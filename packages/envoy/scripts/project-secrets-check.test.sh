@@ -3,9 +3,10 @@
 #
 # Proves project-secrets-check.sh's own decisions, without a stack: what it asks of each caller,
 # what answer passes each row, what answer fails it and which caller and secret the failure names,
-# that its negative control fails, that a run whose rows matched nothing fails, and that live mode
-# refuses half its options. It does not prove the broker's rule; the driver does that on a real
-# stack.
+# that its negative control fails, that a run whose rows matched nothing fails, that live mode
+# refuses a part of its options, and that live mode's public pod row fails on a secret with no
+# project tag, as a deployment's check runs it. It does not prove the broker's rule; the driver
+# does that on a real stack.
 #
 # It copies the real driver, and the lib/pg-url.sh it sources, into a directory of its own beside
 # a fake dev-stack.sh, which prints the banner the real one prints (one export per line,
@@ -228,7 +229,7 @@ case "$command" in
         if ! sees_priv "$person" && [ "$scenario" != alice-enrolled ]; then
           refusal="broker 403 PROJECT_NOT_VISIBLE: the session names a project its person cannot see: PRIV"
         elif [ "$scenario" = f ]; then
-          refusal="broker 403 MACHINE_NOT_REGISTERED: machine_not_registered: PRIV is private, and this machine is not registered to it"
+          refusal="broker 403 PRIVATE_PROJECT_POD_ONLY: private_project_pod_only: PRIV is private; its sessions run only in its own cluster namespace (theorem-session launch --project PRIV)"
         fi
         ;;
     esac
@@ -257,6 +258,9 @@ case "$command" in
       [ -n "$names" ] || who="$who naming nothing"
     elif [ -n "${AGENT_SECRETS_KEY_DIR:-}" ] && [ "$(cat "$AGENT_SECRETS_KEY_DIR/enrollment" 2>/dev/null)" = enr-pod ]; then
       who=pod names=PRIV
+    elif [ -n "${AGENT_SECRETS_KEY_DIR:-}" ] && [ "$(cat "$AGENT_SECRETS_KEY_DIR/enrollment" 2>/dev/null)" = enr-public ]; then
+      # A pod whose credential names no private project: live mode's public pod.
+      who="public pod naming nothing"
     elif [ "${AGENT_SECRETS_MACHINE_IDENTITY:-}" = metadata ] && [ -n "${GCE_METADATA_HOST:-}" ] && [ -n "${AGENT_SECRETS_SESSION:-}" ]; then
       who=machine
     else
@@ -354,8 +358,8 @@ case "${AGENT_SECRETS_MACHINE_IDENTITY:-}" in
       *" PRIV "*)
         if [ "$person" = carol@example.com ]; then
           case "$scenario" in
-            # f-trade-only: a broker whose machine check refuses the trade and not the enrollment.
-            f | f-trade-only) echo "print-trade: invalid_request: The subject token was refused: machine_not_registered: PRIV is private, and this machine is not registered to it" >&2; exit 3 ;;
+            # f-trade-only: a broker whose F check refuses the trade and not the enrollment.
+            f | f-trade-only) echo "print-trade: invalid_request: The subject token was refused: private_project_pod_only: PRIV is private; its sessions run only in its own cluster namespace (theorem-session launch --project PRIV)." >&2; exit 3 ;;
             carol-other-refusal) echo "print-trade: temporarily_unavailable: Dispatch could not be asked whether the token's person sees the projects it names; try again." >&2; exit 3 ;;
             carol-other-list) answer "$person" "" person '["PUB"]'; exit 0 ;;
           esac
@@ -610,7 +614,7 @@ run_driver() { # <name> <scenario> [driver arguments...]
 
 readonly all_rows="project-secrets-check: 16 rows ran, 16 passed"
 
-# The right answers, before avenue F's machine check: every row passes and says which branch the
+# The right answers, before avenue F's check: every row passes and says which branch the
 # dev-box row took.
 run_driver before-f before-f --database-url "$admin_url"
 check "before F: the run exits 0" exits 0
@@ -646,12 +650,12 @@ check "before F: no curl command line carried the grant's proxy password" not_in
 check "before F: no curl command line carried the grant's placeholder" not_in_curl_args agent-secrets-placeholder-not-a-secret
 check "before F: dev-stack.sh is given the --database-url in LEGION_TEST_PG_DSN and in none of its arguments" stack_url_in_env
 
-# F's machine check present: the dev-box row passes on F's refusal alone, and says so.
+# F's check present: the dev-box row passes on F's refusal alone, and says so.
 run_driver f f --database-url "$admin_url"
 check "F: the run exits 0" exits 0
 check "F: the last line counts 16 rows, all passed" says "$all_rows"
-check "F: carol's trade passes as refused by F's check" says "PASS: carol's session listing PRIV: its trade: refused by F's check (machine_not_registered)"
-check "F: carol's PRIV_KEY passes as refused at enrollment by F's check" says "PASS: carol's session listing PRIV: PRIV_KEY: refused at enrollment by F's check (MACHINE_NOT_REGISTERED)"
+check "F: carol's trade passes as refused by F's check" says "PASS: carol's session listing PRIV: its trade: refused by F's check (private_project_pod_only)"
+check "F: carol's PRIV_KEY passes as refused at enrollment by F's check" says "PASS: carol's session listing PRIV: PRIV_KEY: refused at enrollment by F's check (PRIVATE_PROJECT_POD_ONLY)"
 check "F: no before-F line is printed" says_not "before F's check"
 
 # One answer wrong at a time: each fails its own row, naming its caller and its secret, and no
@@ -703,67 +707,84 @@ check "no access schema: the run exits 1" exits 1
 check "no access schema: the failure names avenue A's route the write stands in for" says "PATCH /api/v1/projects/PRIV/access"
 check "no access schema: no row ran" says "project-secrets-check: 0 rows ran, 0 passed"
 
-# Live mode refuses half its options, and every option of the stack. It takes no Dispatch URL:
-# nothing of the session half it drives reads one.
+# Live mode refuses a part of its three options, and every option of the stack. It takes no
+# Dispatch URL: nothing it drives reads one.
 run_driver live-broker-only before-f --broker-url https://broker.example
 check "live: --broker-url alone exits 2" exits 2
-check "live: --broker-url alone names the two options" says "live mode needs --broker-url and --secret together"
+check "live: --broker-url alone names the three options" says "live mode needs --broker-url, --secret and --project together"
 run_driver live-secret-only before-f --secret PRIV_KEY
 check "live: --secret alone exits 2" exits 2
-run_driver live-dispatch-url before-f --broker-url https://broker.example --dispatch-url https://dispatch.example --secret PRIV_KEY
+run_driver live-no-project before-f --broker-url https://broker.example --secret PRIV_KEY
+check "live: no --project exits 2" exits 2
+check "live: no --project names the three options" says "live mode needs --broker-url, --secret and --project together"
+run_driver live-dispatch-url before-f --broker-url https://broker.example --dispatch-url https://dispatch.example --secret PRIV_KEY --project PRIV
 check "live: --dispatch-url exits 2" exits 2
 check "live: --dispatch-url is no option" says "unexpected argument --dispatch-url"
-run_driver live-control before-f --broker-url https://broker.example --secret PRIV_KEY --control untagged
+run_driver live-control before-f --broker-url https://broker.example --secret PRIV_KEY --project PRIV --control untagged
 check "live: --control exits 2" exits 2
 check "live: --control is refused because it writes" says "--control writes a secret, which live mode never does"
-run_driver live-database before-f --broker-url https://broker.example --secret PRIV_KEY --database-url "$admin_url"
+run_driver live-database before-f --broker-url https://broker.example --secret PRIV_KEY --project PRIV --database-url "$admin_url"
 check "live: --database-url exits 2" exits 2
 check "live: --database-url is refused because live mode starts no stack" says "live mode starts no stack"
-run_driver live-no-env before-f --broker-url https://broker.example --secret PRIV_KEY
+run_driver live-no-env before-f --broker-url https://broker.example --secret PRIV_KEY --project PRIV
 check "live: with none of its variables it exits 2" exits 2
 check "live: it names the pod's exchange token variable" says "AGENT_SECRETS_MACHINE_TOKEN_FILE"
 check "live: it names the pod's key dir variable" says "AGENT_SECRETS_KEY_DIR"
-check "live: it names the operator's helper socket variable" says "AGENT_SECRETS_HELPER_SOCK"
+check "live: it names the public pod's key dir variable" says "AGENT_SECRETS_PUBLIC_KEY_DIR"
 
-# Live mode on a deployment with F's check, from an environment holding the pod's token and key
-# dir, an account token and the operator's helper: the pod's half passes, and the operator's
-# session listing the project the pod's introspection named is refused by F.
+# Live mode on a deployment, from an environment holding the project's pod's exchange token and
+# key dir, an account token and a public pod's key dir, and no person's sign-in or helper: the
+# pod's trade names the project, the pod is granted the secret, and the public pod is denied it.
 live="$temporary_dir/live"
-mkdir -p "$live/pod-keys" "$live/signins"
+mkdir -p "$live/pod-keys" "$live/public-keys"
 printf 'token\n' >"$live/priv-exchange-token"
 printf 'token\n' >"$live/account-token"
 printf 'key\n' >"$live/pod-keys/key.pem"
 printf 'enr-pod\n' >"$live/pod-keys/enrollment"
-printf '{"person": "carol@example.com"}\n' >"$live/signins/carol@example.com.json"
-printf '%s\n' "$live/signins" >"$live/helper.sock"
-cat >"$temporary_dir/fake-secrets.json" <<'JSON'
-{"secrets": [{"name": "example/agent-secrets/priv-key", "tags": {"dispatch-project": "PRIV", "owner": "shared", "tier": "agent"}}]}
-JSON
+printf 'key\n' >"$live/public-keys/key.pem"
+printf 'enr-public\n' >"$live/public-keys/enrollment"
+live_secrets() { # <tags JSON>
+  jq -n --argjson tags "$1" '{secrets: [{name: "example/agent-secrets/priv-key", tags: $tags}]}' >"$temporary_dir/fake-secrets.json"
+}
+live_secrets '{"dispatch-project": "PRIV", "owner": "shared", "tier": "agent"}'
 printf '%s\n' "$temporary_dir" >"$state/current-stack"
-run_live() { # <name> <account token file>
-  printf 'f\n' >"$state/scenario"
-  rm -f "$state/register.log"
+run_live() { # <name> <scenario> <account token file> [<project>]
+  printf '%s\n' "$2" >"$state/scenario"
   RUN_OUT="$temporary_dir/$1.out"
+  : >"$state/agent-secrets.log"
   RUN_RC=0
   env -i PATH="$fakes:$stackbin:$PATH" HOME="$temporary_dir" TMPDIR="$temporary_dir" \
     AGENT_SECRETS_MACHINE_IDENTITY=kubernetes AGENT_SECRETS_MACHINE_TOKEN_FILE="$live/priv-exchange-token" \
-    AGENT_SECRETS_KEY_DIR="$live/pod-keys" AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$2" \
-    AGENT_SECRETS_HELPER_SOCK="$live/helper.sock" \
-    bash "$driver" --broker-url https://broker.example --secret PRIV_KEY \
+    AGENT_SECRETS_KEY_DIR="$live/pod-keys" AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$3" \
+    AGENT_SECRETS_PUBLIC_KEY_DIR="$live/public-keys" \
+    bash "$driver" --broker-url https://broker.example --secret PRIV_KEY --project "${4:-PRIV}" \
     >"$RUN_OUT" 2>&1 || RUN_RC=$?
   RUN_LEFT="$(outlived)"
   check "$1: no process of the run outlived the driver ($RUN_LEFT reaped)" no_process_left
 }
-run_live live-f "$live/account-token"
-check "live, F: the run exits 0" exits 0
-check "live, F: three rows ran and passed" says "project-secrets-check: 3 rows ran, 3 passed"
-check "live, F: the pod's trade names the project" says "PASS: the pod: its trade: project scope named, [\"PRIV\"]"
-check "live, F: the pod is granted the secret" says "PASS: the pod: PRIV_KEY: granted"
-check "live, F: the operator's session is refused by F" says "PASS: the operator's machine session listing PRIV: PRIV_KEY: refused at enrollment by F's check (MACHINE_NOT_REGISTERED)"
-check "live, F: the operator's session listed the project the pod's introspection named" grep -qF 'projects=PRIV' "$state/register.log"
-run_live live-no-account ""
+run_live live live "$live/account-token"
+check "live: the run exits 0" exits 0
+check "live: three rows ran and passed" says "project-secrets-check: 3 rows ran, 3 passed"
+check "live: the pod's trade names the project" says "PASS: the pod: its trade: project scope named, [\"PRIV\"]"
+check "live: the pod is granted the secret" says "PASS: the pod: PRIV_KEY: granted"
+check "live: the public pod is denied the secret" says "PASS: a public pod, whose credential names no private project: PRIV_KEY: denied project-not-named"
+check "live: the pod and the public pod each asked once, and no call went through a helper" \
+  test "$(grep -c '^agent-secrets request PRIV_KEY' "$state/agent-secrets.log")/$(grep -c '^agent-secrets register' "$state/agent-secrets.log")" = 2/0
+run_live live-no-account live ""
 check "live, no account token: the run exits 1" exits 1
 check "live, no account token: the trade line is UNKNOWN, not a pass" says "FAIL: the pod: its trade: UNKNOWN: cannot read the introspection"
+run_live live-other-project live "$live/account-token" OTHER
+check "live, another project: the run exits 1" exits 1
+check "live, another project: the trade fails naming the project it wanted" says "FAIL: the pod: its trade: want project scope named with [\"OTHER\"]"
+
+# The control: the project's secret with no project tag. The public pod is then granted it, and
+# the run fails naming that pod, for the reason the probe would be blind.
+live_secrets '{"owner": "shared", "tier": "agent"}'
+run_live live-untagged live "$live/account-token"
+check "live, untagged: the run exits 1" exits 1
+check "live, untagged: the public pod's row fails, naming it" says "FAIL: a public pod, whose credential names no private project: PRIV_KEY: want denied project-not-named; got exit 0, state granted"
+check "live, untagged: two of the three rows passed" says "project-secrets-check: 3 rows ran, 2 passed"
+live_secrets '{"dispatch-project": "PRIV", "owner": "shared", "tier": "agent"}'
 
 check "no process of any run is left when the test ends" test "$(outlived)" = 0
 

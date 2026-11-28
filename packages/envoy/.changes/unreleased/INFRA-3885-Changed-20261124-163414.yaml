@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+  `scripts/project-secrets-check.sh`'s live mode is made for a deployment's check, with no person's sign-in: it takes `--project KEY` beside `--broker-url` and `--secret`, and its third row is a public pod's request for the secret (its key dir in `AGENT_SECRETS_PUBLIC_KEY_DIR`), which must be denied `project-not-named`, in place of the operator's session through `AGENT_SECRETS_HELPER_SOCK`. The pod's trade must name exactly `[KEY]`. A secret that carries no tag of the project is granted to the public pod, and that row fails naming it.
+  Stack mode's developer-box row expects avenue F's refusal under plan F's codes, `private_project_pod_only` at the trade and `PRIVATE_PROJECT_POD_ONLY` at enrollment, in place of `machine_not_registered` and `MACHINE_NOT_REGISTERED`.
+time: 2026-11-24T16:34:14Z
+custom:
+    Issue: INFRA-3885
