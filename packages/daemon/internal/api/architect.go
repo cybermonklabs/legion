@@ -1811,20 +1811,21 @@ func (s *server) readAndJudge(ctx context.Context, issue string, judge func(cont
 }
 
 // queueWriteBackIfLanded queues, for a write of a.status whose landing is not known (its answer
-// was lost and the read after it failed), the daemon's own status row that writes shown's status
-// back only where Dispatch shows a.status (record.StatusWrite.ObservedStatus). The outbox runs it
-// once Dispatch answers, under the issue's lock, and finishes it with no write where the act's
-// write never landed; nothing else would put that status back, since the status repair passes
-// over an issue Dispatch shows done and over the two phases close_root takes, which have no status
-// of their own.
+// was lost and the read after it failed), the daemon's own set-back of shown's status over a.status
+// (record.ReassertStatusWrite, the row the daemon sets its status back with over a session's
+// write), observed at shown's sequence. The outbox runs it once Dispatch answers, under the
+// issue's lock. It writes only where Dispatch shows a.status and no one but the daemon changed the
+// issue's status after shown (the set-back's setBackOwed, asked again after every refusal), so a
+// write that never landed, and a person's move after one that did, are left as they are; it posts
+// no message, so nothing is posted ahead of that judgement. Nothing else would put the status
+// back: the status repair passes over an issue Dispatch shows done and over the two phases
+// close_root takes, which have no status of their own.
 func (s *server) queueWriteBackIfLanded(ctx context.Context, a acceptAct, shown dispatch.Issue) error {
 	if shown.Status == "" {
 		return errors.New("Dispatch's read before the write named no status to write back")
 	}
 	return store.Transact(ctx, s.pool, func(ctx context.Context, tx pgx.Tx) error {
-		row, err := record.NewOutboxRow(a.issue, record.OrdinaryStatusWrite(shown.Status, a.status,
-			fmt.Sprintf("The %s of %s may have written %s in Dispatch while its answer was lost, and the daemon recorded nothing of it, so %s is written back.", a.act, a.issue, a.status, shown.Status)),
-			time.Now().UTC())
+		row, err := record.NewOutboxRow(a.issue, record.ReassertStatusWrite(shown.Status, a.status, shown.LastSeq), time.Now().UTC())
 		if err != nil {
 			return err
 		}

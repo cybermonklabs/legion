@@ -234,6 +234,11 @@ func TestAnAcceptanceWhoseAnswerWasLostIsReadAgain(t *testing.T) {
 	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != 1 {
 		t.Fatalf("outbox rows of LEGION-208 = %d, want the one conditional write back", rows)
 	}
+	var kind, status, observed string
+	if err := h.store.Pool().QueryRow(t.Context(), "select payload->>'kind', payload->>'status', payload->>'observedStatus' from outbox where issue = 'LEGION-208'").
+		Scan(&kind, &status, &observed); err != nil || kind != string(record.ReassertStatusRow) || status != "needs_review" || observed != "retro" {
+		t.Fatalf("the queued row = kind %q writing %q over %q (%v), want the daemon's set-back of needs_review over retro", kind, status, observed, err)
+	}
 }
 
 // newWorkflowAcceptanceHarness is newAcceptanceHarness with the workflow itself as the judgement
