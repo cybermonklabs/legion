@@ -121,12 +121,11 @@ func TestDeliveryBudgets(t *testing.T) {
 	// from its first charge to its stop is. However many adoptions the shim refuses, the process is
 	// kept and the task waits for the next send, each refusal logged and counted on the delivery.
 	// Seven sends are one past the six the shipped limits (prompt_failure_limit 3,
-	// prompt_retire_limit 2) used to allow before they failed the claim. The refusal is the one a jj
-	// snapshot of a large working copy gives when it runs out the adoption's budget.
+	// prompt_retire_limit 2) used to allow before they failed the claim. The refusal is the one the
+	// shim gives when its `jj workspace update-stale` of a stale working copy runs out its bound.
 	t.Run("consecutive refused adoptions never stop the worker", func(t *testing.T) {
-		const timedOut = "Command timed out after 300 s (ran 300.1 s): jj log --no-graph -T commit_id"
 		h := adoptingHarness(t)
-		h.rt.FailAdoptWorkingCopy(adoptRefusal(timedOut))
+		h.rt.FailAdoptWorkingCopy(adoptRefusal(adoptionTimedOut))
 
 		h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing})
 		for range 6 {
@@ -141,7 +140,7 @@ func TestDeliveryBudgets(t *testing.T) {
 		h.wantPrompts(0)
 		if lines := h.logs.lines("level=WARN",
 			`msg="supervise: the shim refused to adopt the working copy; the prompt was never sent"`,
-			timedOut); len(lines) != 7 {
+			adoptionTimedOut); len(lines) != 7 {
 			t.Fatalf("logged %d adoption refusals, want one per send naming the shim's own words:\n%s",
 				len(lines), strings.Join(lines, "\n"))
 		}
@@ -369,12 +368,11 @@ func TestDeliveryRecordsItsFailures(t *testing.T) {
 }
 
 // A worker whose pending task keeps failing with an answer is not stopped, and its issue's
-// architect is told once: the third answered failure in a row on the same task tells the daemon
-// once (Deps.PromptAnswersReached) and stops nothing, and a fourth tells nothing more. A send that
+// architect is told once: the third answered failure of the same task tells the daemon once
+// (Deps.PromptAnswersReached) and stops nothing, and a fourth tells nothing more. A send that
 // reaches a turn starts the count again: the same task, taken back by a provider error after its
 // turn, is told once more only at the third answered failure after that turn.
 func TestATaskWhoseSendsKeepFailingWithAnAnswerIsToldOnceAndStopsNothing(t *testing.T) {
-	const timedOut = "Command timed out after 300 s (ran 300.1 s): jj log --no-graph -T commit_id"
 	h := newHarness(t)
 	var mu sync.Mutex
 	var told []string
@@ -393,7 +391,7 @@ func TestATaskWhoseSendsKeepFailingWithAnAnswerIsToldOnceAndStopsNothing(t *test
 		defer mu.Unlock()
 		return slices.Clone(told)
 	}
-	h.rt.FailAdoptWorkingCopy(adoptRefusal(timedOut))
+	h.rt.FailAdoptWorkingCopy(adoptRefusal(adoptionTimedOut))
 
 	h.must(RequestDeliver{Claim: testToken, Task: "the task", Phase: phase.Implementing, Generation: 7})
 	h.observe(runtime.Alive)
@@ -407,7 +405,7 @@ func TestATaskWhoseSendsKeepFailingWithAnAnswerIsToldOnceAndStopsNothing(t *test
 		t.Fatalf("told %d times after three answered failures, want once: %q", len(got), got)
 	}
 	task := h.pending().ID
-	for _, want := range []string{string(testToken), task, timedOut, "3 sends in a row"} {
+	for _, want := range []string{string(testToken), task, adoptionTimedOut, "3 sends of this task have failed"} {
 		if !strings.Contains(got[0], want) {
 			t.Errorf("the notice's reason %q does not name %q", got[0], want)
 		}
@@ -432,7 +430,7 @@ func TestATaskWhoseSendsKeepFailingWithAnAnswerIsToldOnceAndStopsNothing(t *test
 		t.Fatalf("pending after the provider error = %+v, want the same task kept", kept)
 	}
 
-	h.rt.FailAdoptWorkingCopy(adoptRefusal(timedOut))
+	h.rt.FailAdoptWorkingCopy(adoptRefusal(adoptionTimedOut))
 	h.advance(promptRetryDelay(1)) // the ladder's re-send: the first answered failure after the turn
 	h.observe(runtime.Alive)
 	if got := notices(); len(got) != 1 {

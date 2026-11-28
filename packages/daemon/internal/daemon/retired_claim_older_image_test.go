@@ -43,8 +43,7 @@ func TestAClaimRetiredForPromptFailuresInAPodOnAnOlderImageComesBackOnTheDaemons
 		r.clock = supervise.RealClock{}
 		r.cfg.ProbeInterval = time.Second
 		// No update round opens over the pod while the test reads it, as none has opened while
-		// the project's open-round limits hold it back: the pod stays on the image it was built on
-		// (the planner's read for R8).
+		// the project's open-round limits hold it back: the pod stays on the image it was built on.
 		r.orphanSweep = time.Hour
 	}}, nil, "older")
 	issue := rig.issue("older")

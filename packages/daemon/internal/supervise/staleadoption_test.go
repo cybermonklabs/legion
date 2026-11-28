@@ -14,7 +14,7 @@ const staleEditsCommit = "c45ff7e33d4899a2b99db849241fe128115021b0"
 
 // staleAdoptionLine is the line the machine writes when it puts such a commit in the task, as an
 // operator reads it.
-const staleAdoptionLine = "supervise: the adoption brought a stale working copy up to date and left the edits no jj command had recorded in a commit; the task names it and is sent at once"
+const staleAdoptionLine = "supervise: the adoption brought a stale working copy up to date and left the edits no jj command had recorded in a commit; the task names it"
 
 // namesTheEdits is whether a prompt names the commit that holds the edits a stale working copy's
 // update left and says they are there and no longer on disk, as the role reads it.

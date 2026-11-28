@@ -1879,16 +1879,16 @@ func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
 // A refused adoption (OutcomeAdoptionRefused) is the shim's answer about the working copy, and is
 // charged nothing the same way, whatever it says; the busy answer is never read for it, since that
 // is Oh My Pi's answer about a turn of its own. Every `ok: false` the shim gives the adoption is
-// this, its own command timeout included, which is what both a jj snapshot of a large working copy
-// that outruns the adoption's budget and a jj wedged on a stale lock report. A retirement would
-// cure neither, since the relaunch runs the same jj on the same working copy, and it would end
-// whatever the agent had running. So the bound INFRA-1480 asked for — unbounded re-sends of a
-// refused adoption held two planning tasks 31 and 33 hours, logged at warning level and recorded
-// nowhere else — is the count on the pending task below and one `worker-stalled` notice to the
-// issue's architect once the prompt-failure limit of such answers in a row is reached
-// (answeredFailure, Deps.PromptAnswersReached), not a retirement. The refusal's text is never read
-// to classify it, only carried into the log and the record below, where the shim's words name the
-// command, or the stale lock's path and its age.
+// this, its own command timeout included: what a `jj workspace update-stale` of a stale working
+// copy that outruns its bound reports, and what the metaedit reports where a stale git index.lock
+// fails it. A retirement would cure neither, since the relaunch runs the same jj on the same
+// working copy, and it would end whatever the agent had running. So the bound INFRA-1480 asked
+// for — unbounded re-sends of a refused adoption held two planning tasks 31 and 33 hours, logged
+// at warning level and recorded nowhere else — is the count on the pending task below and one
+// `worker-stalled` notice to the issue's architect once the task's answered failures reach the
+// prompt-failure limit (answeredFailure, Deps.PromptAnswersReached), not a retirement. The
+// refusal's text is never read to classify it, only carried into the log and the record below,
+// where the shim's words name the command, or the stale lock's path and its age.
 //
 // A send lost to the transport is not charged and waits for the shim's next hello — which may
 // already have come while the send was out. So does an identity the daemon could not mint
@@ -1980,9 +1980,7 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 	default:
 		args = append(args, "outcome", string(outcome))
 	}
-	p.SendFailures++
-	p.LastSendFailureAt = m.deps.Clock.Now()
-	p.LastSendError = m.logFarSideError(ctx, level, msg, r.Err, args...)
+	p.failedSend(m.deps.Clock.Now(), m.logFarSideError(ctx, level, msg, r.Err, args...))
 	var err error
 	if untold || handshakeMoved {
 		err = m.saved(m.putClaimAndPending(ctx))
@@ -3018,9 +3016,10 @@ func registrationDeadline(m *Machine, ctx context.Context, _ Event) error {
 // site name that outcome, which the policy charges nothing. Any other acknowledged prompt is the
 // agent's silence, and the site names OutcomeNoTurnStarted, which the policy charges. The wait
 // carries no words of its own, so nothing but that rule's reading of a refusal makes it an
-// answer. This is the one site that hands a prompt to the prompt budget (promptFailed,
-// chargePrompt): the agent's silence is the one prompt failure that budget counts, and every
-// answer to a prompt is charged nothing where it lands (Budgets).
+// answer. This site hands a prompt to the prompt budget (promptFailed, chargePrompt), as a turn a
+// provider error ended does with an outcome the policy waives (providerErrorTurnEnded): the
+// agent's silence is the one prompt failure that budget counts, and every answer to a prompt is
+// charged nothing where it lands (Budgets).
 //
 // Whether the task goes back read is this site's: the bound alone keeps the mark, since a turn
 // that has not started within it may still be this task's, starting late, and the agent read the

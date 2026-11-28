@@ -306,10 +306,9 @@ type Options struct {
 	// Plugins is the plugin pair this daemon pins, with Contract already its own
 	// api.DaemonAPIVersion: internal/daemon's ResolvedPlugins, the pair that daemon's
 	// specs.stalePluginInstall hands a stale claim's launch as runtime.SpawnSpec.Plugins. Nil is a
-	// daemon that knows none (LEGION-164's degraded mode). A Resume of an Oh My Pi role that
-	// carries no pair of its own into a pod it keeps that was built on another image than Image
-	// installs this one (relaunch, dispatch://INFRA-3916 R8): that pod's image carries its own
-	// release's plugins, whose contract no record the daemon holds names. Nothing else reads it.
+	// daemon that knows none (LEGION-164's degraded mode). relaunch installs it into a kept pod
+	// built on another image than Image for an Oh My Pi Resume that carries no pair of its own,
+	// and its block there says why (dispatch://INFRA-3916 R8). Nothing else reads it.
 	Plugins *runtime.PluginInstall
 	// TestPostgres is runtime.kubernetes.test_postgres: every issue pod serves its own PostgreSQL
 	// for tests, started by the roles container's launcher before it accepts a role start and

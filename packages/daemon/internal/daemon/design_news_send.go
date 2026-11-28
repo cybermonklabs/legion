@@ -129,8 +129,8 @@ func (w *workflowRuntime) designNews(ctx context.Context, c supervise.Claim, d s
 
 // heldNews is news, the news a held task of c carries (supervise.Delivery.News), decoded: the one
 // read of it every send of such a task makes before it renders or writes it again (designNews,
-// workflowRuntime.narrowedNews, workflowRuntime.workingCopy, newsTask), each of which encodes its
-// own answer.
+// workflowRuntime.narrowedNews, newsTask, which workflowRuntime.workingCopy writes through), each
+// of which encodes its own answer.
 func heldNews(c supervise.Claim, news []byte) (record.DeliveryNews, error) {
 	var carried record.DeliveryNews
 	if err := json.Unmarshal(news, &carried); err != nil {
@@ -140,18 +140,23 @@ func heldNews(c supervise.Claim, news []byte) (record.DeliveryNews, error) {
 }
 
 // newsTask answers supervise's Deps.NewsTask: the news a held task of c carries with the start's
-// own text it holds (record.DeliveryNews.Task) written through rewrite, encoded again. Every later
-// send renders the task's text from that copy (designNews, renderNews), so a sentence the machine
-// adds to the task's text — the commits a stale working copy's adoption left the edits in — is
-// added here too, as workflowRuntime.workingCopy writes its line in both copies. It reads no
-// record: only news that does not decode fails, and the machine then keeps the sentence in the
-// task's own text alone.
+// own text it holds (record.DeliveryNews.Task) written through rewrite, encoded again, or news
+// itself where rewrite leaves that text as it was. Every later send renders the task's text from
+// that copy (designNews, renderNews), so a sentence the machine adds to the task's text — the
+// commits a stale working copy's adoption left the edits in — is added here too, as
+// workflowRuntime.workingCopy writes its line in both copies through this. It reads no record:
+// only news that does not decode fails, and the machine then keeps the sentence in the task's own
+// text alone.
 func newsTask(c supervise.Claim, news []byte, rewrite func(task string) string) ([]byte, error) {
 	carried, err := heldNews(c, news)
 	if err != nil {
 		return nil, err
 	}
-	carried.Task = rewrite(carried.Task)
+	task := rewrite(carried.Task)
+	if task == carried.Task {
+		return news, nil
+	}
+	carried.Task = task
 	encoded, err := json.Marshal(carried)
 	if err != nil {
 		return nil, fmt.Errorf("encode the news the task held for %s carries: %w", c.Token, err)

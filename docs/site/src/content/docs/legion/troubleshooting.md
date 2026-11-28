@@ -1461,7 +1461,7 @@ Notices, hooks, merge-forward messages and phase reminders reach the agent throu
 The daemon does not send a phase task while another claim of the same issue is in a turn, or while a prompt is on its way to one.
 It sends the task when that turn ends, and the adoption runs then.
 
-**Four lines in the daemon's log show what each adoption did.**
+**Six lines in the daemon's log show what each adoption did.**
 Each line carries the `claim` attribute, whose value is `legion-<project>-<key in lower case>-<role>`, for example `legion-widgets-widgets-12-implementer`.
 So search the daemon's own log for the key and the `-` after it, without regard to case: the `-` keeps out the lines of a longer key, such as `WIDGETS-120` for `WIDGETS-12`.
 Read the log of the daemon's pod under Kubernetes, or the output of `legion start` under tmux:
@@ -1469,7 +1469,8 @@ Read the log of the daemon's pod under Kubernetes, or the output of `legion star
 ```sh
 kubectl -n <namespace> logs <the daemon's pod> > daemon.log
 grep -i '<KEY>-' daemon.log | grep -e 'adopted for the phase task' \
-  -e 'rather than adopt the working copy' -e 'refused to adopt the working copy' \
+  -e 'rather than adopt the working copy' -e 'waited more than 10 minutes' \
+  -e 'brought a stale working copy up to date' -e 'refused to adopt the working copy' \
   -e 'lost to the transport'
 ```
 
@@ -1481,11 +1482,16 @@ A search that finds no line for a time before the first line does not show that 
 
 - `supervise: the working copy was adopted for the phase task` is one adoption that the shim answered `ok`.
   It names the `claim`, the `delivery`, the `phase`, the App's git name as `identity`, and, as `took` in nanoseconds, how long the daemon's call to adopt took: the daemon's own check of where the claim's process runs, then the round trip to the shim and back, with the shim's own work inside it.
+  Where the shim brought a stale working copy up to date, it also names `editsCommits`, the commits that hold the edits no jj command had recorded.
   The release that carries cybermonklabs/legion#3971 is the first to write this line.
 
 - `supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share` is a phase task that waits.
   `inTurn` names the claim whose turn holds it.
-  A hold that lasts more than 10 minutes also writes `supervise: a phase task has waited more than 10 minutes behind another claim of its issue in a turn; the issue's architect is told` at Warn, once per hold, with the `delivery`, its `phase`, `inTurn` and `held`, and the issue's architect gets one `worker-stalled` notice that names the held claim, its task and the claim in the turn.
+  A hold that lasts more than 10 minutes also writes `supervise: a phase task has waited more than 10 minutes behind another claim of its issue in a turn; the issue's architect is told` at Warn, once per hold, with the `delivery`, its `phase`, the `issue`, `inTurn`, `heldSince` and `held`, and the issue's architect gets one `worker-stalled` notice that names the held claim, its task and the claim in the turn.
+
+- `supervise: the adoption brought a stale working copy up to date and left the edits no jj command had recorded in a commit; the task names it` is an adoption whose update left edits in a commit.
+  It names the `delivery` that carries the commit, the delivery it replaced as `was`, the `issue` and `editsCommits`.
+  The line is written before the adoption's own outcome, so a refused adoption writes it too, and the next send carries the commit.
 
 - `supervise: the shim refused to adopt the working copy; the prompt was never sent` is an adoption that failed, with the shim's own words.
   The task stays queued and is sent again at the next sweep. The refusal costs the claim no prompt budget, because the shim answered, and the pending task counts it in `sendFailures`.

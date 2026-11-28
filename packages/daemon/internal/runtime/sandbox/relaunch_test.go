@@ -1158,16 +1158,15 @@ func TestARelaunchIntoAKeptPodOnAnotherImageInstallsThePinnedPair(t *testing.T) 
 			if replaced := newLoc.Sandbox.PodUID != loc.Sandbox.PodUID; replaced != tc.replaced {
 				t.Fatalf("the launch replaced the pod: %t, want %t (pod %s, then %s)", replaced, tc.replaced, loc.Sandbox.PodUID, newLoc.Sandbox.PodUID)
 			}
-			var start shimwire.LauncherStart
-			for _, frame := range g.sent(spec.Claim) {
-				if s, ok := frame.(shimwire.LauncherStart); ok {
-					start = s
-				}
-			}
+			start := lastStart(t, g, spec.Claim)
 			if start.Generation != 2 {
 				t.Fatalf("the last start sent is generation %d's, want the launch's generation 2", start.Generation)
 			}
-			agent := start.Argv[slices.Index(start.Argv, "--")+1:]
+			i := slices.Index(start.Argv, "--")
+			if i < 0 {
+				t.Fatalf("the start %q carries no -- before the agent's command", start.Argv)
+			}
+			agent := start.Argv[i+1:]
 			script := ""
 			if len(agent) > 2 && agent[0] == "/bin/sh" && agent[1] == "-c" {
 				script = agent[2]

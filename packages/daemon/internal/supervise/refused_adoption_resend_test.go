@@ -4,12 +4,12 @@ package supervise
 // wake (dispatch://INFRA-3916 R3). A refusal arms nothing: the sweep's observation of a live
 // process in a ready claim is the retry of a delivery that waits (observe, table.go), so the next
 // sweep after the cause is gone sends the task. On OSSV-537 the task waited for other reasons —
-// the stale-plugin hold, then the architect's turn — and this holds that the retry stays as it is.
-// A refusal is the shim's answer, so a third one is counted on the pending task like the first two
-// and charges the claim nothing (R7).
+// the stale-plugin hold, then the architect's turn — and this holds that retry. A refusal is the
+// shim's answer, so a third one is counted on the pending task like the first two and charges
+// the claim nothing (R7).
 //
-// The negative control is an observe that skips sendPending for a pending task with SendFailures
-// above 0: the sweep that should meet the second refusal sends nothing, and both cases fail.
+// An observe that skipped sendPending for a pending task with SendFailures above 0 would send
+// nothing at the sweep that should meet the second refusal, and both cases would fail.
 
 import (
 	"strings"

@@ -885,7 +885,6 @@ func TestATurnOfTheAgentsOwnResetsTheRetirementCount(t *testing.T) {
 // at all, which is runtime.OutcomeUnrecognised and which the policy would charge were it asked
 // (Charges): no answer site asks it. Each row's outcome is the one the stream mints for that answer.
 func TestEveryAnswerEndsTheRunOfSilentPromptFailures(t *testing.T) {
-	const timedOut = "Command timed out after 300 s (ran 300.1 s): jj log --no-graph -T commit_id"
 	for _, tc := range []struct {
 		name string
 		// answer answers after two silent charges; first is the id of the task's first prompt.
@@ -900,7 +899,7 @@ func TestEveryAnswerEndsTheRunOfSilentPromptFailures(t *testing.T) {
 			h.observe(runtime.Alive)
 		}},
 		{name: "the shim refuses the re-send's adoption", answer: func(h *harness, _ string) {
-			h.rt.FailAdoptWorkingCopy(adoptRefusal(timedOut))
+			h.rt.FailAdoptWorkingCopy(adoptRefusal(adoptionTimedOut))
 			h.observe(runtime.Alive)
 		}},
 		{name: "the agent refuses the re-send busy", answer: func(h *harness, _ string) {

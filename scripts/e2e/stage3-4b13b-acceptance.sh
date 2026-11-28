@@ -789,8 +789,7 @@ pass
 begin claim-with-no-workflow-issue
 holder_tree="${project}-900"
 # The holder is no workflow issue, so no outbox row provisions its workspace. The tmux runtime needs
-# the directory, and a delivery first adopts the working copy for the role's App (jj --ignore-working-copy metaedit), so it
-# is a jj repository of its own; the holder never touches the smoke repository.
+# the directory, so it is a jj repository of its own; the holder never touches the smoke repository.
 holder_dir="$state/workspaces/$repo/${holder_tree,,}"
 mkdir -p "$holder_dir" || fail "could not create the holder's jj workspace"
 jj git init "$holder_dir" >/dev/null 2>&1 || fail "could not create the holder's jj workspace"

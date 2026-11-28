@@ -53,9 +53,11 @@ import (
 // function whatever outcome the answer carries (refused, refusedElsewhere, lateRefused,
 // promptResulted, waitedOutAnswer, through answeredFailure and answeredLive), so a refusal with no
 // code, which is runtime.OutcomeUnrecognised and charged here, is charged nothing there.
-// The prompt budget is asked of the wait for an acknowledged prompt's turn alone (noTurn), whose
-// runtime.OutcomeNoTurnStarted is the agent's silence and stays charged, as do the launch and
-// death outcomes, so a process that dies in a loop is still stopped by the death budget.
+// The prompt budget is asked of the wait for an acknowledged prompt's turn (noTurn), whose
+// runtime.OutcomeNoTurnStarted is the agent's silence and the one outcome that charges it, and of
+// a turn a provider error ended (providerErrorTurnEnded), whose runtime.OutcomeProviderError the
+// policy waives. The launch and death outcomes stay charged, so a process that dies in a loop is
+// still stopped by the death budget.
 //
 // The guards that are not outcome questions stay at their sites: the lifecycle
 // check before a relaunch and before a retirement (checkLaunch), an operator's suspension held

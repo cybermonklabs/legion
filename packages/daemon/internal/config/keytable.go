@@ -404,7 +404,7 @@ var topLevelKeys = func() []keyDescriptor {
 		},
 		{
 			Name: "prompt_failure_limit", RequiredBy: "no",
-			Description: "How many prompts in a row a worker may acknowledge without taking a turn or answering before the daemon retires its process; a prompt the worker or its shim answered is not counted and ends the run.",
+			Description: "How many prompts in a row a worker may acknowledge without taking a turn or answering before the daemon retires its process; a prompt the worker or its shim answered is not counted and ends the run. It is also how many sends of one task may fail with an answer, since the task was queued or a turn last took it, before the issue's architect is told with a worker-stalled notice.",
 			Positive:    &positiveKey{Value: 3, Count: func(c *Config) *int { return &c.PromptFailureLimit }},
 		},
 		{

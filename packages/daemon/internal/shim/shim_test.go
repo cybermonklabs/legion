@@ -1292,7 +1292,8 @@ func TestAdoptWorkingCopyRunsTheSharedMetaeditAndAnswersTheDaemon(t *testing.T) 
 // adoptionCommands is each jj command the adoption runs on workspace with a fake jj, by name,
 // with the arguments the fake records: the freshness check's read of the working copy's record
 // and of the head operation, the read of @'s change that bringing a stale working copy up to date
-// starts with, the describe read (describedArgs), and the metaedit (adoptionArgs).
+// starts with, the describe read (describedArgs), the metaedit (adoptionArgs), and the `jj new`
+// over a described working copy.
 func adoptionCommands(workspace string) map[string][]string {
 	return map[string][]string{
 		"working copy": {"--ignore-working-copy", "debug", "working-copy", "--color=never", "-R", workspace},
@@ -1300,23 +1301,34 @@ func adoptionCommands(workspace string) map[string][]string {
 		"change":       {"--ignore-working-copy", "log", "-r", "@", "--no-graph", "-T", "change_id", "--color=never", "-R", workspace},
 		"read":         {"--ignore-working-copy", "log", "-r", `@ ~ description(exact:"")`, "--no-graph", "-T", "commit_id", "-R", workspace},
 		"metaedit":     {"--ignore-working-copy", "metaedit", "--update-author", "-r", `@ & description(exact:"")`, "-R", workspace},
+		"new":          {"--ignore-working-copy", "new", "-R", workspace},
 	}
 }
 
 // Every jj command the adoption runs — the describe read (describedArgs), the metaedit of an
 // undescribed working copy (adoptionArgs), the `jj new` over a described one, and the freshness
 // check's reads before and after the change — carries --ignore-working-copy, for every project,
-// with no switch and no fallback. On a fresh working copy that is all it runs: no `jj workspace
-// update-stale`, which snapshots.
+// with no switch and no fallback: each runs as adoptionCommands gives it, and one that runs
+// otherwise fails here naming its list. On a fresh working copy that is all it runs: no `jj
+// workspace update-stale`, which snapshots.
 func TestAdoptWorkingCopyRunsEveryCommandWithoutASnapshot(t *testing.T) {
-	check := []string{"freshness check (jj debug working-copy)", "freshness check (jj op log)"}
+	// list names each command by the list it is built from.
+	list := map[string]string{
+		"working copy": "freshness check (jj debug working-copy)",
+		"head":         "freshness check (jj op log)",
+		"read":         "describe list (describedArgs)",
+		"metaedit":     "metaedit list (adoptionArgs)",
+		"new":          "jj new list",
+	}
+	check := []string{"working copy", "head"}
 	for _, tc := range []struct {
-		name      string
-		mode      string
-		wantLists []string
+		name string
+		mode string
+		// change is the adoption's change, by its name in adoptionCommands.
+		change string
 	}{
-		{name: "an undescribed working copy", wantLists: slices.Concat(check, []string{"describe list (describedArgs)", "metaedit list (adoptionArgs)"}, check)},
-		{name: "a described working copy", mode: "described", wantLists: slices.Concat(check, []string{"describe list (describedArgs)", "jj new list"}, check)},
+		{name: "an undescribed working copy", change: "metaedit"},
+		{name: "a described working copy", mode: "described", change: "new"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			record := fakeJJ(t)
@@ -1331,7 +1343,8 @@ func TestAdoptWorkingCopyRunsEveryCommandWithoutASnapshot(t *testing.T) {
 			p := daemon.accept(t)
 			p.open(t)
 
-			p.send(t, shimwire.AdoptWorkingCopy{ID: "no-snapshot", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test", TimeoutMs: 5000})
+			request := shimwire.AdoptWorkingCopy{ID: "no-snapshot", JJUser: "legion-implementer[bot]", JJEmail: "implementer@example.test", TimeoutMs: 5000}
+			p.send(t, request)
 			if got, ok := p.next(t).(shimwire.AdoptWorkingCopyResult); !ok || !got.OK {
 				t.Fatalf("the shim answered %#v, want a successful adoption", got)
 			}
@@ -1340,53 +1353,18 @@ func TestAdoptWorkingCopyRunsEveryCommandWithoutASnapshot(t *testing.T) {
 			if err != nil {
 				t.Fatalf("jj never ran: %v", err)
 			}
-			var commands [][]string
-			var current []string
-			for line := range strings.SplitSeq(strings.TrimSuffix(string(raw), "\n"), "\n") {
-				switch {
-				case strings.HasPrefix(line, "JJ_USER="):
-				case strings.HasPrefix(line, "JJ_EMAIL="):
-					commands = append(commands, current)
-					current = nil
-				default:
-					current = append(current, line)
+			commands := adoptionCommands(workspace)
+			identity := "JJ_USER=" + request.JJUser + "\nJJ_EMAIL=" + request.JJEmail + "\n"
+			rest := string(raw)
+			for _, name := range slices.Concat(check, []string{"read", tc.change}, check) {
+				ran, after, _ := strings.Cut(rest, identity)
+				if want := strings.Join(commands[name], "\n") + "\n"; ran != want {
+					t.Fatalf("the %s ran as %q, want %q; jj ran:\n%s", list[name], strings.Split(strings.TrimSuffix(ran, "\n"), "\n"), commands[name], raw)
 				}
+				rest = after
 			}
-			if len(commands) != len(tc.wantLists) {
-				t.Fatalf("the adoption ran %d jj commands (%q), want %d (%v)", len(commands), commands, len(tc.wantLists), tc.wantLists)
-			}
-			listOf := func(cmd []string) string {
-				for _, arg := range cmd {
-					if strings.HasPrefix(arg, "-") {
-						continue
-					}
-					switch arg {
-					case "debug":
-						return check[0]
-					case "op":
-						return check[1]
-					case "log":
-						return "describe list (describedArgs)"
-					case "metaedit":
-						return "metaedit list (adoptionArgs)"
-					case "new":
-						return "jj new list"
-					default:
-						return "unknown jj command"
-					}
-				}
-				return "unknown jj command"
-			}
-			var gotLists []string
-			for _, cmd := range commands {
-				list := listOf(cmd)
-				gotLists = append(gotLists, list)
-				if !slices.Contains(cmd, "--ignore-working-copy") {
-					t.Errorf("%s ran without --ignore-working-copy: %q", list, cmd)
-				}
-			}
-			if !reflect.DeepEqual(gotLists, tc.wantLists) {
-				t.Fatalf("the adoption ran %v, want %v", gotLists, tc.wantLists)
+			if rest != "" {
+				t.Fatalf("the adoption ran jj commands past its change and the check after it:\n%s", rest)
 			}
 		})
 	}
@@ -1508,7 +1486,9 @@ func TestAdoptWorkingCopyRunsTheJJOnPATHWithNoLEGIONJJPATH(t *testing.T) {
 // phase role left, as a `jj split` of its work into a described commit leaves one, becomes the
 // incoming phase role's, and the described commit under it keeps its id and its author.
 func TestAdoptWorkingCopyStartsTheIncomingRoleOnAFreshCommitOverADescribedOne(t *testing.T) {
-	jj := fixturegit.CompiledJJ(t)
+	// The pinned jj: the commands the freshness check runs follow how it parses jj's debug output,
+	// which no release holds stable.
+	jj := fixturegit.PinnedJJ(t)
 	// The freshness check finds the working copy fresh on its first two reads, the recorded
 	// operation being the head; after the change it finds that operation behind the head, and
 	// reads @'s commit, its dump and the head's operations to find the tree and labels kept.

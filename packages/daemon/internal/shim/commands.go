@@ -115,17 +115,22 @@ func (s *shim) drainCommands() {
 }
 
 // openedWorkspace is what one request of the daemon's runs its commands with in the workspace
-// its role works in (openWorkspace): the workspace, the jj of PATH, and run, which runs one
-// command there with the request's environment and within its budget, with stdin fed to it, and
-// answers its trimmed standard output (workspace.RunCommand). runWithin runs one command the
-// same way, ended at bound after the budget began rather than at the budget's end, and its
-// timeout names that bound: the adoption's `jj workspace update-stale`, which leaves the reads
+// its role works in (openWorkspace): the workspace, the jj of PATH, the request's budget, and
+// runWithin, which runs one command there with the request's environment, with stdin fed to it,
+// ended at bound after the budget began, and answers its trimmed standard output
+// (workspace.RunCommand); its timeout names that bound. run runs a command within the whole
+// budget; the adoption's `jj workspace update-stale` runs within less, which leaves the reads
 // after it a reserve of the budget (updateReserve).
 type openedWorkspace struct {
 	dir       string
 	jj        string
-	run       func(stdin []byte, args ...string) (string, error)
-	runWithin func(bound time.Duration, args ...string) (string, error)
+	budget    time.Duration
+	runWithin func(bound time.Duration, stdin []byte, args ...string) (string, error)
+}
+
+// run runs one command within the request's whole budget (runWithin).
+func (o openedWorkspace) run(stdin []byte, args ...string) (string, error) {
+	return o.runWithin(o.budget, stdin, args...)
 }
 
 // openWorkspace is the one start of every request a shim answers in its role's workspace: the
@@ -152,15 +157,12 @@ func (s *shim) openWorkspace(verb string, env []string, budget time.Duration) (o
 	ctx, cancel := context.WithTimeout(s.commands, budget)
 	started := time.Now()
 	start := s.children.Starter()
-	run := func(stdin []byte, args ...string) (string, error) {
-		return workspace.RunCommand(ctx, start, budget, started, env, dir, stdin, args)
-	}
-	runWithin := func(bound time.Duration, args ...string) (string, error) {
+	runWithin := func(bound time.Duration, stdin []byte, args ...string) (string, error) {
 		within, end := context.WithDeadline(ctx, started.Add(bound))
 		defer end()
-		return workspace.RunCommand(within, start, bound, started, env, dir, nil, args)
+		return workspace.RunCommand(within, start, bound, started, env, dir, stdin, args)
 	}
-	return openedWorkspace{dir: dir, jj: jj, run: run, runWithin: runWithin}, cancel, nil
+	return openedWorkspace{dir: dir, jj: jj, budget: budget, runWithin: runWithin}, cancel, nil
 }
 
 // adopt answers `adopt-working-copy`, which fromDaemon hands it, with the adoption's outcome
@@ -294,5 +296,7 @@ func (s *shim) runAdoption(request shimwire.AdoptWorkingCopy) (edits []string, e
 	if _, err := run(nil, change...); err != nil {
 		return edits, err
 	}
-	return edits, upToDate()
+	// upToDate appends to edits, so it runs before edits is read for the answer.
+	err = upToDate()
+	return edits, err
 }

@@ -6,7 +6,8 @@ import "errors"
 // turned, a process that died, a launch that failed. It is minted where the daemon learns the
 // fact — for an answer of the agent's, by the package that read the frame (internal/stream),
 // from the frame's machine-readable code and never from its words — and the supervisor decides on
-// the member alone. Whether an outcome charges a budget is supervise.Charges's alone.
+// the member alone. A site that charges a budget asks supervise.Charges whether the member charges
+// it; a site that handles the agent's answer to a prompt charges nothing and asks nothing.
 //
 // The set is declared here, below both the stream that mints its members and the supervisor that
 // charges them, so the transport depends on no package above it. The set is closed, and Outcomes
@@ -20,11 +21,11 @@ type Outcome string
 const (
 	// OutcomeUnrecognised is the zero value: an event no site named, or a value the set does not
 	// hold. A prompt refusal that carries no code is this, as internal/stream mints it
-	// (stream.PromptRefusalOutcome) — Oh My Pi's busy sentence with no code among them, since its
-	// words are not read — and so is a prompt refusal whose error carries no minted member
-	// (supervise's sendOutcome). No answer site charges a refusal, whatever outcome it carries,
-	// a refusal with no code among them (supervise's Budgets); the policy still charges this zero
-	// value where a charge site asks it, so an unrecognised event no answer site handled stays
+	// (stream.PromptRefusalOutcome), Oh My Pi's busy sentence with no code included, since its
+	// words are not read; so is a prompt refusal whose error carries no minted member (supervise's
+	// sendOutcome). No answer site charges a refusal, whatever outcome it carries, so a refusal
+	// with no code is charged nothing (supervise's Budgets). The policy still charges this zero
+	// value where a charge site asks it, so an unrecognised event that no answer site handles stays
 	// charged (supervise's Charges).
 	OutcomeUnrecognised Outcome = ""
 	// OutcomeAgentBusy is the agent answering that it is in a turn of its own, which it says by the

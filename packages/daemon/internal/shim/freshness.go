@@ -152,7 +152,7 @@ func (s *shim) bringUpToDate(opened openedWorkspace, operation string, bound tim
 		return nil, err
 	}
 	s.log.Printf("[worker-shim] the working copy is stale; bringing it up to date with jj workspace update-stale")
-	_, updateErr := opened.runWithin(bound, opened.jj, "workspace", "update-stale", "-R", opened.dir)
+	_, updateErr := opened.runWithin(bound, nil, opened.jj, "workspace", "update-stale", "-R", opened.dir)
 	after, err := opened.read("log", "-r", "("+revset+") ~ @", "--no-graph", "-T", `commit_id ++ "\n"`)
 	if err != nil {
 		if updateErr != nil {

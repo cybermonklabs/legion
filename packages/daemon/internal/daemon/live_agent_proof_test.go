@@ -463,6 +463,19 @@ func (s *modelStandin) requestsHolding(marker string) int {
 	return held
 }
 
+// bodiesHolding is every recorded request body that carries marker, oldest first.
+func (s *modelStandin) bodiesHolding(marker string) []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var bodies []string
+	for _, body := range s.requests {
+		if strings.Contains(body, marker) {
+			bodies = append(bodies, body)
+		}
+	}
+	return bodies
+}
+
 // ---- the answers both proofs' stand-ins write ------------------------------------------------------
 
 // writeOverloaded answers one model request 529 with `retry-after: 3600`. The header is over the

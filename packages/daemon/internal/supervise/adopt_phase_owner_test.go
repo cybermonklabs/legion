@@ -5,13 +5,13 @@ package supervise
 // that (dispatch://INFRA-3916 R5, dispatch://INFRA-2695). On OSSV-122 on 2026-11-15 a daemon that
 // adopted for every task sent the reviewer an update round's ask, queued as a task while the issue
 // was in implementing, and its adoption wrote the reviewer's App onto the implementer's
-// undescribed commit. This daemon adopts only for a task of a phase (adopts), drops a task of a
+// undescribed commit. The daemon adopts only for a task of a phase (adopts), drops a task of a
 // phase the issue has left (phaseHolds), and drops an ask an older daemon queued as a task when a
 // restored claim brings one back (sendPending, updateRoundOf).
 //
-// The negative controls are those two drops, each made alone: a phaseHolds that holds back no task
-// of another phase than the issue's turns the reviewer's phase-task row red, and a sendPending that
-// does not drop a restored `update:` task turns the `update:` row red.
+// Each drop is held alone: a phaseHolds that held back no task of another phase than the issue's
+// would turn the reviewer's phase-task row red, and a sendPending that did not drop a restored
+// `update:` task would turn the `update:` row red.
 
 import (
 	"context"
@@ -23,9 +23,10 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 )
 
-// reviewerToken and reviewerClaim are the reviewer of the implementer's own issue (queuedClaim):
-// two roles of one issue, and so of the one jj workspace its roles share.
-const reviewerToken claim.Token = "legion-LEGION-209-reviewer"
+// reviewerToken and reviewerClaim are the reviewer of the implementer's own issue (queuedClaim),
+// the claim the wake tests name thirdToken: two roles of one issue, and so of the one jj workspace
+// its roles share.
+const reviewerToken = thirdToken
 
 func reviewerClaim() Claim {
 	c := queuedClaim()

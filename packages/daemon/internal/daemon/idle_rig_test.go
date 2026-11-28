@@ -170,9 +170,9 @@ func newIdleWakeRig(t *testing.T, plans map[string]idleRigPlan, issues ...string
 // idleRigOptions is what a test changes of the rig's parts before it boots. ListenerEnv is each
 // NAME=VALUE the Envoy listener is started with beside the rig's own, such as the session windows
 // a test shortens so a session it stops hearing from is unresponsive, then gone, and its role
-// claim freed within the test. Tune changes the rig before anything reads it: its configuration
-// (cfg), the daemon's sweep interval (orphanSweep) and the supervisor's clock (clock), before the
-// issues are seeded and the daemon boots; nil changes nothing.
+// claim freed within the test. Tune changes the rig after its parts are built, before the issues
+// are seeded and the daemon boots: its configuration (cfg), the daemon's sweep interval
+// (orphanSweep) and the supervisor's clock (clock); nil changes nothing.
 type idleRigOptions struct {
 	ListenerEnv []string
 	Tune        func(*idleWakeRig)

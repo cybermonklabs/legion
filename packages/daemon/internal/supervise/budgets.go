@@ -313,13 +313,15 @@ func (m *Machine) turnOpen() bool {
 }
 
 // chargePrompt counts one silent prompt failure where the policy charges o (Charges), and charges
-// nothing where it does not. Its one caller is the wait for an acknowledged prompt's turn running
-// out with no answer (noTurn, through promptFailed): no site that handles the far side's answer to
-// a prompt asks it anything, whatever outcome the answer carries (Budgets). At the limit the
-// process is retired — suspended, the session kept — and the same session relaunched, or, once
-// retirements run out too, the claim fails with its prompt count left at the limit, under the
-// prompt budget's own word: what ran out is the retirements, whichever event spent the last of
-// them (CausePromptRetiresExhausted).
+// nothing where it does not. It has two callers: the wait for an acknowledged prompt's turn
+// running out with no answer (noTurn, through promptFailed), whose OutcomeNoTurnStarted, the
+// agent's silence, is the one outcome that charges, and a turn a provider error ended
+// (providerErrorTurnEnded), whose OutcomeProviderError the policy waives. No site that handles
+// the far side's answer to a prompt asks it anything, whatever outcome the answer carries
+// (Budgets). At the limit the process is retired — suspended, the session kept — and the same
+// session relaunched, or, once retirements run out too, the claim fails with its prompt count
+// left at the limit, under the prompt budget's own word: what ran out is the retirements,
+// whichever event spent the last of them (CausePromptRetiresExhausted).
 //
 // Three guards here are not outcome questions, and stay this function's. A
 // relaunch the tree lifecycle refuses is checked before the suspension so the process is kept
@@ -397,12 +399,15 @@ func (m *Machine) answeredLive(ctx context.Context) error {
 // answeredFailure is a send of the pending task that the far side answered with a failure and
 // no turn: the shim refused to adopt the working copy ahead of it, or the agent refused it,
 // before or after its acknowledgement, or ran no turn for it. It is charged nothing and ends the
-// run of silent charges (answeredLive). It is counted all the same, per pending task: at the
-// prompt-failure limit the issue's architect is told once that the task keeps failing while its
-// worker is kept (Deps.PromptAnswersReached), the escalation a retirement and a failed claim once
-// gave. A new task, or a turn that takes this one (confirmCarrying), starts the count again; so
-// does a daemon restart, since the count is memory only. why is the far side's text as the store
-// keeps it.
+// run of silent charges (answeredLive). It is counted all the same, per pending task: when the
+// count reaches the prompt-failure limit the issue's architect is told that the task keeps
+// failing while its worker is kept (Deps.PromptAnswersReached), the escalation that stands in for
+// a retirement and a failed claim. The count is of the task's answered failures since it was
+// queued or a turn last took it (confirmCarrying), and nothing else resets it: a busy answer, a
+// transport loss, an identity failure or a silent charge between two of them leaves it as it is.
+// A new task, or a turn that takes this one, starts the count again, so a task can be told of
+// again after a turn; so does a daemon restart, since the count is memory only. why is the far
+// side's text as the store keeps it.
 func (m *Machine) answeredFailure(ctx context.Context, why string) error {
 	if p := m.claim.Pending; p != nil {
 		if !p.QueuedAt.Equal(m.answeredTask) {
@@ -419,7 +424,7 @@ func (m *Machine) answeredFailure(ctx context.Context, why string) error {
 // tellPromptAnswers tells the issue's architect, through the daemon, that p's sends keep failing
 // with an answer, naming the claim, the task and the last answer.
 func (m *Machine) tellPromptAnswers(p Delivery, why string) {
-	reason := fmt.Sprintf("The %s claim %s did not get its task %s: %d sends in a row failed with an answer. "+
+	reason := fmt.Sprintf("The %s claim %s did not get its task %s: %d sends of this task have failed with an answer since it was queued or a turn last took it. "+
 		"A worker that answers is not stopped, so the daemon keeps the worker and sends the task again at each sweep. "+
 		"The last answer was: %s", m.claim.Role, m.claim.Token, p.ID, m.answeredFailures, why)
 	m.log.Warn("supervise: the far side keeps answering the pending task's sends with a failure; the issue's architect is told",

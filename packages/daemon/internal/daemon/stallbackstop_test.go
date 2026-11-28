@@ -1571,7 +1571,7 @@ func TestATaskThatKeepsFailingWithAnAnswerIsToldAsAWorkerStalledNotice(t *testin
 	t.Parallel()
 	rig := newBackstopRig(t)
 	c := rig.claim(claim.RoleImplementer, "LEGION-219", time.Minute, false)
-	const reason = "The implementer claim did not get its task: 3 sends in a row failed with an answer."
+	const reason = "The implementer claim did not get its task: 3 sends of this task have failed with an answer since it was queued or a turn last took it."
 
 	rig.s.promptAnswersReached(c, reason)
 

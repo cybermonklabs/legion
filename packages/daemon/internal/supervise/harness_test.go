@@ -1322,6 +1322,11 @@ func adoptRefusal(reason string) error {
 	return fmt.Errorf("worker-stream: %s refused adopt-working-copy: %s: %w", testToken, reason, runtime.ErrAdoptRefused)
 }
 
+// adoptionTimedOut is the shim's words for an adoption whose own command ran out its bound: a
+// `jj workspace update-stale` of a stale working copy, bounded to the budget less the reserve
+// the reads after it take (the shim's bringUpToDate).
+const adoptionTimedOut = "Command timed out after 295 s (ran 295.1 s): jj workspace update-stale"
+
 // fakeEnroller is the broker as the machine sees it: it records every enrollment and revocation,
 // mints ids, and fails what the test told it to. It verifies the pod token's expiry against now
 // as the broker does (enroll.Service.Create): an expired token is refused POD_TOKEN_EXPIRED and

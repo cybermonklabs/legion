@@ -95,7 +95,7 @@ func TestTheFreshnessCheckReadsEachTreeShapeJJPrints(t *testing.T) {
 			state: "stale", ran: []string{workingCopy, head, commitID, dump}, labels: 1, resolved: true, treeCount: 1},
 		{name: "a recorded operation not among the head's last 1,000", state: "operation-behind",
 			change: func(f *freshnessFixture) {
-				recorded, _ := parseOperation(f.workingCopy)
+				recorded, _, _ := parseWorkingCopy(f.workingCopy)
 				f.operations = strings.ReplaceAll(f.operations, recorded+"\n", "")
 			},
 			ran: []string{workingCopy, head, commitID, dump, operations}, labels: 1, resolved: true, treeCount: 1},
@@ -204,10 +204,4 @@ func TestTheFreshnessCheckReadsEachTreeShapeJJPrints(t *testing.T) {
 			}
 		})
 	}
-}
-
-// parseOperation is the operation a working copy's record names.
-func parseOperation(workingCopy string) (string, error) {
-	operation, _, err := parseWorkingCopy(workingCopy)
-	return operation, err
 }

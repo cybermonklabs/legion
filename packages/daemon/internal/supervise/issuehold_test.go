@@ -59,9 +59,15 @@ func readyTester(t *testing.T, inTurn func(string, claim.Token) (claim.Token, bo
 	return h
 }
 
+// holdLines is how many hold lines naming the implementer's claim the tester has written so far.
+func (h *harness) holdLines() int {
+	return len(h.logs.lines("supervise: a claim of this issue is in a turn", "inTurn="+string(testToken)))
+}
+
 // wantHeld fails the case unless the tester holds its task, unsent and with no adoption made,
-// behind the implementer's claim, as the hold's own line names it.
-func (h *harness) wantHeld(why string) {
+// behind the implementer's claim, as a hold line the step wrote names it: the log holds more such
+// lines (holdLines) than before, the count read ahead of the step.
+func (h *harness) wantHeld(why string, before int) {
 	h.t.Helper()
 	if prompts := h.prompts(); len(prompts) != 0 {
 		h.t.Fatalf("%s: the tester was sent %+v, want its task held", why, prompts)
@@ -70,8 +76,8 @@ func (h *harness) wantHeld(why string) {
 	if p := h.pending(); p.Prompted || !p.ConfirmedAt.IsZero() {
 		h.t.Fatalf("%s: pending %+v, want the task held, unprompted", why, p)
 	}
-	if lines := h.logs.lines("supervise: a claim of this issue is in a turn", "inTurn="+string(testToken)); len(lines) == 0 {
-		h.t.Fatalf("%s: no hold line names the implementer's claim %s", why, testToken)
+	if after := h.holdLines(); after <= before {
+		h.t.Fatalf("%s: the step wrote no hold line naming the implementer's claim %s (%d before it, %d after)", why, testToken, before, after)
 	}
 }
 
@@ -105,10 +111,10 @@ func (h *harness) refusedLoop(sequence uint64) {
 // on with that run (OSSV-343 on 2026-11-16, Read 3 of dispatch://INFRA-3916/artifact/measurements-md),
 // so the task stays held, as it does behind a turn nothing reported on at all.
 //
-// The rows of an ended turn pass at main; they hold that a claim whose stream turn ended names
-// nothing to the hold, which a machine that kept such a claim published working or sending, or a
-// rule of who is in a turn (ClaimView.InTurn, which the daemon's claimInTurn reads) that named it,
-// would break. The row of the plugin's report holds that the report ends no hold.
+// The rows of an ended turn hold that a claim whose stream turn ended names nothing to the hold,
+// which a machine that kept such a claim published working or sending, or a rule of who is in a
+// turn (ClaimView.InTurn, which the daemon's claimInTurn reads) that named it, would break. The
+// row of the plugin's report holds that the report ends no hold.
 func TestATurnEndedByAProviderRefusalHoldsNoOtherClaimsPhaseTask(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -183,9 +189,11 @@ func TestATurnEndedByAProviderRefusalHoldsNoOtherClaimsPhaseTask(t *testing.T) {
 			impl := tc.implementer(t)
 			tester := readyTester(t, claimsInTurn(impl))
 
+			before := tester.holdLines()
 			tester.must(RequestDeliver{Claim: testerToken, Task: heldTesterTask, Phase: phase.Testing, Generation: 5})
-			tester.wantHeld("while the implementer's turn runs")
+			tester.wantHeld("while the implementer's turn runs", before)
 
+			before = tester.holdLines()
 			tc.end(t, impl)
 			tester.observe(runtime.Alive)
 
@@ -193,7 +201,7 @@ func TestATurnEndedByAProviderRefusalHoldsNoOtherClaimsPhaseTask(t *testing.T) {
 				tester.wantSentOnce("at the sweep after the implementer's turn ended")
 				return
 			}
-			tester.wantHeld("at the sweep while the implementer's turn still runs")
+			tester.wantHeld("at the sweep while the implementer's turn still runs", before)
 		})
 	}
 }
@@ -310,8 +318,9 @@ func TestAHoldOverTenMinutesTellsTheArchitectOnce(t *testing.T) {
 	}{
 		{"a hold of 9 minutes 59 seconds, then the task sent", func(r *holdRig) {
 			r.deliver()
+			before := r.holdLines()
 			r.waitAndSweep(9*time.Minute + 59*time.Second)
-			r.wantHeld("at 9 minutes 59 seconds")
+			r.wantHeld("at 9 minutes 59 seconds", before)
 			r.wantTold(0, "at 9 minutes 59 seconds")
 
 			r.implementing = false
@@ -321,16 +330,18 @@ func TestAHoldOverTenMinutesTellsTheArchitectOnce(t *testing.T) {
 		}},
 		{"a hold of 10 minutes and 1 second", func(r *holdRig) {
 			r.deliver()
+			before := r.holdLines()
 			r.waitAndSweep(10*time.Minute + time.Second)
-			r.wantHeld("at 10 minutes and 1 second")
+			r.wantHeld("at 10 minutes and 1 second", before)
 			r.wantTold(1, "at 10 minutes and 1 second")
 		}},
 		{"the hold at 20 minutes", func(r *holdRig) {
 			r.deliver()
 			r.waitAndSweep(10*time.Minute + time.Second)
 			r.wantTold(1, "at 10 minutes and 1 second")
+			before := r.holdLines()
 			r.waitAndSweep(10*time.Minute - time.Second)
-			r.wantHeld("at 20 minutes")
+			r.wantHeld("at 20 minutes", before)
 			r.wantTold(1, "at 20 minutes")
 		}},
 		{"the task sent, then a new hold of a task", func(r *holdRig) {
@@ -411,8 +422,9 @@ func TestAHoldOverTenMinutesTellsTheArchitectOnce(t *testing.T) {
 			r.deliver()
 			r.waitAndSweep(8 * time.Minute)
 			r.restart()
+			before := r.holdLines()
 			r.observe(runtime.Alive)
-			r.wantHeld("at the rebuilt machine's first sweep")
+			r.wantHeld("at the rebuilt machine's first sweep", before)
 			r.waitAndSweep(8 * time.Minute)
 			r.wantTold(0, "8 minutes after the rebuild, 16 after the hold began")
 			r.waitAndSweep(2*time.Minute + time.Second)

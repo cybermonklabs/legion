@@ -137,21 +137,17 @@ var adoptionEdits = map[string]string{
 	"new.txt":   "a file no jj command recorded\n",
 }
 
-// The daemon's own lines a step reads (internal/supervise).
+// The daemon's own lines a step reads (internal/supervise), beside idleRigAdoptedLine, an
+// adoption the shim answered ok.
 const (
-	// adoptionAdoptedMessage is an adoption the shim answered ok (supervise's adopt).
-	adoptionAdoptedMessage = "supervise: the working copy was adopted for the phase task"
 	// adoptionLeftEditsMessage is a stale working copy's update that left edits in a commit, which
 	// the task then names (supervise's leftEdits).
-	adoptionLeftEditsMessage = "supervise: the adoption brought a stale working copy up to date and left the edits no jj command had recorded in a commit; the task names it and is sent at once"
+	adoptionLeftEditsMessage = "supervise: the adoption brought a stale working copy up to date and left the edits no jj command had recorded in a commit; the task names it"
 	// adoptionRefusedMessage is an adoption the shim refused (supervise's refused).
 	adoptionRefusedMessage = "supervise: the shim refused to adopt the working copy; the prompt was never sent"
 	// adoptionHeldMessage is a phase task held behind another claim of its issue in a turn
 	// (supervise's sendPending).
 	adoptionHeldMessage = "supervise: a claim of this issue is in a turn; the phase task waits rather than adopt the working copy they share"
-	// adoptionResentMessage is the ladder's wait after a provider error over, the task sent again
-	// (supervise's promptRetryDue).
-	adoptionResentMessage = "supervise: the wait after a provider error is over; the task goes again"
 )
 
 // adoptionStaleSentence opens the sentence the daemon adds to a task whose adoption brought a
@@ -596,7 +592,7 @@ func (r *adoptionDeliveryLive) refusedAdoptionResent() {
 		token, held.State, held.Generation, held.Budgets.PromptFailures, held.Budgets.PromptRetires)
 	notices := r.waitArchitectNotices(r.locked, "worker-stalled", 1)
 	if reason := notices[0].Payload; !strings.Contains(reason, string(token)) || !strings.Contains(reason, "did not get its task") ||
-		!strings.Contains(reason, fmt.Sprintf("%d sends in a row failed with an answer", limit)) {
+		!strings.Contains(reason, fmt.Sprintf("%d sends of this task have failed with an answer", limit)) {
 		t.Fatalf("%s's architect was told %q, want the task that kept failing named with its claim and the count %d", r.locked, reason, limit)
 	}
 	r.note("%s's architect was told once: %q", r.locked, notices[0].Payload)
@@ -607,7 +603,7 @@ func (r *adoptionDeliveryLive) refusedAdoptionResent() {
 		t.Fatalf("remove the stale lock %s: %v", r.lock, err)
 	}
 	adopted := r.awaitLogFrom(string(token)+"'s adoption once the lock is gone", from, 2*time.Minute, func(record loggedRecord) bool {
-		return record.Message == adoptionAdoptedMessage && record.Attrs["claim"] == string(token)
+		return record.Message == idleRigAdoptedLine && record.Attrs["claim"] == string(token)
 	})
 	if gap := adopted.at.Sub(removed); gap > adoptionNextSweep {
 		t.Fatalf("the adoption of %s came %s after the lock was removed, want it at the next sweep, within %s", token, gap.Round(time.Millisecond), adoptionNextSweep)
@@ -698,7 +694,7 @@ func (r *adoptionDeliveryLive) endedTurnHoldsNothing() {
 		t.Fatalf("%s's turn ended with status %v, want the stand-in's 529", implementer, errored.Attrs["httpStatus"])
 	}
 	adopted := r.awaitLogFrom(string(tester)+"'s phase task sent", ended, ladderDelays[0]+time.Minute, func(record loggedRecord) bool {
-		return record.Message == adoptionAdoptedMessage && record.Attrs["claim"] == string(tester)
+		return record.Message == idleRigAdoptedLine && record.Attrs["claim"] == string(tester)
 	})
 	// From the release, since the turn's end and the prompt's result that names the provider
 	// error reach the daemon as two frames, and the turn's end alone is what lets the task go.
@@ -706,11 +702,6 @@ func (r *adoptionDeliveryLive) endedTurnHoldsNothing() {
 	if gap > adoptionNextSweep {
 		t.Fatalf("%s's phase task went %s after %s's turn was released into its provider error, want it at the next sweep, within %s",
 			tester, gap.Round(time.Millisecond), implementer, adoptionNextSweep)
-	}
-	if resent := r.daemon.firstAfter(ended, func(record loggedRecord) bool {
-		return record.Message == adoptionResentMessage && record.Attrs["claim"] == string(implementer)
-	}); resent != nil && !resent.at.After(adopted.at) {
-		t.Fatalf("%s's phase task went only after %s's task was sent again, want it while that task waited on the ladder", tester, implementer)
 	}
 	r.await("the "+adoptWaitingProvider+" stand-in to receive the tester's phase task", paneReady, func() bool {
 		return waiter.requestsHolding(waiting.marker) > 0
@@ -881,17 +872,4 @@ func (s *adoptionStandin) heldTurns() int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.held
-}
-
-// bodiesHolding is every recorded request body that carries marker, oldest first.
-func (s *adoptionStandin) bodiesHolding(marker string) []string {
-	s.modelStandin.mu.Lock()
-	defer s.modelStandin.mu.Unlock()
-	var bodies []string
-	for _, body := range s.requests {
-		if strings.Contains(body, marker) {
-			bodies = append(bodies, body)
-		}
-	}
-	return bodies
 }

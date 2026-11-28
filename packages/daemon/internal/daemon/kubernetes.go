@@ -393,8 +393,8 @@ func sandboxOptions(cfg config.Config, k config.Kubernetes, project string, cred
 		}
 	}
 	// The pair this daemon pins, read where specs.plugins is (ResolvedPlugins over the same
-	// configuration), nil where it knows none: the runtime installs it into a kept pod built on
-	// another image for a resume whose spec carries no pair (sandbox.Options.Plugins).
+	// configuration), nil where it knows none; sandbox.Options.Plugins says where the runtime
+	// installs it.
 	plugins, _ := ResolvedPlugins(cfg)
 	opts := sandbox.Options{
 		Namespace: k.Namespace, Project: project, Image: k.Image, StorageClass: k.StorageClass, IssueVolume: issueVolume,

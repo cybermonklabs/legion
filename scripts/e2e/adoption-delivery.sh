@@ -22,9 +22,11 @@
 # starts a pane with no tmux). Each check prints `== <name>`, what it observed and `ok <name>`; the
 # first that fails ends the run non-zero, naming it.
 #
-# The driver waits out nothing of the provider-error ladder: the one 30 s rung the third check
-# arms is what the tester's task must not wait for. Four panes each start Oh My Pi once, and the
-# tester's pane starts only once the third check has the implementer in a turn.
+# The whole job took 4 min 15 s measured on a GitHub-hosted runner (e2e.yaml's run 46094573100 of
+# commit 02d56634), the driver 36.48 s of it; its row in .github/e2e-scripts.json gives it 15
+# minutes. The driver waits out nothing of the provider-error ladder: the one 30 s rung the third
+# check arms is what the tester's task must not wait for. Four panes each start Oh My Pi once, and
+# the tester's pane starts only once the third check has the implementer in a turn.
 #
 # Run it from a checkout on a Linux host with go, git, jj (the worker image's, which
 # packages/daemon/docker/worker.Dockerfile's ARG JJ_TOOL names: the adoption reads jj's debug

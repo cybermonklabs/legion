@@ -1411,11 +1411,11 @@ type Deps struct {
 	// decision, so it returns at once.
 	ProviderErrorRunReached func(c Claim, reason string)
 	// PromptAnswersReached is told of a pending task whose sends the far side has answered with a
-	// failure Limits.PromptFailures times in a row, once per task (answeredFailure), with the
-	// reason the issue's architect is given: the claim, the task and the last answer's text. The
-	// worker is not stopped for those answers, so this is the escalation a retirement and a
-	// failed claim once gave. nil tells nobody. It is called inside the machine's decision, so it
-	// returns at once.
+	// failure Limits.PromptFailures times since the task was queued or a turn last took it
+	// (answeredFailure), with the reason the issue's architect is given: the claim, the task and
+	// the last answer's text. The worker is not stopped for those answers, so this is the
+	// escalation that stands in for a retirement and a failed claim. nil tells nobody. It is
+	// called inside the machine's decision, so it returns at once.
 	PromptAnswersReached func(c Claim, reason string)
 	// IssueHoldReached is told of a phase task that sendPending has held for more than
 	// issueHoldTold behind inTurn, another claim of its issue in a turn or with a send on its way to

@@ -171,8 +171,8 @@ type Runtime struct {
 	// issue pod, with what the read of its workspace found (relaunch, R7 of
 	// #5285), nil for a runtime that tells nobody.
 	launchTook runtime.LaunchTook
-	// plugins is Options.Plugins: the pair a Resume into a kept pod built on another image
-	// installs where its spec carries none (relaunch), nil for a daemon that knows none.
+	// plugins is Options.Plugins, nil for a daemon that knows none: relaunch installs it into a
+	// kept pod built on another image.
 	plugins *runtime.PluginInstall
 	// podShapes is the configuration each kind of pod is built from now in each sandbox it can
 	// run in (podShape), by kind and sandbox (podShapeKey), encoded once here (podShapes). Every

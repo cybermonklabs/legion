@@ -7,9 +7,9 @@
 #   - downloads the x86_64 musl archive of the jj release that the one `ARG JJ_TOOL` line of its
 #     packages/daemon/docker/worker.Dockerfile names, from the release's GitHub assets as the
 #     image's tools stage does, and checks it against that file's `ARG JJ_SHA256`;
-#   - downloads the Go release its packages/daemon/go.mod names (its `go` line) from go.dev and
-#     checks it against the Dockerfile's `ARG GO_SHA256`, whose `ARG GO_VERSION` must name the same
-#     release;
+#   - downloads the Go release its go.work names (its `go` line, the release the worker image's
+#     Go stage builds with) from go.dev and checks it against the Dockerfile's `ARG GO_SHA256`,
+#     whose `ARG GO_VERSION` must name the same release;
 #   - writes a bare git repository of 342,000 tracked files on main, in nested directories of at
 #     most 1,000 entries, over 20 commits, each tagged, so the repository has a history and refs to
 #     load (make_repository below);
@@ -52,17 +52,17 @@
 # Sizing. CPU 4, request equal to limit: the CPU request of the deployment's template for a build
 # or a test suite, the least docs/kubernetes.md, "Running a workload in the cluster from a role",
 # admits, and equal to its limit because this is a timed run: a lower request lets the timed
-# commands share the machine. The namespace lowers a CPU request equal to its limit
-# unless the pod template carries its guaranteed-CPU label, so give that label with --label; this
-# harness reads the CPU back from the server dry run and from the created Job, and refuses (and
-# deletes the Job) where the request came back lower than the limit. Memory 16Gi, request equal to
-# limit: twice an issue pod's whole 8 GiB, in which a role runs this adoption, a provision and a
-# compile of this package alike. The disk, 50Gi of the storage class --storage-class names, holds
-# everything the Job writes (HOME, TMPDIR, Go and its caches, the clone of this repository, the
-# generated repository, the provisioned clone and the workspace, whose 342,000 files take a block
-# each); that is estimated at under 10 GiB from those parts, and the size is five times that, a
-# persistent disk's speed growing with its size. The container's own ephemeral-storage, 10Gi, is
-# the template's: nothing but its logs is written outside /scratch.
+# commands share the machine. The namespace lowers a CPU request equal to its limit unless the
+# pod template carries its guaranteed-CPU label, so give that label with --label; this harness
+# reads the CPU back from the created Job (and, under --dry-run, from the server dry run), and
+# refuses (and deletes the Job) where the request came back lower than the limit. Memory 16Gi,
+# request equal to limit: twice an issue pod's whole 8 GiB, in which a role runs this adoption, a
+# provision and a compile of this package alike. The disk, 50Gi of the storage class
+# --storage-class names, holds everything the Job writes (HOME, TMPDIR, Go and its caches, the
+# clone of this repository, the generated repository, the provisioned clone and the workspace,
+# whose 342,000 files take a block each); that is estimated at under 10 GiB from those parts, and
+# the size is five times that, a persistent disk's speed growing with its size. The container's
+# own ephemeral-storage, 10Gi, is the template's: nothing but its logs is written outside /scratch.
 #
 # Inputs. Every value private to a deployment is an input and never a literal here: this
 # repository is public, and its deployment's namespace, compute class, storage class, image
@@ -72,10 +72,11 @@
 #   --commit <40 hex>               required: the commit of cybermonklabs/legion the Job clones and
 #                                   tests, pushed: the harness fetches it from GitHub first.
 #   --image <ref>@sha256:<64 hex>   required: the image the Job runs, by digest, never by tag. It
-#                                   carries bash, coreutils, awk, curl, git 2.42 or later (jj's git
-#                                   backend needs it) and a GNU tar built on a glibc before 2.43
-#                                   (gVisor has no openat2), and lets uid 1000 run them (the Job's
-#                                   test builds with CGO_ENABLED=0, as the worker image's Go does);
+#                                   carries bash, coreutils, awk, grep, gzip, curl, git 2.42 or
+#                                   later (jj's git backend needs it) and a GNU tar built on a
+#                                   glibc before 2.43 (gVisor has no openat2), and lets uid 1000
+#                                   run them (the Job's test builds with CGO_ENABLED=0, as the
+#                                   worker image's Go does);
 #                                   a mirror of google-cloud-cli on Debian 13 carries them all. A
 #                                   multi-platform image is named by its index digest, never by the
 #                                   digest of one platform's manifest: a node names the image it ran
@@ -192,7 +193,8 @@ usage: scripts/e2e/adopt-large-checkout-job.sh --commit <40 hex> --image <ref>@s
 
   --commit           the pushed commit of cybermonklabs/legion the Job clones and tests.
   --image            the image the Job runs, by digest, a multi-platform image by its index digest
-                     (bash, coreutils, awk, curl, git 2.42 or later, a GNU tar gVisor runs; uid 1000).
+                     (bash, coreutils, awk, grep, gzip, curl, git 2.42 or later, a GNU tar gVisor
+                     runs; uid 1000).
   --namespace        the namespace the Job runs in.
   --node-selector    the compute class the pod selects; it must admit runtimeClassName: gvisor.
   --storage-class    the storage class of the disk volume mounted at /scratch.
@@ -327,7 +329,7 @@ adopt_work() {
   set -euo pipefail
   local commit=$1 files=$2 commits=$3 timeout=$4
   local legion=/scratch/legion tools=/scratch/tools
-  local dockerfile jj_tool jj_sha jj_rest jj_repo jj_version jj_tag go_mod go_version go_sha status
+  local dockerfile jj_tool jj_sha jj_rest jj_repo jj_version jj_tag go_work go_version go_sha status
 
   adopt_step "the stack limit"
   # The template's stack lines: the soft stack limit 131072, read back.
@@ -365,11 +367,11 @@ adopt_work() {
   [[ $("$tools/jj/jj" --version) == "jj $jj_version"* ]] || { echo "the downloaded jj says [$("$tools/jj/jj" --version)], not jj $jj_version" >&2; return 1; }
   "$tools/jj/jj" --version
 
-  adopt_step "the Go release packages/daemon/go.mod names"
-  go_mod=$(awk '$1 == "go" { print $2; exit }' "$legion/packages/daemon/go.mod")
+  adopt_step "the Go release go.work names"
+  go_work=$(awk '$1 == "go" { print $2; exit }' "$legion/go.work")
   go_version=$(adopt_pin "$dockerfile" GO_VERSION)
   go_sha=$(adopt_pin "$dockerfile" GO_SHA256)
-  [ -n "$go_mod" ] && [ "$go_mod" = "$go_version" ] || { echo "packages/daemon/go.mod names go [$go_mod], and the Dockerfile's ARG GO_VERSION, whose ARG GO_SHA256 checks the download, names [$go_version]" >&2; return 1; }
+  [ -n "$go_work" ] && [ "$go_work" = "$go_version" ] || { echo "go.work names go [$go_work], and the Dockerfile's ARG GO_VERSION, whose ARG GO_SHA256 checks the download, names [$go_version]" >&2; return 1; }
   adopt_fetch "https://go.dev/dl/go$go_version.linux-amd64.tar.gz" "$go_sha" "$tools/go.tar.gz"
   tar -xzf "$tools/go.tar.gz" -C "$tools" --no-same-owner
   rm -f "$tools/go.tar.gz" "$tools/jj.tar.gz"
@@ -400,6 +402,7 @@ adopt_work() {
 adopt_judge() {
   awk -v want_files="$1" -v status="$(cat /scratch/adopt/test.status)" '
     /--- SKIP: TestAdoptionOnALargeCheckout / { skipped = 1 }
+    /^=== RUN +TestAdoptionOnALargeCheckout$/ { ran = 1 }
     /--- PASS: TestAdoptionOnALargeCheckout / { passed = 1 }
     /--- FAIL: TestAdoptionOnALargeCheckout / { failed = 1 }
     /adopt-large-checkout: .* holds [0-9]+ tracked files/ { for (i = 1; i < NF; i++) if ($i == "holds") held = $(i + 1) }
@@ -414,7 +417,7 @@ adopt_judge() {
     END {
       print "adopt-large-checkout: times: " (times == "" ? "none" : times)
       if (skipped) reason = "TestAdoptionOnALargeCheckout skipped"
-      else if (!passed && !failed) reason = "go test exited " status " and ran no TestAdoptionOnALargeCheckout"
+      else if (!passed && !failed && !ran) reason = "go test exited " status " and ran no TestAdoptionOnALargeCheckout"
       else if (over != "") reason = over
       else if (failed || status != 0) reason = "TestAdoptionOnALargeCheckout failed, go test exited " status
       else if (adoptions != 5) reason = "the test logged " adoptions + 0 " adoption times, want 5"

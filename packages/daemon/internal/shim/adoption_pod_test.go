@@ -177,13 +177,19 @@ func (w podWorkspace) writeIn(dir string, files map[string]string) {
 // that the adoption succeeded.
 func (w podWorkspace) adopt(user string) {
 	w.t.Helper()
+	if got, _ := w.adoptWith(user, w.jjBin(), 60_000); !got.OK {
+		w.t.Fatalf("the shim answered %#v, want a successful adoption", got)
+	}
+}
+
+// jjBin is a directory of the test's own that holds the fixture's jj alone, for the shim's PATH.
+func (w podWorkspace) jjBin() string {
+	w.t.Helper()
 	bin := w.t.TempDir()
 	if err := os.Symlink(w.jj, filepath.Join(bin, "jj")); err != nil {
 		w.t.Fatal(err)
 	}
-	if got, _ := w.adoptWith(user, bin, 60_000); !got.OK {
-		w.t.Fatalf("the shim answered %#v, want a successful adoption", got)
-	}
+	return bin
 }
 
 // adoptWith has the real shim adopt the workspace as adopt does, with bin first on PATH, where
@@ -236,7 +242,9 @@ func (w podWorkspace) askAdoption(p *peer, user string, budget int) shimwire.Ado
 // copy fresh. The adoption imports no git HEAD either: a role's own `git commit` before it reaches
 // jj at that status, the next ordinary jj command.
 func TestAdoptWorkingCopyInAPodWorkspaceLosesNoEdit(t *testing.T) {
-	jj := fixturegit.CompiledJJ(t)
+	// The pinned jj: the adoption's freshness check reads jj's debug output, which no release
+	// holds stable, and another jj could take the update-stale path here unnoticed.
+	jj := fixturegit.PinnedJJ(t)
 	edits := map[string]string{"README.md": "smoke, edited by a role\n", "new.txt": "a file no jj command recorded\n"}
 	for _, tc := range []struct {
 		name string

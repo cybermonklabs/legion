@@ -2,7 +2,6 @@ package shim_test
 
 import (
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"testing"
@@ -33,9 +32,10 @@ const largeCheckoutTime = "adopt-large-checkout time:"
 // 342,000 files. The workspace is an issue pod's, provisioned by workspace.Provision from the bare
 // repository LEGION_TEST_LARGE_CHECKOUT names (provisionPodWorkspace), and each adoption is the
 // frame through the real shim, as the daemon sends it before a phase task, so runAdoption runs
-// with its freshness check, with the first jj on PATH: once right after the checkout, three times
-// warm under a new identity each time, so each metaedit rewrites @'s author, and once on the `jj
-// new` branch, after a describe of @ that keeps its tree. Each time is from the frame's send to
+// with its freshness check, with the pinned jj (fixturegit.PinnedJJ: the check reads jj's debug
+// output, which no release holds stable): once right after the checkout, three times warm under a
+// new identity each time, so each metaedit rewrites @'s author, and once on the `jj new` branch,
+// after a describe of @ that keeps its tree. Each time is from the frame's send to
 // the shim's answer. Then main's two commands before this change, the adoption's pair with no
 // --ignore-working-copy, which snapshot the working copy, run on the same workspace as the
 // baseline: their times are reported, not judged.
@@ -44,7 +44,7 @@ func TestAdoptionOnALargeCheckout(t *testing.T) {
 	if remote == "" {
 		t.Skip(largeCheckoutEnv + " is unset: this test runs only where " + largeCheckoutEnv + " names a directory holding a bare git repository")
 	}
-	jj := fixturegit.CompiledJJ(t)
+	jj := fixturegit.PinnedJJ(t)
 	inspect := fixturegit.Isolated(t, t.TempDir())
 	if bare, err := inspect.Try(remote, "git", "rev-parse", "--is-bare-repository"); err != nil || strings.TrimSpace(bare) != "true" {
 		t.Fatalf("%s=%s, which names no directory holding a bare git repository: git rev-parse --is-bare-repository there answered %q (%v)", largeCheckoutEnv, remote, strings.TrimSpace(bare), err)
@@ -59,10 +59,7 @@ func TestAdoptionOnALargeCheckout(t *testing.T) {
 	w := provisionPodWorkspace(t, jj, remote, 10*time.Minute)
 	t.Logf("%s provision %.3f s", largeCheckoutTime, time.Since(start).Seconds())
 
-	bin := t.TempDir()
-	if err := os.Symlink(jj, filepath.Join(bin, "jj")); err != nil {
-		t.Fatal(err)
-	}
+	bin := w.jjBin()
 	adopt := func(what, user string) {
 		t.Helper()
 		p, shim := w.startShim(bin)

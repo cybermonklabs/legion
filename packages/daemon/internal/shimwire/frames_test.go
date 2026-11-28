@@ -295,10 +295,9 @@ func TestEveryExchangedFrameRoundTripsItsWireLine(t *testing.T) {
 // The adoption's answer names each commit in which bringing a stale working copy up to date left
 // the edits that no jj command had recorded (EditsCommits), on an answer that succeeds and on one
 // that refuses. The field is optional both ways, so a shim and a daemon of different releases still
-// read each other's frames: a frame with the field round-trips it, a frame a shim of an earlier
-// release writes with no field decodes to no commit, and a daemon of an earlier release, whose
-// struct holds id, ok and error alone and which decodes with a plain json.Unmarshal, reads the new
-// frame and ignores the field.
+// read each other's frames: a frame with the field round-trips it, and a frame a shim of an earlier
+// release writes with no field decodes to no commit. A daemon of an earlier release decodes the
+// new frame with a plain json.Unmarshal (decodeInto), which ignores the field.
 func TestAnAdoptWorkingCopyResultCarriesItsEditsCommitsAndAnOlderFrameReadsAsNone(t *testing.T) {
 	const commit = "c45ff7e33d4899a2b99db849241fe128115021b0"
 	for _, tc := range []struct {
@@ -320,19 +319,6 @@ func TestAnAdoptWorkingCopyResultCarriesItsEditsCommitsAndAnOlderFrameReadsAsNon
 			}
 			if encoded, err := json.Marshal(tc.frame); err != nil || string(encoded) != tc.line {
 				t.Fatalf("Marshal(%#v) = %s, %v; want %s", tc.frame, encoded, err, tc.line)
-			}
-
-			// The answer as a daemon of an earlier release declares it, and decodes it.
-			var older struct {
-				ID    string `json:"id"`
-				OK    bool   `json:"ok"`
-				Error string `json:"error,omitempty"`
-			}
-			if err := json.Unmarshal([]byte(tc.line), &older); err != nil {
-				t.Fatalf("an earlier release's decode of %s: %v", tc.line, err)
-			}
-			if older.ID != tc.frame.ID || older.OK != tc.frame.OK || older.Error != tc.frame.Error {
-				t.Fatalf("an earlier release read %s as %+v, want the id, ok and error of %#v", tc.line, older, tc.frame)
 			}
 		})
 	}

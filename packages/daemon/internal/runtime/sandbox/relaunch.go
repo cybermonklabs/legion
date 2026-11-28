@@ -33,8 +33,8 @@ import (
 // resolve one (ResumeByAgent), is refused before anything is touched: continuing a recorded agent
 // is Resume's, and a fresh agent continues nothing. spec.Plugins travels with a claim that has
 // registered a session (specs.SpawnSpec), which a Spawn's claim never has yet, and is cleared here
-// anyway, and relaunch installs the pair the daemon pins (Options.Plugins) for a Resume alone, so
-// Spawn always installs nothing and its agent always loads the image's copies.
+// anyway, and the pair the daemon pins goes to a Resume alone (relaunch), so Spawn always installs
+// nothing and its agent always loads the image's copies.
 func (r *Runtime) Spawn(ctx context.Context, spec runtime.SpawnSpec) (runtime.Locator, error) {
 	switch {
 	case spec.ResumeSessionFile != "":
@@ -98,15 +98,14 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // replacing it at a launch would end every role's turn in it and delete the issue's disk with
 // everything unpushed on it (INFRA-484). A launch into a drifted pod is therefore an ordinary
 // launch, the install of a stale-plugin pair (spec.Plugins, LEGION-164) included, which brings
-// this launch's agent onto the current plugin without a fresh pod; a Resume into such a pod built
-// on another image installs the pair this daemon pins where its spec carries none (below). Its
-// role is started as the kept pod was built, from the volumes and mounts of that pod's own stored
-// template (keptBy, keptPod) and not from the configuration as it now reads: two of those drift
-// facets, the broker's enrollment and the role's overlays, are named in the role's own start
-// command, and a process started against what its pod cannot carry refuses to run, never
-// registers, and so never answers the round that is to replace that pod. A pod whose template says
-// nothing this daemon can read is replaced at the launch instead, as every drifted pod was before
-// the round.
+// this launch's agent onto the current plugin without a fresh pod; so does the pair this daemon
+// pins for a Resume into such a pod built on another image (relaunch). Its role is started as the
+// kept pod was built, from the volumes and mounts of that pod's own stored template (keptBy,
+// keptPod) and not from the configuration as it now reads: two of those drift facets, the
+// broker's enrollment and the role's overlays, are named in the role's own start command, and a
+// process started against what its pod cannot carry refuses to run, never registers, and so never
+// answers the round that is to replace that pod. A pod whose template says nothing this daemon can
+// read is replaced at the launch instead, as every drifted pod was before the round.
 //
 // Such a pod is kept unless the update round over it is over by the daemon's rule for a round with
 // no process in its pod (Options.RoundPodEnds, dispatch://INFRA-4109 R7): no role process runs in
@@ -182,12 +181,9 @@ func (r *Runtime) Resume(ctx context.Context, prev *runtime.Locator, spec runtim
 // On an error the caller owns stopping its previous process (runtime.Runtime's Spawn and Resume);
 // relaunch stops only the child it may itself have started: a Start the launcher received but did
 // not answer in time (stopIssuedChild). A launch installs a plugin pair (launcherCommand) only into
-// a pod it keeps rather than replaces: the spec's own where spec.Plugins is set, a stale claim's;
-// and, where the spec carries none, the pair this daemon pins (Options.Plugins) for a Resume of an
-// Oh My Pi role into a kept pod built on another image than the configured one, since that image
-// carries its own release's plugins and a process that loaded them would register on that
-// release's contract (podImageDrift, dispatch://INFRA-3916 R8). A Spawn, a Claude Code launch and
-// a launch into a pod on the configured image install nothing of the pinned pair. A pod replaced
+// a pod it keeps rather than replaces: the spec's own where spec.Plugins is set, a stale claim's,
+// and otherwise the pair this daemon pins for an Oh My Pi Resume into a kept pod built on another
+// image (the block in relaunch that sets it says why, dispatch://INFRA-3916 R8). A pod replaced
 // for any reason — a suspended Sandbox, a lost launcher binding, a failed init, a pod that never
 // started, a moved address, an update round that is over, a controller pod built on another image
 // — comes up on the configured image, which the boot gate holds to the daemon's contract, so its
@@ -448,9 +444,7 @@ func (r *Runtime) relaunch(ctx context.Context, prev *runtime.Locator, spec runt
 	// plugin is the image's own claude-envoy, nor a daemon that knows no pair. No pod a round does
 	// not cover is kept here on another image: a launch installing nothing replaces such a pod for
 	// any drift of its shape.
-	resumes := spec.ResumeSessionFile != "" || spec.ResumeSession != ""
-	if !replace && l.spec.Plugins == nil && r.plugins != nil && resumes && !l.runsClaude() &&
-		podImageDrift(s, r.podShapes[l.shapeKey()]) {
+	if !replace && !installing && l.resumesOMP() && podImageDrift(s, r.podShapes[l.shapeKey()]) {
 		l.spec.Plugins = r.plugins
 	}
 	taken := r.launchTaken(bounded, l, s, pod, kind, replacement, took, live)

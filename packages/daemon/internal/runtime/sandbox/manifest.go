@@ -788,6 +788,13 @@ func sessionIDFault(id string) string {
 // agent command, its launcher file and three of its variables are the Claude lane's.
 func (l launch) runsClaude() bool { return runtime.Of(l.spec.Backend) == runtime.BackendClaude }
 
+// resumesOMP is whether the launch resumes a recorded Oh My Pi session, by its file
+// (spec.ResumeSessionFile) or by its id (spec.ResumeSession). A Claude role's resume is Claude
+// Code's.
+func (l launch) resumesOMP() bool {
+	return !l.runsClaude() && (l.spec.ResumeSessionFile != "" || l.spec.ResumeSession != "")
+}
+
 // prepare checks spec and resolves everything a launch needs from it, reading the prompt files on
 // the daemon's disk, so a launch that cannot be honoured is refused before any API call: the
 // shared refusal, over every name a spec may not set — the runtime's own, the composed ones and,
@@ -2025,7 +2032,7 @@ func (r *Runtime) mainEnvironment(l launch) []corev1.EnvVar {
 	// Claude Code's. The name is the runtime's (runtimeOwned), so neither a spec nor an operator's
 	// pod env may set it, and it comes after both. It is plain, so it travels in the start command
 	// alone (launchEnvironment) and changes nothing of the pod.
-	if !l.runsClaude() && (spec.ResumeSessionFile != "" || spec.ResumeSession != "") {
+	if l.resumesOMP() {
 		add(runtime.SessionExclusiveVariable, runtime.SessionExclusiveValue)
 	}
 	return env

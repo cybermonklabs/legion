@@ -1,15 +1,14 @@
 package supervise
 
 // The stale-plugin hold of sendPending (staleRefusesClaim) keeps a claim's task back for as many
-// sweeps as the refresh lane takes to reach the claim, and on OSSV-537 it held the implementer's
-// task from 11:46Z to 12:02Z and wrote no line, so the hold was read only by elimination
-// (dispatch://INFRA-3916 R3). The hold now writes one line the first time it keeps a delivery
-// back, naming the delivery, the contract the claim's process registered on and the daemon's own,
-// and no line again for that delivery at the sweeps that ask again. A delivery that takes its
-// place is told in a line of its own. The hold itself is unchanged: nothing is sent
-// (plugin_refresh_hold_test.go).
+// sweeps as the refresh lane takes to reach the claim; on OSSV-537 it held the implementer's task
+// from 11:46Z to 12:02Z with no line, so the hold was read only by elimination
+// (dispatch://INFRA-3916 R3). The hold writes one line the first time it keeps a delivery back,
+// naming the delivery, the contract the claim's process registered on and the daemon's own, and
+// no line again for that delivery at the sweeps that ask again. A delivery that takes its place
+// is told in a line of its own. The hold sends nothing (plugin_refresh_hold_test.go).
 //
-// The negative control is the gate's line removed, which leaves the hold silent again.
+// A gate that writes no line leaves the hold silent, and fails this test.
 
 import (
 	"log/slog"

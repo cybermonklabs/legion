@@ -422,13 +422,16 @@ describe("mcp", () => {
       fake.calls.push("disconnectAll");
     },
   });
-  const configured = async () => ({
-    configs: { alpha: { command: "alpha" }, beta: { url: "http://beta" } },
+  // configuredAs is a host whose configured servers are configs, alpha's and beta's sources the
+  // two files they are configured in.
+  const configuredAs = (configs: Record<string, unknown>) => async () => ({
+    configs,
     sources: {
       alpha: { path: path.join(workspace, ".omp", "mcp.json") },
       beta: { path: path.join(workspace, ".mcp.json") },
     },
   });
+  const configured = configuredAs({ alpha: { command: "alpha" }, beta: { url: "http://beta" } });
 
   test("passes with no server configured, connecting nothing", async () => {
     const rows = await measure(fakeHost());
@@ -491,14 +494,6 @@ describe("mcp", () => {
   // Oh My Pi's manager never connects a `lazy: true` server at discovery, and answers
   // `disconnected` for it with no error (`connectServers` and `getConnectionStatus` in
   // `mcp/manager.ts` at v18.18.6-sami.20261127-055727).
-  const withLazy = (configs: Record<string, unknown>) => async () => ({
-    configs,
-    sources: {
-      alpha: { path: path.join(workspace, ".omp", "mcp.json") },
-      beta: { path: path.join(workspace, ".mcp.json") },
-    },
-  });
-
   test("a lazy server with no status and no error gives an ok row that names it lazy", async () => {
     // alpha is lazy too, but connected: a lazy server that connected is a connected one.
     const fake: FakeManager = {
@@ -507,7 +502,7 @@ describe("mcp", () => {
     };
     const both = await measure(
       fakeHost({
-        loadMCPConfigs: withLazy({
+        loadMCPConfigs: configuredAs({
           alpha: { command: "alpha", lazy: true },
           beta: { url: "http://beta", lazy: true },
         }),
@@ -522,7 +517,7 @@ describe("mcp", () => {
 
     const alone = await measure(
       fakeHost({
-        loadMCPConfigs: withLazy({ beta: { url: "http://beta", lazy: true } }),
+        loadMCPConfigs: configuredAs({ beta: { url: "http://beta", lazy: true } }),
         discoverMCPServers: async () => ({
           manager: manager({ statuses: { beta: "disconnected" }, calls: [] }),
           errors: [],
@@ -536,7 +531,7 @@ describe("mcp", () => {
     const fake: FakeManager = { statuses: { alpha: "connected", beta: "disconnected" }, calls: [] };
     const rows = await measure(
       fakeHost({
-        loadMCPConfigs: withLazy({
+        loadMCPConfigs: configuredAs({
           alpha: { command: "alpha" },
           beta: { type: "stdio", command: "", lazy: true },
         }),
@@ -562,7 +557,7 @@ describe("mcp", () => {
     };
     const rows = await measure(
       fakeHost({
-        loadMCPConfigs: withLazy({
+        loadMCPConfigs: configuredAs({
           alpha: { command: "alpha" },
           beta: { url: "http://beta", lazy: true },
           gamma: { command: "gamma", lazy: false },

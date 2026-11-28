@@ -297,12 +297,7 @@ func (a *idleRigAgents) registering(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	key := idleRigKey(request.Pod, request.Role)
-	seen, ok := a.roles[key]
-	if !ok {
-		seen = &idleRigRole{}
-		a.roles[key] = seen
-	}
+	seen := a.roleLocked(request.Pod, request.Role)
 	seen.Registrations = append(seen.Registrations, idleRigRegistration{Generation: request.Generation, Contract: request.Contract, Agent: request.Agent})
 	a.mu.Unlock()
 	writeIdleRigJSON(w, map[string]string{})
@@ -324,12 +319,7 @@ func (a *idleRigAgents) registered(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	key := idleRigKey(request.Pod, request.Role)
-	seen, ok := a.roles[key]
-	if !ok {
-		seen = &idleRigRole{}
-		a.roles[key] = seen
-	}
+	seen := a.roleLocked(request.Pod, request.Role)
 	seen.Claim, seen.Secret, seen.Session, seen.SessionFile = request.Claim, request.Secret, request.Session, request.SessionFile
 	seen.Registered++
 	a.mu.Unlock()
@@ -347,12 +337,7 @@ func (a *idleRigAgents) record(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	key := idleRigKey(request.Pod, request.Role)
-	seen, ok := a.roles[key]
-	if !ok {
-		seen = &idleRigRole{}
-		a.roles[key] = seen
-	}
+	seen := a.roleLocked(request.Pod, request.Role)
 	message := idleRigMessage{ID: request.ID, Delivery: request.Delivery, Text: request.Text, At: time.Now().UTC()}
 	switch request.Kind {
 	case "prompt":
@@ -375,15 +360,22 @@ func (a *idleRigAgents) stopping(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	a.mu.Lock()
-	key := idleRigKey(request.Pod, request.Role)
+	seen := a.roleLocked(request.Pod, request.Role)
+	seen.Stopping++
+	a.mu.Unlock()
+	writeIdleRigJSON(w, map[string]string{})
+}
+
+// roleLocked is the record of pod's role process, made empty where there is none yet. The caller
+// holds a.mu.
+func (a *idleRigAgents) roleLocked(pod, role string) *idleRigRole {
+	key := idleRigKey(pod, role)
 	seen, ok := a.roles[key]
 	if !ok {
 		seen = &idleRigRole{}
 		a.roles[key] = seen
 	}
-	seen.Stopping++
-	a.mu.Unlock()
-	writeIdleRigJSON(w, map[string]string{})
+	return seen
 }
 
 func (a *idleRigAgents) servePlan(w http.ResponseWriter, r *http.Request) {
