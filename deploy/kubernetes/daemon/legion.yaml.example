@@ -391,8 +391,9 @@ runtime:
                                        # and holds no URL; it takes session_database in place of
                                        # session_dsn_secret, docs/kubernetes.md "Selecting the store").
                                        # pvc and an omitted key are refused: an issue pod's disk is deleted with
-                                       # the pod, so a session kept as a file on it would die with it and the
-                                       # next launch's resume would fail on the missing file
+                                       # the pod, so a session kept as a file on it would die with it, and the
+                                       # next launch would find no session to resume, so the claim would start
+                                       # a fresh agent without that conversation
     session_dsn_secret: SESSION_DSN    # required with postgres: the key of the providers Secret holding that
                                        # database's postgres:// URL, which every pod mounts
     # session_database:                # required with cloudsql-iam, in place of session_dsn_secret.
