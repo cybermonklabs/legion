@@ -1,0 +1,89 @@
+{
+  "checks": [
+    {
+      "artifact_id": "00000000-0000-4000-8000-000000000001",
+      "block_id": "k5",
+      "compared_with": [
+        {
+          "branch": "legion/ACME-0",
+          "kind": "branch",
+          "merge_commit": "b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1b1"
+        }
+      ],
+      "issue_key": "ACME-1",
+      "negative_control": "",
+      "pass_stands": {
+        "answer": "no",
+        "reason": "no_result"
+      },
+      "ref": "dispatch://ACME-1/artifact/verification-md#b-k5",
+      "results": [],
+      "run": "",
+      "sha256": "8aa2d726fa4ca4eba8b0303eed67ab98fa242ee44faa002e423d8c4c181ccd0e",
+      "surface": "",
+      "text": "Production answers at the merged commit.",
+      "version": 1,
+      "when": "after_merge"
+    },
+    {
+      "artifact_id": "00000000-0000-4000-8000-000000000001",
+      "block_id": "k6",
+      "compared_with": [
+        {
+          "branch": "main",
+          "kind": "branch"
+        }
+      ],
+      "issue_key": "ACME-1",
+      "negative_control": "",
+      "pass_stands": {
+        "answer": "no",
+        "reason": "no_result"
+      },
+      "ref": "dispatch://ACME-1/artifact/verification-md#b-k6",
+      "results": [
+        {
+          "actor": {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          },
+          "check_artifact_id": "00000000-0000-4000-8000-000000000001",
+          "check_block_id": "k6",
+          "check_issue_key": "ACME-1",
+          "check_sha256": "0f6309401de1566de382fe3e1385c057d84db01d7b6ec181fd5094616b6f86b6",
+          "check_version": 1,
+          "check_words_moved": false,
+          "commit_sha": "b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3b3",
+          "commit_stands": {
+            "answer": "other_commit"
+          },
+          "created_at": "2026-01-01T00:00:00Z",
+          "currency": "older",
+          "event_seq": 3,
+          "excluded": 0,
+          "failed": 0,
+          "id": "00000000-0000-4000-8000-000000000002",
+          "issue_key": "ACME-1",
+          "negative_control": "",
+          "observed": "",
+          "role": "tester",
+          "run": "",
+          "screenshots": [],
+          "session": "",
+          "skipped": 0,
+          "surface": "",
+          "verdict": "pass"
+        }
+      ],
+      "run": "",
+      "sha256": "0f6309401de1566de382fe3e1385c057d84db01d7b6ec181fd5094616b6f86b6",
+      "surface": "",
+      "text": "The trunk answers at the merged commit.",
+      "version": 1,
+      "when": "default_branch"
+    }
+  ],
+  "issue": "ACME-1",
+  "verification_artifact_id": "00000000-0000-4000-8000-000000000001"
+}

@@ -156,19 +156,26 @@ type StreamLateRefusal struct {
 // carried of news of the approved design is the pending delivery's own news, read where the
 // acknowledgement is decided (acked): the fence passes only an acknowledgement of the pending id
 // (fenceOutcome), and every rendering of the news takes a new id (currentNews, currentRootTask).
+// Started is what the runtime answered when this send started the working copy at its branch
+// first (Delivery.StartAt), nil for a send that started nothing; the fence keeps it on the pending
+// delivery (keepStarted).
 type PromptAcked struct {
 	Claim      claim.Token
 	Generation uint64
 	DeliveryID string
+	Started    *runtime.StartedAt
 }
 
 // PromptRefused is a send's prompt refused, or lost to the transport, posted by the send's own
-// goroutine.
+// goroutine. Started is as on PromptAcked: a send that started the working copy and then failed
+// its adoption or its prompt has still moved the working copy, so the next send does not move it
+// again and still says it moved.
 type PromptRefused struct {
 	Claim      claim.Token
 	Generation uint64
 	DeliveryID string
 	Err        error
+	Started    *runtime.StartedAt
 }
 
 // TimerKind names the waits a machine times.
@@ -802,7 +809,7 @@ type RequestDeliver struct {
 	// startNews.roundNamed). An operator's task and the controller's carry none
 	// (Delivery.RoundNamed).
 	RoundNamed bool
-	// CheckLook is the look of a closed issue's production check this task is of, from the start
+	// CheckLook is the look of an issue's production check this task is of, from the start
 	// row that queued it (record.SuperviseRequest.CheckLook and CheckOpenedAt). A phase task, an
 	// operator's own and a resume name none, and leave the look the claim is serving alone.
 	CheckLook CheckLook
@@ -835,6 +842,10 @@ type RequestDeliver struct {
 	// gives way to a task of an entry while no turn has taken it (Machine.supersedes), since the
 	// start of an entry carries the same news itself.
 	NewsOnly bool
+	// StartAt is where the task starts the working copy every role of its issue shares before it
+	// is sent: the issue's branch and the base it moved to, for the first task of a next change
+	// (record.SuperviseRequest.StartAt). Every other task names none (Delivery.StartAt).
+	StartAt runtime.StartAt
 	// ResumesNothing marks the daemon's own task that carries no ID and is no operator's: the
 	// controller keeper's start message (internal/daemon's controllerKeeper.ready). A suspended
 	// claim refuses it with a *RefusedError, queuing nothing and launching nothing (deliverResuming),
@@ -1892,6 +1903,14 @@ func ackedInTurn(m *Machine, ctx context.Context, ev Event) error {
 // name of its own: it is raised before any frame leaves, and an operator told the transport lost
 // the prompt would look at the network while the GitHub App is the thing that is down.
 //
+// A refused start of the working copy at the issue's branch (runtime.ErrStartAtRefused, a next
+// change's first task) is not charged either, though it is the shim's answer about this workspace:
+// what it waits for is a person's or the owning architect's act on the branch, a bookmark in
+// conflict above all, and a charge that failed the claim would not wait for that act. The silence
+// the charge of a refused adoption ends (above) is ended here by telling the owning architect,
+// once per task, with the shim's words (tellStartRefused). The task waits, and each sweep, hello,
+// turn end or ready tries the start again.
+//
 // Every failure here, charged or not, is recorded on the pending delivery before the split acts:
 // how many sends of this task have failed, when this one failed and the error it failed
 // with (Delivery.SendFailures and its two companions). That record is a diagnosis rather than a
@@ -1972,6 +1991,9 @@ func refused(m *Machine, ctx context.Context, ev Event) error {
 		msg = "supervise: the shim refused to adopt the working copy; the prompt was never sent"
 	case runtime.OutcomeIdentityUnavailable:
 		msg = "supervise: the role's GitHub App identity could not be minted; the prompt was never sent and the delivery waits"
+	case runtime.OutcomeStartAtRefused:
+		msg = "supervise: the shim refused to start the working copy at the branch; the prompt was never sent and the delivery waits"
+		m.tellStartRefused(ctx, p, r.Err)
 	case runtime.OutcomeTransportLost:
 		msg = "supervise: the prompt was lost to the transport; the delivery waits"
 	default:

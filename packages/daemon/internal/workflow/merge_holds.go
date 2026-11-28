@@ -130,12 +130,12 @@ func MergingNow(ctx context.Context, store record.Store, tx pgx.Tx, key string) 
 // it does, from what its caller read: lingers is whether the issue's tree lingers
 // (record.TreeLingers), and merged whether the phase's own terminating fact has arrived
 // (PhaseFinished, finishedBy). The issue must still work at (leftPhase), and that fact must not
-// have arrived. A root whose pull request merged stands in merging until every issue under it
-// leaves the workflow (closeMerged), and a hold stops nothing there: its merger merged already,
-// or none ran because the pull request had merged when the phase began. A row for such a root
-// would either wait, tried again, on a merger no machine holds, keeping the pod from its idle
-// release (the store's idleWaitingKinds), or wake a released merger to begin step 1 again with
-// nothing to merge. The merge-queue rows pass over the same root, since their rule
+// have arrived. A merge moves its issue on to verifying (closeMerged), and while an issue whose
+// pull request merged still stands in merging a hold stops nothing there: its merger merged
+// already, or none ran because the pull request had merged when the phase began. A row for such
+// an issue would either wait, tried again, on a merger no machine holds, keeping the pod from its
+// idle release (the store's idleWaitingKinds), or wake a released merger to begin step 1 again
+// with nothing to merge. The merge-queue rows pass over the same issue, since their rule
 // (leftMergingAt) needs an open pull request. Accepting has no such fact, so an issue in
 // accepting is judged by leftPhase alone. It reads nothing, so the fact that weighs every issue
 // at once (mergeHoldsChanged) and the executor that weighs one (MergingNow) each read what it

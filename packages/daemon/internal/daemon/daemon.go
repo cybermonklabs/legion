@@ -599,6 +599,7 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		plan.rootTask, plan.designNews, plan.taskText, plan.workingCopy = workflow.rootTask, workflow.designNews, workflow.taskText, workflow.workingCopy
 		plan.taskConfirmed = workflow.taskConfirmed
 		plan.sessionLost, plan.sessionStoreFault = workflow.sessionLost, workflow.sessionStoreFault
+		plan.startAtRefused = workflow.startAtRefused
 		// The run's boot event, and from it on the state event of every write the run makes. The
 		// boot row is queued in a transaction of its own, which commits before either switch below
 		// is on, so it takes the project's next state sequence before any state row this run
@@ -1350,6 +1351,10 @@ type plan struct {
 	// workflow, where neither is reported to anyone.
 	sessionLost       func(c supervise.Claim, cause supervise.SessionLoss, detail string)
 	sessionStoreFault func(c supervise.Claim, detail string)
+	// startAtRefused tells the owning architect that the shim refused to start a next change's
+	// working copy at its branch, and answers whether that notice is durable; nil without a
+	// workflow, where nobody is told.
+	startAtRefused func(ctx context.Context, c supervise.Claim, d supervise.Delivery, reason string) error
 	// providerErrorRunReached tells of a claim whose turns keep ending in a provider error, to the
 	// roles its own doc comment names; nil without a workflow, where nobody is told.
 	providerErrorRunReached func(c supervise.Claim, reason string)
@@ -2308,6 +2313,7 @@ func openSupervision(boot context.Context, cfg config.Config, log *slog.Logger, 
 		TaskConfirmed:           p.taskConfirmed,
 		SessionLost:             p.sessionLost,
 		SessionStoreFault:       p.sessionStoreFault,
+		StartAtRefused:          p.startAtRefused,
 		ProviderErrorRunReached: p.providerErrorRunReached,
 		SessionGone:             cleanSessionStop(&sessionStops, cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"], log),
 		RoleHolder:              roleHolderLookup(cfg.EnvoyURL, p.secrets["ENVOY_TOKEN"]),

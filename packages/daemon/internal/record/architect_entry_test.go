@@ -68,8 +68,7 @@ func TestARootArchitectEntryIsHeldOnItsPhasesRowAsAPhaseWorkersIs(t *testing.T) 
 		t.Helper()
 		inTx(t, st, func(tx pgx.Tx) {
 			runs, err := records.RoleRuns(ctx, tx, []RoleRunKey{
-				{Token: architectToken, Issue: issue.Key, Role: claim.RoleArchitect, Generation: issue.Generation},
-				{Token: testerToken, Issue: issue.Key, Role: claim.RoleTester, Generation: issue.Generation}})
+				RunKey(architectToken, issue, claim.RoleArchitect), RunKey(testerToken, issue, claim.RoleTester)})
 			must(t, err)
 			for _, role := range []struct {
 				role  claim.Role

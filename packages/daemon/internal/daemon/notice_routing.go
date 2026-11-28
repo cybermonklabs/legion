@@ -348,6 +348,47 @@ func architectEnded(tree treeSnapshot, state supervise.ClaimState) string {
 	return ""
 }
 
+// architectComing says whether the owning architect named by token, which holds no claim this
+// daemon supervises, is coming all the same: its tree does not linger, and a start of it that
+// brings work is still queued (workflow.ArchitectStartPending, read with no claim, which asks the
+// same question of the sweep: is the addressee coming, not is it here), or has made its claim
+// since the caller read none. A notice for such an architect is held until its claim exists
+// (noticeAnswered): finished, it would be recorded as delivered to nobody, and a record that tells
+// once a generation (the branch-refused notice) would then silence every later row. The
+// architect's issue is the tree issue token names; a token that names none of them is not coming.
+//
+// The claim is read again after the start rows, the order a role run is read in
+// (record.Postgres.RoleRuns): a start makes its claim (supervisor.Create) before the outbox
+// finishes its row, so a start the rows no longer show has its claim by the second read. Read
+// before the rows alone, as the caller reads it, a start that ran between the two reads would
+// show in neither, and the notice would finish undelivered to an architect that had just come.
+func (r *outbox) architectComing(ctx context.Context, tree treeSnapshot, token claim.Token) (bool, error) {
+	if tree.root.Lingers() || r.claimState(token) != "" || r.pool == nil || r.records == nil {
+		return false, nil
+	}
+	for _, issue := range tree.issues {
+		owner, err := claim.NewToken(tree.project, issue.Key, claim.RoleArchitect)
+		if err != nil || owner != token {
+			continue
+		}
+		var coming bool
+		err = store.TransactWith(ctx, r.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
+			run, err := r.records.RoleRun(ctx, tx, token, issue, claim.RoleArchitect)
+			if err != nil {
+				return err
+			}
+			run.Claim = nil
+			_, coming = workflow.ArchitectStartPending(issue, 0, run)
+			return nil
+		})
+		if err != nil {
+			return false, err
+		}
+		return coming || r.claimState(token) != "", nil
+	}
+	return false, nil
+}
+
 // stoppedWithTree says whether the owning architect of a notice, its claim held, has stopped with
 // its finished tree: the tree lingers or has closed (lingers), and the claim holds its role no
 // longer (holdsRole), as the close suspended it, or is suspending it now, or it failed or retired.

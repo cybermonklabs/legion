@@ -1,0 +1,15 @@
+kind: Added
+body: |-
+  The record derives each issue's merge history from its rows at each read, and stores no class:
+  `ANSWERED` where a row proves the merge (the merge snapshot, a merged pull request row, or a
+  production check of a pull request other than 0), `PARTIAL` where rows name the issue and none
+  proves a merge, and `NONE` where no row bears on it. A clear of a generation, and a later pull
+  request from the issue's branch, save a merged row's merge as the issue's snapshot before they
+  delete or replace the row, so the merge outlives it. `legion merge-history-report --config
+  <file> --project <PROJECT> --repo <owner/name>` counts a project's recorded issues by class, with
+  the done ones, those Dispatch shows `todo` and those whose known merge lacks a base or a final
+  head. It reads the database in one read-only transaction and migrates nothing, so it reads a
+  release before this one too. A count it could not read prints `UNKNOWN`, and the command exits 1.
+time: 2026-11-27T12:58:35Z
+custom:
+    Issue: merged-new-work

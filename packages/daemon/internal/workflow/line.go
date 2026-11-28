@@ -138,9 +138,11 @@ func (w Walk) MovesBack(from, to phase.Phase) bool {
 // to admitted, where a task waits for its first step (waitForFirstStep), and sets issue.Phase to the
 // phase that place derives (record.PhaseAt), in the caller's transaction and before the caller's write
 // of issue (WriteIssue). w then stands where the task does, for whatever the caller reads of it after
-// the move. A run with no plan rows has no task to move, and issue.Phase is to, as it always was. A
-// move to where the task already stands writes nothing. The caller clears or keeps issue.Hold
-// itself.
+// the move. A move to verifying keeps the task's place too, done at its merge, and the issue stands
+// in verifying over it: the task's work merged, and what the issue waits for is its close
+// (enterVerifying). A run with no plan rows has no task to move, and issue.Phase is to, as it always
+// was. A move to where the task already stands writes nothing. The caller clears or keeps
+// issue.Hold itself.
 func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *Walk, to phase.Phase, state record.TaskState) error {
 	if !w.Stored {
 		issue.Phase = to
@@ -148,7 +150,7 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 	}
 	place := w.Place
 	switch to {
-	case phase.Done:
+	case phase.Done, phase.Verifying:
 		// The task keeps its place.
 	case phase.Admitted:
 		place = record.TaskPlace{}
@@ -165,6 +167,9 @@ func (e *Engine) moveTask(ctx context.Context, tx pgx.Tx, issue *record.Issue, w
 		w.Place, w.State = place, state
 	}
 	issue.Phase = record.PhaseAt(w.Line, place, state)
+	if to == phase.Verifying && issue.Phase == phase.Done {
+		issue.Phase = phase.Verifying
+	}
 	return nil
 }
 
@@ -208,7 +213,11 @@ func (e *Engine) writeIssueOn(ctx context.Context, tx pgx.Tx, issue record.Issue
 		case at != issue.Phase:
 			stands = "held from " + stands
 		}
-		if at != task && (issue.Phase != phase.AwaitingPerson || task != phase.Admitted) {
+		// Two phases stand over a task that derives another: a root waiting on a person before its
+		// first step, over the admitted of a task at no act, and an issue whose merged task is done,
+		// waiting in verifying for its close.
+		waits := issue.Phase == phase.AwaitingPerson && task == phase.Admitted || issue.Phase == phase.Verifying && task == phase.Done
+		if at != task && !waits {
 			return fmt.Errorf("put %s at generation %d: it stands in %s, and its task %s is %s at %+v, which stands in %s",
 				issue.Key, issue.Generation, stands, w.Task, w.State, w.Place, task)
 		}

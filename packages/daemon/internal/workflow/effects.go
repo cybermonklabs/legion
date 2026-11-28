@@ -22,12 +22,12 @@ import (
 // worker's completion, so no worker of it is started or resumed for it. Merging's fact is the pull
 // request being merged, which it reads by the one statement of that rule (record.MergedInMerging,
 // where a pull request the record does not hold is not merged): the merger merges, the daemon
-// merges nothing, and a merged root then stands in merging until the rest of its tree leaves the
-// workflow (closeMerged), which can be days. Accepting's is the architect's sign-off, which moves
-// the issue on in the transaction that records it, so an issue standing in accepting is always
-// still waiting for it; every other phase ends with its worker's completion, which moves the
-// issue too. A recorded completion answers nothing here: the merger's is recorded and moves no
-// issue. The pull request's state is all it reads, so it reads the row alone
+// merges nothing, and the merge then moves the issue on to verifying (closeMerged), where its
+// close waits for its checks and for the issues beneath it. Accepting's is the architect's
+// sign-off, which moves the issue on in the transaction that records it, so an issue standing in
+// accepting is always still waiting for it; every other phase ends with its worker's completion,
+// which moves the issue too. A recorded completion answers nothing here: the merger's is recorded
+// and moves no issue. The pull request's state is all it reads, so it reads the row alone
 // (record.Store.PullRequestRow).
 func PhaseFinished(ctx context.Context, store record.Store, tx pgx.Tx, issue record.Issue) (bool, error) {
 	if issue.Phase != phase.Merging {
@@ -516,6 +516,16 @@ const testerVerdictLabel = "Tester's verdict"
 func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, told func(Standing) string,
 	from phase.Phase, movedBack bool,
 ) error {
+	return e.startFrom(ctx, tx, issue, w, role, told, from, movedBack, nil)
+}
+
+// startFrom is start whose phase worker's start names where the working copy starts
+// (record.SuperviseRequest.StartAt), nil for none: a next change's first start, which the gate's
+// opening makes (transition, firstStartAt), moves the working copy to the branch its merge moved
+// before the task reaches the worker. Every other start names none.
+func (e *Engine) startFrom(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, role claim.Role, told func(Standing) string,
+	from phase.Phase, movedBack bool, startAt *record.StartAt,
+) error {
 	if role == "" {
 		return nil
 	}
@@ -533,7 +543,7 @@ func (e *Engine) start(ctx context.Context, tx pgx.Tx, issue record.Issue, w Wal
 	if err != nil {
 		return err
 	}
-	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true})
+	return e.started(ctx, tx, issue, role, sent, entry, startMarks{stored: true, startAt: startAt})
 }
 
 // startStandingStep starts the step issue stands in on w, the walk of its run (standingStep),
@@ -601,7 +611,7 @@ func (e *Engine) ownArchitectRun(ctx context.Context, tx pgx.Tx, issue record.Is
 	if err != nil {
 		return record.RoleRun{}, false, nil
 	}
-	run, err := e.store.RoleRun(ctx, tx, token, issue.Key, claim.RoleArchitect, issue.Generation)
+	run, err := e.store.RoleRun(ctx, tx, token, issue, claim.RoleArchitect)
 	return run, err == nil, err
 }
 
@@ -624,7 +634,7 @@ func architectStartQueued(run record.RoleRun, current phase.Phase) bool {
 // (ArchitectAtWork). The child's first phase start queues it (gateOpened), and so does its next
 // phase start while the claim has failed (reviveArchitect).
 func childArchitectStart(issue record.Issue) record.SuperviseRequest {
-	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.Generation}
+	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.GenerationOf("start", claim.RoleArchitect)}
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the
@@ -899,6 +909,10 @@ type startMarks struct {
 	// raising the entry it hands (enter), and the held phase's retry, which an architect's or an
 	// operator's own request brings (restart).
 	reasserts bool
+	// startAt is where the working copy of a next change starts before the task reaches its
+	// worker (record.SuperviseRequest.StartAt): the first start of that change's generation alone
+	// carries it (startFrom), nil for every other start.
+	startAt *record.StartAt
 }
 
 // started enqueues the start each of its six callers makes, each of which has held role to one
@@ -932,9 +946,9 @@ func (e *Engine) started(ctx context.Context, tx pgx.Tx, issue record.Issue, rol
 		move = reassertion
 	}
 	return startOrOwe(ctx, tx, e.store, issue.Key, record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Task: task,
-		Generation: issue.Generation, Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, Decided: marks.decided,
+		Generation: issue.GenerationOf("start", role), Phase: issue.Phase, Entry: entry, ResendEntry: marks.resend, Decided: marks.decided,
 		ResumeTask: marks.resumeTask, RoundNamed: marks.stored && role == claim.RoleReviewer, RuleResume: marks.ruleResume,
-		FreshSession: marks.freshSession}, e.now(), move)
+		FreshSession: marks.freshSession, StartAt: marks.startAt}, e.now(), move)
 }
 
 // movement says whether a start of a phase worker is news of its issue, which startOrOwe marks

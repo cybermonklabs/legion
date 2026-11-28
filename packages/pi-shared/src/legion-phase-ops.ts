@@ -57,6 +57,7 @@ export const PHASE_OPS = [
   "request_backward_move",
   "ready_for_update",
   "read_build",
+  "report_defect",
 ] as const;
 export type PhaseOp = (typeof PHASE_OPS)[number];
 
@@ -109,6 +110,21 @@ const checkOpening = rfc3339String(
   "check_opened_at",
   "handoff_complete's check_opened_at is the RFC 3339 time, with seconds, its look task names"
 );
+
+/** The refusal of a `head` that is not the 40 lower-case hex characters of a full commit. */
+const DEFECT_HEAD_REFUSAL =
+  "report_defect's head is the 40-character lower-case commit the pull request's head stood at when you saw the defect";
+
+/** `report_defect`'s `head`: the head of the pull request when the role saw the defect, as the
+ * daemon takes it (`DEFECT_HEAD_REQUIRED`): a full commit in lower-case hex. A blank one is
+ * refused as missing alone (requiredString). */
+const defectHead = requiredString("report_defect", "head").refine(
+  (value) => value.trim() === "" || /^[0-9a-f]{40}$/.test(value),
+  { error: DEFECT_HEAD_REFUSAL }
+);
+
+/** The refusal of a `check` that is blank or no string. */
+const DEFECT_CHECK_REFUSAL = "report_defect's check is the block id of one of the issue's checks";
 
 /** The refusal of a `plan_rating` that is not one of the scale's whole numbers. */
 const PLAN_RATING_REFUSAL = `handoff_complete's plan_rating is a whole number from ${LEGION_PLAN_RATING_LEAST} to ${LEGION_PLAN_RATING_MOST}`;
@@ -256,6 +272,19 @@ export const PhaseOpArguments = z.discriminatedUnion(
     // `read_build` takes no field: it reports this process's own build and asks the daemon for
     // the contract it states, and names no issue.
     operation("read_build", {}),
+    // A defect of the change of `issue`, found once its task's last step passed: what is wrong
+    // with its evidence, the head the pull request stood at when the role saw it, and the check it
+    // is about where it is about one. Which roles may report on which issue is the daemon's to
+    // hold (DEFECT_CALLER_NOT_ALLOWED), so the issue is sent as named.
+    operation("report_defect", {
+      issue: requiredString("report_defect", "issue"),
+      defect: requiredString("report_defect", "defect"),
+      head: defectHead,
+      check: z
+        .string({ error: DEFECT_CHECK_REFUSAL })
+        .refine((value) => value.trim() !== "", { error: DEFECT_CHECK_REFUSAL })
+        .optional(),
+    }),
   ],
   {
     error: (issue) =>
@@ -309,8 +338,8 @@ export function phaseOpParameters(zod: unknown): Record<PhaseOpField, z.ZodType>
 }
 
 /** The `legion` tool's sentences on `read_record`, `read_release_records`,
- * `request_backward_move` and `read_build`, which a host whose tool states them passes as
- * `before` and `after` (`legionToolDescription`). */
+ * `request_backward_move`, `report_defect` and `read_build`, which a host whose tool states them
+ * passes as `before` and `after` (`legionToolDescription`). */
 export const PHASE_OP_SENTENCES = {
   readRecord:
     "read_record returns the record of `issue` from the daemon's record route for that issue, your own issue when you leave `issue` out. " +
@@ -333,6 +362,17 @@ export const PHASE_OP_SENTENCES = {
     "request_backward_move returns an issue to an earlier phase (`to`, `reason`). A phase worker moves its own issue. " +
     "The architect that owns an issue in accepting moves it, named by `issue`, back to the phase of an earlier step of its task. " +
     "That move counts no review round: only a review that requests changes counts one. ",
+  reportDefect:
+    "report_defect (`issue`, `defect`, `head`, and `check` where the defect is about a check) records a defect of the change of `issue`, found once its task's last step passed: " +
+    "`defect` says what is wrong, with its evidence, `head` is the 40-character lower-case commit the pull request's head stood at when you saw it, " +
+    "and `check` is the block id of the issue's check it is about; the answer is the defect's id, whether the daemon `recorded` it, found it the " +
+    "`same` as one it holds or `joined` it to one, and `nextChange`, the change that will carry it, and the call moves no phase, so go on with your step. " +
+    "The daemon refuses it before the issue's last step passed (DEFECT_BEFORE_LAST_STEP), from a role or an issue that may not report it " +
+    "(DEFECT_CALLER_NOT_ALLOWED), with no text, one too long or one holding a decision block (DEFECT_TEXT_REQUIRED, DEFECT_TEXT_TOO_LONG, " +
+    "DEFECT_TEXT_DECISION_BLOCK), with no head or one that is no full lower-case commit (DEFECT_HEAD_REQUIRED), with a check that is no block id " +
+    "(DEFECT_CHECK_INVALID), on an issue that closed (DEFECT_ISSUE_CLOSED), in a tree that lingers after it left the workflow (TREE_LINGERING), " +
+    "on an issue that already holds twenty open reported defects (DEFECT_LIMIT_REACHED: withdraw one or fold this into one that stands), " +
+    "for a key that is no issue key (INVALID_ISSUE) and for an issue it has not recorded (ISSUE_NOT_FOUND); each refusal records nothing. ",
   readBuild:
     "read_build reports the build this process runs: the plugin package and version the process loaded, and the contract that build speaks. " +
     "It also reports the contract the daemon states on its answer to the health route. " +
@@ -379,7 +419,7 @@ export function legionToolDescription(host: {
     "and the checking role's report naming its production check with `check_opened_at`) reports this phase complete: `summary` (two sentences for the " +
     "architect), `verdict` pass|fail from the tester alone on a phase completion (the daemon refuses a verdict from " +
     "any other role there) and pass|pending|fail on a production check report (pending: production does not carry the merge " +
-    "yet, or carries it with a requirement only the deploy can show still unobserved and a look still to follow; on the check's last look, only for an issue with no such requirement). " +
+    "yet, or carries it with a requirement only the deploy can show still unobserved. On the check's last look, pending closes the check as not run). " +
     "A tester's fail may name `return_to`, the place of a step of the task its issue runs, 1 for its first: the step the task goes back " +
     "to; without it, the task goes back to the first implementation step before the step that failed. Only a completion with the verdict " +
     "fail names it (RETURN_TO_NEEDS_FAIL), a place below 1 is refused (INVALID_RETURN_TO), and so is a step the task cannot go back to " +
@@ -567,8 +607,8 @@ export async function readBuild(runtime: {
 /**
  * Runs one phase op and answers its JSON result: `{ record }` for `read_record`, of the issue it
  * names or of the claim's own when it names none, the window's records and their counts for
- * `read_release_records`, the daemon's answer for `handoff_complete`, `{}` for
- * `request_backward_move`, this process's build and the daemon's stated contract for
+ * `read_release_records`, the daemon's answer for `handoff_complete` and for `report_defect`,
+ * `{}` for `request_backward_move`, this process's build and the daemon's stated contract for
  * `read_build`, and `{}` for `ready_for_update`, or `{ note }` when its branch-head lookup
  * failed. A refusal throws before any write, minting nothing and posting nothing: each problem
  * `PhaseOpArguments` finds, joined by `; `, a field the operation does not take named first,
@@ -712,6 +752,17 @@ export async function executePhaseOp(
               `command. The lookup said: ${failure}`,
           };
     }
+    case "report_defect":
+      // A report moves no phase, so it answers the daemon's answer and nothing closes the
+      // session's phase input. The claim's grant serves its own issue, an architect's its whole
+      // tree; which issue a role may report on is the daemon's to hold.
+      return daemon.reportDefect({
+        grantId: await mintClaimGrant(daemon, claim),
+        issue: args.issue,
+        defect: args.defect,
+        head: args.head,
+        ...(args.check === undefined ? {} : { check: args.check }),
+      });
     case "read_build":
       // The one read of this operation, and it asks for no project state: the health route,
       // read for its `Legion-Daemon-Contract` header alone (`LegionDaemonClient.daemonContract`

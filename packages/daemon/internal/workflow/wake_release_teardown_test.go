@@ -100,9 +100,9 @@ func TestAWakeTakenBeforeTheTeardownLeavesTheRoleInOneTrueState(t *testing.T) {
 			t.Fatalf("the teardown with the architect working = %s for %s, want it cancelled for %s: a role works in the pod",
 				decision.Act, decision.Cause, store.ReleaseCauseOvertaken)
 		}
-		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+		resume := func(role claim.Role, run store.IssueRun, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
-				Role: role, Generation: generation}, time.Now())
+				Role: role, Generation: run.StartOf("LEGION-208", role)}, time.Now())
 			if err != nil {
 				return store.IdleReleaseRow{}, err
 			}

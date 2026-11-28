@@ -71,7 +71,7 @@ func (e *Engine) ReconcileAwaiting(ctx context.Context, tx pgx.Tx, project strin
 			continue
 		}
 		tokens[i] = architect
-		runKeys = append(runKeys, record.RoleRunKey{Token: architect, Issue: root.Key, Role: claim.RoleArchitect, Generation: root.Generation})
+		runKeys = append(runKeys, record.RunKey(architect, root, claim.RoleArchitect))
 	}
 	asks, err := e.store.RootAsks(ctx, tx, keys)
 	if err != nil {
@@ -684,7 +684,7 @@ func (e *Engine) ResumeAwaitedRoot(ctx context.Context, tx pgx.Tx, root record.I
 		return err
 	}
 	if err := e.enqueue(ctx, tx, root.Key, record.SuperviseRequest{
-		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.Generation, Awaiting: &waiting, Entry: entry,
+		Op: "start", Tree: root.Tree, Role: claim.RoleArchitect, Generation: root.GenerationOf("start", claim.RoleArchitect), Awaiting: &waiting, Entry: entry,
 	}); err != nil {
 		return err
 	}

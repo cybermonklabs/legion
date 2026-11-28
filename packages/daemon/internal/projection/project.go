@@ -184,6 +184,16 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 	if err != nil {
 		return api.State{}, err
 	}
+	// The refusal for good of each issue's branch row at the generation it stands in now, in one
+	// statement for the project's issues (record.Store.BranchRefusals), by issue.
+	refusals, err := in.Store.BranchRefusals(ctx, in.Tx, in.Project)
+	if err != nil {
+		return api.State{}, err
+	}
+	refusedBranches := make(map[string]record.BranchRefusal, len(refusals))
+	for _, refusal := range refusals {
+		refusedBranches[refusal.Issue] = refusal
+	}
 
 	// The wake each claim's own view names, read from the one list the state names under
 	// `wakesWaiting`, so a claim view and that list report the same wake (api.ClaimWakes).
@@ -308,6 +318,18 @@ func Project(ctx context.Context, in Inputs) (api.State, error) {
 			if !lingering[issue.Tree] {
 				view.HoldReason = string(issue.Hold.Reason)
 			}
+		}
+		// What the issue's close waits for, from its stored wait (closeWaitView): an issue in
+		// verifying, and one before its merge that holds a reported defect.
+		closeWait, err := closeWaitView(issue)
+		if err != nil {
+			return api.State{}, err
+		}
+		view.CloseWait = closeWait
+		// The refusal for good of the issue's branch row, where one stands at its generation.
+		if refusal, refused := refusedBranches[issue.Key]; refused {
+			view.BranchRefused = &api.BranchRefusedView{Row: refusal.Row, Write: refusal.Write, Kind: refusal.Kind, Reason: refusal.Reason,
+				At: refusal.RefusedAt}
 		}
 
 		rows := phases[issue.Key]

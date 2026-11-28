@@ -120,7 +120,11 @@ func (e *Engine) correctStatuses(ctx context.Context, tx pgx.Tx, issues []record
 
 // statusRepairTick runs the status repair on the controller's periodic tick, which is what puts a
 // lost status write back without a daemon restart. Its period is controller_wake_interval_seconds,
-// an hour by default, with the first tick a minute after the runtime starts. It returns the zero
+// an hour by default, with the first tick a minute after the runtime starts. The same tick is the
+// backstop of every event that judges a merged issue's close (D15): each issue in verifying has its
+// checks read again where no read stands, which reads its children from Dispatch too, and is
+// judged (judgeEachVerifying). Its first run of each UTC day also tells the owning architect of
+// each issue that still waits what holds its close (tellEachStanding). It returns the zero
 // intake.Result: the workflow owns no other part of the tick.
 //
 // It reads the project's live records (LiveIssues), not every record the project keeps, because a
@@ -140,5 +144,11 @@ func (e *Engine) statusRepairTick(ctx context.Context, tx pgx.Tx) (intake.Result
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.correctStatuses(ctx, tx, issues, running, "tick")
+	if err := e.correctStatuses(ctx, tx, issues, running, "tick"); err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.judgeEachVerifying(ctx, tx, issues); err != nil {
+		return intake.Result{}, err
+	}
+	return intake.Result{}, e.tellEachStanding(ctx, tx, issues)
 }

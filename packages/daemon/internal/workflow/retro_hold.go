@@ -42,8 +42,8 @@ func (e *Engine) retroHeld(ctx context.Context, tx pgx.Tx, issue record.Issue, w
 // owner to do about them (holdTexts.retro); and what starts the retro
 // (intake.HeldParentRetroStarts). A notice of the issues beneath it or of its open Dispatch
 // children ends with the sentence on a write the daemon has not taken yet and that write's rules
-// word for word (endChildWords), as the pr-merged notice does (waitingForTree); a resting root is
-// a tree of its own, which no status write of this architect ends. It names the retro and the
+// word for word (endChildWords), as the sign-off's refusal does (endChildrenFirst); a resting root
+// is a tree of its own, which no status write of this architect ends. It names the retro and the
 // implementer whose work the hold keeps, as the held notice of any hold names the phase it is from
 // (HeldNotice).
 func retroHeldNotice(parent string, held acceptanceHold, movedBack bool) record.Notice {

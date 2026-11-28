@@ -345,6 +345,55 @@ type Issue struct {
 	// released_for_wait_at: every write site that records the root holds a copy read before its own
 	// fact, and a copy read before the clear would otherwise owe the members a second return.
 	MembersOwed bool
+	// TreeGeneration is the tree's run, read on a tree root: what fences each member's idle
+	// release, its suspension and its design-news credits, and the run of the tree's architect.
+	// A root's next change raises the root's Generation and leaves it, so the members and the
+	// tree's architect run on. Only a rerun of the whole tree raises it (ClearTreeGeneration). A
+	// record starts at its own generation where it gives none, and it is read through TreeRun,
+	// which says so for a record built and not read back. PutIssue writes it when it records the
+	// issue, and when a write moves the issue to another tree, at the issue's generation: a root a
+	// hand-over made starts its tree's run at its own generation. It never writes it otherwise, so
+	// a copy of the root read before a rerun never writes the tree's run back. On a child's row it
+	// is the generation the child entered its tree at, and nothing reads it.
+	TreeGeneration uint64
+	// Merge is the issue's newest merge, its merge snapshot: the pull request that merged, its final
+	// reviewed head, the merge commit, the base it merged into, the repository the merge fact named
+	// and GitHub's merged_at of that pull request. It is zero before the issue's first merge. One
+	// writer sets it, PutMergeSnapshot, and it replaces a snapshot only with a later merge. PutIssue
+	// neither writes nor clears it, and no clear of a generation touches it, so a copy of the issue
+	// read before a merge never writes that merge away, and a next change keeps the merge it
+	// continues.
+	Merge Merge
+	// CloseWaitSince is since when the issue's close waits: GitHub's merged_at at an entry from a
+	// merge, or the time the request applied for a change a request started. Nil for an issue
+	// whose close waits for nothing.
+	CloseWaitSince *time.Time
+	// CloseWait is the stored wait, the record close-wait.md renders: each item the close waits for
+	// with its state and since when it stands, the time of the issue's newest entry into
+	// verifying, and the time of the close once it closed. It is the workflow's JSON, kept as the
+	// workflow wrote it, and nil where no wait was stored.
+	CloseWait json.RawMessage
+	// ClosedOnChecksAt is when the issue closed because the checks of its goal passed, nil for
+	// every issue that closed otherwise or has not closed. A failed result on a closed issue
+	// tells the controller only where it is set.
+	ClosedOnChecksAt *time.Time
+	// NextChange is the generation of the next change of the issue that is open: one that started
+	// and has neither merged nor ended with no pull request. It is 0 while none is open.
+	NextChange uint64
+	// NextChangeFollows is the number of the merged pull request the issue's newest next change
+	// started from: Merge's number at that start (workflow's StartNextChange), 0 where none
+	// started. It tells the change's own pull request from the merge it follows: Merge moves to
+	// the change's pull request when that merges, whichever phase the change stands in, and this
+	// does not.
+	NextChangeFollows int
+	// NextChanges counts the next changes the issue has started, over its whole life.
+	NextChanges int
+	// MergerCompletionOwed says that the merger's completion of the generation that merged has not
+	// landed yet. A next change waits for it, or for the hour after the merge.
+	MergerCompletionOwed bool
+	// StandingToldAt is when the owning architect was last told of the terms that still hold the
+	// close (the daily notice), nil for never.
+	StandingToldAt *time.Time
 	// ClaimLeft is why the newest claim release that judged the issue's Dispatch holder left that
 	// holder's claim (ClaimRelease, which the outbox's releaseClaim runs), nil for none: a release
 	// that took the claim, or that found none, clears it. Only Store.RecordClaimLeft writes it, and
@@ -352,6 +401,55 @@ type Issue struct {
 	// its own, and every write site that records the issue holds a copy read before its own fact,
 	// which would otherwise write the entry away or write an older one back.
 	ClaimLeft *ClaimLeft
+}
+
+// Merge is one merge of an issue's work as the record keeps it: the pull request's number, the
+// final head that was reviewed (Head), the merge commit (SHA), the base branch the pull request
+// merged into, the repository the merge fact named, and GitHub's merged_at of that pull request.
+// A field that was not read is empty, and no reader invents it: an older issue's snapshot that a
+// door saved from a retained row can know its number and not its commit, its base or its time.
+type Merge struct {
+	Number   int
+	Head     string
+	SHA      string
+	Base     string
+	Repo     string
+	MergedAt time.Time
+}
+
+// Merged says whether the snapshot records a merge at all: it names the pull request that merged.
+func (m Merge) Merged() bool { return m.Number > 0 }
+
+// TreeRun is the tree's run of the issue's record: TreeGeneration as the record holds it, and on a
+// record that names none, one built and not read back, the issue's own generation, which is what
+// PutIssue's insert writes for it. Every reader of the tree's run reads it here, so a root built in
+// a transaction reads the run the record will hold.
+func (i Issue) TreeRun() uint64 {
+	if i.TreeGeneration == 0 {
+		return i.Generation
+	}
+	return i.TreeGeneration
+}
+
+// ArchitectGeneration is the generation the issue's architect runs on, and its design gate's
+// rows with it: the tree's run (TreeRun) on a tree root, whose architect is the tree's, and the
+// issue's own generation on a child, whose own architect runs on the child's run. A root's next
+// change raises its Generation alone, so it ends no run of its tree's architect.
+func (i Issue) ArchitectGeneration() uint64 {
+	return claim.StartGeneration(claim.RoleArchitect, i.Key, i.Tree, i.Generation, i.TreeGeneration)
+}
+
+// GenerationOf is the generation of the issue that a supervise row of op for role serves, the one
+// the outbox's fence holds the row to (internal/daemon's supervise): a start of the architect
+// serves the architect's run (ArchitectGeneration), which a tree root's next change leaves, and
+// every other row serves the issue's own generation. The rule for a start is claim.StartGeneration,
+// which the store reads too; every writer of a start, the fence and every reader of a role's run
+// (RunKey) read it, so they agree.
+func (i Issue) GenerationOf(op SuperviseOp, role claim.Role) uint64 {
+	if op == "start" {
+		return claim.StartGeneration(role, i.Key, i.Tree, i.Generation, i.TreeGeneration)
+	}
+	return i.Generation
 }
 
 // ClaimLeftReason is why a claim release left the issue's Dispatch claim where it stands: one word
@@ -2005,6 +2103,13 @@ type ProductionCheck struct {
 	ClosedAt       *time.Time
 	Outcome        CheckOutcome
 	FailedLooks    int
+	// RelookSeq is the Dispatch sequence of the event that opened the check's newest look after a
+	// close not_run, 0 for none: a redelivered event of that sequence opens no second look.
+	RelookSeq int64
+	// Generation is the issue generation the check is of, the one its merge closed or a next
+	// change ended in. 0 binds no generation: a check opened by a release before the column runs on
+	// as that release ran it, and never meets the close's production term.
+	Generation uint64
 }
 
 // Open says whether the check is still open: no look has closed it.
@@ -2019,11 +2124,16 @@ func (c ProductionCheck) Open() bool { return c.ClosedAt == nil }
 func (c ProductionCheck) ID() string { return strconv.FormatInt(c.OpenedAt.UnixMicro(), 10) }
 
 // NamedBy says whether openedAt names this check instance, as the rows and facts of a check carry
-// its OpenedAt: a zero openedAt names no instance — a row queued before the rows carried one — and
-// so names this one too; another instant names another check of the issue, one a later merge
-// replaced, whose looks count from one again, or the one that replaced this.
+// its OpenedAt. A zero openedAt names no instance — a row queued, or a fact made, before the rows
+// carried one — so it names only a check of generation 0, which a release before the generation
+// opened and which binds none: a legacy row changes nothing of a check bound to a generation.
+// Another instant names another check of the issue, one a later merge replaced, whose looks count
+// from one again, or the one that replaced this.
 func (c ProductionCheck) NamedBy(openedAt time.Time) bool {
-	return openedAt.IsZero() || openedAt.Equal(c.OpenedAt)
+	if openedAt.IsZero() {
+		return c.Generation == 0
+	}
+	return openedAt.Equal(c.OpenedAt)
 }
 
 // CheckOutcome is how a production check closed; "" while it is open.
@@ -2540,6 +2650,8 @@ type Store interface {
 	// moves an issue onto another repository, and this release's rename pass writes a configured
 	// rename's new name on a recorded issue through RenameIssueRepository beside it, which
 	// dispatch://INFRA-3532's own change removes.
+	// It neither writes nor clears the merge snapshot (Issue.Merge): a whole new record of the
+	// issue keeps it.
 	PutIssue(ctx context.Context, tx pgx.Tx, issue Issue) error
 	// MarkIssueMoved records at as when the daemon last saw key move (Issue.MovedAt), the one
 	// writer of that column: the write sites hand it the fact's own moment, and PutIssue names the
@@ -2942,8 +3054,90 @@ type Store interface {
 	// ClearTreeGeneration empties them for every issue of tree, and runs forget over every
 	// decision the tree keeps and every changes request the outbox holds on its issues first, as
 	// ClearGeneration does, answering the issues whose gates it emptied in the same way
-	// (workflow.Engine.ClearTreeGeneration, the only caller).
+	// (workflow.Engine.ClearTreeGeneration, the only caller). It raises the tree's own run as it
+	// clears: the root's tree_generation takes the root's generation, which the re-admission
+	// beside it raised.
 	ClearTreeGeneration(ctx context.Context, tx pgx.Tx, tree string, forget KeptForget) ([]string, error)
+	// ClearChangeGeneration drops the facts one generation of one issue owns when a next change of
+	// it starts, and keeps the design gate: ClearGeneration's statements but the gate's and what its
+	// holders took of it. The merged pull request goes, with its clock kept in
+	// cleared_pull_requests, and each role's handoff, review rounds, verdict and summary go. For a
+	// tree root the tree's architect's phases row stays whole as well, since the tree's architect
+	// runs on the tree's generation, which a next change does not raise. No other issue's row is
+	// touched, nothing of the gate is published, and no forget runs: the clear drops nothing of
+	// the person's word, so it empties no gate and answers no issue.
+	ClearChangeGeneration(ctx context.Context, tx pgx.Tx, issue string) error
+	// PutMergeSnapshot records merge as issue's newest merge (Issue.Merge), in this transaction. It
+	// is the one writer of the snapshot. It replaces a
+	// snapshot only with a later merge: where one stands, merge replaces it only if its merged_at
+	// is known and later than the stored one, or the stored one is unknown. It answers whether the
+	// snapshot was written. A merge that names no pull request is refused.
+	PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string, merge Merge) (bool, error)
+	// MergeHistoryOf is issue key's merge history as its rows show it now (MergeHistoryRow): its
+	// evidence and the class derived from it, read through the one evidence projection. It writes
+	// nothing, and refuses a key the record holds no issue of. A door reads it under the fact lock,
+	// before any clear.
+	MergeHistoryOf(ctx context.Context, tx pgx.Tx, key string) (MergeHistoryRow, error)
+	// MergeHistoryRows is the merge history of each recorded issue of project, in key order, through
+	// the same projection: of the issues on one of repos, compared without case, or of every issue
+	// of the project where repos is empty. It writes nothing.
+	MergeHistoryRows(ctx context.Context, tx pgx.Tx, project string, repos []string) ([]MergeHistoryRow, error)
+	// ConfirmNeverMerged records, on issue key's row (issues.never_merged_confirmed), that a person
+	// confirmed its work never merged: what lets the next todo of a PARTIAL or NONE history take
+	// the rerun of today. Only a person's move to backlog sets it, which the caller judges.
+	ConfirmNeverMerged(ctx context.Context, tx pgx.Tx, key string) error
+	// ConsumeNeverMergedConfirmation takes issue key's confirmation in one statement and answers
+	// whether one stood, so a confirmation allows one rerun alone. PutMergeSnapshot and every
+	// clear of a generation take it as well, and PutIssue keeps it.
+	ConsumeNeverMergedConfirmation(ctx context.Context, tx pgx.Tx, key string) (bool, error)
+	// PutDefect records a reason of a next change of the issue (Defect) and answers its id.
+	PutDefect(ctx context.Context, tx pgx.Tx, defect Defect) (int64, error)
+	// OpenDefects is every defect of issue that no withdrawal ended and no merged change carried,
+	// oldest first.
+	OpenDefects(ctx context.Context, tx pgx.Tx, issue string) ([]Defect, error)
+	// Defects is every reason of a next change the issue holds, of any kind and whatever its
+	// state, oldest first: the judge of the close reads it before it records a check's fail as a
+	// reason, so a fail whose deciding result an earlier change carried records none.
+	Defects(ctx context.Context, tx pgx.Tx, issue string) ([]Defect, error)
+	// Defect is the defect id of issue, of any kind and whether or not it holds still, nil where
+	// issue holds no defect of that id: the one read that tells a withdrawal what it would end.
+	Defect(ctx context.Context, tx pgx.Tx, issue string, id int64) (*Defect, error)
+	// ClearWaitWithdrawals takes out of issue's stored wait (issues.close_wait, StoredWait.Withdrawn)
+	// each withdrawal of shown, matched by its defect and its time: the withdrawals a version of
+	// close-wait.md that Dispatch took said, so the next version does not say them again. A
+	// withdrawal the wait gained since that version was rendered stays. The caller holds the lock
+	// the workflow writes the wait under (treelifecycle.Serialize), so no write of it falls between
+	// this read and this write.
+	ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue string, shown []WaitWithdrawal) error
+	// WithdrawDefect ends the open reported defect or request id of issue with reason, at at. It
+	// answers false where issue holds no such row: none of that id, a check's or a production
+	// check's reason, one already withdrawn, or one a merged change carried. The reason is
+	// required. Who may end a request is the workflow's to judge (a person's request is refused).
+	WithdrawDefect(ctx context.Context, tx pgx.Tx, issue string, id int64, reason string, at time.Time) (bool, error)
+	// CarryDefects marks each open defect of ids on issue as carried by generation: the change
+	// of that generation takes it, so its merge starts no second change for it.
+	CarryDefects(ctx context.Context, tx pgx.Tx, issue string, generation uint64, ids []int64) error
+	// MergeDefects marks each open defect of issue that generation carries as merged at at: the
+	// change that carried it merged, so it holds the close no more.
+	MergeDefects(ctx context.Context, tx pgx.Tx, issue string, generation uint64, at time.Time) error
+	// CloseDefectsByPerson ends each open defect of issue, of any kind, as closed by a person
+	// (DefectClosedByPerson) at at: a person's done closed the issue. It answers how many it ended.
+	CloseDefectsByPerson(ctx context.Context, tx pgx.Tx, issue string, at time.Time) (int64, error)
+	// PutCheckRead stores read as the issue's newest read of the checks' states, where no read of a
+	// later moment stands. It answers whether it was stored.
+	PutCheckRead(ctx context.Context, tx pgx.Tx, read CheckRead) (bool, error)
+	// NewestCheckRead is the issue's newest stored read, nil where none is stored.
+	NewestCheckRead(ctx context.Context, tx pgx.Tx, issue string) (*CheckRead, error)
+	// RefuseBranch records refusal, the refusal for good of an issue_branch row, as its issue's
+	// refusal of its generation, where none of that generation stands. It answers whether it was
+	// recorded: a second refused row of the generation finds the first, so its architect is told
+	// once (internal/daemon's finishRefused).
+	RefuseBranch(ctx context.Context, tx pgx.Tx, refusal BranchRefusal) (bool, error)
+	// ClearBranchRefusals deletes every refusal issue records: a later row wrote its branch.
+	ClearBranchRefusals(ctx context.Context, tx pgx.Tx, issue string) error
+	// BranchRefusals is the refusal of each issue of project at the generation it stands in now,
+	// by issue key: what the state names (api.Issue.BranchRefused).
+	BranchRefusals(ctx context.Context, tx pgx.Tx, project string) ([]BranchRefusal, error)
 	// RaiseStepStarts counts one more start of place on issue, marks its run open, and answers
 	// the write of that start's record, which run builds from the count with that start in it:
 	// the start of a step's record raises it in its own transaction (workflow's startStep), and
@@ -3089,6 +3283,10 @@ type Store interface {
 	// DesignNewsPending says whether a reconcile of tree's news (DesignNewsReconcile) is queued and
 	// has not begun to run at now (Postgres.DesignNewsPending).
 	DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
+	// DesignNewsWaiting says whether a reconcile of tree's news has not begun to run at now, and
+	// holds each such row until tx ends, so no lane claims it before tx commits
+	// (Postgres.DesignNewsWaiting).
+	DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
 	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
 	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
 	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps
@@ -3319,8 +3517,19 @@ type Store interface {
 	// false is none. Kinds nil is every kind.
 	NextDue(ctx context.Context, tx pgx.Tx, issue string, kinds []OutboxKind, now time.Time) (time.Time, bool, error)
 	// BranchQueued says whether the outbox still holds an issue_branch row of issue, whatever its
-	// lease or its next_at: the branch the row creates may not exist on GitHub yet.
+	// lease or its next_at: the branch the row creates may not exist on GitHub yet. It is
+	// OutboxQueued of that kind.
 	BranchQueued(ctx context.Context, tx pgx.Tx, issue string) (bool, error)
+	// OutboxQueued says whether the outbox still holds a row of kind for issue, whatever its lease
+	// or its next_at, the row a lane runs now among them.
+	OutboxQueued(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (bool, error)
+	// OutboxWaiting is the row of kind for issue that no live lease holds, and whether it found
+	// one: a row still to run, which reads the record when it runs. A kind of which one row waits
+	// for an issue at a time, as close_read and close_wait_publish do, is queued only where this
+	// finds none. A row a lane runs now is not waiting, so a fact its run applies can queue the
+	// next. The earliest waiting row is the one answered, and it is held until tx ends, so no lane
+	// claims it before the change that relies on it commits.
+	OutboxWaiting(ctx context.Context, tx pgx.Tx, issue string, kind OutboxKind) (OutboxRow, bool, error)
 	// UnfinishedLanes is each (issue, lane) with a row of project still in the outbox, by issue
 	// then lane.
 	UnfinishedLanes(ctx context.Context, tx pgx.Tx, project string) ([]LaneKey, error)
@@ -3447,9 +3656,9 @@ type Store interface {
 	// TreeCloses is every tree-close row (SuperviseRequest's "tree_close") queued for tree on an
 	// issue that still stands in tree, oldest first.
 	TreeCloses(ctx context.Context, tx pgx.Tx, tree string) ([]OutboxRow, error)
-	// RoleRun reads one role's run of an issue generation: its queued supervise rows and the claim
-	// with token.
-	RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue string, role claim.Role, generation uint64) (RoleRun, error)
+	// RoleRun reads one role's run of issue as its record stands (RunKey): its queued supervise
+	// rows and the claim with token.
+	RoleRun(ctx context.Context, tx pgx.Tx, token claim.Token, issue Issue, role claim.Role) (RoleRun, error)
 	// RoleRuns is RoleRun for a bounded batch, keyed by token. Each batch reads its queued starts
 	// and claims from the caller's transaction snapshot rather than one query pair per role.
 	RoleRuns(ctx context.Context, tx pgx.Tx, keys []RoleRunKey) (map[claim.Token]RoleRun, error)
@@ -3459,17 +3668,31 @@ type Store interface {
 	RoleClaims(ctx context.Context, tx pgx.Tx, tokens []claim.Token) (map[claim.Token]*RoleClaim, error)
 }
 
-// RoleRunKey identifies one role's run of an issue generation.
+// RoleRunKey identifies one role's run of an issue as the issue's record stands: the role's
+// supervise rows the outbox's generation fence lets act (Issue.GenerationOf), a start at the
+// generation a start of the role serves and every other row at the issue's own generation. The
+// two differ for a tree root's architect after the root's next change, whose starts serve the
+// tree's run and whose stops serve the root's own generation. RunKey is its one constructor, so no
+// reader picks a generation the fence does not hold the row to.
 type RoleRunKey struct {
-	Token      claim.Token
-	Issue      string
-	Role       claim.Role
-	Generation uint64
+	token  claim.Token
+	issue  string
+	role   claim.Role
+	starts uint64
+	others uint64
 }
 
-// RoleRun is what the store holds of one role's run of an issue generation: the role's supervise
-// rows for the generation still queued, oldest first (finishing deletes a row, so each is one the
-// outbox has not run), and this daemon's claim on the role, nil when it has none.
+// RunKey is the key of role's run of issue, as issue's record stands, for the claim token.
+func RunKey(token claim.Token, issue Issue, role claim.Role) RoleRunKey {
+	return RoleRunKey{token: token, issue: issue.Key, role: role, starts: issue.GenerationOf("start", role), others: issue.Generation}
+}
+
+// Token is the claim token whose run the key reads.
+func (k RoleRunKey) Token() claim.Token { return k.token }
+
+// RoleRun is what the store holds of one role's run of an issue (RoleRunKey): the role's supervise
+// rows of the run still queued, oldest first (finishing deletes a row, so each is one the outbox
+// has not run), and this daemon's claim on the role, nil when it has none.
 type RoleRun struct {
 	Queued []QueuedSupervise
 	Claim  *RoleClaim
@@ -3803,9 +4026,10 @@ func PhaseOwed(serving, generation uint64, entry, rowEntry int64, completed, mer
 
 // MergedInMerging is whether the issue stands in merging (at) with pr, its pull request, merged:
 // the fact that finishes merging, by the rule workflow.PhaseFinished applies, since the merger
-// merges and a merged root then stands in merging until the rest of its tree leaves, which can be
-// days. A merger in merging owes nothing once it holds (PhaseOwed), and owes the merge while the
-// pull request is not merged. A pull request the record does not hold (nil) is not merged.
+// merges and the merge then moves the issue on to verifying (workflow's closeMerged), where its
+// close waits for its checks and for the issues beneath it. A merger in merging owes nothing once
+// it holds (PhaseOwed), and owes the merge while the pull request is not merged. A pull request
+// the record does not hold (nil) is not merged.
 func MergedInMerging(pr *PullRequest, at phase.Phase) bool {
 	return at == phase.Merging && pr != nil && pr.State == PullRequestMerged
 }

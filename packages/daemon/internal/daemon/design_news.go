@@ -90,10 +90,11 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 //
 // A root the record no longer holds owes nothing, and the row finishes. So does a tree owed
 // nothing at the first step, with no lock taken: every write that leaves news owed queues a
-// reconcile of its own (record.QueueDesignNews), and this row, running, does not stand in for it
-// (record.Store.DesignNewsPending). A tree owed an opening alone (record.OwedNews) names no pair
-// of versions, so it reads nothing of Dispatch or of the recorded change sets, and goes straight
-// to the settling.
+// reconcile of its own, or finds one waiting (record.QueueDesignNews), and this row, running, does
+// not stand in for it (record.Store.DesignNewsWaiting), which holds a waiting row so no lane claims
+// it before that write commits. A tree owed an opening alone (record.OwedNews) names no pair of
+// versions, so it reads nothing of Dispatch or of the recorded change sets, and goes straight to
+// the settling.
 func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error {
 	if r.dispatch == nil {
 		return errors.New("design_changes executor has no Dispatch client")
@@ -566,7 +567,8 @@ func (r *outbox) settleNews(ctx context.Context, row record.OutboxRow, tree stri
 			if newsStartQueued(start.run) || holdsUntakenTask(start.run.Claim) || !recordedClaimTakesNews(start.run.Claim, start.entry) {
 				continue
 			}
-			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role, Generation: start.issue.Generation, News: true}
+			request := record.SuperviseRequest{Op: "start", Tree: start.issue.Tree, Role: start.role,
+				Generation: start.issue.GenerationOf("start", start.role), News: true}
 			if start.role != claim.RoleArchitect {
 				request.Phase = start.issue.Phase
 			}

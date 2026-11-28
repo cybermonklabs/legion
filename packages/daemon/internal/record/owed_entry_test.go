@@ -87,7 +87,7 @@ func TestTheRecordSaysWhichRolesAreOwedWorkWithEveryOutboxRowDeleted(t *testing.
 		}
 		keys := make([]RoleRunKey, 0, len(roles))
 		for _, r := range roles {
-			keys = append(keys, RoleRunKey{Token: r.token, Issue: issue.Key, Role: r.role, Generation: issue.Generation})
+			keys = append(keys, RunKey(r.token, issue, r.role))
 		}
 		runs, err := records.RoleRuns(ctx, tx, keys)
 		must(t, err)

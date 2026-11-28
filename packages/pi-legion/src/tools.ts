@@ -92,7 +92,8 @@ const AGENT_FIELDS = ["issue", "role"] as const;
 /** Each session kind's operations, in the order the tool's `op` enum lists them. The phase ops
  * (`@legion/pi-shared/legion-phase-ops`) are an architect's too, and `read_build` is every
  * session's: the controller holds a claim like any other role and reads its own build the same
- * way. An operation two kinds hold is one `op` value, listed once (`toolSchema`). */
+ * way. An operation two kinds hold is one `op` value, listed once (`toolSchema`). `report_defect`
+ * is a phase op, which the architect lists beside its `withdraw_defect`. */
 const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
   architect: [
     "register_gate",
@@ -102,6 +103,8 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "request_backward_move",
     "retry_or_escalate",
     "sign_off",
+    "report_defect",
+    "withdraw_defect",
     "close_root",
     "rerun_child",
     "read_record",
@@ -117,6 +120,7 @@ const OPERATIONS: Readonly<Record<LegionToolRole, readonly string[]>> = {
     "handoff_complete",
     "ready_for_update",
     "read_build",
+    "report_defect",
   ],
   controller: [
     "read_build",
@@ -144,6 +148,7 @@ const OPERATION_FIELDS: Readonly<Record<string, readonly string[]>> = {
   release_children: ["issues"],
   retry_or_escalate: ["issue", "decision", "reason"],
   sign_off: ["issue"],
+  withdraw_defect: ["issue", "defect", "reason"],
   close_root: ["issue", "reason"],
   rerun_child: ["issue"],
   read_build: [],
@@ -588,7 +593,7 @@ function toolSchema(pi: PiApi): unknown {
     reason: z
       .string()
       .describe(
-        "close_root's and request_backward_move's why, retry_or_escalate's optional why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
+        "close_root's and request_backward_move's why, retry_or_escalate's optional why, withdraw_defect's why, the controller's pause's why, set_p0_bound's and clear_p0_bound's why, register_gate's reason for its basis, and discard_give_up's why, which it requires. No other operation takes it, replay_give_up included. rerun_child takes only issue: say why in a dispatch comment on the child"
       )
       .optional(),
     decision: z.enum(["retry", "escalate"]).optional(),
@@ -600,6 +605,9 @@ function toolSchema(pi: PiApi): unknown {
     plan_reason: phaseOp.plan_reason,
     return_to: phaseOp.return_to,
     round: phaseOp.round,
+    defect: phaseOp.defect,
+    head: phaseOp.head,
+    check: phaseOp.check,
     status: z.enum(ISSUE_STATUSES).optional(),
     phase: z.enum([...LEGION_PHASES]).optional(),
     settings: z.boolean().optional(),
@@ -875,21 +883,30 @@ export function createLegionTool(deps: {
     // own issue when the call names none; the shared sentence on read_release_records before
     // handoff_complete's contract, since the records it answers are not read from its name;
     // after that contract the shared sentences on request_backward_move (an architect's names
-    // the issue it returns from accepting) and read_build, then the architect's register_gate
+    // the issue it returns from accepting) and report_defect, the architect's withdraw_defect, the
+    // shared sentence on read_build, then the architect's register_gate
     // basis, its retry_or_escalate, its register_plan and stop_task, its sign_off and the
-    // controller's operations: the text tools.test.ts pins, stop_task's and sign_off's by their
-    // terms and the rest exactly, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule, and
-    // the sentence after them is the daemon's record.StatusNotTakenYet (both in
-    // packages/daemon/internal/record/project.go). These tests hold the copies together: the
+    // controller's operations. tools.test.ts holds two things of this text and no other word of
+    // it: every phase worker is given this one description, which names the `verdict` field and
+    // pass|fail, and the description carries the rules for ending a child and the sentence after
+    // them. Those rules are the words of the daemon's record.EndChildRule, and that sentence is the
+    // daemon's record.StatusNotTakenYet (both in packages/daemon/internal/record/project.go). The
     // daemon's TestTheEndChildRuleGolden writes both texts to
     // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
-    // description to that file.
+    // description to that file, so the copies change together.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,
       after:
         PHASE_OP_SENTENCES.requestBackwardMove +
+        PHASE_OP_SENTENCES.reportDefect +
+        "withdraw_defect (issue, defect, reason) is the owning architect's: it takes back a defect of an issue you own, by the id " +
+        "report_defect answered, saying why. The daemon refuses it from any other caller (DEFECT_WITHDRAW_NOT_OWNER), for a defect it " +
+        "does not hold (DEFECT_NOT_FOUND), for a check's own defect (DEFECT_IS_A_CHECK), for one a merged change carries " +
+        "(DEFECT_IN_MERGED_CHANGE), for a request for new work that a person made, which that person's done ends " +
+        "(DEFECT_REQUEST_OF_A_PERSON), with no reason (DEFECT_REASON_REQUIRED) and with a reason close-wait.md cannot carry: one too " +
+        "long (DEFECT_REASON_TOO_LONG) or one that holds a decision block (DEFECT_REASON_DECISION_BLOCK); it refuses both calls for a key " +
+        "that is no issue key (INVALID_ISSUE) and for an issue it has not recorded (ISSUE_NOT_FOUND). " +
         PHASE_OP_SENTENCES.readBuild +
         "register_gate (issue, artifactId, version, step) may also name a basis, the ancestor's document for the same step, " +
         "with basisVersion and your reason, all three or none: the step then opens on the ancestor's approval, or waits on " +
@@ -1446,6 +1463,15 @@ export function createLegionTool(deps: {
               restart
             );
             return jsonSuccess({});
+          }
+          case "withdraw_defect": {
+            // Checked whole before the grant is minted; the daemon holds who may take a report
+            // back, and answers the withdrawal whole.
+            const issue = requiredString(parameters, operation, "issue");
+            const defect = requiredString(parameters, operation, "defect");
+            const reason = requiredString(parameters, operation, "reason");
+            const grantId = await mintClaimGrant(client, active);
+            return jsonSuccess(await client.withdrawDefect({ grantId, issue, defect, reason }));
           }
           case "close_root": {
             const grantId = await mintClaimGrant(client, active);

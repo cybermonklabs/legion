@@ -316,11 +316,11 @@ func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 		t.Fatalf("the sub-parent's children-first notices = %+v, want exactly one", told)
 	}
 
-	// Its tree is re-admitted, which raises the root's generation and leaves every member's
-	// where it stands: the new run's architect has heard nothing, so the wait is told again
-	// though nothing of the sub-parent's own record changed.
+	// Its tree is re-admitted, which raises the root's generation and the tree's run with it, and
+	// leaves every member's where it stands: the new run's architect has heard nothing, so the
+	// wait is told again though nothing of the sub-parent's own record changed.
 	readmitted := issue(t, pool, cfRoot).Generation + 1
-	if _, err := pool.Exec(context.Background(), "update issues set generation = $2 where key = $1", cfRoot, int64(readmitted)); err != nil {
+	if _, err := pool.Exec(context.Background(), "update issues set generation = $2, tree_generation = $2 where key = $1", cfRoot, int64(readmitted)); err != nil {
 		t.Fatalf("open the tree's next run: %v", err)
 	}
 	tick(t, pool, admission, "tick-5")
@@ -329,8 +329,8 @@ func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 	}
 
 	// The tree finishes and hands the sub-parent over as a root of its own, whose run is
-	// numbered from its own record (readmit), which here is the number the tree it left is on.
-	// Keyed on the generation alone the old tree's mark would answer for this tree's first run
+	// numbered from its own record (readmit), its tree's run with it, which here is the number the
+	// tree it left is on. Keyed on the generation alone the old tree's mark would answer for this tree's first run
 	// and its architect would never be told. Its own architect has written that tree's spec and a
 	// person has approved it, which is what puts a root's own children-first wait in the line at
 	// all (record.ChildrenFirstCandidates).
@@ -338,7 +338,7 @@ func TestTheChildrenFirstNoticeIsToldOncePerIssueAndGeneration(t *testing.T) {
 	if handedOver != readmitted {
 		t.Fatalf("the handed-over sub-parent's run = %d and the tree it left is on %d, want the fixture's own premise: the two numbers collide", handedOver, readmitted)
 	}
-	if _, err := pool.Exec(context.Background(), "update issues set tree = key, generation = $2, handed_over_from = $3 where key = $1",
+	if _, err := pool.Exec(context.Background(), "update issues set tree = key, generation = $2, tree_generation = $2, handed_over_from = $3 where key = $1",
 		cfFirst, int64(handedOver), cfRoot); err != nil {
 		t.Fatalf("hand the sub-parent over as a root of its own: %v", err)
 	}

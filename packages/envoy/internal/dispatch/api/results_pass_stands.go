@@ -39,6 +39,10 @@ func standingCommit(result model.CheckResult) string {
 // pass there does not end that state; a retraction of the wrong result does. This holds with and
 // without subjects, so a read at one commit (`?at=`) gives the same answer.
 //
+// A `before_merge` check read at one commit a reader named (`?at=`) answers as a subject at that
+// commit does (namedCommitStands). So a reader of one head, such as the close of an issue read at
+// its newest merge's final head, tells a fail there from no result there.
+//
 // A check whose repository Dispatch could not read answers unknown, since it could compare
 // nothing at all. So does a check CI proves with no subjects whose check runs GitHub could not be
 // read for, for model.PassStandsReasonReadFailed: it holds no result, and the read that would have
@@ -64,8 +68,13 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 		return model.CheckPassStands{Answer: model.PassStandsUnknown, Reason: model.PassStandsReasonReadFailed}
 	}
 	conflicted := passAndFailCommits(check)
-	if check.When == docs.CheckWhenBeforeMerge && len(compared.subjects) > 0 {
-		return eachSubjectStands(check, compared, conflicted)
+	if check.When == docs.CheckWhenBeforeMerge {
+		if named, ok := compared.namedCommit(); ok {
+			return namedCommitStands(check, named, conflicted)
+		}
+		if len(compared.subjects) > 0 {
+			return eachSubjectStands(check, compared, conflicted)
+		}
 	}
 	var roles []string
 	unknown, conflict := false, false
@@ -95,6 +104,26 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 		return model.CheckPassStands{Answer: model.PassStandsUnknown}
 	}
 	return model.CheckPassStands{Answer: model.PassStandsNo}
+}
+
+// namedCommitStands is passStandsOf for a `before_merge` check read at one commit a reader named
+// (`?at=`): the state that commit has as a subject (subjectState), so a reader of that one head
+// reads what a reader of each head reads there. It is yes with the roles whose pass stands there,
+// no for model.PassStandsReasonFail where only a fail stands there and for
+// model.PassStandsReasonNoResult where nothing does, and unknown for
+// model.PassStandsReasonPassAndFail where a pass and a fail count there (R4). Results names the
+// results that decide it, as the subject names them, and Commit is the named commit, absent where
+// Results is empty. A read at one commit places each result at that commit or at another
+// (commitStands), so no pass there is held up by a commit Dispatch could not place. The check's
+// `ci` is read at the heads a read naming no commit selects, not at the named commit, so the
+// subject takes none: a result derived from a run counts there only where its head is that commit.
+func namedCommitStands(check model.CheckBlock, basis model.CheckBasis, conflicted map[string]bool) model.CheckPassStands {
+	subject := subjectState(check, basis, conflicted, nil)
+	stands := model.CheckPassStands{Answer: subject.Answer, Reason: subject.Reason, Roles: subject.Roles, Results: subject.Results}
+	if len(stands.Results) > 0 {
+		stands.Commit = basis.Commit
+	}
+	return stands
 }
 
 // eachSubjectStands is passStandsOf for a `before_merge` check compared with heads: yes only

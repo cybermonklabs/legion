@@ -103,6 +103,15 @@ const (
 	// OutboxKindPlanRecord writes the plan one run of the issue carries out onto Dispatch
 	// (PlanRecord).
 	OutboxKindPlanRecord OutboxKind = "plan_record"
+	// OutboxKindCloseRead reads Dispatch's states of an issue's checks, and its children, for the
+	// judge of its close (CloseRead), and OutboxKindCloseWaitPublish writes the issue's stored wait
+	// onto its document close-wait.md (CloseWaitPublish).
+	OutboxKindCloseRead        OutboxKind = "close_read"
+	OutboxKindCloseWaitPublish OutboxKind = "close_wait_publish"
+	// OutboxKindMergeRead reads, outside the fact transaction, whether the work of a closed issue
+	// whose record shows no merge (MergeHistoryPartial, MergeHistoryNone) merged, for the request
+	// for new work that waits on it (MergeRead).
+	OutboxKindMergeRead OutboxKind = "merge_read"
 )
 
 // OutboxLane is which executor of an issue runs a kind. An issue's rows run on six lanes side by
@@ -141,7 +150,13 @@ const (
 // which reads Dispatch for what changed between two versions of a gated document, on a lane of its
 // own: on the lifecycle lane that read would hold every start, stop and suspend of the tree's
 // root behind it, and on the board lane it would wait behind a notice that waits as long as its
-// architect holds no role, while the news it sends is owed to every holder of the tree.
+// architect holds no role, while the news it sends is owed to every holder of the tree. It also
+// runs the read of an issue's checks for the judge of its close (close_read), a read of Dispatch
+// that writes nothing there and must not wait behind such a notice either, and the read of whether
+// a closed issue's work merged (merge_read), which reads Dispatch and GitHub and applies what it
+// read as a fact, as the close read does. The document that says
+// what the close waits for (close_wait_publish) is a write of the issue's Dispatch row, so it runs
+// on the board lane among the issue's other writes, ahead of the status write of its close.
 // The record lane runs the writes of the records of the issue's work — each step's record and the
 // rating a retro gave the plan (step_record), and the plan of each run (plan_record) — on a lane of
 // their own, so a Dispatch that is slow to take a record, or one that backs a record off until it
@@ -176,10 +191,10 @@ const (
 // run on the lifecycle lane together.
 var laneKinds = map[OutboxLane][]OutboxKind{
 	LaneLifecycle:   {OutboxKindSupervise, OutboxKindIssueSuspend, OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindLingerClose, OutboxKindWorkspaceRemove, OutboxKindGateSeed, OutboxKindPendingBasisSeed, OutboxKindReparentSeed, OutboxKindIssueBranch, OutboxKindCheckWake, OutboxKindCheckLook, OutboxKindCheckBound},
-	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish},
+	LaneBoard:       {OutboxKindDispatchStatus, OutboxKindDispatchMessage, OutboxKindNotice, OutboxKindControllerNotice, OutboxKindRoleMessage, OutboxKindGatedStepsPublish, OutboxKindDesignGatesPublish, OutboxKindRoleHoldersPublish, OutboxKindCloseWaitPublish},
 	LaneRoleMessage: {OutboxKindPhaseEnded, OutboxKindHookPrompt, OutboxKindUpdateAsk, OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindMergeHoldsChanged, OutboxKindConflictConfirm, OutboxKindMergeForward},
 	LaneClaim:       {OutboxKindClaimRelease},
-	LaneDocuments:   {OutboxKindDesignChanges},
+	LaneDocuments:   {OutboxKindDesignChanges, OutboxKindCloseRead, OutboxKindMergeRead},
 	LaneRecord:      {OutboxKindStepRecord, OutboxKindPlanRecord},
 	LaneState:       {OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot},
 }
@@ -1181,20 +1196,27 @@ func (ControllerNotice) OutboxKind() OutboxKind { return OutboxKindControllerNot
 // while no publish has taken it, and one that finds it leased or given back to retry opens the
 // next. Nobody inside a tree is told: the message is the intake's, of no issue an architect runs,
 // and the controller replays or discards it (dispatch://INFRA-1575).
+//
+// A closed-check-failed notice names an issue that this release closed by its checks
+// (issues.closed_on_checks_at), the check, and the result that recorded a fail after that close.
+// Legion opens and reopens nothing for the issue, and the controller routes the fail as it routes
+// any defect. No earlier release decodes the kind, so block A of the done-by-checks migration
+// deletes its unsent rows.
 const (
-	TriageNotice           NoticeKind = "triage"
-	SlotFreeNotice         NoticeKind = "slot-free"
-	TodoNotice             NoticeKind = "todo"
-	TickNotice             NoticeKind = "tick"
-	ParkedDecisionNotice   NoticeKind = "parked-decision"
-	UpdateStalledNotice    NoticeKind = "update-stalled"
-	ProviderErrorsNotice   NoticeKind = "provider-errors"
-	TreeStalledNotice      NoticeKind = "tree-stalled"
-	ArchitectStalledNotice NoticeKind = "architect-stalled"
-	MemoryGuardKillNotice  NoticeKind = "memory-guard-kill"
-	ProjectPausedNotice    NoticeKind = "project-paused"
-	ProjectResumedNotice   NoticeKind = "project-resumed"
-	IntakeGaveUpNotice     NoticeKind = "intake-gave-up"
+	TriageNotice            NoticeKind = "triage"
+	SlotFreeNotice          NoticeKind = "slot-free"
+	TodoNotice              NoticeKind = "todo"
+	TickNotice              NoticeKind = "tick"
+	ParkedDecisionNotice    NoticeKind = "parked-decision"
+	UpdateStalledNotice     NoticeKind = "update-stalled"
+	ProviderErrorsNotice    NoticeKind = "provider-errors"
+	TreeStalledNotice       NoticeKind = "tree-stalled"
+	ArchitectStalledNotice  NoticeKind = "architect-stalled"
+	MemoryGuardKillNotice   NoticeKind = "memory-guard-kill"
+	ProjectPausedNotice     NoticeKind = "project-paused"
+	ProjectResumedNotice    NoticeKind = "project-resumed"
+	IntakeGaveUpNotice      NoticeKind = "intake-gave-up"
+	ClosedCheckFailedNotice NoticeKind = "closed-check-failed"
 )
 
 // ArchitectStallArm names which reading raised an architect-stalled notice. It is part of the
@@ -1340,8 +1362,11 @@ type SuperviseRequest struct {
 	// release wrote has no Awaiting and carries its Task, which this release delivers as it was
 	// written.
 	Awaiting *Awaiting `json:"awaiting,omitempty"`
-	// Generation is the issue generation the request serves. A request of an earlier generation
-	// finishes without acting: it must never suspend, stop, or start the next generation's worker.
+	// Generation is the generation of the issue the request serves (Issue.GenerationOf): the
+	// architect's run for a start of the architect, which is the tree's run on a tree root, and the
+	// issue's own generation for every other request. A request of another generation than the
+	// record holds for it finishes without acting: it must never suspend, stop, or start the next
+	// generation's worker.
 	// Three requests are not held to it. A production check's look start (CheckLook) is fenced on
 	// its check instead (the daemon outbox's checkLookHolds). A tree close of the issue's own tree
 	// whose cleanup is reserved still retires its claim and drives that cleanup, however stale its
@@ -1550,6 +1575,12 @@ type SuperviseRequest struct {
 	// a moved phase took the role over while the row waited (decision 10).
 	// A start that is no wake, and every request of another op, carries none.
 	WakeKind string `json:"wakeKind,omitempty"`
+	// StartAt marks the start of a next change's first phase: before the task reaches its role,
+	// the machine asks the role's shim to start the working copy at the branch the merge moved
+	// (runtime's StartAtBranch). Every other request carries none. A release before the field
+	// refuses a row that carries it (DisallowUnknownFields), so the way back of the done-by-checks
+	// migration deletes such rows.
+	StartAt *StartAt `json:"startAt,omitempty"`
 	// WakeDetail is the detail of the wake whose kind WakeKind names: the head and what its
 	// settlement came to, the role token or the session a message was sent to, or the backstop
 	// that came due. The task of the start is WakeTask of that kind and detail (workflow's
@@ -1563,6 +1594,14 @@ type SuperviseRequest struct {
 	// (DisallowUnknownFields), so a rollback strips it from each queued start first
 	// (docs/kubernetes.md, "Rolling back idle release").
 	WakeDetail string `json:"wakeDetail,omitempty"`
+}
+
+// StartAt is where a next change's working copy starts (SuperviseRequest.StartAt): Bookmark, the
+// issue's branch, legion/<KEY>, and Base, the branch it merged into, both fetched before the
+// working copy moves to the bookmark.
+type StartAt struct {
+	Bookmark string `json:"bookmark"`
+	Base     string `json:"base"`
 }
 
 func (SuperviseRequest) OutboxKind() OutboxKind { return OutboxKindSupervise }
@@ -2066,9 +2105,179 @@ type IssueBranch struct {
 	// Generation is the issue generation the branch is created for. A row of an earlier generation,
 	// or of a tree that lingers, finishes without acting.
 	Generation uint64 `json:"generation"`
+	// From is where a next change's branch starts: the base the issue's last pull request merged
+	// into and the head that was merged, from the issue's merge snapshot. It is nil for every
+	// generation that is no next change, whose branch is made at the default branch as before. A
+	// next change whose snapshot knows neither carries a From that names neither, which starts at
+	// the recorded default branch and moves no branch GitHub has (the daemon's startBranchAtBase).
+	// A release before the field refuses a row that carries it (DisallowUnknownFields), so the way
+	// back of the done-by-checks migration deletes such rows.
+	From *BranchFrom `json:"from,omitempty"`
+}
+
+// BranchFrom is where a next change's branch starts (IssueBranch.From): Base, the branch the issue's
+// last pull request merged into, and MergedHead, the final head that was merged. A field the merge
+// snapshot does not know is empty, and stays so: no reader invents it.
+type BranchFrom struct {
+	Base       string `json:"base,omitempty"`
+	MergedHead string `json:"mergedHead,omitempty"`
+}
+
+// IssueBranchOf builds an issue's branch row: the row of the issue's generation, with From set
+// from its merge snapshot where that generation is a next change (Issue.NextChange is the
+// generation) and a merge stands, and nil for any other generation. Task 6 routes the branch's
+// construction sites through it; until then admit and the engine build IssueBranch directly, with
+// no From.
+func IssueBranchOf(issue Issue) IssueBranch {
+	row := IssueBranch{Generation: issue.Generation}
+	if issue.NextChange != 0 && issue.NextChange == issue.Generation && issue.Merge.Merged() {
+		row.From = &BranchFrom{Base: issue.Merge.Base, MergedHead: issue.Merge.Head}
+	}
+	return row
 }
 
 func (IssueBranch) OutboxKind() OutboxKind { return OutboxKindIssueBranch }
+
+// CloseRead reads Dispatch's states of the row's issue's checks (GET /api/v1/issues/{key}/results),
+// its children (GET /api/v1/issues/{key}) and the approval of its Verification document, and
+// carries them back as a fact the judge of the close reads. Generation is the generation the read
+// was queued for. One row stands for an issue at a time.
+type CloseRead struct {
+	Generation uint64 `json:"generation"`
+}
+
+func (CloseRead) OutboxKind() OutboxKind { return OutboxKindCloseRead }
+
+// CloseWaitPublish writes the row's issue's stored wait (Issue.CloseWait) onto its Dispatch document
+// close-wait.md, rendered when the row runs, so one row standing stands for each change of the wait
+// before it runs. Generation is the generation whose wait was stored.
+type CloseWaitPublish struct {
+	Generation uint64 `json:"generation"`
+}
+
+func (CloseWaitPublish) OutboxKind() OutboxKind { return OutboxKindCloseWaitPublish }
+
+// MergeRead reads whether the work of the row's issue merged, for the request for new work that
+// waits on it: the issue's record shows no positive merge (MergeHistoryPartial or MergeHistoryNone),
+// so the door queued this read instead of a next change. Issue and Generation are the issue and
+// the generation the request was taken at. Requester is who asked (RequesterPerson,
+// claim.RoleController or claim.RoleArchitect), and Request the request's text. A later request by
+// a person writes its asker and its text over the row's; the apply of the read's fact reads both
+// from the row as it stands then. Progress is the read's saved stage, written by the executor
+// alone. One row stands for an issue at a time.
+type MergeRead struct {
+	Issue      string            `json:"issue"`
+	Generation uint64            `json:"generation"`
+	Requester  claim.Role        `json:"requester"`
+	Request    string            `json:"request"`
+	Progress   MergeReadProgress `json:"progress"`
+}
+
+func (MergeRead) OutboxKind() OutboxKind { return OutboxKindMergeRead }
+
+// The stages of a merge read, in the order the executor runs them (MergeReadProgress.Stage). The
+// empty stage is a read not started.
+const (
+	MergeReadStageLinks      = "links"
+	MergeReadStageResults    = "results"
+	MergeReadStageBases      = "bases"
+	MergeReadStageCandidates = "candidates"
+	MergeReadStageMetadata   = "metadata"
+)
+
+// The states of a merge read beside the stage it stands at (MergeReadProgress.State). The empty
+// state is a read still reading.
+const (
+	// MergeReadStateUnread is a search that completed and found no candidate that answers.
+	MergeReadStateUnread = "unread"
+	// MergeReadStateStopped is a stage whose third attempt failed: no automatic attempt follows.
+	MergeReadStateStopped = "stopped"
+)
+
+// MergeReadMaxFailures is the failed attempts one stage of a merge read may count: after the third
+// it stops (MergeReadStateStopped).
+const MergeReadMaxFailures = 3
+
+// MergeReadProgress is the saved stage of one merge read, which a later turn resumes from. Each
+// field is optional and its zero value is a read not started. Stage is the stage the read stands
+// at, State whether it reads, ended unread or stopped. Cursor is the next page, or the deferred
+// redirect, of the current base's commits/{sha}/pulls listing, empty for its first page. Links are
+// the external links the last links read found. Bases are the merge commits whose pull requests the
+// read lists, and Candidates the pull requests it reads. Attempts counts every GET attempt
+// reserved, retries and redirects included, and Failures the failed attempts of the current stage,
+// with Cause the last failure's text and RetryAt the stage's next attempt after it. Reserved is an
+// attempt reserved whose answer is not saved yet, and Uncertain counts such attempts a crash left.
+// MetadataReads counts the pull-request reads of missing branch metadata of a known merge.
+// Refreshes counts the doors' asks for one links read each, which the executor's save never writes
+// over (store.CheckpointMergeRead), and RefreshesRead how many of them the executor's links reads
+// answered: a refresh asked while a links read runs is one more than that read answers, so it
+// stays asked (RefreshAsked). No token or credential is kept here.
+type MergeReadProgress struct {
+	Stage         string               `json:"stage,omitempty"`
+	State         string               `json:"state,omitempty"`
+	Cursor        string               `json:"cursor,omitempty"`
+	Links         []string             `json:"links,omitempty"`
+	Bases         []MergeReadBase      `json:"bases,omitempty"`
+	Candidates    []MergeReadCandidate `json:"candidates,omitempty"`
+	Attempts      int                  `json:"attempts,omitempty"`
+	Failures      int                  `json:"failures,omitempty"`
+	Cause         string               `json:"cause,omitempty"`
+	RetryAt       time.Time            `json:"retryAt,omitzero"`
+	Reserved      bool                 `json:"reserved,omitempty"`
+	Uncertain     int                  `json:"uncertain,omitempty"`
+	MetadataReads int                  `json:"metadataReads,omitempty"`
+	Refreshes     int                  `json:"refreshes,omitempty"`
+	RefreshesRead int                  `json:"refreshesRead,omitempty"`
+}
+
+// RefreshAsked says whether a door asked a links read that no links read has answered yet.
+func (p MergeReadProgress) RefreshAsked() bool { return p.Refreshes > p.RefreshesRead }
+
+// The sources of a merge read's base (MergeReadBase.Source): Dispatch's results read, or the
+// issue's production check.
+const (
+	MergeReadSourceResults    = "results"
+	MergeReadSourceProduction = "production"
+)
+
+// The sources of a merge read's candidate beside those two (MergeReadCandidate.Source): an
+// external link of the issue, a clock a clear kept, and the issue's retained pull request row.
+const (
+	MergeReadSourceLink     = "link"
+	MergeReadSourceCleared  = "cleared"
+	MergeReadSourceRetained = "retained"
+)
+
+// MergeReadBase is one merge commit whose pull requests a merge read lists
+// (GET /repos/{repo}/commits/{sha}/pulls): its repository, its commit, where it was found, and
+// whether every page of its listing was read.
+type MergeReadBase struct {
+	Repo   string `json:"repo"`
+	SHA    string `json:"sha"`
+	Source string `json:"source"`
+	Done   bool   `json:"done,omitempty"`
+}
+
+// MergeReadCandidate is one pull request a merge read reads (GET /repos/{repo}/pulls/{n}): its
+// repository and number, where it was found, and its answer, nil until that read answered.
+type MergeReadCandidate struct {
+	Repo   string           `json:"repo"`
+	Number int              `json:"number"`
+	Source string           `json:"source"`
+	Answer *MergeReadAnswer `json:"answer,omitempty"`
+}
+
+// MergeReadAnswer is what GitHub answered of one candidate: whether it merged, whether it names
+// the issue (its branch or its body), so it may answer the read, and its final head, merge commit,
+// base and merged_at where it merged.
+type MergeReadAnswer struct {
+	Merged   bool      `json:"merged"`
+	Names    bool      `json:"names"`
+	Head     string    `json:"head,omitempty"`
+	SHA      string    `json:"sha,omitempty"`
+	Base     string    `json:"base,omitempty"`
+	MergedAt time.Time `json:"mergedAt,omitzero"`
+}
 
 // CheckWakeDue is the one row that can start a production check's next look beside the check's
 // own bound (CheckBound): the wake the checking agent named for itself on a pending report
@@ -3094,6 +3303,24 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
 		payload = value
+	case OutboxKindCloseRead:
+		value := CloseRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindCloseWaitPublish:
+		value := CloseWaitPublish{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
+	case OutboxKindMergeRead:
+		value := MergeRead{}
+		if err := decoder.Decode(&value); err != nil {
+			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
+		}
+		payload = value
 	case OutboxKindDesignChanges:
 		value := DesignNewsReconcile{}
 		if err := decoder.Decode(&value); err != nil {
@@ -3174,6 +3401,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if value.Parent == "" || value.Tree == "" || value.Ran == "" {
 			return fmt.Errorf("a re-parent seed names the root's new parent, the live tree that parent is in and why the root stays a tree of its own")
 		}
+	case CloseRead:
+		if value.Generation == 0 {
+			return fmt.Errorf("a read of the checks names the generation it was queued for")
+		}
+	case CloseWaitPublish:
+		if value.Generation == 0 {
+			return fmt.Errorf("a publish of the close's wait names the generation whose wait it writes")
+		}
+	case MergeRead:
+		return validMergeRead(issue, value)
 	case IssueSuspend:
 		if value.Tree == "" || value.Generation == 0 || value.TreeGeneration == 0 {
 			return fmt.Errorf("issue suspension requires its tree and both workflow generations")
@@ -3374,6 +3611,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.TurnStart != nil && value.Op != "suspend" {
 			return fmt.Errorf("a supervise %s names a turn start; only a left pod's close's suspend names one", value.Op)
+		}
+		if at := value.StartAt; at != nil && (value.Op != "start" || at.Bookmark == "" || at.Base == "") {
+			return fmt.Errorf("a supervise %s names where the working copy starts, and only a start names it, with the bookmark and the base", value.Op)
 		}
 	case RoleMessage:
 		if value.Role == "" {
@@ -3648,6 +3888,57 @@ func designReview(decision DecisionKind) bool {
 	return decision == DecisionDesignApproved || decision == DecisionDesignChangesRequested
 }
 
+// mergeReadRequesters are who may ask for the request a merge read waits on.
+var mergeReadRequesters = []claim.Role{RequesterPerson, claim.RoleController, claim.RoleArchitect}
+
+// validMergeRead refuses a merge read no row may carry: one of another issue than the row's, of no
+// generation, of an asker who cannot ask, or of no request's text, and a saved stage the executor
+// could not resume (validMergeReadProgress).
+func validMergeRead(issue string, value MergeRead) error {
+	switch {
+	case value.Issue == "" || value.Issue != issue:
+		return fmt.Errorf("a merge read names its row's issue %s. It names %q", issue, value.Issue)
+	case value.Generation == 0:
+		return fmt.Errorf("a merge read names the generation its request was taken at")
+	case !slices.Contains(mergeReadRequesters, value.Requester):
+		return fmt.Errorf("a merge read's request was asked by a person, the controller or an architect, not %q", value.Requester)
+	case strings.TrimSpace(value.Request) == "":
+		return fmt.Errorf("a merge read carries the text of the request it waits on")
+	}
+	return validMergeReadProgress(value.Progress)
+}
+
+// validMergeReadProgress refuses a saved stage of a merge read that names a stage, a state or a
+// source the executor does not know, more failed attempts than a stage may count, a count below
+// zero, or a base or a candidate that names no pull request it can read.
+func validMergeReadProgress(progress MergeReadProgress) error {
+	stages := []string{"", MergeReadStageLinks, MergeReadStageResults, MergeReadStageBases, MergeReadStageCandidates, MergeReadStageMetadata}
+	switch {
+	case !slices.Contains(stages, progress.Stage):
+		return fmt.Errorf("a merge read stands at no stage it runs: %q", progress.Stage)
+	case !slices.Contains([]string{"", MergeReadStateUnread, MergeReadStateStopped}, progress.State):
+		return fmt.Errorf("a merge read is in no state it knows: %q", progress.State)
+	case progress.Failures < 0 || progress.Failures > MergeReadMaxFailures:
+		return fmt.Errorf("a merge read's stage counts %d failed attempts, not 0 to %d", progress.Failures, MergeReadMaxFailures)
+	case progress.Attempts < 0 || progress.Uncertain < 0 || progress.MetadataReads < 0:
+		return fmt.Errorf("a merge read counts no attempt below zero")
+	}
+	for _, base := range progress.Bases {
+		if base.Repo == "" || base.SHA == "" || !slices.Contains([]string{MergeReadSourceResults, MergeReadSourceProduction}, base.Source) {
+			return fmt.Errorf("a merge read's base names its repository, its merge commit and its source, results or production. It names %q, %q and %q",
+				base.Repo, base.SHA, base.Source)
+		}
+	}
+	sources := []string{MergeReadSourceLink, MergeReadSourceCleared, MergeReadSourceRetained, MergeReadSourceProduction, MergeReadSourceResults}
+	for _, candidate := range progress.Candidates {
+		if candidate.Repo == "" || candidate.Number <= 0 || !slices.Contains(sources, candidate.Source) {
+			return fmt.Errorf("a merge read's candidate names its repository, a pull request number above 0 and a source it knows. It names %q, #%d and %q",
+				candidate.Repo, candidate.Number, candidate.Source)
+		}
+	}
+	return nil
+}
+
 // validNoticeKinds is every notice kind the daemon publishes, which is also every kind a row may
 // decode as (DecodeOutboxPayload) and every kind the validation accepts: a kind reaches the
 // outbox only by being on this list, since validNoticeKind decides from it alone and NewOutboxRow
@@ -3747,6 +4038,13 @@ func designReview(decision DecisionKind) bool {
 // session was not lost: nothing of it was deleted. No earlier release decodes it, so the way back
 // of migration 20261120042902 deletes its unsent rows.
 //
+// `close-waits`, `check-failed`, `check-unknown`, `defect-reported`, `next-change`,
+// `close-wait-no-result`, `close-wait-standing`, `checks-unapproved` and `next-change-count` are
+// the owning architect's notices of an issue that waits for its checks after its merge, and of
+// the next changes that wait starts. `next-change-count` reaches the controller too, as a
+// controller notice of the same kind. No earlier release decodes any of them, so block A of the
+// done-by-checks migration deletes their unsent rows.
+//
 // `workspace-kept` (WorkspaceKeptNotice) is a pod no role runs in that the daemon keeps for its
 // disk, or a pod an update round kept for its disk; `workspace-taken` (WorkspaceTakenNotice) is a
 // replacement that still took a disk that may hold work.
@@ -3761,6 +4059,14 @@ func designReview(decision DecisionKind) bool {
 // with the words, which the architect can give to the role another way. No earlier release
 // decodes it, so a rollback deletes its unsent rows first (docs/kubernetes.md, "Rolling back the
 // release that names undelivered hook prompts on the issue").
+//
+// `branch-refused` (BranchRefusedNotice) is an issue_branch row that GitHub, or the deployment's
+// private-name rules, refused in a way a retry meets again, so the row ended rather than retried
+// (internal/daemon's permanentRefusal, finishRefused, branchRefusedNotice). The owning architect is
+// told once for each generation of the issue (Store.RefuseBranch). The reason names the branch,
+// whether the row created or moved it, the refusal's kind and the row's error, and that the roles
+// start without it. No earlier release decodes it, so the way back of migration 20261128022327
+// deletes its unsent rows.
 var validNoticeKinds = []NoticeKind{
 	"phase-finished", "worker-died", "worker-stalled", "worker-silent", "worker-background-stalled", "held",
 	"pr-blocked", "pr-merged", "pr-closed-unmerged", "pull-request-missing", "message-refused",
@@ -3770,8 +4076,11 @@ var validNoticeKinds = []NoticeKind{
 	"catch-up", "checks-red", "review-stuck", "status-reasserted", VolumeNearFullNotice,
 	"session-lost", "session-forgotten", "session-store-fault", "merge-holds-changed", ProviderErrorsNotice,
 	"task-stopped", "plan-not-taken", "retro-held",
+	"next-change-workspace",
+	"close-waits", "check-failed", "check-unknown", "defect-reported", "next-change", "close-wait-no-result",
+	"close-wait-standing", "checks-unapproved", "next-change-count",
 	WorkspaceKeptNotice, WorkspaceTakenNotice,
-	HookPromptUndeliveredNotice,
+	HookPromptUndeliveredNotice, BranchRefusedNotice,
 }
 
 // HookPromptUndeliveredNotice is the architect's notice of a hook's prompt that ended undelivered
@@ -3924,7 +4233,8 @@ func validateNoticeStopper(kind NoticeKind, stoppedBy claim.Token) error {
 func controllerOnlyNoticeKind(kind NoticeKind) bool {
 	switch kind {
 	case TriageNotice, SlotFreeNotice, TodoNotice, TickNotice, ParkedDecisionNotice, UpdateStalledNotice, TreeStalledNotice,
-		ArchitectStalledNotice, MemoryGuardKillNotice, ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice:
+		ArchitectStalledNotice, MemoryGuardKillNotice, ProjectPausedNotice, ProjectResumedNotice, IntakeGaveUpNotice,
+		ClosedCheckFailedNotice:
 		return true
 	default:
 		return false

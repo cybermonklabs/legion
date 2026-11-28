@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  `packages/envoy/clitest` no longer fails a run whose output is still being copied a second after the binary exits. Each run now writes its standard output and standard error to files in a directory of the test's own, which the test's end removes. Before, a pipe's copy that a loaded machine left unscheduled past one second failed the run, though every process had ended. Its report was `exec: WaitDelay expired before I/O complete`.
+
+  On a Unix system the files are read once every process of the run's group has ended. A process the binary starts that holds the output past the binary's exit now delays the read and fails nothing. One that holds it past the run's bound still fails the run as a process still running.
+
+  Elsewhere no process group is waited for, so the files are read as soon as the binary's own process exits. What a process the binary started writes after that exit is not read, and the run does not fail for it. Before, such output was read while the process held the output up to a second past the exit, and the run failed with `exec: WaitDelay expired before I/O complete` when it held it longer.
+time: 2026-11-27T23:51:34Z
+custom:
+    Issue: pr5975

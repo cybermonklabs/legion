@@ -271,10 +271,13 @@ func TestTheRollForwardMarksUncountedEachIssueTheEarlierReleaseMoved(t *testing.
 	s.exec(`update issues set phase = 'testing' where key = 'LEGION-203'`)
 	s.entry("LEGION-203", "tester")
 	s.wayBack()
-	s.exec(`update issues set generation = 2 where key = 'LEGION-210'`)
+	// A re-admission raises the tree's run beside the generation on the schema this test migrates
+	// to (tree_generation, which step_run_witness's root_generation reads), as a rerun of the whole
+	// tree writes it (record.Postgres.ClearTreeGeneration).
+	s.exec(`update issues set generation = 2, tree_generation = 2 where key = 'LEGION-210'`)
 	s.exec(`update issues set linger_until = now() + interval '1 hour' where key = 'LEGION-220'`)
 	s.exec(`update issues set phase = 'testing', held_from = null where key = 'LEGION-230'`)
-	s.exec(`update issues set generation = 2 where key = 'LEGION-240'`)
+	s.exec(`update issues set generation = 2, tree_generation = 2 where key = 'LEGION-240'`)
 
 	s.rollForward()
 	runs := s.starts()
@@ -346,7 +349,7 @@ func TestTheRollForwardKeepsAMembersMergeOpenUntilItsMergerStartsAgain(t *testin
 	}
 	// The earlier release re-admits each root; the promotion of LEGION-260's tree starts
 	// LEGION-261's merger again.
-	s.exec(`update issues set generation = 2, linger_until = null, phase = 'admitted' where key in ('LEGION-250', 'LEGION-260', 'LEGION-270')`)
+	s.exec(`update issues set generation = 2, tree_generation = 2, linger_until = null, phase = 'admitted' where key in ('LEGION-250', 'LEGION-260', 'LEGION-270')`)
 	s.entry("LEGION-261", "merger")
 	s.rollForward()
 

@@ -78,8 +78,8 @@ const (
 // newest; that is harmless here, since it adds pull_requests.state_read_at and the phase entry
 // touches no pull_requests column. Neither column is one any statement of the phase entry reads
 // or writes. Every version above that release's newest (olderReleasesNewestMigration) is withheld
-// with the phase entry, but those appliedWithTheFixture names, so Store.Migrate, which decides
-// each migration on its own row, applies the phase entry and those it withheld.
+// with the phase entry, so Store.Migrate, which decides each migration on its own row, applies the
+// phase entry and those it withheld.
 //
 // It is built this way because the old shape is reachable no other way: the three assignment
 // columns are created by the migrations under this one and dropped by this one, so a record as
@@ -358,8 +358,10 @@ func TestTheUpgradeToThePhaseEntrySendsEachRoleBehindItTheWorkItsEntryNames(t *t
 
 	// The tree is written with that release's own columns as well: this release's issue writer
 	// (record.Store.PutIssue) names columns migrations above that release's newest add —
-	// issues.view_of (20261114064234) and the held start of awaiting_children (20261114232555) —
-	// which the fixture withholds with the phase entry, so the upgrade under test adds them.
+	// issues.view_of (20261114064234), the held start of awaiting_children (20261114232555),
+	// issues.priority (20261124060500), and the close wait's columns and tree_generation
+	// (20261128022325_done_by_checks) — which the fixture withholds with the phase entry, so the
+	// upgrade under test adds them.
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		if err := putPreEntryIssue(ctx, tx, root); err != nil {
 			return err

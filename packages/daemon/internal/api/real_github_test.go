@@ -15,6 +15,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/credential"
@@ -292,7 +293,7 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 	// records its arguments and puts a release in the command's environment under the name it was
 	// asked for, as the real one does.
 	stub := t.TempDir()
-	if err := os.WriteFile(filepath.Join(stub, "agent-secrets"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$STUB_ARGS\"\nname=$1\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexport \"$name=$STUB_VALUE\"\nexec \"$@\"\n"), 0o700); err != nil {
+	if err := testexec.WriteFile(filepath.Join(stub, "agent-secrets"), []byte("#!/bin/sh\nprintf '%s\\n' \"$*\" >\"$STUB_ARGS\"\nname=$1\nwhile [ \"$1\" != -- ]; do shift; done\nshift\nexport \"$name=$STUB_VALUE\"\nexec \"$@\"\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	release := `{"installations":{"acme":{"installation_id":1,"token":"ghs_stub","expires_at":"2026-11-03T13:00:00Z"}}}`
@@ -384,7 +385,7 @@ func TestLiveProofAppsReadTheLib(t *testing.T) {
 		// the lib's own write_github_apps writes for the same Apps.
 		stub, work, want := t.TempDir(), t.TempDir(), t.TempDir()
 		bun := "#!/bin/sh\ncp \"$4\" \"$STUB_KEEP\"\n[ -z \"$STUB_REFUSE\" ] || { echo 'app-logins: the implement App answered another id' >&2; exit 1; }\necho '{\"implement\":\"implement[bot]\",\"review\":\"review[bot]\"}'\n"
-		if err := os.WriteFile(filepath.Join(stub, "bun"), []byte(bun), 0o700); err != nil {
+		if err := testexec.WriteFile(filepath.Join(stub, "bun"), []byte(bun), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		path := "PATH=" + stub + string(os.PathListSeparator) + os.Getenv("PATH")

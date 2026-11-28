@@ -142,9 +142,9 @@ func TestACancelKeepsAnEntryStartAndACheckLookQueuedBesideAWake(t *testing.T) {
 	st := migratedStore(t)
 	wakesBesideWork(t, st, true, true)
 	told := map[claim.Role]string{}
-	woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
+	woken := func(role claim.Role, run IssueRun, wake DroppedWake) (IdleReleaseRow, error) {
 		told[role] = wake.Kind + "|" + wake.Detail + "|" + wake.Task
-		return resumeRow(role, generation, wake)
+		return resumeRow(role, run, wake)
 	}
 
 	cancelled, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, woken, record.OutOfWorkflow,
@@ -685,9 +685,9 @@ func TestAStartAnEarlierDaemonQueuedWithNoDetailKeepsItsTask(t *testing.T) {
 		earlierDaemonsWakes(t, st)
 		logged := captureLog(t, st.Pool())
 		told := map[claim.Role]DroppedWake{}
-		woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
+		woken := func(role claim.Role, run IssueRun, wake DroppedWake) (IdleReleaseRow, error) {
 			told[role] = wake
-			return resumeRow(role, generation, wake)
+			return resumeRow(role, run, wake)
 		}
 		if _, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, woken, record.OutOfWorkflow,
 			ReleaseCancelPause{At: time.Now().UTC()}); err != nil {
@@ -826,9 +826,9 @@ func TestARetellRendersAWakesStartFromTheKindItsTaskWasRenderedWith(t *testing.T
 		st := migratedStore(t)
 		task := wakeOfAnotherKindUnderTheMark(t, st)
 		told := map[claim.Role]DroppedWake{}
-		woken := func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error) {
+		woken := func(role claim.Role, run IssueRun, wake DroppedWake) (IdleReleaseRow, error) {
 			told[role] = wake
-			return resumeRow(role, generation, wake)
+			return resumeRow(role, run, wake)
 		}
 		if _, err := st.CancelIssueRelease(context.Background(), "legion", rootIssue, woken, record.OutOfWorkflow,
 			ReleaseCancelPause{At: time.Now().UTC()}); err != nil {

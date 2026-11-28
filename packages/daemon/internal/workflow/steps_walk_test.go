@@ -142,8 +142,8 @@ func TestTheRecordsOfAnOwnersPlanAreItsTaskAndSteps(t *testing.T) {
 		if got, want := stepStartCounts(t, pool, root.Key), []string{"a/merge/0=1", "a/retro/0=1", "a/step/1=2", "a/step/2=2"}; !slices.Equal(got, want) {
 			t.Fatalf("the starts of %s = %v, want %v: each place of task a counted, and no place of the task default", root.Key, got, want)
 		}
-		if got := issueAt(t, pool, root.Key); got != phase.Done {
-			t.Fatalf("%s stands at %s, want done after its merge", root.Key, got)
+		if got := issueAt(t, pool, root.Key); got != phase.Verifying {
+			t.Fatalf("%s stands at %s, want verifying after its merge: its close waits for its checks", root.Key, got)
 		}
 	})
 

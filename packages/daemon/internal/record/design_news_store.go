@@ -3,6 +3,7 @@ package record
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"time"
 
@@ -198,28 +199,53 @@ func TreeNewsFacts(ctx context.Context, store Store, tx pgx.Tx, steps []DesignSt
 	return NewsFacts{Steps: steps, Gates: gates, Members: members, Told: told, Merged: merged}, nil
 }
 
+// designNewsNotBegun is the rule of a reconcile of tree $2's news (kind $1) that has not begun to
+// run at $3: one due, backing off or retrying, under no live lease.
+const designNewsNotBegun = `kind = $1 and issue = $2 and (lease_until is null or lease_until <= $3)`
+
 // DesignNewsPending says whether the outbox holds a reconcile of tree's news (DesignNewsReconcile)
 // that has not begun to run at now: one due, backing off or retrying, under no live lease. A row a
 // lane runs now is not counted, since it may have read the record before the caller's write.
 func (s *Postgres) DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error) {
 	var pending bool
-	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where kind = $1 and issue = $2
-		and (lease_until is null or lease_until <= $3))`, string(OutboxKindDesignChanges), tree, now).Scan(&pending); err != nil {
+	if err := tx.QueryRow(ctx, `select exists (select 1 from outbox where `+designNewsNotBegun+`)`,
+		string(OutboxKindDesignChanges), tree, now).Scan(&pending); err != nil {
 		return false, fmt.Errorf("read whether the news of tree %s is queued for its reconcile: %w", tree, err)
 	}
 	return pending, nil
 }
 
-// QueueDesignNews queues the reconcile of tree's news of its approved design, due at now, unless one
-// that has not begun to run is queued already (Store.DesignNewsPending): the reconcile reads the
-// record when it runs, so the row already queued does all a second would. Its writers — the write
-// of a gate row that raises an approved version or opens the standing gate (workflow's
-// putGateTold), a phase move that leaves its member owed news (workflow's transition), a send that
-// drops an item it carried (the daemon's designNews) and the sweep — each take the lock every
-// fact applies under, so no two of them can each find none and both queue one.
+// DesignNewsWaiting says whether a reconcile of tree's news has not begun to run at now, by
+// DesignNewsPending's rule. It holds the earliest such row alone until tx ends (limit 1 for
+// update), and that row is enough: a lane's claim of it (ClaimRow) waits for tx to commit, so it
+// reads the record after the writer's change, and the writer that finds one waiting queues none.
+func (s *Postgres) DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error) {
+	var id int64
+	err := tx.QueryRow(ctx, `select id from outbox where `+designNewsNotBegun+`
+		order by next_at, id limit 1 for update`, string(OutboxKindDesignChanges), tree, now).Scan(&id)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, fmt.Errorf("read the reconcile of the news of tree %s that waits to run: %w", tree, err)
+	}
+	return true, nil
+}
+
+// QueueDesignNews queues the reconcile of tree's news of its approved design, due at now, unless
+// one that has not begun to run is queued already (Store.DesignNewsWaiting): the reconcile reads
+// the record when it runs, so the row already queued does all a second would. That read holds the
+// row until tx ends, so no lane claims it before this write commits. A row on the backoff of a
+// failed run keeps its backoff: that backoff rides out a moment's fault of Dispatch over the row's
+// bounded attempts (the daemon's designChangesAttempts), and the row carries this write's news at
+// its next attempt, at most RetryBackoffMost later. Its writers — the write of a gate row that
+// raises an approved version or opens the standing gate (workflow's putGateTold), a phase move that
+// leaves its member owed news (workflow's transition), a send that drops an item it carried (the
+// daemon's designNews) and the sweep — each take the lock every fact applies under, so no two of
+// them can each find none and both queue one.
 func QueueDesignNews(ctx context.Context, store Store, tx pgx.Tx, tree string, now time.Time) error {
-	pending, err := store.DesignNewsPending(ctx, tx, tree, now)
-	if err != nil || pending {
+	waiting, err := store.DesignNewsWaiting(ctx, tx, tree, now)
+	if err != nil || waiting {
 		return err
 	}
 	row, err := NewOutboxRow(tree, DesignNewsReconcile{}, now)

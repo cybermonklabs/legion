@@ -87,6 +87,20 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		ClaimRelease{},
 		ClaimRelease{Session: "ses-1"},
 		IssueBranch{Generation: 2},
+		IssueBranch{Generation: 4, From: &BranchFrom{Base: "main", MergedHead: strings.Repeat("a", 40)}},
+		SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RolePlanner, Generation: 4, Phase: phase.Planning, Task: "Plan the next change.",
+			StartAt: &StartAt{Bookmark: "legion/LEGION-208", Base: "main"}},
+		CloseRead{Generation: 3},
+		CloseWaitPublish{Generation: 3},
+		MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "issue.updated todo by user:a-person"},
+		MergeRead{Issue: "LEGION-208", Generation: 3, Requester: claim.RoleController, Request: "set_status todo",
+			Progress: MergeReadProgress{Stage: MergeReadStageCandidates, Cursor: "https://api.github.com/repositories/1/commits/c0de/pulls?page=2",
+				Links: []string{"https://github.com/acme/widgets/pull/41"},
+				Bases: []MergeReadBase{{Repo: "acme/widgets", SHA: "c0de", Source: MergeReadSourceResults, Done: true}},
+				Candidates: []MergeReadCandidate{{Repo: "acme/widgets", Number: 41, Source: MergeReadSourceLink,
+					Answer: &MergeReadAnswer{Merged: true, Names: true, Head: "h1", SHA: "c0de", Base: "main", MergedAt: now}}},
+				Attempts: 4, Failures: 1, Cause: "502 Bad Gateway", RetryAt: now.Add(time.Minute), Reserved: true, Uncertain: 1,
+				MetadataReads: 1, Refreshes: 2, RefreshesRead: 1}},
 		SuperviseRequest{Op: "issue_close", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 3, Reason: "LEGION-209 is done"},
 		IssueSuspend{Tree: "LEGION-208", Generation: 3, TreeGeneration: 7},
 		// A release's workspace check, and a left pod's close's, which names the roles it closes and
@@ -183,6 +197,39 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 				t.Fatalf("payload = %#v, want %#v", got, payload)
 			}
 		})
+	}
+}
+
+// Every branch row is built by IssueBranchOf. A generation that is a next change of the issue
+// (Issue.NextChange) starts its branch at the base its last pull request merged into and names the
+// head that merged, from the merge snapshot. Any other generation carries no start: the first run
+// of the issue, a generation after a next change ended, and a next change of an issue with no
+// snapshot. A working copy's start on anything but a supervise start is refused.
+func TestTheBranchRowOfANextChangeCarriesFrom(t *testing.T) {
+	merge := Merge{Number: 41, Head: strings.Repeat("a", 40), SHA: strings.Repeat("b", 40), Base: "release/v7", Repo: "acme/widgets"}
+	for _, tc := range []struct {
+		name  string
+		issue Issue
+		want  IssueBranch
+	}{
+		{"a next change", Issue{Key: "ACME-1", Generation: 4, NextChange: 4, Merge: merge},
+			IssueBranch{Generation: 4, From: &BranchFrom{Base: "release/v7", MergedHead: merge.Head}}},
+		{"the first run", Issue{Key: "ACME-1", Generation: 1}, IssueBranch{Generation: 1}},
+		{"a generation after a next change", Issue{Key: "ACME-1", Generation: 5, NextChange: 4, Merge: merge}, IssueBranch{Generation: 5}},
+		{"a merged issue that runs no next change", Issue{Key: "ACME-1", Generation: 4, Merge: merge}, IssueBranch{Generation: 4}},
+		{"a next change with no snapshot", Issue{Key: "ACME-1", Generation: 4, NextChange: 4}, IssueBranch{Generation: 4}},
+	} {
+		if got := IssueBranchOf(tc.issue); !reflect.DeepEqual(got, tc.want) {
+			t.Errorf("%s: IssueBranchOf = %+v, want %+v", tc.name, got, tc.want)
+		}
+	}
+	if _, err := NewOutboxRow("ACME-1", SuperviseRequest{Op: "suspend", Tree: "ACME-1", Role: claim.RolePlanner, Generation: 4,
+		StartAt: &StartAt{Bookmark: "legion/ACME-1", Base: "main"}}, time.Now()); err == nil {
+		t.Error("a suspend that names where the working copy starts was taken, want it refused")
+	}
+	if _, err := NewOutboxRow("ACME-1", SuperviseRequest{Op: "start", Tree: "ACME-1", Role: claim.RolePlanner, Generation: 4,
+		StartAt: &StartAt{Bookmark: "legion/ACME-1"}}, time.Now()); err == nil {
+		t.Error("a start whose working copy names no base was taken, want it refused")
 	}
 }
 
@@ -324,6 +371,7 @@ func TestEveryOutboxKindIsInExactlyOneLane(t *testing.T) {
 		OutboxKindIssueBundle, OutboxKindIssueRelease, OutboxKindGatedStepsPublish, OutboxKindClaimRelease, OutboxKindDesignGatesPublish,
 		OutboxKindMergeQueueRead, OutboxKindMergeQueueRemoval, OutboxKindDesignChanges, OutboxKindRoleHoldersPublish,
 		OutboxKindMergeHoldsChanged, OutboxKindStepRecord, OutboxKindConflictConfirm, OutboxKindMergeForward, OutboxKindPlanRecord,
+		OutboxKindCloseRead, OutboxKindCloseWaitPublish, OutboxKindMergeRead,
 		OutboxKindStateChange, OutboxKindStateAdmission, OutboxKindStateBoot}
 	oracle := []OutboxLane{LaneBoard, LaneClaim, LaneDocuments, LaneLifecycle, LaneRecord, LaneRoleMessage, LaneState}
 	if got := OutboxLanes(); !reflect.DeepEqual(got, oracle) {
@@ -424,6 +472,14 @@ func TestEveryOutboxKindIsHeldOrNotHeldByAPause(t *testing.T) {
 		// supervise start the pause holds (op start above), so the pause lets the reconcile run,
 		// and at the resume each held start carries what it recorded.
 		OutboxKindDesignChanges: "",
+		// The read of an issue's checks for the judge of its close reads Dispatch and starts no
+		// turn, and the document of what the close waits for is a write to Dispatch: the pause lets
+		// both run, as it lets a status write.
+		OutboxKindCloseRead:        "",
+		OutboxKindCloseWaitPublish: "",
+		// The read of whether a closed issue's work merged reads Dispatch and GitHub and applies
+		// what it read as a fact, as the close read does, and starts no turn.
+		OutboxKindMergeRead: "",
 		// The state events tell Dispatch what the daemon observes (dispatch://INFRA-3931) and
 		// start no turn. A pause's own claim moves are state changes Dispatch must see, so the
 		// pause holds none of them, and a paused project's state lane keeps publishing.
@@ -497,6 +553,20 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "a re-parent seed of no parent", payload: ReparentSeed{Tree: "LEGION-300", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
 		{name: "a re-parent seed of no tree", payload: ReparentSeed{Parent: "LEGION-301", Ran: "it ran as a tree of its own"}, reason: "a re-parent seed names"},
 		{name: "a re-parent seed of no reason", payload: ReparentSeed{Parent: "LEGION-301", Tree: "LEGION-300"}, reason: "a re-parent seed names"},
+		{name: "a merge read of another issue", payload: MergeRead{Issue: "LEGION-209", Generation: 3, Requester: RequesterPerson, Request: "todo"}, reason: "names its row's issue"},
+		{name: "a merge read of no generation", payload: MergeRead{Issue: "LEGION-208", Requester: RequesterPerson, Request: "todo"}, reason: "names the generation"},
+		{name: "a merge read asked by a reviewer", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: claim.RoleReviewer, Request: "todo"}, reason: "asked by a person, the controller or an architect"},
+		{name: "a merge read of no request", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: " "}, reason: "carries the text of the request"},
+		{name: "a merge read at no stage it runs", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{Stage: "guess"}}, reason: "stands at no stage it runs"},
+		{name: "a merge read in no state it knows", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{State: "done"}}, reason: "is in no state it knows"},
+		{name: "a merge read past its third failure", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{Failures: 4}}, reason: "counts 4 failed attempts"},
+		{name: "a merge read's base of no commit", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{Bases: []MergeReadBase{{Repo: "acme/widgets", Source: MergeReadSourceResults}}}}, reason: "base names its repository"},
+		{name: "a merge read's candidate of pull request 0", payload: MergeRead{Issue: "LEGION-208", Generation: 3, Requester: RequesterPerson, Request: "todo",
+			Progress: MergeReadProgress{Candidates: []MergeReadCandidate{{Repo: "acme/widgets", Source: MergeReadSourceLink}}}}, reason: "candidate names its repository"},
 		{name: "a decision on an architect's notice", payload: Notice{Kind: "design-approved", Decision: DecisionDesignApproved}, reason: "only a parked-decision controller notice does"},
 		{name: "a root on an architect's notice", payload: Notice{Kind: "design-approved", Root: "LEGION-1"}, reason: "only a parked-decision controller notice does"},
 		{name: "a review's document on a phase-finished notice",
@@ -1443,12 +1513,25 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "retro-held", Role: claim.RoleImplementer, Phase: phase.Retro,
 			Reason: "LEGION-208 passed its last step, and Legion holds it before its retro while these issues beneath it are still in the workflow: LEGION-209. A parent is accepted only once no issue beneath it is still in the workflow. Run each one to done, or end it; Legion starts the retro when the last one leaves. " +
 				StatusNotTakenYet + " " + EndChildRule},
+		{Kind: "next-change-workspace", Role: claim.RoleImplementer, Phase: phase.Implementing,
+			Reason: "The implementer's first task of the next change of LEGION-208 waits. Its shim did not start the working copy at legion/LEGION-208. The shim answered: Bookmark legion/LEGION-208 is conflicted."},
+		{Kind: "close-waits", Role: claim.RoleArchitect, Reason: "ACME-1 merged and waits for its checks before it closes. Read close-wait.md for the wait."},
+		{Kind: "check-failed", Role: claim.RoleArchitect, Reason: "Check c-done of ACME-1 failed: result result-7 at commit c0de."},
+		{Kind: "check-unknown", Role: claim.RoleArchitect, Reason: "Check c-done of ACME-1 has a pass and a fail at the same commit."},
+		{Kind: "defect-reported", Role: claim.RoleArchitect, Reason: "The merger reported a defect of ACME-1: the retry never stops."},
+		{Kind: "next-change", Role: claim.RoleArchitect, Reason: "ACME-1 starts its next change at generation 4 for check c-done."},
+		{Kind: "close-wait-no-result", Role: claim.RoleArchitect, Reason: "The production check of ACME-1 closed, and check c-done still has no result."},
+		{Kind: "close-wait-standing", Role: claim.RoleArchitect, Reason: "ACME-1 still waits for check c-done, which has no result since 2026-11-08."},
+		{Kind: "checks-unapproved", Role: claim.RoleArchitect, Reason: "The approved Verification document of ACME-1 no longer holds check c-done."},
+		{Kind: "next-change-count", Role: claim.RoleArchitect, Reason: "ACME-1 started its fourth next change, for check c-done."},
 		{Kind: WorkspaceKeptNotice, Role: claim.RoleArchitect,
 			Reason: "The daemon did not delete the pod of LEGION-209 (pod pod-uid). No role process runs in this pod, so the pod's launcher read its workspace before the delete."},
 		{Kind: WorkspaceTakenNotice, Role: claim.RoleArchitect,
 			Reason: "The daemon replaced the pod of LEGION-209 (pod pod-uid). The read of the workspace before the replacement found one commit that no branch or tag on origin holds."},
 		{Kind: HookPromptUndeliveredNotice, Role: claim.RoleArchitect,
 			Reason: "Legion hook back-to-implementing's prompt to the implementer of LEGION-208 was not delivered, because the implementer's claim is failed."},
+		{Kind: BranchRefusedNotice, Role: claim.RoleArchitect,
+			Reason: "Legion could not move branch legion/LEGION-208 for the next change of LEGION-208, and it will not try again."},
 		{Kind: VolumeNearFullNotice, Role: claim.RoleArchitect,
 			Reason: "the volume LEGION-208's roles share on pod pod-uid was still above its low mark when the sweep ended",
 			Volume: &VolumeNearFull{PodUID: "pod-uid", Trimmer: "trim-1", Episode: 2, RaisedBy: "rise",

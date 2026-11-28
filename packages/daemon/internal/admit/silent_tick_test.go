@@ -181,10 +181,11 @@ func TestControllerTickNamesTheSilentIssues(t *testing.T) {
 			t.Fatalf("the tick names %#v as silent, want no list at all: every worker of this record stepped inside the bound", silent)
 		}
 	})
-	// A merged root stands in merging until the rest of its tree leaves the workflow, and its
-	// merger, its phase over by the merge (workflow.PhaseFinished), is owed no turn however long
-	// it is quiet. Both roots here stand in merging with a merger silent as long; they differ in
-	// the state of their pull request alone, and the tick names the one whose merge is not done.
+	// A merge moves its issue on to verifying (closeMerged), and a merger whose issue still stands
+	// in merging on a merged pull request, its phase over by the merge (workflow.PhaseFinished), is
+	// owed no turn however long it is quiet. Both roots here stand in merging with a merger silent
+	// as long; they differ in the state of their pull request alone, and the tick names the one
+	// whose merge is not done.
 	t.Run("a merged root's merger beside an unmerged one", func(t *testing.T) {
 		pool := migratedPool(t)
 		admission := quiet(t, 2)

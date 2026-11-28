@@ -1004,7 +1004,7 @@ func (a *Admission) phaseWorkers(ctx context.Context, tx pgx.Tx, candidates []re
 			continue
 		}
 		workers = append(workers, worker)
-		keys = append(keys, record.RoleRunKey{Token: worker.token, Issue: issue.Key, Role: worker.role, Generation: issue.Generation})
+		keys = append(keys, record.RunKey(worker.token, issue, worker.role))
 	}
 	if len(keys) == 0 {
 		return nil, nil, nil
@@ -1806,7 +1806,16 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 			return fmt.Errorf("read whether re-admitted %s ran as a tree of its own: %w", stored.Key, err)
 		}
 	}
+	// Every re-admission opens a new run of the tree the issue roots from here on: a root's own
+	// comes back through ClearTreeGeneration below, and a member that leaves its tree starts its
+	// own tree's run at its new generation (record.Postgres.PutIssue). The copy says so too. A next
+	// change the issue was on is of the generation this leaves, and so is the merger's completion
+	// that change waited for, so both go with it: NextChange names a generation no merge of the new
+	// one can end, and MergerCompletionOwed, which carries no generation, would let the merger
+	// report in verifying for a merge that is not this generation's.
 	stored.Generation++
+	stored.TreeGeneration = stored.Generation
+	stored.NextChange, stored.MergerCompletionOwed = 0, false
 	stored.Status, stored.DispatchStatus = "todo", "todo"
 	stored.Rank = o.Rank
 	stored.Priority = o.Priority
@@ -3126,13 +3135,15 @@ func (a *Admission) catchingUpFor(key string) bool {
 // issue waits, and the state names what for — and a re-admission, which opens a new generation,
 // tells it anew, because that run's architect has not heard it.
 //
-// The run is the tree root's generation, not the waiting issue's own: re-admission raises the
-// root's and leaves every member's where it stands (workflow's linger), so a sub-parent that
-// waited for its unreleased children before the park would be marked told for ever and the new
-// run's architect would never hear of that wait. The mark is keyed on the tree as well, because
-// a generation names a run only within one tree: a sub-parent handed over as a root of its own
-// numbers its run from its own record (readmit), which can be the number the tree it left was
-// at. The mark's own table says so (20261104004500_children_first_notices).
+// The run is the tree's (the root's record.Issue.TreeRun), not the waiting issue's own:
+// re-admission raises it and leaves every member's generation where it stands (workflow's
+// linger), so a sub-parent that waited for its unreleased children before the park would be
+// marked told for ever and the new run's architect would never hear of that wait. A root's next
+// change raises the root's own generation and not the tree's run, so it ends no run of the tree's
+// architect and tells it nothing again. The mark is keyed on the tree as well, because a
+// generation names a run only within one tree: a sub-parent handed over as a root of its own
+// starts its tree's run at its own generation (readmit), which can be the number the tree it left
+// was at. The mark's own table says so (20261104004500_children_first_notices).
 //
 // The parents are told in key order so that one pass's rows read the same whatever order the
 // judgement's map iterated in.
@@ -3150,7 +3161,7 @@ func (a *Admission) tellChildrenFirst(ctx context.Context, tx pgx.Tx, issues []r
 		if !recorded {
 			continue
 		}
-		told, err := a.store.TellChildrenFirst(ctx, tx, key, parent.Tree, byKey[parent.Tree].Generation, now)
+		told, err := a.store.TellChildrenFirst(ctx, tx, key, parent.Tree, byKey[parent.Tree].TreeRun(), now)
 		if err != nil {
 			return err
 		}
@@ -3216,6 +3227,13 @@ func (a *Admission) waitsForChildren(waits map[string]record.ChildWait, issue re
 // off is a pause the label ends.
 func (a *Admission) unslotted(issue record.Issue, live map[string]struct{}, waits map[string]record.ChildWait) bool {
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) || issue.Lingers() || !record.InWorkflow(issue) || issue.AwaitingPerson() {
+		return false
+	}
+	// An issue whose close waits in verifying, and one whose next change runs, wait by design:
+	// the daemon itself started that wait and that change, and only its own checks or a person
+	// close it (D16, row 9). A release would take it out of the workflow, where nothing closes it
+	// at all.
+	if issue.Phase == phase.Verifying || record.OnNextChange(issue) {
 		return false
 	}
 	switch issue.Status {
@@ -3742,7 +3760,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				return err
 			}
 			standing.roles = append(standing.roles, roleToken{role: role, token: token})
-			keys = append(keys, record.RoleRunKey{Token: token, Issue: member.Key, Role: role, Generation: member.Generation})
+			keys = append(keys, record.RunKey(token, member, role))
 		}
 		members = append(members, standing)
 		return nil
@@ -3781,7 +3799,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 		var err error
 		owned := slices.IndexFunc(standing.roles, func(r roleToken) bool { return r.role == standing.owner })
 		switch {
-		case owned >= 0 && workflow.StartFor(runs[standing.roles[owned].token], root, member.Generation, member.Phase):
+		case owned >= 0 && workflow.StartFor(runs[standing.roles[owned].token], root, member.GenerationOf("start", standing.owner), member.Phase):
 			held, err = a.engine.StartPromotedWorker(ctx, tx, member, standing.owner, standing.carriedSlot)
 		default:
 			held, err = a.engine.StopPromotedWorker(ctx, tx, member, owed[member.Key])
@@ -3800,7 +3818,7 @@ func (a *Admission) startMidPhaseMembers(ctx context.Context, tx pgx.Tx, root re
 				continue
 			}
 			if err := a.enqueue(ctx, tx, member.Key, record.SuperviseRequest{Op: "start", Tree: member.Tree, Role: other.role,
-				Generation: member.Generation, Phase: member.Phase}, now); err != nil {
+				Generation: member.GenerationOf("start", other.role), Phase: member.Phase}, now); err != nil {
 				return err
 			}
 		}
@@ -4071,7 +4089,7 @@ func (a *Admission) readSlotHolders(ctx context.Context, tx pgx.Tx, issues []rec
 	var keys []record.RoleRunKey
 	hold := func(held phaseWorker, admittedAt time.Time) {
 		read.holders = append(read.holders, slotHolder{phaseWorker: held, admittedAt: admittedAt})
-		keys = append(keys, record.RoleRunKey{Token: held.token, Issue: held.issue.Key, Role: held.role, Generation: held.issue.Generation})
+		keys = append(keys, record.RunKey(held.token, held.issue, held.role))
 	}
 	seen := make(map[string]struct{}, len(slots))
 	take := func(issue record.Issue, admittedAt time.Time) {
@@ -4159,7 +4177,7 @@ func (a *Admission) owedOf(ctx context.Context, tx pgx.Tx, read slotReading) ([]
 		if send != raiseArchitectEntry && !workflow.OwedEntry(run, held.root, entry.Entry) {
 			continue
 		}
-		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.Generation, held.issue.Phase, c.State) {
+		if c := run.Claim; c != nil && c.Pending != nil && c.Pending.StillWorked(held.issue.GenerationOf("start", held.role), held.issue.Phase, c.State) {
 			continue
 		}
 		// A claim whose pod the idle rule released has no skip of its own, and the entry rule

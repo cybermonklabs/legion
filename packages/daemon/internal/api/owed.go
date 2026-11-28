@@ -203,7 +203,7 @@ func (s *server) owningArchitect(ctx context.Context, issue record.Issue) (claim
 //   - The claim's role works the phase the issue stands on (roleFor), the tree does not linger,
 //     where a completion moves nothing, and the phase is not merging with its pull request
 //     merged (record.MergedInMerging), which is what finishes merging (workflow.PhaseFinished)
-//     while a merged root stands in merging until the rest of its tree leaves. So a role whose
+//     until the merge moves the issue on to verifying (closeMerged). So a role whose
 //     phase has ended owes nothing, whatever it was handed: the issue moved to another role's
 //     phase, to one no role works (awaiting_person, awaiting_children, done, held), or its tree
 //     closed. A merger in merging whose pull request is not merged owes the merge, since the

@@ -166,8 +166,7 @@ func TestOwedEntryReadsARootArchitectEntryAsItReadsAPhaseWorkers(t *testing.T) {
 			}
 
 			seedRecord(t, pool, func(tx pgx.Tx) error {
-				runs, err := record.NewStore().RoleRuns(t.Context(), tx, []record.RoleRunKey{
-					{Token: token, Issue: root.Key, Role: claim.RoleArchitect, Generation: root.Generation}})
+				runs, err := record.NewStore().RoleRuns(t.Context(), tx, []record.RoleRunKey{record.RunKey(token, root, claim.RoleArchitect)})
 				if err != nil {
 					return err
 				}
@@ -342,8 +341,7 @@ func TestAWakeStartRaisesNoArchitectEntryAndLeavesTheArchitectOwedItsWork(t *tes
 		if err != nil {
 			return err
 		}
-		runs, err := store.RoleRuns(t.Context(), tx, []record.RoleRunKey{
-			{Token: token, Issue: entryIssue, Role: claim.RoleArchitect, Generation: root.Generation}})
+		runs, err := store.RoleRuns(t.Context(), tx, []record.RoleRunKey{record.RunKey(token, *root, claim.RoleArchitect)})
 		if err != nil {
 			return err
 		}

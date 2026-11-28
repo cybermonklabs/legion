@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  The record holds a reason of kind `request`, a request for new work on an issue whose work merged, whose role says who asked (`person`, `controller` or `architect`). This release records no request: a `todo` on a closed root runs its tree again as a new generation, as before. The owning architect withdraws a request of the controller or of an architect with its reason. Its withdrawal of a request a person made is refused `DEFECT_REQUEST_OF_A_PERSON` and changes nothing: such a request ends with no pull request only on that person's `done`. A next change moves `legion/<KEY>` to the head of its base with GitHub's GraphQL `updateRefs`. `legion merge-history-report` counts a project's issues by what the record shows of each merge. With `--read-candidates` and `--progress <file>` it also reads, on Dispatch and GitHub, the merge candidates of each `PARTIAL` and `NONE` issue, and applies nothing. A link on the issue names a candidate only in the issue's own repository, or in the one Dispatch resolves it to. Migration `20261128022326_merged_new_work` adds the defect kind `request`, the outbox kind `merge_read` and the column `issues.never_merged_confirmed`. Its way back, which `docs/kubernetes.md` gives, runs before the done-by-checks way back.
+time: 2026-11-27T20:23:06Z
+custom:
+    Issue: pr5975

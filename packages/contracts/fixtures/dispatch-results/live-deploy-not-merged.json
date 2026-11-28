@@ -1,0 +1,77 @@
+{
+  "checks": [
+    {
+      "artifact_id": "00000000-0000-4000-8000-000000000001",
+      "block_id": "live",
+      "compared_with": [
+        {
+          "branch": "main",
+          "kind": "branch",
+          "merge_commit": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+        }
+      ],
+      "issue_key": "ACME-1",
+      "negative_control": "",
+      "pass_stands": {
+        "answer": "unknown",
+        "deploy": {
+          "commit": "c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0c0",
+          "deployed_at": "2026-01-01T00:00:01Z",
+          "program": "renderer"
+        },
+        "reason": "deploy_not_merged"
+      },
+      "program": "renderer",
+      "ref": "dispatch://ACME-1/artifact/verification-md#b-live",
+      "results": [
+        {
+          "actor": {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          },
+          "check_artifact_id": "00000000-0000-4000-8000-000000000001",
+          "check_block_id": "live",
+          "check_issue_key": "ACME-1",
+          "check_sha256": "999795ba7ef3f48b3f7a5a52fbb941e631fd698b6c517f8dca8b11358c17e169",
+          "check_version": 1,
+          "check_words_moved": false,
+          "commit_sha": "c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1c1",
+          "commit_stands": {
+            "answer": "at_basis",
+            "basis": {
+              "branch": "main",
+              "kind": "branch",
+              "merge_commit": "a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0a0"
+            }
+          },
+          "created_at": "2026-01-01T00:00:00Z",
+          "event_seq": 3,
+          "excluded": 0,
+          "failed": 0,
+          "id": "00000000-0000-4000-8000-000000000002",
+          "issue_key": "ACME-1",
+          "negative_control": "",
+          "not_counted": "it names a commit that the current deploy of the program this check reads does not run",
+          "observed": "",
+          "role": "tester",
+          "run": "",
+          "screenshots": [],
+          "session": "",
+          "skipped": 0,
+          "surface": "",
+          "verdict": "pass"
+        }
+      ],
+      "run": "",
+      "sha256": "999795ba7ef3f48b3f7a5a52fbb941e631fd698b6c517f8dca8b11358c17e169",
+      "subject": "production",
+      "surface": "",
+      "text": "The running program answers.",
+      "version": 1,
+      "when": "after_merge"
+    }
+  ],
+  "issue": "ACME-1",
+  "verification_artifact_id": "00000000-0000-4000-8000-000000000001"
+}

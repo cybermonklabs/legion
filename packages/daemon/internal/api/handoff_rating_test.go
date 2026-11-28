@@ -129,7 +129,7 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 	}
 }
 
-// A report on a look of a closed issue's production check ends no phase, so the route refuses a
+// A report on a look of an issue's production check ends no phase, so the route refuses a
 // rating on it PLAN_RATING_UNEXPECTED, whatever the rating's form, before anything is read or
 // recorded, and the same report without the rating is taken.
 func TestARatingOnAProductionChecksReportIsRefused(t *testing.T) {

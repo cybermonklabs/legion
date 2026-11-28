@@ -504,7 +504,7 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 // entry, since no reminder comes to a claim that owes nothing and the silence sweep does not
 // nudge a role whose completion stands, so such a hold would never end. The same holds of a
 // merger in merging whose pull request is merged (record.MergedInMerging), whose merging that
-// merge finished while a merged root stands in merging until the rest of its tree leaves; its
+// merge finished before it moves the issue on to verifying (closeMerged); its
 // control, the same merger with its pull request not merged, owes the merge and is held. A fresh
 // claim, which has retired no run, holding the first task of the issue's run and phase with its
 // send failed before any turn, serves that task's run and entry as the owed answer reads them

@@ -262,6 +262,52 @@ func TestACancelWhileThePausedProjectHoldsItRecordsTheStopsAndQueuesNoResume(t *
 	}
 }
 
+// A paused cancel asks the rule of whether the open phase's worker gets a backstop
+// (ReleaseCancelPause.GetsBackstop) at the run that role's start serves (stopReleasedForPause,
+// IssueRun.StartOf). For a tree root's architect that is the tree's run, which a next change of the
+// root leaves behind the root's own generation. The workflow's rule names no architect as a phase's
+// worker (workflow.OpenPhaseRole), so each row gives the store a rule that names its role, and a
+// backstop rule that answers whether the claim serves the run it is asked at: the store reads the
+// rules it is given, and restates none. The control is the implementer, whose start serves the
+// root's own generation.
+func TestAPausedCancelArmsTheBackstopOfAWorkerServingTheRunItsStartServes(t *testing.T) {
+	t.Parallel()
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer} {
+		t.Run(string(role), func(t *testing.T) {
+			t.Parallel()
+			ctx := context.Background()
+			st := migratedStore(t)
+			openRunningTree(t, st)
+			root := nextChangeOfTheRoot(t, st)
+			if err := st.PutClaim(ctx, supervise.Claim{
+				Token: claim.Token("legion-legion-legion-208-" + string(role)), Project: "legion", Tree: rootIssue,
+				Issue: rootIssue, Role: role, TreeEpoch: 1, Generation: 1, ServingGeneration: root.GenerationOf("start", role),
+				State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased}); err != nil {
+				t.Fatalf("seed the released %s: %v", role, err)
+			}
+			markRelease(t, st, 18, 20, 22, 0, role)
+			pause, _ := pauseLegion(t, st, pausedAt)
+			at := pausedAt.Add(time.Minute)
+
+			cancelled, err := st.CancelIssueRelease(ctx, "legion", rootIssue, resumeRow, record.OutOfWorkflow,
+				ReleaseCancelPause{At: at, Backstop: time.Hour, OpenPhaseRole: func(phase.Phase) claim.Role { return role },
+					GetsBackstop: func(_ context.Context, _ pgx.Tx, _ phase.Phase, run uint64, c supervise.Claim) (bool, error) {
+						return c.ServingGeneration == run, nil
+					}})
+			if err != nil {
+				t.Fatalf("cancel the release while paused: %v", err)
+			}
+			if cancelled.Pause != pause.ID || !slices.Equal(cancelled.Stopped, []claim.Role{role}) {
+				t.Fatalf("the cancel = %+v; want pause %d and the %s stopped", cancelled, pause.ID, role)
+			}
+			if n := pauseCount(t, st, `select count(*) from pod_wake_backstops where issue = $1 and role = $2
+				and not fired and due_at = $3`, rootIssue, string(role), at.Add(time.Hour)); n != 1 {
+				t.Errorf("the %s's backstops due an hour after the cancel = %d, want 1: its claim serves the run its start serves", role, n)
+			}
+		})
+	}
+}
+
 // A cancel made while the project is paused keeps a wake that a role of the mark's set took since
 // the mark (decision 12 of dispatch://INFRA-3759), and that wake's start was written for a session
 // a release stopped. The release took no pod, so the cancel rewrites the task of that start
@@ -415,9 +461,9 @@ func TestACancelOfAReleaseOfAnotherProjectsIssueReadsThisProjectsPause(t *testin
 		}
 	}
 	pause, _ := pauseLegion(t, st, pausedAt)
-	resume := func(role claim.Role, generation uint64, _ DroppedWake) (IdleReleaseRow, error) {
+	resume := func(role claim.Role, run IssueRun, _ DroppedWake) (IdleReleaseRow, error) {
 		return IdleReleaseRow{Kind: "supervise", Payload: []byte(fmt.Sprintf(
-			`{"op":"start","tree":%q,"role":%q,"generation":%d}`, otherIssue, role, generation))}, nil
+			`{"op":"start","tree":%q,"role":%q,"generation":%d}`, otherIssue, role, run.Generation))}, nil
 	}
 
 	cancelled, err := st.CancelIssueRelease(ctx, "legion", otherIssue, resume, record.OutOfWorkflow,

@@ -106,12 +106,11 @@ const EndChildRule = "End a child with your own status write in Dispatch. " +
 	"When the daemon set the move back, write it again."
 
 // StatusNotTakenYet is the sentence that the architect's refusals over children still in the
-// workflow, the pr-merged notice and the retro-held notice carry; workflow's endChildWords holds
-// it with EndChildRule and names each text that carries them. The daemon reads the architect's
-// status write on a child from that write's Dispatch event, and the event consumer can deliver
-// the event after the architect calls again. Until then the record holds the child in the
-// workflow and the refusal names it, so the architect waits for read_record to show its move
-// (dispatch://INFRA-3178 R1).
+// workflow and the retro-held notice carry; workflow's endChildWords holds it with EndChildRule
+// and names each text that carries them. The daemon reads the architect's status write on a child
+// from that write's Dispatch event, and the event consumer can deliver the event after the
+// architect calls again. Until then the record holds the child in the workflow and the refusal
+// names it, so the architect waits for read_record to show its move (dispatch://INFRA-3178 R1).
 //
 // It lives here, beside EndChildRule, because the legion tool's description carries both texts
 // (packages/pi-legion/src/tools.ts). The tests that hold EndChildRule to that description
@@ -122,10 +121,8 @@ const StatusNotTakenYet = "A status that you wrote and that the daemon has not t
 // runs in (OutOfWorkflow) and its phase is short of done. One still admitted counts, since it
 // will run — a root reopened inside its linger (admit's readmit) stands in admitted with no
 // role's phase until its task's first step starts (planning, in the default steps), and is
-// running again from the reopen. It is
-// the production check's "runs again" predicate (workflow's check.go) and the outbox's
-// (checkLookHolds): a look of an issue that runs again would resume the checking role and
-// relaunch its Sandbox under the run, so none starts.
+// running again from the reopen. The production check's "runs again" predicate, RunsAgain, is
+// built on it.
 //
 // It lives here, beside the status rule it is written over, because every judgement that reads
 // the daemon's own records against Dispatch's mirror needs it — the children-first wait
@@ -138,6 +135,58 @@ const StatusNotTakenYet = "A status that you wrote and that the daemon has not t
 // added to it moves admission, the linger, the production check and the release gate together.
 func InWorkflow(issue Issue) bool {
 	return issue.Standing().InWorkflow(OutOfWorkflow)
+}
+
+// RunsAgain says whether an issue's work runs again: it is in the workflow (InWorkflow) and not
+// waiting in verifying for the checks of its goal. It is the production check's "runs again": an
+// issue in verifying has merged its work and no role works the wait, so its looks run there, and
+// a look is deferred only while its issue's next change, or a rerun, holds the issue's claims and
+// its pod. The production check's readers (workflow's check.go, the outbox's checkLookHolds) and
+// a claim's failure (workflow's claimFailed) read it.
+func RunsAgain(issue Issue) bool {
+	return InWorkflow(issue) && issue.Phase != phase.Verifying
+}
+
+// OnNextChange says whether the generation an issue stands on is a next change of it: one the
+// judge of its close started after its work merged (Issue.NextChange, workflow's
+// StartNextChange), still open. The branch row of such a generation starts at the merge snapshot
+// (IssueBranchOf), its first start moves the working copy to that branch (workflow's
+// firstStartAt), its first step takes no plan of an earlier generation (workflow's
+// planFirstStep), and neither the hold under an accepted ancestor nor another tree's release
+// takes it (acceptedAncestorHolding, workflow's closedTreesMember).
+func OnNextChange(issue Issue) bool {
+	return issue.NextChange != 0 && issue.NextChange == issue.Generation
+}
+
+// CarriedNow says whether a change's carry of defect still holds, so that defect is no reason of
+// another change. The rule depends on the kind.
+//
+// A carry of a check's reason or of a production check's (DefectKindCheck, DefectKindProduction)
+// always holds, whatever generation the issue stands at since. The change that carried such a
+// reason answered it: by its merge, by its end with no pull request on the check's pass or on the
+// production check its end opens (workflow's changeResolved), or, where a re-admission ended it,
+// by the re-run, whose merge the checks read again. A check that fails again is a reason of its
+// own, by its new deciding result (workflow's recordCheckReasons), and the production check of the
+// newest merge answers a production reason. So a carried reason of these kinds is never a reason
+// again.
+//
+// A reported defect and a request (DefectKindDefect, DefectKindRequest) hold the close until a
+// merged change carries them or a withdrawal ends them, and no read answers them. So a carry of
+// one holds only for a change that can still end it: one of the issue's own generation, the open
+// next change (OnNextChange) or the current generation's return before its merge (workflow's
+// carryReturn), since every carry is written at the current generation and MergeDefects marks
+// merged only the carrying generation's defects. One an earlier generation carried and did not
+// merge, as a re-admission leaves the change it ends, is carried by no change that will:
+// generations never come back. Such a defect is a reason again, which the next change carries, as
+// an uncarried one is, so the carry a generation raise left behind is inert wherever it came from.
+func CarriedNow(defect Defect, issue Issue) bool {
+	if defect.CarriedBy == 0 {
+		return false
+	}
+	if defect.Kind == DefectKindCheck || defect.Kind == DefectKindProduction {
+		return true
+	}
+	return defect.CarriedBy == issue.Generation
 }
 
 // Stopped is whether the issue's own record says its work has stopped: it is out of the
@@ -456,6 +505,12 @@ func acceptedAncestorHolding(issue Issue, byKey map[string]Issue) string {
 	if issue.Phase != phase.Admitted {
 		return ""
 	}
+	// A child's next change follows a merge that is on the base already (D10), so the hold that
+	// keeps an ancestor from merging a head without its children's work does not hold it: it
+	// starts under that ancestor, and that ancestor's own close waits for it (OpenBeneath).
+	if OnNextChange(issue) {
+		return ""
+	}
 	return AcceptedAncestor(issue, byKey)
 }
 
@@ -694,7 +749,7 @@ type LineFacts struct {
 	StartedParentWaits map[string]ChildWait
 	// RetroHolds is the three holds on the acceptance of each parent held before its retro
 	// (HoldForChildren, RetroHeldParents), by parent key (retroHoldsOf): the issues beneath it
-	// still in the workflow (OpenBeneath), the roots still in the workflow that rest on its
+	// whose work has still to happen (WorkBeneath), the roots still in the workflow that rest on its
 	// approval (RestingRootsOn) and its open Dispatch children, judged as StartedParentWaits is
 	// (readChildWaits). They are the three that hold its retro (workflow's acceptanceHeld), which
 	// the held word children_before_retro names in R8's order (HeldReasonOf) and the admission
@@ -1169,8 +1224,8 @@ func PhaseKeepsSlot(at phase.Phase) bool {
 // against none of the issues that have a change still to write. Work the architect sends back
 // from accepting or from retro to implementing is at work again, so it takes a slot again, and
 // it waits for one among the issues whose work came back; so does a step after accepting whose
-// phase keeps a slot. A merged root stands in merging until the rest of its tree leaves the
-// workflow (workflow's closeMerged), and it stands there on no slot, as accepting and retro do.
+// phase keeps a slot. A merge moves its issue on to verifying (workflow's closeMerged), where its
+// close waits for its checks and for the issues beneath it, and it waits there on no slot.
 //
 // Where the issue stands is StandsAt's reading and not the record's field alone, so an issue a
 // failed claim held keeps exactly the row the phase it was working keeps.

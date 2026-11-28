@@ -213,8 +213,10 @@ the next of them:
   last.
 
 - **A close or a merge.** A pull request recorded open that GitHub shows closed has its close
-  applied, or its merge with its merge commit: the merge closes an issue waiting on it in
-  `merging` and otherwise tells the architect `pr-merged`, and a close without merging tells
+  applied, or its merge with its merge commit: the merge moves an issue waiting on it in
+  `merging` to `verifying`, where its close waits for its checks
+  ([the close](/legion/legion/concepts/#the-close)), and otherwise tells the architect
+  `pr-merged`, and a close without merging tells
   the architect `pr-closed-unmerged`.
 - **A head that moved.** When GitHub shows the pull request open at a head the record does not
   hold, the read applies the synchronize its webhook would have carried, under GitHub's
@@ -552,9 +554,10 @@ What each part is for:
   project: the loader refuses one named twice. A daemon restarted with a changed list relaunches the
   controller, which resumes its session hearing the new list, unless the session is older than
   `controller_session_max_age_hours`, when the relaunch starts a fresh session.
-- **`projects.<KEY>.production_check`** (optional) decides whether a merge that closes one of the
-  project's issues opens a
-  [production check](/legion/legion/concepts/#the-production-check), and which role works it. It
+- **`projects.<KEY>.production_check`** (optional) decides whether the close of one of the
+  project's issues waits for a
+  [production check](/legion/legion/concepts/#the-production-check) after its merge, and which
+  role works it. It
   takes `off` or `tester`, and a project that names no key gets `tester`:
 
   ```yaml
@@ -563,12 +566,12 @@ What each part is for:
       production_check: tester
   ```
 
-  With `tester`, the merge hands the tester the check's first look in its session, a fresh one
-  where the task had no tester step. A child's
-  other five claims are retired. A root's are suspended with the rest of its tree for the linger,
-  and retired when the linger ends. With `off`, no check opens at all: a child's close retires
-  every claim of the child and releases its pod, and a root's close suspends every claim of its
-  tree for the linger. The loader refuses any other value,
+  With `tester`, the first read of the issue's checks after its merge hands the tester the check's
+  first look in its session, a fresh one where the task had no tester step. The move to
+  `verifying` at the merge suspends no claim of the issue. At the close, a child's claims are
+  retired, and a root's are suspended with the rest of its tree for the linger and retired when
+  the linger ends. With `off`, no check opens at all, and the close waits for none. The loader
+  refuses any other value,
   naming the key and the value it read. The check's record carries the role, written when the
   check opened, so moving the key leaves an open check with the role it started under and a check
   opened before this release keeps the implementer.
@@ -988,9 +991,10 @@ What each part is for:
 - **`controller`** (optional) is who runs the project's controller: `operator` (the default), you,
   with `legion controller start`, or `daemon`, a pod the daemon launches and keeps running
   ([Start the controller](#start-the-controller)).
-- Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long a
-  closed issue's production check runs before its last look, 14 days by default,
-  decimals allowed), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
+- Workflow limits, all optional: `linger_hours` (72), `production_check_hours` (336: how long an
+  issue's production check runs, counted from its open, before its last look, 14 days by default,
+  decimals allowed. The merge puts the issue in `verifying`, and the issue closes when its checks
+  pass, as [the close](/legion/legion/concepts/#the-close) says), `pod_update_grace_minutes` (30: how many minutes after it opens a pod's
   update round ends and the pod is replaced, whatever the roles answered and unless the operator's or the controller's
   suspension holds the round, decimals allowed),
   `pod_update_max_open_rounds` (how many issues may hold an open pod-update round at once) and
@@ -999,12 +1003,15 @@ What each part is for:
   may be quiet — no issue of it moving and no agent of it stepping — before the project's
   controller is told once about that tree, decimals allowed; a tree with a role at work is never
   told, nor is one every quiet issue of which waits by design — on a person, on a `blocked_by`
-  link, on its open children (before its first phase or in `awaiting_children`), or for a slot it needs and does not hold — while the project's line
+  link, on its open children (before its first phase or in `awaiting_children`), or for a slot it
+  needs and does not hold — while the project's line
   can still move — some issue of the project holds a slot and waits by no such rule, some claim of it is
   at work, or an issue of the line that waits on no other issue can start — nor, whether or not
-  the line can move, one whose only quiet issues gave their slot back to wait on work outside
-  their tree: a `blocked_by` link to an unfinished issue of any project, or an open child the
-  daemon has released. A wait on a child an architect has not released is no such wait. Where
+  the line can move, one whose only quiet issues wait in `verifying` for the checks of their goal
+  or gave their slot back to wait on work outside their tree: a `blocked_by` link to an
+  unfinished issue of any project, or an open child the daemon has released. So a root that
+  waits in `verifying` is never told, whatever else the project runs. Its tree is still told
+  where an issue beneath it has stopped. A wait on a child an architect has not released is no such wait. Where
   the issue waited on is in this project and its own tree has stopped, that tree is told; a
   wait on a blocker no tree runs (parked, never admitted, in `icebox`) brings no stall notice,
   and the waiting issue stands in `admission.waiting`, its `waitingLine` kind `waiting_on_issue`,
@@ -1555,7 +1562,7 @@ Closing the terminal leaves the project without one, and the daemon logs
    first step back, on their kept sessions, at its next first phase start, and each other role at
    the start of its phase. A claim whose session supervise's `forgetSession` has dropped comes back
    in a new session instead. The daemon suspends or ends claims only when an issue leaves the
-   workflow, when a claim moves to another tree, or for a production check after the issue is done.
+   workflow, when a claim moves to another tree, or for the checking role when a look of a production check ends.
    A phase start gives its task to that live claim. At boot the daemon
    resumes by rule a suspended worker that still owns its issue's phase and that the daemon itself suspended, but never an agent the
    operator or the project's controller suspended: a start for an agent either of them holds waits instead, until a resume lifts the hold. The operator's resume lifts either, and the controller's only its own. A notice for a root's
@@ -1636,6 +1643,7 @@ Closing the terminal leaves the project without one, and the daemon logs
   agents in a tool call: 1 — WIDGETS-12 tester "bash toolu_01F3 since 2026-10-03T10:41:07Z"
   pending Dispatch status writes: none
   held lifecycle rows: none
+  refused issue branches: none
   claims nothing will wake: none
   webhook App missing: none
   consumer legion-go-WIDGETS-dispatch: 0 waiting
@@ -1644,6 +1652,11 @@ Closing the terminal leaves the project without one, and the daemon logs
   intake give-ups legion-go-WIDGETS-dispatch: 1 open, newest seq 48213
   intake give-up 412 legion-go-WIDGETS-dispatch notifications.dispatch.issue.WIDGETS-14.issue.updated seq 48213 gave up 2026-10-03T08:55:02Z after 1 deliveries (undecodable): Envoy envelope payload is not JSON
   ```
+
+  The `refused issue branches` block names each issue whose branch row GitHub refused for good.
+  Each line gives the row, what it wrote, the refusal's kind, when, and the row's error.
+  Legion does not run that row again, starts the issue's roles without the write, and tells the
+  owning architect once for each generation. A later row whose write GitHub takes clears the line.
 
   The `admission` line counts every issue that holds a slot, a root or a child, beside the cap.
   An issue takes a slot when the daemon starts it and gives it back as the admission rule says
@@ -1745,8 +1758,8 @@ Closing the terminal leaves the project without one, and the daemon logs
   what is recorded, and the daemon resumes
   the architect itself on the pass that reads the answer, taking no further slot for it.
 
-  The `open production checks` line counts the closed issues whose production check is still
-  open and names the oldest: its pull request, merge commit, the role working it, which look it
+  The `open production checks` line counts the production checks still open and names the
+  oldest: its pull request, merge commit, the role working it, which look it
   is on, what woke that look (`merge`, `check wake` — the time the checking agent named for
   itself, or the retry of a look nobody reported — or `bound`) and when, and when its next look
   is due (`none` when no check is open).
@@ -1957,8 +1970,8 @@ legion issue status WIDGETS-12 backlog --config legion.yaml --operator-token-fil
 ```
 
 A root on the backlog or in icebox stops its tree: its agents are suspended and the slots
-its issues held go to the next issues in line. `todo` admits a labelled root again, as a new generation that starts from its
-architect.
+its issues held go to the next issues in line. `todo` admits a labelled root again, as a new
+generation that starts from its architect.
 
 ## Replay or discard a message the intake gave up
 

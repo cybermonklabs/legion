@@ -43,6 +43,8 @@ type issueResponse struct {
 	ResolvedRepo           *string         `json:"resolved_repo"`
 	BlockedBy              []string        `json:"blocked_by"`
 	Claim                  *claimResponse  `json:"claim"`
+	Children               []IssueChild    `json:"children"`
+	ExternalLinks          []IssueLink     `json:"external_links"`
 }
 
 // issue is the response as Issue: Dispatch's issue detail, and the issue its PATCH answers with.
@@ -66,6 +68,8 @@ func (r issueResponse) issue() Issue {
 		BlockedBy:              r.BlockedBy,
 		Claim:                  r.Claim.claim(),
 		ClaimUnread:            r.Claim.unread(),
+		Children:               r.Children,
+		Links:                  r.ExternalLinks,
 	}
 }
 
@@ -237,12 +241,20 @@ type daemonWrite struct {
 	Actor            actor    `json:"actor"`
 }
 
-// artifactUpload is the body of a document upload: its name, its markdown and the daemon's actor,
-// all fields Dispatch's JSON upload reads.
+// artifactUpload is the body of a document upload: its name, its markdown, the daemon's actor and,
+// where the upload replaces a version it read, the token of that version, all fields Dispatch's
+// JSON upload reads.
 type artifactUpload struct {
-	Name    string `json:"name"`
-	Content string `json:"content"`
-	Actor   actor  `json:"actor"`
+	Name         string              `json:"name"`
+	Content      string              `json:"content"`
+	Actor        actor               `json:"actor"`
+	Precondition *uploadPrecondition `json:"precondition,omitempty"`
+}
+
+// uploadPrecondition is the precondition of an upload that replaces a version it read: that
+// version's whole-document token.
+type uploadPrecondition struct {
+	Document string `json:"document"`
 }
 
 type gatedStepsWrite struct {

@@ -683,7 +683,7 @@ func capReadings(t *testing.T, pool *pgxpool.Pool, admission *Admission, candida
 		if !found {
 			t.Fatalf("%s stands in no waiting line, want it waiting for a row", candidate)
 		}
-		canMove = admission.lineCanMove(issues, lineHoldsOf(facts, slots, line, dropped), nil, rows, nil)
+		canMove = admission.lineCanMove(issues, lineHoldsOf(issues, facts, slots, line, dropped), nil, rows, nil)
 	})
 	return lets, canMove
 }
@@ -1136,7 +1136,7 @@ func TestAnOlderEventLeavesEachReadsResolvedPriority(t *testing.T) {
 				p0Holder(t, pool, "LEGION-1", "A", record.P1)
 				inheritedHolder(t, pool, "LEGION-9", "C", resolvedFrom(record.P2))
 				applyFact(t, pool, admission, "own-status-write", intake.OwnStatusWrite(dispatch.Issue{Key: "LEGION-9", Title: "LEGION-9",
-					Status: "in_progress", Rank: "C", HandedOver: true, LastSeq: 5, ResolvedRepo: "acme/widgets", Resolved: served}))
+					Status: "in_progress", Rank: "C", HandedOver: true, LastSeq: 5, ResolvedRepo: "acme/widgets", Resolved: served}, "", ""))
 				keeps(t, pool, admission, "LEGION-9")
 			})
 		})

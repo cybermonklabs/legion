@@ -36,11 +36,29 @@ type DroppedWake struct {
 }
 
 // ReleaseWokenRow builds the outbox row that brings one claim a cancelled release suspended back,
-// at the generation the cancel read of the issue, told what the cancel dropped of the role's wake
-// (DroppedWake). It is the caller's because the payload is record's to encode, as every row of a
-// release is (IdleReleaseRow), and because what of the dropped wake the resume's own task carries
-// is the workflow's rule (workflow.CancelledWakeTask).
-type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) (IdleReleaseRow, error)
+// from the issue's record as the cancel read it (IssueRun), told what the cancel dropped of the
+// role's wake (DroppedWake). It is the caller's because the payload, and the generation a start of
+// the role serves, are record's to say, as every row of a release is (IdleReleaseRow), and because
+// what of the dropped wake the resume's own task carries is the workflow's rule
+// (workflow.CancelledWakeTask).
+type ReleaseWokenRow func(role claim.Role, run IssueRun, wake DroppedWake) (IdleReleaseRow, error)
+
+// IssueRun is what a cancel reads of its issue's record for the resumes it queues: the issue's
+// tree, its own generation, and its tree's run (issues.tree_generation), from which the row's
+// builder takes the generation each role's start serves (record.Issue.GenerationOf), and the
+// cancel the one it looks for among the starts already queued (StartOf).
+type IssueRun struct {
+	Tree           string
+	Generation     uint64
+	TreeGeneration uint64
+}
+
+// StartOf is the generation a start of role serves on issue in this run: the tree's run for the
+// tree's architect, the issue's own generation for every other role (claim.StartGeneration, the
+// rule record.Issue.GenerationOf reads too).
+func (r IssueRun) StartOf(issue string, role claim.Role) uint64 {
+	return claim.StartGeneration(role, issue, r.Tree, r.Generation, r.TreeGeneration)
+}
 
 // CancelIssueRelease ends a release that did not finish, in one transaction: the resume of each
 // claim this release suspended and still holds is queued, and the mark goes with it. The two are
@@ -95,8 +113,10 @@ type ReleaseWokenRow func(role claim.Role, generation uint64, wake DroppedWake) 
 // suspension (ReleaseSuspendedClaim), and that record can fail, or the daemon can stop before it.
 // A wake of such a role reads as a wake of a role outside the set, which cancels the release
 // (releaseOvertaken), and its start is the role's one start, in the pod that stayed: the cancel
-// queues no resume of a role whose start is queued for the issue's generation (startQueued, as a
-// wake reads it before it takes anything). A role of this kind with no start queued, as where no
+// queues no resume of a role whose start is queued at the generation that role's start serves
+// (startQueued over IssueRun.StartOf: the tree's run for a root's architect, the issue's own for
+// every other role, as a wake reads it before it takes anything). A role of this kind with no
+// start queued, as where no
 // wake of it was taken, is resumed as a role of the set is, or recorded stopped by the pause while
 // the project is paused (below): nothing else brings it back, since its stop's row, run again,
 // reads the release over, and a pod that stayed arms no backstop. While the claim is still
@@ -298,12 +318,12 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 				return err
 			}
 		}
-		// A paired role with a start queued for the issue's generation, its wake's, keeps that
-		// start as its one start. One with none, as where no wake of it was taken, joins roles: the
-		// cancel resumes it, or records it stopped by the pause while the project is paused, as it
-		// does a role of the set.
+		// A paired role with a start queued at the generation its start serves, its wake's, keeps
+		// that start as its one start. One with none, as where no wake of it was taken, joins roles:
+		// the cancel resumes it, or records it stopped by the pause while the project is paused, as
+		// it does a role of the set.
 		for _, r := range unrecordedReleased {
-			queued, err := startQueued(ctx, tx, issue, r.role, standing.generation)
+			queued, err := startQueued(ctx, tx, issue, r.role, standing.run.StartOf(issue, r.role))
 			if err != nil {
 				return err
 			}
@@ -348,7 +368,7 @@ func (s *Store) cancelIssueRelease(ctx context.Context, project, issue string, w
 			roles = nil
 		}
 		for _, r := range roles {
-			row, err := woken(r.role, standing.generation, dropped[r.role])
+			row, err := woken(r.role, standing.run, dropped[r.role])
 			if err != nil {
 				return err
 			}
@@ -458,11 +478,12 @@ type ReleaseCancelled struct {
 // unpushed work; and, for the worker of the issue's open phase that gets one
 // (ReleaseCancelPause.GetsBackstop, of its whole claim, ClaimTx, since the run and the entry it
 // serves, supervise.Claim.ServingAt's, and the task it holds are read from what releasedRole does
-// not carry), its backstop, which the record arms only where the stop owes no launch. A paused
-// cancel with a backstop always carries both rules, OpenPhaseRole and GetsBackstop: the cancel
-// refused one that lacks either before its transaction (checkBackstopRules). A wake taken since is
-// left open: it is the launch the role is owed, and its start row runs at the resume. The caller
-// holds the issue's lock and held's row for share.
+// not carry), its backstop, which the record arms only where the stop owes no launch. The cancel
+// asks that rule at the generation the worker's own start serves (IssueRun.StartOf, the tree's run
+// for a root's architect). A paused cancel with a backstop always carries both rules,
+// OpenPhaseRole and GetsBackstop: the cancel refused one that lacks either before its transaction
+// (checkBackstopRules). A wake taken since is left open: it is the launch the role is owed, and its
+// start row runs at the resume. The caller holds the issue's lock and held's row for share.
 func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string, held Pause, roles []releasedRole,
 	standing issueStanding, paused ReleaseCancelPause) error {
 	at := paused.At.UTC()
@@ -478,7 +499,7 @@ func stopReleasedForPause(ctx context.Context, tx pgx.Tx, project, issue string,
 			if err != nil {
 				return err
 			}
-			gets, err := paused.GetsBackstop(ctx, tx, standing.phase, standing.generation, c)
+			gets, err := paused.GetsBackstop(ctx, tx, standing.phase, standing.run.StartOf(issue, r.role), c)
 			if err != nil {
 				return err
 			}
@@ -572,25 +593,27 @@ func retellWakesOf(ctx context.Context, tx pgx.Tx, project, issue string, roles 
 }
 
 // issueStanding is what a cancel reads of its issue before it queues a resume (resumeStanding):
-// the generation the resume names, the phase whose worker a paused cancel may arm a backstop for
-// (ReleaseCancelPause.GetsBackstop decides), and whether the issue and its tree root are both
-// still the workflow's to run (pods.InWorkflowNotLingering).
+// the record the resume is built from (IssueRun), the phase whose worker a paused cancel may arm
+// a backstop for (ReleaseCancelPause.GetsBackstop decides, at the generation that worker's start
+// serves), and whether the issue and its tree root are both still the workflow's to run
+// (pods.InWorkflowNotLingering).
 type issueStanding struct {
-	generation uint64
-	phase      phase.Phase
-	live       bool
+	run   IssueRun
+	phase phase.Phase
+	live  bool
 }
 
 // resumeStanding is issue's standing as a cancel reads it. An issue or a root the record no
 // longer holds is not live.
 func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow func(status string) bool) (issueStanding, error) {
-	var generation int64
+	var tree string
+	var generation, treeGeneration int64
 	var issuePhase, status, rootPhase, rootStatus string
 	var lingering, rootLingering bool
-	err := tx.QueryRow(ctx, `select i.generation, i.phase, i.status, i.linger_until is not null,
+	err := tx.QueryRow(ctx, `select i.tree, i.generation, i.tree_generation, i.phase, i.status, i.linger_until is not null,
 		root.phase, root.status, root.linger_until is not null
 		from issues i join issues root on root.key = i.tree where i.key = $1`, issue).Scan(
-		&generation, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
+		&tree, &generation, &treeGeneration, &issuePhase, &status, &lingering, &rootPhase, &rootStatus, &rootLingering)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return issueStanding{}, nil
 	}
@@ -601,7 +624,8 @@ func resumeStanding(ctx context.Context, tx pgx.Tx, issue string, outOfWorkflow 
 		pods.Standing{Phase: phase.Phase(issuePhase), Status: status, Lingers: lingering},
 		pods.Standing{Phase: phase.Phase(rootPhase), Status: rootStatus, Lingers: rootLingering},
 		outOfWorkflow)
-	return issueStanding{generation: uint64(generation), phase: phase.Phase(issuePhase), live: live}, nil
+	run := IssueRun{Tree: tree, Generation: uint64(generation), TreeGeneration: uint64(treeGeneration)}
+	return issueStanding{run: run, phase: phase.Phase(issuePhase), live: live}, nil
 }
 
 // releasedRole is one claim a release suspended that is still suspended as `released`: the role

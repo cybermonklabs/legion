@@ -7,7 +7,8 @@ package daemon
 
 import (
 	"context"
-	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"strings"
 	"testing"
@@ -17,18 +18,17 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/phase"
-	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // A production check after one merge: under `production_check: tester`, an issue whose plan is
-// `implementer tester` is done at its merge, and the check the merge opens gives its first look to
-// the tester's own session, the one that tested the task: the claim takes it where its pane still
-// runs, and a resume of that session where the close's suspension has stopped it. An issue whose
+// `implementer tester` waits in verifying at its merge, and the check of its merge gives its first
+// look to the tester's own session, the one that tested the task: the claim takes it where its pane
+// still runs, and a resume of that session where an idle release has stopped it. An issue whose
 // plan is `implementer` runs no tester, and the check's first look opens on a fresh tester session,
-// a spawn that resumes none. Each issue is done before its check ends, and each check ends with the
-// tester's report. The control is `production_check: off`, under which the same walk opens no check.
+// a spawn that resumes none. Each issue waits in verifying while its check is open, and each check
+// ends with the tester's report. The control is `production_check: off`, under which the same walk
+// opens no check.
 func TestAProductionCheckFollowsAPlan(t *testing.T) {
 	t.Parallel()
 	t.Run("a plan with a tester and a plan with none", func(t *testing.T) {
@@ -80,10 +80,10 @@ func (r *ownerStepsRig) checkOpened() bool {
 }
 
 // lookOpens waits for the merge of the walk's issue to open its production check, the first look
-// open for the tester while the issue is done, and for c, the tester's claimant, to be told that
-// look, which its turn then takes up. A launch of c's claim after the one its pane came up in is the
-// look's start resuming the claim, which the close had suspended: that launch must resume c's own
-// session, and its pane comes up in it (reattach).
+// open for the tester while the issue stands in verifying, its close waiting for the check, and
+// for c, the tester's claimant, to be told that look, which its turn then takes up. A launch of c's
+// claim after the one its pane came up in is the look's start resuming the claim, which the close
+// had suspended: that launch must resume c's own session, and its pane comes up in it (reattach).
 func (r *ownerStepsRig) lookOpens(c *stepClaimant) time.Time {
 	t := r.t
 	t.Helper()
@@ -91,90 +91,57 @@ func (r *ownerStepsRig) lookOpens(c *stepClaimant) time.Time {
 	if check := readProductionCheck(t, r.st.Pool(), r.records, r.key); check.Role != claim.RoleTester || check.Looks != 1 || !check.LookOpen || !check.Open() {
 		t.Fatalf("the check the merge of %s opened is %+v, want look 1 open for the tester", r.key, check)
 	}
-	if got := string(r.d.state().Issues[r.key].Phase); got != string(phase.Done) {
-		t.Fatalf("%s stands in %s while its production check is open, want done", r.key, got)
+	if got := string(r.d.state().Issues[r.key].Phase); got != string(phase.Verifying) {
+		t.Fatalf("%s stands in %s while its production check is open, want verifying: its close waits for the check", r.key, got)
 	}
-	var prompt shimwire.Prompt
-	for deadline := time.After(stepRecordsWait); prompt.ID == ""; {
-		select {
-		case prompt = <-c.prompts:
-		case <-time.After(100 * time.Millisecond):
-			if lastLaunch(t, r.rt, c.token).BootToken != c.bootToken {
-				r.reattach(c)
-			}
-		case <-deadline:
-			held := r.d.claim(c.token)
-			t.Fatalf("%s's tester was told nothing within %s: its claim is %s, and the daemon launched it %v",
-				r.key, stepRecordsWait, held.State, r.launchesOfRole(claim.RoleTester))
-		}
+	prompt, told := c.receiveWithin(stepRecordsWait, r.reattach)
+	if !told {
+		held := r.d.claim(c.token)
+		t.Fatalf("%s's tester was told nothing within %s: its claim is %s, and the daemon launched it %v",
+			r.key, stepRecordsWait, held.State, r.launchesOfRole(claim.RoleTester))
 	}
 	// A resumed session is first told why its process ended, and the check's task follows.
 	if lead := "Production check of " + r.key + ":"; !strings.HasPrefix(prompt.Message, lead) && !strings.Contains(prompt.Message, "\n\n"+lead) {
 		t.Fatalf("%s's tester was told %q, want the first look of the production check", r.key, prompt.Message)
 	}
 	c.answer()
-	c.send(shimwire.AgentStart{DeliveryID: prompt.DeliveryID})
-	c.waitState(supervise.StateWorking)
-	_, value, ok := strings.Cut(prompt.Message, "check_opened_at `")
-	if !ok {
-		t.Fatalf("the production check task gives no check identity: %s", prompt.Message)
-	}
-	value, _, ok = strings.Cut(value, "`")
-	if !ok {
-		t.Fatal("the production check task gives no closing delimiter for its check identity")
-	}
-	opened, err := time.Parse(time.RFC3339Nano, value)
+	c.startTurn(prompt)
+	opened, err := checkOpenedAt(prompt.Message)
 	if err != nil {
-		t.Fatalf("the task's check identity is not an RFC3339 instant: %v", err)
+		t.Fatalf("the production check task %v: %s", err, prompt.Message)
 	}
 	return opened
 }
 
-// reattach is c's pane coming up in its claim's latest launch, which must resume c's own session:
-// it says hello with that launch's boot token, registers in that session and says ready, as the
-// plugin does.
+// checkOpenedAt is the check's opening that the task of a look of a production check names
+// (check_opened_at), which the look's report names, or why the task names none.
+func checkOpenedAt(task string) (time.Time, error) {
+	_, value, found := strings.Cut(task, "check_opened_at `")
+	value, _, closed := strings.Cut(value, "`")
+	if !found || !closed {
+		return time.Time{}, errors.New("names no check_opened_at")
+	}
+	opened, err := time.Parse(time.RFC3339Nano, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("names a check_opened_at that is no RFC 3339 instant: %w", err)
+	}
+	return opened, nil
+}
+
+// reattach is c's pane coming up in its claim's latest launch (attach), which must resume c's own
+// session.
 func (r *ownerStepsRig) reattach(c *stepClaimant) {
 	t := r.t
 	t.Helper()
 	launch := lastLaunch(t, r.rt, c.token)
-	file := "/sessions/" + c.session + ".jsonl"
-	if launch.ResumeSessionFile != file {
+	if file := "/sessions/" + c.session + ".jsonl"; launch.ResumeSessionFile != file {
 		t.Fatalf("the daemon launched %s again with the session file %q, want a resume of %s, its own session's", c.token, launch.ResumeSessionFile, file)
 	}
-	r.built.mu.Lock()
-	address := r.built.address
-	r.built.mu.Unlock()
-	// The suspension stopped the pane its claimant played, so that pane's connection closes, and
-	// the claim's stream takes the new pane's hello once the listener has read the close.
-	c.mu.Lock()
-	_ = c.sh.conn.Close()
-	c.mu.Unlock()
-	sh := dialShimUntilAcked(t, address, launch.BootToken)
-	c.mu.Lock()
-	c.sh, c.bootToken, c.open, c.inTurn = sh, launch.BootToken, nil, false
-	c.mu.Unlock()
-	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: file, AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register %s again in its session %s = %d %s, want 200", c.token, c.session, status, body)
-	}
-	var registered claim.RegisterResponse
-	if err := json.Unmarshal(body, &registered); err != nil {
-		t.Fatalf("decode the registration of %s: %v", c.token, err)
-	}
-	c.secret = registered.Secret
-	d := r.d
-	sh.serve(func() { c.serve(sh, d) })
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: c.token, SessionID: c.session, Secret: c.secret, Generation: launch.Generation,
-	}, false); status != http.StatusNoContent {
-		t.Fatalf("ready %s = %d %s, want 204", c.token, status, body)
-	}
+	c.attach(launch)
 }
 
 // reportLook is c's report of pass on the look its turn took up, which ends the check, and the wait
-// for the check to end with the issue still done.
+// for the check to end and for the read of the checks its close queues to close the issue.
 func (r *ownerStepsRig) reportLook(c *stepClaimant, opened time.Time) {
 	t := r.t
 	t.Helper()
@@ -185,7 +152,7 @@ func (r *ownerStepsRig) reportLook(c *stepClaimant, opened time.Time) {
 	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the report to end "+r.key+"'s production check", func() bool {
 		return !readProductionCheck(t, r.st.Pool(), r.records, r.key).Open()
 	})
-	if got := string(r.d.state().Issues[r.key].Phase); got != string(phase.Done) {
-		t.Fatalf("%s stands in %s after its production check ended, want done", r.key, got)
-	}
+	testwait.WithinPolling(t, stepRecordsWait, 100*time.Millisecond, "the read after the check's close to close "+r.key, func() bool {
+		return string(r.d.state().Issues[r.key].Phase) == string(phase.Done)
+	})
 }

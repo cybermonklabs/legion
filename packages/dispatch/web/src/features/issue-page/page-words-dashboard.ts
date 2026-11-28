@@ -88,6 +88,8 @@ export const PHASE_WORDS = freeze({
   awaiting_children: "Waiting on children",
   /** `integrating`, which marks Merging. */
   integrating: "Integrating",
+  /** `verifying`, where a merged issue's close waits for its checks, which marks Merging. */
+  verifying: "Verifying",
   /** `held`, which marks no step. */
   held: "Held",
   /** A phase that none of the others names. */

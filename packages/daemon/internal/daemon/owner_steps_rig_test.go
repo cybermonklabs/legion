@@ -249,7 +249,7 @@ func stepPhase(t *testing.T, step string) phase.Phase {
 
 // walkSteps walks the task of the walk's issue through steps from its first, the issue standing in
 // the first already, each step's agent answering as answers says in the order the steps run
-// (answerPass where answers names nothing), then its retro and its merge to done. A failed step
+// (answerPass where answers names nothing), then its retro and its merge (merge). A failed step
 // returns the task to its implementer, as the walk returns it.
 func (r *ownerStepsRig) walkSteps(steps []string, answers ...stepAnswer) {
 	r.t.Helper()

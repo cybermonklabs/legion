@@ -73,7 +73,11 @@ func TestACopyCountsAndFoldsOnlyWhileTheRecordHoldsTheRunItWasRenderedIn(t *test
 				r.wantTold("after the confirmation, in the run the copy was rendered in", toldRoot, record.AudienceArchitect, rootTold, false)
 			}
 			if tc.moved != "" {
-				r.exec(`update issues set generation = generation + 1 where key = $1`, tc.moved)
+				// A root set back to todo reruns its whole tree, which raises the tree's run with
+				// the root's generation (record.Postgres.ClearTreeGeneration); a child's own
+				// generation moves alone.
+				r.exec(`update issues set generation = generation + 1,
+					tree_generation = case when key = tree then generation + 1 else tree_generation end where key = $1`, tc.moved)
 			}
 			r.wantTold("while the credit stands", toldChild, record.AudienceHolder, childSeed, true)
 			r.wantTold("while the credit stands", toldRoot, record.AudienceArchitect, tc.root, false)

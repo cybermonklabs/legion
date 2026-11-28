@@ -256,6 +256,16 @@ func ChildOpen(child DispatchIssueRow, recorded *Issue) bool {
 	case "done", "icebox":
 		return false
 	}
+	// A child whose own close waits in verifying has merged its work, which is on the base
+	// already, so the parent's first phase and its sign-off wait for it no longer (D10). The
+	// parent's close is the same for a child that is a tree of its own: it waits for that child's
+	// work to land and not for its checks, which belong to its own tree and root (D10, the lead's
+	// ruling on the second read of cybermonklabs/legion#5558). A child that is a member of the
+	// parent's tree is beneath it, and the root's close waits for it in verifying too, through the
+	// issues beneath (OpenBeneath), not here.
+	if recorded != nil && recorded.Phase == phase.Verifying {
+		return false
+	}
 	if recorded != nil && (recorded.HandedOverFrom != "" || claim.IsTreeRoot(recorded.Key, recorded.Tree)) {
 		return InWorkflow(*recorded)
 	}

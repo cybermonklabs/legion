@@ -1902,6 +1902,55 @@ Write each field as it is, not as a URL writes it: a password that `postgres_dsn
 So each command reads `PGPASSFILE=<pgpass file> psql '<postgres_url>' …`, and libpq takes the password from the file.
 Delete the file when the step is done.
 
+### Counting each issue's merge history
+
+`legion merge-history-report` counts the recorded issues of a project by what the daemon's record shows of each issue's merge.
+It reads the database that the file's `postgres_dsn` names, in one read-only transaction, and it migrates and writes nothing.
+So it also reads the database of a release before this one, whose issues hold no merge snapshot.
+
+```sh
+legion merge-history-report --config <legion.yaml> --project <PROJECT> --repo <owner/name> --repo <owner/name>
+```
+
+Each issue is in one class, which the command derives from the rows at each run, and which no row stores:
+
+- `ANSWERED`: a row proves the merge.
+  It is the issue's merge snapshot, its pull request row in state `merged`, or a production check of a pull request other than 0.
+
+- `PARTIAL`: rows name the issue, and none proves a merge.
+  They are a pull request row that did not merge, a clock that a clear kept, or a production check of pull request 0.
+
+- `NONE`: no row bears on the merge.
+  This does not prove that the work never merged.
+
+`--repo` counts only the issues on that repository, compared without case: give it once for each repository.
+Without `--repo` the command counts every recorded issue of the project, and without `--project` it counts the file's own project.
+Each line of the report is a name and its values:
+
+- `project` and `repos`: the selection, where `all` is every repository.
+
+- `snapshot_at`: the time of the database snapshot that the counts are of.
+
+- `selected`: the count of issues, then the key of each.
+
+- `ANSWERED`, `PARTIAL`, `NONE` and `total`: `issues`, `done` (in the phase `done`), `requested` (done, and Dispatch shows `todo`) and `missing_metadata` (an `ANSWERED` merge whose base or final head is unknown).
+
+A count that the command could not read is `UNKNOWN`, never 0.
+Then the report ends with a line `unknown` and one of four codes, the error goes to stderr, and the command exits 1:
+
+- `config`: the file was refused.
+
+- `connect`: the database was not reached.
+
+- `read`: the read failed, or the database's catalog shows no record.
+
+- `empty`: the selection holds no issue.
+
+Before the release that routes a request on a closed issue by its merge history, take this reading of each project.
+Run it once with the repositories of each configured rename pair, and once with no `--repo`.
+Keep the whole output of each run: its selection, its time, its keys and its counts.
+The pair's issues are a part of the project's, so do not add the two readings.
+
 ### Daemon migration identifiers and release order
 
 A migration's version is the leading digits of its file name (`internal/store/migrations`).
@@ -2483,7 +2532,7 @@ The roll-forward appends one pair again to each task a reviewer's row stores, so
 
 This release adds two outbox kinds, and its migration `20261114031356_merge_queue_removal` adds both names to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, `update_ask` among its kinds, and its version stands above the update round's `20261113082214`, so the update round's list never runs after it.
-Eight migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps both names.
+Ten migrations write the list after it, `20261116165926_role_holders_publish`, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261128022325_done_by_checks` and `20261128022326_merged_new_work`, in that order, and each list keeps both names.
 A `merge_queue_read` row is the daemon's read of a pull request that GitHub reported out of the merge queue: one read, or up to five in all while the reads fail.
 A `merge_queue_removal` row is the message that tells the issue's merger of that removal.
 The migration changes no column.
@@ -2532,7 +2581,7 @@ An ask of the merger that has landed stays: the earlier release reads it as a la
 This release adds the outbox kind `merge_holds_changed`, the notice kind `merge-holds-changed`, and a suspension source of a claim, `controller`.
 It serves the project's controller six actions on an agent, `POST /legion/v1/claims/compact` and `POST /legion/v1/claims/fresh-session`, which it served before, and `POST /legion/v1/agents/stop`, `agents/retry`, `agents/suspend` and `agents/resume`, and it refuses every other grant, an architect's included, `403 CONTROLLER_REQUIRED` at all six (`agentDoor`, `packages/daemon/internal/api/agentdoor.go`).
 Its migration `20261126110259_merge_holds_changed` adds the outbox kind to the outbox's kind check (`outbox_kind_check`), and it writes the whole list, `step_record`, `plan_record`, `conflict_confirm`, `merge_forward`, `design_changes`, `phase_ended`, `pending_basis_seed` and `reparent_seed` among its kinds, and its version stands above `20261122154643_outbox_kinds_with_the_basis_seeds`, `20261119203047_design_news`, `20261119003157_conflict_reads_and_merge_forward`, `20261117023932_outbox_kinds_with_the_plan_record` and `20261117000528_outbox_kinds_with_the_step_record`, whose lists do not name the kind, so none of those lists runs after it.
-Only `20261126163320_state_events` writes the list after it, and that list keeps `merge_holds_changed`.
+Three migrations write the list after it, `20261126163320_state_events` and then the done-by-checks release's `20261128022325_done_by_checks` and `20261128022326_merged_new_work`, in that order, and each list keeps `merge_holds_changed`; on a database the done-by-checks release migrated, the last of them is the last word.
 Its migration `20261115060739_claim_suspended_by_controller` adds the source to the claims' check (`claims_suspended_by_check`).
 The migrations change no column.
 This release also tells an issue's architect of a run of provider errors, in a `notice` row of the kind `provider-errors`, which only the controller was told before.
@@ -2590,7 +2639,7 @@ The earlier release then runs the controller's pod as `runtime.kubernetes.pod.se
 
 This release stops a conflict from sending an issue back to `implementing`.
 Its migration `20261119003157_conflict_reads_and_merge_forward` adds two outbox kinds to the kind check (`outbox_kind_check`), keeps `phase_ended` in it, deletes every queued `phase_ended` row, and adds two nullable columns to `pull_requests`.
-Four migrations write the list after it, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps both names and `phase_ended`.
+Six migrations write the list after it, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261128022325_done_by_checks` and `20261128022326_merged_new_work`, in that order, and each list keeps both names and `phase_ended`.
 The release that holds a parent's start while a child of it is open queues `phase_ended` rows again for one move of its own ([Rolling back the release that holds a parent's start while a child of it is open](#rolling-back-the-release-that-holds-a-parents-start-while-a-child-of-it-is-open)).
 A `conflict_confirm` row is the second read of a head a first read found conflicting, due a minute after it, and `pull_requests.conflict_read` holds that first read.
 A `merge_forward` row is one message to one role about a conflict the daemon acted on, and `pull_requests.merge_forward` holds the ask that the implementer merge the base forward.
@@ -2679,7 +2728,7 @@ The given-up records stay as they were, and after the roll forward a replay or a
 
 This release adds one outbox kind, `role_holders_publish`, and its migration `20261116165926_role_holders_publish` adds the name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, and its version stands above `20261114031356`, so the merge-queue list never runs after it.
-Seven migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps the name.
+Nine migrations write the list after it, `20261117000528_outbox_kinds_with_the_step_record`, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261128022325_done_by_checks` and `20261128022326_merged_new_work`, in that order, and each list keeps the name.
 A `role_holders_publish` row publishes the session of each role of one issue whose claim holds it to Dispatch (`PUT /api/v1/issues/{key}/role-holders`).
 The daemon queues one at the boot ready of a claim, at each boot, and in the transaction of each claim write that changes the session that holds a role: the agent registers, the claim takes another session or forgets its own, or the claim retires, fails, or is suspended by any source but the idle release.
 A claim whose idle pod the daemon released, or that a project pause's stop suspended, keeps its role, and so does a claim launched again over the session it kept.
@@ -2731,7 +2780,8 @@ This release has the daemon publish each change of what Dispatch observes as a s
 Before it, Dispatch read each configured daemon's `GET /legion/v1/state` once a minute.
 The daemon writes each event as an outbox row in the transaction of the write it reports, on one `state` lane per project, and it publishes the rows of each committed transaction as one message on `notifications.legion.<token>.state`, or as consecutive messages split between events where they pass 900 KB (`stateMessageBound`).
 Its migration `20261126163320_state_events` adds the three state kinds to the outbox's kind check (`outbox_kind_check`), the tables `state_publication` and `state_admission_blocks`, three columns on `outbox`, and the commit trigger that gives each state row its sequence.
-That migration writes the whole list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed`, `merge_holds_changed` and `phase_ended` among its kinds, and its version stands above `20261126110259_merge_holds_changed`, the last migration before it that writes the list, so it writes the list last on any database.
+That migration writes the whole list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed`, `merge_holds_changed` and `phase_ended` among its kinds, and its version stands above `20261126110259_merge_holds_changed`, the last migration before it that writes the list, so it writes the list last on a database this release is the newest of.
+On a database the done-by-checks release migrated, two migrations write the list after it, `20261128022325_done_by_checks` and then `20261128022326_merged_new_work`, whose lists keep the three state kinds, and the second is the last word.
 Dispatch's migration `20261118212431_legion_events` adds `kind` and `recorded_at` to `legion_reads`, each with a default, and `reason`, which is null on a row that names no reason.
 It also adds the index `legion_reads_project_recorded_at` and the tables `legion_event_cursors` and `legion_event_parts`.
 It adds `legion_state_intake` to `server_processes`, with the default 0: a process of this release registers 1, and a process of an earlier release does not name the column, so its row reads 0.
@@ -2880,7 +2930,7 @@ The rollback needs no statement.
 
 This release adds one outbox kind, `step_record`, the tables `step_starts` and `step_starts_rollback`, and the function `step_run_witness`; its migration `20261117000528_outbox_kinds_with_the_step_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and the two merge-queue kinds among its kinds, and its version stands above `20261116165926_role_holders_publish`, so the role-holders list never runs after it.
-Six migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps the name.
+Eight migrations write the list after it, `20261117023932_outbox_kinds_with_the_plan_record`, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261128022325_done_by_checks` and `20261128022326_merged_new_work`, in that order, and each list keeps the name.
 A `step_record` row writes one start or one end of one step of an issue onto Dispatch's record of that step (`PUT /api/v1/issues/{key}/steps/{id}`).
 That migration changes no column.
 
@@ -2938,7 +2988,7 @@ Roll back and roll forward every daemon of one database in the same change, and 
 
 This release adds one outbox kind, `plan_record`; its migration `20261117023932_outbox_kinds_with_the_plan_record` adds the kind's name to the outbox's kind check (`outbox_kind_check`).
 That migration writes the whole list, the role-holders publication's kind and `step_record` among its kinds, and its version stands above `20261117000528_outbox_kinds_with_the_step_record`, so the step record's list never runs after it.
-Five migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps the name.
+Seven migrations write the list after it, `20261119003157_conflict_reads_and_merge_forward`, `20261119203047_design_news`, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261128022325_done_by_checks` and `20261128022326_merged_new_work`, in that order, and each list keeps the name.
 A `plan_record` row writes the plan one run of an issue carries out onto Dispatch (`PUT /api/v1/issues/{key}/plans/{id}`), when the run's work starts and again at each later version of the owner's plan that Legion takes, and Dispatch then shows that version.
 This release also writes the rating a retro gave the plan as a `step_record` row that carries `rating` and `rating_reason`, which the daemon sends to the record's rating route (`PUT /api/v1/issues/{key}/steps/{id}/rating`).
 That migration changes no column.
@@ -3203,6 +3253,198 @@ Each other later version of the plan and each `stop_task` on the issue is answer
 That lasts until the issue's next run, whose first step passes the plan over, or until the issue leaves the workflow, which ends the run.
 Rolling forward again also costs the window the other way: an issue the earlier release drew while it ran reads the empty word afterwards and runs as an issue with no experiment does.
 
+#### Rolling back the release that ends a branch row GitHub refuses for good
+
+This release's migration `20261128022327_branch_refusals.up.sql` adds the table `branch_refusals` and the notice kind `branch-refused`.
+The table records the first branch row of each issue and generation that GitHub refused in a way a retry meets again, and no later one.
+An earlier release names the table in no statement.
+It decodes an outbox row strictly, so it fails an unsent `branch-refused` notice at every attempt.
+
+Run the way back below at the rollback, with every project's daemon on that database stopped.
+Run it before the way back of [the release that adds the request kind, the merge read kind and the never-merged column](#rolling-back-the-release-that-adds-the-request-kind-the-merge-read-kind-and-the-never-merged-column).
+Run it with `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`.
+It is one transaction, and each of its statements runs again with no error.
+
+```sql
+begin;
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'branch-refused';
+drop table if exists branch_refusals;
+delete from schema_version where version = 20261128022327;
+commit;
+```
+
+The header of `20261128022327_branch_refusals.up.sql` carries this same block.
+
+The way back costs each unsent `branch-refused` notice, a refusal its architect is never told of, and the state's `branchRefused` of each refused branch.
+Under the earlier release a branch row GitHub refuses retries on its backoff again, and the starts of its issue wait behind it.
+
+#### Rolling back the release that adds the request kind, the merge read kind and the never-merged column
+
+This release's migration `20261128022326_merged_new_work.up.sql` adds the kind `request` to the table `defects`, the outbox kind `merge_read`, and the column `issues.never_merged_confirmed`.
+A request is a request for new work on a closed issue whose work merged, and a merge read reads whether such an issue's work merged where the record shows no merge that proves it.
+The column says that a person confirmed that the issue's work never merged.
+An earlier release knows none of the three, and it decodes an outbox row strictly (`DisallowUnknownFields` in `record/outbox.go`).
+
+Run the way back below at the rollback, with every project's daemon on that database stopped, before the two blocks of [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass).
+Run it with `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`.
+It is one transaction.
+It first prints three lists that a person keeps, as three `NOTICE`s: each open request with its issue, id, asker and text, each issue whose merge read was pending with its asker and request, and each issue whose confirmation no `todo` took.
+psql writes a notice to its standard error, so keep that stream, as block A of that section says.
+
+This release writes none of the three: it records no request, queues no merge read and writes no confirmation.
+So on a database that only this release ran, each list prints `[]`.
+
+The block then deletes the `merge_read` rows, the notices and controller notices of the kind `merge-unread`, and the requests, which the earlier release cannot read.
+It puts back the two kind checks as `20261128022325_done_by_checks` wrote them, drops the column, and deletes the migration's version row, so the roll forward's `Migrate` applies the file again.
+
+```sql
+begin;
+do $$ begin
+  raise notice 'open requests: %', (select coalesce(json_agg(listed), '[]') from (select issue, id, role, text from defects where kind = 'request' and merged_at is null and withdrawn_at is null order by issue, id) listed);
+  raise notice 'pending merge reads: %', (select coalesce(json_agg(listed), '[]') from (select issue, payload->>'requester' as requester, payload->>'request' as request from outbox where kind = 'merge_read' order by issue, id) listed);
+  if exists (select 1 from information_schema.columns where table_schema = current_schema() and table_name = 'issues' and column_name = 'never_merged_confirmed') then
+    raise notice 'unconsumed never-merged confirmations: %', (select coalesce(json_agg(key order by key), '[]') from issues where never_merged_confirmed);
+  else
+    raise notice 'unconsumed never-merged confirmations: []';
+  end if;
+end $$;
+delete from outbox where kind = 'merge_read';
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' = 'merge-unread';
+delete from defects where kind = 'request';
+alter table defects drop constraint if exists defects_kind_check;
+alter table defects add constraint defects_kind_check check (kind in ('check', 'production', 'defect'));
+alter table outbox drop constraint if exists outbox_kind_check;
+alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed', 'merge_holds_changed', 'state_change', 'state_admission', 'state_boot', 'close_read', 'close_wait_publish'));
+alter table issues drop column if exists never_merged_confirmed;
+delete from schema_version where version = 20261128022326;
+commit;
+```
+
+The header of `20261128022326_merged_new_work.up.sql` carries this same block.
+
+On a database that only this release ran, the block deletes no request, merge read or notice, so the way back costs nothing.
+
+#### Rolling back the release that closes an issue when its checks pass
+
+This release's migration `20261128022325_done_by_checks.up.sql` adds the phase `verifying` to `issues_phase_check`: the phase of an issue whose pull request merged and whose close waits for the checks of its goal ([The close](site/src/content/docs/legion/concepts.md#the-close)).
+It adds the merge snapshot and the close wait's columns to `issues` (`merge_number`, `merge_head`, `merge_sha`, `merge_base`, `merge_repo`, `merged_at`, `close_wait_since`, `close_wait`, `closed_on_checks_at`, `next_change`, `next_change_follows`, `next_changes`, `merger_completion_owed`, `standing_told_at` and `tree_generation`), `production_checks.relook_seq` and `production_checks.generation`, `pending_task_deliveries.start_at`, the tables `defects` and `close_reads`, and the outbox kinds `close_read` and `close_wait_publish`.
+It writes `design_news_current` again with four arguments, writes the two functions that call it and `step_run_witness` again, and these read the tree's run from `issues.tree_generation`.
+An earlier release knows no phase `verifying`, calls the three-argument `design_news_current`, and decodes an outbox row strictly, so it fails a row of a kind, a notice kind or a field it does not know at every attempt (`DisallowUnknownFields` in `record/outbox.go`).
+
+At the rollback, with every project's daemon on that database stopped and before the earlier image is pinned, run the way back below with `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1`.
+It is two transactions.
+Block A, from its `-- Block A` line to its `commit;`, runs once for each project, with `<PROJECT>` the project's key, in any order.
+Block B, from its `-- Block B` line to the end, runs once, after block A ran for every project.
+Block B refuses, and changes nothing, while an issue of any project stands in `verifying`.
+
+Block A first prints the list that a person keeps, as two `NOTICE`s: the issues of the project that stand in `verifying`, each with since when its close waits and its merge, and the open defects of the project, each with its issue, id, kind and text.
+psql writes a notice to its standard error, not to its output, so keep that stream: save block A as `block-a-<PROJECT>.sql` and run `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 -f block-a-<PROJECT>.sql 2>&1 | tee list-<PROJECT>.txt` in a shell with `set -o pipefail`, so that a failure still exits non-zero.
+Block A then moves each issue of the project that stands in `verifying` to `merging`, with the status `retro`.
+The earlier release's boot sweep closes each of them at its merged pull request (`sweepMerged` in `workflow/resume.go`), which is the close at the merge that this release ends.
+So after the roll forward to this release, a person reads the kept list and sets each listed issue whose checks still do not pass to `todo`, which starts one next change of it.
+`dispatch results --issue <KEY>` shows the state of each check of an issue.
+The open defects go with the table `defects`: the kept list, and the last version of each issue's `close-wait.md` in Dispatch, are where they are read after the way back.
+Block A deletes the rows of the project that the earlier release cannot decode: the `close_read` and `close_wait_publish` rows, the notices and controller notices of the eleven kinds this release adds, the `issue_branch` rows whose payload holds `from`, and the `supervise` rows whose payload holds `startAt`.
+It gives each `issue_bundle`, `issue_release` and `issue_suspend` row of the project the tree generation the earlier release reads, its root's generation.
+Each of its statements that names a table or a column this migration adds runs only where that table or column still exists, so block A run again, or after block B, prints nothing it cannot read and deletes that project's rows.
+
+Before it drops a column, block B puts back the four SQL functions as the earlier release reads them, since PostgreSQL records no dependency of a `language sql` body on a column, and a body left reading `tree_generation` would fail at run time after the drop.
+It then drops the four-argument `design_news_current`, the two tables and the new columns, puts back `outbox_kind_check` and `issues_phase_check` without the new values, and deletes the migration's version row, so the roll forward's `Migrate` applies the file again (`versionRecorded` in `internal/store/store.go`).
+The kind list it puts back is the state events' of `20261126163320_state_events`, the last list the earlier release writes, so `merge_holds_changed` and the three state kinds stand while `close_read` and `close_wait_publish` go, after block A deleted every row of both.
+The tables and the columns are the database's, so every project's daemon on it rolls back too.
+
+```sql
+-- Block A: once for each project, with <PROJECT> its key, in any order.
+begin;
+do $$ begin
+  if exists (select 1 from information_schema.columns where table_schema = current_schema() and table_name = 'issues' and column_name = 'close_wait_since') then
+    raise notice 'issues of <PROJECT> in verifying: %', (select coalesce(json_agg(listed), '[]') from (select key, close_wait_since, merge_number, merge_sha from issues where phase = 'verifying' and split_part(key, '-', 1) = '<PROJECT>' order by key) listed);
+  end if;
+  if to_regclass('defects') is not null then
+    raise notice 'open defects of <PROJECT>: %', (select coalesce(json_agg(listed), '[]') from (select issue, id, kind, text from defects where merged_at is null and withdrawn_at is null and split_part(issue, '-', 1) = '<PROJECT>' order by issue, id) listed);
+  end if;
+end $$;
+update issues set phase = 'merging', status = 'retro' where phase = 'verifying' and split_part(key, '-', 1) = '<PROJECT>';
+delete from outbox where kind in ('close_read', 'close_wait_publish') and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind in ('notice', 'controller_notice') and payload->>'kind' in ('close-waits', 'check-failed', 'check-unknown', 'defect-reported', 'next-change', 'close-wait-no-result', 'close-wait-standing', 'checks-unapproved', 'next-change-count', 'next-change-workspace', 'closed-check-failed') and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'issue_branch' and payload ? 'from' and split_part(issue, '-', 1) = '<PROJECT>';
+delete from outbox where kind = 'supervise' and payload ? 'startAt' and split_part(issue, '-', 1) = '<PROJECT>';
+update outbox o set payload = jsonb_set(o.payload, '{treeGeneration}', to_jsonb(root.generation)) from issues i join issues root on root.key = i.tree where i.key = o.issue and o.kind in ('issue_bundle', 'issue_release', 'issue_suspend') and split_part(o.issue, '-', 1) = '<PROJECT>';
+commit;
+-- Block B: once, after block A ran for every project.
+begin;
+do $$ begin if exists (select 1 from issues where phase = 'verifying') then raise exception 'an issue still stands in verifying: run block A for its project first'; end if; end $$;
+create or replace function design_news_current(told_issue text, told_generation bigint, told_tree_generation bigint)
+  returns boolean language sql stable as $$
+  select exists (select 1 from issues owner join issues root on root.key = owner.tree
+    where owner.key = told_issue and owner.generation = told_generation and root.generation = told_tree_generation)
+$$;
+create or replace function design_news_credits(carried jsonb)
+  returns table (issue text, audience text, link jsonb) language sql stable as $$
+  select item.issue, item.audience, jsonb_build_object('step', item.step, 'from', item."from", 'to', item."to")
+  from jsonb_to_recordset(coalesce(carried -> 'items', '[]'::jsonb))
+    as item (issue text, audience text, step text, "from" int, "to" int, generation bigint, tree_generation bigint)
+  where design_news_current(item.issue, item.generation, item.tree_generation)
+$$;
+create or replace function design_news_openings(carried jsonb)
+  returns table (issue text, audience text, seq integer) language sql stable as $$
+  select opened.issue, opened.audience, opened.seq
+  from jsonb_to_recordset(coalesce(carried -> 'openings', '[]'::jsonb))
+    as opened (issue text, audience text, seq int, closed boolean, generation bigint, tree_generation bigint)
+  where not coalesce(opened.closed, false) and design_news_current(opened.issue, opened.generation, opened.tree_generation)
+$$;
+create or replace function step_run_witness(issue_key text, tree_key text) returns jsonb language sql stable as $$
+  select jsonb_build_object(
+    'at', coalesce(case when i.phase = 'held' then i.held_from end, i.phase),
+    'generation', i.generation,
+    'pass', (select p.pass from phases p where p.issue = i.key and p.role = 'implementer'),
+    'entries', (select jsonb_object_agg(p.role, p.entry) from phases p where p.issue = i.key),
+    'root_generation', root.generation,
+    'lingers', root.linger_until is not null)
+  from issues i left join issues root on root.key = tree_key
+  where i.key = issue_key
+$$;
+drop function if exists design_news_current(text, text, bigint, bigint);
+drop table if exists close_reads;
+drop table if exists defects;
+alter table issues drop column if exists merge_number, drop column if exists merge_head, drop column if exists merge_sha, drop column if exists merge_base, drop column if exists merge_repo, drop column if exists merged_at, drop column if exists close_wait_since, drop column if exists close_wait, drop column if exists closed_on_checks_at, drop column if exists next_change, drop column if exists next_change_follows, drop column if exists next_changes, drop column if exists merger_completion_owed, drop column if exists standing_told_at, drop column if exists tree_generation;
+alter table production_checks drop column if exists relook_seq, drop column if exists generation;
+alter table pending_task_deliveries drop column if exists start_at;
+alter table outbox drop constraint if exists outbox_kind_check;
+alter table outbox add constraint outbox_kind_check check (kind in ('dispatch_status', 'dispatch_message', 'notice', 'controller_notice', 'supervise', 'gate_seed', 'linger_close', 'workspace_remove', 'issue_branch', 'issue_suspend', 'check_wake', 'check_look', 'check_bound', 'role_message', 'phase_ended', 'issue_bundle', 'issue_release', 'gated_steps_publish', 'claim_release', 'hook_prompt', 'design_gates_publish', 'update_ask', 'merge_queue_read', 'merge_queue_removal', 'role_holders_publish', 'step_record', 'plan_record', 'conflict_confirm', 'merge_forward', 'design_changes', 'pending_basis_seed', 'reparent_seed', 'merge_holds_changed', 'state_change', 'state_admission', 'state_boot'));
+alter table issues drop constraint if exists issues_phase_check;
+alter table issues add constraint issues_phase_check check (phase in ('admitted', 'awaiting_person', 'awaiting_children', 'planning', 'implementing', 'testing', 'reviewing', 'accepting', 'retro', 'merging', 'done', 'held'));
+delete from schema_version where version = 20261128022325;
+commit;
+```
+
+The header of `20261128022325_done_by_checks.up.sql` carries this same block.
+
+What the way back costs is the close of each issue that waited in `verifying`: under the earlier release it closes at its merge, before its checks pass, until a person sets it to `todo` after the roll forward.
+A deleted notice is a telling that its architect, or the controller, never gets.
+A deleted `issue_branch` row that holds `from` is a next change's move of its branch to the head of its base that does not happen, and a deleted `supervise` row that holds `startAt` is a first start of a next change at the branch's new head that does not happen.
+An issue on a next change is an ordinary generation to the earlier release, which runs it to its merge and closes it there.
+A member of a tree whose root ran a next change can be told one item of design news again, since its credits name the old tree generation.
+An issue's `close-wait.md` stays in Dispatch as its last version left it.
+
+**A check that reads production.**
+A check whose `subject` is `production` or `graph` is decided by the current deploy of the program it reads, which Dispatch holds only where the deployment records that program's deploys there (`deploy.recorded`).
+So mark a check `production` or `graph` only for a program whose deploys the deployment records in Dispatch.
+A deployment whose delivery settings read `null` (`GET /api/v1/settings/delivery`) has set no deploy repository in Dispatch.
+A check marked for a program whose deploys nobody records reads `unknown` with the reason `no_deploy`, so the close waits for it, and the owning architect is told once a day.
+A check with no `subject` reads as `code`: a pass recorded at a commit of the merge's branch that holds the merge decides it, and no deploy does.
+
+**A next change's branch.**
+Before a next change's first task, the daemon moves the issue's branch to the head of the base its last pull request merged into, as the implement App.
+It reads the repository's node id over REST and moves the branch with GitHub's GraphQL mutation `updateRefs`, at `https://api.github.com/graphql`.
+Where GitHub refuses that call in a way a retry meets again, the `issue_branch` row ends rather than running again: the App's GraphQL access, a repository read that names no node id, and a coded 4xx are such refusals (`ghbranch.PermanentRefusal`).
+The row logs the ERROR line `outbox issue branch refused for good and dropped, and its architect is told once a generation`, with the write, the refusal's kind and GitHub's answer.
+It records the refusal in `branch_refusals`, and the owning architect is told by a `branch-refused` notice, once for each issue and generation.
+`legion state` shows the refusal on the issue as `branchRefused`, until a later write of that branch succeeds.
+The change's roles then start on the branch as it stands, which is behind the base, so the change's first task must merge the base forward.
+A rate limit, a 5xx, a 401 or a GitHub that answers nothing is no such refusal: the row runs again on its backoff, and the roles wait for it.
+To fix a refusal, let the daemon reach GitHub's GraphQL endpoint, and give the implement App `Contents: Read and write` on the repository, which its write set already asks for.
+
 #### Rolling back the release that names the variant on each step record
 
 This release adds no outbox kind and no migration.
@@ -3281,7 +3523,7 @@ So one project can roll back while another stays on this release, and the statem
 This release's migration `20261119203047_design_news` adds the tables `design_news_told` (with its columns `opening_seq` and `unreached`), `design_changes` and `design_history_unread`, the columns `pending_task_deliveries.design_news`, `carried_news`, `carried_ran` and `news_only`, the functions `design_news_known`, `design_news_folded`, `design_news_opening_settled`, `design_news_opening_told`, `design_news_current`, `design_news_credits`, `design_news_openings` and `design_news_told_in`, and the outbox kind `design_changes`.
 No statement of the release before this one names the three tables, the four new columns or the eight functions, and this migration's kind list names every kind of the list the release before set, `step_record` of `20261117000528_outbox_kinds_with_the_step_record`, `plan_record` of `20261117023932_outbox_kinds_with_the_plan_record`, `conflict_confirm` and `merge_forward` of `20261119003157_conflict_reads_and_merge_forward`, and `phase_ended`, which that list keeps, among them, with `design_changes` added, so the schema needs no restore.
 Its version stands above `20261119003157`, so the list of that migration never runs after it.
-Three migrations write the list after it, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`) and then `20261126163320_state_events`, and each list keeps `design_changes`.
+Five migrations write the list after it, the design-gate basis's `20261122154643_outbox_kinds_with_the_basis_seeds` (dispatch://INFRA-3320), the release whose daemon tells a held role of a merge hold (`20261126110259_merge_holds_changed`), `20261126163320_state_events`, and then the done-by-checks release's `20261128022325_done_by_checks` and `20261128022326_merged_new_work`, in that order, the last of whose lists is the last word of the kind check, and each list keeps `design_changes`.
 A `design_changes` row that this release queued waits in the outbox under the earlier daemon, which runs no lane of that kind, and it runs once this release is back.
 
 **Four statements must run before the earlier image is pinned.**
@@ -3528,7 +3770,7 @@ It adds four columns to `phases` beside the phase entry.
 `entry_given_task`, `entry_given_entry` and `entry_given_generation` are the last task a phase worker was given for an entry, as it was composed, that entry, and the issue's generation it was given in (`record.PhaseRow.Given`, one `record.GivenTask`, which `record.PhaseRow.GivenFor` reads), `''`, 0 and 0 until this release writes them, and on every architect's row: the raise of an entry writes the work it is raised with, and a retry of the entry writes the retry's own task, beside `entry_task`, which keeps the text the role was sent with the daemon's decorations of a send, the base-merge sentence of a testing task of a parent and the reviewer's two sentences of its review round.
 The admission pass holds the given task for a parent whose start has not reached its worker, or whose worker it stops in the middle of its phase, where the given entry is the entry the row stands on and the given generation is the issue's, after the turn that took the task has ended too, and the return decorates the task it gives back once.
 The design-gate basis of dispatch://INFRA-3320, in this same release, adds the basis and kept-approval columns of `design_gates` and the column `issues.view_of` (`20261114064234_design_gate_basis`), and the outbox kinds `pending_basis_seed` and `reparent_seed` (`20261122154643_outbox_kinds_with_the_basis_seeds`).
-That migration writes the kind check above the design news's `20261119203047_design_news` and keeps `design_changes` and `phase_ended` in it; two migrations write the list after it, the merge-holds release's `20261126110259_merge_holds_changed` and then `20261126163320_state_events`, and each list keeps all four kinds: `pending_basis_seed`, `reparent_seed`, `design_changes` and `phase_ended`.
+That migration writes the kind check above the design news's `20261119203047_design_news` and keeps `design_changes` and `phase_ended` in it; four migrations write the list after it, the merge-holds release's `20261126110259_merge_holds_changed`, `20261126163320_state_events`, and then the done-by-checks release's `20261128022325_done_by_checks` and `20261128022326_merged_new_work`, in that order, and each list keeps all four kinds: `pending_basis_seed`, `reparent_seed`, `design_changes` and `phase_ended`.
 This release queues rows of `phase_ended` again: the message that tells a parent's worker that the admission pass ended its phase.
 The release also queues the notice kinds `awaiting-children`, `basis-ended`, `basis-changes-requested` and `resting-root`, and the supervise operation `retire_task`.
 
@@ -4273,6 +4515,7 @@ So after the roll-forward a cause the earlier release wrote with other text is s
 `20261124130001_pull_request_reviews_requested.up.sql`, of #5398's release, carries no way back, since an earlier release neither reads nor writes the five columns it adds and its insert leaves them at the values that say no read wrote them; a row such a release updates, at a new head or at the same one, keeps them beside its own `state_read_at`, and `pull_requests.evidence_read_at` makes them read as unread there.
 `20261124182040_issue_pod_disks.up.sql`, of #4392's release, carries no way back, since an earlier release names `issue_pod_disks` in no statement and leaves it standing.
 `20261125181828_p0_bound.up.sql`, of dispatch://INFRA-5636's release, carries no way back, since an earlier release reads no row of the table it adds or of the columns it adds to `issues`.
+A rollback of a store that the release that closes an issue when its checks pass migrated runs the two blocks of [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass) first, which delete that version's row.
 A rollback of a store that #4590's release or a later one migrated runs #4903's way back and the steps of [Rolling back the release that gives up on intake messages](#rolling-back-the-release-that-gives-up-on-intake-messages) first, and those steps delete rows alone and keep the version row of `20261120144241_intake_failures`.
 A rollback of a store that #5303's release or a later one migrated runs the way back in the header of `20261123224717_members_owed.up.sql` first, which deletes that version's row.
 A rollback of a store that cybermonklabs/legion#5310's release or a later one migrated runs the way back in the header of `20261124033010_plan_earlier_givers.up.sql` too, with the steps of [Rolling back the release whose owner's plan picks the steps](#rolling-back-the-release-whose-owners-plan-picks-the-steps), and it deletes that version's row.
@@ -4290,6 +4533,7 @@ On a store that a release at contract 146 migrated, run the contract 146 block a
 On a store that cybermonklabs/legion#4598 migrated, run that release's one statement ([Rolling back the release that fences each value of the copy of Dispatch's issues](#rolling-back-the-release-that-fences-each-value-of-the-copy-of-dispatchs-issues)) before every one of these, on one that cybermonklabs/legion#4581 migrated, the way back in the header of its `20261120042902_claim_agent_resume_generation.up.sql` before every one of these too, and on one that cybermonklabs/legion#4573 migrated, the statement of [Rolling back the release that lets the owning architect's status stand](#rolling-back-the-release-that-lets-the-owning-architects-status-stand) before every one of these too, each with the daemon stopped and before the earlier image is pinned.
 Those three touch no row in common, so any of them runs first.
 Every store that cybermonklabs/legion#3995's release migrated is such a store on all three counts, since that release carries #4598, #4581 and #4573.
+On a store that the release that closes an issue when its checks pass migrated, run the two blocks of [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass) before every one of these, those three included, with every project's daemon stopped.
 The eleven statements, after that block where it runs, leave the store at the earlier release's schema, but for what the later migrations that the list after the block leaves standing added, and the store then reports its highest recorded row (`schemaVersion` in `internal/store/store.go`): the earlier release's own version, 20261112180548, on a store the release at contract 94 migrated, which records it above this migration's own 20261111225552, and else the highest of the migrations the list after the block leaves standing that the store records, since neither block deletes a version row but its own and the way back of each later release deletes none but its own migration's, where it deletes one.
 #4194's release adds one statement that changes no version, the strip of `wakeDetail` from each queued start in [Rolling back idle release](#rolling-back-idle-release), which runs after its daemon stops and before the earlier image starts.
 
@@ -4413,6 +4657,10 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
+20261128022325_done_by_checks adds the phase `verifying`, the merge snapshot and the close wait's columns of `issues`, two columns of `production_checks`, one of `pending_task_deliveries`, the tables `defects` and `close_reads` and two outbox kinds, and writes `step_run_witness` again, which reads `phases.entry`, and it writes none of the six, so the block holds over it; a rollback past it runs the two blocks of its own section first, [Rolling back the release that closes an issue when its checks pass](#rolling-back-the-release-that-closes-an-issue-when-its-checks-pass), which put the function back as 20261117004117_step_starts wrote it, drop what the migration adds and delete its version row, while `phases.entry` stands.
+20261128022326_merged_new_work adds the kind `request` to `defects`, the outbox kind `merge_read` and the column `issues.never_merged_confirmed`, and it writes none of the six, so the block holds over it; a rollback past it runs the block of its own section first, [Rolling back the release that adds the request kind, the merge read kind and the never-merged column](#rolling-back-the-release-that-adds-the-request-kind-the-merge-read-kind-and-the-never-merged-column), before the blocks of the release that closes an issue when its checks pass.
+20261128022327_branch_refusals adds the table `branch_refusals` and the notice kind `branch-refused`, and it writes none of the six, so the block holds over it.
+A rollback past it first runs the block of [its own section](#rolling-back-the-release-that-ends-a-branch-row-github-refuses-for-good).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:

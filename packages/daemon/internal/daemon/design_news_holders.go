@@ -253,7 +253,7 @@ func readOwedHolders(ctx context.Context, tx pgx.Tx, records record.Store, claim
 		}
 		holder.entry = record.PhaseRowOf(rows, holder.role).Entry
 		holders[key] = holder
-		runKeys = append(runKeys, record.RoleRunKey{Token: holder.token, Issue: holder.issue.Key, Role: holder.role, Generation: holder.issue.Generation})
+		runKeys = append(runKeys, record.RunKey(holder.token, holder.issue, holder.role))
 	}
 	runs, err := records.RoleRuns(ctx, tx, runKeys)
 	if err != nil {

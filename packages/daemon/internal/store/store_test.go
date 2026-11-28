@@ -812,6 +812,27 @@ func migrateThrough(t *testing.T, store *Store, version int) {
 	}
 }
 
+// migrateAllBut applies every embedded migration but versions, in version order: the database of
+// the release before the one that adds versions, with each migration that sorts above them and
+// landed beside it. A caller names each version of one release that depends on another of them,
+// as the merged-new-work migration depends on the done-by-checks one's table of defects.
+func migrateAllBut(t *testing.T, store *Store, versions ...int) {
+	t.Helper()
+	ctx := context.Background()
+	all, err := migrations.All()
+	if err != nil {
+		t.Fatalf("read the embedded migrations: %v", err)
+	}
+	for _, migration := range all {
+		if slices.Contains(versions, migration.Version) {
+			continue
+		}
+		if _, err := store.apply(ctx, migration); err != nil {
+			t.Fatalf("apply %s: %v", migration.Name, err)
+		}
+	}
+}
+
 // phaseRowOf is the phases row of role on issue, read through st as the record reads it, and the
 // zero row where it holds none (record.PhaseRowOf). The migration tests read a row through the
 // store they migrated and through one reopened as a daemon restart reopens it.
@@ -1092,7 +1113,9 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // 20261117000528, the plan record's 20261117023932, dispatch://INFRA-4374's 20261119003157
 // (conflict_confirm and merge_forward), dispatch://INFRA-175's 20261119203047 (design_changes),
 // dispatch://INFRA-3320's 20261122154643 (the two basis seeds), the merge holds' 20261126110259
-// (merge_holds_changed) and dispatch://INFRA-3931's state events' 20261126163320 do: the case of a
+// (merge_holds_changed), dispatch://INFRA-3931's state events' 20261126163320, the
+// done-by-checks migration's 20261128022325 (close_read and close_wait_publish) and the
+// merged-new-work migration's 20261128022326 (merge_read) do: the case of a
 // database main migrated applies a version left out of the list before the list's own rewrites of
 // that check, which do not name the later kind, so the row seeded of that kind fails the upgrade.
 // So does one that reads a column a version of the list adds, as t-e-54's 20261116144907 reads
@@ -1102,15 +1125,19 @@ func TestTheServingRunBackfillsForARelaunchingClaim(t *testing.T) {
 // version (20261124033010) and the parent of a plan task (20261124022547) add a column to
 // 20261117034837's issue_plans and plan_tasks: applied as main's, before that table exists, each
 // fails on the missing table. So does the launch totals' 20261125171320, which alters step_starts
-// (20261117004117). 20261126163320 is the last migration that writes outbox_kind_check:
-// it stands above main's 20261126110259, 20261122154643, 20261119203047 and 20261119003157, which
-// write it too, and main's 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write
-// none. The cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of
-// the list adds either, so neither is in the list. The project pause's 20261115194357 is in it as
-// well, though it rewrites no kind list: a database migrated before the pause takes it in the
-// upgrade, over a row of every kind the schema admits, and its held_by_pause column on the outbox
-// must take them all. Any other version left out makes the cases below weaker, never red, which is
-// why the comment says where the list comes from.
+// (20261117004117). The merged-new-work migration's 20261128022326
+// is the last migration that writes outbox_kind_check: it stands above the done-by-checks
+// 20261128022325, the state events' 20261126163320, the merge holds' 20261126110259, main's
+// 20261122154643, the design news's 20261119203047 and main's 20261119003157, which write it too,
+// and main's 20261111090000, 20261111091500, 20261116144907 and 20261123212127 write none.
+// 20261128022325 also replaces the design news's design_news_current, which it could not drop
+// before 20261119203047 made it. The
+// cache trimmer's two, 20261111090000 and 20261111091500, read no column a version of the list
+// adds either, so neither is in the list. The project pause's 20261115194357 is in it as well,
+// though it rewrites no kind list: a database migrated before the pause takes it in the upgrade,
+// over a row of every kind the schema admits, and its held_by_pause column on the outbox must take
+// them all. Any other version left out makes the cases below weaker, never red, which is why the
+// comment says where the list comes from.
 var thisRelease = map[int]bool{
 	20261029120000: true, 20261029120100: true, 20261029120200: true, 20261029120300: true,
 	20261029120400: true, 20261029120600: true, 20261029120700: true, 20261029120800: true,
@@ -1123,6 +1150,7 @@ var thisRelease = map[int]bool{
 	20261117023932: true, 20261117034837: true, 20261117064152: true, 20261119003157: true,
 	20261119203047: true, 20261122154643: true, 20261123212127: true, 20261124022547: true,
 	20261124033010: true, 20261125171320: true, 20261126110259: true, 20261126163320: true,
+	20261128022325: true, 20261128022326: true,
 }
 
 const idleRelease = 20261101222956
@@ -1148,9 +1176,9 @@ var retiredOutboxKinds = []record.OutboxKind{"ready_merge", "auto_merge_disable"
 // the role-holders kind's 20261116165926 or the merge forward's 20261119003157, whose lists leave
 // it out, and the three state kinds would be, had the state events' 20261126163320 stood below the
 // merge holds' 20261126110259, whose list leaves them out. step_record, plan_record,
-// conflict_confirm, merge_forward, design_changes, the two basis seeds and merge_holds_changed are
-// refused too, unless the state events' list, which runs after each list that names them, names
-// them too.
+// conflict_confirm, merge_forward, design_changes, the two basis seeds, merge_holds_changed and the
+// three state kinds are refused too, unless the done-by-checks list of 20261128022325, which runs
+// after each list that names them, names them too.
 func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.T) {
 	t.Parallel()
 	all, err := migrations.All()
@@ -1189,6 +1217,14 @@ func TestTheOutboxCheckAdmitsEveryKindWhicheverOrderTheMigrationsRan(t *testing.
 		// release's binary then applies its own versions and main's later ones together.
 		{"a database at the idle release", func(m migrations.Migration) bool {
 			return !thisRelease[m.Version] && m.Version <= idleRelease
+		}},
+		// A database main migrated once it took the merge holds' 20261126110259, which is every
+		// deployment running main since then. It lacks the done-by-checks migration, which stands
+		// above 20261126110259, and the merged-new-work one, which stands above that and changes
+		// its table of defects, so the upgrade applies both after that list, as a fresh database
+		// does. The last list is the last word, and it must name merge_holds_changed too.
+		{"a database main migrated with the merge holds", func(m migrations.Migration) bool {
+			return m.Version != doneByChecksVersion && m.Version != mergedNewWorkVersion
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

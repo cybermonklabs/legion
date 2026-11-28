@@ -158,7 +158,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if !ungated && sameDocument && stored.LatestVersion > version {
 		e.logOnCommit(ctx, "workflow: a registration whose read predates the gate's newest version changes nothing", "issue", issue.Key,
 			"artifact", fact.ArtifactID, "version", version, "gate_version", stored.LatestVersion)
-		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: stored.LatestVersion, Generation: issue.Generation})
+		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: stored.LatestVersion, Generation: issue.ArchitectGeneration()})
 	}
 	// A review the daemon applied at this version after the registration's read began is newer
 	// than anything that read could show: the person acted after it. The gate keeps it, so a read
@@ -167,7 +167,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	if !ungated && sameDocument && classify.ReviewAfter(*stored, version, fact.Since) {
 		e.logOnCommit(ctx, "workflow: a registration read Dispatch before the review the gate already holds", "issue", issue.Key,
 			"artifact", fact.ArtifactID, "version", version, "open", classify.DesignGateOpen(*stored), "since_seq", fact.Since.Seq)
-		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation})
+		return intake.Result{}, e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.ArchitectGeneration()})
 	}
 	basis := e.registeredBasis(fact, ungated, stored, version)
 	// A row that joins a tree its gate has already released — the Verification document an
@@ -257,7 +257,7 @@ func (e *Engine) gateRegistered(ctx context.Context, tx pgx.Tx, fact intake.Gate
 	}
 	e.logOnCommit(ctx, "workflow: design gate registered", "issue", issue.Key, "artifact", fact.ArtifactID, "step", step,
 		"version", version, "open", classify.DesignGateOpen(gate), "changes_requested", changesRequested, "gated_steps", e.cfg.Steps)
-	if err := e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.Generation}); err != nil {
+	if err := e.enqueue(ctx, tx, fact.Issue, record.GateSeed{ArtifactID: fact.ArtifactID, Step: step, Version: version, Generation: issue.ArchitectGeneration()}); err != nil {
 		return intake.Result{}, err
 	}
 	if err := e.declareRegistration(ctx, tx, *issue, fact, request, gate); err != nil {
@@ -658,7 +658,7 @@ func (e *Engine) mirrorRegisteredRequest(ctx context.Context, tx pgx.Tx, root re
 // is reset closed, as a gated step's is.
 func (e *Engine) gateAboveDispatch(ctx context.Context, tx pgx.Tx, fact intake.GateAboveDispatch) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Read.Key)
-	if err != nil || issue == nil || issue.Generation != fact.Generation {
+	if err != nil || issue == nil || issue.ArchitectGeneration() != fact.Generation {
 		return intake.Result{}, err
 	}
 	gates, err := e.store.GatesOf(ctx, tx, issue.Key)
@@ -727,7 +727,7 @@ func (e *Engine) declareRegistration(ctx context.Context, tx pgx.Tx, root record
 // is the mirror's; a gate of another generation or document is left as it is.
 func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.GateRequestFound) (intake.Result, error) {
 	root, err := e.recordedRoot(ctx, tx, fact.Issue)
-	if err != nil || root == nil || root.Generation != fact.Generation || fact.RequestAsk == "" {
+	if err != nil || root == nil || root.TreeRun() != fact.Generation || fact.RequestAsk == "" {
 		return intake.Result{}, err
 	}
 	gates, err := e.store.GatesOf(ctx, tx, root.Key)
@@ -794,6 +794,9 @@ func (e *Engine) gateRequestFound(ctx context.Context, tx pgx.Tx, fact intake.Ga
 // approval.
 func (e *Engine) dispatchArtifact(ctx context.Context, tx pgx.Tx, fact intake.DispatchArtifact) (intake.Result, error) {
 	if err := e.basisArtifact(ctx, tx, fact); err != nil {
+		return intake.Result{}, err
+	}
+	if err := e.verificationChanged(ctx, tx, fact); err != nil {
 		return intake.Result{}, err
 	}
 	handover, err := e.personHandover(ctx, tx, fact)

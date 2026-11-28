@@ -2,6 +2,7 @@ package admit
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 // minimalDeployment is the smallest legion.yaml that loads, under this package's own project
@@ -451,6 +453,260 @@ func TestAQuietTreeIsToldToTheControllerOncePerStall(t *testing.T) {
 	if got := stalledRoots(t, pool); got != nil {
 		t.Fatalf("the pass after the promotion told the controller of %v, want nothing: a tree the daemon started an hour ago has not stopped", got)
 	}
+}
+
+// A tree whose root waits in verifying is no stall. Its pull request merged and no role works
+// that phase: the close waits for a check of its goal, for its production check, for a defect,
+// for an open next change, or for an issue beneath it (phase.Verifying). What ends the wait is
+// a report or a departure and never a worker of the tree, so the measure reads the phase as a
+// wait of the daemon's own (lineHolds.waitsByDesign) and the controller hears nothing.
+//
+// The control stands beside it, on the same database, the same clock and the same quiet time:
+// a root in implementing, which a worker of its tree is there to move, is told. A rule that
+// silenced the project whole would fail on that root, and a rule that reads the merged root as
+// a tree at work on no slot — as it reads accepting, retro and merging — fails on the first.
+func TestAWaitForChecksIsAWaitByDesign(t *testing.T) {
+	pool := migratedPool(t)
+	bound := deploymentBound(t, "")
+	admission := quiet(t, 4)
+	admission.UseStalledTreeNotice(bound)
+	registerController(t, pool)
+	records := claimStore(t, pool)
+
+	// The merged root: its close waits in verifying, it holds none of the cap's slots, since
+	// verifying is past its review (record.KeepsSlot), and its architect sits idle.
+	const merged, stoppedRoot = "LEGION-900", "LEGION-910"
+	waiting := seedQuietRoot(t, pool, merged, "A", phase.Verifying)
+	seedPullRequest(t, pool, merged, 90, record.PullRequestMerged)
+	seedClaim(t, records, merged, merged, claim.RoleArchitect, supervise.StateIdle)
+
+	// The control: a root that has stopped in implementing, holding the slot its phase keeps.
+	// Nothing silences it, so it is told, and that slot is what keeps the project's line moving
+	// (lineCanMove), which is the state the ladder's waits are read under.
+	seedQuietRoot(t, pool, stoppedRoot, "B", phase.Implementing)
+	seedClaim(t, records, stoppedRoot, stoppedRoot, claim.RoleImplementer, supervise.StateIdle)
+
+	// The fixture's own premise, read from the rows the pass judges from: the merged root holds
+	// none of the cap's slots and the stopped root holds one. Were the merged root a holder, the
+	// measure would read it as one of the line's and this case would say nothing of its phase.
+	if record.KeepsSlot(waiting) {
+		t.Fatalf("%s in %s keeps one of the cap's slots: this case is a merged root that holds none", merged, waiting.Phase)
+	}
+	_, slots := passFacts(t, pool)
+	holdsSlot := func(key string) bool {
+		return slices.ContainsFunc(slots, func(slot record.Slot) bool { return slot.Issue == key })
+	}
+	if holdsSlot(merged) || !holdsSlot(stoppedRoot) {
+		t.Fatalf("the slots are %#v, want one of %s and none of %s: the stopped root's slot is what keeps this project's line moving",
+			slots, stoppedRoot, merged)
+	}
+
+	settled := settleMovements(t, pool, merged, stoppedRoot)
+	admission.now = func() time.Time { return settled.Add(bound + time.Hour) }
+
+	tick(t, pool, admission, "verifying")
+
+	if got, want := stalledRoots(t, pool), []string{stoppedRoot}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the controller was told of %v, want %v alone: a root whose close waits in verifying waits by design, and the root in implementing has stopped",
+			got, want)
+	}
+	// The silence is the measure's and no release's: the pass left the merged root where it
+	// stood, in the workflow, so nothing but the rule above can have kept it out of the notice.
+	if got := issue(t, pool, merged); got.Phase != phase.Verifying || !record.InWorkflow(got) {
+		t.Fatalf("%s stands at %s/%s after the pass, want it still waiting in verifying: a root the pass took out of the workflow is told to nobody for another reason",
+			merged, got.Phase, got.Status)
+	}
+}
+
+// A root that waits in verifying is told to nobody whatever the rest of its project does. The
+// case above cannot show that: there the stopped root's slot keeps the project's line moving
+// (lineCanMove), and the ladder's waits (lineHolds.waitsByDesign) are read only under a moving
+// line. Here the root in verifying is the project's only tree. It holds no slot, its one claim is
+// idle and the waiting line is empty, so every term of lineCanMove fails. That is the common case
+// and no edge: a production check runs fourteen days by default, and a project whose last tree
+// merged waits that long with nothing else open. What ends the wait is a report or a departure
+// (phase.Verifying), and nothing the project's slots decide, so the measure reads the phase
+// whether or not the line can move, as it reads a wait on work outside the tree
+// (everyIssueWaitsByDesign).
+//
+// The controls are the same project on a database of its own, under the same clock. With its one
+// root stopped in implementing, it is told. So the pass this test runs sees a stall where one
+// stands, and the silence of the first case is its phase's alone. With its root in verifying over
+// a child stopped in implementing, it is told as well: the phase silences its own issue and never
+// the tree, so a stopped issue beneath a merged root still names that tree.
+func TestAWaitForChecksIsNeverToldWhateverTheLineDoes(t *testing.T) {
+	const root, child = loneRoot, loneChild
+
+	t.Run("verifying", func(t *testing.T) {
+		pool, admission := loneTree(t, phase.Verifying, record.PullRequestMerged, "")
+		// The fixture's own premise, read as the pass reads it: nothing of this project can move
+		// by itself, so the ladder's waits silence nothing here and only a reading of the phase
+		// that ignores the line can keep the root out of the notice.
+		if lineMoves(t, pool, admission) {
+			t.Fatalf("the project's line can move, want it stopped: this case is a root in verifying with nothing else in its project")
+		}
+
+		tick(t, pool, admission, "verifying-alone")
+
+		if got := stalledRoots(t, pool); got != nil {
+			t.Fatalf("the controller was told of %v, want nothing: a root whose close waits in verifying waits by design whether or not its project's line can move",
+				got)
+		}
+		if got := issue(t, pool, root); got.Phase != phase.Verifying || !record.InWorkflow(got) {
+			t.Fatalf("%s stands at %s/%s after the pass, want it still waiting in verifying: a root the pass took out of the workflow is told to nobody for another reason",
+				root, got.Phase, got.Status)
+		}
+	})
+
+	t.Run("control-implementing", func(t *testing.T) {
+		pool, admission := loneTree(t, phase.Implementing, record.PullRequestOpen, "")
+
+		tick(t, pool, admission, "implementing-alone")
+
+		if got, want := stalledRoots(t, pool), []string{root}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the controller was told of %v, want %v: a root stopped in implementing has stopped, and this pass must see it",
+				got, want)
+		}
+	})
+
+	t.Run("control-stopped-child", func(t *testing.T) {
+		pool, admission := loneTree(t, phase.Verifying, record.PullRequestMerged, phase.Implementing)
+
+		tick(t, pool, admission, "stopped-child")
+
+		if got, want := stalledRoots(t, pool), []string{root}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the controller was told of %v, want %v: %s has stopped in implementing beneath the merged root, and the root's wait silences the root alone",
+				got, want, child)
+		}
+	})
+
+	// A root in verifying whose close waits on an open Dispatch child the daemon has not released
+	// waits on the tree's own work: releasing that child is its architect's act, as a
+	// children-first wait on such a child is (lineHolds.waitsOnWorkOutsideItsTree). Nothing ends
+	// that wait by itself, so the phase silences the root no longer and the tree is told. Without
+	// this the controller never heard of a merged root that waited forever on a child nobody had
+	// released.
+	t.Run("unreleased-child", func(t *testing.T) {
+		pool, admission := loneTree(t, phase.Verifying, record.PullRequestMerged, "")
+		const unreleased = "LEGION-950"
+		wait, err := json.Marshal(record.StoredWait{Entered: fixedNow.Add(-72 * time.Hour),
+			OpenChildren: []record.WaitIssue{{Key: unreleased, Status: "todo", Since: fixedNow.Add(-72 * time.Hour)}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := pool.Exec(t.Context(), `update issues set close_wait = $2 where key = $1`, root, wait); err != nil {
+			t.Fatalf("store %s's wait on %s: %v", root, unreleased, err)
+		}
+
+		tick(t, pool, admission, "unreleased-child")
+
+		if got, want := stalledRoots(t, pool), []string{root}; !reflect.DeepEqual(got, want) {
+			t.Fatalf("the controller was told of %v, want %v: %s's close waits on %s, which nobody has released",
+				got, want, root, unreleased)
+		}
+	})
+}
+
+// A merged root that waits in verifying for its child, which waits in verifying too, is no stall
+// on any pass. Neither issue holds a slot and no claim of the tree is at work, so the project's
+// line cannot move, and each member's phase silences that member. The control beside it is the
+// stopped child of TestAWaitForChecksIsNeverToldWhateverTheLineDoes, whose tree is told.
+func TestAQuietTreeWhoseRootWaitsForItsChildIsNoStall(t *testing.T) {
+	bound := deploymentBound(t, "")
+	pool, admission := loneTree(t, phase.Verifying, record.PullRequestMerged, phase.Verifying)
+	if lineMoves(t, pool, admission) {
+		t.Fatalf("the project's line can move, want it stopped: this case is a merged root over a merged child with nothing else in its project")
+	}
+	first := admission.now()
+	for pass := range 3 {
+		at := first.Add(time.Duration(pass) * bound)
+		admission.now = func() time.Time { return at }
+
+		tick(t, pool, admission, fmt.Sprintf("waits-for-its-child-%d", pass))
+
+		if got := stalledRoots(t, pool); got != nil {
+			t.Fatalf("pass %d told the controller of %v, want nothing: a root and its child that both wait in verifying wait by design",
+				pass, got)
+		}
+	}
+	for _, key := range []string{loneRoot, loneChild} {
+		if got := issue(t, pool, key); got.Phase != phase.Verifying || !record.InWorkflow(got) {
+			t.Fatalf("%s stands at %s/%s after the passes, want it still waiting in verifying: an issue the pass took out of the workflow is told to nobody for another reason",
+				key, got.Phase, got.Status)
+		}
+	}
+}
+
+// The tree of the stall tests over a project's only tree: loneRoot, and loneChild beneath it.
+const loneRoot, loneChild = "LEGION-960", "LEGION-961"
+
+// loneTree is a project whose one tree is loneRoot, standing in standing at that phase's own
+// Dispatch status, with the slot its phase keeps (seedQuietRoot), its pull request in pr and its
+// architect idle, measured an hour past the deployment's default bound. Where beneath names a
+// phase, the tree also holds loneChild, standing there at that phase's status with the slot the
+// phase keeps and its implementer idle.
+func loneTree(t *testing.T, standing phase.Phase, pr record.PullRequestState, beneath phase.Phase) (*pgxpool.Pool, *Admission) {
+	t.Helper()
+	bound := deploymentBound(t, "")
+	pool := migratedPool(t)
+	admission := quiet(t, 4)
+	admission.UseStalledTreeNotice(bound)
+	registerController(t, pool)
+	records := claimStore(t, pool)
+	seeded := seedQuietRoot(t, pool, loneRoot, "A", standing)
+	seeded.Status, seeded.DispatchStatus = workflow.PhaseStatus(standing), workflow.PhaseStatus(standing)
+	putIssue(t, pool, seeded)
+	seedPullRequest(t, pool, loneRoot, 96, pr)
+	seedClaim(t, records, loneRoot, loneRoot, claim.RoleArchitect, supervise.StateIdle)
+	members := []string{loneRoot}
+	if beneath != "" {
+		under := seedQuietChild(t, pool, loneRoot, loneChild, "A1", beneath, workflow.PhaseStatus(beneath))
+		if record.KeepsSlot(under) {
+			takeSlot(t, pool, loneChild)
+		}
+		seedClaim(t, records, loneRoot, loneChild, claim.RoleImplementer, supervise.StateIdle)
+		members = append(members, loneChild)
+	}
+	settled := settleMovements(t, pool, members...)
+	admission.now = func() time.Time { return settled.Add(bound + time.Hour) }
+	return pool, admission
+}
+
+// lineMoves is the stall measure's liveness clause (lineCanMove) for the project, read as the
+// pass reads it: over the live records, the slots, the line one judgement builds
+// (blockers.JudgeLine) and the trees R6 counts at work (workingTrees), under no P0 bound.
+func lineMoves(t *testing.T, pool *pgxpool.Pool, admission *Admission) bool {
+	t.Helper()
+	var moves bool
+	inTx(t, pool, func(tx pgx.Tx) {
+		records, ctx, now := record.NewStore(), context.Background(), admission.now()
+		issues, err := records.LiveIssues(ctx, tx, testProject)
+		if err != nil {
+			t.Fatalf("list the live issues: %v", err)
+		}
+		slots, err := records.Slots(ctx, tx)
+		if err != nil {
+			t.Fatalf("list the slots: %v", err)
+		}
+		facts, err := record.ReadLineFacts(ctx, tx, records, testProject, issues, admission.engine.GatedSteps())
+		if err != nil {
+			t.Fatalf("read the line facts: %v", err)
+		}
+		rows, facts, line, dropped, err := blockers.JudgeLine(ctx, tx, records, testProject, issues, record.OwnSlots(issues, slots), facts, nil, now)
+		if err != nil {
+			t.Fatalf("judge the waiting line: %v", err)
+		}
+		_, claims, err := admission.quietTrees(ctx, tx, issues, now)
+		if err != nil {
+			t.Fatalf("read the claims of the project: %v", err)
+		}
+		working, err := admission.workingTrees(ctx, tx, issues, facts, claims, now)
+		if err != nil {
+			t.Fatalf("read the trees at work: %v", err)
+		}
+		moves = admission.lineCanMove(issues, lineHoldsOf(issues, facts, slots, line, dropped), working, rows, nil)
+	})
+	return moves
 }
 
 // Five waits the daemon makes on purpose are never a stall, and six trees that look like them

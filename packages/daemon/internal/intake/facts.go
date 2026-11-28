@@ -74,6 +74,18 @@ type DispatchIssue struct {
 	// by its daemon-authored todo event.
 	ActorSession string
 	DaemonActor  bool
+	// PersonActor is the id of the person whose event wrote the state: a Dispatch user actor's
+	// nonempty id as decoded, or the operator's own write through its grant (api's
+	// recordOwnStatusWrite). It is empty for a session, for Dispatch's own system actor, for an
+	// event naming no actor, and for a view or listing, which no one event wrote. Only a person may
+	// confirm never-merged work, so a door reads it, never ActorSession or DaemonActor.
+	PersonActor string
+	// Requester is who asked for the status a route's own write made (OwnStatusWrite): the
+	// controller's set_status, an architect's rerun_child or release_children, or a person's,
+	// the operator's legion issue status among them. A request for new work on a merged issue
+	// carries it to the request it writes. It is empty for a decoded event, whose actor says who
+	// wrote it.
+	Requester claim.Role
 	// ResolvedRepo is the repository (owner/name) Dispatch resolves the issue to at the event: its
 	// own, else its nearest ancestor's, else its project's default; empty when it resolves to none.
 	// The workflow takes it when it first records the issue, and a recorded issue's record follows
@@ -229,10 +241,14 @@ func ObservedIssue(issue dispatch.Issue) DispatchIssue {
 // (dispatch.Client.SetStatus), the state the event carries, at the event's sequence, and its actor
 // is the daemon's own session. An API route that writes a status applies it in the request, so the
 // record does not wait for the event to come back through the consumer; the event, at a sequence no
-// later than this one, then finds its fence.
-func OwnStatusWrite(written dispatch.Issue) DispatchIssue {
+// later than this one, then finds its fence. requester is who asked the route for the write
+// (DispatchIssue.Requester), and personActor the person who asked through the operator's grant,
+// "" for any other asker (DispatchIssue.PersonActor): Dispatch records every such write as the
+// daemon's, so only the route can say who asked.
+func OwnStatusWrite(written dispatch.Issue, requester claim.Role, personActor string) DispatchIssue {
 	event := ObservedIssue(written)
 	event.Observed, event.DaemonActor, event.StatusMove, event.Type = false, true, true, "issue.updated"
+	event.Requester, event.PersonActor = requester, personActor
 	if written.Status == "done" {
 		event.Type = "issue.closed"
 	}
@@ -682,6 +698,25 @@ type DispatchClaim struct {
 }
 
 func (f DispatchClaim) namedIssue() (string, bool) { return f.Key, true }
+
+// DispatchResultChanged is a change of what Dispatch computes for the checks of Key's
+// Verification document, at Seq in Key's event log: a result recorded against one of them
+// (result.recorded, with its id, its check's block id and its verdict), a retraction of one
+// (result.retracted, with no verdict), a pull request that reached Key or left it
+// (issue.pull_request_attribution_changed), or a new deploy of a program a live check of Key reads
+// (deploy.recorded), the last two with no result and no check. Dispatch appends a result's events
+// on the issue whose document holds the check, whichever issue the result was recorded on, so Key
+// is the issue whose close the change may decide. None of them decides a check: the read of the
+// checks does (record.CloseRead), which each queues for an issue whose close waits.
+type DispatchResultChanged struct {
+	Key      string
+	Seq      int64
+	ResultID string
+	Check    string
+	Verdict  string
+}
+
+func (f DispatchResultChanged) namedIssue() (string, bool) { return f.Key, true }
 
 // DispatchConsumerPosition is one measurement of the Dispatch consumer's own position: its ack
 // floor as a stream sequence — the point before which every matching message is acknowledged,
@@ -1170,13 +1205,16 @@ type PullRequestReviewRequests struct {
 
 func (PullRequestReviewRequests) namedIssue() (string, bool) { return "", false }
 
-// PullRequestMerged records GitHub's terminal merged observation: the merge commit, and HeadSHA,
-// the head the pull request merged at, "" when the observation names none.
+// PullRequestMerged records GitHub's terminal merged observation: the merge commit, HeadSHA, the
+// head the pull request merged at, "" when the observation names none, and MergedAt, GitHub's
+// merged_at of the pull request, which orders a later merge of the issue after an earlier one. It
+// is zero where the observation carries none, or one that does not parse: no reader invents one.
 type PullRequestMerged struct {
 	Repo     string
 	Number   int
 	MergeSHA string
 	HeadSHA  string
+	MergedAt time.Time
 }
 
 func (PullRequestMerged) namedIssue() (string, bool) { return "", false }
@@ -1219,6 +1257,40 @@ type MergeQueueReadDone struct {
 }
 
 func (f MergeQueueReadDone) namedIssue() (string, bool) { return f.Issue, true }
+
+// CloseChecksRead is the outbox's read of Dispatch's states for the close of Issue
+// (record.CloseRead), carried back as a fact: never decoded from an event. Generation is the
+// generation the read was queued for, and ReadAt the moment its row began its first Dispatch call,
+// so a read in flight across an entry into verifying is not taken as a read after it. Answer is
+// what Dispatch answered, in the layout the close's stored read keeps (record.CheckReadAnswer): the
+// results, the results at the newest merge's final head where the close needs them, the issue's
+// children, and the Verification document's approval. It is nil where the read failed, and Failure
+// then says why. The workflow stores it as the issue's newest read (record.CheckRead) and judges
+// the close on it.
+type CloseChecksRead struct {
+	Issue      string
+	Generation uint64
+	ReadAt     time.Time
+	Failure    string
+	Answer     *record.CheckReadAnswer
+}
+
+func (f CloseChecksRead) namedIssue() (string, bool) { return f.Issue, true }
+
+// MergeRead is the outbox's read of an older issue's merge (record.MergeRead) finding it, carried
+// back as a fact: never decoded from an event. Issue and Generation are the pending row's. Merge is
+// the newest merged pull request that names the issue, as GitHub answered it, in the snapshot's
+// fields (record.Store.PutMergeSnapshot), with a field GitHub did not answer left zero. The
+// executor posts no fact for a read with no answering candidate: an unread merge is no merge. No
+// handler has a case for it, the workflow's included, so applying it changes nothing of the issue
+// (daemon's answerMergeRead).
+type MergeRead struct {
+	Issue      string
+	Generation uint64
+	Merge      record.Merge
+}
+
+func (f MergeRead) namedIssue() (string, bool) { return f.Issue, true }
 
 // ConflictConfirmDone is the outbox's second read of a conflicting head (record.ConflictConfirm)
 // finishing with no answer that decides: never decoded from an event. GitHub answered UNKNOWN for
@@ -1925,7 +1997,7 @@ type CutoverMergerRepair struct{}
 
 func (CutoverMergerRepair) namedIssue() (string, bool) { return "", false }
 
-// CheckReport is the checking role's report on one look of its closed issue's production check:
+// CheckReport is the checking role's report on one look of its issue's production check:
 // the `legion` tool's `handoff_complete` on an issue whose check is open (api/handoff.go),
 // carrying no commit. Verdict is pass, pending or fail; Summary is what the agent saw. Look is
 // the look the route read as the check's current one, so a report of a look its bound or a hold
@@ -2093,10 +2165,15 @@ type Handler interface {
 // cause can clear while the fact's id stays the same, and writes nothing where it sets it. A
 // PlanGiven applies whatever its mark (factApplies), so its Unspent changes only what a release
 // before reads, which decides by the mark alone.
+//
+// Defect is what the workflow answers report_defect and withdraw_defect where it took the call,
+// which the route writes as its answer (api's reportDefect, withdrawDefect), and nil for every
+// other fact and for a refusal.
 type Result struct {
 	Refusal   *Refusal
 	Duplicate bool
 	Unspent   bool
+	Defect    *DefectAnswer
 }
 
 // Refusal is a committed API response or JetStream log record, never a transaction failure.
@@ -2570,6 +2647,9 @@ func ApplyHandlers(ctx context.Context, tx pgx.Tx, fact Fact, handlers []Handler
 		}
 		if result.Refusal == nil {
 			result.Refusal = applied.Refusal
+		}
+		if result.Defect == nil {
+			result.Defect = applied.Defect
 		}
 		result.Unspent = result.Unspent || applied.Unspent
 	}

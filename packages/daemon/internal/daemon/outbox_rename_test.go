@@ -229,7 +229,7 @@ func TestTheBranchOfATreeRecordedBeforeItsTransferIsCreatedOnTheRepositoryGitHub
 			// repository, so this outbox needs no database.
 			runner := renameOutbox(t, nil, record.NewStore(), github.url, tc.served, tc.renames)
 
-			if err := runner.createBranch(context.Background(), issue); err != nil {
+			if _, err := runner.createBranch(context.Background(), issue); err != nil {
 				t.Fatalf("create the branch of %s: %v", issue.Key, err)
 			}
 

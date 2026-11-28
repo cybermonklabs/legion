@@ -169,7 +169,8 @@ type DeliveryWake struct {
 // debug and adds no warning of its own.
 //
 // token is the claim the wake brings back, and the role it names is the role woken: a token that
-// names no role is an error. generation is the issue's generation, which a start that brings the
+// names no role is an error. generation is the generation a start of that role serves on the issue
+// (record.Issue.GenerationOf: the tree's run for a root's architect), which a start that brings the
 // role back names. mark is the pause that held the outbox row the wake is taken for
 // (record.OutboxRow.HeldByPause, which the resume writes on every row its pause holds), 0 for a
 // row no pause held. PodRecords.PauseOfWake reads which pause holds the wake from the token and

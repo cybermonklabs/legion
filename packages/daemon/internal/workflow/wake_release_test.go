@@ -234,9 +234,9 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		if err := st.ReleaseSuspendedClaim(ctx, project, "LEGION-208", claim.RoleImplementer, boundary); err != nil {
 			t.Fatalf("record the claim the release suspended: %v", err)
 		}
-		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+		resume := func(role claim.Role, run store.IssueRun, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
-				Role: role, Generation: generation}, time.Now())
+				Role: role, Generation: run.StartOf("LEGION-208", role)}, time.Now())
 			if err != nil {
 				return store.IdleReleaseRow{}, err
 			}
@@ -333,9 +333,9 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		if err := applyWake(rig, "wake", fact); !errors.As(err, &later) {
 			t.Fatalf("applying the wake while the release stands = %v, want a retry", err)
 		}
-		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+		resume := func(role claim.Role, run store.IssueRun, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
-				Role: role, Generation: generation}, time.Now())
+				Role: role, Generation: run.StartOf("LEGION-208", role)}, time.Now())
 			if err != nil {
 				return store.IdleReleaseRow{}, err
 			}
@@ -390,9 +390,9 @@ func TestAWakeDuringAReleaseIsAppliedAgain(t *testing.T) {
 		if err := applyWake(rig, "wake", fact); !errors.As(err, &later) {
 			t.Fatalf("applying the wake while the release stands = %v, want a retry", err)
 		}
-		resume := func(role claim.Role, generation uint64, _ store.DroppedWake) (store.IdleReleaseRow, error) {
+		resume := func(role claim.Role, run store.IssueRun, _ store.DroppedWake) (store.IdleReleaseRow, error) {
 			row, err := record.NewOutboxRow("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208",
-				Role: role, Generation: generation}, time.Now())
+				Role: role, Generation: run.StartOf("LEGION-208", role)}, time.Now())
 			if err != nil {
 				return store.IdleReleaseRow{}, err
 			}

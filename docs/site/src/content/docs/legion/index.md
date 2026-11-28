@@ -21,11 +21,13 @@ issue's one pod.
 
 When the plan's steps have passed (in the default steps, the change is tested, reviewed and
 approved), the merger merges the pull request itself, at the head it read, under the repository's
-own branch protection. The architect accepts the change before that, where its plan has that step,
-and the merge closes the issue. The role your project's `production_check` names, the tester by
-default, then drives the merged change in production, once your deploy carries it, and records what it saw on
-the pull request. Every step leaves a record you can read: the spec, the questions and each
-phase's handoff in Dispatch, and the code and the reviews on GitHub.
+own branch protection. The architect accepts the change before that, where its plan has that step.
+The merge closes nothing by itself: the role your project's `production_check` names, the tester
+by default, then drives the merged change in production, once your deploy carries it, and records
+what it saw on the pull request. The issue closes when its checks pass, and a check that fails
+after the merge starts the next change of the same issue. Every step leaves a record you can
+read: the spec, the questions and each phase's handoff in Dispatch, and the code and the reviews
+on GitHub.
 
 The diagram follows the default steps: a plan can leave steps out and name the rest in another
 order, with the implementer before each step that reads its pull request.
@@ -48,16 +50,17 @@ flowchart LR
   accepting --> retro
   accepting -. sends back .-> implementer
   merger --> merge["The merger merges the head it read;<br/>the repository's rules land it"]
-  merge --> done["The merge<br/>closes the issue"]
-  done --> production["Production check<br/>(the role production_check names, on the pull request)"]
+  merge --> verifying["Production check<br/>(the role production_check names, on the pull request)"]
+  verifying --> done["The checks pass:<br/>the issue closes"]
+  verifying -. a check fails .-> nextchange["The next change<br/>of the same issue"]
 ```
 
 ## Where to go next
 
 - [Concepts](/legion/legion/concepts/): the controller, the architect, the phase workers,
-  admission, the design gate, handoffs, review, the architect's acceptance, the merge that closes
-  the issue and the production check your project's `production_check` setting opens after it,
-  and how they fit together.
+  admission, the design gate, handoffs, review, the architect's acceptance, the merge, the
+  production check your project's `production_check` setting opens after it and the close when the
+  issue's checks pass, and how they fit together.
 - [Using Legion](/legion/legion/using-legion/): hand an issue to Legion, approve its spec, review
   and merge its pull request, and read what each Dispatch status means.
 - [Running Legion](/legion/legion/running-legion/): what an operator needs to run the Legion daemon

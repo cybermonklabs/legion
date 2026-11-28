@@ -22,6 +22,10 @@
 //   - is, on a Unix system, a process group of its own, which ends when every process of the
 //     group has exited, the processes the binary leaves behind included. Elsewhere it ends when
 //     the binary's own process exits, and a process it leaves behind is not waited for;
+//   - writes its standard output and standard error to files in a third directory of the test's
+//     own, which are read once the run has ended, so a process of its group that holds them past
+//     the binary's exit delays the read and fails nothing. Elsewhere than on a Unix system, what a
+//     process the binary leaves behind writes after the binary's exit is not read;
 //   - is killed and reported when it has not ended within a minute, with every process of its
 //     group;
 //   - counts its output as standard output and standard error together, except where a check
@@ -127,7 +131,6 @@
 package clitest
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -188,6 +191,20 @@ func Conformance(t *testing.T, bin string, c Case) {
 	if err := c.validate(); err != nil {
 		t.Fatalf("clitest: %v", err)
 	}
+	h := newHarness(t, bin, c)
+	t.Run("help", h.help)
+	t.Run("flag-after-positional", h.flagAfterPositional)
+	t.Run("unknown-flag", h.unknownFlag)
+	t.Run("usage-error", h.builtinUsageErrors)
+	t.Run("typo", h.typo)
+	t.Run("completion", h.completion)
+	t.Run("complete", h.complete)
+}
+
+// newHarness is the harness of the Conformance call t makes on bin and c. Each directory a run
+// gets, and the one its output files go to, is t's own, so t's end removes what a run left there.
+func newHarness(t *testing.T, bin string, c Case) *harness {
+	t.Helper()
 	// Each run starts in HOME, and os/exec reads a relative path against the run's directory.
 	path, err := exec.LookPath(bin)
 	if err == nil {
@@ -197,22 +214,16 @@ func Conformance(t *testing.T, bin string, c Case) {
 		t.Fatalf("clitest: %v", err)
 	}
 	home := t.TempDir()
-	h := &harness{
+	return &harness{
 		bin:      path,
 		name:     filepath.Base(bin),
 		dir:      home,
 		env:      append([]string{"PATH=" + os.Getenv("PATH"), "HOME=" + home, "TMPDIR=" + t.TempDir()}, c.Env...),
+		outputs:  t.TempDir(),
 		server:   c.Server,
 		commands: c.Commands,
 		hidden:   c.Hidden,
 	}
-	t.Run("help", h.help)
-	t.Run("flag-after-positional", h.flagAfterPositional)
-	t.Run("unknown-flag", h.unknownFlag)
-	t.Run("usage-error", h.builtinUsageErrors)
-	t.Run("typo", h.typo)
-	t.Run("completion", h.completion)
-	t.Run("complete", h.complete)
 }
 
 // validate refuses a Case Conformance cannot check whole.
@@ -263,13 +274,14 @@ func (c Case) validate() error {
 	return nil
 }
 
-// harness is one Conformance call's binary, the environment and directory it runs in, and the
-// Case's commands.
+// harness is one Conformance call's binary, the environment and directory it runs in, the
+// directory its output files go to, and the Case's commands.
 type harness struct {
 	bin      string
 	name     string
 	dir      string
 	env      []string
+	outputs  string
 	server   *Recorder
 	commands [][]string
 	hidden   [][]string
@@ -380,11 +392,22 @@ func (h *harness) readScript(t *testing.T, shell string, r result) {
 	if err := os.WriteFile(script, []byte(r.stdout), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	out := h.newStreamFile()
+	defer out.drop()
+	if out.err != nil {
+		t.Fatalf("no file for the output of %s %s could be made: %v", shell, flag, out.err)
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
 	cmd := h.command(ctx, reader, flag, script)
-	if out, err := cmd.CombinedOutput(); err != nil {
-		t.Errorf("%s %s refuses the output of %s: %v\n%s", shell, flag, r.argv, err, out)
+	cmd.Stdout, cmd.Stderr = out.file, out.file
+	err = cmd.Run()
+	said, readErr := out.read()
+	if readErr != nil {
+		t.Fatalf("the output of %s %s could not be read: %v", shell, flag, readErr)
+	}
+	if err != nil {
+		t.Errorf("%s %s refuses the output of %s: %v\n%s", shell, flag, r.argv, err, said)
 	}
 }
 
@@ -496,23 +519,35 @@ var crashLine = regexp.MustCompile(`(?m)^(panic|fatal error): `)
 func (r result) crashed() bool { return crashLine.MatchString(r.stdout + "\n" + r.stderr) }
 
 func (h *harness) run(args ...string) result {
+	r := result{argv: h.display(args)}
+	stdout, stderr := h.newStreamFile(), h.newStreamFile()
+	defer stdout.drop()
+	defer stderr.drop()
+	if err := errors.Join(stdout.err, stderr.err); err != nil {
+		r.failed = fmt.Sprintf("no file for its output could be made: %v: UNKNOWN", err)
+		return r
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), runTimeout)
 	defer cancel()
 	requests, connections := h.server.marks()
 	cmd := h.command(ctx, h.bin, args...)
 	inOwnGroup(cmd)
-	var stdout, stderr bytes.Buffer
-	cmd.Stdout, cmd.Stderr = &stdout, &stderr
+	cmd.Stdout, cmd.Stderr = stdout.file, stderr.file
 	err := cmd.Run()
 	exited := ctx.Err() == nil
 	groupEnded := cmd.Process == nil || waitGroup(ctx, cmd)
-	r := result{argv: h.display(args), stdout: stdout.String(), stderr: stderr.String()}
+	// Every process that could write the output has ended, or was killed, by now.
+	var errStdout, errStderr error
+	r.stdout, errStdout = stdout.read()
+	r.stderr, errStderr = stderr.read()
 	var exit *exec.ExitError
 	switch {
 	case !exited:
 		r.failed = fmt.Sprintf("did not exit within %s", runTimeout)
 	case !groupEnded:
 		r.failed = fmt.Sprintf("exited, but a process it started was still running %s after the run began", runTimeout)
+	case errStdout != nil || errStderr != nil:
+		r.failed = fmt.Sprintf("its output could not be read: %v: UNKNOWN", errors.Join(errStdout, errStderr))
 	case err == nil:
 	case errors.As(err, &exit) && exit.ExitCode() >= 0:
 		r.code = exit.ExitCode()
@@ -529,11 +564,43 @@ func (h *harness) run(args ...string) result {
 }
 
 // command is a run of path with args in the environment and the directory every run gets, killed
-// when ctx ends.
+// when ctx ends. Its output goes to files (streamFile), never to a pipe: os/exec copies a pipe in a
+// goroutine of this process, and a copy a loaded machine leaves unscheduled past WaitDelay ends
+// the run as cut short (exec.ErrWaitDelay), though every process of it ended in time. With no pipe
+// to copy, WaitDelay bounds only the wait for an exit after ctx ends and Cancel killed the run.
 func (h *harness) command(ctx context.Context, path string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, path, args...)
 	cmd.Env, cmd.Dir, cmd.WaitDelay = h.env, h.dir, time.Second
 	return cmd
+}
+
+// streamFile is a file of its own, in the directory of the test's own that the harness keeps for
+// output (harness.outputs), that a run writes one of its streams to (command), or err, why there
+// is none. The test's end removes that directory, so a file a run never dropped goes with it.
+type streamFile struct {
+	file *os.File
+	err  error
+}
+
+// newStreamFile is a new, empty streamFile.
+func (h *harness) newStreamFile() streamFile {
+	file, err := os.CreateTemp(h.outputs, "clitest-output-")
+	return streamFile{file: file, err: err}
+}
+
+// read is what the run wrote to the file. Read it once every process of the run has ended, so
+// nothing it writes is still to come.
+func (s streamFile) read() (string, error) {
+	out, err := os.ReadFile(s.file.Name())
+	return string(out), err
+}
+
+// drop closes and removes the file, where there is one.
+func (s streamFile) drop() {
+	if s.file != nil {
+		_ = s.file.Close()
+		_ = os.Remove(s.file.Name())
+	}
 }
 
 // display is how a report names a run of args.

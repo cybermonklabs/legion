@@ -76,6 +76,10 @@ var allowances = []allowance{
 	{"internal/store", "(*Store).apply", "R1", 1},
 	// DISCARD ALL and pgx's DeallocateAll on the migration's connection before it goes back.
 	{"internal/store", "releaseMigrationConn", "R3", 2},
+	// The merge read's slot: a session advisory lock, which lives on its connection outside any
+	// transaction, taken with pg_try_advisory_lock and given back with pg_advisory_unlock.
+	{"internal/store", "(*Pool).TakeMergeReadSlot", "R3", 1},
+	{"internal/store", "(*MergeReadSlot).Release", "R3", 1},
 }
 
 // excludedPackages are the packages the guard does not walk, each with its reason.

@@ -45,6 +45,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/runtime/sandbox"
 	"github.com/sjawhar/legion/daemon/internal/runtime/tmux"
 	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/wakepace"
@@ -3206,6 +3207,37 @@ func (w *workflowRuntime) sessionLost(c supervise.Claim, cause supervise.Session
 func (w *workflowRuntime) sessionStoreFault(c supervise.Claim, detail string) {
 	w.applySessionFact(c, fmt.Sprintf("session-store-fault:%s:%d", c.Token, time.Now().UnixNano()),
 		intake.SessionStoreFault{Issue: c.Issue, Role: c.Role, Detail: detail}, "apply a session store fault")
+}
+
+// startAtRefused tells the owning architect that the shim refused to start a next change's working
+// copy at its branch (supervise's Deps.StartAtRefused), in one `next-change-workspace` notice with
+// the shim's words: a person or the architect resolves the branch by the refusal's ways out, and
+// the task waits for that, charged nothing. It answers nil only once the notice's row has
+// committed, in its own transaction under ctx, the machine's claim-write deadline, since the
+// machine marks the task told on that answer alone. An error is the notice's enqueue failing, and
+// the task's next refusal tells again.
+func (w *workflowRuntime) startAtRefused(ctx context.Context, c supervise.Claim, d supervise.Delivery, reason string) error {
+	if c.Issue == "" || c.Role == claim.RoleController {
+		return nil
+	}
+	row, err := record.NewOutboxRow(c.Issue, startAtRefusedNotice(c, d, reason), time.Now().UTC())
+	if err != nil {
+		return err
+	}
+	if err := store.TransactWith(ctx, w.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		return w.records.Enqueue(ctx, tx, row)
+	}); err != nil {
+		return fmt.Errorf("queue the notice that %s's working copy did not start at its branch: %w", c.Token, err)
+	}
+	return nil
+}
+
+// startAtRefusedNotice is the owning architect's notice of a start the shim refused: which role's
+// task waits, at which branch, and the shim's words as the daemon keeps a far side's text.
+func startAtRefusedNotice(c supervise.Claim, d supervise.Delivery, reason string) record.Notice {
+	return record.Notice{Kind: "next-change-workspace", Role: c.Role, Phase: d.Phase,
+		Reason: fmt.Sprintf("The %s's first task of the next change of %s waits. Its shim did not start the working copy at %s. The shim answered: %s",
+			c.Role, c.Issue, d.StartAt.Bookmark, storetext.FarSideError(reason))}
 }
 
 // applySessionFact applies one of the two session facts on a goroutine of its own, bounded by

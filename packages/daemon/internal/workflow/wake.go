@@ -133,14 +133,15 @@ type Pods interface {
 	CancelPodBackstops(ctx context.Context, tx pgx.Tx, issue string) error
 }
 
-// wakeRow is the outbox row a wake writes: a `start` of the woken role at the issue's current
-// generation, naming no phase, carrying the task that says why the pod came back. It is the same
-// row a phase start writes, which is the point — the outbox's start executor already resumes a
-// suspended claim by rule (RequestRuleResume) and already delivers the row's task once the
-// relaunched agent is ready. A wake taken while a release of the pod still runs, after that
-// release recorded the role's claim as `released`, does not cancel the release: its row waits for
-// the release's teardown (record's outboxInOrder), so the role starts once, in the pod that comes
-// back (store.IssueRelease). Naming no phase keeps the row out of every phase
+// wakeRow is the outbox row a wake writes: a `start` of the woken role at the generation a start of
+// that role serves (record.Issue.GenerationOf: the tree's run for a root's architect, the issue's
+// own generation for every other role), naming no phase, carrying the task that says why the pod
+// came back. It is the same row a phase start writes, which is the point — the outbox's start
+// executor already resumes a suspended claim by rule (RequestRuleResume) and already delivers the
+// row's task once the relaunched agent is ready. A wake taken while a release of the pod still
+// runs, after that release recorded the role's claim as `released`, does not cancel the release:
+// its row waits for the release's teardown (record's outboxInOrder), so the role starts once, in
+// the pod that comes back (store.IssueRelease). Naming no phase keeps the row out of every phase
 // fence: the issue's phase may move between the wake and the relaunch, and the wake's task is
 // never the phase's work. It is queued as every worker's task is (queuedRow), so a woken reviewer
 // of an issue in reviewing is told the entry of its round too (WakeTask says why).
@@ -154,7 +155,7 @@ type Pods interface {
 // release's record that tells the same wake in other words renders the task again from the two
 // (retellWakeTask).
 func wakeRow(issue record.Issue, role claim.Role, kind, detail string, pause int64, task string) record.SuperviseRequest {
-	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.Generation, Task: task,
+	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: role, Generation: issue.GenerationOf("start", role), Task: task,
 		WakeKind: kind, WakeDetail: detail, Pause: pause}
 }
 
@@ -839,7 +840,7 @@ func (e *Engine) wakeReleased(ctx context.Context, tx pgx.Tx, issue *record.Issu
 	if err != nil {
 		return false, err
 	}
-	queued, err := e.cfg.Pods.StartQueued(ctx, tx, issue.Key, released.Role, issue.Generation)
+	queued, err := e.cfg.Pods.StartQueued(ctx, tx, issue.Key, released.Role, issue.GenerationOf("start", released.Role))
 	if err != nil {
 		return false, err
 	}

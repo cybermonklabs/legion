@@ -180,11 +180,11 @@ func assertNotStranded(t *testing.T, pool *pgxpool.Pool, role claim.Role, token 
 				t.Fatalf("Stranded names %+v for the %s claim, want nothing: its start is queued, held for the issue's slot", stranded, c.State)
 			}
 		}
-		runs, err := store.RoleRuns(t.Context(), tx, []record.RoleRunKey{{Token: token, Issue: returnIssue, Role: role, Generation: 1}})
+		root, err := store.Issue(t.Context(), tx, returnIssue)
 		if err != nil {
 			return err
 		}
-		root, err := store.Issue(t.Context(), tx, returnIssue)
+		runs, err := store.RoleRuns(t.Context(), tx, []record.RoleRunKey{record.RunKey(token, *root, role)})
 		if err != nil {
 			return err
 		}

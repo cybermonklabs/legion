@@ -441,10 +441,12 @@ func (r *outbox) deliveryWake(ctx context.Context, token claim.Token, wake claim
 	// The take's line is a hook of its commit. The resume below is not: it is order-sensitive and
 	// runs after the commit, so a take whose outcome is unknown fails the row, and the row's retry
 	// meets the open resume the take recorded and resumes the claim (the refused branch below).
+	// A start of the role is looked for at the generation it serves (record.Issue.GenerationOf), the
+	// one every writer of a start puts on its row: the tree's run for a root's architect.
 	var took store.DeliveryWake
 	if err := store.Transact(ctx, r.trees.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		var err error
-		if took, err = r.trees.TakeDeliveryWake(ctx, r.project, issue.Key, token, issue.Generation, r.now().UTC(), mark); err != nil || !took.Taken {
+		if took, err = r.trees.TakeDeliveryWake(ctx, r.project, issue.Key, token, issue.GenerationOf("start", held.Role), r.now().UTC(), mark); err != nil || !took.Taken {
 			return err
 		}
 		store.OnCommit(ctx, func() {

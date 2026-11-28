@@ -1338,6 +1338,15 @@ type Deps struct {
 	// held by an untaken task would wait for the next tick. Nil tells no one. It is called inside
 	// the machine's decision, so it returns at once.
 	TaskConfirmed func(c Claim)
+	// StartAtRefused is told of each task whose start of the working copy at its issue's branch the
+	// shim refused (Delivery.StartAt, runtime.ErrStartAtRefused), with the shim's words: the daemon
+	// tells the owning architect (`next-change-workspace`), and a person or the architect resolves
+	// the branch by the refusal's ways out. The task waits, charged nothing. It answers nil only once
+	// its notice is durable, and the machine marks the task told on that answer alone (StartAt.Told,
+	// tellStartRefused), so a telling that failed is made again at the task's next refusal. It is
+	// called inside the machine's decision under the claim-write deadline (Machine.write), as
+	// PauseStopped is. Nil tells no one.
+	StartAtRefused func(ctx context.Context, c Claim, d Delivery, reason string) error
 	// SessionLost is told of each claim whose recorded session the launch forgot, once, at the
 	// forget and before the fresh agent that replaces it is spawned (startFresh), so a spawn that
 	// fails leaves the issue and its architect told all the same: each has to know that a worker
@@ -3325,9 +3334,9 @@ func (m *Machine) fence(ctx context.Context, ev Event) (bool, error) {
 			return false, nil
 		}
 	case PromptAcked:
-		return m.fenceOutcome(ctx, "PromptAcked", ev.Generation, ev.DeliveryID)
+		return m.fenceOutcome(ctx, "PromptAcked", ev.Generation, ev.DeliveryID, ev.Started)
 	case PromptRefused:
-		return m.fenceOutcome(ctx, "PromptRefused", ev.Generation, ev.DeliveryID)
+		return m.fenceOutcome(ctx, "PromptRefused", ev.Generation, ev.DeliveryID, ev.Started)
 	case Timer:
 		a, ok := m.timers[ev.Kind]
 		if !ok || a.seq != ev.Seq || ev.Generation != m.claim.Generation || a.deliveryID != ev.DeliveryID ||
@@ -3403,13 +3412,17 @@ func timesADelivery(kind TimerKind) bool {
 // (promptResulted), so an acknowledgement after it would wait on a result that has come already,
 // and with the task held, nothing would retire it; an answer that ran none took the task back
 // under a new id, which may go from here.
-func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uint64, deliveryID string) (bool, error) {
+//
+// An outcome that passes keeps what its send's start of the working copy answered (keepStarted),
+// whatever outcome: the working copy moved whether or not the prompt went.
+func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uint64, deliveryID string, started *runtime.StartedAt) (bool, error) {
 	own := m.send != nil && m.send.id == deliveryID && m.send.generation == generation
 	resulted := own && m.send.resulted
 	if own {
 		m.send = nil
 	}
 	if !resulted && generation == m.claim.Generation && pendingID(m.claim.Pending) == deliveryID {
+		m.keepStarted(started)
 		return true, nil
 	}
 	if own {
@@ -3422,6 +3435,21 @@ func (m *Machine) fenceOutcome(ctx context.Context, event string, generation uin
 		m.dropStale(event, "delivery", deliveryID, pendingID(m.claim.Pending))
 	}
 	return false, nil
+}
+
+// keepStarted keeps on the pending delivery what the runtime answered when the send whose outcome
+// passed the fence started the working copy at the issue's branch (Delivery.StartAt), so a later
+// send of the task moves nothing again and still says what moved (Delivery.message). It reaches the
+// store with the outcome's own write of the delivery, or with settle's (unsaved). An answer is kept
+// once: a start already answered keeps its first answer, which is the one that moved.
+func (m *Machine) keepStarted(started *runtime.StartedAt) {
+	p := m.claim.Pending
+	if started == nil || p == nil || !p.StartAt.owed() {
+		return
+	}
+	answer := *started
+	p.StartAt.Started = &answer
+	m.unsaved = true
 }
 
 // fenceRequest is the fence on an agent's own request: it must come from the claim's current

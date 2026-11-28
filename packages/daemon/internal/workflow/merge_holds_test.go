@@ -81,8 +81,8 @@ func TestAMergeHoldsChangeTellsTheArchitectInAcceptingAndTheMergerInMerging(t *t
 	}
 }
 
-// A root whose pull request merged stands in merging until every issue under it leaves the
-// workflow (closeMerged), and a merge hold stops nothing there (PhaseFinished), so a merge holds
+// A merge moves its issue on to verifying (closeMerged), and while an issue whose pull request
+// merged still stands in merging a merge hold stops nothing there (PhaseFinished), so a merge holds
 // change writes its merger no row, and MergingNow, which the row's executor reads before each
 // attempt, says the issue left merging. The control is a root in merging whose pull request is
 // still open: it gets its row, and MergingNow says it works merging.

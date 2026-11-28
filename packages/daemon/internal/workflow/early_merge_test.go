@@ -343,10 +343,10 @@ func TestAReopenOfAMergedPullRequestChangesNothing(t *testing.T) {
 }
 
 // An issue that reaches merging with its pull request already merged has nothing left to merge:
-// the merge closes it at once, no merger is started for it, its tree lingers as any root's close
-// does, and the one start the close queues is the tester's first look of the production check
-// the merge opens (merge_close_test.go).
-func TestAnIssueReachingMergingWithItsPullRequestMergedCloses(t *testing.T) {
+// the merge is taken at once, no merger is started for it, and the issue waits in verifying for
+// the checks of its goal. Its tree does not linger, and nothing starts: no role works verifying
+// (close_wait_test.go).
+func TestAnIssueReachingMergingWithItsPullRequestMergedWaitsInVerifying(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "root", Phase: phase.Retro, Generation: 1, Status: "retro", Rank: "U"})
@@ -359,17 +359,17 @@ func TestAnIssueReachingMergingWithItsPullRequestMergedCloses(t *testing.T) {
 	if err != nil || result.Refusal != nil {
 		t.Fatalf("ApplyFact retro = %#v, %v", result, err)
 	}
-	assertPhase(t, pool, phase.Done)
+	assertPhase(t, pool, phase.Verifying)
 	var lingering bool
-	if err := pool.QueryRow(context.Background(), "select linger_until is not null from issues where key = 'LEGION-208'").Scan(&lingering); err != nil || !lingering {
-		t.Fatalf("the root lingers = %t, %v; want its tree lingering after the close", lingering, err)
+	if err := pool.QueryRow(context.Background(), "select linger_until is not null from issues where key = 'LEGION-208'").Scan(&lingering); err != nil || lingering {
+		t.Fatalf("the root lingers = %t, %v; want no linger while it waits", lingering, err)
 	}
-	assertOutboxCount(t, pool, "linger_close", 1)
-	if started := superviseRequests(t, pool, "start"); len(started) != 1 || started["LEGION-208/tester"] != 1 {
-		t.Fatalf("the close started %v, want the tester's check look alone and no merger", started)
+	assertOutboxCount(t, pool, "linger_close", 0)
+	if started := superviseRequests(t, pool, "start"); len(started) != 0 {
+		t.Fatalf("the move started %v, want nobody: no merger, and no role works verifying", started)
 	}
-	if check := productionCheck(t, pool, "LEGION-208"); check == nil || !check.Open() || check.MergeSHA != "merge" || check.Looks != 1 {
-		t.Fatalf("the production check = %+v, want it open on merge commit merge at look 1", check)
+	if check := productionCheck(t, pool, "LEGION-208"); check != nil {
+		t.Fatalf("the production check = %+v, want none at the merge", check)
 	}
 	if got := messageBodies(t, pool); len(got) != 0 {
 		t.Fatalf("Dispatch messages = %q, want none: the daemon posts no packet", got)

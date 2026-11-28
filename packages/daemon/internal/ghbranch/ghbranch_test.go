@@ -23,20 +23,45 @@ import (
 
 const baseCommit = "c0ffee0123456789abcdef0123456789abcdef01"
 
-// github is a repository's REST API as Create and DefaultBranch call it: the repository itself,
-// naming defaultBranch, each branch of refs by its exact name, and a create of a ref answered with
-// create's status and body. It records each read and each create; any other request fails the
-// test, so a Create that reads the base's tree, or posts a tree or a commit of its own, is caught
-// by name.
+// github is a repository's REST and GraphQL API as Create, Reset and DefaultBranch call it: the
+// repository itself, naming defaultBranch and its node id, each branch of refs by its exact name, a
+// create of a ref answered with create's status and body, the GraphQL mutation updateRefs, which
+// moves a ref only while it points at the update's beforeOid and answers refuse's message as an
+// error where refuse is set, or, where empty is set, moves nothing and answers a 200 with no errors
+// and no update (and where emptyDeletes is set too, the branch is gone by the next read), and a
+// compare of two commits answered with the status compared names
+// for "base...head". pushAfterRead, where set, is another process's push that lands on the branch
+// it names just after the first read of that branch's ref is answered. It records each read, each
+// create, each move and each compare; any other request fails the test, so a Create that reads the
+// base's tree, or posts a tree or a commit of its own, is caught by name. answer, where set, answers
+// first: a request it answers (ok) gets its status and body and nothing else.
 type github struct {
 	refs          map[string]string
 	defaultBranch string
 	fullName      string
 	create        func() (int, string)
+	refuse        string
+	empty         bool
+	emptyDeletes  bool
+	compared      map[string]string
+	pushAfterRead map[string]string
+	answer        func(r *http.Request) (status int, body string, ok bool)
 	mu            sync.Mutex
 	read          []string
 	creates       []map[string]string
+	patches       []patched
+	compares      []string
 	authorized    []string
+}
+
+// widgetsNodeID is acme/widgets's GraphQL node id, which the fake names beside its full name.
+const widgetsNodeID = "R_kgDOwidgets"
+
+// patched is one move of a ref the fake made: the branch it named, and the commit it pointed at
+// before (before), the one it points at now (sha) and whether the move was forced (force).
+type patched struct {
+	branch string
+	body   map[string]any
 }
 
 func (g *github) serve(t *testing.T) string {
@@ -46,7 +71,15 @@ func (g *github) serve(t *testing.T) string {
 		g.authorized = append(g.authorized, r.Header.Get("Authorization"))
 		g.mu.Unlock()
 	}, Handle: func(w http.ResponseWriter, r *http.Request) {
+		if g.answer != nil {
+			if status, body, ok := g.answer(r); ok {
+				w.WriteHeader(status)
+				_, _ = io.WriteString(w, body)
+				return
+			}
+		}
 		branch, isRef := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/git/ref/heads/")
+		basehead, isCompare := strings.CutPrefix(r.URL.Path, "/repos/acme/widgets/compare/")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/repos/acme/widgets":
 			g.reading(r.URL.Path)
@@ -54,16 +87,24 @@ func (g *github) serve(t *testing.T) string {
 			if fullName == "" {
 				fullName = "acme/widgets"
 			}
-			_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+g.defaultBranch+`"}`)
+			_, _ = io.WriteString(w, `{"full_name":"`+fullName+`","default_branch":"`+g.defaultBranch+`","node_id":"`+widgetsNodeID+`"}`)
 		case r.Method == http.MethodGet && isRef:
 			g.reading(r.URL.Path)
+			g.mu.Lock()
 			commit, found := g.refs[branch]
+			if pushed, racing := g.pushAfterRead[branch]; racing && found {
+				g.refs[branch] = pushed
+				delete(g.pushAfterRead, branch)
+			}
+			g.mu.Unlock()
 			if !found {
 				w.WriteHeader(http.StatusNotFound)
 				_, _ = io.WriteString(w, `{"message":"Not Found","status":"404"}`)
 				return
 			}
 			_, _ = io.WriteString(w, `{"ref":"refs/heads/`+branch+`","object":{"sha":"`+commit+`","type":"commit"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			g.updateRefs(t, w, r)
 		case r.Method == http.MethodPost && r.URL.Path == "/repos/acme/widgets/git/refs":
 			var body map[string]string
 			if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
@@ -75,11 +116,66 @@ func (g *github) serve(t *testing.T) string {
 			status, answer := g.create()
 			w.WriteHeader(status)
 			_, _ = io.WriteString(w, answer)
+		case r.Method == http.MethodGet && isCompare:
+			g.mu.Lock()
+			g.compares = append(g.compares, basehead+"?"+r.URL.RawQuery)
+			g.mu.Unlock()
+			status, found := g.compared[basehead]
+			if !found {
+				t.Errorf("unexpected compare %s", basehead)
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			_, _ = io.WriteString(w, `{"status":"`+status+`","ahead_by":1,"behind_by":1}`)
 		default:
 			t.Errorf("unexpected request %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotFound)
 		}
 	}})
+}
+
+// updateRefs answers GitHub's GraphQL mutation updateRefs over the one ref update Reset sends, as
+// GitHub's reference documents it: the ref moves to afterOid only while it points at beforeOid.
+// Otherwise it moves nothing and answers as GitHub answered a stale beforeOid when it was tried on
+// a scratch branch: a 200 with no data and one error, with no type and a generic message. A
+// refusal the test scripts (refuse) is answered the same way, whatever the ref points at.
+func (g *github) updateRefs(t *testing.T, w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Query     string         `json:"query"`
+		Variables map[string]any `json:"variables"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || !strings.Contains(body.Query, "updateRefs") {
+		t.Errorf("a GraphQL request other than updateRefs: %q (%v)", body.Query, err)
+		w.WriteHeader(http.StatusBadRequest)
+		return
+	}
+	name, _ := body.Variables["name"].(string)
+	before, _ := body.Variables["beforeOid"].(string)
+	after, _ := body.Variables["afterOid"].(string)
+	branch, isBranch := strings.CutPrefix(name, "refs/heads/")
+	if body.Variables["repositoryId"] != widgetsNodeID || !isBranch || before == "" || after == "" {
+		t.Errorf("updateRefs with variables %v, want acme/widgets's node id, a branch ref, beforeOid and afterOid", body.Variables)
+	}
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	refusal := g.refuse
+	if refusal == "" && g.refs[branch] != before {
+		refusal = "Something went wrong while executing your query on 2026-11-25T09:17:24Z."
+	}
+	if refusal != "" {
+		_, _ = io.WriteString(w, `{"errors":[{"message":"`+refusal+`"}]}`)
+		return
+	}
+	if g.empty {
+		if g.emptyDeletes {
+			delete(g.refs, branch)
+		}
+		_, _ = io.WriteString(w, `{"data":{"updateRefs":null}}`)
+		return
+	}
+	g.refs[branch] = after
+	g.patches = append(g.patches, patched{branch: branch, body: map[string]any{"before": before, "sha": after, "force": body.Variables["force"]}})
+	_, _ = io.WriteString(w, `{"data":{"updateRefs":{"clientMutationId":null}}}`)
 }
 
 func (g *github) reading(path string) {
@@ -101,7 +197,7 @@ func TestCreateMakesTheBranchAtTheNamedBase(t *testing.T) {
 	for _, base := range []string{"main", "develop", "release/v7.1"} {
 		t.Run(base, func(t *testing.T) {
 			g := &github{refs: map[string]string{base: baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
-			if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", base, nil); err != nil {
+			if _, err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", base, nil); err != nil {
 				t.Fatalf("Create: %v", err)
 			}
 			if got := g.reads(); !slices.Equal(got, []string{"/repos/acme/widgets/git/ref/heads/" + base}) {
@@ -129,7 +225,7 @@ func TestCreateReadsABaseWhoseNameHoldsURLSyntaxAsItself(t *testing.T) {
 	} {
 		t.Run(tc.base, func(t *testing.T) {
 			g := &github{refs: map[string]string{tc.base: baseCommit, tc.decoy: decoyCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
-			if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", tc.base, nil); err != nil {
+			if _, err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", tc.base, nil); err != nil {
 				t.Fatalf("Create at %q: %v", tc.base, err)
 			}
 			if got := g.reads(); !slices.Equal(got, []string{"/repos/acme/widgets/git/ref/heads/" + tc.base}) {
@@ -145,7 +241,7 @@ func TestCreateReadsABaseWhoseNameHoldsURLSyntaxAsItself(t *testing.T) {
 // A base GitHub does not have is refused naming it, before anything is created.
 func TestCreateRefusesABaseGitHubDoesNotHave(t *testing.T) {
 	g := &github{refs: map[string]string{"main": baseCommit}}
-	err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "develop", nil)
+	_, err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "develop", nil)
 	if err == nil || !strings.Contains(err.Error(), "read refs/heads/develop of acme/widgets") || len(g.creates) != 0 {
 		t.Fatalf("err=%v creates=%d, want a refusal naming refs/heads/develop and no create", err, len(g.creates))
 	}
@@ -226,15 +322,17 @@ func TestADefaultBranchReadGitHubRateLimitsCarriesTheLimit(t *testing.T) {
 // has run yet, and nothing a role reads comes from the branch's tree, since every phase's handoff
 // is a record on the issue's Dispatch issue rather than a file on the branch (sjawhar/legion#2354).
 // Create reads the base's ref and creates the branch there, and reads, posts or commits no tree:
-// the fake answers nothing else.
+// the fake answers nothing else. Create says it created the branch only where GitHub took the
+// create: a branch GitHub already has is no write, and neither is a create GitHub refused.
 func TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas(t *testing.T) {
 	for _, tc := range []struct {
-		name   string
-		status int
-		body   string
-		want   string
+		name    string
+		status  int
+		body    string
+		want    string
+		created bool
 	}{
-		{name: "created", status: http.StatusCreated, body: `{"ref":"refs/heads/legion/WIDGETS-12","object":{"sha":"` + baseCommit + `"}}`},
+		{name: "created", status: http.StatusCreated, body: `{"ref":"refs/heads/legion/WIDGETS-12","object":{"sha":"` + baseCommit + `"}}`, created: true},
 		{name: "already exists", status: http.StatusUnprocessableEntity,
 			body: `{"message":"Reference already exists","documentation_url":"https://docs.github.com/rest/git/refs#create-a-reference","status":"422"}`},
 		{name: "refused", status: http.StatusForbidden,
@@ -250,10 +348,13 @@ func TestCreateMakesTheBranchAtTheBaseOrLeavesTheOneGitHubHas(t *testing.T) {
 			g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return tc.status, tc.body }}
 			api := g.serve(t)
 
-			err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", nil)
+			created, err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", nil)
 
 			if got := errorText(err); got != tc.want {
 				t.Fatalf("Create error = %q, want %q", got, tc.want)
+			}
+			if created != tc.created {
+				t.Fatalf("Create created = %v, want %v", created, tc.created)
 			}
 			want := map[string]string{"ref": "refs/heads/legion/WIDGETS-12", "sha": baseCommit}
 			if len(g.creates) != 1 || len(g.creates[0]) != 2 || g.creates[0]["ref"] != want["ref"] || g.creates[0]["sha"] != want["sha"] {
@@ -279,7 +380,7 @@ func TestCreateRefusesARepositoryWhoseBaseItCannotRead(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	err := Create(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "release/v7.1", nil)
+	_, err := Create(context.Background(), widgets(server.URL), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "release/v7.1", nil)
 
 	if want := `read refs/heads/release/v7.1 of acme/widgets: GitHub answered GET /git/ref/heads/release/v7.1 with 404: {"message":"Not Found","status":"404"}`; errorText(err) != want {
 		t.Fatalf("Create error = %q, want %q", errorText(err), want)
@@ -316,7 +417,7 @@ func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 		g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
 		api := g.serve(t)
 
-		err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
+		_, err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), branch, "main", rules)
 
 		var refused *leakguard.Refusal
 		if !errors.As(err, &refused) {
@@ -330,7 +431,7 @@ func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 			t.Errorf("GitHub was asked for %v and created %v, want nothing of either", g.reads(), g.creates)
 		}
 
-		if err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", rules); err != nil {
+		if _, err := Create(context.Background(), widgets(api), ghrepo.MustParse("acme/widgets"), "legion/WIDGETS-12", "main", rules); err != nil {
 			t.Fatalf("Create of a clean branch name: %v", err)
 		}
 		if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/legion/WIDGETS-12" || g.creates[0]["sha"] != baseCommit {
@@ -342,7 +443,7 @@ func TestCreateRunsTheDeploymentsRules(t *testing.T) {
 		t.Setenv(leakguard.RulesFileVar, leakguardtest.WriteRules(t, t.TempDir()))
 		g := &github{refs: map[string]string{"main": baseCommit}, create: func() (int, string) { return http.StatusCreated, `{}` }}
 
-		if err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", nil); err != nil {
+		if _, err := Create(context.Background(), widgets(g.serve(t)), ghrepo.MustParse("acme/widgets"), branch, "main", nil); err != nil {
 			t.Fatalf("Create with no rules: %v", err)
 		}
 		if len(g.creates) != 1 || g.creates[0]["ref"] != "refs/heads/"+branch || g.creates[0]["sha"] != baseCommit {

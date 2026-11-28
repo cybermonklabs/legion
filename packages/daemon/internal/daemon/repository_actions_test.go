@@ -103,7 +103,7 @@ func TestEachIssuesActionsActOnTheRepositoryItsRecordNames(t *testing.T) {
 	}
 
 	for _, issue := range []record.Issue{widgets, tools} {
-		if err := runner.createBranch(context.Background(), issue); err != nil {
+		if _, err := runner.createBranch(context.Background(), issue); err != nil {
 			t.Fatalf("create the branch of %s: %v", issue.Key, err)
 		}
 		if err := runner.provisionWorkspace(context.Background(), issue); err != nil {

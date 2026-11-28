@@ -119,6 +119,8 @@ function recordingDaemon(options: {
     "phaseBackward",
     "phaseRetry",
     "signOff",
+    "reportDefect",
+    "withdrawDefect",
     "rootClose",
     "childRerun",
     "planRegister",
@@ -260,6 +262,8 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
         "request_backward_move",
         "retry_or_escalate",
         "sign_off",
+        "report_defect",
+        "withdraw_defect",
         "close_root",
         "rerun_child",
         "read_record",
@@ -319,6 +323,9 @@ const OMP_LEGION_TOOL_SCHEMA = JSON.stringify({
     // Zod renders a whole number with no stated bound above as the largest safe integer.
     return_to: { type: "integer", minimum: 1, maximum: Number.MAX_SAFE_INTEGER },
     round: { type: "string" },
+    defect: { type: "string" },
+    head: { type: "string" },
+    check: { type: "string" },
     status: { type: "string", enum: ["todo", "backlog", "icebox"] },
     phase: { type: "string", enum: [...LEGION_PHASES] },
     settings: { type: "boolean" },
@@ -348,6 +355,7 @@ const DESCRIBED_PROPERTIES: Readonly<Record<string, readonly string[]>> = {
     "close_root",
     "request_backward_move",
     "retry_or_escalate",
+    "withdraw_defect",
     "pause",
     "set_p0_bound",
     "clear_p0_bound",
@@ -1574,6 +1582,214 @@ test("a named look's report posts its check_opened_at, and a step's completion p
   expect(calls.at(-1)?.[1]).not.toHaveProperty("checkOpenedAt");
 });
 
+/** A report_defect call whose every field holds, at the head `TIP`. */
+const DEFECT_REPORT = {
+  op: "report_defect",
+  issue: "LEGION-208",
+  defect: "The merged widget drops its last row: `bun test widget` fails on row 12.",
+  head: TIP,
+} as const;
+
+/** The tool over `daemon` for `active`, refusing to tell the session of an update's answer. */
+const defectTool = (daemon: () => LegionDaemonClient, active: LegionToolSession) =>
+  createLegionTool({
+    pi,
+    daemon,
+    controllerGrant: noControllerGrant,
+    onUpdateAnswered: () => {
+      throw new Error("no update answer expected");
+    },
+    handoffReport: noHandoffReport,
+    branchHead: noBranchHead,
+    dispatch: noDispatch,
+    session: () => active,
+  });
+
+// report_defect records a defect of the change, found once its task's last step passed, and moves
+// no phase: the role goes on with its step. The implementer in retro, the merger in merging and
+// the owning architect report through the one phase op, and no report tells the session anything.
+// The plugin holds no phase input (INFRA-3136), so the one way the tool could close or move a
+// phase is a daemon phase op, handoffComplete or phaseBackward among them: the case holds the
+// tool to a grant and the report for each call, and any other route it posts fails it.
+test("report_defect moves no phase", async () => {
+  const recorded = { defect: "41", state: "recorded", nextChange: 4 };
+  const { calls, daemon } = recordingDaemon({ answers: { reportDefect: recorded } });
+  for (const role of ["implementer", "merger", "architect"] as const) {
+    const result = await defectTool(daemon, claimSession(role)).execute(
+      "",
+      DEFECT_REPORT,
+      undefined,
+      undefined,
+      context()
+    );
+    expect(result, role).not.toHaveProperty("isError", true);
+    expect(result, role).toMatchObject({ details: recorded });
+  }
+  const sent = {
+    grantId: "grant-208",
+    issue: "LEGION-208",
+    defect: DEFECT_REPORT.defect,
+    head: TIP,
+  };
+  expect(calls.filter(([name]) => name === "reportDefect")).toEqual([
+    ["reportDefect", sent],
+    ["reportDefect", sent],
+    ["reportDefect", sent],
+  ]);
+  expect(calls.map(([name]) => name)).toEqual([
+    "grant",
+    "reportDefect",
+    "grant",
+    "reportDefect",
+    "grant",
+    "reportDefect",
+  ]);
+});
+
+// withdraw_defect is the owning architect's: it takes back a defect report by the id the report
+// answered, with why, and answers the daemon's answer whole. It moves no phase either, and a
+// refusal is the tool's failure with the daemon's code and sentence.
+test("withdraw_defect posts the defect's id and its reason with a fresh grant, and answers the daemon's answer", async () => {
+  const withdrawn = { defect: "41", state: "withdrawn" };
+  const withdrawal = {
+    op: "withdraw_defect",
+    issue: "LEGION-209",
+    defect: "41",
+    reason: "The row the report names is the fixture's own, not the widget's.",
+  };
+  const { calls, daemon } = recordingDaemon({ answers: { withdrawDefect: withdrawn } });
+  await expect(
+    defectTool(daemon, claimSession("architect")).execute(
+      "",
+      withdrawal,
+      undefined,
+      undefined,
+      context()
+    )
+  ).resolves.toMatchObject({ details: withdrawn });
+  expect(calls).toEqual([
+    [
+      "grant",
+      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
+    ],
+    [
+      "withdrawDefect",
+      {
+        grantId: "grant-208",
+        issue: "LEGION-209",
+        defect: "41",
+        reason: withdrawal.reason,
+      },
+    ],
+  ]);
+
+  const sentence = "defect 41 of LEGION-209 is the merger's report, not yours";
+  const refusing = recordingDaemon({
+    answers: {
+      withdrawDefect: new LegionDaemonApiError(
+        "POST",
+        "/legion/v1/defects/withdraw",
+        403,
+        "DEFECT_WITHDRAW_NOT_OWNER",
+        sentence,
+        true,
+        0
+      ),
+    },
+  });
+  await expect(
+    defectTool(refusing.daemon, claimSession("architect")).execute(
+      "",
+      withdrawal,
+      undefined,
+      undefined,
+      context()
+    )
+  ).resolves.toEqual({
+    content: [
+      {
+        type: "text",
+        text: `POST /legion/v1/defects/withdraw failed with 403 DEFECT_WITHDRAW_NOT_OWNER: ${sentence}`,
+      },
+    ],
+    details: {},
+    isError: true,
+  });
+});
+
+// Each field the two operations require is refused by its name, and report_defect's head is the
+// full lower-case commit, before a grant is minted or a request sent. withdraw_defect is the
+// architect's alone: a phase worker's call is refused by the operation's name.
+test("report_defect and withdraw_defect refuse each field they require by name, and a head that is no full commit, before any grant", async () => {
+  const { calls, daemon } = recordingDaemon({});
+  const withdrawal = {
+    op: "withdraw_defect",
+    issue: "LEGION-209",
+    defect: "41",
+    reason: "The row the report names is the fixture's own, not the widget's.",
+  };
+  const { defect, head } = DEFECT_REPORT;
+  const { reason } = withdrawal;
+  const refusals: ReadonlyArray<readonly [LegionToolSession, Record<string, unknown>, string]> = [
+    [claimSession("merger"), { op: "report_defect", defect, head }, "report_defect requires issue"],
+    [
+      claimSession("merger"),
+      { op: "report_defect", issue: "LEGION-208", head },
+      "report_defect requires defect",
+    ],
+    [
+      claimSession("merger"),
+      { op: "report_defect", issue: "LEGION-208", defect },
+      "report_defect requires head",
+    ],
+    [
+      claimSession("implementer"),
+      { ...DEFECT_REPORT, head: TIP.slice(0, 12) },
+      "report_defect's head is the 40-character lower-case commit",
+    ],
+    [
+      claimSession("architect"),
+      { ...DEFECT_REPORT, head: TIP.toUpperCase() },
+      "report_defect's head is the 40-character lower-case commit",
+    ],
+    [
+      claimSession("architect"),
+      { op: "withdraw_defect", defect: "41", reason },
+      "withdraw_defect requires issue",
+    ],
+    [
+      claimSession("architect"),
+      { op: "withdraw_defect", issue: "LEGION-209", reason },
+      "withdraw_defect requires defect",
+    ],
+    [
+      claimSession("architect"),
+      { op: "withdraw_defect", issue: "LEGION-209", defect: "41" },
+      "withdraw_defect requires reason",
+    ],
+    [claimSession("architect"), { ...withdrawal, defect: "  " }, "withdraw_defect requires defect"],
+    [
+      claimSession("architect"),
+      { ...withdrawal, head: TIP },
+      'withdraw_defect does not accept field "head"',
+    ],
+    [
+      claimSession("merger"),
+      withdrawal,
+      "withdraw_defect is not available to a phase-worker session",
+    ],
+  ];
+  for (const [active, parameters, refusal] of refusals) {
+    await expect(
+      defectTool(daemon, active).execute("", parameters, undefined, undefined, context())
+    ).resolves.toMatchObject({
+      isError: true,
+      content: [{ type: "text", text: expect.stringContaining(refusal) }],
+    });
+  }
+  expect(calls).toEqual([]);
+});
+
 test("handoff_complete finds the phase's handoff record and the pushed tip, and posts them with a fresh grant", async () => {
   const reads: string[] = [];
   const { calls, daemon } = recordingDaemon({ state: stateAt("implementing") });
@@ -1998,8 +2214,9 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
   });
 });
 
-/** LEGION-208 closed by its merge, with its production check open on its second look: `role` is
- * the role the check records as the one that works it, and `last` false says a look follows. */
+/** LEGION-208, which an earlier release closed at its merge, with its production check open on its
+ * second look: `role` is the role the check records as the one that works it, and `last` false says
+ * a look follows. */
 const openCheck = {
   repo: "acme/widgets",
   pullRequest: 1239,
@@ -2020,7 +2237,7 @@ const openCheck = {
 /** The time a pending report names for its next look. */
 const NEXT_LOOK = "2026-09-29T09:00:00Z";
 
-test("a report on its closed issue's production check carries a verdict and no commit, and a pending its next look", async () => {
+test("a report on its issue's production check carries a verdict and no commit, and a pending its next look", async () => {
   const { calls, daemon } = recordingDaemon({
     state: {
       issues: {
@@ -2647,7 +2864,7 @@ test("an architect's operation set is the tree's operations and none of the agen
   const opSchema = z.toJSONSchema(toolFor(claimSession("architect")).parameters as z.ZodType)
     .properties?.op;
   const declared = typeof opSchema === "object" ? (opSchema.enum ?? []).map(String) : [];
-  expect(declared).toHaveLength(29);
+  expect(declared).toHaveLength(31);
   for (const architect of [claimSession("architect"), claimSession("architect", "LEGION-209")]) {
     const tool = toolFor(architect);
     const available: string[] = [];
@@ -2667,6 +2884,8 @@ test("an architect's operation set is the tree's operations and none of the agen
       "request_backward_move",
       "retry_or_escalate",
       "sign_off",
+      "report_defect",
+      "withdraw_defect",
       "close_root",
       "rerun_child",
       "read_record",

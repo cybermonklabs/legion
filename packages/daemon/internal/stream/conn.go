@@ -34,19 +34,22 @@ var (
 )
 
 // RefusedError is the far side answering a request with a refusal — OMP's `{success:false}`, or
-// a shim's failed adoption, enrollment, token read or workspace read. The connection is
-// fine; the agent said no.
+// a shim's failed adoption, start at the branch, enrollment, token read or workspace read. The
+// connection is fine; the agent said no.
 //
-// A refused prompt is runtime.ErrPromptRefused, a refused adoption runtime.ErrAdoptRefused, and a
-// refused token request runtime.ErrTokenRefused. No other refusal is any of them — a refused
-// negotiation ahead of the prompt, a refused get_state — so the match is on the command rather
-// than an unconditional Unwrap.
+// A refused prompt is runtime.ErrPromptRefused, a refused adoption runtime.ErrAdoptRefused, a
+// refused start at the branch runtime.ErrStartAtRefused, and a refused token request
+// runtime.ErrTokenRefused. No other refusal is any of them — a refused negotiation ahead of the
+// prompt, a refused get_state — so the match is on the command rather than an unconditional
+// Unwrap.
 //
 // Outcome is the member of the closed set (runtime.Outcome) this refusal is, minted here from the
 // frame that carried it, since this is where the daemon reads the far side's answer: a refused
 // prompt is PromptRefusalOutcome of its code, a refused adoption runtime.OutcomeAdoptionRefused
-// whatever its words say (the shim's own answer about a working copy, never a turn's), and every
-// other refusal carries none. Whether it charges a budget is supervise.Charges's alone.
+// whatever its words say (the shim's own answer about a working copy, never a turn's), a refused
+// start at the branch runtime.OutcomeStartAtRefused the same way, and every other refusal carries
+// none. Whether it charges a budget is supervise.Charges's alone, which charges nothing for the
+// start at the branch: it waits for a person's or the architect's act on the branch.
 type RefusedError struct {
 	Claim   claim.Token
 	Command string
@@ -64,6 +67,8 @@ func (c *Conn) refusal(command, reason, code string) *RefusedError {
 		refused.Outcome = c.promptRefusal(reason, code)
 	case shimwire.TypeAdoptWorkingCopy:
 		refused.Outcome = runtime.OutcomeAdoptionRefused
+	case shimwire.TypeStartAtBranch:
+		refused.Outcome = runtime.OutcomeStartAtRefused
 	}
 	return refused
 }
@@ -88,6 +93,8 @@ func (e *RefusedError) Is(target error) bool {
 		return e.Command == shimwire.TypePrompt
 	case runtime.ErrAdoptRefused:
 		return e.Command == shimwire.TypeAdoptWorkingCopy
+	case runtime.ErrStartAtRefused:
+		return e.Command == shimwire.TypeStartAtBranch
 	case runtime.ErrTokenRefused:
 		return e.Command == shimwire.TypeAgentSecretsToken
 	}
@@ -431,6 +438,40 @@ func (c *Conn) AdoptWorkingCopy(ctx context.Context, identity runtime.GitIdentit
 		}
 	}
 	return fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeAdoptWorkingCopy, answer.FrameType())
+}
+
+// StartAtBranch asks the shim to start its workspace's working copy at the issue's branch, which
+// the daemon moved for the issue's next change, and answers what the shim did. The shim runs its
+// fetch and its jj commands within timeout; the answer is awaited for that plus the RPC timeout,
+// the round trip. A shim built before the start forwards it to OMP, whose unknown-command answer
+// is a refusal like the shim's own.
+func (c *Conn) StartAtBranch(ctx context.Context, at runtime.StartAt, timeout time.Duration) (runtime.StartedAt, error) {
+	id := rand.Text()
+	frame := shimwire.StartAtBranch{ID: id, Bookmark: at.Bookmark, Base: at.Base, TimeoutMs: int(timeout.Milliseconds())}
+	if err := frame.Validate(); err != nil {
+		return runtime.StartedAt{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+	}
+	answer, err := c.request(ctx, frame, id, "", timeout+c.rpcTimeout)
+	if err != nil {
+		return runtime.StartedAt{}, err
+	}
+	switch answer := answer.(type) {
+	case shimwire.StartAtBranchResult:
+		if err := answer.Validate(); err != nil {
+			return runtime.StartedAt{}, fmt.Errorf("worker-stream: %s: %w", c.claim, err)
+		}
+		if !answer.OK {
+			return runtime.StartedAt{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeStartAtBranch, Reason: answer.Error}
+		}
+		return runtime.StartedAt{Moved: answer.Moved, From: answer.From, At: answer.At, BehindBase: answer.BehindBase}, nil
+	case shimwire.Response:
+		// A shim that does not answer the frame itself forwards it, and OMP refuses a command
+		// it does not know.
+		if !answer.Success {
+			return runtime.StartedAt{}, &RefusedError{Claim: c.claim, Command: shimwire.TypeStartAtBranch, Reason: answer.Error}
+		}
+	}
+	return runtime.StartedAt{}, fmt.Errorf("worker-stream: %s %s answered by a %s frame", c.claim, shimwire.TypeStartAtBranch, answer.FrameType())
 }
 
 // WorkspaceWork asks the shim whether the workspace it runs in holds work that no branch or tag on
@@ -782,6 +823,8 @@ func (c *Conn) dispatch(frame shimwire.Frame) {
 	case shimwire.AgentSecretsTokenResult:
 		c.answerShim(frame.ID, frame)
 	case shimwire.WorkspaceWorkResult:
+		c.answerShim(frame.ID, frame)
+	case shimwire.StartAtBranchResult:
 		c.answerShim(frame.ID, frame)
 	case shimwire.ModelTotalsResult:
 		c.answerShim(frame.ID, frame)

@@ -11,7 +11,9 @@
 # merger is told to merge only once the reviewer's approval of the new head is on the pull request,
 # while the reviewer is asked to read the merge with `git show --remerge-diff`. A required check
 # that settles red on the new head is told to the merger and the architect, not to the
-# implementer, and GitHub's merge closes the issue. No read of the state shows the issue in
+# implementer, and GitHub's merge moves the issue to verifying, from which the read of its checks
+# after the merge closes it, since the project runs no production check and the issue has no check
+# to wait for. No read of the state shows the issue in
 # implementing, and the daemon writes no in_progress status. Last, the merger's launch names the
 # role prompt parts the daemon composed for a merger and not the driver's own prompt, and the
 # headings of each part are printed beside the daemon's messages. The whole daemon is booted by

@@ -55,6 +55,7 @@ const PHASE_MARKS: Readonly<
   merging: { marked: "merging" },
   integrating: { marked: "merging", words: PHASE_WORDS.integrating },
   awaiting_merge: { marked: "merging" },
+  verifying: { marked: "merging", words: PHASE_WORDS.verifying },
   held: { words: PHASE_WORDS.held },
 };
 

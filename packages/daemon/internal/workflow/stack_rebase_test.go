@@ -82,8 +82,8 @@ func TestAStackRebasePastTheReviewSendsNothingBack(t *testing.T) {
 					return
 				}
 				applyRefusingNothing(t, pool, engine, intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 42, MergeSHA: "merge-42", HeadSHA: "rebased"})
-				if got := issuePhase(t, pool); got != phase.Done {
-					t.Fatalf("after the merge at the rebased head the issue is in %s, want done", got)
+				if got := issuePhase(t, pool); got != phase.Verifying {
+					t.Fatalf("after the merge at the rebased head the issue is in %s, want verifying: its close waits for its checks", got)
 				}
 			})
 		}

@@ -102,6 +102,17 @@ const (
 	completionLeavesAnAsker = "completion-leaves-an-asker"
 	// leftoverAsker is the process completionLeavesAnAsker leaves behind.
 	leftoverAsker = "leftover-asker"
+	// outputHeldPastExit: `-h` starts a process that holds the fake's standard output two seconds
+	// after the fake exits, then exits. One second is what os/exec gives the copy of a pipe after
+	// the exit it copies from (Cmd.WaitDelay, set at the run).
+	outputHeldPastExit = "output-held-past-exit"
+	// outputHeldPastTheRun: `-h` starts a process that holds the fake's standard output for an
+	// hour, past the run's bound.
+	outputHeldPastTheRun = "output-held-past-the-run"
+	// outputHolder is the process outputHeldPastExit and outputHeldPastTheRun start. It reads its
+	// standard input, which the fake holds open, to its end, the fake's exit, and then keeps the
+	// fake's standard output for the time its argument names.
+	outputHolder = "output-holder"
 )
 
 // TestMain runs this binary as the fake fakeEnv names, where it names one, and runs the tests
@@ -445,6 +456,54 @@ func TestConformanceFailsOnAHangingCommand(t *testing.T) {
 	)
 }
 
+// A process the binary starts that holds its standard output after the binary exits, and ends
+// within the bound, ends the run when it ends, as the package documentation says of a run's group:
+// Conformance passes. The holder keeps the output two seconds after the fake's exit, past the one
+// second os/exec gives the copy of a pipe after the exit it copies from, which a loaded machine
+// can also outlast with no process left at all.
+func TestConformancePassesWhileAProcessItStartedHoldsTheOutputPastItsExit(t *testing.T) {
+	t.Parallel()
+	out, err := runChild(t, outputHeldPastExit)
+	if err != nil || !strings.Contains(out, "--- PASS: TestConformanceChild ") {
+		t.Fatalf("Conformance on %s: %v, want a pass\n%s", outputHeldPastExit, err, out)
+	}
+}
+
+// A process the binary starts that holds its standard output past the bound fails the run by that
+// name: the binary exited, and a process of its group was still running at the bound, which kills
+// it. The checks after it still run.
+func TestConformanceFailsWhileAProcessItStartedHoldsTheOutputPastTheBound(t *testing.T) {
+	t.Parallel()
+	requireFails(t, outputHeldPastTheRun, "", []string{"help"},
+		"clitest.test -h: exited, but a process it started was still running 15s after the run began",
+		"--- PASS: TestConformanceChild/complete (",
+	)
+}
+
+// The files a run writes its output to are in a directory of the test's own, so the test's end
+// removes one that a run never dropped, as a run stopped part way leaves it, and nothing is left
+// in the test process's temporary directory.
+func TestTheEndOfATestRemovesAnOutputFileARunNeverDropped(t *testing.T) {
+	t.Parallel()
+	var left string
+	t.Run("a run that never drops its output file", func(t *testing.T) {
+		out := newHarness(t, testBinary(t), Case{}).newStreamFile()
+		if out.err != nil {
+			t.Fatalf("make a run's output file: %v", out.err)
+		}
+		left = out.file.Name()
+		// Closed, so a system that removes no open file can remove it, and not removed: removing
+		// it is drop's work, which such a run never reaches.
+		if err := out.file.Close(); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if _, err := os.Stat(left); !errors.Is(err, os.ErrNotExist) {
+		_ = os.Remove(left)
+		t.Fatalf("the output file %s of a run that never dropped it, once its test ended: %v, want it gone with the test's own directories", left, err)
+	}
+}
+
 // Each run gets the environment, the directory and the input the package documentation gives it,
 // and nothing of the test process's environment: the fake refuses a run that differs, and the
 // test process that runs Conformance here holds childEnv in its environment and a line on its
@@ -578,7 +637,7 @@ func TestConformanceChild(t *testing.T) {
 		c.Commands = append(c.Commands, []string{})
 	case "case-with-a-flag":
 		c.Commands = append(c.Commands, []string{"-v"})
-	case hangingHelp:
+	case hangingHelp, outputHeldPastTheRun:
 		// Long enough that every run but the hanging one ends well inside it on a loaded machine.
 		before := runTimeout
 		runTimeout = 15 * time.Second
@@ -709,6 +768,19 @@ func runFake(defect string, args []string) int {
 		return 0
 	case defect == hangingHelp && slices.Equal(args, []string{"help", "pass"}):
 		time.Sleep(time.Hour)
+	case defect == outputHolder && len(args) == 1:
+		hold, err := time.ParseDuration(args[0])
+		if err != nil {
+			panic(err)
+		}
+		// Its standard input ends when the fake that started it exits.
+		_, _ = io.Copy(io.Discard, os.Stdin)
+		time.Sleep(hold)
+		return 0
+	case defect == outputHeldPastExit && slices.Equal(args, []string{"-h"}):
+		holdOutput("2s")
+	case defect == outputHeldPastTheRun && slices.Equal(args, []string{"-h"}):
+		holdOutput("1h")
 	case defect == leftoverAsker:
 		time.Sleep(300 * time.Millisecond)
 		_ = fetch("/v1/late")
@@ -910,6 +982,31 @@ func leaveAnAsker() {
 	if err := asker.Start(); err != nil {
 		panic(err)
 	}
+}
+
+// fakeExit is the end of a pipe this process holds until it exits, whose other end is the standard
+// input of the holder holdOutput starts. A package variable, so the collector never closes it.
+var fakeExit *os.File
+
+// holdOutput starts this binary as outputHolder, holding this process's standard output for hold
+// once this process has exited, and does not wait for it. The holder joins this process's group.
+func holdOutput(hold string) {
+	self, err := os.Executable()
+	if err != nil {
+		panic(err)
+	}
+	read, write, err := os.Pipe()
+	if err != nil {
+		panic(err)
+	}
+	holder := exec.Command(self, hold)
+	holder.Env = append(os.Environ(), fakeEnv+"="+outputHolder)
+	holder.Stdin, holder.Stdout = read, os.Stdout
+	if err := holder.Start(); err != nil {
+		panic(err)
+	}
+	_ = read.Close()
+	fakeExit = write
 }
 
 // knownTopic refuses, with a usage error, a help topic Find does not resolve to a command, for

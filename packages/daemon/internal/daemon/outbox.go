@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -111,6 +112,9 @@ type outbox struct {
 	// happens (config.IdleReleaseConfig.Backstop, `backstop_minutes`); zero where the deployment
 	// releases no pod, and then a release arms none.
 	backstop time.Duration
+	// mergeReads is the pass every merge read of this daemon spends its GET attempts from
+	// (mergeRead): eight a pass, across every issue whose read is pending.
+	mergeReads mergeReadPassCount
 	// readPullRequest reads one pull request from GitHub (one GET /pulls/{number}) and answers the
 	// implement App's client of its repository with it; applyMergeability applies what that read
 	// says about merging the head, reading the base's rules with that client on a conflicting
@@ -565,7 +569,11 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 // nothing else would: the message is the daemon's only word on the issue for what it carries. A
 // hook prompt that ends undelivered (keptRoleMessageEnded) is named in the message on the issue
 // for its role's undelivered prompts, one held for an hour from the first of them
-// (tellHookPromptUndelivered), since their words reach no session otherwise.
+// (tellHookPromptUndelivered), since their words reach no session otherwise. An issue's branch row
+// GitHub refused for good records the refusal as its issue's refusal of its generation
+// (record.Store.RefuseBranch), which the state names, and tells the owning architect
+// (branchRefusedNotice) only where that record is new: a second refused row of the generation, and
+// one run again after a restart, tell nobody.
 // Each of those rows is written in the finish's own transaction, which owns the commit hook
 // that write registers (projectRecords, store.OnCommit), so the notice's lane is woken as the
 // finish commits and the notice is published without a sweep. Only the hand-over's finish takes
@@ -702,6 +710,29 @@ func (r *outbox) finishRefused(ctx context.Context, row record.OutboxRow, cause 
 		told = func() {
 			r.log.Warn("outbox hook prompt finished undelivered; the issue's message names it", "row", row.ID, "issue", row.Issue,
 				"hook", value.Hook, "role", value.Role, "message_posts_at", posts, "error", kept)
+		}
+	case record.IssueBranch:
+		kind, _ := ghbranch.PermanentRefusal(cause)
+		refusal := record.BranchRefusal{Issue: row.Issue, Generation: value.Generation, Row: row.ID, Write: record.BranchWriteCreate,
+			Kind: string(kind), Reason: kept, RefusedAt: r.now().UTC()}
+		if value.From != nil {
+			refusal.Write = record.BranchWriteMove
+		}
+		notice, err := record.NewOutboxRow(row.Issue, branchRefusedNotice(refusal), r.now().UTC())
+		if err != nil {
+			return err
+		}
+		var first bool
+		follow = func(ctx context.Context, tx pgx.Tx) error {
+			var err error
+			if first, err = r.records.RefuseBranch(ctx, tx, refusal); err != nil || !first {
+				return err
+			}
+			return r.records.Enqueue(ctx, tx, notice)
+		}
+		told = func() {
+			r.log.Error("outbox issue branch refused for good and dropped, and its architect is told once a generation",
+				"row", row.ID, "issue", row.Issue, "write", refusal.Write, "refusal", refusal.Kind, "told", first, "error", kept)
 		}
 	}
 	finish := func(ctx context.Context, write func(context.Context, pgx.Tx) error) error {
@@ -906,9 +937,15 @@ type rateLimit struct {
 // made. A read GitHub refuses for its rate limit is a failed read instead, and the next read
 // waits for the longer of the runtime's wait and GitHub's Retry-After. The read of the base's
 // rules either makes on a conflicting answer (readBaseRules) is no exception: a rate limit there
-// reads as rules the daemon could not read.
+// reads as rules the daemon could not read. The move of a next change's branch is GraphQL
+// (ghbranch.Reset), and its budget is left out too: it is one call of a row that runs once per
+// change, and GitHub's limit on it fails that row, whose retry waits for GitHub's Retry-After. The
+// merge read of an older issue's merge (record.MergeRead, mergeRead) is in the map: it counts its
+// attempts in its own progress, so a deferral spends none, and a later shared rate-limit deadline
+// holds it.
 var githubBudgets = map[record.OutboxKind][]githubrest.Budget{
 	record.OutboxKindIssueBranch: {githubrest.BudgetCore, githubrest.BudgetSecondary},
+	record.OutboxKindMergeRead:   {githubrest.BudgetCore, githubrest.BudgetSecondary},
 }
 
 // standingLimit is the limit in limits, among the budgets a row of kind spends, that still stands
@@ -936,11 +973,21 @@ func standingLimit(limits map[githubrest.Budget]rateLimit, kind record.OutboxKin
 // their routes make for good (recordRefused), so a credential answer retries. The router's 404 of a
 // Dispatch that has no route for a record's or the role holders' write never reaches this: execute
 // makes it a wait (waitsForTheRoute), which wraps nothing of it. For every other kind it is the
-// coded 404 it says.
+// coded 404 it says. An issue's branch row ends on GitHub's refusal of its create or its move that
+// the same write meets again (ghbranch.PermanentRefusal), since it would otherwise retry for ever
+// and tell nobody, while every start of its issue's roles waits behind it.
 func permanentRefusal(row record.OutboxRow, err error) bool {
 	switch row.Kind {
 	case record.OutboxKindDispatchStatus, record.OutboxKindDispatchMessage, record.OutboxKindClaimRelease:
 		_, permanent := dispatch.PermanentRefusal(err)
+		return permanent
+	case record.OutboxKindIssueBranch:
+		// Permanent where GitHub, or the deployment's rules, refused the write in a way a retry
+		// meets again: the App's GraphQL access, a repository read with no node id, and a coded 4xx
+		// of the create among them (ghbranch's refusalKind lists them). A rate limit, a 5xx, a 401,
+		// a token the daemon could not mint and a GitHub that answered nothing carry no refusal,
+		// and the row retries on its backoff.
+		_, permanent := ghbranch.PermanentRefusal(err)
 		return permanent
 	case record.OutboxKindDesignGatesPublish:
 		// Permanent on the route's own 404 ISSUE_NOT_FOUND alone: an issue Dispatch does not know
@@ -1134,6 +1181,12 @@ func (r *outbox) run(ctx context.Context, row record.OutboxRow) error {
 		return r.conflictConfirm(ctx, row, value)
 	case record.MergeForwardMessage:
 		return r.mergeForwardMessage(ctx, row, value)
+	case record.CloseRead:
+		return r.closeRead(ctx, row, value)
+	case record.CloseWaitPublish:
+		return r.closeWaitPublish(ctx, row, value)
+	case record.MergeRead:
+		return r.mergeRead(ctx, row, value)
 	case record.StateChange, record.StateAdmission, record.StateBoot:
 		return r.stateEvents(ctx, row, payload)
 	default:
@@ -3147,9 +3200,12 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return err
 		}
 	} else {
-		if payload.Generation != issue.Generation {
+		// A start of a tree root's architect runs on the tree's generation, which a next change of
+		// the root leaves; every other row serves the issue's own (record.Issue.GenerationOf).
+		current := issue.GenerationOf(payload.Op, payload.Role)
+		if payload.Generation != current {
 			r.log.Info("outbox supervise row serves an earlier generation; finished without acting", "row", row.ID, "issue", issue.Key,
-				"generation", payload.Generation, "current", issue.Generation, "op", payload.Op, "role", payload.Role)
+				"generation", payload.Generation, "current", current, "op", payload.Op, "role", payload.Role)
 			return nil
 		}
 		// A task's retirement names the phase that was stopped, which the issue has left by
@@ -3390,6 +3446,11 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				CheckLook: supervise.CheckLook{Look: payload.CheckLook, OpenedAt: payload.CheckOpenedAt},
 				ID:        fmt.Sprintf("%s%d", outboxDeliveryPrefix, row.ID), Row: row.ID, Kept: kept, Resume: resume,
 				News: news.news, NewsOnly: payload.News}
+			// The first task of a next change starts the working copy at the branch its merge
+			// moved before it is sent (record.SuperviseRequest.StartAt, supervise.Delivery.StartAt).
+			if at := payload.StartAt; at != nil {
+				task.StartAt = runtime.StartAt{Bookmark: at.Bookmark, Base: at.Base}
+			}
 		}
 		// The claim remembers the newest start run against it, so a stop written before this one
 		// is finished rather than acted on however late it arrives (see "suspend" below). A claim
@@ -4572,10 +4633,11 @@ func (r *outbox) pausedCancel() store.ReleaseCancelPause {
 }
 
 // releaseResume is the outbox row that brings one claim a cancelled release suspended back: the
-// `start` row a wake writes (workflow's wakeRow), at the generation the cancel read of the
-// issue, naming no phase. It carries no task where nothing happened to the role but the release:
-// its process was stopped and is started again in the pod it was always in, where a wake's task
-// tells a role its pod went and came back.
+// `start` row a wake writes (workflow's wakeRow), at the generation a start of the role serves on
+// the issue as the cancel read it (record.Issue.GenerationOf: the tree's run for a root's
+// architect), naming no phase. It carries no task where nothing happened to the role but the
+// release: its process was stopped and is started again in the pod it was always in, where a
+// wake's task tells a role its pod went and came back.
 //
 // A cancel that dropped a wake of the role, taken after the release recorded it, hands this the
 // kind, the detail and the task of that wake (store.DroppedWake). A CI settlement and the backstop
@@ -4587,10 +4649,11 @@ func (r *outbox) pausedCancel() store.ReleaseCancelPause {
 // queuedRow), so a reviewer's resume that carries one says so (RoundNamed), and its send adds no
 // second pair.
 func (r *outbox) releaseResume(issue, tree string) store.ReleaseWokenRow {
-	return func(role claim.Role, generation uint64, wake store.DroppedWake) (store.IdleReleaseRow, error) {
+	return func(role claim.Role, run store.IssueRun, wake store.DroppedWake) (store.IdleReleaseRow, error) {
+		read := record.Issue{Key: issue, Tree: run.Tree, Generation: run.Generation, TreeGeneration: run.TreeGeneration}
 		task := workflow.CancelledWakeTask(wake.Kind, wake.Detail, wake.Task)
 		row, err := record.NewOutboxRow(issue, record.SuperviseRequest{Op: "start", Tree: tree,
-			Role: role, Generation: generation, Task: task, RoundNamed: task != "" && role == claim.RoleReviewer}, r.now())
+			Role: role, Generation: read.GenerationOf("start", role), Task: task, RoundNamed: task != "" && role == claim.RoleReviewer}, r.now())
 		if err != nil {
 			return store.IdleReleaseRow{}, fmt.Errorf("encode the resume of %s's %s: %w", issue, role, err)
 		}
@@ -5121,11 +5184,13 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for
 // none: its issue's production check is open, the one the row names (record.ProductionCheck.NamedBy),
-// at the look the row names, with that look open, and the issue out of the workflow. A check closed
-// since (a report, its last look), a check a later merge replaced, a look its bound or a hold ended,
-// a later look's start, or an issue running again (reopened inside its linger since the row was
-// queued: a look would resume the check's own role and relaunch the Sandbox under the run; the look ends
-// at its own bound) leave the row nothing to start, and it finishes without acting, logged with why.
+// at the look the row names, with that look open, and the issue's work not running again
+// (record.RunsAgain: out of the workflow, or waiting in verifying for the checks of its goal). A
+// check closed since (a report, its last look), a check a later merge replaced, a look its bound or
+// a hold ended, a later look's start, or an issue running again (a next change, or a root reopened
+// inside its linger since the row was queued: a look would resume the check's own role and relaunch
+// the Sandbox under the run; the look ends at its own bound) leave the row nothing to start, and it
+// finishes without acting, logged with why.
 func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) (*record.ProductionCheck, error) {
 	check, err := r.productionCheck(ctx, row.Issue)
 	if err != nil {
@@ -5135,7 +5200,7 @@ func (r *outbox) checkLookHolds(ctx context.Context, row record.OutboxRow, paylo
 	switch {
 	case check == nil:
 		why = "the issue has no production check"
-	case record.InWorkflow(issue):
+	case record.RunsAgain(issue):
 		why = fmt.Sprintf("the issue runs again (%s, %s)", issue.Phase, issue.Status)
 	case !check.Open():
 		why = fmt.Sprintf("the check closed as %s", check.Outcome)
@@ -5336,10 +5401,15 @@ func (r *outbox) phaseEntry(ctx context.Context, issue string, role claim.Role) 
 // repository (its check for changed workflow files, which it runs for an App without the workflows
 // permission, times out on a new ref), where it takes one that moves the branch. A branch GitHub
 // already has is left where it is. A start of the issue waits for this row (the lifecycle lane's
-// ordering rule, record.Store.DueRows and ClaimRow), so a create GitHub refuses holds back the
-// issue's roles, each attempt logged with GitHub's answer, until one passes. A row of a generation
-// the issue has left, or of a tree that lingers, finishes without acting: the starts it held back
-// act on neither.
+// ordering rule, record.Store.DueRows and ClaimRow), so a create GitHub fails holds back the
+// issue's roles, each attempt logged with GitHub's answer, until one passes. A refusal the same
+// write meets again ends the row instead, and tells its architect once (permanentRefusal,
+// finishRefused), so the roles start without the write. A row whose write GitHub takes clears the
+// issue's refusals (record.Store.ClearBranchRefusals). A branch GitHub already has is no such
+// write (ghbranch.Create answers it not created), so a refusal of its write still stands. A row of
+// a generation the issue has left, or of a tree that lingers, finishes without acting: the starts
+// it held back act on neither. The row of a next change carries where its branch starts
+// (record.IssueBranch.From), and moves the branch there instead (startBranchAtBase).
 func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload record.IssueBranch) error {
 	issue, err := r.issue(ctx, row.Issue)
 	if err != nil {
@@ -5358,8 +5428,26 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 		r.log.Info("outbox issue branch of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key, "tree", issue.Tree)
 		return nil
 	}
-	if err := r.createBranch(ctx, issue); err != nil {
+	if payload.From != nil {
+		return r.startBranchAtBase(ctx, row, issue, *payload.From)
+	}
+	created, err := r.createBranch(ctx, issue)
+	if err != nil {
 		return fmt.Errorf("create the branch of %s, which its roles' starts wait for: %w", issue.Key, err)
+	}
+	if !created {
+		return nil
+	}
+	return r.branchWritten(ctx, issue.Key)
+}
+
+// branchWritten clears every refusal of issue's branch the record holds, in a transaction of its
+// own, once a row's write GitHub took: the state names no refusal of a branch Legion wrote since.
+func (r *outbox) branchWritten(ctx context.Context, issue string) error {
+	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+		return r.records.ClearBranchRefusals(ctx, tx, issue)
+	}); err != nil {
+		return fmt.Errorf("clear the refused branches of %s: %w", issue, err)
 	}
 	return nil
 }
@@ -5368,23 +5456,126 @@ func (r *outbox) issueBranch(ctx context.Context, row record.OutboxRow, payload 
 // record names under now (serving), at the default branch the record names, unless GitHub
 // already has it, as the implement App for that repository's owner: the App of the roles that
 // write an issue branch (appauth.AppRoleFor), and the one workspace provisioning clones with.
+// It answers whether GitHub created the branch, which a branch GitHub already had is not.
 // The create is a REST write, so a tree recorded before a transfer gets its branch on the
 // repository as GitHub holds it today rather than a write to an owner whose installation has
 // lost it. The ref name passes the deployment's private-name rules first, the ones boot compiled
 // (privateNameRules), so the create runs the same file every role runs.
-func (r *outbox) createBranch(ctx context.Context, issue record.Issue) error {
+func (r *outbox) createBranch(ctx context.Context, issue record.Issue) (bool, error) {
 	ctx, cancel := context.WithTimeout(ctx, issueBranchTimeout)
 	defer cancel()
+	github, repo, err := r.branchClient(ctx, issue)
+	if err != nil {
+		return false, err
+	}
+	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch, r.privateNameRules)
+}
+
+// branchClient is the implement App's client for the repository GitHub holds issue's under now
+// (serving), which every write of an issue's branch is made as (createBranch, startBranchAtBase).
+func (r *outbox) branchClient(ctx context.Context, issue record.Issue) (githubrest.Client, ghrepo.Repository, error) {
 	recorded, err := issue.Repository()
 	if err != nil {
-		return err
+		return githubrest.Client{}, ghrepo.Repository{}, err
 	}
 	repo := r.repositories.serving(recorded)
 	github, err := implementClient(ctx, r.tokens, r.githubAPI, repo)
 	if err != nil {
-		return fmt.Errorf("mint the implement App token for %s: %w", repo, err)
+		return githubrest.Client{}, ghrepo.Repository{}, fmt.Errorf("mint the implement App token for %s: %w", repo, err)
 	}
-	return ghbranch.Create(ctx, github, repo, workspace.Bookmark(issue.Key), issue.DefaultBranch, r.privateNameRules)
+	return github, repo, nil
+}
+
+// startBranchAtBase moves the branch of issue's next change to the head of the base its last pull
+// request merged into (ghbranch.Reset), as the implement App, as createBranch writes a branch: from
+// the merged head alone, a missing branch made there, a tip that already holds the base left. The
+// move is GitHub's GraphQL updateRefs, made only while the branch still points at the merged head,
+// so a push that lands after the row's read stays on the branch. A base GitHub no longer has, or
+// one the merge snapshot does not name, is the recorded default branch. A tip that is neither the
+// merged head nor holds the base is left where it stands: its commits are someone's work. The
+// owning architect is told so (`next-change-workspace`), and has the base merged forward before the
+// change's first task, which the start of the working copy also says to its role where the branch
+// is behind the base (supervise's startedNote). Only a write GitHub took (Moved, Made) clears the
+// issue's refusals (branchWritten): a branch left or already at the base was written by nobody, so
+// a refusal of its write still stands. Each outcome writes in one transaction at most: the clear,
+// or the notice. An outcome Reset gains later is the row's error, naming it, until this switch
+// names it too: read as one of these, it would clear a refusal or tell the architect of a branch
+// left for something neither is.
+func (r *outbox) startBranchAtBase(ctx context.Context, row record.OutboxRow, issue record.Issue, from record.BranchFrom) error {
+	base := from.Base
+	if base == "" {
+		base = issue.DefaultBranch
+	}
+	moving, cancel := context.WithTimeout(ctx, issueBranchTimeout)
+	defer cancel()
+	github, repo, err := r.branchClient(moving, issue)
+	if err != nil {
+		return err
+	}
+	graphql := githubrest.Client{Token: github.Token, API: githubrest.GraphQLEndpoint(r.githubAPI)}
+	result, err := ghbranch.Reset(moving, github, graphql, repo, workspace.Bookmark(issue.Key), base, issue.DefaultBranch, from.MergedHead, r.privateNameRules)
+	if err != nil {
+		return fmt.Errorf("move the branch of %s to %s for its next change, which its roles' starts wait for: %w", issue.Key, base, err)
+	}
+	r.log.Info("outbox issue branch of a next change", "row", row.ID, "issue", issue.Key, "outcome", string(result.Outcome),
+		"base", result.Base, "head", result.Head, "tip", result.Tip, "mergedHead", from.MergedHead)
+	switch result.Outcome {
+	case ghbranch.Moved, ghbranch.Made:
+		return r.branchWritten(ctx, issue.Key)
+	case ghbranch.Stands:
+		return nil
+	case ghbranch.Left:
+		// The branch is someone's work, and the owning architect is told.
+		notice, err := record.NewOutboxRow(issue.Key, branchLeftNotice(issue.Key, from, result), r.now().UTC())
+		if err != nil {
+			return err
+		}
+		return store.TransactWith(ctx, r.pool, pgx.TxOptions{}, func(ctx context.Context, tx pgx.Tx) error {
+			return r.records.Enqueue(ctx, tx, notice)
+		})
+	}
+	return fmt.Errorf("move the branch of %s to %s for its next change: the move answered the outcome %q, which the row does not handle",
+		issue.Key, result.Base, result.Outcome)
+}
+
+// branchLeftNotice is the owning architect's notice of a next change's branch left where it
+// stands (startBranchAtBase): where its tip is, why Legion did not move it, and that the next
+// change's first task is told to merge the base forward.
+// A merge snapshot that names only its pull request gives no merged head (record.BranchFrom), and
+// then the notice says Legion does not know it rather than print an empty commit.
+func branchLeftNotice(issue string, from record.BranchFrom, result ghbranch.Result) record.Notice {
+	branch := workspace.Bookmark(issue)
+	why := fmt.Sprintf("Its tip is not the merged head %s and does not hold the head %s of %s, so Legion did not move it.",
+		from.MergedHead, result.Head, result.Base)
+	if from.MergedHead == "" {
+		why = fmt.Sprintf("Legion does not know the head that the last pull request merged. The tip does not hold the head %s of %s, so Legion did not move it.",
+			result.Head, result.Base)
+	}
+	return record.Notice{Kind: "next-change-workspace", Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("Legion left branch %s where it stands, at %s. %s The next change's first task is told to merge %s into %s.",
+			branch, result.Tip, why, result.Base, branch)}
+}
+
+// branchRefusedNotice is the owning architect's notice of a branch row GitHub refused for good
+// (finishRefused): the branch, whether the row created or moved it, the refusal's kind and the
+// row's error, that Legion does not try again, and that the issue's roles start without the write.
+// A person is who grants the App what it lacks, so the notice asks the architect to ask one. The
+// row's error carries GitHub's answer, which GitHub wrote, bounded as the row kept it
+// (storetext.FarSideError), and the notice reaches the architect as text, so the error goes in as
+// data, as readError keeps a far side's text in a notice: one quoted string, labelled as the
+// write's error, which no line or word of it can leave.
+func branchRefusedNotice(refusal record.BranchRefusal) record.Notice {
+	branch := workspace.Bookmark(refusal.Issue)
+	wrote := fmt.Sprintf("Legion could not create branch %s on GitHub, and it will not try again.", branch)
+	start := "The issue's roles start without it, so their first push must create it."
+	if refusal.Write == record.BranchWriteMove {
+		wrote = fmt.Sprintf("Legion could not move branch %s to the head of its base for the next change of %s, and it will not try again.",
+			branch, refusal.Issue)
+		start = "The next change starts on the branch as it stands."
+	}
+	return record.Notice{Kind: record.BranchRefusedNotice, Role: claim.RoleArchitect,
+		Reason: fmt.Sprintf("%s The refusal is %s. The error of the write, in quotes, is: %s. %s Ask a person to fix the refusal.",
+			wrote, refusal.Kind, strconv.Quote(refusal.Reason), start)}
 }
 
 // removeWorkspace removes the workspace of the row's issue once its tree's linger expired. The

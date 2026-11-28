@@ -6761,6 +6761,9 @@ Each item below names a path with its method and identity, then its purpose.
     A derived result counts at the named commit only where its head matches that commit.
     A named read has no required heads.
     A `before_merge` check there still needs a standing pass at the named commit, with no fail there.
+    It answers as a required head at that commit would: `yes`, `no/fail`, `no/no_result` or `unknown/pass_and_fail`.
+    A check that CI proves answers `unknown/read_failed` at any named commit while its check runs cannot be read, since a named read has no required heads to read them at.
+    Where results decide it, `pass_stands` names their IDs and the named commit.
 
   Each check carries `compared_with`, every commit and branch its results are compared with in the order they are asked about, `compared_nothing` where it has none, and `pass_stands`.
   Each basis is `{kind, repo?, commit?, branch?, merge_commit?, pull_request?, learned_at?}`.

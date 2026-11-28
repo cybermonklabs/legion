@@ -28,6 +28,7 @@ var roleForAnswers = map[phase.Phase]claim.Role{
 	phase.Accepting:        claim.RoleArchitect,
 	phase.Retro:            claim.RoleImplementer,
 	phase.Merging:          claim.RoleMerger,
+	phase.Verifying:        "",
 	phase.Done:             "",
 	phase.Held:             "",
 }

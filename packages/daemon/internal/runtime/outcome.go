@@ -40,6 +40,12 @@ const (
 	// OutcomeAdoptionRefused is the shim refusing to adopt the working copy (ErrAdoptRefused),
 	// which internal/stream mints on its refusal of that command.
 	OutcomeAdoptionRefused Outcome = "adoption_refused"
+	// OutcomeStartAtRefused is the shim refusing to start the working copy at the issue's branch
+	// (ErrStartAtRefused), the first task of a next change, which internal/stream mints on its
+	// refusal of that command. It charges nothing (supervise.Charges): what it waits for is a
+	// person's or the owning architect's act on the branch, and a charge that failed the claim
+	// would not wait for that act.
+	OutcomeStartAtRefused Outcome = "start_at_refused"
 	// OutcomeIdentityUnavailable is the daemon failing to mint the role's GitHub App identity
 	// before any frame left (ErrIdentityUnavailable, supervise's Machine.adopt).
 	OutcomeIdentityUnavailable Outcome = "identity_unavailable"
@@ -92,9 +98,10 @@ const (
 // can edit the one the next reads.
 func Outcomes() []Outcome {
 	return []Outcome{OutcomeUnrecognised, OutcomeAgentBusy, OutcomePromptRefused, OutcomeAdoptionRefused,
-		OutcomeIdentityUnavailable, OutcomeTransportLost, OutcomeNoTurnStarted, OutcomeNoTurnRun,
-		OutcomeProviderError, OutcomeProcessDied, OutcomeLaunchFailed, OutcomeNeverRegistered,
-		OutcomeStalePlugin, OutcomeEarlierReleaseProcessEnded, OutcomeResumeByAgentUnregistered}
+		OutcomeStartAtRefused, OutcomeIdentityUnavailable, OutcomeTransportLost, OutcomeNoTurnStarted,
+		OutcomeNoTurnRun, OutcomeProviderError, OutcomeProcessDied, OutcomeLaunchFailed,
+		OutcomeNeverRegistered, OutcomeStalePlugin, OutcomeEarlierReleaseProcessEnded,
+		OutcomeResumeByAgentUnregistered}
 }
 
 // RefusalOutcome is the member the error in err's chain that minted one carries — the stream's

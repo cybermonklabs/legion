@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
-# The read, after the merge, of the plan and the ratings of one issue a deployed Legion ran to
-# done: it runs `dispatch plans --project <PROJECT>` once, prints what the command printed, and
+# The read, after the close, of the plan and the ratings of one issue a deployed Legion ran to
+# done, which it reaches once its checks pass after its merge: it runs
+# `dispatch plans --project <PROJECT>` once, prints what the command printed, and
 # judges the line of <ISSUE>.
 #
 #   scripts/e2e/plan-ratings-read.sh INFRA INFRA-123

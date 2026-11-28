@@ -187,8 +187,7 @@ var ClaimRecordFields = []RecordFieldDecision{
 
 // IssueRecordFields is every field of `record.Issue`, in the order the record declares them. No
 // field of it is a secret and none is the operator route's alone, so every entry is served to
-// the agent surfaces or withheld, as bookkeeping or, for ReleasedForWaitAt, MovedAt,
-// TreeStalledToldAt and MembersOwed, for the reason its own entry gives.
+// the agent surfaces or withheld, as bookkeeping or for the reason its own entry gives.
 var IssueRecordFields = []RecordFieldDecision{
 	{Field: "Key", Column: ColumnAgents, Keys: []string{"key"}, Reason: "the issue the whole view is about"},
 	{Field: "Tree", Column: ColumnAgents, Keys: []string{"tree"},
@@ -247,6 +246,27 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "when the parent last waited on its children, which the late-completion guard compares a phase entry against after the return: the daemon's own mark, reaching no surface"},
 	{Field: "MembersOwed", Column: ColumnWithheld,
 		Reason: "the mark that a re-admission still owes its tree's members their return, which the root's promotion or the pass that finds its tree running clears in the same transaction that brings them back: it is the daemon's own record of a return still to make, and a reader acts on what it causes, the members' starts and their places in `admission.waiting`"},
+	{Field: "TreeGeneration", Column: ColumnWithheld,
+		Reason: "the tree's run, the fence of each member's queued idle release, suspension and design-news credit and of the run of the tree's architect: it parts from the root's `generation` only at the root's next change, which leaves the members and the architect running, so a reader acts on their work and their claims and never on the fence itself"},
+	{Field: "Merge", Column: ColumnWithheld,
+		Reason: "the merge snapshot, which a next change bases its branch on (record.IssueBranchOf) and the close reads the checks and the production check against: a reader is told of the merge by the open production check's own `check.pullRequest` and `check.mergeCommit`, and by close-wait.md"},
+	{Field: "CloseWaitSince", Column: ColumnAgents, Keys: []string{"closeWait.since"},
+		Reason: "since when the issue's close waits, the merge's time or the time a request applied: a reader of an issue in verifying reads how long it has waited, as close-wait.md's first line says it"},
+	{Field: "CloseWait", Column: ColumnAgents,
+		Keys:   []string{"closeWait.beneath", "closeWait.openChildren", "closeWait.checks", "closeWait.production", "closeWait.defects", "closeWait.unapproved", "closeWait.unread"},
+		Reason: "the stored wait, each item the close waits for with its state and since when: the owning architect acts on each item, and a role that reported a defect reads it there from its report on, before the merge too, as close-wait.md renders the same items"},
+	{Field: "ClosedOnChecksAt", Column: ColumnWithheld,
+		Reason: "the mark that the issue closed because the checks of its goal passed, which alone decides whether a fail recorded after the close tells the controller: the time of the close reaches a reader in the last version of close-wait.md, and a closed issue waits for nothing"},
+	{Field: "NextChange", Column: ColumnWithheld,
+		Reason: "the generation of the open next change, the guard that keeps a second change of the issue from starting while one is open and what starts its branch at the merge snapshot (record.IssueBranchOf): a reader sees the open change as the issue's own `generation` and `phase`, and close-wait.md names it with its reasons"},
+	{Field: "NextChangeFollows", Column: ColumnWithheld,
+		Reason: "the number of the merged pull request the newest next change started from, which tells that change's own pull request from the merge it follows once a person merges the change's pull request before the issue reaches merging: it is the daemon's own record of the merge a change began at, and a reader is told which pull request a change merged as by close-wait.md"},
+	{Field: "NextChanges", Column: ColumnAgents, Keys: []string{"closeWait.nextChanges"},
+		Reason: "the count of the next changes the issue has started, which a reader of a waiting issue reads beside what the close waits for, and which the notice sent at each multiple of the review round cap names too"},
+	{Field: "MergerCompletionOwed", Column: ColumnWithheld,
+		Reason: "the daemon's own record that the merger's completion of the merged generation has not landed, which holds a next change back until it lands or the hour after the merge passes: a reader acts on the change's start, which the `next-change` notice tells, and never on the mark"},
+	{Field: "StandingToldAt", Column: ColumnWithheld,
+		Reason: "the mark that holds the daily notice of the terms that still hold the close to once a day: it is the daemon's own record of what it has already told the owning architect, and a reader is told the terms themselves"},
 	{Field: "ClaimLeft", Column: ColumnAgents, Keys: []string{"claimLeft"},
 		Reason: "why the newest claim release that judged the issue's Dispatch holder left that holder's claim, with the holder and when: a role reads there why a claim stays on its issue, which otherwise only the daemon's log says"},
 }

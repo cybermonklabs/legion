@@ -40,9 +40,13 @@ const (
 // of them is waiting on its children (segment 4). `awaiting_children`, which
 // dispatch://INFRA-3320 added, is one of them too: a child enters it from one of planning through
 // accepting, and waits there on children of its own, which are still at work, so its root waits
-// on it. `done` is none of them: a child in `done` before its close is out of the workflow, whose
-// hours are outside its own work time too (the spec's "Out of the workflow before the close",
-// outOfWorkflowSpans), so its root waits on it through none.
+// on it. `done` is none of
+// them: a child in `done` before its close is out of the workflow, whose hours are outside its
+// own work time too (the spec's "Out of the workflow before the close",
+// outOfWorkflowSpans), so its root waits on it through none. `verifying`, where a merged child
+// waits for its checks (cybermonklabs/legion#5558), is none of them either, as `held` is none:
+// nothing of that child is at work, so the hours are its own wait, which its own facts count
+// under its own part, and a root over it is not waiting on a working child.
 var childWorkingPhases = []string{
 	legion.PhasePlanning, legion.PhaseImplementing, legion.PhaseTesting, legion.PhaseReviewing,
 	legion.PhaseAccepting, legion.PhaseRetro, legion.PhaseMerging, legion.PhaseAwaitingMerge,

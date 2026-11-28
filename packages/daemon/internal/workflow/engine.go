@@ -65,12 +65,12 @@ type Config struct {
 	Steps          []record.DesignStep
 	ReviewRoundCap int
 	Linger         time.Duration
-	// ProductionCheckBound is how long a closed issue's production check waits for its deploy
-	// before its last look (config.Config.ProductionCheckBound, `production_check_hours`): the
-	// check's bound_at is its open plus this. Zero takes the shipped 14 days.
+	// ProductionCheckBound is how long a production check runs from its opening before its last
+	// look (config.Config.ProductionCheckBound, `production_check_hours`): the check's bound_at is
+	// its open plus this. Zero takes the shipped 14 days.
 	ProductionCheckBound time.Duration
 	// ProductionCheckRole is the project's `production_check` (config.Project.ProductionCheck):
-	// the role that works the production check a merge closing an issue opens, and empty for the
+	// the role that works the production check a merged issue's close waits for, and empty for the
 	// project that opens none. It decides the checks opened under this configuration, never one
 	// already open, whose role its own row holds.
 	ProductionCheckRole claim.Role
@@ -317,6 +317,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.dispatchAskRestored(ctx, tx, fact)
 	case intake.HandoffComplete:
 		return e.handoff(ctx, tx, fact)
+	case intake.DefectReport:
+		return e.defectReport(ctx, tx, fact)
+	case intake.DefectWithdrawal:
+		return e.defectWithdrawal(ctx, tx, fact)
 	case intake.PullRequestOpened:
 		return e.pullRequestOpened(ctx, tx, fact)
 	case intake.PullRequestSynchronized:
@@ -353,6 +357,10 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.mergeStateUnread(ctx, tx, fact)
 	case intake.MergeQueueReadDone:
 		return e.mergeQueueReadDone(ctx, tx, fact)
+	case intake.CloseChecksRead:
+		return e.closeChecksRead(ctx, tx, fact)
+	case intake.DispatchResultChanged:
+		return e.resultChanged(ctx, tx, fact)
 	case intake.MergeHoldsChanged:
 		return e.mergeHoldsChanged(ctx, tx, fact)
 	case intake.ConflictConfirmDone:
@@ -533,6 +541,19 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 			return intake.Result{}, err
 		}
 	}
+	// A change of what Dispatch shows of an issue, its status or its parent, changes what the close
+	// of each issue above it in verifying waits for, whoever wrote it: the echo of the daemon's own
+	// status write among them, since a read made before that write reached Dispatch saw the old
+	// status (D15). The read reads the children from Dispatch after the change.
+	recordedParent := ""
+	if issue.Parent != nil {
+		recordedParent = *issue.Parent
+	}
+	if fact.Status != issue.DispatchStatus || fact.Parent != recordedParent {
+		if err := e.askAncestorsRead(ctx, tx, *issue); err != nil {
+			return intake.Result{}, err
+		}
+	}
 	// The engine reacts to a newer status alone: an event carrying the status the record holds is
 	// an edit, which it leaves to the observation admission records (admit's recordObservation).
 	if fact.Status == issue.Status {
@@ -556,6 +577,11 @@ func (e *Engine) dispatchIssue(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		// backlog on Dispatch and write over that.
 		if err := e.store.DropStatusWrites(ctx, tx, issue.Key); err != nil {
 			return intake.Result{}, err
+		}
+		if issue.Phase == phase.Verifying && fact.Status == record.DoneStatus {
+			if err := e.personClosedPast(ctx, tx, issue); err != nil {
+				return intake.Result{}, err
+			}
 		}
 		return intake.Result{}, e.leave(ctx, tx, *issue, fact.Status)
 	}
@@ -720,6 +746,17 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 		return false, err
 	}
 	if agent {
+		// The owning architect's done on a child whose work merged is set back like any other
+		// session's write, and the child's close is judged, since its checks decide it (D16, door 7).
+		if fact.Status == record.DoneStatus {
+			byChecks, err := e.closesByChecks(ctx, tx, issue)
+			if err != nil {
+				return false, err
+			}
+			if byChecks {
+				return true, e.architectsDoneSetBack(ctx, tx, issue.Key, fact.ActorSession)
+			}
+		}
 		return true, nil
 	}
 	return true, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "status-reasserted", Role: claim.RoleArchitect,
@@ -728,10 +765,13 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 
 // owningArchitectsMove says whether fact, the write of a session that holds a claim in issue's
 // tree, is the owning architect's move of issue out of the workflow, which sessionStatusWrite does
-// not set back. Four conditions make it one:
+// not set back. Five conditions make it one:
 //   - The status is done, backlog, icebox or triage (record.OutOfWorkflow).
 //   - The issue is not the tree root, which leaves the workflow only by the architect's sign-off
 //     or close_root.
+//   - A done is of a child whose current generation's work has not merged: a merged child closes
+//     by its checks or a person (closesByChecks), so its architect's done is set back, and it is
+//     told why.
 //   - The session holds the architect claim of an issue of the tree, in any state
 //     (record.Store.ArchitectIssueOfSession).
 //   - That architect owns the issue by the rule of the API's operations on a child
@@ -742,6 +782,12 @@ func (e *Engine) sessionStatusWrite(ctx context.Context, tx pgx.Tx, issue record
 func (e *Engine) owningArchitectsMove(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	if !record.OutOfWorkflow(fact.Status) || claim.IsTreeRoot(issue.Key, issue.Tree) {
 		return false, nil
+	}
+	if fact.Status == record.DoneStatus {
+		byChecks, err := e.closesByChecks(ctx, tx, issue)
+		if err != nil || byChecks {
+			return false, err
+		}
 	}
 	architect, held, err := e.store.ArchitectIssueOfSession(ctx, tx, issue.Tree, fact.ActorSession)
 	if err != nil || !held {
@@ -870,7 +916,7 @@ func (e *Engine) recordChild(ctx context.Context, tx pgx.Tx, root record.Issue, 
 	if resolution.Refusal != "" {
 		return e.refuseChild(ctx, tx, root, fact.Key, fact.Parent, fact.ResolvedRepo, resolution)
 	}
-	if err := e.enterChild(ctx, tx, root, fact, root.Generation, resolution); err != nil {
+	if err := e.enterChild(ctx, tx, root, fact, root.TreeRun(), resolution); err != nil {
 		return err
 	}
 	e.HearRepository(ctx, resolution.GitHubRepo)
@@ -1039,10 +1085,20 @@ func (e *Engine) drawExperiments(ctx context.Context, tx pgx.Tx, issue string) e
 // role that works the phase it stands at is none of a phase that role has left, so it is answered
 // as the run the stop ended (pastReportOf). A task with plan rows takes it the same way, whatever
 // step it stands at now; the test of the run itself is ranUnreported.
+//
+// Verifying is a phase no role works, so a completion there is refused like any other, but for one:
+// the merger's completion of the generation that merged, while the record still owes it
+// (Issue.MergerCompletionOwed). The merger completes in the turn that merged, and the merge can
+// land first, so its completion is of the merge it left (phase.LeftBy answers merging), recorded on
+// its own row and on the generation it worked, and refused neither HANDOFF_NOT_CURRENT_PHASE nor
+// HANDOFF_STALE_GENERATION (D7). A next change waits for it (changeDue).
 func (e *Engine) leftItsPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, role claim.Role, token claim.Token) (bool, error) {
 	at := issue.Phase
 	if record.HeldForChildren(issue) || record.HeldFor(issue, record.HoldTaskStopped) {
 		at = record.StandsAt(issue)
+	}
+	if role == claim.RoleMerger && at == phase.Verifying && issue.MergerCompletionOwed {
+		return e.ranUnreported(ctx, tx, issue, role, token)
 	}
 	if works := RoleFor(at); at == phase.Admitted || works == "" || works == role || phase.LeftBy(role, at) == "" {
 		return false, nil
@@ -1231,7 +1287,15 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		return intake.Result{}, err
 	}
 	if !current {
-		return intake.Result{}, e.reportEndedStep(ctx, tx, *issue, reported, fact.HandoffRecord)
+		if err := e.reportEndedStep(ctx, tx, *issue, reported, fact.HandoffRecord); err != nil {
+			return intake.Result{}, err
+		}
+		// The merger's completion of the merged generation, taken in verifying (leftItsPhase),
+		// is the moment a next change waits for (mergerCompleted).
+		if fact.Role == claim.RoleMerger && issue.Phase == phase.Verifying && issue.MergerCompletionOwed {
+			return intake.Result{}, e.mergerCompleted(ctx, tx, issue.Key)
+		}
+		return intake.Result{}, nil
 	}
 	switch issue.Phase {
 	case phase.Planning:
@@ -1346,7 +1410,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 		return intake.Result{}, e.notice(ctx, tx, issue.Key, record.Notice{Kind: "worker-died", Role: fact.Role, Phase: issue.Phase, Failure: noticeFailure(fact),
 			Reason: fmt.Sprintf("%s's own architect failed; its notices come to you until it runs again, and %s", issue.Key, again)})
 	}
-	// The failure of the role an open check records ends the look of its closed issue's production
+	// The failure of the role an open check records ends the look of its merged issue's production
 	// check, as its bound would, and counts it a failed look, so the next look is named a backoff
 	// out that doubles with each failed look in a row (endFailedLook). Which role that is the check's
 	// own row says (record.ProductionCheck.Role, the role it opened under), never the setting as it
@@ -1360,7 +1424,7 @@ func (e *Engine) claimFailed(ctx context.Context, tx pgx.Tx, fact intake.ClaimFa
 	// linger with a look still open at the reopen) takes the live-phase path below instead, where
 	// the failure holds the phase and is told; its stale look ends at the look's own bound
 	// (check_look), which endLookPending keeps for the run.
-	if !record.InWorkflow(*issue) {
+	if !record.RunsAgain(*issue) {
 		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
 		if err != nil {
 			return intake.Result{}, err
@@ -2745,9 +2809,11 @@ func heldAcceptanceBack(w Walk) string {
 
 // acceptanceHeld reads the three holds on issue's acceptance and on its close, in R8's order, and
 // answers the first that holds; each later one is read only when the one before it holds nothing.
-// First, an issue beneath it in its own tree that is still in the workflow (record.OpenBeneath,
-// SIGNOFF_CHILD_IN_WORKFLOW). Then a root of any tree whose design-gate step rests on its approval
-// and is still in the workflow (record.RestingRoots, SIGNOFF_RESTING_ROOT_IN_WORKFLOW): the checks
+// First, an issue beneath it in its own tree whose work has still to happen (record.WorkBeneath,
+// SIGNOFF_CHILD_IN_WORKFLOW): a child in verifying has merged its work and holds no acceptance
+// (D10), though close_root, which ends the tree, refuses on it first (OpenBeneath). Then a root
+// of any tree whose design-gate step rests on its approval and is still in the workflow
+// (record.RestingRoots, SIGNOFF_RESTING_ROOT_IN_WORKFLOW): the checks
 // of the issues under an ancestor prove its requirements together, so it is accepted only after
 // them. Then a Dispatch child of it that is still open, one that runs as a tree of its own included
 // (childrenOpen, SIGNOFF_CHILD_OPEN). A root that rests on the issue's approval and is a Dispatch
@@ -2759,7 +2825,14 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 	if err != nil {
 		return acceptanceHold{}, err
 	}
-	if open := record.OpenBeneath(issue, members); len(open) > 0 {
+	return e.acceptanceHeldOver(ctx, tx, issue, members)
+}
+
+// acceptanceHeldOver is acceptanceHeld over the members of issue's tree its caller already read
+// (treeMembers), so a caller that reads them for a rule of its own, as closeRoot does, reads the
+// tree once.
+func (e *Engine) acceptanceHeldOver(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) (acceptanceHold, error) {
+	if open := record.WorkBeneath(issue, members); len(open) > 0 {
 		return acceptanceHold{code: signOffChildInWorkflow, names: strings.Join(open, ", ")}, nil
 	}
 	resting, err := record.RestingRoots(ctx, tx, e.store, issue.Key)
@@ -2900,6 +2973,16 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	snapshot := Snapshot{Phase: issue.Phase, HasOpenOrMergedPR: record.LetsImplementationMove(pr)}
+	// The merge's two rows are chosen by whether the close waits (closeWait): the predicate is read
+	// as at an entry into verifying now, so no read made before the merge counts, and a merge alone
+	// closes nothing (D4, "A merge is not sufficient by itself").
+	if trigger == TriggerPullRequestMerged {
+		view, err := e.closeWaitFrom(ctx, tx, issue, e.now())
+		if err != nil {
+			return err
+		}
+		snapshot.CloseWaits = !view.wait.Done()
+	}
 	row, ok := w.row(issue.Phase, trigger, target, snapshot)
 	if !ok {
 		return nil
@@ -2958,9 +3041,18 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	movedBack := w.MovesBack(issue.Phase, row.To)
+	// A move back out of the retro or the merge is a return for a cause that stays, and it carries
+	// each open defect reported in this generation (carryReturn), which the start task of the phase
+	// it reaches names: the returned work takes them, and this generation's merge ends them (D7).
+	var carried []record.Defect
 	if movedBack {
 		if err := e.recordPass(ctx, tx, issue, w.Task, issue.Phase, row.To, pr, len(open) > 0); err != nil {
 			return err
+		}
+		if record.AcceptedPhase(record.StandsAt(issue)) {
+			if carried, err = e.carryReturn(ctx, tx, issue); err != nil {
+				return err
+			}
 		}
 	}
 	if trigger == TriggerReviewRejected {
@@ -2986,6 +3078,11 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	}
 	if held.code != "" {
 		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, reason, held)
+	}
+	// A merge whose close waits stands the issue in verifying, where no role works and nothing
+	// starts (enterVerifying).
+	if row.To == phase.Verifying {
+		return e.enterVerifying(ctx, tx, issue, w, trigger, handoff, pr)
 	}
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, PhaseStatus(row.To), nil, handoff, pr, reason)
 	if err != nil {
@@ -3026,13 +3123,16 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// session, and the start waits for none of them.
 	starting := phase.RoleFor(row.To)
 	// A pull request GitHub has already merged leaves the merger nothing to merge, so no merger is
-	// started for it and the merge closes the issue the moment it reaches merging. The close is
-	// closeMergedTelling's rather than a second transition's because a merged issue's close waits
-	// for the issues beneath it still in the workflow (for a root, the rest of its tree), and an
-	// issue that arrives there and waits must be told why: the notice its architect got at the
-	// merge could not say it, since the issue was elsewhere then. The move reads that fact by the
-	// one statement of merging's rule (record.MergedInMerging), at the phase it enters.
+	// started for it and the merge is taken the moment the issue reaches merging (closeMerged): the
+	// issue waits in verifying, or closes where its close waits for nothing. The move reads that
+	// fact by the one statement of merging's rule (record.MergedInMerging), at the phase it enters.
 	mergedAlready := record.MergedInMerging(pr, row.To)
+	// The gate's opening of a next change starts its first phase, whose task names each reason the
+	// change carries, whatever its kind (carriedByChange, D7).
+	changing, err := e.carriedByChange(ctx, tx, trigger, issue)
+	if err != nil {
+		return err
+	}
 	// A merge GitHub has already made is one of two moves that start a step no phase worker's
 	// start begins: no merger runs it, so it starts here under the agent its step names
 	// (startStandingStep), and its close ends it. Every other move starts what a move into its
@@ -3042,9 +3142,9 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		if err := e.startStandingStep(ctx, tx, issue, w); err != nil {
 			return err
 		}
-	} else if err := e.start(ctx, tx, issue, w, starting, func(at Standing) string {
-		return task(issue, at, handoff, pr, reason)
-	}, from, movedBack); err != nil {
+	} else if err := e.startFrom(ctx, tx, issue, w, starting, func(at Standing) string {
+		return task(issue, at, handoff, pr, withChangeReasons(withCarried(reason, carried), changing))
+	}, from, movedBack, firstStartAt(trigger, issue)); err != nil {
 		return err
 	}
 	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
@@ -3062,7 +3162,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	if mergedAlready {
-		return e.closeMergedTelling(ctx, tx, issue, pr)
+		return e.closeMerged(ctx, tx, issue, pr)
 	}
 	if row.To == phase.Done {
 		return e.leave(ctx, tx, issue, "done")
@@ -3086,8 +3186,10 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 		return "", err
 	}
 	from := issue.Phase
+	// The task of a merged issue is done at its merge, whether the issue closes there or waits in
+	// verifying for its close.
 	state := record.TaskRunning
-	if to == phase.Done {
+	if to == phase.Done || to == phase.Verifying {
 		state = record.TaskDone
 	}
 	if err := e.moveTask(ctx, tx, issue, w, to, state); err != nil {
@@ -3300,7 +3402,7 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 	if err := e.planFirstStep(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranch{Generation: issue.Generation}); err != nil {
+	if err := e.enqueue(ctx, tx, issue.Key, record.IssueBranchOf(issue)); err != nil {
 		return err
 	}
 	if !claim.IsTreeRoot(issue.Key, issue.Tree) {

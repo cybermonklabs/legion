@@ -463,19 +463,26 @@ func (r *stepRecordsRig) work(role claim.Role, word string, req api.HandoffCompl
 	r.finish(c, word, req, next)
 }
 
-// finish is the end of c's turn: it writes its handoff record of word to Dispatch under its own
-// session (none for word ""), completes, ends its turn, and waits for the issue to reach next.
+// finish is finishOf the walk's issue.
 func (r *stepRecordsRig) finish(c *stepClaimant, word string, req api.HandoffCompleteRequest, next phase.Phase) {
+	r.t.Helper()
+	r.finishOf(r.key, c, word, req, next)
+}
+
+// finishOf is the end of c's turn on issue: it writes issue's handoff record of word to Dispatch
+// under c's own session (none for word ""), completes, ends its turn, and waits for issue to reach
+// next.
+func (r *stepRecordsRig) finishOf(issue string, c *stepClaimant, word string, req api.HandoffCompleteRequest, next phase.Phase) {
 	t := r.t
 	t.Helper()
 	if word != "" {
-		req.HandoffID, req.HandoffVersion = r.writeHandoff(c.session, word)
+		req.HandoffID, req.HandoffVersion = r.writeHandoffOf(issue, c.session, word)
 	}
 	if status, body := r.complete(c, req); status != http.StatusOK {
-		t.Fatalf("the %s's completion = %d %s, want 200", c.role, status, body)
+		t.Fatalf("the %s's completion of %s = %d %s, want 200", c.role, issue, status, body)
 	}
 	c.endTurn()
-	r.waitPhase(next)
+	r.waitPhaseOf(issue, next)
 }
 
 // complete posts c's completion req with a grant minted for it now, and answers the daemon's
@@ -504,31 +511,37 @@ func (r *stepRecordsRig) review(state string, next phase.Phase) {
 	r.waitPhase(next)
 }
 
-// approve is reviewer, the walk's reviewer, approving pull request number at stepRecordsHead with a
-// review of its own: the review App's, whose Legion footer names the session the reviewer's claim
-// registered and that head (workflow's byReviewer). It ends the round with no completion, where a
-// person's approval waits for one.
+// approve is approveAt stepRecordsHead, the head every walk of the rig works at.
 func (r *stepRecordsRig) approve(reviewer *stepClaimant, number int) {
 	r.t.Helper()
-	r.publishReviewBy(number, "APPROVED", reviewAppLogin, legionFooter(reviewer.session, stepRecordsHead))
+	r.approveAt(reviewer, number, stepRecordsHead)
+}
+
+// approveAt is reviewer, the walk's reviewer, approving pull request number at head with a review
+// of its own: the review App's, whose Legion footer names the session the reviewer's claim
+// registered and that head (workflow's byReviewer). It ends the round with no completion, where a
+// person's approval waits for one.
+func (r *stepRecordsRig) approveAt(reviewer *stepClaimant, number int, head string) {
+	r.t.Helper()
+	r.publishReviewBy(number, head, "APPROVED", reviewAppLogin, legionFooter(reviewer.session, head))
 }
 
 // publishReview is a person with write access submitting state on pull request number at
-// stepRecordsHead, as Envoy relays GitHub's review.
+// stepRecordsHead, the head every walk of the rig works at, as Envoy relays GitHub's review.
 func (r *stepRecordsRig) publishReview(number int, state string) {
 	r.t.Helper()
-	r.publishReviewBy(number, state, stepRecordsPerson, "")
+	r.publishReviewBy(number, stepRecordsHead, state, stepRecordsPerson, "")
 }
 
-// publishReviewBy is author submitting state on pull request number at stepRecordsHead, the body
-// naming the review's number and ending with footer, as Envoy relays GitHub's review.
-func (r *stepRecordsRig) publishReviewBy(number int, state, author, footer string) {
+// publishReviewBy is author submitting state on pull request number at head, the body naming the
+// review's number and ending with footer, as Envoy relays GitHub's review.
+func (r *stepRecordsRig) publishReviewBy(number int, head, state, author, footer string) {
 	t := r.t
 	t.Helper()
 	r.reviews++
 	payload, err := json.Marshal(map[string]string{
 		"action": "submitted", "kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "state": state,
-		"commit_id": stepRecordsHead, "head_sha": stepRecordsHead, "author": author, "body": "round " + strconv.Itoa(r.reviews) + footer,
+		"commit_id": head, "head_sha": head, "author": author, "body": "round " + strconv.Itoa(r.reviews) + footer,
 		"review_id": strconv.Itoa(number*10 + r.reviews), "submitted_at": time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
@@ -559,13 +572,17 @@ func (r *stepRecordsRig) signOff(issue string) {
 }
 
 // merge waits for the merger's launch and publishes GitHub's merge of the pull request
-// (publishMergeOf), which ends the walk at done.
+// (publishMergeOf), which ends the walk's last step. The merge closes nothing by itself: the issue
+// waits in verifying for the checks of its goal, and the read of the checks the merge queues runs
+// on its own. An issue whose close waits for nothing closes at that read, often before a poll here
+// sees verifying, so merge waits for the issue to leave merging into either, and a caller that
+// needs one of them waits for it.
 func (r *stepRecordsRig) merge() {
 	r.t.Helper()
 	r.awaitLaunch(r.token(claim.RoleMerger))
 	r.github.merged(r.number)
 	r.publishMergeOf(r.number, r.key, stepRecordsHead, "main")
-	r.waitPhase(phase.Done)
+	r.waitPhaseOf(r.key, phase.Verifying, phase.Done)
 }
 
 // waitPhase waits for the issue to stand in want.
@@ -574,16 +591,16 @@ func (r *stepRecordsRig) waitPhase(want phase.Phase) {
 	r.waitPhaseOf(r.key, want)
 }
 
-// waitPhaseOf waits for issue to stand in want.
-func (r *stepRecordsRig) waitPhaseOf(issue string, want phase.Phase) {
+// waitPhaseOf waits for issue to stand in one of want.
+func (r *stepRecordsRig) waitPhaseOf(issue string, want ...phase.Phase) {
 	r.t.Helper()
 	var last string
 	if !testwait.Holds(stepRecordsWait, 100*time.Millisecond, func() bool {
 		got, ok := r.d.state().Issues[issue]
 		last = string(got.Phase)
-		return ok && last == string(want)
+		return ok && slices.Contains(want, got.Phase)
 	}) {
-		r.t.Fatalf("%s stands in %q, want %s", issue, last, want)
+		r.t.Fatalf("%s stands in %q, want %v", issue, last, want)
 	}
 }
 
@@ -621,6 +638,29 @@ func (r *stepRecordsRig) awaitLaunch(token claim.Token) {
 func (r *stepRecordsRig) person(method, path string, body any, want int, into any) {
 	t := r.t
 	t.Helper()
+	status, answer := r.dispatchRequest(method, path, body, "X-Dispatch-User", "step-records")
+	if status != want {
+		t.Fatalf("%s %s = %d %s, want %d", method, path, status, answer, want)
+	}
+	if into != nil {
+		if err := json.Unmarshal(answer, into); err != nil {
+			t.Fatalf("decode %s %s: %v", method, path, err)
+		}
+	}
+}
+
+// agent sends one request to Dispatch with the agent bearer, as a role's session sends one, and
+// answers the status and the body.
+func (r *stepRecordsRig) agent(method, path string, body any) (int, []byte) {
+	r.t.Helper()
+	return r.dispatchRequest(method, path, body, "Authorization", "Bearer "+r.dispatch.token)
+}
+
+// dispatchRequest sends body to Dispatch as JSON, with header set to value as the caller's
+// identity, and answers the status and the body.
+func (r *stepRecordsRig) dispatchRequest(method, path string, body any, header, value string) (int, []byte) {
+	t := r.t
+	t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		t.Fatal(err)
@@ -630,16 +670,8 @@ func (r *stepRecordsRig) person(method, path string, body any, want int, into an
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Dispatch-User", "step-records")
-	status, answer := r.send(request)
-	if status != want {
-		t.Fatalf("%s %s = %d %s, want %d", method, path, status, answer, want)
-	}
-	if into != nil {
-		if err := json.Unmarshal(answer, into); err != nil {
-			t.Fatalf("decode %s %s: %v", method, path, err)
-		}
-	}
+	request.Header.Set(header, value)
+	return r.send(request)
 }
 
 // personMoves is a person setting the walk's issue to status in Dispatch. Dispatch then relays the
@@ -664,25 +696,23 @@ func (r *stepRecordsRig) personMoves(status, kind string) {
 	r.publish("notifications.dispatch.issue."+r.key+"."+kind, "dispatch", fmt.Sprintf("%s-%s-%d", r.key, status, moved.LastSeq), string(payload))
 }
 
-// writeHandoff writes the issue's handoff record of word under session, as `dispatch
-// handoff-write` does with the agent's bearer, and answers its id and version.
+// writeHandoff is writeHandoffOf the walk's issue.
 func (r *stepRecordsRig) writeHandoff(session, word string) (string, int) {
+	r.t.Helper()
+	return r.writeHandoffOf(r.key, session, word)
+}
+
+// writeHandoffOf writes issue's handoff record of word under session, as `dispatch handoff-write`
+// does with the agent's bearer (agent), and answers its id and version.
+func (r *stepRecordsRig) writeHandoffOf(issue, session, word string) (string, int) {
 	t := r.t
 	t.Helper()
-	body := fmt.Sprintf(`{"schemaVersion": 1, "phase": %q, "issue": %q, "summary": "written by %s"}`, word, r.key, session)
-	encoded, err := json.Marshal(map[string]any{"actor": map[string]string{"kind": "session", "id": session}, "body": body})
-	if err != nil {
-		t.Fatal(err)
-	}
-	request, err := http.NewRequest(http.MethodPost, r.dispatch.base+"/api/v1/issues/"+r.key+"/handoffs/"+word, bytes.NewReader(encoded))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+r.dispatch.token)
-	status, answer := r.send(request)
+	body := fmt.Sprintf(`{"schemaVersion": 1, "phase": %q, "issue": %q, "summary": "written by %s"}`, word, issue, session)
+	status, answer := r.agent(http.MethodPost, "/api/v1/issues/"+issue+"/handoffs/"+word, map[string]any{
+		"actor": map[string]string{"kind": "session", "id": session}, "body": body,
+	})
 	if status != http.StatusCreated {
-		t.Fatalf("write the %s handoff of %s as %s = %d %s, want 201", word, r.key, session, status, answer)
+		t.Fatalf("write the %s handoff of %s as %s = %d %s, want 201", word, issue, session, status, answer)
 	}
 	var written struct {
 		ID      string `json:"id"`
@@ -1101,6 +1131,33 @@ func (c *stepClaimant) reconnect() {
 	sh.serve(func() { c.serve(sh, d) })
 }
 
+// attach is the pane coming up in launch, its claim's latest: a resume of c's own session, or a
+// spawn of a session of its own, which c holds from then on. The launch stopped the pane c played,
+// so that pane's connection closes (closeConn), and the claim's stream takes the new pane's hello
+// once the listener has read the close. The new pane's shim says hello with the launch's boot token
+// and counts the agent's calls from zero, its read number too (dialCountingShim); its agent
+// registers in its session and says ready, as the plugin does (register, ready).
+func (c *stepClaimant) attach(launch runtime.SpawnSpec) {
+	t := c.r.t
+	t.Helper()
+	if launch.ResumeSessionFile != c.sessionFile() {
+		c.session = "ses_" + string(c.role) + "_" + randomSuffix(t)[:6]
+	}
+	c.r.built.mu.Lock()
+	address := c.r.built.address
+	c.r.built.mu.Unlock()
+	c.closeConn()
+	sh := dialCountingShim(t, address, launch.BootToken)
+	c.mu.Lock()
+	c.sh, c.bootToken, c.open, c.inTurn = sh, launch.BootToken, nil, false
+	c.counts, c.outsideForm, c.overflowed, c.read = nil, 0, false, 0
+	c.mu.Unlock()
+	c.secret = c.register(launch.BootToken)
+	d := c.r.d
+	sh.serve(func() { c.serve(sh, d) })
+	c.ready(launch.Generation)
+}
+
 // refusedHello says why the daemon that runs now acknowledged no hello of c's pane, naming what it
 // compared: the plugin contract the claim records against its own (api.DaemonAPIVersion), the
 // claim as it holds it now, and the launch of the claim this boot made. A boot relaunches at once a
@@ -1277,9 +1334,10 @@ func (c *stepClaimant) send(frame shimwire.Frame) {
 }
 
 // take waits for the daemon's next task of this claim and starts the turn that works it, its
-// model answering first: the claim's machine reads a connection's frames in order, so once the
-// turn's start shows the claim working, the answer before it has been read too. It answers the
-// prompt that carried the task, which a walk reads where it holds what the claim was told.
+// model answering first (answer, startTurn): the claim's machine reads a connection's frames in
+// order, so once the turn's start shows the claim working, the answer before it has been read too.
+// It answers the prompt that carried the task, which a walk reads where it holds what the claim
+// was told.
 func (c *stepClaimant) take() shimwire.Prompt {
 	c.r.t.Helper()
 	prompt := c.receive()
@@ -1330,6 +1388,28 @@ func (c *stepClaimant) receive() shimwire.Prompt {
 		c.r.t.Fatalf("%s was prompted with no task within %s", c.token, stepRecordsWait)
 		return shimwire.Prompt{}
 	}
+}
+
+// receiveWithin is receive bounded by bound, false where no task came, for a claim the daemon may
+// have launched again since c's pane came up: a latest launch whose boot token is not the one c's
+// pane holds is met in its new pane first (relaunched, the caller's rule for what that launch must
+// be), so the task that launch carries reaches the walk.
+func (c *stepClaimant) receiveWithin(bound time.Duration, relaunched func(*stepClaimant)) (shimwire.Prompt, bool) {
+	t := c.r.t
+	t.Helper()
+	var prompt shimwire.Prompt
+	told := testwait.Holds(bound, 50*time.Millisecond, func() bool {
+		select {
+		case prompt = <-c.prompts:
+			return true
+		default:
+		}
+		if lastLaunch(t, c.r.rt, c.token).BootToken != c.bootToken {
+			relaunched(c)
+		}
+		return false
+	})
+	return prompt, told
 }
 
 // endTurnUnseen ends every turn a prompt started with no daemon of this release there to read it,
@@ -1424,7 +1504,7 @@ func (c *stepClaimant) register(bootToken string) string {
 	t := c.r.t
 	t.Helper()
 	status, body := c.r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: bootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
+		BootToken: bootToken, SessionID: c.session, OmpSessionFile: c.sessionFile(),
 		AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
@@ -1436,6 +1516,9 @@ func (c *stepClaimant) register(bootToken string) string {
 	}
 	return registered.Secret
 }
+
+// sessionFile is the session file of c's session, which its agent registers.
+func (c *stepClaimant) sessionFile() string { return "/sessions/" + c.session + ".jsonl" }
 
 // ready is the claimant's agent saying it is ready at generation, its launch's.
 func (c *stepClaimant) ready(generation uint64) {
@@ -1519,26 +1602,13 @@ func (c *stepClaimant) exit(final bool) {
 	})
 }
 
-// relaunched is the pane of the launch exit waited for. A counting shim connects with the new
-// launch's boot token. The agent registers in the same session and says ready at the new
-// generation. The new launch counts from zero, its read number too. The daemon then sends the task
-// the claim held again, which take takes.
+// relaunched is the pane of the launch exit waited for, the claim's latest, coming up in it as
+// attach says: it counts from zero, its read number too, and its agent registers in the session
+// the launch resumes and says ready at the new generation. The daemon then sends the task the
+// claim held again, which take takes.
 func (c *stepClaimant) relaunched() {
-	t := c.r.t
-	t.Helper()
-	launch := lastLaunch(t, c.r.rt, c.token)
-	c.r.built.mu.Lock()
-	address := c.r.built.address
-	c.r.built.mu.Unlock()
-	sh := dialCountingShim(t, address, launch.BootToken)
-	c.bootToken, c.secret = launch.BootToken, c.register(launch.BootToken)
-	c.mu.Lock()
-	c.sh, c.open, c.inTurn = sh, nil, false
-	c.counts, c.outsideForm, c.overflowed, c.read = nil, 0, false, 0
-	c.mu.Unlock()
-	d := c.r.d
-	sh.serve(func() { c.serve(sh, d) })
-	c.ready(launch.Generation)
+	c.r.t.Helper()
+	c.attach(lastLaunch(c.r.t, c.r.rt, c.token))
 }
 
 // disconnect closes the shim's connection while its process lives on. No probe is scripted, so

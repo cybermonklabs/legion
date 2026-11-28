@@ -116,7 +116,7 @@ func TestOwnerStepsLive(t *testing.T) {
 		if err := l.launchedInOrder([]claim.Role{claim.RoleImplementer, claim.RoleReviewer, claim.RoleTester}); err != nil {
 			l.t.Fatal(err)
 		}
-		l.note("%s walked implementing, reviewing, testing, retro and merging to done, launching its implementer, its reviewer and its tester in that order", anyOrder)
+		l.note("%s walked implementing, reviewing, testing, retro and merging, and left merging on its merge for verifying or done, launching its implementer, its reviewer and its tester in that order", anyOrder)
 		l.stepsRead(anyOrder, "a", ownerStepsAnyOrder)
 	})
 }
@@ -222,8 +222,8 @@ func (l *ownerStepsLive) planRegistered(plan string, steps []string) {
 }
 
 // ownersPlanWalked is walk-implementer-reviewer: the issue's gate opens, and it walks the steps of
-// its owner's plan (steps), then its retro and its merge, to done, with no planner and no tester
-// launched at any point. The error names what does not hold.
+// its owner's plan (steps), then its retro and its merge, which takes it to verifying or on to
+// done, with no planner and no tester launched at any point. The error names what does not hold.
 func (l *ownerStepsLive) ownersPlanWalked(steps []string) error {
 	l.t.Helper()
 	first := l.firstStep()
@@ -237,7 +237,7 @@ func (l *ownerStepsLive) ownersPlanWalked(steps []string) error {
 			return fmt.Errorf("%s's %s was launched %v on the plan %v, want never", l.key, role, launches, steps)
 		}
 	}
-	l.note("%s walked %s, then retro and merging, to done; no planner and no tester was launched", l.key, strings.Join(steps, ", "))
+	l.note("%s walked %s, then retro and merging, and left merging on its merge; no planner and no tester was launched", l.key, strings.Join(steps, ", "))
 	return nil
 }
 
@@ -305,12 +305,12 @@ func taskLinesHold(issue, out, task string, want []stepWant) error {
 }
 
 // walkDefault is the walk of an issue whose owner gives no plan: its gate opens, and it walks the
-// default steps, then its retro and its merge, to done.
+// default steps, then its retro and its merge, which takes it to verifying or on to done.
 func (l *ownerStepsLive) walkDefault() {
 	l.t.Helper()
 	l.openGate(phase.Planning)
 	l.walkSteps(ownerStepsDefault)
-	l.note("%s, given no plan, walked planning, implementing, testing, reviewing, accepting (the architect's sign-off), retro and merging to done", l.key)
+	l.note("%s, given no plan, walked planning, implementing, testing, reviewing, accepting (the architect's sign-off), retro and merging, and left merging on its merge for verifying or done", l.key)
 }
 
 // walkDefaultWithRowsDeleted is walkDefault with the issue's plan rows deleted from the daemon's
@@ -333,10 +333,10 @@ func (l *ownerStepsLive) walkDefaultWithRowsDeleted() {
 	}
 	l.retro()
 	l.merge()
-	l.note("%s walked today's line to done", l.key)
+	l.note("%s walked today's line to its merge", l.key)
 }
 
-// defaultRowsHold says whether the walk's issue, done, holds the rows of the default steps: one
+// defaultRowsHold says whether the walk's issue, merged, holds the rows of the default steps: one
 // plan version 0 of the source default, its task default done, a plan_steps row at each place 1 to
 // 5 naming the role of that default step, and one start of each in step_starts. The error names the
 // first that does not hold.

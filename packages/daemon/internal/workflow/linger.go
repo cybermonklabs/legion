@@ -31,7 +31,10 @@ import (
 // its parent keeps running in a pod of its own. A child closed as done at its merge still owes its
 // production check, where the project opens one (Engine.checkRole): five of its claims are
 // closed, the checking role's is not, no IssueSuspend is written, and the check opens in that
-// role's live session; the check's close writes the suspension (closeCheck). A project whose
+// role's live session; the check's close writes the suspension (closeCheck). Where the child's
+// check of its generation and that merge has closed already, as one that closed while the child
+// waited in verifying, no check runs on: that close closed the checking role's claim and deleted
+// nothing of the pod, so the leave writes the one IssueSuspend. A project whose
 // `production_check` is off checks nothing in production, so its merged child close is like any
 // other done: every claim is closed and the Sandbox deleted with the pod and the disk it ran on.
 // A done child set back to todo opens a new run, and each of its claims comes back on the session
@@ -41,15 +44,17 @@ import (
 // the row that releases it (record.ClaimRelease).
 //
 // A member's leave may be the last one a merged issue above it waited for: an issue whose pull
-// request merged stands in merging while any issue beneath it is in the workflow
-// (closeMerged), and closes once the last of them leaves (closeAwaitingMerge). That is the tree
-// root for a member of its tree, and any parent between them for a member below it, so the leave
-// re-reads the wait of every merged ancestor the departing issue stood beneath. Every way a
-// member stops holding one runs this function — a status moving to backlog, icebox, triage or
-// done (dispatchIssue), a phase reaching done (transition), the architect's close_root, and
-// LeaveUnslotted — and the boot's sweep is the backstop. The child's check opens after that
-// close, so its start row follows the linger's suspends and resumes the checking role as a
-// root's own check does, rather than being stopped by them.
+// request merged stands in verifying while any issue beneath it is in the workflow (its close's
+// Beneath term, record.CloseFacts), and closes once nothing beneath it or open under it in Dispatch
+// holds it and its checks pass. That is the tree root for a member of its tree, and any parent
+// between them for a member below it, so the leave queues a read of the checks of every ancestor in
+// verifying the departing issue stood beneath, which reads the children from Dispatch after the
+// leave, and judges each of them (judgeClose). Every way a member stops holding one runs this
+// function — a status moving to backlog, icebox, triage or done (dispatchIssue), a phase reaching
+// done (transition), the architect's close_root, and LeaveUnslotted — and the controller's tick is
+// the backstop. The child's check opens after that close, so its start row follows the linger's
+// suspends and resumes the checking role as a root's own check does, rather than being stopped by
+// them.
 //
 // Whatever the departure, the held start goes with the phase it was held in: an issue that leaves
 // from awaiting_children stands at done holding nothing (record.Issue.ChildrenWait, the children
@@ -130,8 +135,14 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if status == "done" {
 		op = "issue_close"
 	}
+	podFree := true
 	if merged {
 		except = e.checkRole()
+		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
+		if err != nil {
+			return err
+		}
+		podFree = except == "" || (check != nil && !check.Open() && check.Generation == issue.Generation && check.MergeSHA == mergeOf(issue, *pr).SHA)
 	}
 	if err := e.everyClaim(ctx, tx, issue, op, fmt.Sprintf("%s is %s", issue.Key, status), except); err != nil {
 		return err
@@ -154,9 +165,9 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if root == nil {
 		return fmt.Errorf("suspend issue %s: tree root %s is not recorded", issue.Key, issue.Tree)
 	}
-	if except == "" {
+	if podFree {
 		if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{
-			Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.Generation,
+			Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun(),
 		}); err != nil {
 			return err
 		}
@@ -170,24 +181,26 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	}
 	// This departure may be the last one any merged ancestor of the issue waited for, and not
 	// only the tree root's: the wait reads the issues beneath an issue (record.OpenBeneath), so a
-	// child that merged before the grandchild under it stands in merging too, and nothing
-	// else would ever re-read it — it holds no slot, it is in neither part of the waiting line,
-	// and while it stands there its root can be neither accepted nor closed. Each ancestor's
-	// record is read again rather than taken from the snapshot above, because closing the
-	// nearest one leaves (transition's own leave) and may close the ones above it on the way.
-	// The same departure may be the last one an ancestor held before its retro waited for, a
-	// parent whose last step is not the owner's acceptance (record.HoldForChildren): the fact's settle starts
-	// its retro (releaseHeldParents), as it does for every other change of what stands beneath
-	// it.
+	// child that merged before the grandchild under it stands in verifying too. Each ancestor in
+	// verifying has its checks read again, which reads its children from Dispatch after this leave
+	// (D15), and is judged on what it holds now. Each ancestor's record is read again rather than
+	// taken from the snapshot above, because closing the nearest one leaves (closeOnChecks's own
+	// leave) and may close the ones above it on the way. The same departure may be the last one an
+	// ancestor held before its retro waited for, a parent whose last step is not the owner's
+	// acceptance (record.HoldForChildren): the fact's settle starts its retro (releaseHeldParents),
+	// as it does for every other change of what stands beneath it.
 	for _, ancestor := range above {
 		current, err := e.store.Issue(ctx, tx, ancestor.Key)
 		if err != nil {
 			return err
 		}
-		if current == nil {
+		if current == nil || current.Phase != phase.Verifying {
 			continue
 		}
-		if err := e.closeAwaitingMerge(ctx, tx, *current); err != nil {
+		if err := e.askCloseRead(ctx, tx, *current); err != nil {
+			return err
+		}
+		if err := e.judgeClose(ctx, tx, *current); err != nil {
 			return err
 		}
 	}
@@ -198,7 +211,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if err != nil {
 		return err
 	}
-	return e.openCheck(ctx, tx, issue, *pr, lingers)
+	return e.openCheck(ctx, tx, issue, mergeOf(issue, *pr), lingers)
 }
 
 // leaveState is the state the task of w is in once its issue leaves the workflow at status: done
@@ -320,42 +333,18 @@ func (e *Engine) openCheckIfMerged(ctx context.Context, tx pgx.Tx, issue record.
 	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
 		return err
 	}
-	return e.openCheck(ctx, tx, issue, *pr, wake)
-}
-
-// closeAwaitingMerge closes merged when its own merge was waiting on the issues beneath it: an
-// issue whose pull request merged stands in merging (or held from it) while any issue
-// beneath it is in the workflow (closeMerged), and closes, as its merge would have, once the
-// last of them leaves. Which issues still hold it is closeMerged's to judge, so this runs on
-// every merged ancestor of an issue that leaves the workflow and changes nothing for any other.
-// It tells nobody: the architect heard the wait when the close entered it (merged), and this
-// path is walked at every departure.
-func (e *Engine) closeAwaitingMerge(ctx context.Context, tx pgx.Tx, merged record.Issue) error {
-	if !awaitsMerge(merged) {
-		return nil
-	}
-	pr, err := e.store.PullRequestRow(ctx, tx, merged.Key)
-	if err != nil || pr == nil || pr.State != record.PullRequestMerged {
-		return err
-	}
-	waiting, err := e.closeMerged(ctx, tx, merged, pr)
-	if err != nil || len(waiting) > 0 {
-		return err
-	}
-	e.logOnCommit(ctx, "workflow: a merged issue closes once the last issue beneath it left the workflow", "issue", merged.Key, "pullRequest", pr.Number)
-	return nil
+	return e.openCheck(ctx, tx, issue, mergeOf(issue, *pr), wake)
 }
 
 // awaitsMerge says whether issue awaits its merge: in merging, or held from merging (a failed
 // merger's claim, an escalation, a stopped task's, or the hold the upgrade's data move left an
 // issue that was held in production_check). The merge is what ends merging, so a merged pull
-// request there is a close still waiting on the rest of the tree rather than a merger still at
-// work. It asks the one predicate written over a hold
-// (record.StandsIn) of the one phase, and stays a question of its own rather than folding into
-// record.Accepted: a root in retro has been accepted and does not await its merge, and this is
-// what closes an issue at its merge (merged, closeMerged), what closes an issue on a merge already
-// recorded (closeAwaitingMerge) and what keeps that merge against a later pull request
-// (pullRequestOpened).
+// request there is a merge still to be taken rather than a merger still at work. It asks the one
+// predicate written over a hold (record.StandsIn) of the one phase, and stays a question of its own
+// rather than folding into record.Accepted: a root in retro has been accepted and does not await
+// its merge, and this is what takes an issue's merge (merged, closeMerged), what takes a merge
+// already recorded at the boot (sweepMerged) and what keeps that merge against a later pull
+// request (pullRequestOpened).
 func awaitsMerge(issue record.Issue) bool {
 	return issue.Phase == phase.Merging || issue.Phase == phase.Held && issue.Hold != nil && issue.Hold.From == phase.Merging
 }
@@ -417,7 +406,7 @@ func (e *Engine) beginLinger(ctx context.Context, tx pgx.Tx, root record.Issue, 
 			return err
 		}
 		if err := e.enqueue(ctx, tx, member.Key, record.IssueSuspend{
-			Tree: member.Tree, Generation: member.Generation, TreeGeneration: root.Generation,
+			Tree: member.Tree, Generation: member.Generation, TreeGeneration: root.TreeRun(),
 		}); err != nil {
 			return err
 		}

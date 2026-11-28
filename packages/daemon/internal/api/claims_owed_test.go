@@ -826,8 +826,8 @@ func TestClaimOwedIsNothingForARoleWhosePhaseAnotherRoleWorks(t *testing.T) {
 // The merger merges (dispatch://INFRA-714): merging is its working phase, with no wait for the
 // daemon's merge after it, so a merger whose issue stands in merging with its pull request open
 // owes that phase, and the answer names it. The merged pull request is what finishes merging
-// (workflow.PhaseFinished), and a merged root stands in merging until the rest of its tree
-// leaves, so once its pull request is merged the merger owes nothing though the phase stands.
+// (workflow.PhaseFinished) until the merge moves the issue on to verifying, so once its pull
+// request is merged the merger owes nothing though the issue still stands in merging.
 func TestClaimOwedIsTheMergeUntilTheMergersPullRequestIsMerged(t *testing.T) {
 	h, _, _ := newEntryHarness(t)
 	seedIssueAt(t, h, "LEGION-208", phase.Merging)

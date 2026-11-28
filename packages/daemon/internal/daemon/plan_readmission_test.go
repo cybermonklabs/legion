@@ -26,8 +26,10 @@ import (
 )
 
 // The architect of a tree gives the plan `implementer reviewer` for a child the daemon has not
-// recorded, which stores it at generation 0. The root walks its own plan to its merge, the linger
-// closes its tree, and a person sets the root todo again, which re-admits it at generation 2. The
+// recorded, which stores it at generation 0. The root walks its own plan to its merge, where it
+// waits in verifying, since the child in backlog holds its close (Dispatch lists it open). A person
+// closes the root, the linger closes its tree, and a person sets the root todo again, which
+// re-admits it at generation 2. The
 // re-admission clears the facts of the tree's recorded issues (record.ClearTreeGeneration) and no
 // plan row: the child's rows at generation 0 stand as given, and the root's plan stays at
 // generation 1. The architect of a tree is the claim of its root's key at every generation
@@ -67,6 +69,8 @@ func TestAPlanGivenBeforeAChildIsReleasedWaitsThroughItsRootsReadmission(t *test
 			r.givePlan("implementer", "reviewer")
 			r.openGate(phase.Implementing)
 			r.walkSteps([]string{"implementer", "reviewer"})
+			r.waitPhaseOf(root, phase.Verifying)
+			r.doneByPerson()
 			r.waitLingerEnded(1)
 			ran := r.storedPlan(root, 1)
 			if ran == nil || len(ran.Tasks) != 1 || ran.Tasks[0].State != record.TaskDone {
@@ -206,4 +210,11 @@ func (r *ownerStepsRig) waitStands(issue string, generation uint64, want phase.P
 	}) {
 		r.t.Fatalf("%s stands in %q at generation %d, want %s at %d", issue, last.Phase, last.Generation, want, generation)
 	}
+}
+
+// doneByPerson is a person setting the walk's issue done in Dispatch, and the event Dispatch relays
+// for that write (personMoves). The daemon's consumer reads it as it reads any issue event.
+func (r *ownerStepsRig) doneByPerson() {
+	r.t.Helper()
+	r.personMoves("done", "issue.closed")
 }

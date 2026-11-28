@@ -58,11 +58,23 @@ type factRecorder struct {
 	refusal *intake.Refusal
 }
 
+// Apply records fact and answers the refusal the recorder holds. A report or a withdrawal of a
+// defect it takes is answered as the workflow answers one it takes (intake.Result.Defect), since
+// the two routes answer what the workflow did with the defect.
 func (r *factRecorder) Apply(_ context.Context, _ pgx.Tx, fact intake.Fact) (intake.Result, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.facts = append(r.facts, fact)
-	return intake.Result{Refusal: r.refusal}, nil
+	result := intake.Result{Refusal: r.refusal}
+	if r.refusal == nil {
+		switch fact.(type) {
+		case intake.DefectReport:
+			result.Defect = &intake.DefectAnswer{Defect: 1, State: intake.DefectRecorded, NextChange: 2}
+		case intake.DefectWithdrawal:
+			result.Defect = &intake.DefectAnswer{Defect: 1, State: intake.DefectWithdrawn}
+		}
+	}
+	return result, nil
 }
 
 func (r *factRecorder) recorded() []intake.Fact {
@@ -327,10 +339,29 @@ func (r *statusRecorder) PutDesignGates(_ context.Context, key string, _ []dispa
 	return nil
 }
 
+// IssueResults and IssueResultsAt answer the issue's results with no check. No route of this
+// package reads an issue's results.
+func (r *statusRecorder) IssueResults(_ context.Context, key string) (dispatch.IssueResults, error) {
+	return dispatch.IssueResults{Issue: key, Checks: []dispatch.CheckBlock{}}, nil
+}
+func (r *statusRecorder) IssueResultsAt(_ context.Context, key, _ string) (dispatch.IssueResults, error) {
+	return dispatch.IssueResults{Issue: key, Checks: []dispatch.CheckBlock{}}, nil
+}
+
 // UploadArtifact answers an upload with the slug Dispatch files the name under, and keeps no
 // document. No route of this package writes a document of an issue's.
 func (r *statusRecorder) UploadArtifact(_ context.Context, key, name, _ string) (string, error) {
 	r.taken = append(r.taken, "UploadArtifact "+key)
+	return name, nil
+}
+
+// ArtifactToken finds no document, and UploadArtifactOver answers an upload as UploadArtifact
+// does. No route of this package reads or writes a document of an issue's.
+func (r *statusRecorder) ArtifactToken(context.Context, string, string) (dispatch.DocumentToken, error) {
+	return dispatch.DocumentToken{}, dispatch.ErrDocumentNotFound
+}
+func (r *statusRecorder) UploadArtifactOver(_ context.Context, key, name, _, _ string) (string, error) {
+	r.taken = append(r.taken, "UploadArtifactOver "+key)
 	return name, nil
 }
 
@@ -968,7 +999,8 @@ func TestRerunMovesAChildOfTheTreeByItsDispatchStatus(t *testing.T) {
 	if len(statuses.writes) != 1 {
 		t.Fatalf("Dispatch writes after refusals = %#v, want only the rerun", statuses.writes)
 	}
-	wantFacts := []intake.Fact{intake.DispatchIssue{Key: want.issue, Seq: 1, Type: "issue.updated", Status: want.status, DaemonActor: true, StatusMove: true, ClaimKnown: true}}
+	wantFacts := []intake.Fact{intake.DispatchIssue{Key: want.issue, Seq: 1, Type: "issue.updated", Status: want.status, DaemonActor: true,
+		Requester: claim.RoleArchitect, StatusMove: true, ClaimKnown: true}}
 	if got := facts.recorded(); !reflect.DeepEqual(got, wantFacts) {
 		t.Fatalf("facts = %#v, want the route's own write, as its event, and nothing for a refused write: %#v", got, wantFacts)
 	}
@@ -988,6 +1020,18 @@ func setIssue(t *testing.T, h *harness, key string, change func(*record.Issue)) 
 	})
 	if err != nil {
 		t.Fatalf("set issue %s: %v", key, err)
+	}
+}
+
+// readmitRoot is the re-admission of root's tree: the root's next generation, and the tree's run
+// raised with it, as the re-admission's clear of the whole tree raises it
+// (record.Postgres.ClearTreeGeneration). PutIssue alone writes a root's next change, which leaves
+// the tree's run.
+func readmitRoot(t *testing.T, h *harness, root string) {
+	t.Helper()
+	setIssue(t, h, root, func(issue *record.Issue) { issue.Generation++ })
+	if _, err := h.store.Pool().Exec(context.Background(), `update issues set tree_generation = generation where key = $1 and tree = key`, root); err != nil {
+		t.Fatalf("raise the tree's run of %s: %v", root, err)
 	}
 }
 
@@ -1051,18 +1095,7 @@ func TestGateRegistrationIsItsOwnFactInEachGeneration(t *testing.T) {
 		}
 	}
 	register()
-	err := store.Transact(context.Background(), h.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
-		records := record.NewStore()
-		root, err := records.Issue(context.Background(), tx, "LEGION-208")
-		if err != nil {
-			return err
-		}
-		root.Generation++
-		return records.PutIssue(context.Background(), tx, *root)
-	})
-	if err != nil {
-		t.Fatalf("re-admit LEGION-208: %v", err)
-	}
+	readmitRoot(t, h, "LEGION-208")
 	register()
 	if got := facts.recorded(); len(got) != 2 {
 		t.Fatalf("gate facts = %#v, want one registration per generation", got)

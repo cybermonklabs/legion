@@ -4,22 +4,21 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A merged issue's close waits for the issues beneath it and happens once the last of them
-// leaves. The wait is no longer a tree root's alone: openBeneath reads record.Beneath, the
-// descendants of any issue, where the rule it replaced (openBeside) returned nothing for a
-// non-root. So an intermediate parent can now stand in merging after its merge, waiting for a
-// grandchild, and what must follow is the close when that grandchild goes.
+// A merged issue's close waits for the issues beneath it and comes at the read after the last of
+// them leaves. The wait is no tree root's alone: the close's Beneath term reads record.Beneath, the
+// descendants of any issue. So an intermediate parent stands in verifying after its merge, waiting
+// for a grandchild, and what must follow is the close at the read after that grandchild goes.
 //
-// It matters beyond the one issue: a merged issue in merging is in the workflow, so while it
-// stands there its tree's root cannot be accepted (SIGNOFF_CHILD_IN_WORKFLOW) or closed. The
-// issue itself holds no admission slot, since merging keeps none (record.KeepsSlot), and stands
-// in no part of the waiting line. Its merging phase is finished (PhaseFinished), so nothing but
-// this close moves it on.
+// It matters beyond the one issue: a merged issue in verifying is in the workflow, so while it
+// stands there its tree's root cannot be closed. The issue itself holds no admission slot, since
+// verifying keeps none (record.KeepsSlot), and stands in no part of the waiting line. No role works
+// verifying, so nothing but the judge of its close moves it on.
 func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
@@ -43,8 +42,8 @@ func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 
 	apply := applyFacts(t, pool, engine)
 	apply("merged", intake.PullRequestMerged{Repo: "sjawhar/legion", Number: 43, MergeSHA: "merge"})
-	if at := issueAt(t, pool, child); at != phase.Merging {
-		t.Fatalf("%s stands at %s after its merge, want merging while %s is still in the workflow", child, at, grandchild)
+	if at := issueAt(t, pool, child); at != phase.Verifying {
+		t.Fatalf("%s stands at %s after its merge, want verifying while %s is still in the workflow", child, at, grandchild)
 	}
 
 	// The grandchild leaves, as a person's move of it to done does.
@@ -53,7 +52,12 @@ func TestAMergedChildClosesWhenTheIssueBeneathItLeaves(t *testing.T) {
 	if at := issueAt(t, pool, grandchild); at != phase.Done {
 		t.Fatalf("%s stands at %s, want done: the fixture's own premise", grandchild, at)
 	}
+	if got := len(issueOutboxOf(t, pool, child, "close_read")); got != 1 {
+		t.Fatalf("%s's close_read rows after the last issue beneath it left = %d, want one", child, got)
+	}
+	apply("child-read", intake.CloseChecksRead{Issue: child, Generation: 3, ReadAt: now.Add(time.Second),
+		Answer: &record.CheckReadAnswer{Results: dispatch.IssueResults{Issue: child}, Children: []dispatch.IssueChild{{Key: grandchild, Status: "done"}}}})
 	if at := issueAt(t, pool, child); at != phase.Done {
-		t.Fatalf("%s stands at %s after the last issue beneath it left, want done: a merged issue closes when the last issue beneath it leaves, and while it stands in merging its root can be neither accepted nor closed", child, at)
+		t.Fatalf("%s stands at %s after the read that followed the last issue beneath it, want done", child, at)
 	}
 }

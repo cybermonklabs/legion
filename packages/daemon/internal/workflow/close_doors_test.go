@@ -1,0 +1,302 @@
+package workflow
+
+import (
+	"strings"
+	"testing"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/intake"
+	"github.com/sjawhar/legion/daemon/internal/phase"
+	"github.com/sjawhar/legion/daemon/internal/record"
+)
+
+// Each door that writes done, one case for each row of the plan's table of doors (D16), by the
+// names there: an issue whose pull request merged closes only by its checks or by a person. Door 9,
+// admission's release of an unslotted root, is admission's (internal/admit), and doors 11 and 12
+// write nothing new.
+func TestEachDoorToDone(t *testing.T) {
+	t.Parallel()
+	for _, door := range []struct {
+		name string
+		run  func(*testing.T)
+	}{
+		{"1/TestAMergeInMergingDoesNotCloseWhileACheckHasNoPass", TestAMergeInMergingDoesNotCloseWhileACheckHasNoPass},
+		{"2/TestAMergeInRetroWaitsWhenTheIssueReachesMerging", TestAMergeInRetroWaitsWhenTheIssueReachesMerging},
+		{"3/the last child leaves, and the root closes", TestTheLastChildsLeaveQueuesARead},
+		{"4/TestARestartBetweenTheMergeAndTheFirstReadLosesNothing", TestARestartBetweenTheMergeAndTheFirstReadLosesNothing},
+		{"4/TestTheFirstBootMovesAMergedIssueInMergingIntoVerifying", TestTheFirstBootMovesAMergedIssueInMergingIntoVerifying},
+		{"5/TestAMergeInAParkedTreeWaitsForItsChecks", TestAMergeInAParkedTreeWaitsForItsChecks},
+		{"5/TestAMemberOfALingeringTreeClosesOnItsChecks", TestAMemberOfALingeringTreeClosesOnItsChecks},
+		{"6/TestAPersonsDoneClosesAndSaysWhatWaited", TestAPersonsDoneClosesAndSaysWhatWaited},
+		{"7/TestAnArchitectsDoneOnAMergedChildIsSetBack", TestAnArchitectsDoneOnAMergedChildIsSetBack},
+		{"7/TestAnArchitectsDoneOnAnUnmergedChildDropsIt", TestAnArchitectsDoneOnAnUnmergedChildDropsIt},
+		{"8/TestCloseRootRefusesARootWhosePullRequestMerged", TestCloseRootRefusesARootWhosePullRequestMerged},
+		{"10/TestTheStatusRepairWritesTestingForVerifying", TestTheStatusRepairWritesTestingForVerifying},
+	} {
+		t.Run(door.name, door.run)
+	}
+}
+
+// A restart between the merge and the first read loses nothing: the boot keeps the read the merge
+// queued and queues no second one, the issue stays in verifying, and the read closes it when it
+// comes.
+func TestARestartBetweenTheMergeAndTheFirstReadLosesNothing(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Merging, "retro")
+	rig.mergeRoot()
+	rig.fact(intake.DaemonBooted{Boot: 2})
+	rig.stands(waitRoot, phase.Verifying, "testing")
+	if got := rig.rows(waitRoot, "close_read"); got != 1 {
+		t.Fatalf("close_read rows after the boot = %d, want the one the merge queued", got)
+	}
+	if got := rig.statusWrites(waitRoot, "done"); got != 0 {
+		t.Fatalf("done status writes after the boot = %d, want none", got)
+	}
+	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	closedOnChecks(t, rig, waitRoot)
+}
+
+// A merge in a tree a person parked stands its member in verifying: the member has not closed, so
+// nobody is told child-closed, and its checks are read as in a running tree.
+func TestAMergeInAParkedTreeWaitsForItsChecks(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Implementing, "in_progress")
+	rig.seedChild(waitChild, phase.Merging, "retro")
+	rig.fact(intake.DispatchIssue{Key: waitRoot, Seq: 2, Type: "issue.updated", Status: "backlog", Title: "root", Rank: "U"})
+	if !rig.issue(waitRoot).Lingers() {
+		t.Fatalf("the parked root does not linger")
+	}
+	rig.mergeChild()
+	rig.stands(waitChild, phase.Verifying, "testing")
+	if got := noticesOfKind(t, rig.pool, waitChild, "child-closed"); len(got) != 0 {
+		t.Fatalf("child-closed notices = %+v, want none: the member waits for its checks", got)
+	}
+	if got := rig.rows(waitChild, "close_read"); got != 1 {
+		t.Fatalf("close_read rows of the member = %d, want one", got)
+	}
+}
+
+// A person's done closes an issue that waits in verifying, as a person's close does. The close's
+// one message names what waited, each open defect is marked closed by the person, and an open
+// production check goes on as for any closed issue.
+func TestAPersonsDoneClosesAndSaysWhatWaited(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, claim.RoleTester)
+	rig.seedRoot(phase.Merging, "retro")
+	rig.mergeRoot()
+	rig.seedCheck(waitRoot, waitGeneration, waitRootMerge, "")
+	rig.read(waitRoot, answerOf(waitRoot, nil, noResult("c-after", waitRootMerge)))
+	defect := rig.seedDefect(waitRoot, "the retro found the cache key unchecked")
+
+	rig.fact(intake.DispatchIssue{Key: waitRoot, ResolvedRepo: waitRepo, Seq: 2, Type: "issue.closed", Status: "done", Title: "root", Rank: "U"})
+	// The record's status is admission's to write (its recordObservation), which this rig stubs.
+	if got := issueAt(t, rig.pool, waitRoot); got != phase.Done {
+		t.Fatalf("%s stands at %s after a person's done, want done", waitRoot, got)
+	}
+	messages := messageBodies(t, rig.pool)
+	if len(messages) != 1 || !strings.Contains(messages[0], "c-after") || !strings.Contains(messages[0], "production check") {
+		t.Fatalf("messages = %q, want one naming the check and the production check the close waited for", messages)
+	}
+	var reason string
+	if err := rig.pool.QueryRow(t.Context(), "select withdraw_reason from defects where id = $1", defect).Scan(&reason); err != nil || reason != "closed_by_person" {
+		t.Fatalf("the defect's withdrawal = %q, %v; want closed_by_person", reason, err)
+	}
+	if check := productionCheck(t, rig.pool, waitRoot); check == nil || !check.Open() {
+		t.Fatalf("the production check = %+v, want it open still", check)
+	}
+	if rig.issue(waitRoot).ClosedOnChecksAt != nil {
+		t.Fatalf("a person's close is marked as a close on the checks")
+	}
+}
+
+// A person's done on a merged child that waits in verifying suspends the child's pod once. Where
+// its production check closed there, that close deleted nothing of the pod, and no check runs on
+// after the leave, so the leave queues the one IssueSuspend. Where the check is still open, the
+// leave queues none, and the check's close after it queues the one.
+func TestAPersonsDoneOnAMergedChildSuspendsItsPodOnce(t *testing.T) {
+	t.Parallel()
+	personsDone := func(rig *waitRig) {
+		rig.t.Helper()
+		rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.closed", Status: "done", Title: waitChild, Parent: waitRoot, Rank: "V"})
+		if got := issueAt(rig.t, rig.pool, waitChild); got != phase.Done {
+			rig.t.Fatalf("%s stands at %s after a person's done, want done", waitChild, got)
+		}
+	}
+	merged := func(t *testing.T) *waitRig {
+		t.Helper()
+		rig := newWaitRig(t, claim.RoleTester)
+		rig.seedRoot(phase.Implementing, "in_progress")
+		rig.seedChild(waitChild, phase.Merging, "retro")
+		rig.mergeChild()
+		rig.read(waitChild, answerOf(waitChild, nil, noResult("c-after", waitChildMerge)))
+		return rig
+	}
+	t.Run("its check closed in verifying", func(t *testing.T) {
+		rig := merged(t)
+		rig.report(waitChild, 1, "pass", "the check passed in production", nil)
+		if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 0 {
+			t.Fatalf("suspensions at the check's close in verifying = %+v, want none", got)
+		}
+		personsDone(rig)
+		if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 1 {
+			t.Fatalf("suspensions after the person's done = %+v, want one", got)
+		}
+	})
+	t.Run("its check still open", func(t *testing.T) {
+		rig := merged(t)
+		personsDone(rig)
+		if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 0 {
+			t.Fatalf("suspensions after the person's done = %+v, want none while the check runs", got)
+		}
+		rig.report(waitChild, 1, "pass", "the check passed in production", nil)
+		if got := issueSuspensions(t, rig.pool, waitChild); len(got) != 1 {
+			t.Fatalf("suspensions after the check's close = %+v, want one", got)
+		}
+	})
+}
+
+// The owning architect's done on a child whose pull request merged is set back, as a session's
+// write is, and the architect that wrote it is told what the close waits for: such a child closes
+// by its checks. The child has an architect of its own, which each of the child's notices reaches
+// while it holds its role, and the tree's architect wrote the done. So the set-back is told on the
+// tree root's notices, which reach the architect that wrote it, and the child's own architect holds
+// only the close-waits of the child's entry into verifying.
+func TestAnArchitectsDoneOnAMergedChildIsSetBack(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Implementing, "in_progress")
+	rig.seedChild(waitChild, phase.Merging, "retro")
+	seedArchitectClaim(t, rig.pool, waitRoot)
+	childArchitect, err := claim.NewToken("legion", waitChild, claim.RoleArchitect)
+	if err != nil {
+		t.Fatalf("the architect token of %s: %v", waitChild, err)
+	}
+	if _, err := rig.pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, 'LEGION', $2, $3, 'architect', 1, 'session-child-architect', '', 'working', 0, 0, 0, 0)`,
+		string(childArchitect), waitRoot, waitChild); err != nil {
+		t.Fatalf("seed the architect claim of %s: %v", waitChild, err)
+	}
+	rig.mergeChild()
+	rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.closed", Status: "done", Title: waitChild, Parent: waitRoot, Rank: "V",
+		ActorSession: "session-architect"})
+	rig.stands(waitChild, phase.Verifying, "testing")
+	if got := rig.statusWrites(waitChild, "testing"); got != 2 {
+		t.Fatalf("the child's testing writes = %d, want the entry's and the set-back's", got)
+	}
+	onChild, onRoot := noticesOfKind(t, rig.pool, waitChild, "close-waits"), noticesOfKind(t, rig.pool, waitRoot, "close-waits")
+	if len(onChild) != 1 || len(onRoot) != 1 {
+		t.Fatalf("close-waits notices on %s = %+v and on %s = %+v, want the entry's on %s, whose own architect it reaches, and the set-back's on %s, whose architect wrote the done",
+			waitChild, onChild, waitRoot, onRoot, waitChild, waitRoot)
+	}
+}
+
+// The owning architect's done on a child with no merged pull request takes the child out of the
+// workflow, as before.
+func TestAnArchitectsDoneOnAnUnmergedChildDropsIt(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Implementing, "in_progress")
+	rig.seedChild(waitChild, phase.Implementing, "in_progress")
+	seedArchitectClaim(t, rig.pool, waitRoot)
+	rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.closed", Status: "done", Title: waitChild, Parent: waitRoot, Rank: "V",
+		ActorSession: "session-architect"})
+	if got := rig.issue(waitChild).Phase; got != phase.Done {
+		t.Fatalf("the unmerged child stands at %s, want done", got)
+	}
+}
+
+// A child run again keeps the merge snapshot of an earlier generation (record.Issue.Merge), which no
+// clear touches, but its own generation's work has not merged: it is at work, it opened no next
+// change, and its generation holds no merged pull request. Its owning architect's done therefore
+// takes it out of the workflow, as on any unmerged child. Read from the snapshot alone, the rule
+// set that done back and told the architect "Its pull request merged", which was not why.
+func TestAnArchitectsDoneOnAChildRunAgainAfterAMergeDropsIt(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Implementing, "in_progress")
+	rig.seedChild(waitChild, phase.Implementing, "in_progress")
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		_, err := record.NewStore().PutMergeSnapshot(t.Context(), tx, waitChild, record.Merge{Number: 41, Head: headOne, SHA: waitChildMerge,
+			Base: "main", Repo: waitRepo, MergedAt: waitMergedAt.Add(-time.Hour)})
+		return err
+	})
+	seedArchitectClaim(t, rig.pool, waitRoot)
+	rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.closed", Status: "done", Title: waitChild, Parent: waitRoot, Rank: "V",
+		ActorSession: "session-architect"})
+	if got := rig.issue(waitChild).Phase; got != phase.Done {
+		t.Fatalf("the child run again stands at %s, want done: its own generation's work has not merged", got)
+	}
+	if notices := noticesOfKind(t, rig.pool, waitChild, "close-waits"); len(notices) != 0 {
+		t.Fatalf("close-waits notices = %+v, want none: nothing of its generation merged", notices)
+	}
+}
+
+// The merge GitHub reports for an issue's current pull request is the issue's newest merge: every
+// clear deletes the rows of the generation it leaves, so only the current generation's pull request
+// has a row to merge. Its snapshot replaces one of an earlier merge even where the report names no
+// merged_at. Refused there by the rule that an unknown time never replaces a known one, and the
+// refusal ignored, the issue kept the earlier merge's snapshot and its close judged the checks at
+// the earlier merge commit.
+func TestTheCurrentPullRequestsMergeReplacesAnEarlierSnapshotWithNoMergedAt(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Merging, "retro")
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		_, err := record.NewStore().PutMergeSnapshot(t.Context(), tx, waitRoot, record.Merge{Number: 41, Head: headTwo, SHA: waitLaterMerge,
+			Base: "main", Repo: waitRepo, MergedAt: waitMergedAt.Add(-24 * time.Hour)})
+		return err
+	})
+	rig.fact(intake.PullRequestMerged{Repo: waitRepo, Number: waitRootNumber, MergeSHA: waitRootMerge, HeadSHA: headOne})
+	if merge := rig.issue(waitRoot).Merge; merge.Number != waitRootNumber || merge.SHA != waitRootMerge {
+		t.Fatalf("the root's merge snapshot after its pull request merged = %+v, want #%d at %s: the current pull request's merge is the newest",
+			merge, waitRootNumber, waitRootMerge)
+	}
+	rig.stands(waitRoot, phase.Verifying, "testing")
+}
+
+// close_root refuses a root whose pull request merged, CLOSE_AFTER_MERGE: such a root closes by
+// its checks or a person. Here its next change waits at admitted: the change is of the root's own
+// generation (record.OnNextChange), which is what makes its merge this generation's. A root re-run
+// after an earlier merge holds the same snapshot and no such change, and closes
+// (TestCloseRootReadsThisGenerationsMergeAndAChildInVerifying).
+func TestCloseRootRefusesARootWhosePullRequestMerged(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Admitted, "todo")
+	if _, err := rig.pool.Exec(t.Context(), `update issues set next_change = generation, next_changes = 1 where key = $1`, waitRoot); err != nil {
+		t.Fatalf("open %s's next change: %v", waitRoot, err)
+	}
+	seedRecord(t, rig.pool, func(tx pgx.Tx) error {
+		_, err := record.NewStore().PutMergeSnapshot(t.Context(), tx, waitRoot, record.Merge{Number: waitRootNumber, Head: headOne, SHA: waitRootMerge,
+			Base: "main", Repo: waitRepo, MergedAt: waitMergedAt})
+		return err
+	})
+	result := rig.fact(intake.CloseRoot{Issue: waitRoot, Reason: "moot", Generation: waitGeneration})
+	if code := refusalCode(result); code != "CLOSE_AFTER_MERGE" {
+		t.Fatalf("close_root's answer = %q, want CLOSE_AFTER_MERGE", code)
+	}
+	rig.stands(waitRoot, phase.Admitted, "todo")
+}
+
+// The status repair writes testing for an issue in verifying whose status write was lost, and
+// never done.
+func TestTheStatusRepairWritesTestingForVerifying(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	rig.seedRoot(phase.Merging, "retro")
+	rig.mergeRoot()
+	rig.ranOut(waitRoot, "dispatch_status")
+	rig.fact(intake.ControllerTick{})
+	if got := rig.statusWrites(waitRoot, "testing"); got != 1 || rig.firstID(waitRoot, "dispatch_status", "observedStatus", "retro") == 0 {
+		t.Fatalf("the repair's testing writes = %d, want one over retro", got)
+	}
+	if got := rig.statusWrites(waitRoot, "done"); got != 0 {
+		t.Fatalf("the repair's done writes = %d, want none", got)
+	}
+}

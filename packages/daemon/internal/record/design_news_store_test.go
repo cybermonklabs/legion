@@ -229,6 +229,72 @@ func TestOneReconcileOfATreesNewsStandsQueued(t *testing.T) {
 	}
 }
 
+// A queue beside a reconcile on the backoff of a failed run queues none and leaves that backoff as
+// it stands. The reconcile reads the record when it runs, so it carries the queue's news at its
+// next attempt. Its backoff is what rides out a moment's fault of Dispatch over its bounded
+// attempts (the daemon's designChangesAttempts), and a queue that made it due at once would spend
+// those attempts on the fault.
+func TestAQueueOfTheNewsLeavesTheWaitingReconcilesBackoff(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-320")
+	now := time.Date(2026, 11, 13, 21, 0, 0, 0, time.UTC)
+	dueAt := func() []time.Time {
+		t.Helper()
+		var due []time.Time
+		inTx(t, st, func(tx pgx.Tx) {
+			rows, err := tx.Query(ctx, `select next_at from outbox where kind = $1 and issue = $2 order by id`, string(OutboxKindDesignChanges), root.Key)
+			must(t, err)
+			due, err = pgx.CollectRows(rows, pgx.RowTo[time.Time])
+			must(t, err)
+		})
+		return due
+	}
+	backoff := now.Add(time.Minute)
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, root))
+		must(t, QueueDesignNews(ctx, records, tx, root.Key, now))
+		_, err := tx.Exec(ctx, `update outbox set attempts = 1, next_at = $3 where kind = $1 and issue = $2`,
+			string(OutboxKindDesignChanges), root.Key, backoff)
+		must(t, err)
+	})
+	change := now.Add(time.Second)
+	inTx(t, st, func(tx pgx.Tx) { must(t, QueueDesignNews(ctx, records, tx, root.Key, change)) })
+	if due := dueAt(); len(due) != 1 || !due[0].Equal(backoff) {
+		t.Fatalf("the reconciles of %s after a queue at %s beside one on its backoff to %s = due at %v, want the one, still due at its backoff",
+			root.Key, change, backoff, due)
+	}
+}
+
+// A queue holds the reconcile it finds waiting until its writer's transaction ends, so no lane
+// claims it before the write it stands for commits. A reconcile claimed between the two read the
+// record before the write, found nothing owed and finished, and the write's news waited for the
+// sweep.
+func TestAReconcileAQueueFindsWaitingIsClaimedOnlyOnceItsWriterEnds(t *testing.T) {
+	ctx := context.Background()
+	st := migratedStore(t)
+	records := NewStore()
+	root := issueFixture("LEGION-320")
+	now := time.Now().UTC().Truncate(time.Microsecond)
+	var id int64
+	inTx(t, st, func(tx pgx.Tx) {
+		must(t, records.PutIssue(ctx, tx, root))
+		must(t, QueueDesignNews(ctx, records, tx, root.Key, now))
+		must(t, tx.QueryRow(ctx, `select id from outbox where kind = $1 and issue = $2`, string(OutboxKindDesignChanges), root.Key).Scan(&id))
+	})
+	writer, err := st.Pool().BeginTx(ctx, pgx.TxOptions{})
+	must(t, err)
+	defer func() { _ = writer.Rollback(ctx) }()
+	// The queue moves no row: only its read can hold the row.
+	must(t, QueueDesignNews(ctx, records, writer, root.Key, now))
+	claimHeldBy(t, st, id, "the writer whose queue found it waiting")
+	must(t, writer.Commit(ctx))
+	if claimed, err := claimRow(st, id); err != nil || !claimed {
+		t.Fatalf("a lane's claim of reconcile %d once its writer committed = claimed %t, error %v; want it claimed", id, claimed, err)
+	}
+}
+
 // A change set is recorded per pair of versions. A pair Dispatch could not answer is recorded
 // unavailable with its reason, and a later read replaces it; a pair recorded read is final, since
 // two stored versions never change, and a later failure leaves it as it stands. A set whose shape

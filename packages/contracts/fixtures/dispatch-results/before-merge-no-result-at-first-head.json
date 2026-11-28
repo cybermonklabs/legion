@@ -1,0 +1,30 @@
+{
+  "checks": [
+    {
+      "artifact_id": "00000000-0000-4000-8000-000000000001",
+      "block_id": "k1",
+      "compared_with": [
+        {
+          "commit": "1111111111111111111111111111111111111111",
+          "kind": "named"
+        }
+      ],
+      "issue_key": "ACME-1",
+      "negative_control": "",
+      "pass_stands": {
+        "answer": "no",
+        "reason": "no_result"
+      },
+      "ref": "dispatch://ACME-1/artifact/verification-md#b-k1",
+      "results": [],
+      "run": "",
+      "sha256": "c8e1bdbeae7c94ba021e36f3a10a3b6412ab2d51f033b9061d4baf7027ff1bad",
+      "surface": "",
+      "text": "The change answers at its head.",
+      "version": 1,
+      "when": "before_merge"
+    }
+  ],
+  "issue": "ACME-1",
+  "verification_artifact_id": "00000000-0000-4000-8000-000000000001"
+}
