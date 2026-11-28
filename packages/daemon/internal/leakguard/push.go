@@ -180,7 +180,12 @@ func (g *Guard) Push(ctx context.Context, req PushRequest) error {
 // first update with a commit, the push's URL is read twice, its advertised refs and a fetch
 // negotiation from every update's local commit (destinationHolds), and the remotes whose
 // remote-tracking refs hold what the destination has are read (heldRemotes), which bound the
-// range too only where the negotiation does not answer (Guard.commits).
+// range too only where the negotiation does not answer (Guard.commits). The URL is read only where
+// the push can write to it alone (writesOnlyToItsURL). A push that can write somewhere else — a
+// receive-pack program of its own, a remote helper, another exec path's git-receive-pack —
+// writes where that program writes, which the URL says nothing of, so for it neither read is
+// made: not is empty and the remote-tracking refs bound the range alone, with the remote's commit
+// where the repository holds it, as they bounded every push before these reads.
 func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Record) error) error {
 	read := map[string]bool{}
 	var held []string
@@ -211,8 +216,10 @@ func (g *Guard) pushRecords(ctx context.Context, req PushRequest, emit func(Reco
 			if named {
 				from = req.Remote
 			}
-			if not, negotiated, err = g.destinationHolds(ctx, req.Dir, req.URL, pushTips(req.Updates)); err != nil {
-				return err
+			if g.writesOnlyToItsURL(ctx, req.Dir, req.URL) {
+				if not, negotiated, err = g.destinationHolds(ctx, req.Dir, req.URL, pushTips(req.Updates)); err != nil {
+					return err
+				}
 			}
 			if negotiated {
 				held = nil
@@ -257,16 +264,17 @@ func addsCommits(update Update) bool {
 // heldRemotes are the remotes whose remote-tracking refs say what the push's destination holds,
 // which bound the commits a push reads only where the destination's own answer does not
 // (destinationHolds): where the fetch negotiation with it fails, beside the commits its
-// advertised refs name. They are each remote whose every URL, fetch and push, names the
+// advertised refs name, and where the push can write somewhere other than its URL, alone
+// (writesOnlyToItsURL). They are each remote whose every URL, fetch and push, names the
 // repository the push's URL names (sameRepository), so that its tracking refs hold what the
 // destination has, and among whose refs no other remote's fetch can file one (filedByAnother).
 // Where the push names a remote of the repository, which named answers, that remote is the only
 // one it can hold. git hands a pre-push hook the URL where the remote's name goes for a push to a
 // URL (`git push <url>`), and no tracking ref is filed under a URL, so such a push can hold any
 // remote. The URLs on both sides are git's own, after its insteadOf rewriting. A push that holds
-// no remote, and whose destination answers neither read, has every commit read that the
-// destination's ref does not reach: a remote that is not shown to be the destination says
-// nothing of what it holds.
+// no remote, and whose destination answers neither read or is not read, has every commit read
+// that the destination's ref does not reach: a remote that is not shown to be the destination
+// says nothing of what it holds.
 //
 // What is read is the repository as it is now, so two kinds of ref are held as a remote's
 // although its repository need not hold them, as `--remotes=<name>` held them before: refs the

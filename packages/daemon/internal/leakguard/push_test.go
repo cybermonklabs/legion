@@ -1259,9 +1259,21 @@ var v0Negotiation = []string{"warning: --negotiate-only requires protocol v2", "
 // did before the reads, bounded by that tracking ref with the advertised commits beside it. In the
 // eighth both reads fail, the destination a git:// URL on 127.0.0.1 nothing listens on, which the
 // clone's origin names and whose tracking ref holds the destination's main: the push is judged as
-// it was before the reads, bounded by the tracking refs, with the same text. In every case but the
-// fifth, a second commit of the branch that adds the refused line, which the destination does not
-// hold, is refused, alone.
+// it was before the reads, bounded by the tracking refs, with the same text.
+//
+// In the ninth the push can write somewhere other than the hook's URL, once for each way the guard
+// tells so (writesOnlyToItsURL): the wrapper's mark for `--receive-pack` in the guard's
+// environment; a remote.origin.receivepack key naming the git-receive-pack of a second bare
+// repository; a remote.origin.vcs key; an origin URL `ext::git %s <destination>`, which holds `::`
+// and which the guard's GIT_ALLOW_PROTOCOL lets through; and a GIT_EXEC_PATH that is a symbolic
+// link to git's own exec path, another path to ownExecPath, under which every git the guard runs
+// works as under git's own. The destination holds a commit that adds the refused line, which the
+// clone took with `git fetch <url> main`, as in the stale case, so that no tracking ref holds it,
+// and the branch starts from it. The two reads would answer for the destination, which holds that
+// commit, and pass the push; the guard makes neither, the tracking refs bound the range as they
+// did before the reads, and the push is refused over that commit, as it was before them. In every
+// case but the fifth and the ninth, a second commit of the branch that adds the refused line,
+// which the destination does not hold, is refused, alone.
 func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 	const class = leakguardtest.RulesHostClass
 	refused := "the runner answers at " + leakguardtest.RulesHost + "\n"
@@ -1307,6 +1319,26 @@ func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 	trackedMain := func(r rig, repo string) string {
 		return r.fixture.Run(repo, "git", "rev-parse", "refs/remotes/origin/main")
 	}
+	// unheld is the clone of the ninth case and the commit its branch starts at: a commit of the
+	// destination's that adds the refused line, fetched by the destination's URL after the clone
+	// was made, so that it is at FETCH_HEAD and at no remote-tracking ref.
+	unheld := func(t *testing.T, r rig) (repo, start string) {
+		t.Helper()
+		repo = cloned(t, r, r.destination)
+		held(t, r)
+		return repo, fetched(t, r, repo)
+	}
+	// elsewhere is a second bare repository of the case's own, where a receive-pack of the
+	// push's own choosing would write.
+	elsewhere := func(t *testing.T, r rig) string {
+		t.Helper()
+		second := filepath.Join(r.root, "elsewhere.git")
+		r.fixture.Run(r.root, fixturegit.InitBare(second, "main")...)
+		return second
+	}
+	// heldRefused is the ninth case's report: the destination's commit that adds the refused line,
+	// which no tracking ref holds, read as before the reads.
+	heldRefused := []string{"held.md: " + class}
 	for _, tc := range []struct {
 		name string
 		// build makes the case's clone, and answers it, the commit its new branch starts at, and
@@ -1435,6 +1467,62 @@ func TestANewBranchIsJudgedOnWhatItAddsToTheDestination(t *testing.T) {
 			// on the transport.
 			env:    func(*testing.T) []string { return []string{"GIT_ALLOW_PROTOCOL=file:git"} },
 			second: true,
+		},
+		{
+			name: "a push that can write elsewhere: the wrapper's mark",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				return repo, start, "origin", r.destination
+			},
+			env:  func(*testing.T) []string { return []string{PushNamesReceivePackVar + "=1"} },
+			want: heldRefused,
+		},
+		{
+			name: "a push that can write elsewhere: remote.origin.receivepack",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				r.fixture.Run(repo, "git", "config", "remote.origin.receivepack", "git-receive-pack "+shQuote(elsewhere(t, r))+" #")
+				return repo, start, "origin", r.destination
+			},
+			want: heldRefused,
+		},
+		{
+			name: "a push that can write elsewhere: remote.origin.vcs",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				r.fixture.Run(repo, "git", "config", "remote.origin.vcs", "invented")
+				return repo, start, "origin", r.destination
+			},
+			want: heldRefused,
+		},
+		{
+			name: "a push that can write elsewhere: a URL with ::",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				url := "ext::git %s " + r.destination
+				r.fixture.Run(repo, "git", "remote", "set-url", "origin", url)
+				return repo, start, "origin", url
+			},
+			// ext is let through, so that the reads, were they made, would answer for the
+			// destination.
+			env:  func(*testing.T) []string { return []string{"GIT_ALLOW_PROTOCOL=file:ext"} },
+			want: heldRefused,
+		},
+		{
+			name: "a push that can write elsewhere: a GIT_EXEC_PATH that is not git's own",
+			build: func(t *testing.T, r rig) (string, string, string, string) {
+				repo, start := unheld(t, r)
+				return repo, start, "origin", r.destination
+			},
+			env: func(t *testing.T) []string {
+				own := fixturegit.Isolated(t, t.TempDir()).Run(t.TempDir(), "git", "--exec-path")
+				link := filepath.Join(t.TempDir(), "git-core")
+				if err := os.Symlink(own, link); err != nil {
+					t.Fatal(err)
+				}
+				return []string{"GIT_EXEC_PATH=" + link}
+			},
+			want: heldRefused,
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

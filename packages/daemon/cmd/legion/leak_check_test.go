@@ -802,6 +802,16 @@ type localPush struct {
 	fixture          fixturegit.Runner
 }
 
+// holding makes local a bare clone of the repository, which holds the push's commit, and answers
+// it. A row whose push can write somewhere other than its URL pushes there: the guard's reads of
+// what the destination holds would answer that it holds the whole push, which would pass where
+// the base refused it, so the row reads that the guard makes neither read for such a push.
+func (r localPush) holding(t *testing.T) string {
+	t.Helper()
+	r.fixture.Run(r.root, "git", "clone", "--quiet", "--bare", r.dir, r.local)
+	return r.local
+}
+
 // Every push the hook does not clear gets the guard it got on the base this change merges onto,
 // its exit status and its whole text (R2 of dispatch://INFRA-3524's spec). Each row's commit adds
 // a line the fixture rule file refuses, and each row runs with no shared check under a deployment
@@ -813,12 +823,16 @@ type localPush struct {
 // remote.<name>.vcs and remote.<name>.receivepack in the repository's configuration and on git's
 // command line, the git wrapper's mark, GIT_EXEC_PATH at another directory, and a legacy remote
 // file at a host; and every URL that is not one of the four spellings of a local path the hook
-// clears. Each expected text is the one the same row printed with the base's code (f57cfa7e),
-// which clears no push, but for one: with the stand-in that passes, the push to `.` exits 0 and
-// prints nothing, where the base's guard refused it. That verdict is R10's (dispatch://INFRA-3524's
-// spec, under its plan's decision 18): the destination is the repository itself, whose refs the
-// guard's reads of what a destination holds answer, so the push adds no commit to it and the
-// rules read no commit, as they read none of a push the destination holds whole.
+// clears. The rows of a push that can write somewhere other than its URL, those of
+// remote.<name>.vcs, remote.<name>.receivepack, the mark and GIT_EXEC_PATH, push to a bare clone
+// of the repository (localPush.holding), whose answers to the guard's reads of what a destination
+// holds would pass the push. Each expected text is the one the same row printed with the base's
+// code (f57cfa7e), which clears no push, but for one: with the stand-in that passes, the push to
+// `.` exits 0 and prints nothing, where the base's guard refused it. That verdict is R10's
+// (dispatch://INFRA-3524's spec, under its plan's decision 18): the destination is the repository
+// itself, whose refs the guard's reads of what a destination holds answer, so the push adds no
+// commit to it and the rules read no commit, as they read none of a push the destination holds
+// whole.
 func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
 	for _, tc := range []struct {
@@ -859,36 +873,41 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 		{name: "origin sets remote.origin.vcs", push: func(t *testing.T, r localPush) string {
 			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
 			r.fixture.Run(r.dir, "git", "config", "remote.origin.vcs", "invented")
-			return r.local
+			return r.holding(t)
 		}},
 		{name: "origin sets remote.origin.receivepack", push: func(t *testing.T, r localPush) string {
 			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
 			r.fixture.Run(r.dir, "git", "config", "remote.origin.receivepack", "git-receive-pack")
-			return r.local
+			return r.holding(t)
 		}},
 		{name: "remote.origin.receivepack set through GIT_CONFIG_PARAMETERS", push: func(t *testing.T, r localPush) string {
 			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
+			url := r.holding(t)
 			// What `git -c remote.origin.receivepack=git-receive-pack push origin` hands its hook
 			// (git 2.47.3).
 			t.Setenv("GIT_CONFIG_PARAMETERS", "'remote.origin.receivepack'='git-receive-pack'")
-			return r.local
+			return url
 		}},
 		{name: "remote.origin.vcs set through a GIT_CONFIG_COUNT block", push: func(t *testing.T, r localPush) string {
 			r.fixture.Run(r.dir, "git", "remote", "add", "origin", r.local)
+			url := r.holding(t)
 			t.Setenv("GIT_CONFIG_COUNT", "1")
 			t.Setenv("GIT_CONFIG_KEY_0", "remote.origin.vcs")
 			t.Setenv("GIT_CONFIG_VALUE_0", "invented")
-			return r.local
+			return url
 		}},
 		{name: "the mark is set", push: func(t *testing.T, r localPush) string {
+			url := r.holding(t)
 			t.Setenv(leakguard.PushNamesReceivePackVar, "1")
-			return r.local
+			return url
 		}},
 		{name: "GIT_EXEC_PATH names another directory", push: func(t *testing.T, r localPush) string {
+			url := r.holding(t)
 			t.Setenv("GIT_EXEC_PATH", t.TempDir())
-			return r.local
+			return url
 		}},
 		{name: "that directory also holds a git, which logs each run and whose log must stay empty", push: func(t *testing.T, r localPush) string {
+			url := r.holding(t)
 			execPath, log := t.TempDir(), filepath.Join(t.TempDir(), "runs")
 			if err := execfile.Write(filepath.Join(execPath, "git"), []byte("#!/bin/sh\necho ran >> '"+log+"'\nexit 0\n"), 0o700); err != nil {
 				t.Fatal(err)
@@ -901,7 +920,7 @@ func TestLeakCheckPrePushGuardsEveryOtherPushAsItsBaseDid(t *testing.T) {
 					t.Errorf("the git in GIT_EXEC_PATH ran: %q", ran)
 				}
 			})
-			return r.local
+			return url
 		}},
 		{name: "a .git/remotes file whose URL is the host URL", push: func(t *testing.T, r localPush) string {
 			writeLegacyRemote(t, r.dir, "remotes", "legacy", "URL: "+hostURL+"\n")

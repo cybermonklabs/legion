@@ -307,10 +307,10 @@ func ranMarked(t *testing.T, log string) (string, []string) {
 // reads `--receive-pack` and `--exec` by any prefix that names one of them alone, with the program
 // after `=` or as the next word, wherever the option stands, and runs that program in place of
 // git-receive-pack, so a push to a local path can write anywhere while the hook gets only the
-// local URL; Guard.StaysLocal clears no push that carries the mark. A push that names none of
-// them, the negations, which name no program, and a commit and a status whose arguments only read
-// as one reach their tool with no mark. A mark the caller set stays as the caller set it, so it
-// can only make a push stricter.
+// local URL; Guard.StaysLocal clears no push that carries the mark, and Guard.pushRecords reads
+// nothing of what its URL holds. A push that names none of them, the negations, which name no
+// program, and a commit and a status whose arguments only read as one reach their tool with no
+// mark. A mark the caller set stays as the caller set it.
 func TestTheGitWrapperMarksAPushThatCanNameItsReceivePack(t *testing.T) {
 	const hooksPath = "core.hooksPath=/opt/legion/githooks"
 	// program is the shape that both reviews of dispatch://INFRA-3309's spec measured writing to a

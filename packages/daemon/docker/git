@@ -64,8 +64,10 @@
 # prefix is marked rather than the ones one release of git accepts: git 2.47.3 reads `--e` to
 # `--exec` and `--rece` to `--receive-pack` as one of the two and refuses `--r` to `--rec` as
 # ambiguous, so marking those changes nothing git does. The negations `--no-receive-pack` and
-# `--no-e` name no program and get no mark, and the wrapper never unsets the variable, so a caller
-# who sets it by hand only makes a push stricter.
+# `--no-e` name no program and get no mark. The wrapper never unsets the variable, so a caller who
+# sets it by hand gets what a push that names its own receive-pack gets: the hook clears no such
+# push, and the guard bounds its commits as the base does, by the remote-tracking refs, with no
+# read of what the push's URL holds (Guard.pushRecords).
 #
 # A push is a command whose subcommand word is `push` or `send-pack`, and both get the rebuild
 # below. Only `git push` runs the pre-push hook: `git send-pack` runs no pre-push hook at all

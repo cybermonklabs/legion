@@ -18,9 +18,12 @@ import (
 // (packages/daemon/docker/git) exports to 1 before it runs the real git for a push whose command
 // line can name its own receive-pack program: any argument after the subcommand matching `--<P>` or
 // `--<P>=<value>` where `<P>` is a non-empty prefix of `receive-pack` or of `exec`. git hands its
-// environment to the pre-push hook, where Guard.StaysLocal treats the variable being set — with any
-// value, empty included — as a push that cannot be cleared as local. The wrapper never unsets it,
-// so a caller that sets it by hand only makes a push stricter.
+// environment to the pre-push hook, where Guard.writesOnlyToItsURL reads the variable being set —
+// with any value, empty included — as a push that can write somewhere other than its URL: one
+// Guard.StaysLocal does not clear as local, and one whose commits the guard bounds by the
+// remote-tracking refs alone, with no read of what the URL holds (Guard.pushRecords). The wrapper
+// never unsets it, so a caller that sets it by hand changes only that: the push is not cleared,
+// and its URL is not read.
 const PushNamesReceivePackVar = "LEGION_PUSH_NAMES_RECEIVE_PACK"
 
 // execPathVar is the variable git reads its exec path from, the directory whose git-receive-pack a
@@ -34,24 +37,15 @@ const execPathVar = "GIT_EXEC_PATH"
 // later push of them to a host goes through the hook again. It answers true only when every one of
 // these holds, and false when any read it makes fails, so a push it cannot read is guarded:
 //
-//   - The guard's environment does not set PushNamesReceivePackVar. A push whose command line
-//     names its own receive-pack program writes where that program writes: measured by both
-//     reviews of dispatch://INFRA-3309's spec, a push to a local path with
-//     `--receive-pack="git-receive-pack <another path> #"` wrote to the other path while the hook
-//     got the first one, and such a program can be `ssh git@github.com git-receive-pack <o>/<n>`.
-//     Only the git wrapper sees the command line, so its mark is what says so here.
 //   - url begins with `/`, `./`, `../` or `file:///` and holds no `::` (localURL), an allowlist
 //     rather than a parse that looks for a host: the scp-like `git@github.com:o/n` holds no `://`,
 //     `<transport>::<address>` runs a remote helper, and git 2.47.3 pushed to
 //     `file://localhost/<path>` and `file://otherhost/<path>` as local paths, which stay guarded
 //     because no push needs them (git-push(1), "GIT URLS"; measured by dispatch://INFRA-3309's
 //     architect on 2026-11-13).
-//   - GIT_EXEC_PATH is unset, or names git's own exec path, the two compared after filepath.Clean
-//     (ownExecPath, the first git StaysLocal runs). A push runs the git-receive-pack of that
-//     directory: measured with /usr/bin/git 2.47.3 on 2026-11-27, with GIT_EXEC_PATH=<dir> and
-//     with `git --exec-path=<dir> push`, a `<dir>/git-receive-pack` that ran the real one on a
-//     second bare repository made `git push <bare A> main:e1` write e1 there, while the hook got
-//     bare A's path and saw GIT_EXEC_PATH=<dir>.
+//   - The push can write only to url (writesOnlyToItsURL): the guard's environment carries no
+//     mark of the git wrapper's, git's exec path is its own, and no configuration names a
+//     remote's own receive-pack program or remote helper.
 //   - Every remote of the repository has a URL, and each URL `git remote get-url --all` and `git
 //     remote get-url --push --all` print for it is one localURL takes. Those print the URL after
 //     url.<base>.insteadOf, pushInsteadOf and remote.<name>.pushurl, which is the URL git hands
@@ -61,21 +55,11 @@ const execPathVar = "GIT_EXEC_PATH"
 //     this keeps guarded a checkout that also has a remote at any host, GitHub's or another.
 //     The remotes are the names `git remote` prints and the files under the repository's legacy
 //     remotes and branches directories (remoteNames).
-//   - No key of `git config -z --list`, which holds every scope down to the command line's
-//     (GIT_CONFIG_PARAMETERS, which `git -c` hands the hook, and a GIT_CONFIG_COUNT block), is
-//     remote.<name>.receivepack or remote.<name>.vcs (namesItsOwnTransport). The first writes where
-//     its program writes, as `--receive-pack` does (measured by both reviews of
-//     dispatch://INFRA-3309's spec), and the second makes git push through a remote helper
-//     whatever the URL holds.
 //
 // Its git reads after ownExecPath's go through Guard.git in dir, with the package's pins and the
 // guard's environment. It resolves no shared check and reads no commit.
 func (g *Guard) StaysLocal(ctx context.Context, dir, url string) bool {
-	base := g.base()
-	if _, marked := lookup(base, PushNamesReceivePackVar); marked || !localURL(url) {
-		return false
-	}
-	if !g.ownExecPath(ctx, dir, base) {
+	if !localURL(url) || !g.writesOnlyToItsURL(ctx, dir, url) {
 		return false
 	}
 	names, err := g.remoteNames(ctx, dir)
@@ -86,6 +70,54 @@ func (g *Guard) StaysLocal(ctx context.Context, dir, url string) bool {
 		if !g.remoteStaysLocal(ctx, dir, name) {
 			return false
 		}
+	}
+	return true
+}
+
+// writesOnlyToItsURL is whether the push git hands the pre-push hook — to url, from the
+// repository dir and the guard's environment name — can write only to url: whether no program of
+// the caller's choosing makes the push, a receive-pack program, a remote helper or another exec
+// path's git-receive-pack, which can write somewhere else, a host included, while the hook gets
+// url. Guard.StaysLocal clears no push it answers false for, and Guard.pushRecords makes neither
+// read of what url holds (destinationHolds) for one: url then says nothing of what the repository
+// the push writes to holds, and a url that holds the push's commits (`.`, the clone itself, a
+// local mirror) would have every commit read as held while the push wrote them where none is
+// held. The review of cybermonklabs/legion#5914 reproduced that: with the reads made for every
+// push, `git push --receive-pack="git-receive-pack <another path> #" . main:refs/heads/leak` of a
+// commit the rules refuse passed, and the other path took the ref. It answers true only when
+// every one of these holds, and false when any read it makes fails:
+//
+//   - The guard's environment does not set PushNamesReceivePackVar. A push whose command line
+//     names its own receive-pack program writes where that program writes: measured by both
+//     reviews of dispatch://INFRA-3309's spec, a push to a local path with
+//     `--receive-pack="git-receive-pack <another path> #"` wrote to the other path while the hook
+//     got the first one, and such a program can be `ssh git@github.com git-receive-pack <o>/<n>`.
+//     Only the git wrapper sees the command line, so its mark is what says so here.
+//   - url holds no `::`. git pushes to `<transport>::<address>` through the remote helper
+//     git-remote-<transport>, which writes where it writes: `ext::<command>` runs any command
+//     (gitremote-helpers(7), git-remote-ext(1)).
+//   - GIT_EXEC_PATH is unset, or names git's own exec path, the two compared after filepath.Clean
+//     (ownExecPath, the first git it runs). A push runs the git-receive-pack of that
+//     directory: measured with /usr/bin/git 2.47.3 on 2026-11-27, with GIT_EXEC_PATH=<dir> and
+//     with `git --exec-path=<dir> push`, a `<dir>/git-receive-pack` that ran the real one on a
+//     second bare repository made `git push <bare A> main:e1` write e1 there, while the hook got
+//     bare A's path and saw GIT_EXEC_PATH=<dir>.
+//   - No key of `git config -z --list`, which holds every scope down to the command line's
+//     (GIT_CONFIG_PARAMETERS, which `git -c` hands the hook, and a GIT_CONFIG_COUNT block), is
+//     remote.<name>.receivepack or remote.<name>.vcs (namesItsOwnTransport). The first writes where
+//     its program writes, as `--receive-pack` does (measured by both reviews of
+//     dispatch://INFRA-3309's spec), and the second makes git push through a remote helper
+//     whatever the URL holds.
+//
+// Its read of the configuration goes through Guard.git in dir, with the package's pins and the
+// guard's environment.
+func (g *Guard) writesOnlyToItsURL(ctx context.Context, dir, url string) bool {
+	base := g.base()
+	if _, marked := lookup(base, PushNamesReceivePackVar); marked || strings.Contains(url, "::") {
+		return false
+	}
+	if !g.ownExecPath(ctx, dir, base) {
+		return false
 	}
 	config, err := g.git(ctx, dir, "config", "-z", "--list")
 	return err == nil && !namesItsOwnTransport(config)
@@ -114,7 +146,7 @@ func localURL(url string) bool {
 // from the base environment's PATH (program), so a foreign exec path's own git would be the one
 // that answered. The git that answers is therefore looked up here, on base's PATH with every entry
 // that is GIT_EXEC_PATH taken out, and run by its absolute path under that PATH, so no git of a
-// foreign exec path runs for StaysLocal. Its standard error is read apart and never as the answer.
+// foreign exec path runs for this read. Its standard error is read apart and never as the answer.
 func (g *Guard) ownExecPath(ctx context.Context, dir string, base []string) bool {
 	named, set := lookup(base, execPathVar)
 	if !set {

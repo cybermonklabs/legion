@@ -47,7 +47,11 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // the fetch negotiation answered. tips are the local commits of the push's updates, which the
 // negotiation walks (Guard.negotiated); the advertised refs are read whole (Guard.advertised).
 // The two reads run at the same time, the negotiation in a goroutine of its own, so a destination
-// that answers neither holds the push for one heldReadBound, not two.
+// that answers neither holds the push for one heldReadBound, not two. pushRecords makes them only
+// where the push can write to that URL alone (writesOnlyToItsURL): a push that can write
+// somewhere else, through a receive-pack program of its own, a remote helper or another exec
+// path's git-receive-pack, writes where that program writes, and what the URL holds says nothing
+// of that repository.
 //
 // Where the negotiation answers, the remote-tracking refs bound nothing (Guard.commits): they can
 // be stale, since the clone may not have fetched the destination since it moved; no remote may
@@ -60,8 +64,9 @@ var readsNoConfigFile = []string{"GIT_CONFIG_NOSYSTEM=1", "GIT_CONFIG_GLOBAL=/de
 // fails and the advertised read answers (a destination served on protocol v0 or v1, which the
 // negotiation needs v2 of, or a negotiation past its bound), the advertised commits are added to
 // the remote-tracking refs: each is a commit the destination holds, so the push reads no commit
-// it would read without them. Where both fail, not is empty and the remote-tracking refs bound
-// the push alone, as they did before these reads.
+// it would read without them. Where both fail, and for a push that can write somewhere other than
+// the URL, not is empty and the remote-tracking refs bound the push alone, as they did before
+// these reads.
 //
 // A read that fails refuses nothing. A stop by ctx itself, the caller's deadline or its cancel,
 // is the answer, as it is of every git a push's read runs (Guard.git): the push is then refused

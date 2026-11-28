@@ -21,7 +21,10 @@ body: |-
     The first push of a new branch is now judged on the commits its destination does not hold, as
     the destination itself says: `git ls-remote` of the push's URL and a fetch negotiation with it,
     which fetches nothing. Before, a stale or missing remote-tracking ref made the guard read, and
-    refuse the push over, commits the destination already held.
+    refuse the push over, commits the destination already held. The guard makes these two reads
+    only for a push that writes where its URL names: a push that names its own receive-pack
+    program, its own transport (`remote.<name>.vcs`, a URL with `::`) or an exec path that is not
+    git's own keeps the remote-tracking refs as its bound.
 time: 2026-11-27T23:04:15.885120039Z
 custom:
     Issue: pr5914
