@@ -533,7 +533,7 @@ test("read_release_records posts the claim's own credential and counts the windo
   )
 })
 
-test("refuses before the claim registered, an operation a phase worker has not, and a missing field", async () => {
+test("refuses before the claim registered, an operation a phase worker has not, and a field its operation does not take", async () => {
   const { client, requests } = await daemon()
   const handoffReport = async () => ({ commit: "c" })
   await expect(
@@ -553,50 +553,13 @@ test("refuses before the claim registered, an operation a phase worker has not, 
   ).rejects.toThrow(
     "op is one of read_record, read_release_records, handoff_complete, request_backward_move, ready_for_update, read_build",
   )
+  await expect(
+    executeLegionTool(runtime, { op: "read_record", issue: "LEGION-208", summary: "x" }),
+  ).rejects.toThrow('read_record does not accept field "summary"')
   await expect(executeLegionTool(runtime, { op: "handoff_complete" })).rejects.toThrow(
     "handoff_complete requires summary",
   )
   expect(requests).toEqual([])
-})
-
-// A model that fills every field of the tool's schema, as GPT-family models do, had each such call
-// refused while the tool refused each field an op does not take. The op runs with its own fields
-// instead, and the answer's first line names each other field, with the fields the op takes, as
-// the Oh My Pi host's does; a call that names no other field answers the JSON alone, as it always
-// did.
-test("a field its operation does not take is left out, and the answer's first line names it", async () => {
-  const { client, requests } = await daemon()
-  const runtime = {
-    daemon: client,
-    claim: () => implementer,
-    handoffReport: async (): Promise<never> => {
-      throw new Error("no handoff report expected")
-    },
-    branchHead: noBranchHead,
-  }
-  const hook = {
-    updateAnswered: () => {
-      throw new Error("no update answered expected")
-    },
-  }
-  const state = (await daemonFixture("state.json")) as { issues: Record<string, unknown> }
-  const record = JSON.stringify({ record: state.issues["LEGION-208"] })
-  await expect(
-    answerLegionTool(
-      runtime,
-      { op: "read_record", issue: "LEGION-208", summary: "", verdict: "pass", plan_rating: 1 },
-      hook,
-    ),
-  ).resolves.toBe(
-    `read_record did not use fields "summary", "verdict", "plan_rating", which it does not take; it takes issue\n${record}`,
-  )
-  await expect(
-    answerLegionTool(runtime, { op: "read_record", issue: "LEGION-208" }, hook),
-  ).resolves.toBe(record)
-  expect(requests.map(({ path }) => path)).toEqual([
-    "/legion/v1/issues/LEGION-208/record",
-    "/legion/v1/issues/LEGION-208/record",
-  ])
 })
 
 // R6: a role reads which plugin build its own process runs. The build is this module's own
@@ -654,19 +617,8 @@ test("read_build says so where the daemon states no contract, and takes no field
     daemonContract: null,
     daemonContractNote: "the daemon stated no contract",
   })
-  // An issue the call names reads no project state: the answer is the same build, after the line
-  // naming the issue.
-  const answer = await answerLegionTool(
-    runtime,
-    { op: "read_build", issue: "LEGION-208" },
-    { updateAnswered: () => undefined },
-  )
-  const [line, json] = answer.split("\n")
-  expect(line).toBe('read_build did not use field "issue", which it does not take; it takes none')
-  expect(JSON.parse(json ?? "")).toMatchObject({
-    pluginContract: PLUGIN_CONTRACT,
-    daemonContract: null,
-    daemonContractNote: "the daemon stated no contract",
-  })
-  expect(requests.map(({ path }) => path)).toEqual(["/healthz", "/healthz"])
+  await expect(
+    executeLegionTool(runtime, { op: "read_build", issue: "LEGION-208" }),
+  ).rejects.toThrow('read_build does not accept field "issue"')
+  expect(requests.map(({ path }) => path)).toEqual(["/healthz"])
 })

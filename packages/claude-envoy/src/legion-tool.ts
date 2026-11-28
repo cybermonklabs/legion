@@ -5,14 +5,11 @@ import type { HandoffReport } from "@legion/pi-shared/handoff-record"
 import {
   type ClaimCapability,
   executePhaseOp,
-  isPhaseOp,
   legionToolDescription,
-  PHASE_OP_FIELDS,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   phaseOpParameters,
   pluginBuildOf,
-  unusedFieldsLine,
 } from "@legion/pi-shared/legion-phase-ops"
 import { z } from "zod"
 import pkg from "../package.json" with { type: "json" }
@@ -60,9 +57,8 @@ export interface LegionToolRuntime {
 }
 
 /** Runs one call of the `legion` tool and answers its JSON result; a refusal throws its reason.
- * A field the call's operation does not take is left out, and the answer is what the call
- * answers without it (`answerLegionTool` names it). `signal`, the MCP request's cancellation,
- * ends a `handoff_complete` waiting out a daemon restart. */
+ * `signal`, the MCP request's cancellation, ends a `handoff_complete` waiting out a daemon
+ * restart. */
 export async function executeLegionTool(
   runtime: LegionToolRuntime,
   input: unknown,
@@ -87,27 +83,18 @@ export async function executeLegionTool(
   )
 }
 
-/** Runs one call of the `legion` tool, as executeLegionTool does, and answers the text of its
- * result: its JSON answer, after a first line naming each field the call gave that its operation
- * does not take and so did not use (`unusedFieldsLine`), where it gave any. It tells the host once
- * a `ready_for_update` it ran answered the pod's update message: the worker then waits for its
+/** Runs one call of the `legion` tool, as executeLegionTool does, and tells the host once a
+ * `ready_for_update` it ran answered the pod's update message: the worker then waits for its
  * process to be replaced, so the `Stop` of the turn it answered in blocks nothing
  * (`updateAnswered`, `./legion-phase-hook`). A completion and a look's report tell the host
- * nothing: the reminder asks the daemon what the claim owes. A refusal throws before any hook,
- * with no line. */
+ * nothing: the reminder asks the daemon what the claim owes. A refusal throws before any hook. */
 export async function answerLegionTool(
   runtime: LegionToolRuntime,
   args: Record<string, unknown>,
   hooks: { readonly updateAnswered: () => void | Promise<void> },
   signal?: AbortSignal,
-): Promise<string> {
-  const answer = JSON.stringify(await executeLegionTool(runtime, args, signal))
-  const op = args["op"]
-  if (op === "ready_for_update") await hooks.updateAnswered()
-  // The call ran, so its op is a phase op: executePhaseOp refuses any other.
-  const line =
-    typeof op === "string" && isPhaseOp(op)
-      ? unusedFieldsLine(op, args, PHASE_OP_FIELDS[op])
-      : undefined
-  return line === undefined ? answer : `${line}\n${answer}`
+): Promise<unknown> {
+  const answer = await executeLegionTool(runtime, args, signal)
+  if (args["op"] === "ready_for_update") await hooks.updateAnswered()
+  return answer
 }

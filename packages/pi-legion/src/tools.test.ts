@@ -133,7 +133,6 @@ function recordingDaemon(options: {
     "issuePodUpdate",
     "intakeReplay",
     "intakeDiscard",
-    "projectResume",
     "handoffComplete",
     "releaseRecords",
   ];
@@ -395,16 +394,9 @@ test("the schema the Oh My Pi tool exposes carries every field the phase ops tak
   for (const field of Object.keys(phaseOpParameters(z))) expect(properties).toContain(field);
 });
 
-// A field handoff_complete does not take changes nothing of a root architect's refusal: the call
-// runs nothing, so its answer is the refusal alone, with no line naming the field.
 test("a root architect's handoff_complete is refused as unavailable before its arguments are read", async () => {
   const root = toolFor(claimSession("architect"));
-  for (const parameters of [
-    {},
-    { summary: "" },
-    { summary: "x", verdict: "maybe" },
-    { phase: "plan" },
-  ]) {
+  for (const parameters of [{}, { summary: "" }, { summary: "x", verdict: "maybe" }]) {
     await expect(
       root.execute("", { op: "handoff_complete", ...parameters }, undefined, undefined, context())
     ).resolves.toEqual({
@@ -418,6 +410,17 @@ test("a root architect's handoff_complete is refused as unavailable before its a
       isError: true,
     });
   }
+  // A field handoff_complete never takes is named first, as the operation's field check names it.
+  await expect(
+    root.execute("", { op: "handoff_complete", phase: "plan" }, undefined, undefined, context())
+  ).resolves.toMatchObject({
+    content: [
+      {
+        type: "text",
+        text: 'handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, check_opened_at, plan_rating, plan_reason, return_to; handoff_complete is not available to a root architect session, which runs no phase',
+      },
+    ],
+  });
 });
 
 test("the legion tool exposes only the workflow operations each role owns", async () => {
@@ -670,13 +673,12 @@ test("retry_or_escalate takes a reason", async () => {
 });
 
 // Architects sent a child operation a `reason`, as close_root and request_backward_move take one,
-// and GPT-family owners fill every field of the schema, so a refusal of each field an operation
-// does not take refused every call they made. The operation runs with its own fields instead, the
-// daemon is sent no other, and the answer starts with the line naming each field it did not use,
-// so the agent learns its why went nowhere. The daemon keeps no why for a rerun, so rerun_child's
-// line also names the dispatch comment on the child the why goes in. Any other operation's line
-// names the fields it takes alone: it may name no single issue (release_children's is `issues`).
-test("an operation runs with its own fields, sends the daemon no other, and its answer's first line names each field it did not use", async () => {
+// and were told only that the field is refused: five refusals over four days of architect
+// sessions, each sent again without it and its why lost. The daemon keeps no why for a rerun, so a
+// refusal of its `reason` names the fields the operation takes and the dispatch comment on the
+// child the why goes in, before any grant is minted. Any other operation's refusal names the
+// fields it takes alone: it may name no single issue (release_children, whose field is `issues`).
+test("rerun_child refuses a reason before any grant, naming issue and the dispatch comment the why goes in", async () => {
   const { calls, daemon } = recordingDaemon({});
   const tool = createLegionTool({
     pi,
@@ -688,157 +690,43 @@ test("an operation runs with its own fields, sends the daemon no other, and its 
     dispatch: noDispatch,
     session: () => claimSession("architect"),
   });
-  // Document ids, which go to the daemon as they are, so no Dispatch is read.
-  const spec = "d2f1c6b4-8e07-4a53-9c1d-6b8f2e5a7093";
-  const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";
-  const runs = [
+  const refusals = [
     [
       { op: "rerun_child", issue: "LEGION-209", reason: "The spec changed" },
-      'rerun_child did not use field "reason", which it does not take; it takes issue. Say why in a dispatch comment on the child',
-      ["childRerun", { grantId: "grant-208", issue: "LEGION-209" }],
+      'rerun_child does not accept field "reason"; it takes issue. Say why in a dispatch comment on the child',
     ],
-    // Every field the operation does not take is named, as a phase op's line names them.
+    // Every field the operation does not take is named, as a phase op's refusal names them.
     [
       { op: "sign_off", issue: "LEGION-208", reason: "approved", note: "x" },
-      'sign_off did not use fields "reason", "note", which it does not take; it takes issue',
-      ["signOff", { grantId: "grant-208", issue: "LEGION-208" }],
+      'sign_off does not accept field "reason"; sign_off does not accept field "note"; it takes issue',
     ],
     [
       { op: "release_children", issues: ["LEGION-209"], reason: "wave 2" },
-      'release_children did not use field "reason", which it does not take; it takes issues',
-      ["waveRelease", { grantId: "grant-208", issues: ["LEGION-209"] }],
+      'release_children does not accept field "reason"; it takes issues',
     ],
-    // A field other than `reason` is named with what the operation takes, and nothing more.
+    // A field other than `reason` is refused naming what the operation takes, and nothing more.
     [
-      { op: "register_gate", issue: "LEGION-208", artifactId: spec, version: 1, steps: "spec" },
-      'register_gate did not use field "steps", which it does not take; it takes issue, artifactId, version, step, basis, basisVersion, reason',
-      ["gateRegister", { grantId: "grant-208", issue: "LEGION-208", artifactId: spec, version: 1 }],
+      { op: "register_gate", issue: "LEGION-208", artifactId: "spec", version: 1, steps: "spec" },
+      'register_gate does not accept field "steps"; it takes issue, artifactId, version, step, basis, basisVersion, reason',
     ],
     [
-      { op: "register_plan", issue: "LEGION-209", artifactId: plan, version: 1, step: "spec" },
-      'register_plan did not use field "step", which it does not take; it takes issue, artifactId, version',
-      ["planRegister", { grantId: "grant-208", issue: "LEGION-209", artifactId: plan, version: 1 }],
+      { op: "register_plan", issue: "LEGION-209", artifactId: "plan", version: 1, step: "spec" },
+      'register_plan does not accept field "step"; it takes issue, artifactId, version',
     ],
     [
       { op: "stop_task", issue: "LEGION-209", task: "a", reason: "the plan changed" },
-      'stop_task did not use field "reason", which it does not take; it takes issue, task',
-      ["taskStop", { grantId: "grant-208", issue: "LEGION-209", task: "a" }],
+      'stop_task does not accept field "reason"; it takes issue, task',
     ],
   ] as const;
-  for (const [parameters, line, request] of runs) {
+  for (const [parameters, text] of refusals) {
     await expect(tool.execute("", parameters, undefined, undefined, context())).resolves.toEqual({
-      content: [{ type: "text", text: `${line}\n{}` }],
+      content: [{ type: "text", text }],
       details: {},
+      isError: true,
     });
-    expect(calls.at(-1)).toEqual(request);
   }
+  expect(calls).toEqual([]);
 });
-
-/** A `legion` call as GPT-family models send it on the `openai-responses` API: every field of the
- * tool's one schema filled, with empty strings, `[]`, `false` and `0`, and with a filler value in
- * each enum field and each field with a minimum. It is an owner's stored `read_record` of an owner
- * walk (dispatch://INFRA-4115), its issue key renamed and without the intent `i`, which Oh My Pi
- * takes off before a tool runs. The tool refused every such call of the walk, 53 of 53. */
-const EVERY_FIELD_FILLED = {
-  op: "read_record",
-  issue: "LEGION-208",
-  since: "",
-  artifactId: "",
-  version: 0,
-  step: "spec",
-  basis: "",
-  basisVersion: 0,
-  issues: [],
-  task: "",
-  to: "admitted",
-  reason: "",
-  decision: "retry",
-  summary: "",
-  verdict: "pass",
-  wake_at: "",
-  check_opened_at: "",
-  plan_rating: 1,
-  plan_reason: "",
-  return_to: 1,
-  round: "",
-  status: "todo",
-  phase: "admitted",
-  settings: false,
-  role: "architect",
-  giveUp: 0,
-  consumer: "",
-  throughSeq: 0,
-  bound: 0,
-  unbounded: false,
-} as const;
-
-// The GPT-shaped read_record, and a register_plan with the same fillers: each runs as the
-// operation it names, the record read or the plan sent with that operation's fields alone, and
-// its answer starts with the line naming every other field. The same read with no other field
-// answers exactly as it did before the line existed: the JSON alone.
-test("a call with every field filled runs as its operation with that operation's fields, and its answer starts with the line naming the rest", async () => {
-  const record = { key: "LEGION-208", phase: "accepting" };
-  const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";
-  const taken = { plan: { version: 3, tasks: [{ id: "default", steps: ["implementer"] }] } };
-  const { calls, daemon } = recordingDaemon({
-    state: { issues: { "LEGION-208": record } },
-    answers: { planRegister: taken },
-  });
-  const tool = createLegionTool({
-    pi,
-    daemon,
-    controllerGrant: noControllerGrant,
-    onUpdateAnswered: () => undefined,
-    handoffReport: noHandoffReport,
-    branchHead: noBranchHead,
-    dispatch: noDispatch,
-    session: () => claimSession("architect"),
-  });
-  const run = (parameters: Record<string, unknown>) =>
-    tool.execute("", parameters, undefined, undefined, context());
-
-  await expect(run(EVERY_FIELD_FILLED)).resolves.toEqual({
-    content: [
-      {
-        type: "text",
-        text: `read_record did not use fields "since", "artifactId", "version", "step", "basis", "basisVersion", "issues", "task", "to", "reason", "decision", "summary", "verdict", "wake_at", "check_opened_at", "plan_rating", "plan_reason", "return_to", "round", "status", "phase", "settings", "role", "giveUp", "consumer", "throughSeq", "bound", "unbounded", which it does not take; it takes issue\n${JSON.stringify({ record })}`,
-      },
-    ],
-    details: { record },
-  });
-  expect(calls).toEqual([["record", { issue: "LEGION-208" }]]);
-
-  await expect(
-    run({
-      ...EVERY_FIELD_FILLED,
-      op: "register_plan",
-      issue: "LEGION-209",
-      artifactId: plan,
-      version: 3,
-    })
-  ).resolves.toEqual({
-    content: [
-      {
-        type: "text",
-        text: `register_plan did not use fields "since", "step", "basis", "basisVersion", "issues", "task", "to", "reason", "decision", "summary", "verdict", "wake_at", "check_opened_at", "plan_rating", "plan_reason", "return_to", "round", "status", "phase", "settings", "role", "giveUp", "consumer", "throughSeq", "bound", "unbounded", which it does not take; it takes issue, artifactId, version\n${JSON.stringify(taken)}`,
-      },
-    ],
-    details: taken,
-  });
-  expect(calls.slice(1)).toEqual([
-    [
-      "grant",
-      { sessionId: "ses_208", secret: CLAIM_SECRET, tree: "LEGION-208", issue: "LEGION-208" },
-    ],
-    ["planRegister", { grantId: "grant-208", issue: "LEGION-209", artifactId: plan, version: 3 }],
-  ]);
-
-  await expect(run({ op: "read_record", issue: "LEGION-208" })).resolves.toEqual({
-    content: [{ type: "text", text: JSON.stringify({ record }) }],
-    details: { record },
-  });
-});
-
 // The records the production check of a deployment's idle release counts, read by the pod's own
 // claim: the daemon takes the claim token and the claim's secret, which stay in this process.
 test("read_release_records reads the window with this session's claim, and reports a refusal as read_record does", async () => {
@@ -1771,35 +1659,8 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, and 
   ]);
   expect(reads).toEqual(["LEGION-208 implement", "LEGION-208 test"]);
 
-  // A phase is a field handoff_complete does not take, since the daemon knows it from the grant:
-  // the planner's completion that names one runs as one that names none, reporting the record of
-  // the phase it left, sends the daemon no phase, and its answer starts with the line naming it.
-  await expect(
-    run(claimSession("planner"), { op: "handoff_complete", summary: "x", phase: "plan" })
-  ).resolves.toEqual({
-    content: [
-      {
-        type: "text",
-        text: 'handoff_complete did not use field "phase", which it does not take; it takes summary, issue, verdict, wake_at, check_opened_at, plan_rating, plan_reason, return_to\n{}',
-      },
-    ],
-    details: {},
-  });
-  expect(reads.at(-1)).toBe("LEGION-208 plan");
-  expect(calls.at(-1)).toEqual([
-    "handoffComplete",
-    {
-      grantId: "grant-208",
-      summary: "x",
-      verdict: "",
-      commit: TIP,
-      handoffId: RECORD.id,
-      handoffVersion: RECORD.version,
-    },
-  ]);
-
-  // Refused before any daemon call: a root architect, which runs no phase; a missing summary; and
-  // a verdict of the wrong shape.
+  // Refused before any daemon call: a root architect, which runs no phase; a missing summary; a
+  // verdict of the wrong shape; and a phase, which the daemon knows from the grant.
   const before = calls.length;
   const refusals = [
     [claimSession("architect"), { summary: "Done." }, "root architect session"],
@@ -1809,6 +1670,7 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, and 
       { summary: "x", verdict: "maybe" },
       "verdict is pass, pending or fail",
     ],
+    [claimSession("planner"), { summary: "x", phase: "plan" }, 'does not accept field "phase"'],
   ] as const;
   for (const [session, parameters, message] of refusals) {
     const result = await run(session, { op: "handoff_complete", ...parameters });
@@ -2577,24 +2439,6 @@ test("the controller reads the state without a grant and sets an issue's status 
     "compact",
     { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
   ]);
-  // A field an agent action does not take is left out: a fresh_session that names a status posts
-  // the agent alone, mints the grant as any fresh_session does, and its answer, the daemon's own,
-  // starts with the line naming the status.
-  await expect(
-    run({ op: "fresh_session", issue: "LEGION-209", role: "implementer", status: "todo" })
-  ).resolves.toEqual({
-    content: [
-      {
-        type: "text",
-        text: `fresh_session did not use field "status", which it does not take; it takes issue, role\n${JSON.stringify(notRestarted)}`,
-      },
-    ],
-    details: notRestarted,
-  });
-  expect(calls.at(-1)).toEqual([
-    "freshSession",
-    { grantId: "controller-grant-1", issue: "LEGION-209", role: "implementer" },
-  ]);
   // Refused before any mint: a status the board does not have, a missing issue, a role no claim
   // is on — the controller's own among them — and every operation of a claim.
   const before = calls.length;
@@ -2607,6 +2451,14 @@ test("the controller reads the state without a grant and sets an issue's status 
       "fresh_session requires role architect",
     ],
     [{ op: "fresh_session", role: "implementer" }, "fresh_session requires issue"],
+    [
+      { op: "fresh_session", issue: "LEGION-209", role: "implementer", status: "todo" },
+      'fresh_session does not accept field "status"; it takes issue, role',
+    ],
+    [
+      { op: "read_state", to: "planning" },
+      'read_state does not accept field "to"; it takes issue, issues, phase, settings',
+    ],
     [{ op: "read_record", issue: "LEGION-208" }, "not available to a controller session"],
     [
       { op: "read_release_records", since: "2026-11-01T00:00:00Z" },
@@ -2620,26 +2472,20 @@ test("the controller reads the state without a grant and sets an issue's status 
     expect(result.isError).toBe(true);
     expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
   }
+  // read_state takes its four filters and nothing else, so its refusal of a `reason` is that
+  // field list alone.
+  await expect(run({ op: "read_state", reason: "why" })).resolves.toEqual({
+    content: [
+      {
+        type: "text",
+        text: 'read_state does not accept field "reason"; it takes issue, issues, phase, settings',
+      },
+    ],
+    details: {},
+    isError: true,
+  });
   expect(calls).toHaveLength(before);
-  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
-
-  // read_state takes its four filters and nothing else, so a `to` or a `reason` is no filter: the
-  // call answers the summary as one that names neither does, mints nothing, and its line names
-  // the field with that field list alone.
-  const [whole] = summary.content;
-  for (const field of ["to", "reason"]) {
-    await expect(run({ op: "read_state", [field]: "planning" })).resolves.toEqual({
-      content: [
-        {
-          type: "text",
-          text: `read_state did not use field "${field}", which it does not take; it takes issue, issues, phase, settings\n${whole?.type === "text" ? whole.text : ""}`,
-        },
-      ],
-      details: {},
-    });
-    expect(calls.at(-1)).toEqual(["state", undefined]);
-  }
-  expect(minted).toHaveLength(4);
+  expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller"]);
 });
 
 test("the controller stops, retries, suspends and resumes an agent it names by issue and role", async () => {
@@ -2677,12 +2523,17 @@ test("the controller stops, retries, suspends and resumes an agent it names by i
   }
   expect(minted).toEqual(["ses_controller", "ses_controller", "ses_controller", "ses_controller"]);
 
-  // Refused before any mint: a missing role, the controller's own and a missing issue.
+  // Refused before any mint: a missing role, the controller's own, a missing issue and a field
+  // none of the four takes.
   const before = calls.length;
   for (const [parameters, message] of [
     [{ op: "stop", issue: "LEGION-209" }, "stop requires role architect"],
     [{ op: "retry", issue: "LEGION-209", role: "controller" }, "retry requires role architect"],
     [{ op: "suspend", role: "tester" }, "suspend requires issue"],
+    [
+      { op: "resume_agent", issue: "LEGION-209", role: "tester", reason: "why" },
+      'resume_agent does not accept field "reason"; it takes issue, role',
+    ],
   ] as const) {
     const result = await run(parameters);
     expect(result.isError).toBe(true);
@@ -2690,24 +2541,6 @@ test("the controller stops, retries, suspends and resumes an agent it names by i
   }
   expect(calls).toHaveLength(before);
   expect(minted).toHaveLength(4);
-
-  // A field none of the four takes is left out: a resume_agent that names a reason posts the
-  // agent alone, and its answer, the daemon's own, starts with the line naming the reason.
-  await expect(
-    run({ op: "resume_agent", issue: "LEGION-209", role: "tester", reason: "why" })
-  ).resolves.toEqual({
-    content: [
-      {
-        type: "text",
-        text: `resume_agent did not use field "reason", which it does not take; it takes issue, role\n${JSON.stringify(answers.resumeAgent)}`,
-      },
-    ],
-    details: answers.resumeAgent,
-  });
-  expect(calls.at(-1)).toEqual([
-    "resumeAgent",
-    { grantId: "controller-grant-1", issue: "LEGION-209", role: "tester" },
-  ]);
 
   // A refusal of the daemon's is the tool's failure, its code and words as the daemon gave them:
   // the operator's own suspension, which only the operator lifts.
@@ -2739,9 +2572,8 @@ test("the controller stops, retries, suspends and resumes an agent it names by i
 
 // The controller's replace_pod names the issue alone, mints the controller's grant as set_status
 // does, and returns the daemon's answer whole: the round over the issue's pod, its reasons, and
-// whether this request opened it. Refused before any mint for a missing issue; a field it does not
-// take is left out and named in its answer's first line; a refusal of the daemon's is the tool's
-// failure, its code as the daemon gave it.
+// whether this request opened it. Refused before any mint for a missing issue and for a field it
+// does not take; a refusal of the daemon's is the tool's failure, its code as the daemon gave it.
 test("the controller asks for the replacement of an issue's pod with its own grant", async () => {
   const minted: string[] = [];
   // What the daemon answers (issue-pod-update.json): the round the request opened.
@@ -2766,27 +2598,19 @@ test("the controller asks for the replacement of an issue's pod with its own gra
   expect(minted).toEqual(["ses_controller"]);
 
   const before = calls.length;
-  const missing = await run({ op: "replace_pod" });
-  expect(missing.isError).toBe(true);
-  expect(missing.content).toEqual([{ type: "text", text: "replace_pod requires issue" }]);
+  for (const [parameters, message] of [
+    [{ op: "replace_pod" }, "replace_pod requires issue"],
+    [
+      { op: "replace_pod", issue: "LEGION-209", role: "tester" },
+      'replace_pod does not accept field "role"; it takes issue',
+    ],
+  ] as const) {
+    const result = await run(parameters);
+    expect(result.isError).toBe(true);
+    expect(result.content).toEqual([{ type: "text", text: expect.stringContaining(message) }]);
+  }
   expect(calls).toHaveLength(before);
   expect(minted).toHaveLength(1);
-
-  // A role is no field of replace_pod: the request names the issue alone, and the answer starts
-  // with the line naming the role.
-  await expect(run({ op: "replace_pod", issue: "LEGION-209", role: "tester" })).resolves.toEqual({
-    content: [
-      {
-        type: "text",
-        text: `replace_pod did not use field "role", which it does not take; it takes issue\n${JSON.stringify(opened)}`,
-      },
-    ],
-    details: opened,
-  });
-  expect(calls.at(-1)).toEqual([
-    "issuePodUpdate",
-    { grantId: "controller-grant-1", issue: "LEGION-209" },
-  ]);
 
   const refusing = recordingDaemon({
     answers: {
@@ -2970,31 +2794,18 @@ test("read_build says the daemon stated no contract, and belongs to the controll
       daemonContractNote: "the daemon stated no contract",
     },
   });
-  // It takes no field there either: an issue the call names changes nothing of the answer, the
-  // same build, whose first line names the issue, as a claim session's answer would through the
-  // phase op.
-  const named = await controller.execute(
-    "",
-    { op: "read_build", issue: "LEGION-208" },
-    undefined,
-    undefined,
-    context("ses_controller")
-  );
-  const build = {
-    plugin: pkg.name,
-    version: pkg.version,
-    pluginContract: PLUGIN_CONTRACT,
-    daemonContract: null,
-    daemonContractNote: "the daemon stated no contract",
-  };
-  expect(named).toEqual({
-    content: [
-      {
-        type: "text",
-        text: `read_build did not use field "issue", which it does not take; it takes none\n${JSON.stringify(build)}`,
-      },
-    ],
-    details: build,
+  // It takes no field there either.
+  await expect(
+    controller.execute(
+      "",
+      { op: "read_build", issue: "LEGION-208" },
+      undefined,
+      undefined,
+      context("ses_controller")
+    )
+  ).resolves.toMatchObject({
+    isError: true,
+    content: [{ type: "text", text: 'read_build does not accept field "issue"; it takes none' }],
   });
 });
 
@@ -3002,8 +2813,7 @@ test("read_build says the daemon stated no contract, and belongs to the controll
 // one operation, which sends its reason, and resumes it with one more, which names nothing: the
 // daemon acts on its own project. Each goes through the real daemon client, so the answer the
 // controller reads is the golden the daemon's own test wrote, parsed by the contract's schema.
-// A call the tool can tell is wrong is refused before a grant is minted or a request sent, and a
-// field the operation does not take is left out of its request and named in its answer.
+// A call the tool can tell is wrong is refused before a grant is minted or a request sent.
 test("the controller pauses the project with its reason and resumes it, and each answer is the daemon's golden", async () => {
   const { posted, daemon } = goldenDaemon({
     "/legion/v1/project/pause": "project-pause.json",
@@ -3032,6 +2842,12 @@ test("the controller pauses the project with its reason and resumes it, and each
   const refusals = [
     [{ op: "pause" }, "pause requires reason"],
     [{ op: "pause", reason: " " }, "pause requires reason"],
+    [
+      { op: "pause", reason, issue: "LEGION-208" },
+      'pause does not accept field "issue"; it takes reason',
+    ],
+    [{ op: "resume", reason }, 'resume does not accept field "reason"; it takes none'],
+    [{ op: "resume", issue: "LEGION-208" }, 'resume does not accept field "issue"; it takes none'],
   ] as const;
   for (const [parameters, text] of refusals) {
     await expect(run(parameters)).resolves.toEqual({
@@ -3042,37 +2858,6 @@ test("the controller pauses the project with its reason and resumes it, and each
   }
   expect(posted).toHaveLength(2);
   expect(minted).toHaveLength(2);
-
-  // A pause that names an issue pauses the project with its reason alone, and a resume that names
-  // a reason or an issue resumes it with nothing: neither takes either, so the request carries
-  // neither, and the answer, the daemon's golden, starts with the line naming the field.
-  const grantId = "controller-grant-1";
-  const ignored = [
-    [
-      { op: "pause", reason, issue: "LEGION-208" },
-      'pause did not use field "issue", which it does not take; it takes reason',
-      ["/legion/v1/project/pause", { grantId, reason }],
-    ],
-    [
-      { op: "resume", reason },
-      'resume did not use field "reason", which it does not take; it takes none',
-      ["/legion/v1/project/resume", { grantId }],
-    ],
-    [
-      { op: "resume", issue: "LEGION-208" },
-      'resume did not use field "issue", which it does not take; it takes none',
-      ["/legion/v1/project/resume", { grantId }],
-    ],
-  ] as const;
-  for (const [parameters, line, request] of ignored) {
-    const answered = await run(parameters);
-    expect(answered.isError).toBeUndefined();
-    expect(answered.content).toEqual([
-      { type: "text", text: `${line}\n${JSON.stringify(answered.details)}` },
-    ]);
-    expect(posted.at(-1)).toEqual(request);
-  }
-  expect(minted).toHaveLength(5);
 });
 
 // The P0 bound (C3 of dispatch://INFRA-5636, check c-bound-tool). The controller sets the bound
@@ -3277,12 +3062,10 @@ test("pause and resume are offered to no architect and no phase worker", async (
 });
 
 // The controller's resume_agent and the project's resume are two operations: resume_agent names
-// an agent by issue and role and posts that agent's resume, and resume names no issue. A resume
-// that names the agent's two fields resumes the project, as the operation it names, and its answer
-// starts with the line naming both, so a controller that meant one agent's resume reads that the
-// project's resume ran without them. A resume_agent the daemon refuses because the project is
-// paused reaches the controller in the daemon's own words, which name the resume operation that
-// lifts the pause, so a controller that meant the project's resume reads which operation that is.
+// an agent by issue and role and posts that agent's resume, and resume names no issue and is
+// refused the agent's two fields. A resume_agent the daemon refuses because the project is paused
+// reaches the controller in the daemon's own words, which name the resume operation that lifts
+// the pause, so a controller that meant the project's resume reads which operation that is.
 test("resume_agent resumes an agent, resume names no issue, and a paused project's refusal names resume", async () => {
   const { calls, daemon } = recordingDaemon({ answers: { resumeAgent: { state: "launching" } } });
   const tool = controllerTool(daemon, []);
@@ -3307,10 +3090,9 @@ test("resume_agent resumes an agent, resume names no issue, and a paused project
   expect(asProject.content).toEqual([
     {
       type: "text",
-      text: 'resume did not use fields "issue", "role", which it does not take; it takes none\n{}',
+      text: 'resume does not accept field "issue"; resume does not accept field "role"; it takes none',
     },
   ]);
-  expect(calls.at(-1)).toEqual(["projectResume", { grantId: "controller-grant-1" }]);
 
   const sentence =
     "resume of legion-legion-legion-209-tester refused: the project is paused (pause 7), and a paused project " +
@@ -3372,9 +3154,8 @@ test("the controller's replay_give_up sends one record id to the daemon's contro
 
 // The bulk form names the consumer and the stream sequence the summary gives as its newest. A
 // selection the daemon would refuse (GIVE_UP_REQUEST_INVALID) is refused before a grant is minted
-// or a request sent: both forms, neither, one half of the bulk form, and a number that is no record
-// id or stream sequence. A reason, which only the discard takes, is left out of a replay's request
-// and named in its answer's first line, so the controller reads that the replay kept no reason.
+// or a request sent: both forms, neither, one half of the bulk form, a number that is no record id
+// or stream sequence, and a field the replay does not take.
 test("the controller's replay_give_up sends a consumer and every open record at or below a stream sequence (throughSeq)", async () => {
   const { posted, daemon } = goldenDaemon({ "/legion/v1/intake/replay": "intake-replay.json" });
   const minted: string[] = [];
@@ -3409,6 +3190,10 @@ test("the controller's replay_give_up sends a consumer and every open record at 
       { op: "replay_give_up", giveUp: 41.5 },
       "replay_give_up's giveUp is a give-up's record id, a whole number from 1",
     ],
+    [
+      { op: "replay_give_up", giveUp: 41, reason: "the fix runs" },
+      'replay_give_up does not accept field "reason"; it takes giveUp, consumer, throughSeq',
+    ],
   ] as const;
   for (const [parameters, text] of refusals) {
     await expect(run(parameters)).resolves.toEqual({
@@ -3419,19 +3204,6 @@ test("the controller's replay_give_up sends a consumer and every open record at 
   }
   expect(posted).toHaveLength(1);
   expect(minted).toHaveLength(1);
-
-  const withReason = await run({ op: "replay_give_up", giveUp: 41, reason: "the fix runs" });
-  expect(withReason.details).toEqual(daemonFixture("intake-replay.json"));
-  expect(withReason.content).toEqual([
-    {
-      type: "text",
-      text: `replay_give_up did not use field "reason", which it does not take; it takes giveUp, consumer, throughSeq\n${JSON.stringify(withReason.details)}`,
-    },
-  ]);
-  expect(posted.at(-1)).toEqual([
-    "/legion/v1/intake/replay",
-    { grantId: "controller-grant-1", giveUp: 41 },
-  ]);
 });
 
 test("the controller's discard_give_up sends its reason and returns the daemon's answer", async () => {

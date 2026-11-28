@@ -2865,15 +2865,14 @@ export async function runEnvoyChannelServer(): Promise<void> {
       // for a restarting daemon.
       // A `ready_for_update` that answered blocks no `Stop` of its turn (`answerLegionTool`), as
       // the Oh My Pi host's `onUpdateAnswered` does (`createLegionTool` in
-      // `packages/pi-legion/src/tools.ts`). The answer is its text already, the line naming each
-      // field the call's operation did not use before the JSON, as the Oh My Pi host's is.
-      const text = await answerLegionTool(
+      // `packages/pi-legion/src/tools.ts`).
+      const answer = await answerLegionTool(
         legionRuntime,
         request.params.arguments ?? {},
         { updateAnswered: () => phaseHook?.updateAnswered() },
         extra.signal,
       )
-      return { content: [{ type: "text", text }] }
+      return mcpResult(answer)
     }
     if (runtime === undefined)
       throw new Error(`Envoy channel server is still starting: ${starting}`)

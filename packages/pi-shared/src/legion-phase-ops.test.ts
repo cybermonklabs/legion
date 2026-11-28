@@ -12,7 +12,6 @@ import {
   type ClaimCapability,
   executePhaseOp,
   legionToolDescription,
-  PHASE_OP_FIELDS,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
   PhaseOpArguments,
@@ -20,7 +19,6 @@ import {
   type PhaseOpRuntime,
   phaseOpParameters,
   STALE_ENTRY_INSTRUCTION,
-  unusedFieldsLine,
 } from "./legion-phase-ops";
 
 /** A contract the test's client states on every request, and the build's package names. */
@@ -415,12 +413,20 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: " ", plan_rating: 4 },
       "handoff_complete requires summary; handoff_complete names plan_rating without plan_reason",
     ],
+    [
+      { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"',
+    ],
     [{ op: "read_record", issue: 44 }, "read_record's issue is an issue key, as LEGION-208 is"],
     [{ op: "read_release_records" }, "read_release_records requires since"],
     [{ op: "read_release_records", since: " " }, "read_release_records requires since"],
     [
       { op: "read_release_records", since: "yesterday" },
       "read_release_records' since is an RFC 3339 time, as 2026-11-02T09:00:00Z is",
+    ],
+    [
+      { op: "read_release_records", since: "2026-11-01T12:00:00Z", issue: "LEGION-208" },
+      'read_release_records does not accept field "issue"',
     ],
     [{ op: "request_backward_move", reason: "r" }, "request_backward_move requires to"],
     [{ op: "request_backward_move", to: " ", reason: "r" }, "request_backward_move requires to"],
@@ -812,9 +818,7 @@ test("a record carrying keys no schema names at three depths is read, and read_r
   ]);
 });
 
-// A field handoff_complete never takes changes nothing of a root architect's refusal: the call
-// runs nothing, so the refusal is the whole of it.
-test("a root architect's handoff_complete is refused as unavailable before any of its fields is checked", async () => {
+test("a root architect's handoff_complete is refused as unavailable before its own fields are checked, after any field it never takes", async () => {
   const root = runtime({ ...implementer, role: "architect" });
   const refusal =
     "handoff_complete is not available to a root architect session, which runs no phase";
@@ -822,95 +826,41 @@ test("a root architect's handoff_complete is refused as unavailable before any o
     { op: "handoff_complete" },
     { op: "handoff_complete", summary: "x" },
     { op: "handoff_complete", summary: " ", verdict: "maybe" },
-    { op: "handoff_complete", phase: "plan" },
   ]) {
     await expect(executePhaseOp(root.ops, input)).rejects.toThrow(new Error(refusal));
   }
+  await expect(executePhaseOp(root.ops, { op: "handoff_complete", phase: "plan" })).rejects.toThrow(
+    new Error(
+      `handoff_complete does not accept field "phase"; it takes summary, issue, verdict, wake_at, check_opened_at, plan_rating, plan_reason, return_to; ${refusal}`
+    )
+  );
   expect(root.routes).toEqual([]);
 });
 
-// GPT-family models fill every field of the tool's one schema, so a refusal of each field an op
-// does not take refused every call they made. An op runs with its own fields instead: it answers
-// what the call answers without the others, and the daemon is sent none of them. The line a
-// host's answer starts with names each of them, then once the fields the op takes, so the agent
-// learns what it sent went unused. A refusal of the op's own fields names those problems alone.
-test("a field an op does not take is left out of the op, and named with the fields the op takes in the line a host's answer starts with", async () => {
-  const golden = daemonFixture("state.json") as { issues: Record<string, unknown> };
-  const { ops, routes, posted } = runtime();
-  await expect(
-    executePhaseOp(ops, { op: "read_record", issue: "LEGION-208", reason: "why" })
-  ).resolves.toEqual({ record: golden.issues["LEGION-208"] });
-  await expect(
-    executePhaseOp(ops, {
-      op: "handoff_complete",
-      summary: "Done.",
-      verdict: "pass",
-      phase: "plan",
-      other: 1,
-    })
-  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
-  expect(posted.at(-1)).toEqual({
-    grantId: "grant-for-one-command",
-    summary: "Done.",
-    verdict: "pass",
-    ...REPORT,
-  });
-  expect(routes).toEqual([
-    "/legion/v1/issues/LEGION-208/record",
-    "/legion/v1/issues/LEGION-208/record",
-    "/legion/v1/grants",
-    "/legion/v1/handoff/complete",
-  ]);
-  await expect(
-    executePhaseOp(ops, { op: "handoff_complete", summary: " ", phase: "plan", other: 1 })
-  ).rejects.toThrow(new Error("handoff_complete requires summary"));
-  expect(routes).toHaveLength(4);
-
-  // The window's read with an issue it does not take is the read without it, its post the same.
-  const records = recordsRuntime(RELEASE_RECORDS);
-  const window = { op: "read_release_records", since: "2026-11-01T00:00:00Z" } as const;
-  expect(await executePhaseOp(records.ops, { ...window, issue: "LEGION-208" })).toEqual(
-    await executePhaseOp(records.ops, window)
-  );
-  const body = {
-    claimToken: "legion-legion-legion-208-implementer",
-    secret: "U2VjcmV0",
-    since: "2026-11-01T00:00:00Z",
-  };
-  expect(records.posted.map((post) => post.body)).toEqual([body, body]);
-
-  for (const [op, input, line] of [
+// A refusal that named only the field refused left the agent to guess the call again. An
+// architect sent a `reason` to an operation that took only `issue`, and a worker sent
+// ready_for_update an `issue`. Each was told no more than that the field is refused. A refusal
+// names, once after every field it refuses, the fields the operation takes.
+test("a field an op does not take is refused naming the fields the op takes", async () => {
+  const { ops, routes } = runtime();
+  const refusals = [
     [
-      "ready_for_update",
       { op: "ready_for_update", round: "r1", issue: "LEGION-208" },
-      'ready_for_update did not use field "issue", which it does not take; it takes round',
+      'ready_for_update does not accept field "issue"; it takes round',
     ],
     [
-      "read_record",
       { op: "read_record", issue: "LEGION-208", reason: "why" },
-      'read_record did not use field "reason", which it does not take; it takes issue',
+      'read_record does not accept field "reason"; it takes issue',
     ],
     [
-      "handoff_complete",
       { op: "handoff_complete", summary: "x", phase: "plan", other: 1 },
-      'handoff_complete did not use fields "phase", "other", which it does not take; it takes summary, issue, verdict, wake_at, check_opened_at, plan_rating, plan_reason, return_to',
+      'handoff_complete does not accept field "phase"; handoff_complete does not accept field "other"; it takes summary, issue, verdict, wake_at, check_opened_at, plan_rating, plan_reason, return_to',
     ],
-    [
-      "read_build",
-      { op: "read_build", issue: "LEGION-208" },
-      'read_build did not use field "issue", which it does not take; it takes none',
-    ],
-  ] as const) {
-    expect(unusedFieldsLine(op, input, PHASE_OP_FIELDS[op])).toBe(line);
+  ] as const;
+  for (const [input, message] of refusals) {
+    await expect(executePhaseOp(ops, input)).rejects.toThrow(new Error(message));
   }
-  // A call that names only the op's own fields has no line, and its answer is the op's alone.
-  expect(
-    unusedFieldsLine(
-      "read_record",
-      { op: "read_record", issue: "LEGION-208" },
-      PHASE_OP_FIELDS.read_record
-    )
-  ).toBeUndefined();
+  expect(routes).toEqual([]);
 });
 
 /** LEGION-208 closed by its merge, its production check open on its second look, as the daemon's
@@ -1976,23 +1926,14 @@ test("ready_for_update answers for the round its task named, with the branch hea
     round,
   });
 
-  // The round is the one field the agent passes: the head is the plugin's to resolve, so a head
-  // the call names is left out, and the signal carries the head the plugin looked up.
+  // The round is the one field the agent passes: the head is the plugin's to resolve.
   await expect(
     executePhaseOp(
       runtimeFor(async () => head),
-      { op: "ready_for_update", round, head: "0".repeat(40) }
+      { op: "ready_for_update", round, head }
     )
-  ).resolves.toEqual({});
-  expect(posted).toHaveLength(3);
-  expect(posted.at(-1)?.body).toEqual({
-    claimToken: "legion-legion-legion-208-implementer",
-    sessionId: "ses_implementer",
-    secret: "U2VjcmV0",
-    generation: 5,
-    round,
-    head,
-  });
+  ).rejects.toThrow(new Error('ready_for_update does not accept field "head"; it takes round'));
+  expect(posted).toHaveLength(2);
 });
 
 // The answer counts for the round the worker read and for no other, so the daemon refuses one
@@ -2185,17 +2126,11 @@ test("read_build still answers this build where the daemon refuses the health ro
   }
 });
 
-// read_build takes no field, so an issue the call names reads no project state: the answer is
-// the build's, and the health route is still the one request.
-test("read_build takes no field, and answers the same build for a call that names one", async () => {
+test("read_build takes no field, and refuses one it is given before any request", async () => {
   const { ops, routes } = healthDaemon(CONTRACT);
 
-  await expect(executePhaseOp(ops, { op: "read_build", issue: "LEGION-208" })).resolves.toEqual({
-    plugin: BUILD.name,
-    version: BUILD.version,
-    pluginContract: CONTRACT,
-    daemonContract: CONTRACT,
-    daemonContractNote: null,
-  });
-  expect(routes).toEqual(["/healthz"]);
+  await expect(executePhaseOp(ops, { op: "read_build", issue: "LEGION-208" })).rejects.toThrow(
+    'read_build does not accept field "issue"'
+  );
+  expect(routes).toEqual([]);
 });
