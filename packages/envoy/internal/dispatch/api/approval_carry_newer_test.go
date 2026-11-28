@@ -74,6 +74,8 @@ func newerBuildDocuments(t *testing.T, database *store.Store, settle time.Durati
 // the version. The newer build's settlement resumption then writes the version with his approval
 // carried.
 func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReadsIt(t *testing.T) {
+	// Not parallel: it swaps the default logger (captureLog, logtest.SetDefault) and pmdoc's schema
+	// manifest (useNewerAskManifest, pmdoc.UseManifestForTest).
 	logged := captureLog(t)
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
 	ctx := context.Background()

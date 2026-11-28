@@ -9,6 +9,7 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -140,7 +141,7 @@ func TestConcurrentMentionRetryResolvesNewAttemptUnderLock(t *testing.T) {
 		}
 	}))
 	defer listener.Close()
-	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL})
+	handler, database, deps := newTestServer(t, testServerOptions{envoyURL: listener.URL, clock: clocktest.Held()})
 	direct := directServer(deps)
 	issue := createInteractionIssue(t, handler, "TEST", "Concurrent mention retry", "before")
 	created := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{

@@ -4,12 +4,14 @@ import { join } from "node:path";
 import type { StatusChangeEntry } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
 import { DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // The parent-status rule from the `dispatch` command: the three options of `dispatch issue-update`
 // (`--include-children`, `--unlink-children`, `--include-parent`), which send
@@ -197,65 +199,77 @@ const systemComment = {
   updated_at: AT,
 };
 
+// Behind Dispatch's keyed layer: each answer a handler gives a keyed write, a refusal among them,
+// names the write's key back, as Dispatch's do; the router's 404 for no route and this stand-in's
+// 500 for a request it does not expect name none.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
-    const { pathname, search, searchParams } = new URL(request.url);
-    const text = await request.text();
-    const body = text === "" ? undefined : JSON.parse(text);
-    requests.push({ method: request.method, path: pathname, search, body });
-    const answer = (sent: Answer): Response => Response.json(sent.body, { status: sent.status });
-    if (pathname === "/api/v1/issues" && request.method === "GET") {
-      const rows = listing.map(summary);
-      // A request with a page's limit is answered a page, and one without the unpaged array.
-      if (!searchParams.has("limit")) return Response.json(rows);
-      return Response.json({
-        issues: rows,
-        total: rows.length,
-        limit: Number(searchParams.get("limit")),
-        offset: Number(searchParams.get("offset")),
-      });
-    }
-    if (pathname === "/api/v1/issues" && request.method === "POST" && createAnswer !== undefined) {
-      return answer(createAnswer);
-    }
-    const status = pathname.match(/^\/api\/v1\/issues\/(ACME-\d+)\/status-change$/);
-    if (status !== null && request.method === "POST") {
-      return statusChange === "no route"
-        ? Response.json(
-            { code: "NOT_FOUND", error: `no route for POST ${pathname}` },
-            { status: 404 }
-          )
-        : answer(statusChange);
-    }
-    const messages = pathname.match(/^\/api\/v1\/issues\/(ACME-\d+)\/messages$/);
-    if (messages !== null && request.method === "POST") {
-      return Response.json(
-        {
-          id: MESSAGE_ID,
-          issue_key: messages[1],
-          author: body.actor,
-          body: body.body,
-          to: [],
-          created_at: AT,
-          deliveries: [],
-        },
-        { status: 201 }
-      );
-    }
-    const issue = ACME.find((row) => pathname === `/api/v1/issues/${row.key}`);
-    if (issue !== undefined && request.method === "GET") return Response.json(details(issue));
-    if (issue !== undefined && request.method === "PATCH") {
-      return patchAnswer === undefined ? Response.json(details(issue)) : answer(patchAnswer);
-    }
-    if (pathname === `/api/v1/comments/${COMMENT_ID}`) {
-      return Response.json({ comment: systemComment, replies: [] });
-    }
-    if (pathname === "/api/v1/references") {
-      return Response.json({ node: { kind: "comment", id: COMMENT_ID }, edges: [] });
-    }
-    return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  fetch: keyedLayer(
+    async (request: Request) => {
+      const { pathname, search, searchParams } = new URL(request.url);
+      // Every read command reads whoami first (`whoami-stand-in.ts`); it is not recorded.
+      if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
+      const text = await request.text();
+      const body = text === "" ? undefined : JSON.parse(text);
+      requests.push({ method: request.method, path: pathname, search, body });
+      const answer = (sent: Answer): Response => Response.json(sent.body, { status: sent.status });
+      if (pathname === "/api/v1/issues" && request.method === "GET") {
+        const rows = listing.map(summary);
+        // A request with a page's limit is answered a page, and one without the unpaged array.
+        if (!searchParams.has("limit")) return Response.json(rows);
+        return Response.json({
+          issues: rows,
+          total: rows.length,
+          limit: Number(searchParams.get("limit")),
+          offset: Number(searchParams.get("offset")),
+        });
+      }
+      if (
+        pathname === "/api/v1/issues" &&
+        request.method === "POST" &&
+        createAnswer !== undefined
+      ) {
+        return answer(createAnswer);
+      }
+      const status = pathname.match(/^\/api\/v1\/issues\/(ACME-\d+)\/status-change$/);
+      if (status !== null && request.method === "POST") {
+        return statusChange === "no route"
+          ? Response.json(
+              { code: "NOT_FOUND", error: `no route for POST ${pathname}` },
+              { status: 404 }
+            )
+          : answer(statusChange);
+      }
+      const messages = pathname.match(/^\/api\/v1\/issues\/(ACME-\d+)\/messages$/);
+      if (messages !== null && request.method === "POST") {
+        return Response.json(
+          {
+            id: MESSAGE_ID,
+            issue_key: messages[1],
+            author: body.actor,
+            body: body.body,
+            to: [],
+            created_at: AT,
+            deliveries: [],
+          },
+          { status: 201 }
+        );
+      }
+      const issue = ACME.find((row) => pathname === `/api/v1/issues/${row.key}`);
+      if (issue !== undefined && request.method === "GET") return Response.json(details(issue));
+      if (issue !== undefined && request.method === "PATCH") {
+        return patchAnswer === undefined ? Response.json(details(issue)) : answer(patchAnswer);
+      }
+      if (pathname === `/api/v1/comments/${COMMENT_ID}`) {
+        return Response.json({ comment: systemComment, replies: [] });
+      }
+      if (pathname === "/api/v1/references") {
+        return Response.json({ node: { kind: "comment", id: COMMENT_ID }, edges: [] });
+      }
+      return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
+    },
+    { judged: (response) => response.status !== 404 && response.status !== 500 }
+  ),
 });
 
 afterAll(() => server.stop(true));
@@ -888,22 +902,29 @@ describe("a PARENT_STATUS_CONFLICT", () => {
     ]);
   });
 
-  // Since main's #4896 a parent may be an issue of another project, and Dispatch refuses a
-  // credential scoped to one project each step that writes an issue of another project (403
-  // PROJECT_SCOPE). The CLI does not know its credential's scope, so where an issue the refusal
-  // names, which a flag of the line writes, is in another project than the issue the call names
-  // (by --issue, or by LEGION_ISSUE), the line says that such a credential is refused that step,
-  // and that a person, or a credential that names no project, must make it. A refusal that names
-  // only issues of the call's own project says nothing of projects.
-  test("a refusal naming an issue of another project says a credential scoped to one project is refused that step", async () => {
-    const scopeRefused = (flags: string, key: string, named: string) =>
-      expect.stringMatching(
-        new RegExp(
-          `${flags}.*\\b${key}\\b.*\\b${named}\\b.*\\b403 PROJECT_SCOPE\\b.*\\ba person\\b.*\\bno project\\b`
-        )
-      );
+  // Since main's #4896 a parent may be an issue of another project. A credential that names one
+  // project writes an issue of another project in each step of a status change, as a credential
+  // that names no project does. Only a private project it does not name is refused, and no
+  // project is private yet. So a refusal that names an issue of another project prints the same
+  // lines as one that names an issue of the call's own project: the refusal, the issue, and the
+  // flags that move it, with no line that says the credential is refused a step. This holds
+  // whether the call names its issue by --issue or by LEGION_ISSUE.
+  test("a refusal naming an issue of another project prints the lines of one naming an issue of the call's own project", async () => {
+    /** The lines `argv` prints, under `host`, when Dispatch refuses it with `refusal`. */
+    const printed = async (
+      refusal: Answer,
+      argv: readonly string[],
+      host: Record<string, string> = omp
+    ): Promise<string[]> => {
+      patchAnswer = refusal;
+      const refused = await run(argv, host);
+      expect(refused.code).toBe(1);
+      return refused.stdout.split("\n");
+    };
 
-    // A status change of ACME-5 refused for its parent BETA-1, which --include-parent would move.
+    // A status change of ACME-5 refused for its parent, which --include-parent would move: ACME-4,
+    // of its own project, or BETA-1, of another.
+    const ownParent = doneParentRefusal("ACME-5");
     const otherParent: Answer = {
       status: 409,
       body: {
@@ -915,60 +936,54 @@ describe("a PARENT_STATUS_CONFLICT", () => {
         ],
       },
     };
-    patchAnswer = otherParent;
     for (const [argv, host] of [
       [["issue-update", "--issue", "ACME-5", "--status", "in_progress"], omp],
       [["issue-update", "--status", "in_progress"], { ...omp, LEGION_ISSUE: "ACME-5" }],
     ] as const) {
-      const refused = await run(argv, host);
-      expect(refused.code).toBe(1);
-      expect(refused.stdout.split("\n")).toEqual([
+      const own = await printed(ownParent, argv, host);
+      expect(own).toEqual([
+        `PARENT_STATUS_CONFLICT: ${errorOf(ownParent)}`,
+        "ACME-4 [done] Parent closed with its tree",
+        parentFlags,
+        "",
+      ]);
+      expect(await printed(otherParent, argv, host)).toEqual([
         `PARENT_STATUS_CONFLICT: ${errorOf(otherParent)}`,
         "BETA-1 [done] Epic of another project",
-        scopeRefused("dispatch issue-update --status\\b.*--include-parent\\b", "BETA-1", "ACME-5"),
-        "",
+        ...own.slice(2),
       ]);
     }
 
-    // A status change of ACME-4 refused for its child BETA-7, which --unlink-children and
-    // --include-children would write, alone and beside a reparent.
-    const otherChild: Answer = {
+    // A status change of ACME-4 refused for its child, which --unlink-children and
+    // --include-children would write, alone and beside a reparent: ACME-5, of its own project, or
+    // BETA-7, of another.
+    const childRefusal = (key: string, title: string): Answer => ({
       status: 409,
       body: {
         code: "PARENT_STATUS_CONFLICT",
-        error:
-          "this change would leave a parent's status out of line with its children's. BETA-7 (in_progress) is a child of ACME-4 and is in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.",
-        issues: [
-          {
-            key: "BETA-7",
-            title: "Child of another project",
-            status: "in_progress",
-            relation: "child",
-          },
-        ],
+        error: `this change would leave a parent's status out of line with its children's. ${key} (in_progress) is a child of ACME-4 and is in work. A parent is done only when each child is done, and while a child is in work, its parent is in work.`,
+        issues: [{ key, title, status: "in_progress", relation: "child" }],
       },
-    };
-    patchAnswer = otherChild;
+    });
+    const ownChild = childRefusal("ACME-5", "Child in work");
+    const otherChild = childRefusal("BETA-7", "Child of another project");
     for (const argv of [
       ["issue-update", "--issue", "ACME-4", "--status", "backlog"],
       ["issue-update", "--issue", "ACME-4", "--parent", "ACME-7", "--status", "backlog"],
     ]) {
-      const refused = await run(argv);
-      expect(refused.code).toBe(1);
-      expect(refused.stdout.split("\n")).toEqual([
-        `PARENT_STATUS_CONFLICT: ${errorOf(otherChild)}`,
-        "BETA-7 [in_progress] Child of another project",
-        scopeRefused("--unlink-children\\b.*--include-children\\b", "BETA-7", "ACME-4"),
+      const own = await printed(ownChild, argv);
+      expect(own).toEqual([
+        `PARENT_STATUS_CONFLICT: ${errorOf(ownChild)}`,
+        "ACME-5 [in_progress] Child in work",
+        childFlags,
         "",
       ]);
+      expect(await printed(otherChild, argv)).toEqual([
+        `PARENT_STATUS_CONFLICT: ${errorOf(otherChild)}`,
+        "BETA-7 [in_progress] Child of another project",
+        ...own.slice(2),
+      ]);
     }
-
-    // The same refusal for a parent of the call's own project says nothing of projects.
-    patchAnswer = doneParentRefusal("ACME-5");
-    const ownProject = await run(["issue-update", "--issue", "ACME-5", "--status", "in_progress"]);
-    expect(ownProject.code).toBe(1);
-    expect(ownProject.stdout).toContain("--include-parent");
-    expect(ownProject.stdout).not.toContain("PROJECT_SCOPE");
   });
 });
 

@@ -8,6 +8,7 @@ import type { ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../__tests__/comment-fixture";
+import { precedes } from "../../__tests__/document-order";
 import { dwellOn, installIntersectionObserver } from "../../__tests__/intersection-observer";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { expectSameElements } from "../../__tests__/same-elements";
@@ -609,7 +610,7 @@ for (const variant of ["full", "compact"] as const) {
     const card = within(view.container);
     try {
       const line = card.getByText(/^Approved at version 11 on/);
-      expect(line.textContent).toBe("Approved at version 11 on 2026-10-05 by alice.");
+      expect(line.textContent).toBe("Approved at version 11 on 2026-10-05 by alice");
       const time = line.querySelector("time");
       expect(time?.getAttribute("datetime")).toBe("2026-10-05T14:30:00Z");
       expect(time?.getAttribute("title")).toBe("2026-10-05T14:30:00Z");
@@ -1000,11 +1001,6 @@ function threadReplyBodies(thread: HTMLElement): (string | null | undefined)[] {
     thread.querySelectorAll("li"),
     (item) => item.querySelector(".dispatch-markdown")?.textContent
   );
-}
-
-/** Whether `first` comes before `second` in the document. */
-function precedes(first: Element, second: Element): boolean {
-  return (first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING) !== 0;
 }
 
 const THREAD_ORDER_KEY = userPreferenceStorageKey("alice", "inbox.thread-order");

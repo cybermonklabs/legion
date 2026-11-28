@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  A restricted member's machine login trades for a token of exactly one project: the trade names
+  the one project the session works on (`AGENT_SECRETS_PROJECTS`), and one naming none or several
+  is refused `invalid_request`, saying so. The token's scope is `named`, so a resource server gives
+  it nothing of the person's own, and it lives at most 270 seconds. Before, such a trade had to
+  name at least one project. While Dispatch cannot be asked what kind of member a machine login's
+  approver is, its trade is refused `503 temporarily_unavailable`, unless the broker keeps
+  Dispatch's last answer that the approver is a full member, whose trade then goes on as a full
+  member's; on that refusal the broker clients trade again on their own schedule with no person's
+  action.
+time: 2026-11-25T20:48:37Z
+custom:
+    Issue: pr5557

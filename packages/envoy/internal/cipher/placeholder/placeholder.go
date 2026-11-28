@@ -1,13 +1,15 @@
 // Package placeholder is the airlock's placeholders: the strings the broker hands a command in
-// place of a value its proxy holds, and how they are drawn. A secret's release
-// (internal/cipher/requests) and a grant of a capability the broker mints and holds
-// (requests.MintedKind) mint them, and the broker's log mask (internal/cipher/logmask) reads them
-// out of every line.
+// place of a value its proxy holds, how they are drawn, and the one form of them any query
+// carries. A secret's release (internal/cipher/requests) and a grant of a capability the broker
+// mints and holds (requests.MintedKind) mint them, and the broker's log mask
+// (internal/cipher/logmask) reads them out of every line.
 package placeholder
 
 import (
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"fmt"
 )
 
@@ -63,4 +65,20 @@ func Mint(prefix string) (string, error) {
 		out = append(out, Alphabet[binary.BigEndian.Uint64(draws[8*i:])%uint64(len(Alphabet))])
 	}
 	return string(out), nil
+}
+
+// Hash is a placeholder's SHA-256 in hex: the key airlock_placeholders and result_grants hold it
+// under, and the only form of it any query carries, so the plaintext a command holds never
+// reaches a statement log, pg_stat_statements or a database error.
+func Hash(placeholder string) string {
+	sum := sha256.Sum256([]byte(placeholder))
+	return hex.EncodeToString(sum[:])
+}
+
+// ASCIILetterOrDigit is whether b is an ASCII letter or digit, the left-boundary rule for a
+// kind's own placeholder_prefix: a kind prefix right after one of these does not open a
+// placeholder. The proxy's leftover scan and the broker's log mask both call this function for
+// the one rule.
+func ASCIILetterOrDigit(b byte) bool {
+	return 'a' <= b && b <= 'z' || 'A' <= b && b <= 'Z' || '0' <= b && b <= '9'
 }

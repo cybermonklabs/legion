@@ -80,12 +80,14 @@ import {
 } from "./page-structure";
 import { joinWords, PART_ANSWER_SOURCES, PART_UNASKED_SOURCES } from "./page-words-parts";
 
+export * from "./page-words-dashboard";
 export * from "./page-words-j";
 export * from "./page-words-l";
 export * from "./page-words-m";
 export * from "./page-words-n";
 export * from "./page-words-s";
 export * from "./page-words-t";
+export * from "./page-words-threads";
 export * from "./page-words-u";
 export * from "./page-words-w";
 export * from "./page-words-x";
@@ -218,7 +220,8 @@ export const NODE_STATE_WORDS = joinWords("NODE_STATE_WORDS", {
 /** How an ask stands, by the `state` the server writes into its block. */
 export type AskState = keyof typeof NODE_STATE_WORDS.ask;
 
-/** How a check stands, over every result recorded against it (`tree-drafts.ts`'s `checkState`). */
+/** How a check stands, over every result recorded against it (`statement-rules.ts`'s
+ *  `checkState`). */
 export type CheckState = keyof typeof NODE_STATE_WORDS.check;
 
 /** How a decision stands with the reader, from the decisions read. */
@@ -278,30 +281,35 @@ export function sentenceCase(name: string): string {
   return name === "" ? name : `${name[0]?.toUpperCase() ?? ""}${name.slice(1)}`;
 }
 
-/** The five controls of the filter row in the order the row draws them (R2): Conversation,
- *  which is the page with no filter on, then the four filters in the order of his answer of
- *  2026-11-11 20:57Z, "the spec, the verification, the plan, the decisions"
- *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). The page opens on
- *  Conversation. */
+/** The six controls of the filter row in the order the row draws them (R2): Dashboard, which the
+ *  page opens on (dispatch://INFRA-5702/spec#b-r-new-page), then Conversation, which is the page
+ *  with no filter on, then the four filters in the order of his answer of 2026-11-11 20:57Z, "the
+ *  spec, the verification, the plan, the decisions"
+ *  (dispatch://INFRA-1098/ask/b1fe0ff5-3b4a-4f6d-9b2a-e1f1e146779b). */
 export const PRESET_ORDER = freeze([
+  "dashboard",
   "conversation",
   "spec",
   "verification",
   "plan",
   "decisions",
+  "threads",
 ] as const);
 
-/** One control of the filter row, by its own token: `conversation`, which turns every filter
- *  off, or one of the four filters. Each has an address of its own (`issue-address.ts`). */
+/** One control of the filter row, by its own token: `dashboard`, `conversation`, which turns
+ *  every filter off, or one of the four filters. Each has an address of its own
+ *  (`issue-address.ts`). */
 export type Preset = (typeof PRESET_ORDER)[number];
 
 /** The name of each control of the filter row. Verification is his word for the filter that
  *  draws the checks (2026-11-11 21:57Z), and nothing is called Tree (R2). */
 export const PRESET_NAMES = joinWords("PRESET_NAMES", {
   conversation: "Conversation",
+  dashboard: "Dashboard",
   decisions: "Decisions",
   plan: "Plan",
   spec: "Spec",
+  threads: "Threads",
   verification: "Verification",
 } as const satisfies Record<Preset, string>);
 
@@ -529,9 +537,8 @@ export function issueStatusWord(token: string): string {
 
 /**
  * Every line the page draws where a place holds nothing, one per situation: a preset whose
- * query matches nothing, and a spec with no summary or none the head can draw whole. Each is
- * one sentence, in the simple present, saying what is absent rather than what the reader should
- * do about it.
+ * query matches nothing, a plan with no task, an issue with no check. Each is one sentence, in
+ * the simple present, saying what is absent rather than what the reader should do about it.
  */
 export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
   /** The page with no filter on, on an issue whose tree holds nothing under it. */
@@ -548,13 +555,6 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
    *  shaped (R35): one statement, and several. */
   spec_no_decision_many: "No decision shaped these statements.",
   spec_no_decision_one: "No decision shaped this statement.",
-  spec_summary: "This spec has no summary.",
-  /** A summary whose stored excerpt stops inside its first sentence (`BlockExcerptRunes`, 480
-   *  runes): the spec has a summary, and the head has no whole sentence of it to draw. */
-  spec_summary_cut: "The summary is too long to show here.",
-  /** A summary whose whole text ends in no sentence end, so it holds no sentence the head
-   *  draws. */
-  spec_summary_unended: "The summary has no complete sentence.",
   verification: "This issue has no checks yet.",
   /** What the Verification filter's table says where the state its chip narrows to holds no
    *  statement. */
@@ -578,10 +578,10 @@ export const EMPTY_STATE_LINES = joinWords("EMPTY_STATE_LINES", {
  * block by its id. `shaped_disagreement` is a decision claiming a node whose own origin names
  * another, which the page draws rather than picking one of the two.
  *
- * Two of them are the chain's (R10), each read from what the page already holds
- * (`tree-drafts.ts`): `serves_not_requirement` is a citation that must name a requirement and
- * names a node of another kind, and `nobody_asked` a plan task naming neither a requirement it
- * serves nor a declaration it attempts.
+ * Three of them are the chain's (R10), each read from what the page already holds
+ * (`tree-drafts.ts`): `serves_not_requirement` is a citation naming a node of another kind or
+ * nothing, `serves_nothing` a check naming nothing it serves (`page-words-j.ts`), and
+ * `nobody_asked` a plan task naming neither a requirement it serves nor anything it attempts.
  *
  * The lines say each of these in the reader's words rather than the model's: a node is "this",
  * because the line is drawn in the node's own body, and a declaration is what a person asked
@@ -607,7 +607,7 @@ export const GAP_WORDS = joinWords("GAP_WORDS", {
   /** The task names no requirement it serves and nothing a person asked for, so no reason
    *  stands behind it. The chip says that and passes no judgement on the work. */
   nobody_asked: "No reason given",
-  /** The citation names a node, and that node is a requirement no longer. */
+  /** The citation names a node that is no statement, or nothing in a document the page holds. */
   serves_not_requirement: "Not a statement",
   /** A decision says it shaped the node, and the node says it came from somewhere else: the
    *  two name different sources. */
@@ -676,9 +676,9 @@ export const STATE_LINES = joinWords("STATE_LINES", {
 /**
  * What the page says in answer to the reader's own act, and never on load: a copy they pressed,
  * a list they opened still being read, and a write of theirs still out (dispatch://INFRA-1196
- * R22). The page's other answers are tables of their own -
- * `BLOCKED_BY_REFUSALS` here, `HELP_LINES` and `KEY_REPORTS` in `page-structure.ts` - and
- * `ANSWER_SOURCES` gathers all four, so a test can tell what the page says unasked from what it
+ * R22). The page's other answers are tables of their own - `BLOCKED_BY_REFUSALS` here, `HELP_LINES`
+ * and `KEY_REPORTS` in `page-structure.ts`, `ADDRESS_FALLBACK_WORDS` in `page-words-l.ts` - and
+ * `ANSWER_SOURCES` gathers all five, so a test can tell what the page says unasked from what it
  * says when asked. Each is at most one sentence and names no schema token.
  */
 export const ANSWER_LINES = joinWords("ANSWER_LINES", {
@@ -847,16 +847,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   also_under: "Also under",
   /** Names a person's answer, drawn in the ask's own row and body, never as a node of its own
    *  (R1); the answer itself is the person's own words (`NodeRow.tsx`'s `AskAnswer`). It is also
-   *  the focused open question's control that answers it, which sets the line at the foot of the
-   *  outline to answer it (R16, the prototype's `.acts`), as `a` does. */
+   *  the focused open question's control that sets the writer's answer to it, as `a` does (R16,
+   *  the prototype's `.acts`); nothing sends that answer yet (`OutlineWriter.answer`). */
   answer: "Answer",
-  /** What the line at the foot of the outline says of the open question it answers, before the
-   *  question's own first line (the prototype's `.tgt.ans`). */
-  answering: "Answering:",
-  /** What it says of the options the reader picked, before them: "you chose 1024 px". */
-  answer_chose: "you chose",
-  /** What the line says while it is empty and answers a question. */
-  answer_placeholder: "Answer in your own words…  (Enter sends · Shift+Enter new line)",
   /** The document a design-gate step reviews, by the step (`StepEntry.step`; `criteria` reviews
    *  the verification), as the names of that document's Approve and Request changes end with
    *  it where the gate's list carries the actions of more than one document (`ApprovalSteps`'
@@ -875,8 +868,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   approval_version_of: "of",
   /** Leaves an editor with the value the issue had, in every editor the page opens. */
   cancel: "Cancel",
-  /** Changes the reader's own answer to a question, on its focused row: the line at the foot of
-   *  the outline answers it again over that answer (the old conversation's ask card's control). */
+  /** Changes the reader's own answer to a question, on its focused row: sets the writer's answer
+   *  to a change of it (`OutlineWriter.answer`; the old conversation's ask card's control). */
   change_answer: "Change answer",
   /** Answers an agent's decision with a change, on the decision's own node (R7). It opens the
    *  composer below, whose comment is anchored to the decision's own words. */
@@ -1056,8 +1049,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** What a row's byline, a parent line and a chip say after an edited post's time or words:
    *  ` · edited` (INFRA-1523, R2), as every surface's byline says it. */
   post_edited: POST_MARK_WORDS.edited,
-  /** The row of five controls, Conversation and the four filters, as a reader hears it named
-   *  (R2). */
+  /** The row of six controls, Dashboard, Conversation and the four filters, as a reader hears it
+   *  named (R2). */
   presets: "Filters",
   /** The priority picker, named by what the issue will do with the one picked. */
   priority_to_advance: "Priority to advance",
@@ -1109,10 +1102,8 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** Sends the change a reader wrote against a decision, named apart from the conversation's
    *  own Send so a page drawing both offers two controls a reader can tell apart (R7). */
   send_change: "Send change",
-  /** Sends what the line at the foot of the outline holds (R16), and the answer it holds to the
-   *  question it answers (`send_answer`). */
+  /** Sends what the line at the foot of the outline holds (R16). */
   send: "Send",
-  send_answer: "Send answer",
   /** How many checks serve a requirement, which the coverage read counts without naming them
    *  (R4, until the chain read lands). */
   serving_checks: "Checks serving it",
@@ -1230,6 +1221,9 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The one block a plan task stands directly under (`parent`, read from this release). */
+  parent: "stands under",
+  program: "program",
   run: "run",
   selected: "selected",
   /** The requirements a check or a plan task is there for; the spec's own verb for the edge. */
@@ -1237,6 +1231,7 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",
+  subject: "subject",
   surface: "surface",
   title: "title",
   urgency: "urgency",

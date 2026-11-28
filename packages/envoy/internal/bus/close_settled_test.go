@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 const (
@@ -20,11 +21,9 @@ const (
 	// to show that; a scheduler that kept such a constructor from running for the whole window would
 	// let it through, and the test's control (the close not waited for) is run to show it does not.
 	closeHeldWindow = 500 * time.Millisecond
-	// closeHeldBound is the bound of the close's wait in that test (WithCloseSettleBound), past the
-	// window and the watchdog, so the bound never ends a wait the test is holding.
+	// closeHeldBound is the bound of the close's wait in that test (WithCloseSettleBound), far past
+	// the window, so the bound never ends a wait the test is holding.
 	closeHeldBound = 2 * time.Minute
-	// closeHeldWatchdog bounds each wait of that test on the constructor or on the close's handling.
-	closeHeldWatchdog = time.Minute
 )
 
 // A start that failed has finished closing the client it made when the constructor returns, as long
@@ -109,21 +108,18 @@ func TestAFailedStartTryHasFinishedClosingWhenItReturns(t *testing.T) {
 			case <-entered:
 			case got := <-returned:
 				fail(got, "before the client's handling of its close began")
-			case <-time.After(closeHeldWatchdog):
-				t.Fatalf("watchdog: the client's handling of the failed start's close had not begun %s after the start began", closeHeldWatchdog)
+			case <-testwait.Context(t).Done():
+				t.Fatal("the client's handling of the failed start's close had not begun by the test's deadline")
 			}
+			// A window, not a wait: the constructor must not return while the close's handling is
+			// held, and closeHeldWindow is how long the test holds it to show that.
 			select {
 			case got := <-returned:
 				fail(got, "while the client's handling of its close was held")
 			case <-time.After(closeHeldWindow):
 			}
 			releaseClose()
-			var got outcome
-			select {
-			case got = <-returned:
-			case <-time.After(closeHeldWatchdog):
-				t.Fatalf("watchdog: the constructor had not returned %s after the close it held was released", closeHeldWatchdog)
-			}
+			got := testwait.Receive(t, "the constructor to return once the close it held was released", returned)
 			if got.client != nil {
 				got.client.Close()
 				t.Fatalf("the failed start returned a client, with %v", got.err)

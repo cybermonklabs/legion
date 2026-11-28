@@ -47,6 +47,7 @@ import (
 // readsWithoutAViewer, which names it with the reason it answers no reader. A read in neither
 // place fails here, named, and so does an entry of that table that names no such read.
 func TestEveryNodeKindAnswersAVisibilityPredicate(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	if SeedStoreThroughItsWriters == nil {
@@ -165,8 +166,10 @@ var readsWithoutAViewer = map[string]string{
 	"BlockChanges":         nodeDetail,
 	"BlockEmbeddingStates": nodeDetail,
 	"BlockIndexing.Cited":  serverWork + " - a version write reads the blocks that cite the blocks its index changes, to count what it moves",
-	"BlockTargets":         serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
-	"BlockTextAt":          nodeDetail,
+	"BlockIndexing.KeepRespelled": serverWork + " - a version write's read phase reads the texts recorded for the blocks its index plan names as candidates, " +
+		"to decide which keep their changed version across another renderer version's spelling",
+	"BlockTargets": serverWork + " - the write of a document checks the block pointers it holds against the blocks they name",
+	"BlockTextAt":  nodeDetail,
 	"BlockTexts": "it reads the text of each block GET /api/v1/reference-targets has already named through TargetNames, " +
 		"which binds each block's predicate, as CurrentBlockText and CurrentItemBlockText read one, and answers nothing of any other node",
 	"CountedChanges":       serverWork + " - a write records what its own text cites, as the addresses that text already spells",

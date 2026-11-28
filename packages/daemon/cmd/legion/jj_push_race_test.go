@@ -23,7 +23,9 @@ const rolePushRaceFile = "raced.txt"
 // without the raced one, P with the implementer's author, and leaves the raced file on disk and no
 // change divergent. The push takes one snapshot, the step's. The next jj command, with no
 // --ignore-working-copy, exits 0, finds no stale working copy, and its snapshot puts the raced
-// file in @'s tree.
+// file in @'s tree. It runs in both forms: the snapshot the step takes and the git reads that
+// decide it (gitMoved) run the first git on the form's PATH, the git wrapper in a pod and bin/git
+// in a pane.
 func TestAWriteDuringThePushWaitsForTheNextCommand(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer

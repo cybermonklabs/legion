@@ -14,10 +14,11 @@ export interface InboxApiMocks {
   getCredentialPending: Mock<typeof api.getCredentialPending>;
 }
 
-/** Installs the shared fixtures `Inbox.test.tsx` and `InboxDrawer.test.tsx` both build on: call
- *  once at module scope. The returned object is stable across the file's `beforeEach` cycles even
- *  though what it holds is replaced each time, so a test may still override one mock's resolution
- *  in place (`mocks.getCredentialPending.mockResolvedValue(...)`). */
+/** Installs the shared fixtures `Inbox.test.tsx`, `Inbox.reading-view.test.tsx` and
+ *  `InboxDrawer.test.tsx` all build on: call once at module scope. The returned object is stable
+ *  across the file's `beforeEach` cycles even though what it holds is replaced each time, so a
+ *  test may still override one mock's resolution in place
+ *  (`mocks.getCredentialPending.mockResolvedValue(...)`). */
 export function installInboxApiMocks(): InboxApiMocks {
   const mocks = {} as InboxApiMocks;
   beforeEach(() => {

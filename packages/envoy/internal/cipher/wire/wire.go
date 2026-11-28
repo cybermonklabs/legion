@@ -3,13 +3,31 @@
 // the shapes its relay routes answer. Dispatch relays them with relayBrokerResponse
 // (packages/envoy/internal/dispatch/api/credential_requests.go), which writes the broker's bytes
 // unparsed, so the shape a generated client is given has to be named from the broker's own
-// declaration rather than read off the relay.
+// declaration rather than read off the relay. It also holds how long the broker works on one
+// request (RequestDeadline, RequestWriteMargin), which cmd/cipherd serves by and a caller of the
+// broker can count on, so the two read one figure.
 //
 // It is a leaf: data and its doc comments, importing nothing of the broker's API package and
 // nothing holding a store, an OAuth client or a database.
 package wire
 
 import "time"
+
+// RequestDeadline is how long the broker lets one request's handler work: cmd/cipherd ends each
+// request's context this long after its handler starts (requestDeadline, withRequestDeadline), so
+// no write a handler makes under that context begins after it.
+const RequestDeadline = 45 * time.Second
+
+// RequestWriteMargin is the time past RequestDeadline that the broker's server gives a handler
+// that honours its context to finish what it already began and write its answer: cmd/cipherd's
+// http.Server WriteTimeout is the two together (writeTimeout). WriteTimeout bounds the writing of
+// that answer, not the broker's database: a COMMIT the handler sent before RequestDeadline is over
+// when that database completes it, which no deadline here ends, and a cancel does not undo a commit
+// the database already received. A caller may count on the broker's database completing such a
+// commit within this margin, and so on a write the broker began for a request being over within
+// RequestDeadline + RequestWriteMargin of the handler's start, whether or not that caller is still
+// waiting for the answer.
+const RequestWriteMargin = 15 * time.Second
 
 // PendingEntry is one undecided record in GET /v1/pending's answer: one a decision may still
 // settle, or one whose deadline passed before anybody decided it.
@@ -41,6 +59,14 @@ type PendingEntry struct {
 	// The record's deadline: a secret request's own expiry, the moment its decision compares
 	// with, and a machine login's. A broker from before records had a state sends none.
 	ExpiresAt time.Time `json:"expires_at,omitzero"`
+	// The Dispatch scopes a Dispatch sign-in asks for, none or more: the actions of its launcher
+	// credential detail, which the broker stores with the record when the sign-in opens, so a row
+	// says it is a sign-in in every state, an expired one included. Null for a machine login and
+	// for a secret request. A broker from before Dispatch sign-ins sends none.
+	DispatchScopes *[]string `json:"dispatch_scopes"`
+	// The reason the record's request object signed, verbatim: what the session or tool that asks
+	// says it is for. "" when it signed none. A broker from before this field sends none.
+	Reason string `json:"reason"`
 }
 
 // PendingResponse is GET /v1/pending's answer.
@@ -138,6 +164,15 @@ type LauncherCredentialResp struct {
 	// True once expires_at has passed: the login enrolls nothing more, but sessions it enrolled
 	// still run (each renews with its own key), and revoking it ends them.
 	Expired bool `json:"expired"`
+	// The Dispatch scopes a Dispatch sign-in's person approved, none or more: a device login
+	// approved for Dispatch alone, which enrolls no session and reads no secret
+	// (oauthwire.ScopeDispatch). Written once when its credential is minted and never changed.
+	// Null for every other login.
+	DispatchScopes *[]string `json:"dispatch_scopes"`
+	// The reason the login's request object signed, so a person tells several logins of one host
+	// apart; "" when it signed none, and for every token login, which signs no request object. A
+	// broker from before this field sends none.
+	Reason string `json:"reason"`
 }
 
 // LauncherCredentialsResponse is GET /v1/launcher-credentials's and GET /v1/operator/machines's
@@ -184,6 +219,63 @@ type PersonSignInRevokedResponse struct {
 	// tokens had all expired.
 	TokensEnded int `json:"tokens_ended"`
 }
+
+// RevokePersonSubjectRequest is POST /v1/person-subjects/revoke's body: Dispatch tells the broker
+// that one Google account no longer holds an address, which another account holds now. Every field
+// is required, and Subject differs from HolderSubject.
+type RevokePersonSubjectRequest struct {
+	// The address, a login as record.CanonicalLogin spells it.
+	Person string `json:"person"`
+	// The identity provider both accounts are of, as oidc.CanonicalIssuer spells it.
+	Issuer string `json:"issuer"`
+	// The `sub` of the account that no longer holds the address: every credential it holds under
+	// the address ends, and the broker refuses it any new one.
+	Subject string `json:"subject"`
+	// The `sub` of the account that holds the address now, which keeps every credential it holds
+	// and which the broker no longer refuses if an earlier revocation named it.
+	HolderSubject string `json:"holder_subject"`
+	// The address's session generation at Dispatch once the replacing sign-in committed (Dispatch's
+	// user_sessions.generation, which every recording of an account moves): the broker refuses a
+	// machine-login approval whose approver_session_generation is lower, since Dispatch checked
+	// that approver before this replacement, and answers a revoke below the greatest generation it
+	// applied at the address superseded. Required: the broker answers 400
+	// SESSION_GENERATION_REQUIRED without it. It is a pointer so that a body that leaves it out is
+	// told from one carrying 0. The route and the field came in one change, so no caller sends the
+	// route without it.
+	SessionGeneration *int64 `json:"session_generation,omitempty"`
+}
+
+// PersonSubjectRevokedResponse is POST /v1/person-subjects/revoke's answer.
+type PersonSubjectRevokedResponse struct {
+	// PersonSubjectRevoked: the replaced account holds no credential and no approval-page session
+	// under the address, and the broker refuses it any new one, whether this call or an earlier one
+	// ended them. PersonSubjectSuperseded: the revoke carried a session generation below the
+	// greatest one a revoke the broker applied at the address carried (SupersededBy), so a later
+	// replacement at the address has been applied since, and this one changed nothing; its caller
+	// can tell from it that its own generations for the address are below the broker's. The
+	// broker's migration 0047 says how such a revoke can arrive.
+	State string `json:"state" enum:"revoked,superseded"`
+	// The greatest session generation a revoke the broker applied at the address carried, which is
+	// above this revoke's; given with PersonSubjectSuperseded alone.
+	SupersededBy *int64 `json:"superseded_by,omitempty"`
+	// How many of the replaced account's sign-ins on a machine this call ended; 0 for a repeat
+	// and for a superseded revoke.
+	SignIns int `json:"signins"`
+	// How many of the replaced account's own machines' logins this call ended; 0 for a repeat and
+	// for a superseded revoke.
+	MachineLogins int `json:"machine_logins"`
+	// How many live access tokens those revokes ended with them.
+	TokensEnded int `json:"tokens_ended"`
+	// How many of the replaced account's sessions on the broker's own approval page this call
+	// ended; 0 for a repeat and for a superseded revoke.
+	ApprovalSessions int `json:"approval_sessions"`
+}
+
+// The states PersonSubjectRevokedResponse.State answers.
+const (
+	PersonSubjectRevoked    = "revoked"
+	PersonSubjectSuperseded = "superseded"
+)
 
 // RecordSessionResp is a credential request's two possibly-differing session ids, read
 // independently (LEGION-587): Enrollment is the id the requesting session's own enrollment
@@ -255,6 +347,12 @@ type RecordResponse struct {
 	// The service a machine login is for, when it logs a service in rather than a person's
 	// machine; null otherwise.
 	Service *string `json:"service"`
+	// The Dispatch scopes a Dispatch sign-in asked for, none or more, which the person approves
+	// some or all of (oauthwire.ScopeDispatch): always the scopes asked, in every state, also once
+	// it is decided, expired or its device code is gone, since the broker stores them with the
+	// record. The scopes its person approved are its machine login's
+	// (LauncherCredentialResp.DispatchScopes). Null for a machine login and a secret request.
+	DispatchScopes *[]string `json:"dispatch_scopes"`
 	// The reason the session gave, verbatim.
 	Reason string `json:"reason"`
 	// How many seconds the grant or credential lasts once approved; null for a grant that lasts

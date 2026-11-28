@@ -8,6 +8,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -51,8 +52,19 @@ const lastReplyJoin = `
 // first of them is the pair approval.version and approval.requested_version repeat.
 // waitingOnExpression and describeAsk, which reads it for a reply's
 // waiting_on (commentThreadTarget.waitingOnAfter), share it.
+//
+// An approval with no documents is a request as a build before requests held their documents
+// wrote it (migration 20261102110100 filled them in each row with no event). Its one pair is
+// approval.version and approval.requested_version, and it is moved when the second is below the
+// first, as that build read it. Every stored row holds its documents (asks_approval_kind_check),
+// so only a read at a cut meets such an approval, in the payload of an older event (the asks
+// shadow), and every present read reads the documents alone: the case tests the key first, so a
+// present read runs one path query for each row. A pair with no requested_version is from before
+// migration 0064, which set it to the version the request named, so that request is not moved.
 const approvalMoved = `(a.kind = 'approval'
-		and jsonb_path_exists(a.approval, '$.documents[*] ? (@.requested_version < @.version)'))`
+		and case when a.approval ? 'documents'
+			then jsonb_path_exists(a.approval, '$.documents[*] ? (@.requested_version < @.version)')
+			else jsonb_path_exists(a.approval, '$ ? (@.requested_version < @.version)') end)`
 
 // waitingOnExpression is the one turn rule every open-ask read, the Inbox order, a document's
 // awaiting approval and the approval route's hand-back decision share; a reply's own waiting_on
@@ -103,15 +115,22 @@ end`
 // issues.assignee (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
 const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assignee)`
 
+// ownerProjectJoin attaches the projects row as p for a row already joined to its issue as i and
+// its document as ar. Both askedOfPersonJoins and projectOfComment (api/project_scope.go) append
+// it so the join has one spelling across the module.
+const ownerProjectJoin = `
+	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
 // a: its issue as i, its own document as ar, and the project of whichever of the two owns it as
-// p. Five FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
-// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go) and the
-// read putAskAskedOf takes before it writes (api/ask_asked_of.go) - and each builds them from
-// this one text, so the rule and the tables it names move together. askReadFrom serves two of
-// the six reads, askReadColumns and the Inbox's person filter, which share one statement.
-// TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the expression to
-// its own.
+// p. Six FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
+// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go), the
+// read putAskAskedOf takes before it writes (api/ask_asked_of.go) and projectOfAsk
+// (api/project_scope.go) - and each builds them from this one text, so the rule and the tables
+// it names move together. The six clauses serve seven reads: askReadFrom serves two of them,
+// askReadColumns and the Inbox's person filter, which share one statement, and each other clause
+// serves one. TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the
+// expression to its own.
 //
 // Each is an outer join: a question owned by an issue has no document row and one owned by a
 // document has no issue row, and the constraint asks_one_owner (migration 0009) guarantees
@@ -121,8 +140,7 @@ const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assi
 // to its own `from <table> a`, whatever that caller indents its statement by.
 const askedOfPersonJoins = `
 	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id
-	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+	left join artifacts ar on ar.id = a.artifact_id` + ownerProjectJoin
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an
@@ -277,13 +295,19 @@ func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 // beside its other reads (readIssueDetails), and a read of its own sends them as a batch of its
 // own (loadAskDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
 // declares no counting arms for is refused as the count is queued, which queues nothing and
-// answers nothing itself, so the apply reports that refusal.
-func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
+// answers nothing itself, so the apply reports that refusal. A read at a cut, which ctx carries,
+// queues its identity event alone and stamps nothing else: the reference graph keeps no history,
+// no record gives an ask's parts at a cut (reason P, leaveOutAskParts), and a past-time answer
+// leaves out the count and the parts (askFieldsAtTheCut, eventPageAtTheCut).
+func queueAskDetails(ctx context.Context, b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
 	askIDs := distinctAskIDs(asks)
 	openedEventIDs := make(map[string]int64, len(askIDs))
+	events.QueueOpenedEventIDs(b, askIDs, openedEventIDs)
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		return func() error { return applyOpenedEventIDs(asks, openedEventIDs) }
+	}
 	counts := map[string]int{}
 	partIDs := make([]refs.AskIDs, len(asks))
-	events.QueueOpenedEventIDs(b, askIDs, openedEventIDs)
 	countsErr := refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
 	refs.QueueAskPartIDs(b, asks, partIDs)
 	return func() error {
@@ -304,7 +328,7 @@ func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() er
 // holds q's connection until its results close, so nothing else reads the database in between.
 func loadAskDetails(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
-	apply := queueAskDetails(batch, who, asks)
+	apply := queueAskDetails(ctx, batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -356,7 +380,11 @@ func applyAskPartIDs(asks []*model.Ask, partIDs []refs.AskIDs) {
 // graph-edge count (attachAskBacklinkCounts), then the part ids of its options and of its answer
 // with its part revision (attachAskPartIDs). A write attaches neither. A list of asks reads the
 // same fields, with their identity events, in one batch instead (queueAskDetails, loadAskDetails).
+// A read at a cut reads neither, as queueAskDetails reads neither.
 func attachAskReadFields(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
+	if _, atCut := asof.CutFrom(ctx); atCut {
+		return nil
+	}
 	if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
 		return err
 	}

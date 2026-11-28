@@ -32,6 +32,7 @@ var ErrRunNotFound = errors.New("workflow run not found or gone")
 // handled by that documented policy rather than causing this package to panic or guess.
 type FetchedRun struct {
 	RunID        int64
+	RunAttempt   *int
 	HeadSHA      string
 	HeadCommitAt time.Time
 	StartedAt    time.Time // GitHub's run_started_at (created_at when it sends none): a re-run's start
@@ -85,6 +86,7 @@ type workflowRunsPayload struct {
 
 type workflowRunItem struct {
 	ID           int64      `json:"id"`
+	RunAttempt   *int       `json:"run_attempt"`
 	HeadSHA      string     `json:"head_sha"`
 	HTMLURL      string     `json:"html_url"`
 	Status       string     `json:"status"`
@@ -105,6 +107,7 @@ type workflowRunItem struct {
 func fetchedRunFromItem(item workflowRunItem) FetchedRun {
 	run := FetchedRun{
 		RunID:      item.ID,
+		RunAttempt: item.RunAttempt,
 		HeadSHA:    item.HeadSHA,
 		StartedAt:  item.CreatedAt,
 		CreatedAt:  item.CreatedAt,
@@ -306,7 +309,7 @@ func StoredRun(repo string, kind DeliveryRunKind, run FetchedRun) DeliveryRun {
 		Repo: repo, RunID: run.RunID, Kind: kind, PRNumber: run.PRNumber, HeadSHA: run.HeadSHA,
 		HeadCommitAt: run.HeadCommitAt, StartedAt: run.StartedAt, CreatedAt: &createdAt, CompletedAt: run.CompletedAt,
 		Conclusion: mapRunConclusionPtr(run.Conclusion), URL: run.URL,
-		HeadBranch: run.HeadBranch, Event: run.Event,
+		HeadBranch: run.HeadBranch, Event: run.Event, RunAttempt: run.RunAttempt,
 	}
 }
 

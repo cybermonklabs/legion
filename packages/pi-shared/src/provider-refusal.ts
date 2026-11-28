@@ -25,7 +25,7 @@ export type ProviderTurnOutcome =
   | { kind: "provider-error" };
 
 /** Anthropic's refusal text: `Refusal`, or `Refusal (<category>)`, either one optionally followed
- * by `: <explanation>` (`packages/ai/src/providers/anthropic.ts:3197-3202` at the pinned tag).
+ * by `: <explanation>` (`packages/ai/src/providers/anthropic.ts:3243-3248` at the pinned tag).
  * The category is bounded as the Google reasons below are, and for the same reason. */
 const ANTHROPIC_REFUSAL = /^Refusal(?: \(([^)]{0,200})\))?(?::|$)/;
 
@@ -73,10 +73,10 @@ const BEDROCK_FILTER_TEXTS = [
 ];
 
 /** What the host puts in front of the provider's own error text when it names why it walked the
- * fallback chain: ``reason: `Request failed: ${message.errorMessage ?? "provider returned an
- * error without details"}` `` (`packages/coding-agent/src/session/turn-recovery.ts` at the
- * pinned tag). It is taken off before the texts above are read, so one list of patterns reads
- * both a message's own error text and that reason. */
+ * fallback chain: ``const reason = `Request failed: ${failedMessage.errorMessage ?? "provider
+ * returned an error without details"}` `` (`packages/coding-agent/src/session/turn-recovery.ts:3241`
+ * at the pinned tag). It is taken off before the texts above are read, so one list of patterns
+ * reads both a message's own error text and that reason. */
 const REQUEST_FAILED = /^Request failed: /;
 
 /** How the provider ended the turn that this message settled. */

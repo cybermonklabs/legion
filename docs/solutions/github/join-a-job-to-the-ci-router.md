@@ -85,7 +85,7 @@ its own workflows; this page covers this repository only.
      goes. It costs the job nothing: `ci-ok` passes when `changes` did not select it and it was
      skipped, and fails when it was selected and did not succeed.
    - **`CI_OK_ALWAYS_RUN`**, for a job no `changes` output gates, which therefore runs on every
-     change (`changes` and `lint` are the two). It costs every change the job's whole run time,
+     change (`changes`, `lint` and `priority-conflicts` are the three). It costs every change the job's whole run time,
      and `ci-ok` passes only when the job succeeded: a skip, a cancellation or an absence from
      the verdict's `needs:` fails the check. Put a job here only when every change must run it;
      anything a filter can select belongs in the first class.
@@ -361,7 +361,7 @@ the fills live in workflows that run there.
   (`key: <family>-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}`),
   with the family's prefix as `restore-keys`
   (`restore-keys: ${{ format('<family>-{0}-{1}-', runner.os, runner.arch) }}`; the families are
-  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-darwin-vet` and `go-envoy-infra`,
+  `go-daemon`, `go-docs`, `go-envoy`, `go-envoy-test`, `go-envoy-smoke`, `go-envoy-race`, `go-envoy-darwin-vet` and `go-envoy-infra`,
   and `go-notices` in the order the item below gives; `go-envoy-darwin-vet` restores into the
   build cache directory its step's `GOCACHE` names, not into `~/.cache/go-build`). In
   `ci.yaml` that fallback applies on every run, a dispatched one on main included, because no job
@@ -456,8 +456,9 @@ dispatch-browser. The queued pull request's
 text is checked on the group by ci.yaml's `pr-title` job, which finds it with
 find-pr-payload.sh; pr-title.yaml runs on an edit alone, which a group never
 carries. The slow suites go the
-other way: the queue is where their result normally comes from, and a pull request runs them only
-when it carries the label `full-ci`, or `lane:<filter>` for one of them. The
+other way: the queue is where their result normally comes from, and a pull request runs one only
+under its `lane:<output>` label, for a need the pull request names (`full-ci` runs them all, for
+the few cases `.github/ci-notes/ci.md` names). The
 docs job runs on a group and on a pull request alike; docs-pages.yaml builds and publishes main's
 site on a push trigger of its own.
 

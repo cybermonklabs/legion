@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import {
   DELIVERY_DUPLICATE_WINDOW_HOURS,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  type SchemaApi,
   SESSION_LIVE_WINDOW_MS,
   SLACK_POST_TEXT_MAX,
   zodSchemaApi,
@@ -9,11 +10,13 @@ import {
 import { namesMissing, namesWhole } from "@legion/test-fixtures/names-whole";
 import { z } from "zod";
 import { delivered } from "../../test/delivered";
+import { STORED_TOPIC_KINDS } from "../stream-topics";
 import {
   envoyToolSpecs,
   MessageMetadataSchema,
   messageMetadataShape,
   NOT_SENT_GUIDE,
+  PUBLISHED_DELIVERY,
   parseEnvoyToolArguments,
   publishConfirmationText,
   STORED_DELIVERY,
@@ -140,15 +143,38 @@ describe("envoyToolSpecs", () => {
     expect(subscribe?.description).toContain("envoy.exceptions.<original-topic>");
   });
 
-  // The two texts that say what a subscription and a publish reach carry STORED_DELIVERY whole,
-  // which names the 200 a stored publish answers. Its list of kinds is stream-topics.ts's
-  // STORED_TOPIC_KINDS, read from the stream's own prefixes, so no second list exists to hold.
-  test("carries the stored-delivery clause in both tools", () => {
-    expect(namesMissing(STORED_DELIVERY, ["200"])).toEqual([]);
-    for (const name of ["envoy_subscribe", "envoy_publish"]) {
+  // The texts that say what a subscription and a publish reach carry STORED_DELIVERY and
+  // PUBLISHED_DELIVERY whole, each naming the 200 a stored publish answers. Their lists of kinds
+  // are read from stream-topics.ts's STORED_TOPIC_KINDS, from the stream's own prefixes, so no
+  // second list exists to hold.
+  test("carries the stored-delivery clause in the subscribe tool and the published-delivery clause in the publish tool", () => {
+    for (const [name, clause] of [
+      ["envoy_subscribe", STORED_DELIVERY],
+      ["envoy_publish", PUBLISHED_DELIVERY],
+    ] as const) {
+      expect(namesMissing(clause, ["200"]), name).toEqual([]);
       const description = envoyToolSpecs.find((spec) => spec.name === name)?.description ?? "";
-      expect(description, name).toContain(STORED_DELIVERY);
+      expect(description, name).toContain(clause);
     }
+  });
+
+  // R7 of dispatch://INFRA-3589: the listener's publish route refuses by name the agent topics,
+  // Dispatch's and GitHub's lanes, the Legion wake subject and the listener's own lanes
+  // (`publishHandler`). So the publish tool names each of them, and does not list every kind the
+  // stream stores as stored by a publish, as the subscribe tool does.
+  test("tells an agent each topic the listener refuses a publish to, and that every other topic the stream captures is stored", () => {
+    const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish")?.description ?? "";
+    const refused = [
+      "notifications.dispatch.",
+      "notifications.github.",
+      "notifications.legion.wake",
+      "notifications.envoy.kept.",
+      "notifications.envoy.resume.",
+      "notifications.envoy.takeover.",
+    ];
+
+    expect(namesMissing(publish, refused)).toEqual([]);
+    expect(publish).not.toContain(STORED_TOPIC_KINDS.join(", "));
   });
 
   // The listener's 503 that says the message was not sent (`MESSAGE_NOT_SENT_PREFIX`): the bus
@@ -164,14 +190,16 @@ describe("envoyToolSpecs", () => {
     }
   });
 
-  // A text that tells a sender what a session's state means names the stopped state a send answers
-  // with (`ConnectionState`), the live window in minutes and the duplicate window in hours, each
-  // number from the constant that sets the window.
-  test("names the recipient counts, the stopped state, the minutes of the live window and the hours of the duplicate window", () => {
+  // A text that tells a sender what a session's state means names the stopped and no_receiver
+  // states a send answers with (`ConnectionState`), the live window in minutes and the duplicate
+  // window in hours, each number from the constant that sets the window.
+  test("names the recipient counts, the stopped and no_receiver states, the minutes of the live window and the hours of the duplicate window", () => {
     const publish = envoyToolSpecs.find((spec) => spec.name === "envoy_publish");
     const stopped: ConnectionState = "stopped";
+    const noReceiver: ConnectionState = "no_receiver";
     const names = [
       stopped,
+      noReceiver,
       `${LIVE_WINDOW_MINUTES} minutes`,
       `${DELIVERY_DUPLICATE_WINDOW_HOURS} hours`,
     ];
@@ -502,6 +530,46 @@ describe("message metadata", () => {
     ]);
   });
 
+  // Oh My Pi's `pi.zod` facade drops a description attached before `.optional()` on an enum or
+  // on a field widened to `unknown`, which real Zod renders identically, so only the call order
+  // shows it: on that host `expects_reply` and `urgency` lost the only text that names their
+  // values and their meaning.
+  test("every described Envoy tool field describes last, the one order the OMP facade keeps", () => {
+    type Recorder = {
+      readonly calls: readonly string[];
+      optional(): Recorder;
+      nullable(): Recorder;
+      describe(text: string): Recorder;
+    };
+    const node = (calls: readonly string[]): Recorder => ({
+      calls,
+      optional: () => node([...calls, "optional"]),
+      nullable: () => node([...calls, "nullable"]),
+      describe: () => node([...calls, "describe"]),
+    });
+    const leaf = () => node([]);
+    const api: SchemaApi<Recorder> = {
+      string: leaf,
+      number: leaf,
+      boolean: leaf,
+      enum: leaf,
+      literal: leaf,
+      array: leaf,
+      unknown: leaf,
+      object: leaf,
+      refineObject: leaf,
+    };
+
+    const described = envoyToolSpecs.flatMap((spec) =>
+      Object.entries(spec.arguments(api) as Record<string, Recorder>)
+        .filter(([, field]) => field.calls.includes("describe"))
+        .map(([name, field]) => [`${spec.name}.${name}`, field.calls.at(-1)] as const)
+    );
+
+    expect(described.map(([name]) => name)).toContain("envoy_send.expects_reply");
+    expect(described.filter(([, last]) => last !== "describe")).toEqual([]);
+  });
+
   test("refuses an Envoy tool call once with every problem named", () => {
     const failure = (() => {
       try {
@@ -657,6 +725,37 @@ describe("sendConfirmationText for a state", () => {
       "queued evt_01 for ses_target: the session is stopped; if it runs again within 72 hours, it gets the message"
     );
     expect(text).not.toContain("sent");
+  });
+
+  // A Claude Code terminal with no mod runs and holds its relay subject, but nothing writes a
+  // message into its conversation. The listener answers no_receiver and names no registry state,
+  // and the line must not call that session live (dispatch://INFRA-3589, R12).
+  const noReceiver = {
+    envelope: { event_id: "evt_01" },
+    recipient: "ses_target",
+    confirmed: true,
+    state: "no_receiver",
+    duplicate: false,
+  } as const;
+
+  test("a target with no conversation receiver is queued, and the line never says live", () => {
+    const text = sendConfirmationText(noReceiver);
+
+    expect(text).toBe(
+      "queued evt_01 for ses_target: the session runs but takes no message into its conversation now; the message is stored, and if the session takes messages within 72 hours, it gets the message"
+    );
+    expect(text).not.toContain("live");
+    expect(text).not.toContain("sent");
+  });
+
+  test("a resend to a target with no conversation receiver is queued once, and never says live", () => {
+    const text = sendConfirmationText({ ...noReceiver, duplicate: true });
+
+    expect(text).toBe(
+      "queued once for ses_target: an earlier attempt under the same idempotency_key was already stored, so this one stored no second copy; the session runs but takes no message into its conversation now; the message is stored, and if the session takes messages within 72 hours, it gets the message"
+    );
+    expect(text).not.toContain("live");
+    expect(text).not.toContain("evt_01");
   });
 });
 

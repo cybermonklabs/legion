@@ -4,16 +4,19 @@ import { z } from "zod";
 import { fakeDispatchFetch } from "../../test/fake-dispatch";
 import { bearerCredential } from "../bearer";
 import {
+  COMMANDS_OUTSIDE_THE_SPECS,
   commandFlags,
   commandHelp,
   commandLine,
   commandName,
+  commandsHelp,
   fieldFlag,
   flagName,
   parseCommand,
   toolForCommand,
 } from "../dispatch-command";
 import { executeDispatchTool } from "../dispatch-execute";
+import { NotUtf8Error } from "../dispatch-file-text";
 import { projectBody } from "./dispatch-command-surface-responses";
 
 const noFiles = {
@@ -82,8 +85,8 @@ describe("the dispatch command surface", () => {
     }
   });
 
-  test("names map both ways for all 43 tools, and no two flags of one command collide", () => {
-    expect(dispatchToolSpecs).toHaveLength(43);
+  test("names map both ways for all 45 tools, and no two flags of one command collide", () => {
+    expect(dispatchToolSpecs).toHaveLength(45);
     for (const spec of dispatchToolSpecs) {
       expect(toolForCommand(commandName(spec.name))).toBe(spec.name);
       const flags = commandFlags(spec.name);
@@ -331,6 +334,24 @@ describe("the dispatch command surface", () => {
     expect(parseCommand(["isue"], noFiles)).toMatchObject({ kind: "refused" });
   });
 
+  test("dispatch --help lists every command as a row, and an unknown command's refusal names each", () => {
+    const outside = COMMANDS_OUTSIDE_THE_SPECS.map(({ name }) => name);
+    expect(outside).toEqual(["proxy", "login"]);
+    const names = [...dispatchToolSpecs.map((spec) => commandName(spec.name)), ...outside];
+    const rows = commandsHelp()
+      .split("\n")
+      .flatMap((line) => /^ {2}([a-z][a-z0-9-]*) {2,}\S/.exec(line)?.[1] ?? []);
+    expect(rows).toEqual(names);
+    // Each row of a command outside the specs is the first sentence of its own help.
+    for (const { name, sentence, help } of COMMANDS_OUTSIDE_THE_SPECS) {
+      expect(commandsHelp()).toContain(`  ${sentence}\n`);
+      expect(help().split("\n\n")[1], name).toStartWith(sentence);
+    }
+    const refused = parseCommand(["isue"], noFiles);
+    if (refused.kind !== "refused") throw new Error(`isue was not refused: ${refused.kind}`);
+    expect(refused.problems.join("\n")).toContain(`the commands are: ${names.join(", ")}`);
+  });
+
   test("a bare issue key first is the --issue of a command that takes --issue", () => {
     expect(parseCommand(["read", "ACME-12"], noFiles)).toEqual(
       parseCommand(["read", "--issue", "ACME-12"], noFiles)
@@ -427,6 +448,256 @@ describe("the dispatch command surface", () => {
       kind: "refused",
       tool: "dispatch_read",
       problems: ["the issue key ACME-12 and --issue both set issue"],
+    });
+  });
+
+  // An empty issue key, project key or check id names nothing, and sent it reaches a route that is
+  // no route (`PATCH /api/v1/issues/`), which a rolling release also answers. It is refused before
+  // any request, naming the flag that gave it: an empty variable in a job's step writes one.
+  test("an empty --issue, --project or --check is refused, naming the flag that gave it", () => {
+    const emptyFile = {
+      readText: (path: string): string => {
+        if (path === "empty.txt") return "";
+        throw new Error(`unexpected read ${path}`);
+      },
+    };
+    for (const [argv, problem] of [
+      [
+        ["issue-update", "--issue", "", "--status", "in_progress"],
+        "--issue is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["issue-update", "--issue=", "--status", "in_progress"],
+        "--issue is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["read", "--issue-file", "empty.txt"],
+        "--issue-file is empty, so the call names no issue: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["issues", "--project", ""],
+        "--project is empty, so the call names no project: a variable that gives it may be empty or unset",
+      ],
+      [
+        [
+          "result",
+          "--project",
+          "ACME",
+          "--check",
+          "",
+          "--verdict",
+          "pass",
+          "--commit",
+          "a".repeat(40),
+        ],
+        "--check is empty, so the call names no check: a variable that gives it may be empty or unset",
+      ],
+    ] as const) {
+      expect(parseCommand(argv, emptyFile), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+  });
+
+  // The same holds for every other value that names what a call is about or narrows what a read
+  // answers: an empty commit records a result at no commit, an empty `--at` pins the read to no
+  // commit and an issue list's empty `--parent` lists every issue of the project, each with no
+  // line, and an empty result id or comment id goes into the path. `issue-update --parent ""`
+  // clears the parent, as its flag says, so that command takes it.
+  test("an empty --commit, --at, --retract, --comment or issue list --parent is refused, naming the flag", () => {
+    const unset = (flag: string, noun: string) =>
+      `${flag} is empty, so the call names no ${noun}: a variable that gives it may be empty or unset`;
+    for (const [argv, problem] of [
+      [
+        ["result", "--project", "ACME", "--check", "probe", "--verdict", "pass", "--commit", ""],
+        unset("--commit", "commit"),
+      ],
+      [["results", "--project", "ACME", "--commit", ""], unset("--commit", "commit")],
+      [["results", "--issue", "ACME-1", "--at", ""], unset("--at", "commit")],
+      [["issues", "--project", "ACME", "--parent", ""], unset("--parent", "parent")],
+      [["result", "--retract", "", "--reason", "Wrong commit."], unset("--retract", "result")],
+      [["resolve-comment", "--comment", ""], unset("--comment", "comment")],
+    ] as const) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+    expect(parseCommand(["issue-update", "--issue", "ACME-1", "--parent", ""], noFiles)).toEqual({
+      kind: "call",
+      tool: "dispatch_issue_update",
+      args: { issue: "ACME-1", parent: "" },
+      dryRun: false,
+    });
+  });
+
+  // A value of only white space names nothing either: Dispatch trims a query value, so
+  // `dispatch issues --project " "` listed every project's issues with no line. And `.` or `..`
+  // in a path is a step of the path, which the URL parser drops: `dispatch read --issue ..` asked
+  // `GET /api/v1/`, another route. So the one refusal reads the value trimmed, and refuses `.` and
+  // `..` for each flag whose value goes into a path in some command, `--session` among them.
+  test("a value of only white space, or . or .., is refused, naming the flag", () => {
+    const blank = (flag: string, noun: string) =>
+      `${flag} is only white space, so the call names no ${noun}`;
+    const dots = (flag: string, value: string, noun: string) =>
+      `${flag} is "${value}", only dots and slashes, so the call names no ${noun}`;
+    for (const [argv, problem] of [
+      [["issues", "--project", " "], blank("--project", "project")],
+      [["issues", "--project", "ACME", "--parent", "\t"], blank("--parent", "parent")],
+      [["open-asks", "--project", " "], blank("--project", "project")],
+      [["results", "--issue", "ACME-1", "--at", " "], blank("--at", "commit")],
+      [["issue-update", "--issue", "  ", "--status", "in_progress"], blank("--issue", "issue")],
+      [["read", "--issue", ".."], dots("--issue", "..", "issue")],
+      [["read", "--issue", " . "], dots("--issue", ".", "issue")],
+      [
+        ["result", "--retract", "..", "--reason", "Wrong commit."],
+        dots("--retract", "..", "result"),
+      ],
+      [["resolve-comment", "--comment", "."], dots("--comment", ".", "comment")],
+      [
+        ["send-to-agent", "--session", "..", "--body", "Hello."],
+        dots("--session", "..", "session"),
+      ],
+      [
+        ["send-to-agent", "--session", "", "--body", "Hello."],
+        "--session is empty, so the call names no session: a variable that gives it may be empty or unset",
+      ],
+      [
+        ["architecture-sync", "--project", "..", "--repo", "acme/infra"],
+        dots("--project", "..", "project"),
+      ],
+    ] as const) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+    // A flag whose value goes into a URL path in no command sends a dot as it is: a commit of "."
+    // is sent to Dispatch, which answers that no such commit exists.
+    expect(parseCommand(["results", "--issue", "ACME-1", "--at", "."], noFiles)).toMatchObject({
+      kind: "call",
+    });
+  });
+
+  // Each item of a list names a thing as a single value does: Dispatch drops a blank project of
+  // `dispatch priorities` and reads every project's counts with no line, so each item is refused
+  // as the single value is.
+  test("an item of a list value that names nothing is refused, naming the flag", () => {
+    for (const argv of [
+      ["priorities", "--project", " "],
+      ["priorities", "--project", "ACME", "--project", "\t"],
+    ]) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: ["--project is only white space, so the call names no project"],
+      });
+    }
+    expect(parseCommand(["priorities", "--project", "ACME"], noFiles)).toMatchObject({
+      kind: "call",
+      args: { project: ["ACME"] },
+    });
+  });
+
+  // A value of only dots and slashes names no thing of the flag's, wherever the command sends it:
+  // `./`, `../` and `.//` are what a script writes for "./$X" with an empty X. In a URL path it
+  // names no step, and no key or reference is made of dots and slashes where the command sends it
+  // as a member of its body (`dispatch issue --project`), as a value of its query (`--project` of
+  // `search`, `issues`, `open-asks` and `priorities`) or matches it against an issue's documents
+  // (`--artifact` beside `--issue`). So the one reason is true in each use, and it names the flag
+  // and the value and no place the value would go.
+  test("a value of only dots and slashes is refused with one reason, wherever the command sends it", () => {
+    const dots = (flag: string, value: string, noun: string) =>
+      `${flag} is "${value}", only dots and slashes, so the call names no ${noun}`;
+    for (const [argv, problem] of [
+      [["read", "--issue", "./"], dots("--issue", "./", "issue")],
+      [["read", "--issue", "../"], dots("--issue", "../", "issue")],
+      [["read", "--issue", ".//"], dots("--issue", ".//", "issue")],
+      [["resolve-comment", "--comment", "/"], dots("--comment", "/", "comment")],
+      [
+        ["send-to-agent", "--session", "...", "--body", "Hello."],
+        dots("--session", "...", "session"),
+      ],
+      [["doc-read", "--project", "ACME", "--artifact", "./"], dots("--artifact", "./", "document")],
+      [["issue", "--project", "./", "--title", "A title"], dots("--project", "./", "project")],
+      [["search", "--project", "./", "--query", "ship it"], dots("--project", "./", "project")],
+      [["issues", "--project", "./"], dots("--project", "./", "project")],
+      [["open-asks", "--project", "./"], dots("--project", "./", "project")],
+      [["priorities", "--project", "ACME", "--project", "./"], dots("--project", "./", "project")],
+      [
+        ["plan-approve", "--issue", "DSP-1", "--artifact", "./"],
+        dots("--artifact", "./", "document"),
+      ],
+      [["doc-read", "--issue", "DSP-1", "--artifact", "./"], dots("--artifact", "./", "document")],
+      [["read", "--issue", "DSP-1", "--artifact", "./"], dots("--artifact", "./", "document")],
+    ] as const) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [problem],
+      });
+    }
+  });
+
+  // A document of a project is found by its reference in `GET /api/v1/projects/{key}/artifacts/
+  // {ref}`, so an empty --artifact reached the client's own refusal of the path, which names the
+  // route and not the flag. Each command that takes a document refuses it here, as it does an
+  // empty --issue.
+  test("an empty --artifact is refused in each command that takes a project's document, naming the flag", () => {
+    const unset =
+      "--artifact is empty, so the call names no document: a variable that gives it may be empty or unset";
+    for (const argv of [
+      ["ask", "--project", "ACME", "--artifact", "", "--question", "Ship it?"],
+      ["comment", "--project", "ACME", "--artifact", "", "--body", "Looks good."],
+      [
+        "suggest",
+        "--project",
+        "ACME",
+        "--artifact",
+        "",
+        "--quote",
+        "old wording",
+        "--replace-with",
+        "new wording",
+      ],
+      ["doc-edit", "--project", "ACME", "--artifact", "", "--ops-json", "[]"],
+      ["doc-read", "--project", "ACME", "--artifact", ""],
+      ["request-approval", "--project", "ACME", "--artifact", "", "--summary", "A live sync."],
+      ["read", "--project", "ACME", "--artifact", ""],
+    ]) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [unset],
+      });
+    }
+  });
+
+  // Dispatch trims a value by Go's white space (`strings.TrimSpace`), which takes U+0085 where
+  // JavaScript's `trim` keeps it: `dispatch issues --project $'\u0085'` listed every project's
+  // issues with no line. So the refusal reads Go's set (`goBlankPattern`).
+  test("a value of Go's white space alone, U+0085 among it, is refused, naming the flag", () => {
+    for (const [argv, flag, noun] of [
+      [["issues", "--project", "\u0085"], "--project", "project"],
+      [["issues", "--project", "ACME", "--parent", "\u0085"], "--parent", "parent"],
+      [["read", "--issue", " \u0085\u3000"], "--issue", "issue"],
+    ] as const) {
+      expect(parseCommand(argv, noFiles), argv.join(" ")).toMatchObject({
+        kind: "refused",
+        problems: [`${flag} is only white space, so the call names no ${noun}`],
+      });
+    }
+  });
+
+  // `dispatch issue --parent ""` made the issue with no parent and no line, as an empty variable
+  // writes it, so the create refuses it as the issue list does. `issue-update --parent ""` clears
+  // the parent, as its help says, so that command still takes it (the row above).
+  test("an empty --parent of dispatch issue is refused, naming the flag", () => {
+    expect(
+      parseCommand(["issue", "--project", "ACME", "--title", "A title", "--parent", ""], noFiles)
+    ).toMatchObject({
+      kind: "refused",
+      problems: [
+        "--parent is empty, so the call names no parent: a variable that gives it may be empty or unset",
+      ],
     });
   });
 
@@ -655,6 +926,36 @@ describe("a bare - given to a text flag", () => {
       kind: "refused",
       tool: "dispatch_result",
       problems: [bareDash("--run"), "unknown flag --runn"],
+    });
+  });
+});
+
+describe("a file flag whose bytes are not UTF-8", () => {
+  const bytes = Uint8Array.of(0x41, 0xff);
+  const notUtf8 = {
+    readText: (path: string): string => {
+      if (path === "bad") throw new NotUtf8Error(bytes);
+      throw new Error(`unexpected read ${path}`);
+    },
+  };
+
+  test("is refused for the bytes, naming the field the flag sets, unless the argv is refused for a field given twice, in either order", () => {
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad"], notUtf8)
+    ).toStrictEqual({ kind: "unstorable", tool: "dispatch_comment", field: "body", bytes });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body-file", "bad", "--body", "x"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body-file and --body both set body"],
+    });
+    expect(
+      parseCommand(["comment", "--issue", "DSP-1", "--body", "x", "--body-file", "bad"], notUtf8)
+    ).toStrictEqual({
+      kind: "refused",
+      tool: "dispatch_comment",
+      problems: ["--body and --body-file both set body"],
     });
   });
 });

@@ -25,8 +25,12 @@
 # docker through the owner-only env file $work/session-db.env, never an argument; the pod-facing
 # URL, at host on port_session_db, is written only to the owner-only file $work/session-dsn, which
 # the providers Secret reads, and is never printed. It returns once the database accepts
-# connections, and fails when docker cannot start the container.
+# connections, and fails when docker cannot start the container. The password stands in a variable
+# of this function alone, which turns the shell's xtrace off for itself (`local -`), so a run under
+# `bash -x` traces neither the password nor the URL.
 session_db_start() {
+  local -
+  set +x
   local bind=$1 password
   shift
   password=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')

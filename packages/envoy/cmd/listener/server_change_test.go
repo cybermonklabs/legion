@@ -8,7 +8,7 @@
 // does, through gates (testnats.StartGate) the test can close. The stand-in takes every message
 // from the relay of its own session consumer (bus.DeliverSubject), as a session in consumer
 // delivery does, and answers each frame received and done; it holds no subscription of its own on
-// any topic. While three senders publish a role message, a team topic message and a GitHub topic
+// any topic. While three senders publish a role message, a team topic message and a WhatsApp topic
 // message every 250 ms for at least a minute, it moves the stand-in to another server by a
 // lame-duck shutdown or a forced kill of the server it is on, holding it off the hub for the
 // window a plugin's reconnect wait leaves.
@@ -49,7 +49,7 @@ const (
 	serverChangeSession  = "ses_server_change_standin"
 	serverChangeRole     = "server-change-holder"
 	serverChangeTeam     = "notifications.team.server-change"
-	serverChangeCaptured = "notifications.github.legion-test.server_change.pr.1"
+	serverChangeCaptured = "notifications.whatsapp.legion-test.server_change"
 	serverChangeReplicas = 3
 
 	// serverChangeSendInterval is how often each sender sends one numbered message.
@@ -96,9 +96,11 @@ const (
 // serverChangeKinds names each kind and the topic its sender publishes to: a role topic the
 // stand-in holds, whose lane takes core NATS and whose forward the listener stores on the
 // holder's agent subject (startRoleForward); a team topic, the one namespace an agent names
-// itself; and a GitHub topic. The stream stores the last two under the topic itself, and the
-// stand-in's consumer filters on both, so every kind reaches it through the relay of that
-// consumer and none through a subscription of its own.
+// itself; and a WhatsApp topic, a stream subject of its own beside the team topic. The publish
+// route refuses GitHub's lane and Dispatch's lane by name, so the third kind is on neither. The
+// stream stores the last two under the topic itself, and the stand-in's consumer filters on both,
+// so every kind reaches it through the relay of that consumer and none through a subscription of
+// its own.
 var serverChangeKinds = [kindCount]struct{ name, topic string }{
 	{"role", contracts.RoleTopicPrefix + serverChangeRole},
 	{"team", serverChangeTeam},
@@ -192,6 +194,10 @@ type serverChangeRun struct {
 // crosses the hub, and through the holder's listener H, so the publish route runs on the machine
 // the stand-in registered through.
 func TestServerChange(t *testing.T) {
+	// Not parallel: it orders each disruption by a time.Sleep, opening the stand-in's gates 1.5 s
+	// after its drop (serverChangeGateWindow), inside its 2 s reconnect wait, and requires each
+	// 3 s quiet window (serverChangeQuiet) to pass with the stand-in unmoved and every message
+	// received.
 	runs := []serverChangeRun{
 		{name: "senders through S"},
 		{name: "senders through H", sendThroughHolder: true},
@@ -354,7 +360,7 @@ func (s *serverChangeSoak) startStandIn(t *testing.T) {
 // registration that listener has not read yet.
 func (s *serverChangeSoak) awaitStandInSeenBySenders(t *testing.T) {
 	t.Helper()
-	waitFor(t, serverChangeRecovery, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
+	waitFor(t, "the senders' listener to list the stand-in with both topics and name it the role's holder", func() bool {
 		status, body := callListener(t, s.via.port, http.MethodGet, "/v1/sessions", "")
 		var sessions []listenerwire.SessionInfo
 		if status != http.StatusOK || json.Unmarshal([]byte(body), &sessions) != nil {

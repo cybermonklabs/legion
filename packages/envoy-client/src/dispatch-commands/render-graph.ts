@@ -13,6 +13,7 @@ import { textHead } from "../ask-answer";
 import type { DispatchClient, GraphReferencesQuery } from "../dispatch-http";
 import { ITEM_KINDS, type ItemKind, type ParsedDispatchRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
+import { LEFT_OUT, type LeftOutPart, type ReadCut } from "./as-of";
 import { dispatchAnswered } from "./failures";
 
 /** A graph read's edges as a read shows them: edge type, the other node and its address,
@@ -71,45 +72,54 @@ function unavailableReason(error: unknown): string {
   return dispatchAnswered(error, 404) ? "unavailable" : `unavailable: ${messageFor(error)}`;
 }
 
-/** One direction of a node's reference graph: the answer's node and its edges, or why the server
- *  could not serve it. */
-export async function graphReferences(
-  client: DispatchClient,
-  query: GraphReferencesQuery
-): Promise<GraphReferences | string> {
+/** `read`'s answer, or why the server could not serve it (`unavailableReason`). The part `part`
+ *  names comes from a route that holds no history, so at a cut it is not read and is left out. */
+async function presentOrUnavailable<T>(
+  cut: ReadCut | undefined,
+  part: LeftOutPart,
+  read: () => Promise<T>
+): Promise<T | string> {
+  if (cut !== undefined) return cut.leave(part);
   try {
-    return await client.getReferences(query);
+    return await read();
   } catch (error) {
     return unavailableReason(error);
   }
 }
 
-export async function issueReferencesOrUnavailable(
+/** One direction of a node's reference graph: the answer's node and its edges, or why the server
+ *  could not serve it. The graph holds no history, so at a cut it is not read and is left out. */
+export function graphReferences(
   client: DispatchClient,
-  key: string
+  query: GraphReferencesQuery,
+  cut?: ReadCut
+): Promise<GraphReferences | string> {
+  return presentOrUnavailable(cut, LEFT_OUT.graph, () => client.getReferences(query));
+}
+
+/** The issue's references, or why the server could not serve them; left out at a cut, as the
+ *  graph they come from holds no history. */
+export function issueReferencesOrUnavailable(
+  client: DispatchClient,
+  key: string,
+  cut?: ReadCut
 ): Promise<IssueReferencesAnswer | string> {
-  try {
-    return await client.getIssueReferences(key);
-  } catch (error) {
-    return unavailableReason(error);
-  }
+  return presentOrUnavailable(cut, LEFT_OUT.issueReferences, () => client.getIssueReferences(key));
 }
 
 /**
  * What the issue's requirements lack, or why the server could not say: a Dispatch that does not
  * serve the coverage read yet answers `unavailable`, and any other failure is named, as the
  * references and graph sections do (unavailableReason). A swallowed failure would make a spec with
- * uncovered requirements read exactly like a fully covered one.
+ * uncovered requirements read exactly like a fully covered one. The coverage read holds no
+ * history, so at a cut it is left out.
  */
-export async function issueCoverageOrReason(
+export function issueCoverageOrReason(
   client: DispatchClient,
-  key: string
+  key: string,
+  cut?: ReadCut
 ): Promise<IssueCoverage | string> {
-  try {
-    return await client.issueCoverage(key);
-  } catch (error) {
-    return unavailableReason(error);
-  }
+  return presentOrUnavailable(cut, LEFT_OUT.coverage, () => client.issueCoverage(key));
 }
 
 /**
@@ -117,12 +127,16 @@ export async function issueCoverageOrReason(
  * parent), `Referenced by:` (edges pointing at the node, mentions and structure alike) and
  * `Links:` (edges it writes), read from the reference graph in both directions. A graph the
  * server cannot serve degrades to one "unavailable" row, like the References section, so the
- * read itself still answers.
+ * read itself still answers; at a cut the row says that the sections were left out.
  */
-export async function graphSections(client: DispatchClient, ref: string): Promise<string[]> {
+export async function graphSections(
+  client: DispatchClient,
+  ref: string,
+  cut?: ReadCut
+): Promise<string[]> {
   const [incoming, outgoing] = await Promise.all([
-    graphReferences(client, { to: ref }),
-    graphReferences(client, { from: ref }),
+    graphReferences(client, { to: ref }, cut),
+    graphReferences(client, { from: ref }, cut),
   ]);
   return graphSectionLines(incoming, outgoing);
 }
@@ -168,6 +182,13 @@ function nodeLine(node: GraphNode): string[] {
   ];
 }
 
+/** What a block read's head reads of the block's node: the graph's node of the block, or at a cut
+ *  the facts the block's own document, ask or post gives (`read.ts`). */
+export type BlockNode = Pick<
+  GraphNode,
+  "block_id" | "document" | "changed_version" | "text" | "pin" | "deleted_at" | "edited_at"
+>;
+
 /**
  * A block read's head, from the node its reference names and, for a block of a document, the
  * live block `GET /api/v1/artifacts/{id}/blocks` lists under its id (`typedBlockOf`). A
@@ -188,7 +209,7 @@ function nodeLine(node: GraphNode): string[] {
  * and its text there.
  */
 export function blockLines(
-  node: GraphNode,
+  node: BlockNode,
   ref: ParsedDispatchRef,
   typed?: ArtifactBlock | undefined,
   noun = "Block"
@@ -269,7 +290,11 @@ export async function typedBlockOf(
  * indexed yet, or the index stands on other options than the row now holds), or the reference is
  * pinned to a part the ask has since removed.
  */
-export function askPartNoun(ask: AskWithTrees, node: GraphNode, blockID: string): string {
+export function askPartNoun(
+  ask: AskWithTrees,
+  node: Pick<GraphNode, "pin">,
+  blockID: string
+): string {
   if (ask.answer?.id === blockID) return "Answer";
   if ((ask.options ?? []).some((option) => option.id === blockID)) return "Option";
   const placed =

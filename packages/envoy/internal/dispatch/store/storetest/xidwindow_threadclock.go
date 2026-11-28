@@ -18,9 +18,10 @@ const XidRequireGapsEnv = "DISPATCH_XID_REQUIRE_GAP_JUDGMENT"
 // it can read an OS thread's scheduler clocks (read), and whether it can hold a thread, and the
 // memory every thread touches, out of NUMA balancing (hold, xidHoldMemory). Linux does not promise
 // either: gVisor, for example, exposes no /proc/thread-self/schedstat, and a container's seccomp
-// profile may refuse get_mempolicy, set_mempolicy and mbind. The first caller probes once while locked to an OS
-// thread, as a marked transaction's goroutine is; every later caller reads that same fact, so a
-// kernel that cannot give the rig either follows the race build and judges window shape alone.
+// profile may refuse get_mempolicy, set_mempolicy and mbind. The first caller probes once while
+// locked to an OS thread, as a marked transaction's goroutine is; every later caller reads that
+// same fact, so a kernel that cannot give the rig either follows the race build and judges window
+// shape alone.
 //
 // It is a pointer so its readers and its once can be replaced together by the test that proves an
 // unreadable clock, or a thread NUMA balancing cannot be kept off, judges no gap. Tests in this

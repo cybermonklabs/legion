@@ -32,9 +32,9 @@ import (
 // proves the image by running the image's own `legion probe-image --daemon-api-version <N>` in a
 // Sandbox of that image, placed as every worker is placed, and reading the OK line back from the
 // pod's log.
-// Only a pod on this cluster proves the cluster can pull the image, schedule it on the Legion pool
-// under gVisor, and run its Oh My Pi and plugin there; only the image's CLI can read the image
-// plugin's contract.
+// Only a pod on this cluster proves the cluster can pull the image, schedule it under gVisor on the
+// nodes the operator's scheduling allows, and run its Oh My Pi and plugin there; only the image's
+// CLI can read the image plugin's contract.
 //
 // The Sandbox is `shutdownPolicy: Delete` with a `shutdownTime`, so the controller deletes one the
 // daemon never came back for (sandbox_controller.go:1712-1768 at v1.0.3), a crashed boot's leftover
@@ -196,9 +196,10 @@ type ImageProbe struct {
 	RoleReferences promptrefs.Names
 	// Resources are the probe container's requirements, as the daemon hands them: the probe's own
 	// fixed reservation (internal/daemon/kubernetes.go, probeReservation), its cpu and memory the
-	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. It
-	// runs Oh My Pi three times, one at a time (pi.agents, the plugin's load, the session-storage
-	// setting), checks the image's capability rows and the roles' overlays, and exits, so it is
+	// request and the limit alike, so the probe pod is Guaranteed whatever the roles request. The
+	// probe is the daemon's boot run (LEGION_IMAGE_PROBE_RUN=boot): it starts Oh My Pi for the
+	// plugin's load, then for the image's capability rows, for the reads of Oh My Pi's model
+	// fallback, version and help, and for the roles' overlays, one at a time, and exits, so it is
 	// sized for that and not for a role's work.
 	Resources corev1.ResourceRequirements
 }
@@ -691,11 +692,13 @@ func (r *Runtime) stuck(ctx context.Context, pod *corev1.Pod, name, digest strin
 	}
 	// A pod that mounts the providers Secret (mountsProviders), the probe's included, cannot start
 	// without it, so a Secret or key the kubelet cannot mount refuses the boot here. A pod that needs
-	// none mounts no providers volume, and no event names one.
+	// none mounts no providers volume, and no event names one. The refusal names the settings by
+	// providersEntries and the missing key by the setting that names it, never the kubelet's message,
+	// which quotes the key of the Secret, a provider_keys value that can be a pasted key.
 	secret := ProvidersSecretName(r.project)
 	if failure := providersMountFailure(events, secret); failure != "" {
 		refused := bootprobe.Outcome{Refusal: fmt.Errorf("the probe pod %s cannot mount the providers Secret %s, whose keys every pod mounts (%s): %s",
-			name, secret, strings.Join(r.providersKeys(), ", "), failure)}
+			name, secret, strings.Join(r.providersEntries(), ", "), r.providersMountFault(failure))}
 		return &refused
 	}
 	if volume, message := missingVolume(events); message != "" {
@@ -720,11 +723,43 @@ func providersMountFailure(events []corev1.Event, secret string) string {
 			continue
 		}
 		if strings.Contains(event.Message, `secret "`+secret+`" not found`) || strings.Contains(event.Message, `secrets "`+secret+`" not found`) ||
-			strings.Contains(event.Message, "references non-existent secret key: ") {
+			strings.Contains(event.Message, missingSecretKey) {
 			return event.Message
 		}
 	}
 	return ""
+}
+
+// missingSecretKey is the kubelet's wording for a key of a Secret volume that the Secret does not
+// hold (pkg/volume/secret).
+const missingSecretKey = "references non-existent secret key: "
+
+// missingProvidersKey cuts message, a kubelet FailedMount message on the providers volume, at
+// missingSecretKey: the text before it, and the setting or settings that name the key it reports
+// missing (providersEntryOf), "" when no setting names it. missing is false when the message
+// reports no missing key. The key itself goes no further: it can be a provider's key pasted where
+// a provider_keys value goes. providersMountFault and the pod events (providersMountedKeyShown)
+// each word what it returns.
+func (r *Runtime) missingProvidersKey(message string) (before, setting string, missing bool) {
+	before, key, missing := strings.Cut(message, missingSecretKey)
+	if !missing {
+		return message, "", false
+	}
+	return before, r.providersEntryOf(strings.TrimSpace(key)), true
+}
+
+// providersMountFault is failure, the kubelet's message that providersMountFailure found, in the
+// refusal's own words: the Secret missing, or a key it names missing, named by the setting that
+// names that key (missingProvidersKey). Neither quotes the message.
+func (r *Runtime) providersMountFault(failure string) string {
+	_, setting, missingKey := r.missingProvidersKey(failure)
+	switch {
+	case !missingKey:
+		return "the kubelet reports the Secret is not there"
+	case setting != "":
+		return "the kubelet reports the Secret holds no key for " + setting
+	}
+	return "the kubelet reports the Secret lacks a key the pod mounts, one no setting names"
 }
 
 // mountedVolume is the volume a kubelet FailedMount event names, `MountVolume.SetUp failed for
@@ -1383,9 +1418,15 @@ type probeSpec struct {
 	ShutdownTime   metav1.Time `json:"shutdownTime"`
 }
 
+// probeOwned are the variables the runtime sets in the image probe's container and in no worker's:
+// bootprobe.ImageProbeRunVariable, which tells `legion probe-image` that it runs as the daemon's
+// boot run. podVariables names each, so CheckPod refuses it in runtime.kubernetes.pod.env and as a
+// provider key; it stays out of runtimeOwned and specOwned, since no worker carries it.
+var probeOwned = map[string]bool{bootprobe.ImageProbeRunVariable: true}
+
 // probeManifest is the probe Sandbox: Running from the start (it holds no Secret to write first),
-// deleted by the controller at shutdown, placed as a gVisor worker is placed — the Legion pool,
-// gVisor, the configured scheduling — whatever runtime.kubernetes.sandbox says, as a repository
+// deleted by the controller at shutdown, placed as a gVisor worker is placed — gVisor, the
+// configured scheduling alone — whatever runtime.kubernetes.sandbox says, as a repository
 // cache pod is, where an issue pod or the controller's pod may run in a microVM (placement), with
 // the workers' pod security and what the operator adds to every pod (its ServiceAccount, volumes,
 // mounts, and variables, and the providers Secret's configured keys), and a single container
@@ -1398,12 +1439,18 @@ type probeSpec struct {
 // ProbeImage requires, and, first, running one role generation's namespaces as an issue pod's
 // launcher runs every role (--role-namespaces), over a disk emptyDir of its own at RoleProbeDir,
 // as an issue pod's role homes volume is, so a runtime that refuses a role's namespaces fails the
-// probe rather than every role's start. Its command and env are escaped against the kubelet's
-// expansion as every worker container's are (kubeletLiteral). It carries Karpenter's
-// `do-not-disrupt` alone, not the Cluster Autoscaler's `safe-to-evict` (podTemplate sets both):
-// GKE Autopilot places a pod carrying that one on a node of its own whenever possible, so each
-// boot's probe would ask for a node, and a probe minutes long and already retried on failure
-// (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day eviction window.
+// probe rather than every role's start. Its env is the operator's variables, then the pointers
+// (providersPointers, sessionDSNPointer), then, last, LEGION_IMAGE_PROBE_RUN=boot
+// (bootprobe.ImageProbeRunVariable, probeOwned): that variable tells the image's `legion
+// probe-image` that it is the daemon's boot run, so it makes no pi.agents probe, no
+// session-storage probe and no Claude lane, and its OK line says session-storage=skipped. It is a
+// variable and not a flag: a legion built before the variable ignores it and makes every launch
+// probe, but it refuses a flag it does not define (undefinedFlag). Its command and env are escaped
+// against the kubelet's expansion as every worker container's are (kubeletLiteral). It carries
+// Karpenter's `do-not-disrupt` alone, not the Cluster Autoscaler's `safe-to-evict` (podTemplate
+// sets both): GKE Autopilot places a pod carrying that one on a node of its own whenever possible,
+// so each boot's probe would ask for a node, and a probe minutes long and already retried on
+// failure (kubeletFailure, ImageProbe.Retry) gains nothing from a seven-day eviction window.
 // For each role role_config_files names (Options.RoleConfigFiles), in the workflow's order, it
 // passes that role's overlays (--role-config-files), and for every workflow role one value per
 // arm the project declares that names overlays (Options.ExperimentVariants), that arm's files
@@ -1451,7 +1498,7 @@ func (r *Runtime) probeManifest(name string, p ImageProbe, shutdown time.Time) p
 		Name:            probeContainer,
 		Image:           r.image,
 		Command:         command,
-		Env:             slices.Concat(r.operatorEnv(), r.providersPointers(), r.sessionDSNPointer()),
+		Env:             slices.Concat(r.operatorEnv(), r.providersPointers(), r.sessionDSNPointer(), []corev1.EnvVar{{Name: bootprobe.ImageProbeRunVariable, Value: bootprobe.ImageProbeRunBoot}}),
 		VolumeMounts:    slices.Concat([]corev1.VolumeMount{{Name: roleProbeVolume, MountPath: RoleProbeDir}}, providersMounts, r.pod.VolumeMounts),
 		Resources:       p.Resources,
 		SecurityContext: restrictedContainer(),

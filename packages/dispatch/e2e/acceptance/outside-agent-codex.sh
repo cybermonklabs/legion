@@ -272,7 +272,10 @@ fi
 
 # --- Codex, pinned: one exact release from npm, its integrity and its binary package's checked
 # against the leg's own record of them before it runs. ---
-real_tools "$work/tools" bun npm node git tmux
+if ! tools_problem=$(real_tools "$work/tools" bun npm node git tmux); then
+  all_unknown "$tools_problem"
+  finish
+fi
 tools_path="$work/tools:$PATH"
 if [ -n "$(PATH=$tools_path tool_problem npm)" ]; then
   all_unknown "npm not on PATH, so @openai/codex@$codex_version is not installed"
@@ -775,13 +778,15 @@ drive() {
 # runs as the session starts, before the turn's first request, so the wait ends at the record, or
 # at RUN's first model log line after that request (`whoami`, or `end`) with the records read once
 # more after it: a record that is not there then never comes. SECONDS bounds the wait where the
-# turn makes no later request.
+# turn makes no later request. The records are read once before the bound is: a look of a loaded
+# machine can take longer than a short SECONDS, and a wait that ended before its first look would
+# say that no record came without having read one.
 session_of() {
   local deadline each past
   session_found=''
   record_ended="within $2 s of its turn's start"
   deadline=$(($(now) + $2))
-  while [ -z "$session_found" ] && [ "$(now)" -lt "$deadline" ]; do
+  while :; do
     # The log is read before the records, so a record filed before the line is read after it.
     past=''
     [ -z "$(logged "$1" whoami)$(logged "$1" end)" ] || past=yes
@@ -796,6 +801,7 @@ session_of() {
       record_ended="by its turn's next request, after which no record comes"
       break
     fi
+    [ "$(now)" -lt "$deadline" ] || break
     pause
   done
 }
@@ -877,14 +883,17 @@ listed=''
 list_answer=''
 list_read=''
 if [ -n "$session" ]; then
+  # The list is read once before the bound is, as session_of reads the records.
   deadline=$(($(now) + list_seconds))
-  while [ -z "$listed" ] && [ "$(now)" -lt "$deadline" ] && codex_alive main; do
+  while codex_alive main; do
     list_answer=$(probe sessions)
     if [ -z "$(unknown_of "$list_answer")" ] && [ "$(json_field status "$list_answer")" = 200 ]; then
       list_read=yes
       case $list_answer in *"\"$session\""*) listed=yes ;; esac
     fi
-    [ -n "$listed" ] || sleep 2
+    [ -z "$listed" ] || break
+    [ "$(now)" -lt "$deadline" ] || break
+    sleep 2
   done
 fi
 control_answer=''
@@ -1214,8 +1223,12 @@ else
     *'Your credential names session '*)
       row C7 "$want7" "bun $entry whoami: the credential names another session than $terminal_session: $(cell "${terminal_out:0:300}")" FAIL
       ;;
-    *" acts for $person_lower:"*"may write project $project and no other"*)
-      row C7 "$want7" "bun $entry whoami, as session $terminal_session: acts for $person_lower, may write project $project and no other" PASS
+    # A release since a token naming a project also writes other projects says "Its token names
+    # project <P>."; a release before it says "It may write project <P> and no other.". The leg
+    # may pin either, and each names the project the token names.
+    *" acts for $person_lower:"*"Its token names project $project."* | \
+      *" acts for $person_lower:"*"may write project $project and no other"*)
+      row C7 "$want7" "bun $entry whoami, as session $terminal_session: acts for $person_lower, its token names project $project" PASS
       ;;
     *) row C7 "$want7" "bun $entry whoami named another person or project: $(cell "${terminal_out:0:300}")" FAIL ;;
   esac

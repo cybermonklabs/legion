@@ -2,7 +2,12 @@ kind: Added
 custom:
   Issue: pr4392
 body: |-
-  `dispatchToolSpecs` gains `dispatch_api`, the thirty-sixth spec, whose one argument `path` is a
-  route under `/api/v1` with its query. Its rule refuses a path that does not begin `/api/v1`, a
-  path that holds a space, a backslash, a `#` or a character outside printable ASCII, and a path
-  with a `.` or `..` segment, plain or percent-encoded. Each refusal names the path.
+  `dispatchToolSpecs` gains `dispatch_api`, the thirty-sixth spec. Its argument `path` is a route
+  under `/api/v1` with its query; `method`, which may be left out for a GET, is one of
+  `DISPATCH_API_METHODS` (`POST`, `PUT`, `PATCH` and `DELETE`); and `body` is the request's JSON
+  body, taken only beside `method`. Its description says that a write that a named `dispatch`
+  command makes goes through that command, and that in a session whose AskGate reviews Dispatch
+  writes the command sends GET alone. Its rule refuses a path that does not begin `/api/v1`, a path
+  that holds a space, a backslash, a `#` or a character outside printable ASCII, a path that holds
+  `"`, `<`, `>`, `^`, `` ` ``, `{` or `}` before its query, a path with a `.` or `..` segment,
+  plain or percent-encoded, and a body with no method. Each refusal of a path names the path.

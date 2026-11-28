@@ -249,8 +249,9 @@ func TestALiveSubscriptionIsSentAnEventWhileTransactionsThatWriteNoEventAreOpen(
 }
 
 // TestAnEventsSubscriptionOnARelayStillOnAReplacedLogWaitsForItsReset: after the log is reset
-// (e2e/seed.ts truncates it between browser scenarios) the relay keeps the old log's cursor until
-// its reset check has run, on the next read a notification or a subscriber wakes, so a
+// (e2e/seed.ts deletes its rows and restarts its ids between browser scenarios) the relay keeps the
+// old log's cursor until its reset check has run, on the next read a notification or a subscriber
+// wakes, so a
 // subscription can take its relay subscription in between, on a published cursor above the new
 // log's newest id. Served from there it would drop the new log's events up to that id, and then the
 // relay's reset would end it, sending the page through a resubscribe and the whole refresh a gap

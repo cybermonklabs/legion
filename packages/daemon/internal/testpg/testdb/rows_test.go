@@ -1,0 +1,99 @@
+package testdb
+
+import (
+	"context"
+	"maps"
+	"slices"
+	"strings"
+	"testing"
+
+	"github.com/jackc/pgx/v5/pgxpool"
+)
+
+// rowsPool is a pool on an empty database of the test's own (Database), closed at the test's end.
+func rowsPool(t *testing.T) *pgxpool.Pool {
+	t.Helper()
+	pool, err := pgxpool.New(context.Background(), Database(t, "legion_testdb_rows"))
+	if err != nil {
+		t.Fatalf("open a pool on the empty database: %v", err)
+	}
+	t.Cleanup(pool.Close)
+	return pool
+}
+
+// TableRows sees a row written, a row deleted and a row changed in place, each in the one table it
+// was in, and an update that writes a row's own values again changes nothing it reads. The table
+// has a json column, whose key order an update changes, and a column named x, the alias TableRows
+// reads each row as: a read that turned the rows into jsonb, or read the column x in place of the
+// row, would see no change there.
+//
+// The faults it catches: a row's text that leaves out its values (its control: TableRows reading
+// each table's row count, under which the change in place and the reordered keys are not seen), a
+// row read as jsonb (its control: TableRows reading `to_jsonb(x.*)`, the encoding workflow's copy
+// had, under which the reordered keys are not seen), the column x read in place of the row (its
+// control: `x::text` without `.*`, under which the change in place and the reordered keys are not
+// seen), and a comparison that names no table (its control: ChangedTables answering nil).
+func TestTableRowsSeesARowWrittenDeletedOrChangedInPlace(t *testing.T) {
+	pool := rowsPool(t)
+	exec := func(statement string) {
+		t.Helper()
+		if _, err := pool.Exec(context.Background(), statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	exec(`create table rows_probe (id int primary key, x int not null, body text not null, doc json not null)`)
+	exec(`insert into rows_probe values (1, 7, 'first', '{"a": 1, "b": 2}')`)
+	for _, step := range []struct {
+		what, statement string
+		changed         []string
+	}{
+		{"a row written", `insert into rows_probe values (2, 7, 'second', '{}')`, []string{"rows_probe"}},
+		{"a row changed in place", `update rows_probe set body = 'changed' where id = 1`, []string{"rows_probe"}},
+		{"a json value's keys reordered in place", `update rows_probe set doc = '{"b": 2, "a": 1}' where id = 1`, []string{"rows_probe"}},
+		{"a row deleted", `delete from rows_probe where id = 2`, []string{"rows_probe"}},
+		{"a row's own values written again", `update rows_probe set body = body, x = x, doc = doc`, nil},
+	} {
+		before := TableRows(t, pool)
+		exec(step.statement)
+		if changed := ChangedTables(before, TableRows(t, pool)); !slices.Equal(changed, step.changed) {
+			t.Errorf("%s changed the rows of %q, want %q", step.what, changed, step.changed)
+		}
+	}
+}
+
+// TableRows fails the test on a schema that holds no table, since two reads of no table are equal
+// and every "no table changed" would pass. The database is an empty one, which holds no table.
+//
+// The fault it catches is a read that answers an empty map (its control: TableRows without its
+// check of the listing, under which the read answers and this test fails).
+func TestTableRowsFailsOnASchemaWithNoTable(t *testing.T) {
+	pool := rowsPool(t)
+	recorder := &fatalRecorder{TB: t}
+	var read map[string]string
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		read = TableRows(recorder, pool)
+	}()
+	<-done
+	if want := "the current schema holds none"; !strings.Contains(recorder.message, want) {
+		t.Fatalf("TableRows of an empty database answered %q and failed the test with %q, want it failed saying %q", read, recorder.message, want)
+	}
+}
+
+// ChangedTables names a table that one read holds and the other does not, as it names one whose
+// rows differ, and names nothing for two equal reads.
+//
+// The fault it catches is a comparison that ranges over one read's tables (its control:
+// ChangedTables ranging over after's tables alone, as api's and workflow's copies did, under which
+// the dropped table goes unnamed).
+func TestChangedTablesNamesATableOnlyOneReadHolds(t *testing.T) {
+	before := map[string]string{"kept": "{}", "dropped": "{}", "written": "{}"}
+	after := map[string]string{"kept": "{}", "made": "{}", "written": `{"(1)"}`}
+	if changed, want := ChangedTables(before, after), []string{"dropped", "made", "written"}; !slices.Equal(changed, want) {
+		t.Errorf("ChangedTables = %q, want %q", changed, want)
+	}
+	if changed := ChangedTables(before, maps.Clone(before)); len(changed) != 0 {
+		t.Errorf("ChangedTables of two equal reads = %q, want none", changed)
+	}
+}

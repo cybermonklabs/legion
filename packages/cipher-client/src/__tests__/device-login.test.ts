@@ -16,6 +16,7 @@ import { createPrivateKey, createPublicKey } from "node:crypto";
 import { readFile, stat, utimes, writeFile } from "node:fs/promises";
 import { hostname } from "node:os";
 import { dirname, join } from "node:path";
+import { BROKER_REQUEST_REASON_MAX } from "@legion/contracts";
 import { holdSecret, scrub } from "@legion/contracts/held-secrets";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -39,7 +40,11 @@ import {
   startDeviceLogin,
   withDeviceLoginLock,
 } from "../device-login";
-import { DEVICE_LOGIN_FILE_VAR, readDeviceLogin } from "../device-login-file";
+import {
+  DEVICE_LOGIN_FILE_NAMED,
+  DEVICE_LOGIN_FILE_VAR,
+  readDeviceLogin,
+} from "../device-login-file";
 import { DEVICE_LOGIN_STALE_LOCK_MS } from "../device-login-lock";
 import {
   BROKER_URL_VAR,
@@ -54,6 +59,7 @@ import {
   BrokerTradeFailedError,
   DEVICE_LOGIN_COMMAND,
   DeviceLoginEndedError,
+  DeviceLoginReplacedError,
   isFinalRefusal,
 } from "../token-errors";
 import { POD_SESSION_NOT_REGISTERED } from "../wire";
@@ -121,6 +127,312 @@ test("the device authorization signs the request object the broker's verifyPerso
   expect(typeof claims.jti === "string" && claims.jti.length > 0).toBe(true);
   expect((claims.exp as number) - (claims.iat as number)).toBe(600);
   expect(Math.abs((claims.iat as number) - Date.now() / 1000)).toBeLessThan(60);
+});
+
+test("a Dispatch sign-in requests dispatch and names its sorted unique scopes", async () => {
+  const stub = broker({ dispatchScopes: ["person"], scope: "dispatch" });
+  const started = await startDeviceLogin({
+    brokerUrl: stub.url,
+    dispatchScopes: ["person", "person"],
+    host: HOST,
+    person: PERSON,
+    reason: "Run Dispatch work",
+  });
+
+  const request = stub.authorizations[0]?.form;
+  expect(request?.get("scope")).toBe("dispatch");
+  const verified = await compactVerify(request?.get("request") ?? "", EmbeddedJWK);
+  const claims = JSON.parse(new TextDecoder().decode(verified.payload)) as Record<string, unknown>;
+  expect(claims.authorization_details).toEqual([
+    { actions: ["person"], identifier: HOST, type: "launcher_credential" },
+  ]);
+  expect(claims.reason).toBe("Run Dispatch work");
+
+  const path = loginPath();
+  const login = await finishDeviceLogin(started, { path, sleep: noSleep });
+  expect(login.dispatchScopes).toEqual(["person"]);
+  expect(JSON.parse(await readFile(path, "utf8")).dispatch_scopes).toEqual(["person"]);
+});
+
+test("a Dispatch sign-in from an older broker keeps no login", async () => {
+  const stub = broker({ scope: "dispatch" });
+  const path = loginPath();
+  const started = await startDeviceLogin({
+    brokerUrl: stub.url,
+    dispatchScopes: ["person"],
+    host: HOST,
+    person: PERSON,
+  });
+
+  const refusal = await finishDeviceLogin(started, { path, sleep: noSleep }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(refusal?.message).toContain("too old");
+  expect(refusal?.message).toContain(`Machine logins on ${stub.url}/credentials/machine`);
+  expect(await stat(path).catch(() => null)).toBeNull();
+});
+
+// The first login keeps the scopes its person ticked, some or all of those it asked for. An answer
+// naming a scope it did not ask for, or one twice, is refused before anything is kept, and the
+// refusal ends as the too-old one does: where to revoke the sign-in the broker may hold live, and
+// the command that asks for the same sign-in again.
+test("a Dispatch sign-in keeps fewer scopes than it asked for, and refuses one it did not ask for", async () => {
+  const fewer = broker({ dispatchScopes: [], scope: "dispatch" });
+  const started = await startDeviceLogin({
+    brokerUrl: fewer.url,
+    dispatchScopes: ["person"],
+    host: HOST,
+    person: PERSON,
+  });
+  const kept = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep });
+  expect(kept.dispatchScopes).toEqual([]);
+
+  for (const [name, scopes] of [
+    ["a scope not asked for", ["approve"]],
+    ["a scope twice", ["person", "person"]],
+  ] as const) {
+    const stub = broker({ dispatchScopes: scopes, scope: "dispatch" });
+    const path = loginPath();
+    const asking = await startDeviceLogin({
+      brokerUrl: stub.url,
+      dispatchScopes: ["person"],
+      host: HOST,
+      person: PERSON,
+    });
+    const refusal = await finishDeviceLogin(asking, { path, sleep: noSleep }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refusal, name).toBeInstanceOf(BrokerTradeFailedError);
+    expect(refusal?.message, name).toContain(
+      `revoke it in Machine logins on ${stub.url}/credentials/machine`
+    );
+    expect(refusal?.message, name).toEndWith(
+      `then log in again with: ${DEVICE_LOGIN_COMMAND} --scope person`
+    );
+    expect(await stat(path).catch(() => null), name).toBeNull();
+  }
+});
+
+// A broker that predates Dispatch sign-ins refuses the scope `dispatch` `400 invalid_scope` in its
+// OAuth library's words, which this client does not know: the person reads the client's one
+// sentence, which names both brokers that can answer so. A refusal it knows, the broker's own
+// DISPATCH_SIGNIN_OFF or SCOPE_NOT_CONSENTABLE as the corpus holds them, prints in the broker's
+// words. A machine login answered so, and a sign-in refused with another code, read as every
+// broker refusal reads.
+test("a Dispatch sign-in's request answered 400 invalid_scope in unknown words says the broker serves no sign-in", async () => {
+  const sentence =
+    "this broker serves no Dispatch sign-in: it predates them, or BROKER_DISPATCH_SIGNIN is off";
+  const refusalOf = async (
+    code: string,
+    dispatchScopes: readonly string[] | undefined,
+    description?: string
+  ) => {
+    const stub = broker({
+      refuseAuthorization: code,
+      ...(description === undefined ? {} : { refuseAuthorizationDescription: description }),
+    });
+    return await startDeviceLogin({
+      brokerUrl: stub.url,
+      dispatchScopes,
+      host: HOST,
+      person: PERSON,
+    })
+      .then(() => null)
+      .catch((error: unknown) => error as Error);
+  };
+  const signIn = await refusalOf("invalid_scope", ["person"]);
+  expect(signIn?.message).toBe(
+    `the secrets broker refused this Dispatch sign-in: HTTP 400 invalid_scope: ${sentence}`
+  );
+  for (const hint of [
+    "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off",
+    "is not consentable; a Dispatch sign-in may approve only person, p0",
+  ]) {
+    const description = sentAs(hint);
+    const known = await refusalOf("invalid_scope", ["person"], description);
+    expect(known, hint).toBeInstanceOf(BrokerRefusedError);
+    expect(known?.message, hint).toBe(
+      `the secrets broker refused this Dispatch sign-in: HTTP 400 invalid_scope: ${description}`
+    );
+  }
+  const machine = await refusalOf("invalid_scope", undefined);
+  expect(machine).toBeInstanceOf(BrokerRefusedError);
+  expect(machine?.message).toContain("this machine's device login");
+  expect(machine?.message).not.toContain(sentence);
+  const other = await refusalOf("invalid_request", ["person"]);
+  expect(other).toBeInstanceOf(BrokerRefusedError);
+  expect(other?.message).not.toContain(sentence);
+});
+
+// What a caller cannot ask for is refused before any request, as a RangeError a command reads as
+// its usage error: a scope no Dispatch sign-in may ask for (contracts' DISPATCH_SIGN_IN_SCOPES),
+// and a reason over BROKER_REQUEST_REASON_MAX characters, counted as code points as the broker
+// counts them. A reason of the bound itself is sent.
+test("a device login refuses a scope no sign-in may ask for and a reason past the broker's bound, before any request", async () => {
+  const stub = broker();
+  const wide = "\u{1F600}";
+  for (const [name, more] of [
+    ["approve", { dispatchScopes: ["approve"] }],
+    ["an empty word", { dispatchScopes: ["person", ""] }],
+    [
+      "a long reason",
+      { dispatchScopes: ["person"], reason: wide.repeat(BROKER_REQUEST_REASON_MAX + 1) },
+    ],
+  ] as const) {
+    const refused = await startDeviceLogin({
+      brokerUrl: stub.url,
+      host: HOST,
+      person: PERSON,
+      ...more,
+    })
+      .then(() => null)
+      .catch((error: unknown) => error);
+    expect(refused, name).toBeInstanceOf(RangeError);
+  }
+  expect(stub.authorizations).toHaveLength(0);
+
+  await startDeviceLogin({
+    brokerUrl: stub.url,
+    dispatchScopes: ["person"],
+    host: HOST,
+    person: PERSON,
+    reason: wide.repeat(BROKER_REQUEST_REASON_MAX),
+  });
+  expect(stub.authorizations).toHaveLength(1);
+});
+
+// A Dispatch sign-in keeps its approved scopes in its file, and each refresh must answer the same
+// scopes under the scope `dispatch`: an answer that drops them, narrows them, or names a machine
+// login is refused and the file keeps the login it held. The refusal names the broker as
+// `urlForText` does, and Dispatch's page in words, never an address built from the broker's.
+test("a Dispatch sign-in's refresh that drops its scopes is refused, and the file stays", async () => {
+  for (const [name, options] of [
+    ["no dispatch_scopes", { scope: "dispatch" }],
+    ["scope machine", { dispatchScopes: ["person"] }],
+    ["fewer scopes", { scope: "dispatch", dispatchScopes: [] }],
+  ] as const) {
+    const stub = broker(options);
+    const path = loginPath();
+    await writeDeviceLoginFile(path, stub.url, { dispatch_scopes: ["person"] });
+    const before = await readFile(path, "utf8");
+    const refused = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+      describe: "this machine's device login",
+      held: async () => true,
+    }).then(
+      () => null,
+      (error: unknown) => error
+    );
+    expect(refused, name).toBeInstanceOf(BrokerTradeFailedError);
+    expect((refused as Error).message, name).toContain(stub.url);
+    expect((refused as Error).message, name).toContain("Dispatch's Machine logins page");
+    expect((refused as Error).message, name).not.toContain("/credentials/machine");
+    expect(await readFile(path, "utf8"), name).toBe(before);
+  }
+});
+
+test("control: a Dispatch sign-in's refresh that answers its scopes keeps them", async () => {
+  const stub = broker({ dispatchScopes: ["person"], scope: "dispatch" });
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url, { dispatch_scopes: ["person"] });
+  const refreshed = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+    describe: "this machine's device login",
+    held: async () => true,
+  });
+  expect(refreshed.dispatchScopes).toEqual(["person"]);
+  expect(JSON.parse(await readFile(path, "utf8")).dispatch_scopes).toEqual(["person"]);
+});
+
+test("a machine login's file from before Dispatch sign-ins still refreshes as a machine login", async () => {
+  const stub = broker();
+  const path = loginPath();
+  const written = await writeDeviceLoginFile(path, stub.url);
+  const refreshed = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+    describe: "this machine's device login",
+    held: async () => true,
+  });
+  expect(refreshed.dispatchScopes).toBeNull();
+  expect(stub.refreshes).toHaveLength(1);
+  const file = JSON.parse(await readFile(path, "utf8")) as Record<string, unknown>;
+  expect(file.refresh_token).not.toBe(written.refreshToken);
+  expect(Object.hasOwn(file, "dispatch_scopes")).toBe(false);
+});
+
+// A client of the release before this one, on the same machine (claude-envoy and pi-envoy each
+// bundle a client, and both default to ~/.config/legion/device-login.json), wrote the file with
+// the members it knew, so a Dispatch sign-in's dispatch_scopes are gone from it. The refresh is
+// answered under the scope dispatch, which is the answer of a sign-in alone, so the scopes it
+// names are kept and saved, checked as a first login's are; the login then reads as the sign-in
+// it is, and its end names the sign-in's command, not the machine login's, which must never be
+// given to a sign-in's holder (token-errors.ts). The second refresh of the same file is refused
+// invalid_grant, as the broker refuses one whose credential was revoked.
+test("a file an earlier build's refresh stripped keeps the scopes its refresh answers, and its end names them", async () => {
+  const stub = broker({ dispatchScopes: ["person"], refuseRefreshAfter: 1, scope: "dispatch" });
+  const path = loginPath();
+  await writeDeviceLoginFile(path, stub.url);
+  const refreshed = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+    describe: "this machine's device login",
+    held: async () => true,
+  });
+  expect(refreshed.dispatchScopes).toEqual(["person"]);
+  expect(JSON.parse(await readFile(path, "utf8")).dispatch_scopes).toEqual(["person"]);
+
+  const ended = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+    describe: "this Dispatch sign-in",
+    held: async () => true,
+  }).then(
+    () => null,
+    (error: unknown) => error as Error
+  );
+  expect(ended).toBeInstanceOf(DeviceLoginEndedError);
+  expect(ended?.message).toEndWith(`run: ${DEVICE_LOGIN_COMMAND} --scope person`);
+});
+
+// Such an answer naming scopes this build may not hold is refused rather than kept as a machine
+// login: the file stays as it was and the sign-in stays live. The control is the row above, whose
+// answer names a scope a sign-in may hold.
+test("a stripped file whose refresh answers scopes no sign-in may hold is refused, and the file stays", async () => {
+  for (const scopes of [["approve"], ["person", "person"], "person"]) {
+    const stub = broker({ dispatchScopes: scopes as string[], scope: "dispatch" });
+    const path = loginPath();
+    await writeDeviceLoginFile(path, stub.url);
+    const before = await readFile(path, "utf8");
+    const name = JSON.stringify(scopes);
+    const refused = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+      describe: "this machine's device login",
+      held: async () => true,
+    }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refused, name).toBeInstanceOf(BrokerTradeFailedError);
+    expect(refused?.message, name).toContain("Dispatch's Machine logins page");
+    expect(await readFile(path, "utf8"), name).toBe(before);
+  }
+});
+
+// A file whose dispatch_scopes is there but is no list of distinct scopes a sign-in may hold was
+// written by no build: it is refused, where a file that holds none reads as a machine login.
+test("a login file whose dispatch_scopes is malformed is refused at its read and at its trade", async () => {
+  for (const scopes of [["approve"], ["person", "person"], "person", null, [1]]) {
+    const stub = broker();
+    const path = loginPath();
+    await writeDeviceLoginFile(path, stub.url, { dispatch_scopes: scopes });
+    const name = JSON.stringify(scopes);
+    const read = await readDeviceLogin(path).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(read?.message, name).toContain("dispatch_scopes");
+    const traded = await new DeviceLoginIdentity({ path, brokerUrl: stub.url }).read().then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(traded?.message, name).toContain("dispatch_scopes");
+    expect(stub.refreshes, name).toHaveLength(0);
+    expect(stub.trades, name).toHaveLength(0);
+  }
 });
 
 test("the poll proves the login's key, waits out a pending code and keeps the login in a 0600 file", async () => {
@@ -239,16 +551,19 @@ test.each([
   ["429 naming invalid_grant", "invalid_grant", 429],
   ["408 naming access_denied", "deny", 408],
   ["408 with no body", "empty-408", undefined],
-] as const)("a poll answered %s is polled again, and the login completes", async (_, answer, status) => {
-  const stub = broker({ polls: [answer, "approve"], oauthErrorStatus: status });
-  const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
-  const outcome = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep }).then(
-    (login) => login.credentialId,
-    (error: unknown) => (error as Error).message
-  );
-  expect(outcome).toBe(STAND_IN_CREDENTIAL);
-  expect(stub.polls).toHaveLength(2);
-});
+] as const)(
+  "a poll answered %s is polled again, and the login completes",
+  async (_, answer, status) => {
+    const stub = broker({ polls: [answer, "approve"], oauthErrorStatus: status });
+    const started = await startDeviceLogin({ brokerUrl: stub.url, person: PERSON, host: HOST });
+    const outcome = await finishDeviceLogin(started, { path: loginPath(), sleep: noSleep }).then(
+      (login) => login.credentialId,
+      (error: unknown) => (error as Error).message
+    );
+    expect(outcome).toBe(STAND_IN_CREDENTIAL);
+    expect(stub.polls).toHaveLength(2);
+  }
+);
 
 test("a poll answered 400 authorization_pending, or 429 with no body, is polled again", async () => {
   const stub = broker({ polls: ["pending", "empty-429", "approve"] });
@@ -875,7 +1190,53 @@ test("a login file others may read, or one made at another broker, is refused", 
   expect(stub.refreshes).toHaveLength(0);
 });
 
+// A session started before another login of this machine is told its one cure: start a new
+// session. The broker keeps a session name for the principal that wrote under it; a Dispatch
+// sign-in is a principal of its own, and so is each person's machine login, and the file keeps no
+// person, so the client cannot tell the one case a restart would cure. Each case, a machine login
+// of another person over a machine login among them, gets the same words. That case is not a row
+// of its own: the file holds no person (`device-login-file.ts`), so its file is the same as the
+// first row's. No later read finds this process's key again, so the refusal is final in each case.
 test("a session started before another login of this machine refuses to trade the new one", async () => {
+  const machine = {};
+  const signIn = { dispatch_scopes: ["person"] };
+  const cure = `${DEVICE_LOGIN_FILE_NAMED} holds another login than the one this process started with, since ${DEVICE_LOGIN_COMMAND} ran again; start a new session to trade the new one: the secrets broker keeps a session's name for the principal that wrote under it, and each Dispatch sign-in is a principal of its own, as is each person's machine login, so this session started again is refused, except where a machine login replaced the same person's machine login, which this process cannot tell, since the login file names no person`;
+  for (const [name, started, now] of [
+    ["a machine login, then a machine login", machine, machine],
+    ["a machine login, then a sign-in", machine, signIn],
+    ["a sign-in, then a machine login", signIn, machine],
+    ["a sign-in, then a sign-in", signIn, signIn],
+  ] as const) {
+    const stub = broker();
+    const path = loginPath();
+    const live = {
+      access_token: fixtureSecret("access"),
+      access_expires_at: new Date(Date.now() + 600_000).toISOString(),
+    };
+    await writeDeviceLoginFile(path, stub.url, { ...live, ...started });
+    const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
+    await identity.key();
+    // `dispatch login --device` ran again since: the file holds a login of another key, which the
+    // client this session made does not prove.
+    await writeDeviceLoginFile(path, stub.url, { ...live, ...now });
+    const refusal = await identity
+      .spend(async () => {})
+      .then(
+        () => null,
+        (error: unknown) => error as Error
+      );
+    expect(refusal, name).toBeInstanceOf(DeviceLoginReplacedError);
+    expect(isFinalRefusal(refusal), name).toBe(true);
+    expect(refusal?.message, name).toBe(cure);
+    expect(stub.refreshes, name).toHaveLength(0);
+  }
+});
+
+// The token client's retry loop ends on that refusal: no later read finds this process's key
+// again, so a retry is a trade no wait cures. The session's one trade answers the caller with the
+// refusal and its cure, logs no "trading again", tells no caller the trade is being retried, and
+// a second call before the loop's next slot is answered the same with no second trade.
+test("a session whose login file another login replaced stops trading at once and says what to start", async () => {
   const stub = broker();
   const path = loginPath();
   const live = {
@@ -883,20 +1244,40 @@ test("a session started before another login of this machine refuses to trade th
     access_expires_at: new Date(Date.now() + 600_000).toISOString(),
   };
   await writeDeviceLoginFile(path, stub.url, live);
-  const identity = new DeviceLoginIdentity({ path, brokerUrl: stub.url });
-  await identity.key();
-  // `dispatch login --device` ran again since: the file holds a login of another key, which the
-  // client this session made does not prove.
-  await writeDeviceLoginFile(path, stub.url, live);
-  const refusal = await identity
-    .spend(async () => {})
-    .then(
+  const env = {
+    [BROKER_URL_VAR]: stub.url,
+    [IDENTITY_VAR]: IDENTITY_DEVICE_LOGIN,
+    [DEVICE_LOGIN_FILE_VAR]: path,
+  };
+  // The client reads the login's key when it is made, as a session's client is.
+  const made = await brokerTokenClient(env, "ses-laptop-1");
+  await writeDeviceLoginFile(path, stub.url, { ...live, dispatch_scopes: ["person"] });
+  const spends = spyOn(DeviceLoginIdentity.prototype, "spend");
+  const warned: string[] = [];
+  const warn = spyOn(console, "warn").mockImplementation((...line: unknown[]) => {
+    warned.push(line.join(" "));
+  });
+  try {
+    const refusal = await made?.client.token().then(
       () => null,
       (error: unknown) => error as Error
     );
-  expect(refusal?.message).toContain("holds another login");
-  expect(refusal?.message).toContain("start this session again");
-  expect(stub.refreshes).toHaveLength(0);
+    expect(refusal).toBeInstanceOf(DeviceLoginReplacedError);
+    expect(refusal?.message).toContain("start a new session");
+    expect(refusal?.message).not.toContain("being retried");
+    const again = await made?.client.token().then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(again).toBe(refusal);
+    expect(spends).toHaveBeenCalledTimes(1);
+    expect(warned.filter((line) => line.includes("trading again"))).toEqual([]);
+    expect(stub.trades).toHaveLength(0);
+  } finally {
+    made?.client.close();
+    spends.mockRestore();
+    warn.mockRestore();
+  }
 });
 
 test("a save removes the copies and locks a process that died left beside the login", async () => {
@@ -1057,10 +1438,12 @@ test("a trade refused for its session or its projects is not refreshed and trade
         "belongs to another identity: one the broker's configuration fixes it for, or one that has written under it within the last 30 days. Ask under a name of your own."
       ),
     ],
+    // A restricted member's machine login naming no project or several, which the broker's
+    // exchange policy holds to exactly one (`exchange.ErrRestrictedOneProject`).
     [
       "invalid_request",
       sentAs(
-        "is a restricted member, whose token names its projects: set AGENT_SECRETS_PROJECTS to the projects this session works on."
+        "is a restricted member, who sees only the projects that name them, and the trade asked for 2; set AGENT_SECRETS_PROJECTS to the one project this session works on."
       ),
     ],
     // A pod session no registration names yet, which a later trade cures, not a refresh.
@@ -1119,6 +1502,35 @@ test("a trade refused because the login ended is refreshed, and the refresh's re
   expect(stub.refreshes).toHaveLength(1);
   expect(refusal).toBeInstanceOf(DeviceLoginEndedError);
   expect(refusal?.message).toContain(DEVICE_LOGIN_COMMAND);
+});
+
+// A Dispatch sign-in that ended is cured by a new Dispatch sign-in of the scopes it held: the
+// machine login's command would make a login that starts sessions and reads secrets. Its file's
+// dispatch_scopes name them, `none` where it held none; a machine login's file names the
+// machine login's command, as before.
+test("an ended login names the command that makes the same kind of login again", async () => {
+  for (const [name, fields, says] of [
+    [
+      "a person sign-in",
+      { dispatch_scopes: ["person"] },
+      `run: ${DEVICE_LOGIN_COMMAND} --scope person`,
+    ],
+    ["an empty sign-in", { dispatch_scopes: [] }, `run: ${DEVICE_LOGIN_COMMAND} --scope none`],
+    ["a machine login", {}, `run: ${DEVICE_LOGIN_COMMAND}`],
+  ] as const) {
+    const stub = broker({ refuseRefresh: true });
+    const path = loginPath();
+    await writeDeviceLoginFile(path, stub.url, fields);
+    const refused = await refreshDeviceLogin(path, await readDeviceLogin(path), {
+      describe: "this machine's device login",
+      held: async () => true,
+    }).then(
+      () => null,
+      (error: unknown) => error as Error
+    );
+    expect(refused, name).toBeInstanceOf(DeviceLoginEndedError);
+    expect(refused?.message, name).toEndWith(says);
+  }
 });
 
 test("a refresh refused other than invalid_grant is that refusal, and one unanswered twice names the broker", async () => {

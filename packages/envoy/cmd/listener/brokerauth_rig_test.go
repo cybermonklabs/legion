@@ -189,7 +189,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 			return `{"target_session":"` + target + `","source_session":"` + s + `","message":"a message of the rig"}`
 		}},
 		{name: "messages/publish", path: "/v1/messages/publish", body: func(s string) string {
-			return `{"topic":"notifications.github.rig","source_session":"` + s + `","message":"a message of the rig"}`
+			return `{"topic":"notifications.team.rig","source_session":"` + s + `","message":"a message of the rig"}`
 		}},
 	}
 
@@ -330,7 +330,7 @@ func TestBrokerTokenBindsEveryWriteRouteToTheSessionItNames(t *testing.T) {
 
 // v1RoutePatterns is how many patterns registerV1Routes registers today, each of which the walk
 // below must visit at least once.
-const v1RoutePatterns = 16
+const v1RoutePatterns = 17
 
 // walkSession is where a walk request's path or body names the session its token names.
 const walkSession = "<session>"
@@ -369,9 +369,10 @@ var v1Walk = []struct {
 	{http.MethodPost, "/v1/messages/send", "/v1/messages/send",
 		`{"target_session":"<session>","source_session":"<session>","message":"a message of the walk"}`},
 	{http.MethodPost, "/v1/messages/publish", "/v1/messages/publish",
-		`{"topic":"notifications.github.rig","source_session":"<session>","message":"a message of the walk"}`},
+		`{"topic":"notifications.team.rig","source_session":"<session>","message":"a message of the walk"}`},
 	{http.MethodDelete, "/v1/sessions/<session>", "/v1/sessions/", ""},
 	{http.MethodGet, "/v1/sessions/<session>/relay", relaySocketPattern, ""},
+	{http.MethodGet, "/v1/sessions/<session>/successors", sessionSuccessorsPattern, ""},
 	{http.MethodGet, "/v1", "/v1", ""},
 	{http.MethodGet, "/v1/no-such-route", "/v1/", ""},
 }
@@ -456,6 +457,31 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 		walkToken{"a named project's token", namedToken, named})
 }
 
+// On a real bus, with no change to the listener's own code: a results token — the project scope
+// results beside the one scope results and the run a result entry mints it for, the one token
+// Dispatch's results route takes — is answered 401 not_a_session on every path registerV1Routes
+// registers (v1Walk), because the verifier brokerTokens.open builds leaves the results switch
+// unset (ciphertoken.Options.ServesResults) and so refuses the token as a build before the switch
+// refuses it. A CI job's token writes its results and reaches no listener. A token of a named
+// project is answered anything but 401 on each of the same requests and writes no rejection line,
+// so the refusal is the scope's and not the route's.
+func TestAPIAuthRefusesAResultsTokenOnEveryV1Route(t *testing.T) {
+	t.Parallel()
+	rig := newBrokerRig(t)
+	const (
+		results      = "ses_rig_results"
+		named        = "ses_rig_named"
+		resultsToken = "access-token-that-writes-results"
+		namedToken   = "access-token-of-a-named-project"
+	)
+	rig.broker.Says(resultsToken, resultsAnswer(results, rig.caller.JKT()))
+	rig.broker.Says(namedToken, serviceAnswer(named, "example-fleet", rig.caller.JKT()))
+	rig.register(t, results)
+	rig.register(t, named)
+	walkEveryV1Route(t, rig, []walkToken{{"a results token", resultsToken, results}},
+		walkToken{"a named project's token", namedToken, named})
+}
+
 // A token narrowed to reading, of every kind of trade the broker narrows, is refused on every
 // path registerV1Routes registers (v1Walk) as the read entry's token is: each answer of the
 // golden file the broker's own test holds its narrowed answers to is answered 401 with one
@@ -464,6 +490,7 @@ func TestAPIAuthRefusesAReadOnlyTokenOnEveryV1Route(t *testing.T) {
 // token. A token of a named project is answered anything but 401 on each of the same requests
 // and writes no rejection line, so each refusal is the token's and not the route's.
 func TestAPIAuthRefusesANarrowedTokenOfEveryKindOnEveryV1Route(t *testing.T) {
+	t.Parallel()
 	rig := newBrokerRig(t)
 	const (
 		narrowedSession = "ses_rig_narrowed"

@@ -101,6 +101,7 @@ func (g *standInGiveUps) made() []string {
 // record failed, since that give-up is still open, and 0 when none did. A refusal of the daemon is
 // printed as every operator command prints one, and exits 1.
 func TestIntakeReplayPrintsEachOutcomeAndExitsOneOnAFailure(t *testing.T) {
+	t.Parallel()
 	const consumer = "legion-go-LEGION-dispatch"
 	t.Run("a record failed", func(t *testing.T) {
 		d := newIntakeDaemon(t, &standInGiveUps{replay: intake.ReplayAnswer{Replayed: []intake.ReplayedGiveUp{
@@ -153,6 +154,7 @@ func TestIntakeReplayPrintsEachOutcomeAndExitsOneOnAFailure(t *testing.T) {
 // A discard names why its records are let go, which each record keeps: `legion intake discard`
 // without --reason is a usage error, exit 2, and nothing reaches the daemon.
 func TestIntakeDiscardRefusesAMissingReason(t *testing.T) {
+	t.Parallel()
 	stand := &standInGiveUps{}
 	d := newIntakeDaemon(t, stand)
 	code, out, errb := d.intake("discard", "--give-up", "41")
@@ -170,6 +172,7 @@ func TestIntakeDiscardRefusesAMissingReason(t *testing.T) {
 // as the caller. A selection of neither form, of both, or of half the second is a usage error, exit
 // 2, that sends nothing.
 func TestIntakeCommandsSendTheirSelector(t *testing.T) {
+	t.Parallel()
 	const consumer = "legion-go-LEGION-dispatch"
 	for _, row := range []struct {
 		name   string
@@ -247,6 +250,7 @@ func (resolvedRepositories) ResolveRepository(resolved string) (workflow.Resolut
 // handler chain: the replay applies a recorded give-up and prints `applied`, and the discard closes
 // another and prints its id, each read back from the table as closed by the operator.
 func TestIntakeCommandsReplayAndDiscardRecordedGiveUps(t *testing.T) {
+	t.Parallel()
 	const project = "LEGION"
 	ctx := context.Background()
 	st, err := store.Open(ctx, testdb.Database(t, "legion_intake_commands"))

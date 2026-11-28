@@ -63,13 +63,8 @@ func TestAnEnsureHookAcrossAReconnectDecidesNothingOnTheEmptyVersion(t *testing.
 	go func() { ensured <- client.ensureStreamOn(context.Background(), conn) }()
 	time.Sleep(300 * time.Millisecond)
 	server.Start(t)
-	select {
-	case err := <-ensured:
-		if err == nil || !strings.Contains(err.Error(), "not connected") {
-			t.Fatalf("the ensure hook on a reconnecting connection answered %v, want an error that the connection is not connected: it decided on, or waited for, a version the connection had not reported", err)
-		}
-	case <-time.After(60 * time.Second):
-		t.Fatal("the ensure hook across a reconnect did not return within 60s")
+	if err := testwait.Receive(t, "the ensure hook across a reconnect to return", ensured); err == nil || !strings.Contains(err.Error(), "not connected") {
+		t.Fatalf("the ensure hook on a reconnecting connection answered %v, want an error that the connection is not connected: it decided on, or waited for, a version the connection had not reported", err)
 	}
 	waitConnected(t, conn)
 	info, err := js.StreamInfo(Stream)
@@ -126,26 +121,12 @@ func TestAFlapRunsTheSecondDisconnectHookAtOnce(t *testing.T) {
 	t.Cleanup(func() { connectedVersion = read })
 
 	server.Stop(t)
-	select {
-	case <-disconnects:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the first disconnect hook did not run within 10s of the server stopping")
-	}
+	testwait.Receive(t, "the first disconnect hook to run once the server stopped", disconnects)
 	armed.Store(true)
 	server.Start(t)
-	var down time.Time
-	select {
-	case down = <-secondOutage:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the reconnect's ensure did not read the server version within 30s of the restart")
-	}
-	select {
-	case ran := <-disconnects:
-		if late := ran.Sub(down); late > 2*time.Second {
-			t.Fatalf("the second disconnect hook ran %s after the second outage began, want at once: the ensure hook held nats.go's callback goroutine", late)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the second disconnect hook did not run within 10s of the second outage: the ensure hook held nats.go's callback goroutine waiting for a server version")
+	down := testwait.Receive(t, "the reconnect's ensure to read the server version", secondOutage)
+	if late := testwait.Receive(t, "the second disconnect hook to run", disconnects).Sub(down); late > 2*time.Second {
+		t.Fatalf("the second disconnect hook ran %s after the second outage began, want at once: the ensure hook held nats.go's callback goroutine", late)
 	}
 	server.Start(t)
 }

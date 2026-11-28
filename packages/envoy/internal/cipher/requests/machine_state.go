@@ -52,7 +52,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/exchange"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/projectaccess"
-	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipher/store"
@@ -68,8 +67,9 @@ var (
 	ErrNotOwner    error = notOwnerError{}
 	ErrNotApprover       = errors.New("only the grant's approver or the person its session acts for may revoke it")
 	ErrTerminal          = errors.New("request is already decided")
-	// ErrExpired is ApplyDecision's refusal for a record that expired undecided: the sweeper
-	// expired its request, or its pending_expires_at has passed before the sweeper got to it.
+	// ErrExpired is a decision's refusal (ApplyPageDecision, ApplyJudgeDecision) for a record
+	// that expired undecided: the sweeper expired its request, or its pending_expires_at has
+	// passed before the sweeper got to it.
 	ErrExpired = errors.New("request expired before its approver acted on it")
 	// ErrNotExpired is Dismiss's refusal for a record nobody has decided whose deadline has not
 	// passed: it may still be decided, so there is nothing to dismiss yet.
@@ -186,11 +186,17 @@ type SecretDecision struct {
 	// "automatic", "approval" or "deny".
 	Decision string `json:"decision"`
 	Source   string `json:"-"`
-	// ProfileDigest is the fingerprint of the profile the name was served as when the request
-	// was decided (policy.Secret.ProfileDigest), "" for a stored secret served by its own name.
+	// ProfileDigest is the fingerprint of what the name was served as when the request was
+	// decided (policy.Secret.ProfileDigest): its profile's, or its own behind the proxy or under a
+	// scopes tag, and "" for a stored secret served by its own name with neither.
 	// The request records it in request_secrets.airlock_digest, and a release ends the grant once
 	// it differs from the one the policy holds then.
 	ProfileDigest string `json:"-"`
+	// Kind is the hosts and headers of the kind the name was behind when the request was decided
+	// (reachOf), nil for a name behind no kind. The request records it in
+	// request_secrets.airlock_kind, and a release ends the grant once the kind the policy holds
+	// then has lost one of them (kindLost).
+	Kind *kindReach `json:"-"`
 	// Target is the target the request's signed locations narrow this name's GitHub profile to
 	// (record.AuthorizationDetail.Target), the zero record.Target for none. The request records
 	// it in request_secrets.target_account and target_repositories, which the release mints for.
@@ -221,8 +227,9 @@ type Request struct {
 	JudgeDeciding bool `json:"-"`
 }
 
-// Decision is ApplyDecision's result: the request's new state and, when granted, the new grant's
-// id (empty when the record was denied, or approved but the requesting enrollment had died).
+// Decision is ApplyPageDecision's and ApplyJudgeDecision's result: the request's new state and,
+// when granted, the new grant's id (empty when the record was denied, or approved but the
+// requesting enrollment had died).
 type Decision struct {
 	RequestID string
 	State     string
@@ -284,6 +291,12 @@ type Machine struct {
 	Policy     *policy.Current
 	Secrets    secrets.Reader
 	PendingTTL time.Duration
+	// SecretsPrefix is BROKER_SECRETS_PREFIX and SecondPrefix BROKER_SECRETS_SECOND_PREFIX, ""
+	// for none: the two the one rule of a grant's frozen source reads (sourceRule). With
+	// SecondPrefix set, a source frozen under it counts as the source the policy serves under
+	// SecretsPrefix for the same name and type, so a store move ends no grant; a release still
+	// reads the policy's source alone (readSource). Nothing else here reads either.
+	SecretsPrefix, SecondPrefix string
 	// Audience is BROKER_PUBLIC_URL: the aud a new request object is held to exactly (Create), and
 	// the origin a stored record's object is read back by (record.VerifyStoredRequestObject).
 	Audience string
@@ -351,18 +364,14 @@ type Machine struct {
 	// which a release calls for each such value it read and hands to nobody (giveBack, heldBack,
 	// release.go). A type with none, and a Machine with no map, leaves such a value to lapse.
 	GiveBacks map[string]GiveBack
-	// Airlock is the airlock's rules as the broker read them at boot: the proxy blocks of the
-	// profiles file (BROKER_PROFILES_FILE, policy.Profiles.ProxyRules), and the zero value for a
-	// deployment with no profiles file. A granted name the rules name is released as placeholders
-	// rather than as its value (Values), and the proxy port puts the real value back into the
-	// requests the entry allows.
-	Airlock proxyrules.Rules
 	// AirlockProxyURL is BROKER_AIRLOCK_PROXY_URL, the URL a command reaches that port at, and
-	// AirlockCACertificate the PEM certificate of its certificate authority
-	// (BROKER_AIRLOCK_CA_CERT_FILE, read at boot). Every release that holds a name back carries
-	// both, since a command that cannot reach the proxy or cannot trust it has nothing.
-	AirlockProxyURL      string
-	AirlockCACertificate string
+	// ProxyRoots the PEM roots a command trusts it by (proxy.Authority.ReleaseRoots: the root of
+	// the proxy's own chain and BROKER_PROXY_RELEASE_ROOTS_FILE's), read at each release since a
+	// pod that asks a pool for its intermediate learns its root from the first answer. Every
+	// release that holds a name back carries both, since a command that cannot reach the proxy
+	// or cannot trust it has nothing. A nil ProxyRoots carries none.
+	AirlockProxyURL string
+	ProxyRoots      func() string
 	// Minted are the capabilities the broker mints and holds behind rules entries of kind dpop,
 	// one per kind: a proxy connection presenting a kind's placeholder is that kind's grant
 	// (mintedConnection), and the proxy's read of its values is the token MintedTokens mints for
@@ -489,13 +498,15 @@ func limitOr(limit *ratelimit.Limit, fallback ratelimit.Limit) ratelimit.Limit {
 }
 
 // NewChainVerifier builds the record.ChainVerifier VerifyChain uses, scoped to agent_secret
-// records. rules are the airlock's, the ones the machine itself holds (Machine.Airlock): they
-// reach the verifier as record.ChainVerifier.JudgeSeconds, so a grant the model judge approved
-// re-verifies against the same bound the judge decided under. Zero rules give the judge nothing,
-// which refuses every such approval.
-func NewChainVerifier(st *store.Store, audience string, skew time.Duration, rules proxyrules.Rules) *record.ChainVerifier {
+// records. cur is the live policy, the one the machine itself holds (Machine.Policy): its judge
+// tags reach the verifier as record.ChainVerifier.JudgeSeconds, read at each verification, so a
+// grant the model judge approved re-verifies against the bound its keys' tags give the judge now.
+// A nil cur gives the judge nothing, which refuses every such approval.
+func NewChainVerifier(st *store.Store, audience string, skew time.Duration, cur *policy.Current) *record.ChainVerifier {
 	chain := st.ChainVerifier(record.KindAgentSecret, audience, skew)
-	chain.JudgeSeconds = rules.JudgeSeconds
+	if cur != nil {
+		chain.JudgeSeconds = func(name string) (uint32, bool) { return cur.Get().JudgeSeconds(name) }
+	}
 	// The keys of a judged record's request that needed a decision, off the request's own
 	// rows; every other key is one its session got at once, which the release's own re-check
 	// (stillAllowed) holds to the live policy.
@@ -841,10 +852,10 @@ func (m *Machine) createChecked(ctx context.Context, enr enrollmentRow, enrollme
 	// decides the request: a request naming no lifetime gets the shortest judge seconds of the
 	// keys the judge decides, and one that asks for longer is refused here, before anyone is
 	// asked, as a max-grant tag refuses it. A key the session gets at once beside them is no key
-	// the judge decides, so its own rules entry bounds nothing. The bound comes before the
+	// the judge decides, so its own judge tag bounds nothing. The bound comes before the
 	// max-grant tags, which then read the lifetime the judge would grant. Whether the judge will
 	// hold the request is read now off the same evaluation the transaction below makes; a request
-	// a person decides — a judge key beside a key with no judge entry, or any request on a broker
+	// a person decides — a judge key beside a key with no judge tag, or any request on a broker
 	// that runs no judge — keeps the ordinary lifetime rules.
 	// What Dispatch holds of the requested names' projects, read here on the pool, before the
 	// transaction below takes its locks, so no call to Dispatch holds one; a request holding no
@@ -1379,7 +1390,7 @@ func (m *Machine) evaluate(set *policy.Set, names []string, requester policy.Req
 			}
 			e.approver = d.Approver
 		}
-		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source, ProfileDigest: set.Secrets[name].ProfileDigest})
+		e.decisions = append(e.decisions, SecretDecision{Name: name, Decision: d.Outcome, Source: d.Source, ProfileDigest: set.Secrets[name].ProfileDigest, Kind: reachOf(set, name)})
 	}
 	switch {
 	case denied:
@@ -1525,8 +1536,8 @@ func (m *Machine) insertRequest(ctx context.Context, tx pgx.Tx, r newRequest) er
 		return err
 	}
 	for _, d := range r.decisions {
-		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest, target_account, target_repositories, github_app_field, github_app_read_only) values ($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-			r.id, d.Name, d.Decision, d.Source, d.ProfileDigest, nullable(d.Target.Account), d.Target.Repositories, r.gitHubAppField, r.gitHubAppReadOnly); err != nil {
+		if _, err := tx.Exec(ctx, `insert into request_secrets (request_id, name, decision, source, airlock_digest, airlock_kind, target_account, target_repositories, github_app_field, github_app_read_only) values ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9,$10)`,
+			r.id, d.Name, d.Decision, d.Source, d.ProfileDigest, d.Kind.column(), nullable(d.Target.Account), d.Target.Repositories, r.gitHubAppField, r.gitHubAppReadOnly); err != nil {
 			return err
 		}
 	}
@@ -1913,12 +1924,19 @@ func (m *Machine) endPending(ctx context.Context, scope store.PendingScope, arg 
 	return ended, nil
 }
 
-// ApplyDecision decides a pending agent_secret record by login, the login of the person deciding
-// it on the broker's own approval page (approval.Page.decide, its one caller). approve=true mints
-// the grant while the requesting enrollment may still take one — live, dormant and holding what
-// the session's next box will adopt, or lapsed with no end written against it yet, where the end
-// the sweep is about to write would leave it dormant (mayGrant below) — and otherwise the
-// request is denied.
+// ApplyPageDecision decides a pending agent_secret record as the person signed in to the broker's
+// own approval page under session (approval.Page.decide, its one caller), whose login decides it.
+// approve=true mints the grant while the requesting enrollment may still take one — live,
+// dormant and holding what the session's next box will adopt, or lapsed with no end written
+// against it yet, where the end the sweep is about to write would leave it dormant (mayGrant
+// below) — and otherwise the request is denied.
+// Before anything else its transaction takes the lock of the session's person and reads the
+// session again under it (store.HoldBrowserSessionTx), and a session no longer live is
+// store.ErrBrowserSessionEnded, deciding nothing. The revoke of the account that signed the
+// session in (enroll.Service.RevokePersonSubject) deletes the session under that same lock, so
+// the decision either commits before the revoke reads the person's sessions, made while the
+// account still held the address, or waits for the revoke and decides nothing: no decision of a
+// replaced account commits after its revoke.
 // It re-reads the record body, recomputes its id, refuses any login but the record's own approver
 // (record.ErrNotApprover) whatever the record's state, and then a person Dispatch calls a
 // restricted member, approving or denying (ErrRestrictedDecider, restricted_approver.go), or one
@@ -1948,8 +1966,8 @@ func (m *Machine) endPending(ctx context.Context, scope store.PendingScope, arg 
 // under it. A session moves once per enrolment, so the attempt after a move reads one enrollment
 // under both of its locks; the bound on how many are made is the one enroll.Service.Create puts
 // on its own retries.
-func (m *Machine) ApplyDecision(ctx context.Context, recordID string, approve bool, login string) (Decision, error) {
-	return m.applyDecision(ctx, recordID, approve, byPerson(login))
+func (m *Machine) ApplyPageDecision(ctx context.Context, recordID string, approve bool, session store.BrowserSessionRef) (Decision, error) {
+	return m.applyDecision(ctx, recordID, approve, bySession(session))
 }
 
 // ApplyJudgeDecision approves recordID as the model judge running as modelID, writing everything
@@ -1968,7 +1986,7 @@ func (m *Machine) ApplyDecision(ctx context.Context, recordID string, approve bo
 // an approval can commit and grant nothing (decider.judgedRow). The caller's own map is left
 // as it was.
 //
-// This is the judge's one approval. A record the airlock rules do not let it decide is refused
+// This is the judge's one approval. A record its keys' judge tags do not let it decide is refused
 // with record.ErrNotJudgeable and nothing is written; a record a person decided first, or one
 // that expired, comes back as ErrTerminal or ErrExpired, and one the judge no longer holds as
 // ErrJudgeHoldEnded, which are the ordinary answers for a judge that lost the race and no fault
@@ -2012,12 +2030,12 @@ func (m *Machine) DenyJudged(ctx context.Context, recordID, modelID string, judg
 	return m.applyDecision(ctx, recordID, false, who)
 }
 
-// judgeKey reports whether the model judge decides a request for name: the airlock rules give
-// the judge seconds of it, and it is no secret a person approves every release of — one tagged
-// admin, or an anthropic-federation secret (policy.Secret.PersonApprovesEveryRelease) — whatever
-// the rules say.
+// judgeKey reports whether the model judge decides a request for name, and for how long: its
+// judge tag gives the judge seconds of it (policy.Set.JudgeSeconds), and it is no secret a person
+// approves every release of — one tagged admin, or an anthropic-federation secret
+// (policy.Secret.PersonApprovesEveryRelease) — whatever the judge tag says.
 func (m *Machine) judgeKey(set *policy.Set, name string) (uint32, bool) {
-	seconds, judged := m.Airlock.JudgeSeconds(name)
+	seconds, judged := set.JudgeSeconds(name)
 	if !judged || set.Secrets[name].PersonApprovesEveryRelease() {
 		return 0, false
 	}
@@ -2121,13 +2139,14 @@ const judgedKind = "request.judged"
 // leaves the first one nothing to write on, and ends no hold: the approval it could not read may
 // still hold the request's row, and its hold runs out by itself (JudgeHold), which hands the
 // request to its person. Every other row is written as given (JudgedWritten), with no read: an
-// approval the state machine refused before its COMMIT certainly wrote nothing.
-func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (JudgedWrite, error) {
+// approval the state machine refused before its COMMIT certainly wrote nothing. It answers what it
+// did with the row and, for a row it wrote, the verdict it wrote (JudgedLog).
+func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judged map[string]any) (JudgedLog, error) {
 	detail := judgedDetail(judged)
 	wrote := JudgedWritten
 	tx, err := m.Store.Pool.Begin(ctx)
 	if err != nil {
-		return "", err
+		return JudgedLog{}, err
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if applied, ok := detail["applied"].(string); ok && applied == AppliedUnknown {
@@ -2142,29 +2161,48 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 			// either way: the row is the one write a run that asked the model must keep.
 			_ = tx.Rollback(ctx)
 			if tx, err = m.Store.Pool.Begin(ctx); err != nil {
-				return "", err
+				return JudgedLog{}, err
 			}
 		case landed:
-			return JudgedAlreadyApplied, nil
+			return JudgedLog{Write: JudgedAlreadyApplied}, nil
 		default:
 			detail["applied"] = false
 		}
 	}
 	// The enrollment is the one the request hangs off now, never the one the record froze, as
-	// every other read of this package is (the package comment's moved session). No lock and no
-	// liveness test: the row is written for the trail, and a verdict on a request whose box has
-	// gone is as worth keeping as one on a live request.
-	var requestID string
-	var enr enrollmentRow
-	if err := tx.QueryRow(ctx, `select req.id, e.id, e.kind, e.operator, c.service, e.runtime_id, coalesce(e.session_id,'')
-		from requests req join enrollments e on e.id = req.enrollment_id
-		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1`, recordID).
-		Scan(&requestID, &enr.ID, &enr.Kind, &enr.Operator, &enr.Service, &enr.RuntimeID, &enr.SessionID); err != nil {
-		return "", err
+	// every other read of this package is (the package comment's moved session). No liveness
+	// test: the row is written for the trail, and a verdict on a request whose box has gone is as
+	// worth keeping as one on a live request. The request's row is taken for share, so a cancel or
+	// a decision already writing it is waited for and the verdict below is the state it left: the
+	// hand-over's update further down would wait for that write anyway, after the state was read.
+	// A row whose approval could not be read takes no lock, since that approval may still hold the
+	// request's row and the row must be written all the same; its verdict reads no state.
+	lock := " for share of req"
+	if wrote == JudgedAppliedUnknown {
+		lock = ""
 	}
+	var requestID, state string
+	var enr enrollmentRow
+	if err := tx.QueryRow(ctx, `select req.id, req.state, e.id, e.kind, e.operator, c.service, e.runtime_id, coalesce(e.session_id,'')
+		from requests req join enrollments e on e.id = req.enrollment_id
+		left join launcher_credentials c on c.id = e.launcher_credential_id where req.record_id=$1`+lock, recordID).
+		Scan(&requestID, &state, &enr.ID, &enr.Kind, &enr.Operator, &enr.Service, &enr.RuntimeID, &enr.SessionID); err != nil {
+		return JudgedLog{}, err
+	}
+	// The row's verdict is what became of the request, read here and never taken from the
+	// caller: a pending request is its person's from this row on, one already decided, cancelled
+	// or expired is not pending, and a row whose approval could not be read may yet be granted.
+	verdict := JudgedNotPending
+	switch {
+	case wrote == JudgedAppliedUnknown:
+		verdict = AppliedUnknown
+	case state == "pending":
+		verdict = JudgedHandedOver
+	}
+	detail["verdict"] = verdict
 	actor := record.JudgeActor(modelID)
 	if err := audit(ctx, tx, judgedKind, enr.ID, requestID, nil, actor, detail); err != nil {
-		return "", err
+		return JudgedLog{}, err
 	}
 	// The hand-over: a verdict that decides nothing ends the judge's hold in the transaction
 	// that records it, so the request is on its person's list the moment the row is, and
@@ -2173,14 +2211,14 @@ func (m *Machine) LogJudged(ctx context.Context, recordID, modelID string, judge
 	// and waiting on it would spend the time the row needs; the hold runs out by itself.
 	if wrote != JudgedAppliedUnknown {
 		if _, err := tx.Exec(ctx, `update requests set judge_until = null where id=$1 and judge_until is not null`, requestID); err != nil {
-			return "", err
+			return JudgedLog{}, err
 		}
 	}
 	if err := tx.Commit(ctx); err != nil {
-		return "", err
+		return JudgedLog{}, err
 	}
 	logGrantRow(judgedKind, actor, enr, requestID, "", rawJSON(detail))
-	return wrote, nil
+	return JudgedLog{Write: wrote, Verdict: verdict}, nil
 }
 
 // approvalLanded reports whether the request recordID names carries the request.judged row an
@@ -2232,6 +2270,14 @@ func landedWait(ctx context.Context) time.Duration {
 	return max(wait, time.Millisecond)
 }
 
+// JudgedLog is what LogJudged did with the row it was given (Write) and, for a row it wrote, the
+// verdict it wrote (Verdict): what became of the request, read in the row's own transaction.
+// Verdict is empty for JudgedAlreadyApplied, which writes nothing.
+type JudgedLog struct {
+	Write   JudgedWrite
+	Verdict string
+}
+
 // JudgedWrite is what LogJudged did with the row it was given.
 type JudgedWrite string
 
@@ -2251,6 +2297,19 @@ const (
 // applied: the approval's answer was lost, and so was the read of whether its own row is there.
 const AppliedUnknown = "unknown"
 
+// The verdict of a request.judged row: what became of the request, never what a model answered.
+// The model's answer for each key is the row's calls (judge.keyCall); this word is the outcome.
+// JudgedGranted and JudgedRefused are written by the decision's own transaction (decider.judgedRow),
+// which alone knows what it did; the judge writes JudgedHandedOver for a row that leaves the
+// request to its person (LogJudged), and JudgedNotPending for one written once the request was
+// already decided, cancelled or expired.
+const (
+	JudgedGranted    = "granted"
+	JudgedRefused    = "refused"
+	JudgedHandedOver = "handed to the person"
+	JudgedNotPending = "not pending"
+)
+
 // judgedDetail is a caller's verdict as the audit row holds it: a copy of what the caller gave,
 // and never nil. Never nil because audit.detail is NOT NULL and a nil map is a null parameter,
 // so a judge that recorded no reasoning records the empty object the column defaults to and
@@ -2265,12 +2324,15 @@ func judgedDetail(judged map[string]any) auditDetail {
 }
 
 // decider is who is deciding a record in one applyDecisionAttempt: a person, named by the login
-// their signed-in session proved, or the model judge, named by the id of the model that decided
-// and carrying the verdict it wrote. Exactly one of the two is ever set, and the constructors
-// below are the only way to build one, so "a judge with a login" and "nobody at all" are not
-// states a caller reaches by filling in a field.
+// their signed-in session proved and carrying that session, or the model judge, named by the id
+// of the model that decided and carrying the verdict it wrote. Exactly one of the two is ever
+// set, and the constructors below are the only way to build one, so "a judge with a login" and
+// "nobody at all" are not states a caller reaches by filling in a field.
 type decider struct {
-	login   string
+	login string
+	// session is the approval-page session a person decides under, which the attempt holds
+	// before anything else (store.HoldBrowserSessionTx); the zero value for the judge.
+	session store.BrowserSessionRef
 	modelID string
 	// judged is the judge's verdict, written as the request.judged audit row inside the
 	// decision's own transaction (D11); nil for a person, who writes no such row.
@@ -2280,10 +2342,12 @@ type decider struct {
 	refusal string
 }
 
-// byPerson is the decider of a decision a person made on the broker's own approval page: the
-// login their Dispatch session names, which the record's approver rule then canonicalizes
-// (record.Body.ApproverLogin).
-func byPerson(login string) decider { return decider{login: login} }
+// bySession is the decider of a decision a person made on the broker's own approval page under
+// session: the login that session is signed in as, which the record's approver rule then
+// canonicalizes (record.Body.ApproverLogin).
+func bySession(session store.BrowserSessionRef) decider {
+	return decider{login: session.Login, session: session}
+}
 
 // byJudge is the decider of a decision the model judge made: the id of the model and the verdict
 // it wrote. No login is ever recorded for it — the judge is no person, and the person who would
@@ -2307,6 +2371,12 @@ func byJudge(modelID string, judged auditDetail) decider {
 func (d decider) judgedRow(next string) auditDetail {
 	row := judgedDetail(d.judged)
 	row["applied"] = next == "granted"
+	// The verdict is what the request became, never what the judge asked for: an approval that
+	// granted nothing is the request's refusal, and the row says refused.
+	row["verdict"] = JudgedRefused
+	if next == "granted" {
+		row["verdict"] = JudgedGranted
+	}
 	return row
 }
 
@@ -2428,6 +2498,12 @@ const enrollmentWouldGoDormant = `coalesce(e.session_id,'') <> '' and e.carry_pr
 // request's own enrollment_id, and the attempt is abandoned when the two disagree. Nothing is
 // written against a box the session has moved off, and nothing is denied for a move that was
 // already done when the decision arrived.
+//
+// A person's attempt takes one lock before both, the person's own, and reads its approval-page
+// session under it (store.HoldBrowserSessionTx), deciding nothing for a session no longer live.
+// It is taken first, holding no row, because the subject revoke takes that lock before it locks
+// the enrollments of the logins it ends (enroll.Service.RevokePersonSubject), so an attempt that
+// waited for the revoke holds nothing the revoke waits for.
 func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, approve bool, who decider) (_ Decision, moved bool, _ error) {
 	// One policy snapshot answers this decision: the default lifetime, the re-evaluation below,
 	// and each name's profile fingerprint, which the request records as what it was decided
@@ -2491,6 +2567,11 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		return Decision{}, false, err
 	}
 	defer tx.Rollback(ctx)
+	if !who.isJudge() {
+		if err := store.HoldBrowserSessionTx(ctx, tx, who.session, time.Now()); err != nil {
+			return Decision{}, false, err
+		}
+	}
 
 	var body string
 	var createdAt time.Time
@@ -2580,7 +2661,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 		if err := verifyObject(); err != nil {
 			return Decision{}, false, err
 		}
-		// The judge's grant is held to the rules' bound on what a judge decides; its refusal
+		// The judge's grant is held to the bound its keys' judge tags give it; its refusal
 		// is not, since a refusal grants nothing. Whether it may write at all is the hold's,
 		// read below once the request's own state has been.
 		if approve {
@@ -2591,7 +2672,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 			if err != nil {
 				return Decision{}, false, err
 			}
-			if err := record.MayJudge(parsed, obj, m.Airlock.JudgeSeconds, neededADecision(requested)); err != nil {
+			if err := record.MayJudge(parsed, obj, set.JudgeSeconds, neededADecision(requested)); err != nil {
 				return Decision{}, false, fmt.Errorf("judge record %s: %w", recordID, err)
 			}
 		}
@@ -2634,7 +2715,7 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 	// denial before the policy is read, naming the request's first name, so it writes no grant
 	// whatever its names: currentPolicyAdmits passes over a name the policy no longer serves, so a
 	// request whose every name left the policy has no name for Evaluate to deny, and would
-	// otherwise be granted. currentPolicyAdmits still runs, so its refusals (the judge's own rules,
+	// otherwise be granted. currentPolicyAdmits still runs, so its refusals (the judge's own two,
 	// a withheld name no one may approve now) leave the request pending as they always did, and a
 	// name it denies is the one the denial names.
 	var denied *policyDenial
@@ -2780,12 +2861,14 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 }
 
 // decidedUnder records, for each name of a request an approval is granting, the fingerprint of
-// the profile that name is served as in set, the policy snapshot the approval was made against. A
-// request freezes each name's fingerprint when it is created (insertRequest), which is the whole
-// of it for a request the policy grants or denies at once; one that waits for a person — up to
-// PendingTTL, half a day — can be approved across a profiles roll, and what a release compares
-// against must be the entry the approval was given under, else the grant the person just made
-// ends on its first release with a reason that is not true (checkRelease's per-name comparison).
+// the profile that name is served as in set, the policy snapshot the approval was made against,
+// and the hosts and headers of the kind it is behind there (reachOf). A request freezes both for
+// each name when it is created (insertRequest), which is the whole of it for a request the policy
+// grants or denies at once; one that waits for a person — up to PendingTTL, half a day — can be
+// approved across a profiles roll, and what a release compares against must be the entry and the
+// kind the approval was given under, else the grant the person just made ends on its first release
+// with a reason that is not true (checkRelease's per-name comparisons), or a kind narrowed after
+// the request but before the approval leaves the grant wider than what the person approved.
 //
 // The requests row's rules_version is left as the request was written under, and is not moved
 // to this snapshot: it is what makes a release re-check the whole grant (checkRelease), and the
@@ -2794,19 +2877,20 @@ func (m *Machine) applyDecisionAttempt(ctx context.Context, recordID string, app
 // Moving it would skip the re-check for exactly those approvals. A version left behind only
 // makes the re-check run more often than it must, and the fingerprint it compares is this one.
 //
-// One statement over every name of the request, by name, since every row's digest is read from
-// the one snapshot: a stored secret served by its own name records "", as it does at creation.
-// The column keeps its name, airlock_digest, from before profiles. granted is the request's names,
-// read once by the approve path that calls this.
+// One statement over every name of the request, by name, since every row is read from the one
+// snapshot: a stored secret served by its own name behind no kind records "" and no kind, as it
+// does at creation. The column keeps its name, airlock_digest, from before profiles. granted is
+// the request's names, read once by the approve path that calls this.
 func decidedUnder(ctx context.Context, tx pgx.Tx, requestID string, granted []requestedSecret, set *policy.Set) error {
 	names := make([]string, len(granted))
 	digests := make([]string, len(granted))
+	kinds := make([]*string, len(granted))
 	for i, g := range granted {
-		names[i], digests[i] = g.name, set.Secrets[g.name].ProfileDigest
+		names[i], digests[i], kinds[i] = g.name, set.Secrets[g.name].ProfileDigest, reachOf(set, g.name).column()
 	}
-	_, err := tx.Exec(ctx, `update request_secrets s set airlock_digest = v.digest
-		from unnest($2::text[], $3::text[]) as v(name, digest)
-		where s.request_id = $1 and s.name = v.name`, requestID, names, digests)
+	_, err := tx.Exec(ctx, `update request_secrets s set airlock_digest = v.digest, airlock_kind = v.kind::jsonb
+		from unnest($2::text[], $3::text[], $4::text[]) as v(name, digest, kind)
+		where s.request_id = $1 and s.name = v.name`, requestID, names, digests, kinds)
 	return err
 }
 
@@ -2842,12 +2926,12 @@ const PolicyDeniedActor = "broker:policy"
 // otherwise it expires, or its session cancels it and asks again). requester carries the names the
 // session's operator withheld from it, each human tier to the session, so a withheld name that the
 // request got automatically before the withhold is its owner's to approve (anyone's, for a shared
-// secret), whoever the record waits on. A denial releases nothing, so ApplyDecision does
+// secret), whoever the record waits on. A denial releases nothing, so ApplyPageDecision does
 // not ask. A name the current policy grants at once, denies or no longer serves names no
 // approver, so it leaves the approval to the record's approver; Values refuses a grant of the last
 // two at its first read. The one deny it answers for is a name the requesters tag no longer lists
 // this session for (*policyDenial): no owner change could put it back in the session's reach, so
-// ApplyDecision records the request denied rather than leaving a card no one can answer. That
+// ApplyPageDecision records the request denied rather than leaving a card no one can answer. That
 // deny is read in a pass of its own over every name, ahead of every refusal below, because a
 // request holding such a name has to be answered however its other names read: in one pass the
 // first name that cannot be admitted wins, and both of the refusals below can come first — a
@@ -2879,12 +2963,11 @@ const PolicyDeniedActor = "broker:policy"
 //
 // A withheld name is hard to reach, since only names granted automatically are withheld and the
 // name must have changed tier while the request waited. An admin secret is easier: its owner
-// adds the tag while the model is answering, or a deployment writes a judge entry for a name
-// that already carries it, and the judge's own check — made against the policy snapshot of a
-// moment ago — would be the only thing refusing a credential whose tag promises that a person
-// approves every release of it (policy.TagAdmin). That promise is the secret's and not the rules
-// file's to make, so the author of the rules file cannot undo it here either. Both are one
-// comparison to close.
+// adds the tag while the model is answering, or someone writes a judge tag on a secret that
+// already carries it, and the judge's own check — made against the policy snapshot of a moment
+// ago — would be the only thing refusing a credential whose tag promises that a person approves
+// every release of it (policy.TagAdmin). That promise outranks the judge tag, so no judge tag
+// undoes it here either. Both are one comparison to close.
 //
 // A person's path never reaches either guard: a withheld name a person may approve is still
 // theirs to approve, and an admin secret is approved by the person its owner tag names, both on
@@ -2950,9 +3033,10 @@ func currentPolicyAdmits(requested []requestedSecret, set *policy.Set, requester
 
 // verifyRecordBody re-parses a credential_requests row's stored body and confirms it still hashes
 // to its own id. The append-only trigger should make a mismatch unreachable outside a direct
-// database tamper; ApplyDecision checks it before deciding a record rather than trusting the row
-// blindly. VerifyChain's own re-verification goes through the shared record.ChainVerifier instead
-// (m.Chain), which reproduces this same check as part of its larger chain.
+// database tamper; a decision (applyDecisionAttempt) checks it before deciding a record rather
+// than trusting the row blindly. VerifyChain's own re-verification goes through the shared
+// record.ChainVerifier instead (m.Chain), which reproduces this same check as part of its larger
+// chain.
 func verifyRecordBody(recordID, body string) (record.Body, error) {
 	parsed, err := record.VerifyBodyReproducesID(body, recordID)
 	if err != nil {
@@ -3061,10 +3145,10 @@ func (m *Machine) enrollment(ctx context.Context, id string) (enrollmentRow, err
 
 // lockLiveEnrollment takes enrollment id's row lock for share inside tx while the enrollment is
 // live (not revoked, lease not lapsed); pgx.ErrNoRows when it is not. Taken before tx writes a
-// request or grant row, the order ApplyDecision takes them in, it keeps endEnrollment off the row
-// until tx commits: EndLapsed skips the locked row and Revoke waits for it, and either then
-// cancels what tx wrote. An enrollment ended while tx waited for the lock is no longer live once
-// Postgres rechecks the row, so tx writes nothing on it.
+// request or grant row, the order applyDecisionAttempt takes them in, it keeps endEnrollment off
+// the row until tx commits: EndLapsed skips the locked row and Revoke waits for it, and either
+// then cancels what tx wrote. An enrollment ended while tx waited for the lock is no longer live
+// once Postgres rechecks the row, so tx writes nothing on it.
 func lockLiveEnrollment(ctx context.Context, tx pgx.Tx, id string) error {
 	var one int
 	return tx.QueryRow(ctx, `select 1 from enrollments where id=$1 and revoked_at is null and enrollment_lease_live(lease_expires_at) for share`, id).Scan(&one)

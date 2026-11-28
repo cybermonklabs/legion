@@ -1,40 +1,56 @@
-import type {
-  InboxRow,
-  MyReplyRow,
-  SessionAnswersResponse,
-  WhoamiResponse,
+import type { InboxRow, MyReplyRow, WhoamiResponse } from "@legion/contracts";
+import {
+  awaitsDecision,
+  inboxThreadRow,
+  serviceSubjectLabel,
+  signInScopes,
 } from "@legion/contracts";
-import { awaitsDecision, inboxThreadRow, serviceSubjectLabel } from "@legion/contracts";
 import { actorText, deletedMark, editedMark } from "../actor-text";
 import { textHead } from "../ask-answer";
 import { type CredentialPendingRow, DispatchServiceError } from "../dispatch-http";
 import { dispatchChildRef, dispatchDocumentRef, dispatchIssueRef } from "../dispatch-owner";
 import { messageFor } from "../errors";
-import { isNoAnswersRoute, renderSessionAnswersList } from "../session-answers";
-import type { DispatchToolResult, SessionContext } from "./context";
+import {
+  isNoAnswersRoute,
+  renderSessionAnswersList,
+  sessionAnswersWereLeftOut,
+} from "../session-answers";
+import { LEFT_OUT, leftOutAt, leftOutWords, type ReadTime, readTime } from "./as-of";
+import type { DispatchToolResult, ReadingContext, SessionContext } from "./context";
 import { dispatchAnswered, refusalWithCode } from "./failures";
 
 /**
- * `dispatch answers`: the answers this session's asks have been given since it last read them.
- * It names no owner, so it runs on the session's context alone.
+ * `dispatch answers`: the answers this session's asks have been given since it last read them;
+ * at a cut, those of the 72 hours before it. It names no owner, so it runs on the session's
+ * context alone.
  */
-export async function answersCommand(context: SessionContext): Promise<DispatchToolResult> {
-  const { configUrl, input, newClient: dispatchClient } = context;
+export async function answersCommand(
+  context: ReadingContext<SessionContext>
+): Promise<DispatchToolResult> {
+  const { configUrl, input, newClient: dispatchClient, reading } = context;
   const sessionId = input.sessionId?.trim();
   if (!sessionId) throw new Error("host session id is required for dispatch answers");
-  let response: SessionAnswersResponse;
-  try {
-    response = await dispatchClient().sessionAnswers(sessionId);
-  } catch (error) {
-    if (isNoAnswersRoute(error)) {
-      throw new Error(
-        `This Dispatch (${configUrl}) has no answers route yet: its build is older than the answers route.`
-      );
-    }
-    throw error;
+  const cut = reading.cut;
+  const response = await dispatchClient()
+    .sessionAnswers(sessionId, {}, cut)
+    .catch((error: unknown) => {
+      if (isNoAnswersRoute(error)) {
+        throw new Error(
+          `This Dispatch (${configUrl}) has no answers route yet: its build is older than the answers route.`
+        );
+      }
+      throw error;
+    });
+  if (cut !== undefined && sessionAnswersWereLeftOut(response, cut)) {
+    return {
+      text: `People's answers for this session were ${leftOutWords(cut.asOf)}.`,
+      details: { session: sessionId, since: response.since },
+    };
   }
+  // At a cut the window is the 72 hours before it, as the server reads it (decision 12 of
+  // dispatch://INFRA-4620): nothing the list prints counts from this machine's clock.
   return {
-    text: renderSessionAnswersList(response.items ?? [], { now: Date.now() }),
+    text: renderSessionAnswersList(response.items ?? [], readTime(cut)),
     details: { session: sessionId, since: response.since, total: response.total },
   };
 }
@@ -52,6 +68,10 @@ function whoamiPerson(identity: WhoamiResponse): string | null {
  * so it runs on the session's context alone. A read-only credential, which Dispatch names by
  * `read` among its scopes, is told it may only read, with its cut where it has one, in place of
  * the sentences about the issues it would create.
+ *
+ * It names the OAuth scopes the credential holds, with a word for none, as a Dispatch sign-in's
+ * person chose them, and carries them in its details; a Dispatch older than the field names none,
+ * and then neither does it.
  */
 export async function whoamiCommand(context: SessionContext): Promise<DispatchToolResult> {
   const { input, newClient: dispatchClient } = context;
@@ -66,29 +86,35 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
   // a session of its own: read either omission as that older build, not as "no session".
   const proved = identity.kind === "agent" ? (identity.session ?? null) : null;
   const project = identity.kind === "agent" ? (identity.project ?? null) : null;
+  // A broker-issued token's project scope; every other credential carries none, and a Dispatch
+  // older than the field leaves it out.
+  const projectScope = identity.kind === "agent" ? (identity.project_scope ?? null) : null;
   // A Dispatch that predates read-only tokens names no `read` and no cut, and has no read-only
   // credential to name.
   const readOnly = identity.scopes?.includes("read") === true;
   const cut = identity.kind === "agent" ? (identity.cut ?? null) : null;
+  const scopes = identity.scopes ?? null;
   // The session Dispatch records the writes as: the one the credential proved, else this host's.
   const session = proved ?? sessionId;
   const unowned =
     "no owner, so an issue you create without an assignee takes its parent's assignee when the parent is in the same project, else the project's default assignee, which every project names, so the issue always has one.";
   // Whether Dispatch refuses every write this credential makes until a person signs in on its
   // machine (SIGN_IN_REQUIRED). Dispatch answers it as sign_in_required, from the same decision
-  // its write check makes, so an exchange entry's token that names its account and no person,
-  // whose writes Dispatch records under that account, is not told it may not write. whoami is
-  // where a person asks what their credential may do, so for a caller that is refused it says so
-  // rather than describing the issue creation the server would refuse, and names the command that
-  // gets them a write. A Dispatch that predates the field omits it, and then the rule that
-  // Dispatch kept is read from the shape: a broker token is the one credential that proves a
-  // session of its own, so a caller that names a service and proves a session is the machine
-  // nobody signed in on, which that Dispatch refuses every write. A verified service-account
-  // token names a service and proves no session; it writes as before, and keeps the sentence it
-  // had. A read-only credential is told that it reads only before this is read: Dispatch answers
-  // it false, and no sign-in would let it write.
+  // its write check makes, so a job's token and an exchange entry's token that names its account
+  // and no person, whose writes Dispatch records under their service, are not told they may not
+  // write. whoami is where a person asks what their credential may do, so for a caller that is
+  // refused it says so rather than describing the issue creation the server would refuse, and
+  // names the command that gets them a write. A Dispatch that predates the field omits it, and
+  // then the rule that Dispatch kept is read from the shape: a broker token is the one credential
+  // that proves a session of its own, so a caller that names a service and proves a session is
+  // the machine nobody signed in on, which that Dispatch refuses every write. A verified
+  // service-account token names a service and proves no session; it writes as before, and keeps
+  // the sentence it had. A read-only credential is told that it reads only before this is read:
+  // Dispatch answers it false, and no sign-in would let it write.
+  const brokerService = owner === null && service !== null && proved !== null;
   const answered = identity.kind === "agent" ? identity.sign_in_required : undefined;
-  const signInNeeded = answered ?? (owner === null && service !== null && proved !== null);
+  const signInNeeded = answered ?? brokerService;
+  const writesAsService = brokerService && !signInNeeded;
   // Who the session is, as each sentence names it: the person it acts for, else the service it
   // runs as. The text names the identity the way every other surface does; details keeps the
   // subject whole, because that is the persisted value.
@@ -116,16 +142,35 @@ export async function whoamiCommand(context: SessionContext): Promise<DispatchTo
     acting = `Session ${session} ${who}: issues you create without an assignee are assigned to ${owner}.`;
   } else if (signInNeeded) {
     acting = `Session ${session} ${who} and no person, so it may read but Dispatch refuses every write it makes: run \`agent-secrets login\` on this machine to write as yourself.`;
+  } else if (writesAsService) {
+    acting = `Session ${session} ${who} and no person, and writes as that service with ${unowned}`;
   } else if (service !== null) {
     acting = `Session ${session} ${who}: ${unowned}`;
   } else {
     acting = `Session ${session} runs under the shared token: ${unowned}`;
   }
-  const writable =
-    project !== null && !readOnly ? ` It may write project ${project} and no other.` : "";
+  // A token that names a project also writes other projects' objects, as a credential that
+  // names none does, except in a private project it does not name. So the line names the
+  // project and claims no limit on what the token writes. A job's public token and an exchange
+  // entry's token naming its account name no one project, and Dispatch holds them to none: a
+  // job entry's list of private projects limits none of its writes at this release. A read-only
+  // credential's line names none, as it names no write.
+  const projectSentence = readOnly
+    ? ""
+    : project !== null
+      ? ` Its token names project ${project}.`
+      : writesAsService
+        ? " It names no one project, so it may write wherever a token that names no project may."
+        : "";
+  const holds =
+    scopes === null
+      ? ""
+      : scopes.length === 0
+        ? " Its credential holds no scope."
+        : ` Its credential holds the ${scopes.length === 1 ? "scope" : "scopes"} ${scopes.join(", ")}.`;
   return {
-    text: acting + elsewhere + writable,
-    details: { session, owner, service, project },
+    text: acting + elsewhere + projectSentence + holds,
+    details: { session, owner, service, project, project_scope: projectScope, scopes },
   };
 }
 
@@ -177,10 +222,11 @@ function inboxSnoozed(row: InboxRow, now: number): boolean {
  * Which band a row sits in: the page's `sectionOf` (`.../features/inbox/sections.ts`). A snooze
  * the person set wins over everything, because deferring an ask is them saying it does not need
  * them now; every other row sits under whose turn it is. A row the Inbox lists without a turn
- * belongs to no band, as on the page, and so is listed under no heading.
+ * belongs to no band, as on the page, and so is listed under no heading. At a cut (`asOf`) no
+ * snooze is known, so every row sits under whose turn it is.
  */
-function inboxSection(row: InboxRow, now: number): "agent" | "human" | "later" | undefined {
-  if (inboxSnoozed(row, now)) return "later";
+function inboxSection(row: InboxRow, time: ReadTime): "agent" | "human" | "later" | undefined {
+  if ("now" in time && inboxSnoozed(row, time.now)) return "later";
   const waiting = row.waiting_on;
   return waiting === "agent" || waiting === "human" ? waiting : undefined;
 }
@@ -203,10 +249,14 @@ function inboxAskOwner(row: InboxRow): { readonly label: string; readonly ref: s
   return { label: row.id, ref: row.id };
 }
 
-function inboxAskLine(row: InboxRow): string {
+function inboxAskLine(row: InboxRow, asOf: string | undefined): string {
   const { label, ref } = inboxAskOwner(row);
   const priority = row.priority === null ? "P-" : `P${row.priority}`;
-  return `- ${label} · ${priority} · ${row.kind} · ${textHead(row.question, INBOX_QUESTION_HEAD)} · ${ref}`;
+  // A read at a cut leaves out an ask's question where a restore changed its wording with no event.
+  const question: string | undefined = row.question;
+  const text =
+    question === undefined ? leftOutWords(asOf) : textHead(question, INBOX_QUESTION_HEAD);
+  return `- ${label} · ${priority} · ${row.kind} · ${text} · ${ref}`;
 }
 
 /** What an unread thread's line is named by: the issue key of a thread on an issue, the slug of
@@ -260,20 +310,38 @@ function inboxThreadLine(row: MyReplyRow, now: number): string {
  *  the broker refuses every decision of it, so, as the Inbox page links that row nowhere, the
  *  line prints no `approve_url` the broker still sends. A row that names no session leaves that
  *  field out rather than printing two dashes, and a machine login, which is decided with
- *  `dispatch` rather than on a broker page, carries no url to print. */
+ *  `dispatch` rather than on a broker page, carries no url to print.
+ *
+ *  A row whose `dispatch_scopes` is a list is a Dispatch sign-in (`signInScopes`, the rule the
+ *  Inbox page reads too): its line names it as one, the scopes it asks for after what it names
+ *  ("no scope" for none), and, in place of the session a sign-in never names, the reason its
+ *  request gave, or that it gives none. Anybody who reaches the broker's device route writes
+ *  that reason, and the named person's agents read this line, so it is marked as the requester's
+ *  own words, unchecked, and quoted as JSON, which keeps a reason holding a line break or a
+ *  control character on its one line. A row with no `dispatch_scopes`, a machine login's, a
+ *  secret request's or one from a broker older than sign-ins, prints as it did before them. */
 function credentialRequestLine(request: CredentialPendingRow): string {
   const session = request.session ?? null;
   const pending = awaitsDecision(request);
+  const asked = signInScopes(request);
+  const reason = request.reason ?? "";
   return [
-    `- ${request.kind}`,
+    asked === null ? `- ${request.kind}` : "- Dispatch sign-in",
     (request.identifiers ?? []).join(", "),
+    ...(asked === null ? [] : [`asks for ${asked.join(", ") || "no scope"}`]),
     request.requested_at,
     ...(pending
       ? []
       : [request.expires_at === undefined ? "expired" : `expired ${request.expires_at}`]),
-    ...(session === null
-      ? []
-      : [`session request=${session.request ?? "-"}, enrollment=${session.enrollment ?? "-"}`]),
+    ...(asked !== null
+      ? [
+          reason === ""
+            ? "gives no reason"
+            : `requester's words (unchecked): ${JSON.stringify(reason)}`,
+        ]
+      : session === null
+        ? []
+        : [`session request=${session.request ?? "-"}, enrollment=${session.enrollment ?? "-"}`]),
     ...(!pending || request.approve_url === undefined ? [] : [request.approve_url]),
   ].join(" · ");
 }
@@ -321,10 +389,11 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  * `Needs you` is the page's `needsYou` (`.../features/inbox/BlockedOnYou.tsx`): the asks waiting
  * on a person that the viewer has not deferred and that wait on them (`waitingOnYou`),
  * plus every credential request still waiting on a decision, which is the viewer's by
- * construction because the list is read as `?approver=me`. Here that is the band's own rows and
+ * construction because the list is read as `?approver=me`. Its asks are the band's own rows and
  * nothing narrower, since `?assignee=me` keeps only the asks that wait on the caller, as the
- * page's default view does; counting the rows it prints is therefore the page's rule, and it is
- * the one count that cannot disagree with the lines under it. An expired credential request
+ * page's default view does. The count is the page's rule: those rows plus the pending credential
+ * requests, which are listed under `Credential requests` and not under this heading, so the
+ * count is higher than the rows under it by that number. An expired credential request
  * waits on nobody (`awaitsDecision`), so it is not counted here, as the page does not count it,
  * though `Credential requests` lists and counts it until somebody dismisses it.
  *
@@ -334,71 +403,102 @@ function sideRead<T>(settled: SettledSideRead<T>, what: string, warnings: string
  *
  * `Credential requests` is the broker's list as Dispatch relays it, in its order: the pending
  * requests first, then the expired ones nobody has dismissed.
+ *
+ * Every band and age counts from `time`: the present, or the cut (`asOf`) the Inbox was read at.
+ * At a cut no event records a snooze, so `Later` is left out and each row it would hold sits
+ * under whose turn it is.
  */
 function formatInboxSummary(
   rows: readonly InboxRow[],
-  threads: readonly MyReplyRow[],
-  requests: readonly CredentialPendingRow[],
-  now: number
+  threads: readonly MyReplyRow[] | undefined,
+  requests: readonly CredentialPendingRow[] | undefined,
+  time: ReadTime
 ): string {
   const sections = { agent: [] as InboxRow[], human: [] as InboxRow[], later: [] as InboxRow[] };
   for (const row of rows) {
-    const section = inboxSection(row, now);
+    const section = inboxSection(row, time);
     if (section !== undefined) sections[section].push(row);
   }
+  const asOf = "asOf" in time ? time.asOf : undefined;
   return [
-    `Needs you ${sections.human.length + requests.filter(awaitsDecision).length}`,
-    ...sections.human.map(inboxAskLine),
+    `Needs you ${sections.human.length + (requests ?? []).filter(awaitsDecision).length}`,
+    ...sections.human.map((row) => inboxAskLine(row, asOf)),
     "",
     `Waiting on agents ${sections.agent.length}`,
-    ...sections.agent.map(inboxAskLine),
+    ...sections.agent.map((row) => inboxAskLine(row, asOf)),
     "",
-    `Later ${sections.later.length}`,
-    ...sections.later.map(inboxAskLine),
-    "",
-    `Unread threads ${threads.length}`,
-    ...threads.map((row) => inboxThreadLine(row, now)),
-    "",
-    `Credential requests ${requests.length}`,
-    ...requests.map(credentialRequestLine),
+    ...("asOf" in time
+      ? [`Later ${leftOutAt(time.asOf)}`]
+      : [
+          `Later ${sections.later.length}`,
+          ...sections.later.map((row) => inboxAskLine(row, asOf)),
+        ]),
+    // A band read at a cut from a route that holds no history is left out whole, and the
+    // `Left out at` line names it: only a read of the present lists the threads, whose ages
+    // count from its clock.
+    ...(threads === undefined || !("now" in time)
+      ? []
+      : [
+          "",
+          `Unread threads ${threads.length}`,
+          ...threads.map((row) => inboxThreadLine(row, time.now)),
+        ]),
+    ...(requests === undefined
+      ? []
+      : ["", `Credential requests ${requests.length}`, ...requests.map(credentialRequestLine)]),
   ].join("\n");
 }
 
 /**
- * `dispatch inbox`: what the person's Inbox page shows. It names no owner, so it runs on the
- * session's context alone.
+ * `dispatch inbox`: what the person's Inbox page shows; at a cut, the asks open then, with no
+ * unread threads and no credential requests, which hold no history. It names no owner, so it
+ * runs on the session's context alone.
  */
-export async function inboxCommand(context: SessionContext): Promise<DispatchToolResult> {
+export async function inboxCommand(
+  context: ReadingContext<SessionContext>
+): Promise<DispatchToolResult> {
+  const {
+    reading: { identity, cut },
+  } = context;
   const client = context.newClient();
-  // All four reads at once: they depend on nothing of each other, and the credential list is
-  // the slow one, since Dispatch relays it to the secrets broker.
-  const pending = settleSideRead(client.credentialPending());
-  const unread = settleSideRead(client.myReplies());
-  let identity: WhoamiResponse;
+  // The three reads at once: they depend on nothing of each other, and the credential list is
+  // the slow one, since Dispatch relays it to the secrets broker. Whoami was read before them
+  // (`readAtCut`). At a cut the two side reads are left out: their routes hold no history.
+  const pending = cut === undefined ? settleSideRead(client.credentialPending()) : undefined;
+  const unread = cut === undefined ? settleSideRead(client.myReplies()) : undefined;
+  if (cut !== undefined) {
+    cut.leave(LEFT_OUT.unreadThreads);
+    cut.leave(LEFT_OUT.credentialRequests);
+    cut.leave(LEFT_OUT.snoozes);
+  }
   let rows: InboxRow[];
   try {
-    [identity, rows] = await Promise.all([client.whoami(), client.inbox("me")]);
+    rows = await client.inbox("me", cut);
   } catch (error) {
     // The inbox route needs `person`, and a credential without it is refused 403
     // OAUTH_SCOPE_REQUIRED, whose message names the scope: the code is what the caller acts
-    // on, so it reaches the text. `whoami` needs no scope.
+    // on, so it reaches the text.
     throw refusalWithCode(error);
   }
   const viewer = whoamiPerson(identity);
   const warnings: string[] = [];
   // A Dispatch with no secrets broker answers null, which is an ordinary deployment: it has
   // no credential requests, so it lists and counts none.
-  const requests: readonly CredentialPendingRow[] =
-    sideRead(await pending, "credential requests", warnings)?.pending ?? [];
-  const threads: readonly MyReplyRow[] =
-    sideRead(await unread, "unread threads", warnings)?.rows ?? [];
+  const requests: readonly CredentialPendingRow[] | undefined =
+    pending === undefined
+      ? undefined
+      : (sideRead(await pending, "credential requests", warnings)?.pending ?? []);
+  const threads: readonly MyReplyRow[] | undefined =
+    unread === undefined
+      ? undefined
+      : (sideRead(await unread, "unread threads", warnings)?.rows ?? []);
   return {
-    text: formatInboxSummary(rows, threads, requests, Date.now()),
+    text: formatInboxSummary(rows, threads, requests, readTime(cut)),
     details: {
       viewer,
       asks: rows.length,
-      unread_threads: threads.length,
-      credential_requests: requests.length,
+      ...(threads === undefined ? {} : { unread_threads: threads.length }),
+      ...(requests === undefined ? {} : { credential_requests: requests.length }),
     },
     ...(warnings.length === 0 ? {} : { warnings }),
   };

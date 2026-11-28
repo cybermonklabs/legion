@@ -15,6 +15,7 @@ import (
 )
 
 func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
+	t.Parallel()
 	for _, which := range []string{"no entry", "entry without task", "started", "empty token", "missing record", "cleared issue", "cleared tree"} {
 		t.Run(which, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -33,9 +34,9 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 			if which == "cleared issue" || which == "cleared tree" {
 				seedRecord(t, pool, func(tx pgx.Tx) error {
 					if which == "cleared tree" {
-						return record.NewStore().ClearTreeGeneration(t.Context(), tx, issue.Tree, time.Now())
+						return engine.ClearTreeGeneration(t.Context(), tx, issue.Tree, time.Now())
 					}
-					return record.NewStore().ClearGeneration(t.Context(), tx, issue.Key, time.Now())
+					return engine.ClearGeneration(t.Context(), tx, issue, time.Now())
 				})
 				issue.Generation++
 				seedIssue(t, pool, issue)
@@ -94,6 +95,7 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 }
 
 func TestAStoppedStepsLateReportNeedsItsStartedRun(t *testing.T) {
+	t.Parallel()
 	for _, started := range []bool{true, false} {
 		name := "started"
 		if !started {

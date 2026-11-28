@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"os"
 	"os/exec"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/claudebridge"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -22,6 +25,7 @@ import (
 
 // The command's refusals come before anything starts, each naming what is missing, as a usage error.
 func TestClaudeBridgeRefusesWhatItCannotRun(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion claude-bridge` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	t.Setenv("LEGION_ROLE", "implementer")
 	t.Setenv("LEGION_ISSUE", "ACME-7")
@@ -42,6 +46,7 @@ func TestClaudeBridgeRefusesWhatItCannotRun(t *testing.T) {
 
 // A claude that cannot be started is the bridge's failure, exit 1, naming it.
 func TestClaudeBridgeNamesAClaudeItCannotStart(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process; it runs `legion claude-bridge` in this process, which points the process's standard logger at the test's own stderr (podLogs).
 	t.Setenv("CLAUDE_CONFIG_DIR", t.TempDir())
 	// The bridge opens its inbox under the process TMPDIR, so a test that runs it in-process
 	// places that directory itself, with room for the inbox's socket.
@@ -57,6 +62,7 @@ func TestClaudeBridgeNamesAClaudeItCannotStart(t *testing.T) {
 // the bridge ends then as it ends on SIGTERM, stopping Claude Code and removing its inbox's
 // directory, so nothing it made stays in TMPDIR.
 func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
+	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
@@ -78,6 +84,7 @@ func TestClaudeBridgeRemovesItsInboxWhenHungUp(t *testing.T) {
 // Claude Code's last lines are still read and answered: a frame the bridge writes then fails, is
 // logged, and ends nothing, rather than SIGPIPE ending the bridge before it removes its inbox.
 func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
+	t.Parallel()
 	// The stand-in answers the bridge's SIGTERM with a tool call, which the bridge shows on the pane
 	// with a frame to the shim.
 	toolCall := filepath.Join(t.TempDir(), "tool-call.json")
@@ -98,6 +105,7 @@ func TestClaudeBridgeOutlivesTheShimItsPaneTookWithIt(t *testing.T) {
 // Claude Code ends a turn and exits while the shim reads slowly: the bridge waits for the shim to
 // read every frame, the turn's agent_end among them, whole, and exits as Claude Code did.
 func TestClaudeBridgeExitsOnceTheShimHasReadEveryFrame(t *testing.T) {
+	t.Parallel()
 	turn := filepath.Join(t.TempDir(), "turn")
 	content := strings.Repeat("x", 256<<10)
 	if err := os.WriteFile(turn, []byte(`{"type":"assistant","message":{"content":[{"type":"text","text":"WAITING on CI"},`+
@@ -167,10 +175,11 @@ func goneShim(t *testing.T) *os.File {
 }
 
 // The bridge's own lines pass the URL rule. A turn's outcome that cannot be reported is logged
-// with the error of the post, which quotes the daemon's URL as the pane names it
-// (LEGION_DAEMON_URL), user name and query included: the line keeps the URL's host and path, and
-// neither the user name nor the query reaches the pane.
+// through redact.RequestError, for the report's route under the daemon's URL as the pane names it
+// (LEGION_DAEMON_URL), user name and query included: the line holds redact.RequestError's text for
+// that route and the dial's error, and neither the user name nor the query reaches the pane.
 func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
+	t.Parallel()
 	stdout, err := os.Create(filepath.Join(t.TempDir(), "stdout"))
 	if err != nil {
 		t.Fatal(err)
@@ -178,6 +187,7 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	defer stdout.Close()
 	// A port nothing listens on, so the report's post fails at its dial.
 	const daemon = "127.0.0.1:1"
+	daemonURL := "http://legion-reader@" + daemon + "/daemon?token=planted-query-token-3"
 	bootToken := filepath.Join(t.TempDir(), "boot-token")
 	if err := os.WriteFile(bootToken, []byte("boot-token\n"), 0o600); err != nil {
 		t.Fatal(err)
@@ -186,14 +196,18 @@ func TestClaudeBridgeLogsNoURLCredentials(t *testing.T) {
 	p := startClaudeBridge(t, "touch \"$CLAUDE_STANDIN_READY\"\n"+
 		`printf '%s\n' '{"type":"system","subtype":"init"}' '{"type":"result","subtype":"success","is_error":false}'`+"\n"+
 		"exec sleep 86400\n", stdout,
-		"LEGION_DAEMON_URL=http://legion-reader@"+daemon+"/daemon?token=planted-query-token-3",
+		"LEGION_DAEMON_URL="+daemonURL,
 		"LEGION_BOOT_TOKEN_FILE="+bootToken, "LEGION_GENERATION=4")
 	p.await("the failed report logged", func() bool {
 		return strings.Contains(p.logged(), "could not report the outcome of turn 1")
 	})
 	p.hangUp()
 	logged := p.logged()
-	if want := `Post "http://` + daemon + `/daemon"`; !strings.Contains(logged, want) {
+	// The rule's own text for the failure, read from the rule and never written out here, for the
+	// route the bridge posts to (internal/claudebridge's turnReports.url): the route, then the
+	// dial's error, which begins with the address it dialed.
+	route := daemonURL + "/legion/v1/claims/turn-outcome"
+	if want := redact.RequestError("the daemon", route, errors.New("dial tcp "+daemon+": ")).Error(); !strings.Contains(logged, want) {
 		t.Errorf("the bridge logged:\n%s\nwant the report's failure naming %s", logged, want)
 	}
 	for _, credential := range []string{"legion-reader", "planted-query-token-3"} {
@@ -224,7 +238,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...stri
 	p := &claudeBridgeProcess{t: t, tmp: testtmp.Dir(t, claudebridge.InboxLongestPath),
 		stderr: filepath.Join(dir, "stderr"), exited: make(chan struct{})}
 	claude := filepath.Join(dir, "claude")
-	if err := os.WriteFile(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
+	if err := execfile.Write(claude, []byte("#!/bin/sh\n"+script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	stderr, err := os.Create(p.stderr)
@@ -233,7 +247,7 @@ func startClaudeBridge(t *testing.T, script string, stdout *os.File, env ...stri
 	}
 	defer stderr.Close()
 	ready := filepath.Join(dir, "ready")
-	p.cmd = exec.Command(os.Args[0], "claude-bridge", "--", claude, "--resume", "s")
+	p.cmd = exec.Command(legionCopy(t), "claude-bridge", "--", claude, "--resume", "s")
 	p.cmd.Env = append(os.Environ(), testMainEnv+"=1", "TMPDIR="+p.tmp, "CLAUDE_CONFIG_DIR="+t.TempDir(),
 		"LEGION_ROLE=implementer", "LEGION_ISSUE=ACME-7", "CLAUDE_STANDIN_READY="+ready)
 	p.cmd.Env = append(p.cmd.Env, env...)

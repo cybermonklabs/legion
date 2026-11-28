@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  A root's step that waits on an accepted parent's approval request no longer waits past that
+  acceptance. When a parent that Dispatch shows accepted enters its wait on open children, the
+  daemon writes in_progress over that status. In the same transaction, and before that write, it
+  now ends each step that waits on the parent's request, as the pending-basis read ends it for an
+  accepted parent. A step already open on that approval stays open. A rollback to an earlier
+  release loses this end, so such a wait can outlive the acceptance (docs/kubernetes.md, under the
+  daemon API contract entry 20261125181104).

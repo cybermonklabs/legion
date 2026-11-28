@@ -24,12 +24,15 @@ import { stubDeviceLoginBroker } from "@legion/cipher-client/test/device-logins"
 import { DISPATCH_READ_ONLY_TOKEN } from "@legion/contracts";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { type FakeDispatchCall, startFakeDispatch } from "../../test/fake-dispatch";
+import { keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import { runDispatchCli } from "../dispatch-cli";
 import { activeDispatchSettings } from "../dispatch-config";
 import { resetAdviceMemory } from "../dispatch-execute";
 import { DispatchClient } from "../dispatch-http";
 import { sessionDispatchSettings, sessionSettings } from "../session-settings";
 import { brokerStandIns } from "./broker-stand-ins";
+import { WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 const { servers, tempDir, stubBroker } = brokerStandIns("dispatch-token-files");
 
@@ -93,6 +96,8 @@ const READS: Readonly<Record<string, unknown>> = {
     { key: "CORE", name: "Core", open_asks: 0, created_at: "2026-09-01T00:00:00Z" },
   ],
   "/api/v1/issues/DSP-1": issue,
+  // Every read command reads whoami first (`whoami-stand-in.ts`).
+  "/api/v1/whoami": WHOAMI_NO_CUT,
   "/api/v1/issues/DSP-1/events": [],
   "/api/v1/issues/DSP-1/references": { members: [], truncated: false },
   "/api/v1/issues/DSP-1/coverage": {
@@ -116,11 +121,14 @@ function dispatchAnswer(call: FakeDispatchCall): Response {
     return Response.json(READ_ONLY_REFUSAL, { status: 403 });
   }
   if (call.method === "POST" && pathname === "/api/v1/issues/DSP-1/messages") {
-    return Response.json({
-      id: "message-1",
-      issue_key: "DSP-1",
-      advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
-    });
+    return Response.json(
+      routeAnswer("POST /api/v1/issues/{key}/messages", {
+        id: "message-1",
+        issue_key: "DSP-1",
+        advice: { issue_status: "in_progress", session_writes_since_human: 0, your_open_asks: [] },
+      }),
+      { status: 201 }
+    );
   }
   return Response.json(
     { code: "NOT_FOUND", error: `the stand-in serves no ${call.method} ${pathname}` },
@@ -132,9 +140,14 @@ function dispatchAnswer(call: FakeDispatchCall): Response {
 function standInDispatch(): { readonly url: string; readonly presented: Presented[] } {
   const presented: Presented[] = [];
   const server = startFakeDispatch({
+    // Behind Dispatch's keyed layer: the message's 201 names the write's key back; the read-only
+    // refusal is the token check's, before the layer, and names none.
     handler: (call) => {
       presented.push(presentedOf(call));
-      return dispatchAnswer(call);
+      return keyedLayer((_url: string, _init: RequestInit) => dispatchAnswer(call))(
+        String(call.url),
+        { headers: call.headers }
+      );
     },
   });
   servers.push(server);
@@ -522,6 +535,40 @@ describe("the dispatch command's token files", () => {
       );
     expect(refusal).toContain("DISPATCH_URL");
     expect(refusal).not.toContain(copy.token);
+  });
+
+  test("`dispatch api` sends the file's token and a proof made with the file's key, with a host and with none", async () => {
+    const dispatch = standInDispatch();
+    const copy = copyFiles();
+    const hosted = commandEnvironment(copy, dispatch.url);
+    // With no host, as in a job no plugin runs: no DISPATCH_HOST, no envoy.json and no parent
+    // process that names one.
+    const unhosted = commandEnvironment(copy, dispatch.url, {
+      DISPATCH_HOST: undefined,
+      ENVOY_CONFIG_FILE: undefined,
+    });
+    for (const env of [hosted, unhosted]) {
+      let stdout = "";
+      let stderr = "";
+      const code = await runDispatchCli(["api", "--path", "/api/v1/issues/DSP-1"], env, {
+        stdout: (text) => {
+          stdout += text;
+        },
+        stderr: (text) => {
+          stderr += text;
+        },
+        readText: (file) => readFileSync(file, "utf8"),
+        cwd: copy.dir,
+        nearestAncestorNamed: () => undefined,
+      });
+      expect([env.DISPATCH_HOST, code, stderr]).toEqual([env.DISPATCH_HOST, 0, ""]);
+      expect(JSON.parse(stdout)).toEqual(issue);
+      const presented = dispatch.presented.splice(0);
+      expect(presented.map(({ method, url }) => `${method} ${url.pathname}`)).toEqual([
+        "GET /api/v1/issues/DSP-1",
+      ]);
+      expectFileCredential(presented[0] as Presented, copy.token, copy.key, dispatch.url);
+    }
   });
 
   test("a write whose result names an owner sends the listener nothing of the file's token", async () => {

@@ -74,7 +74,7 @@ func fetchControllerCredential(ctx context.Context, daemonURL, secret, defaultOw
 	const route = "/legion/v1/controller/github-credential"
 	status, body, err := operator{base: daemonURL}.do(ctx, http.MethodPost, route, api.ControllerCredentialRequest{Secret: secret, Default: defaultOwner})
 	if err != nil {
-		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", daemonURL, err)
+		return ghconfig.Bundle{}, nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	if status/100 != 2 {
 		var failure api.Failure

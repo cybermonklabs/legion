@@ -11,14 +11,22 @@
 # plugin-pack.py: with them goes the Bun install, which no other test of this module needs, and with
 # that the lockfile and the workspace manifests, and with them skills/ and the prepack script
 # that stages each plugin's partition of it, which no other test of this module reads.
-# The plain step leaves two tests out as well, internal/supervise's table pins
+# The plain step leaves three tests out as well. Two are internal/supervise's table pins
 # (SUPERVISE_TABLE_TESTS), which the text-check job runs by name: they read that package's
 # source and the source of everything it imports, which their type-checker reads from source
 # too (`packages/daemon/internal/supervise/table_test.go#importer.ForCompiler`) and which of this repository
-# is packages/daemon's own packages, so no read leaves this job with them.
+# is packages/daemon's own packages, so no read leaves this job with them. The third is
+# internal/ompsessions' left-setting test (SESSION_CLIENT_LEFT_TESTS), which a step of its own in
+# plain leg 2 runs by name with -v, so that its summary line reaches the log: the step runs the
+# package the plain step runs there, and starts its servers from PgBouncer, which the plain legs'
+# pull step pulls, and PostgreSQL 16, which a pull step of leg 2 alone pulls, so no read leaves
+# this gate with it.
 # Every step here is in a job of the file daemon-go calls whose id is not ci.yaml's, so each
 # citation names that file (DAEMON_FILE).
 DAEMON_FILE = job_file("daemon-go")
+# The pull every plain leg runs of the images their tests start, PostgreSQL 16 apart, which leg 2
+# pulls in a step of its own; the reads below cite both.
+DAEMON_PULL_STEP = "Pull the NATS and PgBouncer test container images"
 GATE = gate("daemon_go_tests", "daemon-go", runs=[
     script_run("scripts/e2e/stage1-skeleton.sh", 'go build -o "$work/legion" ./cmd/legion',
                at(DAEMON_PLAIN_LEGS_JOB, "Stage 1 live proof", DAEMON_FILE), DAEMON, ["./cmd/legion"], mode="build"),
@@ -30,13 +38,17 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     # check-ci-filters.sh reduces only a one-line go test, so each legs step's whole script is
     # pinned, as the envoy-go unit step's is: its packages come from .github/scripts/go_legs.py
     # through xargs, and it carries a -skip besides, neither of which is a form that check
-    # reduces. Each Run names every package of every leg of its kind, as go-legs.yaml lists them:
-    # each leg runs the step over its own share, so the legs together compile and run those
-    # packages, each once. What a leg compiles is every test file of every package it runs, the
+    # reduces. Each Run names every package the legs of its kind run: the race Run the packages
+    # go-legs.yaml lists in them, and the plain Run those it lists in the plain legs and each
+    # package `go list ./...` prints that no place names, which the last plain leg, the job
+    # `unlisted` names, runs (DAEMON_PLAIN_PACKAGES, from leg_run_packages), so a change to only
+    # such a package's test files starts this job. Each leg runs the step over its own share, so
+    # the legs together compile and run those packages, each once. What a leg compiles is every
+    # test file of every package it runs, the
     # skipped tests' included: -skip leaves a test out of the run, never out of the build, so the
     # closure here is the step's whole closure and only those tests' own reads (the plugin-pack
     # gate, plugin-pack.py beside this file) leave this gate. The plain Run names the packages
-    # the legs list rather than the superset ./...: the race Run claims the five packages the
+    # the legs run rather than the superset ./...: the race Run claims the five packages the
     # plain legs leave out, which are this gate's own, while the text checks are the text-check
     # job's, and a Run saying ./... would keep what only their tests read - docs/kubernetes.md -
     # on this job's filter. Only they read it: the way back checks in internal/daemon, which a
@@ -45,7 +57,8 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     # way_back_doc_test.go holds those copies to the guide.
     pinned_step(DAEMON_PLAIN_LEGS_JOB, DAEMON_PLAIN_STEP, DAEMON, DAEMON_PLAIN_SCRIPT, [
         (DAEMON, [f"./{p}/" for p in DAEMON_PLAIN_PACKAGES],
-         f"go test over each plain leg's packages of {GO_LEGS}, the supervise table's two pure pins skipped by name",
+         f"go test over each plain leg's packages of {GO_LEGS}, the supervise table's two pure pins and the "
+         f"session client's left-setting test skipped by name",
          {}),
     ], workflow=DAEMON_FILE),
     pinned_step(DAEMON_RACE_LEGS_JOB, DAEMON_RACE_STEP, DAEMON, DAEMON_RACE_SCRIPT, [
@@ -59,10 +72,18 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     ], workflow=DAEMON_FILE),
     # The shape gate's second run, stamped with HEAD's merge order: the step's whole script is
     # pinned (ci_job_reads.py's DAEMON_STAMPED_GATE_SCRIPT says why). What it compiles is
-    # internal/api's test build, which plain leg 2's step compiles too; the stamp changes the link
+    # internal/api's test build, which plain leg 3's step compiles too; the stamp changes the link
     # alone.
     pinned_step(DAEMON_PLAIN_LEGS_JOB, DAEMON_STAMPED_GATE_STEP, DAEMON, DAEMON_STAMPED_GATE_SCRIPT, [
         (DAEMON, ["./internal/api/"], "go test of internal/api's two shape tests, linked with HEAD's stamp", {}),
+    ], workflow=DAEMON_FILE),
+    # The session client's left-setting test by name, with -v (SESSION_CLIENT_LEFT_TESTS), which
+    # the plain step skips: pinned whole, since -run and -v are outside the simple form. Its Run is
+    # the plain go test of the package, since the step compiles every test file of
+    # internal/ompsessions whichever test the -run then selects.
+    pinned_step(DAEMON_PLAIN_LEGS_JOB, SESSION_CLIENT_LEFT_STEP, DAEMON, SESSION_CLIENT_LEFT_SCRIPT, [
+        (DAEMON, [f"./{SESSION_CLIENT_LEFT_PACKAGE}/"],
+         f"go test -run of the session client's left-setting test in {SESSION_CLIENT_LEFT_PACKAGE}", {}),
     ], workflow=DAEMON_FILE),
 ], reads=reads(
     (GO_LEGS_SCRIPT, at(DAEMON_PLAIN_LEGS_JOB, DAEMON_PLAIN_STEP, DAEMON_FILE)),
@@ -86,18 +107,20 @@ GATE = gate("daemon_go_tests", "daemon-go", runs=[
     (".github/ci-tools.yaml", "`.github/actions/install-uv/action.yml#ci_tools_fetch uv` installs the uv row's binary"),
     (".github/scripts/ci-tools.sh", "`.github/actions/install-uv/action.yml#$GITHUB_ACTION_PATH/../../scripts/ci-tools.sh` sources it, and ci_tools_fetch "
                                     "reads the uv row's two sources"),
-    (".github/actions/pull-test-images/**", at(DAEMON_PLAIN_LEGS_JOB, "Pull the NATS and PgBouncer test container images", DAEMON_FILE)),
-    (f"{DAEMON}/internal/testnats/nats.go", f"{at(DAEMON_PLAIN_LEGS_JOB, 'Pull the NATS and PgBouncer test container images', DAEMON_FILE)} "
+    (".github/actions/pull-test-images/**", at(DAEMON_PLAIN_LEGS_JOB, DAEMON_PULL_STEP, DAEMON_FILE)),
+    (f"{DAEMON}/internal/testnats/nats.go", f"{at(DAEMON_PLAIN_LEGS_JOB, DAEMON_PULL_STEP, DAEMON_FILE)} "
                                             f"const Image, "
                                             f"{at(DAEMON_RACE_LEGS_JOB, 'Pull the NATS test container images', DAEMON_FILE)} "
                                             f"consts Image, SkippingImage"),
     (f"{ENVOY}/internal/testnats/nats.go", f"{at(DAEMON_RACE_LEGS_JOB, 'Pull the NATS test container images', DAEMON_FILE)} "
                                            f"const HubImage"),
-    (f"{DAEMON}/internal/ompsessions/searchpath_test.go", f"{at(DAEMON_PLAIN_LEGS_JOB, 'Pull the NATS and PgBouncer test container images', DAEMON_FILE)} "
-                                                          f"const PoolImage"),
+    (f"{DAEMON}/internal/ompsessions/searchpath_test.go", f"{at(DAEMON_PLAIN_LEGS_JOB, DAEMON_PULL_STEP, DAEMON_FILE)} "
+                                                          f"const PoolImage, "
+                                                          f"{at(DAEMON_PLAIN_LEGS_JOB, 'Pull the PostgreSQL 16 test container image', DAEMON_FILE)} "
+                                                          f"const Postgres16Image"),
 ) + forced_order_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FORCED_ORDER_STEP, DAEMON_FILE)
   + ceiling_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
-  + crash_safety_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + crash_safety_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
+  + service_settings_reads(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + service_settings_reads(DAEMON_RACE_LEGS_JOB, DAEMON_FILE)
   + install_jj(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE) + install_omp(DAEMON_PLAIN_LEGS_JOB, DAEMON_FILE)
   + setup_go(DAEMON_PLAIN_LEGS_JOB, f"{DAEMON}/go.mod", DAEMON_FILE))
 GATE = with_reads(GATE, [

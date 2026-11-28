@@ -1,0 +1,10 @@
+spec-check: subject c1, the head of relay-fixes
+statement relay-answers-requests: not met (check relay-refuses-a-malformed-request is false)
+statement relay-answers-in-time: unknown (check relay-answers-within-the-limit: expired)
+  check relay-answers-within-the-limit: unknown (expired)
+statement relay-answers-on-each-platform: unknown (check relay-answers-on-linux-and-arm: disagree)
+  check relay-answers-on-linux-and-arm: unknown (disagree)
+statement relay-answers-once: unknown (check relay-answers-once-per-request: disagree)
+  check relay-answers-once-per-request: unknown (disagree)
+statement relay-refuses-a-bad-request: not met (check relay-refuses-a-malformed-request is false)
+  check relay-refuses-a-malformed-request: false (failed, counted from c1)

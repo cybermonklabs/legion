@@ -120,6 +120,69 @@ test("summarises the session's open asks into context and records the session id
   }
 })
 
+// A replayed agent's read-only broker token carries a cut, and Dispatch answers the hook's open-asks
+// read at that cut whatever it sends: it names the cut in `Dispatch-As-Of` and leaves out the person
+// an ask waits on where that rests on a project default the records cannot give. The summary then
+// says so at that cut, as `dispatch open-asks` does, and never claims the ask is asked of nobody.
+test("under a token that carries a cut, an ask whose person the answer left out is asked of a person left out at the cut", async () => {
+  const scratch = await mkdtemp(join(tmpdir(), "claude-envoy-hook-cut-"))
+  const cut = "2026-09-13T00:00:00.000000Z"
+  const requests: string[] = []
+  const server = Bun.serve({
+    port: 0,
+    fetch: (request) => {
+      requests.push(`${new URL(request.url).pathname}?${new URL(request.url).searchParams}`)
+      const answer = Response.json({
+        session_id: "s-1",
+        as_of: cut,
+        opened_since: false,
+        count: 1,
+        waiting_on_human: 1,
+        waiting_on_agent: 0,
+        asks: [
+          {
+            id: "ask-9",
+            ref: "/issues/LEGION-9#ask-9",
+            question: "Ship the bundle?",
+            kind: "decision",
+            urgency: "med",
+            created_at: "2026-09-12T00:00:00Z",
+            age_seconds: 86_400,
+            priority: 1,
+            owner: { issue: { key: "LEGION-9", title: "Bundle" } },
+            human_replied: false,
+            last_reply: null,
+            waiting_on: "human",
+          },
+        ],
+      })
+      answer.headers.set("Dispatch-As-Of", cut)
+      answer.headers.set("Dispatch-As-Of-Absent", "/asks/0/waiting_on_person")
+      return answer
+    },
+  })
+  try {
+    const result = await runHook(hookInput, {
+      HOME: scratch,
+      CLAUDE_PLUGIN_DATA: join(scratch, "plugin-data"),
+      DISPATCH_URL: `http://127.0.0.1:${server.port}`,
+      DISPATCH_TOKEN,
+    })
+
+    expect(result.exitCode).toBe(0)
+    expect(result.stdout).toStartWith(
+      "Dispatch authored-ask summary:\n1 unanswered ask you authored",
+    )
+    expect(result.stdout).toContain(`· asked of (left out at ${cut}) · Ship the bundle? ·`)
+    expect(result.stdout).not.toContain("asked of nobody")
+    // The hook sent no cut: the token's cut is Dispatch's to apply.
+    expect(requests).toEqual(["/api/v1/asks/open?author_session=s-1"])
+  } finally {
+    server.stop(true)
+    await rm(scratch, { recursive: true, force: true })
+  }
+})
+
 // The hook ends its process once its output is out (`endOnceWritten`, session-hook.ts): a summary
 // far larger than a pipe holds (64 KiB on Linux), read slowly, must still arrive whole, its last ask
 // included, so the exit waits until stdout has taken every byte. Read this way, a 2 MB write to a
@@ -2119,6 +2182,16 @@ const REVIEWED_WAIT_SITES: readonly {
       "the dispatch command's fetchImpl (:316), handed to the same DispatchClient; the open-asks mode does not reach it",
   },
   {
+    file: "packages/envoy-client/src/dispatch-file-text.ts",
+    text: "readFileSync(0)",
+    count: 1,
+    bound:
+      "readFileText's default readStdin (:129), which reads stdin for a path of `-`; its one " +
+      "caller is the dispatch command's entry (bin/dispatch.ts:21). The hook reaches this module " +
+      "only through stored-text.ts:17, for fileTextBytes and unstorableBytes, and never calls " +
+      "readFileText: the open-asks mode does not reach it",
+  },
+  {
     file: "packages/envoy-client/src/dispatch-cwd.ts",
     text: "execFile",
     kind: "child_process handed on as a value",
@@ -2157,6 +2230,14 @@ const REVIEWED_WAIT_SITES: readonly {
     count: 1,
     bound:
       "the pool identity's default fetch (:171), called only at :197 under AbortSignal.timeout(POOL_TIMEOUT_MS)",
+  },
+  {
+    file: "packages/cipher-client/src/github-actions-identity.ts",
+    text: "fetch",
+    kind: "fetch handed on as a value",
+    count: 1,
+    bound:
+      "a GitHub Actions run's identity's default fetch (:83), called only at :90 under AbortSignal.timeout(TIMEOUT_MS) (:87)",
   },
   {
     file: "packages/cipher-client/src/metadata-identity.ts",

@@ -34,7 +34,9 @@ import (
 // which only a broker from legion-envoy-v29.23.0 up to the release before the project tags reads.
 // Where the guard was joining it (a secret that keeps a dispatch-project tag written without the
 // guard, and a removal of another tag), the tag does not hold it yet, and a broker from before the
-// project tags would serve the secret: the message must not claim the guard is there.
+// project tags would serve the secret: the message must not claim the guard is there. The kinds'
+// guard is said the same way, for the last proxy tag removed and for a secret that keeps a proxy
+// tag written without it.
 func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (main.useAWS, t.Setenv at secret_test.go:372); it sets a package variable the package's other tests read (main.useAWS, awsClients set at secret_test.go:375).
 	for _, c := range []struct {
@@ -50,6 +52,16 @@ func TestAFailedGuardRewriteSaysWhatTheRequestersTagHolds(t *testing.T) {
 			name: "the guard joining", held: "ada@example.com", args: "--max-grant none",
 			tags: map[string]string{policy.TagProject: "PRIV", policy.TagMaxGrant: "1h"},
 			want: "does not hold " + policy.RequestersRollbackGuard + " yet", notWant: "still holds",
+		},
+		{
+			name: "the kinds guard leaving", held: "ada@example.com " + policy.KindsRollbackGuard, args: "--proxy none",
+			tags: map[string]string{policy.TagProxy: "anthropic"},
+			want: "still holds " + policy.KindsRollbackGuard, notWant: "does not hold",
+		},
+		{
+			name: "the kinds guard joining", held: "ada@example.com", args: "--max-grant none",
+			tags: map[string]string{policy.TagProxy: "anthropic", policy.TagMaxGrant: "1h"},
+			want: "does not hold " + policy.KindsRollbackGuard + " yet, so a broker from before the kinds would release this secret as its value", notWant: "still holds",
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {

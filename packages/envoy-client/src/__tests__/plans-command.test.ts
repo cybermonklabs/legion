@@ -47,6 +47,7 @@ function defaultPlan(issue: string, id: string): PlanRecord {
     tasks: [
       {
         id: "default",
+        needs: null,
         steps: ["planner", "implementer", "tester", "reviewer", "acceptance:owner"],
       },
     ],
@@ -76,9 +77,9 @@ const ratedOnce: FinishedIssue = {
   variant: null,
 };
 
-/** INFRA-11's plan: its owner's, in three tasks. The first task is neither the first nor the last
- *  by id, and each task has its own steps, so the line names the first task of the plan and no
- *  other. */
+/** INFRA-11's plan: its owner's, in three tasks, each after the one before it. The first task is
+ *  neither the first nor the last by id, and each task has its own steps, so the line names the
+ *  first task of the plan and no other. */
 const ownerPlan: PlanRecord = {
   id: "3c5e7a9b-4d6f-5a8c-8e0b-2d4f6a8c0e1b",
   issue: "INFRA-11",
@@ -87,9 +88,9 @@ const ownerPlan: PlanRecord = {
   artifact_id: "9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d",
   version: 3,
   tasks: [
-    { id: "server", steps: ["implementer", "reviewer"] },
-    { id: "api", steps: ["implementer:api"] },
-    { id: "web", steps: ["implementer:web", "tester"] },
+    { id: "server", steps: ["implementer", "reviewer"], needs: [] },
+    { id: "api", steps: ["implementer:api"], needs: ["server"] },
+    { id: "web", steps: ["implementer:web", "tester"], needs: ["api"] },
   ],
 };
 
@@ -194,7 +195,7 @@ const otherProject: FinishedIssue = {
     source: "owner",
     artifact_id: "5e6f7a8b-9c0d-4e1f-8a2b-3c4d5e6f7a8b",
     version: 1,
-    tasks: [{ id: "keys", steps: ["implementer", "tester"] }],
+    tasks: [{ id: "keys", needs: [], steps: ["implementer", "tester"] }],
   },
   ratings: [
     {

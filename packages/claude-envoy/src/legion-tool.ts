@@ -8,7 +8,6 @@ import {
   legionToolDescription,
   PHASE_OP_SENTENCES,
   PHASE_OPS,
-  phaseInputAfter,
   phaseOpParameters,
   pluginBuildOf,
 } from "@legion/pi-shared/legion-phase-ops"
@@ -84,19 +83,18 @@ export async function executeLegionTool(
   )
 }
 
-/** Runs a successful call through the host's input hooks; a refusal changes no input gate. */
+/** Runs one call of the `legion` tool, as executeLegionTool does, and tells the host once a
+ * `ready_for_update` it ran answered the pod's update message: the worker then waits for its
+ * process to be replaced, so the `Stop` of the turn it answered in blocks nothing
+ * (`updateAnswered`, `./legion-phase-hook`). A completion and a look's report tell the host
+ * nothing: the reminder asks the daemon what the claim owes. A refusal throws before any hook. */
 export async function answerLegionTool(
   runtime: LegionToolRuntime,
   args: Record<string, unknown>,
-  hooks: {
-    readonly phaseClosed: () => void | Promise<void>
-    readonly updateAnswered: () => void | Promise<void>
-  },
+  hooks: { readonly updateAnswered: () => void | Promise<void> },
   signal?: AbortSignal,
 ): Promise<unknown> {
   const answer = await executeLegionTool(runtime, args, signal)
-  const effect = phaseInputAfter(String(args["op"]), args)
-  if (effect === "phase-closed") await hooks.phaseClosed()
-  else if (effect === "update-answered") await hooks.updateAnswered()
+  if (args["op"] === "ready_for_update") await hooks.updateAnswered()
   return answer
 }

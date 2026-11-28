@@ -15,8 +15,10 @@ import {
   RelayHeader,
   type RelayReply,
 } from "@legion/envoy-client/consumer-delivery";
+import { keyedLayer } from "@legion/envoy-client/test/keyed-layer";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { DeliveryAnswer } from "@legion/envoy-client/transport";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { loopbackHost } from "@legion/test-fixtures/loopback-host";
 import { readStandinBody } from "@legion/test-fixtures/standin-body";
@@ -72,7 +74,11 @@ export async function ompRoot(
 /**
  * Serves every request with `answer`, recording each first. `answer` gets the request's parsed JSON
  * body, empty for a GET, and the request itself, whose `signal` aborts when the client gives the
- * request up. Returns the recorded requests and the server's base URL.
+ * request up. Returns the recorded requests and the server's base URL. The server answers behind
+ * Dispatch's keyed layer (`keyedLayer`), so each 2xx to a request that carries an
+ * `Idempotency-Key` names that key back, as Dispatch's own answers do: the client takes no 2xx
+ * that names no key as its write's answer, so a stand-in of a keyed write (a delivery's accept,
+ * a reply) whose answer left it out would never be accepted.
  */
 export function serveStandin(
   cleanup: Cleanup,
@@ -88,7 +94,7 @@ export function serveStandin(
     // An address of its own, out of reach of a client of another test that still dials this port
     // at 127.0.0.1 (`loopbackHost`); the clients' URLs are built from `base` below.
     hostname: loopbackHost(),
-    async fetch(request) {
+    fetch: keyedLayer(async (request: globalThis.Request) => {
       const url = new URL(request.url);
       // A body that is no JSON object is refused by name, and is neither recorded nor handed to
       // `answer` (`readStandinBody`).
@@ -96,7 +102,7 @@ export function serveStandin(
       if (refusal !== undefined) return refusal;
       requests.push({ path: url.pathname, body });
       return answer(url, body, request);
-    },
+    }),
   });
   cleanup.push(async () => {
     await server.stop(true);
@@ -391,6 +397,9 @@ export interface StandinProvider {
   /** The model ids, in the order the profile lists them; the first of the first provider is what
    * every model role names. */
   readonly models: readonly string[];
+  /** The models also take images, which makes snapcompact a compaction method they can run; text
+   * only by default. */
+  readonly images?: boolean;
 }
 
 /** What `writeStandinProfile` writes when a caller names no providers: the one model every pane
@@ -431,7 +440,7 @@ export async function writeStandinProfile(
     path.join(agent, "models.yml"),
     [
       "providers:",
-      ...providers.flatMap(({ provider, models }) => [
+      ...providers.flatMap(({ provider, models, images }) => [
         `  ${provider}:`,
         `    baseUrl: ${base}/anthropic`,
         "    auth: apiKey",
@@ -442,7 +451,7 @@ export async function writeStandinProfile(
           `      - id: ${id}`,
           `        name: Stand-in ${id}`,
           "        reasoning: false",
-          "        input: [text]",
+          `        input: ${images === true ? "[text, image]" : "[text]"}`,
           "        contextWindow: 200000",
           "        maxTokens: 8000",
           "        cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0}",
@@ -580,15 +589,27 @@ function ompFlags(options: {
   ];
 }
 
+/** The size of each thread pool of a test's omp: the size CI's 4-CPU runners give it. */
+const OMP_POOL_THREADS = "4";
+
 /** The environment `spawnRpc` and `spawnInteractive` start omp with: `home` as HOME, `bin` first
- * on PATH. */
-function ompEnv(options: { readonly home: string; readonly bin?: string }): {
-  HOME: string;
-  PATH: string;
-} {
+ * on PATH, Bun's transpiler cache off, since omp transpiles each extension it loads and would
+ * otherwise keep every one under `home` (408 files in one run of `dispatch-first-omp.test.ts`),
+ * and each of omp's thread pools at `OMP_POOL_THREADS`. Left to itself, omp sizes each
+ * pool to the machine's CPU count: its natives' Tokio runtime (`TOKIO_WORKER_THREADS`), Rayon's
+ * global pool (`RAYON_NUM_THREADS`), the directory walker's workers (`PI_WALK_WORKERS`) and Bun's
+ * work pool (`UV_THREADPOOL_SIZE`). One omp on a 288-CPU machine held 1,333 threads, so a suite
+ * that runs a few at once passed a 4,096-task limit there at any worker count. With each pool
+ * fixed, the threads a test's omp starts are the same on every machine. */
+function ompEnv(options: { readonly home: string; readonly bin?: string }): Record<string, string> {
   return {
+    ...bunCacheOff,
     HOME: options.home,
     PATH: [options.bin, "/usr/local/bin:/usr/bin:/bin"].filter(Boolean).join(":"),
+    TOKIO_WORKER_THREADS: OMP_POOL_THREADS,
+    RAYON_NUM_THREADS: OMP_POOL_THREADS,
+    PI_WALK_WORKERS: OMP_POOL_THREADS,
+    UV_THREADPOOL_SIZE: OMP_POOL_THREADS,
   };
 }
 
@@ -769,18 +790,19 @@ export interface Refusal {
    * error text as `Refusal (<category>): <explanation>`. */
   readonly category?: string;
   readonly explanation?: string;
-  /** Text the model streamed before the refusal, committed by the time it came. The host walks
-   * its own fallback chain for a refusal that follows no output and ends the turn where it is for
-   * one that follows text (`coding-agent/src/session/turn-recovery.ts:1820-1854` and `:3228-3238`
-   * at the pinned tag: committed text is replay-unsafe), so this is the one thing that decides
-   * which of the two walks a case proves. */
+  /** Text the model streamed before the refusal, committed by the time it came. The host sends a
+   * refusal that follows no output to the same model up to two more times and then walks its own
+   * fallback chain, and ends the turn where it is for one that follows text
+   * (`coding-agent/src/session/turn-recovery.ts:2177-2211` and `:3605-3615` at the pinned tag:
+   * committed text is replay-unsafe), so this is the one thing that decides which of the two
+   * walks a case proves. */
   readonly text?: string;
 }
 
 /**
  * The Anthropic Messages stream of one refused turn: a `message_delta` whose `stop_reason` is
  * `refusal` and whose `stop_details` names the category
- * (`packages/ai/src/providers/anthropic.ts:3194-3202` at the pinned tag). The host reads it as an
+ * (`packages/ai/src/providers/anthropic.ts:3240-3248` at the pinned tag). The host reads it as an
  * assistant message with `stopReason: "error"`, `stopDetails.type: "refusal"` and an
  * `errorMessage` of `Refusal (<category>): <explanation>`, which is what
  * `classifyProviderTurn` (`@legion/pi-shared/provider-refusal`) calls a content filter. It

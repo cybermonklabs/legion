@@ -217,9 +217,15 @@ type crashPublished struct {
 	Kept      bool   `json:"kept"`
 }
 
+// crashSender is the session every publish of the crash rig names as its sender.
+const crashSender = "ses_crash_sender"
+
+// publish publishes message to role's topic through the publish route from crashSender, a session
+// that holds no role here: a publish that names no session is refused, not kept, when no live
+// session holds the role (roleSend.noHolder), and the rows read a kept copy.
 func (rig *crashRig) publish(role, message string) crashPublished {
 	rig.t.Helper()
-	body, err := json.Marshal(roleMessage(role, "", message))
+	body, err := json.Marshal(roleMessage(role, crashSender, message))
 	if err != nil {
 		rig.t.Fatal(err)
 	}
@@ -292,8 +298,8 @@ func (rig *crashRig) storeToSession(sessionID string, n int) {
 	}
 	select {
 	case <-js.PublishAsyncComplete():
-	case <-time.After(30 * time.Second):
-		rig.t.Fatalf("the stream did not acknowledge %d messages to %s within 30s", n, sessionID)
+	case <-time.After(listenerWaitBound(rig.t)):
+		rig.t.Fatalf("the stream did not acknowledge %d messages to %s in time", n, sessionID)
 	}
 }
 
@@ -332,10 +338,11 @@ func (rig *crashRig) seqOn(subject, eventID string) uint64 {
 	return 0
 }
 
-// awaitStored waits up to 10 s for an envelope of eventID on subject and returns it.
+// awaitStored waits for an envelope of eventID on subject and returns it, with the test binary's
+// deadline as its only bound.
 func (rig *crashRig) awaitStored(subject, eventID, what string) storedEnvelope {
 	rig.t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(listenerWaitBound(rig.t))
 	for {
 		held := rig.stored(subject)
 		if i := slices.IndexFunc(held, func(stored storedEnvelope) bool { return stored.item.EventID == eventID }); i >= 0 {
@@ -346,7 +353,7 @@ func (rig *crashRig) awaitStored(subject, eventID, what string) storedEnvelope {
 			for i, stored := range held {
 				events[i] = stored.item.EventID
 			}
-			rig.t.Fatalf("%s: the stream holds %v on %s after 10s; want event %s", what, events, subject, eventID)
+			rig.t.Fatalf("%s: the stream holds %v on %s in the time it was given; want event %s", what, events, subject, eventID)
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
@@ -398,17 +405,31 @@ func (rig *crashRig) onlyRecord(role, previous string) crashRecord {
 	return records[0]
 }
 
-// idle waits until no handover of role holds cfg's guard: a claim's own handover, say, that has
-// not ended yet.
+// idle waits until no handover of role is under way on cfg's listener (roleKeepGuards.idle): a
+// claim's own handover, say, whose goroutine has not yet taken the role's guard, or has and has
+// not ended. Waiting for the guard alone returned before such a goroutine took it, and the row
+// then read a takeover record its pass went on to write over (cmd/listener
+// TestAPassCannotWriteOverARecordAnotherPassMoved, envoy-go-race job 139604119157).
 func (rig *crashRig) idle(cfg listenerDeliveryHandlerConfig, role string) {
 	rig.t.Helper()
-	waitFor(rig.t, 30*time.Second, "no handover of role "+role+" holding the listener's guard", func() bool {
-		release, free := cfg.roleKeepDrains.tryHold(role)
-		if free {
-			release()
-		}
-		return free
+	waitFor(rig.t, "no handover of role "+role+" under way on the listener", func() bool {
+		return cfg.roleKeepDrains.idle(role)
 	})
+}
+
+// idle reports whether no handover of role is under way on the listener g belongs to: none was
+// started in a goroutine of its own and has yet to return (begin), and none holds role's guard,
+// as the sweep's does while it runs. The guard alone reads free both before a started handover's
+// goroutine takes it and after the handover ends; the count of started ones tells the two apart.
+func (g *roleKeepGuards) idle(role string) bool {
+	if count, ok := g.started.Load(role); ok && count.(*atomic.Int64).Load() > 0 {
+		return false
+	}
+	release, free := g.tryHold(role)
+	if free {
+		release()
+	}
+	return free
 }
 
 // sweep runs one pass of cfg's kept-lane sweep (sweepOnce) once cfg is idle for role: the sweep

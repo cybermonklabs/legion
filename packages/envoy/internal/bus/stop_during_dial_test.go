@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A recovery that is dialling when Drain stops the client neither installs the connection its dial
@@ -27,11 +28,7 @@ func TestARecoveryStoppedMidDialInstallsNothingAndLogsNoError(t *testing.T) {
 
 	proxy.delay.Store(int64(time.Second))
 	client.Conn.Close()
-	select {
-	case <-proxy.held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the recovery never dialled")
-	}
+	testwait.Receive(t, "the recovery to dial", proxy.held)
 	_ = client.Drain(5 * time.Second)
 	time.Sleep(2 * time.Second)
 
@@ -63,13 +60,11 @@ func TestARecoveryDiallingALostServerEndsAtTheStop(t *testing.T) {
 	proxy.refuse.Store(true)
 	proxy.delay.Store(int64(500 * time.Millisecond))
 	client.Conn.Close()
-	select {
-	case <-proxy.held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("the recovery never dialled")
-	}
+	testwait.Receive(t, "the recovery to dial", proxy.held)
 	client.Close()
 
+	// The bound under test, not a wait: a recovery that ends at the stop logs its cancellation at
+	// once, and one that dials on makes its ten attempts, a second apart, first.
 	deadline := time.Now().Add(3 * time.Second)
 	for !strings.Contains(logs.String(), "envoy nats recovery cancelled") {
 		if time.Now().After(deadline) {

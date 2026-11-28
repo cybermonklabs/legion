@@ -56,7 +56,11 @@
 #   (cv) a part that builds the custom resources' rights or the binding namespaces' rights and
 #        fails or prints nothing reads UNKNOWN naming those rights, and the RBAC step does not
 #        pass;
-#   (cx) with_rights handed an empty rights value refuses it and stops the run, UNKNOWN, exit 2.
+#   (cx) with_rights handed an empty rights value refuses it and stops the run, UNKNOWN, exit 2;
+#   (da) no line of the check, its parts or this test's own files reads a status from a pipe into
+#        a grep that stops early (-q or -m), which pipefail and SIGPIPE can read as no match;
+#   (db) a pick of the reviews to judge that stops part way (its awk under a 2 KiB file size limit)
+#        reads UNKNOWN naming it, exit 2, and the RBAC step does not pass.
 
 # --- (a) People, the system namespaces and the Workload Identity member alone. ---
 if row a; then
@@ -598,4 +602,77 @@ if row cx; then
   want_text "UNKNOWN run: the run stopped before its end" "with_rights handed an empty webhook list"
   ! has_prefix "PASS live: RBAC on operator-cluster: " || fail "with_rights handed an empty webhook list: the RBAC step passed"
   passed "(cx) with_rights handed an empty rights value (a webhook list built as nothing) refuses it and stops the run, UNKNOWN, exit 2"
+fi
+
+# --- (da) No status read from a pipe into a grep that stops early. Under pipefail, `cut FILE |
+# grep -q TEXT` can fail although TEXT is there: grep stops at its first match, and the writer's
+# next write then fails the pipeline with SIGPIPE, more often the earlier the match and the busier
+# the box. Row cz's later-refused item failed so twice in the merge queue on 2026-11-26 (the fake
+# kubectl's holding read a batch's first subject that way). quiet_pipes finds such a line in the
+# check, its parts and this test's own files, the fakes among them: a `|` before a grep given -q,
+# --quiet, --silent, -m or --max-count, on one line or after a line that ends in `|`. The control is
+# its own other half: a file holding the two forms and the two forms it allows (a process
+# substitution, and `||`), where it finds the two and no other. ---
+# quiet_pipes FILE...: each such line, as FILE:LINE: TEXT; comment lines are not read.
+quiet_pipes() {
+  awk '
+    function stops(text, words, n, i) {
+      n = split(text, words, /[[:space:]]+/)
+      for (i = 1; i <= n; i++) {
+        if (words[i] == "--") return 0
+        if (words[i] ~ /^--(quiet|silent|max-count)/) return 1
+        if (words[i] ~ /^-[[:alnum:]]*[qm]/) return 1
+      }
+      return 0
+    }
+    FNR == 1 { follows = 0 }
+    /^[[:space:]]*#/ { follows = 0; next }
+    {
+      text = $0
+      found = follows && match(text, /^[[:space:]]*grep[[:space:]][^|;&)]*/) && stops(substr(text, RSTART, RLENGTH))
+      rest = text
+      while (!found && match(rest, /(^|[^|])\|[[:space:]]*grep[[:space:]][^|;&)]*/)) {
+        found = stops(substr(rest, RSTART, RLENGTH))
+        rest = substr(rest, RSTART + RLENGTH)
+      }
+      if (found) print FILENAME ":" FNR ": " text
+      follows = text ~ /[^|]\|[[:space:]]*$/
+    }' "$@"
+}
+if row da; then
+  mapfile -t sources < <(printf '%s\n' "$check" "$(dirname "$check")"/operator-token-minters/*.sh \
+    "$script_dir/operator-token-minters.test.sh" "$script_dir"/operator-token-minters/test-*.sh | sort -u)
+  found="$(quiet_pipes "${sources[@]}")"
+  [ -z "$found" ] || fail "a status is read from a pipe into a grep that stops early, which pipefail and SIGPIPE can turn into no match; read its input through a process substitution or a here-string: $found"
+  # The control's pipes are written as $p, so that this row's own lines hold none of the forms.
+  control=quiet-pipes-control.sh p='|'
+  printf '%s\n' "cut -f7 \"\$file\" $p grep -qxF -- \"\$subject\" || echo none" \
+    "awk '{ print }' \"\$file\" $p" "  grep -m 1 -F -- \"\$subject\"" \
+    "grep -qxF -- \"\$subject\" < <(cut -f7 \"\$file\")" \
+    "[ -n \"\$subject\" ] || grep -q x \"\$file\"" >"$temporary_dir/$control"
+  found="$(cd "$temporary_dir" && quiet_pipes "$control" | cut -d: -f1,2 | tr '\n' ' ')"
+  [ "$found" = "$control:1 $control:3 " ] ||
+    fail "quiet_pipes found ${found:-nothing} in its control, where lines 1 and 3 alone pipe into a grep that stops early"
+  passed "(da) no line of the check, its parts or this test pipes into a grep that stops early (-q or -m) for its status; the control finds both forms and neither allowed one"
+fi
+
+# --- (db) A pick of the reviews to judge that fails. judge_reviews picks a cluster's allowed and
+# errored reviews out of the answer with one awk, and both its callers run it as a condition, where
+# errexit is off. A copy of the script whose pick runs under `ulimit -f 2`, as on a disk that fills,
+# has the awk killed by SIGXFSZ after 2 KiB, in a world where legion/worker is bound to cluster-admin
+# so that its allowed reviews are far more than that. The RBAC step reads UNKNOWN naming the pick,
+# the run exits 2, and the step does not pass. Run by hand, the control is judge_reviews as at
+# ac0627c8, which read no status of the awk: it judged the reviews written before the kill alone,
+# and the run exited 1 with legion/worker's findings cut short (0 had none been written). ---
+if row db; then
+  base_world
+  cluster_admin operator-cluster "$(sa_subject legion worker)"
+  script="$(script_copy db)"
+  plant "$(dirname "$script")/operator-token-minters/reviews.sh" "  awk -F\"\$US\" '\$1 != \"witness\" && " \
+    "  small_awk -F\"\$US\" '\$1 != \"witness\" && "
+  printf '%s\n' 'small_awk() { (ulimit -f 2 && exec awk "$@"); }' >>"$(dirname "$script")/operator-token-minters/reviews.sh"
+  run_script="$script" run
+  want_rbac_unknown "the reviews to judge could not be picked out of the API server's answer (awk exited " \
+    "a pick of the reviews to judge stopped by a file size limit"
+  passed "(db) a pick of the reviews to judge that stops part way reads UNKNOWN naming it, exits 2, and the RBAC step does not pass"
 fi

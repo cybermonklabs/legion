@@ -11,13 +11,14 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/envlisting"
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 )
 
 func executable(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -28,20 +29,20 @@ func executable(t *testing.T, dir, name string) string {
 func binary(t *testing.T, dir, name string) string {
 	t.Helper()
 	path := filepath.Join(dir, name)
-	if err := os.WriteFile(path, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("\x7fELF\x02\x01\x01\x00"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
 }
 
 // currentJJ is what the worker image's jj prints for `jj --version`.
-const currentJJ = "jj 0.46.0-sami.20261125-112159-d393bdcb1572dc48587ede160608a79a62eeeddf"
+const currentJJ = "jj 0.46.0-sami.20261127-111037-13d6540c23ece8c970fef2f8978f939ebf7dede9"
 
 // fakeJJ is an executable jj in dir whose `jj --version` prints version.
 func fakeJJ(t *testing.T, dir, version string) string {
 	t.Helper()
 	path := filepath.Join(dir, "jj")
-	if err := os.WriteFile(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+version+"'\n"), 0o755); err != nil {
+	if err := execfile.Write(path, []byte("#!/bin/sh\nprintf '%s\\n' '"+version+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	return path
@@ -59,12 +60,12 @@ func fakeJJ(t *testing.T, dir, version string) string {
 // checks merge results and not the version: it is red at a jj that fails the minimal case, K1, K4
 // or a VB1 subtest, as jj 0.45.1-sami and the cherry-pick of jj-vcs/jj#10100 alone do, and a fork
 // release without the fork's later snapshot fixes passes it; the fork's own tests hold those. It
-// runs the first compiled jj on PATH (fixturegit.CompiledJJ), which on CI is the one CI's
-// daemon-go-race job installs at ARG JJ_TOOL of packages/daemon/docker/worker.Dockerfile, so a
-// local run tests whichever jj is first there.
+// runs the jj .github/ci-tools.yaml pins for this machine (fixturegit.PinnedJJ), the binary whose
+// sha256 is that row's digest, which on CI is the one the install-jj action installs at ARG
+// JJ_TOOL of packages/daemon/docker/worker.Dockerfile; a machine without it fails the test by name.
 func TestPinnedJJKeepsWhatEverySideOfAMergeHolds(t *testing.T) {
 	t.Parallel()
-	jj := fixturegit.CompiledJJ(t)
+	jj := fixturegit.PinnedJJ(t)
 	git := fixturegit.CompiledGit(t)
 	home := t.TempDir()
 	version := fixturegit.Isolated(t, home).Run(home, jj, "--version")
@@ -477,7 +478,7 @@ func TestResolveToolsRefusesAScriptAsTheRealGh(t *testing.T) {
 	fakeJJ(t, bin, currentJJ)
 	real := binary(t, bin, "gh")
 	shim := filepath.Join(shims, "gh")
-	if err := os.WriteFile(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o755); err != nil {
+	if err := execfile.Write(shim, []byte("#!/bin/bash\nexec knives gh -- \"$@\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	env := map[string]string{"PATH": shims + ":" + bin}
@@ -558,7 +559,7 @@ func TestTheJJVersionCheckGetsNoNATSSeed(t *testing.T) {
 	dir := t.TempDir()
 	dump := filepath.Join(dir, "env")
 	jj := filepath.Join(dir, "jj")
-	if err := os.WriteFile(jj, []byte("#!/bin/sh\nenv >"+dump+"\necho '"+currentJJ+"'\n"), 0o755); err != nil {
+	if err := execfile.Write(jj, []byte("#!/bin/sh\nenv >"+dump+"\necho '"+currentJJ+"'\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	if err := checkJJVersion(jj); err != nil {

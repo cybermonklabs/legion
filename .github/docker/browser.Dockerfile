@@ -113,10 +113,10 @@ RUN set -eux; \
       util-linux \
       jq \
       # fc-list and fc-match, and the font the runner image resolves `sans-serif` to.
-      # Measured: on ubuntu-24.04 `fc-match sans-serif` answers
-      # `DejaVuSans.ttf: "DejaVu Sans" "Book"`, and in this base, which carries Playwright's
-      # `tools` fonts and no DejaVu at all, it answers
-      # `wqy-zenhei.ttc: "WenQuanYi Zen Hei" "Regular"` -- a CJK face with different metrics.
+      # Measured: on ubuntu-24.04 `fc-match sans-serif` answers the system's DejaVuSans.ttf,
+      # family "DejaVu Sans", style "Book", and in this base, which carries Playwright's
+      # `tools` fonts and no DejaVu at all, it answers wqy-zenhei.ttc, family
+      # "WenQuanYi Zen Hei", style "Regular" -- a CJK face with different metrics.
       # Every layout row of the suite measures text, and one of them, the reasoning link's padded
       # box (`packages/dispatch/e2e/agent-view.e2e.ts#on a phone the live view keeps a reasoning link's padded box off the line above`), failed by 0.8 px in runs
       # 42338254048, 42339402235 and 42340825955 for exactly that reason. fonts-dejavu-core is

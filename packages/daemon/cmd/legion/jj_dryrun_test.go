@@ -82,6 +82,7 @@ func capturedNoAuthorCommit(t *testing.T, stderr string) string {
 // bookmark and 0.38's refusal of a second --remote hold neither a block nor `Nothing changed.`,
 // and the parser answers an error that says so.
 func TestTheDryRunParserPlacesEveryCapturedLine(t *testing.T) {
+	t.Parallel()
 	files, err := filepath.Glob(filepath.Join(capturedDryRuns, "*", "*.txt"))
 	if err != nil {
 		t.Fatal(err)
@@ -135,6 +136,7 @@ func TestTheDryRunParserPlacesEveryCapturedLine(t *testing.T) {
 // read, so the step prints its one line for it: the error names that heading, whether the block
 // is the only one, the first of two, the last of two, or one that a line outside a block follows.
 func TestTheDryRunParserNamesABlockWithNoLine(t *testing.T) {
+	t.Parallel()
 	const heading = "Changes to push to origin:"
 	for _, tc := range []struct{ name, stderr string }{
 		{name: "the only block", stderr: heading + "\n"},

@@ -1,4 +1,5 @@
 import { IDEMPOTENCY_KEY_TTL_MS, retriesUnderKey } from "@legion/contracts";
+import { mayHaveReachedServer } from "@legion/contracts/http-status";
 
 import {
   AnswerNotKeptError,
@@ -17,6 +18,12 @@ import {
 } from "../../api/client";
 import { onReachable, type Reachable, routeOf } from "../../api/reachability";
 import { keyMintedAt } from "../../lib/send-key";
+import {
+  EXPIRED_RETRY_WORDS,
+  SAME_KEY_RETRY_WORDS,
+  STOPPED_SEND_WORDS,
+  STOPPED_WRITE_WORDS,
+} from "./write-words";
 
 /**
  * How long a write may go unanswered before the page says so: past it the write is late, still
@@ -47,8 +54,8 @@ export const MAX_BACKOFF_MS = 30_000;
  * (`delivered`, `saved`).
  */
 export function sameKeyRetryNote(made: string): string {
-  const hours = IDEMPOTENCY_KEY_TTL_MS / 3_600_000;
-  return `Retry asks again under the same key, so it is ${made} at most once if you retry within ${hours} hours of the first try. After that Dispatch no longer knows the key: a Retry is a new write and may be ${made} twice.`;
+  const { after, before, between } = SAME_KEY_RETRY_WORDS;
+  return `${before}${made}${between}${made}${after}`;
 }
 
 /**
@@ -60,8 +67,8 @@ export function sameKeyRetryNote(made: string): string {
  * something the code does not.
  */
 export function expiredRetryNote(made: string): string {
-  const hours = IDEMPOTENCY_KEY_TTL_MS / 3_600_000;
-  return `Its key is ${hours} hours old or more, so Dispatch no longer holds it: a Retry is a new write, which can be ${made} a second time if the first one was.`;
+  const { after, before } = EXPIRED_RETRY_WORDS;
+  return `${before}${made}${after}`;
 }
 
 /**
@@ -107,7 +114,7 @@ export function keySpent(carried: WriteMethod | null, key: string, now: number):
  *  (`sameKeyRetryNote`). */
 export class SendStoppedError extends Error {
   constructor(
-    message = `Dispatch has not confirmed this message. ${sameKeyRetryNote("delivered")}`
+    message = `${STOPPED_SEND_WORDS.unconfirmed} ${sameKeyRetryNote(STOPPED_SEND_WORDS.made)}`
   ) {
     super(message);
     this.name = "SendStoppedError";
@@ -120,9 +127,7 @@ export class SendStoppedError extends Error {
  *  Discard. */
 export class SendInterruptedError extends SendStoppedError {
   constructor() {
-    super(
-      `Not sent: this page was closed before Dispatch confirmed it. ${sameKeyRetryNote("delivered")}`
-    );
+    super(`${STOPPED_SEND_WORDS.interrupted} ${sameKeyRetryNote(STOPPED_SEND_WORDS.made)}`);
     this.name = "SendInterruptedError";
   }
 }
@@ -134,7 +139,7 @@ export class SendInterruptedError extends SendStoppedError {
  *  (`retriesUnderItsKey`). */
 export class SendExpiredError extends SendStoppedError {
   constructor() {
-    super(`Dispatch has not confirmed this message. ${expiredRetryNote("delivered")}`);
+    super(`${STOPPED_SEND_WORDS.unconfirmed} ${expiredRetryNote(STOPPED_SEND_WORDS.made)}`);
     this.name = "SendExpiredError";
   }
 }
@@ -171,9 +176,11 @@ const refusedAfterUnanswered = new WeakSet<ApiError>();
  * answered with no earlier attempt of the write that may have landed unseen, since
  * `writeUnderKey` makes the write again after every other answer. Dispatch commits nothing of such
  * a write, so it publishes no live event for it (`EndReadHold`). An attempt may have landed unseen
- * where the page had no answer to it in this try of the write, and where an earlier try sent
- * anything under the write's key (`carried`): a lapse stops a try, and the page takes the write up
- * in a try of its own once the person signs in again. A refusal after such an attempt is no
+ * where the page had no answer to it in this try of the write, or an answer that can come after
+ * Dispatch acted on it (a 5xx or a 408, `mayHaveReachedServer`: a proxy in front of Dispatch can
+ * time a request out after it forwarded it), and where an earlier try sent anything under the
+ * write's key (`carried`): a lapse stops a try, and the page takes the write up in a try of its own
+ * once the person signs in again. A refusal after such an attempt is no
  * verdict: that attempt may have landed, and the retry Dispatch refused says nothing of it - a
  * snooze is a `PUT`, which sends no key, so its retry runs Dispatch's handler again, which refuses
  * a moment that has passed meanwhile - and its event may still come. An earlier try counts however
@@ -239,7 +246,8 @@ export type StoppedControl =
  * these instead.
  */
 export function stoppedWriteNote(what: string, made: string, control: StoppedControl): string {
-  const unconfirmed = `Dispatch has not confirmed ${what}: it may have been ${made}.`;
+  const { after, before, between } = STOPPED_WRITE_WORDS;
+  const unconfirmed = `${before}${what}${between}${made}${after}`;
   if ("anew" in control) {
     return `${unconfirmed} ${control.anew}`;
   }
@@ -398,7 +406,8 @@ export async function writeUnderKey<T>(
   // have reached Dispatch - the connection can fail after it leaves - which is the point: from
   // then on the key may name something there, and its age decides the write.
   let underKey: WriteMethod | null = carried;
-  // Whether an attempt went out that the page has no answer to: a resent `DELETE` then finds the
+  // Whether an attempt went out that the page has no answer to, or one that can come after
+  // Dispatch acted on it (a 5xx or a 408, `mayHaveReachedServer`): a resent `DELETE` then finds the
   // thing already gone, and a refusal after it, or after an earlier try that sent under the key
   // (`carried`), says nothing of that attempt (`refusedByDispatch`).
   let unanswered = false;
@@ -459,7 +468,7 @@ export async function writeUnderKey<T>(
           unauthorizedWhileSignedIn = false;
         }
         failed?.();
-        unanswered ||= !(error instanceof ApiError) || error.status >= 500;
+        unanswered ||= !(error instanceof ApiError) || mayHaveReachedServer(error.status);
         if (!(await pause(wait.ms, wait.wakes, signal, ownRoute))) throw new SendStoppedError();
         if (wait.grows) backoff = Math.min(backoff * 2, MAX_BACKOFF_MS);
       }

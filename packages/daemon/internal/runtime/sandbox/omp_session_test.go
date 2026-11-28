@@ -53,6 +53,7 @@ func resumeAt(spec runtime.SpawnSpec, file, id string) runtime.SpawnSpec {
 // (SpawnSpec.ResumeSessionID) and no path, while its start command still names the recorded file
 // (ResumeFile), by which the launcher looks the session up before it starts the agent.
 func TestAnOhMyPiRoleStartsUnderTheIdItsDaemonChose(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, exchangeKeyed())
 	spec := workerSpec(t)
 	loc := g.spawn(spec)
@@ -96,6 +97,7 @@ func TestAnOhMyPiRoleStartsUnderTheIdItsDaemonChose(t *testing.T) {
 // has the agent's own command resolve it (ResumeByAgent) alike, and the session the runtime
 // answers for the launch, which the daemon registers for the pod, is that id and no fresh one.
 func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		options []rigOption
@@ -138,6 +140,7 @@ func TestATradingLaunchResumesASessionRecordedWithNoFileByItsID(t *testing.T) {
 // (TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed), and such a claim records no file a
 // refusal could name.
 func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *testing.T) {
+	t.Parallel()
 	const id = "-" + resumeSessionID
 	untraded := newRig(t, nil, withResumesBySession())
 	first := untraded.spawn(workerSpec(t))
@@ -170,6 +173,7 @@ func TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot(t *tes
 // file whose name gives no id is refused, naming the file, before anything of the pod is touched:
 // `--resume <id>` takes no path.
 func TestAnOldClaimResumesByTheIdInItsFileName(t *testing.T) {
+	t.Parallel()
 	const id = "0198f3a2-6b7c-7d8e-9f01-23456789abcd"
 	file := ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/2026-09-23T12-00-00-000Z_" + id + ".jsonl"
 	g := newRig(t, nil, exchangeKeyed())
@@ -213,6 +217,7 @@ func TestAnOldClaimResumesByTheIdInItsFileName(t *testing.T) {
 // the claim records with no file passes the one word `--resume=<id>` instead, which no such id is
 // refused for (TestATradingResumeOfARecordedSessionIDIsNeverRefusedForAFileItHasNot).
 func TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed(t *testing.T) {
+	t.Parallel()
 	dir := ompSessionsDir + "/--legion-workspaces-sjawhar-legion-smoke-legion-208--/"
 	g := newRig(t, nil, exchangeKeyed())
 	spec := workerSpec(t)
@@ -252,6 +257,7 @@ func TestAResumedIdNoParserCanMisreadIsTheOnlyOnePassed(t *testing.T) {
 // manifestCases without the key is byte for byte as it was. A Claude Code launch's command is
 // claudelaunch's, which named its session before this change too, so it is passed over.
 func TestNothingChangesWithoutTheKey(t *testing.T) {
+	t.Parallel()
 	r, err := configure(goldenOptions())
 	if err != nil {
 		t.Fatal(err)
@@ -331,6 +337,7 @@ func TestNothingChangesWithoutTheKey(t *testing.T) {
 // by its file, where the same resume in a pod that trades, the control, is refused naming what it
 // lacks.
 func TestAKeptPodWithoutTheExchangeIdentityKeepsItsOhMyPiArgv(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(enrolledWith(keptBrokerURL)))
 	spec := workerSpec(t)
 	loc := g.spawn(spec)

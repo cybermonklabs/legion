@@ -1,0 +1,18 @@
+# proxy-minted-reads-other-grants: a minted capability's connection reads the session's other
+# grants for a request that carries another whole placeholder, with an enrollment id that is empty,
+# so the store refuses it and the request answers 503 where it was refused 403 NO_PLACEHOLDER.
+# must fail: TestAMintedConnectionReadsNoOtherGrant
+# Applied with patch -p1 from a copy.
+
+--- a/packages/envoy/internal/cipher/proxy/enrollment.go
++++ b/packages/envoy/internal/cipher/proxy/enrollment.go
+@@ -137,7 +137,8 @@ func (s *Server) otherGrantsBinding(ctx context.Context, rules proxyrules.Rules,
+ // one-connection swap reads, and it belongs to no enrollment (its EnrollmentID is empty), so a
+ // request on it is decided by its own grant alone, as on a broker without this read.
+ func (s *Server) otherGrantsBinding(ctx context.Context, rules proxyrules.Rules, own requests.AirlockConnection, host string, port uint16) ([]requests.AirlockConnection, error) {
+-	if own.Minted {
++	// MUTANT: a minted connection reads the session's other grants too.
++	if own.Minted && false {
+ 		return nil, nil
+ 	}
+ 	names := boundEntries(rules, host, port)

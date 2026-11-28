@@ -38,11 +38,14 @@ type OperatorClaim struct {
 	ForgottenSession     string      `json:"forgottenSession,omitempty"`
 	ForgottenSessionFile string      `json:"forgottenSessionFile,omitempty"`
 	// PhaseNotRestarted is what the request did to the claim that the claim itself does not
-	// record, which only the retry with `--fresh-session` sets (freshSession): the claim came
-	// back owing no task and the workflow refused that phase's restart, or this request
-	// stopped the claim and the machine refused the forget or the start that would have
-	// brought it back (notStartedAgain). It is absent everywhere else, a refused retry
-	// included, since that answer is the refusal itself and nothing of the claim changed.
+	// record, which only the retry sets (retryClaim). Both of its forms name a start that waits
+	// for its issue's admission slot (slotWait). The retry with `--fresh-session` also names
+	// what FreshSessionResponse.PhaseNotRestarted names (freshSession): the claim came back
+	// owing no task and the workflow refused that phase's restart, a start refused after the
+	// claim's session was left behind (refusedAfterTheForget), or this request stopped the claim
+	// and the machine refused the forget or the start that would have brought it back
+	// (notStartedAgain). It is absent everywhere else, a refused retry included, since that
+	// answer is the refusal itself and nothing of the claim changed.
 	PhaseNotRestarted string `json:"phaseNotRestarted,omitempty"`
 	// Locator is the claim's process, the runtime's nested shape; none while nothing runs.
 	Locator         *runtime.Locator `json:"locator,omitempty"`
@@ -50,12 +53,13 @@ type OperatorClaim struct {
 	UncertainStreak int              `json:"uncertainStreak"`
 	// Pending is the task the claim holds, until the turn it started ends.
 	Pending *DeliveryView `json:"pending,omitempty"`
-	// SuspendedBy is who suspended the claim while it is suspended: operator, daemon, exit,
-	// released (its idle pod was released), or unknown (a suspension recorded before migration
-	// 0038); absent otherwise. These routes are the one surface that serves it: a session parses
-	// every body it reads with the schema of its own contract, so a key an older contract does not
-	// know refuses the whole body at a plugin whose answer side predates the reader that drops an
-	// unknown key, and is dropped at every plugin after it (api.StrandedClaim).
+	// SuspendedBy is who suspended the agent while its claim is suspended: operator, controller,
+	// daemon, exit, released (its idle pod was released), or unknown (a suspension recorded before
+	// migration 0038), supervise.SuspendSource's values; absent otherwise. These routes are the one
+	// surface that serves it: a session parses every body it reads with the schema of its own
+	// contract, so a key an older contract does not know refuses the whole body at a plugin whose
+	// answer side predates the reader that drops an unknown key, and is dropped at every plugin
+	// after it (api.StrandedClaim).
 	SuspendedBy string `json:"suspendedBy,omitempty"`
 	// SuspensionHeld is a suspension the machine holds for the agent's turn (supervise's
 	// holdSuspension); absent when none is.

@@ -21,7 +21,9 @@ import (
 // claim on it is this very moment's, so it is neither abandoned nor the delivery sweep's
 // (model.MentionAbandonedSQL, model.OwedMentionAttemptSQL). A sender writes that claim again
 // every mentionClaimRefresh for as long as its process lives, so an attempt staged this way
-// stays pending however old it grows (mentionClaimRefresh in internal/dispatch/api).
+// stays pending however old it grows (mentionClaimRefresh in internal/dispatch/api). Here the claim
+// is written once, by this call, so the product reads it live only within model.DeliveryClaimLapse
+// (60 s) of it: the caller scans at once (TestMain names this bound).
 func agedUnnamedAttempts(t *testing.T, database *store.Store, commentID string, age time.Duration) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
@@ -70,6 +72,7 @@ func heldDestinations(t *testing.T, database *store.Store, commentID string) []s
 // of that mention is owed, so the holder is shown the comment once and never beside the mention
 // a send may yet pin to it (decideFallbackCopy, mentionHolds.state).
 func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t *testing.T) {
+	t.Parallel()
 	const routed = "routed-to-a-session-either-mention-may-name"
 	const first = "mentioned-first-whose-sender-still-holds-its-lane"
 	const second = "mentioned-second-whose-sender-still-holds-its-lane"
@@ -97,7 +100,8 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	})
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "resumed")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "resumed")
-	// Both attempts are past their lease and within the bound, their claims this moment's.
+	// Both attempts are past their lease and within the bound, their claims this moment's, which the
+	// scan below reads within model.DeliveryClaimLapse (agedUnnamedAttempts).
 	agedUnnamedAttempts(t, rig.database, commentID, unnamedForwardBound/2)
 
 	// The owner's next event of the same issue, which the forward's wait holds behind it: the
@@ -112,9 +116,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 	})
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
-
-	if got := recv.received(); len(got) != 0 {
+	if got := recv.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("%s was sent %v within the bound, want nothing: the forward waits while a send of an unnamed mention no key stands for is owed on an attempt younger than %s, and the owner's later event waits behind it",
 			holder, keysOf(got), unnamedForwardBound)
 	}
@@ -158,7 +160,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 		t.Fatalf("the role row is settled %v, published %v and attempts %d while a send of the comment's unnamed mentions is still owed, want it waiting with none counted: the row waits for that send as every other copy of the comment does",
 			row.settled, row.published, row.attempts)
 	}
-	waitFor(t, 10*time.Second, "the owner's later event at the holder", func() bool { return len(recv.received()) > 0 })
+	waitFor(t, "the owner's later event at the holder", func() bool { return len(recv.received()) > 0 })
 	if copies := recv.received(); len(copies) != 1 || copies[0].SourceEventID != fmt.Sprint(later.ID) {
 		t.Fatalf("%s was sent %+v past the bound, want the later event (%d) alone: the comment's copy is the row's now, and the order to this one holder is what the bound gives up",
 			holder, copies, later.ID)
@@ -179,9 +181,7 @@ func TestAForwardPastItsBoundIsHeldAsARowAndStopsHoldingTheHoldersLaterEvents(t 
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
 
-	waitFor(t, 10*time.Second, "the comment's copy the row owes the holder", func() bool { return len(recv.received()) > 1 })
-	time.Sleep(time.Second)
-	copies := recv.received()
+	copies := recv.receivedNow(t, rig.client)
 	if len(copies) != 2 || copies[1].SourceEventID != fmt.Sprint(comment.ID) {
 		t.Fatalf("%s was sent %+v once the mentions settled, want the later event (%d) and then the comment (%d), each once: the row delivers the comment the forward gave up, and delivers it once",
 			holder, copies, later.ID, comment.ID)

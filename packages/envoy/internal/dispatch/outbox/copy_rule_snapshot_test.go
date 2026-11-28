@@ -26,6 +26,7 @@ import (
 // it, each of which holds the copy behind K, and the record the batch left, which shows the write
 // fell where the test put it.
 func TestTheCopyRuleReadsAnEarlierEventsRecordInOneSnapshot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	broker := events.NewBroker()

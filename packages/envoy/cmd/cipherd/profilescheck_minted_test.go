@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -15,23 +16,29 @@ func checkProfiles(t *testing.T, profiles string, args ...string) (int, string, 
 	return code, stdout.String(), stderr.String()
 }
 
+// withKinds is profiles, a profiles file mintedProfiles wrote, with kinds, a JSON list of kinds,
+// declared before its profiles.
+func withKinds(profiles, kinds string) string {
+	return `{"kinds": ` + kinds + `, ` + strings.TrimPrefix(profiles, "{")
+}
+
 // TestProfilesCheckRefusesWhatTheBootRefusesOfADPoPBlock: `profiles check` refuses, exit 1, naming
 // the profile and the fault, every dpop block the boot refuses for its shape alone - a "*." host,
-// two hosts, no allow list, a header other than Authorization, a block of no kind over its host -
+// two hosts, no allow list, a header other than Authorization, a kind whose hosts hold its host -
 // whatever its arguments (config.MintedEntryRules). Given --private-upstream, the value the
 // broker's BROKER_PROXY_PRIVATE_UPSTREAM holds, it also refuses a dpop block of another host than
 // the destination's, and takes the destination's with no line saying anything was not checked.
 // Without the flag it takes that block, exits 0 and writes one line saying the block's tie to the
 // destination was not checked, so the command says what it could not see.
 func TestProfilesCheckRefusesWhatTheBootRefusesOfADPoPBlock(t *testing.T) {
-	plain := `{"name": "WILDCARD_TOKEN", "proxy": {"hosts": ["*.test"]}}`
+	wildcard := `[{"name": "wildcard", "hosts": ["*.test"], "ways": ["swap"]}]`
 	for _, c := range []struct{ name, profiles, says string }{
 		{"a *. host", mintedProfiles(`"*.test"`, []string{"FIRST_TOKEN"}), "one exact host"},
 		{"two hosts", mintedProfiles(`"dispatch.test", "other.test"`, []string{"FIRST_TOKEN"}), "one exact host"},
 		{"no allow list", `{"profiles": [{"name": "FIRST_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"], "kind": "dpop"}}]}`, "allow list"},
 		{"a header X-Token", `{"profiles": [{"name": "FIRST_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["X-Token"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/api/v1/"}]}}]}`, "Authorization header alone"},
 		{"an allow entry of every path", `{"profiles": [{"name": "FIRST_TOKEN", "proxy": {"hosts": ["dispatch.test"], "headers": ["Authorization"], "kind": "dpop", "allow": [{"method": "POST", "pathPrefix": "/"}]}}]}`, "path prefix"},
-		{"a block of no kind over the host", mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}, plain), "WILDCARD_TOKEN"},
+		{"a kind over the host", withKinds(mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}), wildcard), "the kind wildcard"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			code, stdout, stderr := checkProfiles(t, c.profiles)
@@ -76,5 +83,30 @@ func TestProfilesCheckRefusesWhatTheBootRefusesOfADPoPBlock(t *testing.T) {
 	}
 	if code, _, stderr := checkProfiles(t, right, "--private-upstream", destination+" "+destination); code != 2 || !strings.Contains(stderr, "twice") {
 		t.Errorf("profiles check with a host named twice = exit %d, stderr %q; want exit 2 naming the host twice", code, stderr)
+	}
+}
+
+// TestProfilesCheckSaysWhichBlockANameIsServedBehind: a file compared with itself, with a store
+// that holds what its profile needs, lists each name behind a block with the block it is served
+// behind - a dpop block's as behind its dpop block, the words the report keeps for a block of kind
+// dpop, and an old file's block of no kind as behind its proxy block - so a report that called
+// every block the one or the other fails a row. A dpop block is made from no stored secret, so its
+// store holds an unrelated one; an old block is its source's, so its store holds that source.
+func TestProfilesCheckSaysWhichBlockANameIsServedBehind(t *testing.T) {
+	for _, c := range []struct{ name, profiles, store, line string }{
+		{"a dpop block", mintedProfiles(`"dispatch.test"`, []string{"FIRST_TOKEN"}),
+			`[{"name": "projects/example/secrets/agent-secrets-other-token", "annotations": {}}]`,
+			`served "FIRST_TOKEN": behind its dpop block`},
+		{"an old file's block of no kind", `{"profiles": [{"name": "TOKEN", "proxy": {"hosts": ["api.example.com"]}}]}`,
+			`[{"name": "projects/example/secrets/agent-secrets-token", "annotations": {"tier": "agent"}}]`,
+			`served "TOKEN": behind its proxy block`},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			code, stdout, stderr := checkProfiles(t, c.profiles, "--against", profilesFile(t, c.profiles),
+				"--secrets-json", writeTempFile(t, "secrets.json", []byte(c.store)))
+			if code != 0 || !slices.Contains(strings.Split(stdout, "\n"), c.line) {
+				t.Fatalf("profiles check of %s against itself = exit %d, stdout %q, stderr %q; want exit 0 and the line %s", c.name, code, stdout, stderr, c.line)
+			}
+		})
 	}
 }

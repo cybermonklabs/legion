@@ -279,7 +279,7 @@ func rolePushNamedRows() []rolePushNamedRow {
 		// under c, and leaves d, on D, where track put it, the seed. The step reads sendme so too:
 		// it rewrites C alone, and since jj resolves sendme to the hidden C after that rewrite,
 		// the real push gets the id of the commit that replaced it.
-		{name: "-r sendme, the repository's alias of C, beside a --config in front of git push that sets it to D and one after git push", alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
+		{name: "-r sendme, the repository's alias of C, beside a --config in front of git push that sets it to D and one after git push", bothForms: true, alone: true, setup: func(f *rolePushFixture) ([]string, rolePushWant, rolePushWant) {
 			f.track("c")
 			f.track("d")
 			c := f.commitOn(rev, impl, "main", rolePushMessage("C", "implementer"))
@@ -339,7 +339,7 @@ func TestARevisionArgumentSendsTheCommitsItNamedBeforeTheStep(t *testing.T) {
 func TestAChangeOffsetPushRunAgainLeavesOriginAsItWas(t *testing.T) {
 	t.Parallel()
 	impl, rev := rolePushImplementer, rolePushReviewer
-	rolePushEachForm(t, func(t *testing.T, form rolePushForm) {
+	rolePushStepLogic(t, func(t *testing.T, form rolePushForm) {
 		f := newRolePushFixture(t, form, rolePushRecords)
 		change, d1, d2 := f.offsets(rolePushMessage("D1", "reviewer"), rolePushMessage("D2", "implementer"))
 		args := []string{"git", "push", "-c", change + "/0"}

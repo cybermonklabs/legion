@@ -38,6 +38,12 @@ jobs:
       - name: Typecheck Envoy client
         run: bun run typecheck
         working-directory: packages/envoy-client
+      - name: Typecheck approve-check's session (bunx tsc --noEmit -p ../envoy/scripts/approve)
+        # packages/envoy/scripts/approve/session.ts runs the agent session approve-check.sh drives
+        # with this package's broker credential and Dispatch client, and no other CI step loads it,
+        # so a change here that breaks it fails this step rather than only a run on a stack.
+        run: bunx tsc --noEmit -p ../envoy/scripts/approve
+        working-directory: packages/envoy-client
       - name: Pre-pull the NATS image the credential tests run
         # ghcr.io/cybermonklabs/legion/ci, the copy of nats:2.10 (.github/ci-images.yaml). This job
         # pulls the image here, and does not call .github/actions/pull-test-images: that action

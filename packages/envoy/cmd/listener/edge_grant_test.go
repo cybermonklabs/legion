@@ -11,6 +11,8 @@ import (
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
+
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -49,6 +51,45 @@ func TestAnEdgeListenerGrantRefusesAListThatIsNoListOfProjectKeys(t *testing.T) 
 	grant, err := newEdgeGrant("test-machine", []string{"*"}, metrics.New())
 	if err == nil || grant != nil || !strings.Contains(err.Error(), "edge mode") {
 		t.Fatalf("newEdgeGrant(test-machine, [*]) = %v, %v; want no grant and a refusal naming edge mode", grant, err)
+	}
+}
+
+// An edge listener publishes no agent wake report, since its grant may not publish the wake topic
+// (natsgrant.Edge): a message on the agent subject of a session with no record is acknowledged
+// with no publish, logged and counted delivery_status="wake_left_to_shared". The core handler
+// delivers with no metadata, so the message takes no wait first. The same message through a
+// listener without the edge's grant reports the wake and counts delivery_status="wake_reported"
+// once, which shows the probe sees a report when one is made and the series the edge must not
+// write is the one a report writes.
+func TestAnEdgeListenerLeavesTheAgentWakeToTheSharedListeners(t *testing.T) {
+	t.Parallel()
+	harness := newListenerDeliveryHarness(t)
+	wakes := agentWakeProbe(t, harness)
+	edge := harness.config
+	edge.edge = testEdgeGrant(t, harness.metrics)
+	absent := "ses_edge_absent_" + id.New()
+	item := listenerTestEnvelope(contracts.LegacyAgentSubject(absent), "edge-wake-"+id.New())
+
+	coreNATSDeliveryHandler(edge)(&natsgo.Msg{Data: marshalListenerEnvelope(t, item)})
+	if message, err := wakes.NextMsg(2 * time.Second); err == nil {
+		t.Fatalf("the edge published a wake report on %s, which its grant may not publish:\n%s", message.Subject, message.Data)
+	}
+	body := metricsBody(t, harness)
+	if got := counterValue(t, body, deliveredSeries("wake_left_to_shared")); got != 1 {
+		t.Fatalf("%s = %d, want 1\n%s", deliveredSeries("wake_left_to_shared"), got, body)
+	}
+	if got := counterValue(t, body, deliveredSeries("wake_reported")); got != -1 {
+		t.Fatalf("%s = %d, want no series: the edge reports no wake\n%s", deliveredSeries("wake_reported"), got, body)
+	}
+	if lines := deliveryRecords(t, harness.logs.String(), "edge listener left the agent wake to the shared listeners"); len(lines) != 1 || lines[0].SessionID != absent {
+		t.Fatalf("edge wake lines %+v, want one naming %s", lines, absent)
+	}
+
+	shared := listenerTestEnvelope(contracts.LegacyAgentSubject(absent), "shared-wake-"+id.New())
+	harness.coreHandler(&natsgo.Msg{Data: marshalListenerEnvelope(t, shared)})
+	awaitWake(t, wakes, wakeKindAgent, absent)
+	if body := metricsBody(t, harness); counterValue(t, body, deliveredSeries("wake_reported")) != 1 {
+		t.Fatalf("%s is not 1 once the listener without the edge's grant reported the wake\n%s", deliveredSeries("wake_reported"), body)
 	}
 }
 
@@ -122,7 +163,7 @@ func TestAnEdgeListenerKeepsNoRoleMessageAndHandsNoKeptLaneOver(t *testing.T) {
 		if key != roleForwardDedupePrefix+item.DedupeKey {
 			t.Fatalf("the shared listener handed over %s, want the kept copy %s", key, roleForwardDedupePrefix+item.DedupeKey)
 		}
-	case <-time.After(10 * time.Second):
+	case <-time.After(listenerWaitBound(t)):
 		t.Fatalf("the shared listener's handover forwarded nothing, so the rig cannot see a handover:\n%s", harness.logs.String())
 	}
 	if cursor, err := harness.client.ReadKeptRoleCursor(ctx, role); err != nil || cursor.Sequence == 0 {
@@ -182,8 +223,10 @@ func TestAnEdgePublishToAnUnheldRoleIsRefusedAndKeptNowhere(t *testing.T) {
 
 // The edge publishes a delivery exception only on a lane its grant holds. A fan-out refusal on a
 // followed GitHub topic or Dispatch event - a delivery mode no one can read, or one the session
-// does not advertise - is withheld and counted, and the agent subject's delivery failure is
-// published on its exception lane. The same GitHub refusal on a listener without the edge's grant
+// does not advertise - is withheld and counted, and a delivery failure on a role subject of the
+// edge's own project is published on its exception lane. A delivery failure on an agent subject
+// raises no exception on any listener (isControlTopic names the role subjects alone), so the edge
+// neither publishes nor counts one. The same GitHub refusal on a listener without the edge's grant
 // is published, which shows the probe sees the lane: the probe reads the exceptions in the order
 // the one connection published them, so the GitHub lane's would come first had the edge published
 // it.
@@ -208,16 +251,18 @@ func TestAnEdgeListenerPublishesNoDeliveryExceptionItsGrantDoesNotHold(t *testin
 	applyDeliveryOutcome(edge, dispatch, fanoutRefusalOutcome(recipient, dispatch, followedTopicModeNotAdvertised, "bogus", false))
 	agent := listenerTestEnvelope(contracts.LegacyAgentSubject(recipient), "edge-agent-"+id.New())
 	applyDeliveryOutcome(edge, agent, deliveryOutcome{sessionID: recipient, exceptionReason: "delivery_failed"})
+	role := listenerTestEnvelope(contracts.RoleTopicPrefix+"PRIV.reviewer", "edge-role-"+id.New())
+	applyDeliveryOutcome(edge, role, deliveryOutcome{sessionID: recipient, exceptionReason: "delivery_failed"})
 	shared := listenerTestEnvelope("notifications.github.acme.pub.pr.2.opened", "shared-github-"+id.New())
 	applyDeliveryOutcome(harness.config, shared, fanoutRefusalOutcome(recipient, shared, followedTopicModeUnreadable, "", false))
 
-	for _, want := range []string{bus.ExceptionTopicPrefix + agent.Topic, bus.ExceptionTopicPrefix + shared.Topic} {
+	for _, want := range []string{bus.ExceptionTopicPrefix + role.Topic, bus.ExceptionTopicPrefix + shared.Topic} {
 		message, err := exceptions.NextMsg(10 * time.Second)
 		if err != nil {
 			t.Fatalf("no exception on %s within 10s: %v\n%s", want, err, harness.logs.String())
 		}
 		if message.Subject != want {
-			t.Fatalf("an exception on %s, want %s next: the edge published one on a lane its grant leaves out", message.Subject, want)
+			t.Fatalf("an exception on %s, want %s next: the edge published one on a lane its grant leaves out, or one for an agent subject", message.Subject, want)
 		}
 	}
 	body := metricsBody(t, harness)
@@ -226,7 +271,9 @@ func TestAnEdgeListenerPublishesNoDeliveryExceptionItsGrantDoesNotHold(t *testin
 			t.Fatalf("%s = %d, want 1", series, got)
 		}
 	}
-	if got := counterValue(t, body, edgeWithheldSeries("notifications.agent", "delivery_failed")); got != -1 {
-		t.Fatalf("the edge counted the agent subject's exception withheld (%d), which its grant publishes", got)
+	for _, prefix := range []string{"notifications.agent", "notifications.role"} {
+		if got := counterValue(t, body, edgeWithheldSeries(prefix, "delivery_failed")); got != -1 {
+			t.Fatalf("the edge counted an exception on %s withheld (%d): it raises none for an agent subject, and its grant publishes its own project's role lane", prefix, got)
+		}
 	}
 }

@@ -40,8 +40,13 @@ jobs:
         env:
           POSTGRES_PASSWORD: ci
         ports: ["5432:5432"]
+        # Its settings, its /dev/shm and its health check: .github/scripts/postgres-service-settings.sh's header.
+        command: postgres -c fsync=off -c full_page_writes=off -c synchronous_commit=off -c max_connections=1000 -c max_prepared_transactions=10
         options: >-
-          --health-cmd "pg_isready -U postgres"
+          --shm-size=1g
+          --health-cmd "pg_isready -h 127.0.0.1 -U postgres"
+          --health-start-period 60s
+          --health-start-interval 1s
           --health-interval 10s
           --health-timeout 5s
           --health-retries 5
@@ -73,13 +78,13 @@ jobs:
             ~/.cache/go-build
           key: go-envoy-${{ runner.os }}-${{ runner.arch }}-go${{ steps.setup-go.outputs.go-version }}
           restore-keys: ${{ format('go-envoy-{0}-{1}-', runner.os, runner.arch) }}
-      - name: Size the service for this lane's Dispatch processes
-        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
-      # No commit, checkpoint or database copy here waits for the runner's disk: why every
-      # Postgres service runs so is .github/scripts/pg-crash-safety-off.sh's header.
-      - name: Turn crash safety off on the service
+      # The settings the service's command: line asks for, read back from the server; why each one
+      # is .github/scripts/postgres-service-settings.sh's header.
+      - name: Read the service's settings back
         timeout-minutes: 2
-        run: .github/scripts/pg-crash-safety-off.sh "${{ job.services.postgres.id }}"
+        run: .github/scripts/postgres-service-settings.sh "${{ job.services.postgres.id }}" postgres
+      - name: Check the service allows this lane's Dispatch processes
+        run: .github/scripts/pg-connection-ceiling.sh "${{ job.services.postgres.id }}"
       - name: Build contracts for the stall suites
         run: bun run build
         working-directory: packages/contracts
@@ -104,6 +109,14 @@ jobs:
       - name: Stall test of pi-envoy
         run: bun run test extensions/envoy.test.ts -t "NATS path freezes"
         working-directory: packages/pi-envoy
+      # The topics a deployment names for a role (ENVOY_ROLE_TOPICS), with real Oh My Pi client
+      # processes against the listener and natsd this job sets Go up for: a mention-free post to a
+      # private Slack channel, through the listener's own signed webhook, reaches the session that
+      # holds the role after its pod is killed and its session relaunched, and after a new session
+      # claims the role, and never reaches a session holding another role.
+      - name: Role topics across a relaunch
+        run: bun run test extensions/role-topics.test.ts
+        working-directory: packages/pi-envoy
       - name: Stall test of claude-envoy
         run: bun test tests/envoy-channel-stall.test.ts
         working-directory: packages/claude-envoy
@@ -124,6 +137,25 @@ jobs:
       # open approval request back from the person is the field the CLI reads and prints.
       - name: Moved-approval advice of the real CLI against a real Dispatch
         run: bun test src/__tests__/moved-approval-advice.live.test.ts
+        working-directory: packages/envoy-client
+      # A CI job's result over the whole path a job writes it through: the real
+      # `agent-secrets result-grant` trades the job's OIDC token from a stand-in of GitHub at
+      # the real secrets broker for the proxy placeholder of a result grant, the real CLI, run
+      # as its child, writes with that placeholder alone through the broker's airlock proxy,
+      # which puts the run's results token in its place, and the real Dispatch server stores the
+      # result or refuses it (packages/envoy-client/test/ci-results-stack.ts). The stack runs two
+      # brokers on one database behind two `dev-proxy-stands front`s, one for their API ports and
+      # one for their proxy ports. It builds from this tree ./cmd/cipherd, ./cmd/dev-oidc-issuer,
+      # ./cmd/dev-proxy-stands, ./cmd/cipher with -o agent-secrets, and the server, and runs them
+      # on this job's Postgres; it needs no container and no fixed port.
+      - name: A CI job's result through the real broker and a real Dispatch
+        run: bun test src/__tests__/ci-results.live.test.ts
+        working-directory: packages/envoy-client
+      # The same stack, for a commit whose spec file's name holds a line break and a workflow
+      # command: the real CLI prints Dispatch's refusal of that tree on one line, so no line of a
+      # job's log that runs the command is a workflow command to its runner.
+      - name: A CI job's refused result prints no workflow command
+        run: bun test src/__tests__/ci-result-refusal-log.live.test.ts
         working-directory: packages/envoy-client
       # A comment's role: mention over the same real CLI and real Dispatch (#4426): the comment the CLI posts with --mention carries one delivery attempt for that
       # target, which is what lets an agent write to the owner of a subject and leave the retry

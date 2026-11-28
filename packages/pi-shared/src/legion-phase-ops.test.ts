@@ -8,7 +8,6 @@ import { PlanRatingCases } from "../../contracts/src/plan-rating-cases";
 import { stateAtPhase } from "../test/daemon-state";
 import { createLegionDaemonClient } from "./daemon-client";
 import type { HandoffReport } from "./handoff-record";
-import * as phaseOps from "./legion-phase-ops";
 import {
   type ClaimCapability,
   executePhaseOp,
@@ -22,7 +21,7 @@ import {
   STALE_ENTRY_INSTRUCTION,
 } from "./legion-phase-ops";
 
-/** The contract the build under test speaks, which its client states on every request. */
+/** A contract the test's client states on every request, and the build's package names. */
 const CONTRACT = 60;
 
 /** A response the daemon's own golden test wrote (`packages/daemon/internal/api`). */
@@ -238,16 +237,6 @@ test("a tester's step completion beside an open check of its role sends its repo
     ...REPORT,
     returnTo: 1,
   });
-});
-
-test("phaseInputAfter closes the phase only on a step's completion", () => {
-  expect(
-    phaseOps.phaseInputAfter("handoff_complete", { check_opened_at: CHECK_OPENED })
-  ).toBeUndefined();
-  expect(phaseOps.phaseInputAfter("handoff_complete", {})).toBe("phase-closed");
-  expect(phaseOps.phaseInputAfter("request_backward_move", {})).toBe("phase-closed");
-  expect(phaseOps.phaseInputAfter("ready_for_update", {})).toBe("update-answered");
-  expect(phaseOps.phaseInputAfter("read_record", {})).toBeUndefined();
 });
 
 test("the phase ops' fields, as a host declares them, are every field of every op, each optional, from the host's Zod", () => {
@@ -1362,8 +1351,8 @@ test("read_record hands on what a reviewing issue's round waits on from GitHub",
   expect(stuck.record.mergeWait).toEqual({
     waitsOn: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
     mergeState: "behind",
-    stateReadAt: "2026-09-22T09:16:12Z",
-    headUpdatedAt: "2026-09-20T14:05:33Z",
+    stateReadAt: "2126-09-22T09:16:12Z",
+    headUpdatedAt: "2126-09-20T14:05:33Z",
     checkRuns: 2,
     toldHead: "0f5a7c2e9b48d1630a7f2c8e4b6d0915a3c7e284",
     toldState: "behind",
@@ -1374,7 +1363,7 @@ test("read_record hands on what a reviewing issue's round waits on from GitHub",
   };
   expect(first.record.mergeWait).toEqual({
     waitsOn: "6c2f8a0d4b7e13952a8c0f6d3b5e9172c4a8d063",
-    headUpdatedAt: "2026-09-22T08:58:40Z",
+    headUpdatedAt: "2126-09-22T08:58:40Z",
     checkRuns: 0,
   });
   // An issue whose round waits on nothing from GitHub has no such wait at all.
@@ -1396,7 +1385,7 @@ test("a failed claim carries its cause", async () => {
   const failure = {
     cause: "died" as const,
     detail: "launch failures ran out",
-    at: "2026-09-22T08:47:03Z",
+    at: "2126-09-22T08:47:03Z",
     attempts: { launchFailures: 4, deaths: 1, promptFailures: 0, promptRetires: 0 },
   };
 

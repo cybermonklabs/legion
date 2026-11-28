@@ -7,6 +7,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // A .jj that is a symbolic link is refused before the creation record in it is read or written
@@ -16,6 +18,7 @@ import (
 // workspace keeps its work. Created fails, and RecordCreated writes nothing through the link.
 // Nothing here needs root, so nothing skips as root.
 func TestALinkedJJIsRefusedBeforeTheCreationRecordIsReadOrWritten(t *testing.T) {
+	t.Parallel()
 	dir, target := t.TempDir(), t.TempDir()
 	if err := os.Symlink(target, filepath.Join(dir, ".jj")); err != nil {
 		t.Fatal(err)
@@ -42,6 +45,7 @@ func TestALinkedJJIsRefusedBeforeTheCreationRecordIsReadOrWritten(t *testing.T) 
 // directory's: a creation moment forged there. Read through the open directory it is the
 // workspace's own.
 func TestAJJSwappedForALinkAfterItsOpenReachesNoOtherDirectory(t *testing.T) {
+	t.Parallel()
 	saved := time.Date(2026, 11, 20, 9, 0, 0, 0, time.UTC)
 	record := func(t *testing.T, jj string, at time.Time) {
 		t.Helper()
@@ -89,4 +93,38 @@ func TestAJJSwappedForALinkAfterItsOpenReachesNoOtherDirectory(t *testing.T) {
 			t.Errorf("Created after .jj was moved = %t, %v; want a refusal naming %s", ok, err, path)
 		}
 	})
+}
+
+// A .jj that is no directory is refused with ENOTDIR, and a FIFO there does not hold the open: the
+// open asks for no O_DIRECTORY, which gVisor does not hold to at a link (openJJ), so the descriptor's
+// own fstat is what refuses it, and O_NONBLOCK is what keeps a FIFO from waiting for a writer.
+func TestAJJThatIsNoDirectoryIsRefused(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		make func(path string) error
+	}{
+		{"a regular file", func(path string) error { return os.WriteFile(path, nil, 0o644) }},
+		{"a FIFO", func(path string) error { return unix.Mkfifo(path, 0o644) }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			if err := tc.make(filepath.Join(dir, ".jj")); err != nil {
+				t.Fatal(err)
+			}
+			done := make(chan error, 1)
+			go func() { done <- RecordCreated(dir, time.Now()) }()
+			select {
+			case err := <-done:
+				if !errors.Is(err, unix.ENOTDIR) || errors.Is(err, errLinkedJJ) {
+					t.Errorf("RecordCreated over %s at .jj = %v, want ENOTDIR", tc.name, err)
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatalf("RecordCreated over %s at .jj did not return", tc.name)
+			}
+			if _, ok, err := Created(dir); ok || !errors.Is(err, unix.ENOTDIR) {
+				t.Errorf("Created over %s at .jj = %t, %v; want ENOTDIR", tc.name, ok, err)
+			}
+		})
+	}
 }

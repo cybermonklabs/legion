@@ -9,6 +9,7 @@
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync } from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { linkOmpNatives } from "./omp-natives";
 
 export const SPILL_THRESHOLD_BYTES = 50 * 1024;
@@ -282,7 +283,7 @@ export async function bundledAgents(omp: string): Promise<string[]> {
   try {
     await linkOmpNatives(omp, home);
     const unpacked = Bun.spawnSync([omp, "agents", "unpack"], {
-      env: { HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin" },
+      env: { ...bunCacheOff, HOME: home, PATH: "/usr/local/bin:/usr/bin:/bin" },
     });
     if (unpacked.exitCode !== 0) {
       throw new Error(

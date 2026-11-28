@@ -8,7 +8,7 @@ import type {
 } from "@legion/contracts";
 import { ASK_URGENCIES, isIdPrefix } from "@legion/contracts";
 import { textHead } from "../ask-answer";
-import { type DispatchClient, DispatchServiceError } from "../dispatch-http";
+import { type AsOfRead, type DispatchClient, DispatchServiceError } from "../dispatch-http";
 import { issueTopic, type Owner, parseDispatchRef } from "../dispatch-owner";
 import { declinedAskLines, relatedCheckLines } from "../related-check";
 import { ToolInputError } from "../tool-input-errors";
@@ -20,6 +20,7 @@ import {
   renderAdvice,
   standingReviewLines,
 } from "./advice";
+import { leftOutWords } from "./as-of";
 import { askQuestionWithRef } from "./check";
 import {
   asObject,
@@ -27,6 +28,7 @@ import {
   type DispatchToolResult,
   optionalBoolean,
   optionalString,
+  type ReadingContext,
   type ResolvedArtifact,
   type SessionContext,
   stringArg,
@@ -44,15 +46,18 @@ function askUrgency(args: ToolArguments): AskUrgency | undefined {
 const askHintLimit = 8;
 
 /** The open asks a refused `reply_to_ask` lists, each by the 8 characters that name it — a
- *  prefix this flag resolves — and the head of its question, at most askHintLimit of them. */
+ *  prefix this flag resolves — and the head of its question, at most askHintLimit of them. A
+ *  question the issue's answer left out, as one under a token that carries a cut leaves out a
+ *  question the records at the cut cannot give, is named as left out (`leftOutWords`). */
 function openAskChoices(
   asks: readonly Pick<AskWithTrees, "id" | "question">[],
   owner: string
 ): string {
   if (asks.length === 0) return `${owner} holds no open ask.`;
-  const hints = asks
-    .slice(0, askHintLimit)
-    .map((ask) => `${ask.id.slice(0, 8)}… ${textHead(ask.question)}`);
+  const hints = asks.slice(0, askHintLimit).map((ask) => {
+    const question: string | undefined = ask.question;
+    return `${ask.id.slice(0, 8)}… ${question === undefined ? leftOutWords(undefined) : textHead(question)}`;
+  });
   return `The open asks of ${owner} are: ${hints.join(", ")}.`;
 }
 
@@ -173,7 +178,8 @@ export async function resolveReplyToAsk(
 const askIdShapeProblem = "ask ids are uuids (a prefix of at least 8 hex characters works)";
 
 /**
- * The ask `dispatch read` of `dispatch://…/ask/<id>` names, read. An ask in a document has two
+ * The ask `dispatch read` of `dispatch://…/ask/<id>` names, read, at `read`'s cut where it names
+ * one. An ask in a document has two
  * ids: its own uuid and the id of its `:::ask{#<id>}` block, which can look like a uuid too.
  * Either names it, whole or as an 8+ hex prefix exactly one of `list()`, the owner's asks, carries.
  * A full uuid is read as an ask id first; the list is read only when no ask has that id.
@@ -183,17 +189,18 @@ export async function readAskRef(
   id: string,
   ownerName: string,
   client: DispatchClient,
-  list: () => Promise<readonly Pick<AskWithTrees, "id" | "block_id">[]>
+  list: () => Promise<readonly Pick<AskWithTrees, "id" | "block_id">[]>,
+  read: AsOfRead = {}
 ): Promise<AskRead> {
   const fullID = normalizeUUID(id);
   if (fullID !== undefined) {
     try {
-      return await client.getAsk(fullID);
+      return await client.getAsk(fullID, read);
     } catch (error) {
       if (!(error instanceof DispatchServiceError) || error.status !== 404) throw error;
       const blocks = (await list()).filter((ask) => ask.block_id?.toLowerCase() === fullID);
       if (blocks.length !== 1 || blocks[0] === undefined) throw error;
-      return client.getAsk(blocks[0].id);
+      return client.getAsk(blocks[0].id, read);
     }
   }
   const asks = await list();
@@ -211,7 +218,9 @@ export async function readAskRef(
         (ask.block_id?.toLowerCase().startsWith(prefix) ?? false)
     );
   }
-  if (matches.length === 1 && matches[0] !== undefined) return client.getAsk(matches[0].id);
+  if (matches.length === 1 && matches[0] !== undefined) {
+    return client.getAsk(matches[0].id, read);
+  }
   throw new ToolInputError(tool, [
     matches.length === 0
       ? `ask id ${id} matches none of the asks on ${ownerName}; use the full id`
@@ -273,19 +282,29 @@ async function resolveAskArgument(
   return { id: resolved, read };
 }
 
-/** `dispatch open-asks`: the open asks this session, or one project, is waiting on. */
-export async function openAsksCommand(context: SessionContext): Promise<DispatchToolResult> {
-  const { input, linkBase, ownerArguments, newClient: dispatchClient } = context;
+/** `dispatch open-asks`: the open asks this session, or one project, is waiting on; at a cut, the
+ *  asks that were open then. */
+export async function openAsksCommand(
+  context: ReadingContext<SessionContext>
+): Promise<DispatchToolResult> {
+  const { input, linkBase, ownerArguments, newClient: dispatchClient, reading } = context;
   const client = dispatchClient();
   const project = optionalString(ownerArguments.args, "project");
+  const asOf = reading.cut?.asOf;
   if (project !== undefined) {
-    const response = await client.openAsksForProject(project);
-    return { text: formatOpenAsksSummary(response, linkBase), details: { ...response } };
+    const response = await client.openAsksForProject(project, reading.cut);
+    return {
+      text: formatOpenAsksSummary(response, linkBase, { project, asOf }),
+      details: { ...response },
+    };
   }
   const sessionId = input.sessionId?.trim();
   if (!sessionId) throw new Error("host session id is required for dispatch open-asks");
-  const response = await client.openAsks(sessionId);
-  return { text: formatOpenAsksSummary(response, linkBase), details: { ...response } };
+  const response = await client.openAsks(sessionId, undefined, reading.cut);
+  return {
+    text: formatOpenAsksSummary(response, linkBase, { asOf }),
+    details: { ...response },
+  };
 }
 
 /** `dispatch ask`: open an ask on the issue, or on a passage of a document. */

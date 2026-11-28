@@ -3,22 +3,32 @@ package sessionanswers
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
 // A message the listener stored for a session that is not running (state 'queued') is a person's
 // words the session owes an answer for exactly as a sent one is: it reaches that session when it
 // runs again, so both delivery arms read the two states alike (INFRA-626). An attempt that
 // failed, and one still pending, reach nobody and are left out.
 func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for state, want := range map[string]int{"sent": 1, "queued": 1, "failed": 0, "pending": 0} {
@@ -51,6 +61,88 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 	}
 }
 
+// Each statement of the read at a cut can use the same destination index as the present read, but
+// with both bounds of the window: the read of the publication evidence (cutPublicationQuery) and
+// the read of the items (cutQuery). The evidence reads events alone, so where it leaves the items
+// unknown, List answers ErrPublicationAtCutUnknown with no item lookups, even when the log is busy.
+func TestTheCutAnswersReadBoundsPublicationEvidenceByTopicAndWindow(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := t.Context()
+	const session = "session-reader"
+	topic := contracts.LegacyAgentSubject(session)
+	cut := asof.CutAt(time.Date(2026, 11, 7, 12, 0, 0, 0, time.UTC))
+	since := cut.Time().Add(-72 * time.Hour)
+	// The target topic has rows just outside both bounds. The window itself contains many
+	// other sessions' events. Only one unconfirmed event matches both index keys.
+	if _, err := database.Pool.Exec(ctx, `
+		insert into events (type, actor, payload, notify, created_at, published_destinations, seq)
+		select 'message.created', '{"kind":"user","id":"alice"}', '{}', false,
+		       case when n < 3000 then $1::timestamptz - interval '1 microsecond'
+		            when n < 6000 then $2::timestamptz + interval '1 microsecond'
+		            else $1::timestamptz end,
+		       array[case when n < 6000 or n = 6000 then $3::text else $3 || '-other-' || n % 80 end], 0
+		from generate_series(0, 17999) n
+	`, since, cut.Time(), topic); err != nil {
+		t.Fatalf("seed the window and surrounding events: %v", err)
+	}
+	if _, err := database.Pool.Exec(ctx, `analyze events`); err != nil {
+		t.Fatalf("analyze events: %v", err)
+	}
+	const index = "events_person_words_destinations"
+	for _, statement := range []struct {
+		name, sql string
+		args      []any
+		// evidence is whether the statement is the read of the publication evidence, which
+		// reads no relation but events.
+		evidence bool
+	}{
+		{"cutPublicationQuery", cutPublicationQuery, []any{since, topic, cut.Time()}, true},
+		{"cutQuery", cutQuery, []any{session, since, topic, cut.Time()}, false},
+	} {
+		bound, err := asof.Bind(statement.sql, cut)
+		if err != nil {
+			t.Fatal(err)
+		}
+		plan, _ := explaintest.AnalyzedPlan(t, ctx, database.Pool, bound, statement.args...)
+		scans := 0
+		for _, node := range explaintest.Nodes(t, plan) {
+			if node.Index == index && node.Loops > 0 {
+				scans++
+				if node.Loops != 1 || node.Rows != 1 ||
+					!strings.Contains(node.IndexCond, "published_destinations @>") ||
+					!strings.Contains(node.IndexCond, "created_at >=") ||
+					!strings.Contains(node.IndexCond, "created_at <=") {
+					t.Errorf("%s did not read one matching row under both bounds: %+v", statement.name, node)
+				}
+			}
+			if statement.evidence && node.Relation != "" && node.Relation != "events" {
+				t.Errorf("the publication evidence read %s (%g loops)", node.Relation, node.Loops)
+			}
+		}
+		if scans != 1 {
+			t.Fatalf("%s should scan %s once, got %d:\n%s",
+				statement.name, index, scans, explaintest.Outline(t, plan))
+		}
+	}
+	items, err := List(asof.WithCut(ctx, cut), database.Pool, session, since)
+	if !errors.Is(err, ErrPublicationAtCutUnknown) || items != nil {
+		t.Fatalf("the unconfirmed event should leave the items unknown, got %#v, %v", items, err)
+	}
+
+	// A resolution that is not a decline is not S1 evidence, even on the exact topic.
+	if _, err := database.Pool.Exec(ctx, `
+		update events set type = 'ask.resolved', payload = '{"resolution":{"kind":"retracted"}}'
+		where created_at = $1 and published_destinations @> array[$2::text]
+	`, since, topic); err != nil {
+		t.Fatalf("replace the one qualifying event with a retraction: %v", err)
+	}
+	items, err = List(asof.WithCut(ctx, cut), database.Pool, session, since)
+	if err != nil || items == nil || len(items) != 0 {
+		t.Fatalf("the retraction and out-of-window events should give an empty list, got %#v, %v", items, err)
+	}
+}
+
 // The read of a session's message deliveries (S2) is an index-only scan of
 // message_deliveries_session_taken (20261114081435) over the window's range, the session's entries
 // created since an hour before the window's start, never a read of every delivery the session ever
@@ -59,6 +151,7 @@ func TestAQueuedDeliveryIsListedAsASentOneIs(t *testing.T) {
 // the generic plan Postgres caches for it afterwards, which knows neither the session nor the
 // window's start.
 func TestTheReadOfASessionsMessageDeliveriesReadsItsWindowsRange(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	var messageID string

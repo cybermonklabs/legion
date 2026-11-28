@@ -11,9 +11,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+	"unicode"
+
+	"github.com/sjawhar/envoy/cipheraddr"
 )
 
 // testAirlockPlaceholder is one placeholder in the broker's own shape: placeholder.Prefix and
@@ -36,6 +40,12 @@ func testRelease(name string, hosts []string, slots map[string]string) *AirlockR
 	}
 }
 
+// prepareAirlock is prepareProxyFilesFor with one environment as both agent-secrets' own and the
+// command's, as a test that releases no value into the command's environment has.
+func prepareAirlock(environ []string, release *AirlockRelease, grantID string, expiresAt *time.Time) (airlockFiles, error) {
+	return prepareProxyFilesFor(environ, environ, release, grantID, expiresAt)
+}
+
 // childEnvMap is buildChildEnv's answer as a map, for a test that asks after single variables.
 func childEnvMap(t *testing.T, environ []string, values map[string]string, release *AirlockRelease, files airlockFiles) map[string]string {
 	t.Helper()
@@ -55,10 +65,15 @@ func childEnvMap(t *testing.T, environ []string, values map[string]string, relea
 // TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy pins the one list the airlock gets wrong in both
 // directions: an entry that stays takes a secret's request past the proxy with a placeholder in
 // it, and an entry that is missing sends a request the proxy refuses (a private address) or
-// cannot reach (the broker itself) through it.
+// cannot reach (the broker itself) through it. An entry with a trailing dot is the same name
+// fully qualified, which Bun's fetch, the runtime `dispatch result` writes with, reads as covering
+// the bound host, so it is held to the bound hosts as the name without it is. Bun also splits the
+// list on white space, so a bound host that a space, a tab or a line feed joins to another entry
+// is dropped as one between commas is, the other entry is kept, and the child's list holds no
+// white space in any row.
 func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 	t.Parallel()
-	release := testRelease("AIRLOCK_ME", []string{"api.example.com", "*.cdn.example.com"}, map[string]string{"value": testAirlockPlaceholder})
+	release := testRelease("AIRLOCK_ME", []string{"api.example.com", "*.cdn.example.com", "dispatch.example.test"}, map[string]string{"value": testAirlockPlaceholder})
 	for _, row := range []struct {
 		name        string
 		environ     []string
@@ -104,9 +119,88 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 			wantEntries: []string{"broker.internal.example"},
 			wantGone:    []string{"broker.internal.example:8443"},
 		},
+		{
+			// The broker's host is held to the bound hosts as any entry is: a parent domain of a
+			// bound host, the bound host itself on another port, and a host under a bound "*."
+			// name each leave the list, so the bound host's requests stay on the proxy.
+			name:     "a broker host that is a parent domain of a bound host",
+			environ:  []string{"AGENT_SECRETS_URL=https://example.com"},
+			wantGone: []string{"example.com"},
+		},
+		{
+			name:     "a broker host that is a bound host on another port",
+			environ:  []string{"AGENT_SECRETS_URL=https://api.example.com:8443"},
+			wantGone: []string{"api.example.com"},
+		},
+		{
+			name:     "a broker host under a bound *. name",
+			environ:  []string{"AGENT_SECRETS_URL=https://secrets.cdn.example.com"},
+			wantGone: []string{"secrets.cdn.example.com"},
+		},
+		{
+			name: "an inherited entry with a trailing dot naming a bound host or its parent",
+			environ: []string{
+				"AGENT_SECRETS_URL=https://broker.internal.example",
+				"NO_PROXY=dispatch.example.test.,.dispatch.example.test.,example.test.,.example.test.,intranet.example.org",
+			},
+			wantEntries: []string{"intranet.example.org"},
+			wantGone:    []string{"dispatch.example.test.", ".dispatch.example.test.", "example.test.", ".example.test."},
+		},
+		{
+			// A row of its own: beside "dispatch.example.test." the list keeps one spelling of
+			// each name in any case, so this entry would leave it whatever the test made of it.
+			name: "an inherited bound host in capitals with a trailing dot",
+			environ: []string{
+				"AGENT_SECRETS_URL=https://broker.internal.example",
+				"NO_PROXY=DISPATCH.EXAMPLE.TEST.,intranet.example.org",
+			},
+			wantEntries: []string{"intranet.example.org"},
+			wantGone:    []string{"DISPATCH.EXAMPLE.TEST."},
+		},
+		{
+			name:     "a broker host that is a bound host with a trailing dot",
+			environ:  []string{"AGENT_SECRETS_URL=https://dispatch.example.test.:8443"},
+			wantGone: []string{"dispatch.example.test.", "dispatch.example.test"},
+		},
+		{
+			name:     "a broker host that is a parent domain of a bound host with a trailing dot",
+			environ:  []string{"AGENT_SECRETS_URL=https://example.test."},
+			wantGone: []string{"example.test.", "example.test"},
+		},
+		{
+			name:        "control: a sibling entry with a trailing dot stays",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=secrets.example.test."},
+			wantEntries: []string{"secrets.example.test.", "broker.internal.example"},
+		},
+		{
+			name:        "an inherited bound host a space joins to another entry",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=other.test dispatch.example.test"},
+			wantEntries: []string{"other.test", "broker.internal.example"},
+			wantGone:    []string{"dispatch.example.test", "other.test dispatch.example.test"},
+		},
+		{
+			name:        "an inherited bound host a tab joins to another entry",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=other.test\tdispatch.example.test"},
+			wantEntries: []string{"other.test", "broker.internal.example"},
+			wantGone:    []string{"dispatch.example.test", "other.test\tdispatch.example.test"},
+		},
+		{
+			name:        "a list of commas, spaces, tabs and a line feed, with bound hosts among it",
+			environ:     []string{"AGENT_SECRETS_URL=https://broker.internal.example", "NO_PROXY=intranet.example.org, other.test\tapi.example.com ,\nx.example.net  .cdn.example.com"},
+			wantEntries: []string{"intranet.example.org", "other.test", "x.example.net", "broker.internal.example"},
+			wantGone:    []string{"api.example.com", ".cdn.example.com"},
+		},
+		{
+			name:        "control: a sibling broker host stays",
+			environ:     []string{"AGENT_SECRETS_URL=https://secrets.example.com"},
+			wantEntries: []string{"secrets.example.com"},
+		},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			got := airlockNoProxy(row.environ, release)
+			if strings.ContainsFunc(got, unicode.IsSpace) {
+				t.Errorf("NO_PROXY = %q, want no white space in it", got)
+			}
 			entries := strings.Split(got, ",")
 			has := func(want string) bool {
 				for _, e := range entries {
@@ -127,6 +221,30 @@ func TestAirlockNoProxyKeepsTheBoundHostsOnTheProxy(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestAFixedNoProxyEntryOverABoundHostIsDropped: a fixed NO_PROXY entry is held to the bound hosts
+// as an inherited one is. With Dispatch's tailnet name bound, `.ts.net` leaves the list, so a
+// write to it goes through the proxy rather than straight out with a placeholder in it; the
+// broker's own tailnet name, which the release does not bind, stays, and so does every other fixed
+// entry. A grant bound to a host outside the tailnet keeps `.ts.net`.
+func TestAFixedNoProxyEntryOverABoundHostIsDropped(t *testing.T) {
+	environ := []string{"AGENT_SECRETS_URL=https://secrets.example-tailnet.ts.net"}
+	entries := func(hosts ...string) []string {
+		return strings.Split(airlockNoProxy(environ, testRelease("DISPATCH_RESULTS_TOKEN", hosts, map[string]string{"value": testAirlockPlaceholder})), ",")
+	}
+	dispatch := entries("dispatch.example-tailnet.ts.net")
+	if slices.Contains(dispatch, ".ts.net") || !slices.Contains(dispatch, "secrets.example-tailnet.ts.net") {
+		t.Fatalf("with Dispatch's tailnet name bound, NO_PROXY = %q; want no .ts.net and the broker's own name", dispatch)
+	}
+	for _, fixed := range airlockFixedNoProxy {
+		if fixed != ".ts.net" && !slices.Contains(dispatch, fixed) {
+			t.Errorf("with Dispatch's tailnet name bound, NO_PROXY = %q; want the fixed entry %q kept", dispatch, fixed)
+		}
+	}
+	if github := entries("api.github.com"); !slices.Contains(github, ".ts.net") {
+		t.Fatalf("with api.github.com bound, NO_PROXY = %q; want .ts.net kept", github)
 	}
 }
 
@@ -201,7 +319,8 @@ func TestAirlockRefusesTwoAWSNames(t *testing.T) {
 
 // TestAirlockProxyURLCarriesThePasswordAndParsesBack: the proxy reads the password of a Basic
 // credential, so the URL must carry it and every client must be able to parse it out again,
-// whether or not the placeholder holds a character a URL must escape.
+// whether or not the placeholder holds a character a URL must escape. The URL is one
+// cipheraddr.NamesAirlockProxy knows as the airlock's.
 func TestAirlockProxyURLCarriesThePasswordAndParsesBack(t *testing.T) {
 	t.Parallel()
 	for _, password := range []string{
@@ -221,8 +340,8 @@ func TestAirlockProxyURLCarriesThePasswordAndParsesBack(t *testing.T) {
 		if parsed.User == nil {
 			t.Fatalf("the proxy URL %q carries no credential", got)
 		}
-		if parsed.User.Username() != "agent-secrets" {
-			t.Errorf("the proxy URL's user is %q, want agent-secrets", parsed.User.Username())
+		if !cipheraddr.NamesAirlockProxy(got) {
+			t.Errorf("the proxy URL's user is %q, which cipheraddr.NamesAirlockProxy does not know as the airlock's", parsed.User.Username())
 		}
 		back, set := parsed.User.Password()
 		if !set || back != password {
@@ -273,7 +392,7 @@ func TestPrepareAirlockWritesTheTrustBundleAndWgetrc(t *testing.T) {
 		t.Fatalf("prepareAirlock: %v", err)
 	}
 
-	dir := filepath.Join(runtimeDir, "agent-secrets", "airlock", "grant-one")
+	dir := grantDirOf(t, filepath.Join(runtimeDir, "agent-secrets", "airlock"), "grant-one", files.bundle)
 	if filepath.Dir(files.bundle) != dir || filepath.Dir(files.wgetrc) != dir {
 		t.Fatalf("the files are at %q and %q, want both under %q", files.bundle, files.wgetrc, dir)
 	}
@@ -517,9 +636,7 @@ func TestPrepareAirlockIsNeverSeenHalfWrittenByAnotherRunsTidy(t *testing.T) {
 			<-swept
 			t.Fatalf("%s: prepareAirlock while another run tidied the same root: %v", grant, err)
 		}
-		if filepath.Dir(files.bundle) != filepath.Join(root, grant) {
-			t.Fatalf("%s: the bundle is at %q, want it under %q", grant, files.bundle, filepath.Join(root, grant))
-		}
+		grantDirOf(t, root, grant, files.bundle)
 	}
 	close(stop)
 	<-swept
@@ -547,7 +664,7 @@ func TestPrepareAirlockTwiceForOneGrantKeepsTheDirectoryThatIsThere(t *testing.T
 	if err != nil {
 		t.Fatalf("the second run for the same grant: %v", err)
 	}
-	if second != first {
+	if second.bundle != first.bundle || second.wgetrc != first.wgetrc {
 		t.Fatalf("the second run answers %+v, want the first run's %+v", second, first)
 	}
 	for _, path := range []string{first.bundle, first.wgetrc, filepath.Join(filepath.Dir(first.bundle), "expires")} {
@@ -559,12 +676,14 @@ func TestPrepareAirlockTwiceForOneGrantKeepsTheDirectoryThatIsThere(t *testing.T
 	if err != nil {
 		t.Fatalf("read the airlock root: %v", err)
 	}
-	if len(entries) != 1 || entries[0].Name() != "grant-one" {
-		names := make([]string, len(entries))
-		for i, entry := range entries {
-			names[i] = entry.Name()
-		}
-		t.Fatalf("the airlock root holds %v, want the one grant directory: the second run's own is left behind", names)
+	// The root holds the key the directory names are keyed with (proxyTrustDirKey) and the one
+	// grant directory, nothing else.
+	names := make([]string, len(entries))
+	for i, entry := range entries {
+		names[i] = entry.Name()
+	}
+	if want := []string{proxyTrustKeyFile, filepath.Base(filepath.Dir(first.bundle))}; !slices.Equal(names, want) {
+		t.Fatalf("the airlock root holds %v, want %v, the key and the one grant directory: the second run's own is left behind", names, want)
 	}
 }
 
@@ -577,7 +696,7 @@ func TestPrepareAirlockFallsBackToTheTemporaryDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("prepareAirlock: %v", err)
 	}
-	want := filepath.Join(tmp, "agent-secrets", "airlock", "grant-one")
+	want := grantDirOf(t, filepath.Join(tmp, "agent-secrets", "airlock"), "grant-one", files.bundle)
 	if filepath.Dir(files.bundle) != want {
 		t.Fatalf("the bundle is at %q, want it under %q", files.bundle, want)
 	}
@@ -819,13 +938,18 @@ func TestExecFormRunsACommandForANameBehindTheAirlock(t *testing.T) {
 	if strings.Contains(env["NO_PROXY"], "api.example.com") || !strings.Contains(env["NO_PROXY"], "intranet.example.org") {
 		t.Errorf("the command's NO_PROXY is %q, want the bound host gone and the other inherited entry kept", env["NO_PROXY"])
 	}
-	bundle := filepath.Join(runtimeDir, "agent-secrets", "airlock", "grant-airlock", "ca-bundle.pem")
+	airlockRoot := filepath.Join(runtimeDir, "agent-secrets", "airlock")
+	bundle := env["CURL_CA_BUNDLE"]
+	grantDir := grantDirOf(t, airlockRoot, "grant-airlock", bundle)
+	if filepath.Base(bundle) != "ca-bundle.pem" {
+		t.Errorf("the command's CURL_CA_BUNDLE is %q, want the grant directory's ca-bundle.pem", bundle)
+	}
 	for _, key := range airlockBundleVars {
 		if env[key] != bundle {
 			t.Errorf("the command's %s is %q, want %q", key, env[key], bundle)
 		}
 	}
-	if want := filepath.Join(runtimeDir, "agent-secrets", "airlock", "grant-airlock", "wgetrc"); env["WGETRC"] != want {
+	if want := filepath.Join(grantDir, "wgetrc"); env["WGETRC"] != want {
 		t.Errorf("the command's WGETRC is %q, want %q", env["WGETRC"], want)
 	}
 	if env["AGENT_SECRETS_URL"] != broker.URL {

@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reSaveSource runs the settings PUT's own upsert (api/architecture_source.go's
@@ -75,6 +76,7 @@ var reSaveArgs = []any{"CORE", archRepo, "main", int64(11), `{"kind":"user","id"
 // record the older head it read before both of those writes: the row, the components and the
 // events must stay at the newer head.
 func TestASettingsReSaveDuringTwoSyncsNeverLeavesTheEarlierHead(t *testing.T) {
+	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles(), commitTwo: infraFiles()})
 	branch.holdBlobs(commitOne)
 	a, b, database := twoProcesses(t, branch)
@@ -88,12 +90,7 @@ func TestASettingsReSaveDuringTwoSyncsNeverLeavesTheEarlierHead(t *testing.T) {
 	reSaveSource(t, b)
 	branch.releaseHeld()
 
-	var answer syncAnswer
-	select {
-	case answer = <-held:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the held sync did not end within 30s of its release")
-	}
+	answer := testwait.Receive(t, "the held sync to end once released", held)
 	if answer.err != nil {
 		t.Fatalf("the held sync: %v", answer.err)
 	}
@@ -131,6 +128,7 @@ func TestASettingsReSaveDuringTwoSyncsNeverLeavesTheEarlierHead(t *testing.T) {
 // architecture.sync_failed event, not one per sync. The second sync runs after a minute has passed
 // on the database's clock (the recorded limit's end moved one minute closer), as a later tick does.
 func TestAHeldGitHubRateLimitEmitsOneSyncFailedEvent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	_, database := newImporterFixture(t, fake)
@@ -190,6 +188,7 @@ func TestAHeldGitHubRateLimitEmitsOneSyncFailedEvent(t *testing.T) {
 // on the flight's retry, records succeeded with no cause: the flight asks again, so the last try
 // that reached GitHub counts, and the superseded try's failures are dropped (githubreads.Hold).
 func TestALeasedImportPassRecordsTheRetryOfASupersededTryNotItsFailure(t *testing.T) {
+	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles()})
 	branch.holdNextHeadLookupAnswering(http.StatusServiceUnavailable)
 	importer, other, database := twoProcesses(t, branch)
@@ -205,11 +204,7 @@ func TestALeasedImportPassRecordsTheRetryOfASupersededTryNotItsFailure(t *testin
 	branch.waitHeld(t)
 	reSaveSource(t, other)
 	branch.releaseHeld()
-	select {
-	case <-passed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("the leased import pass did not end within 30s")
-	}
+	testwait.Receive(t, "the leased import pass to end", passed)
 
 	if got := reads.take(); len(got) != 1 || got[0].read != githubreads.ArchitectureImport || !got[0].succeeded || got[0].cause != "" {
 		t.Fatalf("the pass whose superseded try met a 503 and whose retry read the source recorded %+v, want one succeeded %s attempt with no cause",
@@ -243,6 +238,8 @@ func TestALeasedImportPassRecordsTheRetryOfASupersededTryNotItsFailure(t *testin
 // takes the row's lock (lockSourceRow), so it waits for the commit however late the commit comes,
 // and then finds the row written since the load.
 func TestALeasedImportPassKeepsASupersededTrysFailureWhenItsRetryAsksGitHubNothing(t *testing.T) {
+	// Not parallel: it writes the package variable syncTimeout, which every sync of the parallel
+	// tests reads.
 	previous := syncTimeout
 	syncTimeout = time.Second
 	t.Cleanup(func() { syncTimeout = previous })
