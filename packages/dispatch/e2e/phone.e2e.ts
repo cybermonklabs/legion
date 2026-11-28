@@ -287,9 +287,9 @@ test("a phone thread trap keeps Tab inside the sheet while the composer holds a 
   }
 });
 
-// The wrap's other end. Shift+Tab from the sheet's first control goes to its last enabled one,
-// past the held composer's disabled controls, which a trap that read the `disabled` attribute
-// counted as the last and could not focus, leaving focus where it was.
+// The wrap's other end. While the comment composer holds a send, Shift+Tab from the sheet's
+// first control wraps to its last control. The send holds the composer's controls by
+// `aria-disabled` and disables none of them, so each keeps its Tab stop in the sheet's cycle.
 test("a phone sheet trap wraps Shift+Tab from its first control past a held composer @phone", async ({
   browser,
 }) => {

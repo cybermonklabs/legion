@@ -99,8 +99,11 @@ export type PagedReferenceRoute = Exclude<DispatchReferenceRoute, { kind: "perso
  * The five fields the Inbox filters, sorts and groups by. Assignee is one of them, but it keeps
  * a vocabulary of its own in the address - repeated `?assignee=`, with `everyone` and
  * `unassigned` - because a person's email is not a word this page invented, so it rides in
- * `InboxRoute.assignees` rather than in that type's `filters` (`features/inbox/inbox-route.ts`,
- * which holds the Inbox's address grammar; these are the words it reads and writes).
+ * `InboxRoute.assignees` rather than in that type's `filters`. These are the words the Inbox's
+ * address reads and writes: this file's Inbox block (`InboxRoute`, `parseInboxSearch` and
+ * `buildInboxPath`) is the grammar the Inbox runs until the later piece of INFRA-3135 that
+ * converts the Inbox, and `features/inbox/inbox-route.ts` holds the same grammar for the Agents
+ * page's link to the Inbox.
  */
 export const INBOX_DIMENSIONS = ["priority", "urgency", "type", "project", "assignee"] as const;
 export type InboxDimension = (typeof INBOX_DIMENSIONS)[number];
@@ -137,10 +140,13 @@ export const INBOX_URGENCY_VALUES = [...ASK_URGENCIES, NO_FILTER_VALUE] as const
 export const INBOX_TYPE_VALUES = INBOX_ROW_TYPES;
 
 /** Each filter field's vocabulary, the one table both the address and the Filter panel read:
- *  the words the address keeps for the field (`features/inbox/inbox-route.ts` drops any other,
- *  which would match no row), and the values the field's control lists, in that order. `project`
- *  has none, because a project key is whatever somebody created: the address keeps any
- *  non-empty word, and the control lists the keys its rows carry and then `none`. */
+ *  the words the address keeps for the field, and the values the field's control lists, in that
+ *  order. The address drops any other word, which would match no row: this file's Inbox block
+ *  (`parseInboxSearch`), the grammar the Inbox runs until the later piece of INFRA-3135 that
+ *  converts the Inbox, drops it, and so does `features/inbox/inbox-route.ts`, which holds the
+ *  same grammar for the Agents page's link to the Inbox. `project` has no vocabulary, because a
+ *  project key is whatever somebody created: the address keeps any non-empty word, and the
+ *  control lists the keys its rows carry and then `none`. */
 export const INBOX_FILTER_VOCABULARY: Readonly<
   Record<InboxFilterField, readonly string[] | undefined>
 > = {

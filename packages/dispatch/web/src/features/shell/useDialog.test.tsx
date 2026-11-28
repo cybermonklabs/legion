@@ -225,10 +225,11 @@ test("the frame after it opens, a dialog gives the focus to its first control an
 
 // The trap wraps at the stops the keyboard reaches, in the browser's Tab order: a disclosure's
 // summary is one, as a button is, and a control the page took out of the Tab order with
-// `tabindex="-1"` is none, as a tab of a tab list other than the selected one is not. A trap that
-// took that control for the dialog's last stop would let Tab from the summary leave the dialog for
-// the page behind it, and send Shift+Tab from the first control to a stop no key reaches.
-test("Tab wraps from a dialog's last stop the keyboard reaches, past a control with tabindex -1, and stops on a disclosure's summary", async () => {
+// `tabindex="-1"` is none, as a tab of a tab list other than the selected one is not; nor is a
+// `disabled` control, which the keyboard passes over. A trap that took either control for the
+// dialog's last stop would let Tab from the summary leave the dialog for the page behind it, and
+// aim Shift+Tab from the first control at a control no key reaches.
+test("Tab wraps from a dialog's last stop the keyboard reaches, past a control with tabindex -1 and a disabled control, and stops on a disclosure's summary", async () => {
   const user = userEvent.setup();
   const frames = holdFrames();
   const view = render(
@@ -240,6 +241,9 @@ test("Tab wraps from a dialog's last stop the keyboard reaches, past a control w
         </details>
         <button tabIndex={-1} type="button">
           Out of the Tab order
+        </button>
+        <button disabled type="button">
+          Disabled
         </button>
       </Dialog>
       <button type="button">Behind the dialog</button>
