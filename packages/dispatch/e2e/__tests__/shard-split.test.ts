@@ -12,15 +12,21 @@
  *  config is a unit of its own (`groupOf`, e2e/shard-reporter.ts), so its placement is computed
  *  here row by row; the fixture config holds the rows the reporter must keep together, which the
  *  real config has none of. That computation keys each row by its title in the listing, and the
- *  reporter by its own (`titlesBelowFile`, e2e/shard-reporter.ts), so a second fixture config holds
- *  the two keys against each other in shapes the real config has none of either: a `describe`
- *  with no title, one inside it, and a title that holds a newline.
+ *  reporter by its own (`rowOf`, e2e/shard-reporter.ts, which `preprocess` places every row as),
+ *  so a second fixture config holds the two keys against each other in shapes the real config has
+ *  none of either: a `describe` with no title, one inside it, and a title that holds a newline.
+ *  Its reporter writes each row as `rowOf` builds it, so the keys held there are the ones
+ *  `preprocess` places by.
  *
  *  The listings of a selection run one after the other, and the two selections side by side, so
  *  the file holds at most two at once: a listing of the full config is a `node` of about 300 to
  *  500 MiB, and this file once started ten at once, four of which a Legion pod's memory guard
- *  killed at 6.8 to 7.1 of its 8 GiB. The fixtures' listings start in the file's last two tests,
- *  one after the other, after both selections have ended.
+ *  killed at 6.8 to 7.1 of its 8 GiB. `bun test` runs the file's tests one at a time, in a random
+ *  order drawn from its seed (packages/dispatch/bunfig.toml sets `randomize`), so a fixture's test
+ *  may run while both selections are still listing. Each of the two fixture tests therefore waits
+ *  for both selections to end, fulfilled or rejected, before it starts a listing of its own, and
+ *  its own listings run one after the other. A selection that fails fails its own test and no
+ *  fixture's.
  */
 import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, rmSync } from "node:fs";
@@ -306,7 +312,8 @@ function legsOf(listed: { sharded: readonly Listing[]; whole: Listing }) {
   return { faults, legRows, perLeg, whole };
 }
 
-/** Both selections start here, before any test, so the file holds at most two listings at once. */
+/** Both selections start here, before any test, and run side by side; the fixture tests list
+ *  only once both have ended, so the file holds at most two listings at once. */
 const selections = {
   "the default selection": retained(listedLegs("e2e/playwright.config.ts", [])),
   "the pull-request lane": retained(
@@ -354,6 +361,8 @@ for (const [name, listed] of Object.entries(selections)) {
 test(
   "a serial describe, a default-mode describe and a file of a project that is not fully parallel each stay on one leg, two serial describes of one title are placed apart, and free rows spread",
   async () => {
+    // The full config's listings end first, whichever way (the file's header says why).
+    await Promise.allSettled(Object.values(selections));
     const { faults, legRows, whole } = legsOf(
       await listedLegs("e2e/__tests__/fixtures/shard-groups.config.ts", [])
     );
@@ -388,12 +397,19 @@ test(
     const free = legsHolding("parallel", (title) => title.startsWith("free row "));
     expect(free.length).toBeGreaterThan(1);
   },
-  rowLimit(...Array.from({ length: legs + 1 }, () => "listing" as const))
+  rowLimit(
+    // Both selections, side by side: the longer of two runs of `legs + 1` listings each.
+    ...Array.from({ length: legs + 1 }, () => "listing" as const),
+    // Then the fixture listed whole and leg by leg, one listing after another.
+    ...Array.from({ length: legs + 1 }, () => "listing" as const)
+  )
 );
 
 test(
   "the reporter keys each row as the listing does, inside a describe with no title and with a newline in its title too",
   async () => {
+    // The full config's listings end first, whichever way (the file's header says why).
+    await Promise.allSettled(Object.values(selections));
     const output = mkdtempSync(join(tmpdir(), "row-keys-"));
     try {
       const keys = join(output, "keys.json");
@@ -423,5 +439,10 @@ test(
       rmSync(output, { force: true, recursive: true });
     }
   },
-  rowLimit("listing")
+  rowLimit(
+    // Both selections, side by side: the longer of two runs of `legs + 1` listings each.
+    ...Array.from({ length: legs + 1 }, () => "listing" as const),
+    // Then the fixture's one listing.
+    "listing"
+  )
 );

@@ -89,10 +89,8 @@ function groupOf(test: TestCase): { holder: TestCase | Suite; kind: UnitKind } {
  *  not read off `titlePath()`, which leaves a `describe` with no title out (Playwright 1.64.1's
  *  `Suite.titlePath`, playwright/lib/common/index.js:2617-2622), where the JSON reporter keeps it
  *  as a suite titled "" (`_serializeSuite`, lib/runner/index.js:4343-4352): a row inside one would
- *  be keyed apart from its entry in the table, and weighed by its file's mean.
- *  e2e/__tests__/shard-split.test.ts holds these against the listing's, through
- *  `fixtures/row-keys.reporter.ts`. */
-export function titlesBelowFile(entry: Suite | TestCase): string[] {
+ *  be keyed apart from its entry in the table, and weighed by its file's mean. */
+function titlesBelowFile(entry: Suite | TestCase): string[] {
   const titles: string[] = [];
   let at: Suite | TestCase = entry;
   while (at.type !== "file") {
@@ -103,6 +101,32 @@ export function titlesBelowFile(entry: Suite | TestCase): string[] {
     at = at.parent;
   }
   return titles.reverse();
+}
+
+/** The name of the project whose suite `projectSuite` is: the project's own, else the suite's
+ *  title, which Playwright 1.64.1 makes the project's name (`buildProjectSuite`,
+ *  playwright/lib/runner/index.js:2671-2672). A row's project and the setup projects left out of
+ *  the placement and of the leg's lists are all read through this, so they name a project alike. */
+function projectOf(projectSuite: Suite): string {
+  return projectSuite.project()?.name ?? projectSuite.title;
+}
+
+/** The row that `test`, of the file suite `fileSuite` in the project suite `projectSuite`, is
+ *  placed as: its project, its file and its titles below the file joined by `titleSeparator`,
+ *  which together key its time in the table, and whether it runs. `preprocess` places every row
+ *  as this builds it, and keys the row's unit by the same project and file.
+ *  e2e/__tests__/shard-split.test.ts holds these keys against the listing's through
+ *  `fixtures/row-keys.reporter.ts`, which writes each row as this builds it, so what that test
+ *  reads is what `preprocess` places by and no copy of it. */
+export function rowOf(projectSuite: Suite, fileSuite: Suite, test: TestCase): Row {
+  return {
+    // A file suite's title is its path relative to the config's root, where a report names the
+    // same file (playwright/lib/common/index.js:2872 at 1.64.1), so it keys the table.
+    file: fileSuite.title.split(sep).join("/"),
+    project: projectOf(projectSuite),
+    runs: test.expectedStatus !== "skipped",
+    title: titlesBelowFile(test).join(titleSeparator),
+  };
 }
 
 /** Places a sharded run's rows on its legs by measured row time (`e2e/shard-split.ts` says why
@@ -179,30 +203,28 @@ export default class ShardReporter implements Reporter {
     const units = new Map<TestCase | Suite, Unit & { rows: Row[]; tests: TestCase[] }>();
     const fileSuites: Suite[] = [];
     for (const projectSuite of suite.suites) {
-      const project = projectSuite.project()?.name ?? projectSuite.title;
-      if (setups.has(project)) continue;
+      if (setups.has(projectOf(projectSuite))) continue;
       for (const fileSuite of projectSuite.suites) {
         fileSuites.push(fileSuite);
-        // A file suite's title is its path relative to the config's root, where a report names
-        // the same file (playwright/lib/common/index.js:2872 at 1.64.1), so it keys the table.
-        const file = fileSuite.title.split(sep).join("/");
         for (const test of fileSuite.allTests()) {
+          const row = rowOf(projectSuite, fileSuite, test);
           const { holder, kind } = groupOf(test);
           let unit = units.get(holder);
           if (unit === undefined) {
             unit = {
-              key: unitKey(kind, project, file, test.repeatEachIndex, titlesBelowFile(holder)),
+              key: unitKey(
+                kind,
+                row.project,
+                row.file,
+                test.repeatEachIndex,
+                titlesBelowFile(holder)
+              ),
               rows: [],
               tests: [],
             };
             units.set(holder, unit);
           }
-          unit.rows.push({
-            file,
-            project,
-            runs: test.expectedStatus !== "skipped",
-            title: titlesBelowFile(test).join(titleSeparator),
-          });
+          unit.rows.push(row);
           unit.tests.push(test);
         }
       }
@@ -251,7 +273,7 @@ export default class ShardReporter implements Reporter {
     if (!this.lists) return;
     const { dir, leg, setups } = this.lists;
     const rows = suite.suites
-      .filter((projectSuite) => !setups.has(projectSuite.project()?.name ?? projectSuite.title))
+      .filter((projectSuite) => !setups.has(projectOf(projectSuite)))
       .flatMap((projectSuite) => projectSuite.allTests().map((test) => rowId(test.titlePath())))
       .sort();
     writeFileSync(join(dir, `${leg}.${kind}.jsonl`), rows.length > 0 ? `${rows.join("\n")}\n` : "");
