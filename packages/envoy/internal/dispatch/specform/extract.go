@@ -114,10 +114,14 @@ func (e *UnreadableError) Finding() Finding {
 // purpose). A block is named by its id. The term lines under a heading Terms are Terms, counted as
 // Kind definition. Each other paragraph, list item or table row under that heading is a text of
 // Kind line, named by its text in quotes: a term line has one form, "- **<term>**: <definition>",
-// and a line in any other form is a break of the form, not a term. A heading opens and closes a
-// part of Terms only among the blocks of its own container (container). Each text's Where is
-// "<document> version <n>". A document that the parser refuses is an *UnreadableError: the
-// application reads no block of it either.
+// and a line in any other form is a break of the form, not a term. A heading whose text reads as
+// Terms in another form (readsAsTerms) is a text of Kind heading, named by its text in quotes, and
+// no Terms part: the heading Terms has one form too. A term line outside a Terms part is a text of
+// Kind term_line (termLineElsewhere): it is no definition and adds no term, and Check refuses it
+// when it names a defined term (R50). A heading opens and closes a part of Terms only among the
+// blocks of its own container (container). Each text's Where is "<document> version <n>". A
+// document that the parser refuses is an *UnreadableError: the application reads no block of it
+// either.
 func ExtractDocument(document string, version int, markdown string) (Extracted, error) {
 	if !utf8.ValidString(markdown) {
 		return Extracted{}, &UnreadableError{document, version, errors.New("it is not valid UTF-8")}
@@ -273,16 +277,22 @@ func (e *extraction) container(nodes []*pmdoc.Node, container string, termsLevel
 }
 
 // heading reads a heading, with the blocks after it in its container: the heading Terms opens a
-// Terms part, which the next heading of its level or above closes, and a heading of a component
-// or an interface is a name, with the paragraph right under it as its purpose.
+// Terms part, which the next heading of its level or above closes, a heading that reads as Terms
+// in another form is a text of Kind heading, and a heading of a component or an interface is a
+// name, with the paragraph right under it as its purpose. Whether a heading reads as Terms is
+// decided on its words as the page shows them, with no mark of code font or of emphasis.
 func (e *extraction) heading(node *pmdoc.Node, after []*pmdoc.Node) {
 	level := pmdoc.HeadingLevel(node)
 	if e.termsLevel > 0 && level <= e.termsLevel {
 		e.termsLevel = 0
 	}
 	heading := e.read(node.Children)
-	if heading.words == "Terms" {
+	if heading.shown == "Terms" {
 		e.termsLevel = level
+		return
+	}
+	if readsAsTerms(heading.shown) {
+		e.add(fmt.Sprintf("%q", heading.shown), KindHeading, heading.words, Held{}, nil)
 		return
 	}
 	component := componentHeading.FindStringSubmatch(heading.words)
@@ -332,11 +342,13 @@ func (e *extraction) listItem(node *pmdoc.Node, list string) {
 }
 
 // itemLine reads the first paragraph of a list item of list: bold text, its id in code font and
-// " · under:" are an entry line, a statement of the bold text. Under a heading Terms, bold text,
-// ": " and a definition in an item of a bullet list are a term line, and any other item is a line.
-// A footnote of a term line is part of its definition before the line is read, so a definition
-// can stand wholly in its footnote: a line whose definition has no words of its own is a term
-// line when a footnote that it refers to holds words (Footnote.words).
+// " · under:" are an entry line, a statement of the bold text. Bold text, ": " and a definition in
+// an item of a bullet list are a term line: under a heading Terms a term, and elsewhere a text of
+// Kind term_line (termLineElsewhere). Under a heading Terms any other item is a line. The name of a
+// term is its bold text as the page shows it, so code font makes no second name of a term (R50). A
+// footnote of a term line is part of its definition before the line is read, so a definition can
+// stand wholly in its footnote: a line whose definition has no words of its own is a term line
+// when a footnote that it refers to holds words (Footnote.words).
 func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 	lead, rest := strongLead(paragraph.Children)
 	strong, after := e.read(lead), e.inline(rest)
@@ -347,18 +359,19 @@ func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 			return
 		}
 	}
-	if e.termsLevel == 0 {
-		return
-	}
 	if strong.words != "" && list == "bullet_list" {
 		if match := definitionTail.FindStringSubmatch(after.words); match != nil {
 			tail := after.part(len(after.words)-len(match[1]), 0)
 			tail.words, tail.shown = strings.TrimSpace(tail.words), strings.TrimSpace(tail.shown)
 			tail.notes = append(slices.Clip(strong.notes), after.notes...)
 			if definition, held, notes := e.text(tail); definition != "" || slices.ContainsFunc(notes, func(note *Footnote) bool { return note.words }) {
+				if e.termsLevel == 0 {
+					e.termLineElsewhere(strong.shown, definition, held)
+					return
+				}
 				nameHeld := strong.held.unique()
 				nameHeld.Shown = strong.shown
-				e.out.Terms = append(e.out.Terms, Term{Name: strong.words, Definition: definition, Where: e.where,
+				e.out.Terms = append(e.out.Terms, Term{Name: strong.shown, Definition: definition, Where: e.where,
 					NameHeld: nameHeld, DefinitionHeld: held, DefinitionNotes: notes})
 				e.out.Counts[KindDefinition]++
 				return
@@ -366,6 +379,21 @@ func (e *extraction) itemLine(paragraph *pmdoc.Node, list string) {
 		}
 	}
 	e.line(e.read(paragraph.Children).words)
+}
+
+// termLineElsewhere keeps a term line outside a Terms part, of its term name, its definition and
+// what the definition holds, as a text of Kind term_line named by the name, with the definition as
+// its body. It is no definition and adds no term. Check refuses it when it names a defined term,
+// since a reader would take it for a second definition. Two such lines of one name are two texts.
+func (e *extraction) termLineElsewhere(name, definition string, held Held) {
+	e.out.Texts = append(e.out.Texts, Text{Node: name, Kind: KindTermLine, Body: definition, Where: e.where, Held: held})
+}
+
+// readsAsTerms reports whether heading, the text of a heading as a person reads it and not
+// "Terms", reads as Terms: the word terms in any case, after one last colon is taken away. Another
+// word, such as Glossary, or Terms in a longer text, does not.
+func readsAsTerms(heading string) bool {
+	return strings.EqualFold(strings.TrimSpace(strings.TrimSuffix(heading, ":")), "terms")
 }
 
 // table reads a table: the rows of a table whose head starts Id, Kind, Name and Purpose are each

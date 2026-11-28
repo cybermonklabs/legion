@@ -1945,22 +1945,29 @@ func (StateBoot) OutboxKind() OutboxKind { return OutboxKindStateBoot }
 // left out, so for a text field the pointer only says what the write knows; for a time and for
 // ReturnedTo it is what tells "not known" apart from a value: a zero time would be a moment
 // Dispatch keeps for good, and ReturnedTo 0 is a return to the retro, whose place is 0.
+//
+// SetModel and Answers are written by the end of a step alone. SetModel is the model the step's
+// role was set to. Answers is each model that answered the step's agent, with its calls. A nil
+// Answers says the end does not know them, and a pointer to an empty list is a step with no call.
+// A pointer to a nil list is refused where it is queued (validateOutboxPayload).
 type StepRecord struct {
-	ID         string     `json:"id"`
-	Task       string     `json:"task"`
-	Step       int        `json:"step"`
-	Kind       string     `json:"kind"`
-	Role       string     `json:"role"`
-	Type       string     `json:"type"`
-	Agent      string     `json:"agent"`
-	Generation uint64     `json:"generation"`
-	Session    *string    `json:"session,omitempty"`
-	Model      *string    `json:"model,omitempty"`
-	StartedAt  *time.Time `json:"started_at,omitempty"`
-	EndedAt    *time.Time `json:"ended_at,omitempty"`
-	Result     *string    `json:"result,omitempty"`
-	ReturnedTo *int       `json:"returned_to,omitempty"`
-	Report     *string    `json:"report,omitempty"`
+	ID         string        `json:"id"`
+	Task       string        `json:"task"`
+	Step       int           `json:"step"`
+	Kind       string        `json:"kind"`
+	Role       string        `json:"role"`
+	Type       string        `json:"type"`
+	Agent      string        `json:"agent"`
+	Generation uint64        `json:"generation"`
+	Session    *string       `json:"session,omitempty"`
+	Model      *string       `json:"model,omitempty"`
+	SetModel   *string       `json:"set_model,omitempty"`
+	Answers    *[]ModelCalls `json:"answers,omitempty"`
+	StartedAt  *time.Time    `json:"started_at,omitempty"`
+	EndedAt    *time.Time    `json:"ended_at,omitempty"`
+	Result     *string       `json:"result,omitempty"`
+	ReturnedTo *int          `json:"returned_to,omitempty"`
+	Report     *string       `json:"report,omitempty"`
 	// PlanRating is the rating the retro gave the plan, with its reason: the one write that carries
 	// it is the retro's rating, which Dispatch takes on the record's rating route
 	// (dispatch.HTTPClient.PutStep), and every other write leaves it out. It is embedded, so its two
@@ -1984,6 +1991,14 @@ type StepRecord struct {
 type PlanRating struct {
 	Rating int    `json:"rating"`
 	Reason string `json:"rating_reason"`
+}
+
+// ModelCalls is one model that answered a step's agent and the calls it answered. It mirrors
+// dispatch.ModelCalls, which the publication converts it to (stepWriteOf), because the dispatch
+// package imports no record of the daemon's.
+type ModelCalls struct {
+	Model string `json:"model"`
+	Calls uint64 `json:"calls"`
 }
 
 // StepExperiment is the experiment a draw put an issue in and the variant it drew there. The two
@@ -2122,7 +2137,7 @@ type PhaseEnded struct {
 	To     phase.Phase `json:"to"`
 	Reason string      `json:"reason"`
 	// MergeForward is the merge forward the move into awaiting_children dropped while it was still
-	// open and not withdrawn (PullRequest.MergeForward, workflow's openAsk), nil where it dropped none.
+	// open and not withdrawn (PullRequest.MergeForward, OpenMergeForward), nil where it dropped none.
 	MergeForward *DroppedMergeForward `json:"mergeForward,omitempty"`
 }
 
@@ -2517,7 +2532,7 @@ const (
 // hold and the landed go to each role that works the head in the
 // workspace every role of the issue shares: the planner, whose step may follow the implementer's,
 // the tester, the reviewer, and the merger, which is held in merging while another role's merge
-// forward of the head stands (workflow's heldWorker, which names the worker a hold told to wait).
+// forward of the head stands (MergeForwardHolds, which names the worker a hold told to wait).
 var mergeForwardRoles = map[MergeForwardStep][]claim.Role{
 	MergeForwardAsk:       {claim.RoleImplementer, claim.RoleMerger},
 	MergeForwardHold:      {claim.RolePlanner, claim.RoleTester, claim.RoleReviewer, claim.RoleMerger},
@@ -2543,6 +2558,96 @@ func MergeForwardReaches(step MergeForwardStep, role claim.Role) bool {
 func MergeForwardWorker(step MergeForwardStep, at phase.Phase) (claim.Role, bool) {
 	worker := phase.RoleFor(at)
 	return worker, MergeForwardReaches(step, worker)
+}
+
+// OpenMergeForward is the merge forward pr's record holds while it is the open ask of the head pr
+// stands at - an ask of that head that has not landed (MergeForward.Landed), on a pull request
+// that is open - and whether it is. A close keeps the record's ask (workflow's Engine.closed), but
+// a closed pull request gets no push and no landing, so nothing it holds is owed and no worker
+// waits for it; a reopen drops the ask (workflow's pullRequestOpened). Every reader of the record's
+// ask reads this one rule, the workflow's drop of it on a move into awaiting_children among them.
+// Two checks of the state stand apart, on purpose, since neither reads the record's ask: the
+// workflow's mergeForward guards the writing of a new ask, so a closed pull request is asked
+// nothing, and its leftMergeForwardAt ends every queued row of a pull request that is not open,
+// the landed and the review among them.
+func OpenMergeForward(pr PullRequest) (MergeForward, bool) {
+	asked := pr.MergeForward
+	if pr.State != PullRequestOpen || asked == nil || asked.Head != pr.HeadSHA || asked.Landed != "" {
+		return MergeForward{}, false
+	}
+	return *asked, true
+}
+
+// MergeForwardOwedAt says whether the role asked names (MergeForward.Asked) still owes the merge
+// while the issue stands at at (StandsAt): the merger's ask while the issue stands in merging,
+// where the merge is its own; the implementer's ask made in implementing while it stands in
+// implementing, which that ask covers alone; the implementer's ask made in any later phase
+// wherever the issue stands, merging included, where the merger is held for it; and never once the
+// implementer was told that the ask is no longer its work (MergeForward.Withdrawn). An ask that
+// records no asked role, which a daemon before cybermonklabs/legion#4979 wrote, reads as the
+// implementer's. An asked role whose claim ended still owes it: the head still conflicts, a worker
+// that goes on at it makes work the merge replaces, and the ready of that role's next launch asks
+// it again (workflow's askAgainAtLaunch).
+func MergeForwardOwedAt(asked MergeForward, at phase.Phase) bool {
+	switch {
+	case asked.Withdrawn:
+		return false
+	case asked.Asked() == claim.RoleMerger:
+		return at == phase.Merging
+	case asked.Phase == phase.Implementing:
+		return at == phase.Implementing
+	}
+	return true
+}
+
+// OwedMergeForward is the record's open ask of the head pr stands at (OpenMergeForward) while its
+// asked role owes the merge where the issue stands at at (MergeForwardOwedAt), and whether it is.
+// It is the one rule of whether the merge of that head is owed to a role, which every reader of the
+// ask reads: the workflow's mergeForward, which asks no second role while it is; the hold at each
+// start and the completion fence (MergeForwardHolds); the landed message (mergeForwardLanded); the
+// delivery of each row (leftMergeForwardAt); and the ask sent again at the asked role's next launch
+// (askAgainAtLaunch) and to the merger's launch at the move into merging (askMergerAtEntry).
+func OwedMergeForward(pr PullRequest, at phase.Phase) (MergeForward, bool) {
+	asked, open := OpenMergeForward(pr)
+	return asked, open && MergeForwardOwedAt(asked, at)
+}
+
+// MergeForwardHolds says whether the merge forward pr records (PullRequest.MergeForward) holds
+// role while the issue stands at at (StandsAt): the merge of the head pr stands at is owed
+// (OwedMergeForward: an open ask of that head, not landed, whose asked role still owes it at at),
+// role is the worker of at that the ask's hold reaches (MergeForwardWorker, MergeForwardHold), and
+// role is not the role the ask names (MergeForward.Asked). Such a hold told role to stop writing
+// the workspace, not to complete at the head pr stands at, and to wait for the daemon's landed
+// message (MergeForwardLanded). So an ask of the implementer made after implementing holds the
+// planner, the tester, the reviewer or the merger of each phase the issue stands in until it
+// lands, whether the ask was made in that phase or carried into it, and an ask that records no
+// asked role, which a daemon before cybermonklabs/legion#4979 wrote, holds them alike. The ask
+// made in implementing holds nobody, since it covers implementing alone, whose worker is the role
+// asked; the merger's ask in merging holds nobody either, since merging's worker is the merger. The
+// role asked is never held: the merge is its own open work, the implementer's in implementing and
+// in retro alike and the merger's in merging, so the ask goes to it and no hold does, and reminding
+// it of that work is what the reminder is for. The architect in accepting is held by nothing, its
+// checks-red notice being what tells it. A nil pr, one that records no ask, one that is not open,
+// an ask that landed and an ask the implementer was told is withdrawn hold nothing.
+//
+// It is the one rule the daemon holds a role to while a merge forward waits to land
+// (dispatch://INFRA-2746 R1): the hold of each worker a move, a retry, a launch's ready, the
+// silence repair or admission's owed-entry send starts (workflow's heldWorker, holdStartedWorker);
+// the owed route (api's owedBy), which tells a held role that it owes no completion; the idle
+// release's reminder hold and the backstop of a released or pause-stopped worker, through the idle
+// view (FillIdleClaims, PhaseOwed); and the completion fence of a merge forward (workflow's
+// mergedForwardRefusal), which tells a held role that completes to wait for the landed message
+// rather than to complete at the head pr stands at.
+func MergeForwardHolds(pr *PullRequest, at phase.Phase, role claim.Role) bool {
+	if pr == nil {
+		return false
+	}
+	asked, owed := OwedMergeForward(*pr, at)
+	if !owed {
+		return false
+	}
+	worker, reaches := MergeForwardWorker(MergeForwardHold, at)
+	return reaches && worker == role && role != asked.Asked()
 }
 
 // MergeForwardMessage is one message of a merge forward (PullRequest.MergeForward,
@@ -3470,6 +3575,16 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 			return fmt.Errorf("a step record carries the experiment of its issue with its variant or neither; it carries the experiment %q with the variant %q",
 				value.StepExperiment.Experiment, value.StepExperiment.Variant)
 		}
+		// Dispatch refuses a whole write whose set model or answers break its rules (400
+		// STEP_INPUT), which ends the row, and the step's end would never land. The workflow
+		// builds both within those rules, so a write outside them is a defect of the daemon. A set
+		// model of "" is left out, as Dispatch takes any text field sent as "".
+		if value.SetModel != nil && *value.SetModel != "" && !steprecord.AgentTextHolds(*value.SetModel) {
+			return fmt.Errorf("a step record's set model %q is not an agent's text Dispatch takes", *value.SetModel)
+		}
+		if err := answersHold(value.Answers); err != nil {
+			return err
+		}
 	// The rest of a plan Dispatch judges, as it judges a step record's; its id is held here for the
 	// same reason a step record's is.
 	case PlanRecord:
@@ -3480,6 +3595,43 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		return fmt.Errorf("unknown outbox payload %T", payload)
 	}
 	return nil
+}
+
+// answersHold is nil where answers keep the rules Dispatch holds a step record's answers to, and
+// else the first rule they break. Nil answers state nothing and keep every rule. A pointer to a nil
+// list is refused: it is stored as null, which reads back as not known, so a step with no call
+// states an empty list. That rule is the daemon's own. The rest are Dispatch's, through
+// CheckAnswers. A fault CheckAnswers names that this daemon does not know is refused by its
+// number.
+func answersHold(answers *[]ModelCalls) error {
+	if answers == nil {
+		return nil
+	}
+	if *answers == nil {
+		return fmt.Errorf("a step record's answers point to no list: a step with no call states an empty list")
+	}
+	fault, at := CheckAnswers(*answers)
+	switch fault {
+	case steprecord.AnswersHold:
+		return nil
+	case steprecord.AnswersTooMany:
+		return fmt.Errorf("a step record's answers hold %d entries, more than the %d a step record holds", len(*answers), steprecord.AnswersMax)
+	case steprecord.AnswerModelForm:
+		return fmt.Errorf("a step record's answers entry %d names %q, which is not an agent's text Dispatch takes", at+1, (*answers)[at].Model)
+	case steprecord.AnswerNoCall:
+		return fmt.Errorf("a step record's answers entry %d (%s) has %d calls: a model that answered has 1 or more", at+1, (*answers)[at].Model, (*answers)[at].Calls)
+	case steprecord.AnswerModelTwice:
+		return fmt.Errorf("a step record's answers name %s twice: each model is listed once with all its calls", (*answers)[at].Model)
+	default:
+		return fmt.Errorf("a step record's answers break rule %d of a step record's answers, which this daemon does not know", fault)
+	}
+}
+
+// CheckAnswers is the first rule of a step record's answers that answers break, and the index of
+// the entry that breaks it (steprecord.CheckAnswers). Dispatch reads calls as int64. A count past
+// its range wraps below 1, so it is refused, as Dispatch refuses it.
+func CheckAnswers(answers []ModelCalls) (steprecord.AnswersFault, int) {
+	return steprecord.CheckAnswers(answers, func(answer ModelCalls) (string, int64) { return answer.Model, int64(answer.Calls) })
 }
 
 // carriesReview says whether n carries anything of a person's review of a design document:

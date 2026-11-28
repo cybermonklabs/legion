@@ -112,3 +112,21 @@ func newLogin(t *testing.T, server url.URL, prefix string) url.URL {
 	})
 	return login
 }
+
+// holdTemplateLock takes the template lock, templateLockKey as takeTemplateLock takes it, on a
+// connection of its own to databaseURL and returns that connection, which a cleanup closes when t
+// ends, giving the lock back where the test has not. Postgres keeps an advisory lock per database,
+// so builders wait for what it holds only where databaseURL names the server's lockDatabase.
+func holdTemplateLock(t *testing.T, databaseURL string) *pgx.Conn {
+	t.Helper()
+	ctx := context.Background()
+	conn, err := pgx.Connect(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("connect the holder of the template lock: %v", err)
+	}
+	t.Cleanup(func() { conn.Close(context.Background()) })
+	if _, err := conn.Exec(ctx, "select pg_advisory_lock(hashtext($1))", templateLockKey); err != nil {
+		t.Fatalf("take the template lock: %v", err)
+	}
+	return conn
+}

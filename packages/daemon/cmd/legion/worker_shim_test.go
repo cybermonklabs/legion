@@ -147,7 +147,7 @@ func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if frame, err := shimwire.Decode(line); err != nil || frame != (shimwire.Hello2{BootToken: "boot-token"}) {
+			if frame, err := shimwire.Decode(line); err != nil || frame != (shimwire.Hello2{BootToken: "boot-token", ModelTotals: true}) {
 				return errors.New("the first frame was " + string(line))
 			}
 			return shimwire.NewWriter(conn).WriteFrame(shimwire.HelloAck{})

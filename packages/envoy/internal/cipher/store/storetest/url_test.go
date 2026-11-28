@@ -68,19 +68,6 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 		}
 		return testdb.DatabaseOn(t, login.String(), "", "broker_lock_test", "application_name="+app), app
 	}
-	// hold takes templateLockKey on a connection of its own to databaseURL, closed when t ends.
-	hold := func(t *testing.T, databaseURL string) *pgx.Conn {
-		t.Helper()
-		conn, err := pgx.Connect(ctx, databaseURL)
-		if err != nil {
-			t.Fatalf("connect the holder: %v", err)
-		}
-		t.Cleanup(func() { conn.Close(context.Background()) })
-		if _, err := conn.Exec(ctx, "select pg_advisory_lock(hashtext($1))", templateLockKey); err != nil {
-			t.Fatalf("take the template lock: %v", err)
-		}
-		return conn
-	}
 	build := func(databaseURL string) <-chan error {
 		done := make(chan error, 1)
 		go func() {
@@ -102,7 +89,7 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 
 	t.Run("a holder on the server's postgres database holds up a builder that names another", func(t *testing.T) {
 		databaseURL, app := builder(t)
-		holder := hold(t, testdb.DatabaseURL(server, lockDatabase))
+		holder := holdTemplateLock(t, testdb.DatabaseURL(server, lockDatabase))
 		done := build(databaseURL)
 		testwait.Until(t, "the builder to wait behind the holder of the template lock, or to return", func() (bool, bool) {
 			select {
@@ -121,7 +108,7 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 	})
 	t.Run("control: a holder on the builder's own database holds it up not at all", func(t *testing.T) {
 		databaseURL, app := builder(t)
-		holder := hold(t, databaseURL)
+		holder := holdTemplateLock(t, databaseURL)
 		done := build(databaseURL)
 		err := testwait.Until(t, "the builder to return while a holder on its own database holds the lock", func() (error, bool) {
 			select {

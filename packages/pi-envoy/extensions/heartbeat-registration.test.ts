@@ -4,10 +4,11 @@
 // stays under 1,000 lines. Their `describe` is "envoy OMP extension", the one `envoy.test.ts`
 // uses, so a row's full name is the same in every file. Both files share one harness
 // (`../test/extension-harness`).
-import { describe, expect, setSystemTime, test } from "bun:test";
+import { describe, expect, jest, setSystemTime, test } from "bun:test";
 import type { ExecFn } from "@legion/envoy-client/dispatch-cwd";
 import type { TmuxPlace, TmuxPlaceReading } from "@legion/envoy-client/tmux-place";
 import { onEnvoyRoleRegained } from "@legion/pi-shared/role-claim-bridge";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { EnvoyModule } from "../test/envoy-module";
 import {
@@ -19,7 +20,7 @@ import {
   useExtensionHarness,
   withEnvoyTimings,
 } from "../test/extension-harness";
-import { response, responseWithRegistration } from "../test/listener-stand-in";
+import { response, responseWithRegistration, standInFetch } from "../test/listener-stand-in";
 import type { SessionContext } from "../test/stand-in-host";
 
 useExtensionHarness();
@@ -34,7 +35,7 @@ describe("envoy OMP extension", () => {
     let listenerHoldsClaim = true;
     let registrations = 0;
     const thirdRegistration = Promise.withResolvers<void>();
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === `/v1/roles/${role}`) {
         if (!listenerHoldsClaim) {
@@ -56,7 +57,7 @@ describe("envoy OMP extension", () => {
         if (registrations === 3) thirdRegistration.resolve();
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?heartbeat-hung-hook");
     let hookCalls = 0;
     onEnvoyRoleRegained(async () => {
@@ -78,7 +79,10 @@ describe("envoy OMP extension", () => {
 
     listenerHoldsClaim = false;
     intervals[0]?.();
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await until(
+      "the regain hook and the tick's registration",
+      () => hookCalls === 1 && registrations === 2
+    );
     expect(hookCalls).toBe(1);
     expect(registrations).toBe(2);
 
@@ -104,9 +108,7 @@ describe("envoy OMP extension", () => {
       const wedged = Promise.withResolvers<void>();
       const answered = Promise.withResolvers<void>();
       let registrations = 0;
-      /** Told of the next registration the listener accepts, while `refreshed` waits for one. */
-      let accepted: (() => void) | undefined;
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
           // The call the pass awaits, as a socket that is accepted and never answered leaves it:
           // nothing resolves it, and the request's abort signal goes unread.
@@ -114,13 +116,10 @@ describe("envoy OMP extension", () => {
             wedgePass = false;
             wedged.resolve();
             await answered.promise;
-          } else {
-            registrations += 1;
-            accepted?.();
-          }
+          } else registrations += 1;
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension }: EnvoyModule = await import(
         "./envoy.ts?heartbeat-wedged-pass"
       );
@@ -133,23 +132,16 @@ describe("envoy OMP extension", () => {
       /**
        * Ticks until the listener has accepted one more registration, and answers with the count it
        * reached. A tick that lands inside the refresh interval posts nothing, so the row ticks
-       * again after a grace instead of deciding on one tick, and a refresh is awaited where it
-       * shows — at the listener. The deadline only a stopped refresh reaches leaves the count as
-       * it was, so the caller's own assertion says what was missing.
+       * again rather than deciding on one tick, and a refresh is awaited where it shows — at the
+       * listener.
        */
-      const refreshed = async (): Promise<number> => {
+      const refreshed = (): Promise<number> => {
         const seen = registrations;
-        const until = Date.now() + 5_000;
-        while (registrations === seen && Date.now() < until) {
-          const waiting = Promise.withResolvers<void>();
-          accepted = () => waiting.resolve();
-          const grace = setTimeout(() => waiting.resolve(), 250);
+        return until("the listener to accept one more registration", () => {
+          if (registrations > seen) return registrations;
           intervals[0]?.();
-          await waiting.promise;
-          clearTimeout(grace);
-          accepted = undefined;
-        }
-        return registrations;
+          return undefined;
+        });
       };
       await envoyExtension(fixture.pi);
       await fixture.handlers.get("session_start")?.({}, context);
@@ -172,8 +164,7 @@ describe("envoy OMP extension", () => {
       answered.resolve();
       for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
     });
-    // The row's own bound is a hang guard, the file's convention: its work is a handful of ticks.
-  }, 30_000);
+  });
 
   test("a role move that never settles still lets the next tick refresh the registration", async () => {
     // What a wedged envoy_role_set or a wedged Legion claim leaves behind: the role-move queue is
@@ -186,7 +177,7 @@ describe("envoy OMP extension", () => {
       let wedgeRoleRead = false;
       const answered = Promise.withResolvers<void>();
       let registrations = 0;
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname === `/v1/roles/${role}`) {
           if (wedgeRoleRead) {
@@ -205,7 +196,7 @@ describe("envoy OMP extension", () => {
         }
         if (url.pathname === "/v1/interests/subscribe") registrations += 1;
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension }: EnvoyModule = await import(
         "./envoy.ts?heartbeat-wedged-move"
       );
@@ -223,12 +214,19 @@ describe("envoy OMP extension", () => {
       // This tick registers, then parks in the role move its pass awaits.
       wedgeRoleRead = true;
       intervals[0]?.();
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      await until(
+        "the tick's registration, before its pass parks in the role move",
+        () => registrations === 2
+      );
       expect(registrations).toBe(2);
 
-      // The move is still in flight, and the next tick refreshes the registration regardless.
-      intervals[0]?.();
-      await new Promise((resolve) => setTimeout(resolve, 60));
+      // The move is still in flight, and a tick past the refresh interval refreshes the
+      // registration regardless.
+      await until("a tick to refresh the registration", () => {
+        if (registrations > 2) return true;
+        intervals[0]?.();
+        return false;
+      });
       expect(registrations).toBe(3);
 
       answered.resolve();
@@ -240,17 +238,22 @@ describe("envoy OMP extension", () => {
     // A stall lasts as long as the wedged call does, and every tick inside it meets the same
     // symptom. One line per episode is what a registry outage gets; a line per tick would bury
     // the pane and the log under a notice the agent can do nothing about.
-    // Real waits between hand-driven ticks: the refresh is decided on a real-clock age.
+    // The refresh is decided on a real-clock age, so a stall's tick posts once that age passes the
+    // interval: the row ticks until each refresh reaches the listener.
     await withEnvoyTimings({ heartbeatMs: 25, passDeadlineMs: 5000 }, async () => {
       let wedgePass = false;
+      let registrations = 0;
       const answered = Promise.withResolvers<void>();
-      globalThis.fetch = async (input, init) => {
-        if (new URL(input.toString()).pathname === "/v1/interests/subscribe" && wedgePass) {
-          wedgePass = false;
-          await answered.promise;
+      globalThis.fetch = standInFetch(async (input, init) => {
+        if (new URL(input.toString()).pathname === "/v1/interests/subscribe") {
+          registrations += 1;
+          if (wedgePass) {
+            wedgePass = false;
+            await answered.promise;
+          }
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension }: EnvoyModule = await import(
         "./envoy.ts?heartbeat-stall-said-once"
       );
@@ -272,16 +275,21 @@ describe("envoy OMP extension", () => {
 
         // A healthy tick before any stall is silent.
         intervals[0]?.();
-        await new Promise((resolve) => setTimeout(resolve, 60));
+        await until("the healthy tick's registration", () => registrations === 2);
+        await settle();
         expect(notifications).toEqual([]);
 
         wedgePass = true;
         intervals[0]?.();
-        await new Promise((resolve) => setTimeout(resolve, 60));
-        // Three ticks of the one stall, each refreshing the registration on its own.
-        for (let tick = 0; tick < 3; tick += 1) {
-          intervals[0]?.();
-          await new Promise((resolve) => setTimeout(resolve, 60));
+        await until("the registration the stalled pass parks in", () => registrations === 3);
+        // Three refreshes of the one stall, each a tick past the refresh interval posting the
+        // registration on its own.
+        for (let refresh = 1; refresh <= 3; refresh += 1) {
+          await until(`the stall's refresh ${refresh}`, () => {
+            if (registrations >= 3 + refresh) return true;
+            intervals[0]?.();
+            return false;
+          });
         }
         expect(notifications.filter((message) => message.includes("has stalled"))).toHaveLength(1);
         expect(notifications).toHaveLength(1);
@@ -295,8 +303,13 @@ describe("envoy OMP extension", () => {
         // The pass settles: the episode is over, and the tick after it is silent again.
         answered.resolve();
         for (let step = 0; step < 20; step += 1) await new Promise((r) => setImmediate(r));
+        const beforeHealthy = registrations;
         intervals[0]?.();
-        await new Promise((resolve) => setTimeout(resolve, 60));
+        await until(
+          "the healthy tick's registration after the stall",
+          () => registrations > beforeHealthy
+        );
+        await settle();
         expect(notifications).toHaveLength(1);
         expect(
           warnings.filter(
@@ -334,14 +347,14 @@ describe("envoy OMP extension", () => {
     async function bootPlacedSession(query: string, sessionID: string) {
       const places: (TmuxPlace | undefined)[] = [];
       let registered: (() => void) | undefined;
-      globalThis.fetch = async (input, init) => {
+      globalThis.fetch = standInFetch(async (input, init) => {
         const url = new URL(input.toString());
         if (url.pathname === "/v1/interests/subscribe" && init?.body !== undefined) {
-          places.push(JSON.parse(init.body.toString()).tmux_place);
+          places.push(JSON.parse(String(init?.body)).tmux_place);
           registered?.();
         }
         return responseWithRegistration(input, init, {});
-      };
+      });
       const { default: envoyExtension }: EnvoyModule = await import(`./envoy.ts?${query}`);
       const fixture = createPi();
       const heartbeats: (() => void)[] = [];
@@ -355,6 +368,8 @@ describe("envoy OMP extension", () => {
       await fixture.handlers.get("session_start")?.({}, context);
       return {
         places,
+        /** The moment the session booted: the first registration's reading is stamped then. */
+        bootedAt: Date.now(),
         /** Ticks every interval the session registered, and waits for the registration it sends. */
         heartbeat: async () => {
           const sent = Promise.withResolvers<void>();
@@ -369,27 +384,35 @@ describe("envoy OMP extension", () => {
     }
 
     /** The lifetime these cases run the place cache at: the one a session runs at where nothing
-     *  names another. A short one would have the cache's own refresh timer, which ticks at the
-     *  lifetime, read tmux in the milliseconds a case takes, and what each case counts is the
-     *  readings its registrations start. */
+     *  names another. What each case counts is the readings its registrations start.
+     *
+     *  The cache also reads tmux on a refresh timer of its own, armed by the session's first
+     *  registration at the lifetime: on the real clock that timer read tmux once more whenever a
+     *  slow run took a lifetime, and a case counted three readings where it starts two
+     *  (dispatch://INFRA-49/comment/1e3be641-e6e4-4620-a415-c751bfd1c4db). So every case that
+     *  crosses the lifetime runs on Bun's fake clock (`jest.useFakeTimers`, which the file's
+     *  `afterEach` takes back), where that timer stands still unless the case advances it, which
+     *  none does. */
     const PLACE_LIFETIME_MS = 30_000;
 
-    /** The next registration a session sends once its cached reading has aged out, crossed on
-     *  the clock the cache reads (`Date.now`): a real wait would cost every run the lifetime.
-     *  The pass the previous tick started is let settle first, since a tick that finds one still
+    /** The next registration a session sends once its cached reading has aged out. The case moves
+     *  the clock the cache reads (`Date.now`, held on the fake clock) past the lifetime, which
+     *  fires no timer, rather than waiting it out. Every crossing lands on the same instant, one
+     *  lifetime past the boot, so a reading one crossing starts is still fresh at the next. The
+     *  pass the previous tick started is let settle first, since a tick that finds one still
      *  holding the queue refreshes nothing while the registration it would refresh is fresh. */
-    async function heartbeatPastTheLifetime(session: { heartbeat: () => Promise<void> }) {
+    async function heartbeatPastTheLifetime(session: {
+      bootedAt: number;
+      heartbeat: () => Promise<void>;
+    }) {
       await settle();
-      setSystemTime(new Date(Date.now() + PLACE_LIFETIME_MS + 1_000));
-      try {
-        await session.heartbeat();
-      } finally {
-        setSystemTime();
-      }
+      setSystemTime(new Date(session.bootedAt + PLACE_LIFETIME_MS + 1_000));
+      await session.heartbeat();
     }
 
     test("two registrations while one reading is away read tmux once", async () => {
       await withEnvoyTimings({ tmuxPlaceCacheMs: PLACE_LIFETIME_MS }, async () => {
+        jest.useFakeTimers();
         tmuxPlaceState.reading = () => ({ kind: "place", place: PLACE });
         const session = await bootPlacedSession("tmux-place-one-flight", "ses_tmux_one_flight");
         // A reading that has not answered yet: the registration past the lifetime starts it, and
@@ -438,6 +461,7 @@ describe("envoy OMP extension", () => {
 
     test("reads tmux again for a registration past the cache lifetime", async () => {
       await withEnvoyTimings({ tmuxPlaceCacheMs: PLACE_LIFETIME_MS }, async () => {
+        jest.useFakeTimers();
         let next: TmuxPlaceReading = { kind: "place", place: PLACE };
         tmuxPlaceState.reading = () => next;
         const session = await bootPlacedSession("tmux-place-expired", "ses_tmux_expired");
@@ -455,6 +479,7 @@ describe("envoy OMP extension", () => {
 
     test("a refused reading registers no place and clears the one it held", async () => {
       await withEnvoyTimings({ tmuxPlaceCacheMs: PLACE_LIFETIME_MS }, async () => {
+        jest.useFakeTimers();
         let next: TmuxPlaceReading = { kind: "place", place: PLACE };
         tmuxPlaceState.reading = () => next;
         const session = await bootPlacedSession("tmux-place-refused", "ses_tmux_refused");
@@ -463,12 +488,14 @@ describe("envoy OMP extension", () => {
         await heartbeatPastTheLifetime(session);
         await heartbeatPastTheLifetime(session);
 
+        expect(tmuxPlaceState.calls).toHaveLength(2);
         expect(session.places).toEqual([undefined, PLACE, undefined]);
       });
     });
 
     test("a timed-out reading registers the last place read", async () => {
       await withEnvoyTimings({ tmuxPlaceCacheMs: PLACE_LIFETIME_MS }, async () => {
+        jest.useFakeTimers();
         let next: TmuxPlaceReading = { kind: "place", place: PLACE };
         tmuxPlaceState.reading = () => next;
         const session = await bootPlacedSession("tmux-place-timeout", "ses_tmux_timeout");

@@ -1,4 +1,4 @@
-import { expect, spyOn, test } from "bun:test";
+import { beforeAll, expect, spyOn, test } from "bun:test";
 import { QueryClient } from "@tanstack/react-query";
 import { waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -11,6 +11,7 @@ import { type PageWords, PageWordsProvider } from "../../components/tooltips";
 import type { AgentNames } from "../conversation/CachedAuthor";
 import { answeredAsk, renderCard } from "../inbox/ask-card-fixture";
 import { useAskAnswerForm } from "../inbox/useAskAnswerForm";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { AskBody } from "./AskBody";
 import { type AskTextRenderer, markdownText } from "./ask-text";
 
@@ -18,6 +19,14 @@ import { type AskTextRenderer, markdownText } from "./ask-text";
 // caller with no card around it draws it: with the form `useAskAnswerForm` answers, which reads no
 // thread here (`readThread: false`), and every write of the form refused, so a case that sends one
 // fails by it.
+
+// Every row mounts the form's label of the question (`useQuestionLabel`), which reads the question
+// through the Markdown engine, a module loaded on first use (`markdown-engine.ts`), and the rows
+// run in random order. A row that mounts before the engine has loaded gets the label when the load
+// ends. Where that is between two of the row's waits, React reports the update outside `act`, as
+// "the ask body sends no request" did in its last tick. So the engine is loaded before the rows
+// begin, and each row draws the label in the commit that mounts it.
+beforeAll(warmMarkdownRenderer);
 
 /** A write or a read the body has no business making: it fails, so a case that makes one fails. */
 const refuse = (): Promise<never> => Promise.reject(new Error("the ask body sent a request"));

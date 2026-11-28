@@ -2,9 +2,9 @@
 // and the daemon's worker stream. The shim always dials the daemon — the stream is the daemon's
 // listener, never the shim's — authenticates with the pane's boot token, and spawns OMP only
 // once the daemon has acked it. From then on it carries OMP's stdio NDJSON to the stream and
-// back, answers the frames that are its own (`shutdown`, `adopt-working-copy`, a repeated
-// delivery), and outlives any one connection: a dropped stream is redialled, and what OMP says
-// meanwhile waits in a bounded backlog.
+// back. It answers the frames that are its own: `shutdown`, `adopt-working-copy`, a repeated
+// delivery, and a read of its launch's model totals. It outlives any one connection. A dropped
+// stream is redialled, and what OMP says meanwhile waits in a bounded backlog.
 //
 // The behaviour was ported from the TypeScript shim's `--connect` mode, which LEGION-223 removed; a
 // `worker-shim.ts:N` citation at a rule names its source in this repository's history. The wire
@@ -38,8 +38,9 @@ import (
 )
 
 const (
-	// backlogLimit is how many of OMP's newest frames wait for a daemon that is not connected
-	// (BACKLOG_LIMIT, worker-shim.ts).
+	// backlogLimit is how many of the newest lines bound for the daemon wait for a daemon that is
+	// not connected (BACKLOG_LIMIT, worker-shim.ts). An rpc_chunk sequence counts as its lines,
+	// and is kept or dropped whole.
 	backlogLimit = 1000
 	// A refused or failed connect is retried after reconnectBase, doubling to reconnectCap
 	// (RECONNECT_BASE_MS and RECONNECT_CAP_MS, and cmdWorkerShimConnect's retry, worker-shim.ts).
@@ -252,6 +253,11 @@ type shim struct {
 	log       *log.Logger
 	dedupe    shimwire.Dedupe
 	out       outbox
+	// totals is what the shim counted of its launch's calls, which the daemon reads (totals.go).
+	totals totals
+	// stateSizeLogged logs the size of the harness's first answer to a get_state of the shim's
+	// own, once (ownAnswer).
+	stateSizeLogged sync.Once
 
 	// order makes a dedupe decision and the daemon-bound frames it implies one step, as they are
 	// in the single-threaded shim this is ported from: a start replayed for a retried delivery
@@ -387,7 +393,7 @@ func (s *shim) connect() (acked bool, err error) {
 	defer context.AfterFunc(s.loop, func() { _ = conn.Close() })()
 
 	w := shimwire.NewWriter(conn)
-	if err := w.WriteFrame(shimwire.Hello2{BootToken: s.cfg.BootToken, AgentSecrets: identity}); err != nil {
+	if err := w.WriteFrame(shimwire.Hello2{BootToken: s.cfg.BootToken, AgentSecrets: identity, ModelTotals: true}); err != nil {
 		return false, fmt.Errorf("send hello: %w", err)
 	}
 	r := shimwire.NewReader(conn)
@@ -429,7 +435,7 @@ func (s *shim) fromDaemon(line []byte) {
 	frame, err := shimwire.Decode(line)
 	if err != nil {
 		switch typ := frameType(line); typ {
-		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken:
+		case shimwire.TypeAdoptWorkingCopy, shimwire.TypeWorkspaceWork, shimwire.TypeAgentSecretsEnrollment, shimwire.TypeAgentSecretsToken, shimwire.TypeModelTotals:
 			// The daemon is its only sender, and it is never OMP's to read.
 			s.log.Printf("[worker-shim] refusing a malformed %s frame: %v", typ, err)
 			return
@@ -452,6 +458,9 @@ func (s *shim) fromDaemon(line []byte) {
 		return
 	case shimwire.AgentSecretsToken:
 		s.podToken(f)
+		return
+	case shimwire.ModelTotals:
+		s.readTotals(f)
 		return
 	}
 	s.order.Lock()
@@ -480,12 +489,43 @@ func (s *shim) toChild(line []byte) {
 }
 
 func (s *shim) toDaemon(frame shimwire.Frame) {
+	if line := s.encode(frame); line != nil {
+		s.out.send([][]byte{line})
+	}
+}
+
+// encode is frame's line, or nil, which it logs, where frame cannot be encoded.
+func (s *shim) encode(frame shimwire.Frame) []byte {
 	line, err := json.Marshal(frame)
 	if err != nil {
 		s.log.Printf("[worker-shim] could not encode a %s frame: %v", frame.FrameType(), err)
+		return nil
+	}
+	return line
+}
+
+// readTotals answers the daemon's read of the totals (totals.go). The shim sends the harness a
+// get_state of its own and answers once the harness has answered it (ownAnswer). A read the
+// shim cannot take is refused at once, and a read the harness never answers is refused when it
+// exits (reap).
+func (s *shim) readTotals(request shimwire.ModelTotals) {
+	if request.ID == "" {
+		s.log.Printf("[worker-shim] refusing a model_totals frame with no id")
 		return
 	}
-	s.out.send(line)
+	stateID, refusal := s.totals.ask(request.ID)
+	if refusal != "" {
+		s.toDaemon(shimwire.ModelTotalsResult{ID: request.ID, Error: refusal})
+		return
+	}
+	s.askHarness(stateID)
+}
+
+// askHarness sends the harness a get_state of the shim's own, whose answer is the shim's alone.
+func (s *shim) askHarness(id string) {
+	if err := s.stdin.WriteFrame(shimwire.GetState{ID: id}); err != nil {
+		s.log.Printf("[worker-shim] could not ask the wrapped process for its state: %v", err)
+	}
 }
 
 // spawnOnce reads the pod's shared public leak check, names it where its environment names none,
@@ -568,14 +608,25 @@ func (s *shim) spawnOnce() bool {
 	return true
 }
 
-// pump carries OMP's stdout to the daemon, line by line and unchanged, after the dedupe has seen
-// each frame; the answers the dedupe owes other requests follow the frame that settled them
+// pump carries OMP's stdout to the daemon, frame by frame and unchanged, after the dedupe has
+// seen each frame. The answers the dedupe owes other requests follow the frame that settled them
 // (createShimBridge's forwardToSocket, worker-shim.ts). The child's first line is also when the
 // workspace's CodeGraph warm-up starts (Config.WarmCodegraph), in its own goroutine so the pump
 // never waits on it.
+//
+// The pump reads whole frames. It holds the chunk lines of an rpc_chunk sequence until the
+// sequence is whole. Then it counts the frame (totals.go), shows it to the dedupe, and sends its
+// lines on unchanged in one write. So a frame of the shim's own goes to the daemon before or after
+// a whole sequence, never inside one. One written inside a sequence makes the daemon's reader drop
+// the sequence (internal/stream's read). And no part of a get_state answer of the shim's own
+// reaches the daemon, chunked or not. A line that is not a frame goes on at once, held sequence or
+// not (harnessLine).
 func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 	defer close(done)
 	defer stdout.Close()
+	var frames harnessFrames
+	// A sequence the harness left open at the end of its stdout goes on as it came.
+	defer func() { s.out.send(frames.take()) }()
 	r := shimwire.NewReader(stdout)
 	for {
 		line, err := r.ReadLine()
@@ -594,23 +645,114 @@ func (s *shim) pump(stdout *os.File, done chan<- struct{}) {
 			return
 		}
 		s.warmed.Do(s.warmCodegraph)
-		line = bytes.Clone(line)
-		frame, err := shimwire.Decode(line)
-		s.order.Lock()
-		var owed []shimwire.Frame
-		if err == nil {
-			owed = s.dedupe.AgentFrame(frame)
+		s.harnessLine(&frames, bytes.Clone(line))
+	}
+}
+
+// harnessFrames is the pump's join of the harness's rpc_chunk sequences. It keeps the sequence in
+// hand, and its chunk lines read so far, which the pump holds until the sequence is whole.
+type harnessFrames struct {
+	chunks shimwire.Reassembler
+	held   [][]byte
+}
+
+// take hands over the lines held, and holds none.
+func (h *harnessFrames) take() [][]byte {
+	held := h.held
+	h.held = nil
+	return held
+}
+
+// harnessLine takes one line of the harness's stdout. A sequence the harness broke or abandoned
+// goes on as it came, as every line did before the pump joined them. The daemon's reader drops it
+// too.
+func (s *shim) harnessLine(h *harnessFrames, line []byte) {
+	frame, err := shimwire.Decode(line)
+	if err != nil {
+		// A line that is not a frame goes on at once, held sequence or not. The daemon's reader
+		// logs such a line and skips it without touching the sequence it joins (internal/stream's
+		// read: logNotAFrame, then the next line, with no Interrupt). So going ahead of the held
+		// chunk lines changes nothing the daemon decodes, the line still reaches the daemon's log,
+		// and the outbox's backlog bound counts it. The lines held are then only the chunk lines
+		// of the open sequence, which the reassembler's frame limit bounds. Held among them, such
+		// a line was counted by neither bound.
+		s.out.send([][]byte{line})
+		return
+	}
+	chunk, isChunk := frame.(shimwire.RPCChunk)
+	if !isChunk {
+		if h.chunks.Interrupt() != nil {
+			s.out.send(h.take())
 		}
-		s.out.send(line)
-		for _, f := range owed {
-			s.toDaemon(f)
+		s.harnessFrame(frame, [][]byte{line}, len(line))
+		return
+	}
+	h.held = append(h.held, line)
+	whole, err := h.chunks.Push(chunk)
+	switch {
+	case err != nil:
+		s.out.send(h.take())
+	case whole != nil:
+		joined, err := shimwire.Decode(whole)
+		if err != nil {
+			s.out.send(h.take())
+			return
 		}
-		s.order.Unlock()
-		if err == nil {
-			if summary := summarize(frame); summary != "" {
-				s.log.Print(summary)
+		s.harnessFrame(joined, h.take(), len(whole))
+	}
+}
+
+// harnessFrame takes one whole frame of the harness, of size bytes, and the lines that carried
+// it. A frame of the shim's own goes no further. Every other frame is counted, shown to the
+// dedupe and sent on, followed by what the dedupe owes.
+func (s *shim) harnessFrame(frame shimwire.Frame, lines [][]byte, size int) {
+	switch f := frame.(type) {
+	case shimwire.Response:
+		if strings.HasPrefix(f.ID, ownPrefix) {
+			s.ownAnswer(f, size)
+			return
+		}
+	case shimwire.LegionSetModel:
+		// The bridge names its launch's set model to the shim alone: the daemon reads it in the
+		// totals.
+		s.totals.bridgeNames(f)
+		return
+	case shimwire.Raw:
+		switch f.Type {
+		case "message_end":
+			s.totals.call(f.JSON)
+		case "ready":
+			// Asked before the frame goes on, so the daemon's first read after the ready frame
+			// reaches the harness after this question.
+			if id := s.totals.askReady(); id != "" {
+				s.askHarness(id)
 			}
 		}
+	}
+	s.order.Lock()
+	owed := s.dedupe.AgentFrame(frame)
+	written := make([][][]byte, 0, 1+len(owed))
+	written = append(written, lines)
+	for _, f := range owed {
+		if line := s.encode(f); line != nil {
+			written = append(written, [][]byte{line})
+		}
+	}
+	s.out.send(written...)
+	s.order.Unlock()
+	if summary := summarize(frame); summary != "" {
+		s.log.Print(summary)
+	}
+}
+
+// ownAnswer takes the harness's answer to a get_state of the shim's own, of size bytes, and
+// sends the daemon the read it answers, if any.
+func (s *shim) ownAnswer(response shimwire.Response, size int) {
+	s.stateSizeLogged.Do(func() { s.log.Printf("[worker-shim] the harness's state answer is %d bytes", size) })
+	if result := s.totals.answered(response); result != nil {
+		s.order.Lock()
+		s.toDaemon(*result)
+		s.order.Unlock()
 	}
 }
 
@@ -660,8 +802,9 @@ func (s *shim) drainWarmUp() {
 	}
 }
 
-// reap waits for the wrapped process, lets the pump forward what it wrote before exiting, and
-// ends the shim with its status.
+// reap waits for the wrapped process and lets the pump forward what it wrote before exiting. It
+// then sends the launch's final totals and ends the shim with its status. Each read the harness
+// left unanswered is refused first: the final totals answer it.
 func (s *shim) reap(cmd *exec.Cmd, stdout *os.File, pumped <-chan struct{}) {
 	_ = cmd.Wait()
 	s.children.Done(cmd.Process.Pid)
@@ -673,6 +816,13 @@ func (s *shim) reap(cmd *exec.Cmd, stdout *os.File, pumped <-chan struct{}) {
 		_ = stdout.Close()
 		<-pumped
 	}
+	refused, final := s.totals.exit()
+	s.order.Lock()
+	for _, result := range refused {
+		s.toDaemon(result)
+	}
+	s.toDaemon(final)
+	s.order.Unlock()
 	s.finish(exitStatus(cmd.ProcessState), nil)
 }
 
@@ -801,65 +951,4 @@ func summarize(frame shimwire.Frame) string {
 		}
 	}
 	return ""
-}
-
-// outbox is every frame bound for the daemon: written to the connection when one is attached,
-// held in the backlog of the newest backlogLimit frames when none is, and replayed in order —
-// ahead of anything newer — when the next connection is acked (createShimBridge's forward and
-// onConnect, worker-shim.ts).
-type outbox struct {
-	mu      sync.Mutex
-	conn    net.Conn
-	w       *shimwire.Writer
-	backlog [][]byte
-	dropped bool
-	log     *log.Logger
-}
-
-func (o *outbox) send(line []byte) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.w != nil {
-		if o.w.WriteLine(line) == nil {
-			return
-		}
-		// The stream broke under this frame, so the daemon never got it whole: it waits with the
-		// rest for the next connection. Closing the connection is what tells its reader.
-		_ = o.conn.Close()
-		o.conn, o.w = nil, nil
-	}
-	o.backlog = append(o.backlog, line)
-	if len(o.backlog) > backlogLimit {
-		o.backlog[0] = nil
-		o.backlog = o.backlog[1:]
-		if !o.dropped {
-			o.dropped = true
-			o.log.Printf("[worker-shim] no daemon client connected; dropping oldest frames beyond the last %d", backlogLimit)
-		}
-	}
-}
-
-// attach replays the backlog on a newly acked connection and makes it the one frames go to. A
-// connection that breaks mid-replay is closed, and what it did not take waits for the next.
-func (o *outbox) attach(conn net.Conn, w *shimwire.Writer) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	for len(o.backlog) > 0 {
-		if w.WriteLine(o.backlog[0]) != nil {
-			_ = conn.Close()
-			return
-		}
-		o.backlog[0] = nil
-		o.backlog = o.backlog[1:]
-	}
-	o.backlog = nil
-	o.conn, o.w = conn, w
-}
-
-func (o *outbox) detach(conn net.Conn) {
-	o.mu.Lock()
-	defer o.mu.Unlock()
-	if o.conn == conn {
-		o.conn, o.w = nil, nil
-	}
 }

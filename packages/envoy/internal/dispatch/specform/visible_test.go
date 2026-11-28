@@ -139,12 +139,14 @@ func TestTheRulesJudgeTheWordsAndTheReferenceRulesTheAddresses(t *testing.T) {
 		{"a footnote that two paragraphs refer to is read once",
 			requirement("twice", "Dispatch stores each record.[^n]\n\nDispatch shows it.[^n]") + "\n[^n]: The note says so.\n",
 			[]string{"statement twice sentences"}, "twice", KindStatement, "Dispatch stores each record.\nDispatch shows it.\nThe note says so."},
+		// A footnote of a term is part of its definition, so its sentence counts: R50's definition
+		// has one sentence, and a definition with a footnote of one more breaks definition-sentences.
 		{"a footnote of a term is part of its definition, and no line of Terms",
 			"## Terms\n\n- **lease**: One record of a claim.[^1]\n\n[^1]: The design note names it.\n",
-			nil, "lease", KindDefinition, "One record of a claim.\nThe design note names it."},
+			[]string{"definition lease definition-sentences"}, "lease", KindDefinition, "One record of a claim.\nThe design note names it."},
 		{"a footnote of a term that links to an issue",
 			"## Terms\n\n- **lease**: One record of a claim.[^1]\n\n[^1]: See [the issue](dispatch://ACME-12).\n",
-			[]string{"definition lease dispatch-link"}, "lease", KindDefinition, "One record of a claim.\nSee the issue."},
+			[]string{"definition lease definition-sentences", "definition lease dispatch-link"}, "lease", KindDefinition, "One record of a claim.\nSee the issue."},
 		{"the name of a term that links to an issue",
 			"## Terms\n\n- **[lease](dispatch://ACME-12)**: One record of a claim.\n",
 			[]string{"term lease dispatch-link"}, "lease", KindDefinition, "One record of a claim."},
@@ -778,8 +780,9 @@ func TestTheReferenceRulesJudgeTheWordsThatThePageShows(t *testing.T) {
 			[]string{"statement whole person"}, "whole", KindStatement, "Dispatch asks `Ada Lovelace`."},
 		{"the address of a record wholly in code font", requirement("whole-record", "Dispatch keeps `dispatch://ACME-12`."),
 			[]string{"statement whole-record dispatch-link"}, "whole-record", KindStatement, "Dispatch keeps `dispatch://ACME-12`."},
+		// R50 reads the name of a term as the page shows it, so code font makes no second name.
 		{"a name in a term line split by code font", "## Terms\n\n- **`Ada` Lovelace**: One owner of a `request` of `Ada` Lovelace.\n",
-			[]string{"term `Ada` Lovelace person", "definition `Ada` Lovelace person"}, "`Ada` Lovelace", KindDefinition, "One owner of a `request` of `Ada` Lovelace."},
+			[]string{"term Ada Lovelace person", "definition Ada Lovelace person"}, "Ada Lovelace", KindDefinition, "One owner of a `request` of `Ada` Lovelace."},
 		{"the control: the rules of a sentence keep code font", requirement("config", "Dispatch reads the file `Web.Config` at boot."),
 			nil, "config", KindStatement, "Dispatch reads the file `Web.Config` at boot."},
 	}
