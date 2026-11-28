@@ -50,16 +50,26 @@ func waitingValue(kind, id, attribute string, opening bool) string {
 }
 
 // waitingChildren is a lateral's body reading, at the read's cut, the nodes of kind whose part_of
-// names the block climb.id: of each such node's part_of tuples into it, read into the block through
+// names the block climb.id: of each node's part_of tuples into it, read into the block through
 // graph_tuples_as_of_in, the newest by its time and then its seq, answered as from_id and asserted;
 // a caller keeps those that assert and whose newest standing part_of is that one
-// (waitingPlacement), as the walk's children read does (refs' treeChildJoins).
+// (waitingPlacement), as the walk's children read does (refs' treeChildJoins). The kind is tested
+// past an `offset 0`, on the tuples into the block of every kind, so no index keyed on the near
+// end's kind reads them: given `t.from_kind = 'comment'` among its conditions, the planner read
+// the comments under a decision of an issue of the largest plan through graph_tuples_current,
+// whose key begins with the near end's kind and id, and so read the key of every relation tuple
+// out of a comment of the store, 153 pages for each of the 4 blocks it climbed: 1.8 of the
+// statement's 2.0 ms over the bound's corpus (LargestPlanFloor's diagnostic), where the tuples
+// into each block are a few.
 func waitingChildren(kind string) string {
-	return `select distinct on (t.from_id) t.from_id, t.asserted
-		from graph_tuples t
-		where t.to_kind = '` + refs.BlockNodeKind + `' and t.to_id = climb.id and t.kind = '` + graphstore.TuplePartOf + `'
-		  and t.from_kind = '` + kind + `' and ` + anchorContainerCut + `
-		order by t.from_id, t.at desc, t.seq desc`
+	return `select inbound.from_id, inbound.asserted from (
+			select distinct on (t.from_kind, t.from_id) t.from_kind, t.from_id, t.asserted
+			from graph_tuples t
+			where t.to_kind = '` + refs.BlockNodeKind + `' and t.to_id = climb.id and t.kind = '` + graphstore.TuplePartOf + `'
+			  and ` + anchorContainerCut + `
+			order by t.from_kind, t.from_id, t.at desc, t.seq desc
+			offset 0) inbound
+		where inbound.from_kind = '` + kind + `'`
 }
 
 // waitingPlacement is a lateral's body reading, at the read's cut, the parent of the node of kind

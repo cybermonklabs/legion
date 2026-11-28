@@ -167,25 +167,24 @@ func PlanOrder(ctx context.Context, q Queryer, who model.Actor, issueKey string)
 // PlanOrderOfRows is PlanOrder for a read that holds heads, the head rows of issueKey that a view
 // whose Types hold plan_task reads (HeadViewRows): every row of issueKey whose block_type is
 // plan_task is among them, since a view reads each of the issue's own blocks a typed block of its
-// types may be and every block past those whole (HeadView). So the climb over the head projection
-// (planTreeHeads) starts, for issueKey's own documents, from the blocks of heads alone
-// (planSeedsOfRows), and reads the blocks of the documents of the issues under it as PlanOrder
-// does: never every block of issueKey's documents for its type, which the planner read in a
-// sequential scan of document_blocks, the 52,266 blocks of the store, for each plan view of an
-// issue of the largest plan (12 of the statement's 34 ms).
+// types may be and every block past those whole (HeadView). So the ordered read takes issueKey's
+// own plan nodes from heads (planSeedsOf): each one its row places straight under issueKey's node
+// it settles off that row alone, as the climb over the head projection (planTreeHeads) would read
+// it, and the climb starts from the others alone (planSeedsOfRows); it reads the blocks of the
+// documents of the issues under issueKey as PlanOrder does. Each plan node of heads it settles is
+// a plan task its statement does not read a second time: the 1,393 plan tasks of an issue of the
+// largest plan, read again by their head rows, their document_blocks rows and their documents,
+// were 25.8 of that statement's 26.2 ms over the bound's corpus and 5,573 of the 5,661 rows it
+// read (LargestPlanFloor's diagnostic). It never reads every block of issueKey's documents for its
+// type, which the planner read in a sequential scan of document_blocks, the 52,266 blocks of the
+// store, for each plan view of an issue of the largest plan (12 of the statement's 34 ms).
 func PlanOrderOfRows(ctx context.Context, q Queryer, who model.Actor, issueKey string, heads *HeadTree) (TreeOrder, error) {
-	blocks := make([]string, 0, len(heads.Rows))
-	for node := range heads.Rows {
-		if node.Kind == BlockNodeKind {
-			blocks = append(blocks, node.ID)
-		}
-	}
-	return planOrder(ctx, q, who, issueKey, blocks)
+	return planOrder(ctx, q, who, issueKey, heads)
 }
 
-// planOrder is PlanOrder, whose climb over the head projection starts, for issueKey's own
-// documents, from the blocks blocks names where it is not nil (PlanOrderOfRows).
-func planOrder(ctx context.Context, q Queryer, who model.Actor, issueKey string, blocks []string) (TreeOrder, error) {
+// planOrder is PlanOrder, which takes issueKey's own plan nodes from heads where it is not nil
+// (PlanOrderOfRows).
+func planOrder(ctx context.Context, q Queryer, who model.Actor, issueKey string, heads *HeadTree) (TreeOrder, error) {
 	if issueKey == "" {
 		return TreeOrder{}, nil
 	}
@@ -193,7 +192,7 @@ func planOrder(ctx context.Context, q Queryer, who model.Actor, issueKey string,
 	if err != nil {
 		return TreeOrder{}, err
 	}
-	tree, err := readPlanTree(ctx, q, who, issueKey, descendants, blocks)
+	tree, err := readPlanTree(ctx, q, who, issueKey, descendants, heads)
 	if err != nil || tree.issues[issueKey] == nil {
 		return TreeOrder{}, err
 	}
@@ -203,12 +202,81 @@ func planOrder(ctx context.Context, q Queryer, who model.Actor, issueKey string,
 	return tree.order(), nil
 }
 
+// planSeedsOf is, of the rows of heads, the head rows of root that the climb over the head
+// projection (planTreeHeads) starts from, the plan nodes of root's own documents, split two ways:
+// settled, each such plan node whose row states one part_of and names root's node by it, which the
+// climb would take to root's node in one step and no further (planHeadParents); and the address of
+// every other, where the climb starts (planSeedsOfRows). A plan node of root's own documents is a
+// row whose document_blocks row types it a plan_task (BlockRow.Type, the column planSeedRow reads)
+// and whose document is root's (IssueKey, the issue of the document planSeedsOfRows joins); a block
+// that is none starts no climb, and neither does the prose of a role document, whose row's block
+// type headRowsStatement does not send.
+func planSeedsOf(root string, heads *HeadTree) (seeds []string, settled []*HeadRow) {
+	node := Target{Kind: graphstore.KindIssue, ID: root}
+	for target, head := range heads.Rows {
+		if target.Kind != BlockNodeKind || head.Block == nil || head.Block.Type != planTaskType || head.IssueKey == nil || *head.IssueKey != root {
+			continue
+		}
+		var parents []Target
+		for _, relation := range head.Facts.Relations {
+			if relation.Kind == graphstore.TuplePartOf && relation.To.Kind != graphstore.KindValue {
+				parents = append(parents, relation.To)
+			}
+		}
+		if len(parents) == 1 && parents[0] == node {
+			settled = append(settled, head)
+			continue
+		}
+		seeds = append(seeds, target.ID)
+	}
+	return seeds, settled
+}
+
+// settle adds to the tree each plan node of settled (planSeedsOf) under root, as planTreeHeads
+// answers a plan node whose climb takes it to root's node in its one step: where who may see it,
+// by its row (HeadRow.Seen, the block loader's predicate over the row that the climb's step tests,
+// VisibleNodeOfRow), and its state is not gone; overtaken where it or root is; with its text_rank,
+// size, skills and docs off its row's values. A node the statement answered already keeps that
+// answer, and a tree whose root who may not see takes none.
+func (tree *planTree) settle(root string, settled []*HeadRow) error {
+	issue := tree.issues[root]
+	if issue == nil {
+		return nil
+	}
+	value := func(values map[string]string, attribute string) *string {
+		if held, ok := values[attribute]; ok {
+			return &held
+		}
+		return nil
+	}
+	for _, head := range settled {
+		address := head.Node.ID
+		if !head.Seen || head.State == graphstore.StateGone || tree.plans[address] != nil {
+			continue
+		}
+		values := head.Facts.Values
+		held := &planNode{issue: root, overtaken: issue.overtaken || head.State == graphstore.StateOvertaken,
+			textRank: values[AttributeTextRank], size: values[AttributePlanSize]}
+		var err error
+		if held.skills, err = planList(address, AttributePlanSkills, value(values, AttributePlanSkills)); err != nil {
+			return err
+		}
+		if held.docs, err = planList(address, AttributePlanDocs, value(values, AttributePlanDocs)); err != nil {
+			return err
+		}
+		tree.plans[address] = held
+	}
+	return nil
+}
+
 // planTree is what the ordered read holds of one issue's tree before it orders it: each issue by
-// its key and each plan node by its store address.
+// its key and each plan node by its store address, and the root's head rows the read took plan
+// nodes from (PlanOrderOfRows), nil where it read none.
 type planTree struct {
 	root   string
 	issues map[string]*planIssue
 	plans  map[string]*planNode
+	heads  *HeadTree
 }
 
 // planIssue is one issue of the tree: its parent ("" for the root), whether its node is
@@ -518,11 +586,11 @@ var planSeeds = `select ` + planSeedColumns + `
 // planSeedsOfRows is planSeeds for PlanOrderOfRows, the same starts read two ways: of the
 // documents of the issues under the root, $1 past its first, every plan_task block, each
 // document's blocks read through its key behind an `offset 0`, so that a tree with no issue under
-// its root reads no block; and of the root's own documents, of the blocks $4 names alone, each
-// that is a plan_task block of one of them (document_blocks_node_id) and whose head row under the
-// root names it a plan_task. Each probe of a block of $4 is a lateral read with a limit, which the
-// planner keeps a probe of its index and never turns into a join over every row of
-// document_blocks.
+// its root reads no block; and of the root's own documents, of the blocks $4 names alone - the
+// plan nodes of the root's rows that planSeedsOf did not settle - each that is a plan_task block
+// of one of them (document_blocks_node_id) and whose head row under the root names it a plan_task.
+// Each probe of a block of $4 is a lateral read with a limit, which the planner keeps a probe of
+// its index and never turns into a join over every row of document_blocks.
 var planSeedsOfRows = `select ` + planSeedColumns + `
 			from artifacts document
 			cross join lateral (
@@ -544,21 +612,28 @@ var planSeedsOfRows = `select ` + planSeedColumns + `
 // readPlanTree reads the tree of root, whose descendants are descendants, in one statement, which
 // answers a row per issue and a row per plan node (PlanOrder): over the head projection where a
 // mark names each issue of the tree whole (planTreeHeads), from the starts planSeedsOfRows reads
-// where blocks is not nil (PlanOrderOfRows) and from planSeeds' otherwise, and over the tuples
-// otherwise (planTreeWalk). A tree with an issue no mark names walks the tuples whole: the rows of
-// a marked issue do not hold a node of an issue under it that stands under a node of that issue
-// below, which that issue's rows hold.
-func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, descendants, blocks []string) (*planTree, error) {
+// where heads is not nil (PlanOrderOfRows), beside each plan node of heads it settles off its row
+// (planSeedsOf, settle), and from planSeeds' otherwise, and over the tuples otherwise
+// (planTreeWalk). A tree with an issue no mark names walks the tuples whole: the rows of a marked
+// issue do not hold a node of an issue under it that stands under a node of that issue below,
+// which that issue's rows hold.
+func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, descendants []string, heads *HeadTree) (*planTree, error) {
 	issues := append([]string{root}, descendants...)
 	var marked int
 	if err := q.QueryRow(ctx, `select count(*) from issue_head_marks mark where mark.issue_key = any($1::text[])`, issues).Scan(&marked); err != nil {
 		return nil, fmt.Errorf("read the head marks of the tree of %s: %w", root, err)
 	}
 	statement, args := planTreeWalk(), []any{issues, planOrderDepth, VisibilityArg(who)}
+	var settled []*HeadRow
 	switch {
 	case marked != len(issues):
-	case blocks != nil:
-		statement, args = planTreeHeads(planSeedsOfRows), append(args, blocks)
+	case heads != nil:
+		var seeds []string
+		seeds, settled = planSeedsOf(root, heads)
+		if seeds == nil {
+			seeds = []string{}
+		}
+		statement, args = planTreeHeads(planSeedsOfRows), append(args, seeds)
 	default:
 		statement = planTreeHeads(planSeeds)
 	}
@@ -566,7 +641,7 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 	if err != nil {
 		return nil, fmt.Errorf("read the plan nodes of the tree of %s: %w", root, err)
 	}
-	tree := &planTree{root: root, issues: map[string]*planIssue{}, plans: map[string]*planNode{}}
+	tree := &planTree{root: root, issues: map[string]*planIssue{}, plans: map[string]*planNode{}, heads: heads}
 	var issue, id string
 	var parent, rank, size, skills, docs *string
 	var made *time.Time
@@ -606,6 +681,9 @@ func readPlanTree(ctx context.Context, q Queryer, who model.Actor, root string, 
 		}
 		return nil
 	}); err != nil {
+		return nil, fmt.Errorf("read the plan nodes of the tree of %s: %w", root, err)
+	}
+	if err := tree.settle(root, settled); err != nil {
 		return nil, fmt.Errorf("read the plan nodes of the tree of %s: %w", root, err)
 	}
 	for _, key := range slices.SortedFunc(maps.Keys(tree.issues), tree.compareIssues) {
@@ -654,15 +732,27 @@ func planList(address, name string, text *string) ([]string, error) {
 }
 
 // readNeeds reads every current needs tuple out of the tree's issues and plan nodes, in one
-// statement through graph_tuples_current, each far end one who may see.
+// statement through graph_tuples_current, each far end one who may see: of each node but those
+// whose head row the read holds (planTree.heads) and states no needs (statesNoNeeds), whose read
+// would answer nothing. A tree each of whose nodes is such a node reads none. The 1,393 plan tasks
+// and the issue of an issue of the largest plan, none of which states a needs, were 1,394 probes
+// of graph_tuples_current that answered no row, 7.9 ms over the bound's corpus (LargestPlanFloor's
+// diagnostic).
 func (tree *planTree) readNeeds(ctx context.Context, q Queryer, who model.Actor) error {
 	kinds := make([]string, 0, len(tree.issues)+len(tree.plans))
 	ids := make([]string, 0, len(tree.issues)+len(tree.plans))
 	for key := range tree.issues {
-		kinds, ids = append(kinds, graphstore.KindIssue), append(ids, key)
+		if !tree.statesNoNeeds(Target{Kind: graphstore.KindIssue, ID: key}) {
+			kinds, ids = append(kinds, graphstore.KindIssue), append(ids, key)
+		}
 	}
 	for address := range tree.plans {
-		kinds, ids = append(kinds, BlockNodeKind), append(ids, address)
+		if !tree.statesNoNeeds(Target{Kind: BlockNodeKind, ID: address}) {
+			kinds, ids = append(kinds, BlockNodeKind), append(ids, address)
+		}
+	}
+	if len(kinds) == 0 {
+		return nil
 	}
 	rows, err := q.Query(ctx, `
 		select w.kind, w.id, held.to_kind, held.to_id
@@ -690,6 +780,27 @@ func (tree *planTree) readNeeds(ctx context.Context, q Queryer, who model.Actor)
 		return fmt.Errorf("read the needs of the tree of %s: %w", tree.root, err)
 	}
 	return nil
+}
+
+// statesNoNeeds reports whether node's head row is one the read holds (planTree.heads) whose
+// relations are whole and name no needs: an issue's row, or a plan node's, whose block type is
+// plan_task (headRowsStatement sends a row's block type only where it sends its relations too).
+// A head row holds every relation its node states now (graphstore.HeadRowsSQL), read in the same
+// transaction as the needs read, so that read answers no tuple out of such a node.
+func (tree *planTree) statesNoNeeds(node Target) bool {
+	if tree.heads == nil {
+		return false
+	}
+	head, held := tree.heads.Rows[node]
+	if !held || node.Kind != graphstore.KindIssue && (head.Block == nil || head.Block.Type != planTaskType) {
+		return false
+	}
+	for _, relation := range head.Facts.Relations {
+		if relation.Kind == graphstore.TupleNeeds && relation.To.Kind != graphstore.KindValue {
+			return false
+		}
+	}
+	return true
 }
 
 // overtakenIssue reports whether issue key, or an issue above it in the tree, is overtaken.
