@@ -333,9 +333,7 @@ func (s *server) readDecisions(
 		// Keep passes no reader: it answers no tree, so no footnote is read for it.
 		called := decisionFootnotes(document.ID, markdown, decisions)
 		for index := range decisions {
-			source := called[index]
-			source.markdown = decisions[index].Text
-			registerBlockTree(reader, &decisions[index].TextTree, source)
+			registerBlockTree(reader, &decisions[index].TextTree, decisions[index].Text, called[index])
 		}
 	}
 	if !mark || !markable {
@@ -365,7 +363,7 @@ func (s *server) readDecisions(
 }
 
 // decisionFootnotes is, by each decision's index in decisions, the source of the tree of its text
-// but its markdown (blockTreeSource): the document artifactID, the decision's heading block and
+// (blockTreeSource): the document artifactID, the decision's heading block and
 // the footnotes its text calls that the document defines outside the decision. A decision's text
 // is its section of markdown, the document's markdown the view cut it from, so it holds no
 // definition the document writes outside the section, and read alone it reads a call of such a
@@ -379,24 +377,21 @@ func (s *server) readDecisions(
 // none (footnoteParses). A markdown the parser refuses leaves every decision the tree of its text
 // alone; the failure is logged.
 func decisionFootnotes(artifactID, markdown string, decisions []model.Decision) map[int]blockTreeSource {
-	var keys []int
+	var texts map[int]drawnText
 	for index := range decisions {
-		if strings.Contains(decisions[index].Text, "[^") {
-			keys = append(keys, index)
+		if !strings.Contains(decisions[index].Text, "[^") {
+			continue
 		}
+		if texts == nil {
+			texts = map[int]drawnText{}
+		}
+		block := refs.DocumentBlock{ArtifactID: artifactID, BlockID: decisions[index].BlockID}
+		texts[index] = drawnText{block: block, text: decisions[index].Text}
 	}
-	if len(keys) == 0 {
+	if texts == nil {
 		return nil
 	}
-	texts := make(map[int]string, len(keys))
-	documents := make(map[int]refs.DocumentBlock, len(keys))
-	for _, index := range keys {
-		texts[index] = decisions[index].Text
-		documents[index] = refs.DocumentBlock{ArtifactID: artifactID, BlockID: decisions[index].BlockID}
-	}
-	called := make(map[int]blockTreeSource, len(keys))
-	footnotesCalledIn(markdown, artifactID, keys, texts, documents, called)
-	return called
+	return footnotesCalledIn(markdown, artifactID, texts)
 }
 
 // markStaleLinks decides each link's `stale`: the decision's own text changed after it first

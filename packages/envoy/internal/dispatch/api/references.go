@@ -192,12 +192,13 @@ func (s *server) getReferences(w http.ResponseWriter, r *http.Request) {
 const graphNodeText = -1
 
 // graphFootnotes is, for a read of the reference graph, the source of the tree of each text of a
-// document's block the read draws but its markdown (blockTreeSource): the document's id, the
-// block's id and the footnotes the text calls that the document defines outside the block. node
-// is the queried node's own text and excerpts each edge's excerpt, by the edge's index, both read
-// with the definitions of the document as it stands; pin is the text the node's pin recorded,
-// read with the definitions of the version it pins. A text with no source, and every text of a
-// node that is no document's block, is drawn from its text alone (registerBlockTree).
+// document's block the read draws (blockTreeSource): the document's id, the block's id and the
+// footnotes the text calls that the document defines outside the block. node is the queried
+// node's own text and excerpts each edge's excerpt, by the edge's index, each source of which is
+// a cut, both read with the definitions of the document as it stands; pin is the text the node's
+// pin recorded, read with the definitions of the version it pins. A text with no source, and
+// every text of a node that is no document's block, is drawn from its text alone
+// (registerBlockTree).
 type graphFootnotes struct {
 	node, pin blockTreeSource
 	excerpts  map[int]blockTreeSource
@@ -232,39 +233,38 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 		return footnotes
 	}
 	var keys []int
-	var texts map[int]string
-	var documents map[int]refs.DocumentBlock
-	hold := func(key int, block refs.DocumentBlock, text string) {
-		if !strings.Contains(text, "[^") {
+	var texts map[int]drawnText
+	hold := func(key int, text drawnText) {
+		if !strings.Contains(text.text, "[^") {
 			return
 		}
 		if texts == nil {
-			texts, documents = map[int]string{}, map[int]refs.DocumentBlock{}
+			texts = map[int]drawnText{}
 		}
 		keys = append(keys, key)
-		texts[key], documents[key] = text, block
+		texts[key] = text
 	}
 	block, documentBlock := graphDocumentBlock(node, "")
 	if documentBlock {
-		hold(graphNodeText, block, node.Text)
+		hold(graphNodeText, drawnText{block: block, text: node.Text})
 	}
 	for index, edge := range edges {
 		if edge.Excerpt == nil {
 			continue
 		}
-		if cut, ok := graphDocumentBlock(edge.Node, edge.Excerpt.BlockID); ok {
-			hold(index, cut, edge.Excerpt.Text)
+		if cutFrom, ok := graphDocumentBlock(edge.Node, edge.Excerpt.BlockID); ok {
+			hold(index, drawnText{block: cutFrom, text: edge.Excerpt.Text, cut: true})
 		}
 	}
 	var budget footnoteDocuments
 	if texts != nil {
-		footnotes.excerpts = calledFootnotes(ctx, s, keys, texts, documents, 0, &budget)
+		footnotes.excerpts = calledFootnotes(ctx, s, keys, texts, 0, &budget)
 		footnotes.node = footnotes.excerpts[graphNodeText]
 		delete(footnotes.excerpts, graphNodeText)
 	}
 	if pin := node.Pin; documentBlock && pin != nil && strings.Contains(pin.Text, "[^") {
-		pinned := calledFootnotes(ctx, s, []int{graphNodeText}, map[int]string{graphNodeText: pin.Text},
-			map[int]refs.DocumentBlock{graphNodeText: block}, pin.Version, &budget)
+		pinned := calledFootnotes(ctx, s, []int{graphNodeText}, map[int]drawnText{graphNodeText: {block: block, text: pin.Text}},
+			pin.Version, &budget)
 		footnotes.pin = pinned[graphNodeText]
 	}
 	budget.warnUnread("GET /api/v1/references")

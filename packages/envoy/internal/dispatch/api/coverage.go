@@ -1,9 +1,7 @@
 package api
 
 import (
-	"bytes"
 	"context"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -154,130 +152,21 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 // caller fills in the rest of each row in place.
 func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.RequirementCoverage, error) {
 	var requirements []model.RequirementCoverage
+	var markdowns []string
 	var sources []blockTreeSource
-	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id string, source blockTreeSource) {
+	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id, markdown string, source blockTreeSource) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
 		if trees != nil {
-			sources = append(sources, source)
+			markdowns, sources = append(markdowns, markdown), append(sources, source)
 		}
 	})
 	if err != nil {
 		return nil, err
 	}
 	for index, source := range sources {
-		registerBlockTree(trees, &requirements[index].TextTree, source)
+		registerBlockTree(trees, &requirements[index].TextTree, markdowns[index], source)
 	}
 	return requirements, nil
-}
-
-// blockTreeSource is what one block's tree is read from: markdown, the content typedBlocksIn
-// hands over for the block, the one GET /api/v1/reference-targets cuts from the block's stored
-// text (blockTextContent), a decision's section of decisions.md, or a text of a document's block
-// the reference graph's read draws; labels, the footnotes that markdown calls that its document
-// defines outside it: the ones the block's node calls (pmdoc.CalledFootnoteLabels), or, for a
-// text no node of the document's parse holds, the ones it writes as a call (footnotesCalledIn);
-// and artifactID and blockID, the document that holds the block and the id it holds it under,
-// which registerBlockTree logs a tree it cannot set with. Every source with labels names them.
-// cut is set for a markdown that is a cut of the block's text, an edge's excerpt, which can stop
-// inside a block whose end the cut leaves out (a fenced code block): the stand-ins read after it
-// then stand inside that block, so a tree that does not end in them is no fault of the read, and
-// registerBlockTree sets it nowhere and logs nothing, for the caller to read the cut alone.
-type blockTreeSource struct {
-	markdown, artifactID, blockID string
-	labels                        []string
-	cut                           bool
-}
-
-// registerBlockTree registers with trees, as field, the display tree of source, the block its
-// artifactID's document holds under its blockID. Every read that answers a block's tree registers
-// it here: the coverage read's requirements, the results read's checks, the batched reference
-// read's blocks, the decisions read's decisions and the reference graph read's texts of
-// documents' blocks, so one block answers one tree in each read that draws it whole, and each of
-// them reads a call as the document does. The markdown is cut out of the
-// document, so it holds no definition the document writes outside the block, and read alone it
-// reads a call of such a label as text, where the document reads, and the browser editor holds,
-// a reference. So the markdown of a block with labels is registered with a stand-in definition of
-// each label after it (pmdoc.WithStandInDefinitions), and the stand-ins, those the markdown
-// refers to and those it does not, are taken out of the tree before it is set
-// (withoutStandInDefinitions); a block with none registers its markdown as it stands. A tree that
-// does not end in the stand-ins is set nowhere, since no other field of the read depends on it,
-// and is logged unless source is a cut, which can end that way (blockTreeSource).
-func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, source blockTreeSource) {
-	if len(source.labels) == 0 || source.markdown == "" {
-		trees.text(field, source.markdown)
-		return
-	}
-	trees.textInto(func(tree json.RawMessage) {
-		shown, ok := withoutStandInDefinitions(tree, len(source.labels))
-		if !ok {
-			if !source.cut {
-				slog.Warn("dispatch: take the stand-in footnote definitions out of a block's tree",
-					"artifact", source.artifactID, "block", source.blockID, "labels", source.labels)
-			}
-			return
-		}
-		*field = model.DisplayTree(shown)
-	}, pmdoc.WithStandInDefinitions(source.markdown, source.labels))
-}
-
-// withoutStandInDefinitions is tree, the display tree of a block's content read with count
-// stand-in footnote definitions after it (pmdoc.WithStandInDefinitions), with those definitions
-// taken out, and whether tree ends in them at all: they are the last count children of its
-// document, each a footnote_definition, after at least one block of the content's own, without
-// which the document would hold no block to draw. Only the document's top level is decoded, and
-// of each of its children only the type. The answer is tree's own bytes up to the end of the
-// last child kept and from the close of the document's content on, so every other byte is as the
-// reader built it, in an array of its own: tree is the reader's, shared with every request that
-// reads the same text (pmdoc.DisplayJSON).
-func withoutStandInDefinitions(tree json.RawMessage, count int) (json.RawMessage, bool) {
-	decoder := json.NewDecoder(bytes.NewReader(tree))
-	if opening, err := decoder.Token(); err != nil || opening != json.Delim('{') {
-		return nil, false
-	}
-	for decoder.More() {
-		key, err := decoder.Token()
-		if err != nil {
-			return nil, false
-		}
-		if key != "content" {
-			if err := decoder.Decode(new(json.RawMessage)); err != nil {
-				return nil, false
-			}
-			continue
-		}
-		if opening, err := decoder.Token(); err != nil || opening != json.Delim('[') {
-			return nil, false
-		}
-		// ends is where each child of the document ends, and definitions how many of the last
-		// children read are footnote definitions.
-		var ends []int64
-		definitions := 0
-		for decoder.More() {
-			var child struct {
-				Type string `json:"type"`
-			}
-			if err := decoder.Decode(&child); err != nil {
-				return nil, false
-			}
-			ends = append(ends, decoder.InputOffset())
-			if child.Type == "footnote_definition" {
-				definitions++
-			} else {
-				definitions = 0
-			}
-		}
-		if closing, err := decoder.Token(); err != nil || closing != json.Delim(']') {
-			return nil, false
-		}
-		kept := len(ends) - count
-		if definitions < count || kept < 1 {
-			return nil, false
-		}
-		cut, closing := ends[kept-1], decoder.InputOffset()-1
-		shown := make(json.RawMessage, 0, int64(len(tree))-(closing-cut))
-		return append(append(shown, tree[:cut]...), tree[closing:]...), true
-	}
-	return nil, false
 }
 
 // servingCounts is how many `check` and `plan_task` blocks serve one requirement.

@@ -518,13 +518,9 @@ func (n *graphNodeRead) shape(reader *displayTreeReader, footnotes graphFootnote
 	n.Pin = nil
 	if pin := n.GraphNode.Pin; pin != nil {
 		n.Pin = &blockPinRead{BlockPin: *pin}
-		source := footnotes.pin
-		source.markdown = pin.Text
-		registerBlockTree(reader, &n.Pin.TextTree, source)
+		registerBlockTree(reader, &n.Pin.TextTree, pin.Text, footnotes.pin)
 	}
-	source := footnotes.node
-	source.markdown = n.GraphNode.Text
-	registerBlockTree(reader, &n.TextTree, source)
+	registerBlockTree(reader, &n.TextTree, n.GraphNode.Text, footnotes.node)
 }
 
 // graphExcerptRead is the excerpt an edge shows, with the tree of its text. Every excerpt that
@@ -581,9 +577,7 @@ func graphEdgeReads(edges []model.GraphEdge, trees bool, excerpts map[int]blockT
 			}
 			if edge.Excerpt != nil {
 				read.Excerpt = &graphExcerptRead{GraphExcerpt: *edge.Excerpt}
-				source := excerpts[index]
-				source.markdown, source.cut = edge.Excerpt.Text, true
-				registerBlockTree(reader, &read.Excerpt.TextTree, source)
+				registerBlockTree(reader, &read.Excerpt.TextTree, edge.Excerpt.Text, excerpts[index])
 			}
 		}
 	})
