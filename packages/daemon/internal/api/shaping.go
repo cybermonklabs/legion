@@ -2420,9 +2420,12 @@ func (s *server) writeAnswer(w http.ResponseWriter, r *http.Request, id AnswerID
 // (entryNumber(watchedWorkflowsContract)), and the PauseFailure's moved again at the project
 // release entry's number (entryNumber(projectReleaseContract)), when that entry added `heldPods`
 // (withoutHeldPods); their writers answer from no snapshot of their own, so writeAnswer reads the
-// claims for them (placingClaims). A registration that carries no such key is the same body at
-// every contract, so it reads none. Every other answer writeAnswer writes is the identity at every
-// contract, and so is a plain refusal (a claim.Refusal or a Failure), so a read of the claims for
+// claims for them (placingClaims). A registration that carries neither `replaces` nor
+// `watchedWorkflows` is the same body at every contract, so it reads none. Every other answer
+// writeAnswer writes is the identity at every contract but register_plan's (AnswerPlanRegister),
+// whose row takes `running` off below the running-step entry's number; this answers false for it,
+// so a caller of that route that states no contract reads `running`. A plain refusal (a
+// claim.Refusal or a Failure) is the identity at every contract too, so a read of the claims for
 // one of them would decide nothing. A serving-down added to one of them reaches the caller of a pod
 // only once this answers true for it. The state and the record are no question for it: their
 // routes hand in their own snapshot's claims (writeAnswerFrom).
