@@ -8,7 +8,8 @@ import type { CheckBlock, CheckResult } from "./dispatch-api";
  * them back into the lists that command reads, one list each: the heads of `branch_heads` follow
  * `compared_with`; the results of `recorded_results` join `results`, the two lists the server
  * orders newest first merged by `created_at`, a tie keeping the derived result first; and a result
- * whose `at_branch_head` names a head stands at it.
+ * whose `at_branch_head` names a head stands at it. An answer that names neither `compared_with`
+ * nor `branch_heads`, as one at a cut that leaves `compared_with` out, keeps it absent.
  */
 export function checkWithNewerFields(check: CheckBlock): CheckBlock {
   const { branch_heads: heads, recorded_results: recorded, ...rest } = check;
@@ -20,6 +21,7 @@ export function checkWithNewerFields(check: CheckBlock): CheckBlock {
       : [...served, ...recorded].sort(
           (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at)
         );
+  if (check.compared_with === undefined && heads === undefined) return { ...rest, results };
   return { ...rest, compared_with: [...(check.compared_with ?? []), ...(heads ?? [])], results };
 }
 

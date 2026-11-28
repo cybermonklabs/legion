@@ -59,7 +59,7 @@ function render(changes: Partial<CheckBlock>, brief = false): string {
     verification_artifact_id: "verification",
     checks: [{ ...check, ...changes }],
   };
-  return formatCheckResults(wire, brief, { "DSP-1": repo });
+  return formatCheckResults(wire, { brief, repositories: { "DSP-1": repo } });
 }
 const cases: readonly [string, CheckPassStands, CheckResult[], string][] = [
   [

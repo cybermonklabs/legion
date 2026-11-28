@@ -680,11 +680,13 @@ describe("dispatchToolSpecs", () => {
     expect(refusal({ project: "ACME" })).toEqual([
       "With project, the read needs commit, the 40-character lowercase hex commit whose results it prints.",
     ]);
-    expect(refusal({ ...project, at: project.commit, brief: true })).toEqual([
-      "With project, the read takes commit, check and json alone, and this call also carries at, brief.",
+    expect(
+      refusal({ ...project, at: project.commit, brief: true, as_of: "2026-11-10T12:00:00Z" })
+    ).toEqual([
+      "With project, the read takes commit, check and json alone, and this call also carries at, brief, as_of.",
     ]);
     expect(refusal({ issue: "DSP-1", commit: project.commit, check: "p-1" })).toEqual([
-      "With issue, the read takes at, brief and json alone, and this call also carries commit, check.",
+      "With issue, the read takes at, brief, as_of and json alone, and this call also carries commit, check.",
     ]);
   });
 

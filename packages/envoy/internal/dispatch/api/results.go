@@ -18,6 +18,7 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -543,8 +544,14 @@ type issueCheckResults struct {
 //
 // An end-to-end test process whose hide-state file exists answers without the state the server
 // computes from the results (stateHidden, withoutComputedState).
+//
+// At a cut the read reads the checks of the Verification document's version then, makes no read
+// of GitHub and writes nothing (results_as_of.go), and refuses ?at=.
 func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	if refuseResultsCommitAtCut(w, r) {
 		return
 	}
 	at := r.URL.Query().Get("at")
@@ -569,7 +576,13 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	checks, err := s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
+	_, atCut := asof.CutFrom(r.Context())
+	var checks []model.CheckBlock
+	if atCut {
+		checks, err = s.checkBlocksAtTheCut(r.Context(), artifact, trees)
+	} else {
+		checks, err = s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
+	}
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -607,20 +620,23 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 	// read-throughs, and two `before_merge` checks of one issue name one list of bases and not two
 	// (comparisonReader.learn). The reader holds the read's memo of merge times too
 	// (comparisonReader.fills), so the CI read of each check and the comparison after it learn each
-	// merge time once (fillMergeTimes).
-	reader := newComparisonReader(r.Context(), s, at)
-	reader.learn(r.Context(), checks)
-	headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
+	// merge time once (fillMergeTimes). A read at a cut reads nothing from GitHub, so it learns no
+	// head, derives no result and compares nothing (checksAtTheCut).
+	if !atCut {
+		reader := newComparisonReader(r.Context(), s, at)
+		reader.learn(r.Context(), checks)
+		headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		reader.headCI = headCI
+		for index := range checks {
+			reader.answer(r.Context(), &checks[index])
+		}
+		answerCompatibilityCurrency(checks, at)
+		keepFieldsOlderCommandsRead(checks)
 	}
-	reader.headCI = headCI
-	for index := range checks {
-		reader.answer(r.Context(), &checks[index])
-	}
-	answerCompatibilityCurrency(checks, at)
-	keepFieldsOlderCommandsRead(checks)
 	// Each result's observed text is registered for its tree once no check's results are copied
 	// any more, since what is registered is a pointer into the row: deriveCIResults replaces a
 	// check's results, and keepFieldsOlderCommandsRead moves them into new lists, results and the
@@ -632,6 +648,9 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		for result := range checks[index].RecordedResults {
 			trees.text(&checks[index].RecordedResults[result].ObservedTree, checks[index].RecordedResults[result].Observed)
 		}
+	}
+	if atCut {
+		checksAtTheCut(r.Context(), checks)
 	}
 	body.Checks = checks
 	trees.resolve()
@@ -779,6 +798,21 @@ func unknownCheck(value string) error {
 func validCICheck(check model.CheckBlock) bool {
 	attributes := docs.CheckAttributesOfBlock(check)
 	return docs.CarriesCICheck(attributes) && docs.CICheckRule(attributes) == ""
+}
+
+// addressChecks fills in each of checks, the check blocks of artifact, its issue and its
+// reference.
+func addressChecks(checks []model.CheckBlock, artifact model.Artifact) {
+	issueKey := ""
+	if artifact.IssueKey != nil {
+		issueKey = *artifact.IssueKey
+	}
+	for index := range checks {
+		checks[index].IssueKey = issueKey
+		checks[index].Ref, _ = text.FormatBlockRef(text.Ref{
+			Kind: "block", IssueKey: issueKey, ID: artifact.Slug, Block: checks[index].BlockID,
+		})
+	}
 }
 
 // blockWords is a block's text as a reader sees it: every text node under it, joined by single

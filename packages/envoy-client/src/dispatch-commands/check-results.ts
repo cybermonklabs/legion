@@ -16,6 +16,7 @@ import {
 } from "@legion/contracts";
 import { actorText } from "../actor-text";
 import { printableStrings } from "../runner-log";
+import { leftOutAt, orLeftOut } from "./as-of";
 
 // check-results.ts is what `dispatch results --issue` prints: each check of an issue's
 // Verification document, what Dispatch compared its results with, whether a pass of it stands,
@@ -119,10 +120,13 @@ function basisPlace(basis: CheckBasis): string {
 
 /** The first of R4's two facts: where one result's commit stands against what its check compared
  *  with. A Dispatch server that does not answer it says so rather than reading as another
- *  commit. An answer a linked repository decided names it (`repo`). */
-function commitStandsText(stands: CheckResult["commit_stands"]): string {
+ *  commit. An answer a linked repository decided names it (`repo`). At a cut (`asOf`) it is left
+ *  out: it is read from GitHub now. */
+function commitStandsText(stands: CheckResult["commit_stands"], asOf: string | undefined): string {
   if (stands === undefined) {
-    return "Where that commit stands is not known: this Dispatch server does not say";
+    return asOf === undefined
+      ? "Where that commit stands is not known: this Dispatch server does not say"
+      : `Where that commit stands is ${leftOutAt(asOf)}`;
   }
   if (stands.answer === "at_basis") {
     return stands.basis === undefined
@@ -145,11 +149,15 @@ function commitStandsText(stands: CheckResult["commit_stands"]): string {
 }
 
 /** R4's other fact: whether the check's words moved after the result was recorded. Both versions
- *  are named either way, because they are the handles a reader reads the two wordings with. */
-function checkWordsText(check: CheckBlock, result: CheckResult): string {
-  const versions = `result version ${result.check_version}, check version ${check.version}`;
+ *  are named either way, because they are the handles a reader reads the two wordings with. At
+ *  every cut (`asOf`) the server leaves out the fact, the check's version and its digest. */
+function checkWordsText(check: CheckBlock, result: CheckResult, asOf: string | undefined): string {
+  const version: number | undefined = check.version;
+  const versions = `result version ${result.check_version}, check version ${orLeftOut(version, asOf)}`;
   if (result.check_words_moved === undefined) {
-    return `Whether the check's words moved is not known (${versions})`;
+    return asOf === undefined
+      ? `Whether the check's words moved is not known (${versions})`
+      : `Whether the check's words moved is ${leftOutAt(asOf)} (${versions})`;
   }
   return result.check_words_moved
     ? `The check's words moved after this result (${versions})`
@@ -317,11 +325,16 @@ function readingLine(result: CheckResult, brief: boolean, indent = "    "): stri
 /** One result, in the order the API served it: the verdict, the role, the branch a CI job's
  *  result was pushed on, the whole commit, R4's two facts, the time, the id, the retraction that
  *  stands against it, and the reading; then, for a result that counts for nothing, the reason
- *  Dispatch served in `not_counted`. */
-function resultLines(check: CheckBlock, result: CheckResult, brief: boolean): string[] {
+ *  Dispatch served in `not_counted`. At a cut (`asOf`) R4's two facts are left out. */
+function resultLines(
+  check: CheckBlock,
+  result: CheckResult,
+  brief: boolean,
+  asOf: string | undefined
+): string[] {
   const branch = result.branch === undefined ? "" : ` on branch ${result.branch}`;
   const lines = [
-    `  - ${result.verdict} by ${result.role}${branch} at ${result.commit_sha}. ${commitStandsText(result.commit_stands)}. ${checkWordsText(check, result)}. Recorded ${result.created_at}. Result ${result.id}.`,
+    `  - ${result.verdict} by ${result.role}${branch} at ${result.commit_sha}. ${commitStandsText(result.commit_stands, asOf)}. ${checkWordsText(check, result, asOf)}. Recorded ${result.created_at}. Result ${result.id}.`,
   ];
   const retracted = result.retracted;
   if (retracted !== undefined) {
@@ -374,7 +387,7 @@ function ciCheckLines(
   const subjects = pass.subjects ?? [];
   const derived = derivedResult(ci, results);
   const others = results.filter((result) => result !== derived);
-  const recorded = others.flatMap((result) => resultLines(check, result, brief));
+  const recorded = others.flatMap((result) => resultLines(check, result, brief, undefined));
   const passStandsLine = `  ${passStandsText(check, pass)}.`;
   const perHead = subjects.some((subject) => subject.ci !== undefined);
   const pullRequestLine =
@@ -402,7 +415,7 @@ function ciCheckLines(
       ...recorded,
     ];
   }
-  const stands = commitStandsText(derived.commit_stands);
+  const stands = commitStandsText(derived.commit_stands, undefined);
   return [
     `- ${check.block_id} (${check.when}): ${derived.verdict} at ${derived.commit_sha} by ${derived.role} (CI run ${ci.run}, ${ci.case}), ${stands.charAt(0).toLowerCase()}${stands.slice(1)}. ${check.text}`,
     passStandsLine,
@@ -426,8 +439,16 @@ function ciCheckLines(
  *  read, which the server leaves out with it. The head line ends at what the check compared with,
  *  counting the open pull requests among its bases, and the words and every result follow, so a
  *  reader judges the results themselves. A run's Dispatch server answers so while its state is
- *  hidden (`DISPATCH_TEST_HIDE_STATE_FILE`), and so does a server that predates the answer. */
-function checkLines(check: CheckBlock, brief: boolean, repository?: string): string[] {
+ *  hidden (`DISPATCH_TEST_HIDE_STATE_FILE`), and so does a server that predates the answer. A read
+ *  at a cut (`asOf`) reads nothing from GitHub, so it leaves out what each check is compared with
+ *  and whether a pass of it stands, and the head line says both are left out; a check CI proves
+ *  reads as any other, its derived result left out. */
+function checkLines(
+  check: CheckBlock,
+  brief: boolean,
+  asOf: string | undefined,
+  repository?: string
+): string[] {
   const pass = check.pass_stands;
   if (pass !== undefined && check.ci !== undefined) {
     return ciCheckLines(check, check.ci, pass, brief);
@@ -442,15 +463,21 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
       ? `Compared with the heads of ${open} open ${open === 1 ? "pull request" : "pull requests"}`
       : bases.length > 0
         ? `Compared with ${bases.map(basisText).join(", ")}`
-        : reason === undefined
-          ? "Compared with nothing, and this Dispatch server does not say why"
-          : `Compared with nothing: ${reasonText(reason)}`;
+        : asOf !== undefined && check.compared_with === undefined && reason === undefined
+          ? `What it is compared with is ${leftOutAt(asOf)}`
+          : reason === undefined
+            ? "Compared with nothing, and this Dispatch server does not say why"
+            : `Compared with nothing: ${reasonText(reason)}`;
+  const passWords =
+    pass !== undefined
+      ? ` ${passStandsText(check, pass, repository)}.`
+      : asOf !== undefined
+        ? ` Whether a pass stands is ${leftOutAt(asOf)}.`
+        : "";
   const results = check.results ?? [];
   const deploy = pass?.deploy;
   return [
-    pass === undefined
-      ? `- ${check.block_id} (${check.when}). ${compared}.`
-      : `- ${check.block_id} (${check.when}). ${compared}. ${passStandsText(check, pass, repository)}.`,
+    `- ${check.block_id} (${check.when}). ${compared}.${passWords}`,
     ...(deploy === undefined
       ? []
       : [
@@ -460,7 +487,7 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
     `  The check's words: ${check.text}`,
     ...(results.length === 0
       ? ["  No result is recorded for this check."]
-      : results.flatMap((result) => resultLines(check, result, brief))),
+      : results.flatMap((result) => resultLines(check, result, brief, asOf))),
   ];
 }
 
@@ -472,7 +499,8 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
  *  Verification document says that instead of printing an empty list: Dispatch answers
  *  `verification_artifact_id` "" for such an issue, never null, so that is what is compared.
  *  `repositories` names each check owner's repository, by issue key, where a check's answer names
- *  it and its bases do not (`resultsCommand`, issues.ts).
+ *  it and its bases do not (`resultsCommand`, issues.ts). At a cut (`asOf`) what GitHub and the
+ *  deploys say now is left out.
  *
  *  Every string of the answer is text this command did not write: a CI job's log, a role's
  *  reading, a check's words, a reason. Each is read as runnerlog.Printable writes it
@@ -482,8 +510,15 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
  *  `A pass stands:` line. */
 export function formatCheckResults(
   answer: IssueCheckResults,
-  brief = false,
-  repositories?: Readonly<Record<string, string>>
+  {
+    brief = false,
+    repositories,
+    asOf,
+  }: {
+    brief?: boolean;
+    repositories?: Readonly<Record<string, string>>;
+    asOf?: string | undefined;
+  } = {}
 ): string {
   const results = printableStrings(answer);
   if (results.verification_artifact_id === "") {
@@ -494,7 +529,7 @@ export function formatCheckResults(
     return `${results.issue}'s Verification document holds no check blocks.`;
   }
   const blocks = checks.map((check) =>
-    checkLines(checkWithNewerFields(check), brief, repositories?.[check.issue_key]).join("\n")
+    checkLines(checkWithNewerFields(check), brief, asOf, repositories?.[check.issue_key]).join("\n")
   );
   return [`Checks of ${results.issue}:`, ...blocks].join("\n\n");
 }
