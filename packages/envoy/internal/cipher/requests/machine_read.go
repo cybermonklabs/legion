@@ -25,6 +25,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 )
 
 // MintFailedMessage is logged, at ERROR, each time a type secret's minter fails a release,
@@ -520,7 +521,7 @@ func grantLocations(granted []requestedSecret) []string {
 // a refused scope and handed back as it is, and any other failure named with the secret.
 func (m *Machine) readValue(ctx context.Context, grantID, enrollmentID string, g requestedSecret, served policy.Secret) (secrets.Minted, mintedFrom, error) {
 	minted, from, err := m.release(ctx, g, served)
-	if errors.Is(err, secrets.ErrNotFound) {
+	if errors.Is(err, secretstore.ErrNotFound) {
 		return secrets.Minted{}, mintedFrom{}, fmt.Errorf("%w: %s", ErrSecretNotInStore, g.name)
 	}
 	if errors.Is(err, secrets.ErrMintNarrowingRefused) {
@@ -576,15 +577,16 @@ func sourceMoved(name string) error {
 // for a name (requestedSecret.source), counts as the source the policy serves that name from now
 // (policy.Secret.Source). Every compare of the two calls counts: the re-check of a release and of
 // Create's reuse of a live grant (stillAllowed), the re-check after a release's reads
-// (recheckStoredSources), and the release's read itself (readSource). prefix is
-// BROKER_SECRETS_PREFIX and second BROKER_SECRETS_SECOND_PREFIX (Machine.SecretsPrefix and
-// Machine.SecondPrefix); with second empty the rule counts equal sources alone, which is every
-// broker that does not set it.
+// (recheckStoredSources), and the release's read itself (readSource). prefix and second are the
+// prefixes every source of the store begins with under BROKER_SECRETS_PREFIX and under
+// BROKER_SECRETS_SECOND_PREFIX (Machine.SourcePrefix and Machine.SecondSourcePrefix, which the
+// store answers: secretstore.Config.SourcePrefixes); with second empty the rule counts equal
+// sources alone, which is every broker that does not set it.
 type sourceRule struct{ prefix, second string }
 
 // sourceRule is the rule this machine holds a frozen source to.
 func (m *Machine) sourceRule() sourceRule {
-	return sourceRule{prefix: m.SecretsPrefix, second: m.SecondPrefix}
+	return sourceRule{prefix: m.SourcePrefix, second: m.SecondSourcePrefix}
 }
 
 // counts reports whether frozen counts as served. Equal sources count. With a second prefix set,
@@ -597,6 +599,10 @@ func (m *Machine) sourceRule() sourceRule {
 // a stored source against a minted one or the reverse, and one under the configured prefix where
 // the policy serves the second's, since the policy lists under the configured prefix alone. Such a
 // source no longer names the secret the policy decides about, so its grant ends (sourceMoved).
+//
+// The two prefixes are the store's source prefixes, so a store whose sources carry a lead of their
+// own before the secret's name (the memory store's memory:<name>) is compared from where its name
+// begins, whatever the prefix spells: the rule never looks for a prefix inside a source.
 func (r sourceRule) counts(frozen, served string) bool {
 	if frozen == served {
 		return true

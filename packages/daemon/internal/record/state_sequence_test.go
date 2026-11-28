@@ -9,6 +9,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -233,7 +234,7 @@ func TestStateEventsTakeTheirSequenceInCommitOrder(t *testing.T) {
 	testwait.Eventually(t, "the second commit to wait on the counter row's lock", func() bool {
 		var waiting bool
 		if err := st.Pool().QueryRow(ctx, `select exists (select 1 from pg_stat_activity
-			where pid = $1 and wait_event_type = 'Lock')`, pid).Scan(&waiting); err != nil {
+			where pid = $1 and `+lockwaittest.Waiting+`)`, pid).Scan(&waiting); err != nil {
 			t.Fatalf("read whether the second commit waits on a lock: %v", err)
 		}
 		return waiting

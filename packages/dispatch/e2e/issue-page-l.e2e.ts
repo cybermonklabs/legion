@@ -19,6 +19,7 @@ import {
   createProject,
   getArtifactBlocks,
   getIssueEvents,
+  getMessage,
   getMyState,
   listComments,
 } from "./api";
@@ -80,6 +81,7 @@ import {
   sendWithKeys,
   wordsInField,
 } from "./issue-page-l";
+import { focusedNodeFacts, historyItem, historyPanel } from "./issue-page-m";
 import { withIssuePage } from "./issue-page-option";
 import { runClockUntil, watchWrites } from "./keyed-writes";
 import { commentWithBody } from "./margin-helpers";
@@ -96,8 +98,8 @@ import { asUser } from "./users";
  * marks on one row (`r-current-point` of the spec). Row (11) is R13's half of c-outline-focus that
  * the reader causes, beside the row of `issue-page-i.e2e.ts` for the other half. A reading that a
  * check owes on a part not yet under this part's head is a row of its own beside its check's
- * rows, skipped with an annotation naming that part and tagged `@owed`: four of c-replies, one of
- * c-box, one of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
+ * rows, skipped with an annotation naming that part and tagged `@owed`: two of c-replies, one
+ * of c-mark, two of c-statement-reply, (9) among them, and one of the current point.
  *
  * The rows are on the real stack, each through `phase` (a reset database, alice signed in,
  * the new page turned on with `withIssuePage`): every row but (11), which writes nothing, writes
@@ -747,33 +749,46 @@ test.skip("what the reader sends from the box past the first 50 rows is drawn, i
   });
 });
 
-// c-replies (3), owed on part M (root R15, decision 127): a reply from the panel's history to a
+/** The id of the reply whose words are `words` that Dispatch holds to message `turn` of issue
+ *  `key`, once it holds one: a reply to a message is a message (`send-request.ts`), which the
+ *  root's read lists among its replies with `in_reply_to` naming the turn it answers. */
+async function replyToMessage(key: string, turn: string, words: string): Promise<string> {
+  const read = async () =>
+    ((await getMessage(key, turn)).replies ?? []).find(
+      (one) => one.body === words && one.in_reply_to === turn
+    )?.id;
+  await expect
+    .poll(read, { message: `Dispatch holds no reply "${words}" to message ${turn}` })
+    .toBeDefined();
+  const id = await read();
+  if (id === undefined) throw new Error(`Dispatch holds no reply "${words}" to message ${turn}`);
+  return id;
+}
+
+// c-replies (3), part M's reading (root R15, decision 127): a reply from the panel's history to a
 // turn of a thread the Legion daemon began lands in the history, under that turn, on screen and
-// focused, and the outline draws no row of it. Until part M is under this part's head the panel
-// draws no history with a Reply, so the reading is skipped with an annotation naming M and tagged
-// `@owed`, which the check's run leaves out (decision 135). The round that brings M under the
-// head takes the skip and the tag off.
-test.skip("what the reader sends from the box as a reply to a turn of the daemon's thread is drawn in the panel's history under that turn @owed", {
-  annotation: {
-    description:
-      "Owed on part M (decision 127): the panel's history and its Reply come with part M, so this reading is skipped until M is under this part's head.",
-    type: "owed",
-  },
-}, async ({ browser }) => {
+// focused, and the outline draws no row of it. The daemon writes as the session of its project
+// (`daemonOf`), which is what puts its thread in the history (`agents-only.ts`).
+test("what the reader sends from the box as a reply to a turn of the daemon's thread is drawn in the panel's history under that turn", async ({
+  browser,
+}) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
     await openDetails(page);
-    const turn = panelEntry(page, seeded.daemon.words);
+    const turn = historyItem(page, seeded.daemon.id);
     await expect(turn, "the panel's history draws no turn of the daemon's thread").toHaveCount(1);
-    await turn.getByRole("button", { exact: true, name: CONTROL_LABELS.reply }).click();
+    await turn.locator(`[data-history-reply="${seeded.daemon.id}"]`).click();
     await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
     const words = "A reply to the daemon's turn, from the history.";
     await sendFromComposer(page, words);
-    const reply = panelEntry(page, words);
+    const sent = await replyToMessage(seeded.key, seeded.daemon.id, words);
+    const reply = historyItem(page, sent);
     await expect(reply, "the reply is not drawn in the panel's history").toBeVisible();
     await expect(
-      turn.filter({ hasText: words }),
+      historyPanel(page)
+        .locator(`[data-history-entry="thread:${seeded.daemon.id}"]`)
+        .locator(`[data-history-item="${sent}"]`),
       "the reply is not drawn under the daemon's turn in the history"
     ).toHaveCount(1);
     await expect
@@ -789,20 +804,13 @@ test.skip("what the reader sends from the box as a reply to a turn of the daemon
   });
 });
 
-// c-replies (3), owed on parts M and T (root R1 and R15, decision 127): a reply from the panel's
-// history to an agent's comment tied to no text, in a thread no person wrote in, makes that thread
-// a person's, so the outline draws the comment with the reply under it, on screen and focused.
-// Until M's history with its Reply and T's outline are both under this part's head, the reading
-// is skipped with an annotation naming M and T and tagged `@owed`, which the check's run leaves
-// out (decision 135). The round that brings the second of them under the head takes the skip and
-// the tag off.
-test.skip("what the reader sends from the box as a reply to an agent's comment in the panel's history is drawn in the conversation under it @owed", {
-  annotation: {
-    description:
-      "Owed on parts M and T (decision 127): the panel's history and its Reply come with part M, and the outline that then draws the agent's comment with T, so this reading is skipped until both are under this part's head.",
-    type: "owed",
-  },
-}, async ({ browser }) => {
+// c-replies (3), part M's reading (root R1 and R15, decisions 127 and 573): a reply from the
+// panel's history to an agent's comment tied to no text, in a thread no person wrote in, makes
+// that thread a person's, so the outline draws the comment with the reply under it, on screen
+// and focused.
+test("what the reader sends from the box as a reply to an agent's comment in the panel's history is drawn in the conversation under it", async ({
+  browser,
+}) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
     await gotoIssue(page, `/issues/${seeded.key}/conversation`);
     await expectIssuePageDrawn(page);
@@ -811,9 +819,9 @@ test.skip("what the reader sends from the box as a reply to an agent's comment i
       "the outline draws the agent's comment before a person wrote in its thread"
     ).toHaveCount(0);
     await openDetails(page);
-    const turn = panelEntry(page, seeded.agent.words);
+    const turn = historyItem(page, seeded.agent.id);
     await expect(turn, "the panel's history draws no agent's comment").toHaveCount(1);
-    await turn.getByRole("button", { exact: true, name: CONTROL_LABELS.reply }).click();
+    await turn.locator(`[data-history-reply="${seeded.agent.id}"]`).click();
     await expect(composerTarget(page), "the history's Reply draws no target line").toBeVisible();
     const words = "A reply to the agent's comment, from the history.";
     await sendFromComposer(page, words);
@@ -1355,48 +1363,66 @@ test("the box at the foot is never drawn in Threads, and Conversation draws it a
   });
 });
 
-// c-box, the half owed on INFRA-3948 (decision 127): the panel's Reply on a turn of its history
-// and its Edit on the reader's own comment set no target in Threads, and Conversation opened
-// after them draws the box at rest, with no target line. Until INFRA-3948 is under this part's
-// head Details draws no history and no focused node (`DetailsHistory` and `DetailsFocusedNode`
-// in `details-more.tsx` draw nothing), so the panel has neither control, and the reading is
-// skipped with an annotation naming that part and tagged `@owed`, which the check's run leaves
-// out (decision 135). The round that brings INFRA-3948 under the head takes the skip and the tag
-// off.
-test.skip("the box at the foot is never drawn in Threads, and the panel's Reply or Edit there sets no target @phone @owed", {
-  annotation: {
-    description:
-      "Owed on dispatch://INFRA-3948 (decision 127): Details draws no history and no focused node until that part is under this part's head (DetailsHistory and DetailsFocusedNode in details-more.tsx draw nothing), so the panel has no Reply on a turn of its history and no Edit, and this reading is skipped until then.",
-    type: "owed",
-  },
-}, async ({ browser }) => {
+// c-box, the half that waited on INFRA-3948 (decision 127): Threads mounts no box at the foot, so
+// under Threads Details draws neither control that would aim it - no Reply on a turn of its
+// history and no Edit in its facts of the focused row (`threads-open.ts`) - and Conversation
+// opened after Threads draws the box at rest, with no target line. Each control's absence is
+// read where it would stand, on a turn and in facts the row first finds drawn. The turn is the
+// daemon's, of Details' history. The facts are the reader's own comment's, which a person wrote,
+// so it is a row of the outline and no turn of the history. Threads draws no outline, so the focus
+// is put on that row in Conversation, Threads is opened with the focus still on it, and the facts
+// keep it. INFRA-3948's history and focused node in Details are under this part's head.
+test("the box at the foot is never drawn in Threads, and under Threads Details draws no Reply or Edit, so nothing sets a target @phone", async ({
+  browser,
+}) => {
   await phase(browser, seedHistoryTurns, async (page, seeded) => {
     for (const size of [DESKTOP, PHONE]) {
       const at = `at ${size.width}x${size.height}`;
       await page.setViewportSize({ height: size.height, width: size.width });
       await gotoIssue(page, `/issues/${seeded.key}/conversation`);
       await expectIssuePageDrawn(page);
-      await pickPreset(page, THREADS);
+      await focusRow(page, seeded.own.id);
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the reader's own comment did not take the focus ${at}`,
+        })
+        .toBe(seeded.own.id);
+      // The facts stay the row's only while the focus leaves the outline for nothing but Details
+      // or the box at the foot (`IssueTree.tsx`'s `useReleaseFocus`). From 1280 px a toggle of the
+      // view row takes no focus on its press; below it the row's one control opens a menu that
+      // takes the focus (`IssuePresets.tsx`), so on a phone Threads is opened by `t t`, which
+      // leaves the focus on the row (`useIssueKeymap.ts`).
+      if (size === PHONE) {
+        await page.keyboard.press("t");
+        await page.keyboard.press("t");
+      } else {
+        await pickPreset(page, THREADS);
+      }
       await expectActivePreset(page, THREADS);
+      await expect(composer(page), `the box at the foot is drawn in Threads ${at}`).toHaveCount(0);
       await openDetails(page);
-      await panelEntry(page, seeded.daemon.words)
-        .getByRole("button", { exact: true, name: CONTROL_LABELS.reply })
-        .click();
-      // The press's handler and the render it asks for are done within these frames, so a box
-      // the press aimed would be drawn by their end.
-      await nextFrames(page);
       await expect(
-        composer(page),
-        `the panel's Reply on a turn of the history drew the box in Threads ${at}`
+        focusedNodeFacts(page),
+        `Details draws no facts in Threads, so the row proves nothing ${at}`
+      ).toBeVisible();
+      await expect(
+        focusedNodeFacts(page),
+        `Details' facts in Threads are not the reader's own comment's, so the row proves nothing ${at}`
+      ).toHaveAttribute("data-focused-node", seeded.own.id);
+      await expect(
+        focusedNodeFacts(page).getByRole("button", { exact: true, name: CONTROL_LABELS.edit }),
+        `Details' facts of the reader's own comment draw Edit in Threads ${at}`
       ).toHaveCount(0);
-      await panelEntry(page, seeded.own.words)
-        .getByRole("button", { exact: true, name: CONTROL_LABELS.edit })
-        .click();
-      // The same frames, for the Edit's press.
-      await nextFrames(page);
       await expect(
-        composer(page),
-        `the panel's Edit on the reader's own comment drew the box in Threads ${at}`
+        panelEntry(page, seeded.daemon.words),
+        `Details' history draws no turn of the daemon's in Threads, so the row proves nothing ${at}`
+      ).toBeVisible();
+      await expect(
+        panelEntry(page, seeded.daemon.words).getByRole("button", {
+          exact: true,
+          name: CONTROL_LABELS.reply,
+        }),
+        `a turn of Details' history draws Reply in Threads ${at}`
       ).toHaveCount(0);
       await closeDetails(page);
       await pickPreset(page, PRESET_NAMES.conversation);
@@ -1408,7 +1434,7 @@ test.skip("the box at the foot is never drawn in Threads, and the panel's Reply 
       ).toBeVisible();
       await expect(
         composerTarget(page),
-        `the panel's Reply or Edit in Threads set a target the box draws in Conversation ${at}`
+        `Conversation after Threads draws a target line in the box ${at}`
       ).toHaveCount(0);
     }
   });
