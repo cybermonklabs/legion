@@ -7,7 +7,7 @@ in the workflow file, or, for a value the proof job's matrix carries, in the com
 
 ## The proof step's own limit
 
-`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and twenty-one of the twenty-eight hosted scripts
+`Run the proof` runs `bash "scripts/e2e/$SCRIPT"`, and twenty-two of the twenty-nine hosted scripts
 source `scripts/e2e/lib/live-daemon-proof.sh`, whose `live_daemon_proof` installs nats-server with
 `go install` through `.github/scripts/ci-retry.sh` at the 180 s module bound,
 5 x 180 + 150 = 1050 s; `scripts/e2e/dispatch-session-settings.sh` retries the same install the
@@ -28,7 +28,8 @@ Each row's measured figure is the one its `timeout_minutes` starts from (the com
 
 - Sourcing `lib/live-daemon-proof.sh`, and calling `live_daemon_proof` once: behind-entry-fence.sh,
   child-adoption.sh, claim-compaction.sh, conflict-merger.sh, conflict-no-takeover.sh,
-  experiment.sh, handoff-records.sh, late-completion.sh, merge-wait-readable.sh, owner-steps.sh,
+  experiment.sh, handoff-records.sh, late-completion.sh, left-session-claims.sh,
+  merge-wait-readable.sh, owner-steps.sh,
   parent-waits.sh, plan-ratings.sh, provider-error-retry.sh, register-gate-basis.sh,
   review-range.sh, role-prompt-rule.sh, step-records.sh and sub-architect.sh at 25 minutes,
   1500 + 1050 = 2550 s -> 43 min,
@@ -80,7 +81,16 @@ install-jj (the checkout, setup-bun and the workspace install) plus install-jj's
 rows has measured them yet. refusal-fallback-omp.sh, at 30 minutes with its `jj` false and its
 `bun` true, now carries setup-bun's 1800 + 3416 = 5216 s -> 87 min over 31; its second sum, the
 checkout plus setup-bun's 57 minutes, 3420 s, would be the larger only if the checkout took more
-than 1796 s (dispatch://INFRA-1545).
+than 1796 s (dispatch://INFRA-1545). Main's #5908's left-session-claims.sh row, added with its
+measured 25 minutes alone and no `run_timeout_minutes`, with its `jj` and `bun` true, is priced
+from its own runs: its proof step took 223 s, 254 s and 276 s in jobs 140754719674, 140770344296
+and 140764142639 of the dispatched e2e.yaml runs 46073142788, 46078010645 and 46075998061
+(2026-11-27), so the 1500 s main gave it is 5.4 times its slowest run. It sources
+`lib/live-daemon-proof.sh`, and the hosted run calls `live_daemon_proof` once: its second call
+is the `--base-commit` control's, which the job does not pass. So the step carries
+1500 + 1050 = 2550 s -> 43 min, and the job carries install-jj's 1500 + 3866 = 5366 s -> 90 min.
+Its second sum is the smaller: the steps before install-jj took 35 s, 39 s and 42 s in those jobs,
+and 42 + 3900 = 3942 s (dispatch://INFRA-1545, round 81).
 
 Every figure here is derived by hand. What holds them is
 `.github/scripts/select-e2e-proofs.sh`, which refuses a row whose `run_timeout_minutes` is
