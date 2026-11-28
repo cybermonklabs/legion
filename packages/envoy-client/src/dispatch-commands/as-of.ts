@@ -96,6 +96,7 @@ export const ABSENT_FIELD_WORDS: Readonly<Record<string, string>> = {
   last_seen: "when the claim's holder was last seen",
   takeable_at: "when another session may take the claim",
   design_gates: "the design gates",
+  pull_request: "the pull request",
   referenced_by_count: "how many nodes reference each item now",
   "components/ids": "the component ids",
   "components/unknown": "the unknown components",

@@ -62,8 +62,11 @@ func refuseThreadPageAtCut(w http.ResponseWriter, r *http.Request) bool {
 // documents of an approval request whose newest event at the cut holds none (reason B,
 // approvalAtTheCut), and the open asks what the records at the cut do not give of them
 // (askFieldsAtTheCut). trees is whether the read carries display trees.
+// It leaves out pull_request too, which readIssue does not read at a cut: pull_request_heads keeps
+// only each pull request's present state.
 func (s *server) issueAtTheCut(ctx context.Context, read *issueDetail, trees bool) error {
 	leaveOut(ctx, "/design_gates", "/"+model.ReferencedByCountKey)
+	leaveOut(ctx, "/pull_request")
 	leaveOutRouteReach(ctx, read.Route, "")
 	if issueClaimSession(read.Claim) != "" {
 		leaveOut(ctx, "/holder_state", "/last_seen", "/takeable_at")

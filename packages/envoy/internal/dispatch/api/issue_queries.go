@@ -1207,17 +1207,18 @@ func (s *server) readIssue(ctx context.Context, who model.Actor, key string, tre
 	first.Queue(issueCommentCountStatement, key).QueryRow(func(row pgx.Row) error {
 		return row.Scan(&read.CommentCount)
 	})
-	// An issue no pull request is attributed to answers no row, which the read leaves without one
-	// (getIssue's batch 1 says why the callback answers nil for it).
-	first.Queue(issuePullRequestStatement, key).QueryRow(func(row pgx.Row) error {
-		pullRequest, err := scanIssuePullRequest(row)
-		if errors.Is(err, pgx.ErrNoRows) {
-			return nil
-		}
-		read.PullRequest = pullRequest
-		return err
-	})
 	if _, atCut := asof.CutFrom(ctx); !atCut {
+		// pull_request_heads keeps only each pull request's present state, so a read at a cut does
+		// not read it. An issue no pull request is attributed to answers no row, which the read
+		// leaves without one (getIssue's batch 1 says why the callback answers nil for it).
+		first.Queue(issuePullRequestStatement, key).QueryRow(func(row pgx.Row) error {
+			pullRequest, err := scanIssuePullRequest(row)
+			if errors.Is(err, pgx.ErrNoRows) {
+				return nil
+			}
+			read.PullRequest = pullRequest
+			return err
+		})
 		first.Queue(issueDesignGatesStatement, key, model.GatedStepsKnown).Query(func(rows pgx.Rows) error {
 			scanned, err := scanIssueDesignGates(rows)
 			read.DesignGates = scanned

@@ -85,6 +85,7 @@ func TestAPastTimeAnswerNamesItsCutAndItsAbsentFields(t *testing.T) {
 		"/route_status", "/route_holder", "/route_status_reason", "/holder_state", "/last_seen", "/takeable_at",
 		"/design_gates", "/referenced_by_count",
 		"/open_asks/*/referenced_by_count", "/open_asks/*/revision", "/open_asks/*/options/*/id",
+		"/pull_request",
 	})
 	if named := response.Header().Get(contracts.DispatchAsOfAbsentHeader); named != want {
 		t.Errorf("%s = %q, want %q", contracts.DispatchAsOfAbsentHeader, named, want)

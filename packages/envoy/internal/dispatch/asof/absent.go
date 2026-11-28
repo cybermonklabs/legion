@@ -26,6 +26,8 @@ const (
 	reasonComponents = "This field comes from the present component model. The model keeps no history."
 	// E
 	reasonNoEvent = "No event records this field."
+	// E, for the pull request attributed to an issue.
+	reasonPullRequest = "pull_request_heads keeps only the present state of each pull request, so no record gives the pull request attributed to the issue at the cut."
 	// E, for a delivery attempt.
 	reasonDeliveryState = "No receipt event or reply event gives the time of the state of this delivery attempt."
 	// E, for a session's answers.
@@ -111,6 +113,7 @@ var AbsentFields = map[string][]AbsentField{
 		{"/last_seen", reasonLiveness},
 		{"/takeable_at", reasonLiveness},
 		{"/design_gates", reasonNoEvent},
+		{"/pull_request", reasonPullRequest},
 		{"/referenced_by_count", reasonGraph},
 		{"/open_asks/*/referenced_by_count", reasonGraph},
 		{"/components/ids", reasonComponents},

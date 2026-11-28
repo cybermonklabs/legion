@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -194,6 +195,31 @@ func TestIssueDetailsPullRequest(t *testing.T) {
 			pullRequestHead{repo: repo, number: 51, state: "merged", issue: key, url: address(repo, 51), eventAt: at(1), mergedAt: mergedAt},
 		)
 		wantPullRequest(t, handler, key, repo, 51, "merged", address(repo, 51))
+	})
+
+	t.Run("at a past time the read leaves pull_request out and names it in Dispatch-As-Of-Absent, though a pull request is attributed now", func(t *testing.T) {
+		handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
+		createReferenceAPIProject(t, handler, "PULL")
+		key := createOutcomeIssue(t, handler, "PULL", "Work with an open pull request at a cut")
+		const repo, number = "acme/at-cut", 52
+		url := address(repo, number)
+		writePullRequestHeads(t, database, pullRequestHead{
+			repo: repo, number: number, state: "open", issue: key, url: url, eventAt: at(0),
+		})
+		settleServed(t, served)
+		cut := databaseCut(t, database)
+
+		response := dispatchRequest(t, handler, http.MethodGet, withAsOf(t, "/api/v1/issues/"+key, cut), nil, "alice")
+		if response.Code != http.StatusOK {
+			t.Fatalf("the issue read at the cut: status=%d body=%s", response.Code, response.Body.String())
+		}
+		if got, held := decodeBody[map[string]any](t, response)["pull_request"]; held {
+			t.Errorf("the issue read at the cut carries pull_request %v, want no field", got)
+		}
+		if absent := response.Header().Get(contracts.DispatchAsOfAbsentHeader); !slices.Contains(absentPointers(absent), "/pull_request") {
+			t.Errorf("%s = %q, want it to name /pull_request", contracts.DispatchAsOfAbsentHeader, absent)
+		}
+		wantPullRequest(t, handler, key, repo, number, "open", url)
 	})
 
 	t.Run("a pull request with no stored address reads https://github.com/<repo>/pull/<number>", func(t *testing.T) {
