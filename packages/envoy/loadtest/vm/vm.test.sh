@@ -152,13 +152,23 @@
 # It runs one part at a time, from packages/envoy: `bash loadtest/vm/vm.test.sh <part>` runs the
 # shared setup and that part's cases in a temporary directory of its own, so parts run beside each
 # other. A part is a run of whole groups in this file's order, a group being the cases from one
-# top-level reset_fake to the next, and its function part_<name> holds them; no part reads anything
-# another part made, only the shared setup. `vm.test.sh --parts` prints the parts, one a line; no
-# argument, or a name that is no part, exits 2 before the setup. This loop runs every part, each
-# alone, and fails when any part fails (in a subshell or a script, since it exits), which is what
-# CI's fourteen pool entries do (.github/workflows/ci-job-envoy-go-checks.yaml):
+# top-level reset_fake or restore_up to the next, and its function part_<name> holds them; no part
+# reads anything another part made, only the shared setup. `vm.test.sh --parts` prints the parts,
+# one a line; no argument, or a name that is no part, exits 2 before the setup. This loop runs every
+# part, each alone, and fails when any part fails (in a subshell or a script, since it exits), which
+# is what CI's fourteen pool entries do (.github/workflows/ci-job-envoy-go-checks.yaml):
 #
 #   rc=0; for p in $(bash loadtest/vm/vm.test.sh --parts); do bash loadtest/vm/vm.test.sh "$p" || rc=1; done; exit "$rc"
+#
+# Fifteen groups read what follows an up rather than the up itself, and start from restore_up
+# instead of an up of their own: the state an up of the deployment file this test writes ($config)
+# leaves, copied once per part from one real up and put back for each such group. What it leaves
+# out is the stub embedder that up started, which the copy is made without, so no stub embedder
+# runs after a restore. The cases that check what up itself did -- what it starts, mounts, imports
+# and writes, a second up over the first, an up refused -- still run their own up, as do the series
+# case, whose part restores nothing else, and case (w), which compares the store's mode with the
+# one an up under umask 022 left; and the first case of part check-reset holds the copy to a fresh
+# up, path by path and byte by byte.
 set -euo pipefail
 # Nothing here is read from this test's own standard input, and the fake ssh reads a pipe it is
 # given as ssh does, so the suite runs with /dev/null under it: whatever the caller's standard
@@ -1293,6 +1303,55 @@ credential_read() {
   awk -F'\t' -v c="$1" -v f="$2" '$1 == c && $2 == f { print $3 "\t" $4 "\t" $5; exit }' "$fake/credentials.log"
 }
 
+# restore_up: the state one `vm.sh up --config "$config"` leaves, put back -- the fakes' directory,
+# the run root, the machines' directories and that up's output in $tmp/out -- with RC 0, for a case
+# that reads what follows an up rather than the up itself. Its first call in a part makes the copy,
+# $tmp/snap, from one real up, and every call, that first one too, removes the three trees and
+# copies them back from it. The copy is made inside the part's own process, under that part's own
+# $tmp and umask, so its absolute paths are the part's own and its modes are the ones the part's
+# own up would leave.
+#
+# What it leaves out is the stub embedder that up started. The fake stub serves while $FAKE_DIR
+# exists and $FAKE_DIR/stub-port names its pid (the fake `loadgen stub-embed`), and vm.sh's
+# stub_embed_stop TERMs the pid in stub-embed.pid: a copy that named a live stub would race it
+# across each restore's removal and copy, and a copy that named an ended one would have a later
+# down or second up signal whatever process holds that pid then. So the copy is made once that
+# stub has ended, its own release having removed stub-port, and with the pid file emptied: a
+# restored deployment has no stub running, stub_embed_stop signals no one, and a new stub claims
+# the port at its first check. The stub is a process this test started, so the wait for its end
+# reads its /proc entry by its pid rather than looking for it with ps or pgrep (docs/testing.md);
+# a zombie, state Z there, has exited and waits only for its parent to reap it.
+restore_up() {
+  local pid stat state waited=0
+  if [ ! -d "$tmp/snap" ]; then
+    reset_fake
+    run_vm up --config "$config"
+    ((RC == 0)) || fail "the up whose state restore_up copies for this part failed: see the output above"
+    pid=$(cat "$remote/work/stub-embed.pid")
+    [[ $pid =~ ^[0-9]+$ ]] ||
+      fail "the up restore_up copies recorded no stub embedder pid in $remote/work/stub-embed.pid: '$pid'"
+    kill -TERM "$pid" 2>/dev/null || true
+    while :; do
+      stat=""
+      read -r stat 2>/dev/null <"/proc/$pid/stat" || true
+      state=${stat##*") "}
+      [ -n "$stat" ] && [ "${state%% *}" != Z ] || break
+      ((waited < 200)) ||
+        fail "the stub embedder of the up restore_up copies, pid $pid, was still running 10 s after its TERM"
+      "$REAL_SLEEP" 0.05
+      waited=$((waited + 1))
+    done
+    [ ! -e "$fake/stub-port" ] ||
+      fail "the stub embedder of the up restore_up copies, pid $pid, ended and left $fake/stub-port, which its release removes"
+    : >"$remote/work/stub-embed.pid"
+    mkdir -- "$tmp/snap"
+    cp -a -- "$fake" "$tmp/root" "$remote" "$tmp/out" "$tmp/snap/"
+  fi
+  rm -rf -- "$fake" "$tmp/root" "$remote"
+  cp -a -- "$tmp/snap/fake" "$tmp/snap/root" "$tmp/snap/remote" "$tmp/snap/out" "$tmp/"
+  RC=0
+}
+
 # Part up: groups 1 to 3, sections (a), (b) and (c), and the harness's own command line.
 part_up() {
 # ---- (a) every subcommand refuses a missing or unreadable --config --------------------------------
@@ -1423,13 +1482,106 @@ cli_refused 'the unknown part no-such-part' "$tmp/tmpdir-unknown" no-such-part
 pass "vm.test.sh with no part, or with an unknown one, exits 2 before its setup, naming every part that --parts prints"
 }
 
-# Part check-reset: groups 4 to 7, sections (d), (e) and (f).
+# Part check-reset: the copy restore_up makes, held to a fresh up, then groups 4 to 7, sections (d),
+# (e) and (f).
 part_check_reset() {
-# ---- (d) and (e) check ----------------------------------------------------------------------------
+# ---- the state restore_up puts back is the one a fresh up leaves ----------------------------------
 
+# Fifteen groups of the parts read what follows an up rather than the up itself, and run restore_up
+# in its place: the state one up of $config left, copied once per part and put back. This case,
+# whose restore_up is its part's first and so makes the copy, holds that copy to a fresh up of the
+# same file, path by path and byte by byte. Each up makes a run id and an OS Login keypair of its
+# own, so up_manifest writes a token for each wherever it appears, and in the few files that differ
+# by more -- a time, a mktemp name, how many times up asked for the stub's certificate -- that one
+# thing is a placeholder or left out and the rest of the file is still compared. The one difference
+# restore_up makes by design, the stub embedder it ends, is asserted rather than compared: no
+# stub-port, an empty pid file and no stub of the copy running. And an up that wrote anywhere under
+# $tmp but the trees restore_up puts back would leave there what no restore puts back, so the case
+# lists those paths on both sides of the fresh up.
+
+# up_manifest: every path under $fake, $tmp/root and $remote, relative to $tmp, with its type and
+# its octal mode, in the C locale's order, each regular file followed by its bytes, every line of
+# them led by its path so that a difference names its file. The run id ($LOADTEST_VM_ROOT/current),
+# the run's OS Login private key and its public key are tokens wherever they appear, in paths and
+# in bytes, the keys first, since the public key's comment is the run id. stub-port and the stub's
+# pid file are left out: the case asserts them instead.
+up_manifest() {
+  local run key pub nl=$'\n' asks name type mode path text
+  run=$(cat "$LOADTEST_VM_ROOT/current")
+  key=$(cat "$(run_dir)/oslogin")
+  pub=$(cat "$(run_dir)/oslogin.pub")
+  [ -n "$run" ] && [ -n "$key" ] && [ -n "$pub" ] ||
+    fail "the manifest's up left no run id, OS Login private key or public key under $LOADTEST_VM_ROOT"
+  # up asks the load machine over ssh whether the stub embedder has written its certificate, and
+  # after each no sleeps 2 s and asks again. The stub starts in the background, so how many asks
+  # that takes is the race between its start and up's next ssh: in a pod run of this case one up
+  # asked once and the next twice. An ask before the last is a line of ssh.log that the next line
+  # repeats, and asks, a sed script, keeps only the last line of each such run.
+  asks="\$!N;/^(.*'test -s \"[\$]1\"' 'sh' '[^']*\\/stub-embed\\.pem')\\n\\1\$/!P;D"
+  while IFS=$'\t' read -r name type mode; do
+    case $name in
+      fake/stub-port | remote/work/stub-embed.pid) continue ;;
+    esac
+    printf '%s\t%s\t%s\n' "$name" "$type" "$mode"
+    [ "$type" = f ] || continue
+    path=$tmp/${name//"<run>"/$run}
+    # A file of the case's list has the one thing that differs replaced or left out, and the rest
+    # of it read; text ends in a dot, which keeps the file's last newlines through the $(...).
+    case $name in
+      # fake/curl.argv and fake/import.log: the import's expirationTimeUsec, its second plus 24 h.
+      fake/curl.argv | fake/import.log) text=$(sed -E 's/("expirationTimeUsec": )"[0-9]+"/\1"<time>"/' "$path"; printf .) ;;
+      # fake/psql.passfile: the name of each passfile, which mktemp makes at random on each call.
+      fake/psql.passfile) text=$(sed -E 's/\.pgpass\.[[:alnum:]]{6,}/.pgpass.<name>/g' "$path"; printf .) ;;
+      # root/<run>/oslogin.imported: its whole content, the epoch second of the key's import.
+      'root/<run>/oslogin.imported') text=$(sed -E 's/^[0-9]+$/<time>/' "$path"; printf .) ;;
+      # root/<run>/state.json: the run's "started", the time up made the run.
+      'root/<run>/state.json') text=$(sed -E 's/("started": )"[^"]*"/\1"<time>"/' "$path"; printf .) ;;
+      # fake/actions.log: each ask for the stub's certificate before the last, with its sleep.
+      fake/actions.log) text=$(sed -E '/\tsh -c test -s "[$]1" sh .*\/stub-embed\.pem$/{N;/\nsleep\t2$/d}' "$path"; printf .) ;;
+      # fake/ssh.log: each ask for the stub's certificate before the last.
+      fake/ssh.log) text=$(sed -E "$asks" "$path"; printf .) ;;
+      # fake/ssh.words: the line of each such ask, one a call as in ssh.log, beside its line there.
+      fake/ssh.words) text=$(paste "$path" "$fake/ssh.log" | sed -E "$asks" | cut -f1; printf .) ;;
+      *) text=""; IFS= read -r -d '' text <"$path" || true; text+=. ;;
+    esac
+    text=${text%.}
+    text=${text//"$key"/"<key>"}
+    text=${text//"$pub"/"<pub>"}
+    text=${text//"$run"/"<run>"}
+    printf '%s: %s\n' "$name" "${text//"$nl"/"$nl$name: "}"
+  done < <(cd -- "$tmp" && find fake root remote -printf '%p\t%y\t%m\n' | sed "s/$run/<run>/g" | LC_ALL=C sort)
+}
+
+# outside_restore: every path under $tmp that restore_up neither puts back nor is -- all but the
+# three trees, $tmp/out and $tmp/snap -- relative to $tmp, one a line, in the C locale's order.
+outside_restore() {
+  (cd -- "$tmp" && find . -mindepth 1 \( -path ./fake -o -path ./root -o -path ./remote -o -path ./out -o -path ./snap \) -prune -o -printf '%P\n') |
+    LC_ALL=C sort
+}
+
+restore_up
+[ ! -e "$fake/stub-port" ] || fail "a restored up names a stub embedder in $fake/stub-port: $(cat "$fake/stub-port")"
+[ -f "$remote/work/stub-embed.pid" ] && [ ! -s "$remote/work/stub-embed.pid" ] ||
+  fail "a restored up holds no empty $remote/work/stub-embed.pid, so a later down or second up would TERM the pid it names"
+left=$(pgrep -af -- "$remote/app/loadgen stub-embed" | tr '\n' ';' || true)
+[ -z "$left" ] || fail "the stub embedder of the copy restore_up made runs after a restore: $left"
+up_manifest >"$tmp/manifest-restored"
+beside=$(outside_restore)
 reset_fake
 run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the check cases"
+((RC == 0)) || fail "the fresh up a restored one is held to failed: see the output above"
+added=$(LC_ALL=C comm -13 <(printf '%s\n' "$beside") <(outside_restore))
+[ -z "$added" ] || fail "the fresh up wrote under $tmp outside the trees restore_up puts back, where no restore puts it back: $added"
+up_manifest >"$tmp/manifest-fresh"
+if ! difference=$(diff -u --label restored --label fresh -- "$tmp/manifest-restored" "$tmp/manifest-fresh"); then
+  fail "a restored up differs from a fresh one (- restored, + fresh):
+$difference"
+fi
+pass "a restored up holds every path, mode and byte a fresh up leaves but for its run id, its key and the files the case lists, and no stub embedder of the copy runs"
+
+# ---- (d) and (e) check ----------------------------------------------------------------------------
+
+restore_up
 run_vm check --config "$config"
 ((RC == 0)) || fail "check failed on a deployment that matches the specification"
 grep -q '^| check | expected | found | ok |$' "$tmp/out" || fail "check printed no table header"
@@ -1465,9 +1617,7 @@ grep -q '^| dispatch name cpu memory image (app VM) | /dispatch 16000000000 3435
 grep -q 'of the readings differ' "$tmp/out" || fail "check does not say how many readings differ"
 pass "check exits non-zero and names the row when a container's memory differs"
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the production-address case"
+restore_up
 printf '0\n' >"$fake/nc/10.139.0.2-5432"
 run_vm check --config "$config"
 ((RC != 0)) || fail "check exited 0 while a production address answered from a VM"
@@ -1485,9 +1635,7 @@ pass "check exits non-zero when a VM's maxRunDuration is not 259200 s"
 
 # ---- (f) reset ------------------------------------------------------------------------------------
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the reset case"
+restore_up
 seeded_run
 : >"$fake/actions.log"
 run_vm reset --config "$config"
@@ -1516,9 +1664,7 @@ jq -e '.seconds >= 0 and (.started | length) > 0 and (.ended | length) > 0' "$re
 [ "$(jq -r .template "$record")" = dispatch_seed ] || fail "reset's record does not name the template"
 pass "reset records its duration and its steps"
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the template case"
+restore_up
 printf '{"finished": "x"}\n' >"$(run_dir)/seed.json"
 run_vm reset --config "$config"
 ((RC != 0)) || fail "reset ran without the template database"
@@ -1567,9 +1713,7 @@ reset_over_sessions() {
 reset_deployment $fn_run_dir/reset-sessions.json"
 }
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the attached-sessions case"
+restore_up
 seeded_run
 
 attach_sessions dispatch 274
@@ -1625,9 +1769,7 @@ pass "a drop the instance refuses even so refuses the reset by name, with the se
 
 # The seed's rename of that same database runs into the same sessions, and clears them the same
 # way: it is the database the containers were attached to, renamed to the template.
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the seed's rename case"
+restore_up
 attach_sessions dispatch 31
 : >"$fake/terminate.log"
 run_fn DB_FREE_SECONDS=6 DB_FREE_POLL_SECONDS=2 DB_TERMINATED_SECONDS=4 eval 'seed_template dispatch_seed'
@@ -1694,9 +1836,7 @@ check_run_flags() {
   done
 }
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the step case"
+restore_up
 seeded_run
 run_vm step --config "$config" 2x 2 --duration 10m
 ((RC == 0)) || fail "step failed: see the output above"
@@ -1884,9 +2024,7 @@ pass "a route_mix naming a file this pod does not hold refuses the step before a
 # reads duplicated per-container CPU for it -- the numbers the report's per-step CPU rows are
 # made of. Nothing in a step's own output says any of this, so the case reads the process table.
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the sampler case"
+restore_up
 seeded_run
 run_vm step --config "$config" sampler 1 --duration 10m
 ((RC == 0)) || fail "the sampler case's step failed: see the output above"
@@ -1935,9 +2073,7 @@ pass "series runs the baseline, 1x and 2x long, stops the grid at the first fail
 part_discard_seed_collect() {
 # ---- (j) a stopped VM discards the step -------------------------------------------------------------
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the stopped-VM case"
+restore_up
 seeded_run
 # The step's first reading of all three machines answers RUNNING; every reading after it
 # answers TERMINATED, as a machine stopped at its 72-hour run-time limit does.
@@ -1964,9 +2100,7 @@ pass "a step whose machine is already stopped is discarded before it starts, and
 
 # ---- (k) seed ---------------------------------------------------------------------------------------
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the seed case"
+restore_up
 # The database up made on the instance and Dispatch migrated: the seed writes into it and the
 # last phase renames it to the template.
 [ -e "$fake/db/dispatch" ] || fail "up left no database for the seed to write into"
@@ -2150,9 +2284,7 @@ pass "an instance with no template, a template without the loop seed's id map or
 
 # ---- (l) collect and down ---------------------------------------------------------------------------
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the collect case"
+restore_up
 seeded_run
 run_vm step --config "$config" 1x 1 --duration 10m
 ((RC == 0)) || fail "the step before collect failed"
@@ -2178,9 +2310,7 @@ pass "down stops every container and leaves the VMs and the Cloud SQL instance a
 part_tunnel() {
 # ---- (m) the step's profiling tunnel ---------------------------------------------------------
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the tunnel cases"
+restore_up
 seeded_run
 run_vm step --config "$config" 1x 1 --duration 10m
 ((RC == 0)) || fail "the step of the tunnel cases failed: see the output above"
@@ -2265,9 +2395,7 @@ pass "a LOADTEST_VM_TUNNEL_SECONDS that is not a whole number of seconds above 0
 # off, and down takes the key away again. The fake tunnel refuses a forward whose command names
 # no -i, in the words that ssh refused it with, so a tunnel that goes back to naming none
 # refuses every step of this suite too.
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the tunnel identity case: see the output above"
+restore_up
 seeded_run
 : >"$fake/actions.log"
 run_vm step --config "$config" 1x 1 --duration 10m
@@ -3614,9 +3742,7 @@ part_pg_interrupt() {
 # the order the collectors ran in: the size and the statistics are read after the reset of the
 # deployment and before the load, so what a step's statements show is the step's own writes.
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the Postgres collector case"
+restore_up
 seeded_run
 : >"$fake/actions.log"
 run_vm step --config "$config" pg 1 --duration 10m
@@ -3700,9 +3826,7 @@ pass "both collectors read the step database over a file of mode 600 under the r
 # fetch of the driver's left to stop, and what a stop has to take with it is the load on the
 # load machine, the tunnel, the sampler and Postgres's collector.
 
-reset_fake
-run_vm up --config "$config"
-((RC == 0)) || fail "up failed before the interrupted step case"
+restore_up
 seeded_run
 run_secrets=$remote/work/runs/$(cat "$LOADTEST_VM_ROOT/current")
 for signal in TERM INT; do
