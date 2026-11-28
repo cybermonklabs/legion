@@ -76,7 +76,8 @@ const (
 	stoppedFailure   = "failure"
 )
 
-// budgetStop is a pass stopped at the budget floor (R12): the budget the answers named, and the
+// budgetStop is a pass stopped at the budget floor (R12): the budget as the check read it (the
+// answers' less the requests sent since whose answers the reads never saw, GitHub.atFloor), and the
 // requests the pass still had to make, where it stopped before reading them.
 type budgetStop struct {
 	budget   Budget
@@ -235,8 +236,9 @@ func (r *Run) stopRepo(ctx context.Context, repo string, change func(*Repo)) {
 //  4. The days to measure (survival.SelectDays); with none, the pass ends.
 //  5. The budget: the requests the rest of the pass will make, counted before any is sent.
 //  6. The merged pull requests of the replay range and each change's issue (PullRequests,
-//     Changes).
-//  7. The patches of the range, streamed in chain order into survival.Measure.
+//     Changes), the budget checked after each page (GitHub.atFloor).
+//  7. The patches of the range, streamed in chain order into survival.Measure, the budget checked
+//     after each.
 //  8. One transaction: the results, the day rows of every project they count for, and the
 //     repository's row (store).
 func (r *Run) daily(ctx context.Context, gh *GitHub, stored Repo, now time.Time, line *runLine) error {
@@ -351,9 +353,6 @@ func (r *Run) daily(ctx context.Context, gh *GitHub, stored Repo, now time.Time,
 	if err := gh.Changes(ctx, opened, replayed, pulls); err != nil {
 		return err
 	}
-	if budget := gh.Budget(); belowFloor(budget, 0) {
-		return &budgetStop{budget: budget}
-	}
 
 	workers, buffer := r.workers, r.buffer
 	if workers == 0 {
@@ -365,8 +364,8 @@ func (r *Run) daily(ctx context.Context, gh *GitHub, stored Repo, now time.Time,
 	patches := newStream(ctx, len(replayed), workers, buffer, shas, func(ctx context.Context, index int) (PatchRead, error) {
 		read, err := gh.Patch(ctx, opened, replayed[index])
 		if err == nil {
-			if budget := gh.Budget(); belowFloor(budget, 0) {
-				return PatchRead{}, &budgetStop{budget: budget}
+			if err := gh.atFloor(); err != nil {
+				return PatchRead{}, err
 			}
 		}
 		return read, err
@@ -418,8 +417,9 @@ func chainRoot(chain []survival.Commit) time.Time {
 // merged pull request at most, but the list holds every closed pull request updated on or after
 // d0, of every base, and so also those that never merged and those merged into a branch that has
 // not landed, which no read before the list counts. A list longer than the estimate, and a pull
-// request over 100 commits, which takes more pages of commit messages, are met by the budget check
-// after the list (daily), and the counts the pass logs hold them.
+// request over 100 commits, which takes more pages of commit messages, are met by the live budget
+// check after each page of the list and of the commit messages (GitHub.atFloor), and the counts
+// the pass logs hold them.
 func (r *Run) estimate(ctx context.Context, opened Repository, chain []survival.Commit, shas []string, d0 time.Time) (int, error) {
 	since := 0
 	for _, commit := range chain {

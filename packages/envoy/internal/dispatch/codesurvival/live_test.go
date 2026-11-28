@@ -716,9 +716,11 @@ type liveProxy struct {
 	paced  int
 	pacing time.Duration
 	// parsed is the replay's form of each patch forwarded with capture, by its commit's SHA, and
-	// unparsed each answer that did not parse.
+	// unparsed each answer that did not parse; listings is what each commit's files[] pages
+	// forwarded so far listed, by its SHA.
 	parsed   map[string]survival.Patch
 	unparsed []string
+	listings map[string]*filesListing
 }
 
 // forwardedRead is one read the proxy forwarded: the request, upstream's status and the bytes of
@@ -743,7 +745,7 @@ func newLiveProxy(t *testing.T, upstream, authorization string, perSecond int) *
 	transport.Proxy = http.ProxyFromEnvironment
 	transport.MaxIdleConnsPerHost = 2 * streamWorkers
 	p := &liveProxy{upstream: strings.TrimSuffix(upstream, "/"), authorization: authorization, client: &http.Client{Transport: transport},
-		parsed: map[string]survival.Patch{}}
+		parsed: map[string]survival.Patch{}, listings: map[string]*filesListing{}}
 	if perSecond > 0 {
 		p.pace = time.NewTicker(time.Second / time.Duration(perSecond))
 		t.Cleanup(p.pace.Stop)
@@ -862,9 +864,9 @@ func (p *liveProxy) reads() []forwardedRead {
 
 // parse keeps the replay's form of one answer forwarded with capture, and none of its text: a
 // diff answer's file diffs (survival.ParseDiff), or a files[] page's, read as the run reads the
-// pages (survival.FilesPatch, which reads each entry alone), added to its commit's earlier pages';
-// the first page starts the commit's patch again, in place of a diff the run refused for passing
-// its limit.
+// pages (filesListing), added to its commit's earlier pages', with the files the pages so far
+// withheld, those they did not list among them; the first page starts the commit's patch again,
+// in place of a diff the run refused for passing its limit.
 func (p *liveProxy) parse(read forwardedRead, body []byte) {
 	if sha, ok := read.Patch(); ok {
 		files, err := survival.ParseDiff(body)
@@ -878,9 +880,7 @@ func (p *liveProxy) parse(read forwardedRead, body []byte) {
 		return
 	}
 	sha := filesSHA(read)
-	var page struct {
-		Files []survival.FilesEntry `json:"files"`
-	}
+	var page filesPage
 	err := json.Unmarshal(body, &page)
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -888,12 +888,13 @@ func (p *liveProxy) parse(read forwardedRead, body []byte) {
 		p.unparsed = append(p.unparsed, fmt.Sprintf("%s's files[]: %v", sha, githubapp.ShownErr(err)))
 		return
 	}
-	files, withheld := survival.FilesPatch(page.Files)
-	earlier := p.parsed[sha]
-	if read.Query.Get("page") == "1" {
-		earlier = survival.Patch{}
+	listing, earlier := p.listings[sha], p.parsed[sha]
+	if listing == nil || read.Query.Get("page") == "1" {
+		listing, earlier = &filesListing{}, survival.Patch{}
+		p.listings[sha] = listing
 	}
-	p.parsed[sha] = survival.Patch{Files: append(earlier.Files, files...), Withheld: earlier.Withheld + withheld}
+	files := listing.read(page)
+	p.parsed[sha] = survival.Patch{Files: append(earlier.Files, files...), Withheld: listing.withheldFiles()}
 }
 
 // githubPatches is each patch the proxy forwarded with capture, by its commit's SHA, in the

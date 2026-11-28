@@ -3,8 +3,10 @@ package codesurvival
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -21,6 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/codesurvival/codesurvivaltest"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery/survival"
+	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 )
 
 // shaPattern finds a 40-character hex string that no longer run of hex digits holds: a SHA, and
@@ -571,6 +574,118 @@ func TestABudgetBelowAQuarterStopsTheRunAndWritesNoResult(t *testing.T) {
 	lines := r.logs.lines(t, "codesurvival: run")
 	if last := lines[len(lines)-1]; last["stopped"] != stoppedBudget || last["remaining"] != float64(1000) || last["days_measured"] != float64(0) {
 		t.Fatalf("the stopped run logged %v, want stopped at the budget with 1000 remaining and no day measured", last)
+	}
+}
+
+// manyPullsBranch is a branch of 120 commits over days 0 to 29, four a day, each the commit of a
+// merged pull request whose title and head branch name no issue: the closed pull requests list a
+// first pass reads is two pages, and its attribution reads a page of commit messages for each.
+func manyPullsBranch() *codesurvivaltest.Branch {
+	const commits = 120
+	var (
+		chain []codesurvivaltest.Commit
+		pulls []codesurvivaltest.Pull
+	)
+	patches := map[string][]byte{}
+	for i := range commits {
+		at := day(i / 4).Add(10*time.Hour + time.Duration(i%4)*5*time.Minute)
+		commit := codesurvivaltest.Commit{SHA: fmt.Sprintf("%040x", 0x9011000+i), CommittedAt: at}
+		if i > 0 {
+			commit.Parents = []string{chain[i-1].SHA}
+		}
+		chain = append(chain, commit)
+		patches[commit.SHA] = bigPatch(fmt.Sprintf("src/pull%03d.txt", i), 1<<10)
+		pulls = append(pulls, codesurvivaltest.Pull{Number: i + 1, HeadRef: fmt.Sprintf("feature/%d", i+1), Author: "someone",
+			Title: fmt.Sprintf("Change %d", i+1), MergedAt: at, SHA: commit.SHA})
+	}
+	return codesurvivaltest.NewBranch(chain, patches, pulls)
+}
+
+// routes is how many of requests went to each of the run's routes (routeOf).
+func routes(requests []codesurvivaltest.Request) map[string]int {
+	byRoute := map[string]int{}
+	for _, request := range requests {
+		byRoute[routeOf(request)]++
+	}
+	return byRoute
+}
+
+// requireStoppedAfter fails t unless r's pass, which sent requests, stopped at the budget floor
+// after its last request on route: it sent nothing after it, wrote no result or day row (results
+// and rows are the tables and the code evals' rows before it), and the repository waits for reset.
+func requireStoppedAfter(t *testing.T, r *rig, requests []codesurvivaltest.Request, route string, results, rows []string, reset time.Time) {
+	t.Helper()
+	switch {
+	case len(requests) == 0:
+		t.Errorf("the run sent no request, want its last on the route %s", route)
+	case routeOf(requests[len(requests)-1]) != route:
+		t.Errorf("the run's last request was %s, want one on the route %s", requests[len(requests)-1], route)
+	}
+	if !slices.Equal(r.dump("code_changes", "code_pairs", "code_days", "code_projects"), results) || !slices.Equal(r.evalRows(widgetsProject), rows) {
+		t.Error("the run that met the budget floor wrote a result or a day row")
+	}
+	if repo := r.repo(widgets); !repo.RetryAt.Equal(reset) {
+		t.Errorf("after the budget stop the repository's row is %+v, want it to wait for %s", repo, reset)
+	}
+	lines := r.logs.lines(t, "codesurvival: run")
+	if last := lines[len(lines)-1]; last["stopped"] != stoppedBudget || last["days_measured"] != float64(0) {
+		t.Errorf("the stopped run logged %v, want stopped at the budget with no day measured", last)
+	}
+}
+
+// A remaining budget below a quarter of the limit named by a page of the closed pull requests list
+// stops the run at that page (R12): the first pass over a branch of 120 merged pull requests reads
+// a list of two pages, and the double serves 1,000 of 5,000 from the list's first page on. The run
+// sends nothing after that page: not the list's second page, no page of commit messages and no
+// patch. It writes no result, and the repository waits for the reset.
+func TestABudgetBelowAQuarterDuringThePullRequestListStopsTheRun(t *testing.T) {
+	t.Parallel()
+	r := widgetsRig(t, manyPullsBranch())
+	reset := firstPass.Add(30 * time.Minute)
+	results, rows := r.dump("code_changes", "code_pairs", "code_days", "code_projects"), r.evalRows(widgetsProject)
+	r.github.SetBudgetOnPulls(codesurvivaltest.Budget{Limit: 5000, Remaining: 1000, Reset: reset})
+	requests := r.passAt(firstPass)
+	if byRoute := routes(requests); byRoute["pulls"] != 1 || byRoute["attribution"] != 0 || byRoute["diff"]+byRoute["compare"]+byRoute["files"] != 0 {
+		t.Errorf("the run sent %v, want one page of the closed pull requests list and no commit messages or patch after it", byRoute)
+	}
+	requireStoppedAfter(t, r, requests, "pulls", results, rows, reset)
+}
+
+// A remaining budget that the attribution's pages of commit messages take below a quarter of the
+// limit stops the run at the page that took it there (R12; plan, "The budget": each such page is
+// counted in the run's live budget check). The double serves 1,253 of 5,000 from the closed pull
+// requests list's first page on, and no pull request of the first pass over a branch of 120 names
+// an issue, so the attribution reads a page of commit messages for each, one page a pull request.
+// Each page spends one request no answer the run reads names, so after the fourth the budget left
+// is 1,249, below the floor of 1,250, between the fourth pull request and the fifth: the run reads
+// the list's two pages and four pages of commit messages, and sends nothing after the fourth, no
+// patch among them. It writes no result, the repository waits for the reset, and the pass's GitHub
+// read record (githubreads) names the budget floor as its cause, not an attribution that read no
+// commit messages.
+func TestABudgetBelowAQuarterDuringTheAttributionReadsStopsTheRun(t *testing.T) {
+	t.Parallel()
+	r := widgetsRig(t, manyPullsBranch())
+	var recorded []string
+	r.run.GitHubReads = func(_ context.Context, read githubreads.Read, succeeded bool, cause string) error {
+		recorded = append(recorded, fmt.Sprintf("%s succeeded %t: %s", read, succeeded, cause))
+		return nil
+	}
+	reset := firstPass.Add(30 * time.Minute)
+	results, rows := r.dump("code_changes", "code_pairs", "code_days", "code_projects"), r.evalRows(widgetsProject)
+	r.github.SetBudgetOnPulls(codesurvivaltest.Budget{Limit: 5000, Remaining: 1253, Reset: reset})
+	requests := r.passAt(firstPass)
+	if byRoute := routes(requests); byRoute["pulls"] != 2 || byRoute["attribution"] != 4 || byRoute["diff"]+byRoute["compare"]+byRoute["files"] != 0 {
+		t.Errorf("the run sent %v, want the list's two pages, four pages of commit messages and no patch", byRoute)
+	}
+	requireStoppedAfter(t, r, requests, "attribution", results, rows, reset)
+	lines := r.logs.lines(t, "codesurvival: run")
+	if last := lines[len(lines)-1]; last["requests_attribution"] != float64(4) || last["remaining"] != float64(1253) {
+		t.Errorf("the stopped run logged %v, want four attribution requests and the 1253 the answers named", last)
+	}
+	want := fmt.Sprintf("%s succeeded false: the code survival run of %s stopped at the budget floor: GitHub's remaining budget of 1249 fell below a quarter of the limit of 5000",
+		githubreads.CodeSurvival, widgets)
+	if !slices.Equal(recorded, []string{want}) {
+		t.Errorf("the pass recorded %q, want the one attempt %q", recorded, want)
 	}
 }
 

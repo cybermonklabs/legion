@@ -7,13 +7,14 @@
 // The double answers the App's installation lookup and token mint, the repository and its default
 // branch's ref, the commits list (`sha`, `since` and pages), each first-parent commit's patch by its
 // first parent through the commit route and the compare route (the diff media type), a commit's
-// paged files[], the closed pull requests list, and a pull request's commit messages. A test sets
-// what it must prove on it: a refusal of one commit's patch (a 406, 422 or 5xx naming the diff, an
-// answer past the run's 32 MiB, files[] entries withheld), the rate-limit headers every answer
-// carries (also "below the floor once n patches were read"), a force-push (another branch served in
-// the repository's place), a commit listed that is off the branch, a patch held back until other
-// patches were read, and a failure of every request. It records every request with its method,
-// path, query and Accept.
+// paged files[] with its stats, at most FilesLimit files of it, the closed pull requests list, and
+// a pull request's commit messages. A test sets what it must prove on it: a refusal of one
+// commit's patch (a 406, 422 or 5xx naming the diff, an answer past the run's 32 MiB, files[]
+// entries withheld or left unlisted), the rate-limit headers every answer carries (also "below the
+// floor once n patches were read", and "from the closed pull requests list's next page on"), a
+// force-push (another branch served in the repository's place), a commit listed that is off the
+// branch, a patch held back until other patches were read, and a failure of every request. It
+// records every request with its method, path, query and Accept.
 //
 // Every git command runs when a test builds its history and reads it back (History.Branch), never
 // while the double serves, so a run under test that reads it starts no process of its own or of the
@@ -49,6 +50,11 @@ const DiffMediaType = "application/vnd.github.diff"
 
 // perPage is the page size of the double's lists: GitHub's own maximum, which the run asks for.
 const perPage = 100
+
+// FilesLimit is the most files the double's files[] of a commit lists over all its pages, as
+// GitHub's "Get a commit" lists them "up to a limit of 3000 files"
+// (https://docs.github.com/en/rest/commits/commits#get-a-commit).
+const FilesLimit = 3000
 
 // Pull is one merged pull request of a history: its number, head branch, the login that opened it
 // (GitHub's REST user.login), title and body, when it merged, and the commit it landed as
@@ -191,13 +197,19 @@ func (b *Branch) first(sha string) (string, bool) {
 
 // Refusal is how the double refuses one commit's patch on both diff routes: Status, a 406, a 422
 // or a 5xx whose body is Body; or, with Oversize set, an answer of 40 MiB, past the run's 32 MiB.
-// Withheld is how many of the commit's changed files its files[] serve with no patch. A Refusal
-// with no Status and no Oversize serves the patch and only withholds files[] entries.
+// Withheld is how many of the commit's changed files its files[] serve with no patch; Uncounted
+// how many of the files after those its files[] serve with no patch and changes 0, as GitHub
+// serves a text file it shows no diff of, while its stats still count their lines; and Unlisted
+// how many of its last files its files[] do not list at all while its stats still count their
+// lines, as a listing cut short does. A Refusal with no Status and no Oversize serves the patch and
+// changes only its files[].
 type Refusal struct {
-	Status   int
-	Body     string
-	Oversize bool
-	Withheld int
+	Status    int
+	Body      string
+	Oversize  bool
+	Withheld  int
+	Uncounted int
+	Unlisted  int
 }
 
 // oversizeBytes is the size of an oversize answer: 40 MiB, k8's.
@@ -279,6 +291,7 @@ type GitHub struct {
 	budget    Budget
 	later     *Budget
 	laterFrom int
+	onPulls   *Budget
 	patches   int
 	holds     map[string]*held
 	failAll   bool
@@ -345,11 +358,12 @@ func (g *GitHub) Refuse(sha string, refusal Refusal) {
 	g.refusals[sha] = refusal
 }
 
-// SetBudget makes every answer from now on name budget, and drops a budget SetBudgetAfter set.
+// SetBudget makes every answer from now on name budget, and drops a budget SetBudgetAfter or
+// SetBudgetOnPulls set.
 func (g *GitHub) SetBudget(budget Budget) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	g.budget, g.later = budget, nil
+	g.budget, g.later, g.onPulls = budget, nil, nil
 }
 
 // SetBudgetAfter makes every answer name budget once n more patch reads (a patch through either
@@ -359,6 +373,14 @@ func (g *GitHub) SetBudgetAfter(n int, budget Budget) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.later, g.laterFrom = &budget, g.patches+n
+}
+
+// SetBudgetOnPulls makes every answer name budget from the next page of the closed pull requests
+// list on, that page among them: the budget falling while a run reads the list.
+func (g *GitHub) SetBudgetOnPulls(budget Budget) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.onPulls = &budget
 }
 
 // Hold holds the patch answer of sha until after other patch answers were written, at least
@@ -434,7 +456,7 @@ func (g *GitHub) serve(w http.ResponseWriter, r *http.Request) {
 		g.notFound(w)
 		return
 	}
-	g.headers(w, r)
+	g.headers(w, len(rest) == 1 && rest[0] == "pulls")
 	switch {
 	case len(rest) == 0:
 		g.writeJSON(w, map[string]any{"full_name": parts[1] + "/" + parts[2], "default_branch": BranchName})
@@ -463,9 +485,13 @@ func (g *GitHub) serve(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// headers writes the budget every repository answer names.
-func (g *GitHub) headers(w http.ResponseWriter, r *http.Request) {
+// headers writes the budget every repository answer names. pulls is whether the answer is a page
+// of the closed pull requests list, from which on a budget SetBudgetOnPulls set is named.
+func (g *GitHub) headers(w http.ResponseWriter, pulls bool) {
 	g.mu.Lock()
+	if pulls && g.onPulls != nil {
+		g.budget, g.onPulls = *g.onPulls, nil
+	}
 	budget := g.budget
 	if g.later != nil && g.patches >= g.laterFrom {
 		budget = *g.later
@@ -606,8 +632,10 @@ func (g *GitHub) patchAnswered(sha string) {
 	}
 }
 
-// files answers a page of sha's files[], from its patch, each file's patch withheld for as many of
-// its files as the refusal a test set says.
+// files answers a page of sha's files[], from its patch, as GitHub serves it: at most FilesLimit
+// files over all the pages, each page naming the commit's stats, and, as the refusal a test set
+// says, the patch withheld of as many of its first files, the patch and the count of changed lines
+// left out of as many files after them, and as many of its last files left unlisted.
 func (g *GitHub) files(w http.ResponseWriter, r *http.Request, sha string, branch *Branch) {
 	body, found := branch.Patches[sha]
 	number, ok := page(r)
@@ -617,17 +645,22 @@ func (g *GitHub) files(w http.ResponseWriter, r *http.Request, sha string, branc
 	}
 	defer g.patchAnswered(sha)
 	g.mu.Lock()
-	withheld := g.refusals[sha].Withheld
+	refusal := g.refusals[sha]
 	g.mu.Unlock()
-	entries := filesOf(body)
+	entries, whole := filesOf(body)
 	for index := range entries {
-		if index < withheld {
+		switch {
+		case index < refusal.Withheld:
 			entries[index].Patch = nil
+		case index < refusal.Withheld+refusal.Uncounted:
+			entries[index].Patch, entries[index].Changes = nil, 0
 		}
 	}
+	entries = entries[:max(len(entries)-refusal.Unlisted, 0)]
+	entries = entries[:min(len(entries), FilesLimit)]
 	from, to := min((number-1)*perPage, len(entries)), min(number*perPage, len(entries))
 	link(w, r, number+1, to < len(entries))
-	g.writeJSON(w, map[string]any{"sha": sha, "files": entries[from:to]})
+	g.writeJSON(w, map[string]any{"sha": sha, "stats": whole, "files": entries[from:to]})
 }
 
 // pulls answers the closed pull requests list of the repository: every pull request the branch's
@@ -682,11 +715,23 @@ func (g *GitHub) pullCommits(w http.ResponseWriter, r *http.Request, number int,
 	g.writeJSON(w, []map[string]any{{"sha": branch.Pulls[at].SHA, "commit": map[string]any{"message": branch.Pulls[at].Title}}})
 }
 
+// stats is a commit's stats as GitHub's commit route names them: the lines the whole commit added
+// and deleted, and their sum.
+type stats struct {
+	Total     int `json:"total"`
+	Additions int `json:"additions"`
+	Deletions int `json:"deletions"`
+}
+
 // filesOf is the files[] entries GitHub serves for a commit whose patch is diff, a diff as git
 // writes it: one entry per file, its name, its previous name where it was renamed, its status, its
-// patch (the file's hunks, from its first @@ line) and the count of lines it changed.
-func filesOf(diff []byte) []survival.FilesEntry {
-	var entries []survival.FilesEntry
+// patch (the file's hunks, from its first @@ line) and the count of lines it changed; and the
+// commit's stats, the lines all of its files added and deleted.
+func filesOf(diff []byte) ([]survival.FilesEntry, stats) {
+	var (
+		entries []survival.FilesEntry
+		whole   stats
+	)
 	for _, section := range bytes.Split(diff, []byte("\ndiff --git ")) {
 		section = bytes.TrimPrefix(section, []byte("diff --git "))
 		if len(bytes.TrimSpace(section)) == 0 {
@@ -733,13 +778,20 @@ func filesOf(diff []byte) []survival.FilesEntry {
 			}
 			patch = string(bytes.Join(body, []byte("\n")))
 			for _, line := range body {
-				if len(line) > 0 && (line[0] == '+' || line[0] == '-') {
-					entry.Changes++
+				switch {
+				case len(line) > 0 && line[0] == '+':
+					whole.Additions++
+				case len(line) > 0 && line[0] == '-':
+					whole.Deletions++
+				default:
+					continue
 				}
+				entry.Changes++
 			}
 		}
 		entry.Patch = &patch
 		entries = append(entries, entry)
 	}
-	return entries
+	whole.Total = whole.Additions + whole.Deletions
+	return entries, whole
 }

@@ -83,7 +83,9 @@ const (
 // Counts is what the reads have cost so far: the requests sent to each route and the bytes GitHub
 // answered them with. Each try of a request asked again counts; a request a recorded rate limit
 // held, which was never sent, does not, and neither do the App's own calls for its installation
-// and its token, which GitHub budgets as the App's and not the installation's.
+// and its token, which GitHub budgets as the App's and not the installation's. RouteAttribution
+// instead counts each page of commit messages once, when its token is minted, a page that failed
+// or that a recorded rate limit held included.
 type Counts struct {
 	Repository  int
 	Chain       int
@@ -135,13 +137,14 @@ type Budget struct {
 	Reset     time.Time
 }
 
-// read takes what header names of the budget, as the comment on Budget says.
-func (b *Budget) read(header http.Header) {
+// read takes what header names of the budget, as the comment on Budget says, and reports whether
+// it took the answer: one that names a budget of the budget's window or a later one.
+func (b *Budget) read(header http.Header) bool {
 	limit, limitErr := strconv.Atoi(header.Get("X-RateLimit-Limit"))
 	remaining, remainingErr := strconv.Atoi(header.Get("X-RateLimit-Remaining"))
 	reset, resetErr := strconv.ParseInt(header.Get("X-RateLimit-Reset"), 10, 64)
 	if limitErr != nil || remainingErr != nil || resetErr != nil {
-		return
+		return false
 	}
 	at := time.Unix(reset, 0).UTC()
 	switch {
@@ -149,7 +152,10 @@ func (b *Budget) read(header http.Header) {
 		*b = Budget{Limit: limit, Remaining: remaining, Reset: at}
 	case at.Equal(b.Reset):
 		b.Limit, b.Remaining = limit, min(b.Remaining, remaining)
+	default:
+		return false
 	}
+	return true
 }
 
 // GitHub reads repositories' histories for the run through Dispatch's GitHub App. It counts what
@@ -165,6 +171,10 @@ type GitHub struct {
 
 	mu     sync.Mutex
 	budget Budget
+	// unseen is how many requests whose answers the reads here never saw (counted), the
+	// attribution's pages of commit messages, were sent since the budget last took an answer: each
+	// spent one request of the budget the answers named, and the live check (atFloor) counts it.
+	unseen int
 	counts Counts
 }
 
@@ -200,23 +210,42 @@ func (g *GitHub) Budget() Budget {
 	return g.budget
 }
 
+// atFloor is the run's live check of the budget floor (R12; plan, "The budget"), which the reads
+// run after each page of the closed pull requests list and of the attribution's commit messages,
+// and the run after each patch: a *budgetStop where the budget the answers named, less the
+// requests sent since whose answers the reads never saw (unseen), falls below a quarter of its
+// limit, and nil otherwise.
+func (g *GitHub) atFloor() error {
+	g.mu.Lock()
+	live := g.budget
+	live.Remaining -= g.unseen
+	g.mu.Unlock()
+	if belowFloor(live, 0) {
+		return &budgetStop{budget: live}
+	}
+	return nil
+}
+
 // answered counts one request to route that GitHub answered with header and size bytes of body,
-// and reads the budget from header.
+// and reads the budget from header. An answer the budget takes names what every request sent
+// before it spent, so no request counted before it is unseen after it.
 func (g *GitHub) answered(route Route, header http.Header, size int64) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.counts.add(route, 1)
 	g.counts.Bytes += size
-	if header != nil {
-		g.budget.read(header)
+	if header != nil && g.budget.read(header) {
+		g.unseen = 0
 	}
 }
 
-// counted counts n requests to route whose answers the reads here never saw.
+// counted counts n requests to route whose answers the reads here never saw, which are unseen
+// until the budget takes an answer sent after them.
 func (g *GitHub) counted(route Route, n int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	g.counts.add(route, n)
+	g.unseen += n
 }
 
 // Repository is a repository the run reads, as Open answered it: its name ("owner/name", as
@@ -549,7 +578,8 @@ type listedPull struct {
 // A closed pull request that never merged is no change, whatever commit GitHub names for it,
 // neither is one that merged as no commit of chain, and a commit no pull request landed as -- a
 // push, or the earlier commits of a rebase merge, whose last commit alone is its
-// merge_commit_sha -- has no entry.
+// merge_commit_sha -- has no entry. Each page is followed by the run's live budget check
+// (atFloor): a budget below the floor ends the read at that page with the *budgetStop.
 func (g *GitHub) PullRequests(ctx context.Context, r Repository, d0 time.Time, chain []survival.Commit) (map[string]PullRequest, error) {
 	onChain := make(map[string]bool, len(chain))
 	for _, commit := range chain {
@@ -563,6 +593,9 @@ func (g *GitHub) PullRequests(ctx context.Context, r Repository, d0 time.Time, c
 		got, err := g.readJSON(ctx, r, RoutePulls, path, repositoryCheck(r, path))
 		if err != nil {
 			return nil, fmt.Errorf("read the closed pull requests of %s: %w", r.Repo, unreadable(r.Repo, err))
+		}
+		if err := g.atFloor(); err != nil {
+			return nil, err
 		}
 		var page []listedPull
 		if err := json.Unmarshal(got.body, &page); err != nil {
@@ -596,8 +629,14 @@ func (g *GitHub) PullRequests(ctx context.Context, r Repository, d0 time.Time, c
 // (R5). A commit that landed none gets no change. The issue is the one pull_request_heads holds
 // where the rule this build judges by judged the pull request (delivery.Attributor.JudgedIssues),
 // read in one statement with no request; every other pull request runs attribution's own path
-// (delivery.Attributor.IssueOf), whose commit-message pages are counted on RouteAttribution. A
-// failure of that path fails the call: a change's issue is stored with it for good.
+// (delivery.Attributor.IssueOf), whose pages of commit messages are each counted on
+// RouteAttribution as IssueOf asks for its token, just before it sends the page. The run's live
+// budget check (atFloor) runs before each pull request's attribution, before each of its pages
+// and after the last, so a budget below the floor ends the call at the page that took it there,
+// with the *budgetStop: between two pull requests before delivery sees it, and within one pull
+// request's pages through the token, where delivery notes on the pass's attempt (githubreads) an
+// attribution that read no commit messages. A failure of that path fails the call: a change's
+// issue is stored with it for good.
 func (g *GitHub) Changes(ctx context.Context, r Repository, chain []survival.Commit, pulls map[string]PullRequest) error {
 	var numbers []int
 	for _, commit := range chain {
@@ -609,7 +648,19 @@ func (g *GitHub) Changes(ctx context.Context, r Repository, chain []survival.Com
 	if err != nil {
 		return err
 	}
-	token := func() (string, error) { return g.client.RepositoryToken(ctx, r.Owner, r.Name) }
+	// IssueOf asks for a token once a page, just before it sends the page
+	// (delivery.fetchCommitMessagesWithToken), so the check here comes after every page but the
+	// last, and a page is counted once it has a token to be sent with.
+	token := func() (string, error) {
+		if err := g.atFloor(); err != nil {
+			return "", err
+		}
+		minted, err := g.client.RepositoryToken(ctx, r.Owner, r.Name)
+		if err == nil {
+			g.counted(RouteAttribution, 1)
+		}
+		return minted, err
+	}
 	for i := range chain {
 		pull, ok := pulls[chain[i].SHA]
 		if !ok {
@@ -618,11 +669,13 @@ func (g *GitHub) Changes(ctx context.Context, r Repository, chain []survival.Com
 		}
 		issue, stored := judged[pull.Number]
 		if !stored {
-			key, pages, err := g.attributor.IssueOf(ctx, g.pool, g.client, token, delivery.PullRequestFacts{
+			if err := g.atFloor(); err != nil {
+				return err
+			}
+			key, _, err := g.attributor.IssueOf(ctx, g.pool, g.client, token, delivery.PullRequestFacts{
 				Repo: r.Repo, Number: pull.Number, URL: pull.URL, Title: pull.Title, Body: pull.Body,
 				HeadRef: pull.HeadRef, HeadRepo: pull.HeadRepo,
 			})
-			g.counted(RouteAttribution, pages)
 			if err != nil {
 				return fmt.Errorf("the issue of %s#%d: %w", r.Repo, pull.Number, err)
 			}
@@ -630,15 +683,17 @@ func (g *GitHub) Changes(ctx context.Context, r Repository, chain []survival.Com
 		}
 		chain[i].Change = survival.ChangeFacts{PR: pull.Number, HeadRef: pull.HeadRef, Author: pull.Author, IssueKey: issue}
 	}
-	return nil
+	return g.atFloor()
 }
 
 // PatchRead is one commit's patch as Patch read it: the replay's form of it, the route it came
 // through, and the bytes GitHub answered for it, which the run's stream holds until the replay
 // applied it. Reason says, for a patch read through files[] in place of a diff GitHub refused, how
-// the diff route refused it and how many of the commit's files files[] withheld, as
+// the diff route refused it, how many of the commit's files files[] withheld, and how files[]
+// showed it lists less than the whole commit where it did (filesListing), as
 // code_days.blocked_reason keeps it for a commit that blocks a day: "diff refused (406), files[]
-// withheld 3 of 12 files", say.
+// withheld 3 of 12 files", or "diff refused (422), files[] withheld 0 of 10 files and listed 20 of
+// the commit's 24 changed lines", say.
 type PatchRead struct {
 	Patch  survival.Patch
 	Route  Route
@@ -653,8 +708,9 @@ type PatchRead struct {
 // diff (githubapp.Client.ReadDiff): what the commit brought onto the branch.
 //
 // A patch GitHub refuses (refusal) is read once through the commit's files[] in its place, every
-// page of it, in the replay's form, with the files GitHub withheld counted (survival.FilesPatch)
-// and the refusal and the count named in the read's Reason.
+// page of it, in the replay's form, with the files GitHub withheld counted (survival.FilesPatch), a
+// listing that shows it holds less than the whole commit counted as withholding the files it left
+// out (filesListing), and the refusal and the count named in the read's Reason.
 // A failure that may pass is asked again (get), and one that still fails after the last try, or a
 // failure that is no refusal, fails the read: the run stores nothing and tries again at its next
 // pass. A rate limit is the budget's, returned at once as the *githubapp.RateLimitError.
@@ -665,11 +721,11 @@ func (g *GitHub) Patch(ctx context.Context, r Repository, commit survival.Commit
 	}
 	got, err := g.get(ctx, r, route, path)
 	if refusal(got, err) {
-		read, files, filesErr := g.filesPatch(ctx, r, commit.SHA)
+		read, filesErr := g.filesPatch(ctx, r, commit.SHA)
 		if filesErr != nil {
 			return PatchRead{}, filesErr
 		}
-		read.Reason = fmt.Sprintf("%s, files[] withheld %d of %d files", refused(route, got, err), read.Patch.Withheld, files)
+		read.Reason = refused(route, got, err) + ", " + read.Reason
 		return read, nil
 	}
 	if err != nil {
@@ -695,29 +751,111 @@ func refused(route Route, got answer, err error) string {
 	return fmt.Sprintf("%s refused (%d)", route, got.status)
 }
 
+// filesLimit is the most files GitHub's files[] of a commit lists over all its pages: "up to a
+// limit of 3000 files" (https://docs.github.com/en/rest/commits/commits#get-a-commit).
+const filesLimit = 3000
+
+// filesPage is one page of a commit's files[], the fields the reads take of it: the commit's
+// stats, which every page names alike, and the page's files.
+type filesPage struct {
+	Stats *filesStats           `json:"stats"`
+	Files []survival.FilesEntry `json:"files"`
+}
+
+// filesStats is a commit's stats as files[] names them: total is the lines the whole commit added
+// and deleted, its files past GitHub's limit among them.
+type filesStats struct {
+	Total int `json:"total"`
+}
+
+// filesListing is what the pages of a commit's files[] read so far listed: the commit's stats as
+// the first page named them, the files, how many of them were withheld (survival.FilesPatch), and
+// the lines they changed, each file's changes being its additions and deletions.
+type filesListing struct {
+	pages    int
+	stats    *filesStats
+	files    int
+	withheld int
+	lines    int
+}
+
+// read adds page, the listing's next, and answers its files in the replay's form.
+func (l *filesListing) read(page filesPage) []survival.FileDiff {
+	if l.pages == 0 {
+		l.stats = page.Stats
+	}
+	l.pages++
+	diffs, withheld := survival.FilesPatch(page.Files)
+	l.files, l.withheld = l.files+len(page.Files), l.withheld+withheld
+	for _, entry := range page.Files {
+		l.lines += entry.Changes
+	}
+	return diffs
+}
+
+// short says how the listing shows it holds less than the whole commit, "" where it shows nothing
+// of the kind (R9): it reached GitHub's limit (filesLimit), past which files[] lists no file
+// whatever the commit holds; its first page named no stats to hold it to; or, where it withheld no
+// file, its files changed fewer lines than the stats count, as when files[] serves a text file
+// GitHub shows no diff of with no patch and changes 0, which survival.FilesPatch takes as
+// unchanged. A listing that withheld a file is blocked by it already, and its lines are not held
+// to the stats.
+func (l *filesListing) short() string {
+	switch {
+	case l.files >= filesLimit:
+		return fmt.Sprintf("listed %d files, GitHub's limit", l.files)
+	case l.stats == nil:
+		return "named no stats of the commit"
+	case l.withheld == 0 && l.lines < l.stats.Total:
+		return fmt.Sprintf("listed %d of the commit's %d changed lines", l.lines, l.stats.Total)
+	}
+	return ""
+}
+
+// withheldFiles is how many of the commit's files the listing withheld: those it listed with no
+// whole patch, and, where it is short, one more for the files it did not list, whose number no
+// answer names. A listing that withheld any blocks the days whose 30 days hold its commit.
+func (l *filesListing) withheldFiles() int {
+	if l.short() != "" {
+		return l.withheld + 1
+	}
+	return l.withheld
+}
+
+// reason is what the listing withheld as a blocked day's reason names it after the refusal:
+// "files[] withheld 3 of 12 files", and how it is short where it is, "files[] withheld 0 of 3000
+// files and listed 3000 files, GitHub's limit".
+func (l *filesListing) reason() string {
+	reason := fmt.Sprintf("files[] withheld %d of %d files", l.withheld, l.files)
+	if short := l.short(); short != "" {
+		reason += " and " + short
+	}
+	return reason
+}
+
 // filesPatch reads the files[] of commit sha, every page of it
 // (`GET /repos/{owner}/{repo}/commits/{sha}?per_page=100&page=n`, following each page's Link
-// header), into the replay's form, a page at a time (survival.FilesPatch), so no page's patch text
-// is held past its own, and answers how many files the pages listed.
-func (g *GitHub) filesPatch(ctx context.Context, r Repository, sha string) (PatchRead, int, error) {
-	files, withheld, listed, read := []survival.FileDiff{}, 0, 0, 0
+// header), into the replay's form, a page at a time (filesListing), so no page's patch text is
+// held past its own. The patch withholds what the listing withheld (filesListing.withheldFiles),
+// and the read's Reason names it (filesListing.reason), for Patch to put the refusal before.
+func (g *GitHub) filesPatch(ctx context.Context, r Repository, sha string) (PatchRead, error) {
+	files, read := []survival.FileDiff{}, 0
+	var listing filesListing
 	for path := r.repoPath() + "/commits/" + url.PathEscape(sha) + "?per_page=" + strconv.Itoa(perPage) + "&page=1"; path != ""; {
 		got, err := g.readJSON(ctx, r, RouteFiles, path, githubapp.CheckResponse)
 		if err != nil {
-			return PatchRead{}, 0, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
+			return PatchRead{}, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
 		}
-		var page struct {
-			Files []survival.FilesEntry `json:"files"`
-		}
+		var page filesPage
 		if err := json.Unmarshal(got.body, &page); err != nil {
-			return PatchRead{}, 0, fmt.Errorf("decode the files of %s %s: %w", r.Repo, sha, githubapp.ShownErr(err))
+			return PatchRead{}, fmt.Errorf("decode the files of %s %s: %w", r.Repo, sha, githubapp.ShownErr(err))
 		}
-		diffs, held := survival.FilesPatch(page.Files)
-		files, withheld, listed = append(files, diffs...), withheld+held, listed+len(page.Files)
+		files = append(files, listing.read(page)...)
 		read += len(got.body)
 		if path, err = g.client.NextPage(got.header); err != nil {
-			return PatchRead{}, 0, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
+			return PatchRead{}, fmt.Errorf("read the files of %s %s: %w", r.Repo, sha, err)
 		}
 	}
-	return PatchRead{Patch: survival.Patch{Files: files, Withheld: withheld}, Route: RouteFiles, Bytes: read}, listed, nil
+	return PatchRead{Patch: survival.Patch{Files: files, Withheld: listing.withheldFiles()}, Route: RouteFiles, Bytes: read,
+		Reason: listing.reason()}, nil
 }
