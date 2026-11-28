@@ -13,6 +13,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -39,7 +40,7 @@ func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 			}
 		}))
 		defer listener.Close()
-		handler, _ := newTargetedMessageHandler(t, listener.URL)
+		handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 		issue := createInteractionIssue(t, handler, "TEST", "Mention reply targets", "before")
 		comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 			"body":     "Both reviewers need to answer.",
@@ -74,7 +75,7 @@ func TestMentionRepliesAddressEachDeliveredTarget(t *testing.T) {
 			}
 		}))
 		defer listener.Close()
-		handler, _ := newTargetedMessageHandler(t, listener.URL)
+		handler, _ := newTargetedMessageHandlerOn(t, listener.URL, clocktest.Held())
 		issue := createInteractionIssue(t, handler, "TEST", "Same-session mention reply targets", "before")
 		comment := decodeMentionedComment(t, postMentionedComment(t, handler, issue.Key, map[string]any{
 			"body":     "One session received two mention targets.",

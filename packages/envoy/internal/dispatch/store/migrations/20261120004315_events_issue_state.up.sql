@@ -1,0 +1,44 @@
+-- pgmigrate:non-transactional
+-- 20261120004315_events_issue_state.up.sql: the index on events through which a read at a cut
+-- finds the state of each issue, built concurrently.
+--
+-- Why it exists. A read at a cut reads each issue from its newest issue.created, issue.updated or
+-- issue.closed event at or before the cut, by seq (internal/dispatch/asof, issuesShadow and
+-- issueStateAt). The issue listing at a cut does this read for each issue that it lists. On a copy
+-- of production's event log (813,034 events, 11,937 issues, 2026-11-19), the read of the state of
+-- every issue at a cut took 1,215 ms with the indexes that production had, and 33 ms with this
+-- index. The index holds only the events of those three types, in seq order for each issue. So the
+-- read finds the newest of them at the cut with no sort, and reads no other event of the issue. The
+-- index includes created_at, which the read compares with the cut. On the copy it was 4.2 MB.
+--
+-- The predicate must stay the shadow's word for word. The shadow writes its type list from
+-- issueStateTypes (internal/dispatch/asof/shadows_issues.go). The planner uses a partial index
+-- only when it can prove that the condition of the read implies the predicate of the index. When
+-- the two lists do not agree, the answer stays correct, but the read does not use this index
+-- (asof.TestTheShadowsUseTheirIndexes).
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
+-- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md). So the build's time is downtime. The build reads all of
+-- events two times; on the copy, events and its indexes were 1,359 MB. This change did not
+-- measure the build's time, which depends on the machine.
+--
+-- Why it is exempt from the census's size limit. events is larger than the 1 GiB that a
+-- migration may touch (pgmigrate.CensusTableLimit). A migration whose first line is
+-- `-- pgmigrate:non-transactional` and that holds exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction, and
+-- the census does not apply its size limit to it (pgmigrate/nontransactional.go, concurrentIndex,
+-- and pgmigrate/census.go, Census). The build takes SHARE UPDATE EXCLUSIVE on events, which no
+-- ordinary read or write of events waits on. It waits for each older snapshot between its two
+-- reads of the table.
+--
+-- What a failed build leaves. A build that fails, or that is cancelled or killed, leaves an index
+-- of this name that is marked invalid. The planner does not use an invalid index, and PostgreSQL
+-- can go on updating it on each write. Reads at a cut stay correct, but slow, until the index is
+-- built. The runner records the version only after a build that finished. At the next boot it
+-- drops the invalid index with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). Do not drop it by
+-- hand.
+create index concurrently if not exists events_issue_state
+    on events (issue_key, seq desc) include (created_at)
+    where type in ('issue.created', 'issue.updated', 'issue.closed');

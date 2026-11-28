@@ -12,6 +12,6 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "A project document's blocks and tokens, by slug or unambiguous filename.",
 	Handler:     (*server).getArtifactBlocks,
-	Read:        readEntry{Writes: readWritesNothing, WriteNote: docsCompactionNote},
-	Shape:       routeShape{Status: http.StatusOK, Response: []model.ArtifactBlock{}},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfAnswers, AtACut: asOfBlocksAtACut, WriteNote: docsCompactionNote},
+	Shape:       routeShape{Status: http.StatusOK, Response: []model.ArtifactBlock{}, Params: asOfQuery{}},
 })

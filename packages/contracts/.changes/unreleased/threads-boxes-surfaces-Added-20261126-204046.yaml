@@ -1,0 +1,13 @@
+kind: Added
+body: |-
+  The lists of writing boxes and reading surfaces hold the new issue page's Threads view
+  (INFRA-5704). `DispatchWritingBox` gains `threads-reply`, `threads-comment-edit`,
+  `threads-message` and `threads-new-thread`. `DispatchWriting` gains `issue-message`, a root
+  message of an issue to an agent, which New thread writes. Each has its rows: a comment box with
+  the picker is covered, and a box that writes a message is not, since a message names its agent
+  by its target. Threads' opened record, its rows' first line and a record's quote are files of the
+  `node-row-words`, `node-row-first-line` and `anchor-quote` surfaces, each with a test that proves
+  it. No row of another box or surface changes what it says.
+time: 2026-11-26T20:40:46Z
+custom:
+    Issue: INFRA-5704

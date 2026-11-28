@@ -210,6 +210,7 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/broadcasts/{id}":                     "/api/v1/broadcasts/" + c.broadcast,
 		"/api/v1/credential-grants":                   "/api/v1/credential-grants?approver=me",
 		"/api/v1/credential-requests":                 "/api/v1/credential-requests?approver=me",
+		"/api/v1/credentials/capabilities":            "/api/v1/credentials/capabilities",
 		"/api/v1/inbox":                               "/api/v1/inbox",
 		"/api/v1/issues":                              "/api/v1/issues",
 		"/api/v1/issues/{key}":                        "/api/v1/issues/" + c.issue,

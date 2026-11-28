@@ -12,6 +12,6 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "List every project's architecture sources, by project and then in the order each project added them.",
 	Handler:     (*server).listArchitectureSources,
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: []model.ArchitectureSource{}},
 })
