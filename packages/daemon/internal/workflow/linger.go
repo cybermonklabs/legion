@@ -165,7 +165,7 @@ func (e *Engine) leave(ctx context.Context, tx pgx.Tx, issue record.Issue, statu
 	if root == nil {
 		return fmt.Errorf("suspend issue %s: tree root %s is not recorded", issue.Key, issue.Tree)
 	}
-	if podFree {
+	if podFree && issue.ClosedOnChecksAt == nil {
 		if err := e.enqueue(ctx, tx, issue.Key, record.IssueSuspend{
 			Tree: issue.Tree, Generation: issue.Generation, TreeGeneration: root.TreeRun(),
 		}); err != nil {
