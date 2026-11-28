@@ -16,6 +16,7 @@ import (
 	"time"
 
 	natsgo "github.com/nats-io/nats.go"
+	"github.com/nats-io/nats.go/jetstream"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
@@ -81,6 +82,29 @@ func present(t *testing.T, admin natsgo.JetStreamContext, name string) bool {
 	return err == nil
 }
 
+// nextMsg waits for sub's next message until the test binary's deadline less testwait's margin
+// (testwait.Context), and fails the test naming what, the message it waited for, when none comes.
+func nextMsg(t *testing.T, sub *natsgo.Subscription, what string) *natsgo.Msg {
+	t.Helper()
+	msg, err := sub.NextMsgWithContext(testwait.Context(t))
+	require.NoError(t, err, "gave up waiting for %s", what)
+	return msg
+}
+
+// awaitGone waits through testwait.Until for the stream name to be gone from admin, and fails the
+// test naming what, the fact that deletes it, with the stream's last reading. A read that fails but
+// for a not-found fails the test at once (present), so a stream nothing could read never reads as
+// gone.
+func awaitGone(t *testing.T, admin natsgo.JetStreamContext, name, what string) {
+	t.Helper()
+	testwait.Until(t, what, func() (string, bool) {
+		if present(t, admin, name) {
+			return name + " present", false
+		}
+		return name + " gone", true
+	})
+}
+
 // The edge's consumer calls reach past its publish list, and this row pins how far, on the hub's
 // image: a narrowing of that reach fails it, and so does a widening of the publish list it reads
 // against. On a stream with the production subjects, which a shared listener's user owns:
@@ -129,8 +153,7 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 			Name: "edge-reach", FilterSubject: own, DeliverSubject: target, AckPolicy: natsgo.AckNonePolicy,
 		})
 		require.NoError(t, err, "the edge creates a push consumer delivering on %s", target)
-		msg, err := received.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the edge's push consumer delivered nothing on %s", target)
+		msg := nextMsg(t, received, "the edge's push consumer's delivery on "+target)
 		require.Equal(t, "stored by the edge", string(msg.Data), "the reader received the edge's direct publish, which the server refused")
 	})
 	t.Run("it reads another project's stored Dispatch event", func(t *testing.T) {
@@ -145,8 +168,7 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 			Name: "edge-read", FilterSubject: event, DeliverSubject: inbox, AckPolicy: natsgo.AckNonePolicy,
 		})
 		require.NoError(t, err, "the edge creates a consumer on %s", event)
-		msg, err := read.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the edge's consumer on %s delivered nothing to its inbox", event)
+		msg := nextMsg(t, read, "the delivery of "+event+" to the edge's inbox by the edge's consumer")
 		require.Equal(t, "another project's event", string(msg.Data))
 	})
 	t.Run("a deliver subject the stream carries is refused as a cycle", func(t *testing.T) {
@@ -179,8 +201,7 @@ func TestTheEdgeGrantsConsumerCallsReachPastItsPublishList(t *testing.T) {
 		refusedNaming(t, edgeErrs, `Subscription to "`+twoTokens+`"`)
 		require.NoError(t, owner.Conn.Publish(twoTokens, []byte("two tokens")))
 		require.NoError(t, owner.Conn.Flush())
-		msg, err := wide.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the edge's subscription under deliver.> was delivered nothing")
+		msg := nextMsg(t, wide, "a delivery to the edge's subscription under deliver.>")
 		require.Equal(t, twoTokens, msg.Subject)
 	})
 }
@@ -216,13 +237,11 @@ func TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts(t *t
 
 	require.NoError(t, aConn.PublishRequest(session, receiptOf("edge-a"), []byte("a frame")))
 	require.NoError(t, aConn.Flush())
-	frame, err := frames.NextMsg(10 * time.Second)
-	require.NoError(t, err, "edge-b did not read the frame on %s", session)
+	frame := nextMsg(t, frames, "edge-b's read of the frame on "+session)
 	require.Equal(t, receiptOf("edge-a"), frame.Reply)
 	require.NoError(t, frame.Respond([]byte("done")))
 	require.NoError(t, bConn.Flush())
-	answer, err := receipts.NextMsg(10 * time.Second)
-	require.NoError(t, err, "edge-a did not receive edge-b's answer on %s", receiptOf("edge-a"))
+	answer := nextMsg(t, receipts, "edge-b's answer at edge-a on "+receiptOf("edge-a"))
 	require.Equal(t, "done", string(answer.Data))
 
 	_, err = bConn.SubscribeSync(familyOf("edge-a"))
@@ -231,8 +250,7 @@ func TestAnEdgeMachineAnswersAnotherMachinesFrameAndReadsOnlyItsOwnReceipts(t *t
 	refusedNaming(t, bErrs, `Subscription to "`+familyOf("edge-a")+`"`)
 	require.NoError(t, bConn.Publish(receiptOf("edge-b"), []byte("edge-b's own")))
 	require.NoError(t, bConn.Flush())
-	own, err := ownOfB.NextMsg(10 * time.Second)
-	require.NoError(t, err, "edge-b did not read its own receipt")
+	own := nextMsg(t, ownOfB, "edge-b's read of its own receipt")
 	require.Equal(t, "edge-b's own", string(own.Data))
 }
 
@@ -279,7 +297,7 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		return err
 	}
 	edgeConn, edgeErrs := grantedConnection(t, uri, edgeSeed, natsgo.CustomInboxPrefix(natsgrant.EdgeInboxPrefix("m")))
-	edgeJS, err := edgeConn.JetStream(natsgo.MaxWait(3 * time.Second))
+	edgeJS, err := edgeConn.JetStream()
 	require.NoError(t, err)
 
 	err = refusedRequest(t, edgeErrs, `Publish to "$JS.API.STREAM.UPDATE.KV_`+bus.InterestBucket+`"`, func(ctx context.Context) error {
@@ -289,9 +307,13 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 	info, err := admin.StreamInfo("KV_" + bus.InterestBucket)
 	require.NoError(t, err)
 	require.Nil(t, info.Config.RePublish, "KV_%s carries a republish after the edge's refused update", bus.InterestBucket)
-	interests, err := edgeJS.KeyValue(bus.InterestBucket)
+	// The jetstream package's bucket calls take the test's deadline as their context, which nats.go's
+	// older KeyValue and Put take no form of.
+	edgeKV, err := jetstream.New(edgeConn)
 	require.NoError(t, err)
-	_, err = interests.Put("rp", nil)
+	interests, err := edgeKV.KeyValue(testwait.Context(t), bus.InterestBucket)
+	require.NoError(t, err)
+	_, err = interests.Put(testwait.Context(t), "rp", nil)
 	require.NoError(t, err, "the edge writes an empty value to a key of the interest bucket")
 
 	for _, control := range []struct {
@@ -311,10 +333,9 @@ func TestTheEdgeCannotSetABucketToRepublishIntoTheJetStreamAPI(t *testing.T) {
 		require.NoError(t, err)
 		_, err = bucket.Put("rp", control.value)
 		require.NoError(t, err)
-		copied, err := republished.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the administrator's republish to %s reached no subscriber within 10s, so the row cannot see it fire", target)
+		copied := nextMsg(t, republished, "the administrator's republish to "+target+" at its subscriber, without which the row cannot see it fire")
 		require.Empty(t, copied.Data, "the republished copy on %s carries a body", target)
-		require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, control.victim) }), "%s is still there 10s after the administrator's republish of an empty body to its delete", control.victim)
+		awaitGone(t, admin, control.victim, control.victim+" deleted by the administrator's republish of an empty body to its delete")
 	}
 	require.True(t, present(t, admin, "SCRATCH_VICTIM"), "SCRATCH_VICTIM, whose delete the edge could set no republish to")
 }
@@ -389,19 +410,18 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 		require.NoError(t, adminConn.Flush())
 		require.NoError(t, conn.PublishRequest(request, reply, body))
 		require.NoError(t, conn.Flush())
-		_, err = answers.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the answer to %s reached no subscriber of %s within 10s", request, reply)
+		nextMsg(t, answers, "the answer to "+request+" at a subscriber of "+reply)
 		require.NoError(t, answers.Unsubscribe())
 	}
 	directGet := "$JS.API.DIRECT.GET.KV_" + bus.InterestBucket + ".$KV." + bus.InterestBucket + "."
 
 	listenerConn, _ := grantedConnection(t, uri, listenerSeed)
-	listenerJS, err := listenerConn.JetStream(natsgo.MaxWait(3 * time.Second))
+	listenerJS, err := jetstream.New(listenerConn)
 	require.NoError(t, err)
-	interests, err := listenerJS.KeyValue(bus.InterestBucket)
+	interests, err := listenerJS.KeyValue(testwait.Context(t), bus.InterestBucket)
 	require.NoError(t, err)
 	for key, value := range map[string][]byte{"dg-update": update("SCRATCH_DG"), "dg-control": update("SCRATCH_DG_CONTROL"), "dg-empty": nil} {
-		_, err := interests.Put(key, value)
+		_, err := interests.Put(testwait.Context(t), key, value)
 		require.NoError(t, err)
 	}
 
@@ -421,11 +441,10 @@ func TestTheEdgeHoldsNoDirectGetWhoseAnswerReachesTheJetStreamAPI(t *testing.T) 
 	answered(listenerConn, directGet+"dg-empty", "$JS.API.STREAM.DELETE.SCRATCH_DG_GONE", nil)
 	control := func() string { return state("SCRATCH_DG_CONTROL") + "; " + state("SCRATCH_DG_GONE") }
 	const changed = "present, max_msgs 7, 1 messages; gone"
-	seen := control()
-	for deadline := time.Now().Add(10 * time.Second); seen != changed && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-		seen = control()
-	}
-	require.Equal(t, changed, seen, "SCRATCH_DG_CONTROL and SCRATCH_DG_GONE after Listener's direct gets answered on the update of the one and the delete of the other")
+	testwait.Until(t, "SCRATCH_DG_CONTROL and SCRATCH_DG_GONE to read "+changed+" after Listener's direct gets answered on the update of the one and the delete of the other", func() (string, bool) {
+		seen := control()
+		return seen, seen == changed
+	})
 
 	var states []string
 	want := make([]string, len(streams))
@@ -609,25 +628,22 @@ func TestTheEdgeGrantsPushConsumerReachesItsAccountsJetStreamAPI(t *testing.T) {
 				require.Equal(t, delivery.want, delivery.state())
 				return
 			}
-			delivered := false
-			for deadline := time.Now().Add(10 * time.Second); time.Now().Before(deadline) && !delivered; time.Sleep(50 * time.Millisecond) {
+			testwait.Until(t, fmt.Sprintf("a delivery of the consumer on %s, which a client subscribes", delivery.target), func() (string, bool) {
 				info, err := admin.ConsumerInfo(bus.Stream, name)
-				delivered = err == nil && info.Delivered.Consumer >= 1
-			}
-			require.True(t, delivered, "the consumer on %s delivered nothing within 10s, though a client subscribes it", delivery.target)
-			select {
-			case subject := <-subjects:
-				require.Equal(t, own, subject, "the delivery on %s came under %s, not its stream subject", delivery.target, subject)
-			case <-time.After(10 * time.Second):
-				t.Fatalf("the client subscribed to %s received no delivery within 10s", delivery.target)
-			}
+				if err != nil {
+					return "unread: " + err.Error(), false
+				}
+				return fmt.Sprintf("%d delivered", info.Delivered.Consumer), info.Delivered.Consumer >= 1
+			})
+			subject := testwait.Receive(t, "the delivery at the client subscribed to "+delivery.target, subjects)
+			require.Equal(t, own, subject, "the delivery on %s came under %s, not its stream subject", delivery.target, subject)
 			// The subject above is why an API path takes no action; no clock decides it. A case
 			// whose stream stores the delivery waits for that store, which lands just behind the
 			// client's copy, and every other case reads its state once.
-			after := delivery.state()
-			for deadline := time.Now().Add(10 * time.Second); after == before && before != delivery.want && time.Now().Before(deadline); time.Sleep(50 * time.Millisecond) {
-				after = delivery.state()
-			}
+			after := testwait.Until(t, fmt.Sprintf("the store of the edge's delivery on %s, which moves its state from %s", delivery.target, before), func() (string, bool) {
+				after := delivery.state()
+				return after, before == delivery.want || after != before
+			})
 			require.Equal(t, delivery.want, after, "%s after the edge's delivery (before: %s)", delivery.target, before)
 		})
 	}
@@ -694,12 +710,11 @@ func TestAPushConsumersHeartbeatOnTheAPIDeletesAStreamWhileAClientSubscribesIt(t
 		require.NoError(t, err, "the edge creates a push consumer with a heartbeat delivering on %s", deliver)
 	}
 
-	beat, err := heartbeats.NextMsg(10 * time.Second)
-	require.NoError(t, err, "no heartbeat reached the client subscribed to %s within 10s", target)
+	beat := nextMsg(t, heartbeats, "a heartbeat at the client subscribed to "+target)
 	require.Equal(t, target, beat.Subject, "the heartbeat came under %s", beat.Subject)
 	require.Empty(t, beat.Data, "the heartbeat's body")
 	require.Equal(t, "100", beat.Header.Get("Status"), "the heartbeat's status")
-	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_HB") }), "SCRATCH_HB is still there 10s after a heartbeat reached its delete subject")
+	awaitGone(t, admin, "SCRATCH_HB", "SCRATCH_HB deleted by a heartbeat that reached its delete subject")
 
 	info, err := admin.ConsumerInfo(bus.Stream, "edge-hb-unsubscribed")
 	require.NoError(t, err)
@@ -763,15 +778,14 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	// empty body, and leaves SCRATCH_PULL.
 	require.NoError(t, edgeConn.PublishRequest(pullNext, inbox, pull))
 	require.NoError(t, edgeConn.Flush())
-	status, err := replies.NextMsg(10 * time.Second)
-	require.NoError(t, err, "the no_wait pull's status reached no subscriber of the edge's inbox within 10s")
+	status := nextMsg(t, replies, "the no_wait pull's status at the edge's inbox")
 	require.Equal(t, "404", status.Header.Get("Status"), "the no_wait pull's status")
 	require.Empty(t, status.Data, "the no_wait pull's status body")
 	require.True(t, present(t, admin, "SCRATCH_PULL"), "the pull answered on the inbox removed SCRATCH_PULL")
 	// Probe: the same no_wait pull answered on a stream delete deletes that stream, with no subscriber.
 	require.NoError(t, edgeConn.PublishRequest(pullNext, "$JS.API.STREAM.DELETE.SCRATCH_PULL", pull))
 	require.NoError(t, edgeConn.Flush())
-	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_PULL") }), "SCRATCH_PULL is still there 10s after a no_wait pull's status reached its delete subject")
+	awaitGone(t, admin, "SCRATCH_PULL", "SCRATCH_PULL deleted by a no_wait pull's status that reached its delete subject")
 
 	// The ack route: two stored messages, pulled to the edge's inbox for their ack subjects.
 	for range 2 {
@@ -786,8 +800,7 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	require.NoError(t, edgeConn.Flush())
 	var ackSubjects []string
 	for len(ackSubjects) < 2 {
-		msg, err := replies.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the edge pulled fewer than two of its own messages within 10s")
+		msg := nextMsg(t, replies, "two of the edge's own messages pulled to its inbox")
 		if msg.Reply != "" && len(msg.Data) > 0 {
 			ackSubjects = append(ackSubjects, msg.Reply)
 		}
@@ -796,14 +809,13 @@ func TestAPullStatusAndAnAckAnswerOnTheAPIDeleteAStream(t *testing.T) {
 	// leaves SCRATCH_ACK.
 	require.NoError(t, edgeConn.PublishRequest(ackSubjects[0], inbox, []byte("+ACK")))
 	require.NoError(t, edgeConn.Flush())
-	confirm, err := replies.NextMsg(10 * time.Second)
-	require.NoError(t, err, "the synchronous ack's reply reached no subscriber of the edge's inbox within 10s")
+	confirm := nextMsg(t, replies, "the synchronous ack's reply at the edge's inbox")
 	require.Empty(t, confirm.Data, "the synchronous ack's reply body")
 	require.True(t, present(t, admin, "SCRATCH_ACK"), "the ack answered on the inbox removed SCRATCH_ACK")
 	// Probe: the same synchronous ack answered on a stream delete deletes that stream, with no subscriber.
 	require.NoError(t, edgeConn.PublishRequest(ackSubjects[1], "$JS.API.STREAM.DELETE.SCRATCH_ACK", []byte("+ACK")))
 	require.NoError(t, edgeConn.Flush())
-	require.True(t, testwait.Holds(10*time.Second, 50*time.Millisecond, func() bool { return !present(t, admin, "SCRATCH_ACK") }), "SCRATCH_ACK is still there 10s after a synchronous ack's reply reached its delete subject")
+	awaitGone(t, admin, "SCRATCH_ACK", "SCRATCH_ACK deleted by a synchronous ack's reply that reached its delete subject")
 }
 
 // A publish of a Dispatch event on the edge listener's connection is refused by the server: the
@@ -835,8 +847,7 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	accepted, acceptedErrs := grantedConnection(t, uri, listenerSeed)
 	require.NoError(t, accepted.Publish(subject, []byte("from the listener")))
 	require.NoError(t, accepted.Flush())
-	msg, err := events.NextMsg(5 * time.Second)
-	require.NoError(t, err, "the listener's publish of %s did not reach the subscriber", subject)
+	msg := nextMsg(t, events, "the listener's publish of "+subject+" at the subscriber")
 	require.Equal(t, subject, msg.Subject, "the subscriber's first message")
 	require.Equal(t, "from the listener", string(msg.Data))
 	select {
@@ -849,13 +860,9 @@ func TestTheEdgeCannotPublishADispatchEvent(t *testing.T) {
 	require.NoError(t, refused.Publish(subject, []byte("from the edge")))
 	require.NoError(t, refused.Publish(marker, []byte("the edge's marker")))
 	require.NoError(t, refused.Flush())
-	select {
-	case err := <-refusedErrs:
-		require.True(t, errors.Is(err, natsgo.ErrPermissionViolation), "the edge's connection was told %v, want a permissions violation", err)
-		require.Contains(t, err.Error(), `Publish to "`+subject+`"`)
-	case <-time.After(5 * time.Second):
-		t.Fatalf("the server did not refuse the edge's publish of %s within 5s", subject)
-	}
+	told := testwait.Receive(t, "the server's refusal of the edge's publish of "+subject, refusedErrs)
+	require.True(t, errors.Is(told, natsgo.ErrPermissionViolation), "the edge's connection was told %v, want a permissions violation", told)
+	require.Contains(t, told.Error(), `Publish to "`+subject+`"`)
 	next, err := events.NextMsgWithContext(testwait.Context(t))
 	require.NoError(t, err, "the edge's marker on %s did not reach the subscriber, so nothing shows its publish of %s did not", marker, subject)
 	if next.Subject != marker {
@@ -916,8 +923,7 @@ func publishOutcome(t *testing.T, uri, seed string, reader *natsgo.Subscription,
 	}
 	require.NoError(t, conn.Flush())
 	for {
-		msg, err := reader.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the sentinel %s did not reach the reader within 10s, so no publish could be read as accepted", sentinel)
+		msg := nextMsg(t, reader, "the sentinel "+sentinel+" at the reader, without which no publish reads as accepted")
 		if msg.Subject == sentinel {
 			break
 		}
@@ -929,18 +935,13 @@ func publishOutcome(t *testing.T, uri, seed string, reader *natsgo.Subscription,
 			pending[subject] = true
 		}
 	}
-	deadline := time.After(10 * time.Second)
 	for len(pending) > 0 {
-		select {
-		case err := <-errs:
-			_, quoted, found := strings.Cut(err.Error(), `Publish to "`)
-			subject, _, closed := strings.Cut(quoted, `"`)
-			if errors.Is(err, natsgo.ErrPermissionViolation) && found && closed && pending[subject] {
-				delete(pending, subject)
-				refused = append(refused, subject)
-			}
-		case <-deadline:
-			t.Fatalf("the server neither delivered nor refused these publishes within 10s: %v", pending)
+		err := testwait.Receive(t, fmt.Sprintf("the server's refusal of each publish the reader did not receive; neither delivered nor refused yet: %v", pending), errs)
+		_, quoted, found := strings.Cut(err.Error(), `Publish to "`)
+		subject, _, closed := strings.Cut(quoted, `"`)
+		if errors.Is(err, natsgo.ErrPermissionViolation) && found && closed && pending[subject] {
+			delete(pending, subject)
+			refused = append(refused, subject)
 		}
 	}
 	return accepted, refused

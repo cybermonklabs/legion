@@ -3,15 +3,14 @@
 package natsgrant_test
 
 import (
-	"context"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/stretchr/testify/require"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/natsgrant"
 )
 
@@ -118,8 +117,7 @@ func TestOnlyUsersOnTheListenersGrantWriteOrReadAnExpiryNotice(t *testing.T) {
 	reader, _ := grantedConnection(t, hub.uri, hub.reader)
 
 	t.Run("the listener's user stores a message on the subject and Dispatch's user reads it back", func(t *testing.T) {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-		defer cancel()
+		ctx := testwait.Context(t)
 		body := []byte(`{"role":"` + expiryNoticeRole + `","sequence":3}`)
 		_, err := hub.owner.JS().Publish(subject, body, natsgo.MsgId("expiry-grant-stored-row"), natsgo.Context(ctx))
 		require.NoError(t, err, "the listener's user stores a message on %s", subject)
@@ -160,8 +158,7 @@ func TestOnlyUsersOnTheListenersGrantWriteOrReadAnExpiryNotice(t *testing.T) {
 		control, _ := grantedConnection(t, hub.uri, hub.listener)
 		require.NoError(t, control.Publish(subject, []byte("control")))
 		require.NoError(t, control.Flush())
-		msg, err := received.NextMsg(10 * time.Second)
-		require.NoError(t, err, "the listener's control publish did not reach the reader")
+		msg := nextMsg(t, received, "the listener's control publish at the reader")
 		require.Equal(t, "control", string(msg.Data), "a refused publish on %s reached the reader", subject)
 	})
 
@@ -174,8 +171,7 @@ func TestOnlyUsersOnTheListenersGrantWriteOrReadAnExpiryNotice(t *testing.T) {
 			control, _ := grantedConnection(t, hub.uri, hub.listener)
 			require.NoError(t, control.Publish(subject, []byte(other.name)))
 			require.NoError(t, control.Flush())
-			msg, err := sub.NextMsg(10 * time.Second)
-			require.NoError(t, err, "the %s's user did not receive a notice", other.name)
+			msg := nextMsg(t, sub, "a notice at the "+other.name+"'s user")
 			require.Equal(t, subject, msg.Subject)
 		}
 	})
