@@ -58,7 +58,7 @@ test("dispatch://<KEY>/threads and Threads' pages read in text as no reference",
   }
   for (const path of ["/issues/ACME-1/threads", `/issues/ACME-1/threads/${RECORD}`]) {
     expect(
-      referenceRouteFromHref(`https://dispatch.test${path}`, "https://dispatch.test"),
+      referenceRouteFromHref(`https://dispatch.test${path}`, ["https://dispatch.test"]),
       path
     ).toBeUndefined();
   }

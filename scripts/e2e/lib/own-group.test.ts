@@ -1,7 +1,7 @@
 import { afterEach, expect } from "bun:test";
-import { realpathSync } from "node:fs";
+import { readFileSync, realpathSync } from "node:fs";
 import { hostGate, hostTool } from "@legion/test-fixtures/host-tools";
-import { ownGroup, untilRunning } from "./own-group";
+import { ownGroup, untilExecDone, untilRunning } from "./own-group";
 import { libRowBoundMs, rowWaits } from "./row-waits";
 
 const host = hostGate({ programs: ["perl", "bash", "sleep", "true"] });
@@ -97,3 +97,42 @@ host.test("untilRunning looks once even at an end that has passed", async () => 
   await untilRunning(child.pid, "sleep", waits.end());
   await untilRunning(child.pid, "sleep", performance.now() - 1);
 });
+
+host.test(
+  "untilExecDone resolves once the pid runs the program and its environment reads",
+  async () => {
+    const child = Bun.spawn(ownGroup(["sleep", "60"]), { stdout: "ignore", stderr: "ignore" });
+    started.push(child.pid);
+    await untilExecDone(child.pid, "sleep", waits.end());
+    expect(realpathSync(`/proc/${child.pid}/exe`)).toBe(realpathSync(hostTool("sleep") ?? "sleep"));
+    expect(readFileSync(`/proc/${child.pid}/environ`).length).toBeGreaterThan(0);
+  }
+);
+
+// A process started with an empty environment reads as one inside its exec reads: its exe link
+// names the program and its environment reads empty. A wait on the exe link alone (untilRunning)
+// ends on it. untilExecDone does not, and fails at the end it is given, naming what both read.
+host.test(
+  "untilExecDone does not resolve while the pid's environment reads empty, and fails at the end it is given naming what the exe link and the environment read",
+  async () => {
+    const sleep = realpathSync(hostTool("sleep") ?? "sleep");
+    const child = Bun.spawn(ownGroup([sleep, "60"]), {
+      env: {},
+      stdout: "ignore",
+      stderr: "ignore",
+    });
+    started.push(child.pid);
+    await untilRunning(child.pid, "sleep", waits.end());
+    const end = performance.now() + 1_000;
+    let failure = "";
+    try {
+      await untilExecDone(child.pid, "sleep", end);
+    } catch (error) {
+      failure = (error as Error).message;
+    }
+    expect(performance.now()).toBeGreaterThanOrEqual(end);
+    expect(failure.replace(/^waited \d+\.\d s,/, "waited N s,")).toBe(
+      `waited N s, to the end of the row's waits, for pid ${child.pid} to finish its exec of ${sleep}: its exe link read ${sleep} and its environ 0 bytes`
+    );
+  }
+);
