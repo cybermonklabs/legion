@@ -332,11 +332,12 @@ Each item below names a script, then what it proves.
   a push that moves the pull request's head, published as the normalized `pull_request` envelope, leaves the earlier result at none of the commits the check compares with, and no write of Dispatch's does it, while the result at the new head stands at that head;
   a closed issue takes a result for an `after_merge` check and still refuses a document write 409 `ISSUE_CLOSED`;
   a `default_branch` result stands at the branch for a commit the compare calls `behind` and at no basis for one it calls `diverged`;
+  an `after_merge` check whose author marks it `subject="production"` and names its program counts a result only at the build that program runs now;
   and a result whose issue resolves to a repository the installation lookup does not find is answered unknown, with the unreadable repository as the reason.
   Three more cases run the `dispatch` command as a process against that server.
   The command refuses a bare `-` given to any text flag its help lists but `dispatch artifact --path`, with exit 2 and a line that names the flag's `-file` twin.
   It keeps every other value of a text flag byte for byte.
-  Run against a base binary (`DISPATCH_BIN`) or against the command of another tree (`VERIFICATION_RESULTS_E2E_DISPATCH_CLI`), it is the change's negative control
+  Run against a base binary (`DISPATCH_BIN`) or against the command of another tree (`VERIFICATION_RESULTS_E2E_DISPATCH_CLI`), with one case alone where `VERIFICATION_RESULTS_E2E_CASES` names it, it is the change's negative control
 
 - `child-adoption.sh`
 
@@ -4329,6 +4330,7 @@ DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-base" bash scripts/e2e/dis
 ```sh
 DATABASE_URL=postgres://<user>@127.0.0.1:<port>/<database>?sslmode=disable \
   [DISPATCH_BIN=<envoy-dispatch>] [VERIFICATION_RESULTS_E2E_DISPATCH_CLI=<bin/dispatch.ts>] \
+  [VERIFICATION_RESULTS_E2E_CASES=<case>[,<case>...]] \
   bash scripts/e2e/verification-results.sh     # → "verification results e2e: PASS in <n>s", exit 0
 ```
 
@@ -4361,6 +4363,14 @@ Each item below names an input and its default, then what it means.
   The script reads it before it drops the inherited variables, and refuses a value that is not a readable file.
   The script makes the path absolute, because `dash-refused` runs the command in another directory.
   A negative control names the command of another tree here, with no change to the checkout
+
+- `VERIFICATION_RESULTS_E2E_CASES` — unset
+
+  a comma-separated list of the cases the driver runs; unset or naming none, every case runs.
+  The script reads it beside `DISPATCH_BIN` and passes it to the driver.
+  The setup runs either way, and every case the list leaves out prints `not selected <case>` and is neither run nor counted.
+  A name that is no case of the driver fails the run, and the summary names it.
+  It is the negative control's way to run one case alone
 
 - `VERIFICATION_RESULTS_E2E_DISPATCH_PORT` — `19061`
 
@@ -4398,7 +4408,7 @@ Each item below names a case and how it is driven, then what must hold for it to
 - `the-results-route-is-served` — a result naming a check a plain issue does not have
 
   `400 UNKNOWN_CHECK`, which is the run's first result write.
-  A binary that serves no such route answers `404`, and the run stops there, since every later case records a result too
+  A binary that serves no such route answers `404`, and where this case runs the run stops there, since every later case records a result too
 
 - `a2-record-and-read` — one result recorded against a `before_merge` check, then read back through `GET /api/v1/issues/{key}/results`
 
@@ -4441,6 +4451,18 @@ Each item below names a case and how it is driven, then what must hold for it to
   With a commit named, to the command or to the API, every check of the issue compares with that commit and nothing else, the result at A2 reads at another commit, and a named commit no result is at leaves every result there.
   After the event the basis names A3 at the event's own update time, as the pull request's update time and not as a read.
   The unreadable repository is reported as that, with no pass standing, and never as nothing to compare with
+
+- `live-subject` — one `after_merge` check that marks neither subject nor program, its pull request `#51` merged, then five steps.
+  Step 1 seeds the issue and publishes the merge.
+  Step 2 reads `verification.md` with `dispatch doc-read` and uploads it whole again with `dispatch artifact --force --precondition-json '{"document":"<token>"}'`, the check's opening line now carrying `subject="production" program="live-proof"`.
+  Step 3 runs `dispatch results` with no deploy of `live-proof`.
+  Step 4 runs `dispatch deploy` of the first build as the run's person, records a pass at that build with `dispatch result`, and runs `dispatch results`.
+  Step 5 deploys the second build, then runs `dispatch results` and reads `GET /api/v1/issues/{key}/results`
+
+  step 2 exits 0, and the results route then reads the check's `subject` and `program`.
+  Step 3 prints `A pass stands: not known, as Dispatch holds no deploy of live-proof in acme/verification-live`.
+  Step 4 prints `A pass stands: yes, from implementer, as the newest result is pass <id> at <first build>`.
+  Step 5 prints `A pass stands: not known, as no result counts for live-proof at <second build>, deployed <time>`, with the time the deploy answered, and the results route marks the pass of step 4 `not_counted`, since it names a commit the current deploy does not run
 
 - `k-attribution-what-decides-a-pull-request-issue` — five pull requests of one parent and its child: one on `legion/<child>` whose title and body name the parent first and the child second, one whose branch names no issue and whose body names one, one on `legion/<child>` whose URL a person linked to a third issue, one whose branch names no issue, whose title names one issue and whose URL a person linked to another, and two rows the driver stores credited to the parent under attribution rule 1, one open and one merged, which only the reconcile can re-judge
 
@@ -4493,7 +4515,7 @@ Each item below names a case and how it is driven, then what must hold for it to
   Each stored `run`, `observed` and `negative_control` equals byte for byte what its step gave, and the stdin text of step 1 keeps both its line feeds.
   A field that a step did not send reads as the empty string
 
-Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL exits 1.
+Every case prints `== <case>`, what it read, and `ok <case>` or `FAIL <case>: <why>`; a summary follows, and any FAIL, or a name in `VERIFICATION_RESULTS_E2E_CASES` that is no case, exits 1.
 The work directory, under `TMPDIR`, holds the binaries and the logs of natsd, the two fakes and the server:
 removed when the run passes, kept (without the binaries) and printed when it fails.
 Every process the run started is stopped on any exit.
@@ -4541,6 +4563,21 @@ DATABASE_URL=… [DISPATCH_BIN=<envoy-dispatch>] \
 #   line for --negative-control
 #   exit 1
 git -C <checkout> worktree remove --force "$TMPDIR/<head tree>"
+```
+
+For `live-subject`, the input is a binary built from `2326c5d65772`, which reads a check's `subject` and `program` (block schema 6) but refuses to write them, with `VERIFICATION_RESULTS_E2E_CASES` running that case alone:
+
+```sh
+mkdir -p "$TMPDIR/part-a-src"
+git --git-dir=<the checkout's git directory> archive 2326c5d65772 packages/envoy | tar -x -C "$TMPDIR/part-a-src"
+go -C "$TMPDIR/part-a-src/packages/envoy" build -o "$TMPDIR/envoy-dispatch-part-a" ./cmd/dispatch
+DATABASE_URL=… DISPATCH_BIN="$TMPDIR/envoy-dispatch-part-a" VERIFICATION_RESULTS_E2E_CASES=live-subject \
+  bash scripts/e2e/verification-results.sh
+# → FAIL live-subject: step 2: dispatch artifact … exited 1, want 0: the check's
+#   subject="production" program="live-proof" was not written
+#   stdout "INVALID_MARKDOWN: … this Dispatch build reads attribute \"subject\" of typed block
+#   \"check\" but cannot write it yet. …"
+#   exit 1
 ```
 
 ## child-adoption.sh
