@@ -187,13 +187,14 @@ func thirdSeeded(r *doneByChecksRig, third string) {
 	t.Logf("%s holds the record of the release before: reviewing at generation 1, each column of this release at its default", third)
 }
 
-// firstToItsMerge walks the first issue to merging, with a pass of its check before the merge at
-// its head, and its pull request merges while the merger works. The first read after the merge
-// names the merge on main: the issue stands in verifying, status testing, with no slot,
-// close-wait.md names what it waits for and since when, and the production check opens at that
-// read. Its look 1 is told to the tester, whose turn ends with no report, so the production term
-// reads open. It answers the check's opening and the count of the daemon's messages on the issue
-// at its entry.
+// firstToItsMerge is items 1 and 2 of TestAnIssueClosesWhenTheChecksOfItsGoalPass, the numbers the
+// Verification document's checks name. It walks the first issue to merging, with a pass of its
+// check before the merge at its head, and its pull request merges while the merger works. The
+// first read after the merge names the merge on main: the issue stands in verifying, status
+// testing, with no slot, close-wait.md names what it waits for and since when, and the production
+// check opens at that read. Its look 1 is told to the tester, whose turn ends with no report, so
+// the production term reads open. It answers the check's opening and the count of the daemon's
+// messages on the issue at its entry.
 func firstToItsMerge(r *doneByChecksRig, first string) firstLook {
 	t := r.t
 	t.Helper()
@@ -348,16 +349,16 @@ func fifthSetBack(r *doneByChecksRig, third string) string {
 	return fifth
 }
 
-// firstThroughItsNextChange runs the first issue, whose look 1 stands open with no report, from
-// the fail that starts its next change to its close on its checks, and then a fail after the
-// close.
+// firstThroughItsNextChange is items 3 to 8 of TestAnIssueClosesWhenTheChecksOfItsGoalPass. It runs
+// the first issue, whose look 1 stands open with no report, from the fail that starts its next
+// change to its close on its checks, and then a fail after the close.
 func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook) {
 	t := r.t
 	t.Helper()
 	r.on(first)
 	branch := claim.IssueBranch(first)
 
-	// The fail at a commit of main that holds the merge starts the next change.
+	// Item 3: the fail at a commit of main that holds the merge starts the next change.
 	later := r.standIn.commitOnMain(doneByChecksLaterCommit)
 	fail := r.record("fail", later)
 	failed := r.awaitResultFact(fail)
@@ -404,10 +405,10 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 		opened, r.awaitProcessed("github", opened).UTC().Format(time.RFC3339Nano), doneByChecksSecondPull, doneByChecksSecondHead)
 	r.awaitAnswerOf(doneByChecksBeforeCheck, fmt.Sprintf("#%d opened", doneByChecksSecondPull), subjectNamed(doneByChecksSecondHead))
 
-	// With the change's pull request open, each check passes, and the change holds the close. The
-	// production check of the first merge is no input of it any more: StartNextChange closed it as
-	// not run (D6), so the tester's report of its look 1 is refused, and the production term reads
-	// awaiting_change until the change's own check opens.
+	// Item 4: with the change's pull request open, each check passes, and the change holds the
+	// close. The production check of the first merge is no input of it any more: StartNextChange
+	// closed it as not run (D6), so the tester's report of its look 1 is refused, and the
+	// production term reads awaiting_change until the change's own check opens.
 	tester := r.worker(claim.RoleTester)
 	refusal := r.reportRefused(tester, look.opened, 1, "pass")
 	if check := readProductionCheck(t, r.st.Pool(), r.records, first); check.Open() || check.Outcome != record.CheckNotRun || check.Generation != 1 {
@@ -432,7 +433,7 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 		t.Fatalf("%s's stored wait while its change is open is %+v, want no check, nothing beneath, no reported defect, the open change and the production term awaiting it", first, wait)
 	}
 
-	// The change runs to its merge, and the production check of that merge opens.
+	// Item 5: the change runs to its merge, and the production check of that merge opens.
 	r.walkImplementing(doneByChecksSecondHead)
 	r.walkTesting()
 	r.walkReview(doneByChecksSecondPull, doneByChecksSecondHead)
@@ -452,7 +453,7 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 	reported := r.reportLook(tester, second, 1, "pass", nil)
 	tester.endTurn()
 
-	// The issue closes on its checks.
+	// Item 6: the issue closes on its checks.
 	r.awaitCloseRead(first, "the second production check's pass", reported, passesAt(doneByChecksBeforeCheck, doneByChecksSecondHead))
 	r.awaitIssue(first, "the close", func(issue api.Issue) error {
 		if issue.Phase != phase.Done || issue.LingerUntil == nil {
@@ -465,7 +466,7 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 		t.Fatalf("%s closed with no closed_on_checks_at", first)
 	}
 
-	// The wait was told in close-wait.md's versions, and in no message.
+	// Item 8: the wait was told in close-wait.md's versions, and in no message.
 	versions := r.awaitCloseWaitDocument(first, "the close", closeWaitTime(*row.ClosedOnChecksAt))
 	for place := 1; place < len(versions); place++ {
 		if versions[place] == versions[place-1] {
@@ -480,7 +481,7 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 	}
 	t.Logf("close-wait.md of %s has %d versions from its entry to its close, and its messages stood at %d", first, len(versions), look.messages)
 
-	// A fail after the close tells the controller once and reopens nothing.
+	// Item 7: a fail after the close tells the controller once and reopens nothing.
 	lateFail := r.record("fail", r.standIn.commitOnMain(doneByChecksLateFailCommit))
 	r.awaitResultFact(lateFail)
 	var notices []listenerPublish
