@@ -38,6 +38,13 @@ func TestReplayThinkingPolicy(t *testing.T) {
 			}
 		})
 	}
+	t.Run("nanogpt", func(t *testing.T) {
+		const id = "Qwen3.5-27B-Claude-4.6-Opus-Reasoning-Distilled-Derestricted-Lite"
+		classifier, prefix := anthropicThinkingPolicy("nanogpt", id, replayModelClass(id))
+		if !classifier || prefix {
+			t.Errorf("policy = classifier %t, prefix %t; want true, false", classifier, prefix)
+		}
+	})
 }
 
 func TestReadDropsThinkingAfterAPrecedingRewrite(t *testing.T) {
@@ -104,7 +111,7 @@ func TestTransformNativeAnthropicBlocks(t *testing.T) {
 func TestTransformToolResultRules(t *testing.T) {
 	const model = "gpt-test"
 	const api = conversation.OpenAIResponses
-	target := target{provider: "test", api: api, model: model}
+	defaultTarget := target{provider: "test", api: api, model: model}
 	turn := func(stop string, blocks ...block) llmMessage {
 		return llmMessage{role: "assistant", provider: "test", api: api, model: model, stopReason: stop, blocks: blocks}
 	}
@@ -118,7 +125,7 @@ func TestTransformToolResultRules(t *testing.T) {
 	}
 	run := func(t *testing.T, input []llmMessage, want ...conversation.Message) {
 		t.Helper()
-		got, err := toRequest(input, target)
+		got, err := toRequest(input, defaultTarget)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -131,6 +138,16 @@ func TestTransformToolResultRules(t *testing.T) {
 			out("peer", "peer first"), out(long+"|fc_result", "first"), out(long, "second"), out(long, "duplicate output")},
 			assistant(call(long, "read", `{}`), call(dup, "read", `{}`), call("peer", "read", `{}`)),
 			result("peer", "read", "peer first", false), result(long, "read", "first", false), result(dup, "read", "second", false))
+	})
+	t.Run("flush duplicate at end", func(t *testing.T) {
+		run(t, []llmMessage{turn("toolUse", callBlock("x"), callBlock("x")), out("x", "real")},
+			assistant(call("x", "read", `{}`), call("x_dup1", "read", `{}`)), result("x", "read", "real", false),
+			result("x_dup1", "read", "No result provided", true))
+	})
+	t.Run("flush duplicate before next assistant", func(t *testing.T) {
+		run(t, []llmMessage{turn("toolUse", callBlock("x"), callBlock("x")), out("x", "real"), turn("toolUse", callBlock("y")), out("y", "next")},
+			assistant(call("x", "read", `{}`), call("x_dup1", "read", `{}`)), result("x", "read", "real", false),
+			result("x_dup1", "read", "No result provided", true), assistant(call("y", "read", `{}`)), result("y", "read", "next", false))
 	})
 	t.Run("new turn takes ownership of recurring id", func(t *testing.T) {
 		run(t, []llmMessage{turn("toolUse", callBlock("call"), callBlock("call")), out("call", "old"), usr,
@@ -153,6 +170,33 @@ func TestTransformToolResultRules(t *testing.T) {
 		run(t, []llmMessage{turn("toolUse", blankID, tooLong, bad, callBlock("same")), out("   ", "blank"), out("long", "long"),
 			out("same", "discard"), out("same", "keep"), turn("toolUse", bad), usr, out("same", "late duplicate")},
 			assistant(call("same", "read", `{}`)), result("same", "read", "keep", false), user("next"))
+	})
+	t.Run("name length follows the target", func(t *testing.T) {
+		for _, tc := range []struct {
+			name, provider, api string
+			limit               int
+		}{
+			{"Muse Code on Responses", "muse-code", api, 64},
+			{"Muse Code on Messages", "muse-code", conversation.AnthropicMessages, 128},
+			{"default on Responses", "test", api, 128},
+			{"default on Messages", "test", conversation.AnthropicMessages, 128},
+		} {
+			t.Run(tc.name, func(t *testing.T) {
+				atLimit, tooLong := callBlock("x"), callBlock("x")
+				atLimit.Name = strings.Repeat("a", tc.limit)
+				tooLong.Name = atLimit.Name + "b"
+				got, err := toRequest([]llmMessage{
+					turn("toolUse", tooLong, atLimit),
+					out("x", "discard"), out("x", "keep"),
+				}, target{provider: tc.provider, api: tc.api, model: model})
+				if err != nil {
+					t.Fatal(err)
+				}
+				assertMessages(t, got, []conversation.Message{
+					assistant(call("x", atLimit.Name, `{}`)), result("x", "read", "keep", false),
+				})
+			})
+		}
 	})
 	t.Run("orphan note preserves nonblank output and error", func(t *testing.T) {
 		synthetic := out("synthetic", "did not run")

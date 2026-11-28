@@ -95,15 +95,20 @@ type message struct {
 
 // block is a content block of a message, with the fields of every block type.
 type block struct {
-	Type              string          `json:"type"`
-	Text              string          `json:"text"`
-	Thinking          string          `json:"thinking"`
-	ThinkingSignature string          `json:"thinkingSignature"`
-	Data              string          `json:"data"`
-	MimeType          string          `json:"mimeType"`
-	ID                string          `json:"id"`
-	Name              string          `json:"name"`
-	Arguments         json.RawMessage `json:"arguments"`
+	Type              string `json:"type"`
+	Text              string `json:"text"`
+	Thinking          string `json:"thinking"`
+	ThinkingSignature string `json:"thinkingSignature"`
+	Data              string `json:"data"`
+	MimeType          string `json:"mimeType"`
+	URL               string `json:"url"`
+	ProviderFile      struct {
+		Provider string `json:"provider"`
+		ID       string `json:"id"`
+	} `json:"providerFile"`
+	ID        string          `json:"id"`
+	Name      string          `json:"name"`
+	Arguments json.RawMessage `json:"arguments"`
 }
 
 // parsed is a session's records as Oh My Pi's loader reads them.

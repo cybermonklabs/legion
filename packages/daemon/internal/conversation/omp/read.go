@@ -75,8 +75,32 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // It reads rollover requests from inline journal data, so it needs no cold-store classification.
 // It does not repeat persistence-time filtering on entries the journal never recorded.
 //
-// Read does not reproduce Anthropic request controls such as tool declarations or effort. This
-// changes nothing when no recorded controls apply or when the caller supplies the same controls.
+// Read does not replay Anthropic request controls. The sender needs the current tools and
+// effort, the recorded changes, and endpoint support for mid-conversation controls and
+// system turns. Without those controls, Read represents historical developer text as user
+// content. Upgrading it to system also requires its original attribution and placement.
+//
+// The sender chooses native Anthropic compaction or the summary text. It needs the target's
+// compaction support, legacy replay policy, and request mode. Native replay uses the recorded
+// payload and requires the sender to place the block at the start of the retained assistant
+// turn, if there is one, and replay the file notes at their recorded boundaries.
+//
+// Read assumes that the Anthropic request does not suppress all thinking or exclude individual
+// blocks after a provider rejection. Reproducing those branches needs the current request's
+// thinking policy and the provider's rejected-signature and rejected-redaction set. Padding
+// a strict thinking window requires the target's thinking-presence policy and the current
+// request's effective thinking mode.
+//
+// Read returns the saved history before the caller's prompt. The sender validates attachments
+// in that prompt. If it sends a request with no new prompt and the history ends in an assistant
+// turn, it adds Continue. except for on-demand compaction.
+//
+// The sender groups adjacent Tool messages as one Anthropic user turn and puts any following
+// error-result attachment note and images at its end. It encodes empty successful tool output
+// as an empty string. It needs the endpoint and authentication policy to encode tool names
+// and to add the tool-result id alias where required. Read refuses images held in the Oh My Pi
+// blob store or images with URL or Anthropic file references. The neutral model carries inline
+// image data only.
 //
 // The reader does not apply these request-time branches of transform-messages.ts:
 //
@@ -108,6 +132,9 @@ type Options struct {
 	// The option makes no difference on OpenAI Responses, or on Anthropic Messages history
 	// with no thinking blocks or tool IDs that need normalization.
 	ReplayUnsignedThinking bool
+	// AnthropicTextOnly is true if the target model accepts text but not images.
+	// The default assumes Anthropic image input support. It has no effect on Responses.
+	AnthropicTextOnly bool
 }
 
 // Read reads a session's content.
@@ -145,7 +172,10 @@ func Read(content []byte, opts Options) (*Session, error) {
 	if s.API == "" {
 		return nil, conversation.Unknown("no turn of model %s names its provider API", built.model)
 	}
-	s.Messages, err = toRequest(built.messages, target{provider: provider, api: s.API, model: model, signing: !opts.ReplayUnsignedThinking})
+	s.Messages, err = toRequest(built.messages, target{
+		provider: provider, api: s.API, model: model, signing: !opts.ReplayUnsignedThinking,
+		anthropicTextOnly: opts.AnthropicTextOnly,
+	})
 	if err != nil {
 		return nil, err
 	}

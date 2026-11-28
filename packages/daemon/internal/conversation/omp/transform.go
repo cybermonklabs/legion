@@ -17,20 +17,20 @@ type target struct {
 	// signing is an Anthropic endpoint that verifies thinking signatures and replays no unsigned
 	// thinking (Options).
 	signing                   bool
+	anthropicTextOnly         bool
 	classifier, prefixBinding bool
 	demotionClass             string
 }
 
-// toRequest projects the supported request-shaping rules in the pinned transform-messages.ts
-// onto the neutral conversation. It also inserts the Anthropic encoder's Continue. turn between
-// adjacent assistant turns. Options documents the replay inputs the reader does not have.
+// toRequest applies the pinned history transforms and projects the target encoder's
+// message content onto the neutral conversation. Options describes the replay inputs it lacks.
 func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) {
 	if t.api != conversation.AnthropicMessages && t.api != conversation.OpenAIResponses {
 		return nil, conversation.Unknown("the conversation runs on provider API %q, which the reader does not rebuild a request for", t.api)
 	}
 	t.demotionClass = replayModelClass(t.model)
 	t.classifier, t.prefixBinding = anthropicThinkingPolicy(t.provider, t.model, t.demotionClass)
-	messages = dropMalformedToolCalls(messages)
+	messages = dropMalformedToolCalls(messages, t)
 	latest := -1
 	for i, m := range messages {
 		if m.role == "assistant" && !truncatedThinkingOnly(m) {
@@ -75,14 +75,7 @@ func toRequest(messages []llmMessage, t target) ([]conversation.Message, error) 
 		}
 		return paired, nil
 	}
-	var continued []conversation.Message
-	for i, m := range paired {
-		if i > 0 && m.Role == conversation.Assistant && paired[i-1].Role == conversation.Assistant {
-			continued = append(continued, conversation.Message{Role: conversation.User, Content: []conversation.Block{{Type: conversation.Text, Text: "Continue."}}})
-		}
-		continued = append(continued, m)
-	}
-	return continued, nil
+	return shapeAnthropicHistory(paired, t.anthropicTextOnly), nil
 }
 
 // userMessage is a user message's text and images; blank text is dropped, as both providers'
@@ -125,13 +118,16 @@ func inputBlock(b block) (conversation.Block, bool, error) {
 		if strings.HasPrefix(b.Data, "blob:") {
 			return conversation.Block{}, false, conversation.Unknown("an image held in Oh My Pi's blob store")
 		}
+		if b.URL != "" || (b.ProviderFile.Provider == "anthropic" && b.ProviderFile.ID != "") {
+			return conversation.Block{}, false, conversation.Unknown("an image held at a URL or in Anthropic's file store")
+		}
 		return conversation.Block{Type: conversation.Image, MediaType: b.MimeType, ImageData: b.Data}, true, nil
 	}
 	return conversation.Block{}, false, nil
 }
 
-// assistantMessage is an assistant turn as the target's request replays it: transformMessages'
-// first pass for the target, then the Anthropic encoder's rule for the turn's thinking.
+// assistantMessage replays an assistant turn after the common history transforms
+// and applies the target encoder's thinking rules.
 func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normalizedToolIDs) (conversation.Message, error) {
 	msg := conversation.Message{Role: conversation.Assistant, Provider: m.provider, API: m.api, Model: m.model}
 	native, err := nativeHistory(m, t)
@@ -191,9 +187,6 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 			converted[i] = &thinking
 		case "text":
 			converted[i] = &conversation.Block{Type: conversation.Text, Text: b.Text}
-		case "image":
-			// Assistant images are display blocks. Responses native history is handled above.
-			continue
 		case "anthropicServerTool":
 			if anthropicReplay && !crossProvider {
 				return conversation.Message{}, conversation.Unknown("a native Anthropic server tool block from provider %s", m.provider)
@@ -219,6 +212,9 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 			arguments := b.Arguments
 			if len(arguments) == 0 || string(arguments) == "null" {
 				arguments = json.RawMessage("{}")
+			}
+			if anthropicTarget {
+				arguments = wellFormedAnthropicArguments(arguments)
 			}
 			converted[i] = &conversation.Block{Type: conversation.ToolCall, ToolCallID: id, ToolName: b.Name, Arguments: arguments}
 		}
@@ -328,8 +324,8 @@ func sanitizeToolIDChars(id string) string {
 	return b.String()
 }
 
-// anthropicThinkingPolicy uses the bounded tokens and namespace in
-// catalog/src/compat/rules/taxonomy/anthropic.kdl:1–16. The class rule
+// anthropicThinkingPolicy uses the taxonomy and provider overrides in
+// catalog/src/compat/rules/taxonomy/anthropic.kdl:1–18. The class rule
 // (classes/anthropic.kdl:26–30) suppresses foreign reasoning.
 func anthropicThinkingPolicy(provider, id, class string) (classifier, prefixBinding bool) {
 	id = strings.ToLower(strings.TrimFunc(id, isJSSpace))
@@ -338,7 +334,7 @@ func anthropicThinkingPolicy(provider, id, class string) (classifier, prefixBind
 		switch bare {
 		case "gemma-4-31b-claude-4.6-opus-reasoning-distilled",
 			"qwen3.5-27b-claude-4.6-opus-reasoning-distilled-derestricted",
-			"qwen3.5-27b-claude-4.6-opus-reasoning-distilled-lite":
+			"qwen3.5-27b-claude-4.6-opus-reasoning-distilled-derestricted-lite":
 			return true, false
 		}
 	}
@@ -432,11 +428,12 @@ func truncatedThinkingOnly(m llmMessage) bool {
 
 // dropMalformedToolCalls removes invalid calls, the results paired with those occurrences,
 // and assistant turns left with no blocks (transform-messages.ts:434–493).
-func dropMalformedToolCalls(messages []llmMessage) []llmMessage {
+func dropMalformedToolCalls(messages []llmMessage, t target) []llmMessage {
+	limit := toolCallNameLimit(t)
 	malformed := false
 	for _, m := range messages {
 		for _, b := range m.blocks {
-			if m.role == "assistant" && b.Type == "toolCall" && malformedToolCall(b) {
+			if m.role == "assistant" && b.Type == "toolCall" && malformedToolCall(b, limit) {
 				malformed = true
 			}
 		}
@@ -453,7 +450,7 @@ func dropMalformedToolCalls(messages []llmMessage) []llmMessage {
 			var kept []block
 			for _, b := range m.blocks {
 				if b.Type == "toolCall" {
-					bad := malformedToolCall(b)
+					bad := malformedToolCall(b, limit)
 					queues[b.ID] = append(queues[b.ID], bad)
 					if bad {
 						continue
@@ -483,11 +480,19 @@ func dropMalformedToolCalls(messages []llmMessage) []llmMessage {
 	return out
 }
 
-var validToolCallName = regexp.MustCompile(`^[a-zA-Z0-9_-]{1,128}$`)
+var validToolCallName = regexp.MustCompile(`^[a-zA-Z0-9_-]+$`)
 
-func malformedToolCall(b block) bool {
-	// catalog/src/compat/rules/providers/tool-call-names.kdl:3–5 gives both APIs this limit.
-	return blank(b.ID) || !validToolCallName.MatchString(b.Name)
+func toolCallNameLimit(t target) int {
+	// The API default in providers/tool-call-names.kdl:3–5 is 128.
+	// The provider's Responses rule in providers/muse-code.kdl:79–87 takes priority.
+	if t.api == conversation.OpenAIResponses && t.provider == "muse-code" {
+		return 64
+	}
+	return 128
+}
+
+func malformedToolCall(b block, limit int) bool {
+	return blank(b.ID) || len(b.Name) > limit || !validToolCallName.MatchString(b.Name)
 }
 
 // pairToolResults preserves real results in their order inside a tool-use window.

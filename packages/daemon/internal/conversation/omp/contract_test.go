@@ -736,6 +736,15 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 				`"api":"anthropic-messages","provider":"` + standInProvider + `","model":"` + standInModel + `","usage":{"input":1,"output":1,"cacheRead":0,"cacheWrite":0,"totalTokens":2,"cost":{"input":0,"output":0,"cacheRead":0,"cacheWrite":0,"total":0}},"stopReason":"toolUse","timestamp":` +
 				fmt.Sprint(time.Now().UnixMilli()) + `}}` + "\n"
 		}},
+		{"an OpenAI tool call between text blocks", func(entries map[string]string, leaf string) string {
+			now := time.Now()
+			stamp := conversation.ISOTime(now)
+			return fmt.Sprintf(`{"type":"message","id":"d5000001","parentId":%q,"timestamp":%q,"runtime":%s,"message":{"role":"assistant","api":"openai-responses","provider":"openai","model":"gpt-test","stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"text","text":"Before."},{"type":"toolCall","id":"call_read|fc_read","name":"read","arguments":{"path":"note.txt"}},{"type":"text","text":"After."}]}}`+"\n"+
+				`{"type":"message","id":"d5000002","parentId":"d5000001","timestamp":%q,"runtime":%s,"message":{"role":"toolResult","toolCallId":"call_read|fc_read","toolName":"read","content":[{"type":"text","text":"plum"}],"timestamp":%d}}`+"\n",
+				leaf, stamp, entries["runtime"], handWrittenUsage, now.UnixMilli(), stamp, entries["runtime"], now.UnixMilli()) +
+				fmt.Sprintf(`{"type":"model_change","id":"d5000003","parentId":"d5000002","timestamp":%q,"model":%q}`+"\n",
+					stamp, standInProvider+"/"+standInModel)
+		}},
 		{"an aborted turn and its result", func(_ map[string]string, leaf string) string {
 			ms := fmt.Sprint(time.Now().UnixMilli())
 			return `{"type":"message","id":"2b2b2b2b","parentId":"` + leaf + `","timestamp":"` + stamp() + `","message":{"role":"assistant","content":[` +
@@ -852,7 +861,19 @@ func TestThePinnedOhMyPiResumesHandWrittenRecordsAsTheReaderRebuildsThem(t *test
 				t.Fatal(err)
 			}
 			rig.run(t, file, "What colour is the fruit?")
-			assertResumeMatches(t, before, sessionContent(t, file), model.lastAnthropic(t), "What colour is the fruit?")
+			got := assertResumeMatches(t, before, sessionContent(t, file), model.lastAnthropic(t), "What colour is the fruit?")
+			if testCase.name == "an OpenAI tool call between text blocks" {
+				index := carriedOnce(t, got, func(turn wireTurn, b wireBlock) bool {
+					return turn.Role == "assistant" && b.Type == "text" && b.Text == "Before."
+				}, "the OpenAI assistant's opening text")
+				want := []wireBlock{
+					{Type: "text", Text: "Before."}, {Type: "text", Text: "After."},
+					{Type: "tool_use", ID: "call_read_fc_read", Name: "read", Input: map[string]any{"path": "note.txt"}},
+				}
+				if index >= 0 && !reflect.DeepEqual(got[index].Blocks, want) {
+					t.Errorf("reordered assistant blocks = %+v, want %+v", got[index].Blocks, want)
+				}
+			}
 		})
 	}
 }
