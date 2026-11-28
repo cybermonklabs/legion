@@ -422,26 +422,22 @@ func (r *relay) Close(t testing.TB) {
 	t.Helper()
 	r.closing.Do(func() {
 		close(r.done)
-		// A child forked while the relay listens, such as a parallel test's child binary,
-		// inherits a copy of the listener. Closing the relay's descriptor alone leaves the
-		// address answering dials while any copy is open.
+		// A child forked while the relay listens, such as a parallel test's child binary, inherits
+		// a copy of the listener and can hold it after Close returns, until it execs or exits.
+		// Closing the relay's descriptor alone leaves the address answering dials while any copy
+		// is open.
 		//
-		// On native Linux, the shutdown is what refuses dials: it stops the socket itself from
-		// listening, not just this descriptor, so an inherited copy then neither answers a dial
-		// nor blocks an SO_REUSEADDR bind such as Gate.Open's beside its reservation. A child can
-		// still hold a copy for a moment after Close returns: Go releases ForkLock when the vfork
-		// parent resumes, which Linux before 7.3 does in exec_mmap, before do_close_on_exec (7.3
-		// closes them first), and a child that exits without exec holds its copies until it exits.
+		// On Linux the shutdown stops the socket itself from listening, so every copy refuses
+		// dials, and a copy still open blocks no SO_REUSEADDR bind such as Gate.Open's beside its
+		// reservation.
 		//
-		// The fork lock is for gVisor, which keeps a shut-down listener's port bound while any
-		// copy is open but closes close-on-exec descriptors before it resumes the vfork parent.
-		// Holding ForkLock for reading across the shutdown and the close keeps forks out, so no
-		// copy of a child that execs outlives Close and the next bind takes the port. With the
-		// shutdown alone, the regression test's gate rows failed their reopen in an issue pod
-		// with "bind: address already in use".
+		// Holding ForkLock for reading across the shutdown and the close keeps a fork out
+		// meanwhile, which gVisor needs before the next bind takes the port: in an issue pod, with
+		// the shutdown alone, the regression test's gate rows failed their reopen with "bind:
+		// address already in use", and with the lock held they pass.
 		//
-		// Elsewhere the close under ForkLock is all there is: Darwin's kernel refuses shutdown on
-		// a listening socket with ENOTCONN, and StartGate refuses every system but Linux.
+		// Elsewhere the close under ForkLock is all there is: Darwin refuses shutdown on a
+		// listening socket with ENOTCONN, and StartGate refuses every system but Linux.
 		syscall.ForkLock.RLock()
 		if runtime.GOOS == "linux" {
 			raw, err := r.listener.SyscallConn()
