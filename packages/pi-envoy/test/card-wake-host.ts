@@ -35,29 +35,7 @@ export const twoCards =
   "2 Envoy messages above arrived with no turn to read them: read them and act on them.";
 
 /** What `cardWakeHarness` hands a test; each member's doc is at its definition there. */
-export interface CardWakeHarness {
-  readonly advance: (ms: number) => void;
-  readonly clock: () => number;
-  readonly branch: unknown[];
-  readonly card: (label: string, targeted?: boolean) => SentCard;
-  readonly context: CardWakeContext;
-  readonly delays: number[];
-  readonly fire: () => Promise<void>;
-  readonly message: (record: HostMessage, persisted?: boolean) => void;
-  readonly reply: (fields?: Record<string, unknown>) => HostMessage;
-  readonly sent: Sent[];
-  readonly wake: CardWake;
-  readonly setIdle: (value: boolean) => void;
-  readonly fold: (...cards: SentCard[]) => void;
-  readonly endStartup: () => Promise<void>;
-  readonly run: () => void;
-  readonly end: () => void;
-  readonly event: (idleThere: boolean) => void;
-  readonly markUnsent: (session?: string) => void;
-  readonly markSent: (sentAt: number, session?: string) => void;
-  readonly clearMark: () => void;
-  readonly startTurn: () => void;
-}
+export type CardWakeHarness = ReturnType<typeof cardWakeHarness>;
 
 /**
  * A `CardWake` on a host whose branch the test writes and whose managed timer it runs (`fire`),
@@ -77,7 +55,7 @@ export function cardWakeHarness(
     readonly reportsIdle?: boolean;
     readonly mode?: NonNullable<SessionContext["mode"]> | null;
   } = {}
-): CardWakeHarness {
+) {
   let clock = 1_000;
   let idle = false;
   const sent: Sent[] = [];

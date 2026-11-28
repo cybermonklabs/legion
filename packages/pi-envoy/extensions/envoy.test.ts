@@ -95,7 +95,7 @@ import { testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { captureEnvironment } from "@legion/test-fixtures/environment";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
-import { settled, span, timeLeft, until } from "@legion/test-fixtures/wait";
+import { settled, timeLeft, until } from "@legion/test-fixtures/wait";
 import type { UserInputBuiltinCommand } from "@oh-my-pi/pi-coding-agent/extensibility/extensions/send-user-input-handler";
 import { logger, procmgr } from "@oh-my-pi/pi-utils";
 import { decode } from "@toon-format/toon";
@@ -145,6 +145,7 @@ import {
   TEST_STREAM_ID,
 } from "../test/listener-stand-in";
 import { runSessionPod } from "../test/session-pod-report";
+import { shutdownOnFakeClock } from "../test/shutdown-on-fake-clock";
 import type { BranchEntry, CommandContext, SessionContext, TestPi } from "../test/stand-in-host";
 
 // The NATS stand-in, the host mocks and the reset every row starts and ends with, which
@@ -7639,10 +7640,13 @@ console.log(JSON.stringify(args));
     // The loop outliving its session is a defect of this suite and of the process: on a real
     // connection it keeps asking a connection nobody is using, and here it would flush the shared
     // mock inside whichever row ran when its sleep ended, so every row that counts
-    // `natsState.flushes` exactly would fail at random. The delay is short, so this row sees in
-    // half a second what a 60 s row would take a minute to show.
+    // `natsState.flushes` exactly would fail at random. The loop's sleep is a timer of its own, and
+    // the row runs on Bun's fake clock, as the row above does, so it moves the clock through the
+    // loop's delays itself: an ask the loop makes after the shutdown is in `natsState.flushes`
+    // within the ten delays the row moves through, however loaded the machine.
+    const delayMs = 50;
     process.env.ENVOY_SUBSCRIBE_FLUSH_TIMEOUT_MS = "50";
-    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "50";
+    process.env.ENVOY_RESUBSCRIBE_DELAY_MS = String(delayMs);
     const context = sessionContext("ses_shutdown_stops_asking");
     let stop: (() => Promise<unknown>) | undefined;
     try {
@@ -7657,29 +7661,60 @@ console.log(JSON.stringify(args));
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, context);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
-      await fixture.handlers.get("session_start")?.({}, context);
+      // Each wait's one bound is the row's deadline, read before the clock is held.
+      const boundMs = Math.floor(timeLeft());
+      jest.useFakeTimers();
+      // The clock moves 10 ms at a time, with the turns of the real event loop the stand-ins
+      // answer on between, until the start returns: its first open waits out its 50 ms bound for
+      // an answer the connection never gives, which starts the background confirmation.
+      let startReturned = false;
+      const started = Promise.resolve(fixture.handlers.get("session_start")?.({}, context)).finally(
+        () => {
+          startReturned = true;
+        }
+      );
+      const tenMs = async () => {
+        await settle();
+        jest.advanceTimersByTime(10);
+      };
+      await turnsUntil(() => startReturned, "the start to return", { boundMs, turn: tenMs });
+      await started;
 
       // The loop is running: it asks again every delay while the connection answers nowhere.
       natsState.flushes.length = 0;
-      await until("the background confirmation's ask", () => natsState.flushes.length > 0);
+      await turnsUntil(() => natsState.flushes.length > 0, "the background confirmation's ask", {
+        boundMs,
+        turn: tenMs,
+      });
 
+      // The shutdown runs on the same clock, moved as before, so the loop's sleep is still a
+      // timer this row moves once the shutdown is over.
       natsState.heldFlush = undefined;
-      await stop();
+      let stopped = false;
+      const stopping = stop().finally(() => {
+        stopped = true;
+      });
+      await turnsUntil(() => stopped, "the session's shutdown to return", {
+        boundMs,
+        turn: tenMs,
+      });
+      await stopping;
       stop = undefined;
 
-      // Ten delays after the session ended, nothing of it has asked again.
+      // Ten delays after the session ended, nothing of it has asked again: the clock moves one
+      // delay at a time, and each wake the loop's sleep had armed runs its turn before the next.
       natsState.flushes.length = 0;
-      await span(
-        500,
-        "an ask that did not come shows nowhere: the loop asks on a timer of its own, armed on the " +
-          "real clock while the session ran, the extension keeps no state that says the loop ended, " +
-          "and a session that has shut down takes no later action whose effect would follow an ask"
-      );
+      for (let delay = 0; delay < 10; delay += 1) {
+        jest.advanceTimersByTime(delayMs);
+        await settle();
+      }
       expect(natsState.flushes).toEqual([]);
     } finally {
       natsState.heldFlush = undefined;
       // The shutdown is this row's subject, so it runs inside the row; the `finally` is here for
-      // the path where an assertion above it fails, which must leave no asking behind either.
+      // the path where an assertion above it fails, which must leave no asking behind either, and
+      // it runs on the real clock, so nothing it waits for is held.
+      jest.useRealTimers();
       await stop?.();
       delete process.env.ENVOY_SUBSCRIBE_FLUSH_TIMEOUT_MS;
       delete process.env.ENVOY_RESUBSCRIBE_DELAY_MS;
@@ -22194,37 +22229,6 @@ console.log(JSON.stringify(args));
       { method: "DELETE", path: "/v1/sessions/ses_shutdown" },
     ]);
   });
-
-  /**
-   * Runs `shutdown` on Bun's fake clock, moved a millisecond a turn, until it settles, and answers
-   * when it began and how far the clock had moved when it settled. The handler's waits are its own
-   * timers, so the reading is theirs to the millisecond however loaded the machine, while the
-   * stand-ins answer on turns of the real event loop. The clock stops at the host's limit
-   * (`HOST_SHUTDOWN_HANDLER_MS`, past which Oh My Pi abandons the handler), and a handler still
-   * running there reads as that limit. The wait's one bound is the row's deadline, read before the
-   * clock is held.
-   */
-  const shutdownOnFakeClock = async (
-    shutdown: () => Promise<unknown> | undefined
-  ): Promise<{ readonly began: number; readonly tookMs: number }> => {
-    const boundMs = Math.floor(timeLeft());
-    jest.useFakeTimers();
-    try {
-      const began = Date.now();
-      let done = false;
-      void shutdown()?.then(() => {
-        done = true;
-      });
-      await turnsUntil(
-        () => done || Date.now() - began >= HOST_SHUTDOWN_HANDLER_MS,
-        "the session_shutdown handler to settle, or the clock to reach the host's limit",
-        { boundMs, each: () => jest.advanceTimersByTime(1) }
-      );
-      return { began, tookMs: done ? Date.now() - began : HOST_SHUTDOWN_HANDLER_MS };
-    } finally {
-      jest.useRealTimers();
-    }
-  };
 
   test("session_shutdown resolves within its budget when drain hangs on a dead connection", async () => {
     globalThis.fetch = standInFetch(async (input, init) =>

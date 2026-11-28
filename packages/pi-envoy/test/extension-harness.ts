@@ -467,27 +467,6 @@ export async function settle(): Promise<void> {
   }
 }
 
-// Polls `condition` between event-loop turns. Only the resubscribe path waits on a real timer
-// (`ENVOY_RESUBSCRIBE_DELAY_MS`, 10 ms in these tests), which no fake clock reaches, and a busy
-// machine runs it later than any fixed sleep allows; the deadline is measured on the monotonic
-// clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
-// than on this process's own work passes a longer bound: starting a shell and killing its group
-// is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-// Rows written before the shared wait (`@legion/test-fixtures/wait`) still call this, and each
-// moves there as it is carried (docs/testing.md, "A Bun test waits for its fact").
-export async function until(
-  condition: () => boolean,
-  what: string,
-  timeoutMs = 2_000
-): Promise<void> {
-  const deadline = performance.now() + timeoutMs;
-  for (;;) {
-    if (condition()) return;
-    if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await settle();
-  }
-}
-
 /** nats.js's own default server, the one it dials when a connect is handed none. */
 export const NATS_DEFAULT_PORT = 4222;
 

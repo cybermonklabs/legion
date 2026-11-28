@@ -33,7 +33,7 @@ import {
 import { temporaryTmpdir } from "@legion/test-fixtures/temporary-tmpdir";
 import { timeLeft } from "@legion/test-fixtures/wait";
 import type { DispatchSession } from "../../src/dispatch-session";
-import { HOST_SHUTDOWN_HANDLER_MS } from "../../src/session-shutdown";
+import { shutdownOnFakeClock } from "../../test/shutdown-on-fake-clock";
 import * as core from "./askgate-core";
 import {
   ADVISOR_GATE_ENTRY_TYPE,
@@ -416,34 +416,6 @@ function bind(opts: BindOptions = {}): BoundGate {
     event: (name: string, payload: Record<string, unknown> = {}) =>
       handlers.get(name)?.({ type: name, ...payload }, ctx),
   };
-}
-
-/**
- * Runs `g`'s `session_shutdown` on Bun's fake clock, moved a millisecond a turn, and answers how
- * far the clock had moved when the handler settled. The shutdown's waits are the gate's own
- * timers, so the reading is theirs to the millisecond, however loaded the machine. The clock stops
- * at the host's cap (`HOST_SHUTDOWN_HANDLER_MS`, past which Oh My Pi seals the session), and a
- * handler still running there reads as the cap. The wait's one bound is the row's deadline, read
- * before the clock is held.
- */
-async function shutdownTakesMs(g: BoundGate): Promise<number> {
-  const boundMs = Math.floor(timeLeft());
-  jest.useFakeTimers();
-  try {
-    const began = Date.now();
-    let done = false;
-    void g.event("session_shutdown")?.then(() => {
-      done = true;
-    });
-    await turnsUntil(
-      () => done || Date.now() - began >= HOST_SHUTDOWN_HANDLER_MS,
-      "the shutdown handler to settle, or the clock to reach the host's cap",
-      { boundMs, each: () => jest.advanceTimersByTime(1) }
-    );
-    return done ? Date.now() - began : HOST_SHUTDOWN_HANDLER_MS;
-  } finally {
-    jest.useRealTimers();
-  }
 }
 
 /** The gate's own cap on its shutdown's wait (`SHUTDOWN_WAIT_MS` in `askgate-core.ts`). An
@@ -1811,7 +1783,9 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    expect(await shutdownTakesMs(g)).toBeLessThan(GATE_SHUTDOWN_WAIT_MS);
+    expect((await shutdownOnFakeClock(() => g.event("session_shutdown"))).tookMs).toBeLessThan(
+      GATE_SHUTDOWN_WAIT_MS
+    );
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "shutdown" }]);
     await gated;
   });
@@ -3247,7 +3221,6 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         ["dispatch_ask", "verdict", "allow"],
       ]);
     }
-    // Ten real dry runs, each a bun process: past bun's 5 s default on a loaded host.
   });
   test("a 2>&1 after the here-document opener runs as written and is left out of the dry-run", () => {
     const after = core.scopedCommand(
@@ -3653,8 +3626,6 @@ console.log(JSON.stringify({ argv: process.argv.slice(2), stdin }));
         [{ argv: argvDigest(ASK_ARGV), args: null, files: [], outcome: "skipped" }],
         [{ argv: argvDigest(ASK_ARGV), args: null, files: [], outcome: "halted" }],
       ]);
-      // The row's own bound is a hang guard, the file's convention: its work is three 20 ms
-      // deadlines, far below this.
     });
 
     test("a rebuttal binds the dry run's arguments, its flag gone from the argv", async () => {
@@ -7176,7 +7147,9 @@ describe("rules check", () => {
     ]);
 
     const shut = await bothPending({}, false);
-    expect(await shutdownTakesMs(shut.g)).toBeLessThan(GATE_SHUTDOWN_WAIT_MS);
+    expect((await shutdownOnFakeClock(() => shut.g.event("session_shutdown"))).tookMs).toBeLessThan(
+      GATE_SHUTDOWN_WAIT_MS
+    );
     expect(shut.signals.map((s) => s.aborted)).toEqual([true, true]);
     expect(shut.g.entries).toMatchObject([
       { decision: "allow", outcome: "shutdown", ruleOutcome: "shutdown" },

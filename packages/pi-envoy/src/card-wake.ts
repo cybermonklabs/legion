@@ -164,13 +164,14 @@ import type {
  * start is not coming: the start claim refused before the send (`/legion-controller-start`'s or
  * `/legion-claim-controller`'s), the start's send failing, and the session changing before the
  * send. A sent mark goes on those facts too, and holds nothing once `STARTUP_TURN_CAP_MS` has
- * passed since its send (that cap's own doc says why it stays). A daemon-launched controller whose
- * claim never answers is stopped by the daemon's registration deadline, which ends the process
- * and its hold with it. An operator's controller whose claim never answers, or whose start command
- * never runs, holds its startup cards until the operator's own first turn: the person at that
- * terminal is the one who can act on either. An idle check while the mark holds keeps the phase
- * and the seen startup cards, sends no wake and reads the mark again `STARTUP_TURN_POLL_MS` later,
- * or at a sent mark's cap if that comes sooner. A busy check is as before. The run whose
+ * passed since its send (that cap's own doc says why it stays). A daemon-launched controller has
+ * no unsent mark: its Legion entry marks nothing at `session_start` and marks the start sent only
+ * right before it reports ready, so a claim of its that never answers leaves no mark at all. An
+ * operator's controller whose claim never answers, or whose start command never runs, holds its
+ * startup cards until the operator's own first turn: the person at that terminal is the one who
+ * can act on either. An idle check while the mark holds keeps the phase and the seen startup
+ * cards, sends no wake and reads the mark again `STARTUP_TURN_POLL_MS` later, or at a sent mark's
+ * cap if that comes sooner. A busy check is as before. The run whose
  * `agent_start` cleared the mark checks again at its `agent_end`: that check ends the phase and
  * sends one wake. A startup card seen while the mark held, at its `message_end` or at a check, is
  * owed that wake unless a turn after the start turn read it, since the start turn's replies after
