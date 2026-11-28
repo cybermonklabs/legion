@@ -61,10 +61,11 @@ const drainPollInterval = 250 * time.Millisecond
 // every process: a deployment's is store.HealthProbeTimeout and drainPollInterval on the wall
 // clock, and a test process's (bootConfig.ShutdownProbe) a shorter probe and pause on the wall
 // clock, since a test whose database stops answering waits silentProbes probes out before the
-// process exits. A probeTimeout can only shorten a probe: store.Pool.HealthyWithin derives its
-// deadline from the context it is handed, so a probe under a shorter context ends sooner, and none
-// waits past the store's own bound on the wall clock. One test sets another clock: closePool's row
-// hands closePool production's probe and pause on a clocktest.Fake and moves the fake through them
+// process exits. A probeTimeout can only shorten a probe: store.Pool.Healthy (HealthyOn on
+// clock.Real) derives its deadline from the context it is handed, so a probe under a shorter
+// context ends sooner, and none waits past the store's own bound on the wall clock. One test sets
+// another clock: closePool's row hands closePool production's probe and pause on a clocktest.Fake
+// and moves the fake through them
 // (TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering).
 type silenceBounds struct {
 	clock               clock.Clock
@@ -296,10 +297,9 @@ type silence struct {
 // ConnectionUse read before the wait this probe ends, so a connection taken back during that wait
 // or the probe starts the count again, as an answered probe does. The probe runs within
 // s.bounds.probeTimeout on s.bounds.clock. On the wall clock at store.HealthProbeTimeout, a
-// deployment's, that is the deadline store.Pool.HealthyWithin sets beneath it, and a test
-// process's shorter bound ends the probe sooner. On a clocktest.Fake the probe ends where the
-// test moves the fake past its timeout, and HealthyWithin keeps its own bound, on the wall clock,
-// beneath it.
+// deployment's, that is the deadline store.Pool.Healthy sets beneath it, and a test process's
+// shorter bound ends the probe sooner. On a clocktest.Fake the probe ends where the test moves the
+// fake past its timeout, and Healthy keeps its own bound, on the wall clock, beneath it.
 func (s *silence) probe(pool *store.Pool, before store.ConnectionUse) bool {
 	probing, cancel := s.bounds.clock.WithTimeout(context.Background(), s.bounds.probeTimeout)
 	defer cancel()

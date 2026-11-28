@@ -1210,50 +1210,48 @@ func relayedPool(t *testing.T) (*store.Pool, *databaseRelay) {
 	return pool, relay
 }
 
-// healthProbeSlack is what the row below allows past store.HealthProbeTimeout: a loaded box's
-// scheduling on top of the store's own timer - the timer firing, pgxpool giving up the ping the
-// probe waits on, and the probe's goroutine running again to read the clock. The row's verdict is
-// a bound on wall time, which the issue's non-goal keeps: the store's bound runs on the wall clock,
-// and the row measures that bound itself.
-const healthProbeSlack = time.Second
-
 // A health probe over a connection the health pool already holds open, to a database that has
-// stopped answering, ends at the store's own bound, store.HealthProbeTimeout. That is the warm case
+// stopped answering, ends at the store's own bound (store.HealthProbeTimeout). That is the warm case
 // its doc comment names as production's normal state, and the one nothing else bounds: pgxpool's
 // two-minute ConnectTimeout floor covers only a dial, and a /healthz request's context carries no
 // deadline. TestHealthzAnswersWhilePostgresStopsAnswering holds the cold case, the probe's first
-// dial. The row warms the health connection through the relay (relayedPool), freezes the relay,
-// and runs store.Pool.Healthy on context.Background(), on a goroutine of its own, which times it;
-// it waits for the probe's return through internal/testwait with no bound of its own. It requires
-// the probe to have failed with the store's deadline (context.DeadlineExceeded, from the context
-// store.Pool.HealthyWithin bounds), within store.HealthProbeTimeout and healthProbeSlack of its
-// start, so a bound on the dial alone (the two seconds moved into the pool's ConnectTimeout, say)
-// fails it. The probe waits on pgxpool's ping of the open connection, as /healthz's probe every few
-// seconds does once its connection has been idle for over a second.
+// dial. The row warms the health connection through the relay (relayedPool), freezes the relay, and
+// runs the probe on context.Background(), which sets no deadline, through store.Pool.HealthyOn on a
+// clocktest.Fake: store.Pool.Healthy, which /healthz and the shutdown call, is HealthyOn on
+// clock.Real, so the bound the fake holds is the one a deployment's probe runs under. The row
+// requires the probe to arm the store's bound and nothing else, to be still waiting on the frozen
+// connection a nanosecond before that bound, and to fail with context.DeadlineExceeded once the fake
+// reaches it. A store that bounds only the dial (the two seconds moved into the pool's
+// ConnectTimeout, say) arms nothing on the fake and fails the row at testwait's deadline. Its
+// verdict reads no clock (dispatch://INFRA-3149/comment/1c8db540-4115-4f10-8655-4ef1cfb6d4e3). The
+// probe waits on pgxpool's ping of the open connection, as /healthz's probe every few seconds does
+// once its connection has been idle for over a second.
 func TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound(t *testing.T) {
-	// Not parallel: its verdict is a bound on wall time, which a parallel row's load could break.
+	t.Parallel()
 	pool, relay := relayedPool(t)
 	relay.freeze()
-	type probed struct {
-		err  error
-		took time.Duration
-	}
-	returned := make(chan probed, 1)
+	start := time.Date(2026, time.November, 28, 7, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	answered := make(chan error, 1)
 	go func() {
-		started := time.Now()
-		_, err := pool.Healthy(context.Background())
-		returned <- probed{err: err, took: time.Since(started)}
+		_, err := pool.HealthyOn(context.Background(), fake)
+		answered <- err
 	}()
-	got := testwait.Receive(t, "the health probe over the open connection to the frozen database to return", returned)
-	t.Logf("the health probe over the open connection to the frozen database returned %v after it began: %v", got.took, got.err)
-	if got.err == nil {
-		t.Fatalf("the health probe answered over the open connection to the frozen database, want it to fail at the store's bound")
+	bound := store.HealthProbeTimeout()
+	due := start.Add(bound)
+	fake.AwaitArmedAt(t, "the health probe's bound on the fake", due)
+	fake.Advance(bound - time.Nanosecond)
+	if armed := fake.Armed(); len(armed) != 1 || !armed[0].Equal(due) {
+		t.Fatalf("a nanosecond before the store's bound the fake holds %v; want the probe's bound %s alone, not yet fired", armed, due.Format(time.RFC3339Nano))
 	}
-	if !errors.Is(got.err, context.DeadlineExceeded) {
-		t.Errorf("the health probe over the open connection to the frozen database failed with %v, want the store's deadline (context.DeadlineExceeded)", got.err)
+	select {
+	case err := <-answered:
+		t.Fatalf("the health probe over the open connection to the frozen database returned %v a nanosecond before the store's bound", err)
+	default:
 	}
-	if bound := store.HealthProbeTimeout() + healthProbeSlack; got.took > bound {
-		t.Errorf("the health probe over the open connection to the frozen database returned %v after it began, want within %v (store.HealthProbeTimeout() and healthProbeSlack)", got.took, bound)
+	fake.Advance(time.Nanosecond)
+	if err := testwait.Receive(t, "the health probe's answer once the fake reaches the store's bound", answered); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("the health probe over the open connection to the frozen database answered %v at the store's bound; want context.DeadlineExceeded: the caller set no deadline, so only the store's bound gives it", err)
 	}
 }
 
@@ -1270,7 +1268,7 @@ func TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound(t
 // the first and the second failed probe, read once the pause after each was armed, when closePool
 // waits on it; that it returned once the third failed; that the late taker's connection never came
 // back; and that its warning names the cause and the three failed probes. The store's own two
-// seconds still bound each probe underneath, on the wall clock (store.Pool.HealthyWithin), and the
+// seconds still bound each probe underneath, on the wall clock (store.Pool.Healthy), and the
 // row ends each probe on the fake as soon as its timeout is armed, well inside them. The pool
 // (relayedPool) pings every connection it hands out, so the late taker is held by a ping the frozen
 // database never answers.
