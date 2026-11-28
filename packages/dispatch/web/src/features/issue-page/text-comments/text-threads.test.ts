@@ -457,7 +457,10 @@ test("a lens on a block of a thread comment stands under that comment", () => {
     attributes: { verdict: "It holds." },
     author: [{ id: "alice", kind: "user" }],
   });
-  const finding = treeNode("finding-1", "block", "lens-1", { text: "A finding." });
+  const finding = {
+    ...treeNode("finding-1", "block", "lens-1", { text: "A finding." }),
+    id: "lens/lens-1#finding-1",
+  };
   const tree = treeOf(
     [...seededNodes([]), nodeOf(ON_STATEMENT.comment, STATEMENT), block, lens, finding],
     SERVES

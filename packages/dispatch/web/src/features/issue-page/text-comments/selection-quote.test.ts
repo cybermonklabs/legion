@@ -450,9 +450,11 @@ const MEASURED = "e5000000-0000-4000-8000-000000000007";
 const VERDICT = "Read dispatch://CORE-1/spec#b-r1  before   the plan.";
 const RESULT = "The run took 4 s.";
 
-/** A lens with a verdict naming an address, a finding under it, a risk with its early warning and
- *  its prevention, a constraint with a standard and one with a measurement, and a result, each
- *  drawn as the outline draws it (`buildIssueTree` and `drawTree`). */
+/** A lens with a verdict naming an address, a finding under it whose id names the lens
+ *  (`lens/<uuid>#<block id>`, as the store keys a finding), a risk with its early warning and its
+ *  prevention, a constraint with a standard and one with a measurement, and a result, each drawn
+ *  as the outline draws it (`buildIssueTree` and `drawTree`). The finding's row is drawn by its
+ *  block id, `FINDING`. */
 function drawKinds(): RenderResult {
   const root = buildIssueTree({
     issue: issueDetails(),
@@ -460,7 +462,10 @@ function drawKinds(): RenderResult {
       [
         treeNode(KEY, "issue", null, { text: "The issue page" }),
         treeNode(LENS, "lens", KEY, { attributes: { verdict: VERDICT }, text: VERDICT }),
-        treeNode(FINDING, "block", LENS, { text: "A finding of the lens." }),
+        {
+          ...treeNode(FINDING, "block", LENS, { text: "A finding of the lens." }),
+          id: `lens/${LENS}#${FINDING}`,
+        },
         treeNode(RISK, "risk", LENS, {
           attributes: {
             early_warning: "Watch the queue grow.",
