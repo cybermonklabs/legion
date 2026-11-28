@@ -946,6 +946,15 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 			payload.ThreadLogins = movedLogins(nil, movedAssignees...)
 		}
 	}
+	// A reparent that brings covered documents under a root of The Spec changes the order of the
+	// root's list of terms (spec_terms.go, approvedSpecTexts), which reads the move from this event.
+	// It takes the lock of the list it joins before its event, whose id then orders the arrival
+	// among the list's approvals.
+	if parentChanged {
+		if err := s.deps.SpecForm.lockSpecTermsOfMove(ctx, tx, before.Parent, after.Parent); err != nil {
+			return issueWriteResult{}, err
+		}
+	}
 	if closing {
 		// The close stamps closed_at again, at the moment the statement runs (clock_timestamp()),
 		// over the start of the transaction (now()) that the update above wrote. The document
