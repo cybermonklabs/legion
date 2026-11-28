@@ -105,8 +105,9 @@ how_ended() {
 # other callers of this workflow that share the run - dispatch-browser beside
 # dispatch-browser-pr on a pull request labelled full-ci, dispatch-references beside
 # dispatch-browser-pr on one that changes what the reference rows test - so the script holds the
-# name to `<caller> / ` and one of this workflow's seven - binaries, shard, alone,
-# multiprocess, embedder, visual and merge - with a matrix leg in brackets after it.
+# name to `<caller> / `, at its start or after the job that calls ci.yaml (`approval / `), and one
+# of this workflow's seven - binaries, shard, alone, multiprocess, embedder, visual and merge -
+# with a matrix leg in brackets after it.
 #
 # The route is `.../runs/<id>/attempts/<n>/jobs?per_page=100` and not `filter=all`.
 # `filter=all` lists every attempt's jobs, so each re-run made the read heavier:

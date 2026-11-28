@@ -12,7 +12,8 @@
 # {id, name, conclusion, leg} that the merge job's two readings consume - reading one for the
 # legs that owed a blob report, reading three for the legs that did not succeed. <job> is the id
 # of the job that calls dispatch-browser.yaml, the merge job's `${{ inputs.job }}`: GitHub names
-# each job of a called workflow `<caller> / <job>`, and one run of a pull request can run several
+# each job of a called workflow `<caller> / <job>`, after the name of the job that calls ci.yaml
+# where one does (`approval / <caller> / <job>`), and one run of a pull request can run several
 # of ci.yaml's three callers of this workflow, so only the jobs named under this caller are this
 # lane's.
 #
@@ -273,8 +274,12 @@ case "$mode" in
     # of this workflow, whose legs carry the same names after a prefix of their own
     # (`dispatch-browser / shard (1)` and `dispatch-browser-pr / shard (1)`). Read without the
     # prefix, the pull-request lane's merge job would name the full lane's red legs as its own,
-    # and reading one would count rows no blob of this lane holds. After the prefix, the name
-    # must be one of this workflow's seven jobs, with a matrix leg in brackets after it.
+    # and reading one would count rows no blob of this lane holds. The prefix stands at the
+    # name's start, or after the jobs that call ci.yaml in their turn: large-pr-lanes.yaml's
+    # `approval` job does, so its run names a leg `approval / dispatch-browser / shard (1)` (run
+    # 46172906962), and its own `approval / ci-ok` stands under no caller of this workflow. After
+    # the prefix, the name must be one of this workflow's seven jobs, with a matrix leg in
+    # brackets after it.
     #
     # `shard (3)` becomes `shard-3` and `alone (webkit-alone)` becomes `alone-webkit-alone`.
     # `binaries`, `merge`, `multiprocess`, `embedder` and `visual` are this workflow's other
@@ -293,8 +298,10 @@ case "$mode" in
     # The project part takes any name that holds no `)`, and the readings take one leg per
     # line, so a project named with a space, a digit or a capital is one leg here rather than
     # two or none.
-    jq --arg prefix "$caller / " '[.[].jobs[] | select(.name | startswith($prefix)
-          and (ltrimstr($prefix) | test("^(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)")))]
+    jq --arg lane " / $caller / " 'def after_lane: (" / " + .) | split($lane)
+          | if length > 1 then .[1:] | join($lane) else null end;
+      [.[].jobs[] | select(.name | after_lane
+          | if . == null then false else test("^(binaries|shard|alone|multiprocess|embedder|visual|merge)( \\(|$)") end)]
       | map({id, name, conclusion,
           leg: ((.name | capture(" shard \\((?<n>[0-9]+)\\)$") | "shard-\(.n)")
             // (.name | capture(" alone \\((?<p>[^)]*)\\)$") | "alone-\(.p)")

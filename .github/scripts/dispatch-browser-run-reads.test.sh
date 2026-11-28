@@ -489,6 +489,32 @@ check "exits 0" "$(is "$status" 0)"
 check "reads one leg, not three" "$(is "$(entries)" 1)"
 check "holding the project whole" "$(is "$(field 21 .leg)" 'alone-Edge 2 alone')"
 
+echo "case: a run a workflow calls names every job one level deeper, and its legs are read"
+# large-pr-lanes.yaml's `approval` job calls ci.yaml, which calls this workflow, so the jobs API
+# names each job `approval / dispatch-browser / shard (1)` (run 46172906962). Its merge job read
+# none of them as a leg once and failed with "this run's jobs hold no shard or alone leg". The
+# calling job's own jobs (`approval / ci-ok`) and the other caller's legs under the same
+# prefix stay out, as they do with no prefix.
+fixture 0
+page "30|approval / dispatch-browser / binaries|success" \
+  "31|approval / dispatch-browser / shard (1)|success" \
+  "32|approval / dispatch-browser / alone (webkit-alone)|failure" \
+  "33|approval / dispatch-browser / merge|null" \
+  "34|approval / ci-ok|null" \
+  "35|approval / dispatch-browser-pr / shard (1)|success" \
+  "36|approval|success" \
+  "37|lead|success"
+drive jobs "$work/out.json" "$caller"
+check "exits 0" "$(is "$status" 0)"
+check "writes this lane's four jobs and no other" "$(is "$(entries)" 4)"
+check "the shard leg reads shard-1" "$(is "$(field 31 .leg)" shard-1)"
+check "the alone leg reads alone-webkit-alone" "$(is "$(field 32 .leg)" alone-webkit-alone)"
+check "with its own conclusion" "$(is "$(field 32 .conclusion)" failure)"
+check "the merge job carries a null leg" "$(is "$(field 33 .leg)" null)"
+check "the calling job's ci-ok and the other caller's leg are dropped" \
+  "$(is "$(jq -r '[.[] | select(.id == 34 or .id == 35 or .id == 36 or .id == 37)] | length' "$work/out.json")" 0)"
+check "prints no ::error:: line" "$(is "$(errors)" 0)"
+
 echo "case: every attempt refused with HTTP 502"
 fixture 3 "HTTP 502"
 retry_seconds=1
