@@ -190,8 +190,15 @@ const HEADER_LABELS_MEASURE = "issue-header-labels";
 // project seeding a copy of its own. The sum is read at network idle (`expectLoadSettled`) and one
 // second more, and printed; then the line, at rest, holds no chip past its first line or its end,
 // and its count names every chip it leaves out.
+// The row slows Chromium's CPU four times (`Emulation.setCPUThrottlingRate`) from before the
+// cold load until it has read the sum. It uses the same rate as Lighthouse's mobile run, as
+// `e2e/issue-page-i.e2e.ts` does for a busy page. Slowing only adds time, so a sum of at most
+// 50 ms still proves R21 at full speed. It also widens the gap between this reading and the
+// merge-base's. At full speed on `main`'s page, the merge-base's reading takes 32 to 74 ms,
+// so it does not fail the row every time.
 // SLOW(>=2s): the copy of INFRA-3149 written - 69 documents of 45,738 blocks, 39 files and 113
-// comments - and the block index's drain waited for, then one cold load of it.
+// comments - and the block index's drain waited for, then one cold load with the CPU slowed
+// four times.
 test("the header fits its labels within 50 ms of a load @phone", async ({ browser }) => {
   // Measured in builds Job e2e-rows-5tkp5 at dd4508e8, with the cold load at Conversation's
   // address: 1.1 min on chromium and 37.1 s on iphone, each the copy written and the block index
@@ -209,21 +216,29 @@ test("the header fits its labels within 50 ms of a load @phone", async ({ browse
   try {
     const page = await context.newPage();
     await page.setViewportSize(viewport);
-    const traffic = watchApiRequests(page);
-    await gotoIssue(page, `/issues/${copy.key}/conversation`);
-    await expectHeaderDrawn(page);
-    await expectLoadSettled(traffic);
-    // The second past network idle that c-header-labels names: a reading the load's last answers
-    // set off, by a width they changed or a typeface that finished loading, is taken and
-    // measured in the frames of that second.
-    await page.waitForTimeout(1_000);
-    const readings = await page.evaluate(
-      (name) => performance.getEntriesByName(name, "measure").map((entry) => entry.duration),
-      HEADER_LABELS_MEASURE
-    );
+    const cpu = await context.newCDPSession(page);
+    await cpu.send("Emulation.setCPUThrottlingRate", { rate: 4 });
+    let readings: number[];
+    try {
+      const traffic = watchApiRequests(page);
+      await gotoIssue(page, `/issues/${copy.key}/conversation`);
+      await expectHeaderDrawn(page);
+      await expectLoadSettled(traffic);
+      // The second past network idle that c-header-labels names: a reading the load's last answers
+      // set off, by a width they changed or a typeface that finished loading, is taken and
+      // measured in the frames of that second.
+      await page.waitForTimeout(1_000);
+      readings = await page.evaluate(
+        (name) => performance.getEntriesByName(name, "measure").map((entry) => entry.duration),
+        HEADER_LABELS_MEASURE
+      );
+    } finally {
+      await cpu.send("Emulation.setCPUThrottlingRate", { rate: 1 });
+      await cpu.detach();
+    }
     const sum = readings.reduce((total, duration) => total + duration, 0);
     const each = readings.map((duration) => duration.toFixed(1)).join(", ");
-    const said = `SCALE header labels ${copy.census} ${viewport.width} px: ${readings.length} readings, ${sum.toFixed(1)} ms (${each})`;
+    const said = `SCALE header labels ${copy.census} ${viewport.width} px, CPU slowed 4×: ${readings.length} readings, ${sum.toFixed(1)} ms (${each})`;
     console.log(said);
     test.info().annotations.push({ description: said, type: "header-labels" });
     expect(
