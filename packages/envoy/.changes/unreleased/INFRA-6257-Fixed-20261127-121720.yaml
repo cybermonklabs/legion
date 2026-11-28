@@ -25,6 +25,13 @@ body: |-
   at most 16 documents: the reference-targets read in the order its `ref` parameters name them,
   the references read in the order it draws their texts (the node, each edge's excerpt, then the
   version a pin names); a block of any further document keeps the tree of its stored text alone.
+  The reference-targets read's member and the references read's node and pin now draw a block
+  that stands in a list item or a quote as its document draws it, with its containers' prefix
+  (the item's indentation, the quote's `>`) taken off each line after the first, where before a
+  fenced code block there could hold its closing fence as code and a paragraph's line in a quote
+  could open a quote of its own, and the coverage and results reads draw the content of a typed
+  block in a quote as they draw one at the top level, where before they drew its whole stored
+  text.
 time: 2026-11-27T12:17:20Z
 custom:
     Issue: INFRA-6257

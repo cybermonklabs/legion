@@ -513,14 +513,26 @@ type graphNodeRead struct {
 
 // shape rebuilds the shadowing pin from the node and registers both texts with the request's
 // reader, each with the footnotes it calls that its document defines outside it where the node is
-// a document's block (graphFootnotes, registerBlockTree).
+// a document's block (graphFootnotes, registerBlockTree). Such a node's text and its pin's are the
+// block's stored texts, whose lines after the first carry the prefix of the block's containers, a
+// list item's indentation or a quote's `>`: each is registered with that prefix taken off
+// (withoutContainerPrefix), so the tree is the one the block's document draws for it. The
+// footnotes are read from the texts as stored, which call the same labels. Every other node's
+// texts are registered as they stand.
 func (n *graphNodeRead) shape(reader *displayTreeReader, footnotes graphFootnotes) {
+	_, ofDocument := graphDocumentBlock(n.GraphNode, "")
+	drawn := func(text string) string {
+		if ofDocument && reader != nil {
+			return withoutContainerPrefix(text)
+		}
+		return text
+	}
 	n.Pin = nil
 	if pin := n.GraphNode.Pin; pin != nil {
 		n.Pin = &blockPinRead{BlockPin: *pin}
-		registerBlockTree(reader, &n.Pin.TextTree, pin.Text, footnotes.pin)
+		registerBlockTree(reader, &n.Pin.TextTree, drawn(pin.Text), footnotes.pin)
 	}
-	registerBlockTree(reader, &n.TextTree, n.GraphNode.Text, footnotes.node)
+	registerBlockTree(reader, &n.TextTree, drawn(n.GraphNode.Text), footnotes.node)
 }
 
 // graphExcerptRead is the excerpt an edge shows, with the tree of its text. Every excerpt that

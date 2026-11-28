@@ -117,20 +117,20 @@ func referenceTargetOf(t *testing.T, handler http.Handler, reference string) mod
 // asked for trees: the link and the dispatch:// reference `text` drops are both in it, and so
 // is the tail past the stored excerpt, and `text` is what it was. The tree is the very bytes the
 // batched reference read answers for the same block, since both read it from the block's stored
-// text by one rule: a requirement nested in a quote, whose stored text does not read back as one
-// block alone, answers the tree of that whole text, opening line included, in both. A requirement
-// in a list nested two levels deep and one in a footnote definition answer the tree of their
-// content, as a top-level one does, in both reads, with the same bytes. So does a requirement
-// that calls a footnote the document defines outside it, which both reads answer as the
-// reference the document holds.
+// text by one rule: a requirement nested in a quote, one in a list nested two levels deep and one
+// in a footnote definition answer the tree of their content, as a top-level one does, in both
+// reads, with the same bytes, once the prefix of their containers, the quote's `>` or the
+// indentation, is taken off their lines after the first. So does a requirement that calls a
+// footnote the document defines outside it, which both reads answer as the reference the
+// document holds.
 func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
-	const deep, footnoted = "Deep in a nested list.", "In a footnote."
+	const nested, deep, footnoted = "Nested in a quote.", "Deep in a nested list.", "In a footnote."
 	issue := createInteractionIssue(t, handler, "TBT", "Whole requirements",
 		":::requirement{#r1}\n"+wholeBlockContent("TBT-1", wholeBlockTail)+"\n:::\n\n"+
 			":::requirement{#r2}\nAn answered ask leaves the list.\n:::\n\n"+
-			"> :::requirement{#r3}\n> Nested in a quote.\n> :::\n\n"+
+			"> :::requirement{#r3}\n> "+nested+"\n> :::\n\n"+
 			"- a\n  - b\n\n    :::requirement{#r4}\n    "+deep+"\n    :::\n\n"+
 			"See the note.[^1]\n\n[^1]: A note.\n\n    :::requirement{#r5}\n    "+footnoted+"\n    :::\n\n"+
 			":::requirement{#r6}\nRead the note[^1] first.\n:::\n")
@@ -150,11 +150,7 @@ func TestTheCoverageReadCarriesARequirementsContentWhole(t *testing.T) {
 	if !strings.HasPrefix(quoted, ":::requirement{#r3}") {
 		t.Fatalf("r3's stored text is %q, want its slice from its opening line", quoted)
 	}
-	if got, want := sameShape(t, treeAt(t, handler, target, "requirements.2.text_tree")),
-		sameShape(t, pmdoc.DisplayJSON(quoted, pmdoc.DisplayLatest)); !bytes.Equal(got, want) {
-		t.Errorf("r3's text_tree is\n\t%s\nwant the tree of its whole stored text %q\n\t%s", got, quoted, want)
-	}
-	for index, content := range map[int]string{3: deep, 4: footnoted} {
+	for index, content := range map[int]string{2: nested, 3: deep, 4: footnoted} {
 		path := "requirements." + strconv.Itoa(index) + ".text_tree"
 		if got, want := sameShape(t, treeAt(t, handler, target, path)),
 			sameShape(t, pmdoc.DisplayJSON(content, pmdoc.DisplayLatest)); !bytes.Equal(got, want) {
@@ -698,19 +694,19 @@ func referenceTargetsOf(references ...string) string {
 // stored excerpt, which holds the directive line and stops at 480 runes. A typed block's tree is
 // of its own content, as the coverage and the results reads answer one, and a reference pinned
 // to an older version of its document answers the newest version's tree, as it answers the
-// newest name. A typed block nested in a quote, whose stored text does not read back as one
-// block alone, answers the tree of that whole text, while one in a list item answers its
-// content, and so do one in a list nested two levels deep, one in a footnote definition and one
-// after the marker `10. `, whose lines stand four columns in: its content reads as paragraphs,
-// not as an indented code block. A block of no declared type, of a comment, of a message and of
-// an ask answers the tree of its own whole text, and a comment's typed block that holds another,
-// neither written with an id, answers its content as the comment wrote it: no read gives the
-// inner block an id, so two reads answer one tree under one ETag, and that tag sent back is
-// answered 304. A comment's typed block whose content opens with a rule `---` and holds a second
-// one answers both rules and both paragraphs: as the opening of a document of its own, that `---`
-// would start front matter that swallows the content up to the second rule. A comment's typed
-// block whose closing fence stands two spaces in, or three, while its line of content stands at
-// column 0, answers that line: the block's lines start at column 0, where such a fence closes it.
+// newest name. A typed block nested in a quote answers its content, once the quote's `>` is taken
+// off its lines after the first, and so do one in a list item, one in a list nested two levels
+// deep, one in a footnote definition and one after the marker `10. `, whose lines stand four
+// columns in: its content reads as paragraphs, not as an indented code block. A block of no
+// declared type, of a comment, of a message and of an ask answers the tree of its own whole text,
+// and a comment's typed block that holds another, neither written with an id, answers its content
+// as the comment wrote it: no read gives the inner block an id, so two reads answer one tree
+// under one ETag, and that tag sent back is answered 304. A comment's typed block whose content
+// opens with a rule `---` and holds a second one answers both rules and both paragraphs: as the
+// opening of a document of its own, that `---` would start front matter that swallows the
+// content up to the second rule. A comment's typed block whose closing fence stands two spaces
+// in, or three, while its line of content stands at column 0, answers that line: the block's
+// lines start at column 0, where such a fence closes it.
 // A comment's typed block whose fence and lines stand two spaces in, with a line four spaces in
 // between them, answers that line as the comment's own parse reads it: a code block, not a heading.
 // A comment's and a message's typed block whose opening line stands two spaces in, after a
@@ -752,13 +748,13 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	for index := range notes {
 		notes[index] = "Note " + strconv.Itoa(index+1) + " of the twenty."
 	}
-	const listed = "Nested in a list."
+	const quotedWords, listed = "Nested in a quote.", "Nested in a list."
 	const deep, footnoted = "Deep in a nested list.", "In a footnote."
 	// After the marker `10. ` an item's content stands four columns in, so each line of the
 	// requirement's stored text but its first carries four spaces.
 	const numbered = "Nested in item 10.\n\nIts second paragraph."
 	notesDocument := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "notes.md",
-		"> :::requirement{#q1}\n> Nested in a quote.\n> :::\n\n"+
+		"> :::requirement{#q1}\n> "+quotedWords+"\n> :::\n\n"+
 			"- An item:\n\n  :::requirement{#l1}\n  "+listed+"\n  :::\n\n"+
 			"10. An item:\n\n    :::requirement{#l10}\n    "+strings.ReplaceAll(numbered, "\n\n", "\n\n    ")+"\n    :::\n\n"+
 			"- a\n  - b\n\n    :::requirement{#r2}\n    "+deep+"\n    :::\n\n"+
@@ -876,7 +872,7 @@ func TestTheReferenceTargetsReadCarriesATypedBlocksContentWhole(t *testing.T) {
 	}
 	requireWholeBlockTree(t, "the plan task's text_tree", json.RawMessage(task.TextTree), issue.Key, wholeBlockTail)
 	for index, content := range map[int]string{
-		1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quoted, 7: listed,
+		1: "A paragraph of the plan.", 2: commentBlock, 3: messageBlock, 5: *part, 6: quotedWords, 7: listed,
 		8: numbered, 9: ":::callout{}\nInner words.\n:::", 10: "***\n\nAfter a rule.\n\n---\n\nTail.",
 		11: deep, 12: footnoted, 13: "Text of the callout.", 14: "Text of the callout, its fence three spaces in.",
 		15: notAHeading,

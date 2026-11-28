@@ -41,16 +41,17 @@ type blockTreeSource struct {
 // those it does not, are taken out of the tree before it is set (withoutStandInDefinitions); a
 // block with none registers its markdown as it stands.
 //
-// A markdown can leave open a block that its document closes: a fenced code block in a list item,
-// whose stored text carries the item's indentation on each line but its first, so that, read
-// alone, its closing fence closes nothing, or an edge's excerpt cut before the end of such a
-// block. The stand-ins read after it then stand inside that block, so its tree does not end in
-// them and they cannot be taken out. Such a block keeps the tree of its markdown alone, whatever
-// its source, as a block with no labels does and as a block whose document cannot be read does:
-// the reading of that markdown in trees' mode, taken from the process's display cache or built
-// where the cache holds none (builtDisplayTree), once resolve has the tree with the stand-ins and
-// so knows the block needs it. The shape is the block's own and no fault of the read, so nothing
-// is logged for it.
+// A markdown can leave open a block that its document closes: an edge's excerpt, read as its cut
+// stands, cut before the end of a fenced code block, or cut from one in a list item, whose stored
+// text carries the item's indentation on each line but its first, so that, read alone, its closing
+// fence closes nothing. A block's own text has that indentation taken off before it is registered
+// (withoutContainerPrefix), so there the fence closes. The stand-ins read after such a markdown
+// then stand inside the block it leaves open, so its tree does not end in them and they cannot be
+// taken out. Such a block keeps the tree of its markdown alone, whatever its source, as a block
+// with no labels does and as a block whose document cannot be read does: the reading of that
+// markdown in trees' mode, taken from the process's display cache or built where the cache holds
+// none (builtDisplayTree), once resolve has the tree with the stand-ins and so knows the block
+// needs it. The shape is the block's own and no fault of the read, so nothing is logged for it.
 func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, markdown string, source blockTreeSource) {
 	if len(source.labels) == 0 || markdown == "" {
 		trees.text(field, markdown)

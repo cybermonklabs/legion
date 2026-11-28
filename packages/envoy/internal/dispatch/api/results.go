@@ -968,11 +968,12 @@ func refuseCheckProvedByCI(ctx context.Context, q queryer, check resolvedCheck) 
 // coverage and the results reads take the same text through the same rule. The source's labels
 // are the footnotes the block's node calls that the document defines outside it
 // (pmdoc.CalledFootnoteLabels), which each of the three reads registers the markdown with
-// (registerBlockTree): one block answers one tree in all three reads, the whole stored text of a
-// typed block in a quote included, and a call of such a footnote reads in it as the reference the
-// document holds. The ranges come with the markdown from that one read, which serves both from the
-// read cache without a render where it can (typedBlockMarkdown); a block the read gives no range
-// for answers the block's own content (blockContent).
+// (registerBlockTree): one block answers one tree in all three reads, a typed block in a quote
+// included, whose content is cut once the quote's `>` is taken off its lines, and a call of such a
+// footnote reads in it as the reference the document holds. The ranges come with the markdown from
+// that one read, which serves both from the read cache without a render where it can
+// (typedBlockMarkdown); a block the read gives no range for answers the block's own content
+// (blockContent).
 func (s *server) typedBlocksIn(ctx context.Context, artifactID, blockType string, trees bool, visit func(node *pmdoc.Node, id string, tree typedBlockTree)) error {
 	markdown, texts, err := s.typedBlockMarkdown(ctx, artifactID, blockType, trees)
 	if err != nil {

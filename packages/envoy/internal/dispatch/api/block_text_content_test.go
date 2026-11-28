@@ -12,15 +12,16 @@ import (
 
 // blockTextContent answers every shape of a block's stored text found so far with the content
 // its text_tree is read from, the bytes each row pins, and reads no database. A document's block,
-// which can stand in a list item or a footnote definition, has the closing fence's indentation
-// taken out of its lines. A block of a comment, a message or an ask, stored from the start of its
-// line, has its opening line's indentation, up to three spaces, taken off it and up to as many
-// columns off each later line, and its content reads as the item's own parse reads what the block
-// holds, node by node as sameNodes compares them, but where the row's kind names a limit of
-// columnsOff's: there the content reads otherwise than the item, and as the item does once that
-// limit's difference is allowed for. A text that does not read back as one typed block is
-// answered as it stands. The documents' texts are slices of a rendering, as the block index
-// stores them; the items' texts are as a comment writes them.
+// which can stand in a list item, a quote or a footnote definition, has its containers' prefix
+// taken off its lines after the first (withoutContainerPrefix). A block of a comment, a message
+// or an ask, stored from the start of its line, has its opening line's indentation, up to three
+// spaces, taken off it and up to as many columns off each later line, and its content reads as
+// the item's own parse reads what the block holds, node by node as sameNodes compares them, but
+// where the row's kind names a limit of columnsOff's: there the content reads otherwise than the
+// item, and as the item does once that limit's difference is allowed for. A text that does not
+// read back as one typed block is answered as it stands, a document's with its containers' prefix
+// off. The documents' texts are slices of a rendering, as the block index stores them; the items'
+// texts are as a comment writes them.
 func TestBlockTextContentReadsEveryShape(t *testing.T) {
 	t.Parallel()
 	// kind is what a row's text is the block of, and how its content is read past its bytes.
@@ -64,12 +65,12 @@ func TestBlockTextContentReadsEveryShape(t *testing.T) {
 		{"a document's block in a list item with a blank line written without the indentation, which is kept", document,
 			":::requirement{#l2}\n  First.\n\n  Second.\n  :::",
 			"First.\n\nSecond.\n"},
-		{"a document's block with a line that does not carry the fence's indentation", document,
+		{"a document's block whose line of content carries none of the prefix its fence carries, a lazy line read as it stands", document,
 			":::requirement{#r1}\nNot carried.\n  :::",
-			":::requirement{#r1}\nNot carried.\n  :::"},
-		{"a document's block in a quote, answered with its opening line", document,
+			"Not carried.\n"},
+		{"a document's block in a quote, its lines after the first carrying the quote's `> `", document,
 			":::requirement{#q1}\n> Nested in a quote.\n> :::",
-			":::requirement{#q1}\n> Nested in a quote.\n> :::"},
+			"Nested in a quote.\n"},
 		{"a document's empty block", document,
 			":::requirement{#e1}\n\n:::",
 			""},

@@ -298,29 +298,31 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // rather than a comment's, a message's or an ask's. A typed block's text opens with its directive
 // line and closes with its fence, which are no part of what the block says: its tree is of its
 // own content, the tree GET /api/v1/issues/{key}/coverage and /results answer for the same block
-// (typedBlocksIn). Every other block's text is its content already.
+// (typedBlocksIn). Every other block's text is its content already, a document's once the prefix
+// of its containers is taken off it.
 //
 // The content is cut from the text itself and is never rendered again. A parse gives each typed
 // block that has no id a new random one (pmdoc.EnsureBlockIDs), and a rendering writes that id
 // into the block's opening line. So for a block that holds a typed block written without an id, a
 // content rendered from a parse would change on every read, and its tree and the ETag with it.
 //
+// A document's block can stand in a list item, a quote or a footnote definition. Its text starts
+// at the block's first byte, so there it carries its containers' prefix on every line but its
+// first, and left in, that prefix would change the block: the content after a marker such as
+// `10. ` would be an indented code block, and in a quote the last line would be no fence. So a
+// document's block has that prefix taken off each line after the first before anything else is
+// read (withoutContainerPrefix), and is then read as a typed block at the document's top level,
+// which is the reading below of an item's block whose opening line stands at column 0.
+//
 // The cut drops the first line and the last one, the closing fence, and reads the lines between
-// them by the block's kind. A document's block can stand in a list item or in a footnote
-// definition. Its text starts at the directive, so there it carries the container's indentation
-// on every line but its first, and left in, that indentation would make the content after a
-// marker such as `10. ` an indented code block. So the cut takes the closing fence's indentation
-// out of each line of a document's block. A blank line, which the renderer can write without
-// that indentation, is kept as it stands, and a text with a line that is not blank and does not
-// carry that indentation is answered as it stands. A block of a comment, a message or an ask is a
-// top-level block of its item's own text, stored from the start of its line, so its opening line
-// can stand up to three spaces in. The cut takes that indentation off the opening line before it
-// reads the directive, and off each later line as the item's own parse takes it (columnsOff). An
-// opening line that stands a tab or four spaces in opens no typed block, so its text is answered
-// as it stands. With an opener at column 0 every line is as written: under a fence two spaces in,
-// a line four spaces in is an indented code block, as the item reads it, and a line at column 0
-// stays at column 0. Wherever the opener stands, a fence fewer than four columns in closes the
-// block.
+// them by the block's kind. A block of a comment, a message or an ask is a top-level block of its
+// item's own text, stored from the start of its line, so its opening line can stand up to three
+// spaces in. The cut takes that indentation off the opening line before it reads the directive,
+// and off each later line as the item's own parse takes it (columnsOff). An opening line that
+// stands a tab or four spaces in opens no typed block, so its text is answered as it stands. With
+// an opener at column 0 every line is as written: under a fence two spaces in, a line four spaces
+// in is an indented code block, as the item reads it, and a line at column 0 stays at column 0.
+// Wherever the opener stands, a fence fewer than four columns in closes the block.
 //
 // Of either kind, the blank lines at the start and at the end of the content are no part of it,
 // so a block that holds nothing has no content; nor are the lines of only spaces and tabs, one or
@@ -329,25 +331,27 @@ func (s *server) blockTrees(ctx context.Context, answers []model.ReferenceTarget
 // them in the code. A first line `---` is written `***`, the same rule: at the start of a
 // document of its own, `---` opens front matter, which it does not in the block.
 //
-// The text is cut only where its last line is a fence and its first line, the lines as the kind
-// reads them and that fence read back as one typed block (pmdoc.ParseRendering): a document's
-// block with the fence's indentation taken out of the fence too, an item's block as it stands.
-// The parse checks the shape alone; nothing of the content comes from it. A text that fails that
-// check is answered as it stands. So is an item's block whose fence stands four spaces or a tab
-// in: its lines start at column 0, where such a fence closes nothing, so the lines above it are no
-// typed block. So is a typed block in a quote, whose lines after the first carry the quote's `>`:
-// its last line is no fence, and its tree is the tree of its whole stored text, the line that
-// opens the typed block included.
+// The text is cut only where its last line is a fence and the text, a document's with its
+// containers' prefix off, reads back as one typed block (pmdoc.ParseRendering). The parse checks
+// the shape alone; nothing of the content comes from it. A text that fails that check is answered
+// as it stands, a document's with that prefix off. So is a block whose fence stands four spaces or
+// a tab in once a document's prefix is off: its lines start at column 0, where such a fence closes
+// nothing, so the lines above it are no typed block. A typed block in a quote, whose lines after
+// the first carry the quote's `>` so that its last line is no fence, is cut once that `>` is off
+// as a typed block at the document's top level is, and its tree is of its content.
 //
 // In the markdown a document stores, which gives every typed block its id, the cut reads back as
 // a rendering of the block's content does (blockContent), and it is the same bytes except in
 // lines that read as nothing or as the same text: an escape that keeps a line from closing the
 // block, the blank line of an empty code block, the blank lines a rendering writes for the empty
 // paragraph an ask holds ahead of a list. One shape reads otherwise. In a footnote definition, a
-// blank line of code is written without the definition's indentation, and the cut cannot tell
-// those columns from the code's, so such a line can keep other spaces than the document reads in
-// it.
+// blank line of code is written without the definition's indentation, and the prefix taken off
+// cannot tell those columns from the code's, so such a line can keep other spaces than the
+// document reads in it (withoutContainerPrefix).
 func blockTextContent(whole string, document bool) string {
+	if document {
+		whole = withoutContainerPrefix(whole)
+	}
 	opening, rest, _ := strings.Cut(whole, "\n")
 	columns := 0
 	if !document {
@@ -367,39 +371,158 @@ func blockTextContent(whole string, document bool) string {
 	if colons := strings.TrimRight(fence, " \t\r"); colons == "" || strings.Trim(colons, ":") != "" {
 		return whole
 	}
-	lines, standing := columnsOff(inner, columns), whole
-	if indent := closing[:len(closing)-len(fence)]; document && indent != "" {
-		outdent, cut := outdented(inner, indent)
-		if !cut {
-			return whole
-		}
-		lines, standing = outdent, opening+"\n"+outdent+fence
-	}
-	tree, err := pmdoc.ParseRendering(standing)
+	tree, err := pmdoc.ParseRendering(whole)
 	if err != nil || len(tree.Children) != 1 || !pmdoc.IsTypedBlock(tree.Children[0].Type) {
 		return whole
 	}
-	content := withoutBlankEnds(lines)
+	content := withoutBlankEnds(columnsOff(inner, columns))
 	if first, _, _ := strings.Cut(content, "\n"); strings.TrimRight(first, " \t") == "---" {
 		return "***" + content[len("---"):]
 	}
 	return content
 }
 
-// outdented is lines, each ending in its line feed, with indent taken from the start of each
-// line that carries it. A blank line, one of no more than spaces and tabs, that does not carry
-// indent is kept as it stands. cut is false when a line that is not blank does not carry indent.
-func outdented(lines, indent string) (text string, cut bool) {
-	var written strings.Builder
-	written.Grow(len(lines))
-	for line := range strings.Lines(lines) {
-		rest, carried := strings.CutPrefix(line, indent)
-		if !carried && strings.Trim(line, " \t\r\n") != "" {
-			return "", false
-		}
-		written.WriteString(rest)
+// withoutContainerPrefix is whole, the stored text of a document's block, with the prefix of the
+// block's containers taken off each line after the first, from the outermost container in. The
+// text is the document's markdown from the block's first byte to its last, so its first line
+// starts past that prefix, and is kept as it stands, while each line after it carries the prefix:
+// a run of spaces for a list item's content indentation or a footnote definition's, and a quote's
+// `>` with at most one space after it. Read alone, the prefix changes the block: a fenced code
+// block's or a typed block's closing fence four columns in, or after a `>`, closes nothing, and a
+// paragraph's line in a quote that starts with `>` opens a quote of its own.
+//
+// The prefix is read from the lines after the first that show it: each line that is not blank and
+// starts with a space or a `>`, whose leading run of spaces and `>` is read as segments, each `>`
+// with the one space after it where it has one, and each run of spaces between them. The prefix is
+// the longest run of segments every such line shares, a run of spaces at the same place counting
+// as the fewest spaces any of them holds there, so a code line deeper than its closing fence keeps
+// the columns past the fence's, as its document reads them. A line that starts with neither is a
+// lazy continuation line, which carries no prefix, and decides nothing. The one exception is the
+// last line of a block whose first line opens a fenced code block, a typed block or front matter
+// (opensFence): that line is the block's closing fence, written at the block's own column, so where
+// it starts with neither the block stands at the document's top level and the text shows no
+// prefix, whatever its lines between hold. A blank line decides nothing either: the renderer
+// writes a blank line between blocks without a list item's indentation and a quote's as `>` alone,
+// and a blank line of code in a footnote definition without the definition's indentation.
+//
+// Each line after the first has the prefix's segments that it carries taken off, in order, a `>`
+// with the one space after it where it has one; from the first segment it does not carry, as a
+// lazy line carries none and a blank line can carry fewer than all, the rest of the line is kept
+// as it stands. So a blank line of code in a footnote definition that holds fewer spaces than the
+// definition's indentation keeps them, as its document reads them, and one that holds as many or
+// more has the definition's columns taken off, which the text cannot tell from the code's.
+//
+// A block whose first line opens a container of its own, a quote, a list or a footnote definition
+// (opensContainer), is answered as it stands: each of its lines after the first carries that
+// container's own marker or indentation after its containers' prefix, and the text alone does not
+// tell the two apart. `- a\n  - b` is the text of a list whose item holds a list at the document's
+// top level, and of a list of two items in a list item.
+//
+// The prefix is read from the text alone, and no document is read for it: each container writes
+// it on every line of the block but its first, so the lines show it, while a read of the block's
+// document is a load and a parse, which the reads make only for the footnotes of a text that calls
+// one and for at most footnoteDocumentsMax documents a request (calledFootnotes). A text whose
+// lines show no prefix is answered as it stands, with nothing allocated.
+func withoutContainerPrefix(whole string) string {
+	first, rest, found := strings.Cut(whole, "\n")
+	if !found || opensContainer(first) {
+		return whole
 	}
-	return written.String(), true
+	if last := rest[strings.LastIndexByte(rest, '\n')+1:]; opensFence(first) && last != "" && last[0] != ' ' && last[0] != '>' {
+		return whole
+	}
+	prefix := ""
+	for line := range strings.Lines(rest) {
+		lead := line[:len(line)-len(strings.TrimLeft(line, " >"))]
+		if lead == "" || strings.Trim(line[len(lead):], " \t\r\n") == "" {
+			continue
+		}
+		if prefix == "" {
+			prefix = lead
+			continue
+		}
+		at, on := carriedSegments(prefix, lead)
+		if prefix = prefix[:at+min(spacesAt(prefix, at), spacesAt(lead, on))]; prefix == "" {
+			return whole
+		}
+	}
+	if prefix == "" {
+		return whole
+	}
+	var written strings.Builder
+	written.Grow(len(whole))
+	written.WriteString(whole[:len(first)+1])
+	for line := range strings.Lines(rest) {
+		_, on := carriedSegments(prefix, line)
+		written.WriteString(line[on:])
+	}
+	return written.String()
+}
+
+// carriedSegments walks prefix, a run of spaces and `>`, and line from their starts, segment by
+// segment as withoutContainerPrefix reads them, while line carries each segment of prefix: a `>`
+// where prefix has one, taken with the one space after it in each where it has one, and at least
+// as many spaces as a run of prefix holds, of which that many are taken. at is how many bytes of
+// prefix line carries, and on how many bytes of line those segments span.
+func carriedSegments(prefix, line string) (at, on int) {
+	for at < len(prefix) {
+		if prefix[at] == '>' {
+			if on == len(line) || line[on] != '>' {
+				return at, on
+			}
+			at, on = at+1, on+1
+			if at < len(prefix) && prefix[at] == ' ' {
+				at++
+			}
+			if on < len(line) && line[on] == ' ' {
+				on++
+			}
+			continue
+		}
+		spaces := spacesAt(prefix, at)
+		if spacesAt(line, on) < spaces {
+			return at, on
+		}
+		at, on = at+spaces, on+spaces
+	}
+	return at, on
+}
+
+// spacesAt is how many spaces text holds from at on.
+func spacesAt(text string, at int) int {
+	return len(text[at:]) - len(strings.TrimLeft(text[at:], " "))
+}
+
+// opensContainer reports whether first, the first line of a document block's stored text, opens
+// a container of the block's own: a quote's `>` or a list item's marker (containerMarker), or a
+// footnote definition's label, `[^`, the label, each `]` in which the renderer escapes, and `]:`.
+func opensContainer(first string) bool {
+	if containerMarker(first) > 0 {
+		return true
+	}
+	label, definition := strings.CutPrefix(first, "[^")
+	for at := 0; definition && at < len(label); at++ {
+		switch label[at] {
+		case '\\':
+			at++
+		case ']':
+			return strings.HasPrefix(label[at+1:], ":")
+		}
+	}
+	return false
+}
+
+// opensFence reports whether first, the first line of a document block's stored text, opens a
+// block whose last line is its closing fence: a fenced code block, three backticks or tildes or
+// more, a typed block, three colons or more, or front matter, three dashes or more, which a block
+// of more than one line opening `---` can only be.
+func opensFence(first string) bool {
+	for _, fence := range [...]string{"```", "~~~", ":::", "---"} {
+		if strings.HasPrefix(first, fence) {
+			return true
+		}
+	}
+	return false
 }
 
 // columnsOff is lines with columns columns of indentation taken off each line, as the item's own
