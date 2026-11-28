@@ -193,10 +193,10 @@ func TestWakeOnSettlementOfAnEarlyHeadWakesNobody(t *testing.T) {
 // large pull request: at a head's first review each is a check name new to the head, and at each
 // later review, and each reply to a review thread, a newer run of the same name. Every title or
 // body edit runs pr-title again and skips the Large PR label job: at the first edit of a labelled
-// pull request, a newer pr-title run that keeps its word beside the label job's skipped run, a
+// pull request, a newer pr-title run that stays success beside the label job's skipped run, a
 // name new to the head. A settlement whose only change is such skipped runs, beside newer runs of
-// checks that keep their word, wakes nobody, as it tells nobody (dispatch://INFRA-6293 R6), on
-// the wake rig (LEGION-208 implementing, its pull request #42 at head1, its implementer
+// checks that keep the word success, wakes nobody, as it tells nobody (dispatch://INFRA-6293 R6),
+// on the wake rig (LEGION-208 implementing, its pull request #42 at head1, its implementer
 // released):
 //
 //   - a settlement of head1 that names build and a pr-title run concluded success wakes the
@@ -210,16 +210,22 @@ func TestWakeOnSettlementOfAnEarlyHeadWakesNobody(t *testing.T) {
 //   - a settlement of head1 after those in which build failed wakes the implementer a second
 //     time, with a task naming head1 and build, so the release did let a wake through and the
 //     skipped runs were turned away by the rule alone;
-//   - and with the pod back and released again after that wake, (i) a settlement whose only
-//     change is a newer pr-title run that stays success, with no skipped run among its changes,
-//     wakes the implementer a third time, with a task naming head1 and build, as it did before
-//     the rule, and queues no role message, its line being the one told already.
+//   - with the pod back and released again after that wake, (i) a settlement whose only change
+//     is a newer pr-title run that stays success, with no skipped run among its changes, wakes
+//     the implementer a third time, with a task naming head1 and build, and queues no role
+//     message, its line being the one told already;
+//   - and with the pod back and released again after that wake, (j) a settlement in which build,
+//     told failed, has a newer run that failed again, beside newer runs of the four checks told
+//     skipped, as `gh run rerun --failed` leaves where the re-run fails again and the jobs that
+//     depend on it skip again under new run ids, wakes the implementer a fourth time, with a task
+//     naming head1 and build, and queues no role message, its line being the one told already.
 //
 // Negative control: without the rule in wakeOnSettlement, the settlement of (a) wakes the
 // implementer a second time; with the rule weighing new names alone, the settlement of (g) does;
 // with a rule that turns away a settlement with any changed run of a check not named skipped, the
-// settlement of (h) does; and with a rule that also turns away a settlement whose only change is
-// newer runs that keep their word, the settlement of (i) wakes nobody.
+// settlement of (h) does; with a rule that also turns away a settlement whose only change is
+// newer runs that keep their word, the settlement of (i) wakes nobody; and with a rule that takes
+// a newer run of a told check as no change whatever its word, the settlement of (j) wakes nobody.
 func TestASettlementThatOnlyAddsSkippedChecksWakesNobody(t *testing.T) {
 	t.Parallel()
 	// titled is build's run and a pr-title run of id concluded success, as each title or body edit
@@ -305,5 +311,28 @@ func TestASettlementThatOnlyAddsSkippedChecksWakesNobody(t *testing.T) {
 	}
 	if got := roleMessageCount(t, rig.pool); got != told {
 		t.Fatalf("(i) a newer pr-title run alone queued %d role messages, want none", got-told)
+	}
+
+	// The pod comes back and is released again after the third wake, as after the first, so (j)
+	// meets a released implementer. ran is the three wakes' starts.
+	ran = append(ran, wakeStarts(t, rig.pool)...)
+	outboxRan(t, rig.pool)
+	seedRelease(t, rig.pool, "implementer", wakeAt.Add(3*time.Minute))
+	claimSuspendedBy(t, rig.pool, claim.RoleImplementer, "released")
+	told = roleMessageCount(t, rig.pool)
+
+	rerun := laterSettlement("head1", 7, "build")
+	rerun.CheckRuns = append([]record.AttemptRun{{Name: "build", ID: 13}, wordedRun("pr-title", 12, "success"), skippedRun(laneLabel, 17)},
+		lanesSkipped(14)...)
+	rig.apply("rerun", rerun)
+	if starts := append(ran, wakeStarts(t, rig.pool)...); len(starts) != 4 || starts[3].Role != claim.RoleImplementer ||
+		!strings.Contains(starts[3].Task, "head1") || !strings.Contains(starts[3].Task, "build") {
+		t.Fatalf("supervise start rows after (j) build failed again beside newer skipped runs = %+v, want the three wakes' and a fourth of the implementer naming head1 and build", starts)
+	}
+	if resumes := wakeResumes(t, rig.pool); len(resumes) != 4 || resumes[3] != [2]string{string(claim.RoleImplementer), pods.WakeChecks} {
+		t.Fatalf("pod resumes after (j) build failed again beside newer skipped runs = %v, want the three wakes' and a fourth %s wake of the implementer", resumes, pods.WakeChecks)
+	}
+	if got := roleMessageCount(t, rig.pool); got != told {
+		t.Fatalf("(j) build failed again beside newer skipped runs queued %d role messages, want none: its line is the one told already", got-told)
 	}
 }

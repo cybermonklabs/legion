@@ -313,9 +313,9 @@ func lanesSkipped(id int64) []record.AttemptRun {
 // review each is a check name new to the head, and at each later review, and each reply to a
 // review thread, a newer run of the same name, so the head settles again (dispatch://INFRA-6293
 // R6). Every title or body edit runs pr-title again (.github/workflows/pr-title.yaml) and skips
-// the Large PR label job, so the head settles again with a newer pr-title run that keeps its
-// word beside the label job's skipped run. A settlement of the head whose only change since the
-// one standing is such skipped runs, beside newer runs of checks that keep their word, tells no
+// the Large PR label job, so the head settles again with a newer pr-title run that stays success
+// beside the label job's skipped run. A settlement of the head whose only change since the one
+// standing is such skipped runs, beside newer runs of checks that keep the word success, tells no
 // role, and is recorded, so the next settlement told names those checks with the rest:
 //
 //   - (a) one that adds approval and the hold's and lead's runs under their name texts (laneHold,
@@ -336,7 +336,8 @@ func lanesSkipped(id int64) []record.AttemptRun {
 // adds a new run concluded success beside the three skipped runs of (a); (f) a head's first
 // settlement with skipped runs among its checks, of a head that never settled and of a head a
 // push left after a settlement of the head before it was told; and one that changes a commit
-// status beside new skipped runs.
+// status beside new skipped runs. What a newer run of a told check by each word tells, alone or
+// beside skipped runs, TestEachChangeOfACheckBesideSkippedRunsTellsAndWakesAsR6Says holds.
 //
 // Negative control: with a rule that turns away a settlement with any changed run of a check not
 // named skipped, (h) is told; with a rule that also lets a run of a check new to the head stand

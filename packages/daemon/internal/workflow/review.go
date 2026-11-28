@@ -448,31 +448,41 @@ func (v settledView) line() string {
 
 // changesOnlySkippedRuns says whether v, the settlement now standing for the head, changes nothing
 // of told, the one that stood before it applied, but runs whose checks it names skipped, beside
-// newer runs of checks that keep their word (dispatch://INFRA-6293 R6): the two stand for the
-// same head, told being one; they name the same commit statuses alike; each check told names
+// newer runs of checks that keep the word success (dispatch://INFRA-6293 R6): the two stand for
+// the same head, told being one; they name the same commit statuses alike; each check told names
 // keeps the word told names it by; each run of v that is new to the head or a newer run of its
 // name than told's (another run id) is a run of a check named skipped, by GitHub's word or by the
 // daemon's conclusion, the two being spelled alike (record.RunSkipped), or a newer run of a check
-// told names, whose word, kept, changes nothing the line says; and at least one is skipped.
+// told names success, by GitHub's word (success) or, where the settlement carried no word, by the
+// daemon's conclusion (record.RunSucceeded, shownAs); and at least one is skipped.
 //
 // That is what every review leaves on a head in cybermonklabs/legion: its Large PR lanes run's
 // three jobs skip on all but a trusted approval of a large pull request, as check names new to the
 // head at its first review and as newer runs of the same names at each later review, each reply
 // to a review thread among them. And it is what each title or body edit leaves: pr-title
-// (.github/workflows/pr-title.yaml) runs again on the edit, a newer run that keeps its word, and
+// (.github/workflows/pr-title.yaml) runs again on the edit, a newer run that stays success, and
 // the Large PR label job (.github/workflows/large-pr-label.yaml) skips on it, under its name
 // expression's text, a check name new to the head at the first edit of a labelled pull request,
 // whose push ran the job under the name label. A name told knows only from the settlement's failed
 // or cancelled list carries no run id, and is weighed by its word alone.
 //
+// A newer run of a check told names failed or cancelled, or by any word but success, is news
+// whatever skipped runs stand beside it, so a settlement that holds one is never this. A re-run
+// that fails again leaves such a settlement: `gh run rerun --failed` runs the failed job again
+// with the jobs that depend on it, which skip again under new run ids; a full re-run gives each
+// skipped job a new run; and a review or an edit can land while the re-run runs. The worker that
+// re-ran the red check is woken by that settlement (wakeOnSettlement), as
+// skills/legion-worker/references/results.md says it is, even where its line, which keeps the
+// failed check's word, is told's already, so that tellChecks tells it to no role.
+//
 // A settlement in which no run changed - a newer generation of the same runs, or one whose commit
 // statuses the decoder could not read - is never this, and neither is one whose only change is
 // newer runs that keep their word, with no skipped run among them: tellChecks tells none whose
-// line is told's already, and the wake (wakeOnSettlement) wakes on it as it did before this rule.
-// A head's first settlement, where none stood before it (told.head "") or the one that stood is
-// another head's, is never this; nor is one in which a skipped run replaces a run told by another
-// word, since that check's word changed, nor one that adds a run of a check new to the head that
-// is not skipped, nor one that changes a commit status beside its skipped runs.
+// line is told's already, and the wake (wakeOnSettlement) wakes on it. A head's first settlement,
+// where none stood before it (told.head "") or the one that stood is another head's, is never
+// this; nor is one in which a skipped run replaces a run told by another word, since that check's
+// word changed, nor one that adds a run of a check new to the head that is not skipped, nor one
+// that changes a commit status beside its skipped runs.
 func (v settledView) changesOnlySkippedRuns(told settledView) bool {
 	if told.head == "" || v.head != told.head || v.statuses != told.statuses {
 		return false
@@ -495,8 +505,11 @@ func (v settledView) changesOnlySkippedRuns(told settledView) bool {
 			skipped = true
 		case !said:
 			return false
+		case word != "success" && word != string(record.RunSucceeded):
+			return false
 		}
-		// Else a newer run of a check told names, whose word the loop above holds kept.
+		// Else a newer run of a check told names success, by GitHub's word or by the daemon's
+		// conclusion (shownAs), whose word the loop above holds kept.
 	}
 	return skipped
 }
@@ -639,12 +652,12 @@ func namedStatuses(statuses []record.CommitStatus) string {
 //
 // Nor is a settlement of the same head told whose only change since told is runs of checks it
 // names skipped, each new to the head or a newer run of its name, beside newer runs of checks that
-// keep their word (settledView.changesOnlySkippedRuns, dispatch://INFRA-6293 R6). Every review of
-// a pull request in cybermonklabs/legion starts a Large PR lanes run
+// keep the word success (settledView.changesOnlySkippedRuns, dispatch://INFRA-6293 R6). Every
+// review of a pull request in cybermonklabs/legion starts a Large PR lanes run
 // (.github/workflows/large-pr-lanes.yaml), whose three jobs skip on every review but a trusted
 // approval of a large pull request: at a head's first review each is a check name new to the
 // head, and at each later review, and each reply to a review thread, a newer run of the same
-// name. Every title or body edit runs pr-title again, a newer run that keeps its word, and skips
+// name. Every title or body edit runs pr-title again, a newer run that stays success, and skips
 // the Large PR label job (.github/workflows/large-pr-label.yaml), whose skipped run is a check
 // name new to the head at the first edit of a labelled pull request. So the head settles again,
 // and telling it would send three roles a message at every review and every edit that says
@@ -654,9 +667,18 @@ func namedStatuses(statuses []record.CommitStatus) string {
 // told or not, as the line is. A skipped run that replaces a run told by another word changes
 // that check and is told, and so are a settlement that adds a run of a check new to the head that
 // is not skipped beside its skipped runs, one that changes a commit status beside its skipped
-// runs, and a head's first settlement, whatever it names skipped. A settlement whose only change
-// is newer runs that keep their word, with no skipped run among them, is not told either, its
-// line being told's already, and it wakes as it did before this rule.
+// runs, and a head's first settlement, whatever it names skipped.
+//
+// A newer run of a check told names failed or cancelled, or by any word but success, is news
+// whatever skipped runs stand beside it: a re-run that fails again settles as a newer failed run
+// beside newer runs of the jobs that depend on it, which `gh run rerun --failed` runs again and
+// which skip again, and beside the skipped runs of a review or an edit that landed while it ran.
+// Such a settlement is told where its line is not told's, a skipped check new to the head among
+// its runs, and wakes the released worker that re-ran the red check either way
+// (wakeOnSettlement); where its line, which keeps the failed check's word, is told's already, no
+// role is told. A settlement whose only change is newer runs that keep their word, with no
+// skipped run among them, is not told either, its line being told's already, and it wakes the
+// released worker.
 //
 // A role whose released pod this same settlement woke is told nothing: its wake task already
 // names the settlement (WakeTask with pods.WakeChecks), and a message about the same settlement
