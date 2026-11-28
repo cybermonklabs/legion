@@ -1,6 +1,7 @@
 import { CONVERSATION_KINDS } from "../../../api/queries";
 import type { Anchor } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
+import { compiledBlockSchema } from "../../doc/schema";
 import type { Thread, ThreadComment } from "../../margin/useMarginItems";
 import { assemble, type IssueTreeReads, type TreeNode, treeWordsOf } from "../issue-tree";
 import type { Draft } from "../tree-drafts";
@@ -86,12 +87,10 @@ export type ConversationKind = (typeof CONVERSATION_KINDS)[number];
 /** The threads of one drawn node, in the order of their words. */
 export interface NodeThreads {
   /** The node's kind as Conversation's read names it, in its `kind` filter's names
-   *  (`CONVERSATION_KINDS`, `conversationKindOf`), which are not the tree read's supertags: a
-   *  finding (a block whose id names its lens, or under its lens, whatever its supertag) is
-   *  `finding`, a plain block (`block`) is `prose`, and any other node is its supertag where the
-   *  filter names that kind. Undefined for a node of a kind that read does not return, a result
-   *  or a plan task among them: the Contents list gives no entry to a thread on such a node where
-   *  its tree holds no such node (`withThreadEntries`). */
+   *  (`CONVERSATION_KINDS`): the kind the server's `nodeKind` gives the node, an ask's block alone
+   *  excepted, which is `ask` (`conversationKindOf`). Undefined for a node of a kind that read
+   *  does not return, a result or a plan task among them: the Contents list gives no entry to a
+   *  thread on such a node where its tree holds no such node (`withThreadEntries`). */
   readonly conversationKind: ConversationKind | undefined;
   /** The tree id of the node's stored parent (its read parent, else its nearest drawn ancestor,
    *  else the issue): a node drawn under several parents - a check or a plan task also under each
@@ -100,39 +99,36 @@ export interface NodeThreads {
   readonly threads: readonly TextThread[];
 }
 
+/** The names of the schema's typed blocks (`pmdoc.IsTypedBlock`). */
+const TYPED_BLOCKS: ReadonlySet<string> = new Set(
+  compiledBlockSchema.types.map(({ name }) => name)
+);
+
 /**
- * `node`'s kind as Conversation's read names it (`NodeThreads.conversationKind`), read as the
- * page reads the kinds that the tree read answers under another supertag. The finding test comes
- * first, whatever the node's supertag, as the server's `nodeKind` tests `ParseFindingID` before it
- * reads a block's typed block: a node is a finding where its id names its lens
- * (`lens/<uuid>#<block id>`), or where it is a block (of the store kind `block`, or of the
- * supertag `block` or `lens_block`) whose read parent is a lens, as `lensTypeOf` and `subjectOf`
- * read one. So a finding whose text opens a typed block such as `:::plan_task`, which the tree
- * read answers under that block's supertag, is a finding. Else a plain block (`block`, of the
- * store kind `block`) is prose, which the filter takes by the server's kind rule
- * (`isPlainBlock`); else a block (`block` or `lens_block`) is of no kind the filter names. Every
- * other node is its supertag where the filter names that kind, and of none otherwise.
+ * `node`'s kind as Conversation's read names it (`NodeThreads.conversationKind`): a port of the
+ * server's `issueTreeBuilder.nodeKind` (`api/issue_tree_kinds.go`), its branches in its order. A
+ * node whose store kind is not `block` is of its store kind. A block whose id names its lens
+ * (`lens/<uuid>#<block id>`, as `graphstore.ParseFindingID` reads it) is a finding, whatever its
+ * supertag and its parent. A block whose supertag is a typed block of the schema
+ * (`pmdoc.IsTypedBlock`; `compiledBlockSchema`, the manifest the server of the same build
+ * embeds) is of that type: the tree read answers a block's supertag as `refs.TreeNodeType`, the
+ * typed block its text opens. Every other block is prose, a `lens_block` whose id names no lens
+ * among them. The one exception to the port is an ask's block, which the server gives no kind
+ * and which is `ask` here. The kind counts where the filter names it (`CONVERSATION_KINDS`), and
+ * the node is of none otherwise.
  */
-function conversationKindOf(
-  node: TreeAnswerNode,
-  onText: OnTextReads
-): ConversationKind | undefined {
-  const parent = node.parent;
-  const block =
-    node.kind === "block" || node.supertag === "block" || node.supertag === "lens_block";
-  if (
-    node.id.startsWith("lens/") ||
-    (block &&
-      parent !== null &&
-      (parent.kind === "lens" ||
-        parent.supertag === "lens" ||
-        onText.nodes.get(parent.id)?.supertag === "lens"))
-  ) {
-    return "finding";
+function conversationKindOf(node: TreeAnswerNode): ConversationKind | undefined {
+  if (node.kind !== "block") return CONVERSATION_KINDS.find((kind) => kind === node.kind);
+  if (node.id.startsWith("lens/")) return "finding";
+  // The server gives an ask's block no kind, since `kind=ask` takes the ask's own node. The page
+  // draws an ask's block as the ask's own row (`draftAsk`; `treeIdOfNode` gives the ask its
+  // block's tree id, `tree-read/tree-nodes.ts:413`), so a comment on the question's words is a
+  // comment on the ask, and it keeps its fallback.
+  if (node.supertag === "ask") return "ask";
+  if (TYPED_BLOCKS.has(node.supertag)) {
+    return CONVERSATION_KINDS.find((kind) => kind === node.supertag);
   }
-  if (node.kind === "block" && node.supertag === "block") return "prose";
-  if (node.supertag === "block" || node.supertag === "lens_block") return undefined;
-  return CONVERSATION_KINDS.find((kind) => kind === node.supertag);
+  return "prose";
 }
 
 /** A root of a thread, with where its words are. */
@@ -213,7 +209,7 @@ export function textThreadsOf(
         compareIds(left.thread.thread.key, right.thread.thread.key)
     );
     threads.set(nodeId, {
-      conversationKind: conversationKindOf(node, onText),
+      conversationKind: conversationKindOf(node),
       parent: storedParentOf(node, onText, idOf, drawn, key),
       threads: rows.map((row) => row.thread),
     });
