@@ -48,8 +48,8 @@ const otherSessionsTraffic = 24
 // Its control is TestASessionConsumerOnAServerThatSkipsAFilterLosesItsOldFormMessage, the same
 // first case on nats-server v2.10.29 with the refusal stepped past.
 func TestASessionConsumerHandsOverItsOwnMessagesInBothFormsBehindOtherSessionsTraffic(t *testing.T) {
-	// Not parallel: the second case gives its pull liveQuietWindow (500 ms) to reach the server
-	// before the traffic is stored, and the load of parallel tests could make that span too short.
+	// Not parallel: the second case gives its pull liveQuietWindow to reach the server before the
+	// traffic is stored, and the load of parallel tests could make that span too short.
 	//
 	// The cases share one hub server, its stream and the session consumers. Each case follows a
 	// session of its own, so it keeps its own consumer and stream position, and the other case's
@@ -64,16 +64,8 @@ func TestASessionConsumerHandsOverItsOwnMessagesInBothFormsBehindOtherSessionsTr
 	})
 	t.Run("sent while the pull waits", func(t *testing.T) {
 		const session = "ses_scan_waiting"
-		subjects := scanSubjects(session)
-		ctx := context.Background()
 		publishOthers(t, owner, 2)
-		if _, err := consumers.Ensure(ctx, session, subjects, 0); err != nil {
-			t.Fatalf("ensure the consumer of %s: %v", session, err)
-		}
-		if _, err := consumers.RestartAtFloor(ctx, session, subjects); err != nil {
-			t.Fatalf("restart the consumer of %s at its floor: %v", session, err)
-		}
-		pull := pullSession(t, consumers, session)
+		pull := registerSession(t, consumers, session)
 		// The pull request reaches the server and the consumer reads to the stream's end before
 		// the traffic is stored: nothing is handed over meanwhile.
 		requireNoMessage(t, pull, liveQuietWindow)
@@ -142,10 +134,20 @@ func TestASessionConsumerOnAServerThatSkipsAFilterLosesItsOldFormMessage(t *test
 // scanSession is the session the nats:2.10 control follows.
 const scanSession = "ses_scan"
 
-// scanSubjects is what session registers: its own agent subject in the old form, as a plugin does
-// on every heartbeat.
-func scanSubjects(session string) []string {
-	return []string{contracts.LegacyAgentSubject(session)}
+// registerSession drives a registration of session as cmd/listener makes it (Ensure,
+// RestartAtFloor, Pull), on its own agent subject in the old form, as a plugin registers on every
+// heartbeat. It returns the pull.
+func registerSession(t *testing.T, consumers *SessionConsumers, session string) *SessionPull {
+	t.Helper()
+	ctx := context.Background()
+	subjects := []string{contracts.LegacyAgentSubject(session)}
+	if _, err := consumers.Ensure(ctx, session, subjects, 0); err != nil {
+		t.Fatalf("ensure the consumer of %s: %v", session, err)
+	}
+	if _, err := consumers.RestartAtFloor(ctx, session, subjects); err != nil {
+		t.Fatalf("restart the consumer of %s at its floor: %v", session, err)
+	}
+	return pullSession(t, consumers, session)
 }
 
 // releasedAndRegisteredAgain drives the idle release the Legion daemon makes for session: a
@@ -156,26 +158,15 @@ func scanSubjects(session string) []string {
 func releasedAndRegisteredAgain(t *testing.T, owner *Client, consumers *SessionConsumers, session string) (*SessionPull, []ownMessage) {
 	t.Helper()
 	ctx := context.Background()
-	subjects := scanSubjects(session)
-	register := func() *SessionPull {
-		t.Helper()
-		if _, err := consumers.Ensure(ctx, session, subjects, 0); err != nil {
-			t.Fatalf("ensure the consumer of %s: %v", session, err)
-		}
-		if _, err := consumers.RestartAtFloor(ctx, session, subjects); err != nil {
-			t.Fatalf("restart the consumer of %s at its floor: %v", session, err)
-		}
-		return pullSession(t, consumers, session)
-	}
 	publishOthers(t, owner, 2)
-	register().Stop()
+	registerSession(t, consumers, session).Stop()
 	if _, err := consumers.Delete(ctx, session, nil); err != nil {
 		t.Fatalf("delete the consumer of %s at its release: %v", session, err)
 	}
 	publishOthers(t, owner, otherSessionsTraffic)
 	own := publishOwn(t, owner, session)
 	publishOthers(t, owner, 4)
-	return register(), own
+	return registerSession(t, consumers, session), own
 }
 
 // liveQuietWindow is how long a case waits to see that a pull hands over nothing.
