@@ -351,9 +351,9 @@ func podKeptMessage(issue, pod, reasons string, work runtime.WorkspaceWork, agai
 	}
 	found := append([]string{opening}, workFound(work)...)
 	found = append(found, ended,
-		fmt.Sprintf("The daemon does not push for you. Push the work that you keep to legion/%s, and abandon the work that you do not keep. "+
-			"The daemon reads the workspace again after each turn of a role of this issue. When a read finds nothing that origin does not hold, a later round replaces the pod. "+
-			"You are told this once.", issue))
+		"The daemon does not push for you. Push the work that you keep, and abandon the work that you do not keep. "+keptWorkBranches(issue),
+		"The daemon reads the workspace again after each turn of a role of this issue. When a read finds nothing that origin does not hold, a later round replaces the pod. "+
+			"You are told this once.")
 	return strings.Join(found, " ")
 }
 
@@ -379,8 +379,8 @@ func roundKeptMessage(issue, pod, reasons string, claims store.ClaimStates, work
 			"The daemon opens no update round of its own over the pod until a later read finds nothing that origin does not hold, or the runtime makes another pod for the issue. "+
 			"The project's controller can still ask for a round. That round keeps the pod again if its read still finds work that origin does not hold, or if the read fails. "+
 			"The daemon reads the workspace again after a role of the issue starts or runs a turn.",
-		fmt.Sprintf("To keep the work, have a role of %s push it to legion/%s. If no role of %s runs, start one in this pod, for example with `legion claims resume` or `legion claims retry`. "+
-			"You are told this once for this pod.", issue, issue, issue))
+		fmt.Sprintf("To keep the work, have a role of %s push it. %s If no role of %s runs, start one in this pod, for example with `legion claims resume` or `legion claims retry`. "+
+			"You are told this once for this pod.", issue, keptWorkBranches(issue), issue))
 }
 
 // keptEnded is what a keep's message says of the round after stays, the sentence that says the pod
