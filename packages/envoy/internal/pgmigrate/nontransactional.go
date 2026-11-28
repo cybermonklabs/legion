@@ -63,6 +63,12 @@ func concurrentIndex(sql string) (index indexStatement, err error) {
 	return index, nil
 }
 
+// ExecNonTransactional is the zero Locking's ExecNonTransactional, production's: the build's and
+// the drop's lock waits bounded by LockTimeout, and the runner's timers on the wall clock.
+func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) error {
+	return Locking{}.ExecNonTransactional(ctx, conn, migration, signIn)
+}
+
 // ExecNonTransactional runs a marked, single concurrent index build on an idle connection.
 // Its caller must hold the runner's session-level advisory lock until the version is recorded,
 // then close the connection: the build and that record cannot be one transaction. A build that
@@ -71,16 +77,22 @@ func concurrentIndex(sql string) (index indexStatement, err error) {
 // builds the index again, so a timed-out or killed build does not stop every later boot. A
 // relation of that name that is not an index on the target table is refused instead, because the
 // runner did not build it and IF NOT EXISTS would skip over it.
-// The session takes the settings that Pin gives Exec's transaction (PinSession): lock_timeout
-// bounded exactly as Exec's transaction-local setting is, the text settings (textSettings), so
-// Postgres reads the build as the census read it, and session_authorization, role and
-// search_path at the values that RESET gives them (resetSettings), so the build resolves its
-// names as the census did. Each takes its value whatever the session, a connection option or a
-// database default set. Each of the seven is read first and given its value back on return, so a
-// caller that pinned the session before it (PinSession) has the pinned values on return too,
-// whatever the build's own code set. The same lock watch diagnoses failures, the drop's as well
-// as the build's. signIn has Exec's meaning.
-func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) (err error) {
+// The session takes the settings that Pin gives Exec's transaction (PinSession): lock_timeout at
+// l's Timeout, bounded exactly as Exec's transaction-local setting is, the text settings
+// (textSettings), so Postgres reads the build as the census read it, and session_authorization,
+// role and search_path at the values that RESET gives them (resetSettings), so the build resolves
+// its names as the census did. Each takes its value whatever the session, a connection option or
+// a database default set. Each of the seven is read first and given its value back on return,
+// under diagnosisCleanupTimeout on l's Clock, so a caller that pinned the session before it
+// (PinSession) has the pinned values on return too, whatever the build's own code set. The same
+// lock watch diagnoses failures, the drop's as well as the build's. signIn has Exec's meaning.
+// A Timeout that Postgres cannot take (timeoutRefusal) is refused first, before the settings are
+// read, the session is pinned, a leftover is dropped or a watch starts, so the session is left as
+// it was found and nothing is built.
+func (l Locking) ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migration, signIn func(context.Context, *pgx.ConnConfig) error) (err error) {
+	if err := l.timeoutRefusal(); err != nil {
+		return fmt.Errorf("migration %s: %w", migration.Name, err)
+	}
 	if !migration.NonTransactional {
 		return fmt.Errorf("migration %s is not marked non-transactional", migration.Name)
 	}
@@ -91,11 +103,12 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 	if err != nil {
 		return fmt.Errorf("migration %s: %w", migration.Name, err)
 	}
-	// The settings are set before the leftover check so the drop below is bounded by
-	// LockTimeout for every caller, whatever bound the caller's session carries (the server's
-	// default is none at all), and resolves the index's names as the build does.
-	names := make([]string, 0, len(pinSettings)+len(resetSettings))
-	for _, s := range pinSettings {
+	// The settings are set before the leftover check so the drop below is bounded by l's Timeout
+	// for every caller, whatever bound the caller's session carries (the server's default is none
+	// at all), and resolves the index's names as the build does.
+	pinned := l.pinSettings()
+	names := make([]string, 0, len(pinned)+len(resetSettings))
+	for _, s := range pinned {
 		names = append(names, s.name)
 	}
 	// The restore below picks session_authorization and role out by name and gives each back as its
@@ -107,7 +120,7 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 		return fmt.Errorf("migration %s: read session settings: %w", migration.Name, err)
 	}
 	defer func() {
-		cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), diagnosisCleanupTimeout)
+		cleanup, cancel := l.clock().WithTimeout(context.WithoutCancel(ctx), diagnosisCleanupTimeout)
 		defer cancel()
 		// session_authorization and role go back first, each as its own statement and in the order
 		// resetSettings lists them: setting session_authorization ends a SET ROLE, and a single
@@ -130,13 +143,13 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 			err = errors.Join(err, fmt.Errorf("migration %s: restore session settings: %w", migration.Name, restoreErr))
 		}
 	}()
-	if err := PinSession(ctx, conn); err != nil {
+	if err := l.PinSession(ctx, conn); err != nil {
 		return fmt.Errorf("migration %s: %w", migration.Name, err)
 	}
-	if err := dropOwnLeftover(ctx, conn, migration, index, signIn); err != nil {
+	if err := l.dropOwnLeftover(ctx, conn, migration, index, signIn); err != nil {
 		return err
 	}
-	return execWatched(ctx, conn, migration, signIn)
+	return l.execWatched(ctx, conn, migration, signIn)
 }
 
 // dropOwnLeftover reads the one relation of the index's name in the target table's schema and
@@ -145,8 +158,9 @@ func ExecNonTransactional(ctx context.Context, conn *pgx.Conn, migration Migrati
 // that name on that table is the index this migration builds, already built, and the build's
 // IF NOT EXISTS skips over it. Any other relation of that name is one the runner did not build,
 // and it is refused. An index of another name is neither dropped nor refused.
-// The caller must have bounded the session's lock_timeout already: the drop takes locks too.
-func dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, index indexStatement, signIn func(context.Context, *pgx.ConnConfig) error) error {
+// The caller must have bounded the session's lock_timeout already, at l's Timeout: the drop takes
+// locks too, and execWatched reports its timeout with that bound.
+func (l Locking) dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, index indexStatement, signIn func(context.Context, *pgx.ConnConfig) error) error {
 	table := pgx.Identifier{index.Relation.Relname}
 	if index.Relation.Schemaname != "" {
 		table = pgx.Identifier{index.Relation.Schemaname, index.Relation.Relname}
@@ -196,7 +210,7 @@ func dropOwnLeftover(ctx context.Context, conn *pgx.Conn, migration Migration, i
 	// block. execWatched reports a drop cancelled by lock_timeout as a *LockTimeoutError, which
 	// RetryLockTimeouts finds with errors.As through this wrapping and runs the whole attempt
 	// again.
-	if err := execWatched(ctx, conn, drop, signIn); err != nil {
+	if err := l.execWatched(ctx, conn, drop, signIn); err != nil {
 		return fmt.Errorf("drop the INVALID index %s of this migration's own name, left by a build that failed or is still running: %w", qualified, err)
 	}
 	return nil

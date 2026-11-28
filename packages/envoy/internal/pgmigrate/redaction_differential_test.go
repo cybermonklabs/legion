@@ -28,7 +28,7 @@ package pgmigrate
 // and our reading did not. The narrower one reads nothing of our reading at all, not its
 // refusal and not its spans, and asks only that redactedQuery covered the marker from the byte
 // the server's lexer stopped on, so no fault in the reading can quiet it. Measured on
-// 2026-11-06, with ask reading its results and with actParam's int32 check taken out of
+// 2026-11-06, with the leg reading each result and with actParam's int32 check taken out of
 // scanl.go, which loses the refusal {param}'s number too large makes: over the sample that
 // leg runs, the comparison of refusals failed on 1,250 (text, setting) pairs and the coverage
 // clause on 982. Both of them need the server's message to be read as its lexer's own, which
@@ -67,11 +67,17 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
+	"net"
+	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/jackc/pgx/v5/pgconn"
+	"github.com/jackc/pgx/v5/pgproto3"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // --- the corpus ---
@@ -134,70 +140,15 @@ const (
 	markerReplacement = ")))"
 )
 
-// eachText calls visit with every text of up to maxLen pieces of the alphabet, and with the
-// marker word inserted at every gap of each when withMarker. It streams rather than collecting,
-// so the corpus need not fit in memory.
-func eachText(maxLen int, withMarker bool, visit func(string)) int {
-	n := 0
-	var build func(prefix []string, depth int)
-	build = func(prefix []string, depth int) {
-		if len(prefix) > 0 {
-			if !withMarker {
-				n++
-				visit(strings.Join(prefix, ""))
-			} else {
-				for at := 0; at <= len(prefix); at++ {
-					parts := make([]string, 0, len(prefix)+1)
-					parts = append(parts, prefix[:at]...)
-					parts = append(parts, marker)
-					parts = append(parts, prefix[at:]...)
-					n++
-					visit(strings.Join(parts, ""))
-				}
-			}
-		}
-		if depth == maxLen {
-			return
-		}
-		for _, piece := range alphabet {
-			build(append(prefix, piece), depth+1)
-		}
-	}
-	build(nil, 0)
-	return n
-}
-
 // --- what one reading of a text holds ---
-
-// reading is what scanl.go's transcription reads a text as at one standard_conforming_strings:
-// the spans it does not read as structure, the quoted identifiers it reads as a name, and where
-// scan.l refused it, or -1.
-type reading struct {
-	spans   []sqlToken
-	names   []sqlToken
-	failure int
-}
-
-func readingOf(text string, standardConformingStrings bool) reading {
-	var r reading
-	r.failure = lexSQL(text, standardConformingStrings, func(token sqlToken) {
-		switch token.kind {
-		case sqlString, sqlDollarString, sqlUnicodeEscape, sqlComment:
-			r.spans = append(r.spans, token)
-		case sqlQuotedIdentifier:
-			r.names = append(r.names, token)
-		}
-	}, nil)
-	return r
-}
 
 // isName reports whether this reading holds [from, to) inside a quoted identifier. What is
 // inside one is a name, and the report keeps the names a statement touches on purpose, so the
 // server answering alike whether that name is spelt one way or another says nothing: it never
 // looked the name up.
 func (r reading) isName(from, to int) bool {
-	for _, span := range r.names {
-		if span.start < to && from < span.end {
+	for _, token := range r.tokens {
+		if token.kind == sqlQuotedIdentifier && token.start < to && from < token.end {
 			return true
 		}
 	}
@@ -210,24 +161,40 @@ func (r reading) hides(from, to int) bool {
 	if r.failure >= 0 && r.failure < to {
 		return true
 	}
-	for _, span := range r.spans {
-		if span.start < to && from < span.end {
+	for _, token := range r.tokens {
+		if token.kind.opaque() && token.start < to && from < token.end {
 			return true
 		}
 	}
 	return false
 }
 
+// same reports whether two readings of one text read it alike: refused at the same byte, or
+// neither refused, and the same literals and comments, in order, each of the same kind over the
+// same bytes.
 func (r reading) same(other reading) bool {
-	if r.failure != other.failure || len(r.spans) != len(other.spans) {
+	if r.failure != other.failure {
 		return false
 	}
-	for i := range r.spans {
-		if r.spans[i] != other.spans[i] {
+	mine, theirs := r.tokens, other.tokens
+	for {
+		mine, theirs = fromOpaque(mine), fromOpaque(theirs)
+		if len(mine) == 0 || len(theirs) == 0 {
+			return len(mine) == len(theirs)
+		}
+		if mine[0] != theirs[0] {
 			return false
 		}
+		mine, theirs = mine[1:], theirs[1:]
 	}
-	return true
+}
+
+// fromOpaque is tokens from its first literal or comment on, and empty where it holds none.
+func fromOpaque(tokens []sqlToken) []sqlToken {
+	for len(tokens) > 0 && !tokens[0].kind.opaque() {
+		tokens = tokens[1:]
+	}
+	return tokens
 }
 
 // --- the redaction loop, over the whole corpus ---
@@ -239,48 +206,39 @@ const corpusDepth = 4
 // reading holds inside a literal or a comment, and no byte past the one scan.l refused a reading
 // on, survives it. Where the two readings agree and neither is refused it checks the other
 // direction too: a marker neither hides is shape, and shape is what the report keeps.
+//
+// It reads the corpus in shards (eachShardGap), each a parallel subtest of one group
+// (hiddenBytesOfShard), so that no leaf runs long. A leaf lexes each text once at each setting:
+// it reads both readings for its own checks and hands the same two to redactedQuery's loop
+// (redactReadings), whose output is redactedQuery's. The test's own function walks no text and
+// reads none: it adds up what the shards counted (hiddenByteCounts.add), checks the sums and
+// reports them.
 func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("reads a corpus of millions of texts twice over")
 	}
-	var hiddenTexts, leaked, refusedTexts, agreedTexts, overHidden int
-	leaks := map[string]bool{}
-	swallowed := map[string]bool{}
-	n := eachText(corpusDepth, true, func(text string) {
-		at := strings.Index(text, marker)
-		on, off := readingOf(text, true), readingOf(text, false)
-		if on.failure >= 0 || off.failure >= 0 {
-			refusedTexts++
-		}
-		printed := strings.Contains(redactedQuery(text), marker)
-		if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
-			hiddenTexts++
-			if printed {
-				leaked++
-				if len(leaks) < 20 {
-					leaks[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
-				}
-			}
-			return
-		}
-		if on.same(off) && on.failure < 0 {
-			agreedTexts++
-			if !printed {
-				overHidden++
-				if len(swallowed) < 20 {
-					swallowed[fmt.Sprintf("%q -> %q", text, redactedQuery(text))] = true
-				}
-			}
-		}
-	})
+	shards := make([]*hiddenByteCounts, corpusShards)
+	if !t.Run("corpus", func(t *testing.T) {
+		inParallel(t, "shards", len(shards), func(_ *testing.T, shard int) {
+			shards[shard] = hiddenBytesOfShard(shard)
+		})
+	}) {
+		return
+	}
+	found := newHiddenByteCounts()
+	for _, shard := range shards {
+		found.add(shard)
+	}
+	n, refusedTexts, hiddenTexts, leaked := found.texts, found.refused, found.hidden, found.leaked
+	agreedTexts, overHidden := found.agreed, found.overHidden
 	t.Logf("corpus: %d texts of up to %d pieces, %d refused by scan.l under one reading or the other", n, corpusDepth, refusedTexts)
 	t.Logf("%d texts hold the marker inside a literal, inside a comment, or past a refusal; %d printed it", hiddenTexts, leaked)
-	for e := range leaks {
+	for _, e := range found.leaks.lines {
 		t.Logf("  leak: %s", e)
 	}
 	t.Logf("%d texts both readings read alike and neither is refused and the marker is shape; %d lost it", agreedTexts, overHidden)
-	for e := range swallowed {
+	for _, e := range found.swallowed.lines {
 		t.Logf("  swallowed: %s", e)
 	}
 	// The floor the two checks below stand on: they can only fail over texts the corpus still
@@ -300,6 +258,68 @@ func TestRedactionPrintsNoHiddenByte(t *testing.T) {
 	if overHidden > 0 {
 		t.Errorf("%d texts lost a marker both readings read as shape", overHidden)
 	}
+}
+
+// hiddenByteCounts is what TestRedactionPrintsNoHiddenByte counts of a run of the corpus: its
+// texts, and those a reading refuses; those whose marker a reading hides, and how many of them
+// printed it; those both readings read alike, neither refused, whose marker is shape, and how
+// many of them lost it; and the first lines of the two reports.
+type hiddenByteCounts struct {
+	texts, refused, hidden, leaked, agreed, overHidden int
+	leaks, swallowed                                   firstLines
+}
+
+// newHiddenByteCounts is a hiddenByteCounts with nothing counted, which keeps 20 lines of each
+// report.
+func newHiddenByteCounts() *hiddenByteCounts {
+	return &hiddenByteCounts{leaks: firstLines{limit: 20}, swallowed: firstLines{limit: 20}}
+}
+
+// hiddenBytesOfShard counts one shard of the corpus as one pass over the corpus counts it. It
+// reads each text once at each setting, and hands both readings to redactedQuery's loop
+// (redactReadings), which leaves them as they were for the checks after it.
+func hiddenBytesOfShard(shard int) *hiddenByteCounts {
+	c := newHiddenByteCounts()
+	eachShardGap(shard, func(pieces []string, gap int) {
+		text := withMarker(pieces, gap)
+		c.texts++
+		at := strings.Index(text, marker)
+		on, off := readingOf(text, true), readingOf(text, false)
+		if on.failure >= 0 || off.failure >= 0 {
+			c.refused++
+		}
+		redacted := redactReadings(text, on, off)
+		printed := strings.Contains(redacted, marker)
+		if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
+			c.hidden++
+			if printed {
+				c.leaked++
+				c.leaks.add(fmt.Sprintf("%q -> %q", text, redacted))
+			}
+			return
+		}
+		if on.same(off) && on.failure < 0 {
+			c.agreed++
+			if !printed {
+				c.overHidden++
+				c.swallowed.add(fmt.Sprintf("%q -> %q", text, redacted))
+			}
+		}
+	})
+	return c
+}
+
+// add adds what one shard counted to c. Called on the shards in the corpus's order, it keeps the
+// first lines of each report one pass over the whole corpus would (firstLines).
+func (c *hiddenByteCounts) add(shard *hiddenByteCounts) {
+	c.texts += shard.texts
+	c.refused += shard.refused
+	c.hidden += shard.hidden
+	c.leaked += shard.leaked
+	c.agreed += shard.agreed
+	c.overHidden += shard.overHidden
+	c.leaks.addAll(shard.leaks)
+	c.swallowed.addAll(shard.swallowed)
 }
 
 // --- the oracle ---
@@ -330,48 +350,197 @@ func (a answer) agrees(b answer, aWord, bWord string) bool {
 		strings.ReplaceAll(a.message, aWord, "@") == strings.ReplaceAll(b.message, bWord, "@")
 }
 
-// ask sends one statement as a simple query, as a client sends the statements pg_stat_activity
-// records, and reads what the server answers. It goes through pgconn rather than pgx because
-// pgx refuses a simple query on a connection whose standard_conforming_strings is off, and off
-// is half of what this test is for.
+// sampleConn is a connection the oracle asks its statements on. Each statement goes as one
+// simple query, as a client sends the statements pg_stat_activity records. pgconn makes the
+// connection rather than pgx because pgx refuses a simple query on a connection whose
+// standard_conforming_strings is off, and off is half of what this test is for. Once made, the
+// connection is taken off pgconn (Hijack) and the asks speak the protocol themselves (pgproto3),
+// so that a chunk of the sample keeps pipelineWindow statements in flight on each connection
+// rather than waiting out one round trip a statement: the server answers each Query message in
+// the order it came, each with a ReadyForQuery of its own, and an error ends only the query
+// string it is in.
+type sampleConn struct {
+	conn     net.Conn
+	frontend *pgproto3.Frontend
+}
+
+// dialSample connects to the database url names with standard_conforming_strings at setting,
+// checks that the server took the setting, and takes the connection off pgconn. The connection
+// is closed when the test ends.
+func dialSample(t *testing.T, ctx context.Context, url, setting string) *sampleConn {
+	t.Helper()
+	config, err := pgconn.ParseConfig(url)
+	if err != nil {
+		t.Fatalf("parse the URL of the test's database: %v", err)
+	}
+	// The setting is given to the server in the startup packet, as PGOPTIONS gives it: a SET
+	// in a statement of its own would do, but a SET in the same simple-query string as the
+	// text under test is lexed before it takes effect, which has misled a reader of this
+	// code before.
+	config.RuntimeParams["options"] = "-c standard_conforming_strings=" + setting
+	conn, err := pgconn.ConnectConfig(ctx, config)
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	if running := conn.ParameterStatus("standard_conforming_strings"); running != setting {
+		conn.Close(ctx)
+		t.Fatalf("standard_conforming_strings is %q, want %q", running, setting)
+	}
+	// Hijack hands over pgconn's own Frontend, which holds whatever pgconn has read ahead, so
+	// the answers are read on through it and no byte the server sent is lost between the two.
+	hijacked, err := conn.Hijack()
+	if err != nil {
+		conn.Close(ctx)
+		t.Fatalf("take the connection off pgconn: %v", err)
+	}
+	c := &sampleConn{conn: hijacked.Conn, frontend: hijacked.Frontend}
+	t.Cleanup(c.close)
+	return c
+}
+
+// close ends the session with a Terminate, as pgconn's Close does, and closes the socket. On a
+// connection a failed ask has closed already, the Terminate fails and nothing is left to end.
+func (c *sampleConn) close() {
+	c.frontend.Send(&pgproto3.Terminate{})
+	c.frontend.Flush()
+	c.conn.Close()
+}
+
+// pipelineWindow is how many statements a connection holds sent and not yet answered, and
+// pipelineBatch how many of them a send flushes at once. The window keeps what is in flight on a
+// connection, statements one way and answers the other, far below what a socket buffers, so that
+// neither the server nor the test writes to a socket the other side has stopped reading. Measured
+// in a pod on gVisor on 2026-11-28, with each chunk's statements sent all at once and one
+// connection's answers left unread while the other's were read, seven of the first 24 chunks to
+// end took 24 to 48 s each, where the rest took under 0.3 s.
+const (
+	pipelineWindow = 64
+	pipelineBatch  = 16
+)
+
+// send sends each statement as one Query message, pipelineBatch at a time, each batch once
+// credits, which the reads put one in for each answer they take, gives room for it in the
+// window. It returns once stop is closed, which a failed read does. A failed send closes the
+// connection, so a read that waits for the answers to statements the server never got returns.
+func (c *sampleConn) send(statements []string, credits, stop <-chan struct{}) error {
+	var query pgproto3.Query
+	for batch := range slices.Chunk(statements, pipelineBatch) {
+		for range batch {
+			select {
+			case <-credits:
+			case <-stop:
+				return nil
+			}
+		}
+		for _, statement := range batch {
+			query.String = statement
+			c.frontend.Send(&query)
+		}
+		if err := c.frontend.Flush(); err != nil {
+			c.conn.Close()
+			return err
+		}
+	}
+	return nil
+}
+
+// read reads the server's answer to statement, the next statement sent on c that has not been
+// answered: the first error's SQLSTATE, position and message, or, where no error came, the
+// columns of every result. The answer runs to the statement's ReadyForQuery, so the rows of one
+// statement are never read as the next one's answer. Until 2026-11-06 this leg read each
+// statement through pgconn's result readers and left each result unread, which came back as a
+// refusal with no SQLSTATE for every statement the server answered a row to; what that cost the
+// oracle, and the floor that now fails a run which compares no success, are recorded at that
+// floor rather than here.
 //
-// Each result is read and closed before the next is asked for. A ResultReader left open holds
-// its statement's rows on the connection, and NextResult called over them answers "unexpected
-// DataRow message without preceding RowDescription" rather than the next result: that is one
-// bogus refusal for every statement the server answered a row to - select 1 among them - with
-// no SQLSTATE and no position, which this leg would read as a refusal the grammar made. What that
-// cost the oracle, and the floor that now fails a run which compares no success, are recorded at
-// that floor rather than here.
-func ask(ctx context.Context, conn *pgconn.PgConn, sql string) answer {
+// The rows of a result, the end of a result (CommandComplete), a notice (under
+// standard_conforming_strings off, escape_string_warning sends one for a backslash in a plain
+// literal), a parameter's new value and a notification are passed over, since an answer holds
+// none of them; so is an error after the first, since the first is the one the server gave for
+// the statement. Any other message fails the read, naming the message and the statement: no
+// statement of the sample is empty or a COPY, so the server sends none of the rest.
+func (c *sampleConn) read(statement string) (answer, error) {
 	var columns strings.Builder
-	var failure error
-	results := conn.Exec(ctx, sql)
-	for results.NextResult() {
-		reader := results.ResultReader()
-		for _, field := range reader.FieldDescriptions() {
-			fmt.Fprintf(&columns, "%s:%d,", field.Name, field.DataTypeOID)
+	var failure *pgconn.PgError
+	for {
+		msg, err := c.frontend.Receive()
+		if err != nil {
+			return answer{}, fmt.Errorf("read the answer to %q: %w", statement, err)
 		}
-		// The first error is the one the server gave: a later result's reader answers for a
-		// statement the server never reached.
-		if _, err := reader.Close(); err != nil && failure == nil {
-			failure = err
+		switch msg := msg.(type) {
+		case *pgproto3.RowDescription:
+			for _, field := range msg.Fields {
+				fmt.Fprintf(&columns, "%s:%d,", field.Name, field.DataTypeOID)
+			}
+		case *pgproto3.ErrorResponse:
+			if failure == nil {
+				failure = pgconn.ErrorResponseToPgError(msg)
+			}
+		case *pgproto3.ReadyForQuery:
+			if failure != nil {
+				return answer{failed: true, sqlstate: failure.Code, position: failure.Position, message: failure.Message}, nil
+			}
+			return answer{columns: columns.String()}, nil
+		case *pgproto3.DataRow, *pgproto3.CommandComplete, *pgproto3.NoticeResponse,
+			*pgproto3.ParameterStatus, *pgproto3.NotificationResponse:
+		default:
+			return answer{}, fmt.Errorf("the server answered %q with a %T, which no statement of this sample is answered with", statement, msg)
 		}
 	}
-	err := results.Close()
-	if failure == nil {
-		failure = err
+}
+
+// askAll sends each connection its statements and reads the server's answers in the order they
+// were sent: answers[i][k] is the answer conns[i] got to statements[i][k]. A goroutine of each
+// connection sends while the test's goroutine reads, a statement of each connection in turn, so
+// both connections are asked at once and neither holds more than pipelineWindow statements
+// unanswered. A failed read stops the sends and closes both connections, so that a send waiting
+// for room in the window or held on a socket returns, and the sends are joined before the test
+// fails.
+func askAll(t *testing.T, conns [2]*sampleConn, settings [2]string, statements [2][]string) [2][]answer {
+	t.Helper()
+	stop := make(chan struct{})
+	var credits [2]chan struct{}
+	var sends sync.WaitGroup
+	var sent [2]error
+	for i, conn := range conns {
+		credits[i] = make(chan struct{}, pipelineWindow)
+		for range pipelineWindow {
+			credits[i] <- struct{}{}
+		}
+		sends.Go(func() {
+			if err := conn.send(statements[i], credits[i], stop); err != nil {
+				sent[i] = fmt.Errorf("send under standard_conforming_strings=%s: %w", settings[i], err)
+			}
+		})
 	}
-	if failure == nil {
-		return answer{columns: columns.String()}
+	answers := [2][]answer{make([]answer, len(statements[0])), make([]answer, len(statements[1]))}
+	var read error
+	for k := 0; read == nil && k < max(len(statements[0]), len(statements[1])); k++ {
+		for i, conn := range conns {
+			if k >= len(statements[i]) {
+				continue
+			}
+			var err error
+			if answers[i][k], err = conn.read(statements[i][k]); err != nil {
+				read = fmt.Errorf("under standard_conforming_strings=%s: %w", settings[i], err)
+				break
+			}
+			// The window never holds more credits than it began with, since a statement takes
+			// one before it is sent and its answer gives it back, so this never waits.
+			credits[i] <- struct{}{}
+		}
 	}
-	out := answer{failed: true, message: failure.Error()}
-	var pgErr *pgconn.PgError
-	if errors.As(failure, &pgErr) {
-		out.sqlstate = pgErr.Code
-		out.position = pgErr.Position
-		out.message = pgErr.Message
+	if read != nil {
+		close(stop)
+		for _, conn := range conns {
+			conn.conn.Close()
+		}
 	}
-	return out
+	testwait.Returns(t, "the sends of this chunk's statements to return", sends.Wait)
+	if err := errors.Join(read, sent[0], sent[1]); err != nil {
+		t.Fatalf("ask the server: %v", err)
+	}
+	return answers
 }
 
 // verdict is what the server said about one text's marker under one standard_conforming_strings.
@@ -563,9 +732,13 @@ func byteOffset(text string, position int32) int {
 	return len(text)
 }
 
-func probe(ctx context.Context, conn *pgconn.PgConn, text string, ours reading) verdict {
+// probe reads the server's answer to text under the setting ours is the reading at. A verdict it
+// returns conclusive is one the comparison with a second answer settles: the server's answer to
+// the same text with the marker replaced by markerReplacement (replacedMarker), which the caller
+// asks for once it has read the first answers of its whole chunk, and from which it sets the
+// verdict's token (askChunk).
+func probe(text string, ours reading, answered answer) verdict {
 	at := strings.Index(text, marker)
-	answered := ask(ctx, conn, text)
 	out := verdict{failed: answered.failed, name: ours.isName(at, at+len(marker)), coversFrom: -1}
 	if answered.failed {
 		out.class, out.lexical = refusalClass(answered.message)
@@ -585,20 +758,24 @@ func probe(ctx context.Context, conn *pgconn.PgConn, text string, ours reading) 
 	if answered.failed && refusedAt < at+len(marker) {
 		// The server refused at a byte of the marker or before it, and the clause above could
 		// not read that refusal as its lexer's, so nothing it said is evidence about these
-		// bytes: what stopped there read none of them. The comparison below would be worse than
-		// nothing here, since a message that names the byte the server stopped on changes when
-		// the marker changes whatever the server made of it. What this branch holds is the
-		// grammar's own refusals - a syntax error, and the two str_udeescape raises in scan.l's
-		// words for a U&'…' it unpicks, which carry no scanner_yyerror suffix - and the lexer's
-		// own refusals that carry no position, which the pg_verifymbstr of <xqs> gives:
-		// PostgreSQL 18.6 answers select e'\xff' with an invalid byte sequence for encoding and
-		// no POSITION field.
+		// bytes: what stopped there read none of them. The comparison with the second answer
+		// would be worse than nothing here, since a message that names the byte the server
+		// stopped on changes when the marker changes whatever the server made of it. What this
+		// branch holds is the grammar's own refusals - a syntax error, and the two str_udeescape
+		// raises in scan.l's words for a U&'…' it unpicks, which carry no scanner_yyerror suffix
+		// - and the lexer's own refusals that carry no position, which the pg_verifymbstr of
+		// <xqs> gives: PostgreSQL 18.6 answers select e'\xff' with an invalid byte sequence for
+		// encoding and no POSITION field.
 		return out
 	}
 	out.conclusive = true
-	changed := ask(ctx, conn, strings.Replace(text, marker, markerReplacement, 1))
-	out.token = !answered.agrees(changed, marker, markerReplacement)
 	return out
+}
+
+// replacedMarker is text with its marker replaced by markerReplacement: the second statement
+// the oracle asks about a text whose first answer probe leaves conclusive.
+func replacedMarker(text string) string {
+	return strings.Replace(text, marker, markerReplacement, 1)
 }
 
 // TestRedactionAgainstServerOutcomes holds the transcription to a real PostgreSQL by outcome,
@@ -622,137 +799,44 @@ func probe(ctx context.Context, conn *pgconn.PgConn, text string, ours reading) 
 // scan.l's "invalid Unicode surrogate pair" out of the lexical set and a reading that recovers
 // from a carriage return inside E'\ud83d…\udc00' rather than refusing prints the marker that
 // follows the literal, with both clauses silent on it.
+//
+// It runs as three groups of parallel subtests, one after the other, so that no leaf runs long:
+// two that build the sample from the corpus shard by shard (serverSample), and one that asks the
+// server about it in chunks (askChunk), each chunk on connections of its own to a database of the
+// test's own. The test's own function walks no text, reads none and asks the server nothing: it
+// adds up what the chunks counted (serverCounts.add), checks the sums and reports them.
 func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	t.Parallel()
 	if testing.Short() {
 		t.Skip("asks a server about thousands of statements")
 	}
-	url := os.Getenv("DISPATCH_TEST_DATABASE_URL")
-	if url == "" {
-		t.Skip("DISPATCH_TEST_DATABASE_URL must be set")
-	}
-	ctx := context.Background()
+	server := fixtureServer(t, "DISPATCH_TEST_DATABASE_URL must be set")
 	settings := [2]string{"on", "off"}
-	var conns [2]*pgconn.PgConn
-	for i, setting := range settings {
-		config, err := pgconn.ParseConfig(url)
-		if err != nil {
-			t.Fatalf("parse DISPATCH_TEST_DATABASE_URL: %v", err)
-		}
-		// The setting is given to the server in the startup packet, as PGOPTIONS gives it: a SET
-		// in a statement of its own would do, but a SET in the same simple-query string as the
-		// text under test is lexed before it takes effect, which has misled a reader of this
-		// code before.
-		config.RuntimeParams["options"] = "-c standard_conforming_strings=" + setting
-		conn, err := pgconn.ConnectConfig(ctx, config)
-		if err != nil {
-			t.Fatalf("connect: %v", err)
-		}
-		defer conn.Close(ctx)
-		if running := conn.ParameterStatus("standard_conforming_strings"); running != setting {
-			t.Fatalf("standard_conforming_strings is %q, want %q", running, setting)
-		}
-		conns[i] = conn
+	sample := serverSample(t)
+	parts := slices.Collect(slices.Chunk(sample, sampleChunk))
+	chunks := make([]*serverCounts, len(parts))
+	if !t.Run("ask", func(t *testing.T) {
+		// The statements read nothing of a database's own state, so a database of the test's
+		// own answers them as any other would. It is made here rather than at the test's start
+		// so that the test's own time holds no round trip: CREATE DATABASE … STRATEGY FILE_COPY
+		// checkpoints the server twice, which a server other tests write to can take seconds
+		// over.
+		url := testdb.DatabaseOn(t, server, "pgmigrate_redaction")
+		inParallel(t, "chunks", len(chunks), func(t *testing.T, chunk int) {
+			chunks[chunk] = askChunk(t, url, settings, parts[chunk])
+		})
+	}) {
+		return
 	}
-	sample := serverSample()
-	var asked, leaked, lost, shape, inconclusive, named, refusedByUs, refusalMissing, refusalSpurious int
-	var covered, uncovered, ran int
-	ranTexts := map[string]bool{}
-	leaks := map[string]bool{}
-	losses := map[string]bool{}
-	refusals := map[string]bool{}
-	// The tally, one entry per class of scanlErrors, counted apart: generated from the texts
-	// the corpus built, fixed from the class's own fixed statement, raised where that fixed
-	// statement was seen to raise its own class, and saw for what it raised instead where it
-	// did not.
-	tally := map[*scanlError]*classTally{}
-	for i := range scanlErrors {
-		tally[&scanlErrors[i]] = &classTally{}
+	found := newServerCounts()
+	for _, chunk := range chunks {
+		found.add(chunk)
 	}
-	for _, entry := range sample {
-		text := entry.text
-		printed := strings.Contains(redactedQuery(text), marker)
-		var verdicts [2]verdict
-		for i, setting := range settings {
-			ours := readingOf(text, setting == "on")
-			verdicts[i] = probe(ctx, conns[i], text, ours)
-			switch {
-			case ours.failure >= 0 && !verdicts[i].failed:
-				refusalSpurious++
-				if len(refusals) < 10 {
-					refusals[fmt.Sprintf("scs=%s %q: our reading is refused at %d, the server ran it", setting, text, ours.failure)] = true
-				}
-			case ours.failure < 0 && verdicts[i].lexical:
-				refusalMissing++
-				if len(refusals) < 10 {
-					refusals[fmt.Sprintf("scs=%s %q: the server's lexer refused it, our reading did not", setting, text)] = true
-				}
-			}
-			if ours.failure >= 0 {
-				refusedByUs++
-			}
-			if !verdicts[i].failed {
-				ran++
-				ranTexts[text] = true
-			}
-			if class := verdicts[i].class; class != nil && (verdicts[i].lexical || class.shared) {
-				hits := tally[class]
-				if entry.class == nil {
-					hits.generated++
-				} else {
-					hits.fixed++
-					if class == entry.class {
-						hits.raised = true
-					}
-				}
-			}
-			if entry.class != nil {
-				hits := tally[entry.class]
-				hits.saw = append(hits.saw, "scs="+setting+": "+raisedWhat(verdicts[i]))
-			}
-			switch {
-			case verdicts[i].coversFrom >= 0:
-				// Rule R, asked of the server: its lexer stopped on this byte, so everything
-				// from there is covered, marker and all. This case comes before the name one
-				// because a name the server's lexer never reached is no name it resolved: it is
-				// the tail of a refused statement, and the tail is covered like any other.
-				covered++
-				if printed {
-					uncovered++
-					if len(leaks) < 20 {
-						leaks[fmt.Sprintf("scs=%s %q -> %q: the server's own lexer refused it at byte %d, at or before the marker", setting, text, redactedQuery(text), verdicts[i].coversFrom)] = true
-					}
-				}
-			case verdicts[i].name:
-				named++
-			case !verdicts[i].conclusive:
-				inconclusive++
-			default:
-				asked++
-			}
-			// Safety: one setting is enough. A marker that server never read as a token is a
-			// marker inside a literal, inside a comment, or past the byte it stopped on, and
-			// none of those may reach the report.
-			if verdicts[i].conclusive && !verdicts[i].name && !verdicts[i].token && printed {
-				leaked++
-				if len(leaks) < 20 {
-					leaks[fmt.Sprintf("scs=%s %q -> %q: the server answered the same with %s in its place", setting, text, redactedQuery(text), markerReplacement)] = true
-				}
-			}
-		}
-		// Shape: both settings are needed, since a marker one reading holds inside a literal is
-		// covered however the other reads it.
-		if verdicts[0].conclusive && verdicts[1].conclusive && verdicts[0].token && verdicts[1].token &&
-			!verdicts[0].name && !verdicts[1].name {
-			shape++
-			if !printed {
-				lost++
-				if len(losses) < 20 {
-					losses[fmt.Sprintf("%q -> %q: the server read the marker as a token of its own under both settings", text, redactedQuery(text))] = true
-				}
-			}
-		}
-	}
+	asked, covered, inconclusive, named := found.asked, found.covered, found.inconclusive, found.named
+	ran, ranTexts, tally := found.ran, found.ranTexts, found.tally
+	refusedByUs, refusalSpurious, refusalMissing := found.refusedByUs, found.refusalSpurious, found.refusalMissing
+	leaked, uncovered, shape, lost := found.leaked, found.uncovered, found.shape, found.lost
+	refusals, leaks, losses := found.refusals.lines, found.leaks.lines, found.losses.lines
 	t.Logf("server: %d of %d (text, setting) pairs settled by outcome, %d settled by the byte the server's own lexer stopped on, %d inconclusive (refused at a byte of the marker or before it with its lexer unnamed, or refused with no position), %d where the marker is inside a quoted identifier", asked, len(settings)*len(sample), covered, inconclusive, named)
 	t.Logf("%d of those pairs are statements the server ran, the pairs whose answers this leg can compare a success over, and %d different statements among them", ran, len(ranTexts))
 	// The floor the tally below stands on, and no replacement for it: the tally fails a class
@@ -760,7 +844,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	// all, where the tally of a corpus that no longer builds texts would have nothing left to
 	// count. It is taken on asked+covered, the pairs this leg settles - by outcome, and by the
 	// byte the server's own lexer stopped on. Measured on 2026-11-07 with the alphabet as it
-	// stands and with ask reading its results: 50,180 pairs settled by outcome and 48,730 by
+	// stands and with the leg reading each result: 50,180 pairs settled by outcome and 48,730 by
 	// the stop byte, 98,910 of 158,364 pairs. The floor is about the corpus still forming the
 	// refusal classes rather than about its size, so a round that deliberately shrinks the
 	// corpus moves this number in the same commit and measures the two counts again.
@@ -770,7 +854,7 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	// Successes the leg compared at all, which nothing else here stands in for: a statement the
 	// server RAN is the only pair the token test compares anything over, and refusalSpurious -
 	// our reading refusing a text the server ran anyway - cannot fire without one. Until
-	// 2026-11-06 ask left each result unread, so every statement the server answered a row to
+	// 2026-11-06 the leg left each result unread, so every statement the server answered a row to
 	// came back as a refusal with no SQLSTATE, every pair was a refusal, and the leg went green
 	// over a sample it had compared no success in: this is the check that would have said so on
 	// the day it landed.
@@ -867,15 +951,15 @@ func TestRedactionAgainstServerOutcomes(t *testing.T) {
 	t.Logf("%d classes the sample takes a text of the corpus for by name, the corpus forming too few of them for the stride to land on one: %s", len(byName), strings.Join(byName, "; "))
 	t.Logf("%d classes the stride's own picks cover: %s", len(byStride), strings.Join(byStride, "; "))
 	t.Logf("%d (text, setting) pairs our reading refuses; %d the server ran anyway, %d the server's own lexer refused and ours did not", refusedByUs, refusalSpurious, refusalMissing)
-	for e := range refusals {
+	for _, e := range refusals {
 		t.Logf("  refusal: %s", e)
 	}
 	t.Logf("markers the server never read as a token and redactedQuery printed: %d; markers past the byte its lexer stopped on and printed: %d", leaked, uncovered)
-	for e := range leaks {
+	for _, e := range leaks {
 		t.Logf("  leak: %s", e)
 	}
 	t.Logf("%d texts hold a marker the server read as a token of its own under both settings; %d lost it", shape, lost)
-	for e := range losses {
+	for _, e := range losses {
 		t.Logf("  lost: %s", e)
 	}
 	if leaked > 0 {
@@ -934,6 +1018,11 @@ type sampleText struct {
 	class *scanlError
 }
 
+// sampleStride is how far apart the hidden or shape texts are that the sample takes from the
+// corpus: one in sampleStride of the texts whose marker our reading holds hidden, and one in
+// sampleStride of those it holds as shape.
+const sampleStride = 97
+
 // serverSample picks the statements the oracle runs: the fixed statement of each refusal class
 // scanlErrors names, so that a class the corpus happens to miss is asked about all the same; the
 // first text of the corpus each class's reaches test recognises, so that a class the corpus
@@ -942,9 +1031,47 @@ type sampleText struct {
 // and every sampleStride'th one it holds as shape, so that both answers the server can give are
 // asked for and a reading that hides too little is as reachable as one that hides too much. The
 // enumeration is deterministic, so the sample is the same on every run.
-func serverSample() []sampleText {
-	const sampleStride = 97
-	var sample []sampleText
+//
+// It reads the corpus in shards (eachShardGap), each a parallel subtest of t, in two groups,
+// since where the stride lands in a shard turns on how many texts, hidden or shape, the shards
+// before it hold. The first group reads each shard's statements at both settings (markShard).
+// From the counts of the shards before each one, t then knows where each shard starts in each
+// stride, hidden or shape, and the second group builds each shard's statements again, reading
+// none of them, and keeps the stride's (strideOfShard). t puts the sample together in the order
+// of one walk of the corpus: the three seeded statements, each class's fixed statement, the
+// stride's statements shard by shard, and each reached statement the stride did not take. Two
+// sequences of pieces that build one text are two statements of the sample, as they are two
+// texts of the walk. t itself reads no statement and builds no text of the corpus.
+func serverSample(t *testing.T) []sampleText {
+	markers := make([]shardMarkers, corpusShards)
+	t.Run("classify", func(t *testing.T) {
+		inParallel(t, "shards", corpusShards, func(_ *testing.T, shard int) {
+			markers[shard] = markShard(shard)
+		})
+	})
+	// starts holds where each shard begins in each stride, hidden or shape: how many statements
+	// of the shards before it hold the marker hidden, and how many as shape. reached holds the
+	// first statement of the corpus each class's reaches test recognises, which is the first
+	// shard's that holds one.
+	starts := make([]markerCounts, corpusShards)
+	reached := make([]string, len(scanlErrors))
+	var before markerCounts
+	for shard, c := range markers {
+		starts[shard] = before
+		before.hidden += c.markers.hidden
+		before.shape += c.markers.shape
+		for i, statement := range c.reached {
+			if reached[i] == "" {
+				reached[i] = statement
+			}
+		}
+	}
+	strides := make([]shardStride, corpusShards)
+	t.Run("stride", func(t *testing.T) {
+		inParallel(t, "shards", corpusShards, func(_ *testing.T, shard int) {
+			strides[shard] = strideOfShard(shard, markers[shard].hides, starts[shard], reached)
+		})
+	})
 	// Three statements the server runs, which make the count of compared successes the sample's
 	// own rather than the class table's: a marker inside a literal, one as a column alias, and
 	// one in a comment, each of which PostgreSQL answers a row to under either setting. Without
@@ -952,11 +1079,17 @@ func serverSample() []sampleText {
 	// select U&'zqz' runs under standard_conforming_strings on. They are a handful of the pairs
 	// and statements the checks above stand on, so what they fix is where the number comes from
 	// rather than its size.
-	for _, ran := range []string{
+	seeded := []string{
 		"select '" + marker + "'",
 		"select 1 as " + marker,
 		"select 1 /* " + marker + " */",
-	} {
+	}
+	size := len(seeded) + len(scanlErrors) + len(reached)
+	for _, stride := range strides {
+		size += len(stride.statements)
+	}
+	sample := make([]sampleText, 0, size)
+	for _, ran := range seeded {
 		sample = append(sample, sampleText{text: ran})
 	}
 	for i := range scanlErrors {
@@ -964,38 +1097,418 @@ func serverSample() []sampleText {
 			sample = append(sample, sampleText{text: class.sample, class: class})
 		}
 	}
-	// strided holds the statements the stride took, so that a statement a reaches test asks
-	// for is not asked twice and counted twice where the stride took it anyway.
-	strided := map[string]bool{}
-	reached := make([]string, len(scanlErrors))
-	hidden, shape := 0, 0
-	eachText(corpusDepth, true, func(text string) {
-		statement := "select " + text
-		for i := range scanlErrors {
-			if scanlErrors[i].reaches != nil && reached[i] == "" && scanlErrors[i].reaches(statement) {
-				reached[i] = statement
-			}
-		}
-		at := strings.Index(statement, marker)
-		on, off := readingOf(statement, true), readingOf(statement, false)
-		if on.hides(at, at+len(marker)) || off.hides(at, at+len(marker)) {
-			if hidden%sampleStride == 0 {
-				sample = append(sample, sampleText{text: statement})
-				strided[statement] = true
-			}
-			hidden++
-			return
-		}
-		if shape%sampleStride == 0 {
+	// took holds whether the stride took each class's reached statement, so that a statement a
+	// reaches test asks for is not asked twice and counted twice where the stride took it anyway.
+	took := make([]bool, len(reached))
+	for _, stride := range strides {
+		for _, statement := range stride.statements {
 			sample = append(sample, sampleText{text: statement})
-			strided[statement] = true
 		}
-		shape++
-	})
-	for _, statement := range reached {
-		if statement != "" && !strided[statement] {
+		for i, kept := range stride.took {
+			took[i] = took[i] || kept
+		}
+	}
+	for i, statement := range reached {
+		if statement != "" && !took[i] {
 			sample = append(sample, sampleText{text: statement})
 		}
 	}
 	return sample
+}
+
+// inParallel runs each(t, i) for each i below n, each a parallel subtest named i of a subtest of
+// t named name, and returns once all of them have. The subtest between t and the leaves is what
+// puts the leaves' run in the time go test reports for t: a test's reported time holds its own
+// function and its cleanups, and its parallel subtests start only once its function has
+// returned, so a test reports none of its own parallel subtests' time, while t, which waits for
+// this subtest in its function, reports all of it. A test split into such groups then spends on
+// its own its reported time less its groups' (TestRedactionAgainstServerOutcomes).
+func inParallel(t *testing.T, name string, n int, each func(t *testing.T, i int)) {
+	t.Helper()
+	t.Run(name, func(t *testing.T) {
+		for i := range n {
+			t.Run(strconv.Itoa(i), func(t *testing.T) {
+				t.Parallel()
+				each(t, i)
+			})
+		}
+	})
+}
+
+// corpusShards is how many shards eachShardGap reads the corpus in: one for each pair of pieces
+// of the alphabet.
+var corpusShards = len(alphabet) * len(alphabet)
+
+// eachShardGap calls visit with the pieces of each text of one shard of the corpus and the gap
+// among them that the marker goes in (withMarker builds the text), in the corpus's order: every
+// sequence of one to corpusDepth pieces of the alphabet, each just before the longer ones it
+// begins and the pieces in the alphabet's order, with the marker at each of its gaps, first to
+// last. A shard is the texts that begin with one pair of pieces, alphabet[shard/len(alphabet)]
+// and then alphabet[shard%len(alphabet)], and the first shard of each first piece also holds the
+// two texts of that piece alone, which the corpus's order puts just before it. So the
+// len(alphabet)² shards in order are the corpus in order, each a run of it, and a shard is read
+// without a walk of the texts before it. visit must not keep pieces, which the next call reuses.
+func eachShardGap(shard int, visit func(pieces []string, gap int)) {
+	pieces := make([]string, 0, corpusDepth)
+	gaps := func() {
+		for gap := 0; gap <= len(pieces); gap++ {
+			visit(pieces, gap)
+		}
+	}
+	pieces = append(pieces, alphabet[shard/len(alphabet)])
+	if shard%len(alphabet) == 0 {
+		gaps()
+	}
+	var build func()
+	build = func() {
+		gaps()
+		if len(pieces) == corpusDepth {
+			return
+		}
+		for _, piece := range alphabet {
+			pieces = append(pieces, piece)
+			build()
+			pieces = pieces[:len(pieces)-1]
+		}
+	}
+	pieces = append(pieces, alphabet[shard%len(alphabet)])
+	build()
+}
+
+// withMarker is the text of pieces with the marker in the gap before pieces[gap], or after the
+// last piece where gap is len(pieces).
+func withMarker(pieces []string, gap int) string {
+	size := len(marker)
+	for _, piece := range pieces {
+		size += len(piece)
+	}
+	var text strings.Builder
+	text.Grow(size)
+	for _, piece := range pieces[:gap] {
+		text.WriteString(piece)
+	}
+	text.WriteString(marker)
+	for _, piece := range pieces[gap:] {
+		text.WriteString(piece)
+	}
+	return text.String()
+}
+
+// sampleStatement is the statement the oracle asks the server about for pieces with the marker
+// in the gap before pieces[gap]: "select " and the text withMarker builds.
+func sampleStatement(pieces []string, gap int) string {
+	return "select " + withMarker(pieces, gap)
+}
+
+// markerCounts is how many statements hold the marker hidden in a reading, and how many hold it
+// as shape.
+type markerCounts struct {
+	hidden, shape int
+}
+
+// shardMarkers is what the first group of serverSample reads of one shard: whether a reading
+// holds the marker of each statement of the shard hidden, in order; how many statements of the
+// shard hold it hidden or as shape; and for each class of scanlErrors, the first statement of the
+// shard its reaches test recognises, or "".
+type shardMarkers struct {
+	hides   []bool
+	markers markerCounts
+	reached []string
+}
+
+// markShard reads each statement of one shard (sampleStatement) at both settings: its marker is
+// hidden where either reading holds it inside a literal, inside a comment or at or past the byte
+// the reading was refused on, and shape otherwise. It keeps no token of either reading, and
+// reads a statement with standard_conforming_strings off only where the reading with it on holds
+// the marker as shape (readingHidesMarker).
+func markShard(shard int) shardMarkers {
+	c := shardMarkers{reached: make([]string, len(scanlErrors))}
+	eachShardGap(shard, func(pieces []string, gap int) {
+		statement := sampleStatement(pieces, gap)
+		for i := range scanlErrors {
+			if scanlErrors[i].reaches != nil && c.reached[i] == "" && scanlErrors[i].reaches(statement) {
+				c.reached[i] = statement
+			}
+		}
+		at := strings.Index(statement, marker)
+		hides := readingHidesMarker(statement, at, true) || readingHidesMarker(statement, at, false)
+		c.hides = append(c.hides, hides)
+		if hides {
+			c.markers.hidden++
+		} else {
+			c.markers.shape++
+		}
+	})
+	return c
+}
+
+// readingHidesMarker reports whether the reading of statement at standardConformingStrings holds
+// any byte of the marker, which starts at byte at, inside a literal or a comment, or at or past
+// the byte scan.l refused the statement on. That is what readingOf(statement,
+// standardConformingStrings).hides(at, at+len(marker)) reports, from a lexing that keeps no token.
+func readingHidesMarker(statement string, at int, standardConformingStrings bool) bool {
+	end := at + len(marker)
+	hidden := false
+	failure := lexSQL(statement, standardConformingStrings, func(token sqlToken) {
+		if token.kind.opaque() && token.start < end && at < token.end {
+			hidden = true
+		}
+	}, nil)
+	return hidden || (failure >= 0 && failure < end)
+}
+
+// shardStride is what the second group of serverSample keeps of one shard: the statements the
+// stride takes from it, in order, and for each class of scanlErrors whether the statement its
+// reaches test recognises first in the corpus is one of them.
+type shardStride struct {
+	statements []string
+	took       []bool
+}
+
+// strideOfShard builds the statements of one shard again (sampleStatement), reading none of
+// them, and keeps each whose index among the corpus's statements whose marker is hidden, or among
+// those where it is shape, is a multiple of sampleStride. hides is what markShard read of each
+// statement of the shard, start how many statements of the shards before it hold the marker
+// hidden and how many as shape, and reached each class's first statement its reaches test
+// recognises.
+func strideOfShard(shard int, hides []bool, start markerCounts, reached []string) shardStride {
+	s := shardStride{took: make([]bool, len(reached))}
+	next := 0
+	eachShardGap(shard, func(pieces []string, gap int) {
+		index := &start.shape
+		if hides[next] {
+			index = &start.hidden
+		}
+		next++
+		kept := *index%sampleStride == 0
+		*index++
+		if !kept {
+			return
+		}
+		statement := sampleStatement(pieces, gap)
+		s.statements = append(s.statements, statement)
+		for i, first := range reached {
+			if first == statement {
+				s.took[i] = true
+			}
+		}
+	})
+	return s
+}
+
+// sampleChunk is how many statements of the sample one subtest asks the server about. Each chunk
+// opens a connection of each setting, so a smaller chunk spends more of its time connecting, and
+// a larger one runs longer: in a pod on 2026-11-28, a chunk of 1,000 statements took 0.17 to
+// 0.55 s, and one of 400 took 0.10 to 0.26 s.
+const sampleChunk = 400
+
+// askChunk asks the server about one chunk of the sample, entries, under each setting, on a
+// connection of each to the database url names (dialSample), and counts what the server said of
+// each statement as one pass over the sample counts it (serverCounts.count). It asks in two
+// phases: first every statement of the chunk, then, for each (statement, setting) pair the first
+// answer leaves conclusive (probe), the statement with its marker replaced (replacedMarker). It
+// lexes each statement once at each setting: probe and count read the reading of each setting,
+// and redactedQuery's loop (redactReadings), whose output is redactedQuery's, reads both.
+func askChunk(t *testing.T, url string, settings [2]string, entries []sampleText) *serverCounts {
+	ctx := context.Background()
+	var conns [2]*sampleConn
+	for i, setting := range settings {
+		conns[i] = dialSample(t, ctx, url, setting)
+	}
+	texts := make([]string, len(entries))
+	for k, entry := range entries {
+		texts[k] = entry.text
+	}
+	answered := askAll(t, conns, settings, [2][]string{texts, texts})
+	ours := make([][2]reading, len(entries))
+	redacted := make([]string, len(entries))
+	verdicts := make([][2]verdict, len(entries))
+	var replaced [2][]string
+	var conclusive [2][]int
+	for k, text := range texts {
+		on, off := readingOf(text, true), readingOf(text, false)
+		redacted[k] = redactReadings(text, on, off)
+		for i, setting := range settings {
+			ours[k][i] = off
+			if setting == "on" {
+				ours[k][i] = on
+			}
+			verdicts[k][i] = probe(text, ours[k][i], answered[i][k])
+			if verdicts[k][i].conclusive {
+				replaced[i] = append(replaced[i], replacedMarker(text))
+				conclusive[i] = append(conclusive[i], k)
+			}
+		}
+	}
+	changed := askAll(t, conns, settings, replaced)
+	for i := range settings {
+		for j, k := range conclusive[i] {
+			verdicts[k][i].token = !answered[i][k].agrees(changed[i][j], marker, markerReplacement)
+		}
+	}
+	counts := newServerCounts()
+	for k, entry := range entries {
+		counts.count(entry, settings, ours[k], verdicts[k], redacted[k])
+	}
+	return counts
+}
+
+// serverCounts is what the server said of a run of the sample: the counts the test checks, the
+// different statements the server ran, the first lines of each report, and the tally. Each chunk
+// counts its own statements (askChunk), and the test adds the chunks up in the sample's order
+// (add), which keeps what one pass over the whole sample would.
+type serverCounts struct {
+	asked, covered, inconclusive, named          int
+	refusedByUs, refusalSpurious, refusalMissing int
+	leaked, uncovered, shape, lost, ran          int
+	ranTexts                                     map[string]bool
+	refusals, leaks, losses                      firstLines
+	tally                                        map[*scanlError]*classTally
+}
+
+// newServerCounts is a serverCounts with nothing counted. Its tally has one entry per class of
+// scanlErrors, counted apart: generated from the texts the corpus built, fixed from the class's
+// own fixed statement, raised where that fixed statement was seen to raise its own class, and
+// saw for what it raised instead where it did not.
+func newServerCounts() *serverCounts {
+	c := &serverCounts{
+		ranTexts: map[string]bool{},
+		refusals: firstLines{limit: 10},
+		leaks:    firstLines{limit: 20},
+		losses:   firstLines{limit: 20},
+		tally:    map[*scanlError]*classTally{},
+	}
+	for i := range scanlErrors {
+		c.tally[&scanlErrors[i]] = &classTally{}
+	}
+	return c
+}
+
+// count adds what the server said of one statement of the sample, entry, to c: ours is our
+// reading of the statement at each setting, verdicts what probe made of the server's answers
+// under it, and redacted what redactedQuery makes of it.
+func (c *serverCounts) count(entry sampleText, settings [2]string, ours [2]reading, verdicts [2]verdict, redacted string) {
+	text := entry.text
+	printed := strings.Contains(redacted, marker)
+	for i, setting := range settings {
+		switch {
+		case ours[i].failure >= 0 && !verdicts[i].failed:
+			c.refusalSpurious++
+			c.refusals.add(fmt.Sprintf("scs=%s %q: our reading is refused at %d, the server ran it", setting, text, ours[i].failure))
+		case ours[i].failure < 0 && verdicts[i].lexical:
+			c.refusalMissing++
+			c.refusals.add(fmt.Sprintf("scs=%s %q: the server's lexer refused it, our reading did not", setting, text))
+		}
+		if ours[i].failure >= 0 {
+			c.refusedByUs++
+		}
+		if !verdicts[i].failed {
+			c.ran++
+			c.ranTexts[text] = true
+		}
+		if class := verdicts[i].class; class != nil && (verdicts[i].lexical || class.shared) {
+			hits := c.tally[class]
+			if entry.class == nil {
+				hits.generated++
+			} else {
+				hits.fixed++
+				if class == entry.class {
+					hits.raised = true
+				}
+			}
+		}
+		if entry.class != nil {
+			hits := c.tally[entry.class]
+			hits.saw = append(hits.saw, "scs="+setting+": "+raisedWhat(verdicts[i]))
+		}
+		switch {
+		case verdicts[i].coversFrom >= 0:
+			// Rule R, asked of the server: its lexer stopped on this byte, so everything
+			// from there is covered, marker and all. This case comes before the name one
+			// because a name the server's lexer never reached is no name it resolved: it is
+			// the tail of a refused statement, and the tail is covered like any other.
+			c.covered++
+			if printed {
+				c.uncovered++
+				c.leaks.add(fmt.Sprintf("scs=%s %q -> %q: the server's own lexer refused it at byte %d, at or before the marker", setting, text, redacted, verdicts[i].coversFrom))
+			}
+		case verdicts[i].name:
+			c.named++
+		case !verdicts[i].conclusive:
+			c.inconclusive++
+		default:
+			c.asked++
+		}
+		// Safety: one setting is enough. A marker that server never read as a token is a
+		// marker inside a literal, inside a comment, or past the byte it stopped on, and
+		// none of those may reach the report.
+		if verdicts[i].conclusive && !verdicts[i].name && !verdicts[i].token && printed {
+			c.leaked++
+			c.leaks.add(fmt.Sprintf("scs=%s %q -> %q: the server answered the same with %s in its place", setting, text, redacted, markerReplacement))
+		}
+	}
+	// Shape: both settings are needed, since a marker one reading holds inside a literal is
+	// covered however the other reads it.
+	if verdicts[0].conclusive && verdicts[1].conclusive && verdicts[0].token && verdicts[1].token &&
+		!verdicts[0].name && !verdicts[1].name {
+		c.shape++
+		if !printed {
+			c.lost++
+			c.losses.add(fmt.Sprintf("%q -> %q: the server read the marker as a token of its own under both settings", text, redacted))
+		}
+	}
+}
+
+// add adds what one chunk counted to c. Called on the chunks in the sample's order, it keeps the
+// first lines of each report, and what each fixed statement raised (classTally.saw), in that
+// order.
+func (c *serverCounts) add(chunk *serverCounts) {
+	c.asked += chunk.asked
+	c.covered += chunk.covered
+	c.inconclusive += chunk.inconclusive
+	c.named += chunk.named
+	c.refusedByUs += chunk.refusedByUs
+	c.refusalSpurious += chunk.refusalSpurious
+	c.refusalMissing += chunk.refusalMissing
+	c.leaked += chunk.leaked
+	c.uncovered += chunk.uncovered
+	c.shape += chunk.shape
+	c.lost += chunk.lost
+	c.ran += chunk.ran
+	for text := range chunk.ranTexts {
+		c.ranTexts[text] = true
+	}
+	c.refusals.addAll(chunk.refusals)
+	c.leaks.addAll(chunk.leaks)
+	c.losses.addAll(chunk.losses)
+	for class, hits := range chunk.tally {
+		sum := c.tally[class]
+		sum.generated += hits.generated
+		sum.fixed += hits.fixed
+		sum.raised = sum.raised || hits.raised
+		sum.saw = append(sum.saw, hits.saw...)
+	}
+}
+
+// firstLines keeps the first limit different lines added to it, in the order they came. Lines
+// added chunk by chunk in the sample's order keep the lines one pass over the whole sample would:
+// a line among the first limit different lines of the sample is among the first limit of its own
+// chunk, and a line that is not comes after limit different lines in its own chunk or before it.
+type firstLines struct {
+	limit int
+	lines []string
+}
+
+// add keeps line where fewer than limit lines are kept and line is not one of them.
+func (f *firstLines) add(line string) {
+	if len(f.lines) < f.limit && !slices.Contains(f.lines, line) {
+		f.lines = append(f.lines, line)
+	}
+}
+
+// addAll adds each line other keeps to f, in the order other keeps them (add).
+func (f *firstLines) addAll(other firstLines) {
+	for _, line := range other.lines {
+		f.add(line)
+	}
 }
