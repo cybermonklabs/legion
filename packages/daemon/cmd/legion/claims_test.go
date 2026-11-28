@@ -31,6 +31,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/supervise/supervisetest"
 	"github.com/sjawhar/legion/daemon/internal/testport"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
 
@@ -602,6 +603,9 @@ func TestClaimsRetryPostsToTheClaimsRetryRoute(t *testing.T) {
 	if want := "legion-legion-legion-208-architect architect LEGION-208 launching - 4 0 - - - -\n"; out != want {
 		t.Fatalf("retry stdout = %q, want %q", out, want)
 	}
+	// The retry answers once the store has taken the claim launching (supervise's HandleStart and
+	// writeTry), which comes before the runtime's spawn of that launch, so the spawn is waited for.
+	testwait.Eventually(t, "the retry's launch to reach the runtime", func() bool { return len(d.runtime.CallsOf("Spawn")) >= 4 })
 	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 4 {
 		t.Fatalf("the runtime saw %d spawns, want the retry's launch after the three refused", len(spawns))
 	}
