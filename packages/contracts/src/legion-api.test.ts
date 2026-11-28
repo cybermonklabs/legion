@@ -2604,8 +2604,11 @@ test("an escalation rejects empty required fields", () => {
 // The daemon's `modelRequestsProblem` refuses a report with a 400 where a request's id, session or
 // model is blank as Go's strings.TrimSpace reads it, so the request body's schema refuses each such
 // request too, by goBlankPattern rather than JavaScript's trim (`./go-blank.ts`): only spaces, or
-// only U+0085, which trim keeps. A value with content is sent as it is, never trimmed.
-test("a report of model requests refuses a request whose id, session or model is blank", () => {
+// only U+0085, which trim keeps. A value with content is sent as it is, never trimmed. So with an
+// end Go's decode refuses (one with no seconds) or the daemon reads as no end (Go's zero time, at
+// any offset and with a fraction of zeros), while the end `toISOString()` writes, which the Oh My
+// Pi reporter sends, and an end a millisecond past the zero time are taken.
+test("a report of model requests refuses a request whose id, session or model is blank, or whose end the daemon refuses", () => {
   const request = {
     id: "req-1",
     session: "ses_implementer_208",
@@ -2629,6 +2632,26 @@ test("a report of model requests refuses a request whose id, session or model is
     }
     const padded = report([{ ...request, [field]: ` ${request[field]} ` }]);
     expect(LegionModelRequestsRequest.parse(padded)).toEqual(padded);
+  }
+  for (const endedAt of [
+    "2026-11-06T10:00Z",
+    "0001-01-01T00:00:00Z",
+    "0001-01-01T00:00:00.000Z",
+    "0001-01-01T01:00:00+01:00",
+  ]) {
+    expect(
+      LegionModelRequestsRequest.safeParse(report([{ ...request, endedAt }])).success,
+      `endedAt ${endedAt} is refused`
+    ).toBeFalse();
+  }
+  for (const endedAt of [
+    new Date(Date.UTC(2026, 10, 6, 10, 0)).toISOString(),
+    "0001-01-01T00:00:00.001Z",
+  ]) {
+    expect(
+      LegionModelRequestsRequest.safeParse(report([{ ...request, endedAt }])).success,
+      `endedAt ${endedAt} is taken`
+    ).toBeTrue();
   }
 });
 

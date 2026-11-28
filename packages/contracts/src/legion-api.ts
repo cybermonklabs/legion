@@ -2164,6 +2164,19 @@ function modelRequestField(field: string): z.ZodString {
   return z.string().refine((text) => !goBlankPattern.test(text), { error: `${field} is required` });
 }
 
+/** Go's zero `time.Time`, January 1 of year 1 at 00:00:00 UTC, in Unix milliseconds. */
+const GO_ZERO_TIME_MS = Date.parse("0001-01-01T00:00:00Z");
+
+/** A model request's `endedAt`, as the daemon reads it, so that one bad request does not cost its
+ * batch (`modelRequestField`): a `LegionInstant`, since Go's `time.Time` decode refuses a time with
+ * no seconds, which `timestamp` alone takes, and never Go's zero time, which `modelRequestsProblem`
+ * refuses through `EndedAt.IsZero()`: that instant at any offset, with a fraction of zeros or
+ * none. Either refusal is a 400 for the whole report. */
+const modelRequestEndedAt = LegionInstant.refine(
+  (text) => /\.\d*[1-9]/.test(text) || Date.parse(text.replace(/\.\d+/, "")) !== GO_ZERO_TIME_MS,
+  { error: "endedAt is required" }
+);
+
 /** `claim.ModelRequest`, one model request a host made for a session of the project, and nothing
  * else of it: no prompt, no answer and no text of an error. `id` is the host's own, unique within
  * the claim's launch generation and kept across the host's retries, so a request reported twice is
@@ -2177,12 +2190,13 @@ function modelRequestField(field: string): z.ZodString {
  * not learn it: a request of a model the project counts with none leaves its minute's tokens
  * unknown, so the headroom of that minute is not recorded, never the sum of the other requests.
  * `id`, `session` and `model` are each refused where Go's strings.TrimSpace empties them
- * (`modelRequestField`). */
+ * (`modelRequestField`), and `endedAt` where the daemon's decode or its zero check refuses it
+ * (`modelRequestEndedAt`). */
 export const LegionModelRequest = z.strictObject({
   id: modelRequestField("id"),
   session: modelRequestField("session"),
   model: modelRequestField("model"),
-  endedAt: timestamp,
+  endedAt: modelRequestEndedAt,
   uncachedInputTokens: z.number().int().nonnegative().optional(),
 });
 
