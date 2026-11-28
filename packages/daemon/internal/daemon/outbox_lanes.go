@@ -460,8 +460,9 @@ func (l *leaseRenewal) warnOnce(held int64) bool {
 }
 
 // renewLease starts the chain of ticks that keeps the row's lease live while it runs: every third of
-// the lease each tick moves the lease a whole lease ahead, so a run of any length lapses only when
-// the database could not be reached for the whole lease. A renewal that fails is logged and tried
+// the lease each tick moves the lease a whole lease ahead. The lease can still lapse, when the
+// database cannot be reached for the whole lease or when the ticks are held back past it, as in a
+// process the scheduler stalls (outboxLease). A renewal that fails is logged and tried
 // at the next tick; a lease found no longer the row's is logged once, and the run goes on to its
 // end, since nothing cancels a row mid-effect — the finish or retry then fences on the token and
 // records nothing. A lifecycle row's tick also reads the rows its issue holds behind it, and logs

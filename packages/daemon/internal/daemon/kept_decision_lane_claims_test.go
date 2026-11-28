@@ -269,11 +269,12 @@ func TestTheKeptModelRunsOnlyRowsALaneWouldClaim(t *testing.T) {
 // keptAuditTwoLifecycleRows drives a runTogether step that has two due lifecycle rows of the root.
 // The run opens with the root architect's start (newKeptRun), and a second start of the root makes
 // two due rows of the root's lifecycle lane and nothing else due, so the step lists both starts
-// (claimable) and its count is two. At this head the step claims the first in its shuffled order,
+// (claimable) and its count is two. The step claims the first in its shuffled order,
 // and ClaimRow refuses the second, since the first's claim holds the root's lifecycle lane
 // (outboxLaneFree): the step runs the one row and traces the other not claimed, as a lane holds it
-// back while the first's claim is live. The case can fail only on the control tree, whose model
-// (main's) takes both rows, in whichever order its shuffle puts them.
+// back while the first's claim is live. The case can fail only on a model that takes both rows, in
+// whichever order its shuffle puts them, as the model before cybermonklabs/legion#5874 (main at
+// 8868205a) did: it leased each row with leaseOutboxRow and did not claim it.
 func keptAuditTwoLifecycleRows(t *testing.T, sites *keptAuditedSites) {
 	run := newKeptRun(t, 1, 1)
 	run.audit = sites.audit(run)
@@ -293,11 +294,11 @@ func keptAuditTwoLifecycleRows(t *testing.T, sites *keptAuditedSites) {
 // step runs the root architect's opening start, the one row due, and its finish is lost to the
 // crash, so the row keeps its lease (noteCrash). The architect that start launched then comes up
 // and the workflow is told its ready, which queues its catch-up: a board row a lane can claim while
-// the crash's lease holds the root's lifecycle lane. At this head the fourth step's runRow picks
+// the crash's lease holds the root's lifecycle lane. The fourth step's runRow picks
 // from claimable, and record.Store.DueRows leaves out the start under its live crash lease, so the
 // step runs the catch-up, as a lane leaves the start until its lease lapses. The case can fail only
-// on the control tree, whose model (main's) picks among every due row, the crashed start and the
-// catch-up, and there seed 1 picks the start.
+// on a model that picks among every due row, the crashed start and the catch-up, as the model
+// before cybermonklabs/legion#5874 (main at 8868205a) did, and there seed 1 picks the start.
 func keptAuditCrashedRow(t *testing.T, sites *keptAuditedSites) {
 	run := newKeptRun(t, 1, 4)
 	run.audit = sites.audit(run)
