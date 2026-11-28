@@ -118,20 +118,26 @@ const TOOL_CALL_SHAPED = /<(?:[\w-]+:)?(?:function_calls\b|invoke\s+name\s*=|par
  * refusal moves nothing, and the daemon sends any next task itself, so the role does nothing more
  * for that work.
  *
- * A report on a production check is refused `CHECK_NOT_OPEN` with one of two answers
- * (`checkReport`, `packages/daemon/internal/api/handoff.go`), and neither moves anything. When the
- * issue has no open check (`check == nil || !check.Open()`), the answer says that it has no open
- * production check opened at that time. No check is left to report on, so the role does nothing
- * more. When the issue's check is open but did not open at the report's `check_opened_at` (a
- * check that a later merge opened, or a time no check opened at), the answer names the current
- * look and says to send the report again with the values from that look's task. That open check
- * still waits on the role's report, so the role reports again with `check_opened_at` and
- * `look_id` from its newest task of that check rather than doing nothing more. A role whose only
- * task is of the check that a later merge replaced holds no task of the open check yet, and the
- * daemon sends it the task of that check's current look itself, so such a role does nothing more,
- * as a role with no newer task does after `CHECK_LOOK_NOT_OPEN`. So `CHECK_NOT_OPEN` has a
- * sentence of its own that names both answers, apart from the sentence of
- * `HANDOFF_NOT_CURRENT_PHASE`.
+ * A report on a production check is refused `CHECK_NOT_OPEN` with one of two answers, and neither
+ * moves anything. Each answer has two wordings: the route's (`checkReport`,
+ * `packages/daemon/internal/api/handoff.go`), and the engine's when the check changes between the
+ * route's read and the fact's transaction (`checkReported`,
+ * `packages/daemon/internal/workflow/check.go`). When the issue has no open check
+ * (`check == nil || !check.Open()` in both), each says that the issue has no open production
+ * check. No check is left to report on, so the role does nothing more. When the issue's check is
+ * open but did not open at the report's `check_opened_at` (a check that a later merge opened, or a
+ * time no check opened at), the route says that the check "is open, but it did not open at" that
+ * time, and the engine says "A later merge replaced that check with the check that opened
+ * at" another time. Both name an open check that opened at another time than the report's
+ * `check_opened_at`, and both name the current look and say that a report gives the values from
+ * the task of its look, so the reminder keys its instruction on that shared meaning, not on the
+ * words of either. That open check still waits on the role's report, so the role reports again
+ * with `check_opened_at` and `look_id` from its newest task of that check rather than doing
+ * nothing more. A role whose only task is of the check that a later merge replaced holds no task
+ * of the open check yet, and the daemon sends it the task of that check's current look itself, so
+ * such a role does nothing more, as a role with no newer task does after `CHECK_LOOK_NOT_OPEN`.
+ * So `CHECK_NOT_OPEN` has a sentence of its own that names both answers, apart from the sentence
+ * of `HANDOFF_NOT_CURRENT_PHASE`.
  *
  * A report is refused `CHECK_LOOK_NOT_OPEN` when the look id it gives is not the id of the check's
  * current look (`checkReport` and `namesCurrentLook`, `packages/daemon/internal/api/handoff.go`):
@@ -185,10 +191,10 @@ export function owedReminder(work: string): string {
     "`handoff_complete` `HANDOFF_NOT_CURRENT_PHASE`, do nothing more for that work: the daemon " +
     "sends you any next task itself. If it refuses your check report `CHECK_NOT_OPEN`, read its " +
     "answer: when the answer says that the issue has no open production check, do nothing more, " +
-    "and when the answer says that the check is open but did not open at the `check_opened_at` " +
-    "you gave, report again with `check_opened_at` and `look_id` from your newest task of that " +
-    "check, or, if you hold no task of that check, do nothing more, since the daemon sends you " +
-    "the task of its current look itself. If it refuses your check report " +
+    "and when the answer names an open check that opened at another time than the " +
+    "`check_opened_at` you gave, report again with `check_opened_at` and `look_id` from your " +
+    "newest task of that check, or, if you hold no task of that check, do nothing more, since " +
+    "the daemon sends you the task of its current look itself. If it refuses your check report " +
     "`CHECK_LOOK_NOT_OPEN`, the `look_id` you gave is not the id of the current look: report " +
     "again with `check_opened_at` and `look_id` from your newest task of that check, or, if you " +
     "hold no newer task, do nothing more, since the daemon sends you the task of the current " +

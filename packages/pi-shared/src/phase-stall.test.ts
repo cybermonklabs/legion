@@ -242,15 +242,20 @@ test("a settle in a quiet wait earns none, and the wait ends on a reminder", () 
 // work of a phase or of a production check, so every sentence of it holds for both. A role whose
 // completion the daemon refuses as not current (HANDOFF_NOT_CURRENT_PHASE) is told to do nothing
 // more for that work, since the daemon sends any next task itself. CHECK_NOT_OPEN has two answers
-// (checkReport in packages/daemon/internal/api/handoff.go), so that code has a sentence of its
-// own, outside the "do nothing more for that work" sentence, that names both: when the issue has
-// no open production check, do nothing more, and when the check is open but did not open at the
-// check_opened_at the report gave (a check that a later merge opened), report again from the
-// newest task of that check, as the daemon's answer says, or do nothing more when no task of that
-// check is held (a role whose only task is of the check a later merge replaced), since the daemon
-// sends the task of its current look itself (dispatch://INFRA-3518). A report refused
-// CHECK_LOOK_NOT_OPEN gave a look id that is not the id of the current look (checkReport and
-// namesCurrentLook in packages/daemon/internal/api/handoff.go), and the daemon's answer says to
+// (checkReport in packages/daemon/internal/api/handoff.go, and checkReported in
+// packages/daemon/internal/workflow/check.go for a later merge's check that overtakes the report
+// between the route's read and the fact), so that code has a sentence of its own, outside the "do
+// nothing more for that work" sentence, that names both: when the issue has no open production
+// check, do nothing more, and when the answer names an open check that opened at another time
+// than the check_opened_at the report gave (a check that a later merge opened), report again from
+// the newest task of that check, as the daemon's answer says, or do nothing more when no task of
+// that check is held (a role whose only task is of the check a later merge replaced), since the
+// daemon sends the task of its current look itself (dispatch://INFRA-3518). The second answer is
+// keyed on the meaning that the route's words ("is open, but it did not open at") and the
+// engine's ("A later merge replaced that check with the check that opened at") share, so the
+// instruction holds for either. A report refused CHECK_LOOK_NOT_OPEN gave a look id that is not
+// the id of the current look (checkReport and namesCurrentLook in
+// packages/daemon/internal/api/handoff.go), and the daemon's answer says to
 // send it again with the look id from the current look's task, so that code has a sentence of its
 // own too: report again from the newest task of that check, or do nothing more when no newer task
 // is held. A HANDOFF_ALREADY_RECORDED answer while the reminder still comes means the daemon keeps
@@ -284,16 +289,14 @@ test("the reminder text says what to do when handoff_complete is refused HANDOFF
 
     const checkNotOpen = sentences.filter((sentence) => sentence.includes("`CHECK_NOT_OPEN`"));
     expect(checkNotOpen).toHaveLength(1);
-    for (const step of [
-      "when the answer says that the issue has no open production check, do nothing more",
-      "when the answer says that the check is open but did not open at the `check_opened_at` you gave",
-    ]) {
-      expect(checkNotOpen[0]).toContain(step);
-    }
+    expect(checkNotOpen[0]).toContain(
+      "when the answer says that the issue has no open production check, do nothing more"
+    );
     expect(checkNotOpen[0]).toEndWith(
-      "report again with `check_opened_at` and `look_id` from your newest task of that check, " +
-        "or, if you hold no task of that check, do nothing more, since the daemon sends you the " +
-        "task of its current look itself."
+      "when the answer names an open check that opened at another time than the " +
+        "`check_opened_at` you gave, report again with `check_opened_at` and `look_id` from your " +
+        "newest task of that check, or, if you hold no task of that check, do nothing more, since " +
+        "the daemon sends you the task of its current look itself."
     );
     for (const other of ["`CHECK_LOOK_NOT_OPEN`", "HANDOFF_", "for that work"]) {
       expect(checkNotOpen[0]).not.toContain(other);
