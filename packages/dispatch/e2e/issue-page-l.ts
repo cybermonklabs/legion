@@ -213,10 +213,13 @@ export async function scrollEndUnderBox(page: Page, lastRow: string): Promise<vo
   }, lastRow);
 }
 
-/** The entry of the panel (Details) whose words are `words`: a turn of the issue's history, whose
- *  Reply aims the box at it, or the reader's own comment, whose Edit opens its words in the box. */
+/** The turn of the panel's (Details') history whose words are `words`: the element of one turn
+ *  of a thread the history holds (`[data-history-item]`, `Turn` in `history-entries.tsx`), which
+ *  holds that turn's time, author, words and Reply, whose press aims the box at it, and no other
+ *  turn. A day and a thread's entry hold several turns, so neither is matched, and a turn the
+ *  history does not hold matches nothing. A turn draws no Edit. */
 export function panelEntry(page: Page, words: string): Locator {
-  return marginShell(page).getByRole("listitem").filter({ hasText: words });
+  return marginShell(page).locator("[data-history-item]").filter({ hasText: words });
 }
 
 // ---------------------------------------------------------------------------------------------
