@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -24,8 +25,8 @@ const compactMinRows = 16
 // of its edit.
 const compactMaxTailAge = 15 * time.Minute
 
-// compactionTiming is how long the compaction queue waits between the steps of a room. Tests shorten
-// it; production runs defaultCompactionTiming.
+// compactionTiming is how long the compaction queue waits between the steps of a room, on the
+// service's clock (Deps.Clock). Tests shorten it; production runs defaultCompactionTiming.
 type compactionTiming struct {
 	// firstCheck is how long a noted room waits for its first check. Nothing a note's own rows add
 	// is due before they have left the tail, and a room that was due already waits at most this.
@@ -237,6 +238,8 @@ func (s *Service) warnCompaction(ctx context.Context, message, room string, err 
 type compactionQueue struct {
 	step   func(ctx context.Context, room string, retrying bool) compactionNext
 	cancel context.CancelFunc
+	// clock is what the queue's times and its worker's timer run on: the service's (Deps.Clock).
+	clock clock.Clock
 	// wake tells the worker the queue changed: a room was queued, or the queue stopped or resumed.
 	wake chan struct{}
 	// done is closed when the worker has returned.
@@ -272,12 +275,14 @@ type compactionEntry struct {
 	index int
 }
 
-// startCompactionQueue creates a compaction queue whose worker runs step, and starts the worker.
-func startCompactionQueue(step func(ctx context.Context, room string, retrying bool) compactionNext) *compactionQueue {
+// startCompactionQueue creates a compaction queue on c whose worker runs step, and starts the
+// worker.
+func startCompactionQueue(c clock.Clock, step func(ctx context.Context, room string, retrying bool) compactionNext) *compactionQueue {
 	ctx, cancel := context.WithCancel(store.WithTransactionTracking(context.Background()))
 	q := &compactionQueue{
 		step:   step,
 		cancel: cancel,
+		clock:  c,
 		wake:   make(chan struct{}, 1),
 		done:   make(chan struct{}),
 		timing: defaultCompactionTiming,
@@ -299,7 +304,7 @@ func (q *compactionQueue) note(room string) {
 		q.mu.Unlock()
 		return
 	}
-	at := time.Now().Add(q.timing.firstCheck)
+	at := q.clock.Now().Add(q.timing.firstCheck)
 	if held := q.rooms[room]; held != nil {
 		// A held room is either in flight or in the heap: take pops it and makes it current under
 		// one lock, settle pushes it back or deletes it, and dropQueuedLocked deletes every room
@@ -337,22 +342,31 @@ func (q *compactionQueue) signal() {
 // again or drops it as the step decided, until the queue is shut.
 func (q *compactionQueue) run(ctx context.Context) {
 	defer close(q.done)
-	timer := time.NewTimer(time.Hour)
-	timer.Stop()
+	// The worker's one timer, made at its first wait and re-armed after; it is stopped after every
+	// wait, so nothing of it stays armed once the worker returns.
+	var timer clock.Timer
 	for {
 		entry, wait, ok := q.take()
 		if !ok {
 			return
 		}
 		if entry == nil {
+			var fire <-chan time.Time
 			if wait > 0 {
-				timer.Reset(wait)
+				if timer == nil {
+					timer = q.clock.NewTimer(wait)
+				} else {
+					timer.Reset(wait)
+				}
+				fire = timer.C()
 			}
 			select {
 			case <-q.wake:
-			case <-timer.C:
+			case <-fire:
 			}
-			timer.Stop()
+			if timer != nil {
+				timer.Stop()
+			}
 			continue
 		}
 		next := q.step(ctx, entry.room, entry.retry > 0)
@@ -376,7 +390,7 @@ func (q *compactionQueue) take() (*compactionEntry, time.Duration, bool) {
 		return nil, 0, true
 	}
 	entry := q.due[0]
-	if wait := time.Until(entry.at); wait > 0 {
+	if wait := entry.at.Sub(q.clock.Now()); wait > 0 {
 		return nil, wait, true
 	}
 	heap.Pop(&q.due)
@@ -423,7 +437,7 @@ func (q *compactionQueue) settle(entry *compactionEntry, next compactionNext) {
 	if renoted {
 		after = min(after, timing.firstCheck)
 	}
-	entry.at = time.Now().Add(after)
+	entry.at = q.clock.Now().Add(after)
 	heap.Push(&q.due, entry)
 }
 

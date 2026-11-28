@@ -263,7 +263,7 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	}
 	fmt.Fprintf(stderr, "[legion] checking the controller's Oh My Pi (%s) in %s before the daemon mints a capability\n",
 		omplaunch.WithPrefixShown(cfg.OmpLaunchPrefix, invocation), controllerDir)
-	secret, designSteps, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
+	answer, err := probeAndMint(ctx, cfg.DaemonURL, daemon.ControllerProbe{
 		Omp: invocation, Prefix: cfg.OmpLaunchPrefix, Env: env, WorkDir: controllerDir, Stdin: os.Stdin, Stderr: attempts,
 		Contract: api.DaemonAPIVersion(), Log: slog.New(slog.NewTextHandler(stderr, redact.HandlerOptions(nil))),
 	}, operatorToken)
@@ -272,10 +272,10 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 		return 0, err
 	}
 
-	if _, err := runtime.WriteSecretFile(stateDir, token, controllerSecretVariable, secret); err != nil {
+	if _, err := runtime.WriteSecretFile(stateDir, token, controllerSecretVariable, answer.Secret); err != nil {
 		return 0, fmt.Errorf("write the controller secret: %w", err)
 	}
-	stopGitHubRefresh, defaultOwner, reach, err := controllerStartGitHubCredential(ctx, cfg.DaemonURL, secret, stateDir, stderr)
+	stopGitHubRefresh, defaultOwner, reach, err := controllerStartGitHubCredential(ctx, cfg.DaemonURL, answer.Secret, stateDir, stderr)
 	if err != nil {
 		return 0, err
 	}
@@ -319,9 +319,17 @@ func controllerStart(ctx context.Context, configPath, daemonURL string, stderr, 
 	// holds its directories (daemon.RepositoriesClause). It is the sentence
 	// a daemon that launches its own controller writes from its own read of the installations
 	// (daemon.RepositoriesSentence), so the one controller prompt quotes one sentence.
+	// The project's watched workflows follow, when it names any, in the line the daemon tells its
+	// own controller (daemon.WatchedWorkflowsFragment), from the secret's answer: the system prompt
+	// is what a turn an Envoy card starts still reads after a compaction. The list this process
+	// starts with is the one its prompt names; a list changed since reaches the controller at its
+	// next start.
 	// The start message travels as LEGION_CONTROLLER_START_MESSAGE (controllerEnvironment) and the
 	// command line ends with the word daemon.ControllerStartCommand, whose doc says why.
-	addressing := daemon.DesignGateFragment(designSteps) + " " + daemon.RepositoriesSentence(reach)
+	addressing := daemon.DesignGateFragment(answer.DesignGateSteps) + " " + daemon.RepositoriesSentence(reach)
+	if len(answer.WatchedWorkflows) > 0 {
+		addressing += " " + daemon.WatchedWorkflowsFragment(answer.WatchedWorkflows)
+	}
 	prompt, err := runtime.ComposePrompt(runtime.PromptParts{
 		RolePromptPaths:            controllerPrompts,
 		Addressing:                 addressing,
@@ -481,9 +489,9 @@ func executableFile(info os.FileInfo) bool {
 // probeAndMint is the controller probe and then the one daemon call, which mints the capability:
 // the probe's refusal comes before the mint, never after it, and the call names the contract the
 // probe held the plugin to, so a daemon of another contract refuses it before minting.
-func probeAndMint(ctx context.Context, daemonURL string, probe daemon.ControllerProbe, operatorToken string) (string, []record.DesignStep, error) {
+func probeAndMint(ctx context.Context, daemonURL string, probe daemon.ControllerProbe, operatorToken string) (api.ControllerSecretResponse, error) {
 	if err := daemon.ProbeController(ctx, probe); err != nil {
-		return "", nil, err
+		return api.ControllerSecretResponse{}, err
 	}
 	return fetchControllerSecret(ctx, daemonURL, operatorToken, probe.Contract)
 }
@@ -561,49 +569,55 @@ func removeDirs(created []string) {
 }
 
 // fetchControllerSecret is `POST /legion/v1/controller/secret` with the operator token as a
-// bearer and the plugin's daemon API contract in the body, answering the capability and the
-// design-gate steps the deployment gates. A failed request names the daemon URL and never tries
-// another address; a refusal quotes the daemon's `error`, except a daemon from before contract
-// 12, which refuses the contract field itself as unknown, so the refusal names the side to
-// upgrade instead.
+// bearer and the plugin's daemon API contract in the body, answering the capability, the
+// design-gate steps the deployment gates and the project's watched workflows. A failed request
+// names the daemon URL and never tries another address; a refusal quotes the daemon's `error`,
+// except a daemon from before contract 12, which refuses the contract field itself as unknown, so
+// the refusal names the side to upgrade instead.
 //
 // An answer that names no step list at all (`designGateSteps` absent or null) is a daemon from
 // before contract 55, and one that names a step this release does not know is a daemon beyond
 // it: both are refused rather than guessed at, since the controller would otherwise promise, or
 // withhold, a design approval on an assumption. The empty list is not that case — it is a
-// deployment that gates no step, which the daemon answers as `[]`.
-func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string, contract int) (string, []record.DesignStep, error) {
+// deployment that gates no step, which the daemon answers as `[]`. An answer that names no
+// workflow list at all (`watchedWorkflows` absent or null) is a daemon from before the
+// watched-workflows entry, and is refused the same way rather than read as a project that watches
+// none, since the controller would then hear nothing the project names; `[]` is that project.
+func fetchControllerSecret(ctx context.Context, daemonURL, operatorToken string, contract int) (api.ControllerSecretResponse, error) {
 	const route = "/legion/v1/controller/secret"
 	status, body, err := operator{base: daemonURL, bearer: operatorToken}.do(ctx, http.MethodPost, route, api.ControllerSecretRequest{PluginContract: contract})
 	if err != nil {
-		return "", nil, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
+		return api.ControllerSecretResponse{}, fmt.Errorf("could not reach the Legion daemon at %s: %v; is the port-forward running? (never falls back to another address)", redact.URL(daemonURL), err)
 	}
 	if status/100 != 2 {
 		var refused legionclaim.Refusal
 		if status == http.StatusBadRequest && json.Unmarshal(body, &refused) == nil &&
 			strings.Contains(refused.Message, `unknown field "pluginContract"`) {
-			return "", nil, fmt.Errorf("%s%s: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon", daemonURL, route, contract)
+			return api.ControllerSecretResponse{}, fmt.Errorf("%s%s: the daemon speaks a daemon API contract older than 12, and this legion speaks %d; upgrade the daemon to this legion's release, or start the controller with the legion built with that daemon", daemonURL, route, contract)
 		}
 		hint := ""
 		if status == http.StatusForbidden {
 			hint = " — the operator token does not match the daemon's operator_token_file"
 		}
-		return "", nil, fmt.Errorf("%s%s: %s%s", daemonURL, route, refusal(status, body), hint)
+		return api.ControllerSecretResponse{}, fmt.Errorf("%s%s: %s%s", daemonURL, route, refusal(status, body), hint)
 	}
 	var answer api.ControllerSecretResponse
 	if err := json.Unmarshal(body, &answer); err != nil {
-		return "", nil, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
+		return api.ControllerSecretResponse{}, fmt.Errorf("%s%s answered with a body that is not JSON", daemonURL, route)
 	}
 	if answer.Secret == "" {
-		return "", nil, fmt.Errorf("%s%s answered with no secret", daemonURL, route)
+		return api.ControllerSecretResponse{}, fmt.Errorf("%s%s answered with no secret", daemonURL, route)
 	}
 	if answer.DesignGateSteps == nil {
-		return "", nil, fmt.Errorf("%s%s answered no design gate steps (designGateSteps); upgrade the daemon to this legion's release", daemonURL, route)
+		return api.ControllerSecretResponse{}, fmt.Errorf("%s%s answered no design gate steps (designGateSteps); upgrade the daemon to this legion's release", daemonURL, route)
 	}
 	for _, step := range answer.DesignGateSteps {
 		if !step.Valid() {
-			return "", nil, fmt.Errorf("%s%s answered design gate step %q, not %s; upgrade the daemon to this legion's release", daemonURL, route, step, record.StepWords())
+			return api.ControllerSecretResponse{}, fmt.Errorf("%s%s answered design gate step %q, not %s; upgrade the daemon to this legion's release", daemonURL, route, step, record.StepWords())
 		}
 	}
-	return answer.Secret, answer.DesignGateSteps, nil
+	if answer.WatchedWorkflows == nil {
+		return api.ControllerSecretResponse{}, fmt.Errorf("%s%s answered no watched workflows (watchedWorkflows); upgrade the daemon to this legion's release", daemonURL, route)
+	}
+	return answer, nil
 }

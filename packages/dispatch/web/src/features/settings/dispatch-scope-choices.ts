@@ -30,7 +30,7 @@ export const READ_ONLY: DispatchScopeChoice<"read"> = {
 };
 
 export const SET_P0: DispatchScopeChoice<"p0"> = {
-  allows: "Set an issue's priority to P0.",
+  allows: "Makes work P0: sets P0, or moves, clears or files work under a P0 issue.",
   id: "p0",
   label: "Set P0",
 };

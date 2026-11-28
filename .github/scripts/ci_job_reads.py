@@ -629,6 +629,25 @@ def go_notices_runs():
     return out
 
 
+RELEASE_PATHS_STEP = "Check the legion release's version paths cover every package the binary links"
+RELEASE_PATHS_CHECK = ".github/scripts/check-legion-release-paths.sh"
+RELEASE_BUILD_LEGION = ".github/scripts/release-build-legion.sh"
+
+
+def legion_release_paths_runs():
+    """The go list lint's release-path check runs for each legion target: the line is
+    release-build-legion.sh's list mode, which the check runs with -deps over ./cmd/legion, with
+    the environment that script's build gives the target."""
+    started_by = at("lint", RELEASE_PATHS_STEP)
+    out = []
+    for target in targets(GO_TARGETS, "legion"):
+        goos, goarch = target.split("/")
+        out.append(script_run(RELEASE_BUILD_LEGION, 'for_target "$target" go -C packages/daemon list "$@" ./cmd/legion',
+                              started_by, DAEMON, ["./cmd/legion"], mode="build",
+                              env={"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch}))
+    return out
+
+
 # The steps whose go commands are not in the simple form, pinned whole: envoy-go-build's
 # pack step, envoy-smoke's schema step, and the tag steps below.
 PACK_STEP = "Pack envoy binaries"
@@ -788,7 +807,8 @@ CEILING_GO_RUN = 'server=$(cd -- "$repo_root/packages/envoy" && go run ./interna
 
 def ceiling_run(job, workflow=""):
     """The go run pg-connection-ceiling.sh starts in `job`'s ceiling step, in `workflow` when the
-    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml)."""
+    job's steps are not in its own called file (daemon-go-race's, in ci-job-daemon-go.yaml;
+    dispatch-two-builds-same's, in ci-job-dispatch-two-builds.yaml)."""
     return script_run(CEILING, CEILING_GO_RUN, f"run by {at(job, CEILING_STEP, workflow)}", ENVOY,
                       ["./internal/dispatch/store/cmd/connections"], mode="build")
 
@@ -2560,6 +2580,7 @@ BROWSER_VERDICT_STEP = "Fail when a leg failed or the merged report holds a fail
 BROWSER_BLOBS_REFUSED_STEP = "Report a refused blob download as a refused read"
 BROWSER_PG_STEP = "Read the lanes' PostgreSQL and time its provider"
 BROWSER_WAIT_STORE_STEP = "Wait for the S3-compatible server"
+BROWSER_STORE_CHECK_STEP = "Check that no write grew the file store"
 # One name, two steps: the shard job's and the alone job's second read of the binaries artifact.
 BROWSER_FETCH_STEP = "Download the binaries again, after a first attempt that did not complete"
 # One name, two steps: the shard job's and the alone job's, each running a script of its own,
@@ -2590,7 +2611,7 @@ LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl
 # scripts/approve/scan.ts.
 SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
-# and is the verdict on them; envoy-go-checks and the test job each end with one.
+# and is the verdict on them; envoy-go-checks, the test job and envoy-session-stall each have one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run
@@ -2821,8 +2842,8 @@ def browser_gate(filter, job):
          "could not complete"),
         (".github/scripts/dispatch-browser-wait-for-store.sh",
          f"{at_browser(BROWSER_WAIT_STORE_STEP)} runs it to wait for the file store the step "
-         "before it started, which it makes a bucket in and writes, reads back and deletes one "
-         "object in"),
+         "before it started, which it grows one collection of before any write, makes a bucket in, "
+         "writes, reads back and deletes one object in, and checks no write grew"),
         (".github/scripts/dispatch-browser-shard-suite.sh",
          f"{at_browser(BROWSER_SHARD_SPECS)} runs it for this leg's share of the lane's row time"),
         (".github/scripts/dispatch-browser-shard-record.sh",
@@ -2860,6 +2881,9 @@ def browser_gate(filter, job):
         (".github/scripts/gh-read.sh",
          "`.github/scripts/dispatch-browser-run-reads.sh#$script_dir/gh-read.sh` sources it, so the merge job's read of its own attempt's "
          "jobs takes its retry ladder, and the blobs-refused mode makes no request"),
+        (f"{ENVOY}/internal/tests3/one-collection.sh",
+         f"`.github/scripts/dispatch-browser-wait-for-store.sh#packages/envoy/internal/tests3/one-collection.sh`, which {at_browser(BROWSER_WAIT_STORE_STEP)} runs, "
+         f"and {at_browser(BROWSER_STORE_CHECK_STEP)} run it on the file store the shard job starts"),
         # The container the shard and alone jobs run in, and what decides which bytes it is.
         # No step reads these three: the `container:` key does, before the first step runs, so
         # the citation is the two jobs that carry that key rather than a step of either.

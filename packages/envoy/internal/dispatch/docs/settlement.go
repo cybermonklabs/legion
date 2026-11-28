@@ -245,7 +245,22 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 	if err != nil {
 		return settle.stoppedShort(fmt.Errorf("begin document transaction: %w", err))
 	}
+	// Registered ahead of the rollback, so it runs once the transaction has ended: committed below
+	// or rolled back by the deferred call that follows.
+	if s.afterSettleTransaction != nil {
+		defer s.afterSettleTransaction(room)
+	}
 	defer tx.Rollback(ctx)
+	// Where the test hooks are on, the transaction names itself in pg_stat_activity for as long as
+	// it runs (set_config's is_local: the pooled connection's own name, none, comes back when it
+	// ends), so a test reading the database's sessions can tell a settlement from the other
+	// document writes that wait on the same owner lock with the same statement: the block-index
+	// pass, an edit, a rebuild. Production sends no such statement.
+	if s.hooks != nil {
+		if _, err := tx.Exec(ctx, `select set_config('application_name', $1, true)`, SettlementApplicationName); err != nil {
+			return settle.stoppedShort(fmt.Errorf("name the settlement transaction: %w", err))
+		}
+	}
 	// Settlement decides everything before it writes anything: every write of the stages below
 	// goes through write and queues on this ledger, and the queue runs back to back right before
 	// the commit, so the transaction holds a transaction id only for those statements, not while
@@ -428,6 +443,12 @@ func (st *settlement) abandon(err error) settleOutcome {
 // the update from the room's queue, so no flush of this settlement stores or refuses it, and the
 // settlement ends here on the mark (roomRefusedUpdate). Whichever meets the refusal first takes
 // that mark and starts the room's close; the call here starts nothing when the mark is taken.
+//
+// The same mark is taken when the gate refuses the room's parked bytes (storeParked, on the
+// peer's apply path, not the persistence worker's). Those bytes carry no observed time, so the
+// refusal can come at any time after the close, and they are in no tree. The settlement ends here
+// on that mark too (roomRefusedUpdate): the room closes for its issue all the same, and the
+// document settles from the store as above.
 func (st *settlement) endOnRefusedUpdate() settleOutcome {
 	s := st.service
 	s.discardSuppressedPersistence(st.room, st.slots...)
@@ -437,10 +458,10 @@ func (st *settlement) endOnRefusedUpdate() settleOutcome {
 	return settleOutcome{}
 }
 
-// roomRefusedUpdate is whether the room instance this settlement holds took an update the append
-// gate refused because the document's issue closed (roomInstance.issueCloseStarted): the second
+// roomRefusedUpdate is whether the room instance this settlement holds took a refusal of the
+// append gate because the document's issue closed (roomInstance.issueCloseStarted): the second
 // order of a refused update (endOnRefusedUpdate), in which the room's persistence worker met the
-// refusal first.
+// refusal first, or a refusal of the room's parked bytes (storeParked).
 //
 // The settlement reads it twice: once it holds the document's advisory lock (readLocked, after
 // lockSettlementCursor), and after its last store write, before its commit (commitVersion,
@@ -451,7 +472,9 @@ func (st *settlement) endOnRefusedUpdate() settleOutcome {
 // mark before it drops the update from the room's queue (StoreUpdateContext, finishUpdateClass).
 // So when the settlement stores the room's updates, either that update is still queued, and the
 // gate refuses the settlement's own write (the first order), or it has gone, and its mark was
-// taken before, which the second read finds.
+// taken before, which the second read finds. A refusal of the room's parked bytes can take the
+// mark at any time; those bytes are in no tree, so a version the settlement commits holds none of
+// them, whether or not it found the mark.
 func (st *settlement) roomRefusedUpdate() bool {
 	instance := st.service.instanceOf(st.doc)
 	return instance != nil && instance.issueCloseStarted.Load()
@@ -824,8 +847,11 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	// editor, so the reopen still finds the editor of the text the closed issue's versions hold.
 	// So does one on a closed issue that saved nothing (savedNothing): it credits SettlementActor
 	// only because it found nothing to credit, and its commit deletes the pending row alone,
-	// whatever arming ran it after the settlement that kept the editor. The delete and the keep
-	// are queued, as every write of this settlement is, for its write phase.
+	// whatever arming ran it after the settlement that kept the editor. Each of these acts on the
+	// kept editor only with the row it deletes: a settlement that finds the row already gone, a
+	// second one of the same updates the resumption armed while the first was committing, leaves
+	// the kept editor as the first left it (clearSettlementPending). The delete and the keep are
+	// queued, as every write of this settlement is, for its write phase.
 	var kept *model.Actor
 	if st.issueClosed && !st.credit.actor.SameAs(SettlementActor) {
 		kept = &st.credit.actor

@@ -1,0 +1,29 @@
+{
+  "action": "completed",
+  "workflow_run": {
+    "id": 42749312158,
+    "name": "Lint",
+    "path": ".github/workflows/lint.yml",
+    "event": "pull_request",
+    "head_branch": "trunk",
+    "head_sha": "c4151a57d34034840748fb15977aea63e60be0af",
+    "status": "completed",
+    "conclusion": "failure",
+    "run_attempt": 1,
+    "run_started_at": "2026-11-10T03:25:09Z",
+    "updated_at": "2026-11-10T04:11:50Z",
+    "html_url": "https://github.com/cli/cli/actions/runs/42749312158",
+    "pull_requests": [],
+    "head_repository": {
+      "full_name": "example-fork/cli"
+    }
+  },
+  "repository": {
+    "name": "cli",
+    "full_name": "cli/cli",
+    "default_branch": "trunk",
+    "owner": {
+      "login": "cli"
+    }
+  }
+}

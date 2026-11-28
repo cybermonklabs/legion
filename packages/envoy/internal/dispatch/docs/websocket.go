@@ -245,15 +245,13 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 	return a.StoreUpdateContext(context.Background(), room, update)
 }
 
-// StoreUpdateContext stores a room's update, which ygo's persistence worker hands on one call per
-// update, in order: it appends, in one transaction under the document's advisory lock, every
-// update of the same room instance its update observer recorded before this one and no writer has
-// stored yet, this one, and the run of updates the room recorded after it that its batch takes
-// (roomBatchThrough), in the room's commit order, each with the in-flight credit and the class its
-// observer recorded (AppendRoomFlush, flushRun). So the order ygo's persistence hands updates on
-// in never decides the order they are stored in, and an update another writer stored first is
-// skipped. It returns nil only once the update is durable, by its own transaction or by one that
-// stored it first, so ygo's flush still means every update it held is stored.
+// StoreUpdateContext stores a room's update, which ygo's persistence hands it. For an update with
+// a class, it runs a batch (AppendRoomFlush, flushRun): one transaction under the document's
+// advisory lock over the run of the same room instance's updates whose classes are not marked
+// stored, recorded up to the position its batch runs through (roomBatchThrough), in the room's
+// commit order, each with the in-flight credit and the class its observer recorded. So the order
+// of the calls does not decide the order the updates are stored in. A nil return does not mean
+// the update is durable (room_appends.go, "A nil return").
 //
 // Unless something waits on the room, the call lingers for the room's queue to fill before its
 // batch goes, at most roomAppendLinger from the update's recording (room_appends.go).
@@ -278,21 +276,17 @@ func (a *servicePersistenceAdapter) StoreUpdate(room string, update []byte) erro
 // is closed (settleRoomWithin).
 //
 // A replaced history fails the room, as any failed append does: the room reloads from the store,
-// which is the close-and-reload a replaced history needs (plan D3.3), and the browser resends the
-// update to the reloaded room. A refused update on a closed issue is dropped and closes the room
-// for its issue (refuseClosedIssueAppend), so its browsers reconnect read-only. Either is decided
-// under the document's advisory lock, so it is never this process's own write in flight, and
-// needs no room-sync lane to run.
+// which is the close-and-reload a replaced history needs (plan D3.3).
+// A refused update on a closed issue - refused with its whole run, or cut from the run whose
+// prefix this call stored (RoomFlush.cut) - is not stored, and this call calls
+// refuseClosedIssueAppend for the update's room instance. Either is decided under the document's
+// advisory lock, so it is never this process's own write in flight, and needs no room-sync lane
+// to run.
 //
-// An update that never reaches the store - its room failed, or a live write, a settlement or a
-// catch-up already made it durable - lands its credit here instead: the room drops it with the
-// update, which the browser resends. Whichever way the append ends, the update leaves its
-// instance's unstored updates once it has.
+// Whichever way the call ends, it lands the update's credit (UpdateCredit.landed) and the update
+// leaves its instance's unstored updates.
 func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room string, update []byte) error {
 	if a.service.roomFailed(room) {
-		// The failed room's update is dropped and its browser resends it to the room that
-		// replaces this one, but its class is taken all the same, so the work the record counts
-		// for it ends here (dropUpdate).
 		a.dropUpdate(room, update)
 		return nil
 	}
@@ -327,12 +321,7 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 			Observed:       class.observed,
 		}}
 		if _, err := a.store.AppendUpdatesWithCredit(withRoomCursor(ctx, class.cursor), room, updates); err != nil {
-			if errors.Is(err, ErrIssueClosed) {
-				a.service.refuseClosedIssueAppend(room, class.instance)
-				return nil
-			}
-			a.service.failRoom(room, err)
-			return err
+			return a.service.appendFailed(room, class.instance, err)
 		}
 		return nil
 	}
@@ -365,12 +354,7 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	}
 	flush := &RoomFlush{service: a.service, room: room, cursor: class.cursor}
 	if _, err := a.store.AppendRoomFlush(ctx, room, flush, through, class.credit); err != nil {
-		if errors.Is(err, ErrIssueClosed) {
-			a.service.refuseClosedIssueAppend(room, class.instance)
-			return nil
-		}
-		a.service.failRoom(room, err)
-		return err
+		return a.service.appendFailed(room, class.instance, err)
 	}
 	if flush.storedContentChange() {
 		a.service.scheduleSettleAfterAppend(room)
@@ -378,7 +362,22 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	if class.cursor.takeReplaced() {
 		a.service.closeRoomOnReplacedHistory(room, class.instance)
 	}
+	if slices.Contains(flush.cut, class) {
+		a.service.refuseClosedIssueAppend(room, class.instance)
+	}
 	return nil
+}
+
+// appendFailed answers err, a failed append of room's updates made in instance: a refusal for a
+// closed issue (ErrIssueClosed) calls refuseClosedIssueAppend for instance and returns nil, and any
+// other error fails the room and is returned.
+func (s *Service) appendFailed(room string, instance *roomInstance, err error) error {
+	if errors.Is(err, ErrIssueClosed) {
+		s.refuseClosedIssueAppend(room, instance)
+		return nil
+	}
+	s.failRoom(room, err)
+	return err
 }
 
 // Compact is ygo's room-close compaction: its persistence worker calls it as it exits, the server's
@@ -865,7 +864,7 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 	}
 }
 
-// storeParked appends, in the order the room committed them, the parked bytes its drains queued
+// storeParked appends the parked bytes its drains queued, taking them in the order they were queued
 // (classifyDrained), each on its own and gated on the cursor of the room instance that parked
 // it (AppendParkedUpdate). It stores them with no class, no credit and no settlement owed: they
 // changed nothing the room renders, and the commit that integrates them marks the document owed.
@@ -875,7 +874,10 @@ func (s *Service) armDrainedSettle(room string, settles, changed, local bool) {
 // already holds is skipped. The bytes are bounded by the room's pending queue (MaxPendingItems),
 // which refuses an update that would park past it, and a struct sent again parks only once, so a
 // peer that keeps sending what cannot integrate cannot grow the store past that bound per room
-// instance. An append that fails fails the room, as any of the room's appends does.
+// instance. The bytes carry no observed time, so the gate refuses them once the document's issue
+// is closed, whenever the room took them (observedBeforeClose). On that refusal (ErrIssueClosed)
+// storeParked calls refuseClosedIssueAppend for the instance that parked them, as
+// StoreUpdateContext does for a refused browser update; any other failed append fails the room.
 func (s *Service) storeParked(room string) {
 	for {
 		state := s.lockExistingState(room)
@@ -891,9 +893,9 @@ func (s *Service) storeParked(room string) {
 		if s.roomFailed(room) {
 			continue
 		}
-		ctx := withRoomCursor(context.Background(), next.cursor)
+		ctx := withRoomCursor(context.Background(), &next.instance.cursor)
 		if _, err := s.persistence.AppendParkedUpdate(ctx, room, next.update); err != nil {
-			s.failRoom(room, fmt.Errorf("store the parked bytes of a document update: %w", err))
+			s.appendFailed(room, next.instance, fmt.Errorf("store the parked bytes of a document update: %w", err))
 		}
 	}
 }
@@ -929,7 +931,7 @@ func (s *Service) classifyDrained(room string, instance *roomInstance, logged cr
 	_, remote := logged.Origin.(*remoteUpdateOrigin)
 	if len(logged.Parked) > 0 && !published && !remote {
 		state := s.lockState(room)
-		state.parked = append(state.parked, parkedBytes{update: logged.Parked, cursor: &instance.cursor})
+		state.parked = append(state.parked, parkedBytes{update: logged.Parked, instance: instance})
 		s.unlockState(room, state)
 	}
 	if len(logged.Parked) > 0 && bytes.Equal(logged.Update, emptyUpdateV1) {

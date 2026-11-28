@@ -270,7 +270,10 @@ function IssueDetail({ route }: { route: IssueRoute }): ReactNode {
   // digits go through `useIssuePriority` on the route's key, the query key this page reads, so
   // a keyed priority lands in the same cache the picker writes. `IssueHeader` registers the
   // palette-only issue actions into this same scope; it never pushes one of its own.
-  const priorityWrite = useIssuePriority(route.key, issuePriority(issue.data?.priority));
+  const priorityWrite = useIssuePriority(
+    route.key,
+    issuePriority(issue.data ?? { priority: null })
+  );
   useKeymapScope("issue");
   useKeymap("issue", [
     {
