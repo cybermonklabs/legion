@@ -168,12 +168,15 @@ func TestAStepBesideAFixIsToldToPushToItsOwnBranch(t *testing.T) {
 }
 
 // A continuing step keeps the branch its open start is bound to until that step ends, also after
-// its fix ended with its way pending. The tester runs when fix 1 starts, so its open start is bound
-// to its own branch beside fix 1; fix 1 pushes headTwo and ends while the tester still runs, so the
-// way after it waits for the tester's step. A start of the tester then, a resume of the step that
-// still runs, is told fix 1 and the branch its start is bound to (boundFacts), never the task's
-// branch, which a tester told no fix would push to. Its red is boundBranch answering no branch: the
-// resume is then told no fix and no branch.
+// its fix ended with its way pending, and no longer. The tester runs when fix 1 starts, so its open
+// start is bound to its own branch beside fix 1; fix 1 pushes headTwo and ends while the tester
+// still runs, so the way after it waits for the tester's step. A start of the tester then, a resume
+// of the step that still runs, is told fix 1 and the branch its start is bound to (boundFacts),
+// never the task's branch, which a tester told no fix would push to. Then the tester completes:
+// its step has ended, and boundBranch answers no branch for its place, so no later start of it is
+// told a binding its ended run held. Its two reds: boundBranch answering no branch (the resume is
+// then told no fix and no branch), and boundBranch reading a start whose run has ended (the binding
+// then outlives its step).
 func TestAContinuingStepKeepsItsBoundBranchUntilItEnds(t *testing.T) {
 	r := newFixRig(t, returnEngine(), []string{"implementer", "tester", "reviewer"}, TriggerImplementationReady)
 	r.fails(fixHead, "k-ci")
@@ -190,6 +193,21 @@ func TestAContinuingStepKeepsItsBoundBranchUntilItEnds(t *testing.T) {
 	assertPhase(t, r.pool, phase.Testing)
 	if facts := r.startFactsIn(phase.Testing); facts.Fix != 1 || facts.Branch != tester || facts.Kept {
 		t.Fatalf("a resume of the tester after fix 1 ended with its way pending is told %+v, want fix 1 on the branch its start is bound to, %s", facts, tester)
+	}
+	if result := r.testerCompletesAt(headTwo, "test-1"); result.Refusal != nil {
+		t.Fatalf("the tester's completion was refused: %+v", result.Refusal)
+	}
+	var branch, pushed string
+	onStored(t, r.pool, r.engine, "LEGION-208", func(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+		w, err := r.engine.walk(ctx, tx, issue)
+		if err != nil {
+			return err
+		}
+		branch, pushed, err = r.engine.boundBranch(ctx, tx, issue, w, 2)
+		return err
+	})
+	if branch != "" || pushed != "" {
+		t.Fatalf("after the tester's step ended, boundBranch answers branch %q pushed %q for its place, want none: the binding outlived its step", branch, pushed)
 	}
 }
 
