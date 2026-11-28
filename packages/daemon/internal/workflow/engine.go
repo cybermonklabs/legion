@@ -2821,7 +2821,7 @@ func (e *Engine) acceptanceHeld(ctx context.Context, tx pgx.Tx, issue record.Iss
 // (treeMembers), so a caller that reads them for a rule of its own, as closeRoot does, reads the
 // tree once.
 func (e *Engine) acceptanceHeldOver(ctx context.Context, tx pgx.Tx, issue record.Issue, members []record.Issue) (acceptanceHold, error) {
-	if open := record.WorkBeneath(issue, members); len(open) > 0 {
+	if open := record.OpenBeneath(issue, members); len(open) > 0 {
 		return acceptanceHold{code: signOffChildInWorkflow, names: strings.Join(open, ", ")}, nil
 	}
 	resting, err := record.RestingRoots(ctx, tx, e.store, issue.Key)
