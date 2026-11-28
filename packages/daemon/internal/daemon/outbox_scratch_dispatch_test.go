@@ -444,7 +444,7 @@ type scratchDispatch struct {
 	createStaged bool
 	env          []string
 	// socket is the port's own socket from the first start to the test's end (ownPort): it listens
-	// while a Dispatch serves on it, and stop takes it out of listening, the port kept.
+	// from each start to its stop, which takes it out of listening, the port kept.
 	socket  *os.File
 	port    int
 	base    string
@@ -588,17 +588,17 @@ func (d *scratchDispatch) start() {
 }
 
 // ownPort is a loopback port the kernel chooses, held until t ends by a TCP socket bound to that
-// port by number and listening only while a Dispatch serves it. A socket bound by number keeps its
-// port when it stops listening (Linux's SOCK_BINDPORT_LOCK), where one bound to port 0 gives the
-// port back, and a restart's listen then comes up on another port, so the port's number comes from
-// a probe: the probe binds port 0, which the kernel answers with a port no socket holds on an
-// address overlapping this one, and closes; the socket then binds that port by number. Neither
-// sets SO_REUSEADDR, so the socket's bind either takes the port, or fails because another socket
-// holds it at that bind: one that bound it after the probe closed, or the probe itself, whose
-// descriptor a child forked before the close holds until its exec. A child holds a copy of every
-// descriptor from its fork to its exec, close-on-exec or not, and this package forks children of
-// its own while its tests run in parallel. A bind refused with EADDRINUSE takes no port, and the
-// next probe chooses again; any other error fails the test.
+// port by number and listening from each start to its stop. A socket bound by number keeps its port
+// when it stops listening (Linux's SOCK_BINDPORT_LOCK), where one bound to port 0 gives the port
+// back, and a restart's listen then comes up on another port, so the port's number comes from a
+// probe: the probe binds port 0, which the kernel answers with a port no socket holds on an address
+// overlapping this one, and closes; the socket then binds that port by number. Neither sets
+// SO_REUSEADDR, so the socket's bind either takes the port, or fails because another socket holds
+// it at that bind: one that bound it after the probe closed, or the probe itself, whose descriptor
+// a child forked before the close holds until its exec. A child holds a copy of every descriptor
+// from its fork to its exec, close-on-exec or not, and this package forks children of its own while
+// its tests run in parallel. A bind refused with EADDRINUSE takes no port, and the next probe
+// chooses again; any other error fails the test.
 //
 // The port the bind took is this socket's while it neither listens nor sets SO_REUSEADDR: no bind
 // of any user is given it. start sets SO_REUSEADDR on the socket before each listen (see its
