@@ -1,23 +1,30 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, expect, spyOn, test } from "bun:test";
 import { type RenderResult, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { api } from "../../../api/client";
 import type { Actor, Comment } from "../../../api/types";
 import { producingMessages } from "../contents-entries";
 import { KEY, node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { type ContentsEntry, contentsOf } from "../IssueContents";
 import type { TreeNode } from "../issue-tree";
 import { readComment } from "../outline-fixtures";
+import { treeOf } from "../slots/stage-fixtures";
 import { withThreadEntries } from "./contents-threads";
 import {
   answerSeededReads,
+  CHECK,
   columnOf,
   drawPage,
   newClient,
   ON_PLAN_TASK,
   ON_STATEMENT,
+  PLAN_TASK,
   REPLY_ON_STATEMENT,
+  RESULT,
+  rowOf,
   STATEMENT,
+  seededNodes,
   type TextThreadSeed,
   threadOn,
 } from "./margin-fixtures";
@@ -280,4 +287,57 @@ test("an entry on a node Conversation does not draw stands at the list's top lev
     "on-result",
   ]);
   expect(kinds.get("on-result"), "what a press on the entry opens").toBe("comment");
+});
+
+// R8, through the page (the tester's row, INFRA-5706 round 6): the reader's comment on a statement
+// that the first page of Conversation's read does not hold. The server answers that page with
+// neither the statement nor the comment on it, and the comments read answers the comment with its
+// anchor, as the page of INFRA-1196's copy read them at `cc0257a56797` (813 nodes, 161 left). The
+// list holds the comment's entry all the same, at its top level until a page holds the statement,
+// and a press on it opens its thread. `withThreadEntries` gets its threads from the outline read
+// alone (`useTextThreads`), which builds none for a comment the read does not hold.
+test("the reader's comment on a statement the first page of Conversation's read does not hold has its entry, and a press on it opens its thread", async () => {
+  stubs = answerSeededReads({ threads: [ON_STATEMENT] });
+  const read = spyOn(api, "getIssueTree");
+  const seeded = read.getMockImplementation();
+  if (seeded === undefined) throw new Error("the seeded reads answer no tree read");
+  stubs.push(read);
+  // The first page: every seeded node but the statement, what hangs under it, and the comment.
+  const firstPage = treeOf(seededNodes([], { without: [STATEMENT, PLAN_TASK, CHECK, RESULT] }));
+  read.mockImplementation(async (key, query = {}, init) =>
+    query.kind === undefined ? seeded(key, query, init) : firstPage
+  );
+  const client = newClient();
+  const view = drawPage(client, "conversation");
+  try {
+    await waitFor(
+      () =>
+        expect(
+          view.container.querySelector("[data-node-row]"),
+          "the page draws no row of the first page"
+        ).not.toBeNull(),
+      { timeout: 8000 }
+    );
+    expect(rowOf(view, ON_STATEMENT.node), "the first page holds the statement").toBeNull();
+    const entry = await waitFor(() => {
+      const found = view.container.querySelector<HTMLElement>(
+        `[data-contents-entry="${ON_STATEMENT.comment.id}"]`
+      );
+      if (found === null) {
+        throw new Error(
+          "the list holds no entry for the reader's comment while no page holds its statement"
+        );
+      }
+      return found;
+    });
+    await userEvent.setup().click(entry);
+    await waitFor(() =>
+      expect(view.held.location?.pathname, "the press did not go to the comment's address").toBe(
+        `/issues/${KEY}/comments/${ON_STATEMENT.comment.id}`
+      )
+    );
+  } finally {
+    view.finish();
+    client.clear();
+  }
 });
