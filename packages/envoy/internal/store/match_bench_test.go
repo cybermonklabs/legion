@@ -4,16 +4,18 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
 // benchmarkRegistry is a registry whose cache holds sessions sessions of machine "bench", each
 // following what a working session follows: its own agent subject, one Dispatch issue (twenty
 // sessions share each), one pull request of one of twenty repositories, and one Slack thread.
-// Each is a row of its key (interestFixture).
+// Each is a row of its key (interestFixture), stamped at the registry's clock, a fake standing at
+// registryClockStart.
 func benchmarkRegistry(b *testing.B, sessions int) *Registry {
 	b.Helper()
-	r := &Registry{index: newSubjectIndex()}
+	r := &Registry{index: newSubjectIndex(), now: clocktest.New(registryClockStart).Now}
 	r.cache = newInterestCopy(r)
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -28,7 +30,7 @@ func benchmarkRegistry(b *testing.B, sessions int) *Registry {
 				fmt.Sprintf("notifications.github.sjawhar.repo%d.pr.%d.>", i%20, i),
 				fmt.Sprintf("notifications.slack.T1.C%d.thread.%d.>", i%10, i),
 			},
-		})
+		}, r.now)
 		if err := r.cache.Delivered(kvwatch.Entry{Key: sessionID, Value: value, Revision: 1}); err != nil {
 			b.Fatalf("deliver %s: %v", sessionID, err)
 		}

@@ -501,7 +501,7 @@ func TestAClaimWhoseRequestEndsDuringItsCleanupSucceedsAndLogsNoFailure(t *testi
 		roleTopic  = "notifications.role.legion-controller"
 	)
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: oldSession, MachineID: "example-host", Topics: []string{roleTopic, "notifications.slack.>"}})
+	putInterest(t, kv, Interest{SessionID: oldSession, MachineID: "example-host", Topics: []string{roleTopic, "notifications.slack.>"}}, reg.now)
 	if _, err := reg.roleKV.Put(role, []byte(oldSession)); err != nil {
 		t.Fatalf("seed role claim: %v", err)
 	}

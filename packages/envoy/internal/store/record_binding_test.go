@@ -267,7 +267,7 @@ func TestAWriteOverACopiedDeleteMarkerReplacesItAtItsTrueSequence(t *testing.T) 
 				var stored uint64
 				if marker.copied {
 					source := victim + "_source"
-					putInterest(t, kv, Interest{SessionID: source, MachineID: "shared-a", Topics: []string{bindingPubTopic}})
+					putInterest(t, kv, Interest{SessionID: source, MachineID: "shared-a", Topics: []string{bindingPubTopic}}, reg.now)
 					if err := marker.mark(source); err != nil {
 						t.Fatalf("mark %s: %v", source, err)
 					}

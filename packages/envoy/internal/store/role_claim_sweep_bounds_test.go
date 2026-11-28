@@ -259,7 +259,7 @@ func TestARoleListingTheRequestWalkedAwayFromStopsReadingTheBucket(t *testing.T)
 	reg, rawInterests := coldRegistry(t, conn)
 	roles, holderOf := otherSessionsClaims("walked-away", walkedAwayClaims)
 	putRoleClaimsInParallel(t, reg.roles().Legacy(), roles, holderOf)
-	putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}})
+	putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}}, reg.now)
 	// Through the bucket's own watch the listing is complete, which is what makes the counts
 	// below a reading of how much of the bucket the stopped listing was handed rather than of
 	// how much of it there is.

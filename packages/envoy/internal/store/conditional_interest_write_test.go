@@ -66,7 +66,7 @@ func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T
 
 	const sessionID = "ses_interest_cas"
 	const planned, won = "notifications.planned", "notifications.won"
-	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}})
+	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}}, reg.now)
 	plan, err := reg.PlanInterest(context.Background(), sessionID, []string{planned})
 	if err != nil {
 		t.Fatalf("plan the registration of %s: %v", sessionID, err)
@@ -74,7 +74,7 @@ func TestAnInterestWriteIsRefusedByARowStoredUnderTheRevisionItRead(t *testing.T
 
 	racing := &racingInterestWrite{KeyValue: kv}
 	racing.beforeFirstWrite = func() {
-		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{won}})
+		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{won}}, reg.now)
 	}
 	handle, err := bus.WrapKeyValue(conn, racing)
 	if err != nil {
@@ -117,11 +117,11 @@ func TestAMergingInterestWriteIsBuiltAgainOverARowStoredUnderTheRevisionItRead(t
 
 	const sessionID = "ses_interest_merge_cas"
 	const merging, won = "notifications.merging", "notifications.won"
-	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}})
+	putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}}, reg.now)
 
 	racing := &racingInterestWrite{KeyValue: kv}
 	racing.beforeFirstWrite = func() {
-		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{won}})
+		putInterest(t, kv, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{won}}, reg.now)
 	}
 	handle, err := bus.WrapKeyValue(conn, racing)
 	if err != nil {

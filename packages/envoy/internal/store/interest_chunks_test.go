@@ -14,8 +14,10 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvchunk/kvchunktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // rawInterests is the interest bucket on conn as a raw handle, which reads what is stored with
@@ -579,15 +581,18 @@ func (kv deleteFailingKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) err
 }
 
 // The reaper's pass collects the chunks no record names even when its reap of dead sessions failed,
-// so a bucket whose reap keeps failing still loses its stale chunks.
+// so a bucket whose reap keeps failing still loses its stale chunks. The registry's clock and its
+// loops' ticks are one fake (WithClock, WithTimerClock): the case moves it past the chunks' grace,
+// and then to the reaper's first tick, so the one pass the loop runs is the one this holds.
 func TestAReaperPassCollectsChunksWhenItsReapFailed(t *testing.T) {
+	t.Parallel()
 	conn := kvchunktest.SmallPayloadNATS(t)
-	clock := &manualClock{at: time.Now()}
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
+	fake := clocktest.New(registryClockStart)
+	logs, logger := ownLogs()
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(fake.Now), WithTimerClock(fake), WithLogger(logger))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	t.Cleanup(reg.StopWatch)
 	waitFor(t, reg.watcher.Ready)
 	kv := rawInterests(t, conn)
 	legacy := reg.watcher.KV().Legacy()
@@ -601,15 +606,28 @@ func TestAReaperPassCollectsChunksWhenItsReapFailed(t *testing.T) {
 	if len(kvchunktest.LiveChunkKeys(t, kv)) == 0 {
 		t.Fatal("the write whose manifest failed left no chunk, so there is nothing to collect")
 	}
+	// useKV waits for its watcher's read of the bucket, so from here the cache's copy follows the
+	// bucket and holds every chunk the failed write left, each from the fake's start, which is all
+	// a pass judges them by (collectInterestChunks).
 	useKV(t, reg, deleteFailingKeyValue{KeyValue: legacy, key: "ses_dead"})
-	clock.Set(time.Now().Add(InterestReapAllowance(InterestReapGrace) + kvchunk.Grace))
+	fake.Advance(InterestReapAllowance(InterestReapGrace) + kvchunk.Grace)
 	if _, err := reg.Reap(func(string) (bool, error) { return false, nil }, InterestReapGrace); err == nil {
 		t.Fatal("the reap whose delete fails answered no error, so the pass below is not the failing one")
 	}
 	ctx, stop := context.WithCancel(t.Context())
-	done := reg.StartReaper(ctx, func(string) (bool, error) { return false, nil }, 20*time.Millisecond, InterestReapGrace)
-	t.Cleanup(func() { stop(); <-done })
-	waitFor(t, func() bool { return len(kvchunktest.LiveChunkKeys(t, kv)) == 0 })
+	const interval = time.Minute
+	first := fake.Now().Add(interval)
+	done := reg.StartReaper(ctx, func(string) (bool, error) { return false, nil }, interval, InterestReapGrace)
+	t.Cleanup(func() {
+		stop()
+		testwait.Receive(t, "the reaper loop's end after its context ended", done)
+	})
+	fake.AwaitArmedAt(t, "the reaper loop's first tick", first)
+	fake.Advance(interval)
+	fake.AwaitArmedAt(t, "the reaper loop's tick after its first pass, armed once that pass has returned", first.Add(interval))
+	if left := kvchunktest.LiveChunkKeys(t, kv); len(left) != 0 {
+		t.Fatalf("the bucket holds %d chunks after a reaper pass whose reap failed, want none: the pass collects them whether or not its reap failed. the log is:\n%s", len(left), logs.String())
+	}
 }
 
 // headRefusingKeyValue is the interest bucket whose writes of key's record the server refuses, as a

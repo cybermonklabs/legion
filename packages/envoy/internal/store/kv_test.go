@@ -38,26 +38,29 @@ import (
 // --- Unit Tests (no NATS needed — test Match() against pre-populated cache) ---
 
 // holding is a registry with no watcher whose cache holds interests, each delivered as a read
-// delivers it (interestCache.Apply) and each a row of its key (interestFixture).
+// delivers it (interestCache.Apply) and each a row of its key (interestFixture), stamped at its
+// clock, a fake standing at registryClockStart.
 func holding(t *testing.T, interests map[string]Interest) *Registry {
 	t.Helper()
-	r := &Registry{index: newSubjectIndex()}
+	r := &Registry{index: newSubjectIndex(), now: clocktest.New(registryClockStart).Now}
 	r.cache = newInterestCopy(r)
 	for sessionID, item := range interests {
-		interestCache{r}.Apply(kvwatch.Entry{Key: sessionID, Value: interestFixture(t, sessionID, item), Revision: 1}, kvwatch.Read{})
+		interestCache{r}.Apply(kvwatch.Entry{Key: sessionID, Value: interestFixture(t, sessionID, item, r.now), Revision: 1}, kvwatch.Read{})
 	}
 	return r
 }
 
 // interestFixture is item encoded as the row the registry writes under key: one naming key, a
-// machine and the time of its write (boundInterest). A fixture naming no time is stamped now, the
-// time a write made now carries; one naming a time keeps it, which is how a case states the row's
-// age. A fixture that is still no row of key fails the test here, so a case written over a
-// session's row never runs over a record every reader drops.
-func interestFixture(t testing.TB, key string, item Interest) []byte {
+// machine and the time of its write (boundInterest). A fixture naming no time is stamped at now's
+// reading, now being the clock of the registry that reads the row (WithClock, Registry.now), as a
+// write that registry made then would be; one naming a time keeps it, which is how a case states
+// the row's age, and reads no clock, so a caller whose every row names one may pass a nil now. A
+// fixture that is still no row of key fails the test here, so a case written over a session's row
+// never runs over a record every reader drops.
+func interestFixture(t testing.TB, key string, item Interest, now func() time.Time) []byte {
 	t.Helper()
 	if item.UpdatedAt == 0 {
-		item.UpdatedAt = time.Now().UnixMilli()
+		item.UpdatedAt = now().UnixMilli()
 	}
 	value, err := json.Marshal(item)
 	if err != nil {
@@ -512,10 +515,10 @@ func connectNATS(t *testing.T) (*natsgo.Conn, func()) {
 }
 
 // putInterest stores item under its own session's key, straight to the bucket, as the row the
-// registry writes (interestFixture).
-func putInterest(t *testing.T, kv natsgo.KeyValue, item Interest) {
+// registry writes (interestFixture), stamped at now's reading when it names no time.
+func putInterest(t *testing.T, kv natsgo.KeyValue, item Interest, now func() time.Time) {
 	t.Helper()
-	if _, err := kv.Put(item.SessionID, interestFixture(t, item.SessionID, item)); err != nil {
+	if _, err := kv.Put(item.SessionID, interestFixture(t, item.SessionID, item, now)); err != nil {
 		t.Fatalf("failed to put interest: %v", err)
 	}
 }
@@ -565,7 +568,7 @@ func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create KV bucket: %v", err)
 	}
-	putInterest(t, kv, Interest{SessionID: "ses_preload", MachineID: "m1", Topics: []string{"notifications.>"}})
+	putInterest(t, kv, Interest{SessionID: "ses_preload", MachineID: "m1", Topics: []string{"notifications.>"}}, time.Now)
 
 	// Open registry — watch() populates cache asynchronously
 	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
@@ -622,7 +625,7 @@ func TestWatch_PropagatesDelete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create KV bucket: %v", err)
 	}
-	putInterest(t, kv, Interest{SessionID: "ses_del", MachineID: "m1", Topics: []string{"notifications.>"}})
+	putInterest(t, kv, Interest{SessionID: "ses_del", MachineID: "m1", Topics: []string{"notifications.>"}}, time.Now)
 
 	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
@@ -655,7 +658,7 @@ func TestWatch_PropagatesPurge(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create KV bucket: %v", err)
 	}
-	putInterest(t, kv, Interest{SessionID: "ses_purge", MachineID: "m1", Topics: []string{"notifications.>"}})
+	putInterest(t, kv, Interest{SessionID: "ses_purge", MachineID: "m1", Topics: []string{"notifications.>"}}, time.Now)
 
 	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
@@ -690,7 +693,7 @@ func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create KV bucket: %v", err)
 	}
-	putInterest(t, kv, Interest{SessionID: "ses_survive", MachineID: "m1", Topics: []string{"notifications.>"}})
+	putInterest(t, kv, Interest{SessionID: "ses_survive", MachineID: "m1", Topics: []string{"notifications.>"}}, time.Now)
 
 	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
@@ -772,7 +775,7 @@ func TestGet_ColdCacheFallsBackToKV(t *testing.T) {
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_cold", MachineID: "m1", Topics: []string{"topic.a", "topic.b"}})
+	putInterest(t, kv, Interest{SessionID: "ses_cold", MachineID: "m1", Topics: []string{"topic.a", "topic.b"}}, reg.now)
 
 	item, err := reg.Get(context.Background(), "ses_cold")
 	if err != nil {
@@ -793,7 +796,7 @@ func TestGet_ColdCachePopulatesCacheOnHit(t *testing.T) {
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_pop", MachineID: "m1", Topics: []string{"topic.x"}})
+	putInterest(t, kv, Interest{SessionID: "ses_pop", MachineID: "m1", Topics: []string{"topic.x"}}, reg.now)
 
 	// First Get falls back to KV and caches the result
 	if _, err := reg.Get(context.Background(), "ses_pop"); err != nil {
@@ -833,7 +836,7 @@ func TestReadsWhoseContextHasEndedAnswerOnlyFromTheCache(t *testing.T) {
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_cached", MachineID: "m1", Topics: []string{"topic.a"}})
+	putInterest(t, kv, Interest{SessionID: "ses_cached", MachineID: "m1", Topics: []string{"topic.a"}}, reg.now)
 	if _, err := reg.Get(context.Background(), "ses_cached"); err != nil {
 		t.Fatalf("warm the cache: %v", err)
 	}
@@ -1092,7 +1095,7 @@ func TestUpsert_TransientGetErrorPropagatesAndDoesNotClobber(t *testing.T) {
 		MachineID: "m1",
 		Dir:       "/workspace",
 		Topics:    []string{"topic.agent", "topic.github.pr.>"},
-	})
+	}, reg.now)
 
 	// Close the NATS connection BEFORE the cache has been warmed for this key.
 	// coldRegistry skips the eager load, so the cache is empty and Upsert will
@@ -1124,7 +1127,7 @@ func TestUpsert_ColdCacheMergesWithExistingKVEntry(t *testing.T) {
 		MachineID: "m1",
 		Dir:       "/workspace",
 		Topics:    []string{"topic.a", "topic.b"},
-	})
+	}, reg.now)
 
 	// Upsert with topic C — cache is cold, must read from KV to merge
 	result, err := reg.Upsert(Interest{SessionID: "ses_merge", MachineID: "m1"}, []string{"topic.c"})
@@ -1175,7 +1178,7 @@ func TestUpsert_ColdCacheDuplicateTopicDeduped(t *testing.T) {
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_dedup", MachineID: "m1", Topics: []string{"topic.a", "topic.b"}})
+	putInterest(t, kv, Interest{SessionID: "ses_dedup", MachineID: "m1", Topics: []string{"topic.a", "topic.b"}}, reg.now)
 
 	// Upsert with topic A (already exists) — should deduplicate
 	result, err := reg.Upsert(Interest{SessionID: "ses_dedup", MachineID: "m1"}, []string{"topic.a"})
@@ -1349,7 +1352,7 @@ func TestUpsertWritesARowStoredWithNullTopicsOnce(t *testing.T) {
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	clock := &manualClock{at: start}
 	reg, kv := clockedRegistry(t, clock)
-	putInterest(t, kv, Interest{SessionID: "ses_null", MachineID: "m1", Dir: "/work/ses_null", UpdatedAt: start.UnixMilli()})
+	putInterest(t, kv, Interest{SessionID: "ses_null", MachineID: "m1", Dir: "/work/ses_null", UpdatedAt: start.UnixMilli()}, reg.now)
 	stored := interestRevision(t, kv, "ses_null")
 
 	clock.Set(start.Add(time.Second))
@@ -1378,7 +1381,7 @@ func TestRemove_ColdCacheReadsFromKV(t *testing.T) {
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_rm", MachineID: "m1", Topics: []string{"topic.a", "topic.b", "topic.c"}})
+	putInterest(t, kv, Interest{SessionID: "ses_rm", MachineID: "m1", Topics: []string{"topic.a", "topic.b", "topic.c"}}, reg.now)
 
 	// Remove topic B — cache is cold, must read from KV
 	if _, err := reg.Remove(context.Background(), "ses_rm", []string{"topic.b"}, releasedByItsProcess); err != nil {
@@ -1578,7 +1581,7 @@ func TestRemoveAndSetRole_DropStoredTopicsReachingAPrivateStreamSubject(t *testi
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
 			reg, kv := coldRegistry(t, conn)
-			putInterest(t, kv, Interest{SessionID: "ses_stale", MachineID: "m1", Topics: stale})
+			putInterest(t, kv, Interest{SessionID: "ses_stale", MachineID: "m1", Topics: stale}, reg.now)
 			// Get caches the stored row, so Match fans the lane out to the session before the write.
 			if _, err := reg.Get(context.Background(), "ses_stale"); err != nil {
 				t.Fatalf("read the seeded row: %v", err)
@@ -1687,7 +1690,7 @@ func TestSetRole_TransferRole(t *testing.T) {
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_old", MachineID: "m1", Topics: []string{"notifications.role.legion-controller", "notifications.slack.>"}})
+	putInterest(t, kv, Interest{SessionID: "ses_old", MachineID: "m1", Topics: []string{"notifications.role.legion-controller", "notifications.slack.>"}}, reg.now)
 	if _, err := reg.roleKV.Put("legion-controller", []byte("ses_old")); err != nil {
 		t.Fatalf("failed to seed role bucket: %v", err)
 	}
@@ -1747,7 +1750,7 @@ func TestSetRole_Idempotent(t *testing.T) {
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_same", MachineID: "m1", Topics: []string{"notifications.role.legion-controller"}})
+	putInterest(t, kv, Interest{SessionID: "ses_same", MachineID: "m1", Topics: []string{"notifications.role.legion-controller"}}, reg.now)
 	if _, err := reg.roleKV.Put("legion-controller", []byte("ses_same")); err != nil {
 		t.Fatalf("failed to seed role bucket: %v", err)
 	}
@@ -1825,8 +1828,8 @@ func TestInterestReaper(t *testing.T) {
 
 	// Create interests for alive and dead sessions (both updated 10 min ago on the registry's clock)
 	tenMinutesAgo := start.Add(-10 * time.Minute).UnixMilli()
-	putInterest(t, kv, Interest{SessionID: "ses_alive", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: tenMinutesAgo})
-	putInterest(t, kv, Interest{SessionID: "ses_dead", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: tenMinutesAgo})
+	putInterest(t, kv, Interest{SessionID: "ses_alive", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: tenMinutesAgo}, reg.now)
+	putInterest(t, kv, Interest{SessionID: "ses_dead", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: tenMinutesAgo}, reg.now)
 
 	// Warm cache via Get (coldRegistry has no watch())
 	if _, err := reg.Get(context.Background(), "ses_alive"); err != nil {
@@ -2062,7 +2065,7 @@ func TestReaperGraceWindow(t *testing.T) {
 		"ses_16m": 16 * time.Minute,
 	}
 	for sid, age := range rows {
-		putInterest(t, kv, Interest{SessionID: sid, MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: fixed.Add(-age).UnixMilli()})
+		putInterest(t, kv, Interest{SessionID: sid, MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: fixed.Add(-age).UnixMilli()}, reg.now)
 		// Warm cache
 		if _, err := reg.Get(context.Background(), sid); err != nil {
 			t.Fatalf("Get %s failed: %v", sid, err)
@@ -2205,7 +2208,7 @@ func TestReapCallsIsAliveWithoutHoldingTheInterestLock(t *testing.T) {
 	reg, kv := coldRegistry(t, conn)
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	reg.now = clocktest.New(start).Now
-	putInterest(t, kv, Interest{SessionID: "ses_dead", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: start.Add(-10 * time.Minute).UnixMilli()})
+	putInterest(t, kv, Interest{SessionID: "ses_dead", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: start.Add(-10 * time.Minute).UnixMilli()}, reg.now)
 	if _, err := reg.Get(context.Background(), "ses_dead"); err != nil {
 		t.Fatalf("Get ses_dead failed: %v", err)
 	}
@@ -2242,7 +2245,7 @@ func TestReapKeepsAnInterestReupsertedDuringThePass(t *testing.T) {
 	reg, kv := coldRegistry(t, conn)
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	reg.now = clocktest.New(start).Now
-	putInterest(t, kv, Interest{SessionID: "ses_back", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: start.Add(-10 * time.Minute).UnixMilli()})
+	putInterest(t, kv, Interest{SessionID: "ses_back", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: start.Add(-10 * time.Minute).UnixMilli()}, reg.now)
 	if _, err := reg.Get(context.Background(), "ses_back"); err != nil {
 		t.Fatalf("Get ses_back failed: %v", err)
 	}
@@ -2276,7 +2279,7 @@ func TestReapKeepsAnInterestWrittenAfterItsRecheck(t *testing.T) {
 	reg, kv := coldRegistry(t, conn)
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	reg.now = clocktest.New(start).Now
-	putInterest(t, kv, Interest{SessionID: "ses_raced", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: start.Add(-10 * time.Minute).UnixMilli()})
+	putInterest(t, kv, Interest{SessionID: "ses_raced", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: start.Add(-10 * time.Minute).UnixMilli()}, reg.now)
 	if _, err := reg.Get(context.Background(), "ses_raced"); err != nil {
 		t.Fatalf("Get ses_raced failed: %v", err)
 	}
@@ -2286,7 +2289,7 @@ func TestReapKeepsAnInterestWrittenAfterItsRecheck(t *testing.T) {
 	current := reg.watcher.KV()
 	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(&putBeforeDeleteKeyValue{
 		KeyValue:     kv,
-		beforeDelete: func() { putInterest(t, kv, fresh) },
+		beforeDelete: func() { putInterest(t, kv, fresh, reg.now) },
 	}, current.WatchHandle(), current.Streams()), interestCache{reg})
 
 	count, err := reg.Reap(func(string) (bool, error) { return false, nil }, 0)
@@ -2541,7 +2544,7 @@ func TestSetRoleRollsBackWhenInterestUpsertFails(t *testing.T) {
 		SessionID: oldSession,
 		MachineID: "example-host",
 		Topics:    []string{roleTopic, "notifications.slack.>"},
-	})
+	}, reg.now)
 	if _, err := reg.roleKV.Put(role, []byte(oldSession)); err != nil {
 		t.Fatalf("seed role claim: %v", err)
 	}
@@ -2581,7 +2584,7 @@ func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 		SessionID: oldSession,
 		MachineID: "example-host",
 		Topics:    []string{roleTopic, "notifications.slack.>"},
-	})
+	}, reg.now)
 	if _, err := reg.roleKV.Put(role, []byte(oldSession)); err != nil {
 		t.Fatalf("seed role claim: %v", err)
 	}
@@ -2646,7 +2649,7 @@ func TestSetRoleSucceedsWhenOldHolderCleanupFails(t *testing.T) {
 		SessionID: oldSession,
 		MachineID: "example-host",
 		Topics:    []string{roleTopic, "notifications.slack.>"},
-	})
+	}, reg.now)
 	if _, err := reg.roleKV.Put(role, []byte(oldSession)); err != nil {
 		t.Fatalf("seed role claim: %v", err)
 	}
@@ -3090,7 +3093,7 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 				SessionID: sessionID,
 				MachineID: machineID,
 				Topics:    []string{"notifications.remote"},
-			})
+			}, reg.now)
 			waitForMatches(t, reg, "the watcher to deliver the remote write of ses_revision", machineID, "notifications.remote", 1)
 		},
 	})
@@ -3307,8 +3310,8 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	// the directory is not being removed here — but that is a fact about this test's neighbours,
 	// not about the call, and the retry does not depend on it.
 	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: 1, Storage: natsgo.FileStorage})
-	putInterest(t, recreated, Interest{SessionID: "ses_a", MachineID: "m1", Topics: []string{"notifications.new"}})
-	putInterest(t, recreated, Interest{SessionID: "ses_b", MachineID: "m1", Topics: []string{"notifications.b"}})
+	putInterest(t, recreated, Interest{SessionID: "ses_a", MachineID: "m1", Topics: []string{"notifications.new"}}, reg.now)
+	putInterest(t, recreated, Interest{SessionID: "ses_b", MachineID: "m1", Topics: []string{"notifications.b"}}, reg.now)
 	var swept []string
 	completion := held.holdCompletion(t, func() { swept = cachedIDs(reg) })
 	if err := reg.Rewatch(context.Background(), conn); err != nil {

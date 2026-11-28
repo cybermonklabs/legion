@@ -447,7 +447,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		}
 		// The record's only topic is not a role's, so the pass over it releases nothing and
 		// every call the bucket takes below is the fallback's own.
-		putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}})
+		putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}}, cold.now)
 		counting := countRoleBucketCalls(t, cold, &sweepRoleKeyValue{delay: claimCallDelay})
 
 		ctx, cancel := context.WithTimeout(context.Background(), sweepDeadline)
@@ -568,7 +568,7 @@ func smallRoleBucketRegistry(t *testing.T, session string, held []string) (*Regi
 	for _, role := range held {
 		putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, time.Now())
 	}
-	putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}})
+	putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}}, reg.now)
 	if err := reg.RoleViewErr(); err == nil {
 		t.Fatal("the registry's role claim view can be served, so these cases would never reach the fallback")
 	}

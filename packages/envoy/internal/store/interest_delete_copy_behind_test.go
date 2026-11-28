@@ -50,12 +50,12 @@ func TestAnInterestDeleteRemovesTheRecordACopyBehindAnswers(t *testing.T) {
 			defer cleanup()
 			r := openRegistry(t, conn)
 			bucket := r.watcher.KV().Legacy()
-			putInterest(t, bucket, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}})
+			putInterest(t, bucket, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID}}, r.now)
 			first, err := bucket.Get(sessionID)
 			if err != nil {
 				t.Fatalf("read %s's first row: %v", sessionID, err)
 			}
-			putInterest(t, bucket, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID, "notifications.dispatch.issue.CB-1.>"}})
+			putInterest(t, bucket, Interest{SessionID: sessionID, MachineID: "m1", Topics: []string{"notifications.agent." + sessionID, "notifications.dispatch.issue.CB-1.>"}}, r.now)
 			latest, err := bucket.Get(sessionID)
 			if err != nil || latest.Revision() <= first.Revision() {
 				t.Fatalf("read %s's latest row = %v (%v), want a revision past the first row's %d", sessionID, latest, err, first.Revision())

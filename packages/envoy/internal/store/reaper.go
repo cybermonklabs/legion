@@ -8,6 +8,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 const (
@@ -325,9 +326,10 @@ func (r *Registry) ReapRoleClaims(ctx context.Context, isAlive func(string) bool
 // a delete). Each pass then collects the chunks no interest record names (collectInterestChunks),
 // within ctx, whether or not the reap failed, since the collection reads only the cache and the
 // reap's failure says nothing about it. Each pass logs how many interests it reaped, how many
-// chunks it collected and how long it took (elapsed_ms).
+// chunks it collected and how long it took (elapsed_ms). Its ticks come on the registry's timer
+// clock (WithTimerClock, everyInterval).
 func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) (bool, error), interval, graceWindow time.Duration) <-chan struct{} {
-	return everyInterval(ctx, interval, func() {
+	return everyInterval(ctx, r.timerClock(), interval, func() {
 		started := time.Now()
 		count, reapErr := r.Reap(live, graceWindow)
 		collected, err := r.collectInterestChunks(ctx)
@@ -350,7 +352,8 @@ func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) 
 // claim renewed inside liveWindow, a lapsed claim no hand-back marked whose holder session
 // isAlive reports alive, and a restored claim no hand-back marked inside sessionTTL
 // (ReapRoleClaims), and logs what it reaped beside what it skipped, since only a reaper whose
-// failures are visible from its own line can be read as the backstop it is (RoleClaimSweep).
+// failures are visible from its own line can be read as the backstop it is (RoleClaimSweep). Its
+// ticks come on the registry's timer clock (WithTimerClock, everyInterval).
 //
 // isAlive is given the holder session id of every claim whose renewal has lapsed, and it
 // decides each of them but one: a claim its holder handed back (RoleClaim.HandedBack) is freed
@@ -382,7 +385,7 @@ func (r *Registry) StartReaper(ctx context.Context, live func(sessionID string) 
 // see. What makes a failed pass an ordered shutdown is that this loop's ctx has ended, so that
 // is what the level reads.
 func (r *Registry) StartRoleClaimReaper(ctx context.Context, isAlive func(string) bool, interval, sessionTTL, liveWindow time.Duration) <-chan struct{} {
-	return everyInterval(ctx, interval, func() {
+	return everyInterval(ctx, r.timerClock(), interval, func() {
 		sweep, err := r.ReapRoleClaims(ctx, isAlive, sessionTTL, liveWindow)
 		if err != nil {
 			if ctx.Err() != nil {
@@ -408,25 +411,30 @@ func (r *Registry) StartRoleClaimReaper(ctx context.Context, isAlive func(string
 	})
 }
 
-// everyInterval runs pass in a background goroutine at each tick of interval until ctx ends, and
-// returns a channel closed once the goroutine has returned.
-func everyInterval(ctx context.Context, interval time.Duration, pass func()) <-chan struct{} {
+// everyInterval runs pass in a background goroutine at each tick of interval on c until ctx ends,
+// and returns a channel closed once the goroutine has returned. c is the registry's timer clock
+// (WithTimerClock): clock.Real() unless a test hands it a clocktest fake, which the test moves past
+// a tick once the loop has armed it. Each tick after the first is armed only once the pass before
+// it has returned (clock.Ticker), so a test that sees it armed knows that pass is done.
+func everyInterval(ctx context.Context, c clock.Clock, interval time.Duration, pass func()) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ticker := time.NewTicker(interval)
-		defer ticker.Stop()
+		ticks := clock.NewTicker(c, interval, false)
+		defer ticks.Stop()
 		for {
 			select {
 			case <-ctx.Done():
 				return
-			case <-ticker.C:
+			case <-ticks.C():
+				ticks.Took()
 			}
 			// A tick and the end can both be ready, and select picks either.
 			if ctx.Err() != nil {
 				return
 			}
 			pass()
+			ticks.Next()
 		}
 	}()
 	return done

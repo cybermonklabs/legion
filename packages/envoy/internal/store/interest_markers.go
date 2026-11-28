@@ -10,6 +10,7 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -61,7 +62,8 @@ type interestMarkerCollector struct {
 	interval time.Duration
 	log      *slog.Logger
 	// scanIdle is how long a pass's scan of the bucket waits for its next entry before it gives up
-	// (kvwatch.ScanExistingKeys): kvwatch.ScanIdleTimeout, or less in the package's own tests.
+	// (kvwatch.ScanExistingKeysOn): kvwatch.ScanIdleTimeout, or less in the package's own tests. It
+	// runs on the registry's timer clock (WithTimerClock), as the collector's ticks do.
 	scanIdle time.Duration
 	// purgeRefused is set once a purge the server refused has been logged, so a NATS user without
 	// STREAM.PURGE on the interest bucket says so once per process rather than every pass. Passes
@@ -88,7 +90,9 @@ type interestPass struct {
 // cache's first warm-up, so the first pass -- the one that streams every marker in the bucket -- is
 // off the readiness path. It runs until ctx ends, and the channel it returns is closed once it has
 // returned: a pass in flight when ctx ends finishes first, since its scan's watcher is a consumer
-// nats.go creates and deletes, and the listener's shutdown waits for it before it drains NATS.
+// nats.go creates and deletes, and the listener's shutdown waits for it before it drains NATS. Its
+// ticks and its scan's idle bound run on the registry's timer clock (WithTimerClock): clock.Real()
+// unless a test hands it a clocktest fake.
 func (r *Registry) StartInterestMarkerCollector(ctx context.Context, js func() nats.JetStreamContext, interval time.Duration) <-chan struct{} {
 	done := make(chan struct{})
 	go func() {
@@ -98,18 +102,26 @@ func (r *Registry) StartInterestMarkerCollector(ctx context.Context, js func() n
 	return done
 }
 
+// run runs the passes, the first at once and each after it at the next tick of the interval. The
+// tick after a pass is armed only once that pass has returned (clock.Ticker), so a test that sees it
+// armed on its fake knows the pass is done.
 func (c *interestMarkerCollector) run(ctx context.Context, js func() nats.JetStreamContext) {
-	ticker := time.NewTicker(c.interval)
-	defer ticker.Stop()
+	ticks := clock.NewTicker(c.registry.timerClock(), c.interval, true)
+	defer ticks.Stop()
+	// The first tick is the start's, on C at once, so the first pass runs whether or not ctx has
+	// already ended.
+	<-ticks.C()
 	for {
+		ticks.Took()
 		// Every pass logs how it ended, with every stream value it read, except a purge the server
 		// keeps refusing, which says so once per process. A failed pass changes nothing, and the
 		// next tick reads the bucket again.
 		_, _ = c.pass(js(), nil)
+		ticks.Next()
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticks.C():
 		}
 		// A tick and the end can both be ready, and select picks either.
 		if ctx.Err() != nil {
@@ -129,7 +141,7 @@ func (c *interestMarkerCollector) pass(js nats.JetStreamContext, afterScan func(
 		return 0, fmt.Errorf("interest markers: read the bucket's stream: %w", err)
 	}
 	pass.read1 = &read1
-	scan, err := kvwatch.ScanExistingKeys(context.Background(), kv, jetstream.AllKeys, "interest markers", c.scanIdle, c.log, func(entry kvwatch.Entry) error {
+	scan, err := kvwatch.ScanExistingKeysOn(context.Background(), kv, jetstream.AllKeys, "interest markers", c.scanIdle, c.registry.timerClock(), c.log, func(entry kvwatch.Entry) error {
 		if pass.floor == 0 || entry.Revision < pass.floor {
 			pass.floor = entry.Revision
 		}

@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
@@ -64,6 +65,9 @@ type Registry struct {
 	// legacySubjects counts the old-form names callers give the registry (LegacySubjectCounter);
 	// nil counts nothing.
 	legacySubjects LegacySubjectCounter
+	// timers is the clock the registry's loops wait on (WithTimerClock); nil, as in a Registry this
+	// package's tests build as a literal, is clock.Real() (timerClock).
+	timers clock.Clock
 }
 
 // OpenOption configures the registry.
@@ -72,6 +76,7 @@ type OpenOption func(*openOpts)
 type openOpts struct {
 	replicas       int
 	now            func() time.Time
+	timers         clock.Clock
 	log            *slog.Logger
 	roleWatch      []kvwatch.Option
 	legacySubjects LegacySubjectCounter
@@ -108,6 +113,16 @@ func WithClock(now func() time.Time) OpenOption {
 	return func(o *openOpts) { o.now = now }
 }
 
+// WithTimerClock sets the clock the registry's loops wait on: the tick of each pass of StartReaper,
+// StartRoleClaimReaper and StartInterestMarkerCollector, and the idle bound of the collector's scan
+// of the interest bucket (kvwatch.ScanIdleTimeout). It is a test seam: the listener passes none, and
+// the default is clock.Real(). A test hands a clocktest fake and moves it past a loop's tick once the
+// loop has armed it, so it waits out no interval. WithClock is the time the registry records and
+// judges windows by; a test that wants both on one fake passes that fake's Now to WithClock too.
+func WithTimerClock(c clock.Clock) OpenOption {
+	return func(o *openOpts) { o.timers = c }
+}
+
 // WithRoleClaimWatch adds options to the role claim watcher's own, after them, so a test sets the
 // watcher's AfterFunc (kvwatch.WithAfterFunc), its clock (kvwatch.WithNow) or the interval of its
 // scheduled read (kvwatch.WithScheduledRead) and fires the scheduled read itself rather than wait
@@ -142,7 +157,7 @@ func WithLegacySubjectCounter(counter LegacySubjectCounter) OpenOption {
 // only the scan's idle bound (kvwatch.ScanIdleTimeout), however long it lasts. A scan that keeps no
 // run fails Open with an error that names the role claim scan, which fails the listener's start.
 func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registry, error) {
-	opts := openOpts{replicas: 1, now: time.Now, log: slog.Default()}
+	opts := openOpts{replicas: 1, now: time.Now, timers: clock.Real(), log: slog.Default()}
 	for _, o := range options {
 		o(&opts)
 	}
@@ -167,6 +182,7 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 		log:                   opts.log,
 		index:                 newSubjectIndex(),
 		now:                   opts.now,
+		timers:                opts.timers,
 		openedAt:              opts.now(),
 		restoredRoleRevisions: restoredRoleRevisions,
 		legacySubjects:        opts.legacySubjects,
@@ -265,6 +281,15 @@ func (r *Registry) logger() *slog.Logger {
 		return slog.Default()
 	}
 	return r.log
+}
+
+// timerClock is the clock the registry's loops wait on (WithTimerClock): the one Open was given, or
+// clock.Real() for a Registry the package's own tests build as a literal and give none.
+func (r *Registry) timerClock() clock.Clock {
+	if r.timers == nil {
+		return clock.Real()
+	}
+	return r.timers
 }
 
 // Logger is the logger the registry logs through: the listener's own, which it passes to Open, so

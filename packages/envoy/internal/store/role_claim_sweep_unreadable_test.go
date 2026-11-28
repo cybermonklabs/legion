@@ -63,7 +63,7 @@ func unreadableRoleBucketRegistry(t *testing.T, session string, held []string) (
 	}
 	// The record's only topic is not a role's, so the pass over it releases nothing and the
 	// claims below are the fallback's alone to release.
-	putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}})
+	putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}}, reg.now)
 	if err := reg.RoleViewErr(); err == nil {
 		t.Fatal("the registry's role claim view can be served, so these cases would never reach the fallback")
 	}

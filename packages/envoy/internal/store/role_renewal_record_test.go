@@ -717,7 +717,7 @@ func TestEachActReadsTheRecordInBothDirections(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					rig := newRepairRig(t, nil)
 					revision := seed(t, rig) + 1
-					putInterest(t, rig.interests, Interest{SessionID: holder, MachineID: "m1", Topics: []string{own, lane}})
+					putInterest(t, rig.interests, Interest{SessionID: holder, MachineID: "m1", Topics: []string{own, lane}}, rig.reg.now)
 					settle(rig)
 					rig.reg.applyRoleClaim(roleClaimEntry(role, holder, revision))
 					if got := heldRoles(t, rig.reg, holder); !slices.Equal(got, []string{role}) {
