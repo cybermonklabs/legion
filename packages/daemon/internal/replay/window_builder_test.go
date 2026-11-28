@@ -87,9 +87,11 @@ type builtLine struct {
 	line json.RawMessage
 }
 
-// builtEvent is one Dispatch event of the record, before build numbers its id.
+// builtEvent is one Dispatch event of the record, before build numbers its id: at is its place in
+// the record's order, and stamp its created_at where Dispatch stamped it otherwise (zero for at).
 type builtEvent struct {
 	at      time.Time
+	stamp   time.Time
 	key     string
 	seq     int64
 	kind    string
@@ -240,6 +242,10 @@ func (b *windowBuilder) build() Window {
 	slices.SortStableFunc(b.events, func(x, y builtEvent) int { return x.at.Compare(y.at) })
 	window.Events = make(map[string][]json.RawMessage)
 	for i, event := range b.events {
+		created := event.at
+		if !event.stamp.IsZero() {
+			created = event.stamp
+		}
 		raw, err := json.Marshal(struct {
 			ID         int64      `json:"id"`
 			IssueKey   string     `json:"issue_key"`
@@ -252,7 +258,7 @@ func (b *windowBuilder) build() Window {
 			CreatedAt  time.Time  `json:"created_at"`
 			Payload    any        `json:"payload"`
 		}{ID: int64(100 + i + 1), IssueKey: event.key, Project: builtProjectOf(event.key), Seq: event.seq, Type: event.kind,
-			Actor: event.actor, Notify: true, CreatedAt: event.at, Payload: event.payload})
+			Actor: event.actor, Notify: true, CreatedAt: created, Payload: event.payload})
 		if err != nil {
 			b.t.Fatalf("write the event of %s at %s: %v", event.key, event.at.Format(time.RFC3339), err)
 		}
@@ -492,6 +498,17 @@ func (b *windowBuilder) edit(at time.Time, key string, change func(*builtIssue))
 func (b *windowBuilder) daemonWrites(at time.Time, key, status string) {
 	b.t.Helper()
 	b.changed(at, key, eventActor{Kind: "session", ID: dispatch.DaemonSession(key)}, func(issue *builtIssue) { issue.Status = status })
+}
+
+// daemonWritesStamped is daemonWrites at at, its place in key's events after every event of key
+// written before it, stamped created_at stamped, which may come before theirs: Dispatch can stamp
+// two writes of one issue made at once in the other order than it numbers them (its seq, and its
+// id), so the later of them carries the earlier stamp. It is the one event a built window stamps
+// before an event of its issue written before it (event).
+func (b *windowBuilder) daemonWritesStamped(at, stamped time.Time, key, status string) {
+	b.t.Helper()
+	b.daemonWrites(at, key, status)
+	b.events[len(b.events)-1].stamp = stamped
 }
 
 // daemonPosts is the recorded daemon's post of body on key at at (message.created by its own
@@ -1816,6 +1833,211 @@ func TestADaemonWriteIsJudgedInTheRecordsOrder(t *testing.T) {
 	}
 }
 
+// slotsGivenTo is each slot a replay's log gives key, in its order, as slotsGiven writes it.
+func slotsGivenTo(log []replayLine, key string) []string {
+	return slices.DeleteFunc(slotsGiven(log), func(slot string) bool { return !strings.HasPrefix(slot, key+" at ") })
+}
+
+// restartStampedBackwardWindow is a window from 09:00 to 11:00 recorded under main with a cap of 1,
+// its inputs reaching back to the daemon's boot at 06:00. ACME-1, a root promoted at 06:05,
+// implements from 06:50 on the slot. ACME-2, a root handed to Legion at 07:00 at a rank above
+// ACME-1's, waits for it. At 10:00 the controller restarts ACME-1 through the daemon's API, which
+// Dispatch records under the daemon's session: backlog, and then todo, the todo stamped 100 µs
+// before the backlog though Dispatch numbers it after (daemonWritesStamped). The record's daemon
+// reads the two in Dispatch's order: ACME-1 leaves the workflow at 10:00:00.3 and ACME-2 takes its
+// slot, the todo runs ACME-1 again at its next generation, and at 10:03 a person moves ACME-2 to
+// backlog and ACME-1 takes the slot again.
+func restartStampedBackwardWindow(t *testing.T) Window {
+	return restartStampedBackwardRecord(t).build()
+}
+
+// restartStampedBackwardRecord is the record of restartStampedBackwardWindow, unbuilt, for a window
+// that adds to it.
+func restartStampedBackwardRecord(t *testing.T) *windowBuilder {
+	b := newWindowBuilder(t, clock(9, 0), clock(11, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a1", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted))
+	b.file(clock(7, 0), "ACME-2", filing{Title: "Count the widgets per shelf", Status: "todo", Rank: "a0", Labels: handedToLegion})
+	written := clock(10, 0).Add(200 * time.Microsecond)
+	b.daemonWrites(written, "ACME-1", "backlog")
+	b.daemonWritesStamped(written, clock(10, 0).Add(100*time.Microsecond), "ACME-1", "todo")
+	b.leaves(restartLeft, "ACME-1", "backlog")
+	b.issue("ACME-1").generation++
+	b.rootPromoted(restartLeft, "ACME-2")
+	b.edit(clock(10, 3), "ACME-2", setStatus("backlog"))
+	b.leaves(clock(10, 3), "ACME-2", "backlog")
+	b.rootPromoted(clock(10, 3), "ACME-1")
+	return b
+}
+
+// restartLeft is the moment the record's daemon writes ACME-1's leave in
+// restartStampedBackwardWindow, the leave its controller's restart's backlog causes, 300 ms after
+// Dispatch's stamps of that backlog and of the todo after it.
+var restartLeft = clock(10, 0).Add(300 * time.Millisecond)
+
+// restartRankedWindow is restartStampedBackwardWindow with a root that competes for ACME-1's slot
+// at 10:03: ACME-3, handed to Legion at 07:05 at a rank below ACME-1's, waits for the slot until
+// 10:40, where a person moves ACME-1 to backlog, ACME-1 leaves the workflow, and the record promotes
+// ACME-3 into its slot.
+func restartRankedWindow(t *testing.T) Window {
+	b := restartStampedBackwardRecord(t)
+	b.file(clock(7, 5), "ACME-3", filing{Title: "Archive the old exports", Status: "todo", Rank: "a2", Labels: handedToLegion})
+	b.edit(clock(10, 40), "ACME-1", setStatus("backlog"))
+	b.leaves(clock(10, 40), "ACME-1", "backlog")
+	b.rootPromoted(clock(10, 40), "ACME-3")
+	return b.build()
+}
+
+// A todo that runs an issue again, read before the daemon's line of the leave the issue's event
+// before it caused, enters the issue after that leave: Dispatch stamps the controller's restart's
+// backlog and todo before the daemon writes the leave, and the daemon applies the todo only once it
+// has applied that leave, with the issue's lines of it, its tree's linger and the slot it gives back
+// (traceBuilder.reenter). So the slot the record gives the issue next is the first start of the run
+// the todo begins (firstStartIn), by which the line ranks its tree (assumption 36). The test reads
+// restartRankedWindow's trace, in which ACME-1's next entry is at its leave at 10:00:00.3, at its
+// next generation, and its first start in the window is its slot of 10:03, and replays the window
+// under main, which gives ACME-1 the slot ACME-2 gives back at 10:03 and ACME-3 the slot ACME-1
+// gives back at 10:40, as the record does. It fails where the todo makes no entry, the issue
+// standing in its visit when the trace reads it, for which the slot of 10:03 is a later slot of
+// ACME-1's run from 06:05, ACME-1 has no first start and ranks at its Dispatch rank behind ACME-3's
+// first start, and ACME-3 takes the slot at 10:03.
+func TestARestartedRootsNextSlotIsTheFirstStartOfItsNewRun(t *testing.T) {
+	t.Parallel()
+	window := restartRankedWindow(t)
+	trace, err := BuildTrace(window)
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	iss := trace.Issues["ACME-1"]
+	if entry := iss.entryAt(clock(10, 3)); entry == nil || !entry.At.Equal(restartLeft) || entry.Generation != 2 {
+		t.Errorf("the trace reads ACME-1's entry at 10:03 as %+v, want its entry at its leave at %s, at generation 2", entry, stamp(restartLeft))
+	}
+	if start, began := firstStartIn(iss, window.From); !began || !start.Equal(clock(10, 3)) {
+		t.Errorf("the trace reads ACME-1's first start in the window as %s (%t), want 10:03, the first slot of the run its restart begins",
+			stamp(start), began)
+	}
+	_, log := knobRun(t, window, mainRule(t), "main")
+	for key, want := range map[string][]string{"ACME-1": {"ACME-1 at 10:03"}, "ACME-3": {"ACME-3 at 10:40"}} {
+		if given := slotsGivenTo(log, key); !slices.Equal(given, want) {
+			t.Errorf("the replay gave %s the slots %v, want %v", key, given, want)
+		}
+	}
+}
+
+// setBackThenShelvedWindow is a window from 09:00 to 11:00 recorded under main, its inputs reaching
+// back to the daemon's boot at 08:00, in which a todo the daemon writes back is followed by another
+// issue event before the issue's leave. ACME-2, a root promoted at 08:05, plans from 08:20 through
+// the window. ACME-1, a child filed todo under it at 08:25, waits at admitted. At 10:10 ACME-1's own
+// architect closes it done, which the record's daemon sets back (workflow's sessionStatusWrite): no
+// leave follows, and its session writes todo again 0.33 s later. At 10:15 its session writes
+// backlog, the controller's set_status, and ACME-1 leaves the workflow at 10:15:00.25. Nothing of
+// ACME-1 follows.
+func setBackThenShelvedWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(11, 0))
+	b.reaches(time.Hour)
+	b.boot(clock(8, 0))
+	promotedRoot(b, clock(8, 5), "ACME-2", "a2")
+	b.rootDesigned(clock(8, 20), "ACME-2")
+	b.file(clock(8, 25), "ACME-1", filing{Title: "Write the export's header row", Parent: "ACME-2", Tree: "ACME-2", Status: "todo", Rank: "b1"})
+	b.changed(clock(10, 10), "ACME-1", b.session("ACME-1", claim.RoleArchitect), setStatus(record.DoneStatus))
+	b.daemonWrites(clock(10, 10).Add(330*time.Millisecond), "ACME-1", "todo")
+	b.daemonWrites(clock(10, 15), "ACME-1", "backlog")
+	b.leaves(shelvedLeft, "ACME-1", "backlog")
+	return b.build()
+}
+
+// shelvedLeft is the moment the record's daemon writes ACME-1's leave in setBackThenShelvedWindow,
+// the leave its session's backlog at 10:15 causes.
+var shelvedLeft = clock(10, 15).Add(250 * time.Millisecond)
+
+// The leave of an issue belongs to the issue's last issue event before it, and a todo enters the
+// issue after that leave only where it is that event (traceBuilder.maybeEnter): a later issue event
+// of the issue before the leave ends the todo's wait for a leave, whatever it is. The test reads
+// setBackThenShelvedWindow's trace: the todo the daemon wrote back after the architect's done is
+// followed by the backlog, whose leave at 10:15:00.25 makes no entry, and ACME-1 stands in no
+// phase from then on. It fails where the todo waits on through the backlog, read right after an
+// issue event out of the workflow, the done, for which the leave the backlog caused enters ACME-1
+// again, at admitted, to the window's end.
+func TestALeaveBelongsToTheLastIssueEventBeforeIt(t *testing.T) {
+	t.Parallel()
+	trace, err := BuildTrace(setBackThenShelvedWindow(t))
+	if err != nil {
+		t.Fatalf("build the trace: %v", err)
+	}
+	iss := trace.Issues["ACME-1"]
+	if leaves := iss.Leaves; len(leaves) != 1 || !leaves[0].At.Equal(shelvedLeft) {
+		t.Fatalf("the trace reads ACME-1's leaves as %+v, want one at %s", leaves, stamp(shelvedLeft))
+	}
+	if i := slices.IndexFunc(iss.Entries, func(entry Entry) bool { return !entry.At.Before(shelvedLeft) }); i >= 0 {
+		t.Errorf("the trace enters ACME-1 at %s, after its leave at %s, want no entry after it", stamp(iss.Entries[i].At), stamp(shelvedLeft))
+	}
+	if visit := iss.openVisit(); visit != nil || iss.visitAt(clock(10, 30)) != nil {
+		t.Errorf("the trace holds ACME-1 in %+v after its leave at %s, want it in no phase", visit, stamp(shelvedLeft))
+	}
+}
+
+// One issue's events keep Dispatch's own order, the order of their sequence, in which the daemon
+// reads Dispatch's stream, whatever their stamps (readTrace). The test replays
+// restartStampedBackwardWindow under main: the backlog applies first and ACME-1 leaves, the todo is
+// then judged against that backlog (driver.keepsDaemonEvent), enters, and runs ACME-1 again, and
+// ACME-1 takes the slot ACME-2 gives back at 10:03. It fails where the events are read by their
+// stamps, for which the todo is judged against ACME-1's in_progress before it and left out as an
+// outbox write, and ACME-1 never comes back.
+func TestAnIssuesEventsKeepDispatchsOrderWhateverTheirStamps(t *testing.T) {
+	t.Parallel()
+	_, log := knobRun(t, restartStampedBackwardWindow(t), mainRule(t), "main")
+	if given, want := slotsGivenTo(log, "ACME-1"), []string{"ACME-1 at 10:03"}; !slices.Equal(given, want) {
+		t.Errorf("the replay gave ACME-1 the slots %v, want %v: the controller's restart runs it again", given, want)
+	}
+}
+
+// labelledBackWindow is a window from 09:00 to 12:00 recorded under main with a cap of 1, its
+// inputs reaching back to the daemon's boot at 06:00. ACME-2, a root promoted at 06:05, works to
+// its review's approval at 10:35, where its slot goes back. ACME-1, a root handed to Legion at
+// 07:00, waits for the slot until a person takes the legion label off it at 08:00; at 08:05 a
+// session outside Legion sets it in_progress, and the record's daemon takes it out of the workflow
+// at that status, a root with neither a slot nor a place in the line (workflow's LeaveUnslotted). At
+// 09:30 a person puts the label back, the status still in_progress, and at 10:00 the controller
+// sets it todo through the daemon's API, which Dispatch records under the daemon's session: the
+// record's daemon runs it again at its next generation, and it takes ACME-2's slot at 10:35.
+func labelledBackWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(12, 0))
+	b.reaches(3 * time.Hour)
+	b.capped(1)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-2", "a0", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted),
+		moveAt(7, 50, phase.Testing, workflow.TriggerImplementationReady), moveAt(8, 50, phase.Reviewing, workflow.TriggerTesterPassed),
+		moveAt(10, 35, phase.Accepting, workflow.TriggerReviewApproved))
+	b.file(clock(7, 0), "ACME-1", filing{Title: "Export the widget list", Status: "todo", Rank: "a1", Labels: handedToLegion})
+	b.edit(clock(8, 0), "ACME-1", unlabelled)
+	outside := eventActor{Kind: "session", ID: "00000000-0000-4000-8000-0000000000c4", Origin: &eventOrigin{Host: "omp", SessionTitle: "session 1"}}
+	b.changed(clock(8, 5), "ACME-1", outside, setStatus("in_progress"))
+	b.leaves(clock(8, 5), "ACME-1", "in_progress")
+	b.edit(clock(9, 30), "ACME-1", labelled)
+	b.daemonWrites(clock(10, 0), "ACME-1", "todo")
+	b.issue("ACME-1").generation++
+	b.rootPromoted(clock(10, 35), "ACME-1")
+	return b.build()
+}
+
+// A todo of the daemon's own session on an issue the record holds out of the workflow is the move
+// that runs it again, whatever status the issue's event before it shows (driver.keepsDaemonEvent):
+// the daemon re-admits a root its record holds out of the workflow at a todo with the label
+// (admit's applyObservation), and its outbox writes no such todo. The test replays
+// labelledBackWindow under main: the controller's todo at 10:00 enters, ACME-1 runs again, and it
+// takes the slot ACME-2 gives back at 10:35. It fails where only a status out of the workflow
+// before the todo keeps it, for which the todo over ACME-1's in_progress is left out as an outbox
+// write, and ACME-1 never comes back.
+func TestADaemonTodoOnAnIssueTheRecordHoldsOutOfTheWorkflowRunsItAgain(t *testing.T) {
+	t.Parallel()
+	_, log := knobRun(t, labelledBackWindow(t), mainRule(t), "main")
+	if given, want := slotsGivenTo(log, "ACME-1"), []string{"ACME-1 at 10:35"}; !slices.Equal(given, want) {
+		t.Errorf("the replay gave ACME-1 the slots %v, want %v: the controller's todo runs it again", given, want)
+	}
+}
+
 // reopenLateWindow is a window from 09:00 to 13:00 recorded under main with a cap of 2, its inputs
 // reaching back to the daemon's boot at 06:00. ACME-2, a root promoted at 06:05, implements from
 // 06:50 to the window's end, holding a slot. ACME-1, a root promoted at 06:30, holds the other slot
@@ -2371,6 +2593,70 @@ func TestAVisitIsWorkerlessOnlyWhereNothingOfItsRoleShowsAndItsWorkStartsAtTheMo
 			t.Errorf("with %s the trace reads the visit from %s as workerless %t, its first piece opens by %d from %s, want workerless %t, opening by %d from %s",
 				c.name, stamp(c.enter), visit.Workerless, p.opens, stamp(p.start), c.workerless, c.opens, stamp(c.start))
 		}
+	}
+}
+
+// workerlessTestingWindow is a window from 09:00 to 13:00 recorded under legion-v19.57.3, its
+// inputs reaching back to the daemon's boot at 06:00, with a visit to testing whose tester never
+// works. ACME-1, a root promoted at 06:05, implements from 06:50 on its slot and moves into testing
+// at 10:00; GitHub's checks_red moves it back to implementing at 10:05, before any tester of it is
+// launched or takes a turn, so the visit is workerless (Visit.Workerless). Its implementer then
+// works from 10:20 to 10:55 and it moves into testing at 11:00; its tester works from 11:01 to 11:29
+// and fails it at 11:30; its implementer works from 11:31 to 11:59 and it moves into testing at
+// 12:00; and its tester works from 12:01 to 12:19 and passes it into reviewing at 12:20.
+func workerlessTestingWindow(t *testing.T) Window {
+	b := newWindowBuilder(t, clock(9, 0), clock(13, 0))
+	b.window.Parts[0].Rule = "legion-v19.57.3"
+	b.reaches(3 * time.Hour)
+	b.boot(clock(6, 0))
+	rootThrough(b, "ACME-1", "a1", clock(6, 5), clock(6, 20), moveAt(6, 50, phase.Implementing, workflow.TriggerPlannerCompleted))
+	work := func(role claim.Role, from, to time.Time) {
+		b.turnStarts(from, "ACME-1", role)
+		b.turnEnds(to, "ACME-1", role)
+	}
+	b.turnEnds(clock(10, 0), "ACME-1", claim.RoleImplementer)
+	b.moved(clock(10, 0), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	b.moved(clock(10, 5), "ACME-1", phase.Testing, phase.Implementing, workflow.TriggerChecksRed)
+	work(claim.RoleImplementer, clock(10, 20), clock(10, 55))
+	b.moved(clock(11, 0), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	work(claim.RoleTester, clock(11, 1), clock(11, 29))
+	b.moved(clock(11, 30), "ACME-1", phase.Testing, phase.Implementing, workflow.TriggerTesterFailed)
+	work(claim.RoleImplementer, clock(11, 31), clock(11, 59))
+	b.moved(clock(12, 0), "ACME-1", phase.Implementing, phase.Testing, workflow.TriggerImplementationReady)
+	work(claim.RoleTester, clock(12, 1), clock(12, 19))
+	b.moved(clock(12, 20), "ACME-1", phase.Testing, phase.Reviewing, workflow.TriggerTesterPassed)
+	b.turnStarts(clock(12, 20), "ACME-1", claim.RoleReviewer)
+	return b.build()
+}
+
+// A start of the role of a visit whose work opened on the move into its phase, as a workerless
+// visit's does, opens no work of a later visit while the issue stands in that visit
+// (driver.startPiece): the later visit's work opens when the issue comes to it. The test replays
+// workerlessTestingWindow under legion-v19.57.3: the tester's start at 10:00 finds the visit's own
+// work open, checks_red moves ACME-1 back at 10:05, and ACME-1 then follows its record, into
+// testing at 10:00, 11:00 and 12:00 and into reviewing at 12:20, with no move refused and no work
+// passed over. It fails where the tester's start at 10:00 opens the testing work of 11:00, passing
+// over the implementing work from 10:05, for which that work's tester_failed is refused at 10:30,
+// and ACME-1 moves into testing at 10:35 and into reviewing at 10:55.
+func TestAStartOpensNoLaterVisitsWorkWhileItsOwnVisitsWorkRuns(t *testing.T) {
+	t.Parallel()
+	result, log := replayWindowOn(t, workerlessTestingWindow(t), "legion-v19.57.3", MainBranch, 1)
+	into := func(to phase.Phase) []time.Time {
+		return linesAt(log, func(line replayLine) bool {
+			return line.Msg == phaseChangedLine && line.Issue == "ACME-1" && line.To == string(to)
+		})
+	}
+	if got, want := into(phase.Testing), []time.Time{clock(10, 0), clock(11, 0), clock(12, 0)}; !slices.EqualFunc(got, want, time.Time.Equal) {
+		t.Errorf("ACME-1 moved into testing at %s, want at %s", describeTimes(got), describeTimes(want))
+	}
+	if got, want := into(phase.Reviewing), []time.Time{clock(12, 20)}; !slices.EqualFunc(got, want, time.Time.Equal) {
+		t.Errorf("ACME-1 moved into reviewing at %s, want at %s", describeTimes(got), describeTimes(want))
+	}
+	if refused := result.Divergence.Refused; len(refused) > 0 {
+		t.Errorf("the replay refused %+v", refused)
+	}
+	if n := result.Divergence.SkippedSegments; n != 0 {
+		t.Errorf("the replay passed over %d recorded work segments, want none", n)
 	}
 }
 

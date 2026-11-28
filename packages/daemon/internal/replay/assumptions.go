@@ -140,7 +140,7 @@ var Assumptions = []Assumption{
 		Text:      "The repairs a boot or a read of the repository mapping makes, a merger the cutover left released, a design gate's request found again, a repository's mapping changed, change nothing of a window.",
 		Direction: "Sound for a window recorded under one release and one mapping: a repair the record made shows as its own move or start, which the replay enters as recorded."},
 	{Number: assumeSlotFromBeforeTheReach,
-		Text:      "An issue the record first shows in a phase that keeps a slot, whose first slot line gives a slot back or which no slot line names, held a slot from before the window's reach, until that line or, with none, until the rule gives the slot back; and an issue that stands at the window's start in a worker's phase that keeps a slot, with no slot line holding it there and no wait that gives the slot back, whose worker started in that run of phases after its last slot went back, held one from its last entry into that run until the rule gives it back.",
+		Text:      "An issue the record first shows in a phase that keeps a slot, whose first slot line gives a slot back or which no slot line names, held a slot from before the window's reach, until that line or, with none, until the rule gives the slot back; and an issue that stands at the window's start in a phase that keeps a slot under the window's rule, accepting among them where the rule keeps one there, with no slot line holding it there and no wait that gives the slot back, whose worker started in that run of phases after its last slot went back, held one from its last entry into that run until the rule gives it back.",
 		Direction: "Doubtful where the reach begins with slots in use and no line names them, or a slot is taken again by a way that writes no slot line: the slot is read from the phase, and at the window's start from the worker's start, alone. If such an issue held no slot, the slots held, with no worker in a turn above all, are overstated by its span; started work that waits for a slot is understated, its time read as held; in a replay its slot keeps another issue from starting until it goes back, which delays that issue and understates the issues finished; the priority taken by holders is overstated where it ranks below an issue that waits; and of the other delays, a link wait it opens counts from its slot, which lengthens the waits, the loops being read from their own lines. A holder the inference misses moves each the other way. The reading that would test it is the slots in use the slot line at the window's start carries, the first at or after it, against the slots the trace holds right after that line: the start state reports the difference and the inferred holders it wrote, and the run carries both in its divergence."},
 	{Number: assumeKeptOpenLoop,
 		Text:      "A recorded open-loop conflict enters at its end even if the live stretch drew clean earlier or git answers clean now. The move is the record's, not a draw.",
@@ -199,9 +199,10 @@ var Assumptions = []Assumption{
 
 // assumeSlotFromBeforeTheReach is the assumption the trace's own inference rests on, that an issue
 // the record first shows in a phase that keeps a slot held one from before the window's reach
-// (inferSlots), and that an issue standing at the window's start in a worker's phase that keeps a
-// slot, whose worker started there with no slot line holding it, held one (inferStartSlots), each
-// a SlotSpan.Inferred, which the start state and a run name where they rest on it.
+// (inferSlots), and that an issue standing at the window's start in a phase its rule keeps a slot
+// in, accepting among them, whose worker started in its run with no slot line holding it, held one
+// (inferStartSlots), each a SlotSpan.Inferred, which the start state and a run name where they rest
+// on it.
 const assumeSlotFromBeforeTheReach = 34
 
 // assumeKeptOpenLoop is the assumption a stretch that keeps its recorded conflict rests on, its loop

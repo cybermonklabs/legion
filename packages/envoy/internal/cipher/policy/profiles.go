@@ -136,8 +136,15 @@ type ProxyBlock struct {
 	Hosts   []string           `json:"hosts"`
 	Headers []string           `json:"headers"` // nil: the default ["authorization"]; empty: no header
 	Allow   []proxyrules.Allow `json:"allow"`   // nil: any method and path; empty: nothing allowed
-	Kind    string             `json:"kind"`    // "dpop"; in an old file also "", "aws" or "azure"
+	Kind    string             `json:"kind"`    // ProxyBlockKindDPoP; in an old file also "", "aws" or "azure"
 }
+
+// ProxyBlockKindDPoP is the value of ProxyBlock.Kind for a dpop block: the proxy block of a
+// capability the broker mints and holds, the one kind of block a kinds file serves. It names a kind
+// of block, not a way, and not the kind of its own a file of no kinds serves an old block behind
+// (blockKindName): the block's binding takes the dpop way (proxyrules.WayDPoP), and a block's kind
+// is compared with this constant, never with the way.
+const ProxyBlockKindDPoP = "dpop"
 
 // proxyEntry is a proxy block as the file writes it: the block, and the judge and guidance a block
 // held before they became the source key's own tags (TagJudge, TagGuidance). The two are read
@@ -255,7 +262,7 @@ func readProfiles(kinds []proxyrules.Kind, entries []profileEntry) (Profiles, er
 		case e.Proxy == nil:
 		case e.Proxy.block == nil:
 			p.ProxyKind = e.Proxy.kind
-		case e.Proxy.block.Kind == proxyrules.WayDPoP:
+		case e.Proxy.block.Kind == ProxyBlockKindDPoP:
 			p.Proxy = &e.Proxy.block.ProxyBlock
 		default:
 			if legacy == nil {
@@ -455,9 +462,9 @@ func (e profileEntry) checkProxy(kinds []proxyrules.Kind, refuse func(field, why
 			return refuse("proxy", fmt.Sprintf("names the kind %q, which the file's kinds do not declare", e.Proxy.kind))
 		}
 		return nil
-	case e.Proxy.block.Kind != proxyrules.WayDPoP && readsBlocks(kinds):
+	case e.Proxy.block.Kind != ProxyBlockKindDPoP && readsBlocks(kinds):
 		return e.Proxy.block.checkBlock(e.Name, cmp.Or(e.Source, e.Name), refuse)
-	case e.Proxy.block.Kind != proxyrules.WayDPoP:
+	case e.Proxy.block.Kind != ProxyBlockKindDPoP:
 		return refuse("proxy", fmt.Sprintf("is a proxy block, and a proxy block is no longer read: declare the kind under kinds and tag the source, %s, proxy=<kind>", cmp.Or(e.Source, e.Name)))
 	}
 	if err := e.Proxy.block.judgeFields(refuse); err != nil {
@@ -500,9 +507,9 @@ func (e *proxyEntry) checkBlock(name, source string, refuse func(field, why stri
 // and a block of another kind would serve the capability's name as a kind of its own. That result
 // entries need the profile at all is the start check's (config.ResultsEntryRules).
 func (e profileEntry) checkMinted(refuse func(field, why string) error) error {
-	dpop := e.Proxy != nil && e.Proxy.block != nil && e.Proxy.block.Kind == proxyrules.WayDPoP
+	dpop := e.Proxy != nil && e.Proxy.block != nil && e.Proxy.block.Kind == ProxyBlockKindDPoP
 	if e.Name == oauthwire.AirlockResultsName && !dpop {
-		return refuse("proxy", "must be a proxy block of kind "+proxyrules.WayDPoP+": "+e.Name+" is the results capability the broker mints and holds for a CI run's result grant, a name and a proxy block of kind "+proxyrules.WayDPoP)
+		return refuse("proxy", "must be a proxy block of kind "+ProxyBlockKindDPoP+": "+e.Name+" is the results capability the broker mints and holds for a CI run's result grant, a name and a proxy block of kind "+ProxyBlockKindDPoP)
 	}
 	if !dpop {
 		return nil

@@ -127,7 +127,13 @@ var OutboxHandling = map[RowKind]RowHandling{
 	{Kind: record.OutboxKindIssueBundle}:     {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
 	{Kind: record.OutboxKindIssueRelease}:    {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
 	{Kind: record.OutboxKindWorkspaceRemove}: {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
-	{Kind: record.OutboxKindClaimRelease}:    {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
+	// A claim release: the row of a move out of the workflow and of the boot pass, and, since
+	// cybermonklabs/legion#5908, the row that names a session a claim write left behind
+	// (record.ClaimRelease.Session). The claim store queues that row only once a daemon with a
+	// workflow turns the release on (store.Store.ReleaseLeftSessionClaims), and a replay's store
+	// never does, so a replay queues none. The Dispatch claim a release takes or leaves comes to a
+	// replay as the record's issue.claimed and issue.released events (DispatchClaim).
+	{Kind: record.OutboxKindClaimRelease}: {Way: OutboxFinished, Assumption: assumeWorkspaceInSegment},
 
 	{Kind: record.OutboxKindMergeQueueRead}:    {Way: OutboxFinished, Assumption: assumeNoGitHub},
 	{Kind: record.OutboxKindMergeQueueRemoval}: {Way: OutboxFinished, Assumption: assumeNoGitHub},
@@ -890,8 +896,9 @@ func retired(c supervise.Claim) supervise.Claim {
 
 // startWork is the work a start the stub ran brings to issue: the paused segment of the role, or
 // its next recorded segment where the start's entry is above the one the claim was given (given)
-// or the start resends its entry, a reassertion counted where the start re-sent an entry the
-// claim was given already.
+// or the start resends its entry, but none where the move into the phase opened the work of the
+// visit the issue stands in (startPiece), a reassertion counted where the start re-sent an entry
+// the claim was given already.
 func (d *driver) startWork(issue record.Issue, payload record.SuperviseRequest, given int64, delivered bool) error {
 	if p := d.pausedPiece(issue.Key, payload.Role); p != nil {
 		return d.resumePiece(p)

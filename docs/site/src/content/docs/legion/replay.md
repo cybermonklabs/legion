@@ -45,6 +45,8 @@ The [CLI reference](/legion/legion/reference/cli/) gives each command and flag a
 
 - **Work segment**: one visit of an issue to a phase, from the visit's worker start to the recorded move that ends it.
   The worker start is the later of the move into the phase and the slot that the issue takes for it.
+  The architect works accepting on no slot of the issue's, so a visit to accepting in which the issue takes no slot and its own architect takes no turn starts at the move into accepting.
+  A child's acceptance is the work of its tree root's architect, whose turns are the root's own, and the replay enters that architect's recorded move of the child out of accepting at the end of the segment, as the request of the architect that owns the tree.
   A visit that the admission pass ends (the design gate opening) ends at its last design registration, or with none at its worker's last turn's end.
   A visit that the issue's leave cuts ends at the leave, and a visit with no move out in the window stays open.
 
@@ -714,10 +716,21 @@ Each daemon process serves from its recorded reconcile: no pass of the process r
 The replay reads that reconcile from the line that holds roots for the Dispatch consumer, or else from the process's first slot line before its line `legion daemon started`.
 A process whose log shows neither serves from its first line.
 Most Dispatch events that the daemon's own session wrote are its outbox's status writes, which the replay's own outbox makes again, so the replay leaves those events out.
-The daemon's API also writes statuses under that session for an agent, and no outbox row writes these: a move to backlog, icebox or triage, a move from one of those or from done to todo that adds no `legion` label, and the controller's todo on a root whose phase is held.
+The daemon's API also writes statuses under that session for an agent, and no outbox row writes these: a move to backlog, icebox or triage, a move to todo from out of the workflow that adds no `legion` label, and the controller's todo on a root whose phase is held.
+Before such a todo, the issue is out of the workflow where the issue's event before it shows backlog, icebox, triage or done, or where the record holds the issue out of the workflow then: the issue left the workflow, at whatever status, and has not entered it again.
+The record's daemon takes the issue in again at a todo with the `legion` label, whatever status came before it, for example a root that left at `in_progress` after a person took its label off and that has the label back.
 The controller's `set_status`, an architect's `release_children` and `rerun_child` and, in releases that have it, an architect's `park_child` write such moves, and the replay enters each one as recorded.
-The replay decides whether a write of the daemon's session is such a move from the issue's event before it in the record, and not from the event that its copy of Dispatch applied last, because the replay can apply an event early or late.
-A move to todo from done or from another status out of the workflow waits while the replay's own record holds the issue in the workflow.
+The replay decides whether a write of the daemon's session is such a move from the record, from the issue's event before it in the record and the record's leaves of the issue, and not from the event that its copy of Dispatch applied last, because the replay can apply an event early or late.
+The record's order of one issue's events is Dispatch's own, the order of their sequence, in which the daemon reads them, whatever their stamps.
+Dispatch can stamp two writes of one issue that are made at once in the reverse order, such as the backlog and the todo of the controller's restart of a root.
+So the replay reads an event that is stamped before the event that Dispatch wrote before it on its issue at that event's moment, and after it.
+Dispatch's stamps and the daemon's lines come from two clocks, so Dispatch can stamp both writes of the controller's restart before the daemon's line of the leave that the backlog causes.
+The daemon applies the todo only once it has applied that leave, so the replay enters the issue again after the leave's own lines: the leave, the linger of a root's tree, and the slot that the leave gives back.
+So the run that the todo begins is a run of its own, and the slot that the record gives the issue next is the first start of that run, by which the line ranks the issue's tree (assumption 36).
+A leave belongs to the issue's last issue event before it, so a todo enters the issue after a leave only where the todo is that event.
+Where another issue event of the issue comes between the todo and the leave, or the issue's phase moves, the todo enters nothing at that leave.
+For example, the daemon sets an architect's done on its own issue back to todo, with no leave, and a later backlog then takes the issue out: that leave runs nothing again.
+A move to todo from out of the workflow waits while the replay's own record holds the issue in the workflow.
 It then enters when the replay's issue leaves the workflow, at its recorded offset from the record's leave of the issue before it, so a run that the record starts again after its done starts again after the replay's done.
 The replay knows the controller's todo on a held root by the record's release of that hold, whose reason names a todo.
 An architect's `release_children` of a root that has left the workflow first adopts the root into the architect's tree, at the generation that the line `workflow: a queued root joined a live tree` names, and parks it at done there, because its status is not todo.
@@ -762,6 +775,8 @@ The replay enters such a retry at its recorded offset from the replay's start of
 Where the replay's issue stands in another phase at that moment, the replay counts the retry as refused.
 A work segment of a visit in which the record shows no launch, no turn and no hold of the phase's role, and which starts at the move into its phase, opens on that move, as an accepting segment does, because no start of the role opened it in the record.
 Its recorded end, a conflict among them, then enters at its recorded offset, and does not wait for a start that the replay holds, as it holds a merger's start while the tree's design gate stands closed.
+The replay's daemon still sends the role its start at that move, and while the issue stands in that visit, the start opens no segment of a later visit, which opens when the issue comes to that visit.
+So a testing visit that GitHub's `checks_red` ends before any tester works runs its own recorded length, and the issue then runs the work that the record shows after it, in its order.
 A work segment of a visit that shows a launch, a turn or a hold of its role opens on that role's start.
 Where a conflict waits for merging, the issue's segment in merging, whichever way it opens, opens when the merger's merge forward lands, because the merger merges the base forward before the issue's own work in merging.
 Each claim that the replay writes runs the session that the record shows that claim running at that moment.
@@ -3343,6 +3358,7 @@ The slowdown factor f is the tool's reading of it.
 
 **Evidence in a recorded window.** _The pod and workspace rows that the replay finishes without acting._
 The replay finishes each release and each pause stop of a role, and each issue branch, issue suspend, bundle, issue release, workspace removal and claim release, without acting.
+The release of the Dispatch claim of a session the daemon left behind, a claim release row that names that session, never reaches a replay's outbox: only a daemon with a workflow turns it on, and a replay's store never does, so the replay queues none.
 The replay runs no Sandbox teardown, so it neither notes a teardown on an issue release mark nor writes or reads the `pod_releases` records keyed by those marks.
 `run.json` counts them under `divergence.finished`.
 The replay's pause queues its stop rows on the simulated clock, as the daemon queues them on its own, so each pause stop finishes at the moment the record shows the pause.
@@ -3519,7 +3535,7 @@ If a repair at a boot, or a change of the mapping, gave or took a slot that no r
 Read each process start in the window, and the release that its part gives.
 After a boot that starts a new release, look in the record for a slot or a move that no fact of the window explains.
 
-### Assumption 34: An issue the record first shows in a phase that keeps a slot, whose first slot line gives a slot back or which no slot line names, held a slot from before the window's reach, until that line or, with none, until the rule gives the slot back; and an issue that stands at the window's start in a worker's phase that keeps a slot, with no slot line holding it there and no wait that gives the slot back, whose worker started in that run of phases after its last slot went back, held one from its last entry into that run until the rule gives it back
+### Assumption 34: An issue the record first shows in a phase that keeps a slot, whose first slot line gives a slot back or which no slot line names, held a slot from before the window's reach, until that line or, with none, until the rule gives the slot back; and an issue that stands at the window's start in a phase that keeps a slot under the window's rule, accepting among them where the rule keeps one there, with no slot line holding it there and no wait that gives the slot back, whose worker started in that run of phases after its last slot went back, held one from its last entry into that run until the rule gives it back
 
 The tool's own.
 Doubtful where the reach begins with slots in use and no line names their holders, because the slot is then read from the phase alone.
@@ -3529,7 +3545,9 @@ An issue whose work came back with no slot and whose worker has not started owes
 Under a rule that gives the slot back at the merger's ready mark (`legion-v19.57.3`), an issue that stands in merging past that mark keeps no slot there, so a turn that its merger takes after the mark is no sight of a slot.
 The start state keeps that mark for the replay's passes, as the replay keeps a mark that it applies.
 An issue that stands in a phase that the architect works, such as accepting, owes no start that waits for a slot, because the architect's turn starts on no slot of the issue's.
-Where the record holds such an issue's slot with no line, the start state names the issue, because it holds neither a slot nor a start that waits for one.
+Its slot is read by the window's recorded rule all the same: under a rule that keeps a slot in accepting, such as `legion-v19.57.3`, the daemon keeps the slot that the issue held in the phases before accepting.
+So where the record holds such an issue's slot with no line, and its worker started in its run after its last slot went back, the start state gives the issue that slot.
+Under a rule that keeps no slot in accepting, the issue holds none there.
 
 **Evidence in a recorded window.** _The slot line at the window's start._
 The first `admission:` slot line at or after the window's start gives the slots in use where the start state places them.

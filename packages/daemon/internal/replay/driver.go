@@ -227,6 +227,11 @@ type driver struct {
 	// pull request leaving the merge queue the record shows before it (Move.Drop), which names the
 	// move's cause in the snapshot timeline.
 	drops map[string]string
+	// phaseOpened is, by issue, the piece of work the issue's last move into a phase opened
+	// (openOnPhase), the work of the visit it stands in that no start opens, over which a start of
+	// that phase's role opens no piece of a later visit (startPiece). Every move of the issue clears
+	// it.
+	phaseOpened map[string]*piece
 	// ownFacts counts the replay's own facts, which names each (factID).
 	ownFacts int
 	// released is what the slots of the current fact did: a slot released before a slot taken in
@@ -1580,16 +1585,21 @@ func (d *driver) recordedBefore(event *scriptEvent) map[string]json.RawMessage {
 // backlog then todo), an architect's park of a child (park_child, backlog, in the releases that
 // have it), its release of a child into its tree (release_children, todo) and its run again of a
 // child out of the workflow (rerun_child, todo). So a write that moves an issue, root or child
-// alike, to backlog, icebox or triage, or from any status out of the workflow, done among them, to
-// todo without adding the legion label, is applied as recorded. So is the controller's todo on a
-// held root, which moves it from the status of its held phase (releasesHold): the record's release
-// of that hold names a todo as its cause, for which the replay enters no retry of its own
-// (queueHoldEnd), so the hold ends only where the todo's own event is applied, as a person's todo
-// on a held root ends it. Every other write of the daemon's own is its outbox's status write,
-// which the replay's own rows make. What a write moves the issue from is the issue's event before
-// it in the record (scriptEvent.prev), whatever the replay's copy applied before it: the write's
-// meaning is the record's, and an event the replay applies early or late, an act of a piece of work
-// it moves, would otherwise stand in for the status the write was made over.
+// alike, to backlog, icebox or triage, or to todo from out of the workflow without adding the
+// legion label (fromOutOfWorkflow), is applied as recorded. Out of the workflow is the daemon's own
+// record of the issue, not the status Dispatch showed before the todo: a todo with the label on a
+// root its record holds out of the workflow runs it again whatever status came before
+// (admit's applyObservation, record.Issue.Readmittable), and the outbox's set-back writes back the
+// todo of an issue its record holds in the workflow, waiting for its start. The controller's todo
+// on a held root, which moves it from the status of its held phase (releasesHold), is applied as
+// recorded too: the record's release of that hold names a todo as its cause, for which the replay
+// enters no retry of its own (queueHoldEnd), so the hold ends only where the todo's own event is
+// applied, as a person's todo on a held root ends it. Every other write of the daemon's own is its
+// outbox's status write, which the replay's own rows make. What a write moves the issue from is the
+// record's, the issue's event before it in the record (scriptEvent.prev) and the record's leaves of
+// the issue, whatever the replay's copy applied before it: the write's meaning is the record's, and
+// an event the replay applies early or late, an act of a piece of work it moves, would otherwise
+// stand in for the status the write was made over.
 func (d *driver) keepsDaemonEvent(event *scriptEvent) bool {
 	after := event.parsed.Issue
 	if after == nil || event.prev < 0 {
@@ -1603,19 +1613,33 @@ func (d *driver) keepsDaemonEvent(event *scriptEvent) bool {
 		return true
 	}
 	labelled := dispatch.CarriesLegionLabel(after.Labels) && !dispatch.CarriesLegionLabel(before.Labels)
-	return after.Status == "todo" && !labelled && (record.OutOfWorkflow(before.Status) || event.releasesHold)
+	return after.Status == "todo" && !labelled && (d.fromOutOfWorkflow(event) || event.releasesHold)
+}
+
+// fromOutOfWorkflow says whether event, an issue event with an issue event of its issue before it
+// (scriptEvent.prev), moves its issue from out of the workflow in the record: the event before it
+// shows a status out of the workflow, done among them, or the record holds the issue out of the
+// workflow at the write (IssueTrace.leftBefore), as it holds a root it took out at a status of the
+// workflow's own, one left with neither a slot nor a place in the line, its label taken off, at its
+// status (workflow's LeaveUnslotted), until a todo runs it again, its label put back or not.
+func (d *driver) fromOutOfWorkflow(event *scriptEvent) bool {
+	if record.OutOfWorkflow(d.script.events[event.prev].parsed.Issue.Status) {
+		return true
+	}
+	iss, traced := d.trace.Issues[event.env.key]
+	return traced && iss.leftBefore(event.at)
 }
 
 // defersReopen says whether events[i], a write of the daemon's own session the replay keeps
-// (keepsDaemonEvent) that sets its issue todo from a status out of the workflow, waits for the
-// replay's issue to leave the workflow: the replay's own record of the issue stands in the
+// (keepsDaemonEvent) that sets its issue todo from out of the workflow (fromOutOfWorkflow), waits
+// for the replay's issue to leave the workflow: the replay's own record of the issue stands in the
 // workflow, its run, which the record shows ended before the write, still under way in the replay.
 // Such a write deferred is queued again at the replay's leave (placeReopens). A todo on an issue the
 // replay does not record, or records out of the workflow, applies now, and so does one that ends a
 // hold (releasesHold), whose issue stands held in the workflow by design.
 func (d *driver) defersReopen(i int) (bool, error) {
 	event := &d.script.events[i]
-	if event.parsed.Issue.Status != "todo" || event.releasesHold || !record.OutOfWorkflow(d.script.events[event.prev].parsed.Issue.Status) {
+	if event.parsed.Issue.Status != "todo" || event.releasesHold || !d.fromOutOfWorkflow(event) {
 		return false, nil
 	}
 	issue, err := d.recorded(event.env.key)
