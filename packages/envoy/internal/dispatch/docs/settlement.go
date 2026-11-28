@@ -980,11 +980,6 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	return settleDone, settleOutcome{}
 }
 
-// SettlementApplicationName is the application_name a settlement's transaction shows in
-// pg_stat_activity while it runs, where the test hooks are on (Deps.TestHooks); the connection's own
-// name comes back when the transaction ends.
-const SettlementApplicationName = "dispatch-settlement"
-
 // settledEditNotice is what a settlement's version does to the document's edit notice, under the
 // owner lock the settlement took first: the sweep takes the two in that order too
 // (sendEditNotice). A person's version on an open issue opens or moves on the notice

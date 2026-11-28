@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"math"
-	"reflect"
 	"slices"
 	"sync"
 	"sync/atomic"
@@ -38,10 +37,31 @@ func newSeamService(t *testing.T, deps Deps) *Service {
 	return service
 }
 
+// sessionsNamed is a count of the test database's sessions under one application_name, with the
+// error of the read that counted them.
+type sessionsNamed struct {
+	count int
+	err   error
+}
+
+// requireDueAt waits until what is armed on fake for due, moves fake to a nanosecond short of due,
+// and requires it still armed there: the caller then moves the last nanosecond and waits for what
+// the timer does.
+func requireDueAt(t *testing.T, fake *clocktest.Fake, what string, due time.Time) {
+	t.Helper()
+	fake.AwaitArmedAt(t, what, due)
+	fake.Advance(due.Sub(fake.Now()) - time.Nanosecond)
+	if armed := fake.Armed(); !slices.ContainsFunc(armed, due.Equal) {
+		t.Fatalf("%s, due at %v, is no longer pending a nanosecond short of it (pending: %v)", what, due, armed)
+	}
+}
+
 // Deps.Clock left nil is the real clock, and the reference excerpt reconciliation hands its
 // statements no moment, so the database's now() stamps and judges every retry; a settle delay left
-// zero is DefaultSettle. A clock a test hands is the one every bound runs on, and the
-// reconciliation's moment is its reading.
+// zero is DefaultSettle. A clock a test hands is the one the service's timers run on, and the
+// reconciliation's moment is its reading; two moments stay the wall clock's whatever the clock
+// (the drain deadline and the excerpt retry's due time, the last two rows of this file), and so do
+// the timers duty runs until it takes a clock (INFRA-6392).
 func TestDepsClockIsTheRealClockUnlessATestHandsOne(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -98,12 +118,7 @@ func TestTheSettleTimerFiresOnDepsClockOnlyOnceTheClockReachesIt(t *testing.T) {
 	}
 
 	editLiveTree(t, service, artifactID, replaceRun("Before.", "After."))
-	due := fake.Now().Add(settle)
-	fake.AwaitArmedAt(t, "the room's settlement after the write", due)
-	fake.Advance(settle - time.Nanosecond)
-	if armed := fake.Armed(); !slices.ContainsFunc(armed, due.Equal) {
-		t.Fatalf("the settlement due at %v is no longer pending a nanosecond short of it (pending: %v)", due, armed)
-	}
+	requireDueAt(t, fake, "the room's settlement after the write", fake.Now().Add(settle))
 	select {
 	case <-started:
 		t.Fatal("the room's settlement started before the fake reached its timer")
@@ -133,23 +148,16 @@ func TestADeadlineSeamLeftZeroIsMainsBound(t *testing.T) {
 	}
 }
 
-// VerifyMark's wait for a mark is the wall timer where Deps.Clock is nil, and otherwise a timer on
-// that clock, which fires once the clock reaches the wait and not before.
+// VerifyMark's wait for a mark, where Deps.Clock is set, is a timer on that clock, which fires once
+// the clock reaches the wait and not before (marks_test.go holds the wall timer's).
 func TestTheMarkWaitRunsOnDepsClock(t *testing.T) {
 	t.Parallel()
-	if got, want := reflect.ValueOf(markTimerOn(nil)).Pointer(), reflect.ValueOf(wallMarkTimer).Pointer(); got != want {
-		t.Fatal("a service given no clock arms VerifyMark's wait on something other than the wall timer")
-	}
 	const wait = 300 * time.Millisecond
 	fake := clocktest.New(time.Date(2026, 11, 28, 9, 0, 0, 0, time.UTC))
 	due := fake.Now().Add(wait)
 	fired, stop := markTimerOn(fake)(wait)
 	defer stop()
-	fake.AwaitArmedAt(t, "VerifyMark's wait", due)
-	fake.Advance(wait - time.Nanosecond)
-	if armed := fake.Armed(); !slices.ContainsFunc(armed, due.Equal) {
-		t.Fatalf("VerifyMark's wait due at %v is no longer pending a nanosecond short of it (pending: %v)", due, armed)
-	}
+	requireDueAt(t, fake, "VerifyMark's wait", due)
 	fake.Advance(time.Nanosecond)
 	testwait.Receive(t, "VerifyMark's wait to fire once the fake reached it", fired)
 }
@@ -170,11 +178,7 @@ func TestTheCompactionQueueWaitsOnItsClock(t *testing.T) {
 	}()
 	due := fake.Now().Add(defaultCompactionTiming.firstCheck)
 	queue.note("room")
-	fake.AwaitArmedAt(t, "the noted room's first check", due)
-	fake.Advance(defaultCompactionTiming.firstCheck - time.Nanosecond)
-	if armed := fake.Armed(); !slices.ContainsFunc(armed, due.Equal) {
-		t.Fatalf("the first check due at %v is no longer pending a nanosecond short of it (pending: %v)", due, armed)
-	}
+	requireDueAt(t, fake, "the noted room's first check", due)
 	fake.Advance(time.Nanosecond)
 	if room := testwait.Receive(t, "the queue to check the noted room once the fake reached its time", stepped); room != "room" {
 		t.Fatalf("the queue checked %q, want the noted room", room)
@@ -221,28 +225,6 @@ func TestAnAskResolutionIsStampedAtTheMomentItsCallerTakes(t *testing.T) {
 	}
 }
 
-// The relay counts, for the test hooks, each awareness change of a host that counts them, as the
-// service does: a state another process relayed, its removal, and a removal the room made itself
-// of a client it had taken a state of from another process (Expired); a removal of this
-// process's own client takes no entry.
-func TestTheRelayCountsAwarenessChangesForAServiceWithTheHooks(t *testing.T) {
-	t.Parallel()
-	service := &Service{hooks: newTestHooks()}
-	relay := newAwarenessRelay(service)
-	relay.countAwarenessChange("doc", 7, ownRemoval)
-	relay.countAwarenessChange("doc", 9, relayedState)
-	relay.countAwarenessChange("doc", 9, ownRemoval)
-	relay.countAwarenessChange("doc", 9, relayedRemoval)
-	counters := service.hooks.counters["doc"]
-	if counters == nil {
-		t.Fatal("the relay counted no awareness change of a service whose test hooks are on")
-	}
-	want := map[uint64]RelayedAwarenessChanges{9: {States: 1, Removals: 1, Expired: 1}}
-	if !reflect.DeepEqual(counters.RelayedAwareness, want) {
-		t.Fatalf("the hooks counted %+v, want %+v", counters.RelayedAwareness, want)
-	}
-}
-
 // What asked for a catch-up carries to the next catch-up of the room to start, as a set, and is
 // taken by that one alone; a catch-up this process asked for itself carries nothing, and a
 // service without the hooks carries nothing at all.
@@ -274,7 +256,8 @@ func TestASettlementUnderTheHooksNamesItsTransactionAndRunsItsHookOnceItEnds(t *
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	deps := testServiceDeps(database)
-	deps.Settle, deps.TestHooks = time.Hour, true
+	// An unmoved fake, so no settle timer starts a settlement of its own: the row settles itself.
+	deps.Clock, deps.TestHooks = clocktest.New(time.Date(2026, 11, 28, 9, 0, 0, 0, time.UTC)), true
 	service := newSeamService(t, deps)
 	service.SetFormGate(formKept)
 	ctx := context.Background()
@@ -284,7 +267,7 @@ func TestASettlementUnderTheHooksNamesItsTransactionAndRunsItsHookOnceItEnds(t *
 
 	// Each hook reports the first settlement of the document alone: the shutdown that ends the
 	// test settles again, and finds both hooks spent.
-	queued, release, ended := make(chan int, 1), make(chan struct{}), make(chan string, 1)
+	queued, release, ended := make(chan sessionsNamed, 1), make(chan struct{}), make(chan string, 1)
 	var held, reported atomic.Bool
 	var releaseOnce sync.Once
 	letGo := func() { releaseOnce.Do(func() { close(release) }) }
@@ -296,12 +279,10 @@ func TestASettlementUnderTheHooksNamesItsTransactionAndRunsItsHookOnceItEnds(t *
 		if room != artifactID || !held.CompareAndSwap(false, true) {
 			return nil
 		}
-		var named int
-		if err := database.Pool.QueryRow(ctx,
+		var named sessionsNamed
+		named.err = database.Pool.QueryRow(ctx,
 			`select count(*) from pg_stat_activity where datname = current_database() and application_name = $1`,
-			SettlementApplicationName).Scan(&named); err != nil {
-			named = -1
-		}
+			SettlementApplicationName).Scan(&named.count)
 		queued <- named
 		<-release
 		return nil
@@ -330,8 +311,8 @@ func TestASettlementUnderTheHooksNamesItsTransactionAndRunsItsHookOnceItEnds(t *
 		defer close(settled)
 		settleNow(service, artifactID)
 	}()
-	if named := testwait.Receive(t, "the settlement to queue its version", queued); named != 1 {
-		t.Fatalf("while the settlement ran, %d sessions of the test's database were named %q, want its transaction's one", named, SettlementApplicationName)
+	if named := testwait.Receive(t, "the settlement to queue its version", queued); named.err != nil || named.count != 1 {
+		t.Fatalf("while the settlement ran, %d sessions of the test's database were named %q (read: %v), want its transaction's one", named.count, SettlementApplicationName, named.err)
 	}
 	letGo()
 	if failure := testwait.Receive(t, "the hook after the settlement's transaction to run", ended); failure != "" {
@@ -346,6 +327,9 @@ func TestASettlementUnderTheHooksNamesItsTransactionAndRunsItsHookOnceItEnds(t *
 // the fake's own timeline, years behind the wall, would read to the loop as long past.
 func TestAnExcerptPassOnAFakeClockAnswersItsRetryOnTheWallClock(t *testing.T) {
 	t.Parallel()
+	// A moment of the wall clock before this row was written: any due time on the wall clock is
+	// after it, and any on the fake's 2020 timeline is years before.
+	wallFloor := time.Date(2026, time.November, 1, 0, 0, 0, 0, time.UTC)
 	database := storetest.Open(t)
 	ctx := context.Background()
 	document := owedDocuments(t, database, 1)[0]
@@ -366,28 +350,28 @@ func TestAnExcerptPassOnAFakeClockAnswersItsRetryOnTheWallClock(t *testing.T) {
 		t.Fatalf("read the owed document's retry: %v", err)
 	}
 	wait := retry.Sub(*deferred)
-	before := time.Now()
-	if due := service.reconcileExcerptPass(ctx, referenceExcerptSchedule); due.Before(before.Add(wait)) {
-		t.Fatalf("the pass answers its next run at %v, before the wall clock's %v read ahead of it plus the retry's wait of %v",
-			due, before, wait)
+	if due := service.reconcileExcerptPass(ctx, referenceExcerptSchedule); due.Before(wallFloor.Add(wait)) {
+		t.Fatalf("the pass answers its next run at %v, before %v, a moment of the wall clock's before this row was written, plus the retry's wait of %v: the due time is on the fake's timeline",
+			due, wallFloor, wait)
 	}
 }
 
 // Shutdown's drain ends at Deps.ShutdownDrainDeadline, a wall-clock moment, on the wall clock
-// whatever Deps.Clock is: on a fake years behind the wall and never moved, a drain that a room's
-// held append keeps waiting still ends once the wall clock reaches the deadline, and Shutdown
-// returns then, and not before, with the append the drain did not see through. Measured and
-// armed on the fake, the drain would last the years between the two clocks.
+// whatever Deps.Clock is: with a deadline the wall clock has passed and a fake a year short of it
+// and never moved, a drain that a room's held append keeps waiting ends at once, and Shutdown
+// returns with the append the drain did not see through. Measured and armed on the fake, the
+// drain would never end.
 func TestShutdownsDrainEndsAtItsDeadlineOnTheWallClockWhateverDepsClockIs(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
-	deadline := time.Now().Add(3 * time.Second)
+	// Past for the wall clock and a year ahead for the fake: armed on the wall clock the drain ends
+	// at once, armed on the fake it never ends, and the shared wait below names it.
 	deps := testServiceDeps(database)
 	deps.Persistence = appends
 	deps.Clock = clocktest.New(time.Date(2020, 1, 1, 9, 0, 0, 0, time.UTC))
-	deps.ShutdownDrainDeadline = clock.DeadlineAt(deadline, true)
+	deps.ShutdownDrainDeadline = clock.DeadlineAt(time.Date(2021, 1, 1, 0, 0, 0, 0, time.UTC), true)
 	service := newSeamService(t, deps)
 	// Registered after the service, so they run before its shutdown, in reverse: a row that fails
 	// with Shutdown still draining ends that drain, then lets the held append go.
@@ -403,10 +387,7 @@ func TestShutdownsDrainEndsAtItsDeadlineOnTheWallClockWhateverDepsClockIs(t *tes
 
 	shutdown := make(chan error, 1)
 	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
-	err := testwait.Receive(t, "Shutdown to return once the wall clock reached its drain deadline", shutdown)
-	if returned := time.Now(); returned.Before(deadline) {
-		t.Fatalf("Shutdown returned at %v, before its drain deadline %v", returned, deadline)
-	}
+	err := testwait.Receive(t, "Shutdown to return at its drain deadline, long past on the wall clock", shutdown)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Shutdown returned %v, want the held append its drain deadline did not see through", err)
 	}

@@ -222,13 +222,9 @@ type awarenessHost interface {
 	coalesceAwareness(flush func())
 	// awarenessWindows are the windows a test opens in the relay's paths.
 	awarenessWindows() awarenessWindows
-}
-
-// awarenessCounter is a host that counts, for the test hooks, each change its rooms' awareness
-// made to a client: a state or a removal another process's notification applied, or a removal
-// the room made itself (RoomCounters.RelayedAwareness). The service is one, which counts nothing
-// where the hooks are off; a host that is not one, such as a test's own, counts nothing.
-type awarenessCounter interface {
+	// countAwarenessChange is the test hooks' count of a change room's awareness made to client:
+	// a state or a removal another process's notification applied, or a removal the room made
+	// itself (RoomCounters.RelayedAwareness) - and nothing where they are off.
 	countAwarenessChange(room string, client uint64, change awarenessChange)
 }
 
@@ -266,8 +262,6 @@ type awarenessWindows struct {
 // what it tracks is this process's rooms and the awareness clients connected to them here.
 type awarenessRelay struct {
 	host awarenessHost
-	// counter is host where it is an awarenessCounter, nil where it is not.
-	counter awarenessCounter
 	// mu guards every map below. It is taken ahead of a room's awareness lock, never behind it:
 	// record reads the room under it (awarenessClientStanding), and nothing of this package can
 	// hold ygo's awareness lock while it takes mu, since that lock is private to ygo and every
@@ -331,15 +325,13 @@ type awarenessRelay struct {
 }
 
 func newAwarenessRelay(host awarenessHost) *awarenessRelay {
-	relay := &awarenessRelay{
+	return &awarenessRelay{
 		host:     host,
 		pending:  make(map[string]map[uint64]awarenessEntry),
 		flushing: make(map[string]bool),
 		inbound:  make(map[string]map[uint64]int),
 		local:    make(map[string]map[uint64]uint64),
 	}
-	relay.counter, _ = host.(awarenessCounter)
-	return relay
 }
 
 var _ cluster.Relay = (*awarenessRelay)(nil)
@@ -1082,16 +1074,16 @@ func (r *awarenessRelay) touched(room string, aw *awareness.Awareness, event awa
 			if inbound[client] == 0 {
 				entries = append(entries, awarenessEntry{client: client})
 			} else {
-				r.countAwarenessChange(room, client, relayedState)
+				r.host.countAwarenessChange(room, client, relayedState)
 			}
 		}
 	}
 	for _, client := range event.Removed {
 		if inbound[client] == 0 {
 			left = append(left, awarenessEntry{client: client, clock: relayed[client], removed: true})
-			r.countAwarenessChange(room, client, ownRemoval)
+			r.host.countAwarenessChange(room, client, ownRemoval)
 		} else {
-			r.countAwarenessChange(room, client, relayedRemoval)
+			r.host.countAwarenessChange(room, client, relayedRemoval)
 		}
 	}
 	r.mu.Unlock()
@@ -1136,14 +1128,6 @@ func (r *awarenessRelay) touched(room string, aw *awareness.Awareness, event awa
 		entries = append(entries, gone)
 	}
 	return entries
-}
-
-// countAwarenessChange counts change, which room's awareness made to client, where the host is an
-// awarenessCounter (touched).
-func (r *awarenessRelay) countAwarenessChange(room string, client uint64, change awarenessChange) {
-	if r.counter != nil {
-		r.counter.countAwarenessChange(room, client, change)
-	}
 }
 
 // mark counts the clients entries names as ones another process's notification is applying to

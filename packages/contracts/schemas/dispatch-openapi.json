@@ -1204,7 +1204,7 @@
     },
     "/api/v1/artifacts/{id}/_test/room-counters": {
       "get": {
-        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, time its settlement resumptions of it, and read the awareness client entries its room holds now. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
+        "description": "Test hook: count this process's room failures, lock-waiting compactions and room closes of a document, the heads its notified and swept catch-ups left, its LISTENs, the issue closes its notifications and its rechecks applied, and the awareness it took from other processes, time its settlement resumptions of it, and read the awareness client entries its room holds now. This route keeps no history and answers the present only. It refuses as_of with 400 AS_OF_NOT_SERVED, and a read-only token that carries a cut with 403 AS_OF_TOKEN_NOT_SERVED.",
         "operationId": "getApiV1ArtifactsByIdTestRoomCounters",
         "parameters": [
           {

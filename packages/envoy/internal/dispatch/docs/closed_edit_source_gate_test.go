@@ -13,7 +13,8 @@ import (
 // forgets the one kept. With the row already gone - deleted by a settlement of the same updates
 // that committed first, as when the resumption arms a second settlement behind one whose version
 // is queued - it settles nothing owed and leaves the kept editor as the first left it, whatever
-// it would keep. The settlement race itself is staged in package api; this row is the statement's.
+// it would keep. This row is the statement's; the settlement race itself is the api piece's to
+// stage (INFRA-3149).
 func TestAPendingClearThatFindsTheRowGoneLeavesTheKeptEditor(t *testing.T) {
 	t.Parallel()
 	service, artifactID := newTestService(t)

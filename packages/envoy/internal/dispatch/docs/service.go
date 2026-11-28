@@ -108,9 +108,8 @@ type Deps struct {
 	EditNoticeQuiet time.Duration
 	// ShutdownDrainDeadline is the end a test gives the drain Shutdown spends on document work, in
 	// place of ShutdownDrainBudget (9 s) after it began; the zero value is production's. Only a
-	// test process sets another (cmd/dispatch: DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE, under the
-	// test hooks): its give-up, for an end-to-end row whose settlement at shutdown waits on a step
-	// of the row's own. It is a wall-clock moment (clock.Deadline), so Shutdown measures and arms
+	// test sets another: its give-up, for a row whose settlement at shutdown waits on a step of the
+	// row's own. It is a wall-clock moment (clock.Deadline), so Shutdown measures and arms
 	// it on the wall clock whatever Clock is.
 	ShutdownDrainDeadline clock.Deadline
 	// PeerWriteDeadline is the end a test gives ygo's deadline on each write to a document socket

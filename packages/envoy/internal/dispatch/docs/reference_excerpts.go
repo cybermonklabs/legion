@@ -576,7 +576,7 @@ const referenceExcerptLease = "reference-excerpts"
 // left owed announces through a trigger on refs, and which the hub also signals after each
 // successful LISTEN, so what was written while the listener had no connection is caught up then -
 // and when a pass asks for one: at once while a full batch leaves documents it can still record,
-// and when the earliest document it deferred falls due (refs.NextExcerptRetryAt). Passes start at
+// and when the earliest document it deferred falls due (refs.NextExcerptRetry). Passes start at
 // least two seconds apart. With nothing owed and nothing deferred it holds no timer and makes no
 // statement. A nil wake leaves the loop with its start and its own due times.
 //
@@ -631,13 +631,12 @@ func (s *Service) markStaleExcerpts(ctx context.Context) bool {
 // reconcileExcerptPass is one pass of the reconciliation's batch, and returns when the loop next
 // needs to run with no wake: now while a full batch leaves documents it can still record, else the
 // earliest due time of a document it deferred, else never. A pass whose own read failed asks again
-// after schedule.retryBase. The due time is the wait to that retry, measured on the clock that
-// stamped it (refs.NextExcerptRetryAt) from the moment the pass judges at - the database's now()
-// where Deps.Clock is nil, as in production, and the reading of the clock a test set
-// (excerptMoment) where it set one - added to this process's wall clock, the one the loop arms its
-// timer on (duty.RunWoken) until duty takes a clock (INFRA-6392). So neither skew between the
-// database's clock and this process's nor a test's fake, however far it stands from the wall
-// clock, moves the timer.
+// after schedule.retryBase. Where Deps.Clock is nil, as in production, the due time is the earliest
+// retry's own moment, as Postgres stamped it (refs.NextExcerptRetry), as on main. Where a test set a
+// clock, the retry was stamped and is judged on that clock's reading (excerptMoment), so the due
+// time is the wait to it from that reading (refs.NextExcerptRetryAt), added to this process's wall
+// clock, the one the loop arms its timer on (duty.RunWoken) until duty takes a clock (INFRA-6392):
+// a fake however far from the wall clock moves the timer by no more than the wait.
 func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSchedule) time.Time {
 	documents, full, err := s.reconcileReferenceExcerpts(ctx, schedule.retryBase)
 	if documents > 0 {
@@ -652,7 +651,16 @@ func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSche
 	case full:
 		return time.Now()
 	}
-	wait, owed, err := refs.NextExcerptRetryAt(ctx, s.store.Pool, s.excerptMoment())
+	var next time.Time
+	if judged := s.excerptMoment(); judged == nil {
+		next, err = refs.NextExcerptRetry(ctx, s.store.Pool)
+	} else {
+		var wait time.Duration
+		var owed bool
+		if wait, owed, err = refs.NextExcerptRetryAt(ctx, s.store.Pool, judged); err == nil && owed {
+			next = time.Now().Add(wait)
+		}
+	}
 	if err != nil {
 		if ctx.Err() != nil {
 			return time.Time{}
@@ -660,10 +668,7 @@ func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSche
 		slog.Error("dispatch: reconcile reference excerpts", "error", err)
 		return time.Now().Add(schedule.retryBase)
 	}
-	if !owed {
-		return time.Time{}
-	}
-	return time.Now().Add(wait)
+	return next
 }
 
 // excerptMoment is the moment the reconciliation writes and judges a document's retry at, handed
