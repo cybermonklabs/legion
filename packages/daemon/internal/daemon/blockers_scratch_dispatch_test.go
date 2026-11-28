@@ -794,6 +794,10 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 	t.Logf("the state once %s closed and its tree finished, handing over %s, held in it on %s:\n%s", free, child, elsewhere, body)
 	checked(child, "once its finished tree handed it over", state, body)
 
+	// The child closed with no merge in its record, so a todo on it alone waits for its merge read
+	// (D17). A person's backlog, then todo, confirms that its work never merged, and the todo runs
+	// it as before.
+	setDispatchStatus(t, baseURL, unlinked, "backlog")
 	setDispatchStatus(t, baseURL, unlinked, "todo")
 	state, body = settled(t, d, "take "+unlinked+" into its waiting line or a slot", func(s api.State) bool {
 		return slices.Contains(s.Admission.Waiting, unlinked) || slices.Contains(s.Admission.Active, unlinked)
@@ -819,6 +823,9 @@ func TestBlockedIssuesAreNotStartedAgainstScratchDispatch(t *testing.T) {
 		return cleaned
 	})
 	var namedTakenBack []api.BlockedIssue
+	// The root closed with no merge in its record: a person's backlog, then todo, confirms that its
+	// work never merged (D17), so the todo takes its tree back as before.
+	setDispatchStatus(t, baseURL, free, "backlog")
 	setDispatchStatus(t, baseURL, free, "todo")
 	state, body = settled(t, d, "take "+free+" back once a person set it to todo", func(s api.State) bool {
 		_, named := blockedOn(s, free)

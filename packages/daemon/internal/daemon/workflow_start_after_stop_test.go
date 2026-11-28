@@ -391,6 +391,9 @@ func TestAWorkflowStartStartsAStoppedWorkerAgain(t *testing.T) {
 		// The tree closes and lingers, which is the state a re-admission takes a tree back from,
 		// and its members give their slots back.
 		lingerTree(t, pool, record.NewStore(), root)
+		// The root closed with no merge in its record: a person's confirmation that its work never
+		// merged (D17) is what lets the todo below take today's re-admission.
+		confirmOutboxNeverMerged(t, pool, root)
 		passed(t, pool, "after the tree closed")
 		if held := slotHolders(t, pool); !slices.Equal(held, []string{other}) {
 			t.Fatalf("the admission slots are held by %v after the tree closed, want %s alone: a lingering tree's members give their slots back", held, other)

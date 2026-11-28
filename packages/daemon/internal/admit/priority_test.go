@@ -101,6 +101,9 @@ func TestAReadmittedRootTakesThePriorityItsTodoShows(t *testing.T) {
 	until := fixedNow.Add(time.Hour)
 	putIssue(t, pool, record.Issue{Key: key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "lingering",
 		Tree: key, Phase: phase.Done, Generation: 1, Status: "done", Rank: "A", Priority: record.P2, LingerUntil: &until, LastDispatchSeq: 1})
+	// The root closed with no merge in its record: a person confirmed that its work never merged
+	// (D17), so the todo re-admits it as today.
+	confirmNeverMerged(t, pool, key)
 
 	apply(t, pool, admission, "readmit", intake.DispatchIssue{Key: key, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "todo",
 		Title: "lingering", Rank: "A", Priority: record.P0, HandedOver: handed}, engine)

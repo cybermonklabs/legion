@@ -482,8 +482,9 @@ func zeroFact(t *testing.T, kind string) intake.Fact {
 		intake.ControllerTick{}, intake.ChildAdoption{}, intake.DispatchConsumerPosition{}, intake.EntrySweep{}, intake.LingerDeadline{},
 		intake.Handover{}, intake.CloseRoot{}, intake.MergeHoldsChanged{Project: "LEGION", Event: "dispatch-71"}, intake.ControllerMemoryGuardKill{}, intake.PendingBasisRead{},
 		intake.BasisChangesRead{}, intake.ReparentRead{}, intake.CloseChecksRead{}, intake.DispatchResultChanged{},
-		// An older issue's merge read, which names no issue here, so it moves nothing.
-		intake.MergeRead{},
+		// An older issue's merge read, and its end with no answer, which name no issue here, so they
+		// move nothing.
+		intake.MergeRead{}, intake.MergeUnread{},
 		// A role's report of a defect and the architect's withdrawal of one, which name no issue
 		// here, so each is refused ISSUE_NOT_FOUND and moves nothing: neither call moves a phase.
 		intake.DefectReport{}, intake.DefectWithdrawal{},

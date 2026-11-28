@@ -550,6 +550,9 @@ func TestAStaleHandoverEventAfterTheRootReopensKeepsTheChild(t *testing.T) {
 			}
 		}
 	})
+	// The root closed with no merge in its record: a person confirmed that its work never merged
+	// (D17), so its todo re-admits its tree as today.
+	confirmNeverMerged(t, pool, root)
 
 	// The reopen is an intake fact serialized before the child PATCH's daemon event, and it cancels
 	// the durable hand-over fence instead of deleting it. The next event sees that cancellation.
@@ -748,6 +751,9 @@ func TestARootReopenedInItsLingerKeepsItsChildren(t *testing.T) {
 	pool, admission, engine := seedFinishingTree(t)
 	apply(t, pool, admission, "root-parked", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 2, Type: "issue.updated", Status: "backlog", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 	apply(t, pool, admission, "root-closed", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 3, Type: "issue.closed", Status: "done", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
+	// The root closed with no merge in its record: a person confirmed that its work never merged
+	// (D17), so its todo re-admits its tree as today.
+	confirmNeverMerged(t, pool, finishedRoot)
 	apply(t, pool, admission, "root-reopened", intake.DispatchIssue{Key: finishedRoot, ResolvedRepo: "acme/widgets", Seq: 4, Type: "issue.updated", Status: "todo", Title: finishedRoot, Rank: "A", HandedOver: true}, engine)
 	if root := issue(t, pool, finishedRoot); root.Generation != 2 || root.Lingers() {
 		t.Fatalf("the reopened root = %#v, want generation 2, no longer lingering", root)

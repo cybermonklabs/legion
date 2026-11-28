@@ -30,8 +30,12 @@ type ChangePlace struct {
 	Parent *string
 	// WaitsSince is when the issue's close waits from (Issue.CloseWaitSince): nil carries the
 	// moment the merge set, which every reason after a merge does, and a time is the moment a
-	// request applied (D1).
+	// request applied (D1). A request with no WaitsSince waits from the moment it starts the change.
 	WaitsSince *time.Time
+	// Request is the request for new work that starts the change (D17), nil for a change a reason
+	// after a merge starts. StartNextChange writes its row (record.DefectKindRequest), the one
+	// writer of that kind, and the change carries it as its reason.
+	Request *Request
 }
 
 // ChangeInPlace is the placement of a change that starts where the issue already stands: its own
@@ -75,6 +79,19 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 	if check != nil && check.Open() {
 		if err := e.markCheckClosed(ctx, tx, check, record.CheckNotRun); err != nil {
 			return err
+		}
+	}
+	// A request is a reason of its own kind, written here alone and carried by the change it
+	// starts, so the checks that passed before cannot end the change before its owner takes a turn.
+	if place.Request != nil {
+		request := record.Defect{Issue: issue.Key, Generation: issue.Generation, Kind: record.DefectKindRequest, Text: place.Request.Text,
+			Role: place.Request.Requester, ReportedAt: now}
+		if request.ID, err = e.store.PutDefect(ctx, tx, request); err != nil {
+			return err
+		}
+		reasons = append(slices.Clone(reasons), request)
+		if place.WaitsSince == nil {
+			place.WaitsSince = &now
 		}
 	}
 	ids := make([]int64, 0, len(reasons))
@@ -140,13 +157,24 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
 }
 
 // nextChangeReason is the next-change notice: the change's generation, each reason it carries and
-// where the work stands now. Each sentence holds at most 25 words and no semicolon.
+// where the work stands now, and, where a request is among the reasons, the instruction of D17 to
+// the owner (requestInstruction). Each sentence holds at most 25 words and no semicolon.
 func nextChangeReason(issue record.Issue, reasons []record.Defect) string {
 	text := fmt.Sprintf("The next change of %s started as generation %d, on its own branch with its approved design kept.", issue.Key, issue.Generation)
 	if named := reasonLines(reasons); len(named) > 0 {
-		return text + " It carries these reasons:" + bulleted(named) + "\nIt waits in the admission line for a slot."
+		text += " It carries these reasons:" + bulleted(named) + "\nIt waits in the admission line for a slot."
+	} else {
+		text += " It waits in the admission line for a slot."
 	}
-	return text + " It waits in the admission line for a slot."
+	if carriesRequest(reasons) {
+		text += "\n" + requestInstruction
+	}
+	return text
+}
+
+// carriesRequest says whether reasons hold a request for new work (record.DefectKindRequest).
+func carriesRequest(reasons []record.Defect) bool {
+	return slices.ContainsFunc(reasons, func(reason record.Defect) bool { return reason.Kind == record.DefectKindRequest })
 }
 
 // reasonLines is one line for each reason of a change: its id, its kind and what it says.
@@ -352,14 +380,17 @@ func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool)
 }
 
 // changeOpenedNoPullRequest says whether the issue's open change has opened no pull request of
-// its own generation: the record holds none, or the one it holds is of a generation before the
-// change (record.PullRequest.Generation).
+// its own: the record holds none, or the one it holds is the merged pull request the change
+// follows (the merge snapshot's, Issue.Merge). The change's start deletes every row that is not
+// open (record.Store.ClearChangeGeneration), so a row the record holds after it is one the
+// change's branch opened, in whatever state. record.PullRequest.Generation is not read: it is the
+// CI settlement's generation, which names no generation of the issue.
 func (e *Engine) changeOpenedNoPullRequest(ctx context.Context, tx pgx.Tx, issue record.Issue) (bool, error) {
 	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil || pr == nil {
 		return true, err
 	}
-	return pr.Generation < int64(issue.NextChange), nil
+	return pr.State == record.PullRequestMerged && pr.Number == issue.Merge.Number, nil
 }
 
 // changeResolved says whether each reason the issue's open change carries is resolved (D7, B08):
@@ -677,6 +708,40 @@ func withCarried(reason string, carried []record.Defect) string {
 		return reason
 	}
 	named := "This return carries these defects of the change, which your work takes:" + bulleted(reasonLines(carried))
+	if reason == "" {
+		return named
+	}
+	return sentence(reason) + " " + named
+}
+
+// carriedByChange is each open reason the next change of issue carries (Defect.CarriedBy is the
+// change's generation), of every kind, where trigger is the gate's opening of that change: its first
+// start task names them (withChangeReasons). Every other move names none, so it reads nothing.
+func (e *Engine) carriedByChange(ctx context.Context, tx pgx.Tx, trigger TriggerKind, issue record.Issue) ([]record.Defect, error) {
+	if trigger != TriggerGateOpened || !record.OnNextChange(issue) {
+		return nil, nil
+	}
+	open, err := e.store.OpenDefects(ctx, tx, issue.Key)
+	if err != nil {
+		return nil, err
+	}
+	var carried []record.Defect
+	for _, reason := range open {
+		if reason.CarriedBy == issue.Generation {
+			carried = append(carried, reason)
+		}
+	}
+	return carried, nil
+}
+
+// withChangeReasons is reason, the move's own words for the start task, followed by what the first
+// start task of a next change says of the reasons the change carries (carriedByChange): each by id,
+// kind and what it says, and a check's by its block id, which the change's work takes (D7).
+func withChangeReasons(reason string, carried []record.Defect) string {
+	if len(carried) == 0 {
+		return reason
+	}
+	named := "This next change carries these reasons, which its work takes:" + bulleted(reasonLines(carried))
 	if reason == "" {
 		return named
 	}

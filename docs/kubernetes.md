@@ -1887,6 +1887,30 @@ A deployment of an earlier layout clears all of it before it upgrades ([Upgradin
 The daemon runs on a host its pods can reach and serves the worker stream they dial.
 The controller is `legion controller start` on the operator's machine, or, under `controller: daemon`, a pod of its own with one launcher that the daemon launches ([The controller](#the-controller)).
 
+### Reviewing the controller's requests for new work
+
+`legion reopened-report` reads, for each issue the controller reopened, what happened between the request and the end of the change it started.
+It reads Dispatch alone, with the Dispatch credential of the operator-side `controller.yaml`, as `legion controller start` reads it, and it writes nothing.
+
+```sh
+legion reopened-report --config <controller.yaml> --issue <KEY> --issue <KEY>
+```
+
+A row starts at the accepted `todo` of the request, and ends where `close-wait.md` says the change merged or ended with no pull request.
+Each row is in one category:
+
+- `checks_written`: an actor other than the daemon changed a check block of the Verification document within the row.
+- `request_withdrawn`: the owner withdrew the request before the change ended.
+- `instruction_not_followed`: the change ended with neither of those. A version that changed no check block is no coverage.
+- `pending`: the change is still open.
+- `not_assessable`: an event, a version or the evidence could not be read.
+
+Each line is a name, the issue and its values: `row`, `start`, `change`, `end`, `version`, `withdrawal` and `unread`.
+Then a `total` line gives each category's count and issues, and `assessed` counts the ended rows that could be read.
+A value that the command could not read is `UNKNOWN`, never 0.
+The command exits 1 where a row could not be read or the file names no credential it can use, and 2 on a usage error.
+The controller's review of the rows judges whether the checks cover the request: the command decides nothing more.
+
 ### Reaching the daemon's database by hand
 
 A step below that reads or writes the daemon's database by hand gives `psql` or `pg_dump` the database's URL with no password in it, `<postgres_url>`, and the password in a file, never as an argument, because every process on the machine can read another's arguments.
@@ -3245,7 +3269,9 @@ psql writes a notice to its standard error, so keep that stream, as block A of t
 
 Each issue of the second list is closed, and Dispatch shows it `todo`.
 The earlier release reruns such an issue's whole tree, so set each one to `backlog` before the earlier release starts.
-After the roll forward, a person reads the kept lists and sets each issue to `todo` again where its request still stands.
+After the roll forward, a person reads the kept lists.
+Where an issue's request still stands, the person sets it to `done`, then `todo`.
+The `done` makes the record hold the issue closed again, so the `todo` waits for its merge read and does not run its tree again.
 
 The block then deletes the `merge_read` rows, the notices and controller notices of the kind `merge-unread`, and the requests, which the earlier release cannot read.
 It puts back the two kind checks as `20261128022325_done_by_checks` wrote them, drops the column, and deletes the migration's version row, so the roll forward's `Migrate` applies the file again.

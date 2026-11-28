@@ -27,8 +27,8 @@ const (
 // when the issue waits is the row's own column (Issue.CloseWaitSince), so it is not kept here
 // twice. Each item says since when it stands. Entered is the time of the issue's newest entry
 // into verifying, after which alone a read of the checks counts. Ended is the change that ended
-// last, said once in the version written when it ended. Withdrawn is each reported defect the
-// owning architect withdrew, with the reason, that no version Dispatch took has said yet: the one
+// last, said once in the version written when it ended. Withdrawn is each reported defect or
+// request the owning architect withdrew, with the reason, that no version Dispatch took has said yet: the one
 // builder of a wait carries it (workflow's waitOf), so every writer of the wait keeps it, the
 // entry into verifying included, and the row that uploads a version holding it takes exactly
 // those out after the upload (Store.ClearWaitWithdrawals), which is what says it once.
@@ -96,13 +96,16 @@ type WaitReason struct {
 	Since time.Time  `json:"since"`
 }
 
-// WaitWithdrawal is a reported defect the owning architect withdrew (withdraw_defect): its id, its
-// text, the withdrawal's reason and when it was made.
+// WaitWithdrawal is a reported defect or a request for new work the owning architect withdrew
+// (withdraw_defect): its id, its kind (empty for a defect, which a release before the field
+// wrote), its text, the withdrawal's reason and when it was made. close-wait.md names a request
+// as a request, never as a defect.
 type WaitWithdrawal struct {
-	ID     int64     `json:"id"`
-	Text   string    `json:"text"`
-	Reason string    `json:"reason"`
-	At     time.Time `json:"at"`
+	ID     int64      `json:"id"`
+	Kind   DefectKind `json:"kind,omitempty"`
+	Text   string     `json:"text"`
+	Reason string     `json:"reason"`
+	At     time.Time  `json:"at"`
 }
 
 // WaitChange is the next change of the issue that is open: its generation and each reason it
@@ -166,15 +169,8 @@ func CloseWaitDocument(issue Issue) (string, error) {
 			fmt.Fprintf(&doc, "Change %d ended with no pull request at %s.\n", wait.Ended.Generation, waitTime(wait.Ended.At))
 		}
 	}
-	if len(wait.Withdrawn) > 0 {
-		doc.WriteString("\n## Withdrawn defects\n\n")
-		for _, withdrawn := range wait.Withdrawn {
-			fmt.Fprintf(&doc, "- defect %d, withdrawn at %s, because:\n", withdrawn.ID, waitTime(withdrawn.At))
-			writeAgentText(&doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(withdrawn.Reason)))
-			doc.WriteString("  The defect was:\n")
-			writeAgentText(&doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(withdrawn.Text)))
-		}
-	}
+	writeWithdrawn(&doc, wait.Withdrawn, false)
+	writeWithdrawn(&doc, wait.Withdrawn, true)
 	if wait.Closed != nil {
 		fmt.Fprintf(&doc, "\n## Closed\n\n%s closed at %s. Nothing holds it now.\n", issue.Key, waitTime(*wait.Closed))
 		return doc.String(), nil
@@ -254,16 +250,44 @@ func CloseWaitDocument(issue Issue) (string, error) {
 	return doc.String(), nil
 }
 
+// writeWithdrawn writes the withdrawals of withdrawn of one kind under a heading of their own: the
+// requests for new work where requests is set, under "Withdrawn requests", and the reported defects
+// otherwise, under "Withdrawn defects", so a request is never named a defect (D11). Each item is
+// the kind and id, when it was withdrawn, the withdrawal's reason, and what it said.
+func writeWithdrawn(doc *strings.Builder, withdrawn []WaitWithdrawal, requests bool) {
+	kind, heading := DefectKindDefect, "Withdrawn defects"
+	if requests {
+		kind, heading = DefectKindRequest, "Withdrawn requests"
+	}
+	first := true
+	for _, item := range withdrawn {
+		if (item.Kind == DefectKindRequest) != requests {
+			continue
+		}
+		if first {
+			fmt.Fprintf(doc, "\n## %s\n\n", heading)
+			first = false
+		}
+		fmt.Fprintf(doc, "- %s %d, withdrawn at %s, because:\n", kind, item.ID, waitTime(item.At))
+		writeAgentText(doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(item.Reason)))
+		fmt.Fprintf(doc, "  The %s was:\n", kind)
+		writeAgentText(doc, "  ", strings.TrimSpace(dispatchbody.LineFeeds(item.Text)))
+	}
+}
+
 // writeWaitReason writes one reason of a change, or one reported defect, as an item of the list:
-// its kind and id, the check it is about where it names one, the role that reported it and the
-// head it saw it at where the reason has them, since when it stands, and its text beneath, each
-// line of it indented under the item.
+// its kind and id, the check it is about where it names one, the role that reported it (who
+// asked, for a request for new work) and the head it saw it at where the reason has them, since
+// when it stands, and its text beneath, each line of it indented under the item.
 func writeWaitReason(doc *strings.Builder, reason WaitReason) {
 	fmt.Fprintf(doc, "- %s %d", reason.Kind, reason.ID)
 	if reason.Check != "" {
 		fmt.Fprintf(doc, " about %s", codeSpan(reason.Check))
 	}
-	if reason.Role != "" {
+	switch {
+	case reason.Role != "" && reason.Kind == DefectKindRequest:
+		fmt.Fprintf(doc, ", asked by the %s", reason.Role)
+	case reason.Role != "":
 		fmt.Fprintf(doc, ", reported by the %s", reason.Role)
 	}
 	if reason.Head != "" {

@@ -156,6 +156,9 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 		claims []ownerClaim
 		// taken says what the person's write did, so the comparison is not of two no-ops.
 		taken func(t *testing.T, pool *pgxpool.Pool)
+		// neverMerged are the closed issues a person confirmed never merged (D17): a todo on a
+		// closed issue with no merge in its record runs as today only on that confirmation.
+		neverMerged []string
 	}{
 		{name: "a running tree's child parked", key: "LEGION-2", status: "backlog",
 			issues: []record.Issue{
@@ -179,6 +182,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 			issues: []record.Issue{
 				{Key: "LEGION-5", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: testProject, Title: "LEGION-5", Tree: "LEGION-5", Phase: phase.Done, Generation: 1, Status: "done", Rank: "B", HandedOver: true, LingerUntil: &until, LastDispatchSeq: 1},
 			},
+			neverMerged: []string{"LEGION-5"},
 			taken: func(t *testing.T, pool *pgxpool.Pool) {
 				if got := issue(t, pool, "LEGION-5"); got.Generation != 2 || got.LingerUntil != nil {
 					t.Fatalf("lingering root after a person's todo = %#v, want it re-admitted at generation 2", got)
@@ -222,6 +226,7 @@ func TestAnOutsideSessionsWriteWhereNoTreeRunsIsAPersonsMove(t *testing.T) {
 				for _, seeded := range tc.issues {
 					putIssue(t, pool, seeded)
 				}
+				confirmNeverMerged(t, pool, tc.neverMerged...)
 				inTx(t, pool, func(tx pgx.Tx) {
 					for i, key := range tc.slots {
 						if err := record.NewStore().PutSlot(context.Background(), tx, record.Slot{Issue: key, Index: i, AdmittedAt: fixedNow}); err != nil {

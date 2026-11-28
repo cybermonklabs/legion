@@ -161,13 +161,27 @@ func TestAPersonsDoneOnAMergedChildSuspendsItsPodOnce(t *testing.T) {
 }
 
 // The owning architect's done on a child whose pull request merged is set back, as a session's
-// write is, and the architect is told what the close waits for: such a child closes by its checks.
+// write is, and the architect that wrote it is told what the close waits for: such a child closes
+// by its checks. The child has an architect of its own, which each of the child's notices reaches
+// while it holds its role, and the tree's architect wrote the done. So the set-back is told on the
+// tree root's notices, which reach the architect that wrote it, and the child's own architect holds
+// only the close-waits of the child's entry into verifying.
 func TestAnArchitectsDoneOnAMergedChildIsSetBack(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, "")
 	rig.seedRoot(phase.Implementing, "in_progress")
 	rig.seedChild(waitChild, phase.Merging, "retro")
 	seedArchitectClaim(t, rig.pool, waitRoot)
+	childArchitect, err := claim.NewToken("legion", waitChild, claim.RoleArchitect)
+	if err != nil {
+		t.Fatalf("the architect token of %s: %v", waitChild, err)
+	}
+	if _, err := rig.pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
+		values ($1, 'LEGION', $2, $3, 'architect', 1, 'session-child-architect', '', 'working', 0, 0, 0, 0)`,
+		string(childArchitect), waitRoot, waitChild); err != nil {
+		t.Fatalf("seed the architect claim of %s: %v", waitChild, err)
+	}
 	rig.mergeChild()
 	rig.fact(intake.DispatchIssue{Key: waitChild, Seq: 2, Type: "issue.closed", Status: "done", Title: waitChild, Parent: waitRoot, Rank: "V",
 		ActorSession: "session-architect"})
@@ -175,9 +189,10 @@ func TestAnArchitectsDoneOnAMergedChildIsSetBack(t *testing.T) {
 	if got := rig.statusWrites(waitChild, "testing"); got != 2 {
 		t.Fatalf("the child's testing writes = %d, want the entry's and the set-back's", got)
 	}
-	notices := noticesOfKind(t, rig.pool, waitChild, "close-waits")
-	if len(notices) != 2 || !strings.Contains(notices[1].Reason, "set your done") {
-		t.Fatalf("close-waits notices = %+v, want the entry's and the set-back's", notices)
+	onChild, onRoot := noticesOfKind(t, rig.pool, waitChild, "close-waits"), noticesOfKind(t, rig.pool, waitRoot, "close-waits")
+	if len(onChild) != 1 || len(onRoot) != 1 {
+		t.Fatalf("close-waits notices on %s = %+v and on %s = %+v, want the entry's on %s, whose own architect it reaches, and the set-back's on %s, whose architect wrote the done",
+			waitChild, onChild, waitRoot, onRoot, waitChild, waitRoot)
 	}
 }
 

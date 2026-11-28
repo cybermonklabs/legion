@@ -146,17 +146,20 @@ func putStoredWait(issue *record.Issue, stored record.StoredWait) error {
 
 // waitOf is the stored wait of view: each item the close waits for, with since when it stands.
 // An item that stood in old in the same state keeps its since. Every other item stands from now.
-// Entered is old's: only an entry into verifying sets it (enterVerifying, endChange). Ended and
-// Closed are set by the change's end and the close alone, so each is said in one version.
+// Entered is old's: only an entry into verifying sets it (enterVerifying, endChange). Closed is
+// set by the close alone, so it is said in one version.
 //
 // Withdrawn is old's, whole: a withdrawal stays in the wait until a version of close-wait.md
 // holding it is uploaded, which is what says it once (daemon's closeWaitPublish clears exactly
 // what its version showed). Every writer of the wait goes through this, the entry into verifying
 // and a lingering tree's merge among them, so a withdrawal made before a merge reaches the first
-// version written after it. A caller with one to add appends it to this.
+// version written after it. A caller with one to add appends it to this. Ended is old's on the
+// same rule: the change's end sets it, and it stays until an uploaded version has said it
+// (record.Store.ClearWaitEnded), so a write of the wait between the end and that upload loses no
+// end of a change from the document.
 func (e *Engine) waitOf(issue record.Issue, view closeView, old record.StoredWait, now time.Time) record.StoredWait {
 	wait := view.wait
-	stored := record.StoredWait{Entered: old.Entered, Withdrawn: slices.Clone(old.Withdrawn)}
+	stored := record.StoredWait{Entered: old.Entered, Ended: old.Ended, Withdrawn: slices.Clone(old.Withdrawn)}
 	blocks := map[string]dispatch.CheckBlock{}
 	if view.answer != nil {
 		for _, block := range view.answer.Results.Checks {
@@ -1140,15 +1143,27 @@ func (e *Engine) mergedThisGeneration(ctx context.Context, tx pgx.Tx, issue reco
 	return ok && row.State == record.PullRequestMerged, nil
 }
 
-// architectsDoneSetBack tells the owning architect that its done on issue, a merged child, was set
-// back, and judges the child's close, which its checks decide.
-func (e *Engine) architectsDoneSetBack(ctx context.Context, tx pgx.Tx, key string) error {
+// architectsDoneSetBack tells the architect whose session wrote done on issue, a merged child, that
+// the done was set back, and judges the child's close, which its checks decide. The notice is told
+// on that architect's own issue (record.Store.ArchitectIssueOfSession), whose notices reach it: the
+// child's own notices reach the child's own architect while it holds its role, which is not the
+// writer where an architect above the child wrote the done. A session that holds no architect claim
+// of the tree is named to the architect that the child's notices reach.
+func (e *Engine) architectsDoneSetBack(ctx context.Context, tx pgx.Tx, key, session string) error {
 	issue, err := e.store.Issue(ctx, tx, key)
 	if err != nil || issue == nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-waits", Role: claim.RoleArchitect, Reason: fmt.Sprintf(
-		"The daemon set your done on %s back. Its pull request merged, so its checks or a person close it. Read what its close waits for in close-wait.md.", issue.Key)}); err != nil {
+	writer, held, err := e.store.ArchitectIssueOfSession(ctx, tx, issue.Tree, session)
+	if err != nil {
+		return err
+	}
+	told, set := issue.Key, fmt.Sprintf("Session %s set %s to done, and the daemon set it back.", session, issue.Key)
+	if held {
+		told, set = writer, fmt.Sprintf("The daemon set your done on %s back.", issue.Key)
+	}
+	if err := e.notice(ctx, tx, told, record.Notice{Kind: "close-waits", Role: claim.RoleArchitect,
+		Reason: set + " Its pull request merged, so its checks or a person close it. Read what its close waits for in close-wait.md."}); err != nil {
 		return err
 	}
 	return e.judgeClose(ctx, tx, *issue)

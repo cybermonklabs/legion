@@ -267,6 +267,8 @@ var IssueRecordFields = []RecordFieldDecision{
 		Reason: "the mark that holds the daily notice of the terms that still hold the close to once a day: it is the daemon's own record of what it has already told the owning architect, and a reader is told the terms themselves"},
 	{Field: "ClaimLeft", Column: ColumnAgents, Keys: []string{"claimLeft"},
 		Reason: "why the newest claim release that judged the issue's Dispatch holder left that holder's claim, with the holder and when: a role reads there why a claim stays on its issue, which otherwise only the daemon's log says"},
+	{Field: "MergeReadWaits", Column: ColumnWithheld,
+		Reason: "read beside the record from the issue's standing merge_read row, it keeps a closed root out of the waiting line while its request for new work waits for its merge read: a reader sees that request as the issue at done with the status todo, and the controller is told merge-unread where the read finds nothing"},
 }
 
 // AssignmentRecordFields is every field of `record.Assignment`, in the order the record declares

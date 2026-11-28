@@ -550,7 +550,11 @@ func (e *Engine) reviveArchitect(ctx context.Context, tx pgx.Tx, issue record.Is
 	if architectStartQueued(run, issue.Phase) {
 		return nil
 	}
-	if err := e.enqueue(ctx, tx, issue.Key, childArchitectStart(issue)); err != nil {
+	start, err := e.childArchitectStartOf(ctx, tx, issue)
+	if err != nil {
+		return err
+	}
+	if err := e.enqueue(ctx, tx, issue.Key, start); err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a child's phase start starts its failed architect again", "issue", issue.Key, "tree", issue.Tree, "phase", issue.Phase)
@@ -588,15 +592,29 @@ func architectStartQueued(run record.RoleRun, current phase.Phase) bool {
 	return queuedStartActs(run, 0, "") || queuedStartActs(run, 0, current)
 }
 
-// childArchitectStart is the plain start of a child's own architect, issue's, with no phase, task,
+// childArchitectStart is the plain start of a child's own architect, issue's, with no phase,
 // entry, slot mark or kept decisions: its catch-up at its launch's ready is its first instruction
 // (claimReady). A root architect's start carries the task its record derives and the entry it
 // raises (StartArchitect); a child's architect is handed no entry, and the rule that closes the
 // difference between an architect's owed and held work reaches a tree's root alone
 // (ArchitectAtWork). The child's first phase start queues it (gateOpened), and so does its next
-// phase start while the claim has failed (reviveArchitect).
-func childArchitectStart(issue record.Issue) record.SuperviseRequest {
-	return record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.GenerationOf("start", claim.RoleArchitect)}
+// phase start while the claim has failed (reviveArchitect). Where the child's open next change
+// carries a request for new work (requested, changeCarriesRequest), the start carries the
+// request's instruction as its task (D17), which names none of the change's reasons: the first
+// start of the change's phase names each.
+func childArchitectStart(issue record.Issue, requested bool) record.SuperviseRequest {
+	start := record.SuperviseRequest{Op: "start", Tree: issue.Tree, Role: claim.RoleArchitect, Generation: issue.GenerationOf("start", claim.RoleArchitect)}
+	if requested {
+		start.Task = fmt.Sprintf("%s is yours, and its next change %d runs with its approved design kept. %s", issue.Key, issue.Generation, requestInstruction)
+	}
+	return start
+}
+
+// childArchitectStartOf is childArchitectStart of issue as the record stands, whether its open
+// change carries a request read in the caller's transaction.
+func (e *Engine) childArchitectStartOf(ctx context.Context, tx pgx.Tx, issue record.Issue) (record.SuperviseRequest, error) {
+	requested, err := changeCarriesRequest(ctx, tx, e.store, issue)
+	return childArchitectStart(issue, requested), err
 }
 
 // restart starts the phase worker of a phase entry the issue never left: the architect's or the

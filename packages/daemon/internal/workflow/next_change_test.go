@@ -225,7 +225,7 @@ func (r *waitRig) changeMerges(key string, number int, merge, head string) {
 	seedIssue(r.t, r.pool, issue)
 	seedPhase(r.t, r.pool, record.PhaseRow{Issue: key, Role: claim.RoleMerger, Claim: "change-merger", HandoffCommit: head})
 	seedPR(r.t, r.pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: waitRepo, Number: number, Branch: claim.IssueBranch(key),
-		Base: "main", HeadSHA: head, Generation: int64(issue.Generation), Failing: []string{}})
+		Base: "main", HeadSHA: head, Failing: []string{}})
 	r.fact(intake.PullRequestMerged{Repo: waitRepo, Number: number, MergeSHA: merge, HeadSHA: head, MergedAt: r.now})
 }
 
@@ -370,7 +370,7 @@ func TestANextChangeOfARootLeavesEachOtherMemberAsItIs(t *testing.T) {
 	rig.seedChild(done, phase.Done, "done")
 	seedPhase(t, rig.pool, record.PhaseRow{Issue: waitChild, Role: claim.RoleImplementer, Claim: "child-implementer", EntryTask: "implement it", Entry: 1})
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: waitChild, Repo: waitRepo, Number: waitChildNumber,
-		Branch: claim.IssueBranch(waitChild), Base: "main", HeadSHA: headTwo, Generation: waitGeneration, Failing: []string{}})
+		Branch: claim.IssueBranch(waitChild), Base: "main", HeadSHA: headTwo, Failing: []string{}})
 	approvedGate(t, rig, waitChild)
 	st := openStore(t, rig)
 	for _, key := range []string{waitChild, done} {
@@ -889,8 +889,15 @@ func TestTheCountNamesEachChangesPullRequest(t *testing.T) {
 // A reason that comes while a change is open starts no second generation: the read of an issue
 // whose change is open goes to the judge of that change (judgeOpenChange), which starts nothing,
 // so the reason waits for the change after it. And where a caller reaches StartNextChange itself
-// with such an issue, which each door of Task 13 can, its one hard guard holds the start: the
-// record keeps the generation and the count it had.
+// with such an issue, its one hard guard holds the start: the record keeps the generation and the
+// count it had, and a request brought to it writes no request row.
+//
+// The guard is one of the places that hold "one change at a time", and it is kept. In admission's
+// door test ("a request read twice starts one change") a second read never reaches StartNextChange:
+// the observation's sequence fence (record.Issue.Outdates) and the doors' scope (an issue at done
+// or verifying, a root at done or lingering) stop it first, so taking the guard out there changes
+// nothing. Here the guard stands with no routing in front of it, and its control (door-repeat)
+// runs here.
 func TestANextChangeNeverStartsWhileOneIsOpen(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, "")
@@ -921,6 +928,29 @@ func TestANextChangeNeverStartsWhileOneIsOpen(t *testing.T) {
 	if got := rig.issue(waitRoot); got.Generation != open.Generation || got.NextChange != open.NextChange || got.NextChanges != open.NextChanges {
 		t.Fatalf("after StartNextChange over an open change %s stands at generation %d, change %d of %d; want %d, %d of %d",
 			waitRoot, got.Generation, got.NextChange, got.NextChanges, open.Generation, open.NextChange, open.NextChanges)
+	}
+	requests := func() int {
+		t.Helper()
+		var count int
+		if err := rig.pool.QueryRow(t.Context(), `select count(*) from defects where issue = $1 and kind = $2`,
+			waitRoot, string(record.DefectKindRequest)).Scan(&count); err != nil {
+			t.Fatalf("count the request rows of %s: %v", waitRoot, err)
+		}
+		return count
+	}
+	before := requests()
+	if err := store.Transact(t.Context(), rig.pool, func(ctx context.Context, tx pgx.Tx) error {
+		return rig.engine.StartRequestedChange(ctx, tx, waitRoot, Request{Requester: claim.RoleController, Text: "a request on the open change"},
+			ChangeInPlace(open))
+	}); err != nil {
+		t.Fatalf("StartRequestedChange over an open change: %v", err)
+	}
+	if got := rig.issue(waitRoot); got.Generation != open.Generation || got.NextChange != open.NextChange || got.NextChanges != open.NextChanges {
+		t.Fatalf("after a request over an open change %s stands at generation %d, change %d of %d; want %d, %d of %d",
+			waitRoot, got.Generation, got.NextChange, got.NextChanges, open.Generation, open.NextChange, open.NextChanges)
+	}
+	if after := requests(); after != before {
+		t.Fatalf("%s holds %d request rows after a request over its open change, want the %d it held: the guard writes nothing", waitRoot, after, before)
 	}
 }
 
@@ -1099,7 +1129,7 @@ func TestAPassWhileTheNextChangeIsOpenClosesNothing(t *testing.T) {
 	rig.started(waitRoot, changeGeneration, 1)
 	rig.standIn(waitRoot, phase.Reviewing, "needs_review")
 	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: waitRoot, Repo: waitRepo, Number: 44, Branch: claim.IssueBranch(waitRoot),
-		Base: "main", HeadSHA: headTwo, Generation: changeGeneration, Failing: []string{}})
+		Base: "main", HeadSHA: headTwo, Failing: []string{}})
 	rig.seedCheck(waitRoot, changeGeneration, waitRootMerge, record.CheckRecorded)
 
 	rig.readAt(waitRoot, changeGeneration, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))

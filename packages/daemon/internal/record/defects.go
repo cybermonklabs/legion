@@ -212,13 +212,45 @@ func (s *Postgres) ClearWaitWithdrawals(ctx context.Context, tx pgx.Tx, issue st
 	return nil
 }
 
+func (s *Postgres) ClearWaitEnded(ctx context.Context, tx pgx.Tx, issue string, shown *WaitChangeEnd) error {
+	if shown == nil {
+		return nil
+	}
+	var encoded []byte
+	if err := tx.QueryRow(ctx, "select close_wait from issues where key = $1 for update", issue).Scan(&encoded); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil
+		}
+		return fmt.Errorf("read the stored wait of %s: %w", issue, err)
+	}
+	if len(encoded) == 0 {
+		return nil
+	}
+	var wait StoredWait
+	if err := json.Unmarshal(encoded, &wait); err != nil {
+		return fmt.Errorf("read the stored wait of %s: %w", issue, err)
+	}
+	if wait.Ended == nil || *wait.Ended != *shown {
+		return nil
+	}
+	wait.Ended = nil
+	cleared, err := json.Marshal(wait)
+	if err != nil {
+		return fmt.Errorf("write the stored wait of %s: %w", issue, err)
+	}
+	if _, err := tx.Exec(ctx, "update issues set close_wait = $2 where key = $1", issue, cleared); err != nil {
+		return fmt.Errorf("write the stored wait of %s: %w", issue, err)
+	}
+	return nil
+}
+
 func (s *Postgres) WithdrawDefect(ctx context.Context, tx pgx.Tx, issue string, id int64, reason string, at time.Time) (bool, error) {
 	if strings.TrimSpace(reason) == "" {
 		return false, fmt.Errorf("withdraw defect %d of %s: a withdrawal says why", id, issue)
 	}
 	tag, err := tx.Exec(ctx, `update defects set withdrawn_at = $4, withdraw_reason = $3
-		where issue = $1 and id = $2 and kind = $5 and withdrawn_at is null and merged_at is null`,
-		issue, id, reason, at, string(DefectKindDefect))
+		where issue = $1 and id = $2 and kind = any($5) and withdrawn_at is null and merged_at is null`,
+		issue, id, reason, at, []string{string(DefectKindDefect), string(DefectKindRequest)})
 	if err != nil {
 		return false, fmt.Errorf("withdraw defect %d of %s: %w", id, issue, err)
 	}
