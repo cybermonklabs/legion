@@ -1828,6 +1828,11 @@ func (a *Admission) readmit(ctx context.Context, tx pgx.Tx, stored record.Issue,
 	if err := a.store.MarkIssueMoved(ctx, tx, stored.Key, a.now()); err != nil {
 		return err
 	}
+	// The linger the re-admission ends, or the tree it takes the issue out of, held a child's
+	// architect's first start (treeRunsAgain).
+	if err := a.treeRunsAgain(ctx, tx, record.WaitForTreeRuns(stored.Tree)); err != nil {
+		return err
+	}
 	// The members this generation leaves mid-phase, and those reopened at done, come back the
 	// first time its tree runs: at the promotion that opens it, or at the pass that finds it
 	// running first, its design gate opened before the root's promotion from the waiting line
@@ -2776,6 +2781,12 @@ func (a *Admission) promoteHolds(ctx context.Context, tx pgx.Tx, respectHolds bo
 						return admitted, released, err
 					}
 				}
+				// The promotion opens the tree: a child's architect's first start that waited for
+				// it to run again, and a start of the tree's work that met its reserved cleanup,
+				// whose next epoch this open is (treelifecycle.Open), each go now (treeRunsAgain).
+				if err := a.treeRunsAgain(ctx, tx, record.WaitForTreeRuns(issue.Tree), record.WaitForEpoch(issue.Tree)); err != nil {
+					return admitted, released, err
+				}
 			}
 			now := a.now()
 			if takes {
@@ -3547,10 +3558,29 @@ func (a *Admission) returnMembersOfRunningTrees(ctx context.Context, tx pgx.Tx, 
 		if err := a.returnOwedMembers(ctx, tx, root, issues, facts.OwedRows, false, a.now()); err != nil {
 			return wrote, err
 		}
+		// The tree runs with no promotion to come, so a child's architect's first start that
+		// waited for it to run again goes now (treeRunsAgain).
+		if err := a.treeRunsAgain(ctx, tx, record.WaitForTreeRuns(root.Tree)); err != nil {
+			return wrote, err
+		}
 		a.logOnCommit(ctx, "admission brings back the members of a re-admitted tree that runs before its promotion",
 			"issue", root.Key, "generation", root.Generation)
 	}
 	return wrote, nil
+}
+
+// treeRunsAgain makes due at once, in the caller's transaction, every outbox row that waits for one
+// of keys (record.Store.ExpediteWaits, dispatch://INFRA-4131/spec#b-r-wait-event): a tree to run
+// again (record.WaitForTreeRuns), which the first start of a child's own architect waits for while
+// its tree lingers or its root waits in the line (the daemon's outbox, startRoot), and which a
+// re-admission (readmit), the promotion that opens the tree and the pass that finds the tree
+// running before its promotion (returnMembersOfRunningTrees) each bring about; and the tree's next
+// lifecycle epoch (record.WaitForEpoch), which a start that met the tree's reserved cleanup waits
+// for (treelifecycle.ErrCleanupReserved), and which the promotion's open of the tree is. Each row
+// runs once the transaction commits and reads the tree as it then stands.
+func (a *Admission) treeRunsAgain(ctx context.Context, tx pgx.Tx, keys ...string) error {
+	_, err := a.store.ExpediteWaits(ctx, tx, keys, a.now())
+	return err
 }
 
 // promotedByEarlierRelease says whether root, which carries the mark of a return still owed

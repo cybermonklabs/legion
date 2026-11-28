@@ -200,9 +200,11 @@ type heldMessage struct {
 // role again. A released merger is held by the rule that holds its start
 // (mergerWaitsForTheDesignGate: the design gate, and the news of the approved design it is owed),
 // and a released role of another kind while the root's design gate is closed (designGateClosed):
-// such a role is neither woken nor told, and the row waits, since a role the gate holds may not
-// know the gate closed, and woken by this message it would work against the gate. A role whose
-// session holds it is told at once, gate or none, and m.delivered is logged. Every other answer
+// such a role is neither woken nor told, and the row waits for the gate's opening, or the news
+// being recorded, which makes it due at once (record.WaitForGate, record.WaitForNews,
+// dispatch://INFRA-4131/spec#b-r-wait-event), since a role the gate holds may not know the gate
+// closed, and woken by this message it would work against the gate. A role whose session holds it
+// is told at once, gate or none, and m.delivered is logged. Every other answer
 // of the listener's that refuses the publish keeps the row waiting for its role (roleWait) on the
 // capped backoff of a role wait (dispatch://INFRA-4131/spec#b-r-capped), as it does for a hook
 // prompt: no session holds the role (notify.ErrNoHolder), its holder is unresponsive
@@ -248,7 +250,8 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		} else if closed, err := r.designGateClosed(ctx, m.issue); err != nil {
 			return err
 		} else if closed {
-			return wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role)
+			return eventWait(record.WaitForGate(m.issue.Tree),
+				wait.Errorf("%s waits for the design gate of %s to open before it wakes the released %s", m.what, m.issue.Tree, m.role))
 		}
 	}
 	// This runs before the publish, which would otherwise answer ErrNoHolder for the released

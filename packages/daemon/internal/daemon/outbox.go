@@ -492,12 +492,13 @@ func (r *outbox) settle(ctx context.Context, row record.OutboxRow, err error) {
 		case !permanent && roleWaitRun(row.Kind, err):
 			row.Wait = r.logWait(ctx, row, err, kept)
 		case errors.Is(err, wait.ErrWaiting):
-			// A wait is not a failure (wait.ErrWaiting): a suspension or start held for a turn, a
-			// task behind the claim's pending delivery, a tree's cleanup reservation, a close
-			// waiting for its stops, a claim release Dispatch has yet to allow, or a child's
-			// architect's first start waiting for its tree to run again. The row runs again on its
-			// backoff, logged when it first waits and as a warning once it has waited long, unless
-			// the wait ends on its own.
+			// A wait is not a failure (wait.ErrWaiting). The waits that reach here are those whose
+			// end the daemon does not record, every wait of an event it records being an event
+			// wait above (roleWaitRun, dispatch://INFRA-4131/spec#b-r-wait-event): a claim release
+			// Dispatch has yet to allow, a Dispatch that does not serve a route yet, the Envoy
+			// listener's freeing of a role, and a wait that names its moment. The row runs again on
+			// its backoff, logged when it first waits and as a warning once it has waited long,
+			// unless the wait ends on its own.
 			level := slog.LevelDebug
 			switch {
 			case row.Attempts == 0:
@@ -563,7 +564,12 @@ func (r *outbox) noteLimit(row record.OutboxRow, err error) {
 // the end commits (waitEndedOnCommit). A waiting row finishes through FinishLeasedOutbox so a
 // concurrent delete (such as DropQueuedChanges deleting a leased notice) does not cause a second
 // end line: where the delete already removed the row, ErrOutboxLeaseLost ends quietly without
-// logging again.
+// logging again, and the delete made due what the row's end makes due.
+//
+// The same transaction makes due every row that waits for this row's end (finishedWaits,
+// record.Store.ExpediteWaits, dispatch://INFRA-4131/spec#b-r-wait-event): a close or a release
+// behind a role stop, a teardown behind its workspace check, a child architect's first start
+// behind the child's branch, and a notice behind an earlier notice to its architect.
 func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 	if err := store.Transact(ctx, r.pool, func(ctx context.Context, tx pgx.Tx) error {
 		if !row.Wait.WaitSince.IsZero() {
@@ -574,9 +580,15 @@ func (r *outbox) finish(ctx context.Context, row record.OutboxRow) error {
 				return err
 			}
 			r.waitEndedOnCommit(ctx, row)
-			return nil
+		} else if err := r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken); err != nil {
+			return err
 		}
-		return r.records.FinishOutbox(ctx, tx, row.ID, row.LeaseToken)
+		if keys := finishedWaits(row); len(keys) > 0 {
+			if _, err := r.records.ExpediteWaits(ctx, tx, keys, r.now().UTC()); err != nil {
+				return err
+			}
+		}
+		return nil
 	}); err != nil {
 		return fmt.Errorf("finish outbox row %d: %w", row.ID, err)
 	}
@@ -1032,10 +1044,9 @@ func permanentRefusal(row record.OutboxRow, err error) bool {
 
 // routineWait is a wait nobody has to act on for Legion (routineWaiting): a Dispatch claim release
 // waiting on the claim's holder or on a contended answer (claimHeldWait, claimContendedWait),
-// which the hour claimReleaseWait caps rather than an operator, and a child's architect's first
-// start waiting for its tree to run again (childArchitectFirstStart), which a person's move of the
-// tree or of the child ends rather than an operator, and then for the branch row a re-admission
-// queued for the child (startRoot), whose own failures that row logs.
+// which the hour claimReleaseWait caps rather than an operator. A child's architect's first start
+// waiting for its tree to run again, and then for its branch row (startRoot), is an event wait
+// instead (eventWait), logged by its wait (logWait).
 func routineWait(err error) bool {
 	var routine interface{ Routine() bool }
 	return errors.As(err, &routine) && routine.Routine()
@@ -2014,9 +2025,10 @@ func (r *outbox) messageArtifact(ctx context.Context, row record.OutboxRow, arti
 // so no issue topic carries one. The architect, the earlier notices it waits behind, and whether
 // its tree lingers are read from one snapshot of the tree (notice_routing.go). A notice waits
 // behind an earlier notice of its tree that is held for the same architect, so each architect is
-// told in the order the notices were written: on its backoff (errNoticeWaits), or, when the
-// earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). A role
-// topic with no live holder refuses the publish (notify.ErrNoHolder): while the architect's claim
+// told in the order the notices were written: once the earlier row ends, which makes this one due
+// at once (errNoticeWaits, record.WaitForRow, dispatch://INFRA-4131/spec#b-r-wait-event), or, when
+// the earlier row is itself due at a moment still ahead, at that moment and once (wait.Until). A
+// role topic with no live holder refuses the publish (notify.ErrNoHolder): while the architect's claim
 // can hold its role again — relaunching, a suspended root whoever suspended it (the operator's or
 // the controller's suspension until that holder's resume, or the operator's, lifts it), or the
 // architect of a catch-up's own issue suspended while that issue is in the workflow, which its
@@ -2271,7 +2283,10 @@ func (r *outbox) deliverNotice(ctx context.Context, row record.OutboxRow, payloa
 			return wait.Until(due, fmt.Sprintf("%s's notice row %d waits behind its row %d, due at %s",
 				architect, row.ID, earlier, due.Format(time.RFC3339)))
 		}
-		return fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier)
+		// Otherwise the row waits for the earlier row's end (record.WaitForRow,
+		// dispatch://INFRA-4131/spec#b-r-wait-event): its finish, or a delete of it
+		// (projectRecords' DropCatchUps and DropQueuedChanges), makes this row due at once.
+		return eventWait(record.WaitForRow(earlier), fmt.Errorf("%w: %s's notice row %d waits behind its row %d", errNoticeWaits, architect, row.ID, earlier))
 	}
 	topic := notify.RoleTopicPrefix + string(architect)
 	gate := r.roleWaitGate(row, topic)
@@ -2531,7 +2546,7 @@ func (r *outbox) retireStoppedTask(ctx context.Context, row record.OutboxRow, pa
 	}
 	retired, err := machine.RetireStoppedTask(ctx, payload.Phase, payload.Generation, payload.Entry)
 	if err != nil {
-		return fmt.Errorf("retire the %s task of %s's %s: %w", payload.Phase, row.Issue, payload.Role, err)
+		return claimWait(token, issue.Tree, fmt.Errorf("retire the %s task of %s's %s: %w", payload.Phase, row.Issue, payload.Role, err))
 	}
 	r.log.Info("outbox retired the task of a stopped phase", "row", row.ID, "issue", issue.Key, "role", payload.Role,
 		"phase", payload.Phase, "entry", payload.Entry, "held", retired)
@@ -2691,8 +2706,11 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 	case errors.As(err, &roleErr):
 		return err
 	case errors.Is(err, supervise.ErrMachineBusy):
-		return wait.Errorf("the ask of round %s for %s waits for its %s's machine, whose lock is held; nothing is published yet: %w",
-			payload.Round, row.Issue, payload.Role, err)
+		// The lock's holder tells the claim's change hook of this refusal when it lets the lock go
+		// (supervise.Deps.ClaimChanged), so the row waits for any change of its claim
+		// (record.WaitForClaim, dispatch://INFRA-4131/spec#b-r-wait-event).
+		return eventWait(record.WaitForClaim(token), wait.Errorf("the ask of round %s for %s waits for its %s's machine, whose lock is held; nothing is published yet: %w",
+			payload.Round, row.Issue, payload.Role, err))
 	case err != nil && (outcome == supervise.UpdateAskDelivered || outcome == supervise.UpdateAskAlreadyDelivered):
 		return fmt.Errorf("the ask of round %s for %s reached its %s, and the claim write that marks it asked is not made yet: %w",
 			payload.Round, row.Issue, payload.Role, err)
@@ -3185,7 +3203,7 @@ func startRetry(token claim.Token, payload record.SuperviseRequest) supervise.Re
 func (r *outbox) retryRefused(ctx context.Context, row record.OutboxRow, issue record.Issue, payload record.SuperviseRequest,
 	machine *supervise.Machine, err error, asked string) error {
 	if !errors.Is(err, supervise.ErrHeldForCyberPolicy) {
-		return fmt.Errorf("%s %s: %w", asked, machine.Claim().Token, err)
+		return claimWait(machine.Claim().Token, issue.Tree, fmt.Errorf("%s %s: %w", asked, machine.Claim().Token, err))
 	}
 	return r.heldStartRefused(ctx, row, issue, payload, machine.Claim(), err)
 }
@@ -3374,20 +3392,21 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			// production check, which resumes the role that check records
 			// (record.ProductionCheck.Role) the linger suspended.
 			//
-			// One start waits on its backoff rather than finishing: the first start of a child's own
-			// architect that finds no claim (childArchitectFirstStart), for as long as its tree
-			// lingers or its root waits in the line for the tree to be opened again
-			// (record.QueuedRoot), and then until the branch row the re-admission queued for the
-			// child has finished. Re-admission brings back a member's own architect only where it
-			// holds a claim, so that start finished here is one nothing queues again, and the child
-			// would run to its close with no architect of its own.
+			// One start waits rather than finishing: the first start of a child's own architect
+			// that finds no claim (childArchitectFirstStart), for as long as its tree lingers or its
+			// root waits in the line for the tree to be opened again (record.QueuedRoot), and then
+			// until the branch row the re-admission queued for the child has finished, each an
+			// event wait that the re-admission and the promotion, or the branch row's finish, make
+			// due at once (startRoot). Re-admission brings back a member's own architect only where
+			// it holds a claim, so that start finished here is one nothing queues again, and the
+			// child would run to its close with no architect of its own.
 			first := !found && childArchitectFirstStart(issue, payload)
-			root, waitsFor, err := r.startRoot(ctx, issue, first)
+			root, waitsFor, key, err := r.startRoot(ctx, issue, first)
 			if err != nil {
 				return err
 			}
 			if waitsFor != "" {
-				return routineWaiting{err: wait.Errorf("the first start of the own architect of %s waits for %s", issue.Key, waitsFor)}
+				return eventWait(key, wait.Errorf("the first start of the own architect of %s waits for %s", issue.Key, waitsFor))
 			}
 			if root != nil && root.Lingers() {
 				r.log.Info("outbox start of a member of a lingering tree; finished without acting", "row", row.ID, "issue", issue.Key,
@@ -3414,20 +3433,23 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// controller holds over that agent). The issue the supervisor keeps beside the machine
 		// (volumeLost) never moves with it: a claim's issue is fixed for its life.
 		if found && machine.Claim().Tree != issue.Tree {
-			if err := machine.Retree(ctx, issue.Tree); err != nil {
+			if err := machine.Retree(ctx, issue.Tree); errors.Is(err, wait.ErrWaiting) {
+				return eventWait(record.WaitForClaim(token), err)
+			} else if err != nil {
 				return err
 			}
 		}
-		// A suspension that holds — the operator's or the controller's — holds its
-		// claim until a resume lifts it: the start, and the task it gives, wait on the row's
-		// backoff. StartedBy refuses the same in the claim's own decision. A check start does not
-		// wait: its look cannot run, and ends, its cause naming the holder (checkLookHeld).
+		// A suspension that holds — the operator's or the controller's — holds its claim until a
+		// resume lifts it: the start, and the task it gives, wait for the claim's change, which
+		// the resume is (claimWait). StartedBy refuses the same in the claim's own decision. A
+		// check start does not wait: its look cannot run, and ends, its cause naming the holder
+		// (checkLookHeld).
 		if found {
 			if held := machine.Claim(); held.RuleHolds() {
 				if payload.CheckLook > 0 {
 					return r.checkLookHeld(ctx, row, payload, *check, held.Holder())
 				}
-				return fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError())
+				return claimWait(token, issue.Tree, fmt.Errorf("start %s of %s: %w", payload.Role, issue.Key, held.RuleHoldError()))
 			}
 		}
 		if !found {
@@ -3438,7 +3460,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				Token: token, Project: r.project, Tree: issue.Tree, Issue: issue.Key, Role: payload.Role, State: supervise.StateQueued,
 			}, "")
 			if err != nil {
-				return fmt.Errorf("create claim %s: %w", token, err)
+				return claimWait(token, issue.Tree, fmt.Errorf("create claim %s: %w", token, err))
 			}
 		}
 		// The task this start gives the claim, nil for a start that carries none. It is built here,
@@ -3485,10 +3507,13 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// (supervise.Delivery.Carried, the claim store's settleDesignNews). A start queued for news
 		// alone travels marked so (supervise.RequestDeliver.NewsOnly, stored as
 		// pending_task_deliveries.news_only): its task holds no work, so the machine refuses it
-		// behind any task that does, the one a running turn works among them, and the row waits on
-		// its backoff until that turn has ended. A task of news alone the worker has not taken
-		// gives way to a start of an entry, whose own task carries that same news (supervise's
-		// Machine.supersedes), so the start that StartedBy is told of below reads it too.
+		// behind any task that does, the one a running turn works among them
+		// (supervise.ErrDeliveryPending), and the row waits for the claim's change that ends that
+		// pending task's hold — a turn's confirmation of it, its retirement or its drop — which
+		// makes it due at once (claimWait, dispatch://INFRA-4131/spec#b-r-wait-event). A task of
+		// news alone the worker has not taken gives way to a start of an entry, whose own task
+		// carries that same news (supervise's Machine.supersedes), so the start that StartedBy is
+		// told of below reads it too.
 		var task *supervise.RequestDeliver
 		if payload.Task != "" || payload.Awaiting != nil || payload.News {
 			kept, err := keptJSON(payload.Kept)
@@ -3544,7 +3569,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		switch state {
 		case supervise.StateQueued:
 			if err := machine.Handle(ctx, supervise.RequestSpawn{Claim: token}); err != nil {
-				return fmt.Errorf("start claim %s: %w", token, err)
+				return claimWait(token, issue.Tree, fmt.Errorf("start claim %s: %w", token, err))
 			}
 		case supervise.StateSuspended:
 			// The role owns the issue's phase this start is for: the rule resumes it, unless the
@@ -3557,7 +3582,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 				reason = fmt.Sprintf("start row %d of %s (production check look %d)", row.ID, issue.Key, payload.CheckLook)
 			}
 			if err := machine.Handle(ctx, supervise.RequestRuleResume{Claim: token, Reason: reason}); err != nil {
-				return fmt.Errorf("resume claim %s: %w", token, err)
+				return claimWait(token, issue.Tree, fmt.Errorf("resume claim %s: %w", token, err))
 			}
 		case supervise.StateFailed:
 			// A boot rule-resume that spent its launch budget is terminal for this row: retrying it
@@ -3659,7 +3684,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			}
 		} else if task != nil {
 			if err := machine.Handle(ctx, *task); err != nil {
-				return fmt.Errorf("deliver to claim %s: %w", token, err)
+				return claimWait(token, issue.Tree, fmt.Errorf("deliver to claim %s: %w", token, err))
 			}
 			gave = true
 		}
@@ -3743,7 +3768,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return nil
 		}
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByDaemon}); err != nil {
-			return fmt.Errorf("suspend claim %s: %w", token, err)
+			return claimWait(token, issue.Tree, fmt.Errorf("suspend claim %s: %w", token, err))
 		}
 		// A linger, a park, a hand-over, a close and a stopped task all stop a claim through this
 		// one body, and each takes a released claim over: the machine re-stamps the suspension's
@@ -3786,7 +3811,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return nil
 		}
 		if err := machine.Handle(ctx, supervise.RequestSuspend{Claim: token, Reason: payload.Reason, By: supervise.SuspendedByReleased}); err != nil {
-			return fmt.Errorf("release claim %s: %w", token, err)
+			return claimWait(token, issue.Tree, fmt.Errorf("release claim %s: %w", token, err))
 		}
 		// The claim is suspended as `released`, so the release's mark records it: it is that set
 		// the cancel resumes, the teardown records as the release's roles, and a later row reads
@@ -3810,7 +3835,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			return nil
 		}
 		if err := machine.Handle(ctx, supervise.RequestIssueClose{Claim: token}); err != nil {
-			return fmt.Errorf("close the issue of claim %s: %w", token, err)
+			return claimWait(token, issue.Tree, fmt.Errorf("close the issue of claim %s: %w", token, err))
 		}
 		// The issue is done, so no idle release of its pod is coming: the decline of one goes
 		// with the backstop.
@@ -3836,7 +3861,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// A close that reserved, or found reserved, its tree's cleanup ran through reservedTreeClose
 		// already; one reaching here closes its claim alone.
 		if err := machine.Handle(ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
-			return fmt.Errorf("close the tree of claim %s: %w", token, err)
+			return claimWait(token, issue.Tree, fmt.Errorf("close the tree of claim %s: %w", token, err))
 		}
 		// The tree is closing, so no idle release of this member's pod is coming.
 		r.forgetIdleRelease(ctx, row.Issue)
@@ -3894,20 +3919,21 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // reaches no claim finishes (newsOnlyRefusal). The news stays owed on the record, and the
 // reconcile the entry sweep queues (queueOwedDesignNews) tells it once a claim holds the role, since
 // the start that creates or revives a child's architect (workflow's childArchitectStart) carries no
-// news. Read as a first start it would wait on its backoff while the tree lingers, its root waits
-// in the line, or the child's branch row is queued, where it should finish.
+// news. Read as a first start it would wait while the tree lingers, its root waits in the line,
+// or the child's branch row is queued, where it should finish.
 //
-// The first start waits on the row's backoff, where every other start of a member of a tree that
-// lingers finishes without acting, for as long as the tree lingers (record.Issue.Lingers) or its
-// root waits in the line for the tree to be opened again (record.QueuedRoot), and then for as long
-// as a branch row of the child is still queued, which the re-admission queues newer than this start
-// (startRoot). Finishing it would leave the child with no architect of its own for the rest of its
-// run, because nothing queues the start again: a re-admission brings back a member's own architect
-// only where it holds a claim (admit's startMidPhaseMembers), and the child's later phase starts
-// revive only a claim that failed (workflow's reviveArchitect). The child's notices would go to the
-// architect above it (record.OwningArchitect) to its close, which R2 of dispatch://INFRA-3915 keeps
-// only for a child started before that change (plan D9), and this child's first phase start did
-// queue the start.
+// The first start waits, where every other start of a member of a tree that lingers finishes
+// without acting, for as long as the tree lingers (record.Issue.Lingers) or its root waits in the
+// line for the tree to be opened again (record.QueuedRoot), and then for as long as a branch row of
+// the child is still queued, which the re-admission queues newer than this start (startRoot): each
+// an event wait, which the re-admission and the promotion of the root (admit's treeRunsAgain), or
+// the branch row's finish (finishedWaits), make due at once. Finishing it would leave the child
+// with no architect of its own for the rest of its run, because nothing queues the start again: a
+// re-admission brings back a member's own architect only where it holds a claim (admit's
+// startMidPhaseMembers), and the child's later phase starts revive only a claim that failed
+// (workflow's reviveArchitect). The child's notices would go to the architect above it
+// (record.OwningArchitect) to its close, which R2 of dispatch://INFRA-3915 keeps only for a child
+// started before that change (plan D9), and this child's first phase start did queue the start.
 //
 // The linger is read as Lingers reads it, a deadline armed, and not as one still running at the
 // moment (record.Lingering), since a tree can run again after its deadline: a root past it is
@@ -3923,21 +3949,25 @@ func keepsStartTask(held supervise.Claim, payload record.SuperviseRequest) bool 
 // child is handed over, adopted into a live tree or taken as a root of its own, each of which moves
 // it to a later generation, and supervise's generation fence finishes the start; or the child
 // leaves the workflow, and the fence on its own status finishes it. Its one cost is a parked tree
-// that is never re-admitted: the row retries at the backoff's 64-second cap for as long as it
-// stands, two reads each try (the child and its root), and only a child whose tree left the
-// workflow between its first phase start and that start's run ever has such a row.
+// that is never re-admitted: the row retries at the capped backoff's 5 minutes
+// (record.RoleWaitBackoffMost) for as long as it stands, two reads each try (the child and its
+// root), and only a child whose tree left the workflow between its first phase start and that
+// start's run ever has such a row.
 func childArchitectFirstStart(issue record.Issue, payload record.SuperviseRequest) bool {
 	return payload.Role == claim.RoleArchitect && !claim.IsTreeRoot(issue.Key, issue.Tree) && payload.Phase == "" && payload.Task == "" && !payload.News
 }
 
 // stopElsewhere suspends, as the daemon and keeping its session, every claim of issue that still
 // runs a process in a tree other than the issue's, and is a wait (wait.ErrWaiting) until none
-// does. A claim already in the issue's tree is skipped on its view, which only Retree changes, so
-// a start waits on no decision a sibling claim has in flight. Once this call has stopped a claim,
-// it makes close rows of that claim's former tree due now: its cleanup may have been waiting on
-// that claim.
+// does: an event wait for the first such claim to change (record.WaitForClaim,
+// dispatch://INFRA-4131/spec#b-r-wait-event), whose stop is a change its machine tells, so the
+// start runs again once that claim runs nothing and waits again for the next one still running. A
+// claim already in the issue's tree is skipped on its view, which only Retree changes, so a start
+// waits on no decision a sibling claim has in flight. Once this call has stopped a claim, it makes
+// close rows of that claim's former tree due now: its cleanup may have been waiting on that claim.
 func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 	var running []string
+	var first claim.Token
 	var left []string
 	for _, role := range claim.Roles {
 		token, err := claim.NewToken(r.project, issue.Key, role)
@@ -3957,13 +3987,17 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 			return err
 		}
 		if still != "" {
+			if first == "" {
+				first = token
+			}
 			running = append(running, still)
 		} else if stopped && !slices.Contains(left, tree) {
 			left = append(left, tree)
 		}
 	}
 	if len(running) > 0 {
-		return wait.Errorf("start of %s in tree %s waits for %s to stop", issue.Key, issue.Tree, strings.Join(running, ", "))
+		return eventWait(record.WaitForClaim(first),
+			wait.Errorf("start of %s in tree %s waits for %s to stop", issue.Key, issue.Tree, strings.Join(running, ", ")))
 	}
 	for _, tree := range left {
 		if err := r.wakeTreeCloses(ctx, tree); err != nil {
@@ -3977,8 +4011,8 @@ func (r *outbox) stopElsewhere(ctx context.Context, issue record.Issue) error {
 // process in a tree other than issue's, its stop bounded where that tree's close would have ended
 // the turn (carriedStopDeadline). It answers the claim as "token:state in tree T" while it still
 // runs there; stopped says it ran when this call began and runs nothing when it returns. A
-// suspension the claim holds for its turn or its boot is no error: the caller waits on its backoff
-// and asks again.
+// suspension the claim holds for its turn or its boot is no error: the caller waits for the claim's
+// stop (record.WaitForClaim) and asks again.
 //
 // It reads the claim through supervise.Machine.Claim, before the stop and after it: each read
 // decides whether the claim still has to stop, which is "a check a decision must not race"
@@ -4012,10 +4046,12 @@ func (r *outbox) stopCarried(ctx context.Context, machine *supervise.Machine, is
 
 // stopInLeftTree handles a suspend or tree close that names a tree its issue has left. It stops a
 // machine only while the claim still stands in payload.Tree, waits for a stored claim in that tree
-// until its machine is available, and otherwise finishes without acting. This row and a new-tree
-// start run on the issue's lifecycle lane, so the claim cannot be re-pointed between this check and
-// the suspension. A stop this call completes wakes the old tree's close rows; this row releases no
-// tree resources itself.
+// until its machine is available, and otherwise finishes without acting. Both waits are for a
+// change of the claim (record.WaitForClaim, dispatch://INFRA-4131/spec#b-r-wait-event): the
+// machine the daemon publishes for it (supervisor.add) and its stop are each one its hook is told.
+// This row and a new-tree start run on the issue's lifecycle lane, so the claim cannot be
+// re-pointed between this check and the suspension. A stop this call completes wakes the old
+// tree's close rows; this row releases no tree resources itself.
 func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest, issue record.Issue) error {
 	token, err := claim.NewToken(r.project, row.Issue, payload.Role)
 	if err != nil {
@@ -4028,8 +4064,8 @@ func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, paylo
 			return err
 		}
 		if may {
-			return wait.Errorf("%s of tree %s, which %s has left for tree %s, waits for the supervising machine of its stored claim %s",
-				payload.Op, payload.Tree, issue.Key, issue.Tree, token)
+			return eventWait(record.WaitForClaim(token), wait.Errorf("%s of tree %s, which %s has left for tree %s, waits for the supervising machine of its stored claim %s",
+				payload.Op, payload.Tree, issue.Key, issue.Tree, token))
 		}
 		return nil
 	}
@@ -4041,8 +4077,8 @@ func (r *outbox) stopInLeftTree(ctx context.Context, row record.OutboxRow, paylo
 		return err
 	}
 	if still != "" {
-		return wait.Errorf("%s of tree %s, which %s has left for tree %s, waits for %s to stop", payload.Op, payload.Tree,
-			issue.Key, issue.Tree, still)
+		return eventWait(record.WaitForClaim(token), wait.Errorf("%s of tree %s, which %s has left for tree %s, waits for %s to stop", payload.Op, payload.Tree,
+			issue.Key, issue.Tree, still))
 	}
 	if !stopped {
 		return nil
@@ -4100,10 +4136,12 @@ func carriedStopDeadline(oldRoot *record.Issue, now time.Time, stop time.Duratio
 // root's generation has become, still retires its claim and drives the cleanup; were the fences to
 // finish those rows without acting, the reservation would never confirm and the re-admitted tree
 // would wait forever. The cleanup (store.CleanupReservedTree) waits until every stored claim of the
-// tree has retired, then has the runtime release what it holds for the tree and confirms the
-// reservation. It reports false, acting on nothing, when the tree holds no unconfirmed
-// reservation and this close could not take one; the ordinary fences then decide. A cleanup that
-// finished ends the pods of the tree's issues (endTreePods).
+// tree has retired, a wait for any change of a claim of the tree (record.WaitForTreeClaims,
+// dispatch://INFRA-4131/spec#b-r-wait-event), each of which the claim's machine tells, then has the
+// runtime release what it holds for the tree and confirms the reservation. It reports false,
+// acting on nothing, when the tree holds no unconfirmed reservation and this close could not take
+// one; the ordinary fences then decide. A cleanup that finished ends the pods of the tree's issues
+// (endTreePods).
 func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, payload record.SuperviseRequest) (bool, error) {
 	lifecycle, reserved, err := r.trees.ReserveWorkflowTreeCleanup(ctx, r.project, payload.Tree, payload.Linger)
 	if err != nil {
@@ -4118,11 +4156,13 @@ func (r *outbox) reservedTreeClose(ctx context.Context, row record.OutboxRow, pa
 	}
 	if machine, found := r.supervisor.Machine(token); found {
 		if err := machine.Handle(ctx, supervise.RequestTreeClose{Claim: token}); err != nil {
-			return true, fmt.Errorf("close the tree of claim %s: %w", token, err)
+			return true, claimWait(token, payload.Tree, fmt.Errorf("close the tree of claim %s: %w", token, err))
 		}
 	}
 	r.forgetIdleRelease(ctx, row.Issue)
-	if err := r.trees.CleanupReservedTree(ctx, r.project, payload.Tree, lifecycle.Epoch, r.supervisor.deps.Runtime); err != nil {
+	if err := r.trees.CleanupReservedTree(ctx, r.project, payload.Tree, lifecycle.Epoch, r.supervisor.deps.Runtime); errors.Is(err, wait.ErrWaiting) {
+		return true, eventWait(record.WaitForTreeClaims(payload.Tree), err)
+	} else if err != nil {
 		return true, err
 	}
 	r.endTreePods(ctx, row.Issue, payload.Tree)
@@ -4178,20 +4218,21 @@ func (r *outbox) root(ctx context.Context, issue record.Issue) (*record.Issue, e
 }
 
 // startRoot is root for a start and, when first asks, what the first start of a child's own
-// architect that found no claim (childArchitectFirstStart) still waits for, "" for nothing: the
-// tree of root to run again, while root lingers or waits in the line for its tree to be opened
-// (record.QueuedRoot, under the design-gate steps the project gates); then the branch of issue,
-// while a branch row of it is still in the outbox (record.Store.BranchQueued). The ordering rule
-// holds a start behind an older branch row of its issue alone (record's outboxInOrder), and a
-// re-admission queues the child's branch row again, newer than this start, which may have waited
-// out the whole linger: so the wait on the row keeps the order the child's first phase start
-// queued the two in (workflow's gateOpened), and no role of the issue starts before its branch
-// exists. It is all read in one read-only repeatable-read transaction, so the rule judges one state
-// of the root, its gate and the outbox, once per try and for that start alone: the gate is not read
-// of a root that lingers, nor the branch row of a tree that does not run.
-func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) (*record.Issue, string, error) {
-	var root *record.Issue
-	waitsFor := ""
+// architect that found no claim (childArchitectFirstStart) still waits for, "" for nothing, with
+// the key of the event that ends that wait (dispatch://INFRA-4131/spec#b-r-wait-event): the tree
+// of root to run again, while root lingers or waits in the line for its tree to be opened
+// (record.QueuedRoot, under the design-gate steps the project gates), which admission's
+// re-admission and promotion of the root end (record.WaitForTreeRuns); then the branch of issue,
+// while a branch row of it is still in the outbox (record.Store.BranchQueued), which that row's
+// finish ends (record.WaitForBranch). The ordering rule holds a start behind an older branch row
+// of its issue alone (record's outboxInOrder), and a re-admission queues the child's branch row
+// again, newer than this start, which may have waited out the whole linger: so the wait on the row
+// keeps the order the child's first phase start queued the two in (workflow's gateOpened), and no
+// role of the issue starts before its branch exists. It is all read in one read-only
+// repeatable-read transaction, so the rule judges one state of the root, its gate and the outbox,
+// once per try and for that start alone: the gate is not read of a root that lingers, nor the
+// branch row of a tree that does not run.
+func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) (root *record.Issue, waitsFor, key string, err error) {
 	if err := store.TransactWith(ctx, r.pool, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		var err error
 		if root, err = r.records.Issue(ctx, tx, issue.Tree); err != nil || root == nil || !first {
@@ -4206,7 +4247,7 @@ func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) 
 			waits = record.QueuedRoot(*root, lifecycle, gate)
 		}
 		if waits {
-			waitsFor = fmt.Sprintf("the tree of %s to run again", root.Key)
+			waitsFor, key = fmt.Sprintf("the tree of %s to run again", root.Key), record.WaitForTreeRuns(root.Key)
 			return nil
 		}
 		branch, err := r.records.BranchQueued(ctx, tx, issue.Key)
@@ -4215,26 +4256,28 @@ func (r *outbox) startRoot(ctx context.Context, issue record.Issue, first bool) 
 		}
 		if branch {
 			waitsFor = fmt.Sprintf("the branch of %s, which a row of the outbox has still to create", issue.Key)
+			key = record.WaitForBranch(issue.Key)
 		}
 		return nil
 	}); err != nil {
-		return nil, "", fmt.Errorf("read the tree root of %s: %w", issue.Key, err)
+		return nil, "", "", fmt.Errorf("read the tree root of %s: %w", issue.Key, err)
 	}
-	return root, waitsFor, nil
+	return root, waitsFor, key, nil
 }
 
 // stopWithoutMachine is a stop row — a suspend or an issue close — that finds no machine for its
 // claim. Creation persists a claim before publishing its machine in memory, and the stop must not
 // be consumed in that interval: while the stored claim may still hold a process, the row waits for
-// the machine the later publish brings; a claim that runs nothing, or none at all, leaves it
-// nothing to stop.
+// the machine the later publish brings, a change of the claim the daemon's hook is told of
+// (supervisor.add, record.WaitForClaim, dispatch://INFRA-4131/spec#b-r-wait-event); a claim that
+// runs nothing, or none at all, leaves it nothing to stop.
 func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, token claim.Token) error {
 	pending, err := r.trees.StoredClaimMayRun(ctx, token, row.ID)
 	if err != nil {
 		return err
 	}
 	if pending {
-		return wait.Errorf("stop claim %s: waiting for its stored claim's supervising machine", token)
+		return eventWait(record.WaitForClaim(token), wait.Errorf("stop claim %s: waiting for its stored claim's supervising machine", token))
 	}
 	return nil
 }
@@ -4244,7 +4287,8 @@ func (r *outbox) stopWithoutMachine(ctx context.Context, row record.OutboxRow, t
 // store authorizes the close (store.IssueSuspension), waits its pod out and deletes it
 // (runtime.IssueSuspender). A pod the runtime deleted, or found gone, once the store authorized
 // it, ends the pause's hold of that pod (podDeleted); a pod whose close the store did not refuse
-// ends (endPods).
+// ends (endPods). A close the store holds for the issue's role stops or for a stored claim that may
+// still run waits for the event that ends that wait (issueStopWait).
 func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value record.IssueSuspend) error {
 	if r.supervisor == nil {
 		return errors.New("issue suspension executor has no claim supervisor")
@@ -4278,7 +4322,7 @@ func (r *outbox) suspendIssue(ctx context.Context, row record.OutboxRow, value r
 		authorized = act && err == nil
 		return act, err
 	}); err != nil {
-		return err
+		return issueStopWait(row.Issue, err)
 	}
 	if authorized {
 		if err := r.podDeleted(ctx, row.Issue, "the issue's close, park, linger or production check deleted its pod"); err != nil {
@@ -4410,9 +4454,12 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 	}
 	releasing := store.IssueReleased{Issue: row.Issue, Tree: payload.Tree, IssueGeneration: payload.Generation,
 		TreeGeneration: payload.TreeGeneration, Row: row.ID}
+	// A teardown the store holds for the issue's role stops, for a stored claim that may still
+	// run, or for the release's workspace check waits for the event that ends that wait
+	// (issueStopWait), here and at the runtime's read below.
 	first, err := r.trees.IssueRelease(ctx, r.project, releasing, record.OutOfWorkflow)
 	if err != nil {
-		return err
+		return issueStopWait(row.Issue, err)
 	}
 	switch first.Act {
 	case store.ReleaseOver:
@@ -4494,7 +4541,7 @@ func (r *outbox) releaseIssue(ctx context.Context, row record.OutboxRow, payload
 		}
 		released, err := releaser.ReleaseIssue(ctx, row.Issue, payload.Tree, authorize, writing)
 		if err != nil {
-			return err
+			return issueStopWait(row.Issue, err)
 		}
 		switch decision.Act {
 		case store.ReleaseOver:
@@ -5189,18 +5236,19 @@ func (r *outbox) startNewsOf(ctx context.Context, row record.OutboxRow, issue re
 // mergerWaitsForTheDesignGate is the one role fence a start carries: the merger merges nothing
 // while its tree's design gate is closed, because a new version of the spec is with its reviewer
 // and what may merge is what that review decides (dispatch://INFRA-714/spec R5). It answers a
-// wait error for a merger start the gate holds, which leaves the start on the row's backoff as a
-// check start waits on its look (checkLookHolds), and nil for every other role and an open gate.
-// The gate opening releases the row's next try, and tells every phase worker of the tree and the
-// root's architect as well (workflow's tellGateMoved).
+// wait for a merger start the gate holds, which waits for the gate to open (record.WaitForGate,
+// dispatch://INFRA-4131/spec#b-r-wait-event) on the capped backoff, and nil for every other role
+// and an open gate. The gate's opening makes the row due at once, and tells every phase worker of
+// the tree and the root's architect as well (workflow's tellGateMoved).
 //
 // It also waits while the merger's member is owed news of the approved design that no start can
 // carry yet, its change set not recorded, read or unavailable, or its earlier version neither read
 // nor recorded unread with no reconcile of the tree pending (mergerNewsUnrecorded): a merger
-// released without the change list could merge before it reads what changed. That wait ends within
-// the design_changes row's bounded attempts, since a pair Dispatch cannot read is recorded
-// unavailable, and a review history it cannot read is recorded unread (designChangesAttempts), and
-// the start then carries the news (newsForStart).
+// released without the change list could merge before it reads what changed. That wait is for the
+// news to be recorded (record.WaitForNews), which the reconcile's write makes due at once
+// (designChanges), and it ends within the design_changes row's bounded attempts, since a pair
+// Dispatch cannot read is recorded unavailable, and a review history it cannot read is recorded
+// unread (designChangesAttempts), and the start then carries the news (newsForStart).
 //
 // Every held message to a released merger (deliverHeld: a merge-queue removal, a merge forward's
 // hold and landed, and a merge-holds change) reads this same rule before it wakes it, so no such
@@ -5214,13 +5262,14 @@ func (r *outbox) mergerWaitsForTheDesignGate(ctx context.Context, issue record.I
 		return err
 	}
 	if closed {
-		return wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree)
+		return eventWait(record.WaitForGate(issue.Tree), wait.Errorf("the merger of %s waits for the design gate of %s to open", issue.Key, issue.Tree))
 	}
 	unrecorded, err := r.mergerNewsUnrecorded(ctx, issue)
 	if err != nil || !unrecorded {
 		return err
 	}
-	return wait.Errorf("the merger of %s waits for what changed in the approved design of %s to be recorded", issue.Key, issue.Tree)
+	return eventWait(record.WaitForNews(issue.Tree),
+		wait.Errorf("the merger of %s waits for what changed in the approved design of %s to be recorded", issue.Key, issue.Tree))
 }
 
 // checkLookHolds is the production check a check start row still has a look to start in, nil for
@@ -5528,14 +5577,17 @@ func (r *outbox) removeWorkspace(ctx context.Context, row record.OutboxRow, payl
 	}
 	// The workspace goes only once the close has retired every claim of the issue: a claim whose
 	// release the runtime refused still runs there, and one that is re-admitted before its close
-	// lands goes on in it. A retired claim's relaunch provisions the workspace again.
+	// lands goes on in it. A retired claim's relaunch provisions the workspace again. The removal
+	// waits for a change of the first claim not retired (record.WaitForClaim,
+	// dispatch://INFRA-4131/spec#b-r-wait-event), its retirement among them.
 	for _, role := range claim.Roles {
 		token, err := claim.NewToken(r.project, row.Issue, role)
 		if err != nil {
 			return fmt.Errorf("derive claim for outbox row %d: %w", row.ID, err)
 		}
 		if machine, found := r.supervisor.Machine(token); found && machine.Claim().State != supervise.StateRetired {
-			return wait.Errorf("workspace removal of %s waits for the tree's close to retire claim %s (%s)", row.Issue, token, machine.Claim().State)
+			return eventWait(record.WaitForClaim(token),
+				wait.Errorf("workspace removal of %s waits for the tree's close to retire claim %s (%s)", row.Issue, token, machine.Claim().State))
 		}
 	}
 	repo, err := issue.Repository()

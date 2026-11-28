@@ -530,6 +530,12 @@ func (s *Store) CommitIssueRelease(ctx context.Context, project string, release 
 	return s.issueRelease(ctx, project, release, outOfWorkflow, true)
 }
 
+// ErrWorkspaceCheckUnfinished is the wait of a release's teardown behind the release's own
+// workspace check, its issue_bundle row, still queued (issueRelease): the check's finish ends it,
+// which the daemon's outbox makes the waiting teardown due at
+// (dispatch://INFRA-4131/spec#b-r-wait-event).
+var ErrWorkspaceCheckUnfinished = wait.New("its workspace check")
+
 // issueRelease is IssueRelease, and CommitIssueRelease where commit is true.
 func (s *Store) issueRelease(ctx context.Context, project string, release IssueReleased, outOfWorkflow func(status string) bool, commit bool) (ReleaseDecision, error) {
 	if release.Issue == "" || release.Tree == "" || release.IssueGeneration == 0 || release.TreeGeneration == 0 || release.Row <= 0 {
@@ -635,7 +641,8 @@ func (s *Store) issueRelease(ctx context.Context, project string, release IssueR
 		// holds reads; a check below it is an earlier release's and holds no pod of this one. The
 		// row's kind keeps the name of the save it replaced (record.OutboxKindIssueBundle
 		// says why). The teardown never runs ahead of the check: a pod whose workspace nobody read
-		// could hold work that no branch on origin has, and the teardown deletes its disk.
+		// could hold work that no branch on origin has, and the teardown deletes its disk. The wait
+		// is ErrWorkspaceCheckUnfinished, which the check's finish ends.
 		var checking bool
 		if err := tx.QueryRow(ctx, `select exists (
 			select 1 from outbox where issue = $1 and kind = 'issue_bundle' and id >= $2 and id <= $3)`,
@@ -643,7 +650,7 @@ func (s *Store) issueRelease(ctx context.Context, project string, release IssueR
 			return err
 		}
 		if checking {
-			return wait.Errorf("issue %s release waits for its workspace check", release.Issue)
+			return fmt.Errorf("issue %s release waits for %w", release.Issue, ErrWorkspaceCheckUnfinished)
 		}
 		decision.Act, decision.Cause = ReleaseActs, ReleaseCauseNone
 		if !commit {

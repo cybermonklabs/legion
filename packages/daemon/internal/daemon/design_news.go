@@ -75,7 +75,10 @@ func owedNewsItems(news record.TreeNews, root string) []owedNewsItem {
 //  3. In one write transaction, it records each change set it read (record.Store.PutDesignChanges),
 //     each version the review history answered (record.Store.FillTold), clearing what the record
 //     held of that history as unread (record.Store.ClearDesignHistoryUnread), and each history it
-//     gave up on (record.Store.PutDesignHistoryUnread). A failed read is recorded unavailable or
+//     gave up on (record.Store.PutDesignHistoryUnread), and makes due at once every outbox row that
+//     waits for the tree's news to be recorded (record.WaitForNews,
+//     dispatch://INFRA-4131/spec#b-r-wait-event): a merger's start, and a held message to a released
+//     merger, that mergerWaitsForTheDesignGate holds. A failed read is recorded unavailable or
 //     unread, or returned for the row to retry, as giveUpReason answers. The told row of a
 //     question recorded unread is left knowing no version. A read that failed says nothing about
 //     the document, so it is never written as version 0, which says no version was approved
@@ -155,7 +158,8 @@ func (r *outbox) designChanges(ctx context.Context, row record.OutboxRow) error 
 					return err
 				}
 			}
-			return nil
+			_, err := r.records.ExpediteWaits(ctx, tx, []string{record.WaitForNews(root.Tree)}, at)
+			return err
 		}); err != nil {
 			return fmt.Errorf("record what the reconcile of the tree of %s read from Dispatch: %w", root.Tree, err)
 		}

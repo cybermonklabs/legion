@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/store/storetext"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
+	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 	"github.com/sjawhar/legion/daemon/internal/wait"
 )
 
@@ -285,6 +286,90 @@ func (w eventWaiting) Unwrap() error { return w.err }
 // so settle and every reader of the error still read it as that wait.
 func eventWait(key string, waiting error) error {
 	return eventWaiting{key: key, err: waiting}
+}
+
+// claimWait is err, the answer of token's claim's machine to what an outbox row asked of it, as
+// the row's event wait where that answer is a wait whose end the daemon records itself
+// (dispatch://INFRA-4131/spec#b-r-wait-event). Each of these the machine ends with a change of the
+// claim it tells (supervise.Deps.ClaimChanged), so the row waits for any change of the claim
+// (record.WaitForClaim): a task on its way to the agent (supervise.ErrTaskSending), which the
+// send's end settles; a delivery behind the claim's pending one (supervise.ErrDeliveryPending),
+// which a turn's confirmation of that one, its retirement or its drop ends; a suspension held for
+// a turn, a launch or a compaction (supervise.ErrSuspendHeld), which lands at its end; and a
+// suspension that holds (supervise.ErrHeldByOperator, supervise.ErrHeldByController), which a
+// resume lifts. A tree's reserved cleanup that the claim's admission or launch met
+// (treelifecycle.ErrCleanupReserved) ends only at the next epoch of tree, the claim's tree, which
+// admission opens (record.WaitForEpoch); so does the tree's confirmed cleanup
+// (treelifecycle.ErrLifecycleClosed), which the admission or launch of a start meets between the
+// confirmation and the promotion that opens that next epoch, and which is no failure of the row
+// but the same wait, made one here. Every other answer is err as it is: a failure, or a wait whose
+// end the daemon does not record, such as the Envoy listener's freeing of a role
+// (supervise.ErrForgetWaitsForRole), which keeps the outbox's backoff.
+func claimWait(token claim.Token, tree string, err error) error {
+	switch {
+	case errors.Is(err, treelifecycle.ErrCleanupReserved):
+		return eventWait(record.WaitForEpoch(tree), err)
+	case errors.Is(err, treelifecycle.ErrLifecycleClosed):
+		return eventWait(record.WaitForEpoch(tree), wait.Errorf("%s waits for the next epoch of tree %s: %w", token, tree, err))
+	case errors.Is(err, supervise.ErrTaskSending), errors.Is(err, supervise.ErrDeliveryPending),
+		errors.Is(err, supervise.ErrSuspendHeld), errors.Is(err, supervise.ErrHeldByOperator),
+		errors.Is(err, supervise.ErrHeldByController):
+		return eventWait(record.WaitForClaim(token), err)
+	}
+	return err
+}
+
+// issueStopWait is err, the store's answer to the authorization of a close or a release of
+// issue's pod (store.Store.IssueSuspension, store.Store.IssueRelease), as the row's event wait
+// where that answer is one of the store's waits (dispatch://INFRA-4131/spec#b-r-wait-event): the
+// issue's role stops still queued (store.ErrRoleStopsUnfinished), which their finishes end
+// (record.WaitForRoleStops); a stored claim of the issue that may still hold a process
+// (store.StoredClaimWait), which the claim's stop ends (record.WaitForClaim); and the release's
+// workspace check still queued (store.ErrWorkspaceCheckUnfinished), which its finish ends
+// (record.WaitForWorkspaceCheck). Every other answer is err as it is.
+func issueStopWait(issue string, err error) error {
+	var stored store.StoredClaimWait
+	switch {
+	case errors.Is(err, store.ErrRoleStopsUnfinished):
+		return eventWait(record.WaitForRoleStops(issue), err)
+	case errors.Is(err, store.ErrWorkspaceCheckUnfinished):
+		return eventWait(record.WaitForWorkspaceCheck(issue), err)
+	case errors.As(err, &stored):
+		return eventWait(record.WaitForClaim(stored.Token), err)
+	}
+	return err
+}
+
+// finishedWaits is the keys of the waits row's finish ends (record.Store.ExpediteWaits,
+// dispatch://INFRA-4131/spec#b-r-wait-event), which finish makes due in the transaction that
+// deletes the row: a role stop of the issue (a supervise row's suspend, step_stop, issue_close or
+// release), which a close or a release of its pod waits for (record.WaitForRoleStops); the issue's
+// workspace check, its issue_bundle row, which a release's teardown waits for
+// (record.WaitForWorkspaceCheck); its branch, the issue_branch row, which the first start of a
+// child's own architect waits for (record.WaitForBranch); and a notice, which every later notice
+// to the same architect waits behind (record.WaitForRow). Every other row ends no wait.
+func finishedWaits(row record.OutboxRow) []string {
+	switch row.Kind {
+	case record.OutboxKindNotice:
+		return []string{record.WaitForRow(row.ID)}
+	case record.OutboxKindIssueBundle:
+		return []string{record.WaitForWorkspaceCheck(row.Issue)}
+	case record.OutboxKindIssueBranch:
+		return []string{record.WaitForBranch(row.Issue)}
+	case record.OutboxKindSupervise:
+		payload, err := record.DecodeOutboxPayload(row)
+		if request, ok := payload.(record.SuperviseRequest); err == nil && ok && roleStop(request.Op) {
+			return []string{record.WaitForRoleStops(row.Issue)}
+		}
+	}
+	return nil
+}
+
+// roleStop is whether op is one of the role stops a close and a release of an issue's pod wait for
+// (store's issueStopFences): a suspend, a step stop, an issue close and a role stop of an idle
+// release.
+func roleStop(op record.SuperviseOp) bool {
+	return op == "suspend" || op == "step_stop" || op == "issue_close" || op == "release"
 }
 
 // readyReleasedLine is the one line a ready's release writes once its transaction commits

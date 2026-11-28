@@ -3883,6 +3883,7 @@ func (s projectRecords) EnqueueGatedSteps(ctx context.Context, tx pgx.Tx, publis
 
 // DropCatchUps tells the wake pacing which held catch-ups it deleted, and logs the end of the wait
 // of each one it deleted while it waited (waitsEndedOnCommit), each once the transaction commits.
+// A notice behind one it deleted is due at once (droppedNotices).
 func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue string, now time.Time) ([]record.WaitingRow, error) {
 	if !s.ownsKey(record.OutboxKindNotice, issue) {
 		return nil, nil
@@ -3899,19 +3900,39 @@ func (s projectRecords) DropCatchUps(ctx context.Context, tx pgx.Tx, issue strin
 		store.OnCommit(ctx, func() { s.catchUps.drop(ids) })
 	}
 	waitsEndedOnCommit(ctx, s.logger(), dropped, "a newer catch-up of its issue deleted it", now)
-	return dropped, nil
+	return dropped, s.droppedNotices(ctx, tx, dropped, now)
 }
 
 // DropQueuedChanges logs the end of the wait of each changes request it deleted while it waited
 // (waitsEndedOnCommit), once the transaction commits. It takes no key of an issue, so it refuses
-// none: its rows are the ones the clear of a generation of the daemon's own project read.
+// none: its rows are the ones the clear of a generation of the daemon's own project read. A
+// notice behind one it deleted is due at once (droppedNotices).
 func (s projectRecords) DropQueuedChanges(ctx context.Context, tx pgx.Tx, rows []int64) ([]record.WaitingRow, error) {
 	dropped, err := s.Store.DropQueuedChanges(ctx, tx, rows)
 	if err != nil {
 		return dropped, err
 	}
-	waitsEndedOnCommit(ctx, s.logger(), dropped, "the clear of its generation deleted it", time.Now())
-	return dropped, nil
+	now := time.Now()
+	waitsEndedOnCommit(ctx, s.logger(), dropped, "the clear of its generation deleted it", now)
+	return dropped, s.droppedNotices(ctx, tx, dropped, now)
+}
+
+// droppedNotices makes due, in the delete's own transaction, every notice that waits behind a
+// notice of dropped (record.WaitForRow, dispatch://INFRA-4131/spec#b-r-wait-event): a notice to an
+// architect waits for every earlier one to that architect to end, and a delete ends it as its
+// finish would (the outbox's finish, finishedWaits).
+func (s projectRecords) droppedNotices(ctx context.Context, tx pgx.Tx, dropped []record.WaitingRow, now time.Time) error {
+	var keys []string
+	for _, row := range dropped {
+		if row.Kind == record.OutboxKindNotice {
+			keys = append(keys, record.WaitForRow(row.ID))
+		}
+	}
+	if len(keys) == 0 {
+		return nil
+	}
+	_, err := s.ExpediteWaits(ctx, tx, keys, now)
+	return err
 }
 
 func (s projectRecords) DropUnfencedCheckWakes(ctx context.Context, tx pgx.Tx, issue string) error {

@@ -1232,7 +1232,10 @@ func artifactReview(step record.DesignStep, fact intake.DispatchArtifact) Decisi
 // and never that a person approved it: gateOpenedMessage writes the opening either way.
 //
 // No phase is moved and no turn is interrupted: the gate holds the merger's start while it is
-// closed (the daemon's supervise row) and releases it at the opening, and every other worker
+// closed (the daemon's supervise row) and releases it at the opening, which makes due at once, in
+// this transaction, every outbox row that waits for the tree's gate to open (record.WaitForGate,
+// record.Store.ExpediteWaits, dispatch://INFRA-4131/spec#b-r-wait-event): the merger's start, and
+// a held message to a released role (the daemon's deliverHeld). Every other worker
 // decides for itself what the version means for the work in hand. A phase no worker holds names
 // nobody. The gate is the root's, so the root's architect is told, once. A member in accepting is
 // passed over, since that phase is an architect's own: the root's is the root's architect, told
@@ -1276,6 +1279,8 @@ func (e *Engine) tellGateMoved(ctx context.Context, tx pgx.Tx, key string, step 
 		if err := e.store.CloseOpenings(ctx, tx, root.Tree); err != nil {
 			return err
 		}
+	} else if _, err := e.store.ExpediteWaits(ctx, tx, []string{record.WaitForGate(root.Tree)}, e.now()); err != nil {
+		return err
 	}
 	if lingers, err := record.TreeLingers(ctx, e.store, tx, root.Tree); err != nil || lingers {
 		return err
