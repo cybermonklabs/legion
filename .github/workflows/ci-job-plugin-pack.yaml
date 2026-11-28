@@ -41,7 +41,8 @@ name: CI job plugin-pack
 #     (internal/testbin's OMP refuses on GitHub Actions without LEGION_TEST_OMP). It is installed
 #     by .github/actions/install-omp from the release archive, checked against its pinned sha256.
 #   * setup-go and the go-daemon cache restore. The step compiles internal/daemon's test binary,
-#     the same build the daemon-go race step makes, so it restores the same entry.
+#     with no race detector, on the dependencies the go-daemon entry holds, so it restores that
+#     entry.
 # That job starts no database, no tmux, no uv and no container image.
 #
 # What the step-models-chain job runs is the two e2e-tagged tests of the same package, which
@@ -109,8 +110,9 @@ jobs:
           token: ''
           cache: false
 
-      # go-daemon, shared with typecheck, daemon-go and pi-legion: this step compiles the same
-      # package's test binary the daemon-go race step does.
+      # go-daemon, shared with typecheck, daemon-go, step-models-chain and pi-legion: this step
+      # compiles internal/daemon's test binary, with no race detector, on the dependencies that
+      # entry holds.
       # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
@@ -157,13 +159,15 @@ jobs:
   #     test starts, and a step checks it, as every lane that starts one checks its own.
   #
   # The step runs the daemon's e2e tag, which no other job of ci.yaml runs, and selects with
-  # -run. So internal/daemon's untagged tests run in daemon-go-race's "Test the concurrent
-  # packages under the race detector" (ci_job_reads.py's TAG_RUNS)
+  # -run. So internal/daemon's untagged tests run in "Test the concurrent packages under the race
+  # detector", the step of the daemon-go-race-legs matrix that daemon-go-race passes only when
+  # every leg passed (ci_job_reads.py's TAG_RUNS)
   # (.github/ci-notes/ci.md#why-the-step-models-chain-is-a-job-of-its-own).
   step-models-chain:
     if: inputs.job == 'step-models-chain'
     # ubuntu-24.04, not arm64: the pinned Oh My Pi this job installs is built for linux-x64 alone
-    # (.github/ci-notes/ci.md#choose-the-runner-ubuntu-2404-arm-unless-the-job-needs-an-x86_64-machine).
+    # (.github/ci-notes/ci.md#the-router-every-check-a-pull-request-or-the-merge-queue-runs,
+    # "Runners").
     runs-on: ubuntu-24.04
     # The step's own -timeout is 40 minutes. So a hung chain prints the goroutine dump that names
     # the pane it waited for before the runner cancels the job. Around it are the Bun install, the
@@ -220,8 +224,11 @@ jobs:
           token: ''
           cache: false
 
-      # go-daemon, shared with typecheck, daemon-go, plugin-pack and pi-legion: this step compiles
-      # the same package's test binary the daemon-go race step does.
+      # go-daemon, shared with typecheck, daemon-go, plugin-pack and pi-legion. This step compiles
+      # internal/daemon's test binary under -tags e2e, with no -race. It reads the module cache and
+      # the objects of the packages that binary imports, which the fill's build of every package's
+      # test binary leaves (.github/ci-notes/ci-caches.md#what-the-go-daemon-fill-builds-on-each-leg).
+      # why: .github/ci-notes/ci.md#a-cache-restore-comes-before-every-step-that-can-write-a-path-it-names
       - uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |

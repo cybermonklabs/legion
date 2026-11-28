@@ -18,16 +18,19 @@
 -- end of that run names no counts. A launch it made gets its row at the claim's next write. An
 -- outbox step_record row it queued names no set model and no answers.
 --
--- The way back below runs with every daemon of the database stopped, before the earlier image is
--- pinned (docs/kubernetes.md, "Rolling back the release that counts each step's models"). The
--- release before decodes a step_record row strictly, so the update takes off the two keys it
--- refuses. The drops take the column and the table. The delete makes the roll forward apply this
--- migration again.
+-- The way back below is one transaction, so a run that fails changes nothing. It runs with every
+-- daemon of the database stopped, before the earlier image is pinned
+-- (docs/kubernetes.md, "Rolling back the release that counts each step's models"). The release
+-- before decodes a step_record row strictly, so the update takes off the two keys it refuses. The
+-- drops take the column and the table. The delete makes the roll forward apply this migration
+-- again.
 --
+-- begin;
 -- update outbox set payload = payload - 'set_model' - 'answers' where kind = 'step_record';
 -- alter table step_starts drop column start_totals;
 -- drop table claim_launches;
 -- delete from schema_version where version = 20261125171320;
+-- commit;
 create table claim_launches (
   claim text not null,
   generation bigint not null check (generation > 0),

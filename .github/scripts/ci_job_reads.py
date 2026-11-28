@@ -1341,7 +1341,7 @@ STEP_MODELS_CHAIN_TESTS = ["TestStepModelsLive", "TestTheStandInGivesEachRespons
 STEP_MODELS_CHAIN_PACKAGE = "internal/daemon"
 STEP_MODELS_CHAIN_JOB = "step-models-chain"
 STEP_MODELS_CHAIN_STEP = "Run the step-models chain on the real harnesses"
-STEP_MODELS_CHAIN_PATTERN = f"'^({'|'.join(sorted(STEP_MODELS_CHAIN_TESTS))})$'"
+STEP_MODELS_CHAIN_PATTERN = names_pattern(STEP_MODELS_CHAIN_TESTS)
 STEP_MODELS_CHAIN_SCRIPT = (f"go test -tags e2e -count=1 -timeout 40m -v -run {STEP_MODELS_CHAIN_PATTERN} "
                             f"./{STEP_MODELS_CHAIN_PACKAGE}/")
 
@@ -2948,10 +2948,12 @@ TAG_RUNS = [
            f"envoy-infra-build's \"{INFRA_PLAIN_STEP}\" runs {', '.join(INFRA_NATSLIVE_PACKAGES)} untagged",
            job_file("envoy-infra-go")),
     # The chain's step joins -tags e2e with -run, so it runs the two tagged tests of
-    # internal/daemon alone. That package's untagged tests are the daemon-go race step's, which
-    # is the one run of them (docs/testing.md), and daemon_go_tests is that step's filter.
-    TagRun("step_models_chain", STEP_MODELS_CHAIN_JOB, STEP_MODELS_CHAIN_STEP, "daemon_go_tests", "daemon-go-race",
-           f"daemon-go-race's \"{DAEMON_RACE_STEP}\" runs ./{STEP_MODELS_CHAIN_PACKAGE}'s untagged tests",
+    # internal/daemon alone. That package's untagged tests are the race step's. The step is in
+    # daemon-go-race-legs, and daemon-go-race passes only when every leg passed. It is the one run
+    # of them (docs/testing.md), and daemon_go_tests is its filter.
+    TagRun("step_models_chain", STEP_MODELS_CHAIN_JOB, STEP_MODELS_CHAIN_STEP, "daemon_go_tests", DAEMON_RACE_JOB,
+           f"the \"{DAEMON_RACE_STEP}\" step of {DAEMON_RACE_LEGS_JOB}, the legs {DAEMON_RACE_JOB} passes only "
+           f"when each passed, runs ./{STEP_MODELS_CHAIN_PACKAGE}'s untagged tests",
            job_file(STEP_MODELS_CHAIN_JOB)),
 ]
 

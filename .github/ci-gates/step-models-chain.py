@@ -11,18 +11,19 @@
 # The reads the two tests make are declared where the tests are, in the //ci: lines of
 # internal/daemon/step_models_live_test.go and live_agent_proof_test.go. The job compiles both
 # under the e2e tag. What is declared here is what the job's own steps read. That is the two
-# harness installs, the test images the package's broker pulls, and the Postgres checks of every
-# lane that starts a Dispatch process. It is also the Bun install and the Go setup the step is
-# built on.
+# harness installs and the jj install, the test images the package's broker pulls, and the
+# Postgres checks of every lane that starts a Dispatch process. It is also the Bun install and the
+# Go setup the step is built on.
 GATE = gate("step_models_chain", STEP_MODELS_CHAIN_JOB, runs=[
     # The chain starts a Dispatch process, so the job checks that its Postgres service allows one,
     # as daemon-go-race does.
     ceiling_run(STEP_MODELS_CHAIN_JOB),
 ], exact=[
-    # check-ci-filters.sh reduces no step that joins -tags with -run under a job whose install
-    # actions write $GITHUB_ENV, so the step's whole script is pinned. What it compiles is every
-    # test file of internal/daemon the e2e tag builds. A -run leaves a test out of the run, never
-    # out of the build.
+    # check-ci-filters.sh reduces no go line that carries -run (ci_filter_coverage.py's
+    # reduce_line): -run is no flag the simple form takes, and its quoted pattern holds characters
+    # the form refuses. So the step's whole script is pinned. What it compiles is every test file
+    # of internal/daemon the e2e tag builds. A -run leaves a test out of the run, never out of the
+    # build.
     pinned_step(STEP_MODELS_CHAIN_JOB, STEP_MODELS_CHAIN_STEP, DAEMON, STEP_MODELS_CHAIN_SCRIPT, [
         (DAEMON, [f"./{STEP_MODELS_CHAIN_PACKAGE}/"], "go test -tags e2e -run over the package the two tests are in",
          {"tags": "e2e"}),

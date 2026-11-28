@@ -444,6 +444,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-plugin-pack.yaml
     with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
       job: plugin-pack
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 
@@ -457,6 +458,7 @@ jobs:
       checks: write
     uses: ./.github/workflows/ci-job-plugin-pack.yaml
     with:
+      # why: .github/ci-notes/ci.md#two-jobs-that-call-one-file
       job: step-models-chain
       ci-ok-changes: ${{ toJSON(needs.changes) }}
 

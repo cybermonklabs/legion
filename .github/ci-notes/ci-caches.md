@@ -75,9 +75,10 @@ nothing.
 Eight Go families, each one a restore step of ci.yaml's run names, keyed on the runner's
 architecture and on the Go version the family's own module installs (go-envoy-infra on the hash
 of its module files too, for the reason its job gives): go-notices (lint's notices step),
-go-daemon (typecheck, daemon-go, plugin-pack and pi-legion), go-envoy (envoy-go-build,
-envoy-go-checks, listener-server-change, envoy-e2e-local, envoy-session-stall and envoy-refill,
-and the embedder job of .github/workflows/dispatch-browser.yaml), go-envoy-test (envoy-go,
+go-daemon (typecheck, daemon-go, plugin-pack, step-models-chain and pi-legion), go-envoy
+(envoy-go-build, envoy-go-checks, listener-server-change, envoy-e2e-local, envoy-session-stall
+and envoy-refill, and the embedder job of .github/workflows/dispatch-browser.yaml), go-envoy-test
+(envoy-go,
 envoy-go-claim-model, which builds the API's test binary of that set, the binaries, multiprocess
 and visual jobs of .github/workflows/dispatch-browser.yaml, which ci.yaml's dispatch-browser and
 dispatch-browser-pr
@@ -99,10 +100,10 @@ objects. So each family is filled on every architecture one of its readers runs 
 leg per runner: go-notices and go-envoy-race on ubuntu-24.04-arm alone, where lint and the race
 lane run; go-daemon, go-envoy, go-envoy-test and go-envoy-infra on ubuntu-24.04-arm and on
 ubuntu-24.04 both, since each has a reader on each (typecheck and the envoy lanes but one on the
-first; daemon-go, plugin-pack, pi-legion, envoy-go-build, envoy-go-checks, envoy-go-claim-model,
-the browser lane, the two-build jobs and the release builds on the second); and go-envoy-smoke
-and go-envoy-darwin-vet on ubuntu-24.04 alone, where envoy-smoke and envoy-go-build run. A leg
-builds what that
+first; daemon-go, plugin-pack, step-models-chain, pi-legion, envoy-go-build, envoy-go-checks,
+envoy-go-claim-model, the browser lane, the two-build jobs and the release builds on the second);
+and go-envoy-smoke and go-envoy-darwin-vet on ubuntu-24.04 alone, where envoy-smoke and
+envoy-go-build run. A leg builds what that
 runner's readers build and no more: go-daemon's arm64 reader is typecheck alone, so its arm64 leg
 runs typecheck's vet and leaves the test and race builds to the x86_64 leg.
 
@@ -157,11 +158,12 @@ says) and builds from nothing.
 
 ## What the go-daemon fill builds on each leg
 
-go-daemon keys on packages/daemon/go.mod's Go: ci.yaml's typecheck, daemon-go, plugin-pack and
-pi-legion set Go up from it. One leg per runner, because typecheck runs on ubuntu-24.04-arm and the
-other three on ubuntu-24.04, and the key carries the runner's architecture. Each leg builds what its
-runner's readers build: typecheck's vet on both, and the test and race builds on the x86_64 leg
-alone, since no job that reads the arm64 entry runs them. Each push fills it again from its newest
+go-daemon keys on packages/daemon/go.mod's Go: ci.yaml's typecheck, daemon-go, plugin-pack,
+step-models-chain and pi-legion set Go up from it. One leg per runner, because typecheck runs on
+ubuntu-24.04-arm and the other four on ubuntu-24.04, and the key carries the runner's
+architecture. Each leg builds what its runner's readers build: typecheck's vet on both, and the
+test and race builds on the x86_64 leg alone, since no job that reads the arm64 entry runs them.
+Each push fills it again from its newest
 entry (.github/ci-notes/ci-caches.md#why-each-fill-builds-on-the-newest-entry-of-its-family).
 
 What typecheck builds is the vet behind the e2e tag. It is the one build of this family an arm64 job
@@ -177,8 +179,11 @@ daemon-go's race legs (.github/go-legs.yaml) to, so a package that joins or leav
 there is the side the fill's command follows. The test binaries are compiled and never run (`go test
 -c -o /dev/null` links each one and writes nothing): running them would want tmux, jj, Oh My Pi, uv,
 container images and a Postgres service, and the build cache this entry holds is what a compile
-leaves. The x86_64 leg alone: daemon-go, plugin-pack and pi-legion, which read these objects, run on
-ubuntu-24.04.
+leaves. The x86_64 leg alone: daemon-go, plugin-pack, step-models-chain and pi-legion, which read
+these objects, run on ubuntu-24.04. The fill links no test binary under the `e2e` tag.
+step-models-chain's build of internal/daemon's still takes the module cache from the entry, and
+the objects of every package that binary imports: the module's `e2e` tag is on test files alone,
+so the fill's untagged build compiles those packages from the same files.
 
 ## What the go-notices fill builds
 

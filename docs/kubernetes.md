@@ -3033,17 +3033,20 @@ Run the way back below with every daemon of the database stopped, before the ear
 Run it in one `psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1` session, before the block of any older release below:
 
 ```sql
+begin;
 update outbox set payload = payload - 'set_model' - 'answers' where kind = 'step_record';
 alter table step_starts drop column start_totals;
 drop table claim_launches;
 delete from schema_version where version = 20261125171320;
+commit;
 ```
 
 The header of `20261125171320_launch_model_totals.up.sql` carries this same block.
 The `update` takes the two keys off each queued step record, so the end of that step lands with no counts.
 The `alter` and the `drop` take the column and the table.
 The `delete` makes the roll forward's `Migrate` apply the migration again, which adds them back empty.
-A second run stops at the `alter`, since the first run took the column.
+The block is one transaction, so a run that fails changes nothing.
+A second run after a whole one stops at the `alter`, since the first run took the column.
 
 **Every daemon sharing the database moves together.**
 The table, the column and the outbox are shared by every project's daemon on the database, and the block names no project.
@@ -4274,7 +4277,7 @@ A rollback of a store that cybermonklabs/legion#5310's release or a later one mi
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
-A rollback of a store that the release that counts each step's models migrated runs [its way back](#rolling-back-the-release-that-counts-each-steps-models) first, which deletes the row of 20261125171320.
+A rollback of a store that the release that counts each step's models migrated runs [its way back](#rolling-back-the-release-that-counts-each-steps-models), which deletes the row of 20261125171320, before every other way back here, the next line's among them.
 A rollback of a store that the release that releases a left session's claim migrated runs the way back in the header of `20261127193428_claim_left.up.sql` first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, drops `issues.claim_left` and deletes that version's row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 `20261120210000_issue_release_committed.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its column in place and the release before writes none of it (the migration's header).
 `20261126001514_pod_release_give_ups.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its table in place and the release before names it in no statement (the migration's header).
