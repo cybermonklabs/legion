@@ -3,7 +3,6 @@ package natscallout
 import (
 	"context"
 	"crypto/ecdsa"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strconv"
@@ -25,6 +24,9 @@ import (
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
+
+// Every storm below runs its hub and its clients in a peer process and the auth service in this
+// one, each role on CPUs of its own, as their deployments run (stormpeer_test.go).
 
 // sessionOption is a session's credential as natscred.Session presents it, on a token source of
 // the test's own: each CONNECT takes the token current answers once, signs the nonce the server
@@ -94,11 +96,12 @@ func reconnectingSession(t *testing.T, url string, s *session, giveUpOnRefusal b
 //
 // Five hundred is the size the auth service verification's check c-callout-available names, and
 // more than the service's decision slots, so the reconnects that reach it together queue for a
-// slot. Under the race detector it is two hundred (raceEnabled): the clients and the hub run in the
-// test's own process, and at five hundred under -race on a loaded machine the first connects
-// failed before anything under test had started. envoy-go's plain step runs the five hundred. The
-// first connects are made twenty at a time for the same reason: they set the storm up and are not
-// the storm.
+// slot. Under the race detector it is two hundred (raceEnabled): the detector makes each decision
+// several times the cost, and this row holds the service to one CPU, where five hundred decisions
+// at that cost would not fit the hub's timer; the service's own share is what the detector makes
+// dear, and the peer's hub and clients it leaves alone. envoy-go's plain step runs the five
+// hundred. The first connects are made twenty at a time (connectingAtOnce) for a reason of their
+// own: they set the storm up and are not the storm.
 //
 // The server's own log cannot say which of its give-ups were requests the service was sent. It
 // waits out its authorization timeout for a request it sent while no service was subscribed as
@@ -126,14 +129,10 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		heldOff        = 3 * time.Second
 		controlHeldOff = 9 * time.Second
 	)
-	keys := testnats.NewCalloutKeys(t)
-	server, url := testnats.StartWithCalloutServer(t, keys)
-	sessions := make([]*session, connections)
-	for index := range sessions {
-		sessions[index] = newSession(t, fmt.Sprintf("ses_storm_%03d", index), 15*time.Minute)
-	}
+	peer := startStormPeer(t)
+	hub := peer.do(peerCommand{Do: "start", Sessions: connections})
 	var decided, slowest atomic.Int64
-	introspect := introspector(sessions...)
+	introspect := peerIntrospection(hub.Answers, 0)
 	timed := func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 		began := time.Now()
 		decision, err := Decide(ctx, deps, services, req)
@@ -148,26 +147,10 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		decided.Add(1)
 		return introspect(ctx, token)
 	}}
-	service := startService(t, url, keys, deps, timed)
+	service := startService(t, hub.URL, hub.Keys, deps, timed)
 
-	var reconnected atomic.Int64
-	clients := newLastNonces()
-	conns := make([]*nats.Conn, connections)
-	errs := make([]error, connections)
-	connecting := make(chan struct{}, 20)
-	var wait sync.WaitGroup
-	for index, s := range sessions {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			connecting <- struct{}{}
-			defer func() { <-connecting }()
-			conns[index], errs[index] = reconnectingSession(t, url, s, false, clients.signer(s.id),
-				nats.ReconnectHandler(func(*nats.Conn) { reconnected.Add(1) }))
-		}()
-	}
-	wait.Wait()
-	require.NoError(t, errors.Join(errs...), "a first connection was not admitted")
+	first := peer.do(peerCommand{Do: "connect", Mode: "reconnecting", Bound: time.Minute})
+	require.Empty(t, failedConnects(first), "a first connection was not admitted")
 	require.EqualValues(t, connections, decided.Load(), "every first connection was decided")
 
 	// The service is off the bus for heldOff, so every client is refused for that long and must
@@ -176,39 +159,32 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 	// backUp is taken once back's subscription has reached the server (startService), so the
 	// server sends back every request on a nonce signed after it.
 	service.Close()
-	restarted := len(server.Log())
-	server.Restart(t, testnats.CalloutConfig(keys))
+	restarted := peer.do(peerCommand{Do: "restart"})
 	time.Sleep(heldOff)
 	backDecided := newDecidedNonces()
 	backLog := &logtest.Buffer{}
 	backDeps := deps
 	backDeps.Log = slog.New(slog.NewTextHandler(backLog, nil))
-	back := startService(t, url, keys, backDeps, backDecided.wrap(timed))
+	back := startService(t, hub.URL, hub.Keys, backDeps, backDecided.wrap(timed))
 	backUp := time.Now()
-	testwait.WithinPolling(t, 60*time.Second, 50*time.Millisecond, "every connection admitted again", allConnected(conns))
-	closed := 0
-	for _, nc := range conns {
-		if nc.IsClosed() {
-			closed++
-		}
-	}
-	require.Zero(t, closed, "%d connections closed for good while the service was away", closed)
+	peer.awaitConnected(connections, 60*time.Second)
 	require.GreaterOrEqual(t, decided.Load(), int64(2*connections), "each reconnect was decided afresh")
 	require.Less(t, time.Duration(slowest.Load()), decideBudget,
 		"the slowest of %d decisions took %s, at or past the %s budget", decided.Load(), time.Duration(slowest.Load()), decideBudget)
-	refusedWhileAway := strings.Count(server.Log()[restarted:], "authentication error")
+	report := peer.do(peerCommand{Do: "report"})
+	refusedWhileAway := countSince(report.Log, restarted.Logged, "authentication error")
 	t.Logf("reconnects=%d decided=%d slowest-decision=%s; clients refused while the service was away: %d",
-		reconnected.Load(), decided.Load(), time.Duration(slowest.Load()), refusedWhileAway)
+		report.Reconnects, decided.Load(), time.Duration(slowest.Load()), refusedWhileAway)
 	require.Positive(t, refusedWhileAway, "the server refused no client while the service was away, which is what the storm is for")
 
 	// Every client is connected, so every request the server sent back has been answered or given
 	// up on, and back's Close writes its reporter's last line.
 	back.Close()
 	require.Empty(t, backLog.String(), "back dropped, refused or could not answer requests the server sent it")
-	unheld, held := backDecided.unheld(clients)
+	unheld, held := backDecided.unheld(report.Last)
 	require.Equal(t, connections, held, "only %d of %d clients are connected on a request back decided: the nonces do not show the connections", held, connections)
 	require.Empty(t, unheld, "the server gave up on %d requests back admitted: no client is connected on their nonces", len(unheld))
-	undecided := backDecided.undecidedSince(clients, backUp)
+	undecided := backDecided.undecidedSince(report.Signed, backUp)
 	require.Empty(t, undecided, "back did not decide %d requests the server sent it after it subscribed: it dropped them without answering, refusing or counting them", len(undecided))
 
 	t.Run("control: admissions the server stopped waiting for", func(t *testing.T) {
@@ -219,10 +195,9 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 		was := decideBudget
 		decideBudget = 2 * hubTimeout
 		t.Cleanup(func() { decideBudget = was })
-		keys := testnats.NewCalloutKeys(t)
-		_, url := testnats.StartWithCalloutServer(t, keys)
 		const control = 5
-		controls := sessionsNamed(t, "ses_late", control)
+		peer := startStormPeer(t)
+		hub := peer.do(peerCommand{Do: "start", Sessions: control})
 		var seen sync.Map
 		lateFirst := func(ctx context.Context, deps Deps, services []config.NATSService, req Request) (Decision, error) {
 			if _, again := seen.LoadOrStore(req.Token, true); !again {
@@ -230,56 +205,55 @@ func TestACalloutStormAfterAServerRestartAdmitsEveryConnection(t *testing.T) {
 			}
 			return Decide(ctx, deps, services, req)
 		}
-		decidedHere, clientsHere := newDecidedNonces(), newLastNonces()
-		late := startService(t, url, keys, Deps{Introspect: introspector(controls...)}, decidedHere.wrap(lateFirst))
-		conns := make([]*nats.Conn, control)
-		errs := make([]error, control)
-		var wait sync.WaitGroup
-		for index, s := range controls {
-			wait.Go(func() {
-				conns[index], errs[index] = reconnectingSession(t, url, s, false, clientsHere.signer(s.id), nats.RetryOnFailedConnect(true))
-			})
-		}
-		wait.Wait()
-		require.NoError(t, errors.Join(errs...))
-		testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "every control client admitted on its second request", allConnected(conns))
+		decidedHere := newDecidedNonces()
+		late := startService(t, hub.URL, hub.Keys, Deps{Introspect: peerIntrospection(hub.Answers, 0)}, decidedHere.wrap(lateFirst))
+		connected := peer.do(peerCommand{Do: "connect", Mode: "reconnecting", Retry: true, Bound: time.Minute})
+		require.Empty(t, failedConnects(connected))
+		peer.awaitConnected(control, 30*time.Second)
 		late.Close()
-		unheld, held := decidedHere.unheld(clientsHere)
+		report := peer.do(peerCommand{Do: "report"})
+		unheld, held := decidedHere.unheld(report.Last)
 		require.Equal(t, control, held, "the control clients are not connected on requests the service decided")
 		require.Len(t, unheld, control, "the check above cannot see an admission the server stopped waiting for")
 	})
 
 	t.Run("control: clients that give up on a refused credential", func(t *testing.T) {
-		keys := testnats.NewCalloutKeys(t)
-		server, url := testnats.StartWithCalloutServer(t, keys)
 		const control = 20
-		controls := make([]*session, control)
-		for index := range controls {
-			controls[index] = newSession(t, fmt.Sprintf("ses_control_%02d", index), 15*time.Minute)
-		}
-		deps := Deps{Introspect: introspector(controls...)}
-		first := startService(t, url, keys, deps, Decide)
-		conns := make([]*nats.Conn, control)
-		for index, s := range controls {
-			nc, err := reconnectingSession(t, url, s, true, nil)
-			require.NoError(t, err)
-			conns[index] = nc
-		}
+		peer := startStormPeer(t)
+		hub := peer.do(peerCommand{Do: "start", Sessions: control})
+		deps := Deps{Introspect: peerIntrospection(hub.Answers, 0)}
+		first := startService(t, hub.URL, hub.Keys, deps, Decide)
+		connected := peer.do(peerCommand{Do: "connect", Mode: "reconnecting", GiveUpOnRefusal: true, Bound: time.Minute})
+		require.Empty(t, failedConnects(connected))
 		first.Close()
-		server.Restart(t, testnats.CalloutConfig(keys))
+		peer.do(peerCommand{Do: "restart"})
 		time.Sleep(controlHeldOff)
-		back := startService(t, url, keys, deps, Decide)
+		back := startService(t, hub.URL, hub.Keys, deps, Decide)
 		t.Cleanup(back.Close)
 
-		testwait.WithinPolling(t, 30*time.Second, 50*time.Millisecond, "the clients that give up to close", func() bool {
-			for _, nc := range conns {
-				if !nc.IsClosed() {
-					return false
-				}
-			}
-			return true
-		})
+		closed := peer.do(peerCommand{Do: "await", Until: "closed", Bound: 30 * time.Second})
+		require.Equal(t, control, closed.Closed, "only %d of %d clients that give up on a refused credential closed", closed.Closed, control)
 	})
+}
+
+// failedConnects is each connect of answer that was neither admitted nor refused, by its error.
+func failedConnects(answer peerAnswer) []string {
+	var failed []string
+	for index, kind := range answer.Kinds {
+		if kind == "failed" {
+			failed = append(failed, answer.Errors[index])
+		}
+	}
+	return failed
+}
+
+// countSince is how often text appears in a hub's log from offset on, the length its log had at
+// some earlier moment (peerAnswer.Logged).
+func countSince(log string, offset int, text string) int {
+	if offset > len(log) {
+		offset = len(log)
+	}
+	return strings.Count(log[offset:], text)
 }
 
 // A connection already open stays open while the auth service is stopped, and receives on its
@@ -344,22 +318,10 @@ func TestConnectionsSurviveTheAuthServiceStoppingUntilTheirUserExpires(t *testin
 	receives("after the service is back")
 }
 
-// allConnected answers whether every one of conns is connected, for testwait to poll.
-func allConnected(conns []*nats.Conn) func() bool {
-	return func() bool {
-		for _, nc := range conns {
-			if !nc.IsConnected() {
-				return false
-			}
-		}
-		return true
-	}
-}
-
 // lastNonces keeps the nonce each client signed last, and when each nonce was signed. A client
 // signs the nonce of every connection the server opens for it (sessionOption), and one the server
 // refuses is followed by another, so once a client is connected its last nonce is the one its
-// connection was admitted on.
+// connection was admitted on. The peer keeps it and its test reads it (peerAnswer.Last).
 type lastNonces struct {
 	mu     sync.Mutex
 	last   map[string]string
@@ -378,6 +340,21 @@ func (l *lastNonces) signer(id string) func(nonce string) {
 		l.last[id] = nonce
 		l.signed[nonce] = time.Now()
 	}
+}
+
+// read is a copy of both maps, for the peer to answer its test with while its clients still sign.
+func (l *lastNonces) read() (last map[string]string, signed map[string]time.Time) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	last = make(map[string]string, len(l.last))
+	for id, nonce := range l.last {
+		last[id] = nonce
+	}
+	signed = make(map[string]time.Time, len(l.signed))
+	for nonce, at := range l.signed {
+		signed[nonce] = at
+	}
+	return last, signed
 }
 
 // decidedNonces keeps the nonce of every request a service decided with no error.
@@ -401,20 +378,19 @@ func (d *decidedNonces) wrap(decide decideFunc) decideFunc {
 	}
 }
 
-// unheld is what became of the service's decisions, read once every one of clients is connected
-// and the service has closed: held is how many clients are connected on a nonce the service
-// decided, and unheld every nonce it decided that no client is connected on. The server takes one
-// answer per request, so a decided nonce no connection holds is an answer the server did not take:
-// it had given up on the request and refused that client itself, or the service refused the
-// connection after deciding it, and either way the client tried again on a new nonce. A request
-// the server sent while no service was subscribed is in neither, since no service decided it.
-func (d *decidedNonces) unheld(clients *lastNonces) (unheld []string, held int) {
-	clients.mu.Lock()
-	defer clients.mu.Unlock()
+// unheld is what became of the service's decisions, read once every one of the peer's clients is
+// connected and the service has closed: held is how many clients are connected on a nonce the
+// service decided, and unheld every nonce it decided that no client is connected on. The server
+// takes one answer per request, so a decided nonce no connection holds is an answer the server did
+// not take: it had given up on the request and refused that client itself, or the service refused
+// the connection after deciding it, and either way the client tried again on a new nonce. A
+// request the server sent while no service was subscribed is in neither, since no service decided
+// it. clients is the nonce each client signed last, as the peer reported it (peerAnswer.Last).
+func (d *decidedNonces) unheld(clients map[string]string) (unheld []string, held int) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	holding := make(map[string]bool, len(clients.last))
-	for _, nonce := range clients.last {
+	holding := make(map[string]bool, len(clients))
+	for _, nonce := range clients {
 		holding[nonce] = true
 		if d.nonces[nonce] {
 			held++
@@ -428,17 +404,16 @@ func (d *decidedNonces) unheld(clients *lastNonces) (unheld []string, held int) 
 	return unheld, held
 }
 
-// undecidedSince is every nonce clients signed at or after since that the service did not decide,
-// read once the service has closed. A client signs a nonce as the server opens a connection for
-// it, before the server sends the request, so when since follows the service's subscribing, each
-// such nonce is a request the server sent the service; one the service did not decide is one it
-// dropped unanswered, or refused, or erred on.
-func (d *decidedNonces) undecidedSince(clients *lastNonces, since time.Time) (undecided []string) {
-	clients.mu.Lock()
-	defer clients.mu.Unlock()
+// undecidedSince is every nonce signed at or after since that the service did not decide, read
+// once the service has closed. A client signs a nonce as the server opens a connection for it,
+// before the server sends the request, so when since follows the service's subscribing, each such
+// nonce is a request the server sent the service; one the service did not decide is one it
+// dropped unanswered, or refused, or erred on. signed is when each nonce was signed, as the peer
+// reported it (peerAnswer.Signed).
+func (d *decidedNonces) undecidedSince(signed map[string]time.Time, since time.Time) (undecided []string) {
 	d.mu.Lock()
 	defer d.mu.Unlock()
-	for nonce, at := range clients.signed {
+	for nonce, at := range signed {
 		if !at.Before(since) && !d.nonces[nonce] {
 			undecided = append(undecided, nonce)
 		}
@@ -518,9 +493,7 @@ func countedFor(t *testing.T, registry *metrics.Registry, counts func(line strin
 // the bounds to a handful, sixteen waiting beside one or two slots, so almost every request goes
 // past the waiting bound, which is the regime a storm of more than about 1,100 requests is for the
 // deployed bounds (64 slots, 1,024 waiting), and refusalCost puts what those refusals cost one
-// after another past the hub's timeout. The count is kept that small because the clients and the
-// hub run in the test's own process: at 400, under -race on a loaded machine, they fell behind
-// themselves, and clients failed their connects with the service's fix in place.
+// after another past the hub's timeout.
 const stormRequests = 120
 
 // stormRead is what a storm's clients heard, the service's record of it and the hub's count of the
@@ -528,53 +501,52 @@ const stormRequests = 120
 type stormRead struct {
 	admitted, failed, pastBound, gaveUp int
 	slowest                             time.Duration
-	other                               error
+	other                               string
 }
 
-// readStorm reads a storm once every one of its clients has returned, from errs and took. The hub
-// writes each give-up (hubGaveUp) before it refuses that client, so once every client has returned
-// the hub's log names every request it gave up on. The service counts each answer only after it
-// has sent it, so the read waits until registry has counted one for each client that was admitted
-// or refused.
-func readStorm(t *testing.T, server *testnats.Server, registry *metrics.Registry, errs []error, took []time.Duration) stormRead {
+// readStorm reads a storm once every one of its clients has returned, from the peer's answer to
+// the connect. The hub writes each give-up (hubGaveUp) before it refuses that client, so once
+// every client has returned the hub's log names every request it gave up on. The service counts
+// each answer only after it has sent it, so the read waits until registry has counted one for each
+// client that was admitted or refused, and only then reads the hub's log from the peer.
+func readStorm(t *testing.T, peer *stormPeer, registry *metrics.Registry, connected peerAnswer) stormRead {
 	t.Helper()
 	var storm stormRead
-	for index, err := range errs {
-		switch {
-		case err == nil:
+	for index, kind := range connected.Kinds {
+		switch kind {
+		case "admitted":
 			storm.admitted++
-		case !errors.Is(err, nats.ErrAuthorization):
+		case "failed":
 			storm.failed++
-			storm.other = err
+			storm.other = connected.Errors[index]
 		}
-		storm.slowest = max(storm.slowest, took[index])
+		storm.slowest = max(storm.slowest, connected.Took[index])
 	}
 	testwait.WithinPolling(t, 30*time.Second, 20*time.Millisecond, "the service to count every request of the storm", func() bool {
-		return recordedFor(t, registry) >= len(errs)-storm.failed
+		return recordedFor(t, registry) >= len(connected.Kinds)-storm.failed
 	})
-	storm.pastBound, storm.gaveUp = refusedFor(t, registry, labelWaitingBound), strings.Count(server.Log(), hubGaveUp)
+	storm.pastBound = refusedFor(t, registry, labelWaitingBound)
+	storm.gaveUp = strings.Count(peer.do(peerCommand{Do: "report"}).Log, hubGaveUp)
 	t.Logf("%d requests: %d admitted, %d past the waiting bound, %d failed otherwise (%v), the slowest client back after %s; the hub gave up on %d",
-		len(errs), storm.admitted, storm.pastBound, storm.failed, storm.other, storm.slowest, storm.gaveUp)
+		len(connected.Kinds), storm.admitted, storm.pastBound, storm.failed, storm.other, storm.slowest, storm.gaveUp)
 	return storm
 }
 
 // requireEveryClientHeardInsideTheHubsTimeout fails unless the hub gave up on no request of a
-// storm, every client was admitted (a nil error) or refused, and the storm reached what it is for:
-// at least half its requests past the waiting bound, read from registry's refusals. It answers how
-// many were admitted.
+// storm, every client was admitted or refused, and the storm reached what it is for: at least half
+// its requests past the waiting bound, read from registry's refusals. It answers how many were
+// admitted.
 //
 // Inside the hub's authorization timeout is the hub's own reading. Its timer runs from the moment
 // it sends the request to the moment it reads the answer, and a request it did not give up on was
-// answered inside it. A client's own time does not measure that. It adds the dial, the client's
-// signature and the hub's work on the CONNECT before the timer starts, all in this one test
-// process. Under the race detector on four loaded CPUs those took up to 0.8 s, and clients the hub
-// had answered in time came back after more than two seconds.
-func requireEveryClientHeardInsideTheHubsTimeout(t *testing.T, server *testnats.Server, registry *metrics.Registry, errs []error, took []time.Duration) int {
+// answered inside it. A client's own time does not measure that: it adds the dial, the client's
+// signature and the hub's work on the CONNECT before the timer starts, all in the peer's process.
+func requireEveryClientHeardInsideTheHubsTimeout(t *testing.T, peer *stormPeer, registry *metrics.Registry, connected peerAnswer) int {
 	t.Helper()
-	storm := readStorm(t, server, registry, errs, took)
+	storm := readStorm(t, peer, registry, connected)
 	require.Zero(t, storm.gaveUp, "the hub gave up on %d requests it sent the service", storm.gaveUp)
 	require.Zero(t, storm.failed, "%d clients failed their connect neither admitted nor refused: %v", storm.failed, storm.other)
-	require.GreaterOrEqual(t, storm.pastBound, len(errs)/2, "the storm did not go past the waiting bound, which is the regime it is for")
+	require.GreaterOrEqual(t, storm.pastBound, len(connected.Kinds)/2, "the storm did not go past the waiting bound, which is the regime it is for")
 	return storm.admitted
 }
 
@@ -590,16 +562,14 @@ func TestAStormPastTheWaitingBoundIsAnsweredInsideTheHubsTimeout(t *testing.T) {
 	withRefusalWork(t, refusalCost)
 	withDecisionSlots(t, 2)
 	withWaitingBound(t, 16)
-	keys := testnats.NewCalloutKeys(t)
-	server, url := startDebugCalloutServer(t, keys)
-	sessions := sessionsNamed(t, "ses_storm", stormRequests)
-	deps := slowIntrospect(100*time.Millisecond, sessions...)
+	peer := startStormPeer(t)
+	hub := peer.do(peerCommand{Do: "start", Sessions: stormRequests, Debug: true})
 	registry := metrics.New()
-	deps.Metrics = NewMetrics(registry)
-	startService(t, url, keys, deps, Decide)
+	deps := Deps{Introspect: peerIntrospection(hub.Answers, 100*time.Millisecond), Metrics: NewMetrics(registry)}
+	startService(t, hub.URL, hub.Keys, deps, Decide)
 
-	errs, took := connectAll(t, url, sessions)
-	admitted := requireEveryClientHeardInsideTheHubsTimeout(t, server, registry, errs, took)
+	connected := peer.do(peerCommand{Do: "connect", Mode: "once", Bound: time.Minute})
+	admitted := requireEveryClientHeardInsideTheHubsTimeout(t, peer, registry, connected)
 	require.Positive(t, admitted, "no connection of the storm was admitted")
 }
 
@@ -611,17 +581,15 @@ func TestTheHubCountsAStormAnsweredPastItsTimeout(t *testing.T) {
 	withRefusalWork(t, testnats.CalloutAuthTimeout*time.Second+500*time.Millisecond)
 	withDecisionSlots(t, 2)
 	withWaitingBound(t, 16)
-	keys := testnats.NewCalloutKeys(t)
-	server, url := startDebugCalloutServer(t, keys)
-	sessions := sessionsNamed(t, "ses_late_storm", stormRequests)
-	deps := slowIntrospect(100*time.Millisecond, sessions...)
+	peer := startStormPeer(t)
+	hub := peer.do(peerCommand{Do: "start", Sessions: stormRequests, Debug: true})
 	registry := metrics.New()
-	deps.Metrics = NewMetrics(registry)
-	startService(t, url, keys, deps, Decide)
+	deps := Deps{Introspect: peerIntrospection(hub.Answers, 100*time.Millisecond), Metrics: NewMetrics(registry)}
+	startService(t, hub.URL, hub.Keys, deps, Decide)
 
-	errs, took := connectAll(t, url, sessions)
-	storm := readStorm(t, server, registry, errs, took)
-	require.GreaterOrEqual(t, storm.pastBound, len(errs)/2, "the storm did not go past the waiting bound, which is the regime it is for")
+	connected := peer.do(peerCommand{Do: "connect", Mode: "once", Bound: time.Minute})
+	storm := readStorm(t, peer, registry, connected)
+	require.GreaterOrEqual(t, storm.pastBound, len(connected.Kinds)/2, "the storm did not go past the waiting bound, which is the regime it is for")
 	require.GreaterOrEqual(t, storm.gaveUp, storm.pastBound, "the hub's count missed refusals answered past its timeout: the storms' check cannot see them")
 }
 
@@ -635,27 +603,12 @@ func TestAFloodOfConnectionsHoldingNoCredentialIsAnsweredInsideTheHubsTimeout(t 
 	withRefusalWork(t, refusalCost)
 	withDecisionSlots(t, 1)
 	withWaitingBound(t, 16)
-	keys := testnats.NewCalloutKeys(t)
-	server, url := startDebugCalloutServer(t, keys)
+	peer := startStormPeer(t)
+	hub := peer.do(peerCommand{Do: "start", Debug: true})
 	registry := metrics.New()
-	startService(t, url, keys, Deps{Metrics: NewMetrics(registry)}, Decide)
+	startService(t, hub.URL, hub.Keys, Deps{Metrics: NewMetrics(registry)}, Decide)
 
-	errs := make([]error, stormRequests)
-	took := make([]time.Duration, stormRequests)
-	var wait sync.WaitGroup
-	for index := range errs {
-		wait.Add(1)
-		go func() {
-			defer wait.Done()
-			began := time.Now()
-			nc, err := nats.Connect(url, nats.NoReconnect(), nats.Timeout(10*time.Second))
-			took[index], errs[index] = time.Since(began), err
-			if err == nil {
-				nc.Close()
-			}
-		}()
-	}
-	wait.Wait()
-	admitted := requireEveryClientHeardInsideTheHubsTimeout(t, server, registry, errs, took)
+	connected := peer.do(peerCommand{Do: "connect", Mode: "nocredential", Count: stormRequests, Bound: time.Minute})
+	admitted := requireEveryClientHeardInsideTheHubsTimeout(t, peer, registry, connected)
 	require.Zero(t, admitted, "a connection holding no credential was admitted")
 }
