@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `DISPATCH_SCOPES` and `DISPATCH_TOKEN_SCOPES` name `p0`, the scope a priority of 0 on an issue's
+  own priority needs, and `ActorActSchema` reads an act that records it. The descriptions of
+  `POST /api/v1/issues`, `PATCH /api/v1/issues/{key}`, the token routes and `GET /api/v1/whoami`
+  in the OpenAPI document, and the `priority` descriptions of `dispatch_issue` and
+  `dispatch_issue_update`, say that a priority of 0 needs `p0` and what a credential does without it.
+time: 2026-11-26T02:21:32Z
+custom:
+    Issue: pr5616

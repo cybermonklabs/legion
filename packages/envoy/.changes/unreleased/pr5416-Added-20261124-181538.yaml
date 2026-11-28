@@ -1,0 +1,5 @@
+kind: Added
+body: 'A check block can name what it reads (`subject`) and which program (`program`), read from this release and written from the next.'
+time: 2026-11-24T18:15:38Z
+custom:
+    Issue: pr5416

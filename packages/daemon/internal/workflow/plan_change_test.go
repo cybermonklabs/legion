@@ -283,7 +283,7 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 		}
 		node := record.PlanRecord{ID: PlanID(root.Key, root.Generation), Generation: root.Generation, Source: record.PlanSourceOwner,
 			PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: 2},
-			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}}}}
+			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"planner", "implementer", "tester", "reviewer", "acceptance:owner"}, Needs: &[]string{}}}}
 		if nodes := planWrites(t, pool, root.Key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], node) {
 			t.Fatalf("the plan nodes of %s after version 2 = %+v, want the newest %+v", root.Key, nodes, node)
 		}
@@ -342,24 +342,23 @@ func TestAPlanGivenIsStoredWhereItsTaskHasNotStarted(t *testing.T) {
 	})
 }
 
-// running is the refusal of a version that changes or removes task a while it runs.
+// runningRefusal is the refusal of a version that removes task a while it runs, or changes its
+// steps.
 func runningRefusal() *intake.Refusal {
-	reason := "task a is running: stop it with stop_task before you change it."
-	return &intake.Refusal{Status: 409, Code: "PLAN_REFUSED", Message: "Legion refused this plan and recorded nothing: " + reason,
-		Reasons: []plan.Refusal{{Task: "a", Reason: reason}}}
+	return intake.PlanRefused([]plan.Refusal{plan.RunningTaskChanged("a")})
 }
 
-// A later version changes only a task that waits or is stopped. While
-// task a runs, a version that changes its steps, or only its text, is refused naming a, and writes
-// nothing. A version that leaves a's block as it is, and changes only the prose outside it, is
-// taken, a goes on at its step, and the run's plan node is written again at that version. A
-// version at or below the one in force, and a version of another document, are refused. A version
-// given while a is stopped that leaves its block as it is
+// A later version changes a task that waits or is stopped, and of a running task its text alone
+// (TestALaterVersionChangesTheTextOfARunningTaskAlone). While task a runs, a version that changes
+// its steps is refused naming a, and writes nothing. A version that leaves a's block as it is, and
+// changes only the prose outside it, is taken, a goes on at its step, and the run's plan node is
+// written again at that version. A version at or below the one in force, and a version of another
+// document, are refused. A version given while a is stopped that leaves its block as it is
 // is taken and a stays stopped; one with other steps is taken, and starts a again at its first
 // step on the new steps: the hold is cleared, the issue stands in that step's phase, its role is
 // started at a raised entry told why, the pass rises by one, and no pair, round or hook is counted.
 // A version that changes a task that is done, or one whose issue left the workflow, is refused.
-func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
+func TestALaterVersionChangesAWaitingOrStoppedTask(t *testing.T) {
 	t.Parallel()
 	t.Run("while a runs, then after it is stopped", func(t *testing.T) {
 		pool := migratedPool(t)
@@ -375,9 +374,6 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		id := planID(key, gen, 2)
 		assertPlanRefusal(t, pool, engine, key, gen, id,
 			apply(id, ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", "implementer", "reviewer"))), runningRefusal(), before)
-		id = planID(key, gen, 3)
-		assertPlanRefusal(t, pool, engine, key, gen, id,
-			apply(id, ownersPlan(t, key, gen, 3, givenTask(t, "Build the widget, and its manual.", "implementer", "tester", "reviewer"))), runningRefusal(), before)
 
 		// The control: the same block, with only the prose outside it changed, which no
 		// plan.Plan holds, is taken, and a goes on at its step.
@@ -395,15 +391,16 @@ func TestALaterVersionChangesOnlyAWaitingOrStoppedTask(t *testing.T) {
 		}
 		node := record.PlanRecord{ID: PlanID(key, gen), Generation: gen, Source: record.PlanSourceOwner,
 			PlanDocument: &record.PlanDocument{ArtifactID: planArtifact, Version: 4},
-			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "tester", "reviewer"}}}}
+			Tasks:        []record.PlanRecordTask{{ID: "a", Steps: []string{"implementer", "tester", "reviewer"}, Needs: &[]string{}}}}
 		if nodes := planWrites(t, pool, key); len(nodes) == 0 || !reflect.DeepEqual(nodes[len(nodes)-1], node) {
 			t.Fatalf("the plan nodes of %s after version 4 = %+v, want the newest %+v", key, nodes, node)
 		}
 
-		// Version 3, refused while a ran, is now below the version in force.
-		id = planID(key, gen, 3)
-		assertPlanRefusal(t, pool, engine, key, gen, id, apply(id, ownersPlan(t, key, gen, 3, built)), &intake.Refusal{Status: 409, Code: "PLAN_VERSION_OLD",
-			Message: "the plan in force of LEGION-208 is version 4, and Legion takes only a later version: version 3 changed nothing."}, kept)
+		// Version 2, refused while a ran, is now below the version in force.
+		id = planID(key, gen, 2)
+		assertPlanRefusal(t, pool, engine, key, gen, id, apply(id, ownersPlan(t, key, gen, 2, givenTask(t, "Build the widget.", "implementer", "reviewer"))),
+			&intake.Refusal{Status: 409, Code: "PLAN_VERSION_OLD",
+				Message: "the plan in force of LEGION-208 is version 4, and Legion takes only a later version: version 2 changed nothing."}, kept)
 		other := ownersPlan(t, key, gen, 5, built)
 		other.Plan.ArtifactID = "0b6a2d4e-9f1c-4c3a-8e5d-7a6b5c4d3e2f"
 		otherID := fmt.Sprintf("plan:%s:%d:%s:%d", key, gen, other.Plan.ArtifactID, 5)
@@ -545,7 +542,7 @@ func seedDefaultPlan(t *testing.T, pool *pgxpool.Pool, key string, generation ui
 	steps := make([]record.PlanStep, len(defaults))
 	for i, step := range defaults {
 		steps[i] = record.PlanStep{Issue: key, Generation: generation, Task: plan.DefaultTask, Position: i + 1, Role: step.Role,
-			AgentKey: step.Key, Type: builtinDeployment.Roles[step.Role].Type}
+			AgentKey: step.Key, Type: record.BuiltinDeployment.Roles[step.Role].Type}
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
 		return record.NewStore().PutPlan(t.Context(), tx, version, []record.PlanTask{task}, steps)
@@ -581,7 +578,7 @@ func TestAVersionThatReplacesTheStoppedDefaultTaskStartsTheNewTask(t *testing.T)
 		id, version1 := planID(key, gen, 1), ownersPlan(t, key, gen, 1, givenTask(t, "Build the widget.", "implementer", "reviewer"))
 
 		before := planStandingOf(t, pool, engine, key, gen)
-		reason := "task default is running: stop it with stop_task before you change it."
+		reason := plan.RunningTaskChanged(plan.DefaultTask).Reason
 		assertPlanRefusal(t, pool, engine, key, gen, id, apply(id, version1), &intake.Refusal{Status: 409, Code: "PLAN_REFUSED",
 			Message: "Legion refused this plan and recorded nothing: " + reason, Reasons: []plan.Refusal{{Task: plan.DefaultTask, Reason: reason}}}, before)
 

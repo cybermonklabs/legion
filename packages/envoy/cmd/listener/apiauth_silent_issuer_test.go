@@ -90,6 +90,9 @@ func rawSessionsStatus(t *testing.T, addr, bearer string, halfClose bool) int {
 // discovery only until identityBudget after its check began (identityCheck). A listener that takes
 // only Google identity tokens sends every JWT-shaped bearer to that branch.
 func TestAnIdentityTokenOfASilentIssuerIsAnswered503(t *testing.T) {
+	// Not parallel: it requires each 503 within identityBudget (4 s) plus 2 s, and the budget is
+	// what ends each request. Its four rows run beside each other alone: each is one request
+	// that waits on its own budget's timer, against a server and an issuer of its own.
 	for _, branch := range []string{"a projected token", "a Google identity token"} {
 		for _, joins := range []bool{false, true} {
 			name := branch + ", the request starts the attempt"
@@ -97,6 +100,7 @@ func TestAnIdentityTokenOfASilentIssuerIsAnswered503(t *testing.T) {
 				name = branch + ", the request joins an attempt under way"
 			}
 			t.Run(name, func(t *testing.T) {
+				t.Parallel()
 				issuer, accepted := silentIssuer(t)
 				verifier := oidc.NewLazyVerifier(issuer, listenerTestAudience)
 				auth := listenerAPIAuth{token: "example-shared-token", logger: logging.NewWithWriter("silent-issuer", &bytes.Buffer{})}
@@ -137,6 +141,8 @@ func TestAnIdentityTokenOfASilentIssuerIsAnswered503(t *testing.T) {
 // so the token is answered 503 with Retry-After: 1 within the deadline, never with a closed
 // connection.
 func TestAProjectedTokenOfASilentKeySetIsAnswered503(t *testing.T) {
+	// Not parallel: it requires the 503 within identityBudget (4 s) plus 2 s, and the budget is
+	// what ends the request.
 	keySet, _ := silentIssuer(t)
 	var issuer string
 	discovery := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -170,6 +176,8 @@ func TestAProjectedTokenOfASilentKeySetIsAnswered503(t *testing.T) {
 // the set it reads is kept, so once a request is admitted the next one is answered at once with no
 // read of its own.
 func TestAProjectedTokenOfASlowIssuerIsAnsweredWithinTheWriteDeadline(t *testing.T) {
+	// Not parallel: it requires the 503 within identityBudget (4 s) plus 2 s, which the budget
+	// ends, and the answer from the kept key set within 1 s.
 	issuer := oidctest.New(t)
 	key := issuer.PublishKey(t, "slow-issuer-key")
 	issuer.DelayDiscovery(3 * time.Second)

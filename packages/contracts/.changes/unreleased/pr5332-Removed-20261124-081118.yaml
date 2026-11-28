@@ -1,0 +1,5 @@
+kind: Removed
+body: Under the daemon API contract that carries entry `20261125170906` (`drop-unserved-state-keys`), the daemon state schema no longer declares an issue's `slot.lentTo` or `admission.free`, and the declared read set no longer names `slot.lentTo`. No daemon has served either field. A state that carries one still parses, and the field is dropped.
+time: 2026-11-24T08:11:18.986987979Z
+custom:
+    Issue: pr5332

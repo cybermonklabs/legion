@@ -29,9 +29,12 @@
 #     Secret Manager's NotFound and PermissionDenied are printed.
 #
 # Each row resets the world (so each plant is removed after its row), plants one thing, and holds
-# the run to its exit and to the line naming what it planted. The rows are in eight files of
-# operator-token-minters/, by concern, each sourced below after the world and its helpers, and
-# each listing its rows in its header:
+# the run to its exit and to the line naming what it planted. A row of a list of rights instead
+# plants the whole list in one world: each right on a ServiceAccount of its own (plant_rights), or
+# each permission through a role of its own on one member (plant_permissions), and holds one run a
+# world to each right's line (want_planted); row bf is two worlds. The rows are in eight files of
+# operator-token-minters/, by concern, each listing its rows in its header. After the world and its
+# helpers, each file's rows run in a process of their own, beside the other files' (run_row_file):
 #
 #   - test-rows-run.sh: the run as a whole: a clean world, the permission names, reads that saw
 #     nothing, each step's witness, a refused identity, the admin tag, the report and its fixture,
@@ -43,8 +46,9 @@
 #     accounts, the hold writers, IAM impersonation and IAM writers, and a fleet member's project;
 #   - test-rows-pool.sh: the pool's other clusters: the project's other clusters, the pool
 #     project's own clusters, and the fleet's members;
-#   - test-rows-admission.sh: admission power outside the admission objects: a webhook's backend,
-#     a policy engine's resources, and an admission policy's parameter objects;
+#   - test-rows-admission.sh: admission power: the rights on the admission objects, and outside
+#     them a webhook's backend, a policy engine's resources, and an admission policy's parameter
+#     objects;
 #   - test-rows-become.sh: who can become a principal with a finding through a right a live role
 #     limits by name;
 #   - test-rows-fence.sh: the broker's pod fence, which credits what it refuses only when the
@@ -56,17 +60,23 @@
 # OPERATOR_MINTERS_SCRIPT names another copy of the script to run them against; a copy keeps the
 # directory operator-token-minters/ beside it, whose parts it sources (the rows files are this
 # test's own, beside it). A row of one plant per item runs up to 8 items at a time, each in a world
-# of its own (each).
+# of its own (each). Up to one row file a core runs at a time, longest first;
+# OPERATOR_MINTERS_TEST_SLOTS names another count. Each file's rows print in the order of the list
+# above once every file has ended, with the seconds the file took.
 # CI runs it in envoy-go-checks (.github/workflows/ci-job-envoy-go-checks.yaml).
 set -euo pipefail
 shopt -s inherit_errexit
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 readonly check="${OPERATOR_MINTERS_SCRIPT:-$script_dir/operator-token-minters.sh}"
-temporary_dir="$(mktemp -d "${TMPDIR:-/tmp}/operator-token-minters-test.XXXXXX")"
-readonly temporary_dir
-trap 'rm -rf "$temporary_dir"' EXIT
-readonly fake_bin="$temporary_dir/bin"
+# test_root holds what every row reads (the fakes, the world each row starts from, the fence's copy
+# of the check) and a directory for each row file's process. temporary_dir is where the running rows
+# write: test_root until the rows start, then each row file's own (run_row_file).
+test_root="$(mktemp -d "${TMPDIR:-/tmp}/operator-token-minters-test.XXXXXX")"
+readonly test_root
+trap 'rm -rf "$test_root"' EXIT
+temporary_dir="$test_root"
+readonly fake_bin="$test_root/bin"
 # world is the world the current row plants in; a row run beside others has one of its own.
 world="$temporary_dir/world"
 mkdir -p "$fake_bin"
@@ -531,6 +541,90 @@ want_step_unknown() {
   ! has_prefix "PASS live: $1: " || fail "$3: the step $1 passed"
 }
 want_rbac_unknown() { want_step_unknown "RBAC on operator-cluster" "$1" "$2"; }
+# --- A list of rights in one world. A row of such a list plants every right of it in one world,
+# each right on a ServiceAccount of its own (plant_rights), or each permission through a role of
+# its own on one member (plant_permissions), and judges the world by one run of the check
+# (want_planted): a run per right cost about 140 runs of the check a harness run. A right the check
+# does not ask leaves its line out. The ServiceAccount rows also check each account's other
+# findings (planted_problems); the permission rows check each role's line alone. What a finding
+# belongs to is read from its own line, never from a cluster's label or a subject's form: the
+# principal is the text before the line's first ": ", and a right's verb and resource are its first
+# two words. A line wanted whole is built from what the caller passes (SUFFIX, MEMBER, ATTACHED), so
+# a change to how the check names a cluster or a member changes those arguments alone. ---
+OWN_FINDINGS=()
+# plant_rights CLUSTER NAMESPACE SUFFIX ENTRY...: each ENTRY, `verb|group|resource|subresource|the
+# binding's namespace|the resource name=the right the run names` (an empty namespace is
+# cluster-wide, an empty name names none), granted on CLUSTER to NAMESPACE/right-<its place among
+# the ENTRYs>, a ServiceAccount that holds nothing else; adds to OWN_FINDINGS the finding each must
+# print, its right followed by SUFFIX (` on cluster <project>/<location>/<name>` off the operator's).
+plant_rights() {
+  local cluster="$1" ns="$2" suffix="$3" entry verb group resource sub gns name i=0
+  shift 3
+  for entry in "$@"; do
+    i=$((i + 1))
+    IFS='|' read -r verb group resource sub gns name <<<"${entry%%=*}"
+    add_sa "$cluster" "$ns" "right-$i"
+    subject_grant "$cluster" "$(sa_subject "$ns" "right-$i")" "$verb" "$group" "$resource" "$sub" "$gns" "$name"
+    OWN_FINDINGS+=("system:serviceaccount:$ns:right-$i"$'\t'"${entry#*=}$suffix")
+  done
+}
+# plant_permissions ATTACHED MEMBER PERMISSION...: each PERMISSION held by MEMBER on ATTACHED through
+# a role of its own that grants nothing else, projects/<project>/roles/only.<permission>; adds to
+# OWN_FINDINGS the finding each must print.
+plant_permissions() {
+  local attached="$1" member="$2" permission
+  shift 2
+  for permission in "$@"; do
+    role "projects/$project/roles/only.$permission" "$permission"
+    iam "$attached" "projects/$project/roles/only.$permission" "$member"
+    OWN_FINDINGS+=("$member"$'\t'"$permission on $attached through projects/$project/roles/only.$permission, granted at $attached")
+  done
+}
+# planted_problems MODE: each way the run's output departs from OWN_FINDINGS, one a line:
+# `missing: FINDING ...` for each finding OWN_FINDINGS holds that the run did not print; with MODE
+# own or only, `misread: FINDING ...` for each other finding naming a planted principal whose right
+# is another planted principal's own, or does not start with the verb and resource of one of its
+# own (a grant of one verb on one resource, naming no name or namespace, allows that verb on that
+# resource by name and in each namespace too, and a chain from it starts with the right it becomes
+# by); with MODE only, `unplanted: FINDING ...` for each finding naming any other principal. One
+# awk reads the output whole.
+planted_problems() {
+  local planted="$temporary_dir/planted-${world##*/}.tsv"
+  printf '%s\n' "${OWN_FINDINGS[@]}" >"$planted"
+  awk -F'\t' -v mode="$1" '
+    FNR == NR { want[$0] = 1; planted[$1] = 1; owned[$2] = 1; split($2, w, " "); stem[$1 "\t" w[1] " " w[2]] = 1; next }
+    /^FINDING / {
+      line = substr($0, 9); at = index(line, ": ")
+      if (!at) next
+      who = substr(line, 1, at - 1); right = substr(line, at + 2)
+      if ((who "\t" right) in want) { seen[who "\t" right] = 1; next }
+      if (who in planted) {
+        split(right, w, " ")
+        if (mode != "lines" && (right in owned || !((who "\t" w[1] " " w[2]) in stem))) print "misread: " $0
+      } else if (mode == "only") print "unplanted: " $0
+    }
+    END { for (k in want) if (!(k in seen)) { sub(/\t/, ": ", k); print "missing: FINDING " k } }' "$planted" - <<<"$output"
+}
+# want_planted WHAT MODE: the run printed each finding OWN_FINDINGS holds and, with MODE own or only,
+# nothing planted_problems names, and exited 1; it fails once, listing every problem, before it
+# reads the exit. With MODE own or only it holds itself to its control: the output with the last
+# planted finding moved onto the first planted principal reads as that finding misread and missing.
+# Empties OWN_FINDINGS.
+want_planted() {
+  local problems last first moved
+  problems="$(planted_problems "$2")"
+  [ -z "$problems" ] || fail "$1: ${problems//$'\n'/; }"
+  want_status 1 "$1"
+  first="${OWN_FINDINGS[0]%%$'\t'*}" last="${OWN_FINDINGS[-1]}"
+  if [ "$2" != lines ] && [ "$first" != "${last%%$'\t'*}" ]; then
+    moved="${output/$'\n'"FINDING ${last/$'\t'/: }"$'\n'/$'\n'"FINDING $first: ${last#*$'\t'}"$'\n'}"
+    [ "$moved" != "$output" ] || fail "$1: the control could not move the line 'FINDING ${last/$'\t'/: }'"
+    problems="$(output="$moved" planted_problems "$2")"
+    [[ "$problems" == *"misread: FINDING $first: ${last#*$'\t'}"* && "$problems" == *"missing: FINDING ${last/$'\t'/: }"* ]] ||
+      fail "$1: the control, the finding of ${last%%$'\t'*} moved onto $first, read as: ${problems:-nothing}"
+  fi
+  OWN_FINDINGS=()
+}
 rows=0
 passed() {
   rows=$((rows + 1))
@@ -569,23 +663,90 @@ each() {
   [ "$failed" -eq 0 ] || { echo "FAIL: $failed of the $# items of $fn failed" >&2; exit 1; }
 }
 
-# The rows, one file of operator-token-minters/ per concern, as the header lists them.
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-run.sh
-. "$script_dir/operator-token-minters/test-rows-run.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-code.sh
-. "$script_dir/operator-token-minters/test-rows-code.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-rbac.sh
-. "$script_dir/operator-token-minters/test-rows-rbac.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-iam.sh
-. "$script_dir/operator-token-minters/test-rows-iam.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-pool.sh
-. "$script_dir/operator-token-minters/test-rows-pool.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-admission.sh
-. "$script_dir/operator-token-minters/test-rows-admission.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-become.sh
-. "$script_dir/operator-token-minters/test-rows-become.sh"
-# shellcheck source=packages/envoy/infra/scripts/operator-token-minters/test-rows-fence.sh
-. "$script_dir/operator-token-minters/test-rows-fence.sh"
+# --- The rows. ---
 
+# The row files of operator-token-minters/, test-rows-<name>.sh, in the header's reading order, which
+# is the order their rows print in.
+readonly row_files=(run code rbac iam pool admission become fence)
+# The same files longest first, the order their processes start in, so a file started last is not
+# the one the run waits for. The seconds are what each file's rows took in envoy-go-checks job
+# 140612446150 (artifact harness-times-140612446150), where the whole test took 475.0 s in one
+# process: rbac 109, run 101, iam 88, pool 58, fence 47, admission 45, code 17, become 9.
+readonly row_file_schedule=(rbac run iam pool fence admission code become)
+on_disk=("$script_dir"/operator-token-minters/test-rows-*.sh)
+on_disk=("${on_disk[@]##*/test-rows-}")
+on_disk=("${on_disk[@]%.sh}")
+if [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${row_file_schedule[@]}" | sort)" ] ||
+  [ "$(printf '%s\n' "${row_files[@]}" | sort)" != "$(printf '%s\n' "${on_disk[@]}" | sort)" ]; then
+  echo "FAIL: the row files in reading order (${row_files[*]}), in start order (${row_file_schedule[*]}) and on disk (${on_disk[*]}) differ" >&2
+  exit 1
+fi
+slots="${OPERATOR_MINTERS_TEST_SLOTS:-$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)}"
+[[ $slots =~ ^[1-9][0-9]*$ ]] || {
+  echo "FAIL: OPERATOR_MINTERS_TEST_SLOTS is $slots, which is no count of row files to run at a time" >&2
+  exit 2
+}
+
+# now_ms: the clock in milliseconds. A `date` with no %N, which is BSD's, gives whole seconds, so a
+# file's time is read in seconds there rather than failing the arithmetic below.
+now_ms() {
+  local now
+  now=$(date +%s%3N)
+  [[ $now =~ ^[0-9]+$ ]] || now=$(($(date +%s) * 1000))
+  printf '%s\n' "$now"
+}
+# run_row_file NAME: test-rows-NAME.sh's rows in a process of their own, which writes only under a
+# directory of its own (its temporary_dir, holding its world), so no row reads a file another
+# file's rows wrote; what they print, how many passed, the process's exit and its milliseconds go to
+# files of its own under test_root. The process runs under set -e, as `each` runs an item: a
+# subshell an `||` tested would run with it off. A row file's rows set variables of any name at its
+# top level (test-rows-rbac.sh reads a `name` there), so the file the count goes to is named, and
+# made readonly, before they run.
+run_row_file() {
+  local name="$1" started
+  started=$(now_ms)
+  set +e
+  (
+    set -e
+    readonly passed_file="$test_root/rows-$name.passed"
+    temporary_dir="$test_root/rows-$name"
+    world="$temporary_dir/world"
+    rows=0
+    mkdir "$temporary_dir"
+    # shellcheck source=/dev/null # operator-token-minters/test-rows-NAME.sh, one of row_files
+    . "$script_dir/operator-token-minters/test-rows-$name.sh"
+    echo "$rows" >"$passed_file"
+  ) >"$test_root/rows-$name.out" 2>"$test_root/rows-$name.err"
+  echo "$?" >"$test_root/rows-$name.status"
+  echo "$(($(now_ms) - started))" >"$test_root/rows-$name.ms"
+}
+running=0
+for name in "${row_file_schedule[@]}"; do
+  if [ "$running" -ge "$slots" ]; then
+    wait -n || true
+    running=$((running - 1))
+  fi
+  run_row_file "$name" &
+  running=$((running + 1))
+done
+wait
+
+# Each file's output whole, in reading order. A file's process that did not exit 0 with its count
+# of passed rows written as its last act failed, whatever it printed.
+failed=()
+for name in "${row_files[@]}"; do
+  cat "$test_root/rows-$name.out"
+  cat "$test_root/rows-$name.err" >&2
+  exited="$(cat "$test_root/rows-$name.status" 2>/dev/null || echo none)"
+  file_rows="$(cat "$test_root/rows-$name.passed" 2>/dev/null || true)"
+  milliseconds="$(cat "$test_root/rows-$name.ms" 2>/dev/null || echo 0)"
+  if [ "$exited" != 0 ] || [[ ! $file_rows =~ ^(0|[1-9][0-9]*)$ ]]; then
+    failed+=("test-rows-$name.sh (exit $exited)")
+    continue
+  fi
+  rows=$((rows + file_rows))
+  echo "rows of test-rows-$name.sh: $file_rows passed, $((milliseconds / 1000)).$(((milliseconds % 1000) / 100)) s"
+done
+[ "${#failed[@]}" -eq 0 ] || { echo "FAIL: the rows of ${failed[*]} failed" >&2; exit 1; }
 [ "$rows" -gt 0 ] || { echo "FAIL: OPERATOR_MINTERS_TEST_ROWS=${OPERATOR_MINTERS_TEST_ROWS:-} names no row" >&2; exit 1; }
 echo "all $rows rows passed"

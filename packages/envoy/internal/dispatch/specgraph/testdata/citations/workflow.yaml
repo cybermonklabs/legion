@@ -1,0 +1,24 @@
+# A workflow of four jobs for TestReadWorkflowJobs and the citations tests of cmd/spec-check:
+# spec-citations waits for changes and go-checks, and not for envoy-go.
+name: Results from CI
+on: push
+jobs:
+  changes:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo changes
+  go-checks:
+    needs: changes
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo go-checks
+  envoy-go:
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo envoy-go
+  spec-citations:
+    needs: [changes, go-checks]
+    if: always()
+    runs-on: ubuntu-24.04
+    steps:
+      - run: echo spec-citations

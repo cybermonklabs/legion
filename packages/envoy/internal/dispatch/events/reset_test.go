@@ -161,7 +161,8 @@ func (r scanThen) Scan(dest ...any) error {
 	return err
 }
 
-// A reset of the event log (e2e/seed.ts's `truncate events restart identity` and its refill) that
+// A reset of the event log (here a `truncate events restart identity` and its refill; e2e/seed.ts
+// deletes the rows and restarts the ids, which does the same) that
 // commits while EventCursorCheck is reading must leave the answer describing one log, the old one
 // or the new one. A mixed answer - the old log's newest id with no row at the cursor in the new
 // one - is one the relay would take for a reset to the old log's head: it would move its cursor

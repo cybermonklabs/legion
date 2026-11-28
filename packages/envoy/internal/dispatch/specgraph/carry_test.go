@@ -11,10 +11,10 @@ import (
 // file that the test reads changed". R18: "At each commit, Dispatch derives four ties". A caught
 // failing example of a code check, and a run of the test of a program check of production, at
 // commit A counts at the subject's commit B only when the check's tie is known at A and at B and no
-// path that changed between them is covered by the tie at A or by the tie at B. Each row is
-// TestCheckState's base with subject c2, whose tree is c1's with docs/x.md changed, with a pass of
-// C at c2, so that c1's caught failing example decides for C, and with one more change: narrow is
-// C's tie with no entry of testdata.
+// path that changed between them reaches the tie at A or the tie at B, which covers it or holds a
+// path under it. Each row is TestCheckState's base with subject c2, whose tree is c1's with
+// docs/x.md changed, with a pass of C at c2, so that c1's caught failing example decides for C, and
+// with one more change: narrow is C's tie with no entry of testdata.
 func TestAResultCarriesByTheTiesOfBothCommits(t *testing.T) {
 	t.Parallel()
 	const deleted = "packages/envoy/cmd/listener/testdata/a.json" // a file of c1, under testdata

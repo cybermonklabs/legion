@@ -44,6 +44,7 @@ func edgeConfirmRequest(ctx context.Context, outside string, projects []string, 
 // (bucketSessionEntry) before its confirmation, so it drives the fault through the registry's
 // leader-read seam instead, with a working bucket read, to reach the confirmation's own 503 branch.
 func TestAnEdgeBusFaultConfirmingASessionAnswersBusUnavailable(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, peer = "ses_confirm_fault_outside", "ses_confirm_fault_peer"
 	rig.placeElsewhere(t, peer, "PRIV")

@@ -1,23 +1,32 @@
 package api
 
+//ci:reads packages/contracts/fixtures/dispatch-version-blocks/* servedVersion reads each answer a real Dispatch served, for the route's tests
+
 import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/steprecord"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/plan"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/store"
 )
 
@@ -114,15 +123,17 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 10), http.StatusConflict, "VERSION_NOT_IN_DISPATCH",
 		"Dispatch shows "+planDoc+" at version 9, not 10; give register_plan a version that Dispatch has")
 	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks)
+	twoSinks := PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks, twoSinks)
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2),
 		PlanReason{Task: "a", Reason: "step 2 of task a names the role prober, which neither the deployment nor the plan defines."})
-	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoTasks,
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoTasks, twoSinks,
 		PlanReason{Task: "b", Reason: "step 2 of task b names the role prober, which neither the deployment nor the plan defines."})
 	// A version that keeps the task of the default steps and adds a second is a plan of two tasks
 	// like any other: the route refuses it, so the workflow never takes it.
 	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 6),
-		PlanReason{Reason: "the plan has 2 tasks (default, a), and this release runs one task for each issue. This release of Legion does not carry it out yet."})
+		PlanReason{Reason: "the plan has 2 tasks (default, a), and this release runs one task for each issue. This release of Legion does not carry it out yet."},
+		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, default), and the work of each would merge by itself. This release of Legion does not carry it out yet."})
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("refused registrations recorded %#v, want nothing", got)
 	}
@@ -150,6 +161,56 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 	assertProcessedEvent(t, h, "plan:LEGION-208:1:"+planDoc+":4")
 }
 
+// planReadFailing is the record store whose read of an issue's plan fails while fail is set, as a
+// database that refuses the read would. Every other read and write is the store's own.
+type planReadFailing struct {
+	record.Store
+	fail bool
+}
+
+func (p *planReadFailing) Plan(ctx context.Context, tx pgx.Tx, issue string, generation uint64) (*record.StoredPlan, error) {
+	if p.fail {
+		return nil, errors.New("the read of the plan failed")
+	}
+	return p.Store.Plan(ctx, tx, issue, generation)
+}
+
+// register_plan reads where each task of the plan stands once the fact is taken (runningAt), on
+// the first registration and on its retry alike: the one path of `running`. When that read fails,
+// the registration is answered 500 RECORD_UNAVAILABLE with the version taken, and a retry while
+// the read still fails is answered the same. Each registration reaches the handler, which stores
+// nothing here, under the one id the route names it by (intake.ApplyFact applies every PlanGiven,
+// and the workflow answers a give of the version in force as taken). The fault is a registration
+// answered 200 without `running`, which would tell the owner that no step of the plan runs. The
+// control is the same registration once the read works again: it is answered 200 with the plan.
+func TestARegistrationWhoseReadOfTheRecordFailsIsAnsweredRecordUnavailable(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	records := &planReadFailing{Store: record.NewStore(), fail: true}
+	h.handler = NewServer("127.0.0.1", 8437, Options{
+		Supervisor: h.supervisor, BootTokens: h.tokens, Project: testProject, OperatorToken: testOperatorToken,
+		Controller: h.store, Grants: credential.New(nil), Pool: h.store.Pool(), Record: records,
+		Handlers: []intake.Handler{facts}, Dispatch: statuses,
+	}).Handler
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"))
+	const unread = "Legion took version 4 of the plan, but could not read where its tasks stand; give register_plan the same version again to read them"
+	given := []intake.Fact{givenPlan("LEGION-208", 1, architect.token, planDoc, 4, implementerReviewer...)}
+
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), http.StatusInternalServerError, "RECORD_UNAVAILABLE", unread)
+	if got := facts.recorded(); !reflect.DeepEqual(got, given) {
+		t.Fatalf("facts after the first registration = %#v, want %#v: the version is taken though its answer could not be read", got, given)
+	}
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), http.StatusInternalServerError, "RECORD_UNAVAILABLE", unread)
+	records.fail = false
+	const taken = `{"plan":{"version":4,"tasks":[{"id":"a","steps":["implementer","reviewer"]}]}}`
+	if again := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4); again.Code != http.StatusOK || strings.TrimSpace(again.Body.String()) != taken {
+		t.Fatalf("the retry once the read works = %d %s, want 200 with its one task", again.Code, again.Body)
+	}
+	if got, want := facts.recorded(), slices.Repeat(given, 3); !reflect.DeepEqual(got, want) {
+		t.Fatalf("facts = %#v, want %#v: one for each registration of the one version", got, want)
+	}
+}
+
 // The reader of 219 takes every field of register_plan's answer as optional, since no plugin code
 // reads one (legion-api.ts's LEGION_ANSWER_READS: a field that set does not name is optional). So
 // the reader takes a task written without `steps`, and the daemon holds what it does not check:
@@ -158,7 +219,7 @@ func TestRegisterPlanTakesAPlanAndRefusesWithReasons(t *testing.T) {
 // TestRegisterPlanTakesAPlanAndRefusesWithReasons holds the same for one task through the route.
 func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	answer := PlanRegisterResponse{Plan: registeredPlan(plan.Plan{ArtifactID: planDoc, Version: 7,
-		Tasks: []plan.Task{{ID: "a"}, {ID: "b", Steps: []plan.Step{{Role: "implementer"}}}}})}
+		Tasks: []plan.Task{{ID: "a"}, {ID: "b", Steps: []plan.Step{{Role: "implementer"}}}}}, nil)}
 	shaped, _ := shapeAnswer(AnswerPlanRegister, answer, OwnerPlanContract, OwnerPlanContract)
 	encoded, err := json.Marshal(shaped)
 	if err != nil {
@@ -170,9 +231,59 @@ func TestRegisterPlanWritesEveryTasksStepsAsAList(t *testing.T) {
 	}
 }
 
+// register_plan's answer names the act each running task stands at (the running-step entry), as
+// a list of one entry (record.StoredPlan.Running gives one for each running task): step 2 of task
+// a, the reviewer. A task that does not run, b, carries no `running` key at all, rather than an
+// empty or a null list.
+func TestRegisterPlanNamesTheActEachRunningTaskStandsAt(t *testing.T) {
+	running := []record.RunningStep{{Task: "a", Place: record.TaskPlace{Kind: record.PlaceStep, Position: 2}, Role: claim.RoleReviewer}}
+	answer := PlanRegisterResponse{Plan: registeredPlan(plan.Plan{ArtifactID: planDoc, Version: 3, Tasks: []plan.Task{
+		{ID: "a", Steps: []plan.Step{{Role: "implementer"}, {Role: "reviewer"}}}, {ID: "b"}}}, running)}
+	shaped, _ := shapeAnswer(AnswerPlanRegister, answer, entryNumber(runningStepContract), entryNumber(runningStepContract))
+	encoded, err := json.Marshal(shaped)
+	if err != nil {
+		t.Fatalf("marshal the answer: %v", err)
+	}
+	const want = `{"plan":{"version":3,"tasks":[{"id":"a","steps":["implementer","reviewer"],"running":[` +
+		`{"kind":"step","place":2,"role":"reviewer"}]},{"id":"b","steps":[]}]}}`
+	if string(encoded) != want {
+		t.Errorf("register_plan answers %s,\nwant %s: the act task a stands at, and no `running` on task b", encoded, want)
+	}
+}
+
+// servedVersion is version 1 of the document artifactID as the real client
+// (dispatch.HTTPClient.PlanDocument) reads it from a Dispatch that answers with status and the
+// fixture name, an answer under packages/contracts/fixtures/dispatch-version-blocks that a real
+// Dispatch served for ACME-1's plan.md: the version, or that Dispatch's refusal of it.
+func servedVersion(t *testing.T, name string, status int, artifactID string) (dispatch.DocumentVersion, error) {
+	t.Helper()
+	body, err := os.ReadFile(filepath.Join("..", "..", "..", "contracts", "fixtures", "dispatch-version-blocks", name))
+	if err != nil {
+		t.Fatalf("read the fixture %s: %v", name, err)
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch r.URL.Path {
+		case "/api/v1/artifacts/" + artifactID + "/versions/1":
+			w.WriteHeader(status)
+			_, _ = w.Write(body)
+		case "/api/v1/artifacts/" + artifactID:
+			_, _ = w.Write([]byte(`{"id":"` + artifactID + `","issue_key":"ACME-1","slug":"plan-md"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+	return dispatch.New(server.URL, dispatch.BearerTransport("dispatch-test-token", nil)).PlanDocument(t.Context(), artifactID, 1)
+}
+
 // What register_plan answers for a document it cannot read a plan from, each before anything is
-// recorded: Dispatch's version without blocks, a document of another issue, a failed read, a
-// block outside the plan's grammar and a document with no task block.
+// recorded: Dispatch's version without blocks, a document of another issue, a failed read, an
+// older build's refusal of a version that holds `parent` (409 DOC_NEWER_CONTENT, read by the real
+// client from the body that build served), a block outside the plan's grammar and a document with
+// no task block. The refusal is a failed read the owner retries, never a refusal of the plan. Its
+// control is a planAt that reads a 409 as a version with no blocks: the answer is then 409
+// PLAN_REFUSED, the plan refused for having no task.
 func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 	h, facts, statuses := planHarness(t)
 	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
@@ -192,8 +303,369 @@ func TestRegisterPlanAnswersADocumentItCannotRead(t *testing.T) {
 	statuses.planErr = errors.New("connection reset")
 	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), http.StatusBadGateway, "DISPATCH_FAILED",
 		"Dispatch read of "+planDoc+" at version 1 failed; retry register_plan")
+	if _, statuses.planErr = servedVersion(t, "older-build-newer-content.json", http.StatusConflict, planDoc); statuses.planErr == nil {
+		t.Fatal("the real client read the older build's refusal as a version")
+	}
+	refusedSaying(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), http.StatusBadGateway, "DISPATCH_FAILED",
+		"Dispatch read of "+planDoc+" at version 1 failed; retry register_plan")
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("unreadable documents recorded %#v, want nothing", got)
+	}
+}
+
+// register_plan reads each task block's `parent` against the document it registers (plan.ParentOf,
+// which plan.FromBlocks calls), as a reference to one of its blocks names it (dispatch.DocumentRef):
+// `dispatch://<KEY>/spec` for the issue's primary document, and `dispatch://<KEY>/artifact/<slug>`
+// for any other. So a
+// `parent` in the registered document's form puts its block under the block it names, and the
+// other form names another document, whatever its id. Validate's refusals of an element and of a
+// `parent` that names a block the version does not hold reach the answer among its reasons. A
+// `parent` that is not one reference, and task blocks under each other, are a plan Legion cannot
+// read, answered with one reason. None records anything. The fault is a route that reads a
+// `parent` against no document, or against the wrong one. The control is planAt given the artifact
+// form of the primary document: version 1 is refused as two tasks, and version 3 refused as an
+// element with steps.
+func TestRegisterPlanReadsEachParentInTheRegisteredDocument(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	parented := func(block dispatch.DocumentBlock, parent string) dispatch.DocumentBlock {
+		block.Attributes["parent"] = parent
+		return block
+	}
+	const spec, artifact = "dispatch://LEGION-208/spec#b-a", "dispatch://LEGION-208/artifact/plan-md#b-a"
+	elementWithSteps := func(id string) PlanReason {
+		return PlanReason{Task: id, Reason: "task block " + id + " is an element of task a: it stands under a, which names no sub-owner. " +
+			"Legion does not carry out an element, so an element names no steps, owner or merges, and " + id + " names steps."}
+	}
+	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
+	twoSinks := PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."}
+	// The fake gives planDoc no slug, so it is the primary document of LEGION-208.
+	statuses.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"), parented(taskBlock("e1", ""), spec))
+	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer reviewer"), parented(taskBlock("e1", "implementer"), spec))
+	statuses.givePlan(planDoc, 3, taskBlock("a", "implementer reviewer"), parented(taskBlock("b", "implementer reviewer"), artifact))
+	statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"), parented(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/spec#b-gone"))
+	statuses.givePlan(planDoc, 5, taskBlock("a", "implementer reviewer"), parented(taskBlock("b", "implementer reviewer"), spec+" "+spec))
+	statuses.givePlan(planDoc, 6, parented(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/spec#b-b"), parented(taskBlock("b", "implementer reviewer"), spec))
+
+	if taken := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1); taken.Code != http.StatusOK {
+		t.Fatalf("register version 1 = %d %s, want 200: e1 is an element of a, which names nothing only a task carries out", taken.Code, taken.Body)
+	}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), elementWithSteps("e1"))
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), twoTasks, twoSinks)
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4), twoTasks, twoSinks,
+		PlanReason{Task: "b", Reason: "task block b names gone as its parent, which no typed block of version 4 of the plan holds. " +
+			"Name a typed block of this version in parent, or leave parent out."})
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 5),
+		PlanReason{Reason: `task block b: its parent "` + spec + ` ` + spec + `" is not one dispatch:// reference.`})
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 6),
+		PlanReason{Reason: "task blocks a, b stand under each other, so none of them has a place in the plan."})
+
+	// The same document, filed under a slug and not as the primary one: the artifact form names it.
+	statuses.approvals[planDoc] = dispatch.Approval{State: "none", LatestVersion: 9, Slug: "plan-md"}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 3), elementWithSteps("b"))
+
+	got := facts.recorded()
+	if len(got) != 1 {
+		t.Fatalf("facts = %#v, want the one fact of version 1", got)
+	}
+	given, ok := got[0].(intake.PlanGiven)
+	if want := []plan.Element{{ID: "e1", Of: "a", Under: "a"}}; !ok || len(given.Plan.Tasks) != 1 || given.Plan.Tasks[0].ID != "a" || !reflect.DeepEqual(given.Plan.Elements, want) {
+		t.Fatalf("the fact of version 1 = %#v, want the one task a and the element %+v", got[0], want)
+	}
+}
+
+// A real Dispatch's version of a plan whose t1, t2 and t3 stand under the owner's task default,
+// read through the real client (servedVersion), is a plan of one task: register_plan answers 200
+// with the task default alone, and records it with the three blocks as its elements. The fault is
+// an element read as a task, which Legion would carry out. The control is a FromBlocks with Places
+// taken out: the version is then refused as a plan of four tasks.
+func TestAVersionWithElementsAnswersItsOneTask(t *testing.T) {
+	const acmeDoc = "8c3f2e5a-4d9f-4a7c-9ea3-5f6a7b8c9d02"
+	document, err := servedVersion(t, "plan-with-parent.json", http.StatusOK, acmeDoc)
+	if err != nil {
+		t.Fatalf("read the fixture's version through the client: %v", err)
+	}
+	h, facts, statuses := planHarness(t)
+	seedIssueAt(t, h, "ACME-1", phase.Admitted)
+	architect := newLiveClaim(t, h, "ACME-1", claim.RoleArchitect)
+	statuses.documents[acmeDoc] = "ACME-1"
+	statuses.approvals[acmeDoc] = dispatch.Approval{State: "none", LatestVersion: 1, Slug: "plan-md"}
+	statuses.plans[planVersion(acmeDoc, 1)] = document
+
+	taken := registerPlan(h, architect.grant(t), "ACME-1", acmeDoc, 1)
+	if want := `{"plan":{"version":1,"tasks":[{"id":"default","steps":[]}]}}`; taken.Code != http.StatusOK || strings.TrimSpace(taken.Body.String()) != want {
+		t.Fatalf("register version 1 = %d %s, want 200 %s: t1, t2 and t3 are elements of default", taken.Code, taken.Body, want)
+	}
+	got := facts.recorded()
+	if len(got) != 1 {
+		t.Fatalf("facts = %#v, want the one fact of version 1", got)
+	}
+	given, ok := got[0].(intake.PlanGiven)
+	want := []plan.Element{{ID: "t1", Of: "default", Under: "default"}, {ID: "t2", Of: "default", Under: "default"}, {ID: "t3", Of: "default", Under: "default"}}
+	if !ok || len(given.Plan.Tasks) != 1 || given.Plan.Tasks[0].ID != plan.DefaultTask || given.Plan.Tasks[0].Text != "Ship the parser." || !reflect.DeepEqual(given.Plan.Elements, want) {
+		t.Fatalf("the fact of version 1 = %#v, want the one task default, its own text alone, and the elements %+v", got[0], want)
+	}
+}
+
+// needing is block with `needs` writing the words needs.
+func needing(block dispatch.DocumentBlock, needs string) dispatch.DocumentBlock {
+	block.Attributes["needs"] = needs
+	return block
+}
+
+// register_plan reads each need as the task it names (plan.FromBlocks) before either check, so
+// the reasons name the task a reference names, a task a reference names is needed (b alone ends
+// the first plan), and a word that names no task gets the reason no release lifts rather than the reason of a
+// need this release does not carry out yet; the plan recorded is the one both checks read. The
+// fault is a route that checks, and records, the words as the blocks write them; the control is
+// a FromBlocks that keeps each word whole, which answers `task b needs dispatch://LEGION-208/artifact/plan-md#b-a.`
+// and `task b needs x.`, each as not carried out yet, and a and b as two tasks that no task needs.
+func TestRegisterPlanReadsEachNeedAsTheTaskItNames(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	// The words name plan.md as an artifact of LEGION-208, so the document is filed under that slug:
+	// a need is read against the plan's own document (plan.FromBlocks).
+	statuses.approvals[planDoc] = dispatch.Approval{State: "none", LatestVersion: 2, Slug: "plan-md"}
+	statuses.givePlan(planDoc, 1, taskBlock("a", "implementer reviewer"),
+		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
+	statuses.givePlan(planDoc, 2, taskBlock("a", "implementer reviewer"), needing(taskBlock("b", "implementer reviewer"), "x"))
+
+	twoTasks := PlanReason{Reason: "the plan has 2 tasks (a, b), and this release runs one task for each issue. This release of Legion does not carry it out yet."}
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1), twoTasks,
+		PlanReason{Task: "b", Reason: "task b needs a. This release of Legion does not carry it out yet."})
+	assertPlanRefused(t, registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 2), twoTasks,
+		PlanReason{Reason: "the plan has 2 tasks that no task needs (a, b), and the work of each would merge by itself. This release of Legion does not carry it out yet."},
+		PlanReason{Task: "b", Reason: "task b needs x, which names no task of this plan."})
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("refused registrations recorded %#v, want nothing", got)
+	}
+}
+
+// A plan whose tasks need each other in a cycle is refused, and among its reasons is the cycle's,
+// which names the chain, whatever reasons of this release's come before it. The fault is a cycle
+// answered only as needs this release does not carry out yet; the control is Validate without its
+// check of cycles, whose answer holds no reason naming the chain.
+func TestRegisterPlanRefusesACycleOfNeedsNamingIt(t *testing.T) {
+	h, facts, statuses := planHarness(t)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.approvals[planDoc] = dispatch.Approval{State: "none", LatestVersion: 1, Slug: "plan-md"}
+	statuses.givePlan(planDoc, 1, needing(taskBlock("a", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-b"),
+		needing(taskBlock("b", "implementer reviewer"), "dispatch://LEGION-208/artifact/plan-md#b-a"))
+
+	answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+	if answer.Code != http.StatusConflict {
+		t.Fatalf("status = %d, want 409; body %s", answer.Code, answer.Body)
+	}
+	var refusal PlanRefusal
+	decodeInto(t, answer, &refusal)
+	cycle := PlanReason{Task: "a", Reason: "task a needs itself: a needs b, b needs a."}
+	if refusal.Code != "PLAN_REFUSED" || !slices.Contains(refusal.Reasons, cycle) || !strings.Contains(refusal.Error, cycle.Reason) {
+		t.Fatalf("refusal = %+v, want PLAN_REFUSED holding the reason %+v", refusal, cycle)
+	}
+	if got := facts.recorded(); len(got) != 0 {
+		t.Fatalf("a refused registration recorded %#v, want nothing", got)
+	}
+}
+
+// A refused plan's answer has a bound in bytes, whatever the plan holds. It names the first
+// plan.MostReasons reasons of each kind of cause and counts the rest of the kind in one more; a
+// task id is at most steprecord.TaskIDMax, since a longer one is refused by one reason of its own;
+// each other word of the plan a reason quotes is cut to plan.MostQuotedBytes and marked; and a
+// reason lists at most plan.MostReasons task ids. Three versions below are one `plan_task` block
+// whose one attribute holds 1 MiB of words, the most a Dispatch document holds as its server
+// writes it, each word a cause of its own: 262,144 `needs` words that name no task, 209,712 roles
+// nobody defines, and 116,508 steps `tester:k`, each with a key and with no implementer before
+// it. Each answer is within perKind bytes for each kind it holds, and counts the rest of each kind
+// past the bound, in its sentence too. Three more quote or list long values, each within
+// perLongKind for each kind, a bound computed from those constants: a ring of 40,000 tasks, whose
+// reasons list the plan's tasks and the cycle through them; a task whose id is 900 KB; and a task
+// whose one need is a word of 1 MiB, each of the last two quoted with its mark. The faults are an
+// answer with a reason for each cause and one that quotes or lists a value whole; the controls
+// take out plan's bound of the reasons, under which the three versions are answered in 34, 44 and
+// 66 MB and the ring in 9.6 MB, and quoted's cut with listed's and chainOf's, under which the
+// ring, the long id and the long need are answered whole. It holds the counts and the size, and no
+// sentence.
+func TestRegisterPlanAnswersAPlanOfManyCausesWithinABound(t *testing.T) {
+	// perKind is plan.MostReasons reasons of one kind and its count, each written twice (in
+	// `error` and in `reasons`) at under 200 bytes with its JSON.
+	const perKind = (plan.MostReasons + 1) * 2 * 200
+	// longReason is the longest reason: its sentence, under 300 bytes, and a list of
+	// plan.MostReasons pairs of task ids, `<id> needs <id>, ` (a cycle's chain), which is longer
+	// than a word cut to plan.MostQuotedBytes with its mark. perLongKind is plan.MostReasons such
+	// reasons and a count, each written twice with its task id and its JSON.
+	const longReason = 300 + plan.MostReasons*(2*steprecord.TaskIDMax+len(" needs , "))
+	const perLongKind = (plan.MostReasons + 1) * (2*longReason + steprecord.TaskIDMax + 50)
+	const mib = 1 << 20
+	// digits is i written in n digits of the base len(alphabet), the first digit the largest.
+	digits := func(i int, alphabet string, n int) string {
+		word := make([]byte, n)
+		for at := n - 1; at >= 0; at-- {
+			word[at] = alphabet[i%len(alphabet)]
+			i /= len(alphabet)
+		}
+		return string(word)
+	}
+	// Each three-character word over 64 characters, each a need that names no task.
+	words := make([]string, 64*64*64)
+	for i := range words {
+		words[i] = digits(i, "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ-_", 3)
+	}
+	// The implementer, then roles of four characters, a letter and three of [a-z0-9-], each once.
+	const letters, rest = "abcdefghijklmnopqrstuvwxyz", "abcdefghijklmnopqrstuvwxyz0123456789-"
+	roles := []string{"implementer"}
+	for i := range (mib - len("implementer ")) / len("abcd ") {
+		roles = append(roles, string(letters[i/(37*37*37)])+digits(i, rest, 3))
+	}
+	steps := mib / len("tester:k ")
+	keyed := strings.TrimSuffix(strings.Repeat("tester:k ", steps), " ")
+	// The ring: t00000 to t39999, each needing the next and the last the first.
+	const ringSize = 40_000
+	ring := make([]dispatch.DocumentBlock, ringSize)
+	for i := range ring {
+		ring[i] = needing(taskBlock(fmt.Sprintf("t%05d", i), "implementer reviewer"), fmt.Sprintf("t%05d", (i+1)%ringSize))
+	}
+	longID := strings.Repeat("a", 900<<10)
+	longNeed := strings.Repeat("x", mib)
+	for _, tc := range []struct {
+		name    string
+		blocks  []dispatch.DocumentBlock
+		bound   int
+		reasons int    // the reasons the answer holds
+		counts  []int  // what the reasons that count the rest of a kind count
+		cut     string // the mark of a value quoted in part, which the sentence holds
+	}{
+		{"262,144 needs words that name no task", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), strings.Join(words, " "))},
+			perKind, plan.MostReasons + 1, []int{len(words) - plan.MostReasons}, ""},
+		{"209,712 roles nobody defines", []dispatch.DocumentBlock{taskBlock("a", strings.Join(roles, " "))},
+			perKind, plan.MostReasons + 1, []int{len(roles) - 1 - plan.MostReasons}, ""},
+		// Four kinds: a key at each step, the role tester at two steps, no implementer, and no
+		// implementer before each step.
+		{"116,508 steps tester:k", []dispatch.DocumentBlock{taskBlock("a", keyed)},
+			4 * perKind, 2*(plan.MostReasons+1) + 2, []int{steps - plan.MostReasons, steps - plan.MostReasons}, ""},
+		// Three kinds: the plan's tasks, the need of each task, and the one cycle.
+		{"a ring of 40,000 tasks", ring, 3 * perLongKind, 1 + plan.MostReasons + 1 + 1, []int{ringSize - plan.MostReasons}, ""},
+		// The id alone is refused; with steps that each name it, a whole id gave tens of MB.
+		{"a task whose id is 900 KB", []dispatch.DocumentBlock{taskBlock(longID, "tester:k tester:k")},
+			perLongKind, 1, nil, fmt.Sprintf("… (cut from %d bytes)", len(longID))},
+		{"a task whose one need is a word of 1 MiB", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), longNeed)},
+			perLongKind, 1, nil, fmt.Sprintf("… (cut from %d bytes)", len(longNeed))},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := planHarness(t)
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			statuses.givePlan(planDoc, 1, tc.blocks...)
+
+			answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+			size := answer.Body.Len()
+			t.Logf("%s: answered %d in %d bytes, the bound %d", tc.name, answer.Code, size, tc.bound)
+			if answer.Code != http.StatusConflict || size > tc.bound {
+				t.Fatalf("%s is answered %d in %d bytes, want 409 in at most %d", tc.name, answer.Code, size, tc.bound)
+			}
+			var refusal PlanRefusal
+			decodeInto(t, answer, &refusal)
+			if refusal.Code != "PLAN_REFUSED" || len(refusal.Reasons) != tc.reasons {
+				t.Fatalf("refusal %s of %d reasons, want PLAN_REFUSED of %d", refusal.Code, len(refusal.Reasons), tc.reasons)
+			}
+			if !strings.Contains(refusal.Error, tc.cut) {
+				t.Errorf("the sentence holds no mark %q of a value quoted in part: %.3000s", tc.cut, refusal.Error)
+			}
+			for _, left := range tc.counts {
+				count := fmt.Sprintf(" %d ", left)
+				if !strings.Contains(refusal.Error, count) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
+					return reason.Task == "" && strings.Contains(reason.Reason, count)
+				}) {
+					t.Errorf("no reason of the whole plan counts %d more, in `reasons` and in the sentence: %.3000s", left, refusal.Error)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("a refused registration recorded %#v, want nothing", got)
+			}
+		})
+	}
+}
+
+// plantedUser is the user name a planted URL carries as its userinfo, 300 bytes, written as the
+// redact package's tests write theirs: a user name with no password, which a secret scanner takes
+// for no credential, and which redact.URLCredentials removes as it removes a password or a token.
+// plantedURL carries it, and redactedURL is what the URL rule (redact.URLCredentials) leaves of
+// plantedURL, read from the rule and never written out here, so that a rule that removes the
+// userinfo and one that writes a mark in place of the whole authority both leave the test true;
+// it is still past plan.MostQuotedBytes, so a reason quotes it cut.
+var (
+	plantedUser = strings.Repeat("planted-reader-", 20)
+	plantedURL  = "https://" + plantedUser + "@h.example/" + strings.Repeat("p", 200)
+	redactedURL = redact.URLCredentials(plantedURL)
+)
+
+// credentialIn is the first run of six bytes of plantedUser that text holds, and "" where it holds
+// none.
+func credentialIn(text string) string {
+	for at := 0; at+6 <= len(plantedUser); at++ {
+		if part := plantedUser[at : at+6]; strings.Contains(text, part) {
+			return part
+		}
+	}
+	return ""
+}
+
+// register_plan's answer to a plan whose words carry a URL with a credential holds no byte of the
+// credential, in its `error` and in each of its `reasons`, however long the word: the plan
+// package reads each word it quotes whole through the URL rule before it cuts it, so the route's
+// own redaction of `error` has nothing left to find, and `reasons`, which the route writes as they
+// came, holds what the rule left. A need, a step whose role is the URL, a step whose key is the
+// URL, a task block's id, a role block's id and one id on two blocks each carry plantedURL. Each
+// answer quotes redactedURL cut and marked, in a reason of the task named and in the sentence, and
+// holds no run of six bytes of plantedUser. The fault is a cut made before the rule, which ends
+// inside the userinfo, before its "@", so the route's redaction of `error` finds no userinfo and
+// `reasons` are never redacted; the control is the plan package's quoted cutting first, under
+// which each answer keeps 120 bytes of plantedUser in both.
+func TestRegisterPlanQuotesNoByteOfAURLsCredential(t *testing.T) {
+	cut := func(word string) string {
+		return fmt.Sprintf("%s… (cut from %d bytes)", word[:plan.MostQuotedBytes], len(word))
+	}
+	quote := cut(redactedURL)
+	roleBlock := dispatch.DocumentBlock{ID: plantedURL, Type: plan.RoleBlockType, Attributes: map[string]string{}}
+	for _, tc := range []struct {
+		name   string
+		blocks []dispatch.DocumentBlock
+		task   string // the task of the reason that quotes the word
+		quote  string
+	}{
+		{"a need", []dispatch.DocumentBlock{needing(taskBlock("a", "implementer reviewer"), plantedURL)}, "a", quote},
+		{"a step whose role is the URL", []dispatch.DocumentBlock{taskBlock("a", plantedURL)}, "", quote},
+		{"a step whose key is the URL", []dispatch.DocumentBlock{taskBlock("a", "implementer reviewer:"+plantedURL)}, "", cut("reviewer:" + redactedURL)},
+		{"a task block's id", []dispatch.DocumentBlock{taskBlock(plantedURL, "implementer reviewer")}, "", quote},
+		{"a role block's id", []dispatch.DocumentBlock{roleBlock, taskBlock("a", "implementer reviewer")}, "", quote},
+		{"one id on two blocks", []dispatch.DocumentBlock{roleBlock, taskBlock(plantedURL, "implementer reviewer")}, "", quote},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h, facts, statuses := planHarness(t)
+			architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+			statuses.givePlan(planDoc, 1, tc.blocks...)
+
+			answer := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 1)
+			if answer.Code != http.StatusConflict {
+				t.Fatalf("status = %d, want 409; body %.2000s", answer.Code, answer.Body)
+			}
+			var refusal PlanRefusal
+			decodeInto(t, answer, &refusal)
+			if refusal.Code != "PLAN_REFUSED" || !strings.Contains(refusal.Error, tc.quote) || !slices.ContainsFunc(refusal.Reasons, func(reason PlanReason) bool {
+				return reason.Task == tc.task && strings.Contains(reason.Reason, tc.quote)
+			}) {
+				t.Fatalf("refusal %.3000v, want PLAN_REFUSED quoting %.300q in its sentence and in a reason of task %q", refusal, tc.quote, tc.task)
+			}
+			if part := credentialIn(refusal.Error); part != "" {
+				t.Errorf("`error` %.2000q holds %q of the URL's credential", refusal.Error, part)
+			}
+			for _, reason := range refusal.Reasons {
+				if part := credentialIn(reason.Reason); part != "" {
+					t.Errorf("the reason %.2000q holds %q of the URL's credential", reason.Reason, part)
+				}
+			}
+			if got := facts.recorded(); len(got) != 0 {
+				t.Fatalf("a refused registration recorded %#v, want nothing", got)
+			}
+		})
 	}
 }
 
@@ -205,7 +677,7 @@ func TestRegisterPlanAnswersTheWorkflowsRefusals(t *testing.T) {
 		name    string
 		refusal *intake.Refusal
 	}{
-		{"a version that changes the running task", intake.PlanRefused([]plan.Refusal{intake.RunningTaskChanged("a")})},
+		{"a version that changes the running task beyond its text", intake.PlanRefused([]plan.Refusal{plan.RunningTaskChanged("a")})},
 		{"a version at or below the one in force", intake.PlanVersionOld("LEGION-208", 4, 4)},
 		{"a version of another document", intake.PlanDocumentChanged("LEGION-208", childDoc)},
 	} {
@@ -216,7 +688,8 @@ func TestRegisterPlanAnswersTheWorkflowsRefusals(t *testing.T) {
 			statuses.givePlan(planDoc, 4, taskBlock("a", "implementer reviewer"))
 			recorder := registerPlan(h, architect.grant(t), "LEGION-208", planDoc, 4)
 			if tc.refusal.Reasons != nil {
-				assertPlanRefused(t, recorder, PlanReason{Task: "a", Reason: "task a is running: stop it with stop_task before you change it."})
+				assertPlanRefused(t, recorder, PlanReason{Task: "a", Reason: "task a is running, so a later version can change only its text. " +
+					"Stop it with stop_task before you change any other part of it or remove it."})
 				return
 			}
 			refusedSaying(t, recorder, tc.refusal.Status, tc.refusal.Code, tc.refusal.Message)

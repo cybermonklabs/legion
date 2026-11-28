@@ -13,15 +13,12 @@ import {
   usePublishReferenceNames,
 } from "../refs/reference-names";
 import { parseNodeReference } from "../refs/routes";
-import {
-  chipName,
-  chipNaming,
-  type IssueTreeReads,
-  type NodeChip,
-  type TreeNode,
-  targetNaming,
-} from "./issue-tree";
+import { chipName } from "./first-line";
+import type { IssueTreeReads, NodeChip, TreeNode } from "./issue-tree";
 import { lineOrKindWord, useNodeLine } from "./node-line";
+import type { LineNames } from "./one-line";
+import { knownIssueKeys } from "./row-references";
+import { chipNaming, targetNaming } from "./target-naming";
 
 /**
  * What the shared reader makes of what the tree holds, read through the code the page's
@@ -96,9 +93,30 @@ export function publishedNames(
   };
 }
 
+/** What a plain line on the issue `issue`'s page names the references it cites by
+ *  (`useIssueNames`) where the page published `names`, each target's name, an issue's title
+ *  among them, with each issue they name known by its bare key (`knownIssueKeys`), and `lines`,
+ *  the line a chip names a block by: a reference with neither reads as its author wrote it, and
+ *  nothing is deleted, edited or ambiguous. */
+export function lineNamesOf(
+  issue: string,
+  { lines = new Map(), names = new Map() }: Partial<Pick<LineNames, "lines" | "names">> = {}
+): LineNames {
+  return {
+    ambiguous: new Set(),
+    author: () => "",
+    deleted: new Map(),
+    edited: new Set(),
+    issue,
+    issues: knownIssueKeys(names),
+    lines,
+    names,
+  };
+}
+
 /** What the page publishes for `chips`: every chip the batched read answered for, named by the
- *  page's own rule (`issue-tree.ts`'s `chipNaming`, as `targetNaming` names the read's targets),
- *  and every chip's reference as one the page asks for, answered or not yet. */
+ *  page's own rule (`target-naming.ts`'s `chipNaming`, as `targetNaming` names the read's
+ *  targets), and every chip's reference as one the page asks for, answered or not yet. */
 export function publishedChips(chips: readonly NodeChip[]): PublishedReferences {
   return {
     ...chipNaming(chips.filter((chip) => chip.answered)),

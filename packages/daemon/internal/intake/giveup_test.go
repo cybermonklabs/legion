@@ -365,7 +365,7 @@ func failingHandler(calls *int) Handler {
 }
 
 // registerCaptureController records CAPTURE's controller as registered, as `legion controller
-// start` and its session's registration leave the row ControllerRegistered reads.
+// start` and its session's registration leave the row ControllerSession reads.
 func registerCaptureController(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	token, err := claim.ProjectToken("CAPTURE")

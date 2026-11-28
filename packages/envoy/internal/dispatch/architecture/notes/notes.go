@@ -107,3 +107,41 @@ func CheckSize(path string, size int64) error {
 	}
 	return nil
 }
+
+// MaxFiles is the most notes a note set may hold, and MaxSetSize the most bytes its notes may
+// hold in sum. MaxFileSize bounds each note and these bound the set, so a reader that checks them
+// from a directory's listing reads at most MaxSetSize bytes of notes. Each reader checks them from
+// its listing before it reads a note: the Dispatch server's GitHub reader for a CI job's result of
+// a check of the spec files and for the architecture import, spec-check, architecture-check and
+// the CI reporter.
+//
+// MaxFiles is what the server can list: it reads a directory's listing as one GitHub response of
+// at most 1 MiB (githubapp's responseLimit), GitHub writes about 200 bytes for each entry beside
+// its name and the repository's (13,351 bytes for the 56 entries of this repository's
+// .github/workflows), and so 1,000 entries fit with a name of 255 bytes each and the longest
+// repository name. MaxSetSize is what the server keeps of one commit: it keeps the checks it
+// judged of a commit's spec files in a cache of 16 MiB that keeps no entry larger than itself,
+// and those checks take about the bytes of the files they are written in, so a set of 16 MiB is
+// read once for each commit, and not once for each result.
+const (
+	MaxFiles   = 1000
+	MaxSetSize = 16 << 20
+)
+
+// ErrSetTooLarge is CheckSet's refusal of a set over MaxFiles or MaxSetSize, which a caller tells
+// from another failure with errors.Is.
+var ErrSetTooLarge = errors.New("set too large")
+
+// CheckSet decides whether a set of files notes holding size bytes in sum, in the directory dir,
+// is within MaxFiles and MaxSetSize: nil when it is, else ErrSetTooLarge wrapped with the
+// directory, and the count and its limit, or, where the count is within its bound, the sum and its
+// limit.
+func CheckSet(dir string, files int, size int64) error {
+	if files > MaxFiles {
+		return fmt.Errorf("%w: %s holds %d files (limit %d)", ErrSetTooLarge, dir, files, MaxFiles)
+	}
+	if size > MaxSetSize {
+		return fmt.Errorf("%w: %s holds %d bytes in its files (limit %d)", ErrSetTooLarge, dir, size, MaxSetSize)
+	}
+	return nil
+}

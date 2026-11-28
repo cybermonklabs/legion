@@ -3982,43 +3982,44 @@ const refusals = [
 // taking one - on the control or on an element around it - and lists it again once that is
 // undone, in a change no component of Add's draws. Each row is one rule of `usableControl`, or
 // the name Add finds the control by, and each is a change Add's watch must see.
-test.each(
-  refusals
-)("Add lists no entry whose control is %s, and lists it again once it is not", async (_name, refuse) => {
-  const user = userEvent.setup();
-  const { getIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
-  getIssue.mockResolvedValue(advancesOnly);
-  const view = renderDetails();
-  try {
-    await screen.findByRole("link", { name: "CORE-3" });
-    await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
-    expect(
-      screen.getAllByRole("menuitem").map((entry) => entry.textContent),
-      "Add lists other than Advances"
-    ).toEqual([PROPERTY_LABELS.advances]);
-    await user.keyboard("{Escape}");
-    const control = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
-    let undo = () => {};
-    await act(async () => {
-      undo = refuse(control, screen.getByTestId("issue-advances"));
-    });
-    await waitFor(() =>
-      expect(addMenuControl(), "Add lists Advances while its control takes no press").toBeNull()
-    );
-    await act(async () => undo());
-    await waitFor(() =>
+test.each(refusals)(
+  "Add lists no entry whose control is %s, and lists it again once it is not",
+  async (_name, refuse) => {
+    const user = userEvent.setup();
+    const { getIssue, restore } = stubIssueApi();
+    const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+    getIssue.mockResolvedValue(advancesOnly);
+    const view = renderDetails();
+    try {
+      await screen.findByRole("link", { name: "CORE-3" });
+      await user.click(await screen.findByRole("button", { name: CONTROL_LABELS.add }));
       expect(
-        addMenuControl(),
-        "Advances' control takes a press again, but Details draws no Add"
-      ).not.toBeNull()
-    );
-  } finally {
-    view.unmount();
-    priorities.mockRestore();
-    restore();
+        screen.getAllByRole("menuitem").map((entry) => entry.textContent),
+        "Add lists other than Advances"
+      ).toEqual([PROPERTY_LABELS.advances]);
+      await user.keyboard("{Escape}");
+      const control = screen.getByRole("button", { name: addPriorityControlName("CORE-1") });
+      let undo = () => {};
+      await act(async () => {
+        undo = refuse(control, screen.getByTestId("issue-advances"));
+      });
+      await waitFor(() =>
+        expect(addMenuControl(), "Add lists Advances while its control takes no press").toBeNull()
+      );
+      await act(async () => undo());
+      await waitFor(() =>
+        expect(
+          addMenuControl(),
+          "Advances' control takes a press again, but Details draws no Add"
+        ).not.toBeNull()
+      );
+    } finally {
+      view.unmount();
+      priorities.mockRestore();
+      restore();
+    }
   }
-});
+);
 
 // Details draws the priority's line in one of two places: beside Add while the issue advances
 // none, and in the Advances row once it advances one. The first priority added moves it, and the
@@ -4054,46 +4055,47 @@ const FIRST_ADDED: readonly (readonly [
   ],
 ];
 
-test.each(
-  FIRST_ADDED
-)("the first priority added hands the focus from the add control beside Add to %s", async (name, readBack, disabled, focused) => {
-  const user = userEvent.setup();
-  const { getIssue, patchIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
-  getIssue.mockResolvedValue(advancesOnly);
-  const view = renderDetails();
-  try {
-    const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
-    // The issue's read after the write is held, so the write lands, and the picker has given the
-    // focus back to its trigger beside Add, before the line moves.
-    const reread = Promise.withResolvers<IssueDetails>();
-    getIssue.mockImplementation(() => reread.promise);
-    await toggleEvals(user, control);
-    await waitFor(() =>
+test.each(FIRST_ADDED)(
+  "the first priority added hands the focus from the add control beside Add to %s",
+  async (name, readBack, disabled, focused) => {
+    const user = userEvent.setup();
+    const { getIssue, patchIssue, restore } = stubIssueApi();
+    const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+    getIssue.mockResolvedValue(advancesOnly);
+    const view = renderDetails();
+    try {
+      const control = await screen.findByRole("button", { name: addPriorityControlName("CORE-1") });
+      // The issue's read after the write is held, so the write lands, and the picker has given the
+      // focus back to its trigger beside Add, before the line moves.
+      const reread = Promise.withResolvers<IssueDetails>();
+      getIssue.mockImplementation(() => reread.promise);
+      await toggleEvals(user, control);
+      await waitFor(() =>
+        expect(
+          document.activeElement,
+          "the add landed, and the line gave the focus back to no add control beside Add"
+        ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
+      );
+      await act(async () => reread.resolve(readBack));
+      const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
+      expect(
+        within(row).getByRole("button", { name: priorityTriggerName("CORE-1", false) }),
+        disabled
+          ? "the Advances row's picker trigger is not disabled on a closed issue"
+          : "the Advances row's picker trigger is disabled on an open issue"
+      ).toHaveProperty("disabled", disabled);
       expect(
         document.activeElement,
-        "the add landed, and the line gave the focus back to no add control beside Add"
-      ).toBe(screen.queryByRole("button", { name: addPriorityControlName("CORE-1") }))
-    );
-    await act(async () => reread.resolve(readBack));
-    const row = await waitFor(() => detailsRow(PROPERTY_LABELS.advances));
-    expect(
-      within(row).getByRole("button", { name: priorityTriggerName("CORE-1", false) }),
-      disabled
-        ? "the Advances row's picker trigger is not disabled on a closed issue"
-        : "the Advances row's picker trigger is disabled on an open issue"
-    ).toHaveProperty("disabled", disabled);
-    expect(
-      document.activeElement,
-      `the line moved into the Advances row, and the focus fell to the page rather than to ${name}`
-    ).toBe(focused(row));
-    expect(patchIssue, "other than one write went out").toHaveBeenCalledTimes(1);
-  } finally {
-    view.unmount();
-    priorities.mockRestore();
-    restore();
+        `the line moved into the Advances row, and the focus fell to the page rather than to ${name}`
+      ).toBe(focused(row));
+      expect(patchIssue, "other than one write went out").toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      priorities.mockRestore();
+      restore();
+    }
   }
-});
+);
 
 // The last priority removed moves the line back beside Add, and the focus its picker's trigger
 // held went with the Advances row to the page's body. It goes on to the add control beside Add,
@@ -4118,65 +4120,66 @@ const LAST_REMOVED: readonly (readonly [string, IssueDetails, boolean, () => HTM
   ],
 ];
 
-test.each(
-  LAST_REMOVED
-)("removing the last priority hands the focus from its picker's trigger to %s", async (name, readBack, disabled, focused) => {
-  const user = userEvent.setup();
-  const { getIssue, patchIssue, restore } = stubIssueApi();
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
-  getIssue.mockResolvedValue({
-    ...advancesOnly,
-    advances: [{ id: "evals-now", inherited: false }],
-  });
-  const view = renderDetails();
-  try {
-    const trigger = await waitFor(advancesRowTrigger);
-    // The issue's read after the write is held, so the removal lands before the line moves.
-    const reread = Promise.withResolvers<IssueDetails>();
-    getIssue.mockImplementation(() => reread.promise);
-    const reads = getIssue.mock.calls.length;
-    await toggleEvals(user, trigger);
-    await waitFor(() =>
+test.each(LAST_REMOVED)(
+  "removing the last priority hands the focus from its picker's trigger to %s",
+  async (name, readBack, disabled, focused) => {
+    const user = userEvent.setup();
+    const { getIssue, patchIssue, restore } = stubIssueApi();
+    const priorities = spyOn(api, "listPriorities").mockResolvedValue(oneLivePriority);
+    getIssue.mockResolvedValue({
+      ...advancesOnly,
+      advances: [{ id: "evals-now", inherited: false }],
+    });
+    const view = renderDetails();
+    try {
+      const trigger = await waitFor(advancesRowTrigger);
+      // The issue's read after the write is held, so the removal lands before the line moves.
+      const reread = Promise.withResolvers<IssueDetails>();
+      getIssue.mockImplementation(() => reread.promise);
+      const reads = getIssue.mock.calls.length;
+      await toggleEvals(user, trigger);
+      await waitFor(() =>
+        expect(
+          getIssue.mock.calls.length,
+          "the removal landed, and the issue was not read again"
+        ).toBeGreaterThan(reads)
+      );
+      // The shared trigger stays refused, and keeps the focus, until the new read is drawn.
       expect(
-        getIssue.mock.calls.length,
-        "the removal landed, and the issue was not read again"
-      ).toBeGreaterThan(reads)
-    );
-    // The shared trigger stays refused, and keeps the focus, until the new read is drawn.
-    expect(trigger, "the trigger took a press again before the new read was drawn").toHaveAttribute(
-      "aria-disabled",
-      "true"
-    );
-    expect(document.activeElement, "the trigger lost the focus before the line moved").toBe(
-      trigger
-    );
-    await act(async () => reread.resolve(readBack));
-    await waitFor(() =>
+        trigger,
+        "the trigger took a press again before the new read was drawn"
+      ).toHaveAttribute("aria-disabled", "true");
+      expect(document.activeElement, "the trigger lost the focus before the line moved").toBe(
+        trigger
+      );
+      await act(async () => reread.resolve(readBack));
+      await waitFor(() =>
+        expect(
+          screen.queryByText(PROPERTY_LABELS.advances, {
+            exact: true,
+            selector: "[data-page-chrome]",
+          }),
+          "the issue advances nothing, and Details still draws the Advances row"
+        ).toBeNull()
+      );
       expect(
-        screen.queryByText(PROPERTY_LABELS.advances, {
-          exact: true,
-          selector: "[data-page-chrome]",
-        }),
-        "the issue advances nothing, and Details still draws the Advances row"
-      ).toBeNull()
-    );
-    expect(
-      screen.getByRole("button", { name: addPriorityControlName("CORE-1") }),
-      disabled
-        ? "the add control beside Add is not disabled on a closed issue"
-        : "the add control beside Add is disabled on an open issue"
-    ).toHaveProperty("disabled", disabled);
-    expect(
-      document.activeElement,
-      `the line moved back beside Add, and the focus fell to the page rather than to ${name}`
-    ).toBe(focused());
-    expect(patchIssue, "other than one write went out").toHaveBeenCalledTimes(1);
-  } finally {
-    view.unmount();
-    priorities.mockRestore();
-    restore();
+        screen.getByRole("button", { name: addPriorityControlName("CORE-1") }),
+        disabled
+          ? "the add control beside Add is not disabled on a closed issue"
+          : "the add control beside Add is disabled on an open issue"
+      ).toHaveProperty("disabled", disabled);
+      expect(
+        document.activeElement,
+        `the line moved back beside Add, and the focus fell to the page rather than to ${name}`
+      ).toBe(focused());
+      expect(patchIssue, "other than one write went out").toHaveBeenCalledTimes(1);
+    } finally {
+      view.unmount();
+      priorities.mockRestore();
+      restore();
+    }
   }
-});
+);
 
 /** The fixture's issue advancing the priority "Evals collecting data now", with its own set at
  *  `revision`. */
@@ -6890,7 +6893,12 @@ test("with no pin, Pinned reads None and sends no request", async () => {
     expect(within(pins).queryAllByRole("link")).toHaveLength(0);
     // The panel's reads have gone out by the time the Repository row has read the project list.
     await waitFor(() => expect(api.listProjects).toHaveBeenCalled());
-    expect(pinReads.asks, "Pinned read the issue's questions with no pin").not.toHaveBeenCalled();
+    // Details reads the issue's open asks of its own, for the approval requests that wait on the
+    // reader (`useWaitingRequests`); Pinned's read is of every ask.
+    expect(
+      pinReads.asks.mock.calls.filter(([, state]) => state === "all"),
+      "Pinned read the issue's questions with no pin"
+    ).toEqual([]);
     expect(
       pinReads.comments,
       "Pinned read the issue's comments with no pin"
@@ -6948,13 +6956,18 @@ test("with a pin, a window focus past 30 s reads none of Pinned's questions, com
   const { unmount } = renderDetails(undefined, undefined, client);
 
   try {
+    // Details reads the issue's open asks of its own, for the approval requests that wait on the
+    // reader (`useWaitingRequests`); Pinned's read is of every ask.
+    const pinnedAsks = () => pinReads.asks.mock.calls.filter(([, state]) => state === "all");
     await waitFor(() => {
-      for (const read of Object.values(pinReads)) expect(read).toHaveBeenCalledTimes(1);
+      expect(pinnedAsks()).toHaveLength(1);
+      expect(pinReads.comments).toHaveBeenCalledTimes(1);
+      expect(pinReads.messages).toHaveBeenCalledTimes(1);
       expect(client.isFetching()).toBe(0);
     });
     await focusPastStaleness(client);
     await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
-    expect(pinReads.asks, "a window focus read Pinned's questions again").toHaveBeenCalledTimes(1);
+    expect(pinnedAsks(), "a window focus read Pinned's questions again").toHaveLength(1);
     expect(pinReads.comments, "a window focus read Pinned's comments again").toHaveBeenCalledTimes(
       1
     );
@@ -7890,77 +7903,76 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
 // element of Details takes it, then or two frames and a task later, as a keeper that waits would.
 // Each change here comes through the query cache, as the reads of such a change land; a control a
 // close disables drops its focus to the body as Chromium drops it (`emulateChromiumFocusFixup`).
-test.each(
-  TAKEN_AWAY
-)("%s: the focus stays on the page's body, and no element of Details takes it", async (_name, {
-  after,
-  before,
-  focused,
-}) => {
-  const user = userEvent.setup();
-  const { getIssue, getMyState, pinReads, restore } = stubIssueApi();
-  const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
-  const getReferences = spyOn(api, "getReferences");
-  // The Advances row reads the priorities, to name the one the issue advances.
-  const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
-  pinReads.comments.mockResolvedValue(
-    Object.entries(PIN_WORDS).map(([id, words]) => commentOf(id, words))
-  );
-  // Makes `held` what Dispatch answers and, once Details is drawn, what its reads hold.
-  const hold = (held: Held, queryClient?: QueryClient) => {
-    const details = held.issue ?? issue;
-    const state = pinnedState(...(held.pins ?? []).map((id) => conversationItemId("comment", id)));
-    const blocking: GraphReferences = {
-      edges: (held.waiting ?? []).map((key) => waitingEdge(key, `Waits for ${key}`)),
-      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
-    };
-    getIssue.mockResolvedValue(details);
-    getMyState.mockResolvedValue(state);
-    getReferences.mockResolvedValue(blocking);
-    if (queryClient === undefined) return;
-    act(() => {
-      queryClient.setQueryData(issueQuery("CORE-1").queryKey, details);
-      queryClient.setQueryData(userStateQuery().queryKey, state);
-      queryClient.setQueryData(["references", "to", reference, "blocked_by"], blocking);
-    });
-  };
-  hold(before);
-  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
-  const stopBlurring = emulateChromiumFocusFixup();
-
-  try {
-    const lost = await focused(user);
-    act(() => lost.focus());
-    expect(document.activeElement, "the case's element did not take the focus").toBe(lost);
-
-    hold({ ...before, ...after }, queryClient);
-    await waitFor(() =>
-      expect(
-        lost.isConnected && !lost.matches(":disabled"),
-        "the change left the focused element on the page, taking a press"
-      ).toBe(false)
+test.each(TAKEN_AWAY)(
+  "%s: the focus stays on the page's body, and no element of Details takes it",
+  async (_name, { after, before, focused }) => {
+    const user = userEvent.setup();
+    const { getIssue, getMyState, pinReads, restore } = stubIssueApi();
+    const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
+    const getReferences = spyOn(api, "getReferences");
+    // The Advances row reads the priorities, to name the one the issue advances.
+    const priorities = spyOn(api, "listPriorities").mockResolvedValue(noLivePriorities);
+    pinReads.comments.mockResolvedValue(
+      Object.entries(PIN_WORDS).map(([id, words]) => commentOf(id, words))
     );
-    expect(
-      document.activeElement,
-      "the element went, and the focus is not on the page's body"
-    ).toBe(document.body);
-    await settleFocus();
-    expect(
-      document.activeElement,
-      "the focus left the page's body after the element went, though the reader pressed nothing"
-    ).toBe(document.body);
-    expect(
-      detailsPanel().contains(document.activeElement),
-      "an element of Details took the focus"
-    ).toBe(false);
-  } finally {
-    stopBlurring();
-    unmount();
-    priorities.mockRestore();
-    getReferences.mockRestore();
-    restore();
+    // Makes `held` what Dispatch answers and, once Details is drawn, what its reads hold.
+    const hold = (held: Held, queryClient?: QueryClient) => {
+      const details = held.issue ?? issue;
+      const state = pinnedState(
+        ...(held.pins ?? []).map((id) => conversationItemId("comment", id))
+      );
+      const blocking: GraphReferences = {
+        edges: (held.waiting ?? []).map((key) => waitingEdge(key, `Waits for ${key}`)),
+        node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+      };
+      getIssue.mockResolvedValue(details);
+      getMyState.mockResolvedValue(state);
+      getReferences.mockResolvedValue(blocking);
+      if (queryClient === undefined) return;
+      act(() => {
+        queryClient.setQueryData(issueQuery("CORE-1").queryKey, details);
+        queryClient.setQueryData(userStateQuery().queryKey, state);
+        queryClient.setQueryData(["references", "to", reference, "blocked_by"], blocking);
+      });
+    };
+    hold(before);
+    const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+    const stopBlurring = emulateChromiumFocusFixup();
+
+    try {
+      const lost = await focused(user);
+      act(() => lost.focus());
+      expect(document.activeElement, "the case's element did not take the focus").toBe(lost);
+
+      hold({ ...before, ...after }, queryClient);
+      await waitFor(() =>
+        expect(
+          lost.isConnected && !lost.matches(":disabled"),
+          "the change left the focused element on the page, taking a press"
+        ).toBe(false)
+      );
+      expect(
+        document.activeElement,
+        "the element went, and the focus is not on the page's body"
+      ).toBe(document.body);
+      await settleFocus();
+      expect(
+        document.activeElement,
+        "the focus left the page's body after the element went, though the reader pressed nothing"
+      ).toBe(document.body);
+      expect(
+        detailsPanel().contains(document.activeElement),
+        "an element of Details took the focus"
+      ).toBe(false);
+    } finally {
+      stopBlurring();
+      unmount();
+      priorities.mockRestore();
+      getReferences.mockRestore();
+      restore();
+    }
   }
-});
+);
 
 // Details keeps three places nothing fills yet (`details-more.tsx`): the people, the focused
 // row's facts and the history. Until something fills them, each draws nothing.
@@ -7969,5 +7981,86 @@ test("Details' places for the people, the focused row's facts and the history dr
     const view = render(<Place issue={issue} state={undefined} />);
     expect(view.container.innerHTML, `${Place.name} drew something`).toBe("");
     view.unmount();
+  }
+});
+
+// dispatch://INFRA-5702/spec#b-r-header-count (R10): Details draws Approve and Request changes on
+// its Approval row wherever no approval request waits on the reader, and leaves them to the
+// header while one does, by the approval-request items of the one rule of what waits
+// (`useWaitingRequests`). An approval of the reader's that a newer version made stale is an item
+// of Dashboard's list but no request, so it moves no control: Details keeps both. An open request
+// on the document that waits on the reader takes them to the header.
+test("a stale approval moves no approval control", async () => {
+  const { getIssue, pinReads, restore } = stubIssueApi();
+  const stale: IssueDetails = {
+    ...issue,
+    artifacts: [
+      {
+        ...specArtifact,
+        approval: {
+          at: "2026-09-10T00:00:00Z",
+          by: { id: "alice", kind: "user" },
+          latest_version: 3,
+          state: "stale",
+          version: 2,
+        },
+      },
+    ],
+  };
+  getIssue.mockResolvedValue(stale);
+  const { queryClient, unmount } = renderDetails();
+  const actions = () =>
+    within(screen.getByTestId("issue-details-approval-steps")).queryAllByRole("button", {
+      name: /^(Approve|Request changes)\b/,
+    });
+
+  try {
+    await waitFor(() => expect(pinReads.asks).toHaveBeenCalledWith("CORE-1", "open"));
+    await waitFor(() => expect(queryClient.isFetching()).toBe(0));
+    await screen.findByTestId("issue-details-approval-steps");
+    expect(actions().length, "the stale approval moved Details' approval controls").toBeGreaterThan(
+      0
+    );
+
+    pinReads.asks.mockImplementation(async (_key, state) =>
+      state === "open"
+        ? [
+            {
+              anchor: null,
+              answer: null,
+              artifact_id: specArtifact.id,
+              asked_of: null,
+              asked_of_at: null,
+              asked_of_by: null,
+              author: { id: "session-1", kind: "session" },
+              block_id: null,
+              created_at: "2026-09-11T00:00:00Z",
+              edited_at: null,
+              id: "ask-approval",
+              issue_key: "CORE-1",
+              kind: "approval",
+              last_reply: null,
+              multiple: false,
+              options: [],
+              question: "Approve the spec?",
+              state: "open",
+              urgency: "med",
+              waiting_on: "human",
+              waiting_on_person: "alice",
+            },
+          ]
+        : []
+    );
+    await act(async () => {
+      await queryClient.invalidateQueries({ queryKey: ["asks", "CORE-1", "open"] });
+    });
+    await waitFor(() =>
+      expect(actions(), "a request waiting on the reader left Details' approval controls").toEqual(
+        []
+      )
+    );
+  } finally {
+    unmount();
+    restore();
   }
 });

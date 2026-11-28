@@ -11,26 +11,29 @@ import (
 	"github.com/nats-io/nats.go"
 )
 
-// fakeStartClock is a start's clock that only the start and its tries move: a sleep moves it by the
-// wait, plus late[i] for the i'th sleep when late names one, as a process the scheduler wakes late
-// from a wait finds the clock, and a try by the time the try takes.
+// fakeStartClock is a start's clock (startClock) that only the start and its tries move: a wait
+// moves it by the wait, plus late[i] for the i'th wait when late names one, as a process the
+// scheduler wakes late from a wait finds the clock, and a try by the time the try takes. The
+// start's loop runs on the test's own goroutine, so each wait ends as it is asked for.
 type fakeStartClock struct {
 	at    time.Time
 	late  []time.Duration
 	slept []time.Duration
 }
 
-func (c *fakeStartClock) clock() startClock {
-	return startClock{
-		now: func() time.Time { return c.at },
-		sleep: func(wait time.Duration) {
-			if i := len(c.slept); i < len(c.late) {
-				c.at = c.at.Add(c.late[i])
-			}
-			c.slept = append(c.slept, wait)
-			c.at = c.at.Add(wait)
-		},
+func (c *fakeStartClock) Now() time.Time { return c.at }
+
+// After moves the clock past the wait, and answers a channel that already holds the moment it
+// reached.
+func (c *fakeStartClock) After(wait time.Duration) <-chan time.Time {
+	if i := len(c.slept); i < len(c.late) {
+		c.at = c.at.Add(c.late[i])
 	}
+	c.slept = append(c.slept, wait)
+	c.at = c.at.Add(wait)
+	reached := make(chan time.Time, 1)
+	reached <- c.at
+	return reached
 }
 
 // scriptedTry is one try of a start in a row of TestACredentialWaitWaitsOutRefusalsUpToItsBound:
@@ -182,7 +185,7 @@ func TestACredentialWaitWaitsOutRefusalsUpToItsBound(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			clock := &fakeStartClock{at: time.Date(2026, 11, 22, 0, 3, 50, 0, time.UTC), late: row.late}
 			made, tries, refused := &Client{}, 0, 0
-			client, err := waitOutCredentialRefusals(row.bound, func(error, time.Duration) { refused++ }, clock.clock(), func() (*Client, error) {
+			client, err := waitOutCredentialRefusals(row.bound, func(error, time.Duration) { refused++ }, clock, func() (*Client, error) {
 				try := row.tries[min(tries, len(row.tries)-1)]
 				tries++
 				clock.at = clock.at.Add(try.took)
@@ -244,7 +247,7 @@ func TestACredentialWaitThatEndsNamesTheLastRefusal(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			clock := &fakeStartClock{at: time.Date(2026, 11, 22, 0, 3, 50, 0, time.UTC)}
 			tries := 0
-			_, err := waitOutCredentialRefusals(5*time.Second, nil, clock.clock(), func() (*Client, error) {
+			_, err := waitOutCredentialRefusals(5*time.Second, nil, clock, func() (*Client, error) {
 				tries++
 				return nil, row.try(tries)
 			})

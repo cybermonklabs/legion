@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/launcher"
+	"github.com/sjawhar/legion/daemon/internal/redact"
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -279,9 +280,9 @@ func TestRoleInitIsHiddenAndRefusesToRunOutsideARolesNamespaces(t *testing.T) {
 }
 
 // role-init's own lines pass the URL rule, though the stderr it is handed goes to the role's shim
-// as it is (newRoleInitCommand): a flag's value it cannot read, quoted in its refusal, keeps no
-// userinfo and no query, so a URL with a token in either reaches the launcher's log with neither,
-// its host and path kept.
+// as it is (newRoleInitCommand): a flag's value it cannot read, quoted in its refusal, is quoted as
+// the URL rule writes it (redact.URLCredentials, read from the rule, never written out here), so a
+// URL with a token in its userinfo or its query reaches the launcher's log with neither.
 func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
 	t.Parallel()
 	const token = "FAKEtok3nZQ9x"
@@ -299,7 +300,10 @@ func TestRoleInitsOwnLinesPrintNoCredentialAURLCarries(t *testing.T) {
 		if strings.Contains(printed, token) {
 			t.Errorf("role-init printed the token its flag's value carries: %s", shown)
 		}
-		if want := `"https://d.example/status"`; !strings.Contains(stderr.String(), want) {
+		if strings.Contains(printed, "legion-reader") {
+			t.Errorf("role-init printed the user name its flag's value carries: %s", shown)
+		}
+		if want := redact.URLCredentials(`"` + value + `"`); !strings.Contains(stderr.String(), want) {
 			t.Errorf("role-init printed %q, want it to quote the value as %s", shown, want)
 		}
 	}
@@ -365,11 +369,13 @@ func TestTheLaunchersCommandLineForItsDeleterIsOneVolumeTrimDeleteReads(t *testi
 // the connection failed: in the controller pod's container on the launcher's own stderr, in an
 // issue pod's behind the role's name. There the test database's script also writes a DSN with a
 // user name and a query, which the launcher copies into the container's log behind the script's
-// name. And a --token-file the launcher cannot read is quoted in its refusal. Each line keeps the
-// URL's host and path, and no user name or query reaches the container's log.
+// name. And a --token-file the launcher cannot read is quoted in its refusal. Each line is the
+// line as the URL rule writes it (redact.URLCredentials, read from the rule, never written out
+// here), and no user name or query reaches the container's log.
 func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process; it runs `legion launcher` in this process, which points the process's standard logger at the test's own stderr (podLogs).
-	connect := notADaemon(t, "moved to https://legion-reader@d.example/launch?token=planted-query-token-4")
+	const farSide = "moved to https://legion-reader@d.example/launch?token=planted-query-token-4"
+	connect := notADaemon(t, farSide)
 	token := filepath.Join(t.TempDir(), "LAUNCHER_TOKEN")
 	if err := os.WriteFile(token, []byte("token"), 0o400); err != nil {
 		t.Fatal(err)
@@ -385,12 +391,15 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 	}
 	// The test database's script, first on PATH: it names a server that does not answer, by a DSN
 	// with a user name and a query, and fails.
+	const dsnLine = "the test database at postgresql://legion-reader@127.0.0.1:5433/legion_test?token=planted-query-token-5 does not answer"
 	bin := t.TempDir()
-	script := "#!/bin/sh\necho 'the test database at postgresql://legion-reader@127.0.0.1:5433/legion_test?token=planted-query-token-5 does not answer'\nexit 1\n"
+	script := "#!/bin/sh\necho '" + dsnLine + "'\nexit 1\n"
 	if err := execfile.Write(filepath.Join(bin, "legion-testpg"), []byte(script), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))
+	const notAFrame = `hello acknowledgement: shimwire: line is not a JSON object: "` + farSide + `"`
+	const tokenFile = "https://legion-reader@d.example/token?token=planted-query-token-6"
 	for _, tc := range []struct {
 		name string
 		args []string
@@ -405,7 +414,7 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			name:    "the controller pod's container",
 			args:    []string{"--connect", connect, "--token-file", token, "--role", "controller", "--private-dir", t.TempDir()},
 			until:   "launcher: daemon connection:",
-			shown:   []string{`launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`},
+			shown:   []string{redact.URLCredentials("launcher: daemon connection: " + notAFrame)},
 			planted: []string{"planted-query-token-4"},
 		},
 		{
@@ -413,18 +422,16 @@ func TestTheLauncherCommandWritesNoURLCredentials(t *testing.T) {
 			args:  []string{"--connect", connect, "--roles-dir", rolesDir, "--role", "tester", "--test-postgres"},
 			until: "tester: launcher: daemon connection:",
 			shown: []string{
-				`tester: launcher: daemon connection: hello acknowledgement: shimwire: line is not a JSON object: "moved to https://d.example/launch"`,
-				"legion-testpg: the test database at postgresql://127.0.0.1:5433/legion_test does not answer",
+				redact.URLCredentials("tester: launcher: daemon connection: " + notAFrame),
+				redact.URLCredentials("legion-testpg: " + dsnLine),
 			},
 			planted: []string{"planted-query-token-4", "planted-query-token-5"},
 		},
 		{
-			name: "a token file it cannot read",
-			args: []string{"--connect", connect, "--token-file", "https://legion-reader@d.example/token?token=planted-query-token-6", "--role", "controller", "--private-dir", t.TempDir()},
-			code: 1,
-			// The query runs to the white space after it, so the ":" the line writes there goes
-			// with it.
-			shown:   []string{"launcher: token file https://d.example/token open https://d.example/token no such file"},
+			name:    "a token file it cannot read",
+			args:    []string{"--connect", connect, "--token-file", tokenFile, "--role", "controller", "--private-dir", t.TempDir()},
+			code:    1,
+			shown:   []string{redact.URLCredentials("launcher: token file " + tokenFile + ": open " + tokenFile + ": no such file")},
 			planted: []string{"planted-query-token-6"},
 		},
 	} {

@@ -3,14 +3,15 @@
 // What the client does between trades: it holds a token while that token is live, trades again
 // before it lapses with nothing of the caller's restarting, at the moment the corpus the Go client
 // replays too names (`testdata/renewal.json`), keeps writing through a broker or an issuer that is
-// merely down while its retry loop trades again, tells a caller whose deadline ends what that
-// loop's last trade came to rather than handing out no identity, stops with a plain error on one
+// merely down while its retry loop trades again, tells a fail-fast caller what that loop's last
+// trade came to rather than handing out no identity, stops with a plain error on one
 // that has been ended, and trades afresh when a caller is told the token in hand is dead. The
 // loop's whole table of answers is `retry-loop.test.ts`.
 
 import { expect, test } from "bun:test";
 import { URL_NOT_PRINTED } from "@legion/contracts/log-text";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { settled, until } from "@legion/test-fixtures/wait";
 import { signedIn, stubIssuer } from "../../test/sign-ins";
 import { newDpopKey } from "../dpop";
 import { personIdentity } from "../person-identity";
@@ -22,9 +23,10 @@ import {
   isFinalRefusal,
   SignInEndedError,
   TradeRetryingError,
+  TradeUnansweredError,
 } from "../token-errors";
 import { SUBJECT_TOKEN_TYPE_KUBERNETES } from "../wire";
-import { accepted, stubBroker } from "./stub";
+import { accepted, refusalOf, stubBroker } from "./stub";
 
 const PERSON = "ada@example.com";
 const CLIENT_ID = "example-device-client";
@@ -74,9 +76,12 @@ async function told(call: Promise<unknown>): Promise<unknown> {
   );
 }
 
-/** How long a row's caller waits on the retry loop before it is told what the loop's last trade
- *  came to: long enough for one trade against a stand-in on this machine. */
-const DEADLINE_MS = 1_000;
+/** What a fail-fast caller of `client` is told, which the retry loop tells it as soon as the trade
+ *  it waits on has failed: what that trade came to. Waited for through the shared wait, so a call
+ *  that never answers fails at the row's deadline, naming it. */
+function answerOf(client: BrokerTokenClient): Promise<unknown> {
+  return settled("the retry loop's answer to a fail-fast caller", told(client.token()));
+}
 
 test("the token in hand is reused until the renewal window, then traded again", async () => {
   const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));
@@ -156,32 +161,33 @@ if (renewalCorpus.version !== 1 || renewalCorpus.rows.length === 0) {
 
 // Each row through the rule, and where the broker can mint its life, through a client that holds
 // what it traded until a millisecond short of the row's moment and trades again at it.
-test.each(
-  renewalCorpus.rows.map((row) => [row.name, row] as const)
-)("the renewal corpus: %s", async (_, row) => {
-  const landed = Date.now();
-  const window = row.renew_before_seconds * 1000;
-  const renews = landed + row.renews_after_seconds * 1000;
-  expect(renewalAt(landed + row.life_seconds * 1000, landed, window)).toBe(renews);
-  // The broker mints no token that lives no time at all, and the client refuses one.
-  if (row.life_seconds <= 0) return;
-  const broker = stubBroker((_trade, count) => ({
-    body: accepted(`token-${count}`, row.life_seconds),
-  }));
-  const clock = { now: landed };
-  const client = await clientAt(broker.url, clock, countingSource(), window);
-  try {
-    expect((await client.token()).accessToken).toBe("token-1");
-    clock.now = renews - 1;
-    expect((await client.token()).accessToken).toBe("token-1");
-    clock.now = renews;
-    expect((await client.token()).accessToken).toBe("token-2");
-    expect(broker.trades.length).toBe(2);
-  } finally {
-    client.close();
-    broker.stop();
+test.each(renewalCorpus.rows.map((row) => [row.name, row] as const))(
+  "the renewal corpus: %s",
+  async (_, row) => {
+    const landed = Date.now();
+    const window = row.renew_before_seconds * 1000;
+    const renews = landed + row.renews_after_seconds * 1000;
+    expect(renewalAt(landed + row.life_seconds * 1000, landed, window)).toBe(renews);
+    // The broker mints no token that lives no time at all, and the client refuses one.
+    if (row.life_seconds <= 0) return;
+    const broker = stubBroker((_trade, count) => ({
+      body: accepted(`token-${count}`, row.life_seconds),
+    }));
+    const clock = { now: landed };
+    const client = await clientAt(broker.url, clock, countingSource(), window);
+    try {
+      expect((await client.token()).accessToken).toBe("token-1");
+      clock.now = renews - 1;
+      expect((await client.token()).accessToken).toBe("token-1");
+      clock.now = renews;
+      expect((await client.token()).accessToken).toBe("token-2");
+      expect(broker.trades.length).toBe(2);
+    } finally {
+      client.close();
+      broker.stop();
+    }
   }
-});
+);
 
 test("two callers that need a token at once make one trade", async () => {
   const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));
@@ -193,6 +199,71 @@ test("two callers that need a token at once make one trade", async () => {
     expect(second.accessToken).toBe("token-1");
     expect(broker.trades.length).toBe(1);
   } finally {
+    broker.stop();
+  }
+});
+
+// A caller that joins a trade another caller started ends at its own signal, and leaves that
+// trade to the caller that started it: the identity here answers only once the test lets it. The
+// caller is told the trade has not been answered yet, as the retry loop tells every caller whose
+// signal ends before a trade answers (retry-loop.test.ts, "never answers").
+test("a caller that joins a trade under way ends at its own signal", async () => {
+  const broker = stubBroker((_trade, count) => ({ body: accepted(`token-${count}`, 600) }));
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const source: TokenSource = {
+    read: async () => {
+      await held;
+      return { token: "subject-1", tokenType: SUBJECT_TOKEN_TYPE_KUBERNETES };
+    },
+    describe: () => "an identity that answers once the test lets it",
+  };
+  const client = await clientAt(broker.url, { now: Date.now() }, source);
+  try {
+    const first = client.token();
+    const ended = new AbortController();
+    const joined = client.token(ended.signal);
+    ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    expect(await refusalOf(() => joined)).toBeInstanceOf(TradeUnansweredError);
+    release();
+    expect((await first).accessToken).toBe("token-1");
+    expect(broker.trades.length).toBe(1);
+  } finally {
+    release();
+    broker.stop();
+  }
+});
+
+// The trade runs under its own bound and under no caller's signal: the caller that started it
+// leaves at its own signal, and the caller that joined it still gets its token from that one
+// trade. The broker here answers the trade only once the test lets it, after the starter left.
+test("the starter's signal ends its own wait, and never the trade another caller waits on", async () => {
+  const { promise: arrived, resolve: arrive } = Promise.withResolvers<void>();
+  const { promise: held, resolve: release } = Promise.withResolvers<void>();
+  const broker = stubBroker(async (_trade, count) => {
+    arrive();
+    await held;
+    return { body: accepted(`token-${count}`, 600) };
+  });
+  const client = await clientAt(broker.url, { now: Date.now() }, countingSource());
+  try {
+    const ended = new AbortController();
+    const starter = client.token(ended.signal);
+    const joiner = client.token();
+    await arrived;
+    ended.abort(new DOMException("The operation timed out.", "TimeoutError"));
+    const left = await refusalOf(() => starter);
+    release();
+    const joined = await joiner.then(
+      (token) => token.accessToken,
+      (error: unknown) => String(error)
+    );
+    expect({
+      left: left?.name,
+      joined,
+      trades: broker.trades.length,
+    }).toEqual({ left: "TradeUnansweredError", joined: "token-1", trades: 1 });
+  } finally {
+    release();
     broker.stop();
   }
 });
@@ -210,10 +281,10 @@ test("a broker that does not answer leaves the token in hand working until it la
     clock.now += 560_000;
     expect((await client.token()).accessToken).toBe("token-1");
     expect(broker.trades.length).toBe(2);
-    // Past its expiry there is nothing live left, so the caller is told at its deadline what the
-    // retry loop's last trade came to, rather than writing with no identity.
+    // Past its expiry there is nothing live left, so the caller is told what the retry loop's
+    // last trade came to, rather than writing with no identity.
     clock.now += 60_000;
-    const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+    const refusal = await answerOf(client);
     expect(refusal).toBeInstanceOf(TradeRetryingError);
     expect((refusal as Error).message).toContain("503");
     expect(isFinalRefusal(refusal)).toBe(false);
@@ -226,8 +297,8 @@ test("a broker that does not answer leaves the token in hand working until it la
 // A failed trade's text names the broker and what went wrong, and a caller prints it: a plain
 // broker URL by itself, and one that carries user info (AGENT_SECRETS_URL can) by its fixed phrase
 // alone, no part of it; and no error keeps the library's as its cause, since the body the library
-// read hangs off it. The retry loop trades again on such an answer, so a caller is told the text at
-// its deadline.
+// read hangs off it. The retry loop trades again on such an answer, so a fail-fast caller is told
+// the text once the trade failed.
 test.each([
   // The library refuses a 200 with no token_type, and hangs the body it read off its error.
   ["the library refuses", (token: string) => ({ access_token: token, expires_in: 600 })],
@@ -241,29 +312,32 @@ test.each([
       expires_in: 600,
     }),
   ],
-] as const)("an answer %s names the broker only where its URL is plain, and keeps no cause", async (_, body) => {
-  const password = fixtureSecret("pw");
-  const leaked = `canary-token-${crypto.randomUUID()}`;
-  const broker = stubBroker(() => ({ body: body(leaked) }));
-  const withUser = broker.url.replace("http://", `http://operator:${password}@`);
-  try {
-    for (const [url, named] of [
-      [broker.url, `${broker.url}/`],
-      [withUser, `the broker URL ${URL_NOT_PRINTED}`],
-    ] as const) {
-      const client = await clientAt(url, { now: Date.now() }, countingSource());
-      const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
-      client.close();
-      if (!(refusal instanceof TradeRetryingError)) throw new Error("the trade was answered");
-      expect(refusal.message).toContain(named);
-      expect(refusal.cause).toBeUndefined();
-      expect(Bun.inspect(refusal)).not.toContain(leaked);
-      expect(Bun.inspect(refusal)).not.toContain(password);
+] as const)(
+  "an answer %s names the broker only where its URL is plain, and keeps no cause",
+  async (_, body) => {
+    const password = fixtureSecret("pw");
+    const leaked = `canary-token-${crypto.randomUUID()}`;
+    const broker = stubBroker(() => ({ body: body(leaked) }));
+    const withUser = broker.url.replace("http://", `http://operator:${password}@`);
+    try {
+      for (const [url, named] of [
+        [broker.url, `${broker.url}/`],
+        [withUser, `the broker URL ${URL_NOT_PRINTED}`],
+      ] as const) {
+        const client = await clientAt(url, { now: Date.now() }, countingSource());
+        const refusal = await answerOf(client);
+        client.close();
+        if (!(refusal instanceof TradeRetryingError)) throw new Error("the trade was answered");
+        expect(refusal.message).toContain(named);
+        expect(refusal.cause).toBeUndefined();
+        expect(Bun.inspect(refusal)).not.toContain(leaked);
+        expect(Bun.inspect(refusal)).not.toContain(password);
+      }
+    } finally {
+      broker.stop();
     }
-  } finally {
-    broker.stop();
   }
-});
+);
 
 // A broker URL that is no http or https URL may be a token pasted where the URL goes, so the
 // client refuses it before any trade and names no part of it.
@@ -282,7 +356,7 @@ test("a token pasted as the broker's URL is refused, and named in no part", asyn
 // host it was handed, and the broker is named by `urlForText` already.
 test("a trade that got no answer names the failure by its class", async () => {
   const client = await clientAt("http://127.0.0.1:1", { now: Date.now() }, countingSource());
-  const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+  const refusal = await answerOf(client);
   client.close();
   if (!(refusal instanceof TradeRetryingError)) throw new Error("the trade was answered");
   expect(refusal.message).toBe(
@@ -350,10 +424,10 @@ test("the broker's rate limit leaves the token in hand working until it lapses",
     clock.now += 560_000;
     expect((await client.token()).accessToken).toBe("token-1");
     expect(broker.trades.length).toBe(2);
-    // Past its expiry there is nothing live left, so the caller is told at its deadline rather
-    // than writing with no identity, and what it is told says the trade goes on.
+    // Past its expiry there is nothing live left, so the caller is told rather than writing with
+    // no identity, and what it is told says the trade goes on.
     clock.now += 60_000;
-    const refusal = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+    const refusal = await answerOf(client);
     expect(refusal).toBeInstanceOf(TradeRetryingError);
     expect(isFinalRefusal(refusal)).toBe(false);
     expect((refusal as Error).message).toContain("too many token requests; try again later");
@@ -363,9 +437,9 @@ test("the broker's rate limit leaves the token in hand working until it lapses",
   }
 });
 
-// An outage (a 408, a 429, a 5xx: `outage` in oauth-refusal.ts) is no refusal a trade ends on,
-// whatever OAuth error its body names: the token in hand stays, and the next trade is tried. A
-// 400 or a 403 refusal is final, and drops the token in hand.
+// An outage (a 408, a 429, a 5xx: `outage` of `@legion/contracts/http-status`) is no refusal a
+// trade ends on, whatever OAuth error its body names: the token in hand stays, and the next trade
+// is tried. A 400 or a 403 refusal is final, and drops the token in hand.
 test.each([
   [408, false],
   [429, false],
@@ -488,17 +562,13 @@ test("a sign-in the issuer ended drops the token in hand, while an issuer that i
     expect((await client.token()).accessToken).toBe("token-1");
     // At the slot, the issuer no longer honours the sign-in: that is final, whatever is in hand.
     held.shift()?.();
-    let ended: unknown = null;
-    for (let turn = 0; turn < 400 && ended === null; turn++) {
-      ended = await told(client.token());
-      if (ended === null) await Bun.sleep(5);
-    }
+    const ended = await until("a caller told that the sign-in ended", () => told(client.token()));
     expect(ended).toBeInstanceOf(SignInEndedError);
     expect((ended as Error).message).toContain(SIGNIN_COMMAND);
-    // Nothing is held after it: past the slot, with the issuer down again, the caller is told at
-    // its deadline rather than handed the token the ended sign-in traded for.
+    // Nothing is held after it: past the slot, with the issuer down again, the caller is told
+    // what the trade came to rather than handed the token the ended sign-in traded for.
     clock.now += 60_000;
-    const down = await told(client.token(AbortSignal.timeout(DEADLINE_MS)));
+    const down = await answerOf(client);
     expect(down).toBeInstanceOf(TradeRetryingError);
     expect((down as Error).message).toContain("HTTP 503");
     expect(broker.trades.length).toBe(1);

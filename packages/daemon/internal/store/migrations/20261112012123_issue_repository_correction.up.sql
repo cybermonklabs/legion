@@ -1,0 +1,88 @@
+-- 20261112012123_issue_repository_correction.up.sql -- an issue's repository is Dispatch's fact,
+-- and the record follows a correction of it instead of refusing one (dispatch://INFRA-3136/spec R3).
+--
+-- Until now the record's repository, default branch and GitHub spelling were write-once: the
+-- upsert in record.(*Postgres).PutIssue carried a condition that matched no row whose repository
+-- differed, and the write was refused. So a repository a person corrected in Dispatch could not
+-- reach a running tree at all. The guard goes with this migration, the three columns are left out
+-- of the upsert's update set instead — a copy of the issue read before a correction writes no old
+-- repository back — and one statement of its own, record.(*Postgres).CorrectIssueRepository,
+-- applies the correction and writes the four columns this migration adds to issues.
+--
+-- repo_before is the repository the record held before the newest correction, empty when there
+-- has been none: what the next task of each worker names beside the new repository, so a role
+-- reading its task knows which clone its earlier work is in.
+--
+-- repo_corrected_at is the moment the daemon applied that correction, null when there has been
+-- none, which is what the spec means by recording the correction with the moment it happened: every
+-- launch of the issue's claims from then on names it beside the repository the issue left
+-- (daemon's AddressingFragment), and `legion state --json` shows it on the issue as
+-- repoCorrectedAt. The pair is written together, so a null moment and an empty repo_before both
+-- read as "never corrected", which is every row written before this release.
+--
+-- repo_change_pending and repo_change_reason are a change Dispatch has made that the daemon has
+-- not applied yet and why it has not, both empty when there is none:
+-- record.(*Postgres).NoteIssueRepositoryChange writes the pair for a pass that read a corrected
+-- repository and could not apply it, so the next pass and a person reading the record see what is
+-- waiting rather than silence, and CorrectIssueRepository clears the pair as it applies the
+-- change. Text rather than null for the same reason the record's other optional names are text:
+-- nothing reads the difference between empty and absent here.
+--
+-- claims.update_repository is the repository the pod of the claim's update round was built from,
+-- as that pod named it at the round's open, whatever drift opened the round
+-- (supervise.Claim.UpdateRepository, the daemon's groupDrift), and '' on a round whose pod named
+-- none and while no round is open. A correction can land while any round runs, so where the
+-- record holds another repository when the daemon writes the message on an issue whose pod went
+-- before its round was over, or cannot be read then, that message names this repository's issue
+-- branch, and its workspace where the pod's disk is a kept volume that is still there, beside the
+-- repository the record holds then where it was read (the daemon's podWentMessage). On a round
+-- that a correction opened, the round's reasons name both repositories too, but as text for a
+-- reader, and the record's as it stood at the round's open. claims.update_repository_round is the
+-- round the name was written with, and the claim store reads the name only while that round is
+-- the one update_round holds (store's roundRepositoryOf). A name it reads that is no repository
+-- refuses the read of the claims and names the claim, as a stored locator that does not validate
+-- does.
+--
+-- claims.working_repository is the repository the claim's running process works, the one whose
+-- workspace that process was started in (supervise.Claim.WorkingRepository). The launch that
+-- records the process writes it in the same write: the repository the place the process runs in
+-- was built from, where the runtime's processes share one (a Sandbox pod's own workspace fetch),
+-- and otherwise the repository of the spec the process was started with. Every phase task the
+-- daemon sends that process names this repository's workspace in its working copy line (the
+-- daemon's workingCopy): a correction moves the record at once and the process only at its next
+-- launch, a tmux pane's or the relaunch into the pod its update round builds, so the record's
+-- repository would name a workspace the process does not work in, and under tmux one nothing has
+-- made yet. Null is none recorded, a claim that records no process and every row standing before
+-- this migration, and '' is a launch that named no repository.
+-- claims.working_repository_incarnation is the incarnation of the process the name was recorded
+-- for, and the claim store reads the name only while that incarnation is the stored locator's
+-- (store's workingRepositoryOf). A name it reads that is no repository refuses the read of the
+-- claims and names the claim, as the round's repository does.
+--
+-- An older daemon binary on this schema writes none of the columns this migration adds and reads
+-- none of them: its issue reads and its claim reads and writes name the columns it knows, and the
+-- new ones take their defaults. Its write of a claim this release wrote leaves the round's two
+-- claims columns as they stood, through the end of a round this release opened and the open of
+-- the claim's next round, which is why the name carries the round it was written with: this
+-- release reads that next round as one that recorded no repository. It leaves the two working
+-- repository columns as they stood too, and its relaunch writes a locator of another incarnation
+-- beside them, which is why that name carries the incarnation it was recorded for: this release
+-- reads such a claim as one whose process no launch of its own recorded a repository for, and
+-- sends that process each task with the working copy line it was composed with. It still carries
+-- the write-once guard, so it refuses a corrected repository as it always did, and a correction
+-- this release applied stands under it with repo_before and repo_corrected_at untouched for the
+-- roll forward.
+--
+-- Every statement here alters issues or claims and nothing else, so the migration applies
+-- whether it runs before or after the migrations of a higher version: the store applies a
+-- missing lower version late, on a database that already ran those.
+--
+-- There is no down file: migrations here are forward-only.
+alter table issues add column repo_before text not null default '';
+alter table issues add column repo_corrected_at timestamptz;
+alter table issues add column repo_change_pending text not null default '';
+alter table issues add column repo_change_reason text not null default '';
+alter table claims add column update_repository text not null default '',
+  add column update_repository_round text not null default '',
+  add column working_repository text,
+  add column working_repository_incarnation text not null default '';

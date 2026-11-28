@@ -37,9 +37,9 @@ func newRuleSet(version int, rules map[string]rule, posts map[string]postBodyRea
 	return ruleSet{version: version, rules: rules, posts: posts, history: history, types: types, askTypes: asks}
 }
 
-// currentRules is this build's rules: version rulesVersion, versionRules, postBodyReads and the
+// currentRules is this build's rules: version RulesVersion, versionRules, postBodyReads and the
 // body history read.
-var currentRules = newRuleSet(rulesVersion, versionRules, postBodyReads, true)
+var currentRules = newRuleSet(RulesVersion, versionRules, postBodyReads, true)
 
 // rulesAdded names, for each rules version after the first, the event types its rules read that
 // the version before it did not: the types a fill of a lower stored version passed over, which a

@@ -87,6 +87,9 @@ var goingMutatingRoutesWithNoTool = []string{
 	"POST /api/v1/projects/{key}/architecture-sources/{owner}/{repo}/sync",
 	"POST /api/v1/projects/{key}/artifacts/{slug}/versions",
 	"POST /api/v1/projects/{key}/related",
+	// Only a CI job's results token writes this row, and the going loop acts as an agent session,
+	// so no tool of the catalogue performs it.
+	"POST /api/v1/projects/{key}/results",
 	"POST /api/v1/signins/{id}/revoke",
 	"PUT /api/v1/asks/{id}/asked-of",
 	"PUT /api/v1/issues/{key}/design-gates",
@@ -421,6 +424,30 @@ func TestAGoingActionTheCatalogueDoesNotHoldIsRefusedWithNoRequestMade(t *testin
 	})
 }
 
+// TestAGoingResultCallNamingAProjectFillsNoRoute: dispatch_result's project form is a CI job's
+// write with its own results token, which no session holds, so the catalogue gives it no row: a
+// call that names project and no issue fills neither row of dispatch_result, and the caller
+// refuses it before any request, naming what the issue row needs.
+func TestAGoingResultCallNamingAProjectFillsNoRoute(t *testing.T) {
+	catalogue, err := BuildGoingCatalogue()
+	if err != nil {
+		t.Fatalf("build the catalogue: %v", err)
+	}
+	doer := &countingDoer{}
+	caller := GoingCaller{Catalogue: catalogue, BaseURL: "https://dispatch.invalid", Doer: doer}
+	_, err = caller.Do(context.Background(), "dispatch_result", map[string]any{
+		"project": "ACME", "check": "p-1", "verdict": "pass",
+		"commit": "1111111111111111111111111111111111111111",
+	})
+	var refused GoingArgumentError
+	if !errors.As(err, &refused) || !strings.Contains(refused.Reason, "POST /api/v1/issues/{key}/results needs issue") {
+		t.Fatalf("the caller answered %v, want the project form refused naming what the issue row needs", err)
+	}
+	if len(doer.requests) != 0 {
+		t.Fatalf("the caller sent %d request(s) for a call no row takes", len(doer.requests))
+	}
+}
+
 // TestAGoingRelationOutsideBothEdgeFamiliesFails: a catalogue entry names the relations its
 // verbs write, and a name in neither edge family — the global relation names
 // (model.GraphEdgeKinds) and the `block[]` attributes of the typed blocks (pmdoc.LinkKinds) — is
@@ -468,8 +495,14 @@ func TestTheGoingCatalogueIsMountedOnTheServedTable(t *testing.T) {
 		if action.Action != "dispatch_issue" {
 			continue
 		}
-		if !strings.HasPrefix(action.Description, "Create a native Dispatch issue") {
-			t.Fatalf("the issue create's description is %q, want the tool spec's own", action.Description)
+		want := ""
+		for _, tool := range contracts.DispatchTools {
+			if tool.Name == action.Action {
+				want = tool.Description
+			}
+		}
+		if want == "" || action.Description != want {
+			t.Fatalf("the issue create's description is %q, want the tool spec's own, %q", action.Description, want)
 		}
 		if len(action.Routes) != 1 || action.Routes[0].Method != http.MethodPost || action.Routes[0].Pattern != "/api/v1/issues" {
 			t.Fatalf("the issue create names the routes %v", action.Routes)

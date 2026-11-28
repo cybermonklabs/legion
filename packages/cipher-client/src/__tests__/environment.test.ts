@@ -4,7 +4,7 @@
 
 import { afterEach, expect, test } from "bun:test";
 import { createPublicKey, generateKeyPairSync } from "node:crypto";
-import { writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
@@ -270,17 +270,39 @@ test("a pod role trades with its own agent-secrets key", async () => {
   }
 });
 
-test("an unreadable role key refuses the trade, naming the path", async () => {
-  // A role's directory with no key.pem: the trade refuses rather than proving a fresh key, which
-  // the broker would refuse in words that name neither the file nor the key.
-  const keyDir = makeDirectory();
+test("a role key that cannot be read or parsed refuses the trade, naming AGENT_SECRETS_KEY_DIR and not the path", async () => {
+  // The trade refuses rather than proving a fresh key, which the broker would refuse in words
+  // that name neither the file nor the key. The refusal names the directory by its variable and
+  // why, never the path, which can be a token a person pasted where the directory goes, and it
+  // keeps no cause, since the runtime's error repeats the path it was handed.
+  const pasted = "madeUpKeyDirToken0123456789abcdef";
+  const root = makeDirectory();
+  const notPem = join(root, "not-pem");
+  await mkdir(notPem);
+  await writeFile(join(notPem, ROLE_KEY_FILE), `${fixtureSecret("notkey")}\n`, { mode: 0o600 });
   const broker = stubBroker(() => ({ body: accepted("role-access-token", 600) }));
   try {
-    const env = await podRole(broker.url, keyDir);
-    const refusal = await refusalOf(() => brokerTokenClient(env));
-    expect(refusal).toBeInstanceOf(Error);
-    expect(refusal?.message).toContain(join(keyDir, ROLE_KEY_FILE));
-    expect(refusal?.message).toContain("this role's agent-secrets key");
+    for (const [dir, want] of [
+      [
+        join(root, pasted),
+        `read this role's agent-secrets key in the directory ${KEY_DIR_VAR} names: ENOENT`,
+      ],
+      [
+        notPem,
+        `read this role's agent-secrets key in the directory ${KEY_DIR_VAR} names: it does not parse as a PKCS#8 PEM private key`,
+      ],
+    ] as const) {
+      const refusal = await refusalOf(async () =>
+        brokerTokenClient(await podRole(broker.url, dir))
+      );
+      expect(refusal).toBeInstanceOf(Error);
+      expect(refusal?.message).toBe(want);
+      expect(refusal?.cause).toBeUndefined();
+      expect(refusal?.message).not.toContain(root);
+      for (let at = 0; at + 10 <= pasted.length; at += 1) {
+        expect(refusal?.message).not.toContain(pasted.slice(at, at + 10));
+      }
+    }
     expect(broker.trades).toHaveLength(0);
   } finally {
     broker.stop();

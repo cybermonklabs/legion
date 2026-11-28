@@ -4,14 +4,17 @@ import { truncateSync, writeFileSync } from "node:fs";
 import * as path from "node:path";
 import { DISPATCH_BLOCK_UNITS, DISPATCH_EVENT_BODY_MAX } from "@legion/contracts/dispatch-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
+import { routeAnswer } from "../../test/route-answers";
 import { bearerCredential } from "../bearer";
 import { type DispatchToolResult, executeDispatchTool } from "../dispatch-execute";
-import { DISPATCH_WRITE_RETRY, DispatchClient } from "../dispatch-http";
+import { DISPATCH_WRITE_RETRY, DispatchClient, DispatchServiceError } from "../dispatch-http";
 import {
   forgetShownPictures,
   readPictures,
   shownPictureAddresses,
   shownPictures,
+  textWithPictures,
 } from "../dispatch-picture-tools";
 import { pictureAddresses } from "../dispatch-pictures";
 import { ToolInputError } from "../tool-input-errors";
@@ -44,6 +47,27 @@ function json(body: unknown, status = 200): Response {
   });
 }
 
+/** The upload route of each owner a picture goes to, as the OpenAPI document writes it. */
+const UPLOAD_ROUTES: Readonly<Record<string, string>> = {
+  issues: "POST /api/v1/issues/{key}/artifacts",
+  projects: "POST /api/v1/projects/{key}/artifacts",
+  agents: "POST /api/v1/agents/{session_id}/artifacts",
+};
+
+/** The answer of an upload to `pathname` (`/api/v1/<owner>/<key>/artifacts`): the document
+ *  `artifact` and the version `number` Dispatch gave it, as the owner's route answers them. */
+function uploaded(pathname: string, artifact: Record<string, unknown>, number: number) {
+  const [, , , owner = "", key] = pathname.split("/");
+  const route = UPLOAD_ROUTES[owner];
+  if (route === undefined) throw new Error(`no upload route for ${pathname}`);
+  const where =
+    owner === "projects" ? { project: key } : owner === "issues" ? { issue_key: key } : {};
+  return routeAnswer(route, {
+    artifact: { id: `artifact-${artifact.slug}`, ...where, ...artifact },
+    version: { number },
+  });
+}
+
 interface Upload {
   readonly path: string;
   readonly name: string;
@@ -52,8 +76,9 @@ interface Upload {
 }
 
 /**
- * A Dispatch that records every request. An upload answers the slug the server gives `name` and the
- * next version of it; a write answers its own body back; anything `routes` does not answer fails.
+ * A Dispatch that records every request, behind its keyed layer (each 2xx to a write names the
+ * write's key back). An upload answers the slug the server gives `name` and the next version of
+ * it; a write answers its own body back; anything `routes` does not answer fails.
  */
 function dispatch(
   routes: (pathname: string, init: RequestInit) => Response | undefined = () => undefined
@@ -92,11 +117,11 @@ function dispatch(
       const number = (versions.get(slug) ?? 0) + 1;
       versions.set(slug, number);
       uploads.push({ path: target.pathname, name, type: partType?.[1] ?? "", size: upload.size });
-      return json({ artifact: { slug, name }, version: { number } });
+      return json(uploaded(target.pathname, { slug, name }, number));
     }
     throw new Error(`unexpected request: ${method} ${target.pathname}`);
   };
-  return { requests, uploads, posted, fetchImpl: fetchImpl as typeof fetch };
+  return { requests, uploads, posted, fetchImpl: keyedLayer(fetchImpl) as typeof fetch };
 }
 
 /**
@@ -301,11 +326,10 @@ describe("sending pictures", () => {
     expect(server.posted.map((posted) => posted.body)).toEqual([`${body}\n\n${line}`]);
   });
 
-  // The 30 s limit is a hang guard, not a budget: the row uploads 25 MiB, the most one Dispatch
-  // upload takes, and bun's unwritten 5,000 ms per-test default is a limit on moving those bytes
-  // rather than on a hang. Measured in a 2-CPU pod: 0.94 s idle; under 16 busy loops (8 x nproc),
-  // 5.05 s at most in a whole-suite run and 5.13 s with this file alone, which passes that
-  // default. It fires only if the upload never answers.
+  // The row uploads 25 MiB, the most one Dispatch upload takes, and bun's unwritten 5,000 ms
+  // per-test default is a limit on moving those bytes rather than on a hang. Measured in a 2-CPU
+  // pod: 0.94 s idle; under 16 busy loops (8 x nproc), 5.05 s at most in a whole-suite run and 5.13
+  // s with this file alone, which passes that default; the command's one guard covers it.
   test("a picture of exactly 25 MiB, the most one Dispatch upload takes, is uploaded and posted", async () => {
     const server = dispatch();
     const largest = file("largest.png", PNG, 25 * MiB);
@@ -320,7 +344,7 @@ describe("sending pictures", () => {
     expect(server.posted.map((body) => body.body)).toEqual([
       "Full size.\n\n![largest.png](dispatch://DSP-41/artifact/largest-png@v1)",
     ]);
-  }, 30_000);
+  });
 
   test("a file name holding brackets or a backslash still reads back as its picture", async () => {
     const server = dispatch();
@@ -503,6 +527,32 @@ describe("sending pictures", () => {
     expect(server.posted).toEqual([]);
   });
 
+  // Whether a refusal says the upload never took effect is the one rule of whether a request may
+  // have reached the server (`mayHaveReachedServer`), as `writeMayHaveLanded` reads it: Dispatch's
+  // own 408 may come after it stored the upload, as its 5xx may, and its 413 may not.
+  test.each([
+    [408, "may or may not have been uploaded"],
+    [503, "may or may not have been uploaded"],
+    [413, "was not uploaded"],
+  ] as const)("an upload Dispatch answered %i %s", async (status, outcome) => {
+    const shot = file(`status-${status}.png`, PNG);
+    const failure = await refusal(
+      textWithPictures(
+        "Look.",
+        [{ path: shot, name: path.basename(shot), file: Bun.file(shot, { type: "image/png" }) }],
+        "DSP-41",
+        async () => {
+          throw new DispatchServiceError("REFUSED", status, "the upload was answered so");
+        },
+        { kind: "session", id: session }
+      )
+    );
+
+    expect(failure.message).toBe(
+      `images: ${shot} ${outcome}: REFUSED: the upload was answered so. Nothing was posted.`
+    );
+  });
+
   // A picture is uploaded before the call's own write. A repeat of that upload that Dispatch
   // answers with a landing - a replayed 2xx reading ANSWER_NOT_KEPT, or 409 KEY_COMMITTED - says
   // the upload was made but gives no copy of it, so the call has no address to put in its text:
@@ -532,8 +582,15 @@ describe("sending pictures", () => {
       ],
       [
         "KEY_COMMITTED",
-        () =>
-          json({ code: "KEY_COMMITTED", error: "the write landed and its answer was lost" }, 409),
+        // The layer's own refusal of a repeat whose write committed names the key back too.
+        (key: string) =>
+          new Response(
+            JSON.stringify({
+              code: "KEY_COMMITTED",
+              error: "the write landed and its answer was lost",
+            }),
+            { status: 409, headers: { "Content-Type": "application/json", "Idempotency-Key": key } }
+          ),
       ],
     ] as const) {
       let uploads = 0;
@@ -582,7 +639,7 @@ describe("sending pictures", () => {
     const over = `body block 1 (paragraph) is 1 characters over the ${DISPATCH_BLOCK_UNITS}-character block limit (${DISPATCH_BLOCK_UNITS + 1}/${DISPATCH_BLOCK_UNITS})`;
     const server = dispatch((pathname, init) => {
       if (pathname === "/api/v1/issues/DSP-41/artifacts" && init.method === "POST") {
-        return json({ artifact: { slug: "shot-png" }, version: { number: 12 } });
+        return json(uploaded(pathname, { slug: "shot-png", name: "shot.png" }, 12));
       }
       return pathname === "/api/v1/issues/DSP-41/messages" && init.method === "POST"
         ? json({ code: "CAP_EXCEEDED", error: over }, 400)

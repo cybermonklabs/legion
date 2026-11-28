@@ -49,6 +49,7 @@ func republishSessionRecord(t *testing.T, rig *edgeRig, sessionID string, projec
 // list. After a RePublish of the holder's record listing PRIV, the answer must still name no holder:
 // before the confirmation it named the in-house holder and its process.
 func TestAnEdgeRoleHolderOverARepublishedRecordNamesNoHolder(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const reader, foreign, role = "ses_rh_reader", "ses_rh_foreign", "legion-priv-priv-6-tester"
 	token := rig.personToken(reader, "PRIV")
@@ -79,6 +80,7 @@ func TestAnEdgeRoleHolderOverARepublishedRecordNamesNoHolder(t *testing.T) {
 // refresh confirms the stored record by the leader read on every listener, and writes the claim's
 // token's projects (none, for an in-house claim) when it is no writer's.
 func TestAnEdgeHidesASessionAClaimRefreshedFromARepublishedRecord(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const reader, inHouse = "ses_cr_reader", "ses_cr_in_house"
 	token := rig.personToken(reader, "PRIV")
@@ -123,6 +125,7 @@ func TestAnEdgeHidesASessionAClaimRefreshedFromARepublishedRecord(t *testing.T) 
 // answers the live agent alone. Before the gone check the gone agent's record is a writer's too, so
 // it was shown; the control is the live agent, which the listing must keep.
 func TestAnEdgeShowsNoGoneLegionAgentOfTheTokensProject(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, live, gone, issue, roleToken = "ses_ga_outside", "ses_ga_live", "ses_ga_gone", "PRIV-9", "legion-priv-priv-9-tester"
 	token := rig.personToken(outside, "PRIV")
@@ -184,6 +187,7 @@ func TestAnEdgeShowsNoGoneLegionAgentOfTheTokensProject(t *testing.T) {
 // the control, which both routes must answer 200. Covers the registration view (?view=registration)
 // and the full view, whose confirmations the reviewer's mutation left with no failing test.
 func TestAnEdgeHidesARepublishedRecordOnTheRegistryRoutes(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, forged, live = "ses_reg_outside", "ses_reg_forged", "ses_reg_live"
 	token := rig.personToken(outside, "PRIV")
@@ -213,6 +217,7 @@ func TestAnEdgeHidesARepublishedRecordOnTheRegistryRoutes(t *testing.T) {
 // loses to it. Over a RePublished holder record the 409 names no holder; control: a confirmed holder
 // is named.
 func TestAnEdgeClaim409NamesNoRePublishedHolder(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const claimant, holder, role = "ses_409_claimant", "ses_409_holder", "legion-priv-priv-7-tester"
 	token := rig.personToken(claimant, "PRIV")
@@ -246,6 +251,7 @@ func TestAnEdgeClaim409NamesNoRePublishedHolder(t *testing.T) {
 // (roleSend.shownHolder). The send still forwards to the holder; over a RePublished holder record
 // the answer names no holder. Control: a confirmed holder is named.
 func TestAnEdgeRoleSendNamesNoRePublishedHolder(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const sender, holder, role = "ses_send_sender", "ses_send_holder", "legion-priv-priv-8-tester"
 	token := rig.personToken(sender, "PRIV")
@@ -281,6 +287,7 @@ func TestAnEdgeRoleSendNamesNoRePublishedHolder(t *testing.T) {
 // older's replaced_by only when the newer's session is confirmed. Over a RePublished record for the
 // newer, the older's replaced_by is null; control: a confirmed newer is named.
 func TestAnEdgeShowsNoReplacementOverARepublishedRecord(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, older, newer, issue, roleToken = "ses_repl_outside", "ses_repl_older", "ses_repl_newer", "PRIV-9", "legion-priv-priv-10-tester"
 	token := rig.personToken(outside, "PRIV")
@@ -336,6 +343,7 @@ func TestAnEdgeShowsNoReplacementOverARepublishedRecord(t *testing.T) {
 // a session no listener has heard of (unknownSession, no last_seen), not as a stopped session of the
 // token's project. Control: a live confirmed session answers 200.
 func TestAnEdgeHidesAPastWindowRepublishedRecordAsUnknown(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	const outside, live, forged = "ses_pw_outside", "ses_pw_live", "ses_pw_forged"
 	token := rig.personToken(outside, "PRIV")
@@ -372,6 +380,7 @@ func TestAnEdgeHidesAPastWindowRepublishedRecordAsUnknown(t *testing.T) {
 // nothing here registered the session. A revert to the stored record's projects would read PRIV's
 // answer and remove the topic.
 func TestPruneEdgeInterestsSkipsAnUnadmittedSession(t *testing.T) {
+	t.Parallel()
 	rig := newEdgeRigServing(t, []string{"PRIV"})
 	rig.tick(t)
 	const unadmitted = "ses_prune_unadmitted"

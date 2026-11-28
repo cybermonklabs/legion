@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  A listener that creates its durable consumer, for a new machine id or after its durable was
+  deleted, starts it at deliver policy new. So it reports no wake and forwards no role message
+  for a message stored before the create. A listener whose durable exists keeps that durable's
+  cursor. The refusal of a durable the listener cannot use now says that a delete skips every
+  message stored before the create, where it said that the recreated durable replays every
+  retained message.
+time: 2026-11-17T12:35:39Z
+custom:
+    Issue: pr4194

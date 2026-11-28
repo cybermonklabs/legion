@@ -1,8 +1,8 @@
-/** The layout rule's instrument (`packages/dispatch/AGENTS.md`, "Layout"; dispatch://INFRA-5200):
- *  what a page breaks of the rule, read off the live DOM. `measureLayout` runs inside the page
- *  (`page.evaluate(measureLayout)`), so it is self-contained: it closes over nothing and
- *  imports nothing, and every helper is declared inside it. It reads sideways only: a box cut at
- *  its bottom, or one that scrolls down, is no breach of the rule.
+/** The layout rule's instrument (`packages/dispatch/web/src/AGENTS.md`, "Layout";
+ *  dispatch://INFRA-5200): what a page breaks of the rule, read off the live DOM. `measureLayout`
+ *  runs inside the page (`page.evaluate(measureLayout)`), so it is self-contained: it closes over
+ *  nothing and imports nothing, and every helper is declared inside it. It reads sideways only: a
+ *  box cut at its bottom, or one that scrolls down, is no breach of the rule.
  *
  *  It reports four kinds of breach:
  *  - `page-scroll`: the document is wider than the viewport, so the page scrolls sideways. One
@@ -58,9 +58,9 @@
  *  An element is read only where it draws (`checkVisibility`): the content of a closed
  *  `<details>` keeps a box in Chromium, and is no breach.
  *
- *  Each breach names its element by a `locator`, which an entry of `e2e/layout-breaches.ts`
- *  names exactly: the nearest `data-testid`, `data-layout-group` or `aria-label` on the element
- *  or above it, else the element's path.
+ *  Each breach names its element by a `locator`, which a failing row prints: the nearest
+ *  `data-testid`, `data-layout-group` or `aria-label` on the element or above it, else the
+ *  element's path.
  *
  *  `elements` and `contentElements` count what it read, the page and the page's own region, so a
  *  caller can refuse a blank page: a page that drew nothing breaks nothing, and that is not a
@@ -74,17 +74,20 @@ export interface LayoutBreach {
   readonly detail: string;
   /** The element's own text, cut to 80 characters, so a reader can find it on the screen. */
   readonly text: string;
-  /** A stable locator a breach list entry may name it by: the nearest `data-testid`,
-   *  `data-layout-group` or `aria-label` on its element or above it, else the element's path. A
-   *  page-scroll breach is named by the deepest element past the viewport, its cause. */
+  /** A stable locator a failing row names it by: the nearest `data-testid`, `data-layout-group`
+   *  or `aria-label` on its element or above it, else the element's path. A page-scroll breach is
+   *  named by the deepest element past the viewport, its cause. */
   readonly locator: string;
 }
+
+/** What a reading can break: the four kinds the measure reports, and a group the route must mark
+ *  and the page does not. */
+export type LayoutBreachKind = LayoutBreach["kind"] | "group-missing";
 
 /** The viewport widths the layout rule holds a page to: a phone, a tablet, the wide layout's
  *  first width (`WIDE_LAYOUT_MIN_PX` in `e2e/review-routes.ts`), a laptop and a desktop. The rule
  *  holds at every width from 360 to 1920 px; these are the widths the test samples. */
 export const LAYOUT_WIDTHS = [360, 900, 1280, 1440, 1920] as const;
-export type LayoutWidth = (typeof LAYOUT_WIDTHS)[number];
 
 export interface LayoutReading {
   /** The width of the viewport the page was read at, in CSS pixels. */
