@@ -336,7 +336,9 @@ func newOutbox(pool *store.Pool, records record.Store, client dispatch.Client, p
 // update ask finish undelivered.
 // So an operator's settle of the name lets a waiting row's next attempt through, while a row that
 // finished undelivered is not sent again (review round 13 of #4220, note 36). A store that does
-// not answer publishes nothing and fails the attempt, which the row's backoff retries.
+// not answer publishes nothing and fails the attempt (gateReadFailed), which the row's backoff
+// retries: a row of a kind that waits for its role ends that run in the failure rather than a wait
+// (roleWait).
 //
 // HoldsItsSession takes no machine lock, so no publish waits out a decision in flight, a launch or
 // relaunch in the runtime included (LEGION-650). The gate is here rather than in the publisher
@@ -375,14 +377,16 @@ func (r *outbox) publishKept(ctx context.Context, topic, message string, payload
 // heldBack is the gate publish and publishKept share: nil when topic may be published to, and
 // otherwise why not. A claim that records a session it does not hold is refused with
 // unheldSession, which every executor answers as the listener's notify.ErrNoHolder and which a
-// role wait reads as no publish (roleWait).
+// role wait reads as no publish (roleWait). A read of that hold that fails with no claim.Refusal,
+// a store that did not answer, fails with gateReadFailed: nothing is published, and the run of
+// the row ends in that failure rather than a wait (roleWait).
 func (r *outbox) heldBack(ctx context.Context, topic, dedupeKey string) error {
 	if token, held := r.heldTopic(topic); held && r.supervisor != nil {
 		if m, ok := r.supervisor.Machine(token); ok {
 			if err := m.HoldsItsSession(ctx); err != nil {
 				var refusal claim.Refusal
 				if !errors.As(err, &refusal) {
-					return fmt.Errorf("ask whether %s holds its session before publishing to it: %w", token, err)
+					return gateReadFailed{err: fmt.Errorf("ask whether %s holds its session before publishing to it: %w", token, err)}
 				}
 				// One line per claim while its hold refuses, as holdRecorded writes one per
 				// refusal (warnRefusal): a held row asks again at each attempt of its backoff,
@@ -409,12 +413,30 @@ func (r *outbox) heldBack(ctx context.Context, topic, dedupeKey string) error {
 // unheldSession is heldBack's refusal of a publish to a claim that records a session it does not
 // hold. err wraps notify.ErrNoHolder, which every executor answers as it answers the listener's
 // own, and the hold's claim.Refusal; it reached no listener, so a role wait reads it as no publish
-// and no answer of the listener's (roleWait, publishFailed).
+// and no answer of the listener's (roleWait, publishFailed). A read of the hold that answered no
+// refusal at all is gateReadFailed, which is no refusal and no wait.
 type unheldSession struct{ err error }
 
 func (e unheldSession) Error() string { return e.err.Error() }
 
 func (e unheldSession) Unwrap() error { return e.err }
+
+// gateReadFailed is heldBack's failure to read whether a claim holds the session it records
+// (supervise.Machine.HoldsItsSession): the store did not answer, or answered an error that is no
+// claim.Refusal. Nothing was published and the listener was not asked, so it is no failed publish
+// (publishFailed) and no wait: every executor of a kind that waits for its role hands it to
+// roleWait as its publish's answer, and roleWait answers it as it is, so the run ends in that
+// failure. settle logs it as one, `outbox row failed` at Error, and retries the row on the
+// outbox's own backoff (record.RetryBackoff) with its wait as it was: no wait started, and no
+// launch marked as published to, so its next run publishes to that launch once the read works.
+// A store read stays a failure (dispatch://INFRA-4131/spec#b-r-capped; the architect's ruling,
+// dispatch://INFRA-4131/comment/19e7d9e9-97a3-42a1-b0eb-38aaa8e2f502). err wraps the store's
+// error.
+type gateReadFailed struct{ err error }
+
+func (e gateReadFailed) Error() string { return e.err.Error() }
+
+func (e gateReadFailed) Unwrap() error { return e.err }
 
 // heldTopic is the claim whose session a publish to topic is held to (publish): the claim a role
 // topic names, but for the controller's role topic under `controller: operator`. There the role is
@@ -2482,7 +2504,9 @@ func (r *outbox) roleMessage(ctx context.Context, row record.OutboxRow, payload 
 		return nil
 	case err != nil:
 		// A wait, but for the listener's refusal of the message itself, which settle ends the row
-		// on at this run (messageRefused).
+		// on at this run (messageRefused), and for the gate's failure to read whether the claim
+		// holds its session, no publish, which roleWait answers as the run's failure
+		// (gateReadFailed).
 		return r.roleWait(topic, gate.view, err, wait.Errorf("%s's role message for %s waits for its role to take it: %w",
 			row.Issue, payload.Role, err))
 	}
@@ -2801,8 +2825,10 @@ func (r *outbox) updateAsk(ctx context.Context, row record.OutboxRow, payload re
 		return fmt.Errorf("the ask of round %s for %s reached its %s, and the claim write that marks it asked is not made yet: %w",
 			payload.Round, row.Issue, payload.Role, err)
 	case err != nil:
-		// The machine answers no other error today; one it came to answer is the row's failure,
-		// never read as an outcome below.
+		// The machine answers no other error today, and passes on the callback's own: the gate's
+		// failure to read whether the claim holds its session, no publish, which roleWait
+		// answered as it is (gateReadFailed). Either is the row's failure, never read as an
+		// outcome below.
 		return err
 	}
 	switch outcome {
@@ -3530,9 +3556,10 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		}
 		// A suspension that holds — the operator's or the controller's — holds its claim until a
 		// resume lifts it: the start, and the task it gives, wait for the claim's change, which
-		// the resume is (claimWait). StartedBy refuses the same in the claim's own decision. A
-		// check start does not wait: its look cannot run, and ends, its cause naming the holder
-		// (checkLookHeld).
+		// the resume is (claimWait). StartedBy refuses the same in the claim's own decision, where
+		// the hold landed after this read, and that refusal waits the same way. A check start does
+		// not wait at this read: its look cannot run, and ends, its cause naming the holder
+		// (checkLookHeld); one StartedBy refused ends so at its next run.
 		if found {
 			if held := machine.Claim(); held.RuleHolds() {
 				if payload.CheckLook > 0 {
@@ -3624,7 +3651,7 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		// this row created has no older stop to fence, and recording it here rather than only for
 		// a claim that already existed keeps one rule instead of a special case.
 		if err := machine.StartedBy(ctx, row.ID, task); err != nil {
-			return fmt.Errorf("record the start of claim %s: %w", token, err)
+			return claimWait(token, issue.Tree, fmt.Errorf("record the start of claim %s: %w", token, err))
 		}
 		// A start whose wake carried an Envoy message marks its claim before it asks for the
 		// launch, so that launch waits in the pacing's message queue (dispatch://INFRA-5682 R1).

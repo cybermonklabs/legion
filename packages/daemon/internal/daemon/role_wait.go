@@ -59,7 +59,9 @@ const (
 // (record.OutboxKind.WaitsForRole) returns one, through roleWait, for each failed publish that does
 // not end its row in the executor (publishFailed), and controllerNotice for each wait of its read
 // of the role's holder (controllerHolds), which publishes nothing. One such wait ends its row
-// rather than wait: a publish the listener refused for the message itself (messageRefused).
+// rather than wait: a publish the listener refused for the message itself (messageRefused). The
+// gate's failure to read whether the claim holds its session (gateReadFailed) made no publish and
+// is no wait: roleWait answers it as the run's failure.
 type roleWaiting struct {
 	// topic is the topic the row publishes to, and token the claim it is held to
 	// (outbox.heldTopic): the claim the role topic names, the project's controller claim for the
@@ -198,7 +200,20 @@ func (r *outbox) roleWaitGate(row record.OutboxRow, topic string) roleGate {
 // launch or non-release suspension, launch records view.Generation so roleWaitNext stores it into
 // record.OutboxWait.WaitLaunch (the gate allows no such publish at Generation 0, so launch is never
 // 0 for one).
+//
+// The gate's failure to read whether the claim holds its session (gateReadFailed) is no role wait:
+// nothing was published, so no launch is marked as published to, and a store read stays a failure
+// (dispatch://INFRA-4131/spec#b-r-capped; the architect's ruling,
+// dispatch://INFRA-4131/comment/19e7d9e9-97a3-42a1-b0eb-38aaa8e2f502). roleWait answers it as it
+// is, the run's failure, which settle logs as one (`outbox row failed`, at Error) and retries on
+// the outbox's own backoff (record.RetryBackoff). Every executor of the nine kinds hands each
+// failure of its publish that its kind does not end on to roleWait, so this is the one place that
+// answer is read.
 func (r *outbox) roleWait(topic string, view supervise.ClaimView, answer, waiting error) error {
+	var unread gateReadFailed
+	if errors.As(answer, &unread) {
+		return answer
+	}
 	w := r.newRoleWaiting(topic, view, waiting)
 	if publishFailed(answer) {
 		w.markPublished(answer)
@@ -467,9 +482,10 @@ func (r *outbox) expediteWaits(ctx context.Context, keys []string, released func
 }
 
 // publishFailed is whether err, what a role publish answered (outbox.publish, publishTo and
-// publishKept), is a failed publish: every error the publish answers but the gate's own refusal of
-// a claim that records a session it does not hold (unheldSession), which publishes nothing. So it
-// is the listener's refusal whatever its status, a 5xx other than its 504 among them, and a publish
+// publishKept), is a failed publish: every error the publish answers but the two of the gate's own
+// that publish nothing, its refusal of a claim that records a session it does not hold
+// (unheldSession) and its failure to read whether the claim holds it (gateReadFailed). So it is
+// the listener's refusal whatever its status, a 5xx other than its 504 among them, and a publish
 // that did not reach the listener or could not read its answer. Each executor of a kind that waits
 // for its role ends its row on the refusals its kind ends on (a role message's no holder, holder
 // capability and grant denial, a notice's capability and grant denial, an update ask's no holder),
@@ -480,10 +496,12 @@ func (r *outbox) expediteWaits(ctx context.Context, keys []string, released func
 // meets the same failure, the claim record cannot show. The one failed publish that does not wait
 // is the listener's refusal of the message itself (messageRefused), whose role wait settle ends at
 // that run. A failure that is no publish, a store read or a Dispatch read the executor makes
-// before or after the publish, stays the row's failure.
+// before or after the publish, the gate's read of the claim's session among them (gateReadFailed,
+// which roleWait answers as it is), stays the row's failure.
 func publishFailed(err error) bool {
 	var unheld unheldSession
-	return err != nil && !errors.As(err, &unheld)
+	var unread gateReadFailed
+	return err != nil && !errors.As(err, &unheld) && !errors.As(err, &unread)
 }
 
 // messageRefused is whether err, what a run of a row of kind ended in, is a role wait whose publish

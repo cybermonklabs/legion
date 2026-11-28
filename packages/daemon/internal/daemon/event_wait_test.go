@@ -336,6 +336,7 @@ func TestEventWaitListed(t *testing.T) {
 		{"E15b a start after its tree's cleanup confirmed waits for the next epoch", eventWaitEpochAfterTheCleanup},
 		{"E16 a retirement waits for the task on its way to the agent", eventWaitTaskSending},
 		{"E17 a start waits for the operator's hold to lift", eventWaitRuleHold},
+		{"E17b a start whose claim the operator holds by the time it records the start waits for the hold to lift", eventWaitRuleHoldAtTheStart},
 		{"E18 an update ask waits for its claim's machine lock", eventWaitMachineBusy},
 		{"E19 a notice waits behind an earlier notice to its architect", eventWaitEarlierNotice},
 		{"E19b three notices behind a held one drain in three runs once it ends", eventWaitEarlierNotices},
@@ -705,6 +706,39 @@ func eventWaitRuleHold(t *testing.T) {
 	start := h.queue("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1,
 		Phase: phase.Implementing, Task: "Implement the plan."}, h.clock.Now())
 
+	start.waitsOnToTheCap(record.WaitForClaim(implementer))
+	start.dueAtItsEvent(func() {
+		if err := machine.Handle(h.ctx, supervise.RequestResume{Claim: implementer, By: supervise.SuspendedByOperator}); err != nil {
+			t.Fatalf("the operator's resume of %s: %v", implementer, err)
+		}
+	})
+}
+
+// E17b: a start that read no hold of its claim and meets the operator's hold when the claim
+// records the start (supervise.Machine.StartedBy answers the hold's supervise.ErrHeldByOperator)
+// waits for the operator's resume as E17's does, a change of the claim. The hold lands between the
+// start's read and StartedBy: the start found no machine for its claim and provisions the claim's
+// workspace, the operator's suspension of a claim made meanwhile lands then, and the start's create
+// of the claim answers that claim as it is (supervisor.Create).
+func eventWaitRuleHoldAtTheStart(t *testing.T) {
+	h := newEventWaitHarness(t, "LEGION-208")
+	h.issue("LEGION-208", phase.Implementing, "in_progress", nil)
+	implementer := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	var machine *supervise.Machine
+	provision := h.runner.provision
+	h.runner.provision = func(ctx context.Context, req workspace.Request) (workspace.Workspace, error) {
+		if machine == nil {
+			_, machine = h.suspended("LEGION-208", claim.RoleImplementer, supervise.SuspendedByOperator)
+		}
+		return provision(ctx, req)
+	}
+	start := h.queue("LEGION-208", record.SuperviseRequest{Op: "start", Tree: "LEGION-208", Role: claim.RoleImplementer, Generation: 1,
+		Phase: phase.Implementing, Task: "Implement the plan."}, h.clock.Now())
+
+	start.waitsOn(record.WaitForClaim(implementer), 1)
+	if machine == nil {
+		t.Fatal("the start's first run provisioned no workspace, so no hold landed before it recorded the start")
+	}
 	start.waitsOnToTheCap(record.WaitForClaim(implementer))
 	start.dueAtItsEvent(func() {
 		if err := machine.Handle(h.ctx, supervise.RequestResume{Claim: implementer, By: supervise.SuspendedByOperator}); err != nil {
