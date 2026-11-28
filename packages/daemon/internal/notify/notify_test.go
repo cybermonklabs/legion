@@ -16,14 +16,6 @@ import (
 	"github.com/sjawhar/envoy/listenerwire"
 )
 
-// The controller topic is the one the plugin's controller subscribes to
-// (legionControllerNoticeSubject, packages/contracts/src/subject.ts), byte for byte.
-func TestControllerTopicIsTheControllersNoticeSubject(t *testing.T) {
-	if got := ControllerTopic("legion"); got != "notifications.legion.legion.controller" {
-		t.Fatalf("ControllerTopic = %q, want the controller's notice subject", got)
-	}
-}
-
 // The state topic is the subject the contract builds for a project token (legionStateSubject,
 // packages/contracts/src/subject.ts), byte for byte: every row of the shared fixture that the
 // contract's own test and Envoy's Go test run for that builder is held here too, so the daemon

@@ -7,10 +7,12 @@
 // alike - resolves the name once here, refuses the whole name when any one of its addresses is
 // one the proxy never dials, and then dials those addresses rather than the name. So a name
 // that answers one address to the check and another to the dial, which is DNS rebinding,
-// reaches the address that was checked or nothing at all. The one dial the other way round is
-// the private destination's (upstreamAddresses): the one host the broker's own settings name as
-// inside its cluster, dialled only at addresses every other dial is refused, and only for the
-// allowed requests of the one bound host it serves.
+// reaches the address that was checked or nothing at all. Which addresses the proxy never dials
+// is netaddr.DialRefusal's rule, beside the private destinations' (netaddr.DestinationRefusal);
+// this file resolves, holds each address to the rule and dials. The one dial the other way round
+// is a private destination's (upstreamAddresses): a host the broker's own settings name as inside
+// its cluster, dialled only at addresses in the ranges the destination's rule names, and only for
+// the allowed requests of the one bound host it serves.
 package proxy
 
 import (
@@ -26,16 +28,6 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/netaddr"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 )
-
-// clusterRange is 100.64.0.0/10, the shared address space of RFC 6598. Kubernetes clusters and
-// cloud networks hand node and pod addresses out of it, and netip's own predicates do not name
-// it, so it is spelled out here.
-var clusterRange = netip.MustParsePrefix("100.64.0.0/10")
-
-// thisNetworkRange is 0.0.0.0/8, which RFC 1122 reserves for "this network". netip's
-// IsGlobalUnicast refuses only 0.0.0.0 of it, and Linux routes the rest as unicast since 5.3, so
-// it is spelled out here.
-var thisNetworkRange = netip.MustParsePrefix("0.0.0.0/8")
 
 // ResolveHost is the default of Server.resolve: the addresses a host name has right now, or the
 // address a host that is an address literal already is. It is exported because a caller that
@@ -95,7 +87,7 @@ func (s *Server) checkedAddresses(ctx context.Context, host, port string) ([]net
 		return addrs, nil
 	}
 	for _, addr := range addrs {
-		if rule := localRule(addr, s.clusterRanges); rule != "" {
+		if rule := netaddr.DialRefusal(addr, s.clusterRanges); rule != "" {
 			refused := fmt.Errorf("%s resolves to %s, %s, which this proxy never dials", host, addr, rule)
 			s.logDialFailure(ctx, host, port, net.JoinHostPort(addr.String(), port), len(addrs), dialRefused, refused.Error())
 			return nil, refused
@@ -241,7 +233,7 @@ const (
 // broker's own rules apart from a service that was down, and both apart from a command that went
 // away, by.
 const (
-	// dialRefused: an address this proxy never dials (localRule), so nothing was dialled.
+	// dialRefused: an address this proxy never dials (netaddr.DialRefusal), so nothing was dialled.
 	dialRefused = "refused"
 	// dialUnresolved: a host the resolver answered no address for, or an error, so there was
 	// nothing to dial.
@@ -318,66 +310,4 @@ func (s *Server) logDialFailure(ctx context.Context, host, port, address string,
 	fields := append(dialFields(callerOfContext(ctx), host, port, address),
 		"resolved", resolved, "failure", failure, "reason", reason)
 	s.log.Warn(dialFailedMessage, answer.ClipFields(fields)...)
-}
-
-// localRule names the rule that refuses addr, and "" for an address the proxy may dial. Each
-// answer names the rule and the address family, because an operator reading a refusal has to
-// know which of a name's addresses it was about: a name with one public IPv4 address and one
-// link-local IPv6 address is refused, and the line says which half did it.
-//
-// clusterRanges are the broker cluster's own ranges (Options.ClusterRanges), read after the
-// fixed rules: a Service range such as 34.118.224.0/20 is global unicast, so it is the one rule
-// that stands between a tunnel and a ClusterIP of the cluster the broker runs in, and an address
-// a fixed rule already refuses keeps that rule's more particular name.
-//
-// An IPv6 address that carries an IPv4 address (netaddr.CarriedIPv4) is refused by every rule that
-// refuses the address it carries, and the answer names that address and its rule, unless a rule
-// above already refuses the IPv6 address itself, whose name the answer then keeps.
-func localRule(addr netip.Addr, clusterRanges []netip.Prefix) string {
-	// A 4-in-6 address is the IPv4 address it holds, for every predicate below and for the
-	// family each answer names.
-	addr = netaddr.Canonical(addr)
-	family := "IPv6"
-	if addr.Is4() {
-		family = "IPv4"
-	}
-	switch {
-	case addr.IsLoopback():
-		// 127.0.0.0/8 and ::1: the broker's own pod.
-		return "a loopback " + family + " address"
-	case clusterRange.Contains(addr):
-		// 100.64.0.0/10: the cluster's own nodes and pods.
-		return "a cluster " + family + " address"
-	case addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast():
-		// 169.254.0.0/16 and fe80::/10: the node's metadata server among them.
-		return "a link-local " + family + " address"
-	case addr.IsPrivate():
-		// 10/8, 172.16/12 and 192.168/16; fc00::/7, which is unique-local rather than private.
-		if family == "IPv6" {
-			return "a unique-local IPv6 address"
-		}
-		return "a private IPv4 address"
-	case netaddr.LocalUseTranslation.Contains(addr):
-		// 64:ff9b:1::/48: a translator inside the network, whose layout the address does not say.
-		return "a local-use translation IPv6 address (64:ff9b:1::/48), whose IPv4 address the address alone does not say"
-	case !addr.IsGlobalUnicast():
-		// Everything left that is not a host on the public internet: the unspecified address,
-		// multicast, the IPv4 broadcast address, and the interface-local scopes.
-		return "not a global unicast " + family + " address"
-	case thisNetworkRange.Contains(addr):
-		// 0.0.0.1 to 0.255.255.255: reserved for this network, and no host on the internet.
-		return "an IPv4 address of 0.0.0.0/8, which is reserved for this network"
-	}
-	for _, own := range clusterRanges {
-		if own.Contains(addr) {
-			return "an " + family + " address inside BROKER_AIRLOCK_CLUSTER_RANGES, the broker cluster's own addresses"
-		}
-	}
-	held, n := netaddr.CarriedIPv4(addr)
-	for _, c := range held[:n] {
-		if rule := localRule(c.Addr, clusterRanges); rule != "" {
-			return c.Form + " " + c.Addr.String() + ", " + rule
-		}
-	}
-	return ""
 }

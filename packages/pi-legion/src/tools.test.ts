@@ -1307,12 +1307,24 @@ test("register_gate refuses a basis while the root's document holds an open deci
 });
 
 // The owner's plan (contract 219): register_plan names its document as register_gate does, for any
-// issue of the architect's tree, and answers the plan Legion took; each refusal of the call itself
-// comes before any lookup, grant or request, and the daemon's refusal reaches the agent with its
-// code. stop_task names the task to stop by its block's id.
+// issue of the architect's tree, and answers the plan Legion took, a running task with the act it
+// stands at (the contract entry 20261125174555, running-step); each refusal of the call itself comes before any lookup, grant
+// or request, and the daemon's refusal reaches the agent with its code. stop_task names the task to
+// stop by its block's id.
 test("register_plan takes the document reference the Dispatch tools take and answers the plan Legion took", async () => {
   const plan = "8f14e45f-ceea-467f-a0e6-1d8b2f8c9d11";
-  const taken = { plan: { version: 3, tasks: [{ id: "a", steps: ["implementer", "reviewer"] }] } };
+  const taken = {
+    plan: {
+      version: 3,
+      tasks: [
+        {
+          id: "a",
+          steps: ["implementer", "reviewer"],
+          running: [{ kind: "step", place: 2, role: "reviewer" }],
+        },
+      ],
+    },
+  };
   // The pane's Dispatch holds LEGION-209 with its plan document, which a reference is looked up in.
   const board = fakeDispatchFetch({
     routes: {

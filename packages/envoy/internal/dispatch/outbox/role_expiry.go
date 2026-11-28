@@ -60,7 +60,8 @@ const (
 //
 // A Deps with no kept-lane reader reads no notice and keeps nothing again: the outbox has no
 // stream to read the notices or the copies from, as it makes no keep's handover then
-// (Deps.KeptLanes).
+// (Deps.KeptLanes). Each read through that reader is bounded at probeTimeout, as New bounds every
+// read of it, the scan's batches' handovers among them (boundedKeptLanes).
 func (o *Outbox) passKeptExpiries(ctx context.Context, hold fence) (full, failed bool) {
 	readFull, readFailed := readKeptExpiries(ctx, o.deps, hold, o.instance, &o.keptStream)
 	keepFull, keepFailed := keepExpiredCopiesAgain(ctx, o.deps, hold, o.instance)
