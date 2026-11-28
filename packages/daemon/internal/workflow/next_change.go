@@ -304,9 +304,6 @@ func (e *Engine) changeDue(issue record.Issue, view closeView) (time.Time, bool)
 		return time.Time{}, true
 	}
 	fallback := issue.Merge.MergedAt.UTC().Add(MergerCompletionBound)
-	if !e.now().Before(fallback) {
-		return time.Time{}, true
-	}
 	return fallback, false
 }
 
