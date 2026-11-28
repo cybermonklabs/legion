@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, jest, test } from "bun:test";
+import { beforeAll, expect, jest, test } from "bun:test";
 import type { ChangeDecorations, DocumentJSON } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
@@ -21,12 +21,6 @@ import { VersionView } from "./VersionView";
 // loaded before the first row builds a tree.
 beforeAll(async () => {
   await warmMarkdownRenderer();
-});
-
-// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
-// `realClock`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
 });
 
 function createQueryClient(): QueryClient {

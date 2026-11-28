@@ -148,12 +148,6 @@ afterEach(() => {
   localStorage.clear();
 });
 
-// A row that holds Bun's fake clock (`onFakeClock`) and is ended by the command's guard never
-// reaches its own `realClock`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
-});
-
 function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(BODY);
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>

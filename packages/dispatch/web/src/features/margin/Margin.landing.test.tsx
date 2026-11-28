@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { turnsUntil } from "@legion/test-fixtures/fake-clock";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: the reader's wheel and the margin's own scroll events, which user-event has no form for
@@ -48,12 +48,6 @@ import { RELAYOUT_SETTLES_FRAMES } from "./useCardHold";
 // time. So each row starts with the engine loaded, whatever ran before it.
 beforeAll(async () => {
   await warmMarkdownRenderer();
-});
-
-// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
-// `jest.useRealTimers()`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
 });
 
 const secondComment: Comment = {
@@ -193,6 +187,7 @@ async function marginSettled(): Promise<void> {
     changes.disconnect();
   }
 }
+
 test("a phone comment deep link highlights its card without expanding it or opening the Thread dialog", async () => {
   // The link's destination on a phone is the Conversation turn. The margin marks the card so the
   // reader finds it when they open the review panel, but a thread on a phone opens only in the

@@ -144,12 +144,6 @@ afterEach(() => {
   sockets.restore();
 });
 
-// A row that holds Bun's fake clock (`onFakeClock`) and is ended by the command's guard never
-// reaches its own `realClock`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
-});
-
 /** A query client whose live socket the teardown closes. */
 function newClient(): QueryClient {
   const client = new QueryClient({

@@ -512,7 +512,7 @@ describe("the edge spaces a plain text's lines are trimmed of", () => {
   test("a line that ends in a run of spaces costs the run once", () => {
     const short = readsFor(`x${" ".repeat(n)}`, "x");
     const long = readsFor(`x${" ".repeat(2 * n)}`, "x");
-    // The run is read from its end, once, and the line's first character a read more.
+    // The run is read once, from its end, and the line's first character once by each loop.
     expect(short).toBeGreaterThanOrEqual(n);
     expect(short).toBeLessThanOrEqual(n + 16);
     expect(long).toBeLessThanOrEqual(2 * short);

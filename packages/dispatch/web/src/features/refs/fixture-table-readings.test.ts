@@ -103,8 +103,8 @@ let tableReadings: TableReading[] | undefined;
  * table is filled and under 30 ms for any other row of the file. Bun's 5 s default is only
  * about twice the idle cost, which one busy core takes: the oracle row went red once in four
  * runs of `bun run test` at 5,660 ms (INFRA-1404). So the rows that read it set no number of
- * their own: they run under the one guard `package.json`'s `test:web` script sets for every
- * row of the command, which is far above this fill however loaded the machine.
+ * their own: they run under the one guard `package.json`'s `test:web` script sets for its rows,
+ * which holds the slower of them, read under load, 4.41 times (that file's `"//"` note).
  */
 function wholeTable(): TableReading[] {
   tableReadings ??= pmdocFixtures.map((entry) => {

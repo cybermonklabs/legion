@@ -599,19 +599,16 @@ async function explore(): Promise<Exploration> {
 
 // The eight tests below - the seven checks and the count - share one exploration: it is the slow
 // part, and it judges all seven checks at once. It plays about 171,000 sequences of five events,
-// which judge 186,538 sequences of one to five, about 147 to 255 s in this pod on one core, so
-// each of the eight has a time limit of its own above the guard of `test:web`, the command that
-// runs it: whichever runs first pays for the exploration. None of the eight waits on anything but
-// that promise, so no wait of `@legion/test-fixtures/wait` needs the limit (`useRowGuard`).
+// which judge 186,538 sequences of one to five and take minutes, so each of the eight has a time
+// limit of its own above the guard of `test:web`, the command that runs it: whichever runs first
+// pays for the exploration. None of the eight waits on anything but that promise, so no wait of
+// `@legion/test-fixtures/wait` needs the limit (`useRowGuard`).
 let explored: Promise<Exploration> | undefined;
 function exploration(): Promise<Exploration> {
   explored ??= explore();
   return explored;
 }
-// Sized as twice the slowest run on the slower of the two pod shapes, which runs the suite 2.15
-// times slower. The 255 s measured here (the eight tests, beside other roles' work in the same
-// pod) is about 548 s there, derived rather than measured on that pod, and twice that is about
-// 1,096 s; 1,100 s rounds it up, the 255 s being the slowest of the runs here.
+// The readings this limit is sized on, and their runs, are in `package.json`'s `"//"` note.
 const explorationTimeout = 1_100_000;
 
 // I2 and I3 each name a send that I1 also refuses, or one with nothing left to send. A value an

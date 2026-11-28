@@ -256,12 +256,6 @@ afterEach(() => {
   for (const restore of restores.splice(0)) restore();
 });
 
-// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
-// `realClock`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
-});
-
 // R2: with no target the box writes one of two kinds, Comment on at first and Question, drawn
 // as chips before Send; no chip with a reply's or a statement's target, and none on a closed
 // issue. A Question pressed while the issue was open sends a comment once it is closed, rather

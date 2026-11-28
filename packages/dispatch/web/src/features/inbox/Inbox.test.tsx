@@ -66,11 +66,9 @@ beforeAll(async () => {
   await warmMarkdownRenderer();
 });
 
-// A row that pins the clock (`setSystemTime`) or holds Bun's fake clock and is ended by the
-// command's guard never reaches its own `finally`, so the real clock comes back here too, before
-// the next row.
+// A row that pins the clock (`setSystemTime`) and is ended by the command's guard never reaches
+// its own `finally`, so the real clock comes back here too, before the next row.
 afterEach(() => {
-  jest.useRealTimers();
   setSystemTime();
 });
 

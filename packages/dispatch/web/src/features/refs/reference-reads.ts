@@ -14,11 +14,7 @@
  *   expression takes. So a caller that handed a reader the body again for every reference in it
  *   reads about the square of the body here.
  */
-export const REFERENCE_READERS = [
-  "trimmedMention",
-  "readAddress",
-  "referenceRouteFromHref",
-] as const;
+const REFERENCE_READERS = ["trimmedMention", "readAddress", "referenceRouteFromHref"] as const;
 
 export type ReferenceReader = (typeof REFERENCE_READERS)[number];
 
@@ -47,12 +43,7 @@ export function countReferenceRead(reader: ReferenceReader, characters: number):
 
 /** Each reader's calls and characters since the page loaded. */
 export function referenceReads(): Readonly<Record<ReferenceReader, ReaderReads>> {
-  const copy = noReads();
-  for (const reader of REFERENCE_READERS) {
-    copy[reader].calls = reads[reader].calls;
-    copy[reader].characters = reads[reader].characters;
-  }
-  return copy;
+  return referenceReadsSince(noReads());
 }
 
 /** Each reader's calls and characters since `before`, a reading of `referenceReads`. */

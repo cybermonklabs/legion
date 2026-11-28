@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import {
   act,
   // biome-ignore lint/style/noRestrictedImports: the bare pointer press below has no user-event form - `click` would also send the click this row proves the page has not had.
@@ -35,12 +35,6 @@ import { warmMarkdownRenderer } from "./features/refs/markdown-engine";
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
-});
-
-// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
-// `realClock`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
 });
 
 /** A message the tabs of this browser post to each other, naming `login`, from whichever tab. */

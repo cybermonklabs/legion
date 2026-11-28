@@ -1,5 +1,9 @@
 import { jest } from "bun:test";
-import { turn as realTurn, turnsUntil } from "@legion/test-fixtures/fake-clock";
+import {
+  turn as realTurn,
+  type TurnsUntilOptions,
+  turnsUntil,
+} from "@legion/test-fixtures/fake-clock";
 import { act } from "@testing-library/react";
 
 /**
@@ -74,7 +78,7 @@ export async function settle(): Promise<void> {
 export async function onRealTurns(
   done: () => boolean,
   what: string,
-  options: { readonly each?: () => void; readonly state?: () => string } = {}
+  options: Pick<TurnsUntilOptions, "each" | "state"> = {}
 ): Promise<void> {
   await turnsUntil(done, what, { ...options, turn: () => act(realTurn) });
 }

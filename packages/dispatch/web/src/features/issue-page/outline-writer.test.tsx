@@ -1,4 +1,5 @@
 import { afterEach, beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 
@@ -45,13 +46,17 @@ test("a window focus more than 30 s after the load reads the writer's asks, comm
       await waitFor(() => expect(client.isFetching()).toBe(0));
       // The reader leaves the window and comes back to it more than 30 s after the load.
       setSystemTime(Date.now() + 31_000);
-      act(() => {
+      await act(async () => {
         focusManager.setFocused(false);
         focusManager.setFocused(true);
+        // The client hears a focus a few microtasks after it: it awaits `resumePausedMutations`
+        // before `QueryCache.onFocus` (`QueryClient.mount`), and a turn of the event loop runs
+        // them.
+        await turn();
       });
-      // A read the focus started is out from the focus on: TanStack marks a refetch as fetching
-      // and calls its read as it starts it (`Query.fetch`), inside the focus itself, so the state
-      // read here is the one a read the focus started would have changed.
+      // By then a read the focus started has been called: TanStack calls a refetch's read as it
+      // starts it (`Query.fetch`), so the state and the counts read here are the ones such a read
+      // would have changed.
       expect(client.isFetching(), "the window's focus started a read").toBe(0);
       expect(
         reads.map((read) => read.mock.calls.length),

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, beforeEach, expect, jest, spyOn, test } from "bun:test";
 import { act, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
@@ -28,12 +28,6 @@ import { compiledSchemaCreatable } from "./schema";
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
-});
-
-// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
-// `realClock`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
 });
 
 // Whether the live editor may connect, and what the page shows when it may not or cannot: the

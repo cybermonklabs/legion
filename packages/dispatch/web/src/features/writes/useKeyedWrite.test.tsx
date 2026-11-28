@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -19,12 +19,6 @@ import { writesOf } from "./write-store";
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
-});
-
-// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
-// `realClock`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
 });
 
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });

@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, expect, jest, test } from "bun:test";
+import { beforeAll, expect, jest, test } from "bun:test";
 import { act, screen, waitFor } from "@testing-library/react";
 
 import { onRealTurns, realClock, tick } from "./__tests__/fake-clock";
@@ -20,12 +20,6 @@ beforeAll(async () => {
 // signs out until that tab says how it ended, or goes: the writes are discarded once Dispatch has
 // ended the session, and go on once it still names the person. The rows of this tab's own
 // sign-out are in `app-sign-out.test.tsx`.
-
-// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
-// `realClock`, so the real clock comes back here too, before the next row.
-afterEach(() => {
-  jest.useRealTimers();
-});
 
 // W57. A tab whose sign-out held this tab's writes went without saying how it ended: it closed,
 // crashed or was discarded, so only Dispatch knows whether the sign-out landed. This tab reads

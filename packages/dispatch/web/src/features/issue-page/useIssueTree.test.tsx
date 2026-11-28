@@ -1593,9 +1593,10 @@ test("a tree mounted again past 30 s reads nothing, and a comment event reads th
     setSystemTime(Date.now() + 31_000);
     const again = renderHook(() => useIssueTree(issue).root, { wrapper });
     expect(taskWords(again.result.current)).toBe(TASK_WORDS);
-    // The state a read the mount started would show: React Query marks a query fetching in the
-    // mount's own effect, which `act` flushes, before any request goes out, so a mount that read
-    // again reads fetching here; no clock decides it.
+    // What a read the mount started would change: React Query starts a read the mount calls for
+    // in the mount's own effect, which `act` flushes, and calls its function as it starts it, so
+    // the state and the count read here are the ones such a read would have changed; no clock
+    // decides it.
     await act(async () => {});
     expect(client.isFetching(), "a read the mount started").toBe(0);
     expect(requests(), "no read is sent for a slot mounted again").toBe(loaded);

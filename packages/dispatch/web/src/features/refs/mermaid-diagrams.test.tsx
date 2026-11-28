@@ -114,8 +114,6 @@ describe("Mermaid diagrams", () => {
   });
 
   afterEach(() => {
-    // A row on the fake clock that the command's guard ended never reached its `realClock`.
-    jest.useRealTimers();
     resetMermaidDiagrams();
     globalThis.Worker = pageWorker;
   });
