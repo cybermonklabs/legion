@@ -1,11 +1,9 @@
 kind: Changed
 body: |-
     The worker and architect skills no longer offer `full-ci` beside a slow suite's own
-    `lane:<output>` label. A pull request adds a suite's lane label only for a need its body names,
-    and takes it off when no check of the issue names that suite's job. The skills say that the
-    merge queue runs a slow suite when the queue's own selection, against the queue's base, picks
-    it, and that on cybermonklabs/legion ci-ok's `not run at this head:` line names each held-back
-    suite that a pull request's paths select and that it did not run.
+    `lane:<output>` label. The merge queue runs every held-back slow suite before the change merges,
+    so a pull request adds a suite's lane label only for a need its body names, and takes it off when
+    no check of the issue names that suite's job.
 time: 2026-11-27T07:03:04.751259503Z
 custom:
     Issue: pr5808
