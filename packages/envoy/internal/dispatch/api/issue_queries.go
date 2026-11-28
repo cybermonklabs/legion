@@ -70,7 +70,17 @@ var (
 // holds each matched row's address (ctid), which the read takes back in the same statement and so
 // under the same snapshot. It holds addresses rather than keys because Postgres finds an element
 // of fixed width at its place at once, and the n-th key of an array of text only by reading the
-// n-1 before it.
+// n-1 before it. The addresses are joined to the issues table as a whole, in one pass over it,
+// rather than read back one row at a time: a read of one row by its address costs a shared
+// buffer for each matched issue, which made an unfiltered page of 50 on production read 17,754
+// shared buffers where main's text read 5,421 (2026-11-28), and
+// TestNoListingShapeReadsMoreThanMainsText holds each shape of the listing to main's text.
+//
+// The unpaged text lists every filtered issue, so `filtered` takes each one whole, every column
+// the select reads (issueListRowColumns), and the select reads its rows from `filtered` rather
+// than from the issues table once more; the walk up their chains starts from the same rows. The
+// paged text resolves its page alone, so its `filtered` holds the columns the page is ordered by,
+// and the select and the walk read the page's issues by their keys.
 //
 // An empty page still carries the count the caller asked for, so `listed` answers one issue of
 // the filtered set marked `in_page` false when the page holds nothing, and scanIssuePage drops
@@ -90,7 +100,12 @@ var (
 // statement reads the issues table for one walk rather than for four: four walks read it four
 // times, and a plan that hashes the table for a walk hashed it four times. The priority filter's
 // walk climbs from its own candidates rather than from these rows, before they are known, so it
-// keeps its own (issuePriorityFilterTerms).
+// keeps its own (issuePriorityFilterTerms). The walk's steps up are a join to the issues table
+// that the planner may hash, and it is left free to: a probe of issues_pkey compares text keys
+// under the database's collation at each level of the index, and with the steps fenced into
+// probes a priority's whole list over production's counts (2,060 rows, a walk of 6,478)
+// answered at a p90 of 91.8 ms on the generic plan, against 80.3 ms with the one pass over the
+// table (2026-11-28, build Job infra-5609-r4-cuts-2b-6vfbd).
 //
 // readAdvances false is the one listing text that answers no `advances` relation: it leaves out
 // the relation read (the reading of the log for every issue of the rows' chains) and the columns'
@@ -117,12 +132,20 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 	filterTerms := issueAdvancesFilterTerms
 	advancesTerms := issueAdvancesTermsJoining(issueAdvancesChainOf(chain), issueAdvancesLive)
 	componentsTerms := issueComponentsTermsOver(issueComponentsChainOf(chain))
+	// rowColumns are the columns `filtered` takes of each matched issue: every one the select reads
+	// for the unpaged text, which reads its rows from `filtered`, and the page's order alone for the
+	// paged one, which reads the page's issues by their keys.
+	rowColumns, rows, from, seed := issueListRowColumns, "filtered", "filtered i", "filtered i"
+	if paged {
+		rowColumns, rows = `i.key, i.status, i.rank, i.created_at`, "listed"
+		from, seed = "listed join issues i on i.key = listed.key", "subjects s join issues i on i.key = s.key"
+	}
 	filteredTerms := `matched as (
 		select i.ctid as address
 		from issues i` + pinnedJoin + `
 		` + issueListFilters + `
 	), filtered as (
-		select i.key, i.status, i.rank, i.created_at
+		select ` + rowColumns + `
 		from (select array_agg(address) as addresses from matched) m
 		cross join generate_subscripts(m.addresses, 1) as place(n)
 		join issues i on i.ctid = m.addresses[place.n]
@@ -135,7 +158,7 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 		// matched issues back by. So the text for a cut filters in one term, as the listing did
 		// before it read the matched issues back by their addresses.
 		filteredTerms = `filtered as (
-		select i.key, i.status, i.rank, i.created_at
+		select ` + rowColumns + `
 		from issues i` + pinnedJoin + `
 		` + issueListFilters + `
 	)`
@@ -148,8 +171,8 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 	} else {
 		advancesColumns = issueAdvancesColumnsUnread
 	}
-	terms = refs.IssueChainTerm("subjects", chain) + `, ` + terms
-	rows, columns := "filtered", issueSummaryColumns(advancesColumns)
+	terms = refs.IssueChainTerm(chain, seed) + `, ` + terms
+	columns := issueSummaryColumns(advancesColumns)
 	if paged {
 		query += fmt.Sprintf(`, page as (
 		select i.key from filtered i
@@ -160,18 +183,26 @@ func issueSummaryQuery(pinned, paged, readAdvances, atCut bool) string {
 		union all
 		select (select f.key from filtered f limit 1), false where not exists (select 1 from page)
 	)`, issueListOrder, parameter, parameter+1)
-		rows = "listed"
 		columns = "(select count(*) from filtered) as total, listed.in_page,\n\t       " + columns
 	}
 	return query + `, subjects as (
 		select key from ` + rows + `
 	), ` + terms + `
 	select ` + columns + `
-	from ` + rows + ` join issues i on i.key = ` + rows + `.key
+	from ` + from + `
 	` + issueSummaryJoins(readAdvances) + `
 	order by ` + issueListOrder + `
 `
 }
+
+// issueListRowColumns are the columns of an issue that the listing's select reads of each row,
+// beside the terms its joins attach: every `i.` column of issueSummaryColumns, issueSummaryJoins
+// and issueListOrder. The unpaged text takes them into `filtered` once and reads them there
+// (issueSummaryQuery), so a column the select comes to read is added here, or the unpaged text
+// fails to prepare.
+const issueListRowColumns = `i.key, i.project_key, i.title, i.status, i.priority, i.rank, i.labels, i.parent_key,
+		       i.repo, i.assignee, i.route, i.updated_at, i.last_seq, i.created_by, i.created_at,
+		       i.claimed_by, i.claimed_at, i.tasks_done, i.tasks_total, i.closed_at`
 
 // issueListFilters are the eleven filters a listing request carries, written as sixteen
 // parameters (the label filter takes its keys and the two strings of its map, the priority filter
@@ -348,9 +379,18 @@ var issueAdvancesWalk = `advances_chain as (
 // filtered set, which no row joins, and the issues table's foreign key on parent_key refuses a
 // parent no issue carries. The term is not materialized: the two terms that read it each scan
 // chain, so its rows are not copied into a store of their own first.
+//
+// Its start, the subject's key, is in collation "C". `advances` groups by it with ordered
+// aggregates, so its rows are sorted by subject and id, and under the database's collation (glibc
+// en_US on a deployment) each comparison of two subjects' keys is a strcoll call, where in "C" it
+// is a comparison of bytes: production's 5,715 rows of a priority's whole list sorted in about
+// 27 ms. The groups are the same, since en_US is deterministic and so holds two keys equal exactly
+// when their bytes are; the listing joins the answer back to its rows in the same collation
+// (issueListAdvancesJoin), because Postgres compares no two texts of different implicit
+// collations.
 func issueAdvancesChainOf(chain string) string {
 	return `advances_chain as not materialized (
-		select c.start, c.key as issue_key, c.depth
+		select c.start collate "C" as start, c.key as issue_key, c.depth
 		from ` + chain + ` c
 	)`
 }
@@ -395,6 +435,11 @@ const prioritiesLiveAtCutTerm = `priorities_live_at_cut as (
 // issueAdvancesJoin attaches issueAdvancesTerms' answer to the issue aliased `i`, one row per
 // subject.
 const issueAdvancesJoin = `left join advances on advances.issue_key = i.key`
+
+// issueListAdvancesJoin is issueAdvancesJoin for the listing, whose `advances` answers its keys in
+// collation "C" (issueAdvancesChainOf): the row's key is compared in the same collation, which
+// holds the same keys equal.
+const issueListAdvancesJoin = `left join advances on advances.issue_key = i.key collate "C"`
 
 // issueAdvancesFilterTerms answer the listing's `advances` query keys, as terms computed once
 // per request rather than a read per row: $11 is the priority ids the request named, $12 is
@@ -587,7 +632,7 @@ func issueSummaryJoins(readAdvances bool) string {
 	) progress on progress.parent_key = i.key
 	`
 	if readAdvances {
-		joins += issueAdvancesJoin + `
+		joins += issueListAdvancesJoin + `
 	`
 	}
 	return joins + issueComponentsJoin + `

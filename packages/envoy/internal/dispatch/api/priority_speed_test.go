@@ -1,8 +1,9 @@
 // priority_speed_test.go is what the `advances` relation and the priorities read cost at a
 // deployment's size: a page of the issue listing with the relation read in place against the
-// same page without it, and the whole priorities body and its summary against the paged listing
-// they stand beside. The corpus both are measured over is one build (priority_speed_seed_test.go),
-// and what each number is held to is written at the test that holds it.
+// same page without it, and the whole priorities body and its summary against fixed ceilings,
+// logged beside the paged listing they stand beside. The corpus both are measured over is one
+// build (priority_speed_seed_test.go), and what each number is held to is written at the test
+// that holds it.
 //
 // # One corpus, two tests
 //
@@ -35,9 +36,9 @@
 // The priorities read is held to counts too (speedRequestWork): the statements the server sends
 // to answer it and the round trips they go in, as the traced pool it reads through sees them
 // (speedTrace), and the buffer accesses of each of those statements under both plans, counted as
-// the relation read's are, against the same counts of the paged listing it stands beside. When it
-// was timed instead (the whole body under two seconds and under five times the listing, the
-// summary under 300 ms, the least of 21 runs each), how fast the server answered decided it: on a
+// the relation read's are, against a fixed ceiling for each read and plan. When it was timed
+// instead (the whole body under two seconds and under five times the listing, the summary under
+// 300 ms, the least of 21 runs each), how fast the server answered decided it: on a
 // box at a load near 1,000 the body read 3.10 times the listing (47.4 ms against 15.3 ms), and a
 // server that answered each statement of the body's batch 30 ms late, as a loaded one answers
 // them, put it at 8.26 times (135.9 ms against 16.5 ms, 2026-11-22), over the bound, though the
@@ -82,21 +83,26 @@ const speedCustomPlans = 5
 // at a cost of a few explains a statement.
 const speedSettleReads = 5
 
-// The bounds the two tests hold their readings to, from the issue's own checks: the relation
-// read at no more than twice the same page without it, in rows and in buffer accesses (its scan's
-// allocations are held closer, speedScanAllocsPerID); the whole priorities body at no more than
-// five times the buffer accesses of the paged listing of every open issue, and the summary the
-// navigation rail draws on every page at no more than that listing's, which a reader already
-// waits for. The issue wrote the last two in time: the body under five times the listing's time
-// and under two seconds, the summary under 300 ms. Counted, the summary is held to the listing,
-// the read the page beside it already waits for, rather than to a number of its own; and the two
-// seconds has no count of its own: the body is a fixed number of statements
-// (priorityBodyStatements) whose work is held to the listing's.
+// speedAdvancesRatio is the bound TestAdvancesListingSpeed holds its readings to, from the
+// issue's own checks: the relation read at no more than twice the same page without it, in rows
+// and in buffer accesses (its scan's allocations are held closer, speedScanAllocsPerID).
+const speedAdvancesRatio = 2.0
+
+// speedPriorityFullName names the whole priorities body in the readings and their messages.
+const speedPriorityFullName = "the whole priorities body"
+
+// The most shared buffer accesses each priorities read may make over the corpus, under each of
+// the two plans (TestPrioritiesReadSpeed), set at about twice what main's code read at f04675be:
+// the whole body 3,503 under both plans, and the summary 474 under the plan made for its
+// arguments and 915 under the generic plan (build Job infra-5609-r4-listing-walk-fdqcj,
+// 2026-11-28). Each is below the bound main held the read to before INFRA-5609's single walk of
+// the listing's chains, when the paged listing beside it read 5,785: five times that listing,
+// 28,925, for the body, and the listing's own 5,785 for the summary.
 const (
-	speedAdvancesRatio    = 2.0
-	speedPrioritiesRatio  = 5.0
-	speedSummaryRatio     = 1.0
-	speedPriorityFullName = "the whole priorities body"
+	speedBodyCustomBuffers     = 7000
+	speedBodyGenericBuffers    = 7000
+	speedSummaryCustomBuffers  = 1000
+	speedSummaryGenericBuffers = 2000
 )
 
 // The statements each priorities read is written as and the round trips they go in
@@ -280,27 +286,38 @@ func TestAdvancesListingSpeed(t *testing.T) {
 // TestPrioritiesReadSpeed holds the priorities read to what the page that draws it can afford, in
 // the work it costs rather than the time it takes (speedRequestWork): the whole body in the two
 // statements and two round trips it is written as, over a store of twenty priorities and 400
-// relations, and in no more than five times the buffer accesses of the paged listing of every
-// open issue, the read it stands beside and the one a reader already waits for; and the summary
-// the navigation rail reads on every page in its two statements and two round trips, in no
-// more than that listing's buffer accesses. Hit plus read is every page a statement asked for,
-// cached or not, so the count is the read's work and not the cache's state.
+// relations, and the summary the navigation rail reads on every page in its two statements and
+// two round trips, each in no more shared buffer accesses than its fixed ceiling under each plan
+// (speedBodyCustomBuffers and the three beside it). Hit plus read is every page a statement asked
+// for, cached or not, so the count is the read's work and not the cache's state.
+//
+// The ceilings were once ratios to the paged listing of every open issue, the read the priorities
+// read stands beside and the one a reader already waits for: the body at no more than five times
+// its buffer accesses and the summary at no more than one time, which is how the issue wrote its
+// bounds in time (the body under five times the listing's time and under two seconds, the summary
+// under 300 ms). That tied one route's bound to another route's cost, and the listing moved on its
+// own: its generic plan read 9,162 buffer accesses when the bound was written, 5,785 after #5361
+// and 568 once INFRA-5609 walked its rows' chains once, while the priorities read went from 20,188
+// and 6,345 to 3,503 and 915 and has not grown since. The listing's tenfold speed-up then failed
+// this test on a read that did no more work. The ceilings stand at about twice the priorities
+// read's own counts on main, each strictly below what the ratios allowed it before that speed-up
+// (5 x 5,785 and 5,785), so the bound is tighter than it was. The ratio to the listing is still
+// logged, as information.
 //
 // The work is counted under both plans a connection runs each statement with
-// (speedCustomPlans), each against the listing under the same kind of plan: a connection runs
-// every statement of the three requests under the plan made for its arguments five times and
-// under the generic plan from then on (twelve runs of each request on one connection gave five
-// custom plans and seven generic ones for every statement, pg_prepared_statements, PostgreSQL
-// 18.6, 2026-11-22), so the two pairs are what a reader waits for on a connection's first five
-// reads and on every read after. Correct code reads 0.39 times the listing's buffer accesses for
-// the body and 0.13 times for the summary under the plans made for their arguments (1,193 and 393
-// against 3,052), and 2.20 and 0.69 times under the generic plans (20,188 and 6,345 against 9,162).
+// (speedCustomPlans): a connection runs every statement of the three requests under the plan made
+// for its arguments five times and under the generic plan from then on (twelve runs of each
+// request on one connection gave five custom plans and seven generic ones for every statement,
+// pg_prepared_statements, PostgreSQL 18.6, 2026-11-22), so the two are what a reader waits for on
+// a connection's first five reads and on every read after. Main's code at f04675be reads 3,503
+// buffer accesses for the body under both plans, and 474 for the summary under the plan made for
+// its arguments and 915 under the generic plan.
 //
 // The rows each plan's nodes produced or threw away are reported beside the buffer accesses and
 // held to nothing: the body's statements aggregate the seed's descent through hash joins where
 // the listing walks one page through its indexes, so a row of one is not the work of a row of the
-// other. Under the generic plans the body produces 10.75 times the listing's rows (438,298 against
-// 40,786) where it accesses 2.20 times its buffers, and when the two were timed side by side the
+// other. Under the generic plans the body produced 10.75 times the listing's rows (438,298 against
+// 40,786) when it accessed 2.20 times its buffers, and when the two were timed side by side the
 // body took 3.10 times the listing (47.4 ms against 15.3 ms, the least of 21 runs each).
 //
 // The Go side of each read, the scan of its rows and the building of the body, is held in what
@@ -325,12 +342,12 @@ func TestPrioritiesReadSpeed(t *testing.T) {
 		}
 	}
 	for _, held := range []struct {
-		read       speedRequestWork
-		statements int
-		ratio      float64
+		read                          speedRequestWork
+		statements                    int
+		customBuffers, genericBuffers float64
 	}{
-		{readings.prioritiesFull, priorityBodyStatements, speedPrioritiesRatio},
-		{readings.prioritiesLite, prioritySummaryStatements, speedSummaryRatio},
+		{readings.prioritiesFull, priorityBodyStatements, speedBodyCustomBuffers, speedBodyGenericBuffers},
+		{readings.prioritiesLite, prioritySummaryStatements, speedSummaryCustomBuffers, speedSummaryGenericBuffers},
 	} {
 		read := held.read
 		if len(read.custom) != held.statements || read.roundTrips != priorityReadRoundTrips {
@@ -339,12 +356,14 @@ func TestPrioritiesReadSpeed(t *testing.T) {
 		}
 		for _, generic := range []bool{false, true} {
 			work, reference := read.total(generic), paged.total(generic)
-			buffers := work.buffers / reference.buffers
-			t.Logf("%s costs %.2fx the buffer accesses of %s, at most %.2fx, and %.2fx its rows",
-				work.name, buffers, reference.name, held.ratio, work.rows/reference.rows)
-			if buffers > held.ratio {
-				t.Errorf("%s reads %.0f buffer accesses against %.0f for %s (%.2fx), want at most %.2fx",
-					work.name, work.buffers, reference.buffers, reference.name, buffers, held.ratio)
+			ceiling := held.customBuffers
+			if generic {
+				ceiling = held.genericBuffers
+			}
+			t.Logf("%s reads %.0f buffer accesses, at most %.0f; that is %.2fx the buffer accesses and %.2fx the rows of %s",
+				work.name, work.buffers, ceiling, work.buffers/reference.buffers, work.rows/reference.rows, reference.name)
+			if work.buffers > ceiling {
+				t.Errorf("%s reads %.0f buffer accesses, want at most %.0f", work.name, work.buffers, ceiling)
 			}
 		}
 	}

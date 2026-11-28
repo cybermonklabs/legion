@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -215,6 +216,84 @@ func TestTheIssueListAnswersWhatMainsStatementDid(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The two listing statements as main wrote them at f04675be, before dispatch://INFRA-5609 changed
+// them: the unpaged text (listIssuesQuery) and the paged one (listIssuesPageQuery), each the
+// package's own text at that commit byte for byte (sha256 96127ada… and b2ad7487…), frozen in
+// testdata so no change to the package moves them. They take the arguments today's texts take:
+// $1 to $17, and the paged text's $18 and $19.
+//
+//go:embed testdata/listing-main-f04675be-unpaged.sql
+var mainF04675beListing string
+
+//go:embed testdata/listing-main-f04675be-paged.sql
+var mainF04675bePagedListing string
+
+// listingBuffersTolerance is how far over main's shared buffers a shape of the listing may read
+// before TestNoListingShapeReadsMoreThanMainsText fails. Each count is the fewest of six reads of
+// one plan (countSpeedStatement), so it repeats exactly while the plan does. What can move between
+// runs is the plan, which the planner chooses from statistics ANALYZE samples (the corpus's 678,943
+// events are more rows than it reads), and a different join for one of a statement's small terms
+// moves a few hundred of its thousands of buffers. A tenth holds that, and nothing like the fault
+// the test exists for: reading each matched issue back by its address cost a buffer for each one,
+// which put production's unfiltered page of 50 at 3.3 times main's buffers (17,754 against 5,421).
+const listingBuffersTolerance = 1.10
+
+// No shape of the listing reads more than main's text of the same request: R4 of
+// dispatch://INFRA-5609 makes a priority's list cheaper, and must make no other listing dearer. On
+// the corpus of production's counts (seedListCorpus), each request below is made of the server,
+// and the statement it sent and main's text of the same kind (mainF04675beListing for the unpaged
+// statement, mainF04675bePagedListing for the paged one) are each read with the arguments it sent,
+// under the plan made for them and under the generic plan (countSpeedStatement), and today's may
+// read at most listingBuffersTolerance times main's shared buffers. The shapes are the dashboard's
+// pages (every issue, the open ones, one project's), the unpaged list of open issues, and the
+// three a priority's page sends.
+func TestNoListingShapeReadsMoreThanMainsText(t *testing.T) {
+	t.Parallel()
+	corpus := seedListCorpus(t)
+	trace := &speedTrace{}
+	handler, _, _, _ := newRegisteredTestServer(t, testServerOptions{store: corpus.database, tracer: trace, identity: headerIdentity(corpus.database)})
+	connection, err := corpus.database.Pool.Acquire(context.Background())
+	if err != nil {
+		t.Fatalf("take a connection of the corpus: %v", err)
+	}
+	defer connection.Release()
+	largest := corpus.priorities[0]
+	for _, shape := range []struct{ name, target string }{
+		{"an unfiltered page of 50", "/api/v1/issues?limit=50"},
+		{"the open issues' page of 50", "/api/v1/issues?open=true&limit=50"},
+		{"a project's page of 50", "/api/v1/issues?project=PRD02&limit=50"},
+		{"the open issues, unpaged", "/api/v1/issues?open=true"},
+		{"a priority's list", "/api/v1/issues?advances=" + largest},
+		{"a priority's open list", "/api/v1/issues?advances=" + largest + "&open=true"},
+		{"a priority's page of 50", "/api/v1/issues?advances=" + largest + "&limit=50"},
+	} {
+		_, listing := listingRequest(t, handler, trace, shape.target)
+		mainText := mainF04675beListing
+		switch listing.sql {
+		case listIssuesQuery:
+		case listIssuesPageQuery:
+			mainText = mainF04675bePagedListing
+		default:
+			t.Fatalf("%s sent a listing text other than the unpaged or the paged one", shape.target)
+		}
+		for _, generic := range []bool{false, true} {
+			plan := "the plan made for its arguments"
+			if generic {
+				plan = "the generic plan"
+			}
+			today := countSpeedStatement(t, connection.Conn(), shape.name+" under "+plan, listing.sql, listing.arguments, generic)
+			then := countSpeedStatement(t, connection.Conn(), shape.name+" in main's text under "+plan, mainText, listing.arguments, generic)
+			ratio := today.buffers / then.buffers
+			t.Logf("%s (%s) under %s reads %.0f shared buffers against %.0f in main's text, %.2fx, at most %.2fx",
+				shape.name, shape.target, plan, today.buffers, then.buffers, ratio, listingBuffersTolerance)
+			if ratio > listingBuffersTolerance {
+				t.Errorf("%s (%s) under %s reads %.0f shared buffers against %.0f in main's text (%.2fx), want at most %.2fx",
+					shape.name, shape.target, plan, today.buffers, then.buffers, ratio, listingBuffersTolerance)
+			}
+		}
 	}
 }
 

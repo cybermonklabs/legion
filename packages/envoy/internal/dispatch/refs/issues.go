@@ -313,15 +313,18 @@ var issueRepoAnswer = `repo as (
 		group by c.start
 	)`
 
-// IssueChainTerm is the term named chain: one walk up the parent chain of every issue of
-// subjects, any one-column term of issue keys the statement defines before it, which the
-// statement's readers of those chains read in place of a walk each. The listing resolves its
-// rows' components, repository, priority and `advances` relations from one such term (api's
-// issueSummaryQuery), so it reads the issues table for one walk rather than for four. Each row is
-// one issue of a subject's chain: start, the subject; key, parent_key, priority and repo, that
-// issue's own; project_key, the subject's project, carried up as IssueRepoTerms' walk carries it;
-// depth, its links above the subject; and three flags, each saying whether one of the walks the
-// term replaces makes the row:
+// IssueChainTerm is the term named chain: one walk up the parent chain of every issue that from
+// names, which the statement's readers of those chains read in place of a walk each. from is a
+// FROM list that names those issues, the subjects, as `i` with at least their key, parent_key,
+// project_key, priority and repo: the issues of a one-column term of keys the statement defines
+// before it (`subjects s join issues i on i.key = s.key`), or a term of issue rows it already
+// holds, which the walk then starts from without reading the issues table for them. The listing
+// resolves its rows' components, repository, priority and `advances` relations from one such term
+// (api's issueSummaryQuery), so it reads the issues table for one walk rather than for four. Each
+// row is one issue of a subject's chain: start, the subject; key, parent_key, priority and repo,
+// that issue's own; project_key, the subject's project, carried up as IssueRepoTerms' walk
+// carries it; depth, its links above the subject; and three flags, each saying whether one of the
+// walks the term replaces makes the row:
 //
 //   - in_project: every issue from the subject up to this one is of the subject's project, the
 //     rows of the components walk (api's issueComponentsTerms);
@@ -337,11 +340,11 @@ var issueRepoAnswer = `repo as (
 // bounded by IssueDepthCap like every walk of the chain, so it terminates even if a raced reparent
 // ever commits a cycle. A row carries its depth, so no two rows of one chain are equal and the
 // walk is a `union all`.
-func IssueChainTerm(subjects, chain string) string {
+func IssueChainTerm(chain, from string) string {
 	return chain + ` as (
-		select s.key as start, i.key, i.parent_key, i.project_key, i.priority, i.repo,
+		select i.key as start, i.key, i.parent_key, i.project_key, i.priority, i.repo,
 		       true as in_project, true as repo_open, true as priority_open, 0 as depth
-		from ` + subjects + ` s join issues i on i.key = s.key
+		from ` + from + `
 		union all
 		select c.start, p.key, p.parent_key, c.project_key, p.priority, p.repo,
 		       c.in_project and p.project_key = c.project_key,

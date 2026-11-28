@@ -25,14 +25,16 @@ import (
 // labels the same way, and the priority filter's rule of dispatch://INFRA-5793, which matches
 // the priority each issue resolves to (mainInheritedPriority). The term is written out
 // independently so a change to the production priority query cannot change both sides of the
-// comparison.
+// comparison. It answers each matched issue whole (`i.*`), since the unpaged text reads its rows'
+// columns from `filtered` rather than from the issues table (issueSummaryQuery), whichever of
+// them it reads.
 func mainListFilteredTerm(pinned bool) string {
 	pinnedJoin := ""
 	if pinned {
 		pinnedJoin = "\n\t\tjoin user_issue_state s on s.issue_key = i.key and s.login = $18 and s.pinned"
 	}
 	return `filtered as (
-		select i.key, i.status, i.rank, i.created_at
+		select i.*
 		from issues i` + pinnedJoin + `
 		left join advancing on advancing.key = i.key
 		left join advances_originating originating on originating.key = i.key

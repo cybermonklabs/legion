@@ -24,8 +24,9 @@ const (
 	priorityListQuantile = 0.9
 )
 
-// priorityListRequest is one of the two requests R1 holds: the list with no `limit`, as the
-// priorities page and a priority's own page send it, which runs the unpaged statement, and its
+// priorityListRequest is one of the three requests R1 holds: the list with no `limit`, as the
+// priorities page and a priority's own page send it, which runs the unpaged statement; the same
+// list of open work alone (`&open=true`), which runs the unpaged statement too; and the list's
 // first page of 50, which runs the paged one.
 type priorityListRequest struct {
 	name  string
@@ -35,17 +36,19 @@ type priorityListRequest struct {
 
 var priorityListRequests = []priorityListRequest{
 	{name: "the list"},
+	{name: "the open list", query: "&open=true"},
 	{name: "a page of 50", query: fmt.Sprintf("&limit=%d", priorityListPage), paged: true},
 }
 
 // TestAPriorityListAnswersWithinItsBoundOnEveryPlan holds GET /api/v1/issues?advances=<the
 // largest priority>, as the priorities page and a priority's own page send it with no `limit`,
-// and the same request's first page of 50, to 200 ms at the 90th percentile under each of the two
-// plans a connection runs a statement with (speedCustomPlans): the generic plan every run after
-// the fifth may take, and the plan made for its arguments. Each plan is forced on the connection
-// (newForcedPlan), so the plan measured is the one named whatever Postgres would choose, and the
-// connection runs with JIT off, as production's Cloud SQL does. The corpus is production's counts
-// (seedListCorpus), whose largest priority has 598 open issues.
+// the same request for open work alone (`&open=true`), and the first request's first page of 50,
+// to 200 ms at the 90th percentile under each of the two plans a connection runs a statement with
+// (speedCustomPlans): the generic plan every run after the fifth may take, and the plan made for
+// its arguments. Each plan is forced on the connection (newForcedPlan), so the plan measured is
+// the one named whatever Postgres would choose, and the connection runs with JIT off, as
+// production's Cloud SQL does. The corpus is production's counts (seedListCorpus), whose largest
+// priority has 598 open issues, so the list and the open list each answer 598.
 //
 // The reads are timed as the server answers them, sign-in and encoding included, on a server
 // whose pool holds one connection, and the connection is held to having run every read under the
