@@ -104,12 +104,14 @@ func (t *receiveTerm) handBack(delay time.Duration) {
 	}
 }
 
-// handBackLocked NAKs m with the hand-back delay, up to handBackNaksMax times for one stream
-// sequence: a repeat reaches this pod alone when the server redelivered it before the next holder
-// subscribed, and NAKed again it comes back to that holder after the delay rather than at its ack
-// wait. A repeat past that is dropped with neither ack nor NAK, so a message the hand-back keeps
-// going round costs at most handBackNaksMax deliveries. A message whose JetStream metadata cannot
-// be read is NAKed.
+// handBackLocked NAKs m with the hand-back delay, so it comes back to the next holder after the
+// delay rather than at its ack wait, up to handBackNaksMax times for one stream sequence. A repeat
+// reaches this pod only until its subscription has drained (handBackDrainWait, receive_stop.go),
+// which with a prompt flush and release ends before the delay has run, so the core NAKs each
+// message once; a pod that lingers past the delay and NAKs repeats again is dispatch://INFRA-6344's
+// case. A repeat past handBackNaksMax is dropped with neither ack nor NAK, so a message the
+// hand-back keeps going round costs at most handBackNaksMax deliveries. A message whose JetStream
+// metadata cannot be read is NAKed.
 func (t *receiveTerm) handBackLocked(m *nats.Msg) {
 	if meta, err := m.Metadata(); err == nil {
 		naks := t.handedBack[meta.Sequence.Stream]

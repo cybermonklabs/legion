@@ -522,12 +522,15 @@ func TestAGracefulStopDuringAnAckWaitHoldHandsTheHoldOn(t *testing.T) {
 	}
 }
 
-// A stopping pod that gets back, alone, a message it already handed back NAKs it with the
-// hand-back delay again rather than dropping it (receiveTerm.handBackLocked, up to handBackNaksMax
-// times for one message), so the pod that takes the lease next delivers it after that delay
-// instead of one ack wait later. The message here is the one in hand: its handler NAKs it once the
-// shutdown's grace runs out and cancels its handling, and the server delivers it again at once, to
-// the stopping pod alone, since no other pod has subscribed yet.
+// A message that comes back to a stopping pod after its handler's NAK is handed back once, NAKed
+// with the hand-back delay rather than dropped (receiveTerm.handBackLocked), and the pod that takes
+// the lease next delivers it within an ack wait. The message here is the one in hand: its handler
+// NAKs it once the shutdown's grace runs out and cancels its handling, and the server delivers it
+// again at once, to the stopping pod alone, since no other pod has subscribed yet; that redelivery
+// is the repeat the row's name means. With no linger the stopping pod never hands it back a second
+// time: the hand-back's delay outlasts the drain that follows it (handBackDrainWait). The repeat
+// rule of handBackLocked, a NAK again for a message already handed back (naks > 0, up to
+// handBackNaksMax), is the linger case of dispatch://INFRA-6344, and this row does not reach it.
 // It must not run in parallel: the message, due 2.3 s after the stop, must come within 6 s of it.
 func TestAStoppingPodHandsARepeatBackAgain(t *testing.T) {
 	uri := testnats.URL(t)

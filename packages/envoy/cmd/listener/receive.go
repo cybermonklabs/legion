@@ -120,9 +120,12 @@ const (
 	// a standby to take the released lease and subscribe, so the redelivery reaches it.
 	handBackDelay = 2 * time.Second
 	// handBackNaksMax is how many times a stopping pod NAKs one message with handBackDelay: the
-	// hand-back and two repeats, which reach it alone when the next holder has not subscribed yet.
-	// A repeat past it is dropped and comes back at its ack wait. Each NAK is one more delivery
-	// against the durable's MaxDeliver of 20.
+	// hand-back and two repeats. In this build a repeat reaches the stopping pod only until its
+	// subscription has drained, within handBackDrainWait, and comes back no sooner than
+	// handBackDelay after the hand-back, by when the drain of a stop whose flush and release answer
+	// promptly has ended; so the stopping pod NAKs each message once, and the repeats are the
+	// linger case of dispatch://INFRA-6344. A repeat past it is dropped and comes back at its ack
+	// wait. Each NAK is one more delivery against the durable's MaxDeliver of 20.
 	handBackNaksMax = 3
 	// handBackDrainWait bounds the drain of a stopping pod's subscription: past a slow link's
 	// latency, since what the server pushed before the drain must still reach the pod.

@@ -154,8 +154,9 @@ it fails with messages missing on v2.10.29.
   No standby takes the lease while its own receive connection is down - not an absent record, not a released one, not an expired one - so the cut pod does not take back what it just released;
   it stands by again, and may take the lease, once the connection is up.
   A holder whose renewals have lapsed still renews while its connection has been down less than those 3 s, and so resumes its own record; at 3 s it releases the record instead.
-  A release the bucket does not take keeps the hold:
-  nothing was handed over, so the pod goes on as a holder whose bucket calls fail, its renewals lapse, a standby takes its record once it expires, and it tries the release again at its next turn.
+  The holder stops holding before it writes the release, so a release that lands while its reply is slow or lost leaves no moment in which this pod and the standby that took the record both count themselves the holder.
+  A release the bucket does not take ends the hold all the same, with no renewal after it:
+  the record stays unreleased, and a standby takes it as an expired one once the TTL has passed, and settles.
   That holds whatever the lost route does to the pod's reconnects.
   A route that drops its packets rather than refusing them leaves every reconnect dial hanging for the connect timeout, with nats.go's connection lock held throughout, so the lease would read the signal only between dials:
   it reads atomics instead ("The delivery lease" above), and the release lands on its own bound.
@@ -409,7 +410,10 @@ A rollback that stops every pod of this build before starting the old one carrie
 ## Without the grant: no-lease mode
 
 The listener's NATS user needs the `envoy_listener` bucket in its grant (`infra/core` `ListenerPermissions`, `DispatchPermissions` and `HostPermissions`, and the NATS auth service's answer to a listener or Dispatch connection, carry it from this release).
-That grant names only the machine's own keys, `lease.listener-<machine id>`, `handback.listener-<machine id>.*` and `delivery.listener-<machine id>.*.*` (each `listener-<machine id>` in the key spelling "The delivery lease" gives): it writes each of them and reads each by key, and its other calls on the bucket are the bucket stream's info, create and update, which the open and the raises send (`natsgrant.ListenerState` names the call behind each subject);
+That grant names only the machine's own keys, `lease.listener-<machine id>`, `handback.listener-<machine id>.*` and `delivery.listener-<machine id>.*.*` (each `listener-<machine id>` in the key spelling "The delivery lease" gives), and lets the listener write each of them and read each by key.
+It names the hand-back and ledger keys for the clean-hand-back marks and the delivery ledger of dispatch://INFRA-6344:
+this build writes and reads the lease key alone.
+The listener's other calls on the bucket are the bucket stream's info, create and update, which the open and the raises send (`natsgrant.ListenerState` names the call behind each subject);
 that is a subject's reach, and what every listener user of the fleet can still do to the whole bucket is in `packages/envoy/infra/README.md` ("Permission sets").
 The grant reads each of the listener's other buckets by key too, a direct get on the key's own subject, and on every bucket it refuses a get by revision, a direct get on the stream's bare subject.
 So the listener reads back the one write it must stamp, the lease's acquiring write, by key, and counts it as its own only at the revision it wrote;

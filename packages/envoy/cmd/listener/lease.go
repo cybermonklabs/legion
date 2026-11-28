@@ -504,34 +504,36 @@ func (l *lease) standDown(rev uint64) time.Duration {
 // that connection's subscription can still be bound at the server. So the pod that takes it
 // settles, subscribing at once beside that binding, for a hold whose cap covers that ack wait
 // (settleCap). The loop does not take the record back for two standby polls, as a give-up does,
-// and takes none at all while the connection stays down (poll). A record another pod has already
-// taken writes nothing and is no error: the revision logged is then zero, and this pod stops
-// holding it all the same. The term is this pod's own hold, read by step in this goroutine a
-// moment ago, so there is no un-held case to answer here.
+// and takes none at all while the connection stays down (poll). The term is this pod's own hold,
+// read by step in this goroutine a moment ago, so there is no un-held case to answer here.
 //
-// A release the bucket does not take keeps the hold: nothing was handed over, so this pod goes on
-// as a holder whose bucket calls fail - its renewals lapse and a standby takes its record once it
-// expires, as before this bound - and it tries the release again at its next turn. The receive
-// loop ends the term as it ends any lost lease, dropping the subscription on the dead connection
-// with no hand-back possible on it (durableReceiver.endLost).
+// The hold ends before the release is written, as letGo ends it: under l.mu it takes the
+// revision, builds the released record and clears the hold, so Holding reads false before the
+// write goes out. A release that lands while its reply is slow or lost hands the record to a
+// standby that can subscribe at once, and this pod already counts itself no holder by then, so
+// when its receive connection comes back in place the two do not both deliver a message. A record
+// another pod has already taken writes nothing and is no error: the revision logged is then zero.
+// A release the bucket does not take is noted (noteFailure) and this pod stands down all the
+// same, with no renewal: a standby takes the record it leaves unreleased as an expired one once
+// that has lain unchanged for the ttl, and settles. In every case the change is signalled, as
+// letGo signals it, and the receive loop ends the term as it ends any lost lease, dropping the
+// subscription on the dead connection with no hand-back possible on it (durableReceiver.endLost).
 func (l *lease) releaseReceiveLost(down time.Duration) time.Duration {
 	l.mu.Lock()
 	rev := l.rev
 	record := l.releasedRecordLocked(true)
 	record.StaleBinding = true
+	l.held, l.validUntil = false, time.Time{}
 	l.mu.Unlock()
+	defer l.signal()
 	next, err := l.writeRelease(record, rev)
 	if err != nil {
 		l.noteFailure("release after the receive connection went down", err)
-		return l.renew()
+		return l.standDown(0)
 	}
-	l.mu.Lock()
-	l.held, l.validUntil = false, time.Time{}
-	l.mu.Unlock()
 	l.logger.Warn("listener lease released: the receive connection is down",
 		slog.String("lease", l.key), slog.Int64("down_ms", down.Milliseconds()),
 		slog.Uint64("revision", next))
-	l.signal()
 	return l.standDown(next)
 }
 

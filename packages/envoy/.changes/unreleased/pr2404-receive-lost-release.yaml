@@ -12,16 +12,15 @@ body: |-
     reaches its session in publish order. A session's own messages ride its own consumer,
     relayed by whichever pod holds the term, so one published as the cut lands reaches it in
     milliseconds and one published in the gap between the cut pod's term and the standby's
-    waited 1.257 seconds at worst in the runs measured - well inside the fifteen seconds a
-    hard take-over is bounded at. A connection back
-    inside the three seconds keeps the lease and its term. No standby takes the lease while its
-    own receive connection is down, and a holder whose renewals lapsed while its connection was
-    down resumes its own record only if the connection has been down less than those three
-    seconds; at three seconds it releases the record. That holds whatever
-    the lost route does to the pod's reconnects: a route that drops its packets rather than
-    refusing them leaves every reconnect dial hanging for the five-second connect timeout, with
-    the NATS client library's connection lock held throughout, and the lease reads this pod's
-    receiving without waiting for any of it.
+    reaches it once the standby holds the term, well inside the fifteen seconds a hard
+    take-over is bounded at. A connection back inside the three seconds keeps the lease and its
+    term. No standby takes the lease while its own receive connection is down, and a holder whose
+    renewals lapsed while its connection was down resumes its own record only if the connection
+    has been down less than those three seconds; at three seconds it releases the record. That
+    holds whatever the lost route does to the pod's reconnects: a route that drops its packets
+    rather than refusing them leaves every reconnect dial hanging for the five-second connect
+    timeout, with the NATS client library's connection lock held throughout, and the lease reads
+    this pod's receiving without waiting for any of it.
 time: 2026-10-30T23:30:00.000000000Z
 custom:
     Issue: pr2404

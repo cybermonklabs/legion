@@ -34,10 +34,13 @@ func registerThroughListener(t *testing.T, listener *listenerProcess, body liste
 }
 
 // One machine's grant writes its own delivery lease as the lease does (Create, a read back by key,
-// Update) and a key under its own clean-hand-back prefix (bus.ListenerHandBackPrefix), which it
-// reads back; it is refused a write to another machine's lease key, hand-back key or delivery
+// Update), and it is refused a write to another machine's lease key, hand-back key or delivery
 // ledger key, so no machine's user writes another machine's keys by a key write (what every
-// listener user can still do to the whole bucket is natsgrant.ListenerState's to say). A refused
+// listener user can still do to the whole bucket is natsgrant.ListenerState's to say). The grant
+// names the hand-back and ledger keys for the clean-hand-back marks and the delivery ledger of
+// dispatch://INFRA-6344, and the listener of this build writes and reads the lease key alone, so
+// the row itself writes a key under the machine's own hand-back prefix (bus.ListenerHandBackPrefix)
+// through the raw KV handle and reads it back, to show the grant lets that through. A refused
 // Create draws two refusals, since nats.go reads the key after any failed create
 // (nats.go@v1.55.0 kv.go:729-737): its write, and the direct get of the same key, which the grant
 // refuses too. Each row waits for every refusal its write draws, and fails on any other answer.
