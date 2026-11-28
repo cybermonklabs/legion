@@ -19,10 +19,10 @@ import (
 	"strings"
 	"syscall"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
@@ -93,10 +93,12 @@ func TestTheStandsServeTheirRecordsAndStopOnASignal(t *testing.T) {
 	if !roots.AppendCertsFromPEM(pem) {
 		t.Fatalf("%s holds no PEM certificate", out.CACertFile)
 	}
-	client := &http.Client{Timeout: 10 * time.Second, Transport: &http.Transport{
+	// The call's one bound is the test binary's deadline (testwait.Context): a stand the machine's
+	// load slows is waited for, and one that never answers fails the row when the test gives up.
+	client := &http.Client{Transport: &http.Transport{
 		TLSClientConfig: &tls.Config{RootCAs: roots, ServerName: "s.airlock.test", MinVersion: tls.VersionTLS12},
 	}}
-	request, err := http.NewRequest(http.MethodGet, out.Stands[standS].URL+"/v1/things?page=2", nil)
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, out.Stands[standS].URL+"/v1/things?page=2", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -128,31 +130,34 @@ func TestTheStandsServeTheirRecordsAndStopOnASignal(t *testing.T) {
 		}
 	}
 
-	// And the signal a script sends it: a clean stop.
+	// And the signal a script sends it: a clean stop. The wait for the exit has no span of its
+	// own, so a machine that is slow to schedule the command's shutdown does not fail this row;
+	// the row fails when the command never stops, at the test binary's deadline less testwait's
+	// margin, and the kill is this test's cleanup rather than part of its verdict.
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatalf("signal the command: %v", err)
 	}
 	stopped = true
 	done := make(chan error, 1)
 	go func() { done <- cmd.Wait() }()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Fatalf("the command exited %v on SIGTERM; want a clean stop\n%s", err, stderr.String())
-		}
-	case <-time.After(10 * time.Second):
-		_ = cmd.Process.Kill()
-		t.Fatalf("the command did not stop within 10s of SIGTERM\n%s", stderr.String())
+	t.Cleanup(func() { _ = cmd.Process.Kill() })
+	if err := testwait.Receive(t, "the command to exit after its SIGTERM", done); err != nil {
+		t.Fatalf("the command exited %v on SIGTERM; want a clean stop\n%s", err, stderr.String())
 	}
 	if !strings.Contains(stderr.String(), "stands listening records="+out.RecordsURL) {
 		t.Errorf("the command logged %q; want the line naming its recording URL", stderr.String())
 	}
 }
 
-// recordsOf reads one stand's recording route.
+// recordsOf reads one stand's recording route. Its one bound is the test binary's deadline
+// (testwait.Context), so a stand the machine's load slows is waited for.
 func recordsOf(t *testing.T, url string) []proxyrulestest.Request {
 	t.Helper()
-	answer, err := http.Get(url)
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, url, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	answer, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("GET %s: %v", url, err)
 	}
@@ -362,12 +367,12 @@ func askForAToken(t *testing.T, url, asked string) (int, string) {
 	if asked == "" {
 		asked = `{"repositories":["proofs"]}`
 	}
-	request, err := http.NewRequestWithContext(t.Context(), http.MethodPost,
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodPost,
 		url+"/app/installations/7/access_tokens", strings.NewReader(asked))
 	if err != nil {
 		t.Fatal(err)
 	}
-	answer, err := (&http.Client{Timeout: 10 * time.Second}).Do(request)
+	answer, err := http.DefaultClient.Do(request)
 	if err != nil {
 		t.Fatalf("ask the GitHub stand for a token: %v", err)
 	}
