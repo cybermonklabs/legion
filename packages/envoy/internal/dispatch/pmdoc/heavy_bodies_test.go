@@ -520,25 +520,6 @@ func (r *countedRun) work(t *testing.T, op heavyOp) (callWork, heavyOutcome) {
 	return work, outcome
 }
 
-// TestHeavyBodiesCountedHelper is the run of the counted build the rows count: it prepares the op
-// countedHelperEnv names, runs it once, and logs countedHelperRan with it and its outcome.
-func TestHeavyBodiesCountedHelper(t *testing.T) {
-	t.Parallel()
-	text := os.Getenv(countedHelperEnv)
-	if text == "" {
-		t.Skip("the child process the heavy-bodies rows count statements in")
-	}
-	op, err := parseHeavyOp(text)
-	if err != nil {
-		t.Fatal(err)
-	}
-	call, err := op.prepare()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Log(countedHelperRan + op.String() + ": " + call().String())
-}
-
 // cpuGrowsLinearly measures the CPU time of mode on shape at its length and at cpuCheckLengthOf
 // times it, and fails t, naming them, where either spends more than cpuCeilingPerCharacter for
 // each of its characters or the time for each character grew more than cpuGrowthPerCharacter

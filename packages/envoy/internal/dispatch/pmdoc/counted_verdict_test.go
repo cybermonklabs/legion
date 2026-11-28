@@ -70,6 +70,9 @@ type countedSample struct {
 	searchedBytes, scanBytes    uint64
 	busiest                     uint64
 	busiestBlock                string
+	operationByModule           map[string]uint64
+	updateItems                 uint64
+	outcome                     string
 }
 
 // countedVerdict returns one diagnostic per broken bound and one line with the readings at both
@@ -80,6 +83,9 @@ func countedVerdict(leaf countedLeaf, samples [2]countedSample) (failures []stri
 		readings += fmt.Sprintf("%d %ss (%d body characters): %d operation-only statements, %d bytes allocated in the counted build, "+
 			"%d searched bytes, %d scan bytes, busiest block %q ran %d times; ", sample.units, leaf.unit, sample.characters,
 			sample.operation, sample.countedBytes, sample.searchedBytes, sample.scanBytes, sample.busiestBlock, sample.busiest)
+		if len(sample.operationByModule) != 0 {
+			readings += fmt.Sprintf("operation-only statements by module: %v; ", sample.operationByModule)
+		}
 		if leaf.heavyBody {
 			readings += fmt.Sprintf("%d statements with preparation, %d bytes allocated in the invoking build; ",
 				sample.withPreparation, sample.invokingBytes)
