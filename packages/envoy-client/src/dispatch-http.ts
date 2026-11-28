@@ -84,6 +84,7 @@ import type {
   SpecCheckResult,
   SpecCheckResultInput,
   SpecCheckResults,
+  SpecFormRead,
   StatusChangeAnswer,
   StatusChangeInput,
   Suggestions,
@@ -2823,6 +2824,19 @@ export class DispatchClient {
     return version === undefined
       ? this.#read(["api", "v1", "artifacts", id, "text"], undefined, read)
       : this.#read(["api", "v1", "artifacts", id, "versions", String(version)], undefined, read);
+  }
+
+  /** `GET /api/v1/artifacts/{id}/spec-form[?version=N]`: the form of The Spec in one version of a
+   *  document (the latest settled one without `version`), which writes nothing: where the
+   *  document stands, the count of each kind of text it holds, and every finding, in scope or
+   *  not. A document with no settled version is `409 NO_VERSION`. */
+  async specForm(id: string, version?: number): Promise<SpecFormRead> {
+    return this.#json(
+      "GET",
+      ["api", "v1", "artifacts", id, "spec-form"],
+      undefined,
+      version === undefined ? undefined : { version }
+    );
   }
 
   /** `GET /api/v1/artifacts/{id}/text?blocks=true`: the live document's markdown, its token, its

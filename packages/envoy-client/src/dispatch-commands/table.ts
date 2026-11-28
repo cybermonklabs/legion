@@ -63,6 +63,7 @@ import {
   limitsCommand,
   whoamiCommand,
 } from "./session";
+import { specFormCommand } from "./spec-form";
 import { stepsCommand } from "./steps";
 
 /** Every command the contract names, so a command added there without a handler here fails to
@@ -187,6 +188,7 @@ export const dispatchCommands: Record<DispatchToolName, DispatchCommand> = {
   dispatch_send_to_agent: acting(sendToAgentCommand),
   dispatch_doc_edit: acting(docEditCommand),
   dispatch_doc_read: reading(docReadCommand),
+  dispatch_spec_form: acting(specFormCommand),
   dispatch_request_approval: acting(requestApprovalCommand),
   dispatch_plan_approve: acting(planApproveCommand),
   dispatch_review: acting(reviewCommand),

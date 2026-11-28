@@ -157,10 +157,20 @@ const statementsPerCharacter = 200 * maxNesting
 // character on the plain list.
 const bytesPerCharacter = 64 << 10
 
+// growthStep is the size ratio of the two counts of a counted row (full is growthStep times
+// small), and linearSlack how many times faster than its size a count may grow between them
+// (countGrowthVerdict): a count that grew with the square of its length grows growthStep² = 64
+// times, past linearSlack*growthStep = 24, where a linear one grows about 8. The timed rows of
+// linear_test.go measure at their own step (growthScale) and bound (growthBound).
+const (
+	growthStep  = 8
+	linearSlack = 3
+)
+
 // Every shape a write stores parses in work proportional to its length, counted at an eighth of
 // what the shape grows and then at the whole of it: a shape whose statements or allocations grew
 // with the square of its length would grow growthStep² times where a linear one may grow
-// linearSlack*growthStep (growthStep, linear_test.go).
+// linearSlack*growthStep (growthStep, above).
 func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing.T) {
 	counted := newCountedRun(t)
 	for _, shape := range heavybodies.Shapes() {

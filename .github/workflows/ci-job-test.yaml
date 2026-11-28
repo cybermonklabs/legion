@@ -159,7 +159,8 @@ jobs:
       # prints each one's log. A
       # harness that needs an earlier step is queued after it: release-push.test.sh after
       # install-changie, disk_watch.test.sh after the user-namespace sysctl, check-ci-filters.test.sh,
-      # go-cache-working-set.test.sh and go-legs.test.sh after setup-go.
+      # go-cache-working-set.test.sh, testcontainers_links.test.sh, go-legs.test.sh and
+      # check-go-work-sum.test.sh after setup-go.
       - name: Test release scripts
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"release_push_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/release-push.test.sh .github/scripts/release-push.test.sh
@@ -212,6 +213,10 @@ jobs:
       - name: Test the image trigger path check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_image_trigger_paths_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/check-image-trigger-paths.test.sh .github/scripts/check-image-trigger-paths.test.sh
+
+      - name: Test the image build input check
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_image_build_inputs_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-image-build-inputs.test.sh .github/scripts/check-image-build-inputs.test.sh
 
       - name: Test the CI image check
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"check_ci_images_test"')
@@ -422,7 +427,9 @@ jobs:
       # leaves behind, and it went to .github/workflows/ci-job-daemon-go.yaml with the steps
       # that compiled it. What runs go here is the held-port build of the envoy listener below,
       # the CI-filter check's go list over a scratch module, the build-cache prune's builds of a
-      # scratch module, the testcontainers link check's go list over fixture modules and the
+      # scratch module, the testcontainers link check's go list over fixture modules, the Go legs
+      # harness's go list over a scratch module, the go.work.sum check's download of the root
+      # workspace, its harness's downloads over fixture workspaces from a file proxy and the
       # build-tag lister, none of which that entry is filled for. The daemon's go.mod is still the
       # one Go pin of this repository's three modules that a job without one of its own reads.
       - id: setup-go
@@ -473,6 +480,12 @@ jobs:
         if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_legs_test"')
         run: .github/scripts/harness-pool.sh start .github/scripts/go-legs.test.sh .github/scripts/go-legs.test.sh
 
+      # After setup-go: the harness runs the real Go over scratch workspaces, each with its own
+      # module cache and requirements served by a file proxy, so nothing comes from the network.
+      - name: Test the go.work.sum check over fixture workspaces and a file proxy
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_work_sum_test"')
+        run: .github/scripts/harness-pool.sh start .github/scripts/check-go-work-sum.test.sh .github/scripts/check-go-work-sum.test.sh
+
       # Beside the check above, and needing no Go and no Bun of its own: its fixtures list each
       # program with a stand-in bunx.
       - name: Test the TypeScript filter check
@@ -499,8 +512,15 @@ jobs:
           CI_FILTERS_FILE: ${{ runner.temp }}/ci-filters/ci-filters.computed.yaml
         run: .github/scripts/harness-pool.sh start .github/scripts/ci-router-outputs.test.sh .github/scripts/ci-router-outputs.test.sh
 
+      # After setup-go, which installs the Go packages/daemon/go.mod pins; go.work pins the same
+      # version, so the check switches no toolchain. After the harnesses above are queued, so they
+      # run beside its download rather than after it.
+      - name: Check that every checksum a root workspace download needs is committed
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"go_work_sum"')
+        run: .github/scripts/check-go-work-sum.sh
+
       # After setup-go, since held-port.test.ts builds the real envoy-listener and hands it a held
-      # socket; and after the four harnesses above are queued, so they run beside it rather than
+      # socket; and after the harnesses above are queued, so they run beside it rather than
       # after it (check-ci-filters.test.sh alone took 100 s in run 45107561644's test job).
       # nats-image.test.ts is left out: lint's "Check every NATS server a script starts or installs
       # is one the floor takes" runs that file on every run, and lint runs whenever this job does.

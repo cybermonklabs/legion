@@ -724,14 +724,17 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	// restored asks' parts before the follow plans the parts of the request it moves. Its writes
 	// and events queue after the document writes and before everything the patch queues below,
 	// which is where its writes run in the write phase.
-	var closingAsks, reopenedAsks []model.Ask
+	var closingAsks []model.Ask
+	var restore restoration
 	var restoredEvents []*model.Event
 	switch {
 	case closing:
 		closingAsks, err = s.prepareWithdrawal(documentCtx, tx, key, actor)
 	case reopening:
-		if reopenedAsks, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
-			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, reopenedAsks, actor)
+		// A withdrawn approval request whose text breaks the form of The Spec stays resolved,
+		// with the findings as its reason (prepareRestoration), and the reopen still answers 200.
+		if restore, err = s.prepareRestoration(documentCtx, tx, key, actor); err == nil {
+			restoredEvents, err = s.recordRestoredAsksTx(documentCtx, ledger, key, restore, actor)
 		}
 	}
 	if err != nil {
@@ -752,7 +755,7 @@ func (s *server) writeIssue(ctx context.Context, call issueWriteCall) (issueWrit
 	}
 	advice := s.writeAdviceBefore(ctx, tx, call.adviceRoute, key, actor, afterStatus, afterRow, adviceAsks{
 		excluded: askIDs(closingAsks),
-		opened:   askIDs(reopenedAsks),
+		opened:   askIDs(restore.restored),
 	})
 	// The write phase: the statements from here on run back to back.
 	if changed {

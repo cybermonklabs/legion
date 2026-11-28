@@ -2284,6 +2284,33 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				t.Errorf("unset: NewIssueSession = %q, want no conversation started", boot.NewIssueSession)
 			}
 		},
+		"DISPATCH_SPEC_ROOTS": func(t *testing.T) {
+			// The issue keys of the roots of The Spec, trimmed, and empty when nothing names one.
+			if boot := resolveWith(t, map[string]string{"DISPATCH_SPEC_ROOTS": " ACME-1 "}); boot.SpecRoots != "ACME-1" {
+				t.Errorf("SpecRoots = %q", boot.SpecRoots)
+			}
+			if boot := resolveWith(t, map[string]string{}); boot.SpecRoots != "" {
+				t.Errorf("unset: SpecRoots = %q, want no root named", boot.SpecRoots)
+			}
+			// Its readers: main builds the form of The Spec from it (api.NewSpecForm) before the boot's
+			// restoration, and each backfill command builds one for the service it writes through
+			// (gatedDocumentService), so a value that is no issue key refuses each of them.
+			documents := docs.New(docs.Deps{Events: events.NewBroker()})
+			t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
+			refused := map[string]string{"DISPATCH_SPEC_ROOTS": "acme-1"}
+			if _, err := api.NewSpecForm(resolveWith(t, refused).SpecRoots, "", documents); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
+				t.Errorf("DISPATCH_SPEC_ROOTS=acme-1: build the form of The Spec = %v, want a refusal naming DISPATCH_SPEC_ROOTS", err)
+			}
+			refused["DATABASE_URL"] = storetest.Open(t).Pool.Config().ConnString()
+			refused["XDG_CONFIG_HOME"] = t.TempDir()
+			for _, backfill := range []string{"backfill-block-ids", "backfill-anchor-blocks"} {
+				var stdout, stderr bytes.Buffer
+				if code := runSubcommand(context.Background(), []string{backfill}, envGetter(refused), &stdout, &stderr); code != 1 ||
+					!strings.Contains(stdout.String(), backfill+": invalid DISPATCH_SPEC_ROOTS") {
+					t.Errorf("%s with DISPATCH_SPEC_ROOTS=acme-1: exit %d, stdout %q, want exit 1 and a refusal naming DISPATCH_SPEC_ROOTS", backfill, code, stdout.String())
+				}
+			}
+		},
 		"DISPATCH_LEGION_STATUS_SCOPE": func(t *testing.T) {
 			// on turns the refusal on and is handed to the router, which passes it to the API's
 			// dependencies (routes.BuildAppContext). The router shows no dependencies, so the case

@@ -1,14 +1,36 @@
-import { decodeBlockId, encodeBlockId, itemFromSearch } from "@legion/contracts";
+import {
+  DISPATCH_DASHBOARD_PAGES,
+  decodeBlockId,
+  encodeBlockId,
+  itemFromSearch,
+} from "@legion/contracts";
 import { isCleanUrl } from "@legion/contracts/log-text";
+
+/** The segment of the `dispatch://` reference of each tab of an issue that names the issue, by
+ *  the path segment of its page, as the dashboard's pages file lists them: `activity` is
+ *  `KEY/activity`, the Conversation tab `conversation` is `KEY/log`, which the page `/log` keeps
+ *  naming as it always did. */
+const issueTabReferences = new Map<string, string>([
+  ...DISPATCH_DASHBOARD_PAGES.tabs.map(({ page, reference }) => [page, reference] as const),
+  ["log", "log"],
+]);
+
+/** An issue's page: its own, the spec's, the Decisions tab's, each tab of the pages file, a
+ *  document's by each segment the dashboard reads (`artifacts`, and the singular `artifact`), an
+ *  ask's, a comment's and a message's. */
+const issuePagePattern = new RegExp(
+  `^/issues/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:/(spec|decisions|${[...issueTabReferences.keys()].join("|")})|/(?:${DISPATCH_DASHBOARD_PAGES.document_segments.join("|")})/([^/]+)|/asks/([^/]+)|/comments/([^/]+)|/messages/([^/]+))?/?$`
+);
 
 /**
  * The dispatch:// form of a dashboard URL on the configured server, or undefined when the
- * value is not such a URL. Accepts the issue, spec, artifact, ask, comment, log and activity
- * pages, the Decisions page (which names the issue's decisions.md), project document pages (with
- * their ?ask= / ?comment= deep links, which name the item whatever the fragment), the
- * `#b-<block id>` of a live document page or of an issue ask's, comment's or message's page,
- * which names that block, and the page of an upload an agent's conversation owns
- * (`/agents/<session id>/artifacts/<slug>`).
+ * value is not such a URL. Accepts the issue, spec and artifact pages, each tab of the
+ * dashboard's pages file (the Activity, Conversation and Children tabs among them) and the log
+ * page, the ask, comment and message pages, the Decisions page (which names the issue's
+ * decisions.md), project document pages (with their ?ask= / ?comment= deep links, which name the
+ * item whatever the fragment), the `#b-<block id>` of a live document page or of an issue ask's,
+ * comment's or message's page, which names that block, and the page of an upload an agent's
+ * conversation owns (`/agents/<session id>/artifacts/<slug>`).
  */
 export function dispatchRefFromUrl(value: string, serverUrl: string): string | undefined {
   let url: URL;
@@ -35,9 +57,7 @@ export function dispatchRefFromUrl(value: string, serverUrl: string): string | u
       ? ""
       : `#b-${encodeBlockId(id)}`;
   };
-  const issuePage = url.pathname.match(
-    /^\/issues\/([A-Z][A-Z0-9]{1,9}-[1-9][0-9]*)(?:\/(spec|log|conversation|activity|children|decisions)|\/artifacts\/([^/]+)|\/asks\/([^/]+)|\/comments\/([^/]+)|\/messages\/([^/]+))?\/?$/
-  );
+  const issuePage = url.pathname.match(issuePagePattern);
   if (issuePage) {
     const [, key = "", page, artifact, ask, comment, message] = issuePage;
     const version = versionOf("v");
@@ -54,9 +74,10 @@ export function dispatchRefFromUrl(value: string, serverUrl: string): string | u
     // The Decisions tab is a view of the issue's decisions.md, so its page names that document,
     // whatever its fragment.
     if (page === "decisions") return `dispatch://${key}/artifact/decisions-md`;
-    // `/conversation` keeps resolving to the reference it always had, `KEY/log`; `/activity`,
-    // the tab that now holds the event list, is spelled as its own path is.
-    if (page !== undefined) return `dispatch://${key}/${page === "conversation" ? "log" : page}`;
+    // A tab that names the issue is its reference in the pages file: `/conversation` keeps the
+    // reference it always had, `KEY/log`; `/activity`, `/verification` and the rest are spelled as
+    // their own paths are.
+    if (page !== undefined) return `dispatch://${key}/${issueTabReferences.get(page) ?? page}`;
     if (artifact !== undefined) {
       const slug = decodeURIComponent(artifact);
       return `dispatch://${key}/artifact/${slug}${version}${blockOf("v")}`;
