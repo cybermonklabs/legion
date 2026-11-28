@@ -30,11 +30,23 @@ func noAppOwners(claim.Role) []string { return nil }
 // A role the deployment defines launches with its own prompt file between the headless mechanics
 // and Legion's worker part (prompts.ComposeStep), and with the model its settings give it; one of
 // Legion's roles names no model; a role the deployment does not define is refused, with no prompt
-// and no panic.
+// and no panic. The test plants a marker in its own snapshot of go/worker-common.md, the part whose
+// SEPARATE-POD line tells a phase worker of its own pod, and finds that marker in the checker's
+// prompt as a live launch composes it (runtime.ComposePrompt): a planted string, so the test
+// quotes no phrase of Legion's own text.
 func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
+		t.Fatal(err)
+	}
+	const marker = "planted-worker-common-marker-4333-b7e1"
+	part, err := os.OpenFile(composer.Part("worker-common.md"), os.O_APPEND|os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = part.WriteString("\n" + marker + "\n")
+	if err := errors.Join(err, part.Close()); err != nil {
 		t.Fatal(err)
 	}
 	dir := t.TempDir()
@@ -73,6 +85,9 @@ func TestADeploymentRoleLaunchesWithItsPromptAndModel(t *testing.T) {
 	}
 	if !strings.Contains(prompt, "Run the checks and report pass or fail.") {
 		t.Errorf("the checker's composed prompt lacks the text of its own prompt file:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, marker) {
+		t.Errorf("the checker's composed prompt lacks the marker planted in go/worker-common.md, the part that tells a phase worker of its own pod:\n%s", prompt)
 	}
 
 	tester, err := launch(claim.RoleTester)
