@@ -24,9 +24,9 @@
 import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
 
-/** Threads' own words outside the text of an entry (R2, R7, R8, R10): the choices over the list,
- *  the control under it, the kind of each record, who the Legion daemon is, the link of a record
- *  on text to its node, and New thread's chooser and box. */
+/** Threads' own words outside the text of an entry (R2, R7, R10): the choices over the list, the
+ *  control under it, the kind of each record, who the Legion daemon is, and New thread's chooser
+ *  and box. */
 export const THREADS_WORDS = freeze({
   /** The four choices over the list, drawn in the order Mine, Waiting on me, All and Agents
    *  (R2). */
