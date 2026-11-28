@@ -27,26 +27,28 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestTheFillContinuesFromItsCursorAfterARestart writes 3,000 events of every kind a rule reads,
-// and some no rule reads, and stops a fill as its second batch commits, as a process killed while
+// TestTheFillContinuesFromItsCursorAfterARestart writes one issue's events, one of every kind a
+// rule reads and two no rule reads (textversionstest.WriteIssue, 17 events), and runs the fill on
+// them at a bound of restartBatchEvents events a batch, so the log takes two batches before the
+// restart and two after it. It stops a fill as its second batch commits, as a process killed while
 // it catches up stops. A fill in a second process, with a pool and a horizon of its own, starts at
-// the cursor the first left: its first batch reads the event after the cursor first. At the end
-// every event has exactly the rows it starts, none twice and none missing, and the cursor row says
-// this build's rules version (RulesVersion) wrote them.
+// the cursor the first left, among the issue's events: its first batch reads the event after the
+// cursor first, and it writes the rest in more than one batch. At the end every event has exactly
+// the rows it starts, none twice and none missing, and the cursor row says this build's rules
+// version (RulesVersion) wrote them. (Until INFRA-6353 it wrote 177 issues' 3,009 events at the
+// production bound of batchEvents, 500: two batches before the restart and five after.)
 func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	textversionstest.SeedProject(t, database)
 	broker := events.NewBroker()
-	var want []textversionstest.Written
-	for n := 1; len(want) < 3000; n++ {
-		want = append(want, textversionstest.WriteIssue(t, database, broker, n)...)
-	}
+	want := textversionstest.WriteIssue(t, database, broker, 1)
 
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	var firstLogs logtest.Buffer
 	first := testFiller(database, events.NewHorizon(database.Pool), &firstLogs)
+	first.maxEvents = restartBatchEvents
 	committed := 0
 	first.rest = func(ctx context.Context, _ time.Duration) error {
 		if committed++; committed == 2 {
@@ -70,7 +72,9 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 
 	second := storetest.SecondProcess(t, database)
 	var secondLogs logtest.Buffer
-	if err := testFiller(second, events.NewHorizon(second.Pool), &secondLogs).toHorizon(t.Context()); err != nil {
+	resumed := testFiller(second, events.NewHorizon(second.Pool), &secondLogs)
+	resumed.maxEvents = restartBatchEvents
+	if err := resumed.toHorizon(t.Context()); err != nil {
 		t.Fatalf("the second process's fill: %v", err)
 	}
 	var next int64
@@ -82,6 +86,9 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 		t.Fatalf("the second process's fill logged batches %+v; want its first to start at event %d, the one after the cursor %d",
 			secondBatches, next, left.eventID)
 	}
+	if len(secondBatches) < 2 {
+		t.Fatalf("the second process's fill logged batches %+v; want more than one after the restart, the case this log is made for", secondBatches)
+	}
 	textversionstest.RequireOnlyRowsOf(t, database, want)
 	end := readCursorRow(t, database)
 	if end.eventID != want[len(want)-1].ID || end.rules != RulesVersion {
@@ -89,6 +96,11 @@ func TestTheFillContinuesFromItsCursorAfterARestart(t *testing.T) {
 			end.eventID, end.rules, want[len(want)-1].ID, RulesVersion)
 	}
 }
+
+// restartBatchEvents is the bound on a batch's events of TestTheFillContinuesFromItsCursorAfterARestart's
+// fills (filler.maxEvents): the largest that gives one issue's 17 events two full batches before
+// the restart and more than one batch after it (5 and 5, then 5 and 2).
+const restartBatchEvents = 5
 
 // TestTheFillWritesANewEventWithinSixtySecondsOfTheHorizon holds the fill to 60 s from the moment
 // the horizon passes an event to the event's rows, where nothing announces the moment the horizon
@@ -569,11 +581,13 @@ func TestOnlyAnIDTheFillCastsMustBeAUUID(t *testing.T) {
 //   - A comment of 10 KB, carried whole, and 400 comment.edited events that leave it as it was,
 //     so they start no row: their payloads still count, about 4 MB, so they take two batches at
 //     least.
-//   - 30 comments created with bodies of about 100 KB, which their events cut, with their
-//     revision 1 indexed in their own transactions, each then edited to a few words, all before
-//     the fill runs: each comment.created version reads revision 1's blocks, about 3 MB in all,
-//     where the comment's row holds the few words; a count of the row's body puts them in one
-//     batch.
+//   - Two comments created with bodies of cutCommentBytes, a little over half the bound, which
+//     their events cut, with their revision 1 indexed in their own transactions, each then edited
+//     to a few words, all before the fill runs: each comment.created version reads revision 1's
+//     blocks, over 2 MiB in all, where the comment's row holds the few words, so the fill writes
+//     each comment and its edit in a batch of its own; a count of the row's body puts them in one
+//     batch. Two are the fewest that give a batch of more than one event and more than one batch.
+//     (Until INFRA-6353 the log held 30 comments of about 100 KB, about 3 MB.)
 func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 	t.Parallel()
 	t.Run("the markdown each issue row reads", func(t *testing.T) {
@@ -625,10 +639,10 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 		database := storetest.Open(t)
 		textversionstest.SeedIssue(t, database)
 		broker := events.NewBroker()
-		const comments = 30
+		const comments = 2
 		var want []textversionstest.Written
 		for n := 1; n <= comments; n++ {
-			body := rotationParagraphs(n, 100_000)
+			body := rotationParagraphs(n, cutCommentBytes)
 			if _, truncated := model.EventBody(body); !truncated {
 				t.Fatal("the comment's body is one an event carries whole; the case needs one its event cuts")
 			}
@@ -646,10 +660,15 @@ func TestABatchCountsTheSpecMarkdownItsIssueRowsRead(t *testing.T) {
 			t.Fatalf("%d of the %d comment.created rows hold revision 1's blocks; the case tests the bodies the rules read from them", fromBlocks, comments)
 		}
 		if len(batches) < 2 {
-			t.Fatalf("the fill wrote the %d comments and their edits in %d batch: their revision 1, about 3 MB, takes two at least", comments, len(batches))
+			t.Fatalf("the fill wrote the %d comments and their edits in %d batch: their revision 1, over 2 MiB, takes two at least", comments, len(batches))
 		}
 	})
 }
+
+// cutCommentBytes is the size of each comment body of TestABatchCountsTheSpecMarkdownItsIssueRowsRead's
+// revision 1 case: half a batch's 2 MiB (batchBytes) and a paragraph more (rotationParagraphs'
+// 10 KB), so two of them are over the bound and one, with its edit, is under it.
+const cutCommentBytes = batchBytes/2 + 10_000
 
 // TestTheCursorKeepsTheLowestRulesVersionThatWroteUpToIt holds the cursor row's rules to the
 // lowest rules version that wrote the rows up to the cursor, until this build's re-read raises it.
