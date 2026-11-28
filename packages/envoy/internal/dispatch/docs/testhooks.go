@@ -68,6 +68,89 @@ func (s *Service) ResumeOwedSettlementsForTest(ctx context.Context, age time.Dur
 	return s.resumeOwedSettlements(ctx, age)
 }
 
+// IdleForTest waits until the service runs no document work a caller could measure a request
+// beside: no resident room's record counts an update its persistence has not taken or an append
+// that has not landed, no forced eviction is in flight, and no settlement runs or is armed to run
+// before ctx ends. For the first two it waits on the service's own signals: the evictions' group
+// (waitEvictions) and each such room's idle signal (waitForPendingUpdates, waitForDurableAppends),
+// and it looks the rooms over again after each wait, since an eviction or an append can leave work
+// behind it. Nothing signals a settlement's end - settleWG counts the armed timers too, and a
+// service whose settle delay outlasts its test keeps one armed throughout - so IdleForTest does
+// not wait for a settlement: it answers an error naming the document one runs on
+// (roomState.settling) or is armed for (isSettleTimerArmed, which holds for a fired timer until
+// its settlement has returned), and a caller that waits at a pace of its own asks again, as
+// package api's awaitQuietDatabase does. An armed timer counts only while the service's settle
+// delay is shorter than what is left of ctx (settlesBeforeForTest): one armed an hour out is no
+// work a test with a deadline meets. It answers ctx's error if ctx ends first.
+func (s *Service) IdleForTest(ctx context.Context) error {
+	for {
+		s.waitEvictions(ctx)
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		busy, settling, armed := s.roomWorkForTest()
+		switch {
+		case settling != "":
+			return fmt.Errorf("a settlement of document %s is running", settling)
+		case armed != "" && s.settlesBeforeForTest(ctx):
+			return fmt.Errorf("a settlement of document %s is armed to run within %s", armed, s.settle)
+		case len(busy) == 0:
+			return nil
+		}
+		for _, room := range busy {
+			if err := s.waitForPendingUpdates(ctx, room); err != nil {
+				return err
+			}
+			if err := s.waitForDurableAppends(ctx, room); err != nil {
+				return err
+			}
+		}
+	}
+}
+
+// roomWorkForTest answers every room whose record counts an update its persistence has not taken
+// or an append that has not landed (IdleForTest), a room a settlement runs on and a room whose
+// settlement timer is armed, "" when none is. Each record is read under its own lock, as every
+// lookup reads one.
+func (s *Service) roomWorkForTest() (busy []string, settling, armed string) {
+	var rooms []string
+	s.rooms.Range(func(key, _ any) bool {
+		rooms = append(rooms, key.(string))
+		return true
+	})
+	for _, room := range rooms {
+		state := s.lockExistingState(room)
+		if state == nil {
+			continue
+		}
+		if state.settling > 0 && settling == "" {
+			settling = room
+		}
+		if armed == "" && s.isSettleTimerArmed(state.settle) {
+			armed = room
+		}
+		if state.pendingLocked() || state.appendingLocked() {
+			busy = append(busy, room)
+		}
+		s.unlockState(room, state)
+	}
+	return busy, settling, armed
+}
+
+// settlesBeforeForTest reports whether a settlement armed now counts as work for IdleForTest: it
+// does when it fires before ctx ends, the test binary's deadline for a ctx testwait.Context gives,
+// that is when the service's settle delay is shorter than what is left of ctx; under -timeout 0,
+// whose ctx has no deadline, an armed settlement of any delay counts, since its caller waits as
+// long as the work takes. An armed settlement is counted at all because ignoring it let a wait
+// return beside one about to run: in 2 of 5 runs of the setup of package api's route window row
+// for an issue reopen (readyIssueReopen), the settlement the close armed took its owner lock after
+// a wait that counted only running settlements had returned. One armed an hour out, as a fixture
+// that settles nothing during its test arms it, is no work a test with a deadline meets.
+func (s *Service) settlesBeforeForTest(ctx context.Context) bool {
+	deadline, bounded := ctx.Deadline()
+	return !bounded || time.Now().Add(s.settle).Before(deadline)
+}
+
 // AppendRenderOnlySchemaViolationForTest appends to artifactID's stored history a tree the
 // validator reads and the renderer refuses: a checked task whose empty first paragraph precedes a
 // heading has no markdown the browser reads back as a task. Tests here and in package api build

@@ -41,8 +41,9 @@ type routeXidWindowCase struct {
 	// window is what each transaction of the request may hold while it holds its transaction id.
 	window storetest.XidShape
 	// closedIssue says the request is made on a closed issue, whose documents owe their
-	// settlements until it reopens, so the measurement waits for the database to fall quiet
-	// rather than for every settlement (awaitQuietDatabase).
+	// settlements until it reopens, so the measurement waits for the server's background work to
+	// end and no other backend to hold an xid rather than for every settlement
+	// (awaitQuietDatabase).
 	closedIssue bool
 }
 
@@ -61,9 +62,9 @@ func TestXidWindowRouteTable(t *testing.T) {
 }
 
 // measureRouteXidWindow readies row on a traced server with the harness's large spec, waits for
-// every settlement the seeding owed to finish (for a closed issue, for the database to fall
-// quiet), so the request is measured alone, and judges the transactions the request ran against
-// the row's window.
+// every settlement the seeding owed to finish and for the server's background work to end (for a
+// closed issue, for that work alone; awaitQuietDatabase), so the request is measured alone, and
+// judges the transactions the request ran against the row's window.
 func measureRouteXidWindow(t *testing.T, row routeXidWindowCase) {
 	t.Helper()
 	tracer := storetest.NewXidTracer()

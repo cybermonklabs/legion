@@ -45,16 +45,16 @@ import (
 // spec, each of which renders the spec, about fifteen seconds of a race-built run on a two-core
 // pod against well under one for the measured request. So the measurements run as steps on as
 // few fixtures as their requests allow (runXidSteps), each step a subtest that seeds what its
-// own request needs, waits for the database to fall quiet and measures that request alone. A
-// step anchors its writes on a spare cell of its own (takeSpare) and acts on a seed item no
-// other step touches, so it meets the fixture as a fixture of its own would show it, plus the
-// rows the steps before it added beside its own; and the steps of a run are ordered so that no
-// step meets a state that would send its request down another path: the anchored writes before
-// the spec is versioned, the versions before an approval request is open (every version moves an
-// open request, a path of its own on the route window table), and the claim last. A measurement
-// whose request needs what no run can leave it - a spec its approver approved, a request over two
-// documents, a document store that fails a load, an ask a step before it closed - keeps a fixture
-// of its own.
+// own request needs, waits for the work that seeding left running to end and measures that
+// request alone. A step anchors its writes on a spare cell of its own (takeSpare) and acts on a
+// seed item no other step touches, so it meets the fixture as a fixture of its own would show it,
+// plus the rows the steps before it added beside its own; and the steps of a run are ordered so
+// that no step meets a state that would send its request down another path: the anchored writes
+// before the spec is versioned, the versions before an approval request is open (every version
+// moves an open request, a path of its own on the route window table), and the claim last. A
+// measurement whose request needs what no run can leave it - a spec its approver approved, a
+// request over two documents, a document store that fails a load, an ask a step before it closed
+// - keeps a fixture of its own.
 
 // xidStep is one measurement of a run of steps on one fixture (runXidSteps): the subtest's name,
 // and the step itself, which seeds what its request needs on the fixture the steps before it
@@ -65,12 +65,13 @@ type xidStep struct {
 }
 
 // runXidSteps runs steps in order on f, each as a subtest. Before each step it waits for the
-// database to fall quiet (awaitQuietDatabase) - and where settled, for every document to settle
-// as well - so the work the steps before it left running, a mention's send or a version's
-// settlement, has finished and the step measures its request alone. A failed step does not stop
-// the run: a window's verdict is read after its request answered, so the fixture holds what that
-// request wrote and each later step still answers for its own window alone; a step whose request
-// was refused fails as a rig problem, which names it.
+// fixture server's background work to end and no other backend to hold an xid
+// (awaitQuietDatabase) - and where settled, for every document to settle as well - so the work
+// the steps before it left running, a mention's send or a version's settlement, has finished and
+// the step measures its request alone. A failed step does not stop the run: a window's verdict is
+// read after its request answered, so the fixture holds what that request wrote and each later
+// step still answers for its own window alone; a step whose request was refused fails as a rig
+// problem, which names it.
 func runXidSteps(t *testing.T, f *xidFixture, settled bool, steps []xidStep) {
 	t.Helper()
 	for _, step := range steps {

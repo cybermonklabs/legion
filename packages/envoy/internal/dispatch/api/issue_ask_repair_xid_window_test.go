@@ -69,7 +69,8 @@ func TestXidWindowIssueAskRepairRestoration(t *testing.T) {
 	}
 	reopenWithoutRestoring(t, f, issue.Key, "in_progress", repairActor("session-reopener"))
 	// The close's settlement has run, and the older release's reopen is SQL alone, which arms no
-	// settlement (awaitQuietDatabase), so the measurement waits for the quiet alone.
+	// settlement, so the measurement waits for the fixture's background work and the database's
+	// xids alone (awaitQuietDatabase), not for every settlement.
 	awaitQuietDatabase(t, f.database, false)
 
 	report := measureIssueAskRepair(t, f, tracer, func(repair IssueAskRepair) bool { return repair.Restored == len(asks) })
