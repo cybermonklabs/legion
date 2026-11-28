@@ -56,15 +56,11 @@ type Store struct {
 	// empty for a New store.
 	path string
 	file []byte
-	// next is the error the next call of each kind answers (FailNext), held the error every call
-	// of each kind answers until cleared (Fail), and calls the calls of each kind made so far.
-	next, held map[string]error
-	calls      map[string]int
 }
 
 // New holds secrets.
 func New(secrets ...Secret) *Store {
-	s := &Store{secrets: map[string]Secret{}, version: map[string]uint64{}, next: map[string]error{}, held: map[string]error{}, calls: map[string]int{}}
+	s := &Store{secrets: map[string]Secret{}, version: map[string]uint64{}}
 	for _, secret := range secrets {
 		s.hold(secret)
 	}
@@ -99,53 +95,6 @@ func (s *Store) Delete(id string) {
 	defer s.mu.Unlock()
 	delete(s.secrets, id)
 	delete(s.version, id)
-}
-
-// FailNext makes the next call of kind call - "list", "describe" or "read" - answer err.
-func (s *Store) FailNext(call string, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	s.next[call] = err
-}
-
-// Fail makes every later call of kind call answer err, until Fail(call, nil).
-func (s *Store) Fail(call string, err error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if err == nil {
-		delete(s.held, call)
-		return
-	}
-	s.held[call] = err
-}
-
-// Calls is how many calls of kind call the store has been asked so far, refused ones included; ""
-// counts every call.
-func (s *Store) Calls(call string) int {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if call != "" {
-		return s.calls[call]
-	}
-	total := 0
-	for _, n := range s.calls {
-		total += n
-	}
-	return total
-}
-
-// begin counts one call of kind call and answers the error FailNext or Fail set for it, or the
-// followed file's failure, or nil. The caller holds s.mu.
-func (s *Store) begin(call string) error {
-	s.calls[call]++
-	if err, ok := s.next[call]; ok {
-		delete(s.next, call)
-		return err
-	}
-	if err, ok := s.held[call]; ok {
-		return err
-	}
-	return s.follow()
 }
 
 // hold makes secret the one of its name, numbering its value against the one that name held. The
@@ -185,7 +134,7 @@ func (s *Store) listing(id string) secretstore.Listing {
 func (s *Store) List(_ context.Context, prefix string) ([]secretstore.Listing, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.begin("list"); err != nil {
+	if err := s.follow(); err != nil {
 		return nil, err
 	}
 	var listings []secretstore.Listing
@@ -203,7 +152,7 @@ func (s *Store) List(_ context.Context, prefix string) ([]secretstore.Listing, e
 func (s *Store) Describe(_ context.Context, id string) (secretstore.Listing, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.begin("describe"); err != nil {
+	if err := s.follow(); err != nil {
 		return secretstore.Listing{}, err
 	}
 	secret, ok := s.secrets[id]
@@ -218,7 +167,7 @@ func (s *Store) Describe(_ context.Context, id string) (secretstore.Listing, err
 func (s *Store) Read(_ context.Context, source string) (string, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if err := s.begin("read"); err != nil {
+	if err := s.follow(); err != nil {
 		return "", err
 	}
 	id, ok := strings.CutPrefix(source, sourcePrefix)
