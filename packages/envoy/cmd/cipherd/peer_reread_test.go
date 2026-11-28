@@ -32,12 +32,12 @@ func (s *abandoningCall) Read(ctx context.Context, source string) (string, error
 	return s.Store.Read(ctx, source)
 }
 
-func (s *abandoningCall) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+func (s *abandoningCall) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
 	if s.cut == "Describe" {
 		s.cancel()
 		return secretstore.Listing{}, fmt.Errorf("operation error Secrets Manager: DescribeSecret, %w", ctx.Err())
 	}
-	return s.Store.Describe(ctx, id, opts)
+	return s.Store.Describe(ctx, id)
 }
 
 // TestAPeersRereadThatMergedTheTagsItReadRan: the reread listener's Refresh (peerReread) answers

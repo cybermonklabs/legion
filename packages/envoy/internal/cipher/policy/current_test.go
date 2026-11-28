@@ -569,7 +569,7 @@ func (h *hangingLister) unhang() {
 	}
 }
 
-func (h *hangingLister) List(ctx context.Context, prefix string, _ secretstore.ReadOptions) ([]secretstore.Listing, error) {
+func (h *hangingLister) List(ctx context.Context, prefix string) ([]secretstore.Listing, error) {
 	h.mu.Lock()
 	held := h.held
 	h.mu.Unlock()
@@ -589,7 +589,7 @@ func (h *hangingLister) List(ctx context.Context, prefix string, _ secretstore.R
 func hangingLoader(t *testing.T) (*hangingLister, policy.Loader) {
 	t.Helper()
 	store := memory.New()
-	listed, err := store.List(context.Background(), policytest.Prefix, secretstore.ReadOptions{})
+	listed, err := store.List(context.Background(), policytest.Prefix)
 	if err != nil {
 		t.Fatal(err)
 	}

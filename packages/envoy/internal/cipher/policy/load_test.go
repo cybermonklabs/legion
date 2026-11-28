@@ -155,14 +155,14 @@ type failingSecrets struct {
 	failing bool
 }
 
-func (f *failingSecrets) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
+func (f *failingSecrets) List(ctx context.Context, prefix string) ([]secretstore.Listing, error) {
 	f.mu.Lock()
 	failing := f.failing
 	f.mu.Unlock()
 	if failing {
 		return nil, fmt.Errorf("list secrets under %s: %w", prefix, errors.New("ThrottlingException: Rate exceeded"))
 	}
-	return f.Store.List(ctx, prefix, opts)
+	return f.Store.List(ctx, prefix)
 }
 
 // TestReloadKeepsThePolicyWhenSecretsManagerFails pins the live policy across reloads: a tag edit

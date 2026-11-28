@@ -576,7 +576,7 @@ func (s *lockedOutRead) Read(ctx context.Context, source string) (string, error)
 	return s.Store.Read(ctx, source)
 }
 
-func (s *lockedOutRead) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
+func (s *lockedOutRead) List(ctx context.Context, prefix string) ([]secretstore.Listing, error) {
 	s.mu.Lock()
 	entered, released := s.listEntered, s.listRelease
 	s.listEntered, s.listRelease = nil, nil
@@ -585,7 +585,7 @@ func (s *lockedOutRead) List(ctx context.Context, prefix string, opts secretstor
 		close(entered)
 		<-released
 	}
-	return s.Store.List(ctx, prefix, opts)
+	return s.Store.List(ctx, prefix)
 }
 
 // TestAValueReadWaitsForTheWriterLockOnlyWhileItsCallerDoes (ca-parser, Verification v9): a

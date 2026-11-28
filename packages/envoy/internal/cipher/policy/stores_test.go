@@ -28,14 +28,14 @@ type staleStore struct {
 // stale is store as staleStore, its listing taken now under policytest.Prefix and its lag listLag.
 func stale(t *testing.T, store secretstore.Store) *staleStore {
 	t.Helper()
-	listed, err := store.List(context.Background(), policytest.Prefix, secretstore.ReadOptions{})
+	listed, err := store.List(context.Background(), policytest.Prefix)
 	if err != nil {
 		t.Fatal(err)
 	}
 	return &staleStore{Store: store, listed: listed, lag: listLag}
 }
 
-func (s *staleStore) List(context.Context, string, secretstore.ReadOptions) ([]secretstore.Listing, error) {
+func (s *staleStore) List(context.Context, string) ([]secretstore.Listing, error) {
 	if s.fetched != nil {
 		s.fetched()
 	}
@@ -54,16 +54,16 @@ const localARN = "arn:aws:secretsmanager:local:000000000000:secret:"
 // goldens then hold the bytes they always held, over the memory store.
 type arnSourced struct{ *memory.Store }
 
-func (a arnSourced) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
-	listings, err := a.Store.List(ctx, prefix, opts)
+func (a arnSourced) List(ctx context.Context, prefix string) ([]secretstore.Listing, error) {
+	listings, err := a.Store.List(ctx, prefix)
 	for i := range listings {
 		listings[i].Source = localARN + listings[i].ID
 	}
 	return listings, err
 }
 
-func (a arnSourced) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
-	ls, err := a.Store.Describe(ctx, id, opts)
+func (a arnSourced) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
+	ls, err := a.Store.Describe(ctx, id)
 	if err == nil {
 		ls.Source = localARN + ls.ID
 	}

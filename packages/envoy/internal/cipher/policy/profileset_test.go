@@ -558,11 +558,11 @@ type describedIDs struct {
 	ids []string
 }
 
-func (d *describedIDs) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+func (d *describedIDs) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
 	d.mu.Lock()
 	d.ids = append(d.ids, id)
 	d.mu.Unlock()
-	return d.Store.Describe(ctx, id, opts)
+	return d.Store.Describe(ctx, id)
 }
 
 func (d *describedIDs) take() []string {

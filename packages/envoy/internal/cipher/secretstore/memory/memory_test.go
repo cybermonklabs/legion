@@ -67,9 +67,9 @@ func TestFailNextFailsOneCall(t *testing.T) {
 		store.FailNext(call, boom)
 	}
 	do := map[string]func() error{
-		"list": func() error { _, err := store.List(ctx, prefix, secretstore.ReadOptions{}); return err },
+		"list": func() error { _, err := store.List(ctx, prefix); return err },
 		"describe": func() error {
-			_, err := store.Describe(ctx, prefix+"deel-api-key", secretstore.ReadOptions{})
+			_, err := store.Describe(ctx, prefix+"deel-api-key")
 			return err
 		},
 		"read": func() error { _, err := store.Read(ctx, memory.Source(prefix+"deel-api-key")); return err },

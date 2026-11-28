@@ -403,7 +403,7 @@ func (l Loader) clock() time.Time {
 func (l Loader) Load(ctx context.Context) (*Set, error) {
 	now := l.clock()
 	l.StoreReads.Inc(readList)
-	listings, err := l.Store.List(ctx, l.Prefix, secretstore.ReadOptions{})
+	listings, err := l.Store.List(ctx, l.Prefix)
 	if err != nil {
 		return nil, err
 	}
@@ -519,7 +519,7 @@ func (l Loader) LoadOne(ctx context.Context, name string) (Lookup, error) {
 		return Lookup{}, err
 	}
 	l.StoreReads.Inc(readDescribe)
-	ls, err := l.Store.Describe(ctx, id, secretstore.ReadOptions{})
+	ls, err := l.Store.Describe(ctx, id)
 	switch {
 	case errors.Is(err, secretstore.ErrNotFound):
 		return Lookup{Reason: ReasonAbsent}, nil

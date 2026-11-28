@@ -81,11 +81,11 @@ func TestAWSListingNamesTheVersionGetSecretValueReads(t *testing.T) {
 		{nil, ""},
 	} {
 		store := Store{Client: stagedSecrets{Local: awstest.NewLocal(), stages: tc.stages}}
-		listed, err := store.List(ctx, "dev/", secretstore.ReadOptions{})
+		listed, err := store.List(ctx, "dev/")
 		if err != nil || len(listed) != 1 || listed[0].Version != tc.want {
 			t.Fatalf("List over stages %v = %+v, %v; want one listing of version %q", tc.stages, listed, err, tc.want)
 		}
-		if described, err := store.Describe(ctx, "dev/key", secretstore.ReadOptions{}); err != nil || described.Version != tc.want {
+		if described, err := store.Describe(ctx, "dev/key"); err != nil || described.Version != tc.want {
 			t.Fatalf("Describe over stages %v = %+v, %v; want version %q", tc.stages, described, err, tc.want)
 		}
 	}
@@ -101,12 +101,12 @@ func TestAWSListingIsUnfilledOnlyForATaggedSecretWithNoVersion(t *testing.T) {
 	untagged := awstest.LocalSecret{Name: "dev/untagged-empty", Tags: map[string]string{}}
 	filled := awstest.LocalSecret{Name: "dev/tagged-filled", Tags: map[string]string{secretstore.CreateLabel: "0123456789abcdef0123456789abcdef"}, Value: "v1"}
 	store := Store{Client: awstest.NewLocal(tagged, untagged, filled)}
-	listed, err := store.List(ctx, "dev/", secretstore.ReadOptions{})
+	listed, err := store.List(ctx, "dev/")
 	if err != nil || len(listed) != 3 {
 		t.Fatalf("List = %+v, %v; want three listings", listed, err)
 	}
 	for _, ls := range listed {
-		described, err := store.Describe(ctx, ls.ID, secretstore.ReadOptions{})
+		described, err := store.Describe(ctx, ls.ID)
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -51,7 +51,7 @@ func TestGCPListReadsAnnotationsKeyStateAndExpiry(t *testing.T) {
 	}}
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
-	listings, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{})
+	listings, err := store.List(ctx, fakePrefix)
 	if err != nil {
 		t.Fatalf("List = %v; want the secrets outside the prefix dropped before any call for them", err)
 	}
@@ -109,11 +109,11 @@ func TestGCPListAndDescribeReadNoLabel(t *testing.T) {
 	}}
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
-	listings, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{})
+	listings, err := store.List(ctx, fakePrefix)
 	if err != nil {
 		t.Fatal(err)
 	}
-	described, err := store.Describe(ctx, fakePrefix+"labelled", secretstore.ReadOptions{})
+	described, err := store.Describe(ctx, fakePrefix+"labelled")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestGCPListingIsUnfilledOnlyForALabelledSecretWithNoVersion(t *testing.T) {
 		fakePrefix + "labelled-disabled": {Annotations: tags, Labels: label, ReplicationKey: fakeKey, VersionKey: fakeKey, State: secretmanagerpb.SecretVersion_DISABLED, Value: []byte("v"), Created: noVersionCreated},
 	}}
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
-	listings, err := store.List(context.Background(), fakePrefix, secretstore.ReadOptions{})
+	listings, err := store.List(context.Background(), fakePrefix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -167,7 +167,7 @@ func TestGCPDescribeAndRead(t *testing.T) {
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
 
-	ls, err := store.Describe(ctx, fakePrefix+"served", secretstore.ReadOptions{})
+	ls, err := store.Describe(ctx, fakePrefix+"served")
 	if err != nil || ls.ID != fakePrefix+"served" || !ls.HasCurrentValue {
 		t.Fatalf("Describe(served) = %+v, %v", ls, err)
 	}
@@ -175,7 +175,7 @@ func TestGCPDescribeAndRead(t *testing.T) {
 		t.Fatalf("Describe(served).OnKey = %v, %v; want on the key", on, err)
 	}
 	for _, name := range []string{"missing", "expiring"} {
-		if _, err := store.Describe(ctx, fakePrefix+name, secretstore.ReadOptions{}); !errors.Is(err, secretstore.ErrNotFound) {
+		if _, err := store.Describe(ctx, fakePrefix+name); !errors.Is(err, secretstore.ErrNotFound) {
 			t.Fatalf("Describe(%s) = %v, want ErrNotFound", name, err)
 		}
 	}
@@ -215,7 +215,7 @@ func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
 	}}
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
-	listings, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{})
+	listings, err := store.List(ctx, fakePrefix)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -232,7 +232,7 @@ func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
 	if versionCalls != 3 {
 		t.Fatalf("List made %d GetSecretVersion calls for three secrets; want one each, no more", versionCalls)
 	}
-	if ls, err := store.Describe(ctx, fakePrefix+"seventh", secretstore.ReadOptions{}); err != nil || ls.Version != "7" {
+	if ls, err := store.Describe(ctx, fakePrefix+"seventh"); err != nil || ls.Version != "7" {
 		t.Fatalf("Describe(seventh) = %+v, %v; want version 7", ls, err)
 	}
 }
@@ -240,7 +240,7 @@ func TestGCPListingNamesTheLatestVersionsNumber(t *testing.T) {
 func TestGCPListFailureNamesTheCodeNotTheMessage(t *testing.T) {
 	f := &gcptest.FakeSecretManager{FailList: status.Errorf(codes.PermissionDenied, "Permission denied on resource project 000000000000 (secret value: hunter2)")}
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
-	_, err := store.List(context.Background(), fakePrefix, secretstore.ReadOptions{})
+	_, err := store.List(context.Background(), fakePrefix)
 	if err == nil || !strings.Contains(err.Error(), "PermissionDenied") || strings.Contains(err.Error(), "hunter2") {
 		t.Fatalf("List under a denied identity = %v; want the gRPC code and never the status message", err)
 	}
@@ -296,10 +296,10 @@ func TestGCPReadQuotaCost(t *testing.T) {
 		}
 		return f.Reads() - before
 	}
-	if got := cost(func() error { _, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{}); return err }); got != 1+3 {
+	if got := cost(func() error { _, err := store.List(ctx, fakePrefix); return err }); got != 1+3 {
 		t.Fatalf("List of 3 secrets cost %d reads, want 4", got)
 	}
-	if got := cost(func() error { _, err := store.Describe(ctx, fakePrefix+"a", secretstore.ReadOptions{}); return err }); got != 2 {
+	if got := cost(func() error { _, err := store.Describe(ctx, fakePrefix+"a"); return err }); got != 2 {
 		t.Fatalf("Describe cost %d reads, want 2", got)
 	}
 	if got := cost(func() error { _, err := store.Read(ctx, fakePrefix+"a"); return err }); got != 1 {
@@ -316,10 +316,10 @@ func TestGCPRetriesAnUnavailableMetadataCall(t *testing.T) {
 	}
 	store := gcp.New(gcptest.Start(t, f), fakeKey)
 	ctx := context.Background()
-	if ls, err := store.List(ctx, fakePrefix, secretstore.ReadOptions{}); err != nil || len(ls) != 1 {
+	if ls, err := store.List(ctx, fakePrefix); err != nil || len(ls) != 1 {
 		t.Fatalf("List through one UNAVAILABLE each = %d secrets, %v; want 1 after retries", len(ls), err)
 	}
-	if _, err := store.Describe(ctx, fakePrefix+"a", secretstore.ReadOptions{}); err != nil {
+	if _, err := store.Describe(ctx, fakePrefix+"a"); err != nil {
 		t.Fatalf("Describe through one UNAVAILABLE each = %v; want it to succeed after retries", err)
 	}
 	if f.Calls["ListSecrets"] != 2 || f.Calls["GetSecret"] != 2 || f.Calls["GetSecretVersion"] != 4 {
@@ -409,7 +409,7 @@ func TestGCPBoundsItsRetriesAndKeepsAKeyFailureAnError(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
 	defer cancel()
 	start := time.Now()
-	_, err := store.Describe(ctx, fakePrefix+"a", secretstore.ReadOptions{})
+	_, err := store.Describe(ctx, fakePrefix+"a")
 	if err == nil || !strings.Contains(err.Error(), "Unavailable") || time.Since(start) > 10*time.Second {
 		t.Fatalf("Describe through a lasting UNAVAILABLE = %v after %s; want Unavailable within seconds", err, time.Since(start))
 	}

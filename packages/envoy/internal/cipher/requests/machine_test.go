@@ -644,7 +644,7 @@ type abandoningDescriber struct {
 	cancel context.CancelFunc
 }
 
-func (d abandoningDescriber) Describe(ctx context.Context, id string, _ secretstore.ReadOptions) (secretstore.Listing, error) {
+func (d abandoningDescriber) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
 	d.cancel()
 	return secretstore.Listing{}, fmt.Errorf("describe %s: %w", id, ctx.Err())
 }

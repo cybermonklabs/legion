@@ -39,7 +39,7 @@ type Secret struct {
 	// CreatedAt is when it was created, unset where nobody says.
 	CreatedAt *time.Time `json:"created_at,omitempty"`
 	// DeletedAt, when set, is when it was scheduled for deletion: List leaves it out and Describe
-	// and Read answer ErrNotFound, unless a read asks for deleted secrets.
+	// and Read answer ErrNotFound.
 	DeletedAt *time.Time `json:"deleted_at,omitempty"`
 }
 
@@ -160,7 +160,7 @@ func (s *Store) hold(secret Secret) {
 }
 
 // listing is the Listing of the secret held at id. The caller holds s.mu.
-func (s *Store) listing(id string, opts secretstore.ReadOptions) secretstore.Listing {
+func (s *Store) listing(id string) secretstore.Listing {
 	secret := s.secrets[id]
 	tags := maps.Clone(secret.Tags)
 	if tags == nil {
@@ -177,21 +177,12 @@ func (s *Store) listing(id string, opts secretstore.ReadOptions) secretstore.Lis
 	if secret.CreatedAt != nil {
 		ls.Created = *secret.CreatedAt
 	}
-	if secret.DeletedAt != nil {
-		ls.Deleted = *secret.DeletedAt
-	}
-	if opts.Versions {
-		ls.Versions = map[string][]string{}
-		if ls.Version != "" {
-			ls.Versions[ls.Version] = []string{"CURRENT"}
-		}
-	}
 	return ls
 }
 
 // List answers every secret whose full name starts with prefix, leaving out one scheduled for
-// deletion unless opts.IncludeDeleted asks for it.
-func (s *Store) List(_ context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
+// deletion.
+func (s *Store) List(_ context.Context, prefix string) ([]secretstore.Listing, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.begin("list"); err != nil {
@@ -199,27 +190,27 @@ func (s *Store) List(_ context.Context, prefix string, opts secretstore.ReadOpti
 	}
 	var listings []secretstore.Listing
 	for id, secret := range s.secrets {
-		if !strings.HasPrefix(id, prefix) || secret.DeletedAt != nil && !opts.IncludeDeleted {
+		if !strings.HasPrefix(id, prefix) || secret.DeletedAt != nil {
 			continue
 		}
-		listings = append(listings, s.listing(id, opts))
+		listings = append(listings, s.listing(id))
 	}
 	return listings, nil
 }
 
 // Describe answers the secret whose full name is id, or ErrNotFound for one the store does not
-// hold and, unless opts.IncludeDeleted asks for it, one scheduled for deletion.
-func (s *Store) Describe(_ context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+// hold and one scheduled for deletion.
+func (s *Store) Describe(_ context.Context, id string) (secretstore.Listing, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.begin("describe"); err != nil {
 		return secretstore.Listing{}, err
 	}
 	secret, ok := s.secrets[id]
-	if !ok || secret.DeletedAt != nil && !opts.IncludeDeleted {
+	if !ok || secret.DeletedAt != nil {
 		return secretstore.Listing{}, secretstore.ErrNotFound
 	}
-	return s.listing(id, opts), nil
+	return s.listing(id), nil
 }
 
 // Read answers the value of the secret source names: ErrNotFound for a source no memory secret has,

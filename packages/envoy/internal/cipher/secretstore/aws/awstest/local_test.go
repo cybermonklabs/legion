@@ -13,7 +13,6 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager"
 	"github.com/aws/aws-sdk-go-v2/service/secretsmanager/types"
 
-	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	awsstore "github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
 )
 
@@ -260,11 +259,11 @@ func TestLocalNumbersAValueAnewWhenItsBytesChange(t *testing.T) {
 	store := awsstore.Store{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}
 	version := func(step string) string {
 		t.Helper()
-		described, err := store.Describe(ctx, name, secretstore.ReadOptions{})
+		described, err := store.Describe(ctx, name)
 		if err != nil {
 			t.Fatalf("%s: Describe: %v", step, err)
 		}
-		listed, err := store.List(ctx, "dev/", secretstore.ReadOptions{})
+		listed, err := store.List(ctx, "dev/")
 		if err != nil || len(listed) != 1 || listed[0].Version != described.Version {
 			t.Fatalf("%s: List = %+v, %v; want the version Describe names, %q", step, listed, err, described.Version)
 		}
@@ -343,7 +342,7 @@ func TestLocalFromFileNumbersAnEditedValueAnew(t *testing.T) {
 	}
 	versions := func() map[string]string {
 		t.Helper()
-		listed, err := (awsstore.Store{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}).List(ctx, "dev/agent-secrets/", secretstore.ReadOptions{})
+		listed, err := (awsstore.Store{Client: l, KMS: l, KeyARN: "arn:aws:kms:us-east-1:111122223333:key/k"}).List(ctx, "dev/agent-secrets/")
 		if err != nil {
 			t.Fatal(err)
 		}

@@ -23,16 +23,16 @@ import (
 // name, which the memory store answers by name.
 type resourceNamed struct{ secretstore.Store }
 
-func (r resourceNamed) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
-	listings, err := r.Store.List(ctx, prefix, opts)
+func (r resourceNamed) List(ctx context.Context, prefix string) ([]secretstore.Listing, error) {
+	listings, err := r.Store.List(ctx, prefix)
 	for i := range listings {
 		listings[i].Source = listings[i].ID
 	}
 	return listings, err
 }
 
-func (r resourceNamed) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
-	listing, err := r.Store.Describe(ctx, id, opts)
+func (r resourceNamed) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
+	listing, err := r.Store.Describe(ctx, id)
 	if err == nil {
 		listing.Source = listing.ID
 	}

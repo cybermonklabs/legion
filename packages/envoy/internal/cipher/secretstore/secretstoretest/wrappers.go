@@ -13,9 +13,9 @@ type Counting struct {
 	Describes atomic.Int64
 }
 
-func (c *Counting) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+func (c *Counting) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
 	c.Describes.Add(1)
-	return c.Store.Describe(ctx, id, opts)
+	return c.Store.Describe(ctx, id)
 }
 
 // Held is Store with each Describe held until Release closes, the id sent on Entered before it
@@ -27,14 +27,14 @@ type Held struct {
 	Release <-chan struct{}
 }
 
-func (h Held) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+func (h Held) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
 	h.Entered <- id
 	select {
 	case <-h.Release:
 	case <-ctx.Done():
 		return secretstore.Listing{}, ctx.Err()
 	}
-	return h.Store.Describe(ctx, id, opts)
+	return h.Store.Describe(ctx, id)
 }
 
 // Failing is Store with each call whose error is set answering that error, and every other call
@@ -44,18 +44,18 @@ type Failing struct {
 	ListErr, DescribeErr, ReadErr error
 }
 
-func (f Failing) List(ctx context.Context, prefix string, opts secretstore.ReadOptions) ([]secretstore.Listing, error) {
+func (f Failing) List(ctx context.Context, prefix string) ([]secretstore.Listing, error) {
 	if f.ListErr != nil {
 		return nil, f.ListErr
 	}
-	return f.Store.List(ctx, prefix, opts)
+	return f.Store.List(ctx, prefix)
 }
 
-func (f Failing) Describe(ctx context.Context, id string, opts secretstore.ReadOptions) (secretstore.Listing, error) {
+func (f Failing) Describe(ctx context.Context, id string) (secretstore.Listing, error) {
 	if f.DescribeErr != nil {
 		return secretstore.Listing{}, f.DescribeErr
 	}
-	return f.Store.Describe(ctx, id, opts)
+	return f.Store.Describe(ctx, id)
 }
 
 func (f Failing) Read(ctx context.Context, source string) (string, error) {

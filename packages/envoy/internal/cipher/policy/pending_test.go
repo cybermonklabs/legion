@@ -112,8 +112,8 @@ func TestAStrandedSecretIsRefusedButNeverDeleted(t *testing.T) {
 		if refusal := set.Refused[id]; refusal.Reason != policy.ReasonNoCurrentValue || len(set.Pending) != 0 {
 			t.Fatalf("past the window: refused %+v, pending %+v; want STRANDED_KEY refused no-current-value", set.Refused, set.Pending)
 		}
-		held, err := store.Describe(ctx, id, secretstore.ReadOptions{IncludeDeleted: true})
-		if err != nil || !held.Deleted.IsZero() || held.HasCurrentValue {
+		held, err := store.Describe(ctx, id)
+		if err != nil || held.HasCurrentValue {
 			t.Fatalf("the store answers %+v, %v; want it still holding STRANDED_KEY with no current value, since the broker deletes nothing", held, err)
 		}
 	})
