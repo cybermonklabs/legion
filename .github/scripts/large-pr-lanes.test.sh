@@ -33,6 +33,9 @@ trap 'rm -rf "$work"' EXIT
 source "$script_dir/test-lib.sh"
 
 mkdir "$work/bin"
+# In the stand-in below, the rate_limit arm: `.github/scripts/gh-read.sh#gh_wait_reset` asks the
+# rate_limit route whether a command that failed with 1 spent the budget: both budgets have calls
+# left, so a refusal there is the command's own.
 cat > "$work/bin/gh" <<GH
 #!/usr/bin/env bash
 set -euo pipefail
@@ -63,9 +66,6 @@ case "\$*" in
     last=\$(find "$work/reads-\$run" -name '[0-9]*' | wc -l)
     [ "\$n" -le "\$last" ] || n=\$last
     jq -r "\$filter" "$work/reads-\$run/\$n" ;;
-  # `.github/scripts/gh-read.sh#gh_wait_reset` asks the rate_limit route whether a command that
-  # failed with 1 spent the budget: both budgets have calls left, so a refusal here is the
-  # command's own.
   "api rate_limit "*)
     jq -r "\$filter" <<<'{"resources": {"core": {"remaining": 5000, "reset": 0}, "graphql": {"remaining": 5000, "reset": 0}}}' ;;
   *) echo "unexpected gh \$*" >&2; exit 2 ;;
