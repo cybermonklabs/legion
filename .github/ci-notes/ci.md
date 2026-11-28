@@ -2148,10 +2148,12 @@ Two workflows make it:
   edit cancel a push's label run and then write no label. The job is named `label` only where
   its `if:` holds, so such an edit's skipped run posts its name expression's text, a check name
   other than `label`, and never replaces the push's `label`. The edit also starts a newer
-  `pr-title` run, which keeps its word, in the same settlement of the head; the Legion daemon
-  tells no role and wakes no pod of a settlement whose only change is skipped runs beside such
-  newer runs (`packages/daemon/internal/workflow/review.go#changesOnlySkippedRuns`,
-  dispatch://INFRA-6293). The script reads the size from the
+  `pr-title` run in the same settlement of the head. The Legion daemon tells no role and wakes no
+  pod of a settlement whose only change is skipped runs beside newer runs that stay success, so
+  an edit whose `pr-title` run stays success is told nobody; a newer run of a check that failed
+  or was cancelled is a change, whatever skipped runs stand beside it
+  (`packages/daemon/internal/workflow/review.go#changesOnlySkippedRuns`, dispatch://INFRA-6293).
+  The script reads the size from the
   event's payload and puts the label `large-pr` on a large pull request, or takes it off
   one that shrank. Its `GITHUB_TOKEN` holds `pull-requests: write`, which a pull request's labels
   need (`issues: write` alone is refused: HTTP 403 "Resource not accessible by integration" at
