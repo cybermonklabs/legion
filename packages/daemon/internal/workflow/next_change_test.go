@@ -1064,6 +1064,46 @@ func TestAChangeWhosePullRequestMergesInItsRetroEndsAtItsMerge(t *testing.T) {
 	}
 }
 
+// A change that opens no pull request of its own ends when its check passes, even after the merged
+// pull request it follows comes back. The change's start deletes #42's merged row
+// (record.Store.ClearChangeGeneration). An opened of #42 that carries no clock passes the fence of
+// the clock that clear kept, since a clock missing on either side fences nothing, and writes the
+// row open again; the merge delivered again marks it merged. The record names #42 as the merge the
+// change follows (Issue.NextChangeFollows), so a read that passes the carried check still ends the
+// change with no pull request. Read as a pull request the change opened, the merged #42 held the
+// change open with nothing of its own to merge, and only a person could close the issue.
+func TestAChangeEndsWithNoPullRequestWhenTheMergeItFollowsComesBack(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, "")
+	mergedRoot(t, rig)
+	rig.read(waitRoot, answerOf(waitRoot, nil, failing("c-after", waitRootMerge)))
+	rig.started(waitRoot, changeGeneration, 1)
+	var cleared *record.PullRequest
+	seedRecord(t, rig.pool, func(tx pgx.Tx) (err error) {
+		cleared, err = record.NewStore().PullRequestRow(t.Context(), tx, waitRoot)
+		return err
+	})
+	if cleared != nil {
+		t.Fatalf("%s's pull request at its change's start = #%d %s, want none: the start deletes the merged row", waitRoot, cleared.Number, cleared.State)
+	}
+
+	rig.fact(intake.PullRequestOpened{Repo: waitRepo, Number: waitRootNumber, Branch: claim.IssueBranch(waitRoot), Base: "main", HeadSHA: headOne})
+	rig.mergeRoot()
+	if pr := recordedPR(t, rig.pool, waitRoot); pr.Number != waitRootNumber || pr.State != record.PullRequestMerged {
+		t.Fatalf("%s's pull request after its opened and its merge came again = #%d %s, want #%d merged", waitRoot, pr.Number, pr.State, waitRootNumber)
+	}
+
+	rig.readAt(waitRoot, changeGeneration, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+
+	rig.stands(waitRoot, phase.Verifying, "testing")
+	if got := rig.issue(waitRoot); got.Generation != changeGeneration || got.NextChange != 0 {
+		t.Fatalf("%s after the end stands at generation %d with change %d open, want %d with none", waitRoot, got.Generation, got.NextChange, changeGeneration)
+	}
+	if ended := rig.stored(waitRoot).Ended; ended == nil || ended.Generation != changeGeneration || ended.PullRequest != 0 {
+		t.Fatalf("the stored wait's end = %+v, want change %d ended with no pull request", ended, changeGeneration)
+	}
+}
+
 // A check's reason of a next change resolves only when that check passes (D7), not when it merely
 // stops failing: a read of the change's generation that answers the check no result leaves the
 // change open. Resolved on any state but fail, the change ended with no pull request on a check
