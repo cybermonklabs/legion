@@ -338,10 +338,11 @@ func (skeleton HeadSkeleton) bounds(issueKey string) (low, high []string, above 
 // own documents, as the skeleton reads them (HeadSkeleton); of the blocks of the issue's own
 // documents, each a typed block of one of Types may be - its supertag or its document_blocks type
 // is one of them, or its text opens a typed block of one somewhere, which every block TreeNodeType
-// types so does - on an issue under another each block of the fragment of its tree that is its own
-// (issue_trees), its design blocks, and the first of the blocks that stand under the issue's own
-// node in the order of its children (CompareSiblings), which is the memo where the issue holds one
-// (docs' memoFirst); the comments Comments names, each with its blocks, and the nodes Nodes names,
+// types so does - and on an issue under another each block of the fragment of its tree that is its
+// own (issue_trees), none of them a gone block that no document_blocks row stands for; its design
+// blocks, and the first of the blocks that stand under the issue's own node in the order of its
+// children (CompareSiblings), which is the memo where the issue holds one (docs' memoFirst); the
+// comments Comments names, each with its blocks, and the nodes Nodes names,
 // with, for each block of them, each block its moved_to tuples carry it to and the same block id in
 // the room of each (block_room_address), where a walk finds the node of a comment on text whose
 // anchor names a block it does not take (refs.TreeMovedTo); and the node each of those stands
@@ -353,7 +354,12 @@ func (skeleton HeadSkeleton) bounds(issueKey string) (low, high []string, above 
 // which a view reads whole. It reads no other block under the issue's node: those are the
 // top-level blocks of the spec, the Verification document and the plan, which a view that takes
 // none of them would read whole otherwise (the 2,786 blocks of the plan of an issue of the largest
-// plan, for its spec view).
+// plan, for its spec view). A gone block is no child of any node (newHeadTree), so no walk takes
+// it, and one that no document_blocks row stands for is no start of the plan's climb
+// (planSeedsOfRows) either; every other read of such a block falls back on the store, as it does
+// for any node the rows do not hold. The conversion of an issue into its room leaves each block of
+// its documents so at its old address (docs' retireDocuments): beside the nodes in the room of the
+// typed blocks of a spec of 1,393 requirements, a spec view read those 1,398 old ones too.
 type HeadView struct {
 	Types    []string
 	Comments []string
@@ -364,30 +370,44 @@ type HeadView struct {
 // lateral subquery Postgres keeps (`offset 0`): own_blocks is, of the issue's own blocks, those it
 // reads of their own (selected) and those that stand under the issue's node and are not gone
 // (child), in one range of the key that every block of the issue's own documents is read through
-// once; moves is each block of Nodes and each block the moved_to tuples of one carry it to, at most
-// graphstore.MovedToHops steps, as TreeMovedTo follows them at the head cut, which every tuple the
-// read's snapshot holds is within; wanted is the keys of the rows it reads of its own, the selected
-// of own_blocks, the first of its children in the order of the issue's children (treeChildOrder)
-// and the blocks of moves with the same block id in the room of each, the addresses past the
-// issue's own bounded by a subquery of $4 as headRowsSkeleton bounds them; climbed is those and the
-// parent of each, up through the blocks, comments and comments' blocks, a comment's block climbing
-// to its comment too, which its address names (`comment/<uuid>#<id>`) and which the walk takes it
-// under (docs' readConversation) where its row names no parent; and read is those and the blocks
-// of each comment among them, each a range of the key. $3 is the lowest address of the issue's own
-// blocks (`<key>/`), $5 and $6 the supertags and the pattern of the opening of the typed blocks of
+// once, each with its whole row; moves is each block of Nodes and each block the moved_to tuples of
+// one carry it to, at most graphstore.MovedToHops steps, as TreeMovedTo follows them at the head
+// cut, which every tuple the read's snapshot holds is within; wanted is the keys of the rows it
+// reads of its own, the parent of each selected block of own_blocks, the first of its children in
+// the order of the issue's children (treeChildOrder) and the blocks of moves with the same block id
+// in the room of each, the addresses past the issue's own bounded by a subquery of $4 as
+// headRowsSkeleton bounds them; climbed is those and the parent of each, up through the blocks,
+// comments and comments' blocks, a comment's block climbing to its comment too, which its address
+// names (`comment/<uuid>#<id>`) and which the walk takes it under (docs' readConversation) where its
+// row names no parent; and read is those and the blocks of each comment among them, each a range of
+// the key. It answers the selected blocks of own_blocks off the rows own_blocks read, and every
+// other row of read by its key: a selected block's row read again by its key to climb to its
+// parent, and again to be answered, was two probes of the key for each of the 1,398 typed blocks
+// of a spec view of 1,393 requirements. $3 is the lowest address of the issue's own blocks
+// (`<key>/`), $5 and $6 the supertags and the pattern of the opening of the typed blocks of
 // HeadView's Types, $7 the comments and $8 and $9 the kinds and the addresses of the nodes it names.
+//
+// The same block id in the room of a block of moves is block_room_address's answer, read in one
+// join of each document moves names to its room rather than through the function, once a block:
+// called on each of the 400 nodes the threads on text of a spec view stood on, the function took
+// 12.8 ms of the statement's 44. The join answers what the function answers, one row where the
+// block's document has a room (artifacts' ref_key is unique, and document_rooms' key is the
+// document) and none where it has not, which the function answers null and the read left out.
 var headRowsView = func() string {
-	selected := `blocks.supertag = any($5::text[]) or blocks.block_type = any($5::text[]) or ` + typedTextSQL("blocks.text", "$6") + `
+	selected := `(blocks.supertag = any($5::text[]) or blocks.block_type = any($5::text[]) or ` + typedTextSQL("blocks.text", "$6") + `
 		       or blocks.document_id = (
 		           select tree.artifact_id from issue_trees tree
 		           join issues own on own.key = tree.issue_key
 		           join issues above on above.key = own.parent_key
-		           where tree.issue_key = $1)`
+		           where tree.issue_key = $1))
+		       and (blocks.document_id is not null
+		            or blocks.value_texts[array_position(blocks.value_kinds, '` + graphstore.AttributeState + `')] is distinct from '` + graphstore.StateGone + `')`
 	child := `blocks.parent_kind = '` + graphstore.KindIssue + `' and blocks.parent_address = $1
 		       and blocks.value_texts[array_position(blocks.value_kinds, '` + graphstore.AttributeState + `')] is distinct from '` + graphstore.StateGone + `'`
 	return `
-	with recursive own_blocks (kind, address, rank, made_at, selected, child) as (
-		select blocks.node_kind, blocks.node_address, blocks.rank, blocks.made_at, coalesce(` + selected + `, false), coalesce(` + child + `, false)
+	with recursive own_blocks (kind, address, rank, made_at, selected, child, parent_kind, parent_address, whole) as (
+		select blocks.node_kind, blocks.node_address, blocks.rank, blocks.made_at, coalesce(` + selected + `, false), coalesce(` + child + `, false),
+		       blocks.parent_kind, blocks.parent_address, blocks
 		from issue_head_nodes blocks
 		where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= $3 and blocks.node_address < (select $4::text)
 		  and (` + selected + `
@@ -413,18 +433,24 @@ var headRowsView = func() string {
 		select blocks.node_kind, blocks.node_address from issue_head_nodes blocks
 		where blocks.issue_key = $1 and blocks.node_kind = '` + BlockNodeKind + `' and blocks.node_address >= (select $4::text)
 		union all
-		select own_blocks.kind, own_blocks.address from own_blocks where own_blocks.selected
+		select own_blocks.parent_kind, own_blocks.parent_address from own_blocks
+		where own_blocks.selected and own_blocks.parent_kind in ('` + BlockNodeKind + `', '` + string(ItemComment) + `', '` + ItemComment.BlockKind() + `')
 		union all
 		(select own_blocks.kind, own_blocks.address from own_blocks where own_blocks.child
 		 order by ` + treeChildOrder("own_blocks.rank", "own_blocks.made_at", "own_blocks.kind", "own_blocks.address") + `
 		 limit 1)
 		union all
-		select '` + BlockNodeKind + `', reached.address from moves
-		cross join lateral (
-			select moves.address where moves.hop > 0
-			union all
-			select block_room_address(moves.address)) reached (address)
-		where reached.address is not null
+		select '` + BlockNodeKind + `', moves.address from moves where moves.hop > 0
+		union all
+		select '` + BlockNodeKind + `', roomed.ref_key || substr(moves.address, strpos(moves.address, '#'))
+		from moves
+		join (
+			select document.ref_key as document, tree.ref_key
+			from artifacts document
+			join document_rooms room on room.artifact_id = document.id
+			join artifacts tree on tree.id = room.room
+			where document.ref_key in (select split_part(moves.address, '#', 1) from moves) and tree.ref_key is not null
+		) roomed on roomed.document = split_part(moves.address, '#', 1)
 		union all
 		select '` + string(ItemComment) + `', named.id from unnest($7::text[]) named (id)
 		union all
@@ -453,11 +479,15 @@ var headRowsView = func() string {
 			offset 0) blocks
 		where climbed.kind = '` + string(ItemComment) + `'
 	)
+	select (own_blocks.whole).* from own_blocks where own_blocks.selected
+	union all
 	select viewed.* from read
 	cross join lateral (
 		select * from issue_head_nodes viewed
 		where viewed.issue_key = $1 and viewed.node_kind = read.kind and viewed.node_address = read.address
-		offset 0) viewed`
+		offset 0) viewed
+	where not exists (
+		select from own_blocks held where held.selected and held.kind = read.kind and held.address = read.address)`
 }()
 
 // typedOpening is the pattern of a text that opens a typed block of one of types somewhere

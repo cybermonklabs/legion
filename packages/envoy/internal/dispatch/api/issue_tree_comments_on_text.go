@@ -119,34 +119,31 @@ var textCommentsStatement = `
 // with each comment of those threads that one of them answers or replies to, and so on up, which
 // the read places each of them under; each answered as that statement answers it where its
 // thread's first comment's current anchored_in names a node. The anchored_in of the first comment
-// and whether a person wrote in its thread are read for the threads of those comments alone, so
-// the read of an issue of 9,252 comments on text reads the tuples of the page's few. The first
-// column of every row is how many comments it chose, and one row answers that alone where none was
-// chosen.
+// and whether a person wrote in its thread are read for the threads of those comments alone. The
+// first column of every row is how many comments it chose, and one row answers that alone where
+// none was chosen.
+//
+// The newest are read off the issue's comments newest first (comments_issue_created), each with
+// its thread's first comment where that is one on text (textThreadHeadSQL), until $8 are read: a
+// comment of a thread is a comment of its first comment's issue, since a reply's reply_to is a
+// comment of the owner it is written on (threadHeadFrom). So the read of an issue of 9,252 comments
+// on text reads about the page's few, where finding every thread first read every comment of the
+// issue and sorted them all, 33 ms a read. Each comment chosen past the newest climbs to its
+// thread's first comment the same way. Every other comment it reads, it reads by its key in a
+// lateral subquery Postgres keeps (`offset 0`), and what a row answers of a comment is carried
+// from where the comment was read: joined plainly, Postgres reckoned 40,000 rows of the 401 chosen
+// and read each of them, and each first comment's thread, out of a hash of every comment in the
+// store, three scans of its 10,012 comments for a read of an issue of 600.
 var viewTextCommentsStatement = `
-	with recursive heads as (
-		select c.id
-		from artifacts a
-		join comments c on (c.anchor->>'artifact_id')::uuid = a.id
-		where a.issue_key = $1 and c.issue_key = $1 and c.created_at <= $2
-		  and c.reply_to is null and c.answers is null and c.ask_id is null
-		union all
-		select c.id
-		from comments c
-		where c.issue_key = $1 and c.node_anchor is not null and c.created_at <= $2
-		  and c.reply_to is null and c.answers is null and c.ask_id is null
-	),
-	thread as (
-		select h.id as head, h.id, 0 as depth from heads h
-		union all
-		select thread.head, c.id, thread.depth + 1
-		from thread join comments c on c.reply_to = thread.id
-		where thread.depth < $5 and c.created_at <= $2
+	with recursive documents as (
+		select a.id from artifacts a where a.issue_key = $1
 	),
 	newest as (
-		select thread.id
-		from thread join comments c on c.id = thread.id
-		where $6::timestamptz is null or (c.created_at, c.id) < ($6::timestamptz, $7::uuid)
+		select head.id as head, c.id, c.created_at, coalesce(c.answers, c.reply_to) as answers
+		from comments c
+		cross join lateral (` + textThreadHeadSQL("c") + `) head
+		where c.issue_key = $1 and c.created_at <= $2
+		  and ($6::timestamptz is null or (c.created_at, c.id) < ($6::timestamptz, $7::uuid))
 		order by c.created_at desc, c.id desc
 		limit $8
 	),
@@ -154,37 +151,68 @@ var viewTextCommentsStatement = `
 		select newest.id from newest
 		union
 		select above.id from chosen
-		join comments c on c.id = chosen.id
+		cross join lateral (select c.answers, c.reply_to from comments c where c.id = chosen.id offset 0) c
 		cross join lateral (values (c.answers), (c.reply_to)) above (id)
 		where above.id is not null
 	),
 	members as (
-		select thread.head, thread.id from thread join chosen on chosen.id = thread.id
+		select newest.head, newest.id, newest.created_at, newest.answers from newest
+		union all
+		select head.id, c.id, c.created_at, coalesce(c.answers, c.reply_to)
+		from chosen
+		cross join lateral (select c.id, c.reply_to, c.answers, c.created_at from comments c where c.id = chosen.id offset 0) c
+		cross join lateral (` + textThreadHeadSQL("c") + `) head
+		where c.created_at <= $2 and chosen.id not in (select newest.id from newest)
 	),
 	anchored as (
-		select first.head, held.to_kind, held.to_id
+		select c.id as head, c.wrote, held.to_kind, held.to_id
 		from (select distinct members.head from members) first
-		join comments c on c.id = first.head
+		cross join lateral (
+			select c.id, coalesce(c.author->>'kind' = 'user', false) as wrote from comments c where c.id = first.head offset 0) c
 		cross join lateral (` + textCommentAnchoredIn + `
 		) held
 	),
+	thread as (
+		select anchored.head, anchored.head as id, anchored.wrote, 0 as depth from anchored
+		union all
+		select thread.head, c.id, coalesce(c.author->>'kind' = 'user', false), thread.depth + 1
+		from thread join comments c on c.reply_to = thread.id
+		where thread.depth < $5 and c.created_at <= $2
+	),
 	voicing as (
-		select thread.head, bool_or(coalesce(c.author->>'kind' = 'user', false)) as voiced
-		from thread join comments c on c.id = thread.id
-		where thread.head in (select anchored.head from anchored)
-		group by thread.head
+		select thread.head, bool_or(thread.wrote) as voiced from thread group by thread.head
 	)
 	select total.chosen, m.head::text, m.id::text, m.created_at, m.answers::text, m.voiced, m.to_kind, m.to_id, m.blocks
 	from (select count(*) as chosen from newest) total
 	left join (
-		select members.head, members.id, c.created_at, coalesce(c.answers, c.reply_to) as answers, v.voiced, h.to_kind, h.to_id,
+		select members.head, members.id, members.created_at, members.answers, v.voiced, h.to_kind, h.to_id,
 		       case when not v.voiced then array(
 		         select b.node_id from comment_blocks b where b.comment_id = members.id and b.position is not null order by b.position) end as blocks
 		from members
-		join comments c on c.id = members.id
 		join anchored h on h.head = members.head
 		join voicing v on v.head = members.head
 	) m on true`
+
+// textThreadHeadSQL is the first comment of the thread on text the comment comment is of, as
+// textCommentsStatement finds threads, for a statement that names the issue's documents
+// (documents): the comment its reply_to chain climbs to in at most $5 links, each to a comment
+// written by $2, that replies to nothing, answers nothing and is no part of an ask, of the issue
+// $1, and holds a document anchor on one of the issue's documents or a node anchor; no row where
+// the chain reaches no such comment. The comment itself is not tested against $2.
+func textThreadHeadSQL(comment string) string {
+	return `
+			with recursive up (id, reply_to, depth) as (
+				select ` + comment + `.id, ` + comment + `.reply_to, 0
+				union all
+				select p.id, p.reply_to, up.depth + 1
+				from up join comments p on p.id = up.reply_to
+				where up.depth < $5 and p.created_at <= $2
+			)
+			select up.id
+			from up join comments h on h.id = up.id
+			where up.reply_to is null and h.answers is null and h.ask_id is null and h.issue_key = $1
+			  and (h.node_anchor is not null or (h.anchor->>'artifact_id')::uuid in (select documents.id from documents))`
+}
 
 // olderCommentStatement is whether the issue $1 holds a comment written by $2 older than the
 // position $3 and $4 names (refs.CommentPosition): a view's comments_before that no such comment
@@ -839,14 +867,32 @@ func commentAnchorOf(document, node []byte, state string) (*model.IssueTreeAncho
 // anchorOccurrences gives each document anchor the read holds (anchors) that is not orphaned and
 // names a block its zero-based occurrence within that block (R31): the number of the block's
 // matches of its quote that start before its mark, the count pmdoc.QuoteFinder.FindInBlock takes,
-// read off each document once (docs.Service.AnchorOccurrences). It runs after the read's
-// transaction has closed, as documentPositions does, since a document's marks are its room's. An
-// anchor whose document no longer holds its mark inside its block answers none, as an orphaned one
-// does: a read-only page, which renders the document's Markdown without its marks, places a thread
-// on the second of two identical quotes in one block only by this occurrence.
+// read off each document once (docs.Service.AnchorOccurrences), but each document documentPositions
+// read them off already (anchorsRead). It runs after the read's transaction has closed, as
+// documentPositions does, since a document's marks are its room's. An anchor whose document no
+// longer holds its mark inside its block answers none, as an orphaned one does: a read-only page,
+// which renders the document's Markdown without its marks, places a thread on the second of two
+// identical quotes in one block only by this occurrence.
 func (b *issueTreeBuilder) anchorOccurrences(s *server) error {
-	asked := map[string][]docs.CommentAnchorInBlock{}
-	held := map[string][]*model.IssueTreeAnchor{}
+	asked, held := b.anchorsByDocument()
+	for document, anchors := range asked {
+		if b.anchorsRead[document] {
+			continue
+		}
+		occurrences, err := s.deps.Docs.AnchorOccurrences(b.ctx, document, anchors)
+		if err != nil {
+			return fmt.Errorf("read the occurrences of the comments' anchors in document %s of %s: %w", document, b.key, err)
+		}
+		holdOccurrences(held[document], occurrences)
+	}
+	return nil
+}
+
+// anchorsByDocument is, by its document, each document anchor the read holds (anchors) that is not
+// orphaned and names a block, as a document's read of their occurrences takes them (asked), and
+// the same anchors in the same order as the answer holds them (held).
+func (b *issueTreeBuilder) anchorsByDocument() (asked map[string][]docs.CommentAnchorInBlock, held map[string][]*model.IssueTreeAnchor) {
+	asked, held = map[string][]docs.CommentAnchorInBlock{}, map[string][]*model.IssueTreeAnchor{}
 	for _, anchor := range b.anchors {
 		if anchor.Node != nil || anchor.Orphaned || anchor.ArtifactID == "" || anchor.BlockID == nil || *anchor.BlockID == "" {
 			continue
@@ -854,14 +900,13 @@ func (b *issueTreeBuilder) anchorOccurrences(s *server) error {
 		asked[anchor.ArtifactID] = append(asked[anchor.ArtifactID], docs.CommentAnchorInBlock{MarkID: anchor.MarkID, BlockID: *anchor.BlockID, Quote: anchor.Quote})
 		held[anchor.ArtifactID] = append(held[anchor.ArtifactID], anchor)
 	}
-	for document, anchors := range asked {
-		occurrences, err := s.deps.Docs.AnchorOccurrences(b.ctx, document, anchors)
-		if err != nil {
-			return fmt.Errorf("read the occurrences of the comments' anchors in document %s of %s: %w", document, b.key, err)
-		}
-		for index, occurrence := range occurrences {
-			held[document][index].Occurrence = &occurrence
-		}
+	return asked, held
+}
+
+// holdOccurrences gives each of anchors the occurrence occurrences answers of it by its index, as
+// docs.Service.AnchorOccurrences answers them.
+func holdOccurrences(anchors []*model.IssueTreeAnchor, occurrences map[int]int) {
+	for index, occurrence := range occurrences {
+		anchors[index].Occurrence = &occurrence
 	}
-	return nil
 }

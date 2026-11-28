@@ -216,6 +216,87 @@ func TestAViewReadOfItsRowsAnswersAsTheWalk(t *testing.T) {
 	}
 }
 
+// TestAViewReadOfAConvertedIssueAnswersAsTheWalk holds each view's head read of an issue converted
+// into its room (docs.ConvertIssue) to the walk of the tuples (headRig.after), as alice and as
+// bob, beside comments on the text of its requirements written before the conversion, which name
+// the blocks at their old addresses, a person's reply among them, and after it, which name their
+// nodes in the room, an agent's comment in each. The conversion leaves each block of the issue's
+// documents gone at its old address with no document_blocks row (docs' retireDocuments), beside its
+// node in the room: the rows of the whole issue hold those blocks, and the spec view's rows hold
+// none of them (refs.HeadView), which no walk takes.
+func TestAViewReadOfAConvertedIssueAnswersAsTheWalk(t *testing.T) {
+	database := storetest.Open(t)
+	counter := &roundTrips{}
+	traced := &store.Store{Pool: storetest.Traced(t, database.Pool, counter, nil)}
+	handler, _, deps, _ := newRegisteredTestServer(t, testServerOptions{store: traced, settle: time.Hour})
+	documents := deps.Docs.(*docs.Service)
+	ctx := context.Background()
+
+	createReferenceAPIProject(t, handler, "VRC")
+	const r1Quote, r2Quote = "The board shows each ask once.", "The board orders the asks by urgency."
+	issue := createDigestIssue(t, handler, database, "VRC", "A converted issue's view reads its rows",
+		requirementMarkdown("r1", r1Quote)+"\n"+requirementMarkdown("r2", r2Quote)+"\n", true)
+	key := issue.Key
+	r := newHeadRig(t, handler, database, counter, key)
+	r.requireMarked(key)
+	settle := func() {
+		t.Helper()
+		settleIssue(t, documents, key)
+		reconcileBlockIndexPass(t, deps)
+	}
+	settle()
+	r.after("unconverted issue create", key)
+
+	onText := func(blockID, quote, body, login string) string {
+		t.Helper()
+		input := map[string]any{"body": body, "anchor": map[string]any{"artifact": issue.PrimaryArtifactID, "block_id": blockID, "quote": quote}}
+		if login == "" {
+			input["actor"] = sessionActor()
+		}
+		return createThreadComment(t, handler, key, input, login).ID
+	}
+	asked := onText("r1", r1Quote, "Once on the board, or once a column?", "alice")
+	onText("r2", r2Quote, "The agent reads r2 as urgency alone.", "")
+	createThreadComment(t, handler, key, map[string]any{"body": "Once on the board.", "reply_to": asked}, "bob")
+	settle()
+	r.after("comments on the text of its requirements", key)
+
+	converted, err := documents.ConvertIssue(ctx, key, docs.IssueRoomGate, false)
+	if err != nil || converted.Outcome != docs.IssueConverted {
+		t.Fatalf("convert %s: %+v, %v; want it converted", key, converted, err)
+	}
+	settle()
+	r.after("conversion into the issue's room", key)
+
+	onText("r1", r1Quote, "The room's r1 holds the same words.", "alice")
+	onText("r2", r2Quote, "An agent's note on the room's r2.", "")
+	settle()
+	r.after("comments on the text of its requirements in the room", key)
+
+	retired := func(rows map[refs.Target]*refs.HeadRow) int {
+		held := 0
+		for node, row := range rows {
+			if node.Kind == refs.BlockNodeKind && row.Block == nil && row.Gone() {
+				held++
+			}
+		}
+		return held
+	}
+	alice := model.Actor{Kind: "user", ID: "alice"}
+	whole, _, err := refs.HeadRows(ctx, database.Pool, alice, key, nil)
+	if err != nil {
+		t.Fatalf("read every row of %s: %v", key, err)
+	}
+	viewed, marked, err := refs.HeadViewRows(ctx, database.Pool, alice, key, refs.HeadView{Types: viewTypes[graphstore.QuerySpec]})
+	if err != nil || !marked {
+		t.Fatalf("read the spec view's rows of %s: marked %t, %v", key, marked, err)
+	}
+	if held, read := retired(whole.Rows), retired(viewed.Rows); held < 2 || read != 0 {
+		t.Errorf("the rows of %s hold %d gone blocks that no document_blocks row stands for and its spec view's rows %d, want r1 and r2 at their old addresses among the first and none in the second",
+			key, held, read)
+	}
+}
+
 // requireViewCommentPagesAsWalk follows each comments_before page of view of key as login, from its
 // first page, holding the head read of each to the walk of the tuples (headRig.withoutMark).
 func requireViewCommentPagesAsWalk(t *testing.T, r headRig, key, view, login string) {
