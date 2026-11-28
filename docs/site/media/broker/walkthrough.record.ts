@@ -9,7 +9,8 @@
 //   t3-request.cast     the session asks for DEMO_API_KEY; the request waits for approval
 //   t4-ran.cast         recorded around b2: the waiting command receives the key as the request is
 //                       approved, and runs; then the request's status names who decided it
-//   b2-approve.webm     the request in the Inbox, its page on the secrets broker, the approval there
+//   b2-approve.webm     the request in the Inbox, its page on the secrets broker in the tab the
+//                       row opens, the approval there
 //   b3-grants.webm      from the Inbox to Settings, where the grant is listed
 //
 // A take records every section, in this order: each depends on the one before it (the browser
@@ -32,7 +33,7 @@
 // result. Output goes to WALKTHROUGH_RAW_DIR, default docs/site/media/broker/walkthrough/raw.
 import { execFileSync, spawnSync } from "node:child_process";
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { fileURLToPath } from "node:url";
 
@@ -274,12 +275,8 @@ interface ResultFrame {
  *  the result replaces) measures as an empty box at the corner, where a comparison would find the
  *  corner's own pixels alike and pass. The screenshot is never clipped: Chromium renders a clipped
  *  one at the clip's size, and the recording shows that render as frames of the clip on grey. */
-async function holdOnResult(
-  page: Page,
-  result: Locator,
-  reference: string,
-  mark: Mark
-): Promise<ResultFrame> {
+async function holdOnResult(result: Locator, reference: string, mark: Mark): Promise<ResultFrame> {
+  const page = result.page();
   await expect(result).toBeVisible();
   await expect(result).toBeInViewport({ ratio: 1 });
   mark("result");
@@ -354,6 +351,53 @@ function similarity(video: string, at: number, result: ResultFrame): number {
   return Number(all[1]);
 }
 
+/** A page of a browser section, and when it opened. */
+interface Tab {
+  opened: number;
+  page: Page;
+}
+
+/** Saves a section's recording as one file. With one tab, that is its recording. With more, each
+ *  tab plays from its first frame until the next tab opened, so the file follows the tab a person
+ *  sees and keeps the section's clock: the next tab's first frame is where the last one was cut. */
+async function saveTabs(tabs: Tab[], file: string): Promise<void> {
+  const recording = (tab: Tab) => {
+    const video = tab.page.video();
+    if (video === null) throw new Error(`${file}: a tab has no recording`);
+    return video;
+  };
+  if (tabs.length === 1) {
+    await recording(tabs[0]).saveAs(file);
+    return;
+  }
+  const parts = tabs.map((_, i) => join(rawDir, ".video", `${basename(file)}.tab${i}.webm`));
+  for (const [i, tab] of tabs.entries()) await recording(tab).saveAs(parts[i]);
+  const cuts = tabs.map((tab, i) => {
+    const next = tabs[i + 1];
+    const trim =
+      next === undefined ? "" : `trim=end=${((next.opened - tab.opened) / 1000).toFixed(3)},`;
+    return `[${i}:v]${trim}setpts=PTS-STARTPTS[t${i}]`;
+  });
+  const joined = `${tabs.map((_, i) => `[t${i}]`).join("")}concat=n=${tabs.length}:v=1[v]`;
+  execFileSync("ffmpeg", [
+    "-v",
+    "error",
+    "-y",
+    ...parts.flatMap((part) => ["-i", part]),
+    "-filter_complex",
+    `${cuts.join(";")};${joined}`,
+    "-map",
+    "[v]",
+    "-c:v",
+    "libvpx",
+    "-crf",
+    "4",
+    "-b:v",
+    "8M",
+    file,
+  ]);
+}
+
 /** Records one browser section: a fresh signed-in context whose recording is saved as `file`, at
  *  the viewport's size (Playwright records a page at its CSS size whatever the device scale, and
  *  pads a larger video with grey). `act` ends by passing the section's result to `hold`
@@ -361,7 +405,7 @@ function similarity(video: string, at: number, result: ResultFrame): number {
  *  show that result. It notes two wall-clock lengths the file's duration must fall between: the
  *  actions alone, and the page's whole life (a slow close adds a still tail, which the cut drops).
  *  The recording starts with the page, so a mark lies as far into the file as it came after the
- *  page's creation. */
+ *  page's creation; a tab the section opens takes over the file from its opening (saveTabs). */
 async function browserSection(
   browser: Browser,
   file: string,
@@ -378,6 +422,8 @@ async function browserSection(
   const marks = marker(file);
   const created = Date.now();
   const page = await context.newPage();
+  const tabs: Tab[] = [{ opened: created, page }];
+  context.on("page", (tab) => tabs.push({ opened: Date.now(), page: tab }));
   // Where the drawn pointer starts, so the first move sweeps from it rather than from the corner.
   await page.mouse.move(viewport.width / 2, viewport.height / 2);
   const acting = Date.now();
@@ -387,7 +433,6 @@ async function browserSection(
     async (locator) => {
       if (result !== undefined) throw new Error(`${file}: a section holds on one result, its last`);
       result = await holdOnResult(
-        page,
         locator,
         join(rawDir, ".video", `${file}.result.png`),
         marks.mark
@@ -400,7 +445,7 @@ async function browserSection(
   await context.close();
   const wallSeconds = (Date.now() - created) / 1000;
   const video = join(rawDir, file);
-  await page.video()?.saveAs(video);
+  await saveTabs(tabs, video);
   const length = Number(
     execFileSync(
       "ffprobe",
@@ -557,9 +602,10 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
           markTerminal("key");
         }
       );
-      // B2: the request in the Inbox, its page on the broker, and the approval there. The context
-      // holds no broker session yet, so the row's link passes through the rig issuer's sign-in,
-      // which signs the operator in with no page to fill in, and lands on the request's page.
+      // B2: the request in the Inbox, its page on the broker in the tab the row opens, and the
+      // approval there. The context holds no broker session yet, so the row's link passes through
+      // the rig issuer's sign-in, which signs the operator in with no page to fill in, and lands on
+      // the request's page.
       await browserSection(
         browser,
         "b2-approve.webm",
@@ -571,16 +617,21 @@ test("record the broker walkthrough's raw footage", async ({ browser }) => {
           mark("inbox");
           // Long enough to name the Inbox's link and the sign-in it passes through.
           await sleep(3_500);
-          await clickVisibly(page, row);
-          await expect(broker.requestReason(page)).toBeVisible();
-          await expect(broker.signedIn(page)).toBeVisible();
+          const [tab] = await Promise.all([
+            page.context().waitForEvent("page"),
+            clickVisibly(page, row),
+          ]);
+          await expect(broker.requestReason(tab)).toBeVisible();
+          await expect(broker.signedIn(tab)).toBeVisible();
+          // Where the new tab draws its pointer, so the move to Approve sweeps from it.
+          await tab.mouse.move(viewport.width / 2, viewport.height / 2);
           mark("record");
           // Long enough to say what the broker's page shows before the pointer moves to Approve.
           await sleep(9_000);
-          await clickVisibly(page, broker.approve(page));
+          await clickVisibly(tab, broker.approve(tab));
           mark("approve");
           markTerminal("approve");
-          await hold(broker.requestGranted(page));
+          await hold(broker.requestGranted(tab));
         }
       );
       await keyShown;
