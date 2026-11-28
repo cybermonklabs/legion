@@ -578,4 +578,177 @@ func TestDispatchRLSReadsWritesAndSearch(t *testing.T) {
 			t.Errorf("a comment dispatch_app may not insert: status=%d body=%s, want 500 %s", response.Code, response.Body.String(), codeInternal)
 		}
 	})
+
+	// The owner-run rules of plan D4 that no route reaches on its own (dispatch_node_visible,
+	// dispatch_tuple_end_visible, dispatch_broadcast_visible, dispatch_workflow_node_visible and
+	// dispatch_message_visible), each read through the request store under a viewer while HUSH and
+	// VEIL are private. alice sees every project; bob, an open full member, sees OPEN and LIST.
+	ctx := context.Background()
+	aliceSees := model.Viewer{Person: rlsOwner, Open: true, Sees: []string{rlsHush, rlsList, rlsOpen, rlsVeil}, AnyPrivate: true}
+	bobSees := model.Viewer{Person: rlsMember, Open: true, Sees: []string{rlsList, rlsOpen}, AnyPrivate: true}
+	countAs := func(t *testing.T, viewer model.Viewer, sql string, args ...any) int {
+		t.Helper()
+		var count int
+		if err := w.deps.Store.Pool.QueryRow(store.WithViewer(ctx, viewer), sql, args...).Scan(&count); err != nil {
+			t.Fatalf("count under %s's viewer: %v", viewer.Person, err)
+		}
+		return count
+	}
+	seed := func(t *testing.T, sql string, args ...any) {
+		t.Helper()
+		if _, err := w.database.Pool.Exec(ctx, sql, args...); err != nil {
+			t.Fatalf("seed (%s): %v", strings.Join(strings.Fields(sql), " "), err)
+		}
+	}
+	seedSessions := func(t *testing.T) {
+		t.Helper()
+		seed(t, `insert into session_projects (session_id, project_key, first_at) values ($1, $2, now()), ($3, $4, now()) on conflict do nothing`,
+			open.session, rlsOpen, hush.session, rlsHush)
+	}
+
+	t.Run("person_session_and_role_nodes_stay_visible_to_the_viewers_their_clauses_admit_while_a_project_is_private", func(t *testing.T) {
+		seedSessions(t)
+		seed(t, `insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event, project_key) values
+			('issue', $1, 'issue', 'project', 'live', now(), '{}', 0, $2),
+			('person', 'rls-dora', 'person', 'project', 'live', now(), '{}', 0, null),
+			('session', $3, 'session', 'project', 'live', now(), '{}', 0, null),
+			('session', $4, 'session', 'project', 'live', now(), '{}', 0, null),
+			('role', 'rls-role-open', 'role', 'project', 'live', now(), '{}', 0, null),
+			('role', 'rls-role-hush', 'role', 'project', 'live', now(), '{}', 0, null)
+			on conflict do nothing`, open.issue, rlsOpen, open.session, hush.session)
+		seed(t, `insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event) values
+			('role', 'rls-role-open', 'held_by', 'session', $2, now(), '{}', 0),
+			('role', 'rls-role-hush', 'held_by', 'session', $3, now(), '{}', 0),
+			('issue', $1, 'authored_by', 'person', 'rls-dora', now(), '{}', 0),
+			('issue', $1, 'delivered_to', 'session', $3, now(), '{}', 0)`, open.issue, open.session, hush.session)
+		seenNodes := `select count(*) from graph_nodes where (kind, id) in (('person', 'rls-dora'), ('session', $1), ('role', 'rls-role-open'))`
+		hiddenNodes := `select count(*) from graph_nodes where (kind, id) in (('session', $1), ('role', 'rls-role-hush'))`
+		seenTuples := `select count(*) from graph_tuples where from_id = 'rls-role-open' or (from_id = $1 and to_id = 'rls-dora')`
+		hiddenTuples := `select count(*) from graph_tuples where from_id = 'rls-role-hush' or (from_id = $1 and kind = 'delivered_to' and to_id = $2)`
+		for _, read := range []struct {
+			viewer                                    model.Viewer
+			nodes, hiddenNodes, tuples, hiddenTuples int
+		}{{bobSees, 3, 0, 2, 0}, {aliceSees, 3, 2, 2, 2}} {
+			got := []int{
+				countAs(t, read.viewer, seenNodes, open.session), countAs(t, read.viewer, hiddenNodes, hush.session),
+				countAs(t, read.viewer, seenTuples, open.issue), countAs(t, read.viewer, hiddenTuples, open.issue, hush.session),
+			}
+			if want := []int{read.nodes, read.hiddenNodes, read.tuples, read.hiddenTuples}; !slices.Equal(got, want) {
+				t.Errorf("%s reads [the person, OPEN's session and its role; HUSH's session and the role only it holds; the tuples ending at the first; at the second] %v times, want %v",
+					read.viewer.Person, got, want)
+			}
+		}
+	})
+
+	t.Run("with_no_private_project_the_node_rule_function_is_called_for_no_row", func(t *testing.T) {
+		// The node rules are replaced, in a transaction rolled back at the end, by functions that
+		// refuse every call, and the graph is read as dispatch_app with viewer_private false: the
+		// fast path answers every row before either is called. The same read with viewer_private
+		// true calls them, which shows the replacement is the function the policies call.
+		tx, err := w.database.Pool.Begin(ctx)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		if _, err := tx.Exec(ctx, `
+			create or replace function public.dispatch_node_visible(node_kind text, node_id text, node_project text, node_parties text[]) returns boolean
+			language plpgsql as $$ begin raise exception 'dispatch_node_visible was called'; end $$;
+			create or replace function public.dispatch_tuple_end_visible(end_kind text, end_id text) returns boolean
+			language plpgsql as $$ begin raise exception 'dispatch_tuple_end_visible was called'; end $$`); err != nil {
+			t.Fatalf("replace the node rules with refusing functions: %v", err)
+		}
+		read := func(private string) (nodes, tuples int, err error) {
+			nested, err := tx.Begin(ctx)
+			if err != nil {
+				return 0, 0, err
+			}
+			defer func() { _ = nested.Rollback(ctx) }()
+			if _, err := nested.Exec(ctx, `select set_config('role', 'dispatch_app', true), set_config('dispatch.viewer_sees', '', true),
+				set_config('dispatch.viewer_person', $1, true), set_config('dispatch.viewer_open', 'true', true),
+				set_config('dispatch.viewer_session', '', true), set_config('dispatch.viewer_private', $2, true)`, rlsMember, private); err != nil {
+				return 0, 0, err
+			}
+			err = nested.QueryRow(ctx, `select (select count(*) from graph_nodes), (select count(*) from graph_tuples)`).Scan(&nodes, &tuples)
+			return nodes, tuples, err
+		}
+		nodes, tuples, err := read("false")
+		if err != nil {
+			t.Fatalf("with no private project the graph read as dispatch_app called a node rule: %v", err)
+		}
+		if nodes == 0 || tuples == 0 {
+			t.Fatalf("the graph read as dispatch_app holds %d nodes and %d tuples, so the read proves nothing", nodes, tuples)
+		}
+		if _, _, err := read("true"); err == nil || !strings.Contains(err.Error(), "was called") {
+			t.Errorf("with a private project the graph read answered %v, want the refusing node rule's error: the replacement is not what the policies call", err)
+		}
+	})
+
+	t.Run("a_viewer_whose_broadcast_clause_refuses_reads_no_broadcast", func(t *testing.T) {
+		seedSessions(t)
+		seed(t, `insert into broadcasts (id, author, body, delivery, created_at) values
+			('00000000-0000-4000-8000-00000000b001', '{"kind":"user","id":"alice"}', 'to both', 'btw', now()),
+			('00000000-0000-4000-8000-00000000b002', '{"kind":"user","id":"alice"}', 'to OPEN', 'btw', now())`)
+		seed(t, `insert into messages (id, author, body, target, broadcast_id, broadcast_position, created_at) values
+			('00000000-0000-4000-8000-00000000b011', '{"kind":"user","id":"alice"}', 'to both', 'session:' || $1, '00000000-0000-4000-8000-00000000b001', 0, now()),
+			('00000000-0000-4000-8000-00000000b012', '{"kind":"user","id":"alice"}', 'to both', 'session:' || $2, '00000000-0000-4000-8000-00000000b001', 1, now()),
+			('00000000-0000-4000-8000-00000000b021', '{"kind":"user","id":"alice"}', 'to OPEN', 'session:' || $1, '00000000-0000-4000-8000-00000000b002', 0, now())`,
+			open.session, hush.session)
+		const both = `select count(*) from broadcasts where id = '00000000-0000-4000-8000-00000000b001'`
+		const toOpen = `select count(*) from broadcasts where id = '00000000-0000-4000-8000-00000000b002'`
+		if refused, read := countAs(t, bobSees, both), countAs(t, bobSees, toOpen); refused != 0 || read != 1 {
+			t.Errorf("bob, who does not see HUSH's session a copy went to, reads that broadcast %d times (want 0) and the one to OPEN's alone %d (want 1)", refused, read)
+		}
+		if read := countAs(t, aliceSees, both); read != 1 {
+			t.Errorf("alice, who sent it and sees every session it went to, reads the broadcast %d times, want 1", read)
+		}
+	})
+
+	t.Run("a_workflow_node_insert_and_its_update_pass_in_one_transaction_and_a_viewer_who_cannot_see_its_issue_reads_no_node", func(t *testing.T) {
+		viewed := store.WithViewer(ctx, aliceSees)
+		tx, err := w.deps.Store.Pool.Begin(viewed)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer func() { _ = tx.Rollback(ctx) }()
+		const node = `00000000-0000-4000-8000-00000000e001`
+		if _, err := tx.Exec(viewed, `insert into workflow_nodes (kind, id, supertag, visibility, state, attributes, made_at, made_by, source_event)
+			values ('step', $1, 'step', 'project', 'live', '{}', now(), '{"kind":"user","id":"alice"}', 0)`, node); err != nil {
+			t.Fatalf("alice's insert of a step that names no issue yet: %v", err)
+		}
+		var held []byte
+		if err := tx.QueryRow(viewed, `select attributes from workflow_nodes where kind = 'step' and id = $1 for update`, node).Scan(&held); err != nil {
+			t.Fatalf("alice's read of the step she just inserted: %v", err)
+		}
+		if tag, err := tx.Exec(viewed, `update workflow_nodes set attributes = attributes || jsonb_build_object('issue', $2::text) where kind = 'step' and id = $1`, node, hush.issue); err != nil || tag.RowsAffected() != 1 {
+			t.Fatalf("alice's update stating the step's issue %s: %v, %d rows", hush.issue, err, tag.RowsAffected())
+		}
+		if err := tx.Commit(viewed); err != nil {
+			t.Fatal(err)
+		}
+		const read = `select count(*) from workflow_nodes where id = '00000000-0000-4000-8000-00000000e001'`
+		if hidden, seen := countAs(t, bobSees, read), countAs(t, aliceSees, read); hidden != 0 || seen != 1 {
+			t.Errorf("the step of %s reads %d times for bob (want 0) and %d for alice (want 1)", hush.issue, hidden, seen)
+		}
+	})
+
+	t.Run("a_viewer_neither_sender_nor_recipient_reads_neither_the_message_nor_its_node", func(t *testing.T) {
+		seedSessions(t)
+		// alice's credential proved HUSH's session (session_owners), so its content rule passes her.
+		seed(t, `insert into session_owners (session_id, login, first_at) values ($1, $2, now()) on conflict do nothing`, hush.session, rlsOwner)
+		const message = `00000000-0000-4000-8000-00000000d101`
+		if _, err := w.deps.Store.Pool.Exec(store.WithViewer(ctx, aliceSees), `insert into messages (id, author, body, target, created_at)
+			values ($1, '{"kind":"user","id":"alice"}', 'a direct message', 'session:' || $2, now())`, message, hush.session); err != nil {
+			t.Fatalf("alice's insert of a message on no issue whose node is not written yet: %v", err)
+		}
+		seed(t, `insert into graph_nodes (kind, id, supertag, visibility, state, made_at, made_by, source_event, parties)
+			values ('message', $1, 'message', 'project', 'live', now(), '{}', 0, array['person:alice', 'session:' || $2])`, message, hush.session)
+		const messages = `select count(*) from messages where id = '00000000-0000-4000-8000-00000000d101'`
+		const nodes = `select count(*) from graph_nodes where kind = 'message' and id = '00000000-0000-4000-8000-00000000d101'`
+		if hidden, hiddenNode := countAs(t, bobSees, messages), countAs(t, bobSees, nodes); hidden != 0 || hiddenNode != 0 {
+			t.Errorf("bob, neither sender nor recipient, reads the message %d times and its node %d, want neither", hidden, hiddenNode)
+		}
+		if seen, seenNode := countAs(t, aliceSees, messages), countAs(t, aliceSees, nodes); seen != 1 || seenNode != 1 {
+			t.Errorf("alice, its sender, reads the message %d times and its node %d, want each once", seen, seenNode)
+		}
+	})
 }

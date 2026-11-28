@@ -182,6 +182,11 @@ var reviewedFunctionSecurity = map[string]functionSecurity{
 	"sync_route_roster_session_projects": definer("route_roster's trigger: it rewrites the projection of every session's listed projects and records reached projects, rows of sessions the writer does not see"),
 	"projects_session_projects_swept":    definer("projects' trigger (projects_session_projects_swept): it sweeps the session_projects pairs of every session for the project, rows of sessions the writer does not see"),
 	"user_threads_record":                definer("the user_threads bump (0095_user_threads.up.sql:73-77): a reply moves replied_at on every other participant's row of the thread, rows of other logins"),
+	"dispatch_node_visible":              definer("graph_nodes' policy, and graph_tuples' through dispatch_tuple_end_visible: a node's rule by its kind reads its item's node, a role's held_by tuples and a session's pairs, so no policy reads graph_tuples or graph_nodes under row security and none recurses"),
+	"dispatch_tuple_end_visible":         definer("graph_tuples' policy: it reads the node an end of the tuple names as the owner, then judges it by dispatch_node_visible"),
+	"dispatch_broadcast_visible":         definer("broadcasts' policy: access.BroadcastClause reads the broadcast and every copy of it, and a copy to a session the viewer may not read must refuse the broadcast, not be skipped under row security; a policy of broadcasts may not read broadcasts again"),
+	"dispatch_workflow_node_visible":     definer("workflow_nodes' policy: it reads the node's part_of tuple, whose policy reads workflow_nodes, so the node's issue is resolved as the owner"),
+	"dispatch_message_visible":           definer("messages' policy for a message on no issue: it reads the message's node and its thread root, rows the caller reads under row security, to find its conversation's parties"),
 
 	// Plan D2's readers of the viewer settings: each reads only its own setting.
 	"dispatch_viewer_sees":    invoker,

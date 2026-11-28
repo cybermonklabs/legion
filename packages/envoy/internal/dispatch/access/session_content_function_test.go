@@ -2,6 +2,7 @@ package access
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 
@@ -15,27 +16,29 @@ import (
 // database holds, is sessionContentFunctionBody as it renders now, word for word (whitespace aside).
 // The rule is written once, in Go over store.PersonSeesProjectSQL, which it reads; a change of either
 // that ships without a migration replacing the function fails here rather than leaving the
-// database answering the old rule. The function sets nothing for its calls (no SET clause), as
-// session_clause_visible does not, and is declared at the cost that keeps statements on their
-// indexes.
+// database answering the old rule. The function runs as its owner (security definer), as the
+// policies that bind access.SessionContentClause need, with search_path pinned to pg_catalog,
+// public (plan D5), as session_clause_visible does, and is declared at the cost that keeps
+// statements on their indexes.
 //
 // Control: a word of the rendered body changed (the open viewer's tie test dropped), and the test
 // names the difference.
 func TestTheContentFunctionIsTheBodyGoRenders(t *testing.T) {
 	database := storetest.Open(t)
 	var source string
+	var definer bool
 	var settings []string
 	var cost float32 // pg_proc.procost is a float4
 	if err := database.Pool.QueryRow(context.Background(), `
-		select prosrc, coalesce(proconfig, '{}'), procost from pg_proc where proname = 'session_content_visible'`).Scan(&source, &settings, &cost); err != nil {
+		select prosrc, prosecdef, coalesce(proconfig, '{}'), procost from pg_proc where proname = 'session_content_visible'`).Scan(&source, &definer, &settings, &cost); err != nil {
 		t.Fatalf("read session_content_visible: %v", err)
 	}
 	words := func(text string) string { return strings.Join(strings.Fields(text), " ") }
 	if held, rendered := words(source), words(sessionContentFunctionBody()); held != rendered {
 		t.Errorf("session_content_visible's body differs from sessionContentFunctionBody: a migration must replace the function\nheld:     %s\nrendered: %s", held, rendered)
 	}
-	if len(settings) > 0 {
-		t.Errorf("session_content_visible sets %v on each of its calls, want none", settings)
+	if !definer || !slices.Equal(settings, []string{"search_path=pg_catalog, public"}) {
+		t.Errorf("session_content_visible runs as its owner %t and sets %v on each of its calls, want security definer with search_path=pg_catalog, public alone", definer, settings)
 	}
 	if cost != float32(0.0001) {
 		t.Errorf("session_content_visible is declared at cost %v, want 0.0001", cost)

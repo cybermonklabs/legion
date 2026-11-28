@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 
@@ -276,8 +277,9 @@ func planLoops(t *testing.T, q Querier, relation, sql string, args ...any) (scan
 // deployment that holds a private project and has filled session_projects, the clause calls it
 // once a session, and each call reads route_roster_session_projects through its primary key,
 // keyed on id, in no node more than once. With no private project an open viewer's read calls it
-// not at all (R9). The function sets nothing for its calls (no SET clause, so no call saves and
-// restores a search_path): it names each table by its schema.
+// not at all (R9). The function runs as its owner (security definer), as the policies that bind
+// SessionClause need, with search_path pinned to pg_catalog, public (plan D5), and names each table
+// by its schema.
 //
 // Controls: drop route_roster_session_projects_pkey on the connection the read runs on, and each
 // call reads the projection by a sequential scan, which the test names as a search of no
@@ -295,13 +297,14 @@ func TestTheListenerRecordUsesItsPrimaryKey(t *testing.T) {
 	`); err != nil {
 		t.Fatalf("seed the listener's record of fifty sessions: %v", err)
 	}
+	var definer bool
 	var settings []string
 	if err := database.Pool.QueryRow(ctx, `
-		select coalesce(proconfig, '{}') from pg_proc where proname = 'session_clause_visible'`).Scan(&settings); err != nil {
+		select prosecdef, coalesce(proconfig, '{}') from pg_proc where proname = 'session_clause_visible'`).Scan(&definer, &settings); err != nil {
 		t.Fatalf("read session_clause_visible's settings: %v", err)
 	}
-	if len(settings) > 0 {
-		t.Errorf("session_clause_visible sets %v on each of its calls, want none: it names its tables by their schema", settings)
+	if !definer || !slices.Equal(settings, []string{"search_path=pg_catalog, public"}) {
+		t.Errorf("session_clause_visible runs as its owner %t and sets %v on each of its calls, want security definer with search_path=pg_catalog, public alone", definer, settings)
 	}
 	const projection = "route_roster_session_projects"
 	read := `select count(*) from generate_series(1, 50) as n where ` + SessionClause("'ses_' || n", "$1")

@@ -207,13 +207,14 @@ func PersonClause(loginExpr, viewerParam string) string {
 //
 // The server's viewer, the viewer's own session and an open viewer of a deployment that holds no
 // private project are answered in the statement's own SQL, so those rows call nothing and read
-// nothing (R9). Every other row asks session_clause_visible (the migration's function, which names
-// each table by its schema and sets no search_path). Postgres never inlines that function, since
-// its body reads tables, and runs it once per row it asks about; its declared cost is what keeps
-// the statements that bind this clause on their indexes, which the same decision written into the
-// statement does not (refs.TestBacklinkCountStatementReadsEveryArmThroughAnIndex). What one call
-// runs is in TestTheListenerRecordUsesItsPrimaryKey: the listener record read through its primary
-// key.
+// nothing (R9). Every other row asks session_clause_visible (the migration's function, which runs
+// as its owner with search_path pinned and names each table by its schema, plan D5, so a policy
+// that binds this clause reads what it reads past row security). Postgres never inlines that
+// function, since its body reads tables, and runs it once per row it asks about; its declared cost
+// is what keeps the statements that bind this clause on their indexes, which the same decision
+// written into the statement does not (refs.TestBacklinkCountStatementReadsEveryArmThroughAnIndex).
+// What one call runs is in TestTheListenerRecordUsesItsPrimaryKey: the listener record read through
+// its primary key.
 func SessionClause(sessionExpr, viewerParam string) string {
 	return clause("SessionClause", fmt.Sprintf(`(%[3]s or (%[1]s) = %[2]s::jsonb->>'session'
 		or (%[4]s and not %[5]s)
@@ -302,9 +303,10 @@ func SessionContentClause(sessionExpr, viewerParam string) string {
 // over store.PersonSeesProjectSQLIn, and the migration holds it as this text renders it:
 // TestTheContentFunctionIsTheBodyGoRenders fails while the function a migrated database holds
 // differs from it, so a change of either rule here ships with a migration that replaces the
-// function. The function runs under its caller's search_path and sets none, which would save and
-// restore the setting on every call, so every table it reads is named by its schema, as
-// session_clause_visible names its tables.
+// function. The function runs as its owner (security definer), so a policy that binds
+// SessionContentClause reads the session's rows past row security, with search_path pinned to
+// pg_catalog, public, and every table it reads is named by its schema, as session_clause_visible
+// names its tables (plan D5).
 //
 // The listener record it reads is the projection of route_roster's one row, which serves reads
 // only until its expires_at (routeRosterTTL past the listener's answer, by the database's clock).

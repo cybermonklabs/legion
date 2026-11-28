@@ -1109,4 +1109,47 @@ func TestRequestPoolRunsAsNoBypassRLSRoleAndFailsClosed(t *testing.T) {
 			t.Errorf("ViewerFrom gives %+v, %t, want the viewer the context carries", viewer, ok)
 		}
 	})
+
+	// dispatch_repo_visible, the repository rule of plan D11, read under dispatch_app for limited
+	// members: an issue resolves to the repository the nearest issue of its own project on its
+	// parent chain names, else its project's default repository (refs.IssueRepoTerms), so RLSP's
+	// member reads org/rls-p-own, which RLSP-3 takes from its parent RLSP-2, and RLSP's default,
+	// and not org/rls-q, which only RLSQ-1 names, though RLSP-1's parent is RLSQ-1.
+	t.Run("dispatch_repo_visible_same_project_chain_and_default", func(t *testing.T) {
+		request := f.requestPool(t)
+		for _, sql := range []string{
+			`insert into projects (key, name, default_assignee, visibility, default_repo, created_at) values
+				('RLSP', 'RLSP', 'bob@example.com', 'private', 'org/rls-p-default', now()),
+				('RLSQ', 'RLSQ', 'bob@example.com', 'private', null, now())`,
+			`insert into issues (key, project_key, number, title, status, labels, rank, created_by, created_at, updated_at, parent_key, repo) values
+				('RLSQ-1', 'RLSQ', 1, 'Q root', 'triage', '{}', 'm', '{}', now(), now(), null, 'org/rls-q'),
+				('RLSP-2', 'RLSP', 2, 'P root', 'triage', '{}', 'm', '{}', now(), now(), null, 'org/rls-p-own'),
+				('RLSP-1', 'RLSP', 1, 'P under Q', 'triage', '{}', 'm', '{}', now(), now(), 'RLSQ-1', null),
+				('RLSP-3', 'RLSP', 3, 'P under P', 'triage', '{}', 'm', '{}', now(), now(), 'RLSP-2', null)`,
+		} {
+			if _, err := f.system.Pool.Exec(ctx, sql); err != nil {
+				t.Fatalf("seed the repository rule's projects and issues: %v", err)
+			}
+		}
+		member := model.Viewer{Person: "dora@example.com", Sees: []string{"RLSP"}, AnyPrivate: true}
+		ofQ := model.Viewer{Person: "erin@example.com", Sees: []string{"RLSQ"}, AnyPrivate: true}
+		nobody := model.Viewer{Person: "frank@example.com", AnyPrivate: true}
+		for _, read := range []struct {
+			viewer model.Viewer
+			repo   string
+			want   bool
+		}{
+			{member, "org/rls-p-own", true}, {member, "org/rls-p-default", true}, {member, "org/rls-q", false},
+			{ofQ, "org/rls-q", true}, {ofQ, "org/rls-p-own", false},
+			{nobody, "org/rls-p-own", false}, {nobody, "org/rls-p-default", false}, {nobody, "org/rls-q", false},
+		} {
+			var visible bool
+			if err := request.QueryRow(WithViewer(ctx, read.viewer), `select dispatch_repo_visible($1)`, read.repo).Scan(&visible); err != nil {
+				t.Fatalf("%s: dispatch_repo_visible(%s): %v", read.viewer.Person, read.repo, err)
+			}
+			if visible != read.want {
+				t.Errorf("%s reads %s %t, want %t: an issue resolves to the repository its own project's chain names, else its project's default (refs.IssueRepoTerms), never to a parent's of another project", read.viewer.Person, read.repo, visible, read.want)
+			}
+		}
+	})
 }

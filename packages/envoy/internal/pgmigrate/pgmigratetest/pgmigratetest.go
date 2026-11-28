@@ -121,6 +121,9 @@ func CheckCensusDeclaredFrom(fsys fs.FS, dir string, from int) error {
 
 var (
 	createTable = regexp.MustCompile(`(?is)\bcreate\s+table\s+(?:if\s+not\s+exists\s+)?(?:public\.)?([a-z_][a-z0-9_]*)`)
+	// createView names the view a create view or create or replace view makes, which alter view
+	// names as a touch (graph_edges' security_invoker).
+	createView  = regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:recursive\s+)?view\s+(?:public\.)?([a-z_][a-z0-9_]*)`)
 	renameTable = regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?(?:public\.)?([a-z_][a-z0-9_]*)\s+rename\s+to\s+([a-z_][a-z0-9_]*)`)
 	// versionControlNames are the names cmd/go's embed walk skips under every pattern, all:
 	// included (isBadEmbedName), which CheckEmbedsEveryFile names as such.
@@ -128,7 +131,8 @@ var (
 )
 
 // CheckTouchedTablesAreKnown reports an error unless every table pgmigrate.TouchedTables finds in
-// a migration is one the set creates in that migration or an earlier one. It reads file text
+// a migration is one the set creates in that migration or an earlier one, and every view it finds
+// (alter view's) is one a create view of the set makes there or earlier. It reads file text
 // alone and needs no database, so a store's plain unit tests, run without a test database, still
 // catch a name the extractor misread. It is one-sided: it never catches a statement form the
 // extractor misses, which names nothing; CheckTouchedTablesAgainstLocks catches that, and a misread
@@ -141,6 +145,9 @@ func CheckTouchedTablesAreKnown(fsys fs.FS, dir string) error {
 	known := map[string]bool{}
 	for _, migration := range migrations {
 		for _, match := range createTable.FindAllStringSubmatch(migration.SQL, -1) {
+			known[strings.ToLower(match[1])] = true
+		}
+		for _, match := range createView.FindAllStringSubmatch(migration.SQL, -1) {
 			known[strings.ToLower(match[1])] = true
 		}
 		for _, match := range renameTable.FindAllStringSubmatch(migration.SQL, -1) {

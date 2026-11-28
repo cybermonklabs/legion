@@ -51,7 +51,8 @@ import (
 //     reset of any setting but lock_timeout and statement_timeout takes the catalog reads away
 //     (catalogReadsOff): such a setting can change what the migration's names resolve to, as
 //     search_path does, or how the server reads the text of a later migration;
-//   - alter table, of a table, with only the subcommands catalogOnlyAlterTable admits;
+//   - alter table, of a table, with only the subcommands catalogOnlyAlterTable admits, and alter
+//     view with only the one catalogOnlyAlterTable admits of a view (SET (security_invoker = …));
 //   - rename column, of a table (catalogOnlyRename): it rewrites the column's pg_attribute row,
 //     and no row of the table stores a column's name;
 //   - create table, without INHERITS or PARTITION OF (catalogOnlyCreateTable): the new table
@@ -65,6 +66,11 @@ import (
 //     the migration, whose every other statement must be one of these kinds for it to be exempt,
 //     so the time it is held does not grow with the table either, and the runner's lock_timeout
 //     bounds its wait as it bounds every statement's.
+//   - create policy, of any form (CreatePolicyStmt): it writes the policy's pg_policy row, takes
+//     ACCESS EXCLUSIVE on its table and analyzes its USING and WITH CHECK expressions, taking
+//     ACCESS SHARE on the tables they name and reading none of their rows. The expressions run
+//     only on the later statements the policy applies to, each for the rows that statement
+//     meets, never on the rows already there.
 //
 // CREATE TABLE … AS and CREATE MATERIALIZED VIEW parse as CreateTableAsStmt, and SELECT … INTO as
 // SelectStmt: each fills a table with the rows its query reads, and neither node is here.
@@ -90,6 +96,7 @@ var catalogOnlyStatements = map[string]func(c *classifier, node json.RawMessage)
 	"IndexStmt":          (*classifier).catalogOnlyIndex,
 	"ViewStmt":           always("create view"),
 	"LockStmt":           always("lock table"),
+	"CreatePolicyStmt":   always("create policy"),
 }
 
 // classifier is what tableSizeExemption holds while it judges the statements of one migration, in
@@ -190,7 +197,8 @@ func (*classifier) catalogOnlyDrop(node json.RawMessage) (string, error) {
 }
 
 // catalogOnlyAlterTable answers "alter table" for an ALTER TABLE each of whose subcommands is one
-// of these, which change only the catalog and read no existing row, and "" for any other:
+// of these, which change only the catalog and read no existing row, "alter view" for the one form
+// of ALTER VIEW below, and "" for any other:
 //
 //   - DROP CONSTRAINT and DROP COLUMN, with RESTRICT: removing a constraint deletes its catalog
 //     rows, and its backing index with them, and removing a column marks it dropped in
@@ -205,17 +213,28 @@ func (*classifier) catalogOnlyDrop(node json.RawMessage) (string, error) {
 //   - ALTER COLUMN … DROP NOT NULL, which removes the constraint and checks nothing;
 //   - ALTER COLUMN … DROP EXPRESSION, which makes a stored generated column a plain one that keeps
 //     the values it stored; PostgreSQL 18 refuses it on a virtual generated column, whose values
-//     are stored nowhere.
+//     are stored nowhere;
+//   - ENABLE ROW LEVEL SECURITY, which sets the table's relrowsecurity in pg_class and reads no
+//     row: the table's policies then apply to the later statements of every role that does not
+//     bypass them, each for the rows that statement meets.
 //
 // Every other subcommand is refused: SET NOT NULL scans the table for nulls, ALTER COLUMN TYPE
-// rewrites it, and VALIDATE CONSTRAINT and a validated ADD CONSTRAINT scan it. Each admitted
-// subcommand still takes ACCESS EXCLUSIVE briefly, bounded by the runner's lock_timeout.
+// rewrites it, and VALIDATE CONSTRAINT and a validated ADD CONSTRAINT scan it. FORCE ROW LEVEL
+// SECURITY changes the catalog alone too, and is refused all the same: it makes the table's owner
+// meet its policies, the role every migration and the release before this one write as, so each
+// later write of the owner's, a bounded write among them (boundedWrites), runs policy expressions
+// that can read any table for each row it meets, and no form of Dispatch's row security forces it.
+// Each admitted subcommand still takes ACCESS EXCLUSIVE briefly, bounded by the runner's
+// lock_timeout.
 //
-// The statement must alter a table (objtype OBJECT_TABLE). ALTER TYPE … ADD ATTRIBUTE and ALTER
-// FOREIGN TABLE parse as this node too, as do ALTER VIEW, ALTER MATERIALIZED VIEW (objtype
-// OBJECT_MATVIEW), ALTER INDEX and ALTER SEQUENCE. The census sizes neither a type nor a foreign
-// table, so admitting them serves nothing, and ALTER TYPE alters a type, which takes the catalog
-// reads away from every later migration (catalogReadsOff).
+// The statement must alter a table (objtype OBJECT_TABLE), or be ALTER VIEW … SET
+// (security_invoker = …) (setsViewSecurityInvoker): that option rewrites the view's
+// pg_class.reloptions alone and reads no row, and decides only whose privileges and row security
+// the view's query is checked under when a later statement reads the view. ALTER TYPE … ADD
+// ATTRIBUTE and ALTER FOREIGN TABLE parse as this node too, as do every other ALTER VIEW, ALTER
+// MATERIALIZED VIEW (objtype OBJECT_MATVIEW), ALTER INDEX and ALTER SEQUENCE. The census sizes
+// neither a type nor a foreign table, so admitting them serves nothing, and ALTER TYPE alters a
+// type, which takes the catalog reads away from every later migration (catalogReadsOff).
 func (c *classifier) catalogOnlyAlterTable(node json.RawMessage) (string, error) {
 	var alter struct {
 		Objtype string `json:"objtype"`
@@ -226,6 +245,9 @@ func (c *classifier) catalogOnlyAlterTable(node json.RawMessage) (string, error)
 				Def      map[string]json.RawMessage `json:"def"`
 			} `json:"AlterTableCmd"`
 		} `json:"cmds"`
+	}
+	if setsViewSecurityInvoker(node) {
+		return "alter view", nil
 	}
 	if json.Unmarshal(node, &alter) != nil || alter.Objtype != "OBJECT_TABLE" || len(alter.Cmds) == 0 {
 		return "", nil
@@ -250,12 +272,53 @@ func (c *classifier) catalogOnlyAlterTable(node json.RawMessage) (string, error)
 			if admitted, err := c.catalogOnlyColumn(cmd.Def["ColumnDef"]); err != nil || !admitted {
 				return "", err
 			}
-		case "AT_ColumnDefault", "AT_DropNotNull", "AT_DropExpression":
+		case "AT_ColumnDefault", "AT_DropNotNull", "AT_DropExpression", "AT_EnableRowSecurity":
 		default:
 			return "", nil
 		}
 	}
 	return "alter table", nil
+}
+
+// setsViewSecurityInvoker says whether an AlterTableStmt node alters a view (objtype
+// OBJECT_VIEW) with SET (…) subcommands alone, each naming the option security_invoker and no
+// other: ALTER VIEW … SET (security_invoker = …), the one form of ALTER VIEW that
+// catalogOnlyAlterTable admits and that keeps the catalog reads on after it (listedKind). A node
+// it cannot read is not one.
+func setsViewSecurityInvoker(node json.RawMessage) bool {
+	var alter struct {
+		Objtype string `json:"objtype"`
+		Cmds    []struct {
+			Command struct {
+				Subtype string `json:"subtype"`
+				Def     struct {
+					List struct {
+						Items []struct {
+							DefElem *struct {
+								Defnamespace string `json:"defnamespace"`
+								Defname      string `json:"defname"`
+							} `json:"DefElem"`
+						} `json:"items"`
+					} `json:"List"`
+				} `json:"def"`
+			} `json:"AlterTableCmd"`
+		} `json:"cmds"`
+	}
+	if json.Unmarshal(node, &alter) != nil || alter.Objtype != "OBJECT_VIEW" || len(alter.Cmds) == 0 {
+		return false
+	}
+	for _, item := range alter.Cmds {
+		options := item.Command.Def.List.Items
+		if item.Command.Subtype != "AT_SetRelOptions" || len(options) == 0 {
+			return false
+		}
+		for _, option := range options {
+			if option.DefElem == nil || option.DefElem.Defnamespace != "" || option.DefElem.Defname != "security_invoker" {
+				return false
+			}
+		}
+	}
+	return true
 }
 
 // catalogOnlyColumn admits an added column, a ColumnDef node, that Postgres adds in the catalog
@@ -779,8 +842,9 @@ func timeoutSetting(name string) bool {
 //     SELECT … INTO is not on the list (selectInto): it creates a table and fills it with the rows
 //     its query reads, as CREATE TABLE … AS does, and the list holds neither form of a table that
 //     a query fills;
-//   - LOCK TABLE, CREATE TRIGGER and CREATE INDEX, none of which makes or changes a type or a
-//     function;
+//   - LOCK TABLE, CREATE TRIGGER, CREATE INDEX and CREATE POLICY, none of which makes or changes
+//     a type, a function or a setting: a policy names the role it applies to, and its expressions
+//     name the relations and the functions they read, which the walk below reads as a SELECT's;
 //   - CREATE TABLE and CREATE VIEW, with or without OR REPLACE, of a name that pg_catalog holds as
 //     the name of no type (catalogTypeName). The new row type can hide a type of its name in a
 //     later schema of the search_path, which the census then reads in its place. But no cast
@@ -793,8 +857,11 @@ func timeoutSetting(name string) bool {
 //     with no subcommand of CASCADE. DROP COLUMN … CASCADE and DROP CONSTRAINT … CASCADE drop
 //     objects the statement does not name, as a DROP … CASCADE does: a function with an
 //     SQL-standard body that reads the column, say, and with it a range type whose subtype_diff it
-//     is. ALTER TYPE, ALTER VIEW, ALTER MATERIALIZED VIEW, ALTER SEQUENCE and ALTER FOREIGN TABLE
-//     parse as this node too, and none of them is on the list;
+//     is. ALTER VIEW … SET (security_invoker = …) (setsViewSecurityInvoker) is on the list too: it
+//     sets an option of the view's pg_class row that decides whose privileges and row security
+//     its query is checked under, and changes no name. ALTER TYPE, every other ALTER VIEW, ALTER
+//     MATERIALIZED VIEW, ALTER SEQUENCE and ALTER FOREIGN TABLE parse as this node too, and none
+//     of them is on the list;
 //   - RENAME COLUMN of a table, which renames an attribute of the table's row type and no type.
 //     Every other rename is off the list. A rename of a table, a view, a materialized view or a
 //     foreign table renames the relation's row type, which keeps every cast that targets it, so a
@@ -882,13 +949,14 @@ func (c *classifier) keepsReadsOn(s statement, setConfig bool) (bool, error) {
 
 // listedKind says whether statement s is of a kind on the keep-on list (keepsReadsOn lists the
 // kinds), as its parse node shows with no catalog read: an INSERT, an UPDATE, a DELETE, a LOCK
-// TABLE, a CREATE TRIGGER, a CREATE INDEX, a CREATE TABLE and a CREATE VIEW, a SELECT without INTO,
-// an ALTER TABLE of a table or an index with no subcommand of CASCADE, a RENAME COLUMN of a table,
-// a DROP INDEX, DROP TRIGGER, DROP FUNCTION, DROP TABLE or DROP VIEW with RESTRICT, and a CREATE
-// FUNCTION or CREATE PROCEDURE in plpgsql or sql. A node it cannot read is off the list.
+// TABLE, a CREATE TRIGGER, a CREATE INDEX, a CREATE TABLE and a CREATE VIEW, a CREATE POLICY, a
+// SELECT without INTO, an ALTER TABLE of a table or an index with no subcommand of CASCADE, an
+// ALTER VIEW … SET (security_invoker = …), a RENAME COLUMN of a table, a DROP INDEX, DROP TRIGGER,
+// DROP FUNCTION, DROP TABLE or DROP VIEW with RESTRICT, and a CREATE FUNCTION or CREATE PROCEDURE
+// in plpgsql or sql. A node it cannot read is off the list.
 func (c *classifier) listedKind(s statement) bool {
 	switch s.node {
-	case "InsertStmt", "UpdateStmt", "DeleteStmt", "LockStmt", "CreateTrigStmt", "IndexStmt", "CreateStmt", "ViewStmt":
+	case "InsertStmt", "UpdateStmt", "DeleteStmt", "LockStmt", "CreateTrigStmt", "IndexStmt", "CreateStmt", "ViewStmt", "CreatePolicyStmt":
 		return true
 	case "SelectStmt":
 		return !selectInto(s.body)
@@ -900,6 +968,9 @@ func (c *classifier) listedKind(s statement) bool {
 					Behavior string `json:"behavior"`
 				} `json:"AlterTableCmd"`
 			} `json:"cmds"`
+		}
+		if setsViewSecurityInvoker(s.body) {
+			return true
 		}
 		if json.Unmarshal(s.body, &alter) != nil || alter.Objtype != "OBJECT_TABLE" && alter.Objtype != "OBJECT_INDEX" {
 			return false
@@ -1503,7 +1574,8 @@ func addsPlainColumns(statements []statement) bool {
 // ddl_command_start, ddl_command_end or sql_drop whose tags are unset or name one of the command
 // tags below, "" when there are none: the tag of each kind catalogOnlyStatements admits, CREATE
 // INDEX among them, which the separate concurrent exception reads too. A column rename's tag is
-// ALTER TABLE, and LOCK TABLE, SET and RESET fire no event trigger. A drop fires sql_drop as well
+// ALTER TABLE, as ENABLE ROW LEVEL SECURITY's is, ALTER VIEW … SET (security_invoker = …)'s is
+// ALTER VIEW, and LOCK TABLE, SET and RESET fire no event trigger. A drop fires sql_drop as well
 // as the two ddl_command_ events, so an event trigger on sql_drop would run code of its own on a
 // drop the exemption covers. Census reads this once for the whole database rather than per
 // migration, so such a trigger on sql_drop takes the exemption from every migration, one holding
@@ -1516,4 +1588,4 @@ const ddlEventTriggersQuery = `
 	select coalesce(string_agg(evtname, ', ' order by evtname), '')
 	from pg_event_trigger
 	where evtenabled <> 'D' and evtevent in ('ddl_command_start', 'ddl_command_end', 'sql_drop')
-		and (evttags is null or evttags && array['CREATE FUNCTION', 'CREATE PROCEDURE', 'CREATE TRIGGER', 'DROP FUNCTION', 'DROP TRIGGER', 'DROP INDEX', 'ALTER TABLE', 'CREATE INDEX', 'CREATE TABLE', 'CREATE VIEW', 'DROP TABLE'])`
+		and (evttags is null or evttags && array['CREATE FUNCTION', 'CREATE PROCEDURE', 'CREATE TRIGGER', 'DROP FUNCTION', 'DROP TRIGGER', 'DROP INDEX', 'ALTER TABLE', 'ALTER VIEW', 'CREATE INDEX', 'CREATE TABLE', 'CREATE VIEW', 'CREATE POLICY', 'DROP TABLE'])`

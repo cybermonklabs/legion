@@ -27,30 +27,39 @@ const (
 )
 
 // touchedTablePatterns are the statement forms the repository's migrations lock a table above
-// ACCESS SHARE with, each with what it does to that table's rows.
+// ACCESS SHARE with, each with what it does to that table's rows. A form whose name is a view's
+// (view) names a relation that holds no row.
 var touchedTablePatterns = []struct {
 	pattern *regexp.Regexp
 	writes  rowWrite
+	view    bool
 }{
-	{regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?([\w."]+)`), 0},
-	{regexp.MustCompile(`(?is)\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:(?:if\s+not\s+exists\s+)?[\w."]+\s+)?on\s+(?:only\s+)?([\w."]+)`), 0},
-	{regexp.MustCompile(`(?is)\bdrop\s+table\s+(?:if\s+exists\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), dropsTable},
-	{regexp.MustCompile(`(?is)\btruncate\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), truncatesRows},
-	{regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+[\w."]+.*?\bon\s+([\w."]+)`), 0},
+	{regexp.MustCompile(`(?is)\balter\s+table\s+(?:if\s+exists\s+)?(?:only\s+)?([\w."]+)`), 0, false},
+	{regexp.MustCompile(`(?is)\bcreate\s+(?:unique\s+)?index\s+(?:concurrently\s+)?(?:(?:if\s+not\s+exists\s+)?[\w."]+\s+)?on\s+(?:only\s+)?([\w."]+)`), 0, false},
+	{regexp.MustCompile(`(?is)\bdrop\s+table\s+(?:if\s+exists\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), dropsTable, false},
+	{regexp.MustCompile(`(?is)\btruncate\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), truncatesRows, false},
+	{regexp.MustCompile(`(?is)\bcreate\s+(?:or\s+replace\s+)?(?:constraint\s+)?trigger\s+[\w."]+.*?\bon\s+([\w."]+)`), 0, false},
 	// drop trigger names its table where create trigger does, and both are counted as touches:
 	// drop trigger takes ACCESS EXCLUSIVE on that table, create trigger SHARE ROW EXCLUSIVE.
-	{regexp.MustCompile(`(?is)\bdrop\s+trigger\s+(?:if\s+exists\s+)?[\w."]+\s+on\s+([\w."]+)`), 0},
+	{regexp.MustCompile(`(?is)\bdrop\s+trigger\s+(?:if\s+exists\s+)?[\w."]+\s+on\s+([\w."]+)`), 0, false},
 	// The table may carry an alias (update comments c set …), as 0043 and 0044 write it.
-	{regexp.MustCompile(`(?is)\bupdate\s+(?:only\s+)?([\w."]+)(?:\s+(?:as\s+)?[\w"]+)?\s+set\b`), updatesRows},
-	{regexp.MustCompile(`(?is)\bdelete\s+from\s+(?:only\s+)?([\w."]+)`), deletesRows},
-	{regexp.MustCompile(`(?is)\binsert\s+into\s+([\w."]+)`), insertsRows},
+	{regexp.MustCompile(`(?is)\bupdate\s+(?:only\s+)?([\w."]+)(?:\s+(?:as\s+)?[\w"]+)?\s+set\b`), updatesRows, false},
+	{regexp.MustCompile(`(?is)\bdelete\s+from\s+(?:only\s+)?([\w."]+)`), deletesRows, false},
+	{regexp.MustCompile(`(?is)\binsert\s+into\s+([\w."]+)`), insertsRows, false},
 	// An upsert's do update can change any column of the row it meets, its key among them. A
 	// statement holds no ; outside a literal, and readMigration empties every literal.
-	{regexp.MustCompile(`(?is)\binsert\s+into\s+([\w."]+)[^;]*?\bon\s+conflict\b[^;]*?\bdo\s+update\b`), updatesRows},
-	{regexp.MustCompile(`(?is)\block\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), 0},
+	{regexp.MustCompile(`(?is)\binsert\s+into\s+([\w."]+)[^;]*?\bon\s+conflict\b[^;]*?\bdo\s+update\b`), updatesRows, false},
+	{regexp.MustCompile(`(?is)\block\s+(?:table\s+)?(?:only\s+)?([\w."]+(?:\s*,\s*[\w."]+)*)`), 0, false},
+	// A policy takes ACCESS EXCLUSIVE on the table it is on (create policy <name> on <table>); a
+	// table its expressions read is only read, and the command it is for (for update, for delete)
+	// names no table.
+	{regexp.MustCompile(`(?is)\bcreate\s+policy\s+[\w."]+\s+on\s+([\w."]+)`), 0, false},
+	// alter view takes ACCESS EXCLUSIVE on the view it names (graph_edges' security_invoker),
+	// which holds no row, and alters none of its base tables.
+	{regexp.MustCompile(`(?is)\balter\s+view\s+(?:if\s+exists\s+)?([\w."]+)`), 0, true},
 	// A foreign key takes SHARE ROW EXCLUSIVE on the table it references, which holds that
 	// table's writes for as long as the migration runs.
-	{referencesPattern, 0},
+	{referencesPattern, 0, false},
 }
 
 var referencesPattern = regexp.MustCompile(`(?is)\breferences\s+(?:only\s+)?([\w."]+)`)
@@ -62,17 +71,17 @@ var touchedIndexPatterns = []*regexp.Regexp{
 
 // TouchedTables names, sorted and once each, the tables a migration's statements lock above
 // ACCESS SHARE: the targets of alter table, create index … on, drop table, truncate, create
-// trigger … on, drop trigger … on, update (with or without an alias), delete from, insert into
-// and lock table, and the table a foreign key references. A table a statement only reads (insert
-// … select from, create view … as) is left out: its ACCESS SHARE waits only behind an ACCESS
-// EXCLUSIVE holder. It reads the statements the migration runs (readMigration): not its
-// comments, its string literals or the body of a function it defines, and a DO block's body as
-// statements; it lowercases and strips a public. qualifier and quotes. The forms are the ones
-// the repository's migrations use. What it reads from the text alone is part of the census's
-// reading, CensusTables, which every store's tests hold to what each of its migrations really
-// locks (pgmigratetest.CheckTouchedTablesAgainstLocks), so a migration written in a form this
-// does not know (reindex, cluster, create policy … on, merge into) fails there and needs a
-// pattern here.
+// trigger … on, drop trigger … on, update (with or without an alias), delete from, insert into,
+// lock table and create policy … on, the table a foreign key references, and the view alter view
+// names. A table a statement only reads (insert … select from, create view … as, a policy's
+// expressions) is left out: its ACCESS SHARE waits only behind an ACCESS EXCLUSIVE holder. It
+// reads the statements the migration runs (readMigration): not its comments, its string literals
+// or the body of a function it defines, and a DO block's body as statements; it lowercases and
+// strips a public. qualifier and quotes. The forms are the ones the repository's migrations use.
+// What it reads from the text alone is part of the census's reading, CensusTables, which every
+// store's tests hold to what each of its migrations really locks
+// (pgmigratetest.CheckTouchedTablesAgainstLocks), so a migration written in a form this does not
+// know (reindex, cluster, merge into) fails there and needs a pattern here.
 func TouchedTables(sql string) []string {
 	return touchedNames(readMigration(sql).code)
 }
@@ -97,10 +106,12 @@ func touchedIndexes(code string) []string {
 	return slices.Compact(names)
 }
 
-// touch is one table a statement of a migration names, with what the statement does to its rows.
+// touch is one table a statement of a migration names, with what the statement does to its rows,
+// or the view alter view names (view), which holds no row.
 type touch struct {
 	name   string
 	writes rowWrite
+	view   bool
 	offset int
 }
 
@@ -117,7 +128,7 @@ func matchedTouches(code string) []touch {
 			if form.writes == truncatesRows && (match.name == "on" || match.name == "or") {
 				continue
 			}
-			out = append(out, touch{name: match.name, writes: form.writes, offset: match.offset})
+			out = append(out, touch{name: match.name, writes: form.writes, view: form.view, offset: match.offset})
 		}
 	}
 	return out
@@ -147,7 +158,7 @@ func indexMatches(code string) []matchedName {
 // matchedNames names the tables pattern's first group names in code. An unquoted `on` is no
 // table: ON is a reserved word, so a table so named would be quoted, and the truncate pattern
 // meets it in a trigger's event list (`after truncate on route_roster`), whose table the trigger
-// pattern reads.
+// pattern reads. Each part of a name loses its quotes, so public."comments" names comments.
 func matchedNames(code string, pattern *regexp.Regexp) []matchedName {
 	var names []matchedName
 	for _, match := range pattern.FindAllStringSubmatchIndex(code, -1) {
@@ -156,7 +167,7 @@ func matchedNames(code string, pattern *regexp.Regexp) []matchedName {
 			if strings.EqualFold(trimmed, "on") {
 				continue
 			}
-			name := strings.ToLower(strings.Trim(trimmed, `"`))
+			name := strings.ToLower(strings.ReplaceAll(trimmed, `"`, ""))
 			name = strings.TrimPrefix(name, "public.")
 			if name != "" {
 				names = append(names, matchedName{name: name, offset: match[0]})
@@ -190,7 +201,9 @@ type TouchedTable struct {
 // sorted by name: Census checks each, and pgmigratetest.CheckTouchedTablesAgainstLocks holds the
 // reading to the locks each migration of a set takes. It reads, through q's catalog:
 //
-//   - every table TouchedTables names;
+//   - every table TouchedTables names, but the view alter view names: a view holds no row, so the
+//     size rule has none to read of it, and a row count of it would run its query over the base
+//     tables, which the migration does not alter;
 //   - the table of each index the migration drops or alters (an index the database does not have
 //     yet is skipped: the pending migration that creates it names its table);
 //   - every table a foreign key reaches from rows the migration writes, which a statement locks
@@ -226,6 +239,9 @@ func censusTables(ctx context.Context, q Querier, text migrationText, matches []
 	writes := map[string]rowWrite{}
 	unconditional := map[string]bool{}
 	for _, touch := range matches {
+		if touch.view {
+			continue
+		}
 		writes[touch.name] |= touch.writes
 		if !text.conditionalAt(touch.offset) {
 			unconditional[touch.name] = true

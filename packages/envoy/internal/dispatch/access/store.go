@@ -677,8 +677,9 @@ func RecordListedReach(ctx context.Context, q Querier, session string, projects 
 // project after the switch, so its transcript carries the project's private content from the
 // switch on, as route_roster's trigger keeps a private project a list names.
 //
-// It takes no lock of its own. It names every table by its schema and sets no search_path, as
-// session_content_visible does. The migration holds this text:
+// It takes no lock of its own. It runs as its owner (security definer), since it writes pairs of
+// sessions the writer does not see, with search_path pinned to pg_catalog, public, and names every
+// table by its schema, as session_content_visible does (plan D5). The migration holds this text:
 // TestTheMadePrivateTriggerIsTheBodyGoRenders fails while the function a migrated database holds
 // differs from it.
 func projectMadePrivateFunctionBody() string {

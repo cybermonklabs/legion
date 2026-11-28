@@ -81,8 +81,11 @@ type boundedVerdict struct {
 // read the whole table:
 //
 //   - no rule (pg_rewrite): a rule can run any statement in place of the write or beside it;
-//   - no row-level security (relrowsecurity): a policy's expression can read any table for each
-//     row the write meets;
+//   - no row-level security the write meets (relrowsecurity): a policy's expression can read any
+//     table for each row the write meets. A table with row security is admitted where the
+//     migrating login owns it (relowner, the login itself and not a role it is a member of) and
+//     the table does not force row security (relforcerowsecurity): Postgres applies no policy to
+//     the owner's write then, so the write reads what it would read with row security off;
 //   - for an update without ONLY, no child table (pg_inherits): Postgres updates every child too,
 //     whose size and keys the census does not read;
 //   - the census reads the table's keys, rules and triggers as they stand before any pending
@@ -149,7 +152,7 @@ func (w *writeReading) boundedWrites(ctx context.Context, table string, oid uint
 		return boundedVerdict{why: fmt.Sprintf("the earlier pending migration %s touches %s with more than bounded writes, while the census reads the table's keys, rules and triggers as they stand before any pending migration applies", w.changedBy[table], table)}, nil
 	}
 	var facts boundedTable
-	found, err := w.c.read(w.c.census, boundedTableQuery, oid, &facts.primaryKey, &facts.keyTypes, &facts.referenced, &facts.ruled, &facts.rowSecurity, &facts.children, &facts.triggers)
+	found, err := w.c.read(w.c.census, boundedTableQuery, oid, &facts.primaryKey, &facts.keyTypes, &facts.referenced, &facts.ruled, &facts.rowSecurity, &facts.forcesRowSecurity, &facts.ownedByLogin, &facts.children, &facts.triggers)
 	if err != nil {
 		return boundedVerdict{}, err
 	}
@@ -173,8 +176,10 @@ func (w *writeReading) boundedWrites(ctx context.Context, table string, oid uint
 	switch {
 	case facts.ruled:
 		return boundedVerdict{why: table + " has a rule, which can run any statement in place of a write or beside it"}, nil
-	case facts.rowSecurity:
-		return boundedVerdict{why: table + " has row-level security, whose policies can read any table for each row a write meets"}, nil
+	case facts.rowSecurity && facts.forcesRowSecurity:
+		return boundedVerdict{why: table + " forces row-level security, so even its owner's write meets its policies, which can read any table for each row a write meets"}, nil
+	case facts.rowSecurity && !facts.ownedByLogin:
+		return boundedVerdict{why: table + " has row-level security and is owned by another role than the migrating login, so the write meets its policies, which can read any table for each row a write meets"}, nil
 	}
 	if why := unreviewedTriggers(table, facts.triggers, w.reviewed); why != "" {
 		return boundedVerdict{why: why}, nil
@@ -282,10 +287,12 @@ type boundedTable struct {
 	// still hold the old value, by whatever index that table has on its key, or by a scan.
 	referenced []string
 	// ruled, rowSecurity and children say whether it has a rule, row-level security and a child
-	// table; triggers names its enabled triggers, sorted, without those a foreign key makes
-	// (tgisinternal), whose checks CensusTables reads as the tables the key reaches.
-	ruled, rowSecurity, children bool
-	triggers                     []string
+	// table; forcesRowSecurity whether it forces row-level security on its owner too, and
+	// ownedByLogin whether the census's login, the migrating login, owns it; triggers names its
+	// enabled triggers, sorted, without those a foreign key makes (tgisinternal), whose checks
+	// CensusTables reads as the tables the key reaches.
+	ruled, rowSecurity, forcesRowSecurity, ownedByLogin, children bool
+	triggers                                                      []string
 }
 
 // boundedTableQuery, Catalog read 8, reads a table's boundedTable by its oid. It resolves no name.
@@ -305,6 +312,8 @@ const boundedTableQuery = `with key as (
 			where f.confrelid = $1::oid and f.contype = 'f'), '{}'),
 		exists (select from pg_rewrite w where w.ev_class = r.oid),
 		r.relrowsecurity,
+		r.relforcerowsecurity,
+		pg_get_userbyid(r.relowner) = current_user,
 		exists (select from pg_inherits h where h.inhparent = r.oid),
 		coalesce((select array_agg(t.tgname::text order by t.tgname) from pg_trigger t
 			where t.tgrelid = r.oid and not t.tgisinternal and t.tgenabled <> 'D'), '{}')

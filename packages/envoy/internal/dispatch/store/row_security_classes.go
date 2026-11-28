@@ -154,7 +154,7 @@ var RowSecurityClasses = map[string]RowSecurityTable{
 	"asks":               {RowSecurityIssueOrDocument, reasonIssueOrDocument},
 	"comments":           {RowSecurityIssueOrDocument, reasonIssueOrDocument},
 	"comment_watermarks": {RowSecurityIssueOrDocument, reasonIssueOrDocument},
-	"search_term_queue":  {RowSecurityIssueOrDocument, reasonIssueOrDocument},
+	"search_term_queue":  {RowSecurityIssueOrDocument, "the issue when issue_key is set, else the document it names, else, for a message on no issue, the message (item_id)"},
 
 	// A: documents.
 	"artifacts": {RowSecurityDocuments, "access.DocumentClause over dispatch_viewer(): a project's document through dispatch_sees_project, an issue's through issues, a conversation file through PartyClause over its one session party"},
@@ -197,7 +197,7 @@ var RowSecurityClasses = map[string]RowSecurityTable{
 	"user_ask_snooze": {RowSecurityThroughAsk, reasonThroughAsk},
 
 	// M: messages.
-	"messages": {RowSecurityMessages, "access.MessageClause over dispatch_viewer(): an issue's message through issues, a message on no issue through its conversation's parties"},
+	"messages": {RowSecurityMessages, "access.MessageClause over dispatch_viewer(): an issue's message through issues, a message on no issue through its conversation's parties (dispatch_message_visible: its node's, else those its thread root's author and target give it)"},
 
 	// MC: through a message.
 	"message_deliveries":          {RowSecurityThroughMessage, reasonThroughMessage},
@@ -218,21 +218,21 @@ var RowSecurityClasses = map[string]RowSecurityTable{
 	"outbox_role_undelivered_notes": {RowSecurityThroughEvent, reasonThroughEvent},
 
 	// G: graph nodes.
-	"graph_nodes": {RowSecurityGraphNodes, "project_key through the project rule, parties through PartyClause, a node with neither to an open viewer while no project is private"},
+	"graph_nodes": {RowSecurityGraphNodes, "dispatch_node_visible, the rule of the node's kind: a project kind's node by its project, else its parties, else no viewer; an item's block by its item; a component by its address's project; a person, a session and a role by access.PersonClause, SessionClause and RoleClause; a page by its session's or role's; the block schema's nodes to every viewer"},
 
 	// GT: graph tuples.
-	"graph_tuples": {RowSecurityGraphTuples, "both nodes it joins, through graph_nodes"},
+	"graph_tuples": {RowSecurityGraphTuples, "both nodes it joins, each by dispatch_tuple_end_visible (the node read as the owner, judged by dispatch_node_visible); an attribute's value (to_kind value) is no node"},
 
 	// R: references.
 	"refs": {RowSecurityReferences, "the from item and the to item, each through its own table by kind, or open where the kind holds no project"},
 
 	// WF: workflow.
-	"workflow_nodes":  {RowSecurityWorkflow, "the issue the node is part_of, under the row security of issues"},
+	"workflow_nodes":  {RowSecurityWorkflow, "the issue the node is part_of, its issue attribute or else its part_of tuple, read as the owner (dispatch_workflow_node_visible); a node that names no issue yet passes only the viewer that made it"},
 	"workflow_tuples": {RowSecurityWorkflow, "the step node, through workflow_nodes"},
 
 	// PR: priorities.
 	"priority_nodes":  {RowSecurityPriorities, "an open viewer: a priority belongs to no project"},
-	"priority_tuples": {RowSecurityPriorities, "both ends: a priority end passes an open viewer, an issue end goes through issues"},
+	"priority_tuples": {RowSecurityPriorities, "both ends: a priority end passes an open viewer, an issue end goes through issues, and an attribute's value is no end"},
 
 	// GR: going requests.
 	"going_events":        {RowSecurityGoingRequests, "the going request it names, under the row security of going_requests"},
@@ -246,7 +246,7 @@ var RowSecurityClasses = map[string]RowSecurityTable{
 	"embedding_window_states": {RowSecurityEmbeddings, "the owning row by owner_key, through its own table"},
 
 	// B: broadcasts.
-	"broadcasts": {RowSecurityBroadcasts, "access.BroadcastClause"},
+	"broadcasts": {RowSecurityBroadcasts, "access.BroadcastClause as the owner reads it (dispatch_broadcast_visible); a broadcast its own insert writes passes an open viewer and its sender"},
 
 	// S: a session's rows.
 	"session_projects":               {RowSecuritySessions, reasonSession},
@@ -268,7 +268,7 @@ var RowSecurityClasses = map[string]RowSecurityTable{
 	"delivery_runs":          {RowSecurityRepositories, reasonRepository},
 	"delivery_run_jobs":      {RowSecurityRepositories, reasonRepository},
 	"delivery_run_warnings":  {RowSecurityRepositories, reasonRepository},
-	"delivery_changes":       {RowSecurityRepositories, reasonRepository},
+	"delivery_changes":       {RowSecurityRepositories, "the repository rule on repo (dispatch_repo_visible); a change of no repository passes an open viewer"},
 	"branch_commits":         {RowSecurityRepositories, reasonRepository},
 	"commit_holds":           {RowSecurityRepositories, reasonRepository},
 	"deploys":                {RowSecurityRepositories, reasonRepository},
