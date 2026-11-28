@@ -54,6 +54,9 @@ const (
 	// and no person, it reaches every public project, and Projects is the 0 to
 	// oauthwire.MaxProjects private projects its entry lists (shapeOf).
 	ProjectScopePublic = oauthwire.ProjectScopePublic
+	// ProjectScopeConsented is a Dispatch sign-in token, whose scope words were approved for the
+	// token's person and which older verifiers refuse as an unknown project scope.
+	ProjectScopeConsented = oauthwire.ProjectScopeConsented
 )
 
 // ScopeRead is the one OAuth scope every read-only token holds, in the answer's space-separated
@@ -151,7 +154,9 @@ func cutOf(answer Introspection) (time.Time, error) {
 // Envoy listener refuses a held Caller after its own checks, while Dispatch does not read Held yet.
 // A not-held answer's not_held_until is kept no later than its deadline (answerCache.remember);
 // the Envoy listener refuses a Caller past it (Verifier.Lapsed), while Dispatch does not read it
-// yet. LegionStatus is whether Scope holds the word ScopeLegionStatus, read one word at a time as
+// yet. Consented is non-nil only for a consented token, carrying its consentable scopes, including
+// the empty list a person approved, and SignIn the sign-in it was traded from. LegionStatus is
+// whether Scope holds the word ScopeLegionStatus, read one word at a time as
 // shapeOf reads it and with no slice built, since this too runs on every request a verifier
 // decides.
 func callerOf(answer Introspection, shape tokenShape, run *oauthwire.Run, cut time.Time) Caller {
@@ -170,6 +175,12 @@ func callerOf(answer Introspection, shape tokenShape, run *oauthwire.Run, cut ti
 	}
 	if answer.NotHeldUntil > 0 {
 		caller.NotHeldUntil = time.Unix(answer.NotHeldUntil, 0).UTC()
+	}
+	if answer.ProjectScope == oauthwire.ProjectScopeConsented {
+		caller.Consented, caller.SignIn = []string{}, answer.SignIn
+		for word := range strings.FieldsSeq(answer.Scope) {
+			caller.Consented = append(caller.Consented, word)
+		}
 	}
 	for word := range strings.FieldsSeq(answer.Scope) {
 		if word == ScopeLegionStatus {

@@ -11,6 +11,7 @@ import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
 import { DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
+import { asksWhoami, WHOAMI_NO_CUT } from "./whoami-stand-in";
 
 // The parent-status rule from the `dispatch` command: the three options of `dispatch issue-update`
 // (`--include-children`, `--unlink-children`, `--include-parent`), which send
@@ -206,6 +207,8 @@ const server = Bun.serve({
   fetch: keyedLayer(
     async (request: Request) => {
       const { pathname, search, searchParams } = new URL(request.url);
+      // Every read command reads whoami first (`whoami-stand-in.ts`); it is not recorded.
+      if (asksWhoami(pathname)) return Response.json(WHOAMI_NO_CUT);
       const text = await request.text();
       const body = text === "" ? undefined : JSON.parse(text);
       requests.push({ method: request.method, path: pathname, search, body });

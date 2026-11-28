@@ -5,6 +5,7 @@ import { STALL_EXIT_CAP, STALL_EXIT_CODE } from "@legion/pi-shared/stall-watchdo
 import { call, newestMessage } from "@legion/pi-shared/test/omp-harness";
 import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { span } from "@legion/test-fixtures/wait";
 import {
   ARCHITECT_TOPIC,
   BOUND_MS,
@@ -339,9 +340,12 @@ test.skipIf(skip)(
     expect(told.topic).toBe(ARCHITECT_TOPIC);
     expect(String(told.message)).toContain("it cannot recover from on its own");
     expect(String(told.message)).toContain(`cap of ${STALL_EXIT_CAP}`);
-    // The process is what the cap protects. A real clock is the only thing that shows it is still
-    // there: an exit the ladder did not take emits no signal to await.
-    await Bun.sleep(2 * STEP_MS);
+    // The process is what the cap protects, and an exit the ladder did not take emits no signal:
+    // no record, no request, and the stopped ladder's later sweeps write nothing either.
+    await span(
+      2 * STEP_MS,
+      "an exit the ladder did not take writes no record and makes no request, so neither a read of the pane's state nor a later action's effect shows it was spared: two step gaps pass the moment the next step would have run"
+    );
     expect(third.running()).toBe(true);
     expect(JSON.parse(await readFile(exitsFile(state), "utf8"))).toMatchObject({
       exits: STALL_EXIT_CAP,
@@ -383,7 +387,10 @@ test.skipIf(skip)(
     );
     expect(String(told.message)).toContain("could not be read");
     // As above: the proposition is a process that is still there.
-    await Bun.sleep(2 * STEP_MS);
+    await span(
+      2 * STEP_MS,
+      "an exit the ladder did not take writes no record and makes no request, so neither a read of the pane's state nor a later action's effect shows it was spared: two step gaps pass the moment the next step would have run"
+    );
     expect(pane.running()).toBe(true);
   },
   COLD_PANE_GUARD_MS
@@ -422,9 +429,11 @@ test.skipIf(skip)(
     );
     expect(conversation(after)).toContain("the control started");
 
-    // Past the bound and two sweeps. A real clock, deliberately: the proposition is that the watch
-    // did nothing at all, and a watch that does nothing emits no signal to await.
-    await Bun.sleep(QUIET_MS);
+    // Past the bound and two sweeps: the proposition is that the watch did nothing at all.
+    await span(
+      QUIET_MS,
+      "a watch that judges nothing writes no record, sends no notice and ends no process, so neither a read of the pane's state nor a later action's effect shows it held: the span is the bound and two of the plugin's sweeps"
+    );
     await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(await pane.restarts()).toEqual([]);
@@ -628,7 +637,10 @@ test.skipIf(skip)(
     // alone leaves it green, and that is the system rather than the case: the host ends the
     // turn immediately after it backgrounds the call, so the turn's own close takes the record
     // either way. No live case can hold one of these four alone.
-    await Bun.sleep(SHELL_DEADLINE_MS + QUIET_MS);
+    await span(
+      SHELL_DEADLINE_MS + QUIET_MS,
+      "a closed record is judged by no sweep and so writes nothing, which neither a read of the pane's state nor a later action's effect can show: the span is the call's own deadline, the grace and two sweeps"
+    );
     await pane.settled();
     expect(await pane.records()).toEqual([]);
     expect(pane.publishes()).toEqual([]);
