@@ -231,9 +231,10 @@ type routeDecl struct {
 	// (refuseNewChildP0WithoutScope). Their personal tokens hold the set each token's row
 	// names. A broker-issued token that acts for its person holds `person` alone
 	// (brokerTokenActor), except an approve-only token, which holds `person` and `approve` and
-	// calls only the routes that state ApproveOnly; no broker-issued token holds `p0`. The shared
-	// token, a pod's service-account token, a project-scoped session's token and a broker-issued
-	// token that names a service and no person hold none of them.
+	// calls only the routes that state ApproveOnly, and a Dispatch sign-in's token, which holds the
+	// ones of `person` and `p0` its person approved; no other broker-issued token holds `p0`. The
+	// shared token, a pod's service-account token, a project-scoped session's token and a
+	// broker-issued token that names a service and no person hold none of them.
 	//
 	// The scope `read` a read-only token holds is never one of these: a scope here is one the
 	// caller must hold, and no person holds that one. The routes such a credential may call are

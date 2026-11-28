@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The Codex plugin's terminal `dispatch login` documentation keeps the machine login's example and
+  adds a Dispatch sign-in's beside it: `--scope person` (or `--scope none`) signs a session or tool
+  in to Dispatch alone, where the deployment serves Dispatch sign-ins.
+time: 2026-11-26T08:54:56Z
+custom:
+  Issue: INFRA-5943

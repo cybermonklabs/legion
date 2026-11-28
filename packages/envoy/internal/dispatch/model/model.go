@@ -31,7 +31,7 @@ const (
 	// reads P0 needs it too, unless the writer's session is that parent's architect (api's
 	// refuseNewChildP0WithoutScope). A move that sets no parent needs none, since a detach makes
 	// no issue P0. A person's own sign-in holds it. A personal token holds it only where its maker
-	// gave it.
+	// gave it, and a Dispatch sign-in's broker token only where its person ticked it.
 	ScopeP0 = "p0"
 )
 
@@ -45,8 +45,9 @@ const (
 // It is not in Scopes, and it must stay out. The browser's credential and the words a personal
 // token's scopes may hold both read Scopes, and neither may hold this scope: it is the daemon's
 // broker token's alone. A person-scoped broker token holds ScopePerson alone
-// (brokerPersonScopes), and the approve-only token ScopePerson and ScopeApprove
-// (brokerApproveOnlyScopes), never this scope either. DISPATCH_SCOPES in @legion/contracts and the
+// (brokerPersonScopes), the approve-only token ScopePerson and ScopeApprove
+// (brokerApproveOnlyScopes), and a Dispatch sign-in's token the ones of ScopePerson and ScopeP0
+// its person approved, never this scope either. DISPATCH_SCOPES in @legion/contracts and the
 // check on agent_tokens.scopes do not name it either, so no personal token can hold it. The word
 // is the broker's own (oauthwire), so the scope the broker grants and the one Dispatch reads are
 // one string.
@@ -108,10 +109,12 @@ type Credential struct {
 	// ScopeP0: a browser holds all three, and a personal token the set its row names, which may be
 	// none. A broker-issued token acting for its person holds ScopePerson alone
 	// (brokerPersonScopes), except an approve-only token, which holds ScopePerson and ScopeApprove
-	// (brokerApproveOnlyScopes); no broker-issued token holds ScopeP0. A named broker token (one
-	// the secrets broker scoped to a project) holds ScopeLegionStatus alone where the broker
-	// granted it, which the broker does for a Legion daemon's own token only (brokerTokenActor). No
-	// credential holds ScopeLegionStatus beside ScopePerson.
+	// (brokerApproveOnlyScopes), and a Dispatch sign-in's token, which holds the ones of
+	// ScopePerson and ScopeP0 its person approved, possibly none (ciphertoken.Caller.Consented);
+	// no other broker-issued token holds ScopeP0. A named broker token (one the secrets broker
+	// scoped to a project) holds ScopeLegionStatus alone where the broker granted it, which the
+	// broker does for a Legion daemon's own token only (brokerTokenActor). No credential holds
+	// ScopeLegionStatus beside ScopePerson.
 	Scopes []string
 	// Session is the session a broker-issued token proved, and is empty for every other
 	// credential, none of which proves one.
