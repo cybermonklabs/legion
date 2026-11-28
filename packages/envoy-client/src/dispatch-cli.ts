@@ -17,6 +17,7 @@ import {
   parseCommand,
 } from "./dispatch-command";
 import { ApiGateRefusal, sendApiCall } from "./dispatch-commands/api";
+import { printsJson } from "./dispatch-commands/as-of";
 import { askOnceWithinDryRun, DRY_RUN_DEADLINE_MS, defined } from "./dispatch-commands/context";
 import { OK, REFUSED, USAGE } from "./dispatch-commands/exit-codes";
 import { parentStatusConflictLines } from "./dispatch-commands/failures";
@@ -25,7 +26,6 @@ import {
   hostSessionDirectory,
   unhostedDispatch,
 } from "./dispatch-commands/host-session";
-import { printsJson } from "./dispatch-commands/issues";
 import { isJobResult, jobResultCommand, type ResultBound } from "./dispatch-commands/job-result";
 import { loginCommand } from "./dispatch-commands/login";
 import {

@@ -27,6 +27,7 @@ import { relatedCheckLines } from "../related-check";
 import { printableJson, printableLine, printableStrings } from "../runner-log";
 import { pageSummaryText, searchAnswer } from "../search-answer";
 import { otherAdviceLines, renderAdvice } from "./advice";
+import { printsJson } from "./as-of";
 import { formatCheckResults } from "./check-results";
 
 import {
@@ -735,15 +736,6 @@ function issueListingLine(row: IssueSummary, agents: LiveAgents | undefined): st
   );
 }
 
-/** Whether the whole output of a call is one JSON object a program reads: a call with `json`,
- *  which every command that takes it answers with that object alone. The CLI prints such an
- *  output whole, also on a host that cuts long output, since a cut object is no JSON object, and
- *  prints its own notes on standard error, a read's `Left out at` line at a cut among them
- *  (`withLeftOut`). */
-export function printsJson(args: Readonly<Record<string, unknown>>): boolean {
-  return args.json === true;
-}
-
 /** `dispatch issues`: one project's issues, filtered and paged as the arguments ask, as lines or,
  *  with `--json`, as one JSON object. */
 export async function issuesCommand(context: CommandContext): Promise<DispatchToolResult> {
@@ -952,7 +944,7 @@ export async function resultsCommand(
     results: checks.reduce((total, check) => total + (check.results ?? []).length, 0),
   };
   // `--json` prints the route's answer whole, which names no repository it does not hold.
-  if (optionalBoolean(args, "json") === true) {
+  if (printsJson(args)) {
     return { text: printableJson(JSON.stringify(results, null, 2)), details };
   }
   // A basis omits the issue's own repository. Resolve it only for the two answers that name

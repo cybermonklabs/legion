@@ -311,7 +311,7 @@ func TestAJobsMatrixCheckRunNamesNoLegOnTheIssueRoute(t *testing.T) {
 		t.Fatalf("the job's result for m1 carries no attestation: %s", response.Body.String())
 	}
 	predicate := result.Attestation.Predicate
-	// A "(…)" suffix alone proves no leg; only the job's workflow file does (#4184's 8044330a38).
+	// A "(…)" suffix alone proves no leg; only the job's workflow file does.
 	if predicate.Job != "go-checks (linux)" || predicate.Leg != "" || predicate.Test.Job != "go-checks (linux)" || predicate.Run.CheckRunID != "98" {
 		t.Fatalf("the statement names job %q, leg %q, test job %q and check run %q; want %q, no leg, %q and 98",
 			predicate.Job, predicate.Leg, predicate.Test.Job, predicate.Run.CheckRunID, "go-checks (linux)", "go-checks (linux)")

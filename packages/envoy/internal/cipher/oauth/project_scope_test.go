@@ -54,7 +54,7 @@ func TestEveryProjectScopeIsWrittenAsItsOwnWordAndNoOtherIsWritten(t *testing.T)
 	const project, stale, person = "ACME", "STALE", "ada@example.com"
 	run := oauthwire.CIRun{
 		Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/main",
-		WorkflowSHA: "89abcdef0123456789abcdef0123456789abcdef", Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
+		JobWorkflowSHA: "89abcdef0123456789abcdef0123456789abcdef", Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567", EventName: "push",
 		RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
 	for _, c := range []struct {

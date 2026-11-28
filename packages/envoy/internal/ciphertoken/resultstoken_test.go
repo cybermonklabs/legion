@@ -43,7 +43,7 @@ const resultsSession = "ci-results:example-org/example-repo/.github/workflows/ci
 func resultsRun() *ciphertoken.CIRun {
 	return &ciphertoken.CIRun{
 		Repository: "example-org/example-repo", WorkflowRef: "example-org/example-repo/.github/workflows/ci-results.yaml@refs/heads/main",
-		WorkflowSHA: "89abcdef0123456789abcdef0123456789abcdef", Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567",
+		JobWorkflowSHA: "89abcdef0123456789abcdef0123456789abcdef", Ref: "refs/heads/topic", SHA: "0123456789abcdef0123456789abcdef01234567",
 		EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
 }
@@ -99,7 +99,7 @@ func TestAResultsTokenIsServedAsResultsOnly(t *testing.T) {
 	decided, err := decides(t, rig, caller, token)
 	claims := resultsRun()
 	run := &oauthwire.Run{
-		Repository: claims.Repository, WorkflowRef: claims.WorkflowRef, WorkflowSHA: claims.WorkflowSHA, Ref: claims.Ref, SHA: claims.SHA,
+		Repository: claims.Repository, WorkflowRef: claims.WorkflowRef, JobWorkflowSHA: claims.JobWorkflowSHA, Ref: claims.Ref, SHA: claims.SHA,
 		EventName: claims.EventName, RunnerEnvironment: claims.RunnerEnvironment,
 		Workflow: ".github/workflows/ci-results.yaml", ID: 7, Attempt: 1, CheckRun: 97,
 	}
@@ -208,8 +208,8 @@ func TestAResultsTokenWithoutCIIsRefused(t *testing.T) {
 		"a run whose workflow_ref names a commit and no branch": spoiled(func(a *ciphertoken.Introspection) {
 			a.CI.WorkflowRef = "example-org/example-repo/.github/workflows/ci-results.yaml@0123456789abcdef0123456789abcdef01234567"
 		}),
-		"a run naming no workflow commit":    spoiled(func(a *ciphertoken.Introspection) { a.CI.WorkflowSHA = "" }),
-		"a run with a short workflow commit": spoiled(func(a *ciphertoken.Introspection) { a.CI.WorkflowSHA = "89abcdef" }),
+		"a run naming no workflow commit":    spoiled(func(a *ciphertoken.Introspection) { a.CI.JobWorkflowSHA = "" }),
+		"a run with a short workflow commit": spoiled(func(a *ciphertoken.Introspection) { a.CI.JobWorkflowSHA = "89abcdef" }),
 		"a run whose workflow_ref is not under its repository": spoiled(func(a *ciphertoken.Introspection) {
 			a.CI.Repository = "example-org/other-repo"
 		}),

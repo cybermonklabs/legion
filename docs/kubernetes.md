@@ -11604,8 +11604,8 @@ An issued token carries these claims and no others:
   Dispatch reads `legion-status` (`DISPATCH_LEGION_STATUS_SCOPE`).
   Every other token carries none, whatever session it carries.
 
-- `ci` — the GitHub Actions run a result entry's token was minted for: its `repository`, `ref`, `sha`, `event_name`, `run_id`, `run_attempt`, `runner_environment` and `check_run_id`, as the run's own GitHub token names them, and its `workflow_ref` and `workflow_sha`, the token's `job_workflow_ref` and `job_workflow_sha`: the workflow file the job is written in, the result entry's workflow at the default branch, and the commit of that file the job ran (`CIRun`, `packages/envoy/internal/cipher/oauthwire`).
-  The `workflow_ref` is not the token's own `workflow_ref`, the workflow on the run's branch that called the entry's, and for a run of any other branch than the default the job's file at `sha` is the branch's own copy, which no job of the run ran: a reader reads the run's jobs from the file at `workflow_sha` (Dispatch's project results route does, `jobOfCheckRun`).
+- `ci` — the GitHub Actions run a result entry's token was minted for: its `repository`, `ref`, `sha`, `event_name`, `run_id`, `run_attempt`, `runner_environment`, `check_run_id` and `job_workflow_sha`, as the run's own GitHub token names them, and its `workflow_ref`, the token's `job_workflow_ref`: the workflow file the job is written in, the result entry's workflow at the default branch, of which `job_workflow_sha` is the commit the job ran (`CIRun`, `packages/envoy/internal/cipher/oauthwire`).
+  The `workflow_ref` is not the token's own `workflow_ref`, the workflow on the run's branch that called the entry's, and for a run of any other branch than the default the job's file at `sha` is the branch's own copy, which no job of the run ran: a reader reads the run's jobs from the file at `job_workflow_sha` (Dispatch's project results route does, `jobOfCheckRun`).
   Every other token carries none.
 
 - `as_of` — the cut a token whose trade asked for `read` reads at, the trade's `as_of` form parameter, in UTC to the microsecond.

@@ -27,7 +27,8 @@ const { PATH: SHELL_PATH = "" } = process.env;
 
 /** The CLI entry a row runs, as a CI job's shell reaches it: this checkout's own `dispatch`. */
 const ENTRY = join(import.meta.dir, "..", "..", "bin", "dispatch.ts");
-/** The job that the check's ci_check names, which each check run below is named after. */
+/** The job each run below runs, as the branch's caller calls it: GitHub names its check run
+ *  `ci / go-checks`, the name the check's ci_check is written in. */
 const JOB = "go-checks";
 /** The session that reads the results back, as an agent's command reads them. */
 const SESSION = "session-ci-check-results-live";
@@ -64,6 +65,8 @@ interface ReadStatement {
 interface ReadResult {
   readonly id: string;
   readonly role: string;
+  /** The name of the check run whose job recorded the result. */
+  readonly run: string;
   readonly verdict: string;
   readonly commit_sha: string;
   readonly branch?: string;
@@ -143,12 +146,14 @@ describe.skipIf(!dispatchStackEnabled)(
       };
     }
 
-    /** A run of the job on a push of the issue's branch at `sha`, with a check run of its own. */
+    /** A run of the job on a push of the issue's branch at `sha`, with a check run of its own: the
+     *  branch's caller calls the job, as a branch's run reaches the result entry's workflow. */
     function pushAt(sha: string, checkRunId: number, overrides: Partial<JobRun> = {}): JobRun {
       return {
         sha,
         ref: `refs/heads/${branch()}`,
         job: JOB,
+        called: true,
         runAttempt: 1,
         checkRunId,
         ...overrides,
@@ -237,7 +242,12 @@ describe.skipIf(!dispatchStackEnabled)(
         heads: [{ kind: "branch_head", branch: branch(), commit: at }],
       });
       const [job, ...others] = jobResultsAt(c1, at);
-      expect({ job: job?.role, others: others.length }).toEqual({ job: "ci", others: 0 });
+      // The job's check run is named in the caller's form, as GitHub names a called job's.
+      expect({ job: job?.role, run: job?.run, others: others.length }).toEqual({
+        job: "ci",
+        run: "ci / go-checks",
+        others: 0,
+      });
       // The branch head is the issue's one subject, and a pass stands there: the subject names the
       // role whose pass counts at it and the result that is that pass.
       expect(c1.pass_stands).toEqual({
@@ -293,7 +303,7 @@ describe.skipIf(!dispatchStackEnabled)(
       expect({ code: first.code, stderr: first.stderr }).toEqual({ code: 0, stderr: "" });
       expect(lines(first.stdout), first.stdout).toBe(1);
       expect(first.stdout).toContain(
-        `- ${CI_CHECK} (before_merge): its CI job's results below, and CI run go-checks derives none: Dispatch holds no open or merged pull request head of ${running().issue}.`
+        `- ${CI_CHECK} (before_merge): its CI job's results below, and CI run ci / go-checks derives none: Dispatch holds no open or merged pull request head of ${running().issue}.`
       );
       expect(first.stdout).not.toContain("Pull request line:");
 

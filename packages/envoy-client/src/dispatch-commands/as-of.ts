@@ -251,6 +251,15 @@ export async function readAtCut(session: SessionContext): Promise<Reading> {
   return { identity, cut: asOf === undefined ? undefined : new ReadCut(asOf) };
 }
 
+/** Whether the whole output of a call is one JSON object a program reads: a call with `json`,
+ *  which every command that takes it answers with that object alone. The CLI prints such an
+ *  output whole, also on a host that cuts long output, since a cut object is no JSON object, and
+ *  prints its own notes on standard error, a read's `Left out at` line at a cut among them
+ *  (`withLeftOut`). */
+export function printsJson(args: Readonly<Record<string, unknown>>): boolean {
+  return args.json === true;
+}
+
 /**
  * `result` at a cut with the cut's `Left out at` line: before its text, or, where its whole text
  * is one JSON object a program reads (`wholeJson`, `printsJson`), among its warnings, which the

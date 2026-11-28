@@ -1424,7 +1424,7 @@ func readCIRun(token map[string]any, repository, jobRef, ref string) (oauthwire.
 		name string
 		into *string
 	}{
-		{"job_workflow_sha", &run.WorkflowSHA}, {"sha", &run.SHA}, {"event_name", &run.EventName}, {"run_id", &run.RunID},
+		{"job_workflow_sha", &run.JobWorkflowSHA}, {"sha", &run.SHA}, {"event_name", &run.EventName}, {"run_id", &run.RunID},
 		{"run_attempt", &run.RunAttempt}, {"runner_environment", &run.RunnerEnvironment},
 		{"check_run_id", &run.CheckRunID},
 	} {
@@ -1461,11 +1461,11 @@ func CheckRefPattern(pattern string) error {
 // CheckWorkflowRef refuses, naming it, a ref a result entry cannot take its workflow at: anything
 // but a branch's ref spelled out whole, refs/heads/ and the branch's name, with no segment empty,
 // no space or control character, none of path.Match's special characters (*, ?, [ and \), and no
-// "@refs/heads/". An entry takes its workflow at one branch, the repository's default, and a
-// pattern would reach every branch it matches, the ones anyone who may push can change among
-// them. A run's job_workflow_ref names the workflow's path and then the branch after an
-// "@refs/heads/", and a reader of the run takes the last one as the branch's start
-// (oauthwire.JobWorkflowPath), so a branch's name that holds one would make the path unreadable.
+// oauthwire.JobBranchMark. An entry takes its workflow at one branch, the repository's default,
+// and a pattern would reach every branch it matches, the ones anyone who may push can change among
+// them. A run's job_workflow_ref names the workflow's path and then the branch after that mark,
+// and a reader of the run takes the last one as the branch's start (oauthwire.JobWorkflowPath), so
+// a branch's name that holds one would make the path unreadable.
 func CheckWorkflowRef(ref string) error {
 	name, ok := strings.CutPrefix(ref, "refs/heads/")
 	switch {
@@ -1475,8 +1475,8 @@ func CheckWorkflowRef(ref string) error {
 		return fmt.Errorf("the workflow ref %q holds a space or a control character, which no branch's name holds", ref)
 	case strings.ContainsAny(name, `*?[\`):
 		return fmt.Errorf("the workflow ref %q is a pattern, and an entry takes its workflow at one branch, the repository's default", ref)
-	case strings.Contains(name, "@refs/heads/"):
-		return fmt.Errorf("the workflow ref %q holds @refs/heads/ in its branch's name, so a run's job_workflow_ref would not say where the workflow's path ends", ref)
+	case strings.Contains(name, oauthwire.JobBranchMark):
+		return fmt.Errorf("the workflow ref %q holds %s in its branch's name, so a run's job_workflow_ref would not say where the workflow's path ends", ref, oauthwire.JobBranchMark)
 	}
 	return nil
 }

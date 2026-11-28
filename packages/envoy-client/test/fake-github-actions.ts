@@ -59,7 +59,9 @@ export interface ActionsRun {
   readonly runAttempt: number;
   /** The check run of the job, which GitHub names after the job. */
   readonly checkRunId: number;
-  /** The check run's name: the job's name, then its matrix values in parentheses. */
+  /** The check run's name, as GitHub names a job's: the job's name, then its matrix values in
+   *  parentheses for a leg of a matrix job, and for a job of a reusable workflow the calling
+   *  job's name and ` / ` before it, such as `ci / go-checks`. */
   readonly checkRunName: string;
   /** Whether each token of the run is signed by a key the issuer's key set does not hold. */
   readonly forged?: boolean;

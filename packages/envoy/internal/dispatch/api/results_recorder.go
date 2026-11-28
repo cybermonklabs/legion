@@ -272,7 +272,7 @@ func ciJobActor(actor model.Actor) model.Actor {
 // statement of its run (attestedResult.statement), as the project's results route builds one,
 // from ci, the run its token proved, read whole by the verifier (oauthwire.Run). Its job is the
 // check run's whole name and it names no leg: this route reads no workflow file, and a name's
-// "(…)" suffix alone proves no leg (legOf, #4184's 8044330a38).
+// "(…)" suffix alone proves no leg (legOf).
 func ciJobCheckResult(input checkResultInput, check resolvedCheck, actor model.Actor, run githubapp.CheckRun, ci oauthwire.Run, issueKey string) model.CheckResult {
 	session, observed := sessionOf(actor), cutObserved(input.Observed)
 	statement := attestedResult{

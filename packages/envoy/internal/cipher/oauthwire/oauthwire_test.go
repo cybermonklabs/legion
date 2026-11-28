@@ -96,13 +96,13 @@ func TestARunCarriesTheJobsWorkflowAtTheCommitThatRan(t *testing.T) {
 		ran        = "89abcdef0123456789abcdef0123456789abcdef"
 	)
 	run := oauthwire.CIRun{
-		Repository: repository, WorkflowRef: repository + "/.github/workflows/ci-results.yaml@refs/heads/main", WorkflowSHA: ran,
+		Repository: repository, WorkflowRef: repository + "/.github/workflows/ci-results.yaml@refs/heads/main", JobWorkflowSHA: ran,
 		Ref: "refs/heads/legion/ACME-1", SHA: tested, EventName: "push", RunID: "7", RunAttempt: "1",
 		RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
 	read, err := oauthwire.ParseCIRun(run)
 	want := oauthwire.Run{
-		Repository: repository, WorkflowRef: run.WorkflowRef, WorkflowSHA: ran, Ref: run.Ref, SHA: tested,
+		Repository: repository, WorkflowRef: run.WorkflowRef, JobWorkflowSHA: ran, Ref: run.Ref, SHA: tested,
 		EventName: "push", RunnerEnvironment: "github-hosted", Workflow: ".github/workflows/ci-results.yaml",
 		ID: 7, Attempt: 1, CheckRun: 97,
 	}
@@ -111,7 +111,7 @@ func TestARunCarriesTheJobsWorkflowAtTheCommitThatRan(t *testing.T) {
 	}
 	for name, sha := range map[string]string{"no job_workflow_sha": "", "a short job_workflow_sha": ran[:7], "an upper-case job_workflow_sha": "89ABCDEF0123456789ABCDEF0123456789ABCDEF"} {
 		spoiled := run
-		spoiled.WorkflowSHA = sha
+		spoiled.JobWorkflowSHA = sha
 		if _, err := oauthwire.ParseCIRun(spoiled); err == nil || !strings.Contains(err.Error(), "job_workflow_sha claim is not 40 lowercase hex digits") {
 			t.Errorf("ParseCIRun(a run with %s) = %v, want a refusal naming job_workflow_sha", name, err)
 		}

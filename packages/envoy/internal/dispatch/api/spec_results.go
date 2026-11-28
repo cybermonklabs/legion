@@ -508,7 +508,7 @@ func githubUnanswered(what, code string, err error) *apiError {
 // workflow file shows that job to be the one check names (check being the facts the files give
 // the check of that id), or the refusal: 409 CHECK_NOT_THIS_JOBS saying why, or githubReadRefusal's
 // for the file. The file is the one the job is written in, read at the commit of it the job ran
-// (oauthwire.Run.Workflow at WorkflowSHA, the token's job_workflow_ref and job_workflow_sha), and
+// (oauthwire.Run.Workflow at JobWorkflowSHA, the token's job_workflow_ref and job_workflow_sha), and
 // never the copy at the run's tested commit: for a run on a branch that calls the result entry's
 // workflow at the default branch, that copy is the branch's own, which no job of the run ran and
 // whoever pushes the branch may edit, adding a job named as the check run. The file is read for
@@ -529,13 +529,13 @@ func (s *server) jobOfCheckRun(ctx context.Context, reader *repositoryReader, ru
 				id, named, checkRun.Name, run.CheckRun)
 		}
 	}
-	jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.WorkflowSHA, run.Workflow)
+	jobs, err := s.specWorkflowAt(ctx, reader, run.Repository, run.JobWorkflowSHA, run.Workflow)
 	if err != nil {
-		return "", "", githubReadRefusal(err, fmt.Sprintf("%s of %s at %s, the job's workflow file at the commit the job ran", run.Workflow, run.Repository, run.WorkflowSHA),
+		return "", "", githubReadRefusal(err, fmt.Sprintf("%s of %s at %s, the job's workflow file at the commit the job ran", run.Workflow, run.Repository, run.JobWorkflowSHA),
 			fmt.Sprintf("which says which job makes the check run %d, %q", run.CheckRun, checkRun.Name),
 			codeWorkflowNotShown, http.StatusConflict, codeWorkflowUnreadable)
 	}
-	where := run.Workflow + " at " + run.WorkflowSHA
+	where := run.Workflow + " at " + run.JobWorkflowSHA
 	if isLeg {
 		if why := jobs.whyNotALeg(checkRun.Name, check.Job, where); why != "" {
 			return "", "", errorf(http.StatusConflict, codeCheckNotThisJobs,

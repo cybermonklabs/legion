@@ -499,7 +499,7 @@ func TestAResultGrantHoldsItsRun(t *testing.T) {
 	f := newResultsFixture(t, func(*oauth.Config) {})
 	grant := f.grantOf(t, f.exchanged(t, askingForThePlaceholder(f.resultRunForm(t, "7")), newKey(t)))
 	want := oauthwire.CIRun{
-		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, WorkflowSHA: workflowSHA, Ref: resultsBranch,
+		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, JobWorkflowSHA: workflowSHA, Ref: resultsBranch,
 		SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
 	raw, err := json.Marshal(grant.Extra[oauthwire.ClaimCI])

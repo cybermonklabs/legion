@@ -302,7 +302,7 @@ A service whose verifier does not set the switch, the Envoy listener among them,
 
 A results token is the token the broker mints from a result entry's grant (`BROKER_EXCHANGE_RESULT_WORKFLOWS`) for one GitHub Actions run.
 The entry takes its workflow file at the repository's default branch (`<repository>=<workflow path>=<workflow ref>=<ref pattern>=<project>=<person>`): a run is granted only where its job is written in that copy, which a workflow on the run's branch calls as a reusable workflow, so a branch's own copy of the workflow, which a push to the branch changes, never records a result.
-The run the token carries names the workflow file its job ran, the entry's workflow at the default branch (`workflow_ref`), and the commit of that file the job ran (`workflow_sha`), so the session and principal of its results are the workflow's whatever branch called it.
+The run the token carries names the workflow file its job ran, the entry's workflow at the default branch (`workflow_ref`), and the commit of that file the job ran (`job_workflow_sha`), so the session and principal of its results are the workflow's whatever branch called it.
 The run itself holds only the broker's proxy placeholder: the broker's airlock proxy puts the token, with a DPoP proof of the broker's own key, into each write the proxy block of the profile `DISPATCH_RESULTS_TOKEN` allows, so the job holds no Dispatch credential.
 The token holds the OAuth scope `results` alone and the project scope `results`, and names a person, one project, the session of its workflow and the run (`ci`).
 That person stays inside Dispatch: the result such a token writes names the run's session and principal as its recorder and no person (on `POST /api/v1/issues/{key}/results`, the row's `attestation` names the run's session and principal as its recorder, and the row and its `result.recorded` event carry the run's session as their actor, with no `owner`), and the access log names the run's session as the caller.
@@ -3299,7 +3299,7 @@ A nullable column with no default rewrites no row; the ALTER holds ACCESS EXCLUS
 Migration `20261120144431_pull_request_heads_attribution_inputs` adds five nullable columns to `pull_request_heads`: `attribution_title_keys`, `attribution_cited_issues`, `attribution_branch_keys` and `attribution_commit_keys`, the inputs the attribution read the row's issue from, as `delivery_pull_requests` stores them for a merged pull request, and `head_in_repo`, whether the head branch is in the pull request's own repository.
 Each writer that read GitHub writes them with the row's issue (`delivery.Attributor.UpsertPullRequestHead`); `attribution_commit_keys` is null where the commit messages were not read, which they are only when no earlier source names an issue the pull request may keep.
 A change of an issue's links judges each row it names again from these columns, in the PATCH's own transaction and with no read of GitHub (`delivery.Attributor.LinksChanged`, `PATCH /api/v1/issues/{key}` below).
-Every row stored before it reads null in all five, and `delivery.AttributionRuleVersion` 7 has the reconcile's merged arm read each merged row once more to store them, at most `delivery.RejudgedHeadsPerPass` (50) rows a pass, about 600 an hour; an open row is read again by the first reconcile pass that finds it unread for longer than `delivery.PullRequestHeadStaleAfter` (four and a half minutes), as far as the pass's batch of 200 reaches, so two reads of it are at most about nine and a half minutes apart.
+Every row stored before it reads null in all five, and `delivery.AttributionRuleVersion` 9 has the reconcile's merged arm read each merged row once more to store them, at most `delivery.RejudgedHeadsPerPass` (50) rows a pass, about 600 an hour; an open row is read again by the first reconcile pass that finds it unread for longer than `delivery.PullRequestHeadStaleAfter` (four and a half minutes), as far as the pass's batch of 200 reaches, so two reads of it are at most about nine and a half minutes apart.
 Nullable columns with no default rewrite no row; the ALTER holds ACCESS EXCLUSIVE on `pull_request_heads` for the catalog write alone, the previous release neither reads nor writes the columns, its census answers `0`, and `20261120144431_pull_request_heads_attribution_inputs.down.sql` is the by-hand script that drops them once no release that writes them serves.
 
 Migration `20261125125702_after_merge_states` stores merge metadata, commit ancestry answers and deploys for result comparison.
@@ -3313,7 +3313,6 @@ The results reader fills missing times before choosing a merge.
 If a needed time remains unknown, the merged set stays unordered.
 `event_at` records an attribution update, not a merge time.
 `delivery.AttributionRuleVersion` is 9, rules 3 to 5 with rule 6's merge commit and merge time (below) and rule 8's tie-break, so reconciliation offers each stored merged row once more, a row rule 6 or rule 8 stamped included.
-Rule 8 breaks a tie between candidates by issue key in byte order, so the reconcile judges each merged row stored before rule 8 once more.
 Each pass offers at most `delivery.RejudgedHeadsPerPass` rows, whose refresh reads both columns from GitHub.
 `pull_request_heads_merged_head_ref` indexes `(lower(repo), head_ref)` for merged rows.
 It finds merged pull requests whose head was an integration branch, so the reader can follow its recorded landing.
@@ -3673,6 +3672,7 @@ Every statement is a `set`, a `create table` of a table that holds no row, a `cr
 its census answers `0`.
 The release before it neither reads nor writes the new tables, and the triggers are the database's, so its writes keep the counts as well;
 rolled back past it, the triggers stay and write delta rows that no process folds, a few for each write statement, until a release with the counts loop runs again.
+
 Migration `20261128105250_ci_check_results_coverage_counts` keeps the result class by both tables that hold results, `check_results` and `ci_check_results`, as the recount counts it.
 `ci_check_results` gets the two statement triggers `check_results` has, after insert and after delete, through the same function;
 and the truncate trigger of each of the two tables runs before the truncate and writes minus the rows it is about to take (`search_coverage_results_truncating`), where `20261124011834`'s trigger after a truncate set the whole class to 0 and so took the other table's rows too.
@@ -3680,7 +3680,6 @@ The rows `ci_check_results` holds when it applies are counted by the next recoun
 It drops and creates triggers on `check_results`, then on `ci_check_results`, under the same `lock_timeout` of 500 ms as `20261124011834`, and reads no row.
 Every statement is a `set`, a `create function`, a `drop trigger` or a `create trigger`, so the census exempts it from the table-size limit, except behind a pending `20261125125703_btree_gin`, as for every migration numbered above it;
 its census answers `0` and names no table, since `ci_check_results` does not exist yet where `20261116213930` is pending.
-
 
 Migrations `20261124011835_embeddings_window_unembedded_since` and `20261124011836_embeddings_window_embedded_since` create `embeddings_window_unembedded_since` on `embeddings (kind, dead, pending_since)` and `embeddings_window_embedded_since` on `embeddings (kind, dead, model, pending_since)`, and `20261124011837_drop_embeddings_window_embedded` and `20261124011838_drop_embeddings_window_unembedded` drop `20261118011208`'s `embeddings_window_embedded` and `20261118011258`'s `embeddings_window_unembedded` behind them.
 The coverage route reads kept counts (`20261124011834`), and its oldest lacking age is no count:

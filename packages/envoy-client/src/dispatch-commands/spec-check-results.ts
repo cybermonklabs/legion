@@ -8,7 +8,8 @@
 import type { SpecCheckResult } from "@legion/contracts";
 import type { DispatchClient } from "../dispatch-http";
 import { printable, printableJson } from "../runner-log";
-import { type DispatchToolResult, optionalBoolean, optionalString, stringArg } from "./context";
+import { printsJson } from "./as-of";
+import { type DispatchToolResult, optionalString, stringArg } from "./context";
 import { observedAsKept } from "./observed-text";
 
 /**
@@ -68,14 +69,13 @@ export async function specCheckResultsCommand(
   const check = optionalString(args, "check");
   const results = (await client.specCheckResults(project, commit, check)).results ?? [];
   const what = check === undefined ? project : `check ${printable(check)} of ${project}`;
-  const text =
-    optionalBoolean(args, "json") === true
-      ? printableJson(JSON.stringify(results, null, 2))
-      : results.length === 0
-        ? `No result of ${what} is stored at ${printable(commit)}.`
-        : [
-            `Results of ${what} at ${printable(commit)}, newest first:`,
-            ...results.map(specCheckResultLine),
-          ].join("\n");
+  const text = printsJson(args)
+    ? printableJson(JSON.stringify(results, null, 2))
+    : results.length === 0
+      ? `No result of ${what} is stored at ${printable(commit)}.`
+      : [
+          `Results of ${what} at ${printable(commit)}, newest first:`,
+          ...results.map(specCheckResultLine),
+        ].join("\n");
   return { text, details: { project, commit, results: results.length } };
 }

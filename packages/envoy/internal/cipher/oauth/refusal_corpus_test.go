@@ -465,7 +465,7 @@ var readCIRunClaims = []string{"sha", "job_workflow_sha", "run_id", "run_attempt
 // error that names it, which no row of the corpus matches.
 func runClaimRefusal(claim string) error {
 	run := oauthwire.CIRun{
-		Repository: corpusRepository, WorkflowRef: corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, WorkflowSHA: strings.Repeat("b", 40),
+		Repository: corpusRepository, WorkflowRef: corpusRepository + "/" + corpusWorkflow + "@" + corpusRef, JobWorkflowSHA: strings.Repeat("b", 40),
 		Ref: corpusRef, SHA: strings.Repeat("a", 40), EventName: "push", RunnerEnvironment: "github-hosted",
 		RunID: "1", RunAttempt: "1", CheckRunID: "1",
 	}
@@ -473,7 +473,7 @@ func runClaimRefusal(claim string) error {
 	case "sha":
 		run.SHA = "not-a-commit"
 	case "job_workflow_sha":
-		run.WorkflowSHA = "not-a-commit"
+		run.JobWorkflowSHA = "not-a-commit"
 	case "run_id":
 		run.RunID = "0"
 	case "run_attempt":

@@ -405,7 +405,7 @@ func TestTheResultsTokenIntrospectsAsResultsAlone(t *testing.T) {
 	assertResultStored(t, "the write", answer, body)
 	got := e.introspect(t, b, e.dispatch.tokens(t)[0])
 	run := oauthwire.CIRun{
-		Repository: exchangeRepository, WorkflowRef: exchangeRepository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, WorkflowSHA: workflowSHA,
+		Repository: exchangeRepository, WorkflowRef: exchangeRepository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, JobWorkflowSHA: workflowSHA,
 		Ref: resultsBranch, SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "1", RunnerEnvironment: "github-hosted", CheckRunID: "97",
 	}
 	if got.CI == nil || *got.CI != run {

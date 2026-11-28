@@ -414,12 +414,12 @@ var AccountSubject = regexp.MustCompile(`^` + AccountSubjectPrefix + `[a-z0-9]([
 
 // CIRun is the GitHub Actions run a result entry's token was minted for, as the run's own GitHub
 // token named it: the claims of that token copied onto the token the exchange mints and answered
-// back by introspection (Introspection.CI), each a string as the claim spells it, WorkflowRef and
-// WorkflowSHA being the token's job_workflow_ref and job_workflow_sha. Every reader holds it to
-// one rule, ParseCIRun: the exchange mints a token only for a run that reads
-// (exchange.Set.Workflow), a resource server admits one only so (ciphertoken), and Dispatch stores
-// a result from the Run it reads to. The check run is the job's identity: GitHub names the check
-// run of each job, and a resource server reads its name and its commit from GitHub by this id.
+// back by introspection (Introspection.CI), each a string as the claim spells it, WorkflowRef
+// being the token's job_workflow_ref. Every reader holds it to one rule, ParseCIRun: the exchange
+// mints a token only for a run that reads (exchange.Set.Workflow), a resource server admits one
+// only so (ciphertoken), and Dispatch stores a result from the Run it reads to. The check run is
+// the job's identity: GitHub names the check run of each job, and a resource server reads its name
+// and its commit from GitHub by this id.
 type CIRun struct {
 	// Repository is <owner>/<name>, the repository the run belongs to.
 	Repository string `json:"repository"`
@@ -430,11 +430,11 @@ type CIRun struct {
 	// workflow the run entered through, which for a run on any other branch is a workflow of that
 	// branch that calls this one. Its path is the one the run's session and principal name.
 	WorkflowRef string `json:"workflow_ref"`
-	// WorkflowSHA is the token's job_workflow_sha: the commit of WorkflowRef's file that the job
+	// JobWorkflowSHA is the token's job_workflow_sha: the commit of WorkflowRef's file that the job
 	// ran, the copy a reader reads to know the file's jobs. For a run on any other branch than
 	// WorkflowRef's it is not SHA, the commit the run tested, whose copy of the file is the
 	// branch's own: a push to the branch may change it, and none of its jobs ran.
-	WorkflowSHA string `json:"workflow_sha"`
+	JobWorkflowSHA string `json:"job_workflow_sha"`
 	// Ref is the git ref the run is on, such as refs/heads/main.
 	Ref string `json:"ref"`
 	// SHA is the commit the run was started for.
@@ -482,9 +482,9 @@ func CIRunOf(claim any) (*CIRun, error) {
 // numbers, each held once. It is the one validated form of a run, which every reader takes its
 // fields from rather than parsing the strings again.
 type Run struct {
-	// Repository, WorkflowRef, WorkflowSHA, Ref, SHA, EventName and RunnerEnvironment are the
+	// Repository, WorkflowRef, JobWorkflowSHA, Ref, SHA, EventName and RunnerEnvironment are the
 	// run's fields of those names as its token's claims spell them (CIRun).
-	Repository, WorkflowRef, WorkflowSHA, Ref, SHA, EventName, RunnerEnvironment string
+	Repository, WorkflowRef, JobWorkflowSHA, Ref, SHA, EventName, RunnerEnvironment string
 	// Workflow is the path, inside the repository, of the workflow file the job is written in
 	// (JobWorkflowPath).
 	Workflow string
@@ -514,13 +514,13 @@ func ParseCIRun(run CIRun) (Run, error) {
 	if !ok {
 		return Run{}, fmt.Errorf("job_workflow_ref claim %s is not %s/<path>@refs/heads/<branch>: its repository, the path of the workflow file the job is written in and the branch it is taken at", run.WorkflowRef, run.Repository)
 	}
-	for _, field := range []struct{ claim, value string }{{"sha", run.SHA}, {"job_workflow_sha", run.WorkflowSHA}} {
+	for _, field := range []struct{ claim, value string }{{"sha", run.SHA}, {"job_workflow_sha", run.JobWorkflowSHA}} {
 		if !isCommit(field.value) {
 			return Run{}, fmt.Errorf("%s claim is not 40 lowercase hex digits", field.claim)
 		}
 	}
 	read := Run{
-		Repository: run.Repository, WorkflowRef: run.WorkflowRef, WorkflowSHA: run.WorkflowSHA, Ref: run.Ref,
+		Repository: run.Repository, WorkflowRef: run.WorkflowRef, JobWorkflowSHA: run.JobWorkflowSHA, Ref: run.Ref,
 		SHA: run.SHA, EventName: run.EventName, RunnerEnvironment: run.RunnerEnvironment, Workflow: workflow,
 	}
 	for _, field := range []struct {
@@ -583,9 +583,11 @@ func WorkflowPath(workflowRef, repository, ref string) (string, bool) {
 	return workflowRef[len(prefix) : len(workflowRef)-len(suffix)], true
 }
 
-// jobBranchMark is what a job_workflow_ref holds between the path of the job's workflow file and
-// the name of the branch a result entry takes that file at.
-const jobBranchMark = "@refs/heads/"
+// JobBranchMark is what a job_workflow_ref holds between the path of the job's workflow file and
+// the name of the branch a result entry takes that file at. JobWorkflowPath cuts the path at the
+// last one, and the broker refuses an entry whose branch's name holds one
+// (exchange.CheckWorkflowRef), so both read the one mark.
+const JobBranchMark = "@refs/heads/"
 
 // JobWorkflowPath is the path, inside repository, of the workflow file that the job_workflow_ref
 // of a result entry's run names, "<repository>/<path>@refs/heads/<branch>": the file at the branch
@@ -603,8 +605,8 @@ func JobWorkflowPath(jobWorkflowRef, repository string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	at := strings.LastIndex(rest, jobBranchMark)
-	if at <= 0 || at+len(jobBranchMark) == len(rest) {
+	at := strings.LastIndex(rest, JobBranchMark)
+	if at <= 0 || at+len(JobBranchMark) == len(rest) {
 		return "", false
 	}
 	return rest[:at], true

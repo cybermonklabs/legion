@@ -1296,7 +1296,7 @@ func TestTheReadIsInRecordOrderNewestFirst(t *testing.T) {
 	defer tx.Rollback(ctx)
 	workflow := ".github/workflows/ci-results.yaml"
 	run := oauthwire.Run{
-		Repository: specResultsRepository, WorkflowRef: specResultsRepository + "/" + workflow + "@refs/heads/main", WorkflowSHA: resultsWorkflowCommit,
+		Repository: specResultsRepository, WorkflowRef: specResultsRepository + "/" + workflow + "@refs/heads/main", JobWorkflowSHA: resultsWorkflowCommit,
 		Ref: "refs/heads/topic", SHA: specResultsCommit, EventName: "push", RunnerEnvironment: "github-hosted",
 		Workflow: workflow, ID: 7, Attempt: 1, CheckRun: specResultsCheckRun,
 	}

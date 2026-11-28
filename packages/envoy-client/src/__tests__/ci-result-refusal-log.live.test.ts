@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import {
   type CIResultsStack,
+  DEFAULT_BRANCH_REF,
   startCIResultsStack,
   useCIResultsStackDirectory,
   writeProbeSpec,
@@ -83,10 +84,13 @@ describe.skipIf(!dispatchStackEnabled)("a CI job's refusal, as its log holds it"
       "a spec file whose name holds a line break"
     ).trim();
     stack.setFiles(sha, spec);
+    // A run of the default branch, whose job is written in the result entry's workflow directly:
+    // the run that writes a result of a spec check.
     const env = stack.jobEnv({
       sha,
-      ref: "refs/heads/topic/inject",
+      ref: DEFAULT_BRANCH_REF,
       job: "go-checks",
+      called: false,
       runAttempt: 1,
       checkRunId: 4301,
     });

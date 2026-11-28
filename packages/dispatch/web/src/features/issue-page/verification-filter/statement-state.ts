@@ -5,7 +5,7 @@ import {
   checkStanding,
   namedCommit,
   newestFirst,
-  standingResults,
+  standsAsEvidence,
   standsAtBasis,
   stateAtCommit,
   statementState,
@@ -240,10 +240,10 @@ function checkReading(
   const standing = checkStanding(block);
   const { state, stands } = standing;
   const results = newestFirst(block.results ?? []);
-  // What the body draws under the check: the newest result that stands (`standingResults`: nobody
-  // withdrew it and it counts for something), and where none stands the newest of them all, a
-  // withdrawn one being what a retracted check has to show.
-  const latest = newestFirst(standingResults(block))[0] ?? results[0];
+  // What the body draws under the check: the newest result that stands (`standsAsEvidence`:
+  // nobody withdrew it and it counts for something), and where none stands the newest of them
+  // all, a withdrawn one being what a retracted check has to show.
+  const latest = results.find(standsAsEvidence) ?? results[0];
   const resultNodes = new Map(
     node.children.filter((child) => child.type === "result").map((child) => [child.id, child])
   );

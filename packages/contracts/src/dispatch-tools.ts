@@ -282,14 +282,23 @@ function preconditionArgument<E extends SchemaNode<E>>(z: SchemaApi<E>): E {
 /**
  * The `as_of` argument of the seven read tools (dispatch://INFRA-4620, R3), which derives
  * `--as-of`, `--as-of-file` and their help. `parts` says what the tool leaves out at a past time.
+ * `json` is set for a tool that also takes `json`, whose output with it is the JSON alone: the
+ * `Left out at` line then goes to standard error.
  */
-function asOfArgument<E extends SchemaNode<E>>(z: SchemaApi<E>, parts: string): E {
+function asOfArgument<E extends SchemaNode<E>>(
+  z: SchemaApi<E>,
+  parts: string,
+  { json = false }: { readonly json?: boolean } = {}
+): E {
   return z
     .string()
     .describe(
       "A past time in RFC 3339, such as 2026-11-10T12:00:00Z. The command reads Dispatch as it " +
         `stood at that time. ${parts} The first line, "Left out at <time>:", names each part ` +
         "that the command did not read and each field that Dispatch cannot give at that time. " +
+        (json
+          ? "With json, standard output is the JSON alone, and that line goes to standard error. "
+          : "") +
         "A token that carries a cut reads at its cut, and its cut replaces this time."
     )
     .optional();
@@ -2877,7 +2886,8 @@ export const dispatchToolSpecs = [
         .optional(),
       as_of: asOfArgument(
         z,
-        "It reads the checks and results that Dispatch recorded by that time. It reads nothing from GitHub, so it leaves out what each check is compared with and where each commit stands. Name no --at with it. It goes with issue alone: Dispatch keeps no history of the results CI jobs stored for the spec files."
+        "It reads the checks and results that Dispatch recorded by that time. It reads nothing from GitHub, so it leaves out what each check is compared with and where each commit stands. Name no --at with it. It goes with issue alone: Dispatch keeps no history of the results CI jobs stored for the spec files.",
+        { json: true }
       ),
       json: z
         .boolean()

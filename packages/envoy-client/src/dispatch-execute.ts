@@ -1,4 +1,4 @@
-import { readAtCut, withLeftOut } from "./dispatch-commands/as-of";
+import { printsJson, readAtCut, withLeftOut } from "./dispatch-commands/as-of";
 import { checkDispatchCall, dispatchServerUrls } from "./dispatch-commands/check";
 import { commandContext } from "./dispatch-commands/command-context";
 import {
@@ -6,7 +6,7 @@ import {
   type ExecuteDispatchToolInput,
   sessionContext,
 } from "./dispatch-commands/context";
-import { dryRunAsksDispatch, printsJson } from "./dispatch-commands/issues";
+import { dryRunAsksDispatch } from "./dispatch-commands/issues";
 import {
   type DispatchCommand,
   type DispatchToolName,

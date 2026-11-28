@@ -139,7 +139,7 @@ test("a pass at another commit alone names that commit and leaves the statement 
   expect(read.statements.map((held) => held.state)).toEqual(["unknown"]);
 });
 
-// A withdrawn result is no evidence (`results_comparison.go`, `tree-drafts.ts`), so it neither
+// A withdrawn result is no evidence (`results_pass_stands.go`, `tree-drafts.ts`), so it neither
 // names the commit the rest of the issue is read against nor leaves its check reading Failed.
 test("a check whose every result was withdrawn reads Retracted and names no commit", () => {
   const withdrawn = check({

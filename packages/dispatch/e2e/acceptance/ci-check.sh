@@ -282,7 +282,7 @@ fake_pull() {
 
 # stage_head SECTION ISSUE NUMBER SHA STATE: pull request NUMBER of ISSUE is STATE (open or
 # merged) at SHA, in the fake and in Dispatch's own head record, as a `pull_request` event would
-# have stored it. attribution_rule is delivery.AttributionRuleVersion, 3, so the reconcile has no
+# have stored it. attribution_rule is delivery.AttributionRuleVersion, 9, so the reconcile has no
 # merged row to judge again either; were it to, it reads the same pull request from the fake.
 stage_head() {
   fake_pull "$@"
@@ -290,7 +290,7 @@ stage_head() {
     -v state="$5" -v issue="$2" -v title="$2 the ci-check acceptance run" <<'SQL'
 insert into pull_request_heads
   (repo, number, head_sha, state, issue_key, attribution_source, title, attribution_rule, checked_at)
-values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', 3, now())
+values (:'repo', :'number', :'sha', :'state', :'issue', 'title_body', :'title', 9, now())
 on conflict (repo, number) do update set
   head_sha = excluded.head_sha, state = excluded.state, issue_key = excluded.issue_key,
   title = excluded.title, attribution_rule = excluded.attribution_rule, checked_at = excluded.checked_at;

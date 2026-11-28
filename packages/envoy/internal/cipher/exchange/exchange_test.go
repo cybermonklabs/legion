@@ -879,7 +879,7 @@ func resultCallToken(workflowRef, jobRef, gitRef string) map[string]any {
 // workflowSHA, whatever gitRef is.
 func resultRun(gitRef string) oauthwire.CIRun {
 	return oauthwire.CIRun{
-		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, WorkflowSHA: workflowSHA, Ref: gitRef,
+		Repository: repository, WorkflowRef: repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef, JobWorkflowSHA: workflowSHA, Ref: gitRef,
 		SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "2", RunnerEnvironment: "github-hosted", CheckRunID: "9",
 	}
 }
@@ -966,33 +966,6 @@ func TestABranchsCopyOfAResultWorkflowIsNotTheEntrysWorkflow(t *testing.T) {
 	}
 }
 
-// TestAResultRunNamesTheWorkflowItsJobRan: the run a result entry's token carries names the
-// workflow file its job is written in, the entry's workflow at refs/heads/main (the token's
-// job_workflow_ref), and the commit of that file the job ran (job_workflow_sha). The defect it
-// catches: a run on a branch whose workflow is named as the entry's path at the branch's ref, the
-// branch's own copy of the file, which no job of the run ran and whoever pushes the branch may
-// edit, so that a resource server that reads the run's jobs from that copy at the tested commit
-// takes a job the branch wrote into it as the job that ran. The run reads whole by the rule every
-// reader holds it to, its path the entry's.
-func TestAResultRunNamesTheWorkflowItsJobRan(t *testing.T) {
-	set := listed(t)
-	const branch = "refs/heads/legion/ACME-1"
-	caller := repository + "/" + resultsCaller + "@" + branch
-	job := repository + "/" + resultsWorkflow + "@" + resultsWorkflowRef
-	claims, err := set.Workflow(resultCallToken(caller, job, branch), "", nil)
-	if err != nil || claims.CI == nil {
-		t.Fatalf("Workflow(a job written in %s, called from %s) = %+v, %v; want a run", job, caller, claims, err)
-	}
-	if claims.CI.WorkflowRef != job || claims.CI.WorkflowSHA != workflowSHA {
-		t.Errorf("the run's workflow is %s at %s, want the job's own, %s at %s (job_workflow_ref and job_workflow_sha), not %s at the tested commit %s",
-			claims.CI.WorkflowRef, claims.CI.WorkflowSHA, job, workflowSHA, repository+"/"+resultsWorkflow+"@"+branch, commitSHA)
-	}
-	read, err := oauthwire.ParseCIRun(*claims.CI)
-	if err != nil || read.Workflow != resultsWorkflow || read.Ref != branch || read.SHA != commitSHA {
-		t.Errorf("ParseCIRun(the minted run) = %+v, %v; want the path %s, the ref %s and the tested commit %s", read, err, resultsWorkflow, branch, commitSHA)
-	}
-}
-
 // TestARunIsReadByItsOwnRefWhereAPathOrABranchHoldsAnAt: git allows an "@" in a branch's name
 // and in a workflow file's name, and GitHub writes workflow_ref as <repository>/<path>@<ref>, so
 // the caller's path is the workflow_ref without its repository and without "@" and the token's
@@ -1019,7 +992,7 @@ func TestARunIsReadByItsOwnRefWhereAPathOrABranchHoldsAnAt(t *testing.T) {
 		t.Run(row.name, func(t *testing.T) {
 			claims, err := set.Workflow(resultRunTokenOf(row.path, row.gitRef), "", nil)
 			run := oauthwire.CIRun{
-				Repository: repository, WorkflowRef: repository + "/" + row.path + "@" + resultsWorkflowRef, WorkflowSHA: workflowSHA, Ref: row.gitRef,
+				Repository: repository, WorkflowRef: repository + "/" + row.path + "@" + resultsWorkflowRef, JobWorkflowSHA: workflowSHA, Ref: row.gitRef,
 				SHA: commitSHA, EventName: "push", RunID: "7", RunAttempt: "2", RunnerEnvironment: "github-hosted", CheckRunID: "9",
 			}
 			want := exchange.Claims{

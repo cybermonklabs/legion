@@ -6,9 +6,9 @@ import (
 )
 
 // TestRule9OffersMergedHeadsStoredUnderRules6And8 holds that the current rule reaches the merged
-// head rows stored under rule 6 and under rule 8. Rule 8 is main's tie-break alone, which a
-// deployment of main stamps on its merged rows without the inputs rules 3 to 5 store, so a row it
-// stamped must be judged once more. A head judged by the current rule is not offered again.
+// head rows stored under rule 6 and under rule 8. Rule 8 is the tie-break alone, which a build of
+// that rule stamps on its merged rows without the inputs rules 3 to 5 store, so a row it stamped
+// must be judged once more. A head judged by the current rule is not offered again.
 func TestRule9OffersMergedHeadsStoredUnderRules6And8(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
