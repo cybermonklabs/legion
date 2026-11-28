@@ -564,7 +564,7 @@ func newMNWDispatchWithMerge(t *testing.T) *mnwDispatch {
 		map[string]string{"name": "verification.md", "content": mnwVerification}, nil)
 	d.github.open(41, claim.IssueBranch(mnwChild), stepRecordsHead)
 	d.publishPull("opened")
-	d.github.merge()
+	d.github.merge(41, doneByChecksMergeCommit)
 	d.publishPull("closed")
 	d.awaitComparedWith(mnwChild, doneByChecksMergeCommit)
 	return d
@@ -599,7 +599,10 @@ func (d *mnwDispatch) patch(key string, body map[string]any) int64 {
 // repository Dispatch holds the attribution to, and a merge's commit, time and author.
 func (d *mnwDispatch) publishPull(action string) {
 	d.t.Helper()
-	pull := d.github.pullRequest()
+	pull, held := d.github.pullRequest(41)
+	if !held {
+		d.t.Fatalf("GitHub holds no pull request #41 to publish %s of", action)
+	}
 	fields := map[string]string{
 		"action": action, "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(pull.number), "title": doneByChecksTitle,
 		"url": pull.url(), "body": "", "author": stepRecordsPerson, "head_ref": pull.branch, "head_sha": pull.head,
