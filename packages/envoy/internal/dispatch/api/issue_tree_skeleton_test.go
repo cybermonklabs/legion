@@ -89,7 +89,7 @@ func requireCommentsBeforeRefused(t *testing.T, handler http.Handler, key, query
 	_ = json.Unmarshal(response.Body.Bytes(), &refusal)
 	if response.Code != http.StatusBadRequest || refusal.Code != "INVALID_QUERY" ||
 		!strings.Contains(refusal.Error, "comments_before") || !strings.Contains(refusal.Error, refs.CommentPositionShape) {
-		t.Errorf("comments_before %s on %s (%s) answered status=%d body=%s, want 400 INVALID_QUERY naming comments_before and %s",
+		t.Errorf("comments_before %s on %s (%s) answered status=%d body=%.600s, want 400 INVALID_QUERY naming comments_before and %s",
 			what, key, query, response.Code, response.Body.String(), refs.CommentPositionShape)
 	}
 }
@@ -116,10 +116,11 @@ func seedTupleWithHead(t *testing.T, database *store.Store, tuple graphstore.Tup
 // answers comments_before null. Only the first holds the requirement and the ask; each later page
 // holds its comments alone, no block of one, and read with display trees each with its text and
 // its text_tree. The three pages hold each comment the comment list reads once, and the reply on
-// the first page names the first comment, on the third, as its parent. A position past the end and
-// a position of another shape are each 400 INVALID_QUERY, naming comments_before and its field,
-// and the route's description names both. Beside a view comments_before is taken: the spec view
-// of this issue carries no comment, so it answers no node and comments_before null.
+// the first page names the first comment, on the third, as its parent. A position past the end, a
+// position of another shape and a position the first page answered beside a cursor that read
+// alone answers 200 are each 400 INVALID_QUERY, naming comments_before and its field, and the
+// route's description names both. Beside a view comments_before is taken: the spec view of this
+// issue carries no comment, so it answers no node and comments_before null.
 func TestTheTreeReadPagesTheCommentsNewestFirst(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{})
 	createTestProject(t, handler, "CORE")
@@ -276,6 +277,15 @@ func TestTheTreeReadPagesTheCommentsNewestFirst(t *testing.T) {
 
 	requireCommentsBeforeRefused(t, handler, key, "comments_before="+url.QueryEscape(positionOf(listed[len(listed)-1].ID)), "past the end")
 	requireCommentsBeforeRefused(t, handler, key, "comments_before=abc", "of another shape")
+	// R8: "A `comments_before` beside `cursor` is refused the same way." The cursor names the ask,
+	// a node of the walk, which read alone answers 200, so the 400 beside a position the first page
+	// answered is the pair's refusal and no refusal of either half.
+	cursor := treeCursor(graphstore.KindAsk, ask)
+	if alone := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+key+"/tree?cursor="+url.QueryEscape(cursor), nil, "alice"); alone.Code != http.StatusOK {
+		t.Errorf("the cursor %s of the ask %s alone on %s answered status=%d body=%.600s, want 200: the read beside comments_before refuses the pair, not the cursor",
+			cursor, ask, key, alone.Code, alone.Body.String())
+	}
+	requireCommentsBeforeRefused(t, handler, key, "comments_before="+url.QueryEscape(positionOf(listed[199].ID))+"&cursor="+url.QueryEscape(cursor), "beside cursor")
 	// R8: "Beside `view` or `kind`, it answers the next 200 older comments that answer carries, with
 	// the nodes under them, and no other node." No comment of this issue is on the text of a node
 	// the spec view returns, so that view carries none.

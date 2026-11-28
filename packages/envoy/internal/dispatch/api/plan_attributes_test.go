@@ -145,9 +145,10 @@ func planAttributeWritten(t *testing.T, attribute pmdoc.BlockAttribute, revised 
 // task writes every attribute of plan_task that points at nothing, and the part its steps; a
 // pointer whose targets take a requirement is written by both tasks, naming the spec's
 // requirement; the parent by the part, naming the first task, which makes its part_of; and every
-// other pointer by the second task, naming the first. One block of each other type the plan query
-// takes stands after the three. Each opening line writes its attributes in the order plan_task
-// declares them, as the renderer writes them, so the plan's text is the text the version stores.
+// other pointer by the second task, naming the first. One block of each other type the plan view
+// answers (planViewTypes) stands after the three. Each opening line writes its attributes in the
+// order plan_task declares them, as the renderer writes them, so the plan's text is the text the
+// version stores.
 func planAttributesWritten(t *testing.T, schema pmdoc.BlockSchema, key string, revised bool) planAttributesPlan {
 	t.Helper()
 	plan := planAttributesPlan{types: map[string]string{}, values: map[string]map[string]string{}, pointers: map[string]map[string]string{}}
@@ -198,7 +199,7 @@ func planAttributesWritten(t *testing.T, schema pmdoc.BlockSchema, key string, r
 		opening(planTaskBlockType, planSecond) + "The second task, which needs the first.\n:::\n",
 		opening(planTaskBlockType, planPart) + "The part of the first task.\n:::\n",
 	}
-	for _, typ := range graphstore.QueryTakes(graphstore.QueryPlan) {
+	for _, typ := range planViewTypes() {
 		if typ == planTaskBlockType {
 			continue
 		}
@@ -211,6 +212,16 @@ func planAttributesWritten(t *testing.T, schema pmdoc.BlockSchema, key string, r
 	}
 	plan.markdown = strings.Join(blocks, "\n")
 	return plan
+}
+
+// planViewTypes is every type the plan query takes (graphstore.QueryTakes), so a type a later build
+// adds enters the test with no change to it, and plan_role whatever that list holds: the plan
+// writes a plan_role block even where the query has lost the type, so the view that answers no
+// node of it fails the test rather than the plan leaving the block out.
+func planViewTypes() []string {
+	types := append(slices.Clone(graphstore.QueryTakes(graphstore.QueryPlan)), planTaskBlockType, planRoleType)
+	slices.Sort(types)
+	return slices.Compact(types)
 }
 
 // blockTextsByID is the text of each block GET …/blocks lists of the document artifactID, by its
@@ -259,12 +270,13 @@ func holdUnconverted(t *testing.T, database *store.Store) func() {
 }
 
 // requirePlanView fails unless read, the plan view of the issue key (at, "" for the head, or " at
-// version <n>"), answers each block of plan, whose document is document and whose requirement
-// stands in spec: once, with its text byte for byte as texts holds it; each value names, the
-// attributes of a plan node, in its `attributes` member as plan holds it, and none plan does not
-// hold; each pointer as its tuple, where its far end is a node of the answer; and the part under
-// the node of the first task.
-func requirePlanView(t *testing.T, read treeAnswer, key, at string, document, spec decisionDocument, plan planAttributesPlan, texts map[string]string, names []string) {
+// version <n>") at version, the version of the plan query node it answers - the newest for the
+// head - answers each block of plan, whose document is document and whose requirement stands in
+// spec: once, with its text byte for byte as texts holds it; each value names, the attributes of a
+// plan node, in its `attributes` member as plan holds it, and none plan does not hold, a value it
+// answers otherwise named with that version; each pointer as its tuple, where its far end is a
+// node of the answer; and the part under the node of the first task.
+func requirePlanView(t *testing.T, read treeAnswer, key, at string, version int, document, spec decisionDocument, plan planAttributesPlan, texts map[string]string, names []string) {
 	t.Helper()
 	address := func(block string) string {
 		if block == planRequirement {
@@ -291,7 +303,7 @@ func requirePlanView(t *testing.T, read treeAnswer, key, at string, document, sp
 				case writes && !holds:
 					t.Errorf("the plan view of %s%s answers %s with no value %s, want %s", key, at, block, name, want)
 				case writes && got != want, !writes && holds:
-					t.Errorf("the plan view of %s%s answers %s with %s %q, want %q", key, at, block, name, got, want)
+					t.Errorf("the plan view of %s at version %d answers %s with %s %q, want %q", key, version, block, name, got, want)
 				}
 			}
 		}
@@ -322,9 +334,10 @@ func requirePlanView(t *testing.T, read treeAnswer, key, at string, document, sp
 // TestEveryDeclaredPlanAttributeSurvivesTheConversionAndThePlanView is c-plan-attributes (R18 and
 // R8 of the issue tree's spec). Under the block schema in force with a `steps` attribute of kind
 // string on plan_task and the typed block plan_role, it writes one plan holding a block carrying
-// each attribute plan_task declares and a block of each type the plan query takes
-// (planAttributesWritten), read off the schema and graphstore.QueryTakes, so an attribute or a
-// type a later build adds enters the test with no change to it. It writes that plan in two issues:
+// each attribute plan_task declares and a block of each type the plan query takes and of plan_role
+// (planAttributesWritten, planViewTypes), read off the schema and graphstore.QueryTakes, so an
+// attribute or a type a later build adds enters the test with no change to it, and a query that
+// loses plan_role answers no node for its block. It writes that plan in two issues:
 // the first born converted, the second created unconverted, holding the plan as a document, and
 // then converted by docs.ConvertIssue. In the first it writes a second version, in which the first
 // task writes another steps and the part writes none.
@@ -366,9 +379,9 @@ func TestEveryDeclaredPlanAttributeSurvivesTheConversionAndThePlanView(t *testin
 		revised := planAttributesWritten(t, schema, key, true)
 		uploadDocument(t, handler, "/api/v1/issues/"+key, "plan.md", revised.markdown)
 		head := treeRead(t, handler, key, "?view=plan", "alice", false)
-		requirePlanView(t, head, key, "", document, specDocument, revised, blockTextsByID(t, handler, document.id), names)
+		requirePlanView(t, head, key, "", planQueryVersion(t, database, key), document, specDocument, revised, blockTextsByID(t, handler, document.id), names)
 		at := fmt.Sprintf("?view=plan&v=%d", firstVersion)
-		requirePlanView(t, treeRead(t, handler, key, at, "alice", false), key, fmt.Sprintf(" at version %d", firstVersion),
+		requirePlanView(t, treeRead(t, handler, key, at, "alice", false), key, fmt.Sprintf(" at version %d", firstVersion), firstVersion,
 			document, specDocument, first, firstTexts, names)
 	})
 
@@ -397,9 +410,9 @@ func TestEveryDeclaredPlanAttributeSurvivesTheConversionAndThePlanView(t *testin
 			t.Fatalf("the plan of %s is still a room of its own after the conversion", key)
 		}
 		texts := blockTextsByID(t, handler, document.id)
-		requirePlanView(t, treeRead(t, handler, key, "?view=plan", "alice", false), key, "", document, specDocument, plan, texts, names)
 		version := planQueryVersion(t, database, key)
-		requirePlanView(t, treeRead(t, handler, key, fmt.Sprintf("?view=plan&v=%d", version), "alice", false), key, fmt.Sprintf(" at version %d", version),
+		requirePlanView(t, treeRead(t, handler, key, "?view=plan", "alice", false), key, "", version, document, specDocument, plan, texts, names)
+		requirePlanView(t, treeRead(t, handler, key, fmt.Sprintf("?view=plan&v=%d", version), "alice", false), key, fmt.Sprintf(" at version %d", version), version,
 			document, specDocument, plan, texts, names)
 	})
 }

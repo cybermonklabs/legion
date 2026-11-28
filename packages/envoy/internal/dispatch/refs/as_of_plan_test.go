@@ -124,6 +124,8 @@ func seedAsOfStore(t *testing.T, database *store.Store) asOfSeed {
 		`insert into graph_tuples (from_kind, from_id, kind, to_kind, to_id, at, who, source_event)
 		 select 'block', 'SEED-1/old#b' || i, '` + graphstore.TupleMovedTo + `', 'block', 'SEED-1/spec#b' || i, now() - interval '1 hour', '{}'::jsonb, 0
 		 from generate_series(1, 10) i`,
+		// The needs walk's tuples (tupleIndexesNeedsSeed).
+		tupleIndexesNeedsSeed,
 		`analyze graph_nodes`,
 		`analyze graph_tuples`,
 	} {
@@ -239,12 +241,16 @@ const asOfUnkeyedRead = `
 	select t.from_kind, t.from_id from graph_tuples t
 	where t.to_id = $1 and t.kind = 'part_of' and t.seq <= $2`
 
-// The as-of reads of the walk of an issue's tree, which its record and its renders read: over a
-// seeded store of about 50,000 tuples on about 500 nodes, analyzed, each read's plan - explained
-// with analyze, as the planner chooses it - reaches graph_tuples and graph_nodes through an index
-// of the store, the stated one as an Index Scan, an Index Only Scan or a Bitmap Index Scan, and
-// holds no Seq Scan of either table; a read that leaves its kind out is written in as a control and
-// reads graph_tuples whole. The read indexes stand as the spec spells them. The
+// The as-of reads of the walk of an issue's tree, which its record and its renders read, and the
+// needs walk in both directions and the backlink count (tupleIndexesWalkReads): over a seeded
+// store of about 50,000 tuples on about 500 nodes, analyzed, each read's plan - explained with
+// analyze, as the planner chooses it - reaches graph_tuples and graph_nodes through an index of the
+// store, the stated one as an Index Scan, an Index Only Scan or a Bitmap Index Scan, on a condition
+// that names the index's first key column, and holds no Seq Scan of either table; a read that
+// leaves its kind out is written in as a control and reads graph_tuples whole, and one that leaves
+// out its kind and keeps the in index's predicate is written in as a second control that the test
+// judges unkeyed (tupleIndexesUnkeyedScans). The coverage walk over serves, a read of package api,
+// is planned by the test of this name there. The read indexes stand as the spec spells them. The
 // children read answers a node's children by rank byte for byte (B before a), on a database whose
 // own collation orders a before B. Last, of this child's migrations no statement writes the tuple
 // table but a type migration's insert (store.TypeMigrations).
@@ -252,9 +258,11 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
 	var collated bool
-	if err := database.Pool.QueryRow(ctx, `select 'a' < 'B'`).Scan(&collated); err != nil {
+	var version string
+	if err := database.Pool.QueryRow(ctx, `select 'a' < 'B', current_setting('server_version')`).Scan(&collated, &version); err != nil {
 		t.Fatalf("read the database's collation of a and B: %v", err)
 	}
+	t.Logf("the database is PostgreSQL %s", version)
 	if !collated {
 		t.Fatal("this database orders 'B' before 'a' by its own collation, so it cannot tell a read that orders ranks byte for byte from one that forgot to: run this test where select 'a' < 'B' is true")
 	}
@@ -291,7 +299,9 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 	}
 	requireSubtreesReadEveryLevelsChildren(t, database, seed)
 
-	for _, read := range append(asOfReads(seed), blockResolutionReads(t, database)...) {
+	keys := explaintest.NewIndexKeys(database.Pool)
+	reads := slices.Concat(asOfReads(seed), blockResolutionReads(t, database), tupleIndexesWalkReads(t, database))
+	for _, read := range reads {
 		plan := asOfPlan(t, database, read.statement, read.args)
 		for _, table := range []string{"graph_tuples", "graph_nodes"} {
 			if explaintest.SeqScansRelation(t, plan, table) {
@@ -305,6 +315,13 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 				t.Errorf("%s reads %s through %s with no index condition, %v rows a loop: the whole index", read.name, node.Relation, node.Index, node.Rows)
 			}
 		}
+		// A read that drops the kind it binds, and keeps the predicate graph_tuples_as_of_in is
+		// partial on, reads that index on a condition that skips its first key column: no Seq
+		// Scan, and the stated index all the same.
+		if unkeyed := tupleIndexesUnkeyedScans(t, keys, plan); len(unkeyed) > 0 {
+			t.Errorf("%s reads %s: a read that leaves its kind out reads the whole index or skips over its first column, where the stated index serves a read that binds it:\n%s",
+				read.name, strings.Join(unkeyed, "; "), plan)
+		}
 		scans := explaintest.IndexScans(t, plan)
 		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return slices.Contains(read.through, scan.Index) }) {
 			t.Errorf("%s reads no part of its plan through %v, which serve it; it reads %v", read.name, read.through, scans)
@@ -313,6 +330,9 @@ func TestEveryAsOfReadOfThisChildUsesAnIndexOfTheStore(t *testing.T) {
 	}
 	if plan := asOfPlan(t, database, asOfUnkeyedRead, []any{"SEED-1", seed.readSeq}); !explaintest.SeqScansRelation(t, plan, "graph_tuples") {
 		t.Errorf("the control, a children read with its parent's kind left out, plans with no Seq Scan of graph_tuples, so the test cannot see a read no index serves:\n%s", plan)
+	}
+	if plan := asOfPlan(t, database, tupleIndexesKindLeftOut, []any{"SEED-1/spec", seed.readSeq}); !explaintest.SeqScansRelation(t, plan, "graph_tuples") && len(tupleIndexesUnkeyedScans(t, keys, plan)) == 0 {
+		t.Errorf("the control, the blocks of a document read with the document's kind left out and the in index's predicate kept, plans with no Seq Scan of graph_tuples and no scan that skips its index's first key column, so the test cannot see a read that loses its kind bind alone:\n%s", plan)
 	}
 
 	requireTypeMigrationsAloneWriteTheTupleTable(t)
