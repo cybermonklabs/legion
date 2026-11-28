@@ -1701,3 +1701,40 @@ func TestACopyNamesTheEarliestAskedMatchThoughALaterAskAsksItsWordingNow(t *test
 	}
 	requireCopiedStates(t, service, copied, `#tie state="open" `+copiedFrom(t, service, earlier, original)+"\n")
 }
+
+// copiesOf pairs each ask's block id with the patterns of that block's own opener
+// (copyOpenerArgs): a document of the owner that holds the block under the second id, with an ask
+// of its own there, and no block under the first id, is no copy of either ask, though its markdown
+// matches the second id's patterns and it holds no ask under the first. Only the document holding
+// the block under the first id, with no ask of its own, is a copy.
+func TestCopiesOfPairsEachAsksBlockIDWithItsOwnOpener(t *testing.T) {
+	t.Parallel()
+	service, _ := newTestService(t)
+	ask := func(id string) string {
+		return ":::ask{" + pmdoc.TypedBlockIDAttribute(id) + " urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
+	}
+	first, second := "pair-first", "pair-second"
+	source := createIssueDocument(t, service.store, 1, "Context\n\n"+ask(first)+"\n"+ask(second))
+	copied := createIssueDocument(t, service.store, 1, "Copy\n\n"+ask(first))
+	own := createIssueDocument(t, service.store, 1, "Own\n\n"+ask(second))
+	ctx := context.Background()
+	if _, err := service.store.Pool.Exec(ctx, `
+		insert into asks (issue_key, author, question, block_id, block_artifact_id)
+		values ('DOC-1', '{"kind":"user","id":"alice"}', 'Which region?', $1, $2::uuid)
+	`, second, own); err != nil {
+		t.Fatalf("open the ask of its own under %q on %s: %v", second, own, err)
+	}
+	tx, err := service.store.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	issue := "DOC-1"
+	found, err := copiesOf(ctx, tx, documentAsks{artifactID: source, owner: artifactOwner{IssueKey: &issue}, asks: []model.Ask{{BlockID: &first}, {BlockID: &second}}})
+	if err != nil {
+		t.Fatalf("copiesOf: %v", err)
+	}
+	if !slices.Equal(found, []string{copied}) {
+		t.Fatalf("copies of the asks under %q and %q = %v, want only %s, and not %s, which holds its own ask under %q", first, second, found, copied, own, second)
+	}
+}
