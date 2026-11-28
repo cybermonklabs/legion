@@ -23,9 +23,17 @@ import (
 // Every command on the shared clone runs under request.StoreLock; only the checkout (`jj sparse
 // reset`), which writes the issue's own working copy and nothing of the clone, runs with the lock
 // let go, holding one of request.CheckoutSlot's places instead. It begins its steps on
-// request.Steps where each starts — update-stale, workspace-registration, checkout-check,
-// configuration, checkout-clear and checkout — and hands the step clock to the issue pod's fill,
-// which begins the fill's.
+// request.Steps where each starts — update-stale, checkout-check, workspace-reset,
+// workspace-registration, configuration and checkout — and hands the step clock to the issue pod's
+// fill, which begins the fill's.
+//
+// A workspace that is there and holds no sparse pattern has not finished a checkout. Where it
+// carries checkoutMarkerFile, the provision that added it stopped somewhere from its `jj workspace
+// add` to its checkout's end, and no role has started in it: a role starts only once its provision
+// returns. So it is removed (resetUnfinishedWorkspace, step workspace-reset) and provisioned again
+// from nothing, as a workspace that was never there: its bookmark, creation record, marker and
+// checkout (createWorkspace). Where it carries no marker (an agent cleared its patterns, or an
+// earlier release registered it), it keeps its files and is checked out where it stands.
 func Provision(ctx context.Context, run Runner, request Request) (Workspace, error) {
 	workspace, err := Location(request.StateDir, request.Repo, request.Issue)
 	if err != nil {
@@ -82,6 +90,36 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		return Workspace{}, err
 	}
 
+	checkout, marked := !exists, false
+	if exists {
+		request.Steps.Begin("checkout-check")
+		// A workspace whose checkout never finished — registered with no files, then the checkout
+		// failed or the daemon stopped — is checked out now, or its pane would start in an empty
+		// working copy.
+		whole, err := CheckedOut(ctx, run, workspace)
+		if err != nil {
+			return Workspace{}, err
+		}
+		checkout = !whole
+		if whole {
+			// A crash between the checkout's end and the marker's removal can leave the marker
+			// behind on a finished workspace; remove it so it never marks a later sparse clear.
+			err = removeCheckoutMarker(workspace.Dir)
+		} else {
+			marked, err = hasCheckoutMarker(workspace.Dir)
+		}
+		if err != nil {
+			return Workspace{}, err
+		}
+	}
+	if marked {
+		request.Steps.Begin("workspace-reset")
+		if err := resetUnfinishedWorkspace(ctx, run, workspace); err != nil {
+			return Workspace{}, err
+		}
+		exists = false
+	}
+
 	request.Steps.Begin("workspace-registration")
 	if exists {
 		if err := restoreGitWorktree(ctx, run, workspace, request.Log); err != nil {
@@ -92,14 +130,6 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		// add` has registered it with no file, so a provision stopped anywhere from there to the
 		// checkout's end leaves it marked.
 		if err := createWorkspace(ctx, run, workspace, request.Log); err != nil {
-			return Workspace{}, err
-		}
-	}
-	checkout := !exists
-	clearCheckout := false
-	if exists {
-		request.Steps.Begin("checkout-check")
-		if checkout, clearCheckout, err = checkExistingCheckout(ctx, run, workspace, request.Log); err != nil {
 			return Workspace{}, err
 		}
 	}
@@ -160,12 +190,6 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 	// and those steps keeps the runner's slow-command budget.
 	store.unlock()
 	if checkout {
-		if clearCheckout {
-			request.Steps.Begin("checkout-clear")
-			if err := clearWorkingCopy(workspace.Dir); err != nil {
-				return Workspace{}, err
-			}
-		}
 		request.Steps.Begin("checkout")
 		release, err := request.checkoutPlace(ctx)
 		if err != nil {
@@ -183,32 +207,6 @@ func Provision(ctx context.Context, run Runner, request Request) (Workspace, err
 		}
 	}
 	return workspace, nil
-}
-
-// checkExistingCheckout checks whether an existing workspace finished its checkout under the store
-// lock. A finished workspace loses any leftover marker from a crash between checkout and marker
-// removal; an unfinished workspace will be checked out again, and when it still carries
-// checkoutMarkerFile its unfinished registration (creation record and bookmark) is finished first,
-// logging on log a creation record it replaced, and clearFirst tells Provision to clear the working
-// copy before `jj sparse reset`.
-func checkExistingCheckout(ctx context.Context, run Runner, workspace Workspace, log func(string)) (checkout, clearFirst bool, err error) {
-	whole, err := CheckedOut(ctx, run, workspace)
-	if err != nil {
-		return false, false, err
-	}
-	if whole {
-		return false, false, removeCheckoutMarker(workspace.Dir)
-	}
-	marked, err := hasCheckoutMarker(workspace.Dir)
-	if err != nil {
-		return false, false, err
-	}
-	if marked {
-		if err := finishUnfinishedRegistration(ctx, run, workspace, log); err != nil {
-			return false, false, err
-		}
-	}
-	return true, marked, nil
 }
 
 // CheckedOut is whether workspace's checkout finished: it holds at least one sparse pattern — the

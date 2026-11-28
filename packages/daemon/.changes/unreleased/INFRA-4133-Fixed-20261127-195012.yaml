@@ -1,28 +1,25 @@
 kind: Fixed
 body: |-
-  A workspace checkout (`jj sparse reset`) that was cut short mid-write is now redone from an empty
-  working copy on the next provision, for a workspace this release registers. `Provision` writes a
-  link-safe marker (`.jj/legion-checkout`) right after `jj workspace add` registers a fresh
-  workspace, before any later step of the provision, keeps it through every retry until a checkout
-  finishes, then removes it (and removes any leftover marker when a later provision finds the
-  workspace already checked out). On a retry that finds no sparse patterns and that marker,
-  `Provision` removes every entry of the workspace directory except `.jj` and `.git` without
-  following a link before running `jj sparse reset` again (`workspace-init` logs this as step
-  `checkout-clear`). That retry also finishes a registration that failed after `jj workspace add`:
-  it records the workspace's creation where no record is there, or replaces, and logs, a regular
-  creation record it cannot parse (such as the empty one a provision killed mid-write leaves),
-  while refusing a symlink, FIFO or other non-regular entry at `.jj/legion-created`, and sets the
-  issue's bookmark `legion/<KEY>` on the workspace's working-copy commit where neither the shared
-  clone nor origin has it, rather than reporting the workspace on a bookmark it never set. Where origin
-  has the branch and the shared clone does not, it refuses the workspace by name, with the way out
-  for origin's row: provision again where concurrent fetches conflicted it; restore the bookmark
-  or cancel its deletion, either one followed by deleting the workspace's directory, or delete the
-  branch on GitHub, where the bookmark was deleted in the shared clone and the deletion never
-  pushed; and delete the workspace's directory where GitHub made the branch after the workspace
-  was added. A workspace whose sparse patterns an agent cleared carries no marker, so its
-  untracked files stay untouched. A workspace an earlier release registered, such as one on a
-  tmux host or on a microVM pod's kept volume, carries no marker either, so its next provision
-  checks out over whatever a cut-short checkout of it left, as before.
+  A workspace checkout (`jj sparse reset`) that was cut short mid-write, or any provision that
+  stopped between `jj workspace add` and the checkout's end, is now redone from nothing on the next
+  provision, for a workspace this release registers. `Provision` writes a link-safe marker
+  (`.jj/legion-checkout`) right after `jj workspace add` registers a fresh workspace, before any
+  later step of the provision, and removes it once a checkout finishes (and removes any leftover
+  marker when a later provision finds the workspace already checked out). No role starts in a
+  workspace before its provision succeeds, so a retry that finds no sparse patterns and that
+  marker removes the workspace under the store lock (`workspace-init` logs this as step
+  `workspace-reset`, between `checkout-check` and `workspace-registration`): it deletes the issue's
+  bookmark `legion/<KEY>` where the stopped provision set it on the workspace's working-copy
+  commit, renames the workspace directory aside, forgets the workspace in the shared clone,
+  removes its git worktree entry and deletes the directory without following a link. It then adds
+  the workspace again as a first provision does, at origin's `legion/<KEY>` as GitHub has it then,
+  or at the default branch with `legion/<KEY>` set on its working-copy commit, with a new creation
+  record, so a creation record that is missing, empty, unreadable or no regular file, a bookmark
+  the stopped provision never set and a half-written checkout all go with the old workspace. A
+  workspace whose sparse patterns an agent cleared carries no marker, so its untracked files stay
+  untouched. A workspace an earlier release registered, such as one on a tmux host or on a microVM
+  pod's kept volume, carries no marker either, so its next provision checks out over whatever a
+  cut-short checkout of it left, as before.
 time: 2026-11-27T19:50:12Z
 custom:
     Issue: INFRA-4133

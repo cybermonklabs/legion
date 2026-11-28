@@ -2,7 +2,6 @@ package workspace
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,7 +81,6 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 	local, origin := rows.local, rows.origin
 	var revision string
 	var setAside []string
-	notCreated := "workspace " + workspace.Dir + " was not created"
 	switch {
 	case local.conflict:
 		if local.hasDeletedSide() && origin.tracked && !origin.present {
@@ -97,9 +95,17 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 	case local.present:
 		revision = local.added[0]
 	case origin.conflict:
-		return conflictedOriginRefusal(workspace, origin, notCreated)
+		return fmt.Errorf("Remote bookmark %s is conflicted %s, which concurrent fetches leave; workspace %s was not created. Provision again: the next provisioning's fetch sets the row to origin's branch as it is then",
+			remote, origin.sides(), workspace.Dir)
 	case origin.present && origin.tracked:
-		return deletedLocalBookmarkRefusal(workspace, origin, notCreated, "")
+		return fmt.Errorf("Bookmark %s was deleted in the shared clone %s and the deletion never pushed, while %s is tracked at %s; workspace %s was not created. "+
+			"Restore it: %s. "+
+			"Cancel the deletion, and the next provisioning adopts origin's branch: %s. "+
+			"Start from %s instead: delete the branch on GitHub (the pull request's Delete branch button, or %s), and the next provisioning starts at %s",
+			workspace.Bookmark, cloneDir, remote, origin.added[0], workspace.Dir,
+			wayOut(cloneDir, "bookmark", "set", jjString(workspace.Bookmark), "-r", originRow(workspace.Bookmark)),
+			wayOut(cloneDir, "bookmark", "forget", exactName(workspace.Bookmark)),
+			workspace.DefaultBranch, deleteOnGitHub(workspace), workspace.DefaultBranch)
 	case origin.present:
 		if _, err := runCheckedOnClone(ctx, run, cloneDir, "bookmark", "track", originRow(workspace.Bookmark)); err != nil {
 			return err
@@ -176,27 +182,21 @@ func createWorkspace(ctx context.Context, run Runner, workspace Workspace, log f
 	}
 	// The checkout marker goes on the workspace first, the moment the add has made it and before
 	// any of its files is written: a provisioning that fails or stops anywhere after this, up to
-	// its checkout's end, leaves the workspace marked, so the next one clears whatever a cut-short
-	// checkout wrote before checking out again (Provision, checkoutMarkerFile).
+	// its checkout's end, leaves the workspace marked, so the next one removes it and adds it again
+	// from nothing (Provision, checkoutMarkerFile, resetUnfinishedWorkspace).
 	if err := writeCheckoutMarker(workspace.Dir); err != nil {
 		return err
 	}
-	// Recorded next, ahead of anything else that can still fail: a provisioning that failed after
-	// the add finds the workspace there next time and adds it no more, so this is the record closest
-	// to the add, and the next provisioning records its own moment only where a stop left none, or
-	// one it cannot read (finishUnfinishedRegistration).
+	// Recorded next, the moment closest to the add: a provisioning that stops before or after this
+	// leaves the workspace marked, and the workspace the next one adds again records its own
+	// creation (Created).
 	if err := RecordCreated(workspace.Dir, time.Now()); err != nil {
 		return err
 	}
 	if !fromBase {
 		return nil
 	}
-	return setBookmarkOnWorkingCopy(ctx, run, workspace)
-}
-
-// setBookmarkOnWorkingCopy places workspace.Bookmark on the workspace's working-copy commit (`@`).
-func setBookmarkOnWorkingCopy(ctx context.Context, run Runner, workspace Workspace) error {
-	_, err := RunCheckedIn(ctx, run, workspace, []string{"jj", "bookmark", "set", jjString(workspace.Bookmark), "-r", "@"})
+	_, err = RunCheckedIn(ctx, run, workspace, []string{"jj", "bookmark", "set", jjString(workspace.Bookmark), "-r", "@"})
 	return err
 }
 
@@ -240,36 +240,6 @@ func conflictRefusal(workspace Workspace, local, origin bookmarkRow) error {
 	return fmt.Errorf("Bookmark %s is conflicted %s; workspace %s was not created. Keep %s: %s. Start from %s instead: %s, and the next provisioning starts at %s",
 		workspace.Bookmark, local.sides(), workspace.Dir, keep, wayOut(workspace.Clone, "bookmark", "set", jjString(workspace.Bookmark), "-r", commit),
 		workspace.DefaultBranch, startAtBase, workspace.DefaultBranch)
-}
-
-// conflictedOriginRefusal refuses a conflicted origin row of the issue's bookmark with no local
-// bookmark beside it, with consequence, what the refusal leaves of the workspace: only concurrent
-// fetches leave such a row, and the next provisioning's fetch sets it to origin's branch as it is
-// then.
-func conflictedOriginRefusal(workspace Workspace, origin bookmarkRow, consequence string) error {
-	return fmt.Errorf("Remote bookmark %s is conflicted %s, which concurrent fetches leave; %s. Provision again: the next provisioning's fetch sets the row to origin's branch as it is then",
-		workspace.Bookmark+"@origin", origin.sides(), consequence)
-}
-
-// deletedLocalBookmarkRefusal refuses the issue's bookmark deleted in the shared clone (`jj
-// bookmark delete`) and never pushed while origin's row is tracked, with consequence, what the
-// refusal leaves of the workspace, and the operator's three ways out: restore the bookmark; cancel
-// the deletion (`jj bookmark forget`), which leaves origin's row untracked, so the next
-// provisioning adopts origin's branch; or start from the default branch, by deleting the branch on
-// GitHub, after which the next provisioning's fetch drops the row. then is what the restore and the
-// cancel each need besides their command before the next provisioning starts at origin's branch:
-// nothing ("") for a workspace not yet added, and the deletion of its directory for one added
-// without the branch (finishUnfinishedRegistration).
-func deletedLocalBookmarkRefusal(workspace Workspace, origin bookmarkRow, consequence, then string) error {
-	cloneDir := workspace.Clone
-	return fmt.Errorf("Bookmark %s was deleted in the shared clone %s and the deletion never pushed, while %s is tracked at %s; %s. "+
-		"Restore it%s: %s. "+
-		"Cancel the deletion%s, and the next provisioning adopts origin's branch: %s. "+
-		"Start from %s instead: delete the branch on GitHub (the pull request's Delete branch button, or %s), and the next provisioning starts at %s",
-		workspace.Bookmark, cloneDir, workspace.Bookmark+"@origin", origin.added[0], consequence,
-		then, wayOut(cloneDir, "bookmark", "set", jjString(workspace.Bookmark), "-r", originRow(workspace.Bookmark)),
-		then, wayOut(cloneDir, "bookmark", "forget", exactName(workspace.Bookmark)),
-		workspace.DefaultBranch, deleteOnGitHub(workspace), workspace.DefaultBranch)
 }
 
 // baseCommit is the commit a workspace with no issue branch starts at: the repository's default
@@ -371,42 +341,29 @@ type bookmarkRows struct {
 // ids, comma-separated.
 const bookmarkRowTemplate = `if(remote, remote, "local") ++ "|" ++ if(present, "1", "0") ++ "|" ++ if(conflict, "1", "0") ++ "|" ++ if(tracked, "1", "0") ++ "|" ++ added_targets.map(|c| c.commit_id()).join(",") ++ "|" ++ removed_targets.map(|c| c.commit_id()).join(",") ++ "\n"`
 
-// readBookmark is readBookmarkRows for a workspace about to be added: a bookmark it could not read
-// refuses the add, so its refusal says the workspace was not created.
+// readBookmark reads the bookmark name in the shared clone (the issue's, or the default branch), its local row and
+// origin's, in one `jj bookmark list`. A bookmark that exists nowhere lists nothing. Every row must have the
+// template's shape, with 0/1 flags, full commit ids, one added commit on a present row that is not
+// conflicted and at least one on a conflicted row, and one row per place: a commit jj cannot load
+// prints an error value where its id goes, which a workspace add would take as a revision.
 func readBookmark(ctx context.Context, run Runner, workspace Workspace, name string) (bookmarkRows, error) {
-	rows, err := readBookmarkRows(ctx, run, workspace.Clone, name)
-	var unreadable *unreadableBookmark
-	if errors.As(err, &unreadable) {
-		return bookmarkRows{}, unreadable.refusal("; workspace " + workspace.Dir + " was not created")
-	}
-	return rows, err
-}
-
-// readBookmarkRows reads the bookmark name in the shared clone at cloneDir (the issue's, or the
-// default branch), its local row and origin's, in one `jj bookmark list`. A bookmark that exists
-// nowhere lists nothing. Every row must have the template's shape, with 0/1 flags, full commit ids,
-// one added commit on a present row that is not conflicted and at least one on a conflicted row,
-// and one row per place: a commit jj cannot load prints an error value where its id goes, which a
-// workspace add would take as a revision. A list jj failed, or printed out of that shape, is an
-// *unreadableBookmark.
-func readBookmarkRows(ctx context.Context, run Runner, cloneDir, name string) (bookmarkRows, error) {
-	list, err := onClone(cloneDir, "bookmark", "list", "--all-remotes", exactName(name), "-T", bookmarkRowTemplate)
+	list, err := onClone(workspace.Clone, "bookmark", "list", "--all-remotes", exactName(name), "-T", bookmarkRowTemplate)
 	if err != nil {
 		return bookmarkRows{}, err
 	}
-	result, err := runCommand(ctx, run, list, nil, cloneDir)
+	result, err := runCommand(ctx, run, list, nil, workspace.Clone)
 	if err != nil {
 		return bookmarkRows{}, runFailure(list, result, err)
 	}
 	if result.ExitCode != 0 {
-		return bookmarkRows{}, &unreadableBookmark{name: name, failure: commandFailure(list, result)}
+		return bookmarkRows{}, fmt.Errorf("Bookmark %s could not be resolved; workspace %s was not created: %w", name, workspace.Dir, commandFailure(list, result))
 	}
 	var rows bookmarkRows
 	seen := map[string]bool{}
 	for _, line := range nonEmptyLines(result.Stdout) {
 		where, row, ok := parseBookmarkRow(line)
 		if !ok || seen[where] {
-			return bookmarkRows{}, &unreadableBookmark{name: name, row: line, list: strings.Join(list, " ")}
+			return bookmarkRows{}, fmt.Errorf("Bookmark %s's row %q is not the shape %s prints; workspace %s was not created", name, line, strings.Join(list, " "), workspace.Dir)
 		}
 		seen[where] = true
 		switch where {
@@ -417,88 +374,6 @@ func readBookmarkRows(ctx context.Context, run Runner, cloneDir, name string) (b
 		}
 	}
 	return rows, nil
-}
-
-// unreadableBookmark is readBookmarkRows's refusal of a bookmark it could not read: jj's list
-// failed (failure), or printed row, which is not the shape list prints.
-type unreadableBookmark struct {
-	name, row, list string
-	failure         error
-}
-
-func (e *unreadableBookmark) Error() string { return e.refusal("").Error() }
-func (e *unreadableBookmark) Unwrap() error { return e.failure }
-
-// refusal is the refusal with its consequence, such as readBookmark's "; workspace <dir> was not
-// created", after the bookmark's own clause.
-func (e *unreadableBookmark) refusal(consequence string) error {
-	if e.failure != nil {
-		return fmt.Errorf("Bookmark %s could not be resolved%s: %w", e.name, consequence, e.failure)
-	}
-	return fmt.Errorf("Bookmark %s's row %q is not the shape %s prints%s", e.name, e.row, e.list, consequence)
-}
-
-// finishUnfinishedRegistration finishes the registration of a workspace Provision finds marked
-// (checkoutMarkerFile) with no sparse pattern, under the store lock and before its checkout. Such a
-// workspace's provision may have stopped anywhere after its `jj workspace add` (createWorkspace),
-// and no later provision adds it again, so this one writes what that one left out:
-//   - The creation record, where there is none (Created), at this moment. A record Created refuses
-//     is replaced the same way, and the replacement logged with the refusal: a provision killed
-//     between RecordCreated's truncation and its write leaves an empty one, and the workspace is
-//     marked, so the record is Legion's own and no role has worked there. RecordCreated refuses a
-//     linked .jj as Created does, and anything at the record but a regular file
-//     (rolefile.OpenRegular), so a link, a FIFO or another special file there is not replaced,
-//     followed, written to or waited on.
-//   - The issue's bookmark, where neither the shared clone nor origin has it: the workspace was
-//     added at the default branch (baseCommit), and its `jj bookmark set` did not finish. It is
-//     set on the working-copy commit (setBookmarkOnWorkingCopy).
-//
-// A local bookmark, conflicted or not, is left where it is: a workspace added at the issue's
-// branch starts on top of it, so the bookmark is on the parent of the working-copy commit, never
-// on that commit. With no local bookmark, a row on origin is refused by name rather than checked
-// out with no bookmark, before anything is set, tracked or checked out, each with its way out:
-//   - A conflicted row, as createWorkspace refuses it (conflictedOriginRefusal): the next
-//     provisioning's fetch sets the row to origin's branch as it is then.
-//   - A tracked row, a local deletion never pushed, as createWorkspace refuses it
-//     (deletedLocalBookmarkRefusal), but for the restore of the bookmark and the cancel of the
-//     deletion: this workspace was added at the default branch, and neither moves it to origin's
-//     branch (a restored bookmark is a local bookmark, left where it is, and the untracked row is
-//     not adopted), so each is followed by the directory's deletion, after which the next
-//     provisioning adds the workspace again at origin's branch.
-//   - An untracked row, a branch GitHub has had since the workspace was added without it: the way
-//     out is the directory's deletion, after which the next provisioning adds the workspace again
-//     at origin's branch. A marked workspace never finished a checkout, so no role worked in it
-//     and the deletion loses no work.
-func finishUnfinishedRegistration(ctx context.Context, run Runner, workspace Workspace, log func(string)) error {
-	if _, ok, unreadable := Created(workspace.Dir); unreadable != nil || !ok {
-		switch err := RecordCreated(workspace.Dir, time.Now()); {
-		case err != nil && unreadable != nil:
-			return fmt.Errorf("%v, and it could not be replaced: %w", unreadable, err)
-		case err != nil:
-			return err
-		case unreadable != nil:
-			log(fmt.Sprintf("Workspace %s: replaced the creation record it could not read with this provisioning's moment: %v", workspace.Dir, unreadable))
-		}
-	}
-	rows, err := readBookmarkRows(ctx, run, workspace.Clone, workspace.Bookmark)
-	if err != nil {
-		return fmt.Errorf("finish the registration of workspace %s: %w", workspace.Dir, err)
-	}
-	local, origin := rows.local, rows.origin
-	notCheckedOut := "workspace " + workspace.Dir + " holds no checkout and was not checked out"
-	switch {
-	case local.present || local.conflict:
-		return nil
-	case origin.conflict:
-		return conflictedOriginRefusal(workspace, origin, notCheckedOut)
-	case origin.present && origin.tracked:
-		return deletedLocalBookmarkRefusal(workspace, origin, notCheckedOut, ", then delete its directory, which holds no work")
-	case origin.present:
-		return fmt.Errorf("Bookmark %s is not in the shared clone %s while %s is at %s, and workspace %s holds no checkout: the provision that added the workspace stopped before it set the bookmark, and GitHub has had the branch since, so the workspace does not start at origin's branch and is not checked out. "+
-			"Delete its directory, which holds no work, and the next provisioning adds it again at origin's branch as it is then",
-			workspace.Bookmark, workspace.Clone, workspace.Bookmark+"@origin", origin.added[0], workspace.Dir)
-	}
-	return setBookmarkOnWorkingCopy(ctx, run, workspace)
 }
 
 // parseBookmarkRow reads one line bookmarkRowTemplate printed, reporting whether it has the shape.
@@ -564,13 +439,14 @@ func ownCommitsRevset(workspaceName string) string {
 	return "::" + workspaceName + "@ ~ ::(working_copies() ~ " + workspaceName + "@) ~ ::(bookmarks() | remote_bookmarks() | tags())"
 }
 
-// removingSuffix marks a workspace directory Remove has renamed aside, about to delete: a sibling
-// name in the same parent directory, so the rename is one atomic same-filesystem operation
-// regardless of how large the directory is, unlike the removal that follows it
-// (rolefile.RemoveTree), which a kill can interrupt partway through a large tree.
+// removingSuffix marks a workspace directory Remove, or a provision's resetUnfinishedWorkspace, has
+// renamed aside, about to delete: a sibling name in the same parent directory, so the rename is one
+// atomic same-filesystem operation regardless of how large the directory is, unlike the removal
+// that follows it (rolefile.RemoveTree), which a kill can interrupt partway through a large tree.
 const removingSuffix = ".removing"
 
-// removingPath is where Remove renames workspace.Dir to before deleting it.
+// removingPath is where Remove and resetUnfinishedWorkspace rename workspace.Dir to before
+// deleting it.
 func removingPath(dir string) string { return dir + removingSuffix }
 
 // Remove ports workspace.ts's removeIssueWorkspace, with one addition: the workspace directory is
@@ -614,15 +490,9 @@ func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Loc
 	registered := false
 	var commits []string
 	if cloneExists {
-		listed, err := runCheckedOnClone(ctx, run, cloneDir, "workspace", "list", "-T", `name ++ "\n"`)
+		registered, err = workspaceRegistered(ctx, run, cloneDir, workspaceName)
 		if err != nil {
 			return err
-		}
-		for _, name := range nonEmptyLines(listed.Stdout) {
-			if name == workspaceName {
-				registered = true
-				break
-			}
 		}
 	}
 	if registered {
@@ -659,4 +529,14 @@ func Remove(ctx context.Context, run Runner, workspace Workspace, store sync.Loc
 		return fmt.Errorf("remove workspace directory: %w", err)
 	}
 	return nil
+}
+
+// workspaceRegistered reports whether workspaceName is currently registered in the shared clone at
+// cloneDir (`jj workspace list`).
+func workspaceRegistered(ctx context.Context, run Runner, cloneDir, workspaceName string) (bool, error) {
+	out, err := runCheckedOnClone(ctx, run, cloneDir, "workspace", "list", "-T", `name ++ "\n"`)
+	if err != nil {
+		return false, err
+	}
+	return slices.Contains(nonEmptyLines(out.Stdout), workspaceName), nil
 }

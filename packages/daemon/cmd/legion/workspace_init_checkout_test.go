@@ -206,8 +206,8 @@ func TestWorkspaceInitChecksOutEveryFileOfTheTree(t *testing.T) {
 
 // R3-2: when a first provision's `jj sparse reset` is cut short (exiting 137 after writing half
 // of the tree and half of one file's bytes), `.jj/legion-checkout` is present while it runs, and
-// a second provision with the real jj clears the partial working copy and checks out every file
-// cleanly.
+// a second provision with the real jj removes the workspace and adds it again (workspace-reset),
+// checking out every file cleanly.
 func TestWorkspaceInitRedoesACheckoutThatWasCutShort(t *testing.T) {
 	t.Parallel()
 	v := newIssueVolume(t)
@@ -265,7 +265,7 @@ func TestWorkspaceInitRedoesACheckoutThatWasCutShort(t *testing.T) {
 		t.Fatalf("cut large.bin size = %d, want %d", cutInfo.Size(), len(large)/2)
 	}
 
-	// Second provision with the real jj must redo the checkout from an empty working copy.
+	// Second provision with the real jj must remove the half-written workspace and add it again.
 	v.env["WINIT_CUT_CHECKOUT"] = ""
 	code, stdout, stderr = v.answered(t, "second provision after cut-short checkout", v.args("LEGION-42"))
 	if code != 0 {

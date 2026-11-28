@@ -69,17 +69,6 @@ func openJJ(dir string, held func()) (*os.File, error) {
 	return jj, nil
 }
 
-// openIn opens name in the open directory jj with flags, adding O_NOFOLLOW and O_CLOEXEC, so a
-// record a role planted as a link is not followed. The file's name is only used for diagnostics.
-func openIn(jj *os.File, name string, flags int, perm uint32) (*os.File, error) {
-	path := filepath.Join(jj.Name(), name)
-	fd, err := rolefile.Openat(int(jj.Fd()), name, flags|unix.O_NOFOLLOW|unix.O_CLOEXEC, perm)
-	if err != nil {
-		return nil, &fs.PathError{Op: "openat", Path: path, Err: err}
-	}
-	return os.NewFile(uintptr(fd), path), nil
-}
-
 // createdFile is where provisioning records the moment it created a workspace: in the workspace's
 // own .jj directory, which jj never snapshots, so the record is never committed, and which goes with
 // the workspace, so a workspace created again records its own creation.
@@ -116,8 +105,9 @@ func RecordCreated(dir string, at time.Time) error {
 // Created is the moment RecordCreated recorded for the workspace at dir. ok is false when it holds
 // none: no workspace is there, or provisioning created it before it kept the record. The record is
 // on the issue's volume, which every agent of the issue can write, so it is read through .jj's
-// descriptor (openJJ), opened without following a link or blocking on a special file and read only
-// up to createdRecordLimit, and anything but one RFC 3339 instant is refused, naming the file.
+// descriptor (openJJ), opened as RecordCreated opens it (rolefile.OpenRegular), so anything there
+// but a regular file is refused rather than followed or waited on, and read only up to
+// createdRecordLimit, and anything but one RFC 3339 instant is refused, naming the file.
 func Created(dir string) (at time.Time, ok bool, err error) { return created(dir, nil) }
 
 // created is Created, with held run as openJJ runs it.
@@ -131,21 +121,14 @@ func created(dir string, held func()) (at time.Time, ok bool, err error) {
 	}
 	defer jj.Close()
 	record := filepath.Join(jj.Name(), createdFile)
-	file, err := openIn(jj, createdFile, unix.O_RDONLY|unix.O_NONBLOCK, 0)
+	file, err := rolefile.OpenRegular(int(jj.Fd()), createdFile, record, unix.O_RDONLY, 0)
 	if errors.Is(err, fs.ErrNotExist) {
 		return time.Time{}, false, nil
 	}
 	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", record, err)
+		return time.Time{}, false, fmt.Errorf("read the creation record of workspace %s: %w", dir, err)
 	}
 	defer file.Close()
-	info, err := file.Stat()
-	if err != nil {
-		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", record, err)
-	}
-	if !info.Mode().IsRegular() {
-		return time.Time{}, false, fmt.Errorf("the creation record %s is not a regular file (%s)", record, info.Mode().Type())
-	}
 	body, err := io.ReadAll(io.LimitReader(file, createdRecordLimit))
 	if err != nil {
 		return time.Time{}, false, fmt.Errorf("read the creation record %s: %w", record, err)

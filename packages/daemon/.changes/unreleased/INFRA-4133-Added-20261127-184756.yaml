@@ -10,12 +10,12 @@ body: |-
   and `history-check`, then `github-delta`, `ref-pruning`, `jj-init`, `jj-clone-working-copy`,
   `jj-track`, `jj-configuration`, `workspace-registration`, `configuration` and `checkout`. A clone
   that is already on the volume runs `update-stale`, `jj-configuration`, `github-delta`,
-  `ref-pruning`, `jj-import`, `jj-track`, `workspace-registration`, `checkout-check`,
-  `configuration` and `checkout` where each applies. A provision that fails writes
-  `workspace-init: step <name> failed after <seconds>s` for the step it failed in, and its error
-  stays the log's last line. While a pod is still provisioning, the step it is in is the one after
-  the last step its log names. `docs/kubernetes.md` ("Anatomy of a Sandbox pod") says what each
-  step covers. The tmux runtime's provisions log no step lines.
+  `ref-pruning`, `jj-import`, `jj-track`, `checkout-check`, `workspace-reset`,
+  `workspace-registration`, `configuration` and `checkout` where each applies. A provision that
+  fails writes `workspace-init: step <name> failed after <seconds>s` for the step it failed in, and
+  its error stays the log's last line. While a pod is still provisioning, the step it is in is the
+  one after the last step its log names. `docs/kubernetes.md` ("Anatomy of a Sandbox pod") says
+  what each step covers. The tmux runtime's provisions log no step lines.
 time: 2026-11-27T18:47:56Z
 custom:
     Issue: INFRA-4133

@@ -254,9 +254,9 @@ var freshCloneSteps = []string{
 	"workspace-registration", "configuration", "checkout",
 }
 
-// The steps of a provision onto a kept clone from its jj configuration to its workspace's
-// registration.
-var keptCloneSteps = []string{"jj-configuration", "github-delta", "ref-pruning", "jj-import", "jj-track", "workspace-registration"}
+// The steps of a provision onto a kept clone from its jj configuration to its tracking of the
+// default branches, before its workspace's checkout-check and registration.
+var keptCloneSteps = []string{"jj-configuration", "github-delta", "ref-pruning", "jj-import", "jj-track"}
 
 // `provision` logs one line for each step it runs, `workspace-init: step <name> took <seconds>s`,
 // as the step ends, and then `workspace-init: steps took <seconds>s` before its last line; a
@@ -267,10 +267,10 @@ var keptCloneSteps = []string{"jj-configuration", "github-delta", "ref-pruning",
 // bucket's download failed (d) or after the bucket's pack failed its check (d2); a kept clone with
 // no workspace of the issue's (e0, another issue's provision on the volume), with the issue's
 // workspace checked out (e), with that workspace's sparse patterns cleared and no marker (e1), and
-// with a checkout Legion started and that was cut short (f); and a fetch from GitHub that fails
-// after its retries (g). The steps' durations add up to the total within
-// 0.1 s for each, and the total is no more than the run's wall time. A refusal before the volume
-// (h) prints nothing on stdout.
+// with a checkout Legion started and that was cut short (f), whose workspace is removed and added
+// again (workspace-reset); and a fetch from GitHub that fails after its retries (g). The steps'
+// durations add up to the total within 0.1 s for each, and the total is no more than the run's wall
+// time. A refusal before the volume (h) prints nothing on stdout.
 func TestWorkspaceInitLogsEachStepItRuns(t *testing.T) {
 	t.Parallel()
 	// fromCache names the repository cache at cache to the volume's provision, with its token.
@@ -319,12 +319,12 @@ func TestWorkspaceInitLogsEachStepItRuns(t *testing.T) {
 		{
 			path:    "e0. a kept clone with no workspace of the issue's",
 			prepare: func(t *testing.T, v *issueVolume) { v.provisioned(t, "LEGION-41") },
-			steps:   slices.Concat([]string{"inputs", "stale-locks"}, keptCloneSteps, []string{"configuration", "checkout"}),
+			steps:   slices.Concat([]string{"inputs", "stale-locks"}, keptCloneSteps, []string{"workspace-registration", "configuration", "checkout"}),
 		},
 		{
 			path:    "e. a kept clone with the issue's workspace checked out",
 			prepare: func(t *testing.T, v *issueVolume) { v.provisioned(t, "LEGION-42") },
-			steps:   slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "configuration"}),
+			steps:   slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "workspace-registration", "configuration"}),
 		},
 		{
 			path: "e1. a kept clone with the issue's workspace not checked out",
@@ -333,7 +333,7 @@ func TestWorkspaceInitLogsEachStepItRuns(t *testing.T) {
 				// An agent cleared the workspace's sparse patterns, leaving no marker.
 				v.jj(t, "sparse", "set", "--clear", "-R", v.workspace("LEGION-42"))
 			},
-			steps: slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "configuration", "checkout"}),
+			steps: slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "workspace-registration", "configuration", "checkout"}),
 		},
 		{
 			path: "f. a kept clone with a checkout cut short",
@@ -349,7 +349,7 @@ func TestWorkspaceInitLogsEachStepItRuns(t *testing.T) {
 				}
 				v.env["WINIT_CUT_CHECKOUT"] = ""
 			},
-			steps: slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "configuration", "checkout-clear", "checkout"}),
+			steps: slices.Concat([]string{"inputs", "stale-locks", "update-stale"}, keptCloneSteps, []string{"checkout-check", "workspace-reset", "workspace-registration", "configuration", "checkout"}),
 		},
 		{
 			path: "g. a fetch from GitHub that fails after its retries",
