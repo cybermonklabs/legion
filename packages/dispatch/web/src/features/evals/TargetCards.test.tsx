@@ -283,6 +283,45 @@ test("a via-repository count of 2 shows the note with 2 and a count of 0 none", 
   expect(within(card("pr-open-to-merge")).queryByText(/by default repository/)).toBeNull();
 });
 
+// A count is the whole number it is whatever its series' unit: the three ratio cards' counts of
+// deploys and runs are counts, beside the rate that is the share. Written as shares, one failed
+// deploy read "100.0%".
+test("a ratio card writes its counts as counts and its rate as a share", async () => {
+  const ratio = (name: string, window: Record<string, number>) =>
+    series(name, "ratio", { agg: "ratio", window });
+  renderCards([
+    view("delivery", [
+      evalItem("change-fail-rate", "delivery", ratio("per_deploy", { failed: 1, rate: 0.05 })),
+      evalItem(
+        "deploy-run-success",
+        "delivery",
+        ratio("runs", { concluded: 10, rate: 0.9, reached_production: 9 })
+      ),
+      evalItem(
+        "deployment-rework-rate",
+        "delivery",
+        ratio("rework_deploys", { rate: 0.1, restoring: 2 })
+      ),
+    ]),
+  ]);
+  const written = (slug: string) =>
+    Object.fromEntries(
+      [...card(slug).querySelectorAll<HTMLElement>("[data-window-statistic]")].map((figure) => [
+        figure.dataset.windowStatistic,
+        figure.textContent,
+      ])
+    );
+  expect({
+    "change-fail-rate": written("change-fail-rate"),
+    "deploy-run-success": written("deploy-run-success"),
+    "deployment-rework-rate": written("deployment-rework-rate"),
+  }).toEqual({
+    "change-fail-rate": { failed: "1", rate: "5.0%" },
+    "deploy-run-success": { concluded: "10", rate: "90.0%", reached_production: "9" },
+    "deployment-rework-rate": { rate: "10.0%", restoring: "2" },
+  });
+});
+
 test("each card's verdict", async () => {
   const judged = (met: boolean | null, value: number | null): Verdict => ({
     direction: "higher_better",

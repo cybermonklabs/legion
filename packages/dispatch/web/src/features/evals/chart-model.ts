@@ -157,13 +157,15 @@ const SHARES: ReadonlySet<string> = new Set(["rate", "share", "success_rate", "i
 const PER_DAY: ReadonlySet<string> = new Set(["per_day", "with_prs_per_day"]);
 
 /** How a value of `statistic`, of a series in `unit`, is written, with `extra` decimals past its
- *  usual ones where a toned figure takes them (`lib/target.ts`'s `judgeFigure`). Minutes as the
- *  measures panel writes a lead time ("45m", "3.5h", "2.1d"); hours with a space before the unit,
- *  so a figure in hours is never read back as minutes when its decimals are judged. */
+ *  usual ones where a toned figure takes them (`lib/target.ts`'s `judgeFigure`). A count is the
+ *  whole number it is whatever its series' unit: a ratio series' `failed` counts deploys, not a
+ *  share of them. Minutes as the measures panel writes a lead time ("45m", "3.5h", "2.1d"); hours
+ *  with a space before the unit, so a figure in hours is never read back as minutes when its
+ *  decimals are judged. */
 export function writerOf(unit: string, statistic: string): (value: number) => WriteFigure {
   if (PER_DAY.has(statistic)) return (value) => (extra) => `${value.toFixed(1 + extra)}/day`;
-  if (SHARES.has(statistic) || unit === "ratio") return (value) => (extra) => pct(value, 1 + extra);
   if (COUNTS.has(statistic)) return (value) => () => `${value}`;
+  if (SHARES.has(statistic) || unit === "ratio") return (value) => (extra) => pct(value, 1 + extra);
   if (unit === "minutes") return (value) => (extra) => formatMinutes(value, extra);
   if (unit === "hours") return (value) => (extra) => `${value.toFixed(1 + extra)} h`;
   return (value) => (extra) =>
