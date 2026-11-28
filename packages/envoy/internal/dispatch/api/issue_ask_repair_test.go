@@ -49,7 +49,14 @@ func newRepairFixture(t *testing.T) repairFixture {
 // settle.
 func newRepairFixtureSettlingAfter(t *testing.T, settle time.Duration) repairFixture {
 	t.Helper()
-	return newRepairFixtureOn(t, settle, nil)
+	return newRepairFixtureWith(t, settle, nil, "")
+}
+
+// newRepairFixtureFrom is newRepairFixtureSettlingAfter on a server whose setting names specRoots
+// as the roots of The Spec (DISPATCH_SPEC_ROOTS), "" for none.
+func newRepairFixtureFrom(t *testing.T, settle time.Duration, specRoots string) repairFixture {
+	t.Helper()
+	return newRepairFixtureWith(t, settle, nil, specRoots)
 }
 
 // repairRoomsNeverIdleOut is the repair fixture's room idle timeout (docs.Deps.RoomIdleTimeout):
@@ -63,6 +70,13 @@ const repairRoomsNeverIdleOut = time.Duration(1<<63 - 1)
 // wait (registerQuietServer), which that measurement waits on first, and its background work is
 // waited out once the test ends, as Register's Wait waits it out.
 func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTracer) repairFixture {
+	t.Helper()
+	return newRepairFixtureWith(t, settle, tracer, "")
+}
+
+// newRepairFixtureWith is the fixture on a pool tracer traces (nil for none) and a server whose
+// setting names specRoots as the roots of The Spec ("" for none).
+func newRepairFixtureWith(t *testing.T, settle time.Duration, tracer pgx.QueryTracer, specRoots string) repairFixture {
 	t.Helper()
 	database := storetest.Open(t)
 	if tracer != nil {
@@ -80,6 +94,7 @@ func newRepairFixtureOn(t *testing.T, settle time.Duration, tracer pgx.QueryTrac
 		AgentTokens: sharedAgentTokens(t, "agent-token"),
 		Docs:        documents,
 		ServerURL:   "https://dispatch.example",
+		SpecForm:    specFormOn(t, specRoots, "https://dispatch.example", documents),
 	})
 	if err != nil {
 		t.Fatalf("new API dependencies: %v", err)

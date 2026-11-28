@@ -15,12 +15,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/sync/errgroup"
 
 	"github.com/sjawhar/envoy/internal/dispatch/answerswindow"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/sessionanswers"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -100,6 +102,9 @@ func TestSeedAtASmallScale(t *testing.T) {
 	t.Run("the rare word finds exactly the documents holding it", func(t *testing.T) {
 		assertRareWordFindsItsDocuments(t, first, firstRun)
 	})
+	t.Run("every other owner's first window holds a vector, and no other window does", func(t *testing.T) {
+		assertWindowVectors(t, first, firstRun)
+	})
 	t.Run("the answers read finds the seed's deliveries", func(t *testing.T) {
 		assertAnswersReadFindsTheDeliveries(t, first, firstRun)
 	})
@@ -130,6 +135,82 @@ func TestSeedAtASmallScale(t *testing.T) {
 			t.Fatalf("the refusal does not name what it found: %v", err)
 		}
 	})
+}
+
+// assertWindowVectors holds the vectors of the four window kinds to the seed's rule
+// (embeddedRows): for every other document, ask, comment and message in plan order, its first
+// window by id holds a vector and its other windows hold none, and no window of any other owner
+// holds one. It reads the kinds and each plan row's owner key from windowedKinds, and which owners
+// the rule takes from the plan, not from embeddedRows, so it holds the rule rather than restating
+// the code. Each kind must hold windows with a vector, since a kind with none leaves its window
+// arm of meaning search reading nothing on a seeded database; the counts are logged for that
+// reason.
+func assertWindowVectors(t *testing.T, database *store.Store, run *seedRun) {
+	t.Helper()
+	// taken is, for each window kind, every owner key of the plan and whether the rule takes it.
+	taken := map[string]map[string]bool{}
+	for _, windowed := range windowedKinds {
+		count := windowed.count(run.plan)
+		taken[windowed.kind] = make(map[string]bool, count)
+		for index := range count {
+			taken[windowed.kind][windowed.owner(run.plan, index)] = index%2 == 0
+		}
+	}
+
+	rows, err := database.Pool.Query(context.Background(), `
+		select kind, split_part(id, '#', 1), count(*), min(id),
+		       coalesce(array_agg(id order by id) filter (where embedding is not null), '{}')
+		  from embeddings
+		 where kind in `+refs.WindowKinds+`
+		 group by 1, 2`)
+	if err != nil {
+		t.Fatalf("read the windows of each owner: %v", err)
+	}
+	type tally struct{ windows, embedded, owners, takenOwners int }
+	tallies := map[string]*tally{}
+	var wrong []string
+	var kind, owner, firstWindow string
+	var windows int
+	var embedded []string
+	if _, err := pgx.ForEachRow(rows, []any{&kind, &owner, &windows, &firstWindow, &embedded}, func() error {
+		counted := tallies[kind]
+		if counted == nil {
+			counted = &tally{}
+			tallies[kind] = counted
+		}
+		counted.windows += windows
+		counted.embedded += len(embedded)
+		counted.owners++
+		chosen, planned := taken[kind][owner]
+		switch {
+		case !planned:
+			wrong = append(wrong, fmt.Sprintf("%s %s is no owner of the plan", kind, owner))
+		case chosen && !slices.Equal(embedded, []string{firstWindow}):
+			counted.takenOwners++
+			wrong = append(wrong, fmt.Sprintf("%s %s holds vectors on %v, want on its first window %s alone",
+				kind, owner, embedded, firstWindow))
+		case chosen:
+			counted.takenOwners++
+		case len(embedded) > 0:
+			wrong = append(wrong, fmt.Sprintf("%s %s is not one the rule takes and holds vectors on %v", kind, owner, embedded))
+		}
+		return nil
+	}); err != nil {
+		t.Fatalf("read the windows of each owner: %v", err)
+	}
+	if len(wrong) > 0 {
+		t.Errorf("%d owners' windows break the rule, the first few: %v", len(wrong), wrong[:min(5, len(wrong))])
+	}
+	for _, windowed := range windowedKinds {
+		kind := windowed.kind
+		counted := tallies[kind]
+		if counted == nil || counted.embedded == 0 {
+			t.Errorf("no %s window holds a vector, so meaning search's %s arm reads nothing on a seeded database", kind, kind)
+			continue
+		}
+		t.Logf("%s: %d of %d window rows hold a vector, over %d owners: the %d of them the rule takes of the plan's %d",
+			kind, counted.embedded, counted.windows, counted.owners, counted.takenOwners, len(taken[kind]))
+	}
 }
 
 // TestSeedBuildsTermStatisticsOnMainsSchema seeds the shape the measurement protocol's "before"
@@ -405,6 +486,15 @@ func assertSameRowCounts(t *testing.T, first, second *store.Store) {
 	}
 }
 
+// readsAtOnce bounds the queries rowCountsOf and checksumsOf run at once on one database, each on
+// a connection of its pool, so a read waits on its slowest few queries and not on the sum of them
+// all. Eight is well under the 64 connections store.Open gives a pool, and keeps the pair a
+// comparison reads at once (readBothAtOnce) to 16 connections of the server's limit, which the
+// package's parallel tests share.
+const readsAtOnce = 8
+
+// rowCountsOf is the count of rows of each table of database's public schema, by table. The
+// tables are counted at once, readsAtOnce at a time, and the first count to fail cancels the rest.
 func rowCountsOf(database *store.Store) (map[string]int, error) {
 	ctx := context.Background()
 	rows, err := database.Pool.Query(ctx, `
@@ -418,13 +508,25 @@ func rowCountsOf(database *store.Store) (map[string]int, error) {
 	if err != nil {
 		return nil, fmt.Errorf("list the tables: %w", err)
 	}
+	// Each count is written at its table's index, so the goroutines share no map and need no lock.
+	counted := make([]int, len(tables))
+	counting, ctx := errgroup.WithContext(ctx)
+	counting.SetLimit(readsAtOnce)
+	for index, table := range tables {
+		counting.Go(func() error {
+			query := `select count(*) from ` + pgx.Identifier{table}.Sanitize()
+			if err := database.Pool.QueryRow(ctx, query).Scan(&counted[index]); err != nil {
+				return fmt.Errorf("count %s: %w", table, err)
+			}
+			return nil
+		})
+	}
+	if err := counting.Wait(); err != nil {
+		return nil, err
+	}
 	counts := make(map[string]int, len(tables))
-	for _, table := range tables {
-		var count int
-		if err := database.Pool.QueryRow(ctx, `select count(*) from `+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
-			return nil, fmt.Errorf("count %s: %w", table, err)
-		}
-		counts[table] = count
+	for index, table := range tables {
+		counts[table] = counted[index]
 	}
 	return counts, nil
 }
@@ -502,17 +604,27 @@ func assertSameChecksums(t *testing.T, first, second *store.Store) {
 }
 
 // checksumsOf is the checksum of each sample of checksums in database, in the order checksums
-// lists them.
+// lists them. The samples are read at once, readsAtOnce at a time, each written at its own index
+// so the order is the list's whatever order the queries end in, and the first checksum to fail
+// cancels the rest.
 func checksumsOf(database *store.Store) ([]string, error) {
 	sums := make([]string, len(checksums))
+	summing, ctx := errgroup.WithContext(context.Background())
+	summing.SetLimit(readsAtOnce)
 	for index, item := range checksums {
-		query := fmt.Sprintf(
-			`select coalesce(md5(string_agg(row_text, '|' order by row_text)), 'empty')
-			 from (select concat_ws(':', %s) as row_text from %s) sample`,
-			item.columns, pgx.Identifier{item.table}.Sanitize())
-		if err := database.Pool.QueryRow(context.Background(), query).Scan(&sums[index]); err != nil {
-			return nil, fmt.Errorf("checksum %s: %w", item.table, err)
-		}
+		summing.Go(func() error {
+			query := fmt.Sprintf(
+				`select coalesce(md5(string_agg(row_text, '|' order by row_text)), 'empty')
+				 from (select concat_ws(':', %s) as row_text from %s) sample`,
+				item.columns, pgx.Identifier{item.table}.Sanitize())
+			if err := database.Pool.QueryRow(ctx, query).Scan(&sums[index]); err != nil {
+				return fmt.Errorf("checksum %s: %w", item.table, err)
+			}
+			return nil
+		})
+	}
+	if err := summing.Wait(); err != nil {
+		return nil, err
 	}
 	return sums, nil
 }

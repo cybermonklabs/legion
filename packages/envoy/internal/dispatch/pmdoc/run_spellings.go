@@ -523,7 +523,7 @@ func spelledMarks(node *Node, escapePipes, wwwBare bool, spelling runSpelling) [
 // address from plain text.
 func writesAddressSyntax(nodes []*Node) (colons, dots, ats bool) {
 	for _, node := range nodes {
-		if node.Type != "text" || nodeHasMark(node, "inlineCode") || nodeHasMark(node, "link") {
+		if node.Type != "text" || HasMark(node, "inlineCode") || HasMark(node, "link") {
 			continue
 		}
 		for offset := range len(node.Text) {
@@ -619,7 +619,7 @@ func letterBesideDelimiter(nodes []*Node) bool {
 			return true
 		}
 		if index+1 < len(nodes) && closesOrOpensDelimiterBeside(nodes[index+1], node) && !flankingNeutral(lastRune(node.Text)) &&
-			(flankingNeutral(firstRune(nodes[index+1].Text)) || nodeHasMark(nodes[index+1], "link") || nodeHasMark(nodes[index+1], "inlineCode")) {
+			(flankingNeutral(firstRune(nodes[index+1].Text)) || HasMark(nodes[index+1], "link") || HasMark(nodes[index+1], "inlineCode")) {
 			return true
 		}
 	}

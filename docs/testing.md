@@ -712,12 +712,13 @@ such a test would take the binary toward the step's limit.
 
 ## A test in a daemon package that states the rule runs beside the others
 
-Six packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
+Seven packages of `packages/daemon` state in their `TestMain`'s file that every top-level test of
 the default build calls `t.Parallel()` as its first statement or says why not: `internal/daemon`,
-`internal/workflow`, `internal/store`, `internal/runtime/sandbox`, `internal/workspace` and
-`cmd/legion`. Each `TestMain` sets how many run at once (`daemonTestParallelism`,
-`workflowTestParallelism` and `storeTestParallelism` 4, `sandboxTestParallelism`,
-`workspaceTestParallelism` and `cmdTestParallelism` 8).
+`internal/workflow`, `internal/store`, `internal/runtime/sandbox`, `internal/workspace`,
+`cmd/legion` and `internal/ghroute`. Each `TestMain` sets how many run at once
+(`daemonTestParallelism`, `workflowTestParallelism` and `storeTestParallelism` 4,
+`sandboxTestParallelism`, `workspaceTestParallelism`, `cmdTestParallelism` and
+`ghrouteTestParallelism` 8).
 The live drivers behind `//go:build e2e` of `internal/daemon`, `internal/workflow`,
 `internal/store` and `cmd/legion`, which no unit run compiles, are not held to the rule, and the
 check below reads only the default build. Each test of `internal/daemon` already has a database of
@@ -737,7 +738,7 @@ one second in `TestAPodStartsItsRolesOneLoadAtATime`, or the rig's two-second bo
 `TestSuspendOfAPodWhoseLauncherNeverConnectedReturnsAtOnce`). A new test with neither the call nor
 the comment runs alone for no reason.
 
-So each of the six packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
+So each of the seven packages fails such a test by name: `TestEveryTestCallsParallelOrSaysWhyNot`,
 in the file that declares `TestMain`, runs `packages/daemon/internal/testparallel`'s `Require`
 over the package's own test files, those go/build's default context selects (no `-tags`). It finds a test as go test
 does, whatever name the file imported `testing` under. The reason goes on the comment's first
@@ -769,10 +770,10 @@ remote is copied from a template built once per default branch; the template its
 ## A daemon test writes a file it then executes with `internal/execfile`
 
 In a package of the daemon module whose tests run beside each other (`cmd/legion`,
-`internal/daemon`, `internal/intake`, `internal/runtime/sandbox`, `internal/workspace`), a test
-writes a file it or its program then executes (a stand-in git, gh, jj or curl, a wrapper on a PATH)
-with `packages/daemon/internal/execfile` (`execfile.Write`, `execfile.Append`), never `os.WriteFile`
-or an `os.OpenFile` of its own. A child
+`internal/daemon`, `internal/ghroute`, `internal/intake`, `internal/runtime/sandbox`,
+`internal/workspace`), a test writes a file it or its program then executes (a stand-in git, gh,
+jj or curl, a wrapper on a PATH) with `packages/daemon/internal/execfile` (`execfile.Write`,
+`execfile.Append`), never `os.WriteFile` or an `os.OpenFile` of its own. A child
 another test forks while the file is open for writing holds the write descriptor until its own
 exec, and the kernel refuses to exec a file open for writing: `fork/exec …: text file busy`
 (ETXTBSY, Go issue 22315), which a serial run never meets. `execfile` holds `syscall.ForkLock` for
@@ -989,7 +990,7 @@ A run that reports nothing is no proof on its own: the check runs at a garbage c
 `GOGC=10` beside the detector makes a single test likelier to fire it, not certain, so repeat the run before you read a quiet one as a clean one: with this fix reversed, `TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt` under `GOGC=10 GODEBUG=checkfinalizers=1` fired in 2 of 3 runs for the implementer and in 1 of 6 for the reviewer, and at the fixed head it was quiet in 9 of 9.
 CI runs it in `envoy-go-race-docs` (`.github/workflows/ci-job-envoy-go-race-docs.yaml`), on the same line as the race detector, so one run of the package's tests serves both detectors, and on the package's lines of `envoy-go`'s two plain steps for what the race build leaves out or shrinks: "Test what the race build cannot run at all or at full size" (`envoy-go-race-impossible`) for the memory bounds and the render storms, and "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone" (`envoy-go-alone`) for the xid window rows.
 The `envoy_go_race_docs` and `envoy_go` filters in `.github/ci-filters.yaml` select them.
-Both are slow suites: the merge queue runs them on the tree the change lands as, which is where their result normally comes from, and a pull request runs one only under that suite's `lane:` label, for a need the pull request names (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
+Both are slow suites: the merge queue runs each when the queue's own generator selects it against the queue's base, which is where their result normally comes from, and a pull request runs one only under that suite's `lane:` label, for a need the pull request names (`.github/ci-notes/ci.md`, "Which lane a job runs in: the pull request or the merge queue").
 
 The race run streams the test binary's own output (`go test -json`) and so carries a second check Go's detector does not make:
 the package's `TestMain` prints `docs: <built> services built, <alive> still alive after <duration>` once the tests have run, and the line after it names each test that built a service still alive at the end of the run.

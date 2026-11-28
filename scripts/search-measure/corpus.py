@@ -21,8 +21,25 @@ def read_json(corpus, name):
 
 
 def read_jsonl(corpus, name):
-    with open(os.path.join(corpus, name)) as handle:
-        return [json.loads(line) for line in handle]
+    return list(JsonlRows(corpus, name))
+
+
+class JsonlRows:
+    """The rows of one JSONL corpus file, parsed a line at a time each time they are iterated.
+
+    `read_jsonl` holds a whole file, and a deployment's `documents.jsonl` is every document's
+    markdown: more than a gigabyte, which parsed whole is more than the memory of the pod that
+    loads it. A reader of such a file takes this instead, and may go through it as often as it
+    needs, because each pass opens the file again and holds one row of it at a time.
+    """
+
+    def __init__(self, corpus, name):
+        self.path = os.path.join(corpus, name)
+
+    def __iter__(self):
+        with open(self.path) as handle:
+            for line in handle:
+                yield json.loads(line)
 
 
 def write_json(out, name, value):
@@ -31,9 +48,35 @@ def write_json(out, name, value):
 
 
 def write_jsonl(out, name, rows):
-    with open(os.path.join(out, name), "w") as handle:
+    with JsonlWriter(out, name) as writer:
+        writer.writerows(rows)
+
+
+class JsonlWriter:
+    """A JSONL corpus file written a row at a time, counting the rows it is given.
+
+    A harvest writes each row as its answer comes, rather than every row once the last answer is
+    in, so it holds no more of a corpus than the answers it is reading; `count` is what its
+    summary line says.
+    """
+
+    def __init__(self, out, name):
+        self.handle = open(os.path.join(out, name), "w")
+        self.count = 0
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *raised):
+        self.handle.close()
+
+    def writerow(self, row):
+        self.handle.write(json.dumps(row) + "\n")
+        self.count += 1
+
+    def writerows(self, rows):
         for row in rows:
-            handle.write(json.dumps(row) + "\n")
+            self.writerow(row)
 
 
 def say(line):

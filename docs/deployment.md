@@ -251,8 +251,8 @@ that execs `legion gh` by its absolute path), and every command under a `GH_HOST
 and send nothing.
 A read that names only owners the bundle holds no directory for runs, rather than being refused,
 with the token of `GH_CONFIG_DIR`, the directory a command naming no owner runs with
-(`selectors.dir`): a call `ghWritesNothing` admits, or `gh api graphql` in the one form
-`ghGraphQLQueryRead` reads for certain (`api graphql` typed first, its query given with
+(`selectors.dir` in `internal/ghroute`): a call `writesNothing` admits, or `gh api graphql` in the
+one form `graphQLQueryRead` reads for certain (`api graphql` typed first, its query given with
 `-f query=…` and holding the words `mutation` and `subscription` nowhere, in any case and inside a
 string or a comment too, its other fields given with `-f` or with `-F` values that read no file
 and none of them with a key that holds `query`, no `-H` naming a method override or
