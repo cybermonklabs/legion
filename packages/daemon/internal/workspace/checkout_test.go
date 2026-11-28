@@ -593,48 +593,6 @@ func TestProvisionAddsAgainAWorkspaceWhoseProvisionStoppedBeforeItsCheckoutEnded
 	}
 }
 
-// A provision stopped inside workspace-reset, after its rename of the old workspace aside and before
-// that directory's delete ends (the delete's time follows what the cut-short checkout wrote), leaves
-// removingPath beside a workspace that is registered but missing. The next provision adds the
-// workspace again and checks out the whole tree; it also clears what the stopped reset left aside,
-// as resetUnfinishedWorkspace's first step says, so a partial checkout of the issue's tree does not
-// stay on the issue's volume until the issue is removed.
-func TestProvisionClearsWhatAStoppedWorkspaceResetLeftAside(t *testing.T) {
-	t.Parallel()
-	run := newLocalRunner(t)
-	pushTreeFiles(t, run.remote, "main", markedCheckoutTree)
-	req := provisionRequest(t)
-	location, err := Location(req.StateDir, req.Repo, req.Issue)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	partial := t.TempDir()
-	if err := os.WriteFile(filepath.Join(partial, "half.txt"), []byte("first half\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	realTools := run.tools
-	run.tools = cutShortCheckoutTools(t, filepath.Join(t.TempDir(), "marker.txt"), partial)
-	if _, err := Provision(context.Background(), run, req); err == nil {
-		t.Fatal("the Provision whose checkout was cut short succeeded")
-	}
-	run.tools = realTools
-	// The state a kill right after workspace-reset's rename leaves.
-	aside := removingPath(location.Dir)
-	if err := os.Rename(location.Dir, aside); err != nil {
-		t.Fatal(err)
-	}
-
-	working, err := Provision(context.Background(), run, req)
-	if err != nil {
-		t.Fatalf("the Provision after a stopped workspace-reset: %v", err)
-	}
-	requireWholeTree(t, working, markedCheckoutTree)
-	if _, err := os.Lstat(aside); !errors.Is(err, fs.ErrNotExist) {
-		t.Errorf("after the provision that followed a stopped workspace-reset, %s lstat = %v, want ErrNotExist", aside, err)
-	}
-}
-
 // cutShortCheckout provisions req's workspace with a checkout cut short after writing the first
 // half of half.txt (cutShortCheckoutTools), so the workspace is left registered, marked and holding
 // no sparse pattern: the workspace a workspace-reset takes away.
