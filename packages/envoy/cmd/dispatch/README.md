@@ -2272,6 +2272,9 @@ A refusal of the applied text reads `version <v> is recorded as <identity>, whic
 The runner gives the key back between that judgment and each migration, so another process can record any version in between: before it applies a migration, the runner judges every row again against its whole set, and applies nothing while any row is refused, in either apply mode.
 Such a refusal reads `apply migration <version>: check migration: version …`, and the migrations the boot applied before it stay applied.
 A lock timeout, or a failed read or write of the table, reads `read or record what schema_migrations records, none applied: …` instead, and asks for no reset.
+The runner takes that step only for a migration the judgment above did not read as recorded.
+A version that judgment read, in the transaction that judged every row of the table against the whole set, is applied, so the runner takes no locked transaction or connection of its own for it, where before it took one for every migration of the set: a boot of a migrated database now takes the prepare's transaction alone, and a deployment's boot takes it plus the migrations the release brings.
+A migration the judgment did not read as recorded still goes through the whole path above, so a version another process records in between is still found there (`TestABootJudgesOnlyTheMigrationsItsPrepareDidNotReadAsRecorded` counts the judgments, and `TestMigrateAppliesNothingWhileAnotherBootRecordsAConflictingVersion` holds the refusal).
 What the operator does:
 
 - A database that ran another branch's or an earlier commit's migration, or an edit of one, such as a development database or a preview stack's, holds a schema this build never wrote: reset it, by dropping the database, creating it empty, and starting the server, which migrates it from the first file.

@@ -28,6 +28,7 @@ import { askCard, inboxPane, selectRow } from "./inbox-pane";
 import { replyRowId } from "./inbox-threads";
 import { expectIssuePageDrawn, focusRow } from "./issue-page-g";
 import { withIssuePage } from "./issue-page-option";
+import { openedRecord, recordBox, recordEntry, threadsPath } from "./issue-page-threads";
 import { commentField, pickerRows, pickReference, refPicker } from "./ref-picker";
 import { expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
@@ -690,6 +691,37 @@ const DRIVERS: Partial<Record<DispatchWritingBox, Driver>> = {
       await expect(field).toBeVisible();
       await walkBox(field, world);
       await expectRow(page, field, "suggestion-replacement", "suggestion");
+    },
+  },
+  // Threads on the new issue page (dispatch://INFRA-5704), which a reader gets once their
+  // `issue.page` is `outline` (`withIssuePage`): the reader's own comment thread opened at its
+  // address, where the box at its foot writes a reply to its root and Edit opens the comment's
+  // words in the editor.
+  "threads-comment-edit": {
+    drive: async (page, world) => {
+      await withIssuePage(page.context(), "alice");
+      await page.goto(threadsPath(world.host, world.comment));
+      await expect(openedRecord(page)).toHaveAttribute("data-thread-record", world.comment);
+      const entry = recordEntry(page, world.comment);
+      await entry.getByRole("button", { exact: true, name: CONTROL_LABELS.edit }).click();
+      const field = entry.getByRole("textbox", { name: "Edit comment" });
+      await expect(field).toBeVisible();
+      await walkBox(field, world);
+      await expectRow(page, field, "threads-comment-edit", "comment-edit");
+    },
+  },
+  "threads-reply": {
+    drive: async (page, world) => {
+      await withIssuePage(page.context(), "alice");
+      await page.goto(threadsPath(world.host, world.comment));
+      await expect(openedRecord(page)).toHaveAttribute("data-thread-record", world.comment);
+      const box = recordBox(page, "foot");
+      const field = box.getByRole("textbox", { exact: true, name: CONTROL_LABELS.reply });
+      await expect(field).toBeVisible();
+      await walkBox(field, world);
+      await expectRow(page, field, "threads-reply", "comment", () =>
+        composerSend(page, "Reply", box).click()
+      );
     },
   },
 };

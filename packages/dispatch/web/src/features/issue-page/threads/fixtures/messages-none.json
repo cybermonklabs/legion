@@ -1,0 +1,69 @@
+{
+  "threads": [
+    {
+      "message": {
+        "id": "a92a5f53-93cf-41d1-adc0-76b5ad7eb56c",
+        "issue_key": "PDFD720CB-1",
+        "author": {
+          "kind": "session",
+          "id": "threads-reviewer",
+          "origin": { "session_title": "Reviewer (threads)" }
+        },
+        "body": "Which reads does the list send?",
+        "target": "session:threads-planner",
+        "in_reply_to": null,
+        "broadcast_id": null,
+        "created_at": "2026-11-26T11:38:05.270071Z",
+        "edited_at": null,
+        "deleted_at": null,
+        "deleted_by": null,
+        "deliveries": [
+          {
+            "message_id": "a92a5f53-93cf-41d1-adc0-76b5ad7eb56c",
+            "attempt": 1,
+            "delivery": "aside",
+            "session_id": "threads-planner",
+            "envelope_id": "f6e957266ce7623c52e6fe208eeae170",
+            "duplicate": false,
+            "state": "queued",
+            "error": null,
+            "reply_id": null,
+            "created_at": "2026-11-26T11:38:05.270071Z",
+            "requested_by": {
+              "kind": "session",
+              "id": "threads-reviewer",
+              "origin": { "session_title": "Reviewer (threads)" }
+            },
+            "accepted_at": null,
+            "accepted_as": null
+          }
+        ],
+        "reply_block": null
+      },
+      "replies": [
+        {
+          "id": "ed74283e-8dfb-4b18-a90d-c2a42d4c330c",
+          "issue_key": "PDFD720CB-1",
+          "author": {
+            "kind": "session",
+            "id": "threads-planner",
+            "origin": { "session_title": "Planner (threads)" }
+          },
+          "body": "Three pages and the events.",
+          "target": null,
+          "in_reply_to": "a92a5f53-93cf-41d1-adc0-76b5ad7eb56c",
+          "broadcast_id": null,
+          "created_at": "2026-11-26T11:38:05.54449Z",
+          "edited_at": null,
+          "deleted_at": null,
+          "deleted_by": null,
+          "deliveries": [],
+          "reply_block": null
+        }
+      ],
+      "last_activity_at": "2026-11-26T11:38:05.544490Z"
+    }
+  ],
+  "before": null,
+  "remaining": 0
+}
