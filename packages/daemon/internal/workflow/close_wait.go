@@ -518,7 +518,7 @@ func (e *Engine) resultChanged(ctx context.Context, tx pgx.Tx, fact intake.Dispa
 		if err := e.lookAfterNotRun(ctx, tx, *issue, fact); err != nil {
 			return intake.Result{}, err
 		}
-		return intake.Result{}, e.askCloseRead(ctx, tx, *issue)
+		return intake.Result{}, nil
 	}
 	// An open next change ends when each of its reasons is resolved, a check's by its pass, so a
 	// result's event reads the checks for it as for an issue in verifying (judgeOpenChange).
