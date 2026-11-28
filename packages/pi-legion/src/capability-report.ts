@@ -82,6 +82,14 @@ export interface CommandResult {
   readonly stderr: string;
 }
 
+/** The options of one child command (`CapabilityHost.run`, `runCommand`), which the tests'
+ * fake hosts are handed too. */
+export interface RunOptions {
+  readonly cwd: string;
+  readonly signal: AbortSignal;
+  readonly env?: Readonly<Record<string, string>>;
+}
+
 /**
  * Every collaborator a check needs: Oh My Pi's own discovery and search functions, its settings,
  * and the two child commands. The production host (`ompCapabilityHost`) reaches each lazily; a
@@ -122,11 +130,7 @@ export interface CapabilityHost {
   readonly run: (
     command: string,
     args: readonly string[],
-    options: {
-      readonly cwd: string;
-      readonly signal: AbortSignal;
-      readonly env?: Readonly<Record<string, string>>;
-    }
+    options: RunOptions
   ) => Promise<CommandResult>;
 }
 
@@ -814,11 +818,7 @@ export async function measureCapabilities(
 async function runCommand(
   command: string,
   args: readonly string[],
-  options: {
-    readonly cwd: string;
-    readonly signal: AbortSignal;
-    readonly env?: Readonly<Record<string, string>>;
-  }
+  options: RunOptions
 ): Promise<CommandResult> {
   const child = Bun.spawn([command, ...args], {
     cwd: options.cwd,

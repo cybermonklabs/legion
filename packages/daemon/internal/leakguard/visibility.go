@@ -2,6 +2,7 @@ package leakguard
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/json"
@@ -312,7 +313,7 @@ func (g *Guard) keptVisibility(slug string) (Visibility, bool) {
 func readKeptVisibilityFile(path string) ([]byte, bool) {
 	dirPath := filepath.Dir(path)
 	parentPath := filepath.Dir(dirPath)
-	if pInfo, err := os.Lstat(parentPath); err != nil || !pInfo.IsDir() || !ownedByCurrentUser(pInfo) || pInfo.Mode().Perm()&0o077 != 0 {
+	if pInfo, err := os.Lstat(parentPath); err != nil || !pInfo.IsDir() || !privateToUser(pInfo) {
 		return nil, false
 	}
 	dir, err := os.OpenFile(dirPath, os.O_RDONLY|unix.O_DIRECTORY|unix.O_NOFOLLOW, 0)
@@ -345,7 +346,7 @@ func readKeptVisibilityFile(path string) ([]byte, bool) {
 // directory, so checking Lstat and os.SameFile catches a link there too.
 func openedPrivateAs(file *os.File, path string, kind fs.FileMode) bool {
 	opened, err := file.Stat()
-	if err != nil || opened.Mode().Type() != kind || !ownedByCurrentUser(opened) || opened.Mode().Perm()&0o077 != 0 {
+	if err != nil || opened.Mode().Type() != kind || !privateToUser(opened) {
 		return false
 	}
 	found, err := os.Lstat(path)
@@ -355,6 +356,11 @@ func openedPrivateAs(file *os.File, path string, kind fs.FileMode) bool {
 func ownedByCurrentUser(info os.FileInfo) bool {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	return ok && stat.Uid == uint32(os.Getuid())
+}
+
+// privateToUser says whether info is owned by this user with no permission for group or others.
+func privateToUser(info os.FileInfo) bool {
+	return ownedByCurrentUser(info) && info.Mode().Perm()&0o077 == 0
 }
 
 func (g *Guard) keepVisibility(slug string, visibility Visibility) {
@@ -388,14 +394,24 @@ func (g *Guard) keepVisibility(slug string, visibility Visibility) {
 	}
 }
 
+// keptVisibilityDirs are the directories, under a keep's base, that hold one file for each kept
+// answer (keptVisibilityPath): $XDG_STATE_HOME for a public answer, the role's own state volume
+// for a private or internal one.
+var keptVisibilityDirs = []string{"legion-gh", "visibility"}
+
+// keptVisibilityPath is the file under base that keeps slug's answer.
+func keptVisibilityPath(base, slug string) string {
+	return filepath.Join(base, filepath.Join(keptVisibilityDirs...), visibilityCacheFile(slug))
+}
+
 func writeKeptVisibility(base, slug string, encoded []byte) {
-	dir, ok := ensurePrivateDir(base, "legion-gh", "visibility")
+	dir, ok := ensurePrivateDir(base, keptVisibilityDirs...)
 	if !ok {
 		return
 	}
-	path := filepath.Join(dir, visibilityCacheFile(slug))
+	path := keptVisibilityPath(base, slug)
 	if info, err := os.Lstat(path); err == nil {
-		if !info.Mode().IsRegular() || !ownedByCurrentUser(info) || info.Mode().Perm()&0o077 != 0 {
+		if !info.Mode().IsRegular() || !privateToUser(info) {
 			return
 		}
 	} else if !errors.Is(err, os.ErrNotExist) {
@@ -441,11 +457,11 @@ func ensurePrivateDir(base string, elems ...string) (string, bool) {
 				return "", false
 			}
 			info, err = os.Lstat(cur)
-			if err != nil || !info.IsDir() || !ownedByCurrentUser(info) {
+			if err != nil || !info.IsDir() {
 				return "", false
 			}
 		}
-		if info.Mode().Perm()&0o077 != 0 {
+		if !privateToUser(info) {
 			return "", false
 		}
 	}
@@ -462,18 +478,18 @@ func (g *Guard) visibilityCachePath(slug string) string {
 	if state == "" {
 		return ""
 	}
-	return filepath.Join(state, "legion-gh", "visibility", visibilityCacheFile(slug))
+	return keptVisibilityPath(state, slug)
 }
 
-func (g *Guard) roleState() string {
-	if g.opts.RoleState != "" {
-		return g.opts.RoleState
-	}
-	return roleStateBase
-}
+func (g *Guard) roleState() string { return cmp.Or(g.opts.RoleState, roleStateBase) }
 
-func (g *Guard) writableRoleState() string {
-	base := g.roleState()
+func (g *Guard) writableRoleState() string { return WritableRoleState(g.roleState()) }
+
+// WritableRoleState is base where it is a directory this process can write, and "" otherwise, an
+// empty base among them: the role's own state volume (RoleStateBase) where a role has one, which
+// holds the guard's kept private and internal answers (keepVisibility) and cmd/legion's copies of
+// gh's help (its newGhHelpKeep).
+func WritableRoleState(base string) string {
 	if base == "" {
 		return ""
 	}
@@ -489,7 +505,7 @@ func (g *Guard) privateVisibilityCachePath(slug string) string {
 	if base == "" {
 		return ""
 	}
-	return filepath.Join(base, "legion-gh", "visibility", visibilityCacheFile(slug))
+	return keptVisibilityPath(base, slug)
 }
 
 // VisibilityReadVar is the environment variable the shared public leak check's own visibility

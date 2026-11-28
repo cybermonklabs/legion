@@ -2,7 +2,6 @@ package main
 
 import (
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -23,15 +22,11 @@ const ghDeadlineVar = "LEGION_GH_DEADLINE"
 // that does not parse, and a time not later than now name none, and the call runs as one whose
 // caller gave no deadline: a stale or mistaken value never moves a call onto another path.
 func ghCallerDeadline(env map[string]string, now time.Time) (time.Time, bool) {
-	value := env[ghDeadlineVar]
-	if value == "" || strings.Trim(value, "0123456789") != "" {
-		return time.Time{}, false
-	}
-	ms, err := strconv.ParseInt(value, 10, 64)
+	ms, err := strconv.ParseUint(env[ghDeadlineVar], 10, 63)
 	if err != nil {
 		return time.Time{}, false
 	}
-	deadline := time.UnixMilli(ms)
+	deadline := time.UnixMilli(int64(ms))
 	if !deadline.After(now) {
 		return time.Time{}, false
 	}

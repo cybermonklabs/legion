@@ -73,9 +73,10 @@ func leakCheckCommand(use string, words int, usage, short string, do func(ctx co
 // the repository the guard reads the push's commits from. A TLS handshake timeout the guard's own
 // gh read met (leakguard.Options.OnTLSTimeout) is recorded after the guard's answer is reported,
 // as `legion gh` records one once its call is over (recordGuardTLSTimeout): the push is cleared or
-// refused as it is without the record. In a pane or a pod, which names LEGION_GH_PATH, the guard
-// reads the destination's visibility with the real gh itself, as `legion gh` routes that read
-// (ghGuardRead), and starts no `legion gh` for it.
+// refused as it is without the record, and a signal that ends ctx during the record ends its
+// probes and the command, with 128+<signal>, as one that came during the guard does. In a pane or
+// a pod, which names LEGION_GH_PATH, the guard reads the destination's visibility with the real
+// gh itself, as `legion gh` routes that read (ghGuardRead), and starts no `legion gh` for it.
 func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) int {
 	remote, url := args[0], args[1]
 	what := leakguard.PushName(remote)
@@ -98,7 +99,9 @@ func runLeakCheckPrePush(ctx context.Context, args []string, stderr io.Writer) i
 		URL:     url,
 		Updates: updates,
 	}))
-	recordGuardTLSTimeout(tlsHost, stderr, ctx)
+	if signal, ok := recordGuardTLSTimeout(ctx, tlsHost, stderr); ok {
+		return signal
+	}
 	return status
 }
 
@@ -114,7 +117,7 @@ func runLeakCheckText(ctx context.Context, args []string, stderr io.Writer) int 
 	if err != nil {
 		return leakCheckReport(ctx, stderr, kind, &leakguard.SetupFailure{What: kind, Why: "the text could not be read", Err: err})
 	}
-	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl, RoleState: ghRoleStateBase, GhRead: ghGuardRead(processEnvironment())})
+	guard := leakguard.New(leakguard.Options{Curl: leakguardCurl})
 	return leakCheckReport(ctx, stderr, kind, guard.Text(ctx, leakguard.TextRequest{Text: string(text)}))
 }
 

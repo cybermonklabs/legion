@@ -573,7 +573,7 @@ func TestLeakCheckPrePushPrintsNoCredentialItsRemoteCarries(t *testing.T) {
 // file is named (LEGION_PRIVATE_NAME_RULES_FILE): with no rule file the guard reads no
 // destination's visibility.
 func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variable leakCheckStdin (leakCheck).
+	// Not parallel: it sets environment variables of the whole process; it changes the whole process's working directory; it sets the package variables leakCheckStdin (leakCheck) and ghRoleStateBase.
 	root, defaultDir := gitCredentialBundle(t)
 	help, err := filepath.Abs(ghHelpDir)
 	if err != nil {
@@ -608,6 +608,12 @@ func TestLeakCheckPrePushReadsAnUnservedOwnersVisibilityWithNoCredential(t *test
 		{name: "a served owner's private repository", repo: "acme/widgets", git: lists, code: 0, reads: "rest\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			// The command runs in this test's own process, whose guard keeps a private answer
+			// under ghRoleStateBase for 2 minutes: each row's is a directory of its own, so a run
+			// of the row again in this process (-count=2) reads GitHub again rather than its keep.
+			previous := ghRoleStateBase
+			t.Cleanup(func() { ghRoleStateBase = previous })
+			ghRoleStateBase = t.TempDir()
 			bin, record := t.TempDir(), filepath.Join(t.TempDir(), "reads")
 			// The stand-in real gh names its record by its path: the command runs in this test's
 			// own process, and the guard runs the real gh itself, so gh's environment holds none

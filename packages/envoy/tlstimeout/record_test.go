@@ -1,6 +1,7 @@
 package tlstimeout
 
 import (
+	"context"
 	"crypto/tls"
 	"errors"
 	"maps"
@@ -18,6 +19,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/tlstimeout/tlstimeouttest"
 )
 
@@ -417,8 +419,8 @@ func TestARecordCarriesNothingOfTheCallButItsHost(t *testing.T) {
 const recordSlack = 1500 * time.Millisecond
 
 // Check c-tls-timeout-recorded, point 3: a record whose two probes never end ends at its bound,
-// the Go probe's error that bound's and curl's figures `-`; a second timeout inside Every of the
-// first writes nothing and runs no curl; and one after Every writes again.
+// the Go probe's error that bound's and curl's figures `-`; a second timeout inside a minute of
+// the first writes nothing and runs no curl; and one after a minute writes again.
 func TestARecordEndsWithinItsBoundAndWritesOnceInEvery(t *testing.T) {
 	rig := newRecordRig(t, "exec sleep 30\n")
 	now := time.Date(2026, 11, 27, 21, 30, 0, 0, time.UTC)
@@ -447,6 +449,36 @@ func TestARecordEndsWithinItsBoundAndWritesOnceInEvery(t *testing.T) {
 	rig.r.Record(host)
 	if after := strings.TrimPrefix(rig.stderr.String(), written); !strings.HasPrefix(after, "agent-secrets: tls handshake timeout recorded: host="+host+" ") || curlRuns(t, rig.curl) != 2 {
 		t.Errorf("a timeout 61 s after the first wrote %q and ran curl %d times in all, want a line and two", after, curlRuns(t, rig.curl))
+	}
+}
+
+// A record ends with the context it is made under (RecordContext): one whose context ends while
+// both probes wait, the Go probe on a peer that never answers its handshake and a curl that never
+// ends, returns at once rather than at its bound, an hour here, and still writes its one line,
+// whose figures are what the probes saw by then: the Go probe's error that context's end, and
+// curl's figures `-`, since curl was stopped rather than exiting of its own.
+func TestARecordEndsWithItsContextAndStillWritesItsLine(t *testing.T) {
+	rig := newRecordRig(t, "exec sleep 30\n")
+	rig.r.Bound = time.Hour
+	host := tlstimeouttest.Silent(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	ended := make(chan time.Time, 1)
+	go func() {
+		rig.r.RecordContext(ctx, host)
+		ended <- time.Now()
+	}()
+	testwait.Eventually(t, "the record's curl to run", func() bool { return curlRuns(t, rig.curl) == 1 })
+	cancelled := time.Now()
+	cancel()
+	if took := testwait.Receive(t, "the record to end after its context ended", ended).Sub(cancelled); took > recordSlack {
+		t.Errorf("the record ended %s after its context, want at most %s: its probes did not end with the context, and its bound is %s", took, recordSlack, rig.r.Bound)
+	}
+	_, _, values := parseRecord(t, rig.stderr.String())
+	for key, value := range map[string]string{"host": host, "go_error": "context canceled", "curl_total_s": "-", "curl_exit": "-", "bound_s": "3600.000"} {
+		if values[key] != value {
+			t.Errorf("%s=%q, want %q", key, values[key], value)
+		}
 	}
 }
 

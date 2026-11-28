@@ -2,9 +2,11 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/sjawhar/envoy/tlstimeout/tlstimeouttest"
@@ -12,6 +14,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/leakguard"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
+	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // tlsRecordLine is the start of the record line `legion gh` writes for a TLS handshake timeout to
@@ -223,6 +226,158 @@ func TestLeakCheckPrePushRecordsTheGuardsGhTLSHandshakeTimeout(t *testing.T) {
 	}
 	if _, err := os.Stat(probe); err != nil {
 		t.Errorf("the record ran no curl probe: %v", err)
+	}
+}
+
+// A SIGTERM that reaches `legion gh` or `legion leak-check pre-push` while it records a TLS
+// handshake timeout ends the record's probes, and the command exits 143, the status of a death by
+// that signal (endedBySignal), rather than with the status of the call it recorded: the record
+// runs once that call is over, and its probes would otherwise run on to their bound. Each row's
+// record is held in its curl probe, a stand-in that becomes a sleep of about a day of its own
+// (holdsStandIn), under a bound of two days (testTLSBoundEnv), while its Go probe waits on a peer
+// that never answers TLS, so only the signal ends the record before the row gives up. The signal
+// goes to the command's own pid, as a stop sends it. The record still writes its line, the last
+// the command prints, after the call's own output, and its curl is gone once the command has
+// exited. The rows are the three places a record is made: after the real gh's own timeout
+// (runGhChild), and after the leak guard's own gh read met one, once a `legion gh` call is over
+// and once a pre-push has been refused (recordGuardTLSTimeout).
+func TestASignalDuringATLSRecordEndsTheCommandWithTheSignalsStatus(t *testing.T) {
+	t.Parallel()
+	root, defaultDir := gitCredentialBundle(t)
+	help, err := filepath.Abs(ghHelpDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	silent := tlstimeouttest.Silent(t)
+	standIn := func(t *testing.T, script string) string {
+		t.Helper()
+		stub := filepath.Join(t.TempDir(), "real-gh")
+		if err := execfile.Write(stub, []byte(script), 0o700); err != nil {
+			t.Fatal(err)
+		}
+		return stub
+	}
+	for _, tc := range []struct {
+		name string
+		// args and stdin are the row's command; gh is its stand-in real gh, answer the stand-in
+		// curl's answer to the guard's read through curl, host the host the record names, and
+		// before what the command prints ahead of the record line. seconds is the sleep the
+		// record's curl probe becomes.
+		args                 []string
+		stdin                string
+		gh                   func(t *testing.T) string
+		answer, host, before string
+		seconds              string
+	}{
+		{
+			name: "the real gh's own timeout", args: []string{"gh", "api", "rate_limit"}, host: silent, seconds: "86387",
+			gh: func(t *testing.T) string {
+				return standIn(t, ghStandInPrefix(help)+"echo 'Get \"https://"+silent+"/rate_limit\": net/http: TLS handshake timeout' >&2\nexit 1\n")
+			},
+			before: "net/http: TLS handshake timeout",
+		},
+		{
+			name: "the guard's gh read's timeout, once the call is over", args: []string{"gh", "pr", "create", "-R", "acme/widgets", "--title", "a title the rules pass"},
+			host: "api.github.com", seconds: "86386", answer: curlReadsPublic,
+			gh: func(t *testing.T) string {
+				return standIn(t, ghStandInHelp(help)+"case \" $* \" in\n"+ghVisibilityReadArgv+")\n"+
+					"  echo 'Get \"https://api.github.com/repos/acme/widgets\": net/http: TLS handshake timeout' >&2\n  exit 1;;\nesac\nexit 0\n")
+			},
+		},
+		{
+			name: "the guard's gh read's timeout, once the pre-push is refused", args: []string{"leak-check", "pre-push", "origin", "https://github.com/" + noSuchRepo + ".git"},
+			stdin: refusedRefDeletion, host: "api.github.com", seconds: "86385", before: notFoundSays("the push to origin"),
+			answer: "printf 'HTTP/2 404\\r\\ncontent-type: application/json; charset=utf-8\\r\\n\\r\\n{\"message\":\"Not Found\"}'\nexit 0\n",
+			gh: func(t *testing.T) string {
+				stub, _ := visibilityReadGh(t, ghCannotReachGitHub)
+				return stub
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			pidFile := filepath.Join(t.TempDir(), "curl.pid")
+			killRecordedHelper(t, pidFile, tc.seconds)
+			// The record's curl probe is the run that asks for its timings (-w); every other run is
+			// the guard's read through curl, which reads the token on its standard input first.
+			curl := filepath.Join(t.TempDir(), "curl")
+			script := "#!/bin/sh\ncase \" $* \" in\n*\" -w \"*)\n" + holdsStandIn(pidFile, tc.seconds) + ";;\nesac\ncat >/dev/null\n" + tc.answer
+			if err := execfile.Write(curl, []byte(script), 0o700); err != nil {
+				t.Fatal(err)
+			}
+			command := legionCommand(t, t.TempDir(), map[string]string{
+				"GH_CONFIG_DIR": defaultDir, "LEGION_GH_OWNERS_DIR": root, "LEGION_GH_PATH": tc.gh(t), "XDG_STATE_HOME": t.TempDir(),
+				"PUBLIC_LEAK_CHECK":    leakguardtest.Write(t, t.TempDir(), leakguardtest.Passes),
+				leakguard.RulesFileVar: leakguardtest.WriteRules(t, t.TempDir()),
+				testCurlEnv:            curl,
+				"HTTPS_PROXY":          "http://" + silent,
+				testTLSStampsEnv:       filepath.Join(t.TempDir(), "stamps"),
+				testTLSBoundEnv:        "48h",
+			}, tc.args...)
+			command.Stdin = strings.NewReader(tc.stdin)
+			// Standard output and standard error are a file rather than a pipe, so nothing of the
+			// stand-ins' can hold the wait open.
+			printed, err := os.Create(filepath.Join(t.TempDir(), "printed"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { printed.Close() })
+			command.Stdout, command.Stderr = printed, printed
+			if err := command.Start(); err != nil {
+				t.Fatal(err)
+			}
+			exited := make(chan struct{})
+			var waited error
+			go func() {
+				waited = command.Wait()
+				close(exited)
+			}()
+			t.Cleanup(func() {
+				select {
+				case <-exited:
+				default:
+					_ = command.Process.Kill()
+					<-exited
+					t.Logf("legion %s still ran when the test ended, having printed: %s", tc.args[0], readRecord(t, printed.Name()))
+				}
+			})
+			var pid int
+			testwait.Eventually(t, "the record's curl probe to hold the record, or the command to end", func() bool {
+				select {
+				case <-exited:
+					return true
+				default:
+				}
+				var running bool
+				pid, running = recordedHelper(pidFile, tc.seconds)
+				return running
+			})
+			select {
+			case <-exited:
+				t.Fatalf("legion %s = %v before its record's curl held the record: %s", tc.args[0], waited, readRecord(t, printed.Name()))
+			default:
+			}
+			// The signal must come while the curl holds the record: with no running pid recorded,
+			// the check of its end below would pass a signal that came before the record.
+			if pid <= 0 || !helperRunning(pid, tc.seconds) {
+				t.Fatalf("the record's curl had recorded no running pid (%d) in %s when the signal was to be sent", pid, pidFile)
+			}
+			if err := command.Process.Signal(syscall.SIGTERM); err != nil {
+				t.Fatal(err)
+			}
+			testwait.Receive(t, "legion "+tc.args[0]+" to end after a SIGTERM during its record", exited)
+			out := readRecord(t, printed.Name())
+			if exit, ok := waited.(*exec.ExitError); !ok || exit.ExitCode() != 143 {
+				t.Errorf("legion %s after a SIGTERM during its record = %v; want exit 143: %s", tc.args[0], waited, out)
+			}
+			lines := strings.Split(strings.TrimSuffix(out, "\n"), "\n")
+			if last := lines[len(lines)-1]; !strings.HasPrefix(last, tlsRecordLine(tc.host)) || !strings.Contains(strings.Join(lines[:len(lines)-1], "\n"), tc.before) {
+				t.Errorf("legion %s printed %q; want %q and then the record line, naming %q", tc.args[0], out, tc.before, tlsRecordLine(tc.host))
+			}
+			if helperRunning(pid, tc.seconds) {
+				t.Errorf("the record's curl (pid %d) still runs after legion %s exited; want it stopped with the record", pid, tc.args[0])
+			}
+		})
 	}
 }
 

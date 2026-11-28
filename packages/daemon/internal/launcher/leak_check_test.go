@@ -259,24 +259,16 @@ func TestTheGuardsPrivateCopyIsMadeInTheRolesOwnPrivateDirectory(t *testing.T) {
 // leakguard.RoleStateBase, which that package spells itself, since this one imports it: the
 // role's own state directory as role-init binds it back inside the role's namespaces alone, and
 // as the controller's pod mounts its one role's. A layout that moved the directory would leave
-// the guard keeping nothing, or reading a root-owned mount point no role can write.
+// the guard keeping nothing, or reading a root-owned mount point no role can write. `legion gh`
+// keeps its copies of gh's help there too, under cmd/legion's ghRoleStateBase, which is set from
+// this constant; this package cannot import cmd/legion, a main package, so it holds the constant.
+// There no other role of the pod can write a copy that changes what this role's wrapper parses,
+// and a layout that moved the directory would send the help keep back to $XDG_STATE_HOME, which
+// every role of the pod can write, since all run as one user.
 func TestTheGuardsVisibilityKeepIsInTheRolesOwnStateDirectory(t *testing.T) {
 	t.Parallel()
 	if want := FixedRoot + "/" + RoleStateDir; leakguard.RoleStateBase != want {
 		t.Fatalf("leakguard.RoleStateBase = %s, want the state directory role-init binds for the role alone, %s", leakguard.RoleStateBase, want)
-	}
-}
-
-// `legion gh` keeps its copies of gh's help under cmd/legion's ghRoleStateBase, which is set from
-// leakguard.RoleStateBase; this package cannot import cmd/legion, a main package, so it holds the
-// constant that variable is set from: the role's own state directory as role-init binds it back
-// inside the role's namespaces alone, where no other role of the pod can write a copy that
-// changes what this role's wrapper parses. A layout that moved the directory would send the help
-// keep back to $XDG_STATE_HOME, which every role of the pod can write, since all run as one user.
-func TestTheHelpKeepIsInTheRolesOwnStateDirectory(t *testing.T) {
-	t.Parallel()
-	if want := FixedRoot + "/" + RoleStateDir; leakguard.RoleStateBase != want {
-		t.Fatalf("leakguard.RoleStateBase, which the help keep's ghRoleStateBase is set from, = %s; want the state directory role-init binds for the role alone, %s", leakguard.RoleStateBase, want)
 	}
 }
 

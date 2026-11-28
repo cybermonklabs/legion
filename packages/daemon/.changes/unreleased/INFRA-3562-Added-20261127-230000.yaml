@@ -12,8 +12,10 @@ body: |-
     hands gh a pipe for its standard error where its own is no terminal, and copies it on at once.
     The daemon's GitHub REST client, the launcher's token exchange and the session
     proxy's write it as `legion`. None changes a call's error or status, or what the leak guard
-    allows. A role's command's standard error stays in the role's transcript and does not reach
-    Cloud Logging.
+    allows. A SIGINT or SIGTERM that comes while `legion gh` or `legion leak-check pre-push`
+    records ends the record's probes at once, and the command exits with 128+<signal>, as for such
+    a signal during the call itself. A role's command's standard error stays in the role's
+    transcript and does not reach Cloud Logging.
 time: 2026-11-27T23:00:00Z
 custom:
     Issue: INFRA-3562

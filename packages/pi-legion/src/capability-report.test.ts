@@ -19,6 +19,7 @@ import {
   LIVE_CAPABILITIES,
   type LiveCapability,
   measureCapabilities,
+  type RunOptions,
   WEB_SEARCH_PROBE_QUERY,
 } from "./capability-report";
 
@@ -123,8 +124,6 @@ function passingNamesExceptTheDiskCheck(report: LegionCapabilityReportBody): str
     .filter((row) => row.ok && row.name !== "repository-extensions")
     .map((row) => row.name);
 }
-
-type RunOptions = Parameters<CapabilityHost["run"]>[2];
 
 /** `fakeHost` with its gh call answered by `gh`, which is handed the call's options and runs as
  * the call starts, so a step file it writes is there before the check's budget starts counting. */

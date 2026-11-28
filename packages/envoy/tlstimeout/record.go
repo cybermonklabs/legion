@@ -1,6 +1,7 @@
 package tlstimeout
 
 import (
+	"cmp"
 	"context"
 	"crypto/tls"
 	"io"
@@ -19,8 +20,8 @@ import (
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
-// Recorder writes the record of a TLS handshake timeout (Record). Client, Stderr and Start are a
-// caller's own; every other field is a seam a test fills and the binaries leave zero.
+// Recorder writes the record of a TLS handshake timeout (RecordContext). Client, Stderr and Start
+// are a caller's own; every other field is a seam a test fills and the binaries leave zero.
 type Recorder struct {
 	// Client names what met the timeout, first on the line: `legion-gh` (`legion gh` around the
 	// real gh, and the leak guard's own gh read), `agent-secrets` or `legion` (legion's own HTTP
@@ -47,8 +48,6 @@ type Recorder struct {
 	StampDir string
 	// Bound is how long each probe runs, 5 s where it is zero.
 	Bound time.Duration
-	// Every is the rate limit: one record per Client in each, a minute where it is zero.
-	Every time.Duration
 	// Now is the time a record is made at, for its rate limit and its `at`: time.Now where nil.
 	Now func() time.Time
 	// CgroupRoot is where the cgroup files are read, /sys/fs/cgroup where it is empty.
@@ -58,6 +57,10 @@ type Recorder struct {
 	// whether it could read them. The line holds child_user_s and child_sys_s only where it is set.
 	ChildCPU func() (user, sys time.Duration, ok bool)
 }
+
+// Record is RecordContext under a context that never ends, for a caller with no end of its own
+// to stop the probes at: the HTTP transports (Transport).
+func (r *Recorder) Record(host string) { r.RecordContext(context.Background(), host) }
 
 const (
 	defaultCurl   = "/usr/bin/curl"
@@ -113,33 +116,13 @@ func (r *Recorder) bound() time.Duration {
 	return defaultBound
 }
 
-func (r *Recorder) every() time.Duration {
-	if r.Every > 0 {
-		return r.Every
-	}
-	return defaultEvery
-}
-
-func (r *Recorder) curl() string {
-	if r.Curl != "" {
-		return r.Curl
-	}
-	return defaultCurl
-}
+func (r *Recorder) curl() string { return cmp.Or(r.Curl, defaultCurl) }
 
 func (r *Recorder) stampDir() string {
-	if r.StampDir != "" {
-		return r.StampDir
-	}
-	return filepath.Join(os.TempDir(), "legion-tls-timeout")
+	return cmp.Or(r.StampDir, filepath.Join(os.TempDir(), "legion-tls-timeout"))
 }
 
-func (r *Recorder) cgroupRoot() string {
-	if r.CgroupRoot != "" {
-		return r.CgroupRoot
-	}
-	return defaultCgroup
-}
+func (r *Recorder) cgroupRoot() string { return cmp.Or(r.CgroupRoot, defaultCgroup) }
 
 // observed is everything a record line says beside its client and host.
 type observed struct {
@@ -308,12 +291,13 @@ const curlMargin = 500 * time.Millisecond
 // probeCurl is the curl probe: curl, a fixed path, asking https://<host>/ with no .curlrc and no
 // netrc (-q first, --no-netrc), no globbing of the host (--globoff, which an IPv6 address's
 // brackets would be), silent but for its errors, its body dropped, under the bound (--max-time),
-// and printing its four timings, stopped curlMargin after the bound where it runs on. It starts
-// through start (Recorder.Start), whose done it calls once its wait has read curl's exit. Its
-// standard input is empty and its standard error dropped. It is given no credential: its argv is
-// the host's root and these options, and its environment curlEnviron's.
-func probeCurl(start func(*exec.Cmd) (func(), error), curl, host string, bound time.Duration) curlPhases {
-	ctx, cancel := context.WithTimeout(context.Background(), bound+curlMargin)
+// and printing its four timings, stopped curlMargin after the bound where it runs on, and at once
+// where ctx ends first. It starts through start (Recorder.Start), whose done it calls once its
+// wait has read curl's exit. Its standard input is empty and its standard error dropped. It is
+// given no credential: its argv is the host's root and these options, and its environment
+// curlEnviron's.
+func probeCurl(ctx context.Context, start func(*exec.Cmd) (func(), error), curl, host string, bound time.Duration) curlPhases {
+	ctx, cancel := context.WithTimeout(ctx, bound+curlMargin)
 	defer cancel()
 	command := exec.CommandContext(ctx, curl, "-q", "--no-netrc", "--globoff", "-sS", "-o", os.DevNull,
 		"--max-time", strconv.FormatFloat(bound.Seconds(), 'f', -1, 64), "-w", curlWrites, "https://"+host+"/")

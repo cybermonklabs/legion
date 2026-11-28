@@ -152,17 +152,21 @@ const ghUsage = "usage: legion gh [gh args…]  (the gh first on a Legion pane's
 // count, bounded and at most once a minute. The real gh's own, where its output is the caller's,
 // is read off gh's standard error as gh exits (runGhChild); the guard's own gh read's is told by
 // the guard (leakguard.Options.OnTLSTimeout) and recorded once the call is over. Neither changes
-// the status the call exits with or what the guard allows or refuses.
+// the status the call exits with or what the guard allows or refuses, but a record's probes end
+// with this command's context: a SIGINT or a SIGTERM that comes while they run ends them, and the
+// command with 128+<signal> (endedBySignal), as a signal before gh runs does.
 func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status int) {
 	started := time.Now()
 	env := processEnvironment()
 	steps := openGhSteps(env[ghStepFileVar], started)
 	defer steps.close()
-	// The step file is this call's alone. Every `legion gh` this call starts, the guard's
-	// visibility read and the one the shared check's own read reaches among them, inherits this
-	// process's environment (leakguard's Guard.base), and would write its own steps over this
-	// call's, so the name leaves the environment before anything starts. No caller of runGh
-	// reads the environment after it: runGh runs once, as this process's command.
+	// The step file is this call's alone. A `legion gh` this call starts inherits this process's
+	// environment (leakguard's Guard.base), and would write its own steps over this call's, so the
+	// name leaves the environment before anything starts. Two do: the guard's credential read,
+	// `gh auth git-credential get` from PATH (leakguard's Guard.ghToken), and the one the shared
+	// check's own visibility read reaches. The guard's visibility read starts none: it runs the
+	// real gh itself (ghGuardRead), with ghChildEnviron's environment, which drops the name. No
+	// caller of runGh reads the environment after it: runGh runs once, as this process's command.
 	_ = os.Unsetenv(ghStepFileVar)
 	steps.write(ghStepConfig)
 	repo, commandPath, visibilitySource := "", "", ""
@@ -194,9 +198,16 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	// guardTLSHost is the host of a TLS handshake timeout the guard's own gh read met
 	// (leakguard.Options.OnTLSTimeout, below). It is recorded once, when the call is over, after
 	// the real gh's own run, and never in the middle of the guard's work: the record's probes
-	// take up to their bound, and the guard's curl and ls-remote reads would wait for them.
+	// take up to their bound, and the guard's curl and ls-remote reads would wait for them. It is
+	// recorded under ctx, which a SIGINT or a SIGTERM ends, and such a signal during the record is
+	// the status the command ends with, whatever the call's was. beforeGh, which stopHangup has
+	// ended where gh ran, is read only for a signal that came before the record.
 	guardTLSHost := ""
-	defer func() { recordGuardTLSTimeout(guardTLSHost, stderr, beforeGh, ctx) }()
+	defer func() {
+		if signal, ok := recordGuardTLSTimeout(ctx, guardTLSHost, stderr, beforeGh); ok {
+			status = signal
+		}
+	}()
 	if read, ok := sharedCheckVisibilityRead(args, env); ok {
 		// The shared check's own read, which this command answers by the guard's rule. Like the
 		// guard's own reads, it is not logged as a wrapped call.
@@ -332,16 +343,13 @@ func runGh(ctx context.Context, args []string, stdout, stderr io.Writer) (status
 	case ghVisibilityCall:
 		// This read is the guard's own: checking it would call the guard again.
 	case ghReadCall, ghGuardedCall:
-		// The guard tells its three steps as it starts each, where the caller asked for them.
-		var onStep func(leakguard.Step)
-		if steps != nil {
-			onStep = steps.write
-		}
+		// The guard tells its three steps as it starts each; a call whose caller asked for none
+		// has a nil steps, whose write writes nothing.
 		guard := leakguard.New(leakguard.Options{
 			OnVisibility: func(source leakguard.VisibilitySource) {
 				visibilitySource = string(source)
 			},
-			OnStep:       onStep,
+			OnStep:       steps.write,
 			OnTLSTimeout: func(host string) { guardTLSHost = host },
 			Curl:         leakguardCurl,
 			RoleState:    ghRoleStateBase,
@@ -617,11 +625,14 @@ func ghVisibilityRead(argv []string, env map[string]string) (ghrepo.Repository, 
 // after a gh that exited non-zero whose kept text holds a line of Go's `<Method> "<URL>":
 // net/http: TLS handshake timeout` (tlstimeout.HostInLine, its last), this writes the record line
 // for that URL's host on stderr, with gh's own CPU (ghTLSTimeouts), unless a signal ended ctx.
-// gh's status is the status either way, and its standard error reaches this process's whole and
-// in order; where standard output and standard error are one file, a line gh writes to each at
-// the same moment can reach it in the other order, since the copy is a step of its own. A gh that
-// exits while something it started still holds that pipe is waited for no longer than
-// procgroup's WaitDelay, as every other child's output here is, and its status is still gh's own.
+// The record runs under ctx, so a SIGINT or a SIGTERM that comes while its probes run ends them,
+// and the status is then that signal's, 128+<signal> (endedBySignal), as for a signal that came
+// before gh started. Otherwise gh's status is the status, record or none, and its standard error
+// reaches this process's whole and in order; where standard output and standard error are one
+// file, a line gh writes to each at the same moment can reach it in the other order, since the
+// copy is a step of its own. A gh that exits while something it started still holds that pipe is
+// waited for no longer than procgroup's WaitDelay, as every other child's output here is, and its
+// status is still gh's own.
 // A terminal is left to gh, and nothing is recorded there: the line is the person's to read, and
 // gh's terminal is gh's to read.
 //
@@ -731,7 +742,10 @@ func runGhChild(ctx context.Context, gh string, args, env []string, buffered []b
 	}
 	if _, ended := signalled(ctx); tail != nil && status != 0 && !ended {
 		if host, ok := tlstimeout.HostInLine(string(tail.kept)); ok {
-			ghTLSTimeouts(stderr, ghChildCPU(child.ProcessState)).Record(host)
+			ghTLSTimeouts(stderr, ghChildCPU(child.ProcessState)).RecordContext(ctx, host)
+			if signal, ok := signalled(ctx); ok {
+				return signal
+			}
 		}
 	}
 	return status

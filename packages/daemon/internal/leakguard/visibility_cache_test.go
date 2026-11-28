@@ -213,10 +213,7 @@ func TestVisibilityKeepsAPrivateAnswerForItsBound(t *testing.T) {
 		if err != nil {
 			t.Fatalf("read private keep %s: %v", path, err)
 		}
-		var entry struct {
-			Visibility Visibility `json:"visibility"`
-			ReadAt     string     `json:"read_at"`
-		}
+		var entry privateVisibilityCacheEntry
 		if err := json.Unmarshal(raw, &entry); err != nil {
 			t.Fatalf("unmarshal private keep %q: %v", raw, err)
 		}
@@ -234,10 +231,7 @@ func TestVisibilityKeepsAPrivateAnswerForItsBound(t *testing.T) {
 			t.Fatal(err)
 		}
 		path := filepath.Join(dir, visibilityCacheFile(slug))
-		encoded, err := json.Marshal(struct {
-			Visibility Visibility `json:"visibility"`
-			ReadAt     string     `json:"read_at"`
-		}{Visibility: visibility, ReadAt: readAt.UTC().Format(time.RFC3339Nano)})
+		encoded, err := json.Marshal(privateVisibilityCacheEntry{Visibility: visibility, ReadAt: readAt.UTC().Format(time.RFC3339Nano)})
 		if err != nil {
 			t.Fatal(err)
 		}

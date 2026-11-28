@@ -34,12 +34,11 @@ var lastStep = regexp.MustCompile(`^gh (0|[1-9][0-9]*)\n$`)
 // `legion gh` writes the step a call is in to the file LEGION_GH_STEP_FILE names, at the start of
 // each step, as the one line `<step> <milliseconds since the command started>`, by a file made
 // beside it and renamed over it. The stand-ins of a guarded write read that file as they run: gh's
-// help reads read help, the shared check reads check, the guard's visibility read, which a nested
-// `legion gh` runs, reads visibility, and the call itself reads gh, each later than the one
-// before it. The nested `legion gh` writes nothing over the call's own steps, and no gh is given
-// the variable. A variable naming a path whose directory is of mode 0755, or is a link to a
-// directory of mode 0700, or a relative path, writes nothing, and the call ends as it does with a
-// step file.
+// help reads read help, the shared check reads check, the guard's visibility read, which the guard
+// runs with the real gh itself (ghGuardRead), reads visibility, and the call itself reads gh, each
+// later than the one before it. No gh is given the variable. A variable naming a path whose
+// directory is of mode 0755, or is a link to a directory of mode 0700, or a relative path, writes
+// nothing, and the call ends as it does with a step file.
 func TestLegionGhWritesTheStepItStarts(t *testing.T) {
 	t.Parallel()
 	root, defaultDir := gitCredentialBundle(t)

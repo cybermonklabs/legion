@@ -71,9 +71,15 @@ const (
 // which the record cannot make, so it records nothing (tlstimeout.Recorder.Record).
 const tlsTimeoutStamps = "/nonexistent/legion-test-names-no-tls-timeout-stamps"
 
+// noRoleState is the role state volume base directory (ghRoleStateBase) of every run of `legion`
+// these tests make that names none: a path with no directory, which no keep writes under, so no
+// run reaches the pod's real /var/run/legion/state (TestMain, legionBuild).
+const noRoleState = "/nonexistent/legion-test-names-no-role-state"
+
 // testRoleStateEnv names, to this package's test binary run as `legion` (TestMain), the role
-// state volume base directory the leak guard keeps private and internal visibility answers under
-// (ghRoleStateBase). Only this test binary reads the variable; the legion binary has none.
+// state volume base directory (ghRoleStateBase) the leak guard keeps private and internal
+// visibility answers under and `legion gh` its copies of gh's help. Only this test binary reads
+// the variable; the legion binary has none.
 const testRoleStateEnv = "LEGION_TEST_ROLE_STATE"
 
 // cmdTestParallelism is how many of this package's tests run at once when the command line names
@@ -141,13 +147,14 @@ func TestMain(m *testing.M) {
 			}
 			tlsTimeoutBound = bound
 		}
-		// A test's role state directory for the guard's private/internal visibility keep. Only
-		// this test binary reads the variable; the legion binary has none. Where unset, point at
-		// a non-existent path so no child process reaches the pod's real /var/run/legion/state.
+		// A test's role state directory, where the guard keeps private and internal visibility
+		// answers and `legion gh` its copies of gh's help. Only this test binary reads the
+		// variable; the legion binary has none. Where unset, it is noRoleState, so no child
+		// process reaches the pod's real /var/run/legion/state.
 		if roleState := os.Getenv(testRoleStateEnv); roleState != "" {
 			ghRoleStateBase = roleState
 		} else {
-			ghRoleStateBase = "/nonexistent/legion-test-names-no-role-state"
+			ghRoleStateBase = noRoleState
 		}
 		// A test's bounds of the jj step, of its words of ids and of the push's command, low
 		// enough that a push of a few commits reaches them. Only this test binary reads the

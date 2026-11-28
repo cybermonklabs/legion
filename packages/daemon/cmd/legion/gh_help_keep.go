@@ -14,6 +14,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/sjawhar/legion/daemon/internal/leakguard"
 )
 
 // ghHelpKeep answers gh's help of a command path (readGhHelp) from a copy kept the last time gh
@@ -115,8 +117,8 @@ var ghPrintingVariables = map[string]bool{"CLICOLOR": true, "CLICOLOR_FORCE": tr
 func newGhHelpKeep(ctx context.Context, gh, roleState string, env map[string]string, helpEnv []string) *ghHelpKeep {
 	keep := &ghHelpKeep{fresh: func(path []string) (string, error) { return readGhHelp(ctx, gh, helpEnv, path) }, uid: os.Getuid()}
 	state, config := env["XDG_STATE_HOME"], env["GH_CONFIG_DIR"]
-	if info, err := os.Stat(roleState); err == nil && info.IsDir() && unix.Access(roleState, unix.W_OK) == nil {
-		state = roleState
+	if base := leakguard.WritableRoleState(roleState); base != "" {
+		state = base
 	}
 	if state == "" || config == "" || !filepath.IsAbs(gh) {
 		return keep

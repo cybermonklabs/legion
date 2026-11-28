@@ -2,9 +2,9 @@
 
 // A record is made on a unix system alone: its rate limit keeps its stamp under flock, opened with
 // O_NOFOLLOW and held to its owner's uid (claim), and the process's CPU is getrusage's (selfCPU),
-// none of which windows has. On any other system Record writes nothing (record_other.go). The
-// calls are golang.org/x/sys/unix's, as cmd/cipher's unix files make theirs, since the standard
-// library's syscall has no flock for solaris and illumos.
+// none of which windows has. On any other system RecordContext writes nothing (record_other.go).
+// The calls are golang.org/x/sys/unix's, as cmd/cipher's unix files make theirs, since the
+// standard library's syscall has no flock for solaris and illumos.
 
 package tlstimeout
 
@@ -22,8 +22,9 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// Record writes one line to Stderr, at most 2048 bytes, that says what stood around a TLS handshake
-// timeout to host (a host and port, the request URL's Host), where Every allows it:
+// RecordContext writes one line to Stderr, at most 2048 bytes, that says what stood around a TLS
+// handshake timeout to host (a host and port, the request URL's Host), where its rate limit of one
+// a minute allows it:
 //
 //	<Client>: tls handshake timeout recorded: host=<host> go_dns_s=… go_connect_s=…
 //	go_tls_start_s=… go_tls_done_s=… go_tls_version=… go_tls_curve=… go_error="…"
@@ -35,7 +36,7 @@ import (
 // not happen, is `-`. In order, it:
 //
 //   - keeps the rate limit: a stamp, the file <StampDir>/<Client> of mode 0600 in a directory of
-//     mode 0700 that this user owns, neither a link. Where the stamp's time is within Every of
+//     mode 0700 that this user owns, neither a link. Where the stamp's time is within a minute of
 //     Now, another record of Client is that recent and this one writes nothing and runs nothing.
 //     Otherwise its time becomes Now, under a lock, so of records made at once one goes on. A
 //     stamp it cannot keep so, a directory another user made among them, writes nothing either: a
@@ -45,18 +46,23 @@ import (
 //     either probe runs, so what they read is the moment of the timeout and not the record's own
 //     work (cgroupFigures; /proc/loadavg reads zeros under gVisor, so the cgroup is what says how
 //     loaded the pod is);
-//   - runs two probes of https://<host>/ at once, each under Bound: a Go GET on a transport of its
-//     own (probeTemplate), traced from the probes' start, and one curl, which Start starts, with
-//     no credential of the call, its headers, its path or its query in either (probeGo,
-//     probeCurl). A Recorder with no Start runs the Go probe alone;
+//   - runs two probes of https://<host>/ at once, each under Bound and ctx: a Go GET on a
+//     transport of its own (probeTemplate), traced from the probes' start, and one curl, which
+//     Start starts, with no credential of the call, its headers, its path or its query in either
+//     (probeGo, probeCurl). A Recorder with no Start runs the Go probe alone;
 //   - and writes the line, cutting the Go probe's error, never a key, to keep it at 2048 bytes.
 //
 // It never panics and returns nothing: a part that fails writes `-` for its figures, and a panic
 // of any part is dropped, since the record runs in the path of a call that already failed and must
 // not fail it again. It runs while its caller waits, at most about Bound and a second at a call
-// that failed, and at most once in Every for each Client. A Client that is not a word of letters,
+// that failed, and at most once a minute for each Client. A Client that is not a word of letters,
 // digits and `-` alone records nothing, since it names a file in StampDir.
-func (r *Recorder) Record(host string) {
+//
+// ctx ends the probes where it ends before their bound: a caller whose own end comes while they
+// run, such as `legion gh` on a SIGTERM, is not held to the bound. The line is written all the
+// same, with what the probes saw by then: the Go probe's error is the context's end, and a curl
+// stopped before it exited of its own has no exit status.
+func (r *Recorder) RecordContext(ctx context.Context, host string) {
 	defer func() { _ = recover() }()
 	if r == nil || r.Stderr == nil || !clientWord(r.Client) {
 		return
@@ -74,12 +80,12 @@ func (r *Recorder) Record(host string) {
 		started := time.Now()
 		var wg sync.WaitGroup
 		wg.Go(func() {
-			ctx, cancel := context.WithTimeout(context.Background(), seen.bound)
+			ctx, cancel := context.WithTimeout(ctx, seen.bound)
 			defer cancel()
 			seen.goProbe = probeGo(ctx, host, started)
 		})
 		if r.Start != nil {
-			wg.Go(func() { seen.curl = probeCurl(r.Start, r.curl(), host, seen.bound) })
+			wg.Go(func() { seen.curl = probeCurl(ctx, r.Start, r.curl(), host, seen.bound) })
 		}
 		wg.Wait()
 	} else {
@@ -88,14 +94,14 @@ func (r *Recorder) Record(host string) {
 	_, _ = io.WriteString(r.Stderr, recordLine(r.Client, printedHost(host), seen))
 }
 
-// claim is the rate limit (Record): whether a record of r.Client may be made at now, having set its
-// stamp's time to now where it may. A stamp made now is one; an existing stamp is read and set
-// under an exclusive flock, so of records made at once, in one process or in several, the first
-// sets the time and the rest read it. The directory is checked by its path (a directory, no link,
-// this user's, made mode 0700), and the stamp by what was opened and by its path, as cmd/legion's
-// ghOpenedAs checks its keeps: under gVisor an O_NOFOLLOW open is not trusted alone to refuse a
-// link. In a shared temporary directory, the sticky bit keeps another user from putting anything
-// in place of a directory this user made.
+// claim is the rate limit (RecordContext): whether a record of r.Client may be made at now, having
+// set its stamp's time to now where it may. A stamp made now is one; an existing stamp is read and
+// set under an exclusive flock, so of records made at once, in one process or in several, the
+// first sets the time and the rest read it. The directory is checked by its path (a directory, no
+// link, this user's, made mode 0700), and the stamp by what was opened and by its path, as
+// cmd/legion's ghOpenedAs checks its keeps: under gVisor an O_NOFOLLOW open is not trusted alone
+// to refuse a link. In a shared temporary directory, the sticky bit keeps another user from
+// putting anything in place of a directory this user made.
 func (r *Recorder) claim(now time.Time) bool {
 	dir := r.stampDir()
 	uid := os.Getuid()
@@ -141,7 +147,7 @@ func (r *Recorder) claim(now time.Time) bool {
 		if err != nil {
 			return false
 		}
-		if since := now.Sub(held.ModTime()); since < r.every() && since > -r.every() {
+		if since := now.Sub(held.ModTime()); since < defaultEvery && since > -defaultEvery {
 			return false
 		}
 	}

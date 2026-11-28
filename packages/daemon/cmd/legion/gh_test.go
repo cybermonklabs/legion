@@ -2623,53 +2623,29 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 		}
 		return files
 	}
-	// keepPublic plants the guard's kept public answer for slug under state, as Guard.Visibility
-	// keeps one, and fails the test unless the guard's own Visibility then answers public from it
-	// without a read.
-	keepPublic := func(t *testing.T, state, roleState string) {
+	// keep plants body as the guard's kept answer for slug under base, where Guard.Visibility keeps
+	// it (state, the XDG_STATE_HOME, for a public answer; roleState for a private one inside the
+	// 2-minute bound), and fails the test unless the guard's own Visibility then answers want from
+	// it without a read.
+	keep := func(t *testing.T, state, roleState, base, body string, want leakguard.Visibility) {
 		t.Helper()
-		dir := filepath.Join(state, "legion-gh", "visibility")
+		dir := filepath.Join(base, "legion-gh", "visibility")
 		if err := os.MkdirAll(dir, 0o700); err != nil {
 			t.Fatal(err)
 		}
 		entry := filepath.Join(dir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(slug))))
-		if err := os.WriteFile(entry, []byte(`{"visibility":"public"}`+"\n"), 0o600); err != nil {
+		if err := os.WriteFile(entry, []byte(body+"\n"), 0o600); err != nil {
 			t.Fatal(err)
 		}
 		visibility, err := leakguard.New(leakguard.Options{
 			RoleState: roleState,
 			Env:       []string{"XDG_STATE_HOME=" + state},
 			Visibility: func(context.Context, string) (leakguard.Visibility, error) {
-				return "", errors.New("the kept answer was not read")
+				return "", errors.New("the kept " + string(want) + " answer was not read")
 			},
 		}).Visibility(context.Background(), slug)
-		if err != nil || visibility != leakguard.Public {
-			t.Fatalf("the guard's own Visibility answered %q, %v from the kept entry; want the kept public", visibility, err)
-		}
-	}
-	// keepPrivate plants the guard's kept private answer for slug under roleState, inside the
-	// 2-minute bound, and fails the test unless the guard's own Visibility then answers private
-	// from it without a read.
-	keepPrivate := func(t *testing.T, state, roleState string) {
-		t.Helper()
-		dir := filepath.Join(roleState, "legion-gh", "visibility")
-		if err := os.MkdirAll(dir, 0o700); err != nil {
-			t.Fatal(err)
-		}
-		entry := filepath.Join(dir, fmt.Sprintf("%x.json", sha256.Sum256([]byte(slug))))
-		body := fmt.Sprintf(`{"visibility":"private","read_at":%q}`+"\n", time.Now().UTC().Format(time.RFC3339Nano))
-		if err := os.WriteFile(entry, []byte(body), 0o600); err != nil {
-			t.Fatal(err)
-		}
-		visibility, err := leakguard.New(leakguard.Options{
-			RoleState: roleState,
-			Env:       []string{"XDG_STATE_HOME=" + state},
-			Visibility: func(context.Context, string) (leakguard.Visibility, error) {
-				return "", errors.New("the kept private answer was not read")
-			},
-		}).Visibility(context.Background(), slug)
-		if err != nil || visibility != leakguard.Private {
-			t.Fatalf("the guard's own Visibility answered %q, %v from the kept private entry; want the kept private", visibility, err)
+		if err != nil || visibility != want {
+			t.Fatalf("the guard's own Visibility answered %q, %v from the kept %s entry; want the kept %s", visibility, err, want, want)
 		}
 	}
 	for _, tc := range []struct {
@@ -2713,10 +2689,10 @@ func TestLegionGhAnswersTheSharedChecksVisibilityRead(t *testing.T) {
 			repo := cmp.Or(tc.slug, slug)
 			bin, record, state, roleState := t.TempDir(), filepath.Join(t.TempDir(), "reads"), t.TempDir(), t.TempDir()
 			if tc.kept {
-				keepPublic(t, state, roleState)
+				keep(t, state, roleState, state, `{"visibility":"public"}`, leakguard.Public)
 			}
 			if tc.keptPrivate {
-				keepPrivate(t, state, roleState)
+				keep(t, state, roleState, roleState, fmt.Sprintf(`{"visibility":"private","read_at":%q}`, time.Now().UTC().Format(time.RFC3339Nano)), leakguard.Private)
 			}
 			kept, keptRole := keptFiles(t, state), keptFiles(t, roleState)
 			stub := filepath.Join(bin, "real-gh")
