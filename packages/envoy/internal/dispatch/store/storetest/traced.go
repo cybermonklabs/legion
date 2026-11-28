@@ -14,15 +14,14 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // reopenedPool opens a second pool on pool's database, from the configuration pool was opened
-// with and whatever change configure makes to a copy of it, and closes it after t ends through the
-// shared wait (clone says why). The production pool is built in store.Open and is not a seam a
-// test may configure, so every test that needs a pool of its own shape opens it here: Traced,
-// Reopened, SingleConnection and SecondProcess.
+// with and whatever change configure makes to a copy of it, and closes it after t ends
+// (closeThroughTheSharedWait). The production pool is built in store.Open and is not a seam a test
+// may configure, so every test that needs a pool of its own shape opens it here: Traced, Reopened,
+// SingleConnection and SecondProcess.
 func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config)) *store.Pool {
 	t.Helper()
 	config := pool.Config()
@@ -32,9 +31,7 @@ func reopenedPool(t testing.TB, pool *store.Pool, configure func(*pgxpool.Config
 		t.Fatalf("open a second pool on the same database: %v", err)
 	}
 	reopened := store.NewPool(opened)
-	testcleanup.Add(t, func() {
-		testwait.Returns(t, "every connection of a second pool on the test's database to come back, so the pool closes", reopened.Close)
-	})
+	closeThroughTheSharedWait(t, "a second pool on the test's database", reopened)
 	return reopened
 }
 

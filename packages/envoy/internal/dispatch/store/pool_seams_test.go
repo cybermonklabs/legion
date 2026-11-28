@@ -3,21 +3,56 @@ package store
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
+// probeReadStart is how the health probe's read starts (readSchemaVersion), as the row below finds
+// that read among the statements of its database.
+const probeReadStart = "select coalesce(max(version), 0)"
+
+// probeReadDeadline is a pgx tracer that reads, as the health probe's read starts, the deadline
+// the context pgx was handed for it reports, and hands the first reading to seen. It is installed
+// on a store's pool, and the health pool copies it (openSeparateLocked).
+type probeReadDeadline struct {
+	seen chan readDeadline
+}
+
+// readDeadline is what a context reported of its deadline: ctx.Deadline()'s two answers.
+type readDeadline struct {
+	At      time.Time
+	Bounded bool
+}
+
+func (p *probeReadDeadline) TraceQueryStart(ctx context.Context, _ *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if strings.HasPrefix(data.SQL, probeReadStart) {
+		at, bounded := ctx.Deadline()
+		select {
+		case p.seen <- readDeadline{At: at, Bounded: bounded}:
+		default:
+		}
+	}
+	return ctx
+}
+
+func (*probeReadDeadline) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
+
 // A health probe on a clock a test moves ends when the test moves that clock to the probe's bound,
-// and not before, however long the probe waits on the wall clock: HealthyOn arms
-// healthProbeTimeout on its clock, HealthyOnBy arms the moment its Deadline names there, and no
-// wall-clock bound runs beneath either. The probe is held by a lock on schema_migrations, so only
-// its bound can end it. A probe that armed its bound on the wall clock arms nothing on the fake,
-// and one with a wall-clock bound beneath the fake's answers within healthProbeTimeout of wall time
-// while the fake has not moved.
+// and not before: HealthyOn arms healthProbeTimeout on its clock, HealthyOnBy arms the moment its
+// Deadline names there, and no wall-clock bound runs beneath the read. The probe is held by a lock
+// on schema_migrations, so only its bound can end it. A probe that armed its bound on the wall
+// clock arms nothing on the fake. One with a wall-clock bound beneath the fake's hands its read a
+// context that reports that bound's deadline, where a context the fake made reports only its
+// parent's (clocktest's deadline contexts), so the read starts under a deadline other than the
+// row's own context's, which a tracer on the probe's pool reads as the read starts.
 func TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock(t *testing.T) {
 	start := time.Date(2026, time.November, 28, 7, 0, 0, 0, time.UTC)
 	for _, row := range []struct {
@@ -33,8 +68,11 @@ func TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock(t *testing.T) {
 		}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
-			// A database of the row's own, so the lock it takes on schema_migrations holds no other row.
-			database := openEmptyTestStore(t)
+			// A database of the row's own, so the lock it takes on schema_migrations holds no other row,
+			// on a pool whose tracer the health pool copies.
+			read := &probeReadDeadline{seen: make(chan readDeadline, 1)}
+			database := openIsolatedStoreWithPool(t, func(config *pgxpool.Config) { config.ConnConfig.Tracer = read })
+			t.Cleanup(database.Pool.Close)
 			ctx := testwait.Context(t)
 			if err := database.Migrate(ctx); err != nil {
 				t.Fatalf("migrate: %v", err)
@@ -56,17 +94,24 @@ func TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock(t *testing.T) {
 			due := start.Add(row.bound)
 			fake.AwaitArmedAt(t, "the probe's bound on the fake", due)
 			testwait.Until(t, "the probe's read to queue behind the lock on schema_migrations (the waiting reads last counted)", func() (int, bool) {
+				// Through the pool, a transaction of its own each read: a transaction keeps the copy of
+				// pg_stat_activity its first read took until it ends, so a poll in the holder's
+				// transaction that read before the probe's backend sent its read would count 0 for good.
 				var waiting int
-				if err := holder.QueryRow(ctx, `
+				if err := database.Pool.QueryRow(ctx, `
 					select count(*) from pg_locks l join pg_stat_activity a using (pid)
-					where not l.granted and a.datname = current_database() and a.query like 'select coalesce(max(version), 0)%'
-				`).Scan(&waiting); err != nil {
+					where not l.granted and l.relation = 'schema_migrations'::regclass
+					and a.datname = current_database() and starts_with(a.query, $1)
+				`, probeReadStart).Scan(&waiting); err != nil {
 					t.Fatalf("count the reads waiting on the lock: %v", err)
 				}
 				return waiting, waiting == 1
 			})
-			testwait.Quiet(t, "the probe's answer", answered, healthProbeTimeout+time.Second,
-				"only the probe's bound can end a read the lock holds, and a wall-clock bound beneath the fake's would end it within healthProbeTimeout of wall time; no state shows a timer the probe did not arm on the fake")
+			got := testwait.Receive(t, "the deadline the probe's read started under", read.seen)
+			if want, bounded := ctx.Deadline(); got.Bounded != bounded || !got.At.Equal(want) {
+				t.Fatalf("the probe's read started under a context whose deadline is %+v; want the row's context's alone, %+v: a bound of its own runs beneath the one armed on the fake, whose contexts report only their parent's",
+					got, readDeadline{At: want, Bounded: bounded})
+			}
 			fake.Advance(row.bound - time.Nanosecond)
 			if armed := fake.Armed(); len(armed) != 1 || !armed[0].Equal(due) {
 				t.Fatalf("a nanosecond before the bound the fake holds %v; want the probe's bound %s alone, not yet fired", armed, due.Format(time.RFC3339Nano))

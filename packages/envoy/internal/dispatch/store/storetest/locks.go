@@ -120,7 +120,7 @@ func LockWaiters(ctx context.Context, holder pgx.Tx) (int, error) {
 }
 
 // QueuedBehind reports whether the backend pid waits on a lock holder's transaction owns,
-// directly or behind an earlier waiter, as LockWaiters counts them, and reads through
+// directly or behind an earlier waiter, as WaitForLockWaiters counts them, and reads through
 // holder's own connection for the same reason. Watching one backend rather than counting them is
 // what tells the call under test from any other session queued on the same lock: an issue's
 // document settlement locks the issue's row too (docs/solutions/testing/a-lock-wait-test-watches-
@@ -169,7 +169,7 @@ func WaitForQueuedBehind[T any](t testing.TB, holder pgx.Tx, pid uint32, answere
 
 // lockWaitsOf names each lock the backend pid waits for, by its type and mode, and the backends
 // that block it (pg_blocking_pids), or answers "no lock". It reads pg_locks through holder's own
-// connection, as QueuedBehind does and for the same reason.
+// connection, as WaitForLockWaiters does and for the reason it gives.
 func lockWaitsOf(ctx context.Context, holder pgx.Tx, pid uint32) (string, error) {
 	var waits string
 	if err := holder.QueryRow(ctx, `

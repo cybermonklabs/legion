@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
-	"math"
 	"runtime"
 	"runtime/debug"
 	"slices"
@@ -371,27 +370,32 @@ func (p *Pool) Healthy(ctx context.Context) (int, error) {
 
 // HealthyOn is Healthy with healthProbeTimeout armed on c, for a caller whose own waits run on a
 // clock a test moves, such as a shutdown that counts failed probes toward its decision to exit
-// and whose test ends each probe by moving a clocktest.Fake to the bound. The bound is c's alone,
-// with no wall-clock bound beneath it, so a probe on a fake ends when the test moves the fake
-// there and never because the test was slow to; on clock.Real it is Healthy, and so it is on a nil
-// c (TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock).
+// and whose test ends each probe by moving a clocktest.Fake to the bound. The bound is the read's,
+// armed on c alone with no wall-clock bound beneath it, so a read on a fake ends when the test
+// moves the fake there and never because the test was slow to: on a fake, the read's context
+// reports no deadline of its own (TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock). It is not a
+// cold dial's: pgxpool's two-minute ConnectTimeout bounds a dial on the wall clock
+// (healthProbeTimeout). Healthy is HealthyOn on clock.Real, and a nil c is clock.Real.
 func (p *Pool) HealthyOn(ctx context.Context, c clock.Clock) (int, error) {
 	return p.HealthyOnBy(ctx, c, clock.Deadline{})
 }
 
 // HealthyOnBy is HealthyOn with its bound the end a test process gave it (d, a clock.Deadline) in
-// healthProbeTimeout's place: the zero value keeps healthProbeTimeout, a moment bounds the read
-// there on c, and no end bounds it not at all. A deployment passes the zero value.
+// healthProbeTimeout's place, armed on c as d.WithTimeout arms it: the zero value keeps
+// healthProbeTimeout, a moment bounds the read there on c, and no end arms nothing, so only the
+// caller's context bounds the read. A deployment passes the zero value.
 func (p *Pool) HealthyOnBy(ctx context.Context, c clock.Clock, d clock.Deadline) (int, error) {
 	if c == nil {
 		c = clock.Real()
 	}
-	bound, bounded := d.Within(c, healthProbeTimeout)
-	if !bounded {
-		// No end: a bound past any read, as clock.WithShownDeadline shows one.
-		bound = time.Duration(math.MaxInt64)
+	health, err := p.healthPool()
+	if err != nil {
+		return 0, err
 	}
-	return p.healthyWithin(ctx, c, bound)
+	// Derived from the caller's context, as HealthyWithin's bound is.
+	ctx, cancel := d.WithTimeout(c, ctx, healthProbeTimeout)
+	defer cancel()
+	return readSchemaVersion(ctx, health)
 }
 
 // HealthyWithin is Healthy with a bound the caller names, for the one caller whose read is not
@@ -404,19 +408,20 @@ func (p *Pool) HealthyOnBy(ctx context.Context, c clock.Clock, d clock.Deadline)
 // (healthPool), so that read always pays a fresh dial, and two seconds bounds the query where it
 // has to bound the dial as well. A caller that is always cold names a bound that covers one.
 func (p *Pool) HealthyWithin(ctx context.Context, bound time.Duration) (int, error) {
-	return p.healthyWithin(ctx, clock.Real(), bound)
-}
-
-// healthyWithin is HealthyWithin with bound armed on c.
-func (p *Pool) healthyWithin(ctx context.Context, c clock.Clock, bound time.Duration) (int, error) {
 	health, err := p.healthPool()
 	if err != nil {
 		return 0, err
 	}
 	// Derived from the caller's context, so a request the client already gave up on ends with
 	// it instead of holding the probe's one connection for the full bound.
-	ctx, cancel := c.WithTimeout(ctx, bound)
+	ctx, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
+	return readSchemaVersion(ctx, health)
+}
+
+// readSchemaVersion is the health probe's read on health, under the bound ctx carries: the highest
+// schema migration Postgres has applied.
+func readSchemaVersion(ctx context.Context, health *pgxpool.Pool) (int, error) {
 	// The cast holds the result at bigint whichever type the column has: a connection that
 	// prepared this read while schema_migrations.version was an integer would otherwise fail it
 	// once after a boot widens the column ("cached plan must not change result type").
