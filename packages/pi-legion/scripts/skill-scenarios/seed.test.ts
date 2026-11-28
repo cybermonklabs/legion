@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { settled } from "@legion/test-fixtures/wait";
 import type * as ownerWalkSeedModule from "./owner-walk-seed";
 import type * as seedModule from "./seed";
 
@@ -24,8 +25,15 @@ const work = temporaryDirectory("skill-scenarios-seed");
 beforeAll(async () => {
   process.env.DISPATCH_E2E_PORT = "18777";
   delete process.env.PLAYWRIGHT_BASE_URL;
-  seed = await import("./seed");
-  ownerWalkSeed = await import("./owner-walk-seed");
+  // The one hook of this file that does real work: it loads seed.ts, owner-walk-seed.ts and what
+  // they import (dispatch's e2e/api.ts and its harness modules, @legion/contracts, zod). Each load
+  // is waited for through the shared wait, so a load that outlasts the row's deadline fails here,
+  // naming it, rather than as Bun's unnamed "a beforeEach/afterEach hook timed out".
+  seed = await settled("seed.ts and the modules it imports to load", import("./seed"));
+  ownerWalkSeed = await settled(
+    "owner-walk-seed.ts and the modules it imports to load",
+    import("./owner-walk-seed")
+  );
 });
 let dirs = 0;
 function freshDir(name: string): string {
