@@ -92,6 +92,10 @@ type PgVersioned struct {
 	// NewPgVersioned sets it to the package's closeMargin; New sets Deps.CloseMargin where a test
 	// gave one.
 	closeMargin time.Duration
+	// logger is where this store writes its lines, its builder's to give: New sets Deps.Logger on
+	// the store it builds, and a test that reads a store's lines sets its own as it builds one.
+	// Nil, as NewPgVersioned leaves it, is the default as it is when each line is written (log).
+	logger *slog.Logger
 	// noteStored is the note of the Service that took this store last (New), which each append
 	// gives the version it committed and each load the head it read (noteStoredUpdates), so the
 	// Service's compaction queue checks the room. Nil for a store no Service took.
@@ -102,6 +106,11 @@ type PgVersioned struct {
 // (noteStored), through the store that wraps it where a test wraps one.
 func (p *PgVersioned) pgVersioned() *PgVersioned {
 	return p
+}
+
+// log is the logger a line of this store is written to (logTo of its logger).
+func (p *PgVersioned) log() *slog.Logger {
+	return logTo(p.logger)
 }
 
 // noted gives the Service that took p the head of the room's rows an append committed or a load
@@ -138,7 +147,7 @@ func NewPgVersioned(database *store.Store) *PgVersioned {
 func (p *PgVersioned) Load(ctx context.Context, room string) (persistence.LoadResult, error) {
 	var update []byte
 	stamp, err := p.loadStored(ctx, room, func(head persistence.Version, updates updateSource) (err error) {
-		update, err = stateThrough(room, head, updates, p.maxPendingItems)
+		update, err = stateThrough(p.logger, room, head, updates, p.maxPendingItems)
 		return err
 	})
 	if err != nil {
@@ -553,7 +562,7 @@ func (p *PgVersioned) MaterializeAt(ctx context.Context, room string, version pe
 	if version > head {
 		version = head
 	}
-	update, err := stateThrough(room, version, storedUpdates(ctx, tx, room, version), p.maxPendingItems)
+	update, err := stateThrough(p.logger, room, version, storedUpdates(ctx, tx, room, version), p.maxPendingItems)
 	if err != nil {
 		return nil, err
 	}
@@ -945,7 +954,7 @@ func (p *PgVersioned) lockRoom(ctx context.Context, room string, wait bool, sour
 	// fn may send nothing on this connection (passRoomLock), so nothing else bounds the wait on a
 	// half-open connection, and this room's writers queue on lock until it ends: freeRoomLock
 	// bounds it and reads its answer.
-	defer freeRoomLock(conn, room)
+	defer freeRoomLock(p.logger, conn, room)
 	return fn(conn)
 }
 
@@ -957,10 +966,10 @@ func (p *PgVersioned) lockRoom(ctx context.Context, room string, wait bool, sour
 // returned to its pool, where the next writer could take a lock the session already holds and
 // unlock it twice over. A connection a cancelled statement already closed cannot run an unlock:
 // Postgres drops its locks when the session ends, which is why ErrSessionClosed says nothing here
-// - that statement's caller has its error.
-func freeRoomLock(conn *pgxpool.Conn, room string) {
+// - that statement's caller has its error. A failure goes to logger, the store's (logTo).
+func freeRoomLock(logger *slog.Logger, conn *pgxpool.Conn, room string) {
 	if err := duty.FreeSessionLock(conn, `select pg_advisory_unlock(hashtext($1))`, room); err != nil && !errors.Is(err, duty.ErrSessionClosed) {
-		slog.Error("dispatch: free the document room lock", "room", room, "error", err)
+		logTo(logger).Error("dispatch: free the document room lock", "room", room, "error", err)
 	}
 }
 

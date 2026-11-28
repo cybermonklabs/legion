@@ -41,7 +41,7 @@ func TestAReaderLeavingIsRelayedAtItsClientsClockThoughAPurgeRacesTheEncode(t *t
 				return
 			}
 			purged.Add(1)
-			reclaimAwarenessSlots(room, aw)
+			reclaimAwarenessSlots(nil, room, aw)
 		})
 	}
 	runAwareness(t, pair.taskA)
@@ -448,7 +448,7 @@ func aHeartbeatRacingARemoval(t *testing.T, removalLast bool) {
 				return
 			}
 			purged.Add(1)
-			reclaimAwarenessSlots(room, aw)
+			reclaimAwarenessSlots(nil, room, aw)
 		})
 	}
 	// Her own socket's close removes her client again as the test ends, and a frame of the room
@@ -609,7 +609,7 @@ func TestAReaderLeavingAfterAFlushSentALaterClockStillLeavesTheOtherProcess(t *t
 				return
 			}
 			purged.Add(1)
-			reclaimAwarenessSlots(room, aw)
+			reclaimAwarenessSlots(nil, room, aw)
 		})
 	}
 	// Her own socket's close removes her client again as the test ends, and a frame of the room

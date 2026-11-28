@@ -15,9 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
-	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
-	"github.com/sjawhar/envoy/internal/logtest"
 )
 
 // boundSpec is a spec of two callouts and a paragraph. A browser edit gives the first callout and
@@ -159,10 +157,9 @@ func TestADocumentAlreadyHoldingABlockIDPastTheBoundIsIndexedAndLeavesOwed(t *te
 // reaches the row, and a second document of the issue holding a copy of the block shows that ask
 // and opens none. No settlement fails on an index key past its limit (SQLSTATE 54000).
 func TestAnAskBlockWhoseIDIsPastTheBoundSettles(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	service, original := newTestService(t)
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelInfo)
+	service, original := newTestServiceTo(t, logger)
 	service.settle = time.Hour
 	seedServiceText(t, service, original, "Context\n\n"+shipBlock)
 	long := randomHexID(t, 3200)

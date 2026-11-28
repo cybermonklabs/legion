@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"strconv"
 	"strings"
 	"time"
@@ -183,7 +182,7 @@ func (s *Service) RunBlockIndexReconciliation(ctx context.Context, leases duty.L
 	// counts (a document whose live text stays ahead, skipped every tick) logs nothing.
 	var logged BlockIndexTick
 	liveAhead := liveAheadDocuments{}
-	duty.RunLeasedAfterEachPass(ctx, leases, BlockIndexLease, BlockIndexReconcileInterval, func(ctx context.Context, _ time.Duration) time.Duration {
+	duty.RunLeasedAfterEachPassTo(ctx, s.logger, leases, BlockIndexLease, BlockIndexReconcileInterval, func(ctx context.Context, _ time.Duration) time.Duration {
 		var wait time.Duration
 		wait, cursors = s.blockIndexTick(ctx, cursors, liveAhead, &logged)
 		return wait
@@ -199,7 +198,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		return BlockIndexReconcileInterval, cursors
 	}
 	if err != nil {
-		slog.Error("dispatch: block index reconciliation", "error", err)
+		s.log().Error("dispatch: block index reconciliation", "error", err)
 	}
 	if tick.Documents > 0 || tick.Items > 0 || tick.ItemBlocks > 0 || tick.Texts > 0 ||
 		tick.Windows > 0 || tick.Retired > 0 || tick.Events > 0 || tick.Marked > 0 || tick.Comments > 0 ||
@@ -219,7 +218,7 @@ func (s *Service) blockIndexTick(ctx context.Context, cursors BlockIndexCursors,
 		// orphaned document nodes it stated gone, and another_build= whether a live server process
 		// of another build served, which decides nothing of which events the tick reads and makes
 		// it owe the object pass (readEventsAfterCursor).
-		slog.Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
+		s.log().Info("dispatch: block index", "documents", tick.Documents, "items", tick.Items,
 			"item_blocks", tick.ItemBlocks, "texts", tick.Texts, "windows", tick.Windows,
 			"retired", tick.Retired, "events", tick.Events, "marked", tick.Marked,
 			"comments", tick.Comments, "object_nodes", tick.ObjectNodes, "orphans_gone", tick.OrphansGone,
@@ -309,14 +308,14 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 	case ctx.Err() != nil:
 		return tick, ctx.Err()
 	case err != nil:
-		slog.Error("dispatch: block index could not read the events after its build's cursor", "error", err)
+		s.log().Error("dispatch: block index could not read the events after its build's cursor", "error", err)
 	}
 	objectsLeft, err := s.writeObjectNodesAnotherBuildWrote(ctx, &tick, debt)
 	switch {
 	case ctx.Err() != nil:
 		return tick, ctx.Err()
 	case err != nil:
-		slog.Error("dispatch: block index could not write the nodes of the rows another build wrote", "error", err)
+		s.log().Error("dispatch: block index could not write the nodes of the rows another build wrote", "error", err)
 	}
 	eventsFull = eventsFull || objectsLeft
 	owed, err := s.owedDocuments(ctx, after)
@@ -340,10 +339,10 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 		case errors.Is(err, ErrDocNewerContent):
 			// Another build wrote an element this build does not know, during a release; a build
 			// that reads it indexes the document, which stays owed until then.
-			slog.Warn("dispatch: block index skipped a document holding an element this build cannot read",
+			s.log().Warn("dispatch: block index skipped a document holding an element this build cannot read",
 				"artifact", document.id, "error", err)
 		case err != nil:
-			slog.Error("dispatch: block index skipped a document it could not index",
+			s.log().Error("dispatch: block index skipped a document it could not index",
 				"artifact", document.id, "error", err)
 		case ahead:
 			tick.LiveAhead++
@@ -369,7 +368,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 			if ctx.Err() != nil {
 				return tick, ctx.Err()
 			}
-			slog.Error("dispatch: block index skipped an item it could not index",
+			s.log().Error("dispatch: block index skipped an item it could not index",
 				"kind", item.Kind, "id", item.ID, "error", err)
 			continue
 		}
@@ -388,7 +387,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 			if ctx.Err() != nil {
 				return tick, ctx.Err()
 			}
-			slog.Error("dispatch: block index skipped the blocks of an item it could not index",
+			s.log().Error("dispatch: block index skipped the blocks of an item it could not index",
 				"kind", item.Kind, "id", item.ID, "error", err)
 			continue
 		}
@@ -407,7 +406,7 @@ func (s *Service) ReconcileBlockIndex(ctx context.Context, cursors BlockIndexCur
 			if ctx.Err() != nil {
 				return tick, ctx.Err()
 			}
-			slog.Error("dispatch: block index skipped text it could not index with the whole grammar",
+			s.log().Error("dispatch: block index skipped text it could not index with the whole grammar",
 				"kind", source.Kind, "id", source.ID, "error", err)
 			continue
 		}
@@ -554,7 +553,7 @@ func (s *Service) windowDrift(ctx context.Context, cursors map[string]string, ti
 			case ctx.Err() != nil:
 				return false, ctx.Err()
 			case err != nil:
-				slog.Error("dispatch: block index skipped an owner it could not window",
+				s.log().Error("dispatch: block index skipped an owner it could not window",
 					"owner", owner.name, "id", id, "error", err)
 			case windowed:
 				tick.Windows++
@@ -651,7 +650,7 @@ func (s *Service) windowDocument(ctx context.Context, artifactID string) (bool, 
 	case unreadable || markdown == "" && len(blocks) == 0:
 		markdown, blocks = stored, nil
 	case markdown != stored:
-		markdown, blocks, err = heldVersionBlocks(ctx, tx, artifactID, stored, markdown, blocks,
+		markdown, blocks, err = heldVersionBlocks(ctx, s.logger, tx, artifactID, stored, markdown, blocks,
 			"dispatch: block index cannot read back a document version; its windows cover no block")
 		if err != nil {
 			return false, err
@@ -1125,7 +1124,7 @@ func (s *Service) indexOwedDocument(ctx context.Context, document owedDocument, 
 	case ctx.Err() != nil:
 		return false, false, ctx.Err()
 	case errors.Is(err, ErrDocumentUnloadable), errors.Is(err, ErrDocOutsideSchema):
-		slog.Warn("dispatch: block index cannot read the document; its latest version is indexed with no blocks",
+		s.log().Warn("dispatch: block index cannot read the document; its latest version is indexed with no blocks",
 			"artifact", document.id, "error", err)
 		unreadable = true
 	case err != nil:

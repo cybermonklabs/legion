@@ -40,6 +40,10 @@ type roomShadow struct {
 	// repairs are the repair updates the instance took inside the window, in commit order: the
 	// classes after one are measured on a state that holds it (classifyDrained).
 	repairs []shadowRepair
+	// logger is the service's logger as the service holds it (Service.logger), set as the shadow
+	// is installed, before any measure reads it (installShadowLocked), and resolved at each line
+	// (logTo).
+	logger *slog.Logger
 
 	mu  sync.Mutex
 	doc *crdt.Doc
@@ -97,6 +101,7 @@ func (s *Service) installShadowLocked(room string, state *roomState, shadow *roo
 			return
 		}
 	}
+	shadow.logger = s.logger
 	state.shadow = shadow
 }
 
@@ -306,7 +311,7 @@ func (sh *roomShadow) applyLocked(room string, update []byte) {
 		return
 	}
 	if err := crdt.ApplyUpdateV1(sh.doc, update, nil); err != nil {
-		slog.Error("dispatch: apply a room update to a live write's shadow; later updates it measures count as content changes", "room", room, "error", err)
+		logTo(sh.logger).Error("dispatch: apply a room update to a live write's shadow; later updates it measures count as content changes", "room", room, "error", err)
 		sh.doc = nil
 	}
 }

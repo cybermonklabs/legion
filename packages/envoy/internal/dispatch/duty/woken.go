@@ -2,6 +2,7 @@ package duty
 
 import (
 	"context"
+	"log/slog"
 	"time"
 )
 
@@ -15,6 +16,10 @@ type WokenLoop struct {
 	// Leases is the pool a leased pass takes its lease connection from (Exclusive); unused when
 	// Lease is empty.
 	Leases Leases
+	// Logger is where each leased pass's Exclusive writes its lines - a skip, a pass that ran or
+	// was cut short, a failure to take or give back the lease - and nil is the default logger as
+	// it is when the line is written (logTo). Unused when Lease is empty.
+	Logger *slog.Logger
 	// Wake is signalled when the work may have changed: a pglisten.Hub wake, whose buffer of one
 	// and non-blocking send coalesce any number of changes into one signal. A signal that
 	// arrives while a pass runs stays in that buffer and earns a pass after it, so a change the
@@ -133,7 +138,7 @@ func (l WokenLoop) attempt(ctx context.Context, exclusive ExclusiveFunc) (next t
 	if l.Lease == "" {
 		return l.Pass(ctx), true
 	}
-	ran = exclusive(ctx, nil, l.Leases, l.Lease, time.Time{}, 0, func(ctx context.Context) {
+	ran = exclusive(ctx, l.Logger, l.Leases, l.Lease, time.Time{}, 0, func(ctx context.Context) {
 		next = l.Pass(ctx)
 	})
 	return next, ran

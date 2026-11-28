@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"maps"
 	"reflect"
 	"regexp"
@@ -63,6 +64,27 @@ func testServiceDeps(database *store.Store) Deps {
 	}
 }
 
+// testLogger is a logger of a test's own for the services it builds (Deps.Logger), so the test
+// reads their lines while the tests beside it write theirs elsewhere: a text handler at level,
+// with no attributes of its own, writing into the returned log, which the services' goroutines
+// write while the test reads it.
+func testLogger(level slog.Level) (*storetest.LockedLog, *slog.Logger) {
+	logs := &storetest.LockedLog{}
+	return logs, slog.New(slog.NewTextHandler(logs, &slog.HandlerOptions{Level: level}))
+}
+
+// linesHolding is the lines of logged that hold substring, as storetest.LockedLog.Lines reads a
+// whole log, for a test that reads its log from a mark on.
+func linesHolding(logged, substring string) string {
+	var matched strings.Builder
+	for line := range strings.Lines(logged) {
+		if strings.Contains(line, substring) {
+			matched.WriteString(line)
+		}
+	}
+	return matched.String()
+}
+
 // newTestServiceOn builds a document service on database and shuts it down when the test ends.
 // Its form gate finds no break (formKept), so its carry decides by the carry's rules alone.
 // Where that shutdown runs among the test's other cleanups matters to a test that swaps the
@@ -71,7 +93,16 @@ func testServiceDeps(database *store.Store) Deps {
 // Cleanups run last in first out, so such a test registers its restore before it calls this.
 func newTestServiceOn(t *testing.T, database *store.Store) *Service {
 	t.Helper()
-	service := New(testServiceDeps(database))
+	return newTestServiceOnTo(t, database, nil)
+}
+
+// newTestServiceOnTo is newTestServiceOn with the service writing its lines to logger
+// (Deps.Logger); nil writes them where the default logger points as each is written.
+func newTestServiceOnTo(t *testing.T, database *store.Store, logger *slog.Logger) *Service {
+	t.Helper()
+	deps := testServiceDeps(database)
+	deps.Logger = logger
+	service := New(deps)
 	service.SetFormGate(formKept)
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
@@ -83,9 +114,16 @@ func newTestServiceOn(t *testing.T, database *store.Store) *Service {
 
 func newTestService(t *testing.T) (*Service, string) {
 	t.Helper()
+	return newTestServiceTo(t, nil)
+}
+
+// newTestServiceTo is newTestService with the service writing its lines to logger
+// (newTestServiceOnTo).
+func newTestServiceTo(t *testing.T, logger *slog.Logger) (*Service, string) {
+	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	return newTestServiceOn(t, database), artifactID
+	return newTestServiceOnTo(t, database, logger), artifactID
 }
 
 func TestRepairingAnUnreadableAskBlockCountsTheAskItOpens(t *testing.T) {

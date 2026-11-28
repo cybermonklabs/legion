@@ -3,7 +3,6 @@ package docs
 import (
 	"context"
 	"fmt"
-	"log/slog"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
@@ -45,9 +44,9 @@ const settlementResumptionLease = "settlement-resumption"
 // document nobody opens therefore settles too, whether or not its issue is closed: its ask blocks
 // reach the open asks, or are saved resolved on a closed issue, without anyone loading it.
 func (s *Service) RunSettlementResumption(ctx context.Context, leases duty.Leases) {
-	duty.RunLeased(ctx, leases, settlementResumptionLease, SettlementResumeInterval, duty.TickAtStart, func(ctx context.Context) {
+	duty.RunLeasedTo(ctx, s.logger, leases, settlementResumptionLease, SettlementResumeInterval, duty.TickAtStart, func(ctx context.Context) {
 		if err := s.resumeOwedSettlements(ctx, settlementResumeAge); err != nil && ctx.Err() == nil {
-			slog.Error("dispatch: resume owed document settlements", "error", err)
+			s.log().Error("dispatch: resume owed document settlements", "error", err)
 		}
 	})
 }
@@ -115,7 +114,7 @@ func (s *Service) resumeOwedSettlements(ctx context.Context, age time.Duration) 
 	}
 	if len(rooms) > 0 {
 		s.hooks.countSettlementResumption(rooms, s.clock.Now())
-		slog.Info("dispatch: resumed owed document settlements", "documents", len(rooms))
+		s.log().Info("dispatch: resumed owed document settlements", "documents", len(rooms))
 	}
 	return nil
 }

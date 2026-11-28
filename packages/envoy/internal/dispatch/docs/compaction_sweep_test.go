@@ -13,8 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A restart loses the compaction queue, and nothing reopens the documents it held: the sweep of the
@@ -53,16 +53,15 @@ func TestTheCompactionSweepFoldsADocumentTheRestartedServiceNeverOpened(t *testi
 // their restarts: a second process's tick inside the hour the first one swept finds the hour served
 // and compacts nothing, however due a document is, and the duty record holds the first pass's hour.
 func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	second := storetest.SecondProcess(t, database)
 	waitOutTheSweepHour(t, database)
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
-	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour})
+	logs, logger := testLogger(slog.LevelInfo)
+	first := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Hour, Logger: logger})
 	testcleanup.Add(t, func() { _ = first.Shutdown(context.Background()) })
-	other := New(Deps{Store: second, Events: events.NewBroker(), Settle: time.Hour})
+	other := New(Deps{Store: second, Events: events.NewBroker(), Settle: time.Hour, Logger: logger})
 	testcleanup.Add(t, func() { _ = other.Shutdown(context.Background()) })
 
 	swept := storeAgedRows(t, database, 3, 20*time.Minute)
@@ -76,8 +75,8 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	other.compactionSweepTick(ctx, excerptLeases(t, second))
 	requireRowsAsStored(t, database, due, rows)
 
-	ran := countExcerptLeaseLines(logs, "dispatch duty: leased pass ran", compactionSweepLease)
-	skipped := countExcerptLeaseLines(logs, "dispatch duty: leased pass skipped", compactionSweepLease)
+	ran := countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass ran", compactionSweepLease)
+	skipped := countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass skipped", compactionSweepLease)
 	if ran != 1 || skipped != 1 {
 		t.Fatalf("the two ticks ran %d passes and skipped %d, want one of each:\n%s", ran, skipped, logs.Lines("lease="))
 	}
@@ -90,6 +89,52 @@ func TestTheCompactionSweepRunsOnceAnHourAcrossProcesses(t *testing.T) {
 	}
 	if !thisHour {
 		t.Fatal("the sweep's duty record does not hold this hour's pass")
+	}
+}
+
+// Each leased loop of the service hands duty's runner the service's logger (Deps.Logger), so the
+// lines of its lease - a pass that ran, was skipped or was cut short - go where the service's own
+// lines go. A row starts one loop on a database of its own and waits for the line of the pass the
+// loop runs at start; a loop that hands duty no logger writes that line where the default points,
+// and its row fails. The rows run beside each other, so a row that waits out the test binary's
+// deadline does not spend the deadline of the rows after it. TestEditNoticeSweepRetriesAHeldLease,
+// TestTwoExcerptReconciliationRunnersNeverPassAtOnceAndBothPass and
+// TestTwoResumptionRunnersResumeAnOwedSettlementOncePerPeriod read the lease lines of the woken
+// loops and of the resumption the same way.
+func TestEachLeasedLoopWritesItsLeaseLinesToTheServicesLogger(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		lease string
+		run   func(*Service, context.Context, duty.Leases)
+	}{
+		{BlockIndexLease, (*Service).RunBlockIndexReconciliation},
+		{RefsFormsLease, (*Service).RunRefsFormsReconciliation},
+		{compactionSweepLease, (*Service).RunCompactionSweep},
+	} {
+		t.Run(row.lease, func(t *testing.T) {
+			t.Parallel()
+			database := storetest.Open(t)
+			logs, logger := testLogger(slog.LevelInfo)
+			service := newTestServiceOnTo(t, database, logger)
+			leases := excerptLeases(t, database)
+			ctx, cancel := context.WithCancel(context.Background())
+			returned := make(chan struct{})
+			go func() {
+				defer close(returned)
+				row.run(service, ctx, leases)
+			}()
+			// stop ends the loop and waits for it to return; the cleanup stops it when a wait
+			// below fails the row, before the service and the database go.
+			stop := func() {
+				cancel()
+				testwait.Receive(t, "the "+row.lease+" loop to return once its context ended", returned)
+			}
+			testcleanup.Add(t, stop)
+			testwait.Until(t, "the "+row.lease+" loop's pass at start to be logged to the service's logger", func() (string, bool) {
+				return logs.Lines("lease="), countExcerptLeaseLines(logs.String(), "dispatch duty: leased pass ran", row.lease) > 0
+			})
+			stop()
+		})
 	}
 }
 
@@ -402,7 +447,8 @@ func waitOutTheSweepHour(t *testing.T, database *store.Store) {
 }
 
 // compactionSweepTick is one tick of the sweep, due now, as RunCompactionSweep's ticker makes one:
-// the pass, when this process takes the lease and no process has swept this hour.
+// the pass, when this process takes the lease and no process has swept this hour. Its lease lines
+// go to the service's logger, as the ticker's do.
 func (s *Service) compactionSweepTick(ctx context.Context, leases duty.Leases) {
-	duty.Exclusive(ctx, nil, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
+	duty.Exclusive(ctx, s.logger, leases, compactionSweepLease, time.Now(), compactionSweepPeriod, s.compactionSweepPass)
 }

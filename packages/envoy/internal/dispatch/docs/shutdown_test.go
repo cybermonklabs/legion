@@ -26,7 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -251,7 +250,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	second := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	appends := &burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: []*burstGate{first, second}}
 	drainClock := clocktest.New(time.Now())
-	service := newShutdownTestServiceOn(t, database, appends, drainClock)
+	service := newShutdownTestServiceOn(t, database, appends, drainClock, nil)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
@@ -407,10 +406,11 @@ func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T
 // pending-settlement row, says so at WARN, and counts no settlement failure, which three of would
 // fail the room.
 func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
-	service := newShutdownTestService(t, database, nil)
+	logs, logger := testLogger(slog.LevelWarn)
+	service := newShutdownTestServiceOn(t, database, nil, nil, logger)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	// A block with no id arms the room's settlement, which has to stamp one.
@@ -424,8 +424,7 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 	if err := service.waitForDurableAppends(ctx, artifactID); err != nil {
 		t.Fatalf("wait for the edit to be stored: %v", err)
 	}
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelWarn}))
+	mark := logs.Len()
 
 	if err := service.Shutdown(ctx); err != nil {
 		t.Fatalf("shutdown with a settlement that must stamp its room: %v", err)
@@ -437,7 +436,7 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 	if failures != 0 {
 		t.Errorf("the refused write counted %d settlement failures, want none", failures)
 	}
-	output := logs.String()
+	output := logs.String()[mark:]
 	if !strings.Contains(output, `msg="dispatch: skip shutdown document settlement that has to write into its room" room=`+artifactID) {
 		t.Errorf("Shutdown did not log the settlement it left because its room refused the write:\n%s", output)
 	}
@@ -454,18 +453,20 @@ func TestShutdownLeavesASettlementThatMustWriteIntoItsRoomToResume(t *testing.T)
 // appends, when set, stands in for the store's own document persistence.
 func newShutdownTestService(t *testing.T, database *store.Store, appends VersionedStore) *Service {
 	t.Helper()
-	return newShutdownTestServiceOn(t, database, appends, nil)
+	return newShutdownTestServiceOn(t, database, appends, nil, nil)
 }
 
 // newShutdownTestServiceOn is newShutdownTestService on serviceClock (Deps.Clock), which
-// Shutdown's drain budget runs on; the real clock when nil.
-func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends VersionedStore, serviceClock clock.Clock) *Service {
+// Shutdown's drain budget runs on, the real clock when nil, and writing its lines to logger
+// (Deps.Logger), or where the default logger points when nil.
+func newShutdownTestServiceOn(t *testing.T, database *store.Store, appends VersionedStore, serviceClock clock.Clock, logger *slog.Logger) *Service {
 	t.Helper()
 	service := New(Deps{
 		Store: database, Persistence: appends, Events: events.NewBroker(),
 		Identity: identity.HeaderIdentity{People: store.NewPgPeopleStore(database.Pool, testSigningKey, nil)},
 		Settle:   time.Hour,
 		Clock:    serviceClock,
+		Logger:   logger,
 	})
 	// A test that already called Shutdown runs this one a second time; it logs its own
 	// "left to resume" line but does no second settlement attempt (settleRoomWithin's

@@ -86,7 +86,24 @@ func ScanReview(row pgx.Row) (model.ArtifactReview, error) {
 // for any read the caller makes before it commits. The trigger then finds the row sequenced and
 // leaves it. written receives the review and its event as the batch leaves them, and the caller,
 // which owns the transaction, publishes the event after its commit.
+//
+// It belongs to no service, so the warning of a review whose version names no stored text goes to
+// the default logger as it is when the batch runs. A caller joined to a service's transaction
+// queues through its ledger instead (Ledger.QueueReview), whose warning goes to that service's.
 func QueueReview(b *store.WriteBatch, broker *events.Broker, artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, written func(model.ArtifactReview, model.Event)) error {
+	return queueReview(nil, b, broker, artifact, version, state, kind, actor, reason, askID, written)
+}
+
+// QueueReview is the package's QueueReview for a caller joined to this ledger's transaction, its
+// warning going to the logger of the service that joined it (Join), or where the default points
+// for a ledger of no service.
+func (l *Ledger) QueueReview(b *store.WriteBatch, broker *events.Broker, artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, written func(model.ArtifactReview, model.Event)) error {
+	return queueReview(l.logger(), b, broker, artifact, version, state, kind, actor, reason, askID, written)
+}
+
+// queueReview is QueueReview with its warning going to logger, which it resolves (logTo) inside
+// the insert's callback, as the batch runs, rather than as the review is queued.
+func queueReview(logger *slog.Logger, b *store.WriteBatch, broker *events.Broker, artifact model.Artifact, version int, state, kind string, actor model.Actor, reason *string, askID *string, written func(model.ArtifactReview, model.Event)) error {
 	actorJSON, err := json.Marshal(actor)
 	if err != nil {
 		return fmt.Errorf("encode review actor: %w", err)
@@ -108,7 +125,7 @@ func QueueReview(b *store.WriteBatch, broker *events.Broker, artifact model.Arti
 		}
 		review = scanned
 		if review.ContentSHA256 == nil {
-			slog.Warn("dispatch: review recorded with no content hash: the version names no stored text",
+			logTo(logger).Warn("dispatch: review recorded with no content hash: the version names no stored text",
 				"artifact", artifact.ID, "version", version, "review", review.ID)
 		}
 		return nil

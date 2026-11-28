@@ -68,13 +68,13 @@ func mergeInto[K comparable, V any](dst *map[K]V, src map[K]V) {
 	maps.Copy(*dst, src)
 }
 
-// recoverMutation, deferred around a document mutation, turns its panic into *err and logs it, and
-// reports through *panicked that the mutation panicked.
-func recoverMutation(room string, err *error, panicked *bool) {
+// recoverMutation, deferred around a document mutation, turns its panic into *err and logs it, to
+// logger, the mutating service's (logTo), and reports through *panicked that the mutation panicked.
+func recoverMutation(logger *slog.Logger, room string, err *error, panicked *bool) {
 	if recovered := recover(); recovered != nil {
 		*panicked = true
 		*err = fmt.Errorf("document mutation panicked: %v\n%s", recovered, debug.Stack())
-		slog.Error("dispatch: document mutation panicked", "room", room, "error", *err)
+		logTo(logger).Error("dispatch: document mutation panicked", "room", room, "error", *err)
 	}
 }
 
@@ -97,6 +97,9 @@ type liveOperation struct {
 	// panicked is whether the operation's change panicked (change), which abandon releases the
 	// fork for whatever updates holds.
 	panicked bool
+	// logger is the logger of the service that opened the operation (Service.logger), which a
+	// panic of its change is logged to (recoverMutation).
+	logger *slog.Logger
 }
 
 // openLiveOperation opens an operation on artifactID's document inside the transaction the
@@ -121,7 +124,7 @@ func (s *Service) openLiveOperation(ctx context.Context, artifactID string) (liv
 	if err != nil {
 		return liveOperation{}, err
 	}
-	return liveOperation{tx: tx, write: write, fork: fork, read: write.forkRead}, nil
+	return liveOperation{tx: tx, write: write, fork: fork, read: write.forkRead, logger: s.logger}, nil
 }
 
 // abandon, deferred once the operation is open, undoes what an operation that changed the fork but
@@ -158,7 +161,7 @@ func (op *liveOperation) change(mutate func() error) (*marginWatch, error) {
 	})
 	margin, stopMargin := watchMargin(op.fork)
 	err := func() (err error) {
-		defer recoverMutation(op.write.artifactID, &err, &op.panicked)
+		defer recoverMutation(op.logger, op.write.artifactID, &err, &op.panicked)
 		return mutate()
 	}()
 	stopMargin()
@@ -203,7 +206,7 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 		return fmt.Errorf("append transactional live document update: %w", err)
 	}
 	if len(op.write.versions) == 0 {
-		s.hooks.parkLiveWrite(op.write.artifactID, PauseAfterFirstAppend)
+		s.hooks.parkLiveWrite(s.logger, op.write.artifactID, PauseAfterFirstAppend)
 	}
 	// The transaction holds the document's advisory lock from its read to its end, so no eviction
 	// of the room can finish before then, and a later reload holds the write. A room that failed
@@ -213,7 +216,7 @@ func (s *Service) recordLiveOperation(ctx context.Context, op *liveOperation, ac
 	if err := op.write.state.failure(); err != nil {
 		// The 503 this becomes is the only other trace of a room that stays failed, so the
 		// refusal names the room and the cause here too (see awaitRoomRecovery).
-		slog.Warn("dispatch: refuse a joined write on a failed document room",
+		s.log().Warn("dispatch: refuse a joined write on a failed document room",
 			"room", op.write.artifactID, "error", err)
 		return err
 	}
@@ -2139,7 +2142,7 @@ func (s *Service) SetBlockAttributes(
 	err := s.setBlockAttributes(ctx, artifactID, blockID, attributes, actor)
 	if IsTooLarge(err) {
 		if withheld, withholds := withoutAnswer(attributes); withholds {
-			slog.Warn("dispatch: an answer is left out of its block", "room", artifactID, "block", blockID, "reason", err)
+			s.log().Warn("dispatch: an answer is left out of its block", "room", artifactID, "block", blockID, "reason", err)
 			// A refused write appends nothing, and the transaction's next write starts from a
 			// fork built again without it (forkLive).
 			err = s.setBlockAttributes(ctx, artifactID, blockID, withheld, actor)
@@ -2658,7 +2661,7 @@ func (s *Service) writeVersionTx(ctx context.Context, tx pgx.Tx, artifactID stri
 
 	// What the version's markdown was rendered from, so a text read of a document still standing
 	// there serves it rather than rendering the document again (storedText).
-	version, err := queueVersionInsert(ctx, tx, artifactID, markdown, spec.authors, spec.named, spec.summary, spec.docUpdateVersion, renderStampOf(artifactID, tree))
+	version, err := queueVersionInsert(ctx, tx, artifactID, markdown, spec.authors, spec.named, spec.summary, spec.docUpdateVersion, renderStampOf(s.logger, artifactID, tree))
 	if err != nil {
 		return versionWriteResult{}, err
 	}

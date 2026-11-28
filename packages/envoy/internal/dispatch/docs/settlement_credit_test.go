@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -805,12 +806,20 @@ func TestAnUploadsFullReleaseKeepsABrowserEditCreditedWhileItsTransactionWasOpen
 // rolling deploy's overlap.
 func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *httptest.Server) {
 	t.Helper()
+	return newTestServiceInstanceTo(t, database, nil)
+}
+
+// newTestServiceInstanceTo is newTestServiceInstance writing its lines to logger (Deps.Logger);
+// nil writes them where the default logger points as each is written.
+func newTestServiceInstanceTo(t *testing.T, database *store.Store, logger *slog.Logger) (*Service, *httptest.Server) {
+	t.Helper()
 	service := New(Deps{
 		Store:    database,
 		Events:   events.NewBroker(),
 		Identity: headerIdentity(database),
 		Origins:  testOrigins,
 		Settle:   time.Hour,
+		Logger:   logger,
 	})
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {

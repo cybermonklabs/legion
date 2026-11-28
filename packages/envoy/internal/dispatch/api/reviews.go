@@ -562,7 +562,7 @@ func (s *server) queueApprovalReviews(
 		}
 		reviewEvent := new(model.Event)
 		if err := ledger.Queue(func(b *store.WriteBatch) error {
-			return docs.QueueReview(b, s.deps.Events, reviewed, document.Version, state, docs.ReviewKindPerson,
+			return ledger.QueueReview(b, s.deps.Events, reviewed, document.Version, state, docs.ReviewKindPerson,
 				actor, reason, askID, func(written model.ArtifactReview, event model.Event) {
 					*review, *reviewEvent = written, event
 				})
@@ -1264,7 +1264,7 @@ func (s *server) createArtifactPlanReview(w http.ResponseWriter, r *http.Request
 	var review model.ArtifactReview
 	reviewEvent := new(model.Event)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
-		return docs.QueueReview(b, s.deps.Events, artifact, input.Version, "approved", docs.ReviewKindPlanReview,
+		return ledger.QueueReview(b, s.deps.Events, artifact, input.Version, "approved", docs.ReviewKindPlanReview,
 			actor, nil, nil, func(written model.ArtifactReview, event model.Event) {
 				review, *reviewEvent = written, event
 			})

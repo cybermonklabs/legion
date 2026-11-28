@@ -18,7 +18,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
-	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
@@ -695,10 +694,9 @@ func TestEditNoticeSweepOfTwoServicesSendsEachNoticeOnce(t *testing.T) {
 // the sweep finds nothing due. Once the quiet time passes, one notice covers both people's
 // versions, so each person's version is in exactly one sent notice's range.
 func TestEditNoticeSweepDuringSettlement(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	service, artifactID := newTestService(t)
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelInfo)
+	service, artifactID := newTestServiceTo(t, logger)
 	service.settle = time.Hour
 	service.editNoticeQuiet = 500 * time.Millisecond
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
@@ -796,10 +794,9 @@ func TestEditNoticeSweepDuringSettlement(t *testing.T) {
 // A document deleted after the sweep read its id, which took its notice row with it, is skipped:
 // the sweep does not fail, and the next due notice of the same sweep still goes.
 func TestEditNoticeSweepSkipsDeletedArtifact(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	service, _ := newTestService(t)
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelInfo)
+	service, _ := newTestServiceTo(t, logger)
 	gone := createIssueDocument(t, service.store, 5, "Gone.")
 	kept := createIssueDocument(t, service.store, 6, "Kept.")
 	alice := model.Actor{Kind: "user", ID: "alice@example.com"}
@@ -1056,10 +1053,9 @@ func TestOutsideReviewJoinedHumanEditLastHuman(t *testing.T) {
 // room credits every connected peer and records no sender (creditContentChange). The notice must
 // then name nobody, rather than pick a person out of the credited names: no window names anyone.
 func TestEditNoticeTwoConnectedOneEditsNamesNobody(t *testing.T) {
-	// Not parallel: it swaps the default logger (logtest.SetDefault).
-	logs := &storetest.LockedLog{}
-	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	service, artifactID := newTestService(t)
+	t.Parallel()
+	logs, logger := testLogger(slog.LevelInfo)
+	service, artifactID := newTestServiceTo(t, logger)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "First.\n\nSecond.\n")
 	settleCurrentGeneration(t, service, artifactID)

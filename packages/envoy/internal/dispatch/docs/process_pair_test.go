@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"log/slog"
 	"net/http/httptest"
 	"testing"
 
@@ -39,7 +40,14 @@ type processPair struct {
 // over the pair start.
 func newProcessPair(t *testing.T) processPair {
 	t.Helper()
-	pair := newSeededProcessPair(t, "First.\n\nSecond.\n")
+	return newProcessPairTo(t, nil)
+}
+
+// newProcessPairTo is newProcessPair with both processes writing their lines to logger
+// (newSeededProcessPairTo).
+func newProcessPairTo(t *testing.T, logger *slog.Logger) processPair {
+	t.Helper()
+	pair := newSeededProcessPairTo(t, "First.\n\nSecond.\n", logger)
 	settleCurrentGeneration(t, pair.taskA, pair.artifactID)
 	return pair
 }
@@ -53,10 +61,18 @@ func newProcessPair(t *testing.T) processPair {
 // (dispatch://INFRA-3904). TestAMemberThatNeverAnswersCostsTheWaitAndAWarn holds the budget itself.
 func newSeededProcessPair(t *testing.T, markdown string) processPair {
 	t.Helper()
+	return newSeededProcessPairTo(t, markdown, nil)
+}
+
+// newSeededProcessPairTo is newSeededProcessPair with both processes, and task B's gated store,
+// writing their lines to logger (Deps.Logger); nil writes them where the default logger points as
+// each is written.
+func newSeededProcessPairTo(t *testing.T, markdown string, logger *slog.Logger) processPair {
+	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "# First")
-	taskA, serverA := newTestServiceInstance(t, database)
-	taskB, gateB := newGatedServiceInstance(t, storetest.SecondProcess(t, database))
+	taskA, serverA := newTestServiceInstanceTo(t, database, logger)
+	taskB, gateB := newGatedServiceInstanceTo(t, storetest.SecondProcess(t, database), logger)
 	taskA.roomQueries.wait, taskB.roomQueries.wait = roomWait(t), roomWait(t)
 	serverB := newTestServer(t, taskB)
 	seedServiceText(t, taskA, artifactID, markdown)
