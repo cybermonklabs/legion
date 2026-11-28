@@ -48,27 +48,37 @@ const otherSessionsTraffic = 24
 // Its control is TestASessionConsumerOnAServerThatSkipsAFilterLosesItsOldFormMessage, the same
 // first case on nats-server v2.10.29 with the refusal stepped past.
 func TestASessionConsumerHandsOverItsOwnMessagesInBothFormsBehindOtherSessionsTraffic(t *testing.T) {
+	// Not parallel: the second case gives its pull liveQuietWindow (500 ms) to reach the server
+	// before the traffic is stored, and the load of parallel tests could make that span too short.
+	//
+	// The cases share one hub server, its stream and the session consumers. Each case follows a
+	// session of its own, so it keeps its own consumer and stream position, and the other case's
+	// messages are on subjects outside its filter. The stream holds seven subjects at most (the
+	// two other sessions', each case's two agent subjects, and the resume record of the case that
+	// releases its session), fewer than the otherSessionsTraffic messages stored between a case's
+	// position and its own messages, so the server still reads that traffic by subject.
+	owner, consumers := liveSessionConsumers(t, testnats.HubImage)
 	t.Run("stored while the session was released", func(t *testing.T) {
-		owner, consumers := liveSessionConsumers(t, testnats.HubImage)
-		pull, own := releasedAndRegisteredAgain(t, owner, consumers)
+		pull, own := releasedAndRegisteredAgain(t, owner, consumers, "ses_scan_released")
 		requireHandedOver(t, pull, own)
 	})
 	t.Run("sent while the pull waits", func(t *testing.T) {
-		owner, consumers := liveSessionConsumers(t, testnats.HubImage)
+		const session = "ses_scan_waiting"
+		subjects := scanSubjects(session)
 		ctx := context.Background()
 		publishOthers(t, owner, 2)
-		if _, err := consumers.Ensure(ctx, scanSession, scanSubjects, 0); err != nil {
-			t.Fatalf("ensure the consumer of %s: %v", scanSession, err)
+		if _, err := consumers.Ensure(ctx, session, subjects, 0); err != nil {
+			t.Fatalf("ensure the consumer of %s: %v", session, err)
 		}
-		if _, err := consumers.RestartAtFloor(ctx, scanSession, scanSubjects); err != nil {
-			t.Fatalf("restart the consumer of %s at its floor: %v", scanSession, err)
+		if _, err := consumers.RestartAtFloor(ctx, session, subjects); err != nil {
+			t.Fatalf("restart the consumer of %s at its floor: %v", session, err)
 		}
-		pull := pullSession(t, consumers, scanSession)
+		pull := pullSession(t, consumers, session)
 		// The pull request reaches the server and the consumer reads to the stream's end before
 		// the traffic is stored: nothing is handed over meanwhile.
 		requireNoMessage(t, pull, liveQuietWindow)
 		publishOthers(t, owner, otherSessionsTraffic)
-		requireHandedOver(t, pull, publishOwn(t, owner, scanSession))
+		requireHandedOver(t, pull, publishOwn(t, owner, session))
 	})
 }
 
@@ -122,44 +132,48 @@ func TestASessionConsumerOnAServerThatSkipsAFilterLosesItsOldFormMessage(t *test
 	if err := natsversion.Refusal(version); err == nil {
 		t.Fatalf("the pinned nats:2.10 image reports %s, which natsversion takes; this control needs a server it refuses", version)
 	}
-	pull, _ := releasedAndRegisteredAgain(t, owner, consumers)
+	pull, _ := releasedAndRegisteredAgain(t, owner, consumers, scanSession)
 	got := next(t, pull)
 	if got.Subject != contracts.AgentSubject("INFRA", scanSession) {
 		t.Fatalf("handed over %d on %s first, want the new-form message: the old-form one stored before it is skipped on this server", got.StreamSeq, got.Subject)
 	}
 }
 
-// scanSession is the session every case of this file follows its own messages for.
+// scanSession is the session the nats:2.10 control follows.
 const scanSession = "ses_scan"
 
-// scanSubjects is what scanSession registers: its own agent subject in the old form, as a plugin
-// does on every heartbeat.
-var scanSubjects = []string{contracts.LegacyAgentSubject(scanSession)}
+// scanSubjects is what session registers: its own agent subject in the old form, as a plugin does
+// on every heartbeat.
+func scanSubjects(session string) []string {
+	return []string{contracts.LegacyAgentSubject(session)}
+}
 
-// releasedAndRegisteredAgain drives the idle release the Legion daemon makes: a registration
-// (Ensure, RestartAtFloor, Pull), a release (Delete), other sessions' traffic and one message on
-// the session's agent subject in each form stored while it had no consumer, more traffic, and a
-// registration again. It returns the new pull and the session's own messages, in stream order.
-func releasedAndRegisteredAgain(t *testing.T, owner *Client, consumers *SessionConsumers) (*SessionPull, []ownMessage) {
+// releasedAndRegisteredAgain drives the idle release the Legion daemon makes for session: a
+// registration (Ensure, RestartAtFloor, Pull), a release (Delete), other sessions' traffic and one
+// message on the session's agent subject in each form stored while it had no consumer, more
+// traffic, and a registration again. It returns the new pull and the session's own messages, in
+// stream order.
+func releasedAndRegisteredAgain(t *testing.T, owner *Client, consumers *SessionConsumers, session string) (*SessionPull, []ownMessage) {
 	t.Helper()
 	ctx := context.Background()
+	subjects := scanSubjects(session)
 	register := func() *SessionPull {
 		t.Helper()
-		if _, err := consumers.Ensure(ctx, scanSession, scanSubjects, 0); err != nil {
-			t.Fatalf("ensure the consumer of %s: %v", scanSession, err)
+		if _, err := consumers.Ensure(ctx, session, subjects, 0); err != nil {
+			t.Fatalf("ensure the consumer of %s: %v", session, err)
 		}
-		if _, err := consumers.RestartAtFloor(ctx, scanSession, scanSubjects); err != nil {
-			t.Fatalf("restart the consumer of %s at its floor: %v", scanSession, err)
+		if _, err := consumers.RestartAtFloor(ctx, session, subjects); err != nil {
+			t.Fatalf("restart the consumer of %s at its floor: %v", session, err)
 		}
-		return pullSession(t, consumers, scanSession)
+		return pullSession(t, consumers, session)
 	}
 	publishOthers(t, owner, 2)
 	register().Stop()
-	if _, err := consumers.Delete(ctx, scanSession, nil); err != nil {
-		t.Fatalf("delete the consumer of %s at its release: %v", scanSession, err)
+	if _, err := consumers.Delete(ctx, session, nil); err != nil {
+		t.Fatalf("delete the consumer of %s at its release: %v", session, err)
 	}
 	publishOthers(t, owner, otherSessionsTraffic)
-	own := publishOwn(t, owner, scanSession)
+	own := publishOwn(t, owner, session)
 	publishOthers(t, owner, 4)
 	return register(), own
 }
