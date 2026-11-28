@@ -1952,38 +1952,41 @@ func (s *server) landedWrite(ctx context.Context, shown dispatch.Issue, status s
 //   - Nothing, where the record holds the issue accepted (record.Accepted): another acceptance of
 //     the issue recorded since took it to retro, whose status Dispatch shows already. Any other
 //     phase the record moved the issue to holds no acceptance, so the act's write is written
-//     back: the admission pass's move to awaiting_children, which writes no status of its own
-//     (workflow.PhaseStatus), or the start of a root a close was judged at admitted on, which
-//     the event of the close's own done leaves in the workflow (workflow's closeRootWriteAhead),
-//     so this writes its status back. A move that
-//     writes a status of its own finds Dispatch back at the status it read, or the status repair
-//     queues it at its next run (workflow's correctStatuses).
+//     back: the start of a root a close was judged at admitted on, which the event of the close's
+//     own done leaves in the workflow (workflow's closeRootWriteAhead), among them. A move that
+//     writes a status of its own, the admission pass's move to awaiting_children among them
+//     (workflow's awaitChildren queues PhaseStatus(phase.AwaitingChildren), in_progress, a row that
+//     runs after this write back, under the issue's lock), finds Dispatch back at the status it
+//     read, or the status repair queues it at its next run (workflow's correctStatuses).
 //   - Only at the sequence of a read that shows the act's status (writeAtRead), the first being
 //     the act's own write's answer (written), so Dispatch refuses the write back (ISSUE_CHANGED)
 //     where anything was recorded on the issue since. A read at another status is someone's later
 //     move, a person's close among them, and is left as it is.
 //
 // Two limits stand at this undo, each documented and neither observed. Each needs a sign_off's or
-// a close_root's Dispatch write that its fact then refuses, so that this write back undoes it:
+// a close_root's Dispatch write that its fact then refuses, so that this write back undoes it.
+// Both run through the pending-basis seed: an event that is a cue for a step waiting on the
+// ancestor's request queues it (workflow's readBasisOnCue), and its read of Dispatch decides
+// (workflow's pendingBasisRead, judgeBasisRead):
 //
 //   - sign_off: while Dispatch showed the ancestor retro, a root's pending registration on the
-//     ancestor may end on either of two paths. Another project's pending-basis seed reads the
-//     ancestor retro with the person's approval of the version present (workflow's
-//     pendingBasisRead; that daemon reads only Dispatch's status of an issue of this project). Or,
-//     once this daemon's own retro event has reached the shared mirror, a person's approval of the
-//     ancestor's document ends the wait as the ancestor having left R1's first condition
-//     (workflow's ancestorLeftInStore). The root's architect gets a basis-ended notice naming the
-//     ancestor, and registers again once the ancestor is open, which the write back makes it.
-//   - close_root: Dispatch's done withdrew the ancestor's open approval requests, and that
-//     withdrawal ended every root's pending registration on them (workflow's
-//     endPendingOnRequest), here and in other projects. Each root's architect gets a basis-ended
-//     notice naming the withdrawal, and registers again, or the ancestor's architect requests
-//     approval again, once the ancestor is open.
+//     ancestor may end, in this project or another, when a seed reads Dispatch in that window:
+//     judgeBasisRead takes the retro Dispatch shows as the ancestor having left R1's first
+//     condition, with the person's approval of the version present or not. In this project the
+//     seed is queued by another cue in that window, such as the person's approval of the
+//     ancestor's document, since the act's own retro event is no cue (workflow's
+//     signOffWriteAhead); in another project, by that project's controller tick. The root's
+//     architect gets a basis-ended notice naming the ancestor, and registers again once the
+//     ancestor is open, which the write back makes it.
+//   - close_root: Dispatch's done withdrew the ancestor's open approval requests, and the close
+//     of each request is a cue whose seed reads the request closed (workflow's RequestClosed),
+//     which ends every root's pending registration on them, here and in other projects. Each
+//     root's architect gets a basis-ended notice naming the close, and registers again, or the
+//     ancestor's architect requests approval again, once the ancestor is open.
 //
 // Holding either would need the daemons of two projects to agree on one act, which nothing here
 // does: TestARootWhoseWaitARefusedAcceptanceEndedRegistersAgainOnceTheAncestorIsOpen pins the
-// recovery. The daemon's own retro event ends no wait of this project before the acceptance is
-// recorded (workflow's signOffWriteAhead).
+// recovery.
 func (s *server) writeBack(ctx context.Context, a acceptAct, shown, written dispatch.Issue) string {
 	recorded, err := s.recordedIssue(ctx, a.issue)
 	if err != nil {
