@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // The waits below end on the fact each waits for, and their one bound is the test binary's
@@ -18,15 +19,16 @@ import (
 // the test.
 
 // CountLockWaits counts the sessions of database waiting on a lock whose statement matches the LIKE
-// pattern like. It reads through the pool, never through a transaction: a transaction's first read
-// of pg_stat_activity freezes the view for the rest of it, and a poll inside one spins until it
-// times out. It returns its error rather than failing the test, so a hook running off the test's
-// goroutine, such as a settlement's, can report it and let the code under test go on.
+// pattern like, read from pg_locks (lockwaittest.Waiting, whose package comment says why not from
+// the wait event). It reads through the pool, never through a transaction: a transaction's first
+// read of pg_stat_activity freezes the view for the rest of it, and a poll inside one spins until
+// it times out. It returns its error rather than failing the test, so a hook running off the
+// test's goroutine, such as a settlement's, can report it and let the code under test go on.
 func CountLockWaits(ctx context.Context, database *store.Store, like string) (int, error) {
 	var waiting int
 	if err := database.Pool.QueryRow(ctx, `
 		select count(*) from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and query like $1
+		where datname = current_database() and `+lockwaittest.Waiting+` and query like $1
 	`, like).Scan(&waiting); err != nil {
 		return 0, fmt.Errorf("inspect database locks: %w", err)
 	}
@@ -44,10 +46,10 @@ func OwnerLockWaiters(t testing.TB, database *store.Store) (waiting, holdingXid 
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*), count(*) filter (where backend_xid is not null)
 		from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock' and wait_event = 'advisory'
+		where datname = current_database() and `+lockwaittest.WaitingOn("advisory")+`
 		  and query like '%owner_lock%' and pid <> pg_backend_pid()
 	`).Scan(&waiting, &holdingXid); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}
 	return waiting, holdingXid
 }
