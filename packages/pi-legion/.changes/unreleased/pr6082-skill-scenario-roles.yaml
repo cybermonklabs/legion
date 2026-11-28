@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  The skill-scenario rig gives the implementer's session the implementer role of the run's issue
+  before `seed.ts implement-handoff` records its result, and gives the tester's session the tester
+  role once its claim registers (`seed.ts tester-role`), each as the Legion daemon publishes it:
+  Dispatch stores, as a result's role, the role its recording session holds, and testerProof reads
+  the tester's line in the pull request body by that role.
+time: 2026-11-28T17:50:30Z
+custom:
+  Issue: pr6082

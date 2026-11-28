@@ -6,4 +6,4 @@ body: |-
     results of the session whose role changed under the older set.
 time: 2026-11-28T16:29:04Z
 custom:
-    Issue: role-holders-send-end
+    Issue: pr6082

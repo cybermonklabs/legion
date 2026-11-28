@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+    Dispatch stores, as the role of a recorded result, the role that the recording session holds
+    on the recording issue, as the Legion daemon published it, and the empty string for a session
+    or a person that holds none. A role the request names is never stored and refuses nothing: the
+    answer of `POST /api/v1/issues/{key}/results` says what Dispatch recorded instead
+    (`role_notice`, `role_not_taken`), and each such write is counted in
+    `envoy_dispatch_result_roles_named_total` by `held` and logged. `pass_stands` names a pass of a
+    session with no role in `no_role`, and the pull-request line reads "recorded by a session that
+    holds no role of the issue." Migration `20261128161114_check_results_no_role` widens the role
+    check of `check_results` to take the empty string; it reads and rewrites no row.
+time: 2026-11-28T17:50:30Z
+custom:
+    Issue: pr6082
