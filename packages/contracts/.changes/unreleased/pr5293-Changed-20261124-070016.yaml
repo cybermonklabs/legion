@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The OpenAPI document's description of the search routes names `503 SEARCH_TIMEOUT`, which a
+  search statement past its 15 s bound answers, and its description of
+  `GET /api/v1/search/coverage` names `503 SEARCH_COVERAGE_NOT_FILLED` and
+  `503 SEARCH_COVERAGE_FOLD_BEHIND` beside `503 SEARCH_COVERAGE_TIMEOUT`.
+time: 2026-11-24T07:00:16Z
+custom:
+    Issue: pr5293

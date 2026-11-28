@@ -589,6 +589,7 @@ export function useMarginItems(
     // answer it before, with the comment as it was. The owner's comments are everyone's, so the
     // hold ends on the event rather than wait out an answer that is late.
     holds: ({ id, kind }) => ({ endsOn: commentWritten(id, kind), keys: [commentsQueryKey] }),
+    issue: issueKey,
     onError: (_error, _input, context) => {
       queryClient.setQueryData(commentsQueryKey, context?.previous);
       void queryClient.invalidateQueries({ queryKey: commentsQueryKey });

@@ -2026,6 +2026,23 @@ func TestResolveBootConfigDevSignInRequiresCookieIdentity(t *testing.T) {
 	}
 }
 
+// Header identity reads identity.UserHeader alone, so no setting can make it read a credential
+// header as a person: any other name is refused, naming the one it reads, and every spelling of
+// that one is accepted.
+func TestResolveBootConfigHeaderIdentityReadsItsOwnHeaderAlone(t *testing.T) {
+	for _, name := range []string{"Authorization", "Cookie", "Proxy-Authorization", "X-Forwarded-User"} {
+		_, err := resolveBootConfig(envGetter(headerIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": "header:" + name})))
+		if err == nil || !strings.Contains(err.Error(), name) || !strings.Contains(err.Error(), "header:X-Dispatch-User") {
+			t.Errorf("DISPATCH_IDENTITY=header:%s: err = %v, want a refusal naming it and header:X-Dispatch-User", name, err)
+		}
+	}
+	for _, name := range []string{"X-Dispatch-User", "x-dispatch-user", " X-DISPATCH-USER "} {
+		if _, err := resolveBootConfig(envGetter(headerIdentityEnvironment(map[string]string{"DISPATCH_IDENTITY": "header:" + name}))); err != nil {
+			t.Errorf("DISPATCH_IDENTITY=header:%s: %v, want accepted", name, err)
+		}
+	}
+}
+
 // The fence checks the address the server binds, not a second reading of the variable: every
 // spelling it accepts yields boot.ListenAddr, listenAddress's one value, which main binds.
 func TestResolveBootConfigDevSignInChecksTheAddressItBinds(t *testing.T) {

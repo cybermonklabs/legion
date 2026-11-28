@@ -80,7 +80,7 @@ type silenceBounds struct {
 // drainPollInterval, so the setting can only shorten the wait.
 func shutdownProbes(probe time.Duration) silenceBounds {
 	if probe <= 0 {
-		return silenceBounds{clock: clock.Real(), probeTimeout: store.HealthProbeTimeout, pause: drainPollInterval}
+		return silenceBounds{clock: clock.Real(), probeTimeout: store.HealthProbeTimeout(), pause: drainPollInterval}
 	}
 	return silenceBounds{clock: clock.Real(), probeTimeout: probe, pause: min(probe/8, drainPollInterval)}
 }
@@ -95,11 +95,19 @@ func shutdownProbes(probe time.Duration) silenceBounds {
 // stopped answering.
 const outboxStopBudget = httpDrainBeforeDocuments + documentShutdownTimeout
 
+// processStarted is when this process started, as near as its Go code can say: the moment the
+// package's variables were set, before main ran. The listening line gives the milliseconds since
+// then (since_start_ms), which the fill-length check reads
+// (TestTheServerFillsTheCoverageCountsAtScale): how long a start took to serve, the migrations
+// included.
+var processStarted = time.Now()
+
 // serveUntilStopped serves on listener until ctx ends, then stops Dispatch (shutdown, with
 // httpDrain as its drain before the document service and probes timing the health probes that
 // learn whether the database has stopped answering), deregistering it once HTTP has drained. It
 // logs the address listener is bound to, whether main bound it or inherited it
-// (DISPATCH_LISTEN_FD), so the line names the port a kernel chose. Two things end
+// (DISPATCH_LISTEN_FD), so the line names the port a kernel chose, and the milliseconds since the
+// process started (processStarted). Two things end
 // serving before the signal does, each logged at ERROR and returned once shutdown has run, so main
 // exits 1 and a supervisor never reads either as a clean stop: serving failed, or the registry
 // refused to count this process as live again beside a live process whose signing keys it does not
@@ -110,7 +118,7 @@ func serveUntilStopped(ctx context.Context, cancel context.CancelFunc, server *h
 	documentService *docs.Service, pool *store.Pool, waitBackground, waitIntakes, deregister func(), lost <-chan error, outboxStopped <-chan struct{}, httpDrain time.Duration, probes silenceBounds) error {
 	serveErr := make(chan error, 1)
 	go func() {
-		slog.Info("dispatch: listening", "addr", listener.Addr().String())
+		slog.Info("dispatch: listening", "addr", listener.Addr().String(), "since_start_ms", time.Since(processStarted).Milliseconds())
 		if err := server.Serve(listener); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			slog.Error("dispatch: serve", "error", err)
 			serveErr <- err

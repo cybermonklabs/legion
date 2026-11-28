@@ -1252,8 +1252,8 @@ func TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound(t
 	if !errors.Is(got.err, context.DeadlineExceeded) {
 		t.Errorf("the health probe over the open connection to the frozen database failed with %v, want the store's deadline (context.DeadlineExceeded)", got.err)
 	}
-	if bound := store.HealthProbeTimeout + healthProbeSlack; got.took > bound {
-		t.Errorf("the health probe over the open connection to the frozen database returned %v after it began, want within %v (store.HealthProbeTimeout and healthProbeSlack)", got.took, bound)
+	if bound := store.HealthProbeTimeout() + healthProbeSlack; got.took > bound {
+		t.Errorf("the health probe over the open connection to the frozen database returned %v after it began, want within %v (store.HealthProbeTimeout() and healthProbeSlack)", got.took, bound)
 	}
 }
 

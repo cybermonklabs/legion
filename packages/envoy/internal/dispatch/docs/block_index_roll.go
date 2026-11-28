@@ -35,8 +35,8 @@ const blockIndexEventPage = 1000
 //
 // A version event names its document in payload->>'artifact_id' (ArtifactVersionEventPayload),
 // and the event that creates a document, which records its version 1, carries the whole artifact
-// in its payload and names the document in payload->'artifact'->>'id' (api's
-// artifactCreatedEventPayload, read the same way by versionEventID). An issue's create writes its
+// in its payload and names the document in payload->'artifact'->>'id'
+// (ArtifactCreatedEventPayload, read the same way by versionEventID). An issue's create writes its
 // primary document, the spec, and records that document's version 1 with the issue.created event
 // alone (api's issue create, read the same way by versionEventID), which names the issue and no
 // document: the event's issue_key, its owner, is the issue, so every document of kind 'doc' that
