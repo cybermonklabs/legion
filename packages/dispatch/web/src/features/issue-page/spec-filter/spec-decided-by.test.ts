@@ -1,17 +1,10 @@
 import { beforeAll, expect, test } from "bun:test";
 import { renderHook } from "@testing-library/react";
 
-import { decisionsFromTree } from "../../../api/decisions-tree";
-import type { CheckBlock, Decision } from "../../../api/types";
+import type { CheckBlock, DisplayTree } from "../../../api/types";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import {
-  DECISIONS_SLUG,
-  issueTree,
-  KEY,
-  node,
-  READER,
-  READER_ACTOR,
-} from "../decisions-filter/decisions-fixtures";
+import { decisionNodes } from "../decision-nodes/decision-nodes";
+import { issueTree, KEY, node, READER, READER_ACTOR } from "../decisions-filter/decisions-fixtures";
 import type { TreeNode } from "../issue-tree";
 import { CHIP_LIMIT } from "../node-row-chip";
 import { type LineNames, useIssueNames } from "../one-line";
@@ -19,7 +12,8 @@ import { presetView } from "../presets";
 import { publishingNames } from "../projection-fixture";
 import { SENTENCE_TABLE } from "../sentence-table";
 import { treeContext } from "../tree-drafts";
-import { treeNode } from "../tree-read/tree-fixtures";
+import { treeNode, treeTuple } from "../tree-read/tree-fixtures";
+import type { TreeAnswerNode } from "../tree-read/tree-read";
 import {
   check,
   checkNode,
@@ -31,9 +25,9 @@ import {
   answeredAsk,
   decision,
   decisionNode,
-  decisionsRead,
   issueDetails,
   shaped,
+  specViewAnswer,
   statement,
   statementRef,
 } from "./spec-fixtures";
@@ -44,8 +38,10 @@ import {
  *
  * Each case builds the tree the page would build and hands it to the Spec filter's own view
  * (`presetView`), so the model is read over the rows the filter really draws, with their parent
- * lines, and over the whole tree the checks and the asks sit in. The addressing is the page's
- * own (`treeContext`), so a `shaped` tie is resolved here exactly as the tree resolves one.
+ * lines, and over the whole tree the checks and the asks sit in. The decisions are the decision
+ * nodes of the Spec view read's answer (`decisionNodes`), as the body reads them. The addressing
+ * is the page's own (`treeContext`), so a `shaped` tie is resolved here exactly as the tree
+ * resolves one.
  */
 
 /** How this issue addresses a node, which is how a tie finds the statement it names. Only the
@@ -77,11 +73,12 @@ function lineNamesOf(lines: ReadonlyMap<string, string> = new Map()): LineNames 
  *  wrote it. */
 const NO_NAMES = lineNamesOf();
 
-/** The Spec filter's body over `tree`, as the page reads it once the asks read holds its answer;
- *  `lineNames` is what a reference a plain line cites is named by (`useIssueNames`). */
+/** The Spec filter's body over `tree`, as the page reads it once the asks read holds its answer,
+ *  with `made` as the decisions the Spec view read holds; `lineNames` is what a reference a plain
+ *  line cites is named by (`useIssueNames`). */
 function bodyOf(
   tree: TreeNode,
-  made: readonly Decision[] = [],
+  made: readonly TreeAnswerNode[] = [],
   reader: string | undefined = READER,
   checks: readonly CheckBlock[] = [],
   lineNames: LineNames = NO_NAMES
@@ -89,7 +86,7 @@ function bodyOf(
   return specDecidedBy({
     asksHeld: true,
     checks,
-    decisions: decisionsRead(made),
+    decisions: decisionNodes(specViewAnswer(made), { issue: { key: KEY } }),
     lineNames,
     nodeIdOf,
     reader,
@@ -121,11 +118,12 @@ test("a first sentence ends at its first sentence end, and holds the whole text 
 // of them there are.
 test("one decision stands once beside the run of statements it shaped", () => {
   const groups = bodyOf(issueTree([statement("r1"), statement("r2"), decisionNode("d1")]), [
-    decision({
-      block_id: "d1",
-      kind: "agent",
-      links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+    decision("d1", {
       text: "One read answers every node.",
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      },
     }),
   ]);
   expect(groups).toHaveLength(1);
@@ -149,12 +147,18 @@ test("a statement another decision shaped opens a run of its own", () => {
       decisionNode("d2"),
     ]),
     [
-      decision({
-        block_id: "d1",
-        kind: "agent",
-        links: [shaped(statementRef("r1")), shaped(statementRef("r3"))],
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1")), shaped(statementRef("r3"))],
+        },
       }),
-      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r2"))] }),
+      decision("d2", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r2"))],
+        },
+      }),
     ]
   );
   expect(
@@ -177,11 +181,12 @@ test("a person's decision quotes their answer's first sentence, with the questio
     text: "The node types are all, like, completely so you have to click. And I can't even write.",
   });
   const groups = bodyOf(issueTree([ask, statement("r1")]), [
-    decision({
-      asks: ["ask-1"],
-      block_id: "d1",
-      kind: "person",
-      links: [shaped(statementRef("r1"))],
+    decision("d1", {
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      },
     }),
   ]);
   const made = groups[0]?.runs[0]?.decision;
@@ -201,11 +206,12 @@ test("a person's decision quotes their answer's first sentence, with the questio
 test("an answer with no words of its own is quoted by the option the person chose", () => {
   const ask = answeredAsk("ask-1", { selected: ["1024 px"], text: "" });
   const groups = bodyOf(issueTree([ask, statement("r1")]), [
-    decision({
-      asks: ["ask-1"],
-      block_id: "d1",
-      kind: "person",
-      links: [shaped(statementRef("r1"))],
+    decision("d1", {
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      },
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision?.quote).toBe("1024 px");
@@ -219,67 +225,53 @@ test("another person's answer is not drawn as the reader's own words", () => {
     text: "Keep it at six lines.",
   });
   const groups = bodyOf(issueTree([ask, statement("r1")]), [
-    decision({
-      asks: ["ask-1"],
-      block_id: "d1",
-      kind: "person",
-      links: [shaped(statementRef("r1"))],
+    decision("d1", {
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      },
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision?.said).toBe("person");
 });
 
-// R5: the client reads the decisions from the tree's Decisions view (`api/decisions-tree.ts`),
-// which answers each one as an entry and leaves the read's `decisions` member empty: each is
-// drawn beside the statements its entry's `shaped` links name, a person's as their answer to the
-// ask the entry is, an agent's by its own words.
-test("the decisions read from the tree's Decisions view stand beside the statements they shaped", () => {
-  const read = decisionsFromTree(
-    KEY,
-    [
-      treeNode("d1", "decision", KEY, {
-        decision: { links: [shaped(statementRef("r1"))] },
-        in: DECISIONS_SLUG,
-        role: "query",
-        text: "One read answers every node.",
-      }),
-      treeNode("ask-1", "ask", KEY, {
-        ask: { multiple: false, options: [], urgency: "med" },
-        decision: { links: [shaped(statementRef("r2"))] },
-        role: "query",
-        text: "Does the built page work for you?",
-      }),
-    ],
-    []
-  );
-  expect(read.decisions).toEqual([]);
+// R5: the decisions of the Spec view read are its decision nodes (`decisionNodes`): the model's
+// decision on each decision block and on each question a person answered. Each is drawn beside
+// the statements its `shaped` links name, a person's as their answer to the ask it is, an
+// agent's by its own words, with how sure its agent was.
+test("the decisions of the Spec view read stand beside the statements they shaped", () => {
   const tree = issueTree([
     answeredAsk("ask-1", { text: "Keep both statements." }),
     statement("r1"),
     statement("r2"),
     decisionNode("d1"),
   ]);
-  const { groups } = specDecidedBy({
-    asksHeld: true,
-    checks: [],
-    decisions: read,
-    lineNames: NO_NAMES,
-    nodeIdOf,
-    reader: READER,
-    root: tree,
-    view: presetView(tree, "spec", "").root,
-  });
+  const groups = bodyOf(tree, [
+    decision("d1", {
+      attributes: { uncertainty: "high" },
+      decision: { links: [shaped(statementRef("r1"))] },
+      text: "One read answers every node.",
+    }),
+    treeNode("ask-1", "ask", KEY, {
+      ask: { multiple: false, options: [], urgency: "med" },
+      decision: { links: [shaped(statementRef("r2"))] },
+      role: "context",
+      text: "Does the built page work for you?",
+    }),
+  ]);
   expect(
     groups
       .flatMap((group) => group.runs)
       .map((run) => [
         run.decision?.id,
         run.decision?.said,
+        run.decision?.unsure,
         run.statements.map((one) => one.node.id).join(" "),
       ])
   ).toEqual([
-    ["decisions-md#b-d1", "agent", "spec#b-r1"],
-    ["ask-1", "you", "spec#b-r2"],
+    ["decisions-md#b-d1", "agent", true, "spec#b-r1"],
+    ["ask-1", "you", false, "spec#b-r2"],
   ]);
 });
 
@@ -305,14 +297,15 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
     waiting: true,
   });
   const groups = bodyOf(issueTree([statement("r1"), made]), [
-    decision({
-      block_id: "d1",
-      kind: "agent",
-      links: [shaped(statementRef("r1"))],
+    decision("d1", {
       text,
       text_tree: tree,
-      unsure: true,
-      waiting_review: true,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+        unsure: true,
+        waiting_review: true,
+      },
     }),
   ]);
   const decided = groups[0]?.runs[0]?.decision;
@@ -327,6 +320,134 @@ test("an agent's decision is quoted by its own words, with how sure it was and h
     unsure: true,
   });
   expect(decided?.words).toEqual({ markdown: text, source, tree });
+});
+
+// INFRA-1196's decision 516: a decision block whose `decided_by` names a person is that person's
+// decision, in their own words: the cell says the reader said it where that person is the reader,
+// and a person said it otherwise, and it heads the run of a statement an agent's decision shaped
+// too, as a person's answer does, the agent's named after it. One whose `decided_by` names a
+// session is an agent's, as it always was.
+test("a decision a person decided is drawn as that person's words, before an agent's", () => {
+  const bob = { id: "bob", kind: "user" as const };
+  const tree = issueTree([
+    statement("r1"),
+    statement("r2"),
+    decisionNode("agents"),
+    decisionNode("mine", { author: READER_ACTOR }),
+    decisionNode("bobs", { author: bob }),
+  ]);
+  const made = specViewAnswer(
+    [
+      decision("agents", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+          waiting_review: true,
+        },
+      }),
+      decision("mine", {
+        decision: { kind: "agent", links: [shaped(statementRef("r1"))], waiting_review: true },
+      }),
+      decision("bobs", {
+        decision: { kind: "agent", links: [shaped(statementRef("r2"))], waiting_review: true },
+      }),
+      treeNode(READER, "person", null, { role: "context", text: READER }),
+      treeNode(bob.id, "person", null, { role: "context", text: bob.id }),
+      treeNode("session-planner", "session", null, { role: "context", text: "planner" }),
+    ],
+    [
+      treeTuple("decided_by", "agents", "session-planner"),
+      treeTuple("decided_by", "mine", READER),
+      treeTuple("decided_by", "bobs", bob.id),
+    ]
+  );
+  const groups = specDecidedBy({
+    asksHeld: true,
+    checks: [],
+    decisions: decisionNodes(made, { issue: { key: KEY } }),
+    lineNames: NO_NAMES,
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "").root,
+  }).groups;
+
+  expect(
+    groups.flatMap((group) =>
+      group.runs.map((run) => ({
+        by: run.decision?.by,
+        head: run.decision?.id,
+        informed: run.statements.flatMap((one) => one.alsoShapedBy.map((other) => other.id)),
+        said: run.decision?.said,
+      }))
+    )
+  ).toEqual([
+    {
+      by: READER_ACTOR,
+      head: "decisions-md#b-mine",
+      informed: ["decisions-md#b-agents"],
+      said: "you",
+    },
+    { by: bob, head: "decisions-md#b-bobs", informed: ["decisions-md#b-agents"], said: "person" },
+  ]);
+});
+
+/** The type of every node of `tree`, its own first, each before its children's. */
+function typesIn(tree: DisplayTree | undefined): string[] {
+  if (tree === undefined) return [];
+  const content = Array.isArray(tree.content) ? (tree.content as DisplayTree[]) : [];
+  return [tree.type, ...content.flatMap(typesIn)];
+}
+
+// R5, the tester's finding at e55b07e9 on the real stack: the tree read answers a decision
+// node's text as its whole stored block, the lines that open and close its `decision` directive
+// included, and its reading as that block's, one `decision` node that carries the block's
+// attributes. The cell drew that node, its attributes with it ("DECISION shaped: … replaced
+// false"). It draws the decision's own words and their reading, as the outline's node does
+// (`tree-read/tree-nodes.ts`' `readingOf`), and the because line quotes their first block.
+test("an agent's decision the tree read answers as its whole stored block draws its own words, never its block's attributes", () => {
+  const heading = {
+    attrs: { level: 3 },
+    content: [{ text: "Keep it", type: "text" }],
+    type: "heading",
+  };
+  const paragraph = {
+    content: [{ text: "Keep the model pure. The page reads it.", type: "text" }],
+    type: "paragraph",
+  };
+  const text =
+    `:::decision{#d1 shaped="${statementRef("r1")}" replaced="false"}\n` +
+    "### Keep it\n\nKeep the model pure. The page reads it.\n:::";
+  const cut = { content: [heading, paragraph], type: "doc" };
+  const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1", { text, tree: cut })]), [
+    decision("d1", {
+      text,
+      text_tree: {
+        content: [
+          {
+            attrs: { id: "d1", replaced: "false", shaped: statementRef("r1") },
+            content: [heading, paragraph],
+            type: "decision",
+          },
+        ],
+        type: "doc",
+      },
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
+  ]);
+  const decided = groups[0]?.runs[0]?.decision;
+  expect(decided?.words, "the cell draws the decision's whole stored block").toEqual({
+    markdown: "### Keep it\n\nKeep the model pure. The page reads it.\n",
+    tree: cut,
+  });
+  expect(
+    typesIn(decided?.words?.tree),
+    "the cell draws the block's `decision` node, its attributes with it"
+  ).not.toContain("decision");
+  expect(decided?.quote, "the because line quotes the block's own lines").toBe("Keep it");
 });
 
 // R5: an agent's decision is quoted on the
@@ -349,7 +470,13 @@ test("an agent's decision is quoted by its first block's line, never its heading
     type: "doc",
   };
   const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1", { text, tree })]), [
-    decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))], text }),
+    decision("d1", {
+      text,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
   ]);
   const quote = groups[0]?.runs[0]?.decision?.quote;
   expect(quote, "the because line runs the decision's heading into its words").not.toContain(
@@ -368,7 +495,15 @@ test("a reference named in an agent's quote ends no sentence at its name's label
   const text = `Keep every address, as ${cited} says. Then more follows.`;
   const groups = bodyOf(
     issueTree([statement("r1"), statement("r2"), decisionNode("d1", { text })]),
-    [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))], text })],
+    [
+      decision("d1", {
+        text,
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
+    ],
     READER,
     [],
     lineNamesOf(new Map([[cited, "R2. Every address…"]]))
@@ -385,7 +520,7 @@ test("an agent's quote draws a reference the page published no name for as writt
   const gone = "dispatch://OTHER-1/comment/0f8e2c3a-6b1d-4e5f-9a7c-2d3e4f5a6b7c";
   const text = `Keep it as ${gone} says. Then more follows.`;
   const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1", { text })]), [
-    decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))], text }),
+    decision("d1", { text, decision: { kind: "agent", links: [shaped(statementRef("r1"))] } }),
   ]);
   const quote = groups[0]?.runs[0]?.decision?.quote;
   expect(quote).toBe(`Keep it as ${gone} says.`);
@@ -406,8 +541,19 @@ test("a statement informed by two decisions names the second by its words within
       decisionNode("d2", { text: words }),
     ]),
     [
-      decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] }),
-      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r1"))], text: words }),
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
+      decision("d2", {
+        text: words,
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
     ],
     READER,
     [],
@@ -440,8 +586,11 @@ test("the name of a decision that informed a statement is cut before its referen
       decisionNode("d2", { text: words }),
     ]),
     [
-      decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] }),
-      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r1"))], text: words }),
+      decision("d1", { decision: { kind: "agent", links: [shaped(statementRef("r1"))] } }),
+      decision("d2", {
+        decision: { kind: "agent", links: [shaped(statementRef("r1"))] },
+        text: words,
+      }),
     ],
     READER,
     [],
@@ -455,11 +604,12 @@ test("the name of a decision that informed a statement is cut before its referen
 // R5: a replaced decision draws no line, so the statement it shaped stands with none.
 test("a replaced decision shapes nothing", () => {
   const groups = bodyOf(issueTree([statement("r1")]), [
-    decision({
-      block_id: "d1",
-      kind: "agent",
-      links: [shaped(statementRef("r1"))],
-      replaced: true,
+    decision("d1", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+        replaced: true,
+      },
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision).toBeUndefined();
@@ -481,15 +631,24 @@ test("a person's decision that waits on the asks read still heads its run, and n
   const { groups } = specDecidedBy({
     asksHeld: false,
     checks: [],
-    decisions: decisionsRead([
-      decision({
-        asks: ["ask-1"],
-        block_id: "d1",
-        kind: "person",
-        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
-      }),
-      decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r2"))] }),
-    ]),
+    decisions: decisionNodes(
+      specViewAnswer([
+        decision("d1", {
+          decision: {
+            asks: ["ask-1"],
+            kind: "person",
+            links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+          },
+        }),
+        decision("d2", {
+          decision: {
+            kind: "agent",
+            links: [shaped(statementRef("r2"))],
+          },
+        }),
+      ]),
+      { issue: { key: KEY } }
+    ),
     lineNames: NO_NAMES,
     nodeIdOf,
     reader: READER,
@@ -545,12 +704,45 @@ test("a statement no decision shaped stands in a run with no decision", () => {
 // named on the statement's own line.
 test("every other decision that shaped a statement is named after the first", () => {
   const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1"), decisionNode("d2")]), [
-    decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] }),
-    decision({ block_id: "d2", kind: "agent", links: [shaped(statementRef("r1"))] }),
+    decision("d1", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
+    decision("d2", {
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
   ]);
   expect(groups[0]?.runs[0]?.decision?.id).toBe("decisions-md#b-d1");
   expect(groups[0]?.runs[0]?.statements[0]?.alsoShapedBy.map((one) => one.id)).toEqual([
     "decisions-md#b-d2",
+  ]);
+});
+
+// R5: a person's decision stands beside every statement it shaped. The Spec view read answers an
+// answered ask as context after the spec's decision blocks, so an agent's decision that shaped
+// the same statement comes first in it, and is named after the person's all the same.
+test("a person's decision heads every statement it shaped, before an agent's the read answers first", () => {
+  const ask = answeredAsk("ask-1", { text: "Keep every address the old page answered." });
+  const groups = bodyOf(issueTree([ask, statement("r1"), statement("r2"), decisionNode("d1")]), [
+    decision("d1", { decision: { kind: "agent", links: [shaped(statementRef("r2"))] } }),
+    decision("d2", {
+      decision: {
+        asks: ["ask-1"],
+        kind: "person",
+        links: [shaped(statementRef("r1")), shaped(statementRef("r2"))],
+      },
+    }),
+  ]);
+  const runs = groups[0]?.runs ?? [];
+  expect(runs.map((run) => [run.decision?.id, run.statements.length])).toEqual([["ask-1", 2]]);
+  expect(runs[0]?.statements.map((one) => one.alsoShapedBy.map((by) => by.id))).toEqual([
+    [],
+    ["decisions-md#b-d1"],
   ]);
 });
 
@@ -563,7 +755,14 @@ test("a statement under an answered question keeps that answer when a tie names 
       answeredAsk("ask-1", { text: "Put the memo in the pane." }, [statement("r1")]),
       decisionNode("d1"),
     ]),
-    [decision({ block_id: "d1", kind: "agent", links: [shaped(statementRef("r1"))] })]
+    [
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [shaped(statementRef("r1"))],
+        },
+      }),
+    ]
   );
   expect(groups[0]?.runs[0]?.decision).toMatchObject({ id: "ask-1", type: "ask" });
   expect(groups[0]?.runs[0]?.statements[0]?.alsoShapedBy.map((one) => one.id)).toEqual([
@@ -617,14 +816,54 @@ test("a person's answer that cites a block carries its whole text for the focus,
 // it is drawn as an agent's words and never quoted as the person's.
 test("a person's decision whose question the tree does not hold is drawn as the agent's record", () => {
   const groups = bodyOf(issueTree([statement("r1"), decisionNode("d1")]), [
-    decision({
-      asks: ["an-ask-of-another-issue"],
-      block_id: "d1",
-      kind: "person",
-      links: [shaped(statementRef("r1"))],
+    decision("d1", {
+      decision: {
+        asks: ["an-ask-of-another-issue"],
+        kind: "person",
+        links: [shaped(statementRef("r1"))],
+      },
     }),
   ]);
   expect(groups[0]?.runs[0]?.decision).toMatchObject({ said: "agent", type: "decision" });
+});
+
+// R5, R9 and INFRA-1253 R8: Conversation's read is paged, so the page's tree may not have reached
+// the question a person answered. The Spec view read holds that answered question as context of
+// the statement its `shaped` tie names, and the tree it builds (`TreeViews.trees.spec`) holds its
+// node: the person's decision is drawn by their own answer, never as the agent's record of it.
+test("a person's decision whose question only the Spec view read's tree holds is drawn by their answer", () => {
+  const tree = issueTree([statement("r1"), decisionNode("d1")]);
+  const groups = specDecidedBy({
+    asksHeld: true,
+    checks: [],
+    decisions: decisionNodes(
+      specViewAnswer([
+        decision("d1", {
+          decision: {
+            asks: ["ask-1"],
+            kind: "person",
+            links: [shaped(statementRef("r1"))],
+          },
+        }),
+      ]),
+      { issue: { key: KEY } }
+    ),
+    lineNames: NO_NAMES,
+    nodeIdOf,
+    reader: READER,
+    root: tree,
+    view: presetView(tree, "spec", "").root,
+    viewTree: issueTree([
+      statement("r1"),
+      answeredAsk("ask-1", { text: "Draw the rail once. Then stop." }),
+    ]),
+  }).groups;
+  expect(groups[0]?.runs[0]?.decision).toMatchObject({
+    id: "ask-1",
+    quote: "Draw the rail once.",
+    said: "you",
+    type: "ask",
+  });
 });
 
 // R17: the mark is how the statement stands in the Verification filter's own reading, so one
@@ -687,7 +926,7 @@ test("a row the filter kept that is no statement is in no run", () => {
   const read = specDecidedBy({
     asksHeld: true,
     checks: [],
-    decisions: decisionsRead([]),
+    decisions: [],
     lineNames: NO_NAMES,
     nodeIdOf,
     reader: READER,
@@ -804,11 +1043,8 @@ test("a first sentence ends where every row of the sentence table ends it", () =
 test("a person's quote of each row of the sentence table is the row's stored first sentence", () => {
   for (const row of SENTENCE_TABLE) {
     const groups = bodyOf(issueTree([answeredAsk("ask-1", { text: row.text }), statement("r1")]), [
-      decision({
-        asks: ["ask-1"],
-        block_id: "d1",
-        kind: "person",
-        links: [shaped(statementRef("r1"))],
+      decision("d1", {
+        decision: { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] },
       }),
     ]);
     expect(groups[0]?.runs[0]?.decision?.quote, row.id).toBe(row.stored);
@@ -884,11 +1120,8 @@ test("a person's answer written as a bulleted list is quoted by its first item a
   const groups = bodyOf(
     issueTree([answeredAsk("ask-1", { text: "- keep it\n- drop it" }), statement("r1")]),
     [
-      decision({
-        asks: ["ask-1"],
-        block_id: "d1",
-        kind: "person",
-        links: [shaped(statementRef("r1"))],
+      decision("d1", {
+        decision: { asks: ["ask-1"], kind: "person", links: [shaped(statementRef("r1"))] },
       }),
     ]
   );
@@ -923,11 +1156,8 @@ test("a question is given by its first sentence whole, past 100 characters", () 
       statement("r2"),
     ]),
     [
-      decision({
-        asks: ["ask-2"],
-        block_id: "d1",
-        kind: "person",
-        links: [shaped(statementRef("r2"))],
+      decision("d1", {
+        decision: { asks: ["ask-2"], kind: "person", links: [shaped(statementRef("r2"))] },
       }),
     ]
   );
@@ -936,8 +1166,9 @@ test("a question is given by its first sentence whole, past 100 characters", () 
 
 // R5: where a statement's words changed after the tie that names the decision its run is headed
 // by, it carries Changed since: the tie's own `changed_since_tie`, which the server reads. The
-// tie's far end's `changed_at` decides nothing: the decisions read answers it null, and a time
-// there later than the tie's `created_at` makes no change of a tie the server says is unchanged.
+// tie's far end's `changed_at` decides nothing: the read answers it null on a decision's links,
+// and a time there later than the tie's `created_at` makes no change of a tie the server says is
+// unchanged.
 // A decision that names a statement in two of its blocks holds two ties to it, and the statement
 // changed since that decision only where it changed after both. Only the head's tie decides it,
 // never that of a decision that only informed the statement, and the answered question a
@@ -960,32 +1191,30 @@ test("a statement changed after the tie of the decision heading its run, and onl
       ...["d1", "d2", "d3", "d4"].map((block) => decisionNode(block)),
     ]),
     [
-      decision({
-        block_id: "d1",
-        kind: "agent",
-        links: [
-          tie("r1", true),
-          tie("r2", false),
-          // A far end's time after the tie's, of a tie the server says is unchanged.
-          tie("r3", false, after),
-          tie("r4", false),
-          // Named in two of its blocks: changed after the first tie and not after the second.
-          tie("r5", true),
-          { ...tie("r5", false), from_block: "d1-again" },
-          tie("r7", false),
-        ],
+      decision("d1", {
+        decision: {
+          kind: "agent",
+          links: [
+            tie("r1", true),
+            tie("r2", false),
+            // A far end's time after the tie's, of a tie the server says is unchanged.
+            tie("r3", false, after),
+            tie("r4", false),
+            // Named in two of its blocks: changed after the first tie and not after the second.
+            tie("r5", true),
+            { ...tie("r5", false), from_block: "d1-again" },
+            tie("r7", false),
+          ],
+        },
       }),
       // A decision that only informs r2, which changed after this decision's tie to it.
-      decision({ block_id: "d2", kind: "agent", links: [tie("r2", true)] }),
+      decision("d2", { decision: { kind: "agent", links: [tie("r2", true)] } }),
       // An agent's decision that only informs r6, which changed after its tie, under the
       // answered question that heads r6's run.
-      decision({ block_id: "d3", kind: "agent", links: [tie("r6", true)] }),
+      decision("d3", { decision: { kind: "agent", links: [tie("r6", true)] } }),
       // The person's own decision for the question r6 hangs under, changed after its tie.
-      decision({
-        asks: ["ask-1"],
-        block_id: "d4",
-        kind: "person",
-        links: [tie("r6", true)],
+      decision("d4", {
+        decision: { asks: ["ask-1"], kind: "person", links: [tie("r6", true)] },
       }),
     ]
   );
@@ -1045,19 +1274,27 @@ test("an agent's decision with no node is quoted by the first block of its own w
     type: "doc",
   };
   const groups = bodyOf(issueTree([statement("r1"), statement("r2"), statement("r3")]), [
-    decision({ block_id: "d7", kind: "agent", links: [shaped(statementRef("r1"))], text }),
-    decision({
-      block_id: "d8",
-      kind: "agent",
-      links: [shaped(statementRef("r2"))],
+    decision("d7", {
+      text,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r1"))],
+      },
+    }),
+    decision("d8", {
       text,
       text_tree: tree,
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r2"))],
+      },
     }),
-    decision({
-      block_id: "d9",
-      kind: "agent",
-      links: [shaped(statementRef("r3"))],
+    decision("d9", {
       text: "![The tree](tree.png)\n\n---\n\nKeep the model pure. The page reads it.",
+      decision: {
+        kind: "agent",
+        links: [shaped(statementRef("r3"))],
+      },
     }),
   ]);
   expect(groups[0]?.runs.map((run) => [run.decision?.node, run.decision?.quote])).toEqual([

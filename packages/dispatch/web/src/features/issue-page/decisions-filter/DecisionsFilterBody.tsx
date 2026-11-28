@@ -24,10 +24,10 @@ import { useAgentText } from "../../refs/AgentName";
 import {
   PublishedReferenceNames,
   type PublishedReferences,
+  type ReferenceNameReading,
   useKnownReferences,
 } from "../../refs/reference-names";
 import { parseNodeReference } from "../../refs/routes";
-import { focusOnDocument } from "../../shell/roving";
 import { chipName } from "../first-line";
 import { useSetFocusedNode } from "../focused-node";
 import { focusedNodeOf, type OutlineRequest, useReleaseFocus } from "../IssueTree";
@@ -46,12 +46,15 @@ import {
   PRESET_NAMES,
   STATE_LINES,
 } from "../page-words";
+import { nodeReading } from "../presets";
 import { usePressFocus } from "../press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "../slots/failed-read-line";
+import { usePublishViewReadings } from "../slots/view-readings";
 import { focusIsLoose } from "../tree-focus";
-import type { DrawnRow } from "../tree-fold";
+import type { DrawnRow, PageRow } from "../tree-fold";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { useTreeKeymap } from "../useTreeKeymap";
+import { abortOnReaderAct } from "../useNodeEditing";
+import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
 import { DecisionsRow, type StatementName } from "./DecisionsRow";
 import { useDecisionsEntries } from "./decisions-entries";
 import {
@@ -65,27 +68,52 @@ import {
 } from "./decisions-parts";
 import { entryStanding } from "./entry-standing";
 
-/** The three parts drawn under a heading of their own, in the view's order; the fourth, the
- *  foot, is headed by the control that unfolds it. */
-const HEADED = ["open_questions", "review", "yours"] as const satisfies readonly DecisionsPart[];
+/** The four parts drawn under a heading of their own, in the view's order; the fifth, the foot,
+ *  is headed by the control that folds and unfolds it. */
+const HEADED = [
+  "open_questions",
+  "review",
+  "yours",
+  "others",
+] as const satisfies readonly DecisionsPart[];
+
+/** A part the list draws a page at a time: each headed part, and the foot. */
+type PagedPart = (typeof HEADED)[number] | "agents";
 
 /** What a key that folds, zooms or opens a branch does here, where the list holds none. */
 const NOTHING = (): void => {};
+
+/** How many entries a part draws as the list opens, and how many the control under it draws at
+ *  each press: root R40's size for a flat list, so the list stays bounded on the largest issues
+ *  and the control reads the same under every part (R2, decision 424). */
+const PAGE = 20;
 
 /**
  * The Decisions filter's body, drawn as the picture `page-v3-decisions-1440.png` and the
  * prototype's `.decs` draw it.
  *
- * It is one list in four parts, each under its own heading and in this order: the open
- * questions; the decisions that wait for the reader's review, each with Keep and Change; the
- * reader's decisions, newest first, where another person's entry stands too, with that person's
- * name on its row; and, folded at the foot, the agents' decisions that no statement rests on.
+ * It is one list in parts, each under its own heading and in this order: the open questions;
+ * the decisions that wait for the reader's review, each with Keep and Change; the reader's own
+ * decisions, newest first; what other people decided, newest first, under "Decided by others",
+ * each row with that person's name on it (decision 502); and, at the foot and unfolded, the
+ * agents' decisions that no statement rests on, which the page folds only when the reader folds
+ * them (R2, root R6). Where the reader made every decision, no entry stands under "Decided by
+ * others", no part is drawn for it, and the list is R2's four parts. Each part draws its first
+ * `PAGE` entries, and under a part that holds more a control says how many are left and draws
+ * the next of them (`NextEntries`, root R40, decision 424): a page is no fold, each entry
+ * drawn is whole, and each count counts every entry of its part, drawn or not. The control is a
+ * row of the tree out of the tab order, as the outline's page control is (decision 366), which
+ * `j` and Down on the part's last drawn row press, and a press puts the focus on the first entry
+ * it drew (decision 459). An address, a key, the Contents pane's go-to or the header's count that
+ * goes to an entry not yet drawn draws the pages of its part up to it first (`reach`), and a part
+ * draws the pages up to the entry the reader is on and the one the tab stop rests on, so a read
+ * that puts entries before either takes neither off the page (`drawnPages`, R6).
  * Which entry stands in which part is `decisions-parts.ts`, which is pure, read through the seam
  * (`decisions-entries.ts`); this draws it. A part that holds nothing is not drawn, and no
  * sentence explains the parts: their headings are the whole of it (R22). Before the parts
  * stands the node an address names where it is neither a question nor a decision, a comment
  * say, as a row with no heading and no count: the address outranks the view (`presets.ts`),
- * and the four parts stay all the list says. It is drawn the same at every width: the rows are
+ * and the parts stay all the list says. It is drawn the same at every width: the rows are
  * the outline's own (`DecisionsRow.tsx`).
  *
  * The list is one landmark named by the filter, and inside it answers the WAI-ARIA tree pattern
@@ -97,15 +125,17 @@ const NOTHING = (): void => {};
  * keyboard can scroll it, as on the outline's rows (`RowText.tsx`). The keys are the outline's
  * own (`useTreeKeymap.ts`): the arrows and `j`/`k` move, `Shift+K` and `Shift+C` press Keep and
  * Change, `a` and `r` answer and reply, `f` steps through a row's links, Enter goes to the
- * entry's node in the conversation, and the key that cycles how much is drawn unfolds the foot.
+ * entry's node in the conversation, and the key that cycles how much is drawn opens every body.
  * `q` and `w` walk the entries in the order the list draws them and then the rest of the issue,
  * so a question or a decision the words filter left out is still found, and opens in the
  * conversation, as an entry's link does. The foot's own control is a plain button in the tab
  * order, as the prototype's is, so Tab reaches it where the foot is all the list holds. The tree
  * element keeps no focus while the list draws a row, nor while it draws the foot once the reads
  * that say which questions and decisions there are hold their answers: a focus on it goes on to
- * the tab stop, or to the foot's control where the list draws no row, which is how `t d` reaches
- * a list that holds only the foot. A page opened on one reaches that control by the same rule
+ * the tree's tab-stop row, else into the foot: to the list's tab stop where it is one of the
+ * foot's rows, which stand outside the tree element, or to the foot's control where the list
+ * draws no row, which is how `t d` reaches a list that holds only the foot. A page opened on
+ * one reaches the foot by the same rule
  * where nothing holds the focus: on the page itself, or on the app's main element, which holds
  * the list and which the app focuses when a link inside it opens the page (`focusIsLoose`). On
  * an issue the view draws nothing for, with no row and no foot, there is nowhere to pass it, and
@@ -113,18 +143,20 @@ const NOTHING = (): void => {};
  * list's tab stop where it was pressed on no row, as the outline's keys do (the tester's F16):
  * Left on a row of the parts says the list has no level above it; on a row of the foot, which
  * stands a level down, under the foot's control, it goes up to that control, as Left goes to a
- * row's parent in the outline. Until the reads that say which questions and decisions there are
- * hold their answers, `q` and `w` with nowhere to go say nothing: no question or decision to go
- * to may mean only that they have not arrived (`decisions-entries.ts`).
+ * row's parent in the outline. Until the view knows what the issue holds - Conversation's read,
+ * which says which statement a tie names, and the asks have answered (`decisions-entries.ts`'
+ * `readsHeld`) - `q` and `w` with nowhere to go say nothing: no question or decision to go to
+ * may mean only that they have not arrived.
  *
- * A read that says which entries there are and stands refused - the decisions, the asks - draws
- * the page's one line for a failed read over the list (`slots/failed-read-line.tsx`), with a
- * Retry that asks that read alone again, in place of the entries it would give. Where the list
- * draws no row, the stage the view is drawn in (`slots/stage.tsx`) gives a Retry the focus the
- * tree holds or nothing holds, whether the read is refused before `t d` or after, and keeps the
- * focus in the list when a line leaves with it; where rows are drawn the tab stop takes it, and
- * Shift+Tab from a row goes up to the Retry. So the foot's control takes no focus until those
- * reads have both answered: until then a row or a Retry may yet come to take it.
+ * A read that says which entries there are and stands refused - the decisions' reads, the tree
+ * read and the decisions view, and the asks - draws the page's one line for a failed read over
+ * the list (`slots/failed-read-line.tsx`), with a Retry that asks that read again, in place of
+ * the entries it would give. Where the list draws no row, the stage the view is drawn in
+ * (`slots/stage.tsx`) gives a Retry the focus the tree holds or nothing holds, whether the read
+ * is refused before `t d` or after, and keeps the focus in the list when a line leaves with it;
+ * where rows are drawn the tab stop takes it, and Shift+Tab from a row goes up to the Retry. So
+ * the foot, its rows as much as its control, takes no focus until those reads have both
+ * answered: until then a row or a Retry may yet come to take it.
  *
  * After those lines stands the outline's names line while the page's names reads stand failed
  * (`namesLine`), with a Retry that asks those reads again: every reference a row draws waits on
@@ -133,9 +165,12 @@ const NOTHING = (): void => {};
  * names place no entry, so their line takes none away.
  *
  * The reads are the seam's: the ones the page's tree is built from, under the keys it reads them
- * by (`useIssueTree.ts`), so the body costs no request of its own (R20), and the names its rows
- * draw are the page's batched read's, which the body hands every row in the render that draws it
- * (`published`), so no row reads a reference the page asks for.
+ * by (`useIssueTree.ts`), and the decisions view read, so the body costs no request of its own
+ * (R20), and the names its rows draw are the page's batched read's, which the body hands every
+ * row in the render that draws it (`published`), so no row reads a reference the page asks for.
+ * The tree it is drawn over is the one that view read builds (`decisions-entries.ts`'
+ * `useDecisionsTree`), which its slot hands it, so its rows, its keys and the node an address
+ * names are the nodes of that read, whatever page of Conversation's read the page holds.
  */
 export function DecisionsFilterBody({
   artifacts,
@@ -157,7 +192,7 @@ export function DecisionsFilterBody({
    *  is written against (`issue-artifacts.ts`). */
   artifacts: ReadonlyMap<string, Artifact>;
   /** What the page says where the issue holds no ask and no decision the filter draws, once
-   *  the reads that say which asks and decisions there are hold their answers. */
+   *  the view knows what the issue holds (`decisions-entries.ts`' `readsHeld`). */
   emptyLine: string;
   /** Whether the page takes Escape from a row before the list is left: a filter by words to
    *  clear or a view to turn off comes first in the key table's order
@@ -176,8 +211,9 @@ export function DecisionsFilterBody({
   /** Told whether the list draws the node the address names (`reveal`), where the page draws
    *  the outline in the view's place if it does not (`slots/view-decisions.tsx`): given only
    *  while every read the tree is built from holds its answer. The body tells it as soon as it
-   *  can say, and again each time what it draws changes; the stage acts on the first of these
-   *  for each following of an address that names a node beside the view (`slots/stage.tsx`). */
+   *  can say, once the decisions view read has answered or stands refused (`viewSettled`), and
+   *  again each time what it draws changes; the stage acts on the first of these for each
+   *  following of an address that names a node beside the view (`slots/stage.tsx`). */
   onRevealDrawn?: (drawn: boolean) => void;
   /** What the page publishes of its one batched names read (`useIssueTree.ts`'s `published`),
    *  which the body hands every row it draws in the render that draws it
@@ -186,7 +222,7 @@ export function DecisionsFilterBody({
    *  being read again by the row (R8). */
   published: PublishedReferences;
   /** Who is reading, whose own answer carries the ink rule (R34). Another person's decision
-   *  stands under "Your decisions" too, with that person's name on its row. */
+   *  stands under "Decided by others", with that person's name on its row. */
   reader: string | undefined;
   /** What the page last asked of the outline: go to a node, which the Contents pane's list
    *  asks (`outline-request.tsx`). Each ask is acted on once. */
@@ -196,7 +232,9 @@ export function DecisionsFilterBody({
    *  the row of the question it answers, where the list draws one. Undefined where the address
    *  names no node or the tree holds none it names. */
   reveal?: string;
-  /** The whole tree, which holds each ask and each decision and each statement a tie names. */
+  /** The whole tree `view` was drawn over, which holds each ask and each decision and each
+   *  statement a tie names: the tree the decisions view read builds, as the slot hands it
+   *  (`useDecisionsTree`), and Conversation's until that read holds an answer. */
   root: TreeNode;
   /** The tree as the Decisions filter leaves it (`presetView`). */
   view: TreeNode;
@@ -206,39 +244,54 @@ export function DecisionsFilterBody({
   waitingPress?: number;
 }): ReactNode {
   const navigate = useNavigate();
-  const { failures, parts, readsHeld, retry, retrying, unreadable, writeUps } = useDecisionsEntries(
-    { issue, reader, root, view }
-  );
+  const { failures, parts, readsHeld, retry, retrying, unreadable, viewSettled, writeUps } =
+    useDecisionsEntries({ issue, reader, root, view });
   // The page's one rule for naming a person (`AgentText.author`), which the panel's facts of the
   // focused row name its keeper by: a name, never an id (R9, R22).
   const agentText = useAgentText();
   // Where each thread of the issue is marked read in the reader's Inbox: its newest write's row.
   const threads = useMemo(() => threadMarks(root), [root]);
+  // Every entry the list draws, in the order it draws them, whether its page is drawn or not
+  // and whether the foot is folded or not: the entries an address may name.
+  const every = useMemo(
+    () => DECISIONS_PART_ORDER.flatMap<DecisionsEntry | NamedEntry>((part) => parts[part]),
+    [parts]
+  );
   // The name each statement takes on a decision's "informs" line, as every chip of the page
   // names a block (`chipName`), so a statement reads here as the outline's chip for it reads: by
   // the line the names store projects beside its name from the reading the page published for
   // it, its first block that holds words (`KnownReferences.lines`), cut to a chip's room, which
   // each row draws as it is. One the store holds no line for yet is named by nothing until it
-  // does, as a chip draws nothing until its name comes. Each statement is named by its address
-  // (`ShapedStatement.reference`), so one the tree holds no node for yet - its page is not read
-  // yet (decision 579) - is named as one it holds; one statement shaped by two entries is named
-  // once. Beside its name goes its whole line, the title of the link its line draws, which cuts
-  // the name to the line's width (decision 583 (2), amended).
+  // does, as a chip draws nothing until its name comes. The page's names read is asked for the
+  // addresses the outline's chips and words name (`useIssueTree.ts`), and the decisions this view
+  // draws come from the decisions view read, whose ties it never asks for; a statement only the
+  // coverage read holds, past the pages of Conversation's read, is not in the outline at all. So
+  // the body publishes each tied statement's own reading to the names store, the reading of the
+  // words a decision's row draws it by (`ShapedStatement.node`, `nodeReading`): the tree's
+  // requirement node of it, else the coverage read's row of it, as a view publishes the blocks only
+  // its own tree holds (`slots/view-readings.ts`), and names it by the same rule, by its own
+  // address, so each line is named from the first drawing ("586 (F), corrected").
+  // Beside its name goes its whole line, the title of the link its line draws, which cuts the
+  // name to the line's width (decision 583 (2), amended).
   const { lines } = useKnownReferences();
-  const statementNames = useMemo<ReadonlyMap<string, StatementName>>(() => {
-    const names = new Map<string, StatementName>();
-    for (const part of DECISIONS_PART_ORDER) {
-      for (const { shapes } of parts[part]) {
-        for (const { id, reference } of shapes) {
-          const line = lines.get(reference);
-          if (line !== undefined && !names.has(id)) {
-            names.set(id, { name: chipName(parseNodeReference(reference), line), title: line });
-          }
-        }
+  const covered = useMemo(() => {
+    const readings = new Map<string, ReferenceNameReading>();
+    const references = new Map<string, string>();
+    for (const entry of every) {
+      for (const { id, node } of entry.shapes) {
+        if (node.reference === undefined) continue;
+        readings.set(node.reference, nodeReading(node));
+        references.set(id, node.reference);
       }
     }
+    return { readings, references };
+  }, [every]);
+  usePublishViewReadings(covered.readings);
+  const statementNames = useMemo<ReadonlyMap<string, StatementName>>(() => {
+    const names = new Map<string, StatementName>();
+    for (const [id, reference] of covered.references) nameStatement(names, lines, id, reference);
     return names;
-  }, [lines, parts]);
+  }, [covered.references, lines]);
   const setFocusedNode = useSetFocusedNode();
   const writer = useOutlineWriter();
   const body = useRef<HTMLElement | null>(null);
@@ -250,9 +303,15 @@ export function DecisionsFilterBody({
   // Where the list's one tab stop rests, which outlives the focus leaving it (R9).
   const [stop, setStop] = useState<string | undefined>(undefined);
   const [pinned, setPinned] = useState<ReadonlySet<string>>(() => new Set());
-  const [footShown, setFootShown] = useState(false);
-  // The key that cycles how much is drawn: the list as it opens, then everything - the foot
-  // unfolded and every body open - then the list as it opens again.
+  // The foot is drawn unfolded as the list opens, and folds only when the reader folds it (R2,
+  // root R6).
+  const [footShown, setFootShown] = useState(true);
+  // How many pages of `PAGE` entries the reader drew in each part, by its control or by going to
+  // an entry (`reach`): one as the list opens, and one for a part not named here. A part draws
+  // more where the focus or the tab stop stands further down it (`drawnPages`).
+  const [pages, setPages] = useState<Readonly<Partial<Record<DecisionsPart, number>>>>({});
+  // The key that cycles how much is drawn: the list as it opens, then everything - every body
+  // open, the foot unfolded - then the list as it opens again.
   const [everything, setEverything] = useState(false);
   // The node a key or the page is taking the reader to, once its row is drawn.
   const [wanted, setWanted] = useState<string | undefined>(undefined);
@@ -270,27 +329,84 @@ export function DecisionsFilterBody({
     setReport(said === "" ? undefined : { line: said, ...(row === undefined ? {} : { row }) });
   }, []);
 
+  // How many pages of `PAGE` entries each part draws: those the reader drew (`pages`), and at
+  // least those up to the entry the reader is on and the entry the list's tab stop rests on,
+  // where either stands in the part. A read that puts entries before one of them - a new
+  // decision at the head of the review list, which is newest first - would push it past the
+  // pages drawn and take its row off the page, and with it the focus and a Change being typed
+  // there, which this view keeps no draft of. So the page that holds it is drawn in the render
+  // that read causes, and its row, and what the row holds, stays on the page (R6, decision 110).
+  const drawnPages = useMemo<Readonly<Record<PagedPart, number>>>(() => {
+    const reaching = (part: PagedPart): number =>
+      Math.max(pages[part] ?? 1, pageHolding(parts[part], focused), pageHolding(parts[part], stop));
+    return {
+      agents: reaching("agents"),
+      open_questions: reaching("open_questions"),
+      others: reaching("others"),
+      review: reaching("review"),
+      yours: reaching("yours"),
+    };
+  }, [focused, pages, parts, stop]);
+  // The entries each part draws: its first pages (`drawnPages`). The part itself holds every
+  // entry, so its count counts each one, a page not yet drawn included.
+  const shown = useMemo(
+    () => ({
+      agents: pagesOf(parts.agents, drawnPages.agents),
+      open_questions: pagesOf(parts.open_questions, drawnPages.open_questions),
+      others: pagesOf(parts.others, drawnPages.others),
+      review: pagesOf(parts.review, drawnPages.review),
+      yours: pagesOf(parts.yours, drawnPages.yours),
+    }),
+    [
+      drawnPages.agents,
+      drawnPages.open_questions,
+      drawnPages.others,
+      drawnPages.review,
+      drawnPages.yours,
+      parts,
+    ]
+  );
   // The rows in the order the page draws them, which is the order the outline's keys walk: the
-  // node the address names first, then the parts, then the foot's rows while it is unfolded.
-  const drawn = useMemo<readonly (DecisionsEntry | NamedEntry)[]>(
+  // node the address names first, then the parts, then the foot's rows while it is unfolded,
+  // each part's drawn pages alone.
+  const drawn = useMemo(
     () => [
       ...parts.named,
-      ...parts.open_questions,
-      ...parts.review,
-      ...parts.yours,
-      ...(footShown ? parts.agents : []),
+      ...HEADED.flatMap<DecisionsEntry | NamedEntry>((part) => shown[part]),
+      ...(footShown ? shown.agents : []),
     ],
-    [footShown, parts]
+    [footShown, parts.named, shown]
   );
-  // The rows as the outline's keys read them: the nth is the nth row drawn. Each sits at the
-  // list's one level, under the root the keys are given, which is the view (`keyOrder`), so Left
-  // on a row of the parts finds no row above it and says so, as on a top-level row of the
-  // outline. Left on a row of the foot is the body's own, taken before the keys read it
-  // (`footRowLeft`).
-  const rows = useMemo<DrawnRow[]>(() => {
+  // The rows as the outline's keys read them: the nth node row is the nth row drawn. Each sits
+  // at the list's one level, under the root the keys are given, which is the view (`keyOrder`),
+  // so Left on a row of the parts finds no row above it and says so, as on a top-level row of
+  // the outline. Left on a row of the foot is the body's own, taken before the keys read it
+  // (`footRowLeft`). After the last drawn row of a part that holds more entries than it draws
+  // stands the row of the control under it, as the outline's row that pages a node's children
+  // stands after them (`tree-fold.ts`' `PageRow`), here paging the view's own entries: `j` and
+  // Down on that last row press the control (`useTreeKeymap.ts`' `tree-next`), and `pageParts`
+  // says which part's control it is.
+  const { pageParts, rows } = useMemo(() => {
     const trail = [view.id];
-    return drawn.map((entry) => ({ kind: "node", level: 1, node: entry.node, trail }));
-  }, [drawn, view.id]);
+    const nodeRow = (entry: DecisionsEntry | NamedEntry): DrawnRow => ({
+      kind: "node",
+      level: 1,
+      node: entry.node,
+      trail,
+    });
+    const pageParts = new Map<PageRow, PagedPart>();
+    const rows = parts.named.map(nodeRow);
+    for (const part of footShown ? [...HEADED, "agents" as const] : HEADED) {
+      const entries: readonly (DecisionsEntry | NamedEntry)[] = shown[part];
+      rows.push(...entries.map(nodeRow));
+      const left = parts[part].length - entries.length;
+      if (left <= 0) continue;
+      const page = { kind: "page", left, level: 1, of: view, trail: [] } as const;
+      rows.push(page);
+      pageParts.set(page, part);
+    }
+    return { pageParts, rows };
+  }, [footShown, parts, shown, view]);
 
   // The decision the reader last pressed Keep on, or sent a Change on, on its row here. A press
   // of Keep or a send of Change arms it, and only these let it go: a move to another row, the
@@ -312,8 +428,10 @@ export function DecisionsFilterBody({
       setReport((held) => (held?.row === node.id ? held : undefined));
       // The panel's facts of the focused node are the outline's, but for how the node stands,
       // which they say as the row reads it, so the two never differ: an entry the row reads no
-      // standing for says none, whatever state its node holds.
-      const { state: _nodeState, ...facts } = focusedNodeOf(node);
+      // standing for says none, whatever state its node holds. The row's words already name who
+      // kept the decision or asked to change it, so the facts carry no `stateBy`, which the
+      // panel would name after them a second time.
+      const { state: _nodeState, stateBy: _stateBy, ...facts } = focusedNodeOf(node);
       const state = entryStanding(entry, agentText.author)?.words;
       setFocusedNode(state === undefined ? facts : { ...facts, state });
     },
@@ -370,14 +488,26 @@ export function DecisionsFilterBody({
     }
     return parted;
   }, [parts]);
-  // Takes the reader to one entry: the foot is unfolded where the entry is one of its own, and
-  // the row takes the focus once this render has drawn it.
+  // Draws one entry: the foot is unfolded where the entry is one of its own, and its part draws
+  // its pages up to the one that holds it.
+  const reach = useCallback(
+    (id: string) => {
+      const part = partOf.get(id);
+      if (part === undefined) return;
+      if (part === "agents") setFootShown(true);
+      const needed = pageHolding(parts[part], id);
+      setPages((held) => ((held[part] ?? 1) >= needed ? held : { ...held, [part]: needed }));
+    },
+    [partOf, parts]
+  );
+  // Takes the reader to one entry, drawn first (`reach`): its row takes the focus once this
+  // render has drawn it.
   const goTo = useCallback(
     (id: string) => {
-      if (partOf.get(id) === "agents") setFootShown(true);
+      reach(id);
       setWanted(id);
     },
-    [partOf]
+    [reach]
   );
   useEffect(() => {
     if (wanted === undefined) return;
@@ -415,7 +545,7 @@ export function DecisionsFilterBody({
   // An address that names an entry puts the focus on it, once per address (R19), and one that
   // names a node of another kind, a comment say, on that node's row, drawn first: the row is
   // not on the page until the reads that hold it have answered, so this looks again on every
-  // list the body draws, and unfolds the foot where the entry is one of its own. A write-up of an
+  // list the body draws, and draws the entry where it is not drawn yet (`reach`). A write-up of an
   // answered question - a `reading` node under it - is no entry (`writeUps`), so an address
   // naming one puts the focus on the row the list draws of the question it answers, and lands
   // nowhere where the list draws none. A reading the list draws before the asks read has
@@ -427,66 +557,73 @@ export function DecisionsFilterBody({
     const restated = writeUps?.get(reveal);
     const entry =
       restated === undefined
-        ? drawn.find((each) => each.node.id === reveal)
-        : drawn.find((each) => restated.has(each.node.id));
-    if (entry === undefined) {
-      if (restated === undefined && partOf.get(reveal) === "agents") setFootShown(true);
+        ? every.find((each) => each.node.id === reveal)
+        : every.find((each) => restated.has(each.node.id));
+    if (entry === undefined) return;
+    if (entry.node.type === "reading" && writeUps === undefined) return;
+    if (!drawn.includes(entry)) {
+      reach(entry.node.id);
       return;
     }
-    if (entry.node.type === "reading" && writeUps === undefined) return;
     const row = rowOf(body.current, entry.node.id);
     if (row === null) return;
     taken.current = reveal;
     row.focus();
-  }, [drawn, partOf, reveal, writeUps]);
+  }, [drawn, every, reach, reveal, writeUps]);
   // Whether the list draws the node the address names, which the page is told
   // (`onRevealDrawn`), so that where it does not the outline is drawn in the view's place and
   // lands on it as the outline does. The list draws every node the tree holds that an address
   // names - an ask or a decision as an entry, a node of another kind as the row before the
-  // parts, a decision the decisions read holds no row for in the foot - but for a write-up of an
+  // parts, a decision no decision node answers for in the foot - but for a write-up of an
   // answered question, which it draws only as the row of the question it answers, where the
   // address lands as above. Under words that question does not hold the list draws neither the
   // write-up nor its question, so the address would land nowhere here; the outline draws the
-  // write-up under the question it answers. It is said before the browser paints, so where the
-  // reads were held as the view was drawn, as on Back to its address, no list is painted in the
-  // outline's place.
+  // write-up under the question it answers. It is said only once the decisions view read has
+  // answered or stands refused (`viewSettled`): until then a question or a decision past the
+  // pages of Conversation's read held so far, which only that read holds, may yet come into the
+  // tree, and an address naming one would be said undrawn while the read that holds it is still
+  // out. Refused, the tree is Conversation's, and what the list draws of it is said. It is said
+  // before the browser paints, so where the reads were held as the view was drawn, as on Back to
+  // its address, no list is painted in the outline's place.
   useLayoutEffect(() => {
-    if (onRevealDrawn === undefined) return;
+    if (onRevealDrawn === undefined || !viewSettled) return;
     if (reveal === undefined) {
       onRevealDrawn(false);
       return;
     }
     const restated = writeUps?.get(reveal);
     if (restated !== undefined) {
-      onRevealDrawn(drawn.some((entry) => restated.has(entry.node.id)));
+      onRevealDrawn(every.some((entry) => restated.has(entry.node.id)));
       return;
     }
     onRevealDrawn(true);
-  }, [drawn, onRevealDrawn, reveal, writeUps]);
+  }, [every, onRevealDrawn, reveal, viewSettled, writeUps]);
 
   // Whether the focus on the foot's control is the one this body put there on its own, which
   // the reader has not yet pressed, typed on or left. The tree takes the focus only from a
   // script - the chord, the stage, this body - so a focus it passes to the control is the
   // body's own too.
   const footPlaced = useRef(false);
-  // Puts the focus on the foot's control, as the body's own, where the control is drawn and the
-  // list draws no tab-stop row, and only once the reads that say which questions and decisions
-  // there are hold their answers; says whether it could. Until those reads answer, or while one
-  // of them is refused, a row or a refused read's Retry may yet be drawn, and the stage gives
-  // either the focus the tree holds (`slots/stage.tsx`), which the control would hold from
-  // them. Every place that hands the control the focus on its own goes through here, so that
-  // rule is kept in one place. The tab stop is looked for in the whole list, since the foot's
-  // rows stand after the tree element and are its rows all the same (`aria-owns`).
+  // Puts the focus in the foot, as the body's own, where the tree element holds no tab-stop row,
+  // and only once the reads that say which questions and decisions there are hold their
+  // answers; says whether it could. The foot's rows stand after the tree element and are its
+  // rows all the same (`aria-owns`), so the stage, which looks for the tab-stop row inside the
+  // tree element (`slots/stage.tsx`), finds none of them: the focus goes to the list's tab stop
+  // where it is one of the foot's rows, else to the foot's control, where the list draws no row,
+  // the foot folded. Until those reads answer, or while one of them is refused, a row of the
+  // parts or a refused read's Retry may yet be drawn, and the stage gives either the focus the
+  // tree holds, which the foot would hold from them. Every place that hands the foot the focus
+  // on its own goes through here, so that rule is kept in one place.
   const placeFoot = useCallback((): boolean => {
-    const control = footControl.current;
-    if (!readsHeld || control === null) return false;
-    if (body.current?.querySelector(STOP_ROW) != null) return false;
-    control.focus();
-    footPlaced.current = document.activeElement === control;
+    if (!readsHeld || tree.current?.querySelector(STOP_ROW) != null) return false;
+    const to = body.current?.querySelector<HTMLElement>(STOP_ROW) ?? footControl.current;
+    if (to == null) return false;
+    to.focus();
+    footPlaced.current = to === footControl.current && document.activeElement === to;
     return true;
   }, [readsHeld]);
-  // The tree element takes the focus only to pass it on: to the list's tab stop, else to the
-  // foot's control where `placeFoot` lets it take it. `t d` focuses the tree where it finds no
+  // The tree element takes the focus only to pass it on: to its own tab-stop row, else into the
+  // foot where `placeFoot` lets it take it. `t d` focuses the tree where it finds no
   // tab stop in it (`useIssueKeymap.ts`), and a list that holds only the foot has none. Where
   // neither takes it the tree keeps the focus, which leaves it in the list: until the reads
   // hold, and on an issue the view draws nothing for. A focus that came up from a row is the
@@ -494,19 +631,19 @@ export function DecisionsFilterBody({
   const passFocus = useCallback(
     (event: FocusEvent<HTMLDivElement>) => {
       if (event.target !== event.currentTarget) return;
-      const stopRow = body.current?.querySelector<HTMLElement>(STOP_ROW);
+      const stopRow = event.currentTarget.querySelector<HTMLElement>(STOP_ROW);
       if (stopRow != null) stopRow.focus();
       else placeFoot();
     },
     [placeFoot]
   );
   // A page opened on a list that holds only the foot has no row for the stage to focus
-  // (`slots/stage.tsx`), so the foot's control takes the focus once, on the stage's own terms:
+  // (`slots/stage.tsx`), so the foot takes the focus once, on the stage's own terms:
   // no address names an entry and nothing holds the focus. Nothing holds it on the page itself,
   // or on an element that holds the list (`focusIsLoose`): the app focuses its main element at
   // each page change but the first (`app.tsx`), so a page opened by a link inside the app, from
   // another issue, the Inbox or a board, finds the focus there. It is placed by `placeFoot`, as
-  // a focus on the tree is passed, so `t d` and a page opened here reach the control by one
+  // a focus on the tree is passed, so `t d` and a page opened here reach the foot by one
   // rule, and it waits, as the tree does, for the reads that say which questions and decisions
   // there are. The reads may answer after the body mounts, so this looks again on every render
   // until it has acted. Where they are cached, as on Back to the page's address, it acts in the
@@ -534,19 +671,20 @@ export function DecisionsFilterBody({
   );
   // The tree is built read by read (`useIssueTree.ts`), so a list can hold only the foot until
   // the asks read answers, and then draw its questions. The focus the body put on the foot's
-  // control was for a list with no row: once one is drawn it goes to the tab stop, where the
-  // stage would have put it, unless the reader has taken the control as their own. Where the
-  // control leaves the page with the focus, its own leave places it (`footRef`).
+  // control was for a list with no row, the foot folded: once one is drawn it goes to the tab
+  // stop, where the stage would have put it, unless the reader has taken the control as their
+  // own. Where the control leaves the page with the focus, the focus stays on the page's body
+  // (`footRef`).
   useEffect(() => {
     if (!footPlaced.current || drawn.length === 0) return;
     footPlaced.current = false;
     if (document.activeElement === footControl.current) tree.current?.focus();
   });
   // The reads can answer while the tree holds the focus: `t d` gave it before they did, or the
-  // stage did as a refused read's line left. Where they answer with no row to draw and the foot
-  // drawn, the focus goes on to the foot's control (`placeFoot`), as the tree would have passed
-  // it had they answered first, and it is the body's own there, as on a page opened here. Any
-  // render can bring the answer, so this looks after every one.
+  // stage did as a refused read's line left. Where they answer with no row to draw in the tree
+  // element and the foot drawn, the focus goes on into the foot (`placeFoot`), as the tree would
+  // have passed it had they answered first, and it is the body's own there, as on a page opened
+  // here. Any render can bring the answer, so this looks after every one.
   useLayoutEffect(() => {
     if (document.activeElement === tree.current) placeFoot();
   });
@@ -577,32 +715,27 @@ export function DecisionsFilterBody({
     event.preventDefault();
     footControl.current?.focus();
   };
-  // The foot leaves the page where its last decision moves up to another part, as when a read
-  // ties it to a statement, and the browser moves the focus its control held to the page's
-  // body, where nothing says where it was. So the control says it while it still holds it:
-  // React runs this cleanup before it takes the control off the page. The focus goes to the
-  // list's tab stop, else to the tree, once the render that took the control away is on the
-  // page, unless something else took it in that render, as a failed read's line does for its
-  // own leave (`slots/failed-read-line.tsx`). A focus the body put on the control goes with it.
-  // One function for every render, so React runs the cleanup only when the control leaves.
+  // The foot leaves the page where its last decision leaves it: a read ties the decision to a
+  // statement, which moves it up to the review list, or another session's write takes it away.
+  // A press of the foot's control folds or unfolds the foot and never takes the control off the
+  // page, so where the control leaves holding the focus, nothing the reader did took it away.
+  // Such a leave moves no focus: the browser leaves it on the page's body, where the page's keys
+  // work, and nothing scrolls and no element takes it, since the reader asked to go nowhere
+  // (decision 351, which decision 457 applies to this control). A focus the body put on the
+  // control goes with it. One function for every render, so React runs the cleanup only when the
+  // control leaves.
   const footRef = useCallback((control: HTMLButtonElement | null) => {
     footControl.current = control;
     if (control === null) return undefined;
     return () => {
       footControl.current = null;
       footPlaced.current = false;
-      if (document.activeElement !== control) return;
-      queueMicrotask(() => {
-        if (!focusOnDocument()) return;
-        (body.current?.querySelector<HTMLElement>(STOP_ROW) ?? tree.current)?.focus();
-      });
     };
   }, []);
-
   // An entry the reader is on can move to another part of the list, and its row is drawn
   // again there, which drops the focus to the page: a decision they kept or asked to change
   // leaves the review list for their own decisions, a question another person answered goes
-  // under Your decisions, a decision of the foot that a read ties to a statement comes up to
+  // under Decided by others, a decision of the foot that a read ties to a statement comes up to
   // the review list. A reader who kept or asked to change a decision on its row here is working
   // down the review list, so the focus goes to the decision that stood after it, else the one
   // before it (the prototype's `keepDecision`), else to the decision where it now stands. That
@@ -619,7 +752,7 @@ export function DecisionsFilterBody({
   // the words filter took it out of the view - takes its row and the focus away: the focus goes
   // to the entry that stood after it in its part, else the one before it, else to the tree,
   // which hands it to the list's tab stop - the view's first row, since the entry the stop
-  // rested on is drawn nowhere - else to the foot's control, else keeps it, so it is never left
+  // rested on is drawn nowhere - else into the foot, else keeps it, so it is never left
   // on the page (decision 110). A reader who has moved somewhere else on the page keeps their
   // place.
   const stood = useRef(partOf);
@@ -654,8 +787,8 @@ export function DecisionsFilterBody({
     }
     // No row named here takes it: the focus is off every row, so what a row's focus opened goes,
     // as when the foot's control takes it, and the tree passes it on (`passFocus`) to the tab
-    // stop, which falls back to the view's first row, else, once the reads hold, to the foot's
-    // control, else keeps it.
+    // stop, which falls back to the view's first row, else, once the reads hold, into the foot,
+    // else keeps it.
     footFocused();
     tree.current?.focus();
   }, [focused, footFocused, goTo, partOf, parts, reader]);
@@ -687,8 +820,8 @@ export function DecisionsFilterBody({
     for (const node of nodesInOrder(root)) add(node);
     return { ...view, children: leaves };
   }, [parts, root, view]);
-  // Where `q` and `w` take the reader: to an entry of the list as any move does, the foot
-  // unfolded for one of its own, and to the conversation at a node the list draws no row for,
+  // Where `q` and `w` take the reader: to an entry of the list as any move does, drawn first
+  // where it is not (`reach`), and to the conversation at a node the list draws no row for,
   // as an entry's link to its node does, since there is no row here to put the focus on.
   const goToOrOpen = useCallback(
     (id: string) => {
@@ -703,6 +836,41 @@ export function DecisionsFilterBody({
     [goTo, keyOrder, navigate, partOf]
   );
 
+  // A press of the control under a part, by the pointer or by `j` or Down on the part's last
+  // drawn row, draws the part's next page, after the pages it draws (`drawnPages`), and puts the
+  // focus on the first entry that page holds once its row is drawn, as the control after a
+  // view's last row does (`NextViewPage`, decision 459): the row places itself on screen as it
+  // takes the focus (`moveToRow`), and one already on screen moves nothing. The reader's next
+  // act before then ends the landing (`abortOnReaderAct`), as the next press does. Nothing but a
+  // press lands: a read that draws or takes away entries moves no focus (decision 351).
+  const landing = useRef<{ readonly acts: AbortController; readonly id: string } | undefined>(
+    undefined
+  );
+  useEffect(() => () => landing.current?.acts.abort(), []);
+  const showNext = (part: PagedPart): void => {
+    const entries: readonly DecisionsEntry[] = parts[part];
+    const first = entries[shown[part].length];
+    if (first === undefined) return;
+    landing.current?.acts.abort();
+    landing.current = { acts: abortOnReaderAct(), id: first.node.id };
+    setPages((held) => ({ ...held, [part]: drawnPages[part] + 1 }));
+  };
+  // The press's page is drawn in the render it causes, and its first row is looked for after
+  // every commit until it is there or the landing has ended.
+  useLayoutEffect(() => {
+    const to = landing.current;
+    if (to === undefined) return;
+    if (to.acts.signal.aborted) {
+      landing.current = undefined;
+      return;
+    }
+    const row = rowOf(body.current, to.id);
+    if (row === null) return;
+    landing.current = undefined;
+    to.acts.abort();
+    moveToRow(row);
+  });
+
   useTreeKeymap({
     container: body,
     // The view edits no row: Enter opens the node in the conversation (`onEdit`), so no row's
@@ -710,12 +878,10 @@ export function DecisionsFilterBody({
     editing: false,
     holdsEscape,
     onCycle: () => {
-      // Folding the foot takes its rows away, and a focus on one of them would drop to the
-      // page: it goes to the foot's control, which stays where the rows were.
-      if (everything && focused !== undefined && partOf.get(focused) === "agents")
-        footControl.current?.focus({ preventScroll: true });
+      // The list opens with the foot unfolded, so neither step folds it, and the cycle unfolds
+      // it where the reader folded it.
       setEverything(!everything);
-      setFootShown(!everything);
+      setFootShown(true);
     },
     // Enter on a row goes to its node in the conversation, where the node is edited: this
     // filter draws each entry and edits none (the prototype's `openDecItem`).
@@ -725,6 +891,11 @@ export function DecisionsFilterBody({
     },
     onEditEnd: NOTHING,
     onFold: NOTHING,
+    // `j` and Down on a part's last drawn row press the control under it (`rows`).
+    onPage: (row) => {
+      const part = pageParts.get(row);
+      if (part !== undefined) showNext(part);
+    },
     // `o` names the row by its key (`rowKeyOf`), the view's id before the node's, and the list
     // pins a row by its node's id, as the row's own control does.
     onPin: (rowKey) => {
@@ -778,6 +949,14 @@ export function DecisionsFilterBody({
       />
     );
   };
+  // The control under `part` while it draws fewer entries than it holds, at the level of the
+  // part's rows.
+  const nextFor = (part: PagedPart): ReactNode => {
+    const left = parts[part].length - shown[part].length;
+    return left <= 0 ? null : (
+      <NextEntries left={left} level={part === "agents" ? 2 : 1} onNext={() => showNext(part)} />
+    );
+  };
   const foot = `${headings}-agents`;
   const footRows = `${headings}-agents-rows`;
   // The lines the body says over the list: each read that says which entries there are and
@@ -815,10 +994,12 @@ export function DecisionsFilterBody({
           lines stand over the tree and never in it: a tree holds rows and groups of rows alone.
           A refused read's line stands in place of the entries the read would give: the tree is
           built from the same reads (`useIssueTree.ts`), so a read that holds nothing gives the
-          list no entry of its own, and no part is drawn for it. The names place no entry, so
-          their line takes none away. Each line's alert is keyed by its read's count of failures,
-          so a run that ends with no new refusal, cancelled or paused offline, says nothing
-          again. */}
+          list no entry of its own, and no part is drawn for it - but for the decisions view's
+          answer a Keep or a Change dropped, which the page keeps drawing until the view's next
+          answer (`useDecisionsView`), so its rows stand under the line. The names place no
+          entry, so their line takes none away. Each line's alert is keyed by its read's count of
+          failures, so a run that ends with no new refusal, cancelled or paused offline, says
+          nothing again. */}
       {failedLines.map((line) => (
         <FailedReadLine
           failure={line.failure}
@@ -828,13 +1009,14 @@ export function DecisionsFilterBody({
           retrying={line.retrying}
         />
       ))}
-      {/* The foot's rows stand after its control, outside this element, and are this tree's
-          all the same (`aria-owns`), so the page holds one tree. The element itself takes the
-          focus only to pass it on (`passFocus`), and only from a script: a press on it outside
-          a row, on a part's heading, its count or the gap between two rows, would otherwise
-          focus it, as the nearest element that takes the focus, and the focus would go on to
-          the tab stop, scroll the page to it and open its body. The outline's tree takes no
-          focus from a press either (`IssueTree.tsx`). */}
+      {/* The foot's rows, and the control under them that draws its next entries, stand after
+          the foot's control, outside this element, and are this tree's all the same
+          (`aria-owns`), so the page holds one tree. The element itself takes the focus only to
+          pass it on (`passFocus`), and only from a script: a press on it outside a row, on a
+          part's heading, its count or the gap between two rows, would otherwise focus it, as the
+          nearest element that takes the focus, and the focus would go on to the tab stop, scroll
+          the page to it and open its body. The outline's tree takes no focus from a press either
+          (`IssueTree.tsx`). */}
       <div
         aria-label={CONTROL_LABELS.tree}
         aria-owns={footShown && parts.agents.length > 0 ? footRows : undefined}
@@ -851,11 +1033,12 @@ export function DecisionsFilterBody({
       >
         {/* The node the address names where it is neither a question nor a decision stands
             first, at the tree's first level, under no heading and in no part: the address
-            outranks the view, and the parts stay four (R1, R6). */}
+            outranks the view, and the parts stay all the list says (R1, R6). */}
         {parts.named.map((entry) => rowFor(entry, "named"))}
         {HEADED.map((part) => {
           const entries: readonly DecisionsEntry[] = parts[part];
           if (entries.length === 0) return null;
+          const pageDrawn: readonly DecisionsEntry[] = shown[part];
           return (
             // biome-ignore lint/a11y/useSemanticElements: a tree owns only its rows and groups of rows; a fieldset is neither.
             <div
@@ -888,7 +1071,8 @@ export function DecisionsFilterBody({
                   {part === "review" ? reviewWaiting(parts).length : entries.length}
                 </span>
               </div>
-              {entries.map((entry) => rowFor(entry, part))}
+              {pageDrawn.map((entry) => rowFor(entry, part))}
+              {nextFor(part)}
             </div>
           );
         })}
@@ -896,9 +1080,9 @@ export function DecisionsFilterBody({
       {parts.agents.length === 0 ? null : (
         <div className="flex min-w-0 flex-col" data-decisions-part="agents">
           {/* The foot (the prototype's `.minor-t`): one control that says how many decisions
-              it holds and whether they are drawn, and unfolds them. It is a plain button in
-              the tab order, as the prototype's is, so Tab reaches it where the foot is all the
-              list holds; the key that cycles how much is drawn unfolds it too. A press of it
+              it holds and whether they are drawn, and folds and unfolds them. It is a plain
+              button in the tab order, as the prototype's is, so Tab reaches it from a row of the
+              parts; the key that cycles how much is drawn unfolds it too. A press of it
               moves no focus until the click lands: it is no row, so the list does not hold its
               focus until the press is over (`press`), and the focus coming here closes the
               open body of the row that held it, so the control would move up from under the
@@ -939,7 +1123,8 @@ export function DecisionsFilterBody({
               onKeyDown={footRowLeft}
               role="group"
             >
-              {parts.agents.map((entry) => rowFor(entry, "agents"))}
+              {shown.agents.map((entry) => rowFor(entry, "agents"))}
+              {nextFor("agents")}
             </div>
           ) : null}
         </div>
@@ -950,11 +1135,7 @@ export function DecisionsFilterBody({
           (`decisions-entries.ts`), a list with nothing in it may be one whose entries have not
           arrived, or whose read was refused and says so in its own line, so no line says the
           issue holds nothing, as the outline draws none then (`slots/body.tsx`). */}
-      {readsHeld &&
-      parts.open_questions.length === 0 &&
-      parts.review.length === 0 &&
-      parts.yours.length === 0 &&
-      parts.agents.length === 0 ? (
+      {readsHeld && [...HEADED, "agents" as const].every((part) => parts[part].length === 0) ? (
         <p className={`py-1 text-sm ${textMutedOnCanvas}`} {...pageChrome}>
           {emptyLine}
         </p>
@@ -983,6 +1164,83 @@ function FoldMark({ open }: { open: boolean }): ReactNode {
   );
 }
 
+/**
+ * The control under a part whose entries are not all drawn (R2, root R40, decision 424): it
+ * says how many are left, the part's entries less those drawn, and draws the next of them, at
+ * most `PAGE`, when pressed. It is drawn as the outline draws its page control (`TreeRows.tsx`'s
+ * `PageControl`, decision 366): a row of the tree at `level`, the level of the part's rows, out
+ * of the tab order as every control inside the tree is, since the tree is one tab stop. The keys
+ * press it from the row beside it, `j` and Down on the part's last drawn row (`useTreeKeymap.ts`'
+ * `tree-next`), and a press of the pointer takes no focus (`preventDefault` on `mousedown`), so
+ * it never holds the focus: the press puts it on the first entry it drew (`showNext`).
+ */
+function NextEntries({
+  left,
+  level,
+  onNext,
+}: {
+  /** How many of the part's entries are not drawn yet. */
+  left: number;
+  /** The level of the part's rows. */
+  level: number;
+  onNext: () => void;
+}): ReactNode {
+  return (
+    <div
+      aria-level={level}
+      className="mt-1 mb-0.5 flex min-w-0"
+      data-decisions-next=""
+      role="treeitem"
+      tabIndex={-1}
+    >
+      <button
+        className={`dispatch-inline-link rounded py-1 text-left text-sm leading-5 font-medium hover:text-page-ink ${pageMutedText} ${focusVisibleRing}`}
+        onClick={onNext}
+        onMouseDown={(event) => event.preventDefault()}
+        tabIndex={-1}
+        type="button"
+        {...pageChrome}
+      >
+        {DECISIONS_WORDS.page_next} <span {...authorText}>{Math.min(PAGE, left)}</span> (
+        <span data-decisions-left="" {...authorText}>
+          {left}
+        </span>{" "}
+        {DECISIONS_WORDS.page_left})
+      </button>
+    </div>
+  );
+}
+
+/** The first `pages` pages of `entries`, `PAGE` entries each. */
+function pagesOf<Entry>(entries: readonly Entry[], pages: number): readonly Entry[] {
+  return entries.slice(0, PAGE * pages);
+}
+
+/** Names statement `id`, at address `reference`, in `names` by the line the names store holds
+ *  for it (`lines`), as a chip names it (`chipName`), with that whole line as its title, where
+ *  the store holds a line for it. */
+function nameStatement(
+  names: Map<string, StatementName>,
+  lines: ReadonlyMap<string, string>,
+  id: string,
+  reference: string
+): void {
+  const line = lines.get(reference);
+  if (line !== undefined) {
+    names.set(id, { name: chipName(parseNodeReference(reference), line), title: line });
+  }
+}
+
+/** The page of `entries` that holds the entry of node `id`, counted from 1, or 0 where none
+ *  does. */
+function pageHolding(
+  entries: readonly (DecisionsEntry | NamedEntry)[],
+  id: string | undefined
+): number {
+  const at = id === undefined ? -1 : entries.findIndex((entry) => entry.node.id === id);
+  return at === -1 ? 0 : Math.floor(at / PAGE) + 1;
+}
+
 /** The row of node `id` inside `container`, or null where it draws none. */
 function rowOf(container: HTMLElement | null, id: string): HTMLElement | null {
   return (
@@ -1006,17 +1264,18 @@ function neighbourOf(
   return stood.slice(at + 1).find(stays) ?? stood.slice(0, at).reverse().find(stays);
 }
 
-/** The two reads the seam says may be refused, by the names it gives them. */
+/** The kinds of read the seam says may be refused, by the names it gives them: the decisions'
+ *  reads, the tree read and the decisions view, and the asks. */
 type DecisionsRead = ReturnType<typeof useDecisionsEntries>["unreadable"][number];
 
 /** What the body says of each read that stands refused, in the page's words: the decisions for
- *  the decisions read, and the questions for the asks. A read the seam adds fails this until the
- *  body has a line for it. */
+ *  the decisions' reads, and the questions for the asks. A read the seam adds fails this until
+ *  the body has a line for it. */
 const REFUSED_READ_WORDS: Readonly<Record<DecisionsRead, string>> = {
   asks: STATE_LINES.asks_unreadable,
-  "issue-decisions": STATE_LINES.issue_decisions_unreadable,
+  decisions: STATE_LINES.issue_decisions_unreadable,
 };
 
-/** The row that holds the list's one tab stop, which `passFocus` and the foot's leave look for
- *  in the whole list: the foot's rows stand outside the tree element. */
+/** The row that holds the list's one tab stop, which `placeFoot` looks for in the whole list,
+ *  and `passFocus` in the tree element: the foot's rows stand outside it. */
 const STOP_ROW = '[data-node-row][tabindex="0"]';

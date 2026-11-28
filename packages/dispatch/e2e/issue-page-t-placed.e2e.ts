@@ -1,8 +1,8 @@
-/** the row loads the Decisions view of an issue whose decisions' statements stand past the first
- *  page of Conversation's read, holds that page, and reads every decision row's box before and
- *  after it lands */
+/** the row loads the Decisions view of an issue whose decisions and one of their statements stand
+ *  past the first page of Conversation's read, and reads every decision row's box while that page
+ *  is not read */
 
-import type { Page, Route } from "@playwright/test";
+import type { Page } from "@playwright/test";
 
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import {
@@ -23,12 +23,13 @@ import { owedUnless, TREE_PATH, treeReadGate } from "./issue-page-t-tree";
 import { expect, test } from "./test";
 
 /**
- * Decisions 579 and 583 (2), amended: a decision whose statement stands on a page of
- * Conversation's read the page has not read yet is placed by its own tie against the coverage
- * read's statements, so the Decisions view draws it in the review list from its first drawing,
- * and its row is drawn at its final height from then: one "informs" line for each statement it is
- * tied to, counted from the decisions read's ties, which holds the place of the statement's words
- * until they come, so no row moves when that page lands.
+ * Decisions 579 and 583 (2), amended, on part U's path ("586, amended again"): the Decisions view
+ * draws each decision from the decisions view read, which the server sends whole, and names a
+ * statement the tree does not hold from its coverage row, so a decision whose statement stands on
+ * a page of Conversation's read the page has not read is drawn in the review list from its first
+ * drawing, unmarked, at its final height: one "informs" line for each statement it is tied to,
+ * each named. No page has to land for that, so the page asks for no next page of Conversation for
+ * the decisions, and no row moves while that page is not read.
  *
  * The seed: a spec of the statement `r1`, then `FILLERS` long statements, then the statement
  * `r2`; two agent's decisions waiting for the reader's review, one tied to `r2`, and one tied to
@@ -188,8 +189,8 @@ function conversationCursor(url: URL): boolean {
 // c-placed-rows. `@phone` because the claim is a box's height, which the phone's width reflows:
 // the row reads it at 1440 px and at 390 px.
 // SLOW(>=2s): an issue of a long spec and 60 long comments seeded and its block index waited out,
-// then the Decisions view loaded at two widths with Conversation's next page held back at each.
-test("a decision placed before its statement's page lands keeps its row's height, and no row below it moves, when that page lands @phone", async ({
+// then the Decisions view loaded at two widths, each read over a quiet second.
+test("a decision placed by its statement's coverage row is drawn at its final height, and no row moves, while the statement's page is not read @phone", async ({
   browser,
 }) => {
   test.setTimeout(2 * ROW_MS);
@@ -198,11 +199,12 @@ test("a decision placed before its statement's page lands keeps its row's height
     for (const size of [DESKTOP, PHONE]) {
       const where = `at ${size.width} px`;
       await page.setViewportSize(size);
-      // Conversation's next page, held until the row has read every box.
-      let held: Route | undefined;
-      await page.route(conversationCursor, async (route) => {
-        held = route;
-      });
+      // Each next page of Conversation the page asks for while the Decisions view is drawn.
+      const asked: string[] = [];
+      const watchCursor = (request: { url(): string }) => {
+        if (conversationCursor(new URL(request.url()))) asked.push(request.url());
+      };
+      page.on("request", watchCursor);
       // The page's own first read of Conversation, whose shape the row checks.
       const first = conversationFirstPage(page);
       await gotoIssue(page, presetPath(seeded.key, "decisions"));
@@ -226,30 +228,31 @@ test("a decision placed before its statement's page lands keeps its row's height
         '[data-decisions-body] [data-decisions-part="review"] [data-node-row][data-node-type="decision"]'
       );
       await expect(review, `${where}, the review list does not draw both decisions`).toHaveCount(2);
-      await expect
-        .poll(() => held !== undefined, { message: `${where}, the next page was never asked for` })
-        .toBe(true);
-      // Every read but the held page has answered, the names among them, and the view is still.
-      await pause(1_000);
-      const before = await rowBoxes(page);
-      await held?.continue();
-      await page.unroute(conversationCursor);
-      // The page has landed once no decision is marked: no page is left to read.
-      await expect(
-        page.locator("[data-decisions-body] [data-change-unread]"),
-        `${where}, a decision is still marked after the next page landed`
-      ).toHaveCount(0);
+      // Each line is named from its statement's own words, at the first drawing: r1 by its node
+      // on Conversation's first page, r2 by its coverage row ("586 (F), corrected").
       await expect(
         page.locator("[data-decisions-body] [data-decision-statement] a"),
-        `${where}, the informs lines do not name each statement once their page landed`
+        `${where}, the informs lines are not each named from their statement's own words`
       ).toHaveCount(3);
-      await pause(500);
+      await expect(
+        page.locator("[data-decisions-body] [data-change-unread]"),
+        `${where}, a decision is marked, though the decisions view read holds it whole`
+      ).toHaveCount(0);
+      // Every read has answered, the names among them, and the view is still: a quiet second.
+      await pause(1_000);
+      const before = await rowBoxes(page);
+      await pause(1_000);
       const after = await rowBoxes(page);
+      page.off("request", watchCursor);
+      expect(
+        asked,
+        `${where}, the page asked for a next page of Conversation for the Decisions view`
+      ).toEqual([]);
       expect(
         after,
-        `${where}, a row's height, its informs lines or the top of a row below changed as the next page landed`
+        `${where}, a row's height, its informs lines or the top of a row below changed over a quiet second`
       ).toEqual(before);
-      // One informs line for each statement a decision is tied to, from before the page landed.
+      // One informs line for each statement a decision is tied to, from the first drawing.
       expect(
         Object.fromEntries(before.map(({ id, lines }) => [id.slice(id.indexOf("#b-") + 3), lines])),
         `${where}, a decision does not draw one informs line for each statement it is tied to`

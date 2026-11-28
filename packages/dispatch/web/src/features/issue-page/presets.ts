@@ -52,9 +52,10 @@ import type { TreeAnswer, TreeAnswerNode } from "./tree-read/tree-read";
  * Spec, Verification and Plan are each drawn from the issue's view read of that filter once the
  * page holds it (`TreeNode.views` on the issue's node, `heldFilterView`): the view's query names
  * the nodes, and each is drawn as the tree's node of that id, so a row reads as it does in the
- * outline. Until the view answers, and for Decisions until its view read stands in the decisions
- * read's place, a filter is read off the tree `issue-tree.ts` builds: the kinds are R2's, and the
- * context and the parent's line are this module's.
+ * outline. Until the view answers, a filter is read off the tree `issue-tree.ts` builds: the
+ * kinds are R2's, and the context and the parent's line are this module's. Decisions is always
+ * read so, off the tree it is given, which its slot gives as the tree its own view read builds
+ * once the page holds that read (`decisions-filter/decisions-entries.ts`' `useDecisionsTree`).
  *
  * A node the address names outranks the filter: an address that names one node and then draws a
  * page without it would not have resolved at all (R20), so `named` is kept whatever the filter
@@ -209,8 +210,15 @@ export function presetView(
   if (!isFilter(preset)) {
     return conversationView(root, wanted, named, memo, preset === "conversation");
   }
-  // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members.
-  if (preset === "decisions") return filterView(root, preset, wanted, named);
+  // Decisions filters the whole tree: `decisions-entries.ts` reads each decision's members. Where
+  // the tree carries the decisions view read's answer (`TreeNode.views`), as the tree that read
+  // builds does (`decisions-filter/decisions-entries.ts`' `useDecisionsTree`), an ask or a
+  // decision is a row only where that answer holds it as a node of its own, not as context: the
+  // tree also holds each node of Conversation's pages held so far that the read's own page lacks
+  // (`useIssueTree.ts`' `viewWithContext`), and no row, count or part of the view reads one.
+  if (preset === "decisions") {
+    return filterView(root, preset, wanted, named, ownNodes(root.views?.decisions, root.id));
+  }
   const held = root.views?.[preset];
   return held === undefined
     ? filterView(root, preset, wanted, named)
@@ -411,12 +419,16 @@ function liftPast(node: TreeNode, parts: readonly Lifted[]): TreeNode[] {
   );
 }
 
-/** One filter over the tree: its kinds as rows, each other parent a line on its child's row. */
+/** One filter over the tree: its kinds as rows, each other parent a line on its child's row.
+ *  Where `ownIds` is given, a node the tree read drew (`TreeNode.readId`) is a row of the
+ *  filter's kinds only where its read id is among them, the nodes the filter's view read answers
+ *  as its own (`ownNodes`); the node the address names is drawn all the same. */
 function filterView(
   root: TreeNode,
   filter: Filter,
   wanted: string,
-  named: ReadonlySet<string>
+  named: ReadonlySet<string>,
+  ownIds?: ReadonlySet<string>
 ): PresetView {
   const rows = ROW_KINDS[filter];
   const contextKinds = CONTEXT_KINDS[filter];
@@ -430,7 +442,11 @@ function filterView(
     // nowhere.
     const kind = kindOf(node);
     const own =
-      named.has(node.id) || (kind !== undefined && rows.includes(kind) && holds(node, wanted));
+      named.has(node.id) ||
+      (kind !== undefined &&
+        rows.includes(kind) &&
+        (ownIds === undefined || node.readId === undefined || ownIds.has(node.readId)) &&
+        holds(node, wanted));
     const placing =
       !own &&
       kind !== undefined &&
@@ -776,8 +792,21 @@ function heldFilterView(
  *  context: a node its query took, and under Plan a node of an issue under `key`, the issue the
  *  page is of, which the Plan read answers beside the issue's own as context, each marked with
  *  its issue. The row kinds (`ROW_KINDS`) still choose which of them are rows. */
-function viewRow(node: TreeAnswerNode, filter: TreeFilter, key: string): boolean {
+function viewRow(node: TreeAnswerNode, filter: Filter, key: string): boolean {
   return node.role === "query" || (filter === "plan" && isForeign(node, key));
+}
+
+/** The read ids of the nodes the decisions view read's `answer` holds as its own rather than as
+ *  context, by the one rule each view's own nodes are read by (`viewRow`), for the issue `key`
+ *  the page is of: the nodes a filter drawn off the tree that answer builds draws as rows
+ *  (`filterView`). That tree also holds each node of the outline's read the answer lacks
+ *  (`useIssueTree.ts`' `viewWithContext`), which is no row of the filter. Undefined where no
+ *  answer is held: the tree is the outline's own, and each node of it is one of its own. */
+function ownNodes(answer: TreeAnswer | undefined, key: string): ReadonlySet<string> | undefined {
+  if (answer === undefined) return undefined;
+  return new Set(
+    (answer.nodes ?? []).flatMap((node) => (viewRow(node, "decisions", key) ? [node.id] : []))
+  );
 }
 
 /**
@@ -878,8 +907,16 @@ export interface PresetSignal {
   /** How many nodes of the filter's main kind it draws (R2). */
   readonly count: number;
   /** The part of the count that asks something of the reader, with the word it is drawn with:
-   *  the checks that failed, the decisions waiting for the reader's review. */
-  readonly flag?: { readonly count: number; readonly word: keyof typeof FILTER_SIGNAL_WORDS };
+   *  the checks that failed, the decisions waiting for the reader's review. The decisions' flag
+   *  is a count over the read Decisions' count is read from: the decisions known to wait, with
+   *  "+" exactly where that count carries it (`more`, R15) and where a decision of the review list
+   *  waits on no reader for the mark of a Change on a page not read yet (decision 580, "0+" where
+   *  every one does); the failing checks' flag carries none. */
+  readonly flag?: {
+    readonly count: number;
+    readonly more?: true;
+    readonly word: keyof typeof FILTER_SIGNAL_WORDS;
+  };
   /** Whether the read the count is read from holds nodes no page read yet holds, so the count is
    *  of the nodes loaded and carries "+" (R15, `TreeNode.moreToRead`). */
   readonly more?: true;
@@ -901,10 +938,20 @@ function countOf(root: TreeNode, type: NodeType, counts: (node: TreeNode) => boo
 
 /** The signal each filter's control draws under `query`, which its count follows. A count read
  *  from a read that names a next page carries "+" (`PresetSignal.more`): the held view's own read
- *  for a filter whose view is held, and the tree's for every other. */
+ *  for a filter whose view is held, and the tree's for every other. Decisions is counted off the
+ *  tree its view is drawn over (`decisionsRoot`, `decisions-filter/decisions-entries.ts`'
+ *  `useDecisionsTree`): the one its own view read builds once the page holds that read, which
+ *  holds every question and decision whatever page of the tree read the page holds, so its count
+ *  and its flag are that read's, with "+" only where it names a next page itself; and `root`
+ *  until then, with "+" while the tree read names one (R15): either way the "+" of the tree it is
+ *  counted off (`TreeNode.moreToRead`), which the read it was built from sets by its cursor. Its
+ *  flag of what waits for review is a count over the same read, and carries the same "+", and
+ *  "+" too while a decision of the review list carries the mark of a Change on a page not read
+ *  yet (`TreeNode.waitingUnread`, decision 580). */
 export function filterSignals(
   root: TreeNode,
-  query: string
+  query: string,
+  decisionsRoot: TreeNode = root
 ): Readonly<Record<Filter, PresetSignal>> {
   const view = (filter: Filter) => presetView(root, filter, query);
   const more = (answer: TreeAnswer | undefined): Pick<PresetSignal, "more"> =>
@@ -931,7 +978,7 @@ export function filterSignals(
     ).size;
   };
   const verification = view("verification");
-  const decisions = view("decisions");
+  const decisions = presetView(decisionsRoot, "decisions", query);
   // A check's state is the page's one reading of it, as the server reads its results
   // (`tree-drafts.ts`'s `checkStanding`), so this flag and the Verification body count the same
   // checks as failed.
@@ -940,14 +987,23 @@ export function filterSignals(
   // to a statement of this issue, which is what the tree marks `waiting` (`decision-review.ts`'s
   // `inReviewList`), so the signal, the list and the header's count cannot disagree.
   const toReview = countOf(decisions.root, "decision", (node) => node.waiting);
+  // The decisions of that list that would wait but for the mark of a Change on a page not read
+  // yet (`TreeNode.waitingUnread`): the flag's number, the decisions known to wait, counts none of
+  // them, and the flag draws "+" while any stands, as while the read names a next page, and "0+"
+  // where every decision of the list carries the mark (decision 580).
+  const marked = countOf(decisions.root, "decision", (node) => node.waitingUnread === true);
   // Each ask and each decision is one entry of the count: a person's decision is the answered
-  // ask itself (`tree-drafts.ts`'s `addDecisions`), so no decision node restates an answer, and
-  // a decision under an answered question is an agent's own that settles it.
+  // ask itself (`decision-nodes.ts`' `decisionNodes`), so no decision node restates an answer,
+  // and a decision under an answered question is an agent's own that settles it.
+  const decisionsMore = decisionsRoot.moreToRead === true ? { more: true as const } : {};
+  const flagMore = marked > 0 ? { more: true as const } : decisionsMore;
   return {
     decisions: {
       count: decisions.matches,
-      ...(toReview === 0 ? {} : { flag: { count: toReview, word: "to_review" } }),
-      ...more(undefined),
+      ...(toReview === 0 && marked === 0
+        ? {}
+        : { flag: { count: toReview, ...flagMore, word: "to_review" } }),
+      ...decisionsMore,
     },
     plan: { count: count("plan"), ...more(root.views?.plan), unit: "steps" },
     spec: { count: count("spec"), ...more(root.views?.spec) },

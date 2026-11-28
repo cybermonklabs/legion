@@ -1,10 +1,11 @@
 import { afterEach, beforeEach, expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, type RenderResult, render, waitFor } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import type { NavigateFunction } from "react-router-dom";
 
-import { api } from "../../../api/client";
+import { ApiError, api } from "../../../api/client";
 import {
   issueAskThreadsQuery,
   issueCoverageQuery,
@@ -15,21 +16,24 @@ import {
 } from "../../../api/queries";
 import type {
   Comment,
+  DecisionKeep,
   IssueAskRow,
   IssueCoverage,
-  IssueDecisions,
   MessageRead,
 } from "../../../api/types";
 import { type EventFreshness, useIsHuman } from "../../../hooks/useIsHuman";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { answeredAsk } from "../../inbox/ask-card-fixture";
+import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { buildDispatchReference } from "../../refs/routes";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
+import { plainWrite, writesOf } from "../../writes/write-store";
+import { rowActionSelector } from "../DecisionActions";
 import { presetPath } from "../issue-address";
 import { framesByHand, readComment, TWO_THREADS, waitInAct } from "../outline-fixtures";
 import { type ThreadMark, ThreadReadMark } from "../outline-thread-read";
-import { EMPTY_STATE_LINES, STATE_LINES } from "../page-words";
+import { PROPERTY_LABELS } from "../page-structure";
+import { EMPTY_STATE_LINES, FILTER_SIGNAL_WORDS, STATE_LINES } from "../page-words";
 import { FAILED_READ_RETRY } from "../slots/failed-read-line";
 import {
   answerTree,
@@ -46,18 +50,21 @@ import {
   rowTakesFocus,
   stubReads,
   treeOf,
+  watchDrawn,
 } from "../slots/stage-fixtures";
 import { blockNodeId } from "../tree-drafts";
-import { commentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
-import { outlineQuery, type TreeAnswer, type TreeAnswerNode } from "../tree-read/tree-read";
+import { commentNode, pagedAnswer, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import {
+  outlineQuery,
+  type TreeAnswer,
+  type TreeAnswerNode,
+  viewKey,
+} from "../tree-read/tree-read";
 import {
   decision,
   decisionNode,
-  decisionsRead,
-  entryOf,
   issueDetails,
   KEY,
-  personDecision,
   READER,
   SPEC_DOCUMENT,
   shaped,
@@ -89,10 +96,12 @@ test("no words draw the empty issue's line, and words that match nothing the no-
   expect(await emptyLineOf(drawStage(""))).toBe(EMPTY_STATE_LINES.decisions);
   cleanup();
   expect(await emptyLineOf(drawStage("?q=zzz"))).toBe(EMPTY_STATE_LINES.no_match);
+  cleanup();
 });
 
 test("words of spaces alone draw the empty issue's line, as no words do", async () => {
   expect(await emptyLineOf(drawStage("?q=%20%20"))).toBe(EMPTY_STATE_LINES.decisions);
+  cleanup();
 });
 
 // An address beside the Decisions view names a node of the outline. Where the view's tree holds
@@ -110,6 +119,7 @@ test("a comment the issue holds none of, named beside the Decisions view, draws 
       "the view was drawn beside the line"
     ).toBeNull();
   } finally {
+    cleanup();
     read.mockRestore();
   }
 });
@@ -139,6 +149,7 @@ test("a block no node carries, named on the Decisions view's address, draws the 
     view.container.querySelector("[data-decisions-body]"),
     "the view was drawn beside the line"
   ).toBeNull();
+  view.unmount();
 });
 
 // A comment the tree holds, named beside the Decisions view, is the view's to land on: it draws the
@@ -160,6 +171,7 @@ test("a comment the tree holds, named beside the Decisions view, keeps the view,
     expect(comments, "the page read the issue's comments").not.toHaveBeenCalled();
     expect(focusedRow(), "the focus left the comment's row").toBe("reply-b");
   } finally {
+    cleanup();
     comments.mockRestore();
   }
 });
@@ -171,30 +183,39 @@ const ASKED: readonly IssueAskRow[] = [
   answeredAsk({ id: "ask-answered" }),
 ].map((asked) => ({ ...asked, last_reply: null }));
 
+/** Statement `s1` of the spec as Conversation's read answers it, which the decisions view read
+ *  leaves to that read. */
+const S1 = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT, 0));
+
+/** The decision block `block` of the spec, waiting for review and tied to `S1`. */
+function tied(block: string): TreeAnswerNode {
+  return decision(block, { decision: { links: [shaped(specRef("s1"))] } });
+}
+
+/** The decision block `block` of the spec, waiting for review and tied to `S1` as `tied` writes
+ *  it, its words last changed at `at`: the review list stands newest first. */
+function tiedAt(block: string, at: string): TreeAnswerNode {
+  return decision(block, { decision: { changed_at: at, links: [shaped(specRef("s1"))] } });
+}
+
+/** `count` decisions of the review list (`tiedAt`), `older-1` to `older-<count>`, each older than
+ *  the one before it and every one older than `tied`'s, so the list draws them in that order
+ *  after `tied`'s decisions. */
+function olderDecisions(count: number): TreeAnswerNode[] {
+  return Array.from({ length: count }, (_, at) =>
+    tiedAt(`older-${at + 1}`, `2026-11-10T11:${String(59 - at).padStart(2, "0")}:00Z`)
+  );
+}
+
+/** The decisions view read's answer holding `decisions`, each a node its query took
+ *  (`role: "query"`), as the server's view answers each decision of the issue. */
+function decisionsView(decisions: readonly TreeAnswerNode[]): TreeAnswer {
+  return treeOf(decisions.map((node): TreeAnswerNode => ({ ...node, role: "query" })));
+}
+
 /** The block of the spec that holds the reader's write-up of their answer to `ask-answered`: a
  *  `reading` block. */
 const WRITE_UP_BLOCK = "writeup";
-
-/** The decisions read: the reader's answer to `ask-answered`, which is their decision, with the
- *  reading of it the spec holds (`DecisionEntry.readings`), which the tree read places under that
- *  ask (`answerWriteUpTree`). */
-const WRITE_UP: IssueDecisions = {
-  ...decisionsRead([]),
-  entries: [
-    {
-      ...entryOf(personDecision("ask-answered")),
-      readings: [
-        {
-          artifact_id: SPEC_DOCUMENT.id,
-          authored_by: { id: READER, kind: "person" },
-          block_id: WRITE_UP_BLOCK,
-          node: { id: `${SPEC_DOCUMENT.ref_key}#${WRITE_UP_BLOCK}`, kind: "block" },
-          text: "The reader keeps it as it is.",
-        },
-      ],
-    },
-  ],
-};
 
 /** The write-up's node, which the view draws no row for once the asks read tells it. */
 const WRITE_UP_NODE = blockNodeId(SPEC_DOCUMENT.slug, WRITE_UP_BLOCK);
@@ -221,7 +242,6 @@ function answerWriteUpTree(before: readonly TreeAnswerNode[] = []): void {
 // still open stands first in the list and the stage would give its row the focus.
 test("a person's write-up of an answered question, named on the Decisions view's address, keeps the view, with the focus on the question's row", async () => {
   const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
-  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
   answerWriteUpTree();
   // The messages read, which answers last: with it every read is held, and the view has told the
   // stage whether its tree draws the write-up.
@@ -243,8 +263,1117 @@ test("a person's write-up of an answered question, named on the Decisions view's
       "the view drew the write-up as a row"
     ).toBeNull();
   } finally {
+    cleanup();
     asks.mockRestore();
-    decisions.mockRestore();
+  }
+});
+
+// R6, and INFRA-1196's architect on R2: the Decisions view is drawn over the tree the decisions
+// view read builds (`useDecisionsTree`), so the node an address beside it names is found among
+// the nodes of that read. Conversation's read holds the first decision alone here, as a first
+// page that ends before the second, and the decisions view read holds both: `#b-later` keeps the
+// view, with the focus on the later decision's row.
+test("a decision only the decisions view read holds, named on the Decisions view's address, keeps the view, with the focus on its row", async () => {
+  spyOn(api, "getIssueTree").mockImplementation(async (_key, query) =>
+    query?.view === "decisions"
+      ? decisionsView([tied("first"), tied("later")])
+      : treeOf([S1, tied("first")])
+  );
+  // The messages read is the one held: it answers last, and with it every read the tree is built
+  // from is held, once the decisions view read has answered.
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
+  const later = decisionNode("later").id;
+  const view = drawStage("#b-later");
+  await waitFor(() =>
+    expect(
+      focusedRow(),
+      `the later decision's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+    ).toBe(later)
+  );
+  await act(async () => messagesOut.resolve([]));
+  await waitInAct(20);
+  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  expect(focusedRow(), "the focus left the later decision's row").toBe(later);
+  view.unmount();
+});
+
+// The same address with the reads in the opposite order: the outline's reads all answer, and
+// the view is drawn over Conversation's first page, which holds the first decision alone, while
+// the decisions view read is still out. The view says nothing of the later decision until that
+// read answers (`decisions-entries.ts`' `viewSettled`): once it answers with the later decision,
+// `#b-later` lands on its row in the Decisions view, and the stage never drew the outline in the
+// view's place.
+test("a decision only the decisions view read holds, its read answering after the outline's reads, keeps the view, with the focus on its row", async () => {
+  const viewOut = Promise.withResolvers<TreeAnswer>();
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) =>
+    query?.view === "decisions" ? viewOut.promise : Promise.resolve(treeOf([S1, tied("first")]))
+  );
+  const first = decisionNode("first").id;
+  const later = decisionNode("later").id;
+  const view = drawStage("#b-later");
+  await waitFor(() =>
+    expect(
+      view.container.querySelector(
+        `[data-decisions-body] [data-node-row][data-node-id="${first}"]`
+      ),
+      `the view drew no row of the first decision over the outline's reads; the stage drew ${drawnSlot(view)}`
+    ).not.toBeNull()
+  );
+  // Every read the outline is built from has answered; the decisions view read is still out.
+  await waitInAct(20);
+  expect(
+    drawnSlot(view),
+    "the stage drew the outline in place of the view before the decisions view read answered"
+  ).toBe("the view");
+  await act(async () => viewOut.resolve(decisionsView([tied("first"), tied("later")])));
+  await waitFor(() =>
+    expect(
+      focusedRow(),
+      `the later decision's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+    ).toBe(later)
+  );
+  await waitInAct(20);
+  expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  expect(focusedRow(), "the focus left the later decision's row").toBe(later);
+  view.unmount();
+});
+
+// R4: a refused Keep says so on the row. A Keep, however it ends, reads the tree again and drops
+// the views the page holds (`DecisionActions.tsx`), so the decisions view read is read again;
+// until its next answer lands the page keeps drawing the answer the drop took
+// (`useDecisionsView`), as the Spec view's column does its own. A decision only that read holds,
+// past Conversation's first page, keeps its row while the read is out again, the row keeps the
+// focus, and the row keeps saying the Keep was refused (`409 DECISION_CHANGED`).
+test("a refused Keep of a decision only the decisions view read holds keeps its row, its refusal and the focus while that read is read again", async () => {
+  const refusal = "The decision changed since you read it.";
+  const keep = spyOn(api, "keepDecision").mockRejectedValue(
+    new ApiError(409, { code: "DECISION_CHANGED", error: refusal })
+  );
+  // The decisions view read answers once, and the read the refused Keep makes of it again is
+  // held.
+  const again = Promise.withResolvers<TreeAnswer>();
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    viewReads += 1;
+    return viewReads === 1
+      ? Promise.resolve(decisionsView([tied("first"), tied("later")]))
+      : again.promise;
+  });
+  const later = decisionNode("later").id;
+  const row = () =>
+    document.querySelector<HTMLElement>(
+      `[data-decisions-body] [data-node-row][data-node-id="${later}"]`
+    );
+  const user = userEvent.setup();
+  try {
+    const view = drawStage("#b-later");
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        `the later decision's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+      ).toBe(later)
+    );
+    await user.click(await keepOf(later));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(viewReads, "the refused Keep did not read the decisions view again").toBeGreaterThan(1)
+    );
+    await waitInAct(20);
+    expect(
+      row(),
+      "the refused decision's row left the view while the decisions view read is read again"
+    ).not.toBeNull();
+    expect(
+      row()?.querySelector('[role="alert"]')?.textContent,
+      "the refused decision's row no longer says the Keep was refused"
+    ).toBe(refusal);
+    expect(focusedRow(), "the focus left the refused decision's row").toBe(later);
+    expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  } finally {
+    cleanup();
+    keep.mockRestore();
+  }
+});
+
+/** What the view row's Decisions control draws - its count and its flag of what waits for
+ *  review - and the header's count of what waits, where the page draws each. */
+function waitingCounts(view: RenderResult) {
+  return {
+    count: view.container.querySelector('[data-preset-count="decisions"]')?.textContent,
+    flag: view.container.querySelector('[data-preset-flag="to_review"]')?.textContent,
+    header: view.container.querySelector('[data-testid="issue-whose-turn"]')?.textContent,
+  };
+}
+
+/** Answers the coverage read with statement `s1` of the spec (`S1`), which makes a waiting
+ *  decision tied to it one of the review list (`coverageStatements`): the Decisions control's
+ *  flag and the header's count count it. */
+function coverS1(): void {
+  spyOn(api, "getIssueCoverage").mockResolvedValue({
+    gaps: [],
+    has_plan: false,
+    issue: KEY,
+    requirements: [
+      { block_id: "s1", checks: 1, gaps: [], plan_tasks: 0, ref: specRef("s1"), text: "S1." },
+    ],
+    spec_artifact_id: SPEC_DOCUMENT.id,
+  });
+}
+
+/** The Keep of the later decision as Dispatch takes it. */
+const KEPT_LATER = {
+  artifact_id: SPEC_DOCUMENT.id,
+  block_id: "later",
+  changed_version: 1,
+  kept_at: "2026-11-17T00:00:00Z",
+  kept_by: READER,
+} satisfies DecisionKeep;
+
+/** The Keep control of the row of decision `id` the slot `within` draws, the Decisions view's
+ *  where none is given, once it draws it. */
+async function keepOf(id: string, within = "[data-decisions-body]"): Promise<HTMLElement> {
+  return await waitFor(() => {
+    const button = document
+      .querySelector(`${within} [data-node-row][data-node-id="${id}"]`)
+      ?.querySelector<HTMLElement>(rowActionSelector("keep"));
+    if (button == null) throw new Error(`the row of ${id} draws no Keep`);
+    return button;
+  });
+}
+
+/** Decision `later` as Conversation's read answers it once the reader kept it: waiting for no
+ *  review. */
+function keptLater(): TreeAnswerNode {
+  return decision("later", { decision: { links: [shaped(specRef("s1"))], waiting_review: false } });
+}
+
+/** The header's count of what waits for `count` things, and the Decisions control's flag of
+ *  `count` decisions to review. */
+function waitingFor(count: number) {
+  return {
+    flag: ` · ${count} ${FILTER_SIGNAL_WORDS.to_review}`,
+    header: `${PROPERTY_LABELS.waiting_on_you} (${count})`,
+  };
+}
+
+/** The header's own reads: the issue, the reader's state of it and the projects, whose gates
+ *  only a root issue reads. */
+function answerHeaderReads(): { mockRestore(): void }[] {
+  return [
+    spyOn(api, "getIssue").mockResolvedValue(issueDetails()),
+    spyOn(api, "getMyState").mockResolvedValue({}),
+    spyOn(api, "listProjects").mockResolvedValue([]),
+  ];
+}
+
+// The reset each load of the issue makes of the views (`ViewReadProvider`): no load draws a
+// decisions view older than its own tree. An earlier visit of the issue read the decisions view
+// while it held a decision since removed, and the cache keeps that answer as the reader comes
+// back to the issue at the address of a later decision, with this load's read of the view held
+// out. No reader takes the earlier visit's answer (`useDecisionsView`), on the load's first
+// render either: until this load's read answers, the Decisions control and its flag count
+// Conversation's read, and the view says nothing yet of the later decision, which no answer held
+// so far holds, so the stage keeps the view; once it answers, the control counts it and the
+// address lands on the later decision's row in the view.
+test("coming back to the issue, the Decisions control, its flag and an address read no decisions view answer of the earlier visit, and this load's once it lands", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  coverS1();
+  const headerReads = answerHeaderReads();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const thisLoad = Promise.withResolvers<TreeAnswer>();
+  let earlierVisit = true;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    return earlierVisit
+      ? Promise.resolve(decisionsView([tied("first"), tied("removed")]))
+      : thisLoad.promise;
+  });
+  try {
+    const earlier = drawStage("", { client, page: true });
+    await waitFor(() =>
+      expect(
+        waitingCounts(earlier),
+        "the earlier visit's count of its decisions view read"
+      ).toMatchObject({ count: "2", flag: waitingFor(2).flag })
+    );
+    earlier.unmount();
+    earlierVisit = false;
+
+    const later = decisionNode("later").id;
+    const view = drawStage("#b-later", { client, page: true });
+    await waitFor(() =>
+      expect(waitingCounts(view), "the count over Conversation's read").toMatchObject({
+        count: "1",
+        flag: waitingFor(1).flag,
+      })
+    );
+    await waitInAct(20);
+    expect(
+      waitingCounts(view),
+      "the Decisions control counted the earlier visit's decisions view read"
+    ).toMatchObject({ count: "1", flag: waitingFor(1).flag });
+    expect(
+      drawnSlot(view),
+      "the stage drew the outline in place of the view before this load's decisions view read answered"
+    ).toBe("the view");
+
+    await act(async () => thisLoad.resolve(decisionsView([tied("first"), tied("later")])));
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        `the later decision's address left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+      ).toBe(later)
+    );
+    expect(
+      waitingCounts(view),
+      "the count once this load's decisions view read answered"
+    ).toMatchObject({ count: "2", flag: waitingFor(2).flag });
+    await waitInAct(20);
+    expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+  } finally {
+    cleanup();
+    for (const read of headerReads) read.mockRestore();
+    restoreMatchMedia();
+  }
+});
+
+// The control after the Decisions view's last row reads the answer the page holds of the view
+// (`useNextViewPage`, `useDecisionsView`), which is this load's alone. An earlier visit of the
+// issue read the decisions view while its answer named a next page, and the cache keeps that
+// answer as the reader comes back to the Decisions view, with this load's read of the view held
+// out. The view's first render, before the load's reset drops the view, draws no next-page
+// control of that answer, and none is drawn while this load's read is out.
+test("on a return to the issue, the Decisions view's first render draws no next-page control of the earlier visit's answer", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  let earlierVisit = true;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    return earlierVisit
+      ? Promise.resolve(pagedAnswer(decisionsView([tied("first"), tied("later")]), "page-2"))
+      : Promise.withResolvers<TreeAnswer>().promise;
+  });
+  const control = "[data-tree-more]";
+  const earlier = drawStage("", { client });
+  await waitFor(() =>
+    expect(
+      earlier.container.querySelector(control),
+      "the earlier visit drew no next-page control of its decisions view answer"
+    ).not.toBeNull()
+  );
+  earlier.unmount();
+  earlierVisit = false;
+
+  // Every element the return's renders put on the page or took off it, its first render's among
+  // them, which the load's reset redraws before `render` hands the page back.
+  const drewControl = watchDrawn(control);
+  const view = drawStage("", { client });
+  expect(
+    drewControl(),
+    "the Decisions view's first render on the return drew the earlier visit's next-page control"
+  ).toBe(false);
+  await waitInAct(20);
+  expect(
+    view.container.querySelector(control),
+    "the Decisions view drew the earlier visit's next-page control while this load's read is out"
+  ).toBeNull();
+  view.unmount();
+});
+
+// R4, and the line a refused read draws over the list (`decisions-entries.ts`' `unreadable`): a
+// Keep, however it ends, drops the views the page holds and reads the decisions view again
+// (`DecisionActions.tsx`), and the page draws the answer the drop took until the next one lands
+// (`useDecisionsView`). Where that read is refused, the view says so over the rows it keeps: the
+// decisions' failed read's line stands over the list with its Retry, and the later decision,
+// which of the reads only that answer holds, keeps its row. The Retry reads the view again, and
+// its answer takes the line away.
+test("a refused read of the decisions view after a Keep draws the failed read's line and its Retry over the rows the page keeps", async () => {
+  const keep = spyOn(api, "keepDecision").mockResolvedValue(KEPT_LATER);
+  let viewReads = 0;
+  let refusing = true;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    viewReads += 1;
+    return viewReads > 1 && refusing
+      ? Promise.reject(REFUSED)
+      : Promise.resolve(decisionsView([tied("first"), tied("later")]));
+  });
+  const later = decisionNode("later").id;
+  const user = userEvent.setup();
+  try {
+    const view = drawStage("");
+    const row = () =>
+      view.container.querySelector(
+        `[data-decisions-body] [data-node-row][data-node-id="${later}"]`
+      );
+    const line = () =>
+      view.queryByText(STATE_LINES.issue_decisions_unreadable)?.closest("[data-failed-read]") ??
+      null;
+    await user.click(await keepOf(later));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        line(),
+        "the decisions view's read after the Keep is refused, and the view draws no line that says so"
+      ).not.toBeNull()
+    );
+    const retry = line()?.querySelector<HTMLElement>(FAILED_READ_RETRY);
+    expect(retry, "the refused read's line draws no Retry").not.toBeNull();
+    expect(
+      row(),
+      "the later decision's row left the view under the refused read's line"
+    ).not.toBeNull();
+    expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+
+    refusing = false;
+    if (retry != null) await user.click(retry);
+    await waitFor(() =>
+      expect(line(), "the line stayed once the Retry's read answered").toBeNull()
+    );
+    expect(row(), "the later decision's row left the view once the read answered").not.toBeNull();
+  } finally {
+    cleanup();
+    keep.mockRestore();
+  }
+});
+
+// R13, R35: the header's count of what waits and the Decisions control count the one decisions
+// view answer the page holds (`useDecisionsView`), so the two cannot disagree. Conversation's
+// first page holds the first decision and names a next page; the decisions view read holds the
+// later one too, both waiting for the reader's review. A Keep of the later decision drops the
+// view and reads it again, and while that read is out the header's count and the control both
+// count the answer the drop took, two decisions with no "+", and neither counts Conversation's
+// first page.
+test("while a Keep's read of the decisions view is out, the header's count of what waits counts what the Decisions control counts", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  coverS1();
+  const headerReads = answerHeaderReads();
+  const keep = spyOn(api, "keepDecision").mockResolvedValue(KEPT_LATER);
+  const again = Promise.withResolvers<TreeAnswer>();
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") {
+      return Promise.resolve({ ...treeOf([S1, tied("first")]), cursor: "page-2" });
+    }
+    viewReads += 1;
+    return viewReads === 1
+      ? Promise.resolve(decisionsView([tied("first"), tied("later")]))
+      : again.promise;
+  });
+  const counted = { count: "2", ...waitingFor(2) };
+  const user = userEvent.setup();
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = drawStage("", { client, page: true });
+    await waitFor(() =>
+      expect(waitingCounts(view), "the counts once the decisions view read answered").toEqual(
+        counted
+      )
+    );
+    await user.click(await keepOf(decisionNode("later").id));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(viewReads, "the Keep did not read the decisions view again").toBeGreaterThan(1)
+    );
+    await waitInAct(20);
+    expect(
+      waitingCounts(view),
+      "while the Keep's read of the decisions view is out, the header's count and the Decisions control count different answers"
+    ).toEqual(counted);
+  } finally {
+    cleanup();
+    keep.mockRestore();
+    for (const read of headerReads) read.mockRestore();
+    restoreMatchMedia();
+  }
+});
+
+// The control after the Decisions view's last row reads the answer the page holds of the view
+// (`useNextViewPage`, `useDecisionsView`), as the list does. The decisions view read's answer
+// names a next page; a Keep of the later decision drops the view and reads it again, and while
+// that read is out the view draws the later decision's row from the answer the drop took and,
+// after the list, that answer's next-page control.
+test("while a Keep's read of the decisions view is out, the view draws the next-page control of the kept answer, which names a next page", async () => {
+  const keep = spyOn(api, "keepDecision").mockResolvedValue(KEPT_LATER);
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    viewReads += 1;
+    return viewReads === 1
+      ? Promise.resolve(pagedAnswer(decisionsView([tied("first"), tied("later")]), "page-2"))
+      : Promise.withResolvers<TreeAnswer>().promise;
+  });
+  const later = decisionNode("later").id;
+  const user = userEvent.setup();
+  try {
+    const view = drawStage("");
+    const control = () => view.container.querySelector("[data-tree-more]");
+    await waitFor(() =>
+      expect(control(), "the decisions view read's answer drew no next-page control").not.toBeNull()
+    );
+    await user.click(await keepOf(later));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(viewReads, "the Keep did not read the decisions view again").toBeGreaterThan(1)
+    );
+    await waitInAct(20);
+    expect(
+      view.container.querySelector(
+        `[data-decisions-body] [data-node-row][data-node-id="${later}"]`
+      ),
+      "the later decision's row left the view while the Keep's read is out"
+    ).not.toBeNull();
+    expect(
+      control(),
+      "while the Keep's read is out, the view draws no next-page control of the answer the Keep's drop took"
+    ).not.toBeNull();
+  } finally {
+    cleanup();
+    keep.mockRestore();
+  }
+});
+
+// A press of that control while the Keep's read is out (`readNextTreePage`): the cache holds no
+// answer of the view, which the drop reset, so the press waits for the read out, sends no first
+// page of its own, and once that read answers reads the page after the answer it brings, as one
+// press. The page holds a third decision, whose row the view then draws. The page's frames are
+// held for the whole case: the page reads a next page for the decisions it marks only once it has
+// drawn (`useReadUnloadedPages`, decision 538), so it reads none here, and the press is the one
+// reader of the view's next page.
+test("a press of the kept answer's next-page control while a Keep's read of the decisions view is out reads the next page once that read answers", async () => {
+  const keep = spyOn(api, "keepDecision").mockResolvedValue(KEPT_LATER);
+  const keepRead = Promise.withResolvers<TreeAnswer>();
+  let viewReads = 0;
+  const pages: string[] = [];
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    if (query.cursor !== undefined) {
+      pages.push(query.cursor);
+      return Promise.resolve({
+        ...decisionsView([]),
+        cursor: null,
+        nodes: [{ ...tied("third"), role: "query" }],
+      });
+    }
+    viewReads += 1;
+    return viewReads === 1
+      ? Promise.resolve(pagedAnswer(decisionsView([tied("first"), tied("later")]), "page-2"))
+      : keepRead.promise;
+  });
+  const third = () =>
+    document.querySelector(
+      `[data-decisions-body] [data-node-row][data-node-id="${decisionNode("third").id}"]`
+    );
+  const user = userEvent.setup();
+  const frames = framesByHand();
+  try {
+    const view = drawStage("");
+    const control = () => view.container.querySelector<HTMLElement>("[data-tree-more] button");
+    await waitFor(() =>
+      expect(control(), "the decisions view read's answer drew no next-page control").not.toBeNull()
+    );
+    await user.click(await keepOf(decisionNode("later").id));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(viewReads, "the Keep did not read the decisions view again").toBeGreaterThan(1)
+    );
+    await waitInAct(20);
+    const readsBefore = viewReads;
+    const press = control();
+    expect(press, "the kept answer drew no next-page control").not.toBeNull();
+    if (press != null) await user.click(press);
+    await waitInAct(20);
+    expect(pages, "the press read a page while the Keep's read is out").toEqual([]);
+    expect(viewReads, "the press sent a first page of the view of its own").toBe(readsBefore);
+
+    await act(async () =>
+      keepRead.resolve(pagedAnswer(decisionsView([tied("first"), tied("later")]), "page-2"))
+    );
+    await waitFor(() =>
+      expect(pages, "the press read no next page once the Keep's read answered").toEqual(["page-2"])
+    );
+    await waitFor(() =>
+      expect(third(), "the view drew no row of the next page's decision").not.toBeNull()
+    );
+    await waitInAct(20);
+    expect(pages, "the press read the next page more than once").toEqual(["page-2"]);
+  } finally {
+    cleanup();
+    frames.restore();
+    keep.mockRestore();
+  }
+});
+
+// The landing of that press (`NextViewPage`), on a review list of 21 entries, of which the
+// Decisions view draws the first 20 (`DecisionsFilterBody.tsx`' `PAGE`). The reader keeps the
+// later decision, one of the 20, and presses while the Keep's read is out. That read, which the
+// press waits for and which answers before the next page does, moves the kept decision's row
+// from the review list to another part, each part its own element, so it draws that row anew,
+// and with the kept decision gone from the review list it draws the list's old 21st entry, which
+// was drawn nowhere as the press was made. Neither takes the focus: the press brought neither.
+// The next page holds a third decision, newer than every entry, which the review list draws
+// first, and the press lands on its row, the one row of the next page.
+test("a press of the kept answer's next-page control while a Keep's read is out puts the focus on the next page's first row, not on the kept decision's", async () => {
+  const keep = spyOn(api, "keepDecision").mockResolvedValue(KEPT_LATER);
+  const keepRead = Promise.withResolvers<TreeAnswer>();
+  const nextPage = Promise.withResolvers<TreeAnswer>();
+  const older = olderDecisions(19);
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    if (query.cursor !== undefined) return nextPage.promise;
+    viewReads += 1;
+    return viewReads === 1
+      ? Promise.resolve(
+          pagedAnswer(decisionsView([tied("first"), tied("later"), ...older]), "page-2")
+        )
+      : keepRead.promise;
+  });
+  const later = decisionNode("later").id;
+  const third = decisionNode("third").id;
+  // The review list's 21st entry, its oldest.
+  const oldest = decisionNode("older-19").id;
+  const rowOf = (id: string) =>
+    document.querySelector(`[data-decisions-body] [data-node-row][data-node-id="${id}"]`);
+  // Each row the focus goes to, by its node's id.
+  const focused: string[] = [];
+  const noteFocus = (event: FocusEvent): void => {
+    const row = (event.target as Element).closest?.("[data-node-row]");
+    focused.push(row?.getAttribute("data-node-id") ?? "no row");
+  };
+  document.addEventListener("focusin", noteFocus);
+  const user = userEvent.setup();
+  try {
+    const view = drawStage("");
+    const control = () => view.container.querySelector<HTMLElement>("[data-tree-more] button");
+    await waitFor(() =>
+      expect(control(), "the decisions view read's answer drew no next-page control").not.toBeNull()
+    );
+    expect(rowOf(oldest), "the review list drew its 21st entry, past its first 20").toBeNull();
+    await user.click(await keepOf(later));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(viewReads, "the Keep did not read the decisions view again").toBeGreaterThan(1)
+    );
+    await waitInAct(20);
+    const press = control();
+    expect(press, "the kept answer drew no next-page control").not.toBeNull();
+    if (press != null) await user.click(press);
+    await waitInAct(20);
+
+    // The Keep's read answers with the later decision kept, as the server answers it, and is
+    // drawn before the next page lands.
+    await act(async () =>
+      keepRead.resolve(pagedAnswer(decisionsView([tied("first"), keptLater(), ...older]), "page-2"))
+    );
+    await waitFor(() =>
+      expect(
+        rowOf(later)?.closest("[data-decisions-part]")?.getAttribute("data-decisions-part"),
+        "the Keep's read did not draw the later decision out of the review list"
+      ).not.toBe("review")
+    );
+    await waitFor(() =>
+      expect(
+        rowOf(oldest),
+        "once the kept decision left the review list, the list drew no row of its old 21st entry"
+      ).not.toBeNull()
+    );
+    await waitInAct(20);
+    expect(
+      focused,
+      "the press put the focus on the row of the entry the Keep's read uncovered, which the next page did not bring"
+    ).not.toContain(oldest);
+    await act(async () =>
+      nextPage.resolve({
+        ...decisionsView([]),
+        cursor: null,
+        nodes: [{ ...tiedAt("third", "2026-11-10T13:00:00Z"), role: "query" }],
+      })
+    );
+    await waitFor(() =>
+      expect(rowOf(third), "the view drew no row of the next page's decision").not.toBeNull()
+    );
+    await waitInAct(20);
+    expect(
+      focusedRow(),
+      "the press put the focus on another row than the next page's first, the kept decision's"
+    ).toBe(third);
+  } finally {
+    document.removeEventListener("focusin", noteFocus);
+    cleanup();
+    keep.mockRestore();
+  }
+});
+
+// The bound of the answer a Keep's drop keeps (`useDecisionsView`): only the Decisions view
+// draws it, while the read the drop started is out. A Keep of the later decision on the
+// Decisions view drops the views and reads them again; before the decisions view's read answers,
+// the reader moves to Conversation, whose read answers again with the later decision kept. There
+// the header's count of what waits and the Decisions control's flag count that read, the first
+// decision alone, as before the view was ever read, and never the answer the drop took, which
+// has the later decision waiting still.
+test("on Conversation after a Keep, the header's count and the Decisions control's flag count Conversation's read, not the answer the Keep's drop took", async () => {
+  const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
+  coverS1();
+  const headerReads = answerHeaderReads();
+  let kept = false;
+  const keep = spyOn(api, "keepDecision").mockImplementation(async () => {
+    kept = true;
+    return KEPT_LATER;
+  });
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") {
+      return Promise.resolve(treeOf([S1, tied("first"), kept ? keptLater() : tied("later")]));
+    }
+    viewReads += 1;
+    return viewReads === 1
+      ? Promise.resolve(decisionsView([tied("first"), tied("later")]))
+      : Promise.withResolvers<TreeAnswer>().promise;
+  });
+  const held: { navigate?: NavigateFunction } = {};
+  const user = userEvent.setup();
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = drawStage("", { client, held, page: true });
+    await waitFor(() =>
+      expect(waitingCounts(view), "the counts once the decisions view read answered").toMatchObject(
+        waitingFor(2)
+      )
+    );
+    await user.click(await keepOf(decisionNode("later").id));
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(viewReads, "the Keep did not read the decisions view again").toBeGreaterThan(1)
+    );
+    act(() => held.navigate?.(presetPath(KEY, "conversation")));
+    await waitFor(() =>
+      expect(
+        view.container.querySelector("[data-issue-body]"),
+        "the stage drew no outline on Conversation"
+      ).not.toBeNull()
+    );
+    await waitInAct(20);
+    expect(
+      waitingCounts(view),
+      "on Conversation, the header's count and the Decisions control's flag count the answer the Keep's drop took"
+    ).toMatchObject(waitingFor(1));
+  } finally {
+    cleanup();
+    keep.mockRestore();
+    for (const read of headerReads) read.mockRestore();
+    restoreMatchMedia();
+  }
+});
+
+// The answer a drop keeps is the one the read it starts replaces (`dropViews`). On Conversation,
+// with this load's decisions view answer held, a Keep of the later decision drops the views, and
+// the decisions view, which no filter reads there, is read no more: the drop keeps nothing, and
+// Conversation's read answers again with the later decision kept. The reader then opens the
+// Decisions view, whose read is out: the view draws the later decision as Conversation's read
+// has it, kept, and never as the answer before the Keep had it, waiting with Keep.
+//
+// The same story with another write of the issue out as the Keep settles - a comment the reader
+// posts, which the write store tells the page's subscription of as it goes out
+// (`subscribeTreeFreshness`), so it holds the issue's views (`heldByWrites`) and the Keep's drop
+// owes the decisions view a read at that write's settle (`droppedWhileHeld`). On Conversation
+// nothing reads that view, so the settle only marks it stale, and the drop keeps nothing
+// (`dropViews`: only the Decisions filter's own read keeps). The other write settles,
+// Conversation's read answers again with the later decision kept, and the reader opens the
+// Decisions view, whose read is out: it draws the later decision as Conversation's read has it,
+// and never as the answer before the Keep had it, waiting with Keep.
+test.each([
+  [
+    "the Decisions view opened after a Keep on Conversation draws no decision as it stood before the Keep while its read is out",
+    false,
+  ],
+  [
+    "the Decisions view opened after a Keep on Conversation made while another write of the issue was out draws no decision as it stood before the Keep while its read is out",
+    true,
+  ],
+] as const)("%s", async (_title, otherWrite) => {
+  coverS1();
+  const headerReads = answerHeaderReads();
+  let kept = false;
+  const keep = spyOn(api, "keepDecision").mockImplementation(async () => {
+    kept = true;
+    return KEPT_LATER;
+  });
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") {
+      return Promise.resolve(treeOf([S1, tied("first"), kept ? keptLater() : tied("later")]));
+    }
+    viewReads += 1;
+    return Promise.withResolvers<TreeAnswer>().promise;
+  });
+  const later = decisionNode("later").id;
+  const held: { navigate?: NavigateFunction } = {};
+  const user = userEvent.setup();
+  // What the failure messages add where the Keep was made while another write was out.
+  const made = otherWrite ? " made while another write was out" : "";
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = drawStage("", { client, held, page: true, preset: "conversation" });
+    const keepOnConversation = await keepOf(later, "[data-issue-body]");
+    // This load's answer of the decisions view, as the page holds it once the Decisions view was
+    // on earlier in the load.
+    await act(async () => {
+      client.setQueryData(viewKey(KEY, "decisions"), decisionsView([tied("first"), tied("later")]));
+    });
+    // The other write of the issue, where the case sends one, answered when the case says.
+    const other = otherWrite ? otherWriteOut(client) : undefined;
+    await user.click(keepOnConversation);
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    if (other !== undefined) {
+      await waitInAct(20);
+      await other.settle();
+    }
+    await waitFor(() =>
+      expect(
+        view.container.querySelector(
+          `[data-issue-body] [data-node-row][data-node-id="${later}"] ${rowActionSelector("keep")}`
+        ),
+        "Conversation's read did not answer again with the later decision kept"
+      ).toBeNull()
+    );
+
+    act(() => held.navigate?.(presetPath(KEY, "decisions")));
+    const row = () =>
+      view.container.querySelector<HTMLElement>(
+        `[data-decisions-body] [data-node-row][data-node-id="${later}"]`
+      );
+    await waitFor(() =>
+      expect(row(), "the Decisions view drew no row of the later decision").not.toBeNull()
+    );
+    await waitFor(() =>
+      expect(viewReads, "opening the Decisions view did not read it").toBeGreaterThan(0)
+    );
+    await waitInAct(20);
+    expect(
+      row()?.getAttribute("data-node-state"),
+      `while its read is out, the Decisions view draws the later decision waiting, as it stood before the Keep${made}`
+    ).not.toBe("waiting_review");
+    expect(
+      row()?.querySelector(rowActionSelector("keep")),
+      `while its read is out, the Decisions view draws Keep on the later decision, as before the Keep${made}`
+    ).toBeNull();
+  } finally {
+    cleanup();
+    keep.mockRestore();
+    for (const read of headerReads) read.mockRestore();
+  }
+});
+
+/** Another write of issue `KEY`, sent through the page's write store as the page sends a
+ *  comment, so the page's subscription holds the issue's views while it is out
+ *  (`subscribeTreeFreshness`), and held out until `settle`, which answers it and waits for the
+ *  store to settle it. */
+function otherWriteOut(client: QueryClient): { readonly settle: () => Promise<void> } {
+  const answer = Promise.withResolvers<void>();
+  let settled: Promise<unknown> = Promise.resolve();
+  act(() => {
+    settled = writesOf(client).run({
+      detail: null,
+      inline: true,
+      issue: KEY,
+      kind: plainWrite,
+      label: "A comment",
+      method: "POST",
+      presentation: "indicator",
+      write: () => answer.promise,
+    });
+  });
+  expect(writesOf(client).writesOutOf(KEY), "the other write of the issue is not out").toHaveLength(
+    1
+  );
+  return {
+    settle: () =>
+      act(async () => {
+        answer.resolve();
+        await settled;
+      }),
+  };
+}
+
+// R4 with another write of the issue out as a Keep on the Decisions view settles: that write
+// holds the issue's views (`heldByWrites`), so the Keep's drop sends the decisions view no read
+// and owes it one at that write's settle (`droppedWhileHeld`). The Decisions filter's own read
+// is mounted, so the drop keeps the answer it took (`dropViews`) and the view draws it while the
+// read is owed and while it is out: the later decision, which of the reads only the decisions
+// view holds, keeps its row. The other write settles, the owed read is sent, and its answer draws
+// the later decision kept.
+test("on the Decisions view, a Keep that settles while another write of the issue is out keeps the row of a decision only the decisions view read holds, until the read the write owes lands", async () => {
+  const keep = spyOn(api, "keepDecision").mockResolvedValue(KEPT_LATER);
+  // The decisions view read answers once, and the read the other write's settle owes it is held.
+  const owed = Promise.withResolvers<TreeAnswer>();
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    viewReads += 1;
+    return viewReads === 1
+      ? Promise.resolve(decisionsView([tied("first"), tied("later")]))
+      : owed.promise;
+  });
+  const later = decisionNode("later").id;
+  const row = () =>
+    document.querySelector<HTMLElement>(
+      `[data-decisions-body] [data-node-row][data-node-id="${later}"]`
+    );
+  const user = userEvent.setup();
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    drawStage("", { client });
+    const keepLater = await keepOf(later);
+    const other = otherWriteOut(client);
+    await user.click(keepLater);
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        client.getQueryData(viewKey(KEY, "decisions")),
+        "the Keep's settle did not drop the decisions view"
+      ).toBeUndefined()
+    );
+    await waitInAct(20);
+    expect(viewReads, "the decisions view was read while the other write is out").toBe(1);
+    expect(
+      row(),
+      "the later decision's row left the view while the other write is out"
+    ).not.toBeNull();
+
+    await other.settle();
+    await waitFor(() =>
+      expect(viewReads, "the other write's settle sent no decisions view read").toBeGreaterThan(1)
+    );
+    await waitInAct(20);
+    expect(
+      row(),
+      "the later decision's row left the view while the read the other write owes is out"
+    ).not.toBeNull();
+    await act(async () => owed.resolve(decisionsView([tied("first"), keptLater()])));
+    await waitFor(() =>
+      expect(
+        row()?.querySelector(rowActionSelector("keep")),
+        "once the owed read landed, the view draws Keep on the later decision still"
+      ).toBeNull()
+    );
+    expect(
+      row(),
+      "once the owed read landed, the view draws no row of the later decision"
+    ).not.toBeNull();
+    expect(
+      row()?.getAttribute("data-node-state"),
+      "once the owed read landed, the view draws the later decision waiting still"
+    ).not.toBe("waiting_review");
+  } finally {
+    cleanup();
+    keep.mockRestore();
+  }
+});
+
+// A press of the next-page control that reads nothing (`readNextTreePage`) arms no landing for a
+// row drawn later. A Keep of the later decision, refused, settles while another write of the
+// issue is out: its drop resets the decisions view and owes it a read at that write's settle, and
+// the Decisions view draws the answer the drop took, which names a next page, with its control.
+// A press of it then reads nothing - the cache holds no answer of the view, and no read of it is
+// out - and the focus stays on the refused decision's row. The other write settles, and the owed
+// read answers a decision no answer held before: its row is drawn, and the focus stays put. The
+// page's frames are held for the whole case: the page reads a next page for the decisions it
+// marks only once it has drawn (`useReadUnloadedPages`, decision 538), so no read of the view's
+// next page is out or merged for the press to join, and the press merges nothing.
+test("a press of the next-page control that reads nothing leaves no landing armed", async () => {
+  const keep = spyOn(api, "keepDecision").mockRejectedValue(
+    new ApiError(409, {
+      code: "DECISION_CHANGED",
+      error: "The decision changed since you read it.",
+    })
+  );
+  const pages: string[] = [];
+  let viewReads = 0;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    if (query.cursor !== undefined) {
+      pages.push(query.cursor);
+      return Promise.withResolvers<TreeAnswer>().promise;
+    }
+    viewReads += 1;
+    const added = viewReads === 1 ? [] : [tied("fourth")];
+    return Promise.resolve(
+      pagedAnswer(decisionsView([tied("first"), tied("later"), ...added]), "page-2")
+    );
+  });
+  const later = decisionNode("later").id;
+  const fourth = `[data-decisions-body] [data-node-row][data-node-id="${decisionNode("fourth").id}"]`;
+  const user = userEvent.setup();
+  const frames = framesByHand();
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = drawStage("", { client });
+    const keepLater = await keepOf(later);
+    const other = otherWriteOut(client);
+    await user.click(keepLater);
+    await waitFor(() => expect(keep, "the Keep was never sent").toHaveBeenCalledTimes(1));
+    await waitFor(() =>
+      expect(
+        client.getQueryData(viewKey(KEY, "decisions")),
+        "the Keep's settle did not drop the decisions view"
+      ).toBeUndefined()
+    );
+    await waitInAct(20);
+    expect(focusedRow(), "the focus left the refused decision's row").toBe(later);
+    const press = view.container.querySelector<HTMLElement>("[data-tree-more] button");
+    expect(press, "the answer the Keep's drop took drew no next-page control").not.toBeNull();
+    if (press != null) await user.click(press);
+    await waitInAct(20);
+    expect(pages, "the press read a page").toEqual([]);
+    expect(viewReads, "the press read the decisions view").toBe(1);
+
+    await other.settle();
+    await waitFor(() =>
+      expect(
+        document.querySelector(fourth),
+        "the read the other write owes drew no row of the decision it adds"
+      ).not.toBeNull()
+    );
+    await waitInAct(20);
+    expect(focusedRow(), "a press that read nothing landed on a row drawn after it").toBe(later);
+  } finally {
+    cleanup();
+    frames.restore();
+    keep.mockRestore();
+  }
+});
+
+// A press whose next page draws no row of its own (`NextViewPage`). The first page of the
+// decisions view read holds the review list's 20 entries, all of which the Decisions view draws
+// (`DecisionsFilterBody.tsx`' `PAGE`), and names a next page. That page holds two decisions older
+// than every entry, which the review list, newest first, stands past its first 20, so the view
+// draws no row of either, and the press's landing ends once the view has drawn the answer they
+// merged into. A later read of the view, as an event starts one, reads both pages again, and the
+// next page answers the first of the two with words changed since, newer than every entry: the
+// view draws its row among the first 20, and the focus stays on the first entry's row, where the
+// stage put it and where the press, which takes no focus, left it. The page's frames are held for
+// the whole case: the page reads a next page for the decisions it marks only once it has drawn
+// (`useReadUnloadedPages`, decision 538), so the press is the one reader of the next page, and
+// the landing's end waits on no frame.
+test("a press whose merged page draws no row of its own ends its landing, so a row a later read draws takes no focus", async () => {
+  const pages: string[] = [];
+  // Whether the next page answers the first of its decisions with its words changed.
+  let changed = false;
+  spyOn(api, "getIssueTree").mockImplementation((_key, query) => {
+    if (query?.view !== "decisions") return Promise.resolve(treeOf([S1, tied("first")]));
+    if (query.cursor !== undefined) {
+      pages.push(query.cursor);
+      return Promise.resolve({
+        ...decisionsView([]),
+        cursor: null,
+        nodes: [
+          tiedAt("past", changed ? "2026-11-10T13:00:00Z" : "2026-11-10T10:00:00Z"),
+          tiedAt("past-2", "2026-11-10T09:00:00Z"),
+        ].map((node): TreeAnswerNode => ({ ...node, role: "query" })),
+      });
+    }
+    return Promise.resolve(
+      pagedAnswer(decisionsView([tied("first"), tied("later"), ...olderDecisions(18)]), "page-2")
+    );
+  });
+  const first = decisionNode("first").id;
+  const past = `[data-decisions-body] [data-node-row][data-node-id="${decisionNode("past").id}"]`;
+  const user = userEvent.setup();
+  const frames = framesByHand();
+  try {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const view = drawStage("", { client });
+    const control = () => view.container.querySelector<HTMLElement>("[data-tree-more]");
+    await waitFor(() =>
+      expect(control(), "the decisions view read's answer drew no next-page control").not.toBeNull()
+    );
+    await waitInAct(20);
+    // The stage puts the focus on the list's first row, and a press takes none (`NextViewPage`).
+    expect(focusedRow(), "the focus is not on the first entry's row as the press is made").toBe(
+      first
+    );
+    const focus = document.activeElement;
+    const press = control()?.querySelector<HTMLElement>("button");
+    if (press != null) await user.click(press);
+    await waitFor(() => expect(pages, "the press read no next page").toEqual(["page-2"]));
+    await waitFor(() =>
+      expect(control(), "the view did not draw the answer the last page merged into").toBeNull()
+    );
+    expect(
+      document.querySelector(past),
+      "the view drew a row of the next page's decisions past the review list's first 20"
+    ).toBeNull();
+    expect(document.activeElement, "a press that drew no row moved the focus").toBe(focus);
+
+    changed = true;
+    await act(async () => {
+      await client.invalidateQueries({ exact: true, queryKey: viewKey(KEY, "decisions") });
+    });
+    await waitFor(() =>
+      expect(
+        document.querySelector(past),
+        "the later read drew no row of the decision whose words changed"
+      ).not.toBeNull()
+    );
+    await waitInAct(20);
+    expect(pages, "the later read did not read the next page again").toEqual(["page-2", "page-2"]);
+    expect(focusedRow(), "the press's landing put the focus on a row a later read drew").toBe(
+      first
+    );
+    expect(document.activeElement, "the focus left the first entry's row").toBe(focus);
+  } finally {
+    cleanup();
+    frames.restore();
+  }
+});
+
+// Root R20, INFRA-1196's decision 513: a decision whose `from_ask` names a question the reader
+// answered restates the answer, and the tree holds no node of it, so an address naming its block
+// on the Decisions view's address keeps the view and lands on the row of the question it
+// restates, by the rule the outline lands it by too (`pathToTarget`). The read answers a person's
+// decision on the question, as it does on every ask a person answered.
+test("a decision that restates a person's answer, named on the Decisions view's address, keeps the view, with the focus on the question's row", async () => {
+  const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
+  answerTree([
+    ...ASKED.map((asked) =>
+      treeNode(asked.id, "ask", KEY, {
+        made_at: asked.created_at,
+        text: asked.question,
+        ...(asked.state === "answered" ? { decision: {} } : {}),
+      })
+    ),
+    treeNode("restates", "decision", "ask-answered", {
+      ...inDocument(SPEC_DOCUMENT, 1),
+      decision: { asks: ["ask-answered"], waiting_review: true },
+      text: "Keep the answer as it was given.",
+    }),
+  ]);
+  // The messages read, which answers last: with it every read is held, and the view has told the
+  // stage whether its tree draws the node the address names.
+  const messagesOut = Promise.withResolvers<[]>();
+  spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
+  try {
+    const view = drawStage("#b-restates");
+    await waitFor(() =>
+      expect(
+        focusedRow(),
+        `the address of the decision left the focus elsewhere; the stage drew ${drawnSlot(view)}`
+      ).toBe("ask-answered")
+    );
+    await act(async () => messagesOut.resolve([]));
+    expect(drawnSlot(view), "the stage drew the outline in place of the view").toBe("the view");
+    expect(focusedRow(), "the focus left the question's row").toBe("ask-answered");
+    expect(
+      view.container.querySelector(
+        `[data-node-id="${blockNodeId(SPEC_DOCUMENT.slug, "restates")}"]`
+      ),
+      "the view drew the decision that restates the answer as a row"
+    ).toBeNull();
+  } finally {
+    cleanup();
+    asks.mockRestore();
   }
 });
 
@@ -252,14 +1381,13 @@ test("a person's write-up of an answered question, named on the Decisions view's
 // view draws no entry until the asks read has answered too (decision 585), so the write-up is
 // never drawn as the node the address names, and the address lands on the question's row once
 // the asks answer.
-test("a write-up's address waits for the asks read, which answers after the decisions read, and lands on the question's row", async () => {
+test("a write-up's address waits for the asks read, which answers after the tree read, and lands on the question's row", async () => {
   const asksOut = Promise.withResolvers<IssueAskRow[]>();
   const asks = spyOn(api, "listIssueAskThreads").mockReturnValue(asksOut.promise as never);
-  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
   answerWriteUpTree();
   try {
     const view = drawStage("#b-writeup");
-    await waitFor(() => expect(decisions).toHaveBeenCalled());
+    await waitFor(() => expect(api.getIssueTree).toHaveBeenCalled());
     await waitInAct(50);
     expect(
       view.container.querySelector("[data-decisions-body] [data-node-row]"),
@@ -273,8 +1401,8 @@ test("a write-up's address waits for the asks read, which answers after the deci
       ).toBe("ask-answered")
     );
   } finally {
+    cleanup();
     asks.mockRestore();
-    decisions.mockRestore();
   }
 });
 
@@ -284,7 +1412,6 @@ test("a write-up's address waits for the asks read, which answers after the deci
 // place, which draws the write-up as a row under the question it answers and lands on it.
 test("a write-up's address under words its question does not hold draws the outline, with the focus on the write-up's row", async () => {
   const asks = spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
-  const decisions = spyOn(api, "getIssueDecisions").mockResolvedValue(WRITE_UP);
   answerWriteUpTree();
   try {
     const view = drawStage("?q=flag#b-writeup");
@@ -301,30 +1428,28 @@ test("a write-up's address under words its question does not hold draws the outl
     );
     expect(focusedRow(), "the focus left the write-up's row").toBe(WRITE_UP_NODE);
   } finally {
+    cleanup();
     asks.mockRestore();
-    decisions.mockRestore();
   }
 });
 
 /** The outline's row of the write-up, drawn in the Decisions view's place at the write-up's
- *  address under words its question does not hold: the decisions read is held until the view is
- *  drawn, `press` is done then where it is given, and once the outline draws the row every frame
- *  asked for till then is run (`frames`). */
+ *  address under words its question does not hold: the asks read, which tells the write-up from
+ *  a row the view draws, is held until the view is drawn, `press` is done then where it is given,
+ *  and once the outline draws the row every frame asked for till then is run (`frames`). */
 async function writeUpRowAfter(
   frames: { readonly run: () => Promise<void> },
   press?: () => void
 ): Promise<HTMLElement> {
-  const decisionsOut = Promise.withResolvers<typeof WRITE_UP>();
-  spyOn(api, "getIssueDecisions").mockReturnValue(decisionsOut.promise);
+  const asksOut = Promise.withResolvers<IssueAskRow[]>();
+  spyOn(api, "listIssueAskThreads").mockReturnValue(asksOut.promise as never);
   answerWriteUpTree();
   const view = drawStage("?q=flag#b-writeup");
   await waitFor(() =>
-    expect(drawnSlot(view), "the stage drew no view while the decisions read is out").toBe(
-      "the view"
-    )
+    expect(drawnSlot(view), "the stage drew no view while the asks read is out").toBe("the view")
   );
   if (press !== undefined) act(press);
-  await act(async () => decisionsOut.resolve(WRITE_UP));
+  await act(async () => asksOut.resolve([...ASKED]));
   const row = await waitFor(() => {
     const drawn = view.container.querySelector<HTMLElement>(
       `[data-issue-body] [data-node-row][data-node-id="${WRITE_UP_NODE}"]`
@@ -341,12 +1466,11 @@ async function writeUpRowAfter(
 
 // The outline lands on the address's node until the reader's first act since they followed the
 // address (`IssueTree`'s `addressActs`), which the stage watches from the following's drawing
-// whichever slot it draws. With the decisions read out the view stays drawn, and a press then on
-// a control outside the stage is an act of that following: once the read answers, the outline
+// whichever slot it draws. With the asks read out the view stays drawn, and a press then on a
+// control outside the stage is an act of that following: once the read answers, the outline
 // drawn in the view's place leaves the focus on the control. With no act, the same address lands
 // on the outline's row of the write-up.
 test("a press while the view is drawn keeps the focus on the control pressed, where the outline drawn in the view's place lands on its row with no act", async () => {
-  spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
   const frames = framesByHand();
   try {
     const landed = await writeUpRowAfter(frames);
@@ -365,6 +1489,7 @@ test("a press while the view is drawn keeps the focus on the control pressed, wh
     ).toHaveFocus();
   } finally {
     frames.restore();
+    cleanup();
   }
 });
 
@@ -399,6 +1524,7 @@ test("`j` on a row of the Decisions view, before it draws the outline's line for
     await act(async () => messagesOut.resolve([]));
     await goneLineTakesFocus(view, "the messages answering after `j`");
   } finally {
+    cleanup();
     read.mockRestore();
   }
 });
@@ -407,19 +1533,19 @@ test("`j` on a row of the Decisions view, before it draws the outline's line for
 // and it comes before that read answers. Where the view then draws no node the address names,
 // the Retry left the page with its line, and the outline drawn in the view's place lands as it
 // does where the reader pressed nothing: its line that the issue holds no such comment takes the
-// focus.
-test("Enter on the Retry of the Decisions view's refused decisions read, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
-  const decisionsOut = Promise.withResolvers<IssueDecisions>();
-  spyOn(api, "getIssueDecisions")
+// focus. The read refused here is the asks read, one the view draws its own line for.
+test("Enter on the Retry of the Decisions view's refused asks read, before it draws the outline's line for a comment the issue holds none of in its place, leaves the focus on that line", async () => {
+  const asksOut = Promise.withResolvers<IssueAskRow[]>();
+  spyOn(api, "listIssueAskThreads")
     .mockRejectedValueOnce(REFUSED)
-    .mockReturnValueOnce(decisionsOut.promise);
+    .mockReturnValueOnce(asksOut.promise as never);
   const read = commentGone();
   try {
     const view = drawStage(`?comment=${GONE_COMMENT}`);
     const retry = await rowTakesFocus(
       view,
       `[data-decisions-body] ${FAILED_READ_RETRY}`,
-      "the view's refused decisions read"
+      "the view's refused asks read"
     );
     // Enter on a button: its keydown, then the press it makes.
     act(() => {
@@ -427,9 +1553,10 @@ test("Enter on the Retry of the Decisions view's refused decisions read, before 
       retry.click();
     });
     await waitFor(() => expect(retry).toHaveAttribute("aria-busy", "true"));
-    await act(async () => decisionsOut.resolve(decisionsRead([decision("d1")])));
-    await goneLineTakesFocus(view, "the decisions read answering after Enter on its Retry");
+    await act(async () => asksOut.resolve([...ASKED]));
+    await goneLineTakesFocus(view, "the asks read answering after Enter on its Retry");
   } finally {
+    cleanup();
     read.mockRestore();
   }
 });
@@ -468,7 +1595,6 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
     { checks: [], issue: KEY, verification_artifact_id: "" },
     answered
   );
-  client.setQueryData(issueDecisionsQuery(KEY, true).queryKey, decisionsRead([]), answered);
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, [], answered);
   client.setQueryData(["issue-messages", KEY], [], answered);
   // What the reader holds unread on the issue, which a thread's read mark reads.
@@ -502,6 +1628,7 @@ test("coming back to the outline from Decisions after the app's staleTime asks w
   // and microtasks once the mark is drawn sends any not yet sent.
   await act(async () => {});
   expect(who, "the outline drawn again asked who is reading").not.toHaveBeenCalled();
+  view.unmount();
 });
 
 /** How many times `read`, the stub of one read, is asked for as `node` is drawn, under the app's
@@ -596,19 +1723,9 @@ test("a thread's read mark drawn after the app's staleTime asks the unread set n
 // place, which lands on the write-up's row.
 test("under the Decisions view and words, a fragment the browser changes under one key from a decision to a write-up the list draws no row for draws the outline, with the focus on the write-up's row", async () => {
   spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
-  spyOn(api, "getIssueDecisions").mockResolvedValue({
-    ...WRITE_UP,
-    entries: [entryOf(decision("d1")), ...(WRITE_UP.entries ?? [])],
-  });
-  answerWriteUpTree([
-    treeNode("d1", "decision", KEY, {
-      decision: { ref: specRef("d1") },
-      ...inDocument(SPEC_DOCUMENT),
-      text: decision("d1").text,
-    }),
-  ]);
-  // The decisions read the view's entries come from reads the comments, so the messages read is
-  // the one held: it answers last, and with it every read the tree is built from is held.
+  answerWriteUpTree([decision("d1")]);
+  // The messages read is the one held: it answers last, and with it every read the tree is built
+  // from is held.
   const messagesOut = Promise.withResolvers<[]>();
   spyOn(api, "listIssueMessages").mockReturnValue(messagesOut.promise);
   const decisions = `${presetPath(KEY, "decisions")}?q=flag`;
@@ -632,6 +1749,7 @@ test("under the Decisions view and words, a fragment the browser changes under o
     view.container.querySelector("[data-decisions-body]"),
     "the write-up's fragment drew the Decisions view beside the outline"
   ).toBeNull();
+  view.unmount();
 });
 
 // A read the view draws no line of its own for, refused, is no row of the view. A comment the
@@ -652,6 +1770,7 @@ test("the comment's own read refused, a comment named beside the Decisions view 
       "the Decisions view was drawn beside the outline"
     ).toBeNull();
   } finally {
+    cleanup();
     read.mockRestore();
   }
 });
@@ -661,7 +1780,9 @@ test("the comment's own read refused, a comment named beside the Decisions view 
 // and no Retry. It draws the outline's names line over its list, after its own reads' lines, and
 // its Retry reads the names again.
 test("under the Decisions view, a failed names read draws the outline's names line over the list, and its Retry reads the names again", async () => {
-  spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([decision("d1")]));
+  // A decision node of the tree read whose words cite another issue, which the names read names.
+  const cited = buildDispatchReference({ key: "CORE-2", kind: "issue" });
+  answerTree([decision("d1", { text: `The decision d1 follows ${cited}.` })]);
   // The stub `stubReads` set, which `spyOn` hands back: refused once, then its own answer.
   const names = spyOn(api, "getReferenceTargets").mockRejectedValueOnce(REFUSED);
   const view = drawStage("");
@@ -691,6 +1812,7 @@ test("under the Decisions view, a failed names read draws the outline's names li
     expect(namesLine(), "the Decisions view's names line stayed once the names answered").toBeNull()
   );
   expect(names.mock.calls.length, "the Retry did not ask the names again").toBe(2);
+  view.unmount();
 });
 
 /** The decisions of the older-Change cases (decision 563 (4)): each waits for review and is tied
@@ -698,12 +1820,12 @@ test("under the Decisions view, a failed names read draws the outline's names li
  *  page holds, so a Change of it may stand on the older page that answer names; the second
  *  changed after it, so none of its Changes can. */
 const OLDER_DECISION = decision("older", {
-  changed_at: "2026-11-01T00:00:00Z",
-  links: [shaped(specRef("s1"))],
+  decision: { changed_at: "2026-11-01T00:00:00Z", links: [shaped(specRef("s1"))] },
+  role: "query",
 });
 const NEWER_DECISION = decision("newer", {
-  changed_at: "2026-11-06T00:00:00Z",
-  links: [shaped(specRef("s1"))],
+  decision: { changed_at: "2026-11-06T00:00:00Z", links: [shaped(specRef("s1"))] },
+  role: "query",
 });
 
 /** The reader's Change of the first decision, made after its words last changed and before
@@ -721,15 +1843,8 @@ const STATEMENT_NODE: TreeAnswerNode = treeNode("s1", "requirement", KEY, {
   text: "The statement.",
 });
 
-/** The decisions of the older-Change cases as Conversation's read answers them on a page: each
- *  one's own node, at its place in the spec. */
-const DECISION_NODES: readonly TreeAnswerNode[] = [OLDER_DECISION, NEWER_DECISION].map((made, at) =>
-  treeNode(made.block_id, "decision", KEY, {
-    decision: made,
-    ...inDocument(SPEC_DOCUMENT, at + 1),
-    text: made.text,
-  })
-);
+/** The decisions of the older-Change cases as the tree read answers them: each one's own node. */
+const DECISION_NODES: readonly TreeAnswerNode[] = [OLDER_DECISION, NEWER_DECISION];
 
 /** Conversation's first page for those cases: the statement, the two decisions and the two
  *  threads, and the position of its oldest comment, as older comments remain. */
@@ -745,30 +1860,49 @@ const OLDER_PAGE: TreeAnswer = {
   comments_before: null,
 };
 
-/** Answers the decisions read with the two decisions, Conversation's read with its first page
- *  and the older page with `page`, and each view never. Hands back how many older pages were
- *  asked for so far. */
-function answerOlderChange(page: Promise<TreeAnswer>): () => number {
-  spyOn(api, "getIssueDecisions").mockResolvedValue(
-    decisionsRead([OLDER_DECISION, NEWER_DECISION])
-  );
+/** Holds the older page of one read out while the other cannot supply the Change. */
+function answerOlderChange(page: Promise<TreeAnswer>, fromView: boolean): () => number {
   const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
-    const asked = query as { readonly comments_before?: string; readonly view?: string };
-    if (asked.view !== undefined) return Promise.withResolvers<never>().promise;
-    return asked.comments_before === undefined ? OLDER_FIRST : page;
+    if (query.comments_before !== undefined) return page;
+    if (query.view === "decisions") {
+      return fromView
+        ? { ...OLDER_FIRST, view: "decisions" }
+        : Promise.withResolvers<never>().promise;
+    }
+    return fromView
+      ? {
+          ...OLDER_FIRST,
+          comments_before: null,
+          nodes: [...(OLDER_FIRST.nodes ?? []), ...(OLDER_PAGE.nodes ?? [])],
+        }
+      : OLDER_FIRST;
   });
-  return () => tree.mock.calls.filter(([, query]) => query?.comments_before !== undefined).length;
+  return () => {
+    const requests = tree.mock.calls.flatMap(([, query]) =>
+      query?.comments_before === undefined ? [] : [query]
+    );
+    for (const query of requests) {
+      expect(query.view, "the older page came from the wrong read").toBe(
+        fromView ? "decisions" : undefined
+      );
+    }
+    return requests.length;
+  };
 }
 
 // Decision 563 (4), as INFRA-1196's architect ruled it at 11:23Z (choice (b)): a decision whose
-// Change may stand on a comment page Conversation's read has not loaded stays in the review list,
+// Change may stand on a comment page its read has not loaded stays in the review list,
+// whether that read is the decisions view or Conversation's fallback,
 // drawn with the outline's mark ("+" after its state), and the list's count leaves it out until
 // that page is read. The view reads it once the stage's view has drawn (`useTellViewDrawn`), and
 // the decision then carries the Change the page holds, which it waits on its agent for: it leaves
 // the list then, and only then.
-test("a decision whose Change stands on an older comment page stays in the review list with the outline's mark, out of its count, until that page is read, then carries its Change", async () => {
+test.each([
+  false,
+  true,
+])("a decision whose Change stands on an older comment page stays marked in the review list and out of its count until the page is read (decisions view: %s)", async (fromView) => {
   const page = Promise.withResolvers<TreeAnswer>();
-  const pagesSent = answerOlderChange(page.promise);
+  const pagesSent = answerOlderChange(page.promise, fromView);
   const view = drawStage("");
   const rowOf = (block: string) =>
     view.container.querySelector<HTMLElement>(
@@ -799,7 +1933,11 @@ test("a decision whose Change stands on an older comment page stays in the revie
       "change_requested"
     )
   );
-  expect(rowOf("older")?.querySelector("[data-change-words]")?.textContent).toBe(OLDER_CHANGE.body);
+  await waitFor(() =>
+    expect(rowOf("older")?.querySelector("[data-change-words]")?.textContent).toBe(
+      OLDER_CHANGE.body
+    )
+  );
   expect(rowOf("older")?.querySelector("[data-change-unread]"), "the mark stayed").toBeNull();
   expect(reviewRows(), "the review list once the Change is held").toEqual([
     decisionNode("newer").id,
@@ -812,13 +1950,9 @@ test("a decision whose Change stands on an older comment page stays in the revie
 // has drawn (`useTellViewDrawn`), so a load reads none. With the reads that mark the decision held
 // as the page mounts, no older page is asked for as it mounts, and one is in a frame after.
 test("no older comment page is read before the page's first drawing, and one is read after it", async () => {
-  const pagesSent = answerOlderChange(Promise.withResolvers<TreeAnswer>().promise);
+  const pagesSent = answerOlderChange(Promise.withResolvers<TreeAnswer>().promise, false);
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(outlineQuery(KEY, "conversation").queryKey, OLDER_FIRST);
-  client.setQueryData(
-    issueDecisionsQuery(KEY, true).queryKey,
-    decisionsRead([OLDER_DECISION, NEWER_DECISION])
-  );
   drawStage("", { client });
   expect(pagesSent(), "an older comment page was read before the page's first drawing").toBe(0);
   await waitFor(() =>
@@ -826,27 +1960,35 @@ test("no older comment page is read before the page's first drawing, and one is 
   );
 });
 
-/** Answers the decisions read with the two decisions of the older-Change cases, Conversation's
- *  first page with `first`, its next page (`cursor`) with `next` and its older comment page
- *  (`comments_before`) with `older`, and each view never. Hands back the pages past the first
- *  asked for so far, in the order they were asked for, each by the place it reads from. */
+/** Answers Conversation's first page with `first`, its next page (`cursor`) with `next` and its
+ *  older comment page (`comments_before`) with `older`, and each view never; or, where
+ *  `conversation` is given, the decisions view so, and Conversation's read with `conversation`
+ *  alone. The decisions are the decision nodes of the read that answers `first`, and their
+ *  Changes the comments it hangs under them. Hands back the pages past the first asked for so
+ *  far, in the order they were asked for, each by the view it reads, where it reads one, and the
+ *  place it reads from. */
 function answerPages(
   first: TreeAnswer,
   next: Promise<TreeAnswer>,
-  older: Promise<TreeAnswer>
+  older: Promise<TreeAnswer>,
+  conversation?: TreeAnswer
 ): () => readonly string[] {
-  spyOn(api, "getIssueDecisions").mockResolvedValue(
-    decisionsRead([OLDER_DECISION, NEWER_DECISION])
-  );
+  const paged = conversation === undefined ? undefined : "decisions";
   const tree = spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
-    if (query.view !== undefined) return Promise.withResolvers<never>().promise;
-    if (query.cursor !== undefined) return next;
-    return query.comments_before === undefined ? first : older;
+    if (query.view === paged) {
+      if (query.cursor !== undefined) return next;
+      if (query.comments_before !== undefined) return older;
+      return paged === undefined ? first : { ...first, view: paged };
+    }
+    return query.view === undefined && conversation !== undefined
+      ? conversation
+      : Promise.withResolvers<never>().promise;
   });
   return () =>
     tree.mock.calls.flatMap(([, query]) => {
-      if (query?.cursor !== undefined) return [`cursor ${query.cursor}`];
-      return query?.comments_before === undefined ? [] : [`before ${query.comments_before}`];
+      const read = query?.view === undefined ? "" : `${query.view} `;
+      if (query?.cursor !== undefined) return [`${read}cursor ${query.cursor}`];
+      return query?.comments_before === undefined ? [] : [`${read}before ${query.comments_before}`];
     });
 }
 
@@ -857,16 +1999,34 @@ const NEXT_PAGE: TreeAnswer = treeAnswer([
 ]);
 
 // Decision 574 (B): the tree read pages its walk as well as its comments, and a comment may stand
-// on any page of the walk. So while Conversation's read names a next page (`cursor`), with no
-// older comment page (`comments_before: null`), each decision with no Change held stays in the
-// review list drawn with the outline's mark, out of its count, until that page is read. The view
-// reads it once the stage's view has drawn (`useTellViewDrawn`): the decision whose Change it
-// holds then carries that Change and leaves the list, and the other, whose Change no page holds,
-// waits on the reader again.
-test("a decision whose Change stands on the next page of Conversation's read stays in the review list with the outline's mark, out of its count, until that page is read, then carries its Change", async () => {
+// on any page of the walk; the server pages the decisions view's walk as it pages Conversation's.
+// So while the read the decisions are drawn from - the decisions view where the page holds it,
+// Conversation's read until then - names a next page (`cursor`), with no older comment page
+// (`comments_before: null`), each decision with no Change held stays in the review list drawn
+// with the outline's mark, out of its count, until that page is read. The view reads it once the
+// stage's view has drawn (`useTellViewDrawn`): the decision whose Change it holds then carries
+// that Change and leaves the list, and the other, whose Change no page holds, waits on the reader
+// again.
+test.each([
+  false,
+  true,
+])("a decision whose Change stands on the next page of the read it is drawn from stays in the review list with the outline's mark, out of its count, until that page is read, then carries its Change (decisions view: %s)", async (fromView) => {
   const next = Promise.withResolvers<TreeAnswer>();
   const first: TreeAnswer = { ...OLDER_FIRST, comments_before: null, cursor: "page-2" };
-  const pagesSent = answerPages(first, next.promise, Promise.withResolvers<never>().promise);
+  // Read from the decisions view, Conversation's read holds every page, the Change among them,
+  // so only the view's next page brings the Change to the view's decision.
+  const whole: TreeAnswer = {
+    ...first,
+    cursor: null,
+    nodes: [...(first.nodes ?? []), ...(NEXT_PAGE.nodes ?? [])],
+  };
+  const pagesSent = answerPages(
+    first,
+    next.promise,
+    Promise.withResolvers<never>().promise,
+    fromView ? whole : undefined
+  );
+  const nextPage = fromView ? "decisions cursor page-2" : "cursor page-2";
   const view = drawStage("");
   const rowOf = (block: string) =>
     view.container.querySelector<HTMLElement>(
@@ -896,7 +2056,7 @@ test("a decision whose Change stands on the next page of Conversation's read sta
     reviewCount(),
     "the review list's count counts a marked decision before the next page answers"
   ).toBe("0");
-  await waitFor(() => expect(pagesSent(), "the next page was not read").toEqual(["cursor page-2"]));
+  await waitFor(() => expect(pagesSent(), "the next page was not read").toEqual([nextPage]));
   await act(async () => next.resolve(NEXT_PAGE));
   await waitFor(() =>
     expect(rowOf("older")?.dataset.nodeState, "the decision does not carry its Change").toBe(
@@ -909,7 +2069,7 @@ test("a decision whose Change stands on the next page of Conversation's read sta
     decisionNode("newer").id,
   ]);
   expect(reviewCount()).toBe("1");
-  expect(pagesSent(), "the next page was read other than once").toEqual(["cursor page-2"]);
+  expect(pagesSent(), "the next page was read other than once").toEqual([nextPage]);
 });
 
 // Decision 574 (B) under decision 538: the page reads the next pages first, by the path an
@@ -924,10 +2084,6 @@ test("the next page is read before an older comment page, one at a time, and nei
   const pagesSent = answerPages(first, next.promise, Promise.resolve(OLDER_PAGE));
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   client.setQueryData(outlineQuery(KEY, "conversation").queryKey, first);
-  client.setQueryData(
-    issueDecisionsQuery(KEY, true).queryKey,
-    decisionsRead([OLDER_DECISION, NEWER_DECISION])
-  );
   const view = drawStage("", { client });
   expect(pagesSent(), "a page was read before the page's first drawing").toEqual([]);
   await waitFor(() =>
@@ -1015,7 +2171,7 @@ function recordDrawn(
 test("a decision whose statement stands on a page not read yet is drawn in the review list at the first drawing, and stays there when that page lands", async () => {
   const next = Promise.withResolvers<TreeAnswer>();
   const first: TreeAnswer = {
-    ...treeOf(commentNodes(TWO_THREADS)),
+    ...treeOf([...DECISION_NODES, ...commentNodes(TWO_THREADS)]),
     comments_before: null,
     cursor: "page-2",
   };
@@ -1039,7 +2195,7 @@ test("a decision whose statement stands on a page not read yet is drawn in the r
       view.container.querySelectorAll("[data-decisions-body] [data-decision-informs]").length,
       "a placed row drew no informs line before its statement's page landed"
     ).toBe(2);
-    await act(async () => next.resolve(treeAnswer([STATEMENT_NODE, ...DECISION_NODES])));
+    await act(async () => next.resolve(treeAnswer([STATEMENT_NODE])));
     await waitFor(() =>
       expect(
         client
@@ -1064,9 +2220,6 @@ test("a decision whose statement stands on a page not read yet is drawn in the r
 // draws its rows before that page is asked for, and keeps them drawn while it is out.
 test("the Decisions view draws its rows before the next page is asked for, and keeps them while that page is out", async () => {
   const first: TreeAnswer = { ...OLDER_FIRST, comments_before: null, cursor: "page-2" };
-  spyOn(api, "getIssueDecisions").mockResolvedValue(
-    decisionsRead([OLDER_DECISION, NEWER_DECISION])
-  );
   // Whether the view had drawn a row as each next page was asked for.
   const rowsAtAsk: boolean[] = [];
   spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
@@ -1099,7 +2252,7 @@ function placement(view: RenderResult): string {
 // first drawn in the review list, where it stays.
 test("with the coverage read answering after the other reads, a decision whose statement stands on a page not read yet is first drawn in the review list and never in the foot", async () => {
   const first: TreeAnswer = {
-    ...treeOf(commentNodes(TWO_THREADS)),
+    ...treeOf([...DECISION_NODES, ...commentNodes(TWO_THREADS)]),
     comments_before: null,
     cursor: "page-2",
   };
@@ -1116,7 +2269,7 @@ test("with the coverage read answering after the other reads, a decision whose s
   try {
     // Every read but the coverage read has answered. The view's reads have not settled, so it
     // has not drawn its first drawing, and no page past the first is read yet either.
-    await waitFor(() => expect(api.getIssueDecisions).toHaveBeenCalled());
+    await waitFor(() => expect(api.listIssueAskThreads).toHaveBeenCalled());
     await waitFor(() => expect(api.getIssueTree).toHaveBeenCalled());
     await waitInAct(50);
     expect(placement(view), "a decision was drawn before the coverage read answered").toBe(
@@ -1147,9 +2300,6 @@ test("with the coverage read answering after the other reads, a decision whose s
 // A refused coverage read never holds the view: it stands refused by the page's one rule, and the
 // view draws its decisions by the statements the tree holds.
 test("with the coverage read refused, the Decisions view still draws its decisions", async () => {
-  spyOn(api, "getIssueDecisions").mockResolvedValue(
-    decisionsRead([OLDER_DECISION, NEWER_DECISION])
-  );
   spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) =>
     query.view === undefined
       ? { ...OLDER_FIRST, comments_before: null }
@@ -1169,8 +2319,11 @@ test("with the coverage read refused, the Decisions view still draws its decisio
 /** A decision tied to two statements: `s1`, which Conversation's first page holds, and `s2`,
  *  which stands on its next page and which the coverage read alone names until it lands. */
 const TIED_TWICE = decision("twice", {
-  changed_at: "2026-11-06T00:00:00Z",
-  links: [shaped(specRef("s1")), shaped(specRef("s2"))],
+  decision: {
+    changed_at: "2026-11-06T00:00:00Z",
+    links: [shaped(specRef("s1")), shaped(specRef("s2"))],
+  },
+  role: "query",
 });
 
 /** The lines of the "informs" part of `block`'s row: one for each statement it draws. */
@@ -1180,19 +2333,18 @@ function informsLines(view: RenderResult, block: string): number {
   ).length;
 }
 
-// Decision 583 (2), amended: a decision's row draws one line for each statement it is tied to,
-// counted from the decisions read's ties at its first drawing, before any name comes - here no
-// name ever comes, since the names read answers none - so its height is known then. One of the
-// two statements stands on the page not read yet; the row draws its line all the same, and the
-// count stays two once that page lands.
+// Decision 583 (2), amended, and "586 (F), corrected": a decision's row draws one line for each
+// statement it is tied to at its first drawing, before any name comes from the names read - here
+// the names read answers none - and names each from its own words: `s1`, which the tree holds,
+// by its node, and `s2`, on the page not read yet, by its coverage row. So the row's height is
+// known from the first drawing, and the count stays two once that page lands.
 test("a decision's row draws one informs line for each statement it is tied to before any name comes, one of them on a page not read yet", async () => {
   const next = Promise.withResolvers<TreeAnswer>();
   const first: TreeAnswer = {
-    ...treeOf([STATEMENT_NODE, ...commentNodes(TWO_THREADS)]),
+    ...treeOf([STATEMENT_NODE, TIED_TWICE, ...commentNodes(TWO_THREADS)]),
     comments_before: null,
     cursor: "page-2",
   };
-  spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([TIED_TWICE]));
   spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) => {
     if (query.view !== undefined) return Promise.withResolvers<never>().promise;
     return query.cursor === undefined ? first : next.promise;
@@ -1218,10 +2370,17 @@ test("a decision's row draws one informs line for each statement it is tied to b
       `the row did not draw one informs line for each tie; the stage drew ${drawnSlot(view)}`
     ).toBe(2)
   );
-  expect(
-    view.container.querySelector("[data-decisions-body] [data-decision-line] a"),
-    "a statement was named, though the names read answers none"
-  ).toBeNull();
+  await waitFor(() =>
+    expect(
+      ["spec#b-s1", "spec#b-s2"].map(
+        (statement) =>
+          view.container.querySelector(
+            `[data-decisions-body] [data-decision-statement="${statement}"] a`
+          ) !== null
+      ),
+      "a statement was not named from its own words, though the names read answers none"
+    ).toEqual([true, true])
+  );
   await act(async () =>
     next.resolve(
       treeAnswer([
@@ -1253,32 +2412,38 @@ function drawnRows(view: RenderResult): string {
 // before both answer, and once the rows are drawn their order and parts never change.
 test("the Decisions view draws no entry until the asks and the decisions have answered, and no row moves when the later one does", async () => {
   const later = decision("later", {
-    changed_at: "2026-11-20T00:00:00Z",
-    links: [shaped(specRef("s1"))],
+    decision: {
+      changed_at: "2026-11-20T00:00:00Z",
+      links: [shaped(specRef("s1"))],
+    },
+    role: "query",
   });
   spyOn(api, "listIssueAskThreads").mockResolvedValue([...ASKED] as never);
-  const decisionsOut = Promise.withResolvers<IssueDecisions>();
-  const decisions = spyOn(api, "getIssueDecisions").mockReturnValue(decisionsOut.promise);
-  answerTree([
-    STATEMENT_NODE,
-    treeNode(later.block_id, "decision", KEY, {
-      decision: later,
-      ...inDocument(SPEC_DOCUMENT, 1),
-      text: later.text,
-    }),
-    ...ASKED.map((asked) =>
-      treeNode(asked.id, "ask", KEY, { made_at: asked.created_at, text: asked.question })
-    ),
-  ]);
+  const decisionsOut = Promise.withResolvers<TreeAnswer>();
+  const tree = spyOn(api, "getIssueTree").mockReturnValue(decisionsOut.promise);
   const view = drawStage("");
   // The rows as they stood at each change the view drew.
   const drawn = recordDrawn(view, drawnRows);
   try {
     await waitFor(() => expect(api.listIssueAskThreads).toHaveBeenCalled());
-    await waitFor(() => expect(decisions).toHaveBeenCalled());
+    await waitFor(() => expect(tree).toHaveBeenCalled());
     await waitInAct(50);
     expect(drawnRows(view), "a row was drawn before the decisions read answered").toBe("");
-    await act(async () => decisionsOut.resolve(decisionsRead([later])));
+    await act(async () =>
+      decisionsOut.resolve(
+        treeOf([
+          STATEMENT_NODE,
+          later,
+          ...ASKED.map((asked) =>
+            treeNode(asked.id, "ask", KEY, {
+              made_at: asked.created_at,
+              role: "query",
+              text: asked.question,
+            })
+          ),
+        ])
+      )
+    );
     await waitFor(() =>
       expect(
         drawnRows(view).split(" ").length,

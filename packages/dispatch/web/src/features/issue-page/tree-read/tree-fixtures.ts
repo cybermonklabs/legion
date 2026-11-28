@@ -24,7 +24,7 @@ import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "./tree-read";
  */
 
 /** The issue every fixture of the page is read for. */
-const TREE_KEY = "CORE-1";
+export const TREE_KEY = "CORE-1";
 
 /** The kinds the store keys a node by that are no block, each the supertag of its nodes. A typed
  *  block of another kind - an ask written in a document among them - is a `block`. */

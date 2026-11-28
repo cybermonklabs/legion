@@ -42,6 +42,7 @@ import { agentRoleWord } from "./agent-role";
 import { openChildEntry } from "./children-section";
 import { type Clamp, sameClamp, watchClamp } from "./clamp-measurer";
 import { DecisionActions } from "./DecisionActions";
+import { standingParts } from "./decisions-filter/entry-standing";
 import { useDocumentReadOnly } from "./document-admission";
 import { useDocumentStage } from "./document-stage";
 import { useEditedRow } from "./edited-row";
@@ -69,7 +70,6 @@ import {
   GLYPH_TOKENS,
   NODE_TYPE_NAMES,
   type NodeType,
-  nodeStateWord,
 } from "./page-words";
 import { isThreadContext, tagFilter } from "./presets";
 import { RowText, useOutOfTabOrder } from "./RowText";
@@ -157,10 +157,10 @@ export const NodeRow = memo(function NodeRow({
    *  (`TreeRows.tsx`), so the counts are drawn into a line of their own height and move nothing
    *  under the row (the plan's "The places held", row 6). False unless the view passes it. */
   countsHeld?: boolean;
-  /** The document this row's node is a block of, which its face writes against: a decision's
-   *  Keep and Change are writes on the document its `decision` block stands in, the spec or
-   *  another of the issue's (R7). Undefined for a node that is no block of a document of this
-   *  issue. */
+  /** The document this row's node is a block of, which names the issue whose tree read holds
+   *  the node: a decision's Keep and Change write on the decision node's own document
+   *  (`decision-nodes.ts`' `DecisionNode.document`), never this one. Undefined for a node that
+   *  is no block of a document of this issue. */
   document?: Artifact;
   /** Whether the row's node is a block of a document the page may let the reader type in - the
    *  issue is open and the node has a document - which the row reads with what its document's
@@ -795,6 +795,10 @@ export function RowMargin({
   const time = node.at === undefined ? "" : shortDay(node.at);
   const authored = author.kind !== "unknown";
   const agentText = useAgentText();
+  // How the decision stands, with the person its state names: its keeper after "Kept by", and
+  // whoever asked to change it after "Changed by", in place of its state's own word
+  // (`standingParts`, R2, R3).
+  const standing = node.state === undefined ? undefined : standingParts(node.state, node);
   if (node.child !== undefined) {
     // A child issue's tag is its key, which opens the child in the children's section above the
     // outline (R9, R14), where its entry links to its own page; its row names no author, no time
@@ -899,7 +903,7 @@ export function RowMargin({
       </div>
       {node.state === undefined && node.unsure !== true ? null : (
         <div className={NODE_ROW_LAYOUT.marginState}>
-          {node.state === undefined ? null : (
+          {standing === undefined ? null : (
             <span
               className={`inline-flex items-center gap-1 ${context ? "" : pageStateText[stateTone(node)]}`}
             >
@@ -907,16 +911,21 @@ export function RowMargin({
                 <NodeGlyph className="size-3 shrink-0" token={stateGlyph} />
               )}
               <span data-node-state={node.state} {...pageChrome}>
-                {nodeStateWord(node.state)}
-                {/* "Kept by" names the person who kept it, by the page's one name for them (R2). */}
-                {node.state === "kept" && node.keptBy !== undefined ? (
+                {standing.word}
+                {/* "Kept by" names the person who kept it, and "Changed by" the person whose
+                    Change it waits on, by the page's one name for them (R2, R3). */}
+                {standing.person === undefined ? null : (
                   <>
                     {" "}
-                    <span data-kept-by="" {...authorText}>
-                      {agentText.author(node.keptBy)}
+                    <span
+                      data-changed-by={node.state === "kept" ? undefined : ""}
+                      data-kept-by={node.state === "kept" ? "" : undefined}
+                      {...authorText}
+                    >
+                      {agentText.author(standing.person)}
                     </span>
                   </>
-                ) : null}
+                )}
                 {/* A decision whose Change may stand on a comment page the read has not loaded
                     says so as a count with more to read does (R15), rather than read as
                     unchanged (`TreeNode.changeUnread`). */}

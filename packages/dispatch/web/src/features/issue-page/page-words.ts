@@ -168,11 +168,13 @@ export const BLOCK_TYPE_NAMES = joinWords("BLOCK_TYPE_NAMES", {
  * A decision's states are spec R2's, "wherever a decision is drawn": `waiting_review` is an
  * agent's decision that waits for a person's review, `kept` one a person kept as it reads now -
  * the row draws the name of who kept it after the word - and `replaced` one a later decision
- * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by `tree-drafts.ts`'s
- * `decisionState`). `change_requested` is a decision the reader sent a Change on since it last
- * changed, which waits on its agent and no longer on the reader (`decision-review.ts`). A
- * decision in none of them - an agent's that nobody has reviewed and nothing replaced, or a
- * person's own section - draws no state.
+ * replaced (`decisions.go`'s `replaced`, `waiting_review` and `kept`, read by
+ * `decision-review.ts`' `reviewState`). `change_requested` is a decision a person sent a Change
+ * on since it last changed, which waits on its agent and no longer on the reader
+ * (`decision-review.ts`): the page draws it as "Changed by" and the name of that person
+ * (`DECISIONS_WORDS.changed_by`), and its word here stays as it is, since a file the Dashboard
+ * chunk loads takes additions only (root R33). A decision in none of them - an agent's that
+ * nobody has reviewed and nothing replaced, or a person's own section - draws no state.
  */
 export const NODE_STATE_WORDS = joinWords("NODE_STATE_WORDS", {
   ask: {
@@ -391,13 +393,14 @@ export const SPEC_WORDS = joinWords("SPEC_WORDS", {
 /**
  * The words the Decisions filter's body draws of its own (dispatch://INFRA-1196 R2, R22, R35,
  * `decisions-filter/`). None is a sentence about the page or about Dispatch, and no sentence
- * explains the four parts: their headings are the whole of it. How a decision stands is
+ * explains the parts: their headings are the whole of it. How a decision stands is
  * `NODE_STATE_WORDS.decision`, which the outline draws too.
  */
 export const DECISIONS_WORDS = joinWords("DECISIONS_WORDS", {
-  /** The fourth part's heading, which is the control that unfolds it, after the count of the
-   *  decisions it holds; the words agree with the count (R2: "folded at the foot, the agents'
-   *  decisions that no statement rests on"). */
+  /** The fourth part's heading, which is the control that folds and unfolds it, after the count
+   *  of the decisions it holds; the words agree with the count (R2: "at the foot and unfolded,
+   *  the agents' decisions no statement rests on, which the page folds only when the reader
+   *  folds them"). */
   agents_many: "agent decisions that no statement rests on",
   agents_one: "agent decision that no statement rests on",
   /** Before the reader's words of a Change they sent on a decision, under that decision. */
@@ -698,20 +701,23 @@ export const STATE_LINES = joinWords("STATE_LINES", {
     "Its subscription covers other issues and documents too, so it cannot be unsubscribed from this one alone.",
   /** What the outline says over its rows, on load as much as later, of each read they come from
    *  that stands failed, beside that read's Retry (`outline-reads.ts`): the names the rows cite,
-   *  which checks serve each statement, the issue's decisions, the checks' results, the
-   *  questions and the messages. The spec's, the plan's and the verification
-   *  document's lines, last, are what the Plan and the Verification views say of a tree read
-   *  refused before it first answered, each named by the part the document whose blocks the view
-   *  waits on plays (`PlanFilterBody`, `VerificationFilterBody`). */
+   *  which checks serve each statement, the checks' results, the questions and the messages; the
+   *  issue's decisions and comments are nodes of the tree read, whose own failed line says so.
+   *  The spec's, the plan's and the verification document's lines, last, are what the Plan and
+   *  the Verification views say of a tree read refused before it first answered, each named by
+   *  the part the document whose blocks the view waits on plays (`PlanFilterBody`,
+   *  `VerificationFilterBody`). */
   names_unreadable: "Could not load the names this issue's rows cite.",
   coverage_unreadable: "Could not load which checks serve each statement.",
-  issue_decisions_unreadable: "Could not load this issue's decisions.",
   results_unreadable: "Could not load the checks' results.",
   asks_unreadable: "Could not load the questions.",
   messages_unreadable: "Could not load the messages.",
   spec_unreadable: "Could not load the spec.",
   plan_unreadable: "Could not load the plan.",
   verification_unreadable: "Could not load the verification document.",
+  /** What the Decisions view says, beside one Retry, where the reads its decisions come from stand
+   *  failed: the tree read and its Decisions view (`decisions-filter/DecisionsFilterBody.tsx`). */
+  issue_decisions_unreadable: "Could not load this issue's decisions.",
 } as const);
 
 /**

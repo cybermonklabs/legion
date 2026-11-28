@@ -6,6 +6,7 @@ import { Profiler, type ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { api } from "../../api/client";
+import { issueResultsQuery } from "../../api/queries";
 import type { IssueDetails } from "../../api/types";
 import { MarginProvider } from "../margin/margin-context";
 import { DESKTOP_WIDTH, stubViewport } from "../margin/margin-fixture";
@@ -14,7 +15,6 @@ import { ReferenceNamesProvider } from "../refs/reference-names";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import {
-  decisionsRead,
   issueDetails,
   issueTree,
   KEY,
@@ -281,12 +281,13 @@ test("naming the document a row is edited in draws the editor and not the body",
   }
 });
 
-// An answer of the decisions and of the asks that holds what the read held, in objects that are all
+// An answer of the results and of the asks that holds what the read held, in objects that are all
 // new, builds the tree again: the page's nodes are new objects, though no row holds anything new.
 // No row is drawn again (`NodeRow`'s `memo`, `IssueTree.tsx`'s `sharedTree`). The cases that count
 // rows here would have every row of a long issue drawn again at the base, where each of those
-// answers was one more whole-outline render.
-test("an answer of the decisions and the asks that changes nothing for a row draws no row", async () => {
+// answers was one more whole-outline render. Every decision is a node of the tree read, so no
+// decisions read is answered.
+test("an answer of the results and the asks that changes nothing for a row draws no row", async () => {
   stubs.push(...stubReads());
   const comments = [
     readComment("head-a", 1),
@@ -294,12 +295,14 @@ test("an answer of the decisions and the asks that changes nothing for a row dra
     readComment("head-b", 3),
   ];
   const tree = treeOfComments(comments);
-  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockImplementation(async () =>
-    decisionsRead([])
-  );
+  const getIssueResults = spyOn(api, "getIssueResults").mockImplementation(async () => ({
+    checks: [],
+    issue: KEY,
+    verification_artifact_id: "",
+  }));
   const listIssueAskThreads = spyOn(api, "listIssueAskThreads").mockImplementation(async () => []);
   stubs.push(
-    getIssueDecisions,
+    getIssueResults,
     listIssueAskThreads,
     spyOn(api, "getIssueTree").mockImplementation(async (_key, query = {}) =>
       query.view === undefined ? tree : treeOf([])
@@ -319,14 +322,14 @@ test("an answer of the decisions and the asks that changes nothing for a row dra
     });
     await waitInAct(100);
     const before = draws.rows();
-    const answered = getIssueDecisions.mock.calls.length + listIssueAskThreads.mock.calls.length;
+    const answered = getIssueResults.mock.calls.length + listIssueAskThreads.mock.calls.length;
     await act(async () => {
-      await client.invalidateQueries({ queryKey: ["decisions", KEY] });
+      await client.invalidateQueries({ queryKey: issueResultsQuery(KEY).queryKey });
       await client.invalidateQueries({ queryKey: ["asks", KEY, "thread"] });
     });
     await waitInAct(100);
     expect(
-      getIssueDecisions.mock.calls.length + listIssueAskThreads.mock.calls.length - answered,
+      getIssueResults.mock.calls.length + listIssueAskThreads.mock.calls.length - answered,
       "the two reads were not answered again"
     ).toBe(2);
     expect(

@@ -460,7 +460,8 @@ const SIGNAL_ROOM: Readonly<Record<Filter, string>> = {
  * (12 px, the quiet grey; the failed red for what failed and the decision violet for what waits
  * for review, each with its word, so the colour repeats what the word says). The count is the
  * author's number and carries `data-preset-count`, which the checks read it by; it carries "+"
- * while the read it is read from holds nodes no page read yet holds (`PresetSignal.more`, R15).
+ * while the read it is read from holds nodes no page read yet holds (`PresetSignal.more`, R15),
+ * and the flag's number carries it the same way where the flag says so (`PresetSignal.flag.more`).
  * Until the signal is known the room is drawn empty and hidden from assistive technology, so it
  * holds the control's width and no screen reader hears it or find-in-page matches in it. The
  * room carries `data-preset-signal` either way.
@@ -497,7 +498,10 @@ function Signal({
               {...pageChrome}
             >
               {" · "}
-              <span {...authorText}>{signal.flag.count}</span>{" "}
+              <span {...authorText}>
+                {signal.flag.count}
+                {signal.flag.more === true ? "+" : ""}
+              </span>{" "}
               {FILTER_SIGNAL_WORDS[signal.flag.word]}
             </span>
           )}

@@ -30,7 +30,6 @@ import {
   pageStateText,
   pageWordsText,
 } from "../../../theme/classes";
-import { issueDecisionsQuery } from "../../doc/spec-marks";
 import { useAgentText } from "../../refs/AgentName";
 import { blockFragment } from "../../refs/block-reference";
 import { PublishedReferenceNames, type PublishedReferences } from "../../refs/reference-names";
@@ -44,7 +43,9 @@ import { appKeymap } from "../../shell/keymap";
 import { useMediaQuery } from "../../shell/useDialog";
 import { agentRoleWord } from "../agent-role";
 import { CONTENTS_PANE_QUERY } from "../contents-frame";
+import { decisionNodes } from "../decision-nodes/decision-nodes";
 import { conversationPath } from "../decisions-filter/decisions-parts";
+import { standingParts } from "../decisions-filter/entry-standing";
 import { useDocumentAdmissions } from "../document-admission";
 import { useDocumentStage } from "../document-stage";
 import { useSetFocusedNode } from "../focused-node";
@@ -68,7 +69,6 @@ import {
   EMPTY_STATE_LINES,
   GLYPH_TOKENS,
   NODE_TYPE_NAMES,
-  nodeStateWord,
   SPEC_WORDS,
   STATE_LINES,
   sentenceCase,
@@ -81,7 +81,14 @@ import { specSummary } from "../spec-summary";
 import { treeContext } from "../tree-drafts";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
-import { issueTreeQuery, useBlocksRunning, useTreeRead } from "../tree-read/tree-read";
+import {
+  issueTreeQuery,
+  useBlocksRunning,
+  useLastAnswer,
+  useLoadView,
+  useTreeRead,
+  viewQuery,
+} from "../tree-read/tree-read";
 import { type LineRead, useLineRefusals } from "../useLineRefusals";
 import { abortOnReaderAct, nodeEditable, type OnEditing, useNodeEditing } from "../useNodeEditing";
 import { moveToRow, useTreeKeymap } from "../useTreeKeymap";
@@ -209,7 +216,9 @@ export function SpecFilterBody({
   /** The node the address names, which takes the focus and the tab stop once per following of
    *  the address (R19), unless the reader has acted since they followed it. */
   reveal?: string;
-  /** The whole tree, which holds the asks, the decisions and each statement's checks. */
+  /** The whole tree, which holds the asks, the decisions and each statement's checks, and on
+   *  the issue's node the Spec view read the page holds (`TreeNode.views`), whose decisions the
+   *  column draws. */
   root: TreeNode;
   /** The tree as the Spec filter leaves it (`presetView`). */
   view: TreeNode;
@@ -233,7 +242,7 @@ export function SpecFilterBody({
   // read (`useTreeRead`); `treeQuery` names the tree key both lines tell their refusal by.
   const treeQuery = issueTreeQuery(issue.key);
   const resultsQuery = issueResultsQuery(issue.key);
-  const decisionsQuery = issueDecisionsQuery(issue.key, true);
+  const specQuery = viewQuery(issue.key, "spec");
   const asksQuery = issueAskThreadsQuery(issue.key);
   const coverageRead = useQuery(treeRead(coverageQuery));
   const { blocksOf } = useTreeRead(issue);
@@ -246,8 +255,41 @@ export function SpecFilterBody({
     ...blocksOf("verification"),
     isFetching: useBlocksRunning(issue.key, "verification"),
   };
-  const decisionsRead = useQuery(treeRead(decisionsQuery));
   const asksRead = useQuery(treeRead(asksQuery));
+  const asks = asksRead.data;
+  // The decisions are the decision nodes of the Spec view read (`?view=spec`), which the page
+  // holds on the issue's node (`TreeNode.views`), so the body costs no request of its own
+  // to draw them: each decision the view holds, and each question a person answered that shaped
+  // something. The decision the read carries on the ask decides that, by its `links`; the asks
+  // read is only the fallback where the read carries none, an ask it says is answered that
+  // carries `shaped` ties (`decisionNodes`). The view read is watched under the key the page
+  // reads it by (`ViewReadProvider`). A change of the issue marks the view stale and reads it
+  // again with its answer kept (`subscribeTreeFreshness`); a new load, a Keep and a Change drop
+  // it (`dropViews`), and the column then draws the answer it last held (`useLastAnswer`) until
+  // the next one lands. That answer is this load's alone: on a return to the issue the page's
+  // tree holds no view of the earlier visit (`useIssueTree.ts`, `loadEnded`), so the column's
+  // first render keeps none of it, and the view read's state is this load's too (`useLoadView`),
+  // so that render draws no failed line for a refusal of the earlier visit. A read again that
+  // fails keeps its answer, which leaves the body an answer to draw too.
+  const specRead = useLoadView(issue.key, "spec");
+  const held = useLastAnswer(root.views?.spec);
+  const decisions = useMemo(
+    () => (held === undefined ? [] : decisionNodes(held, { asks, issue })),
+    [asks, held, issue]
+  );
+  // The tree that view read builds (`TreeViews.trees`), the one last held as its answer is: it
+  // holds each answered question whose `shaped` ties name a statement of the view, which
+  // Conversation's read the page's tree is built from may not have reached, so a person's
+  // decision is drawn by their answer whatever page of that read the page holds.
+  const heldTree = useLastAnswer(root.views?.trees?.spec);
+  // The view read as the lines below read a read: held where the column holds an answer of it,
+  // the last one included, and refused, run and asked again by its own query.
+  const decisionsRead = {
+    data: held,
+    errorUpdateCount: specRead.errorUpdateCount,
+    isFetching: specRead.isFetching,
+    refetch: specRead.refetch,
+  };
   // One predicate per read: whether it holds an answer. Every part of the body that says what
   // decided a statement or how it stands - the decision cell and its line saying none did, the
   // line under a statement, the runs, the mark, and what `w` and `q` report - reads the
@@ -260,7 +302,7 @@ export function SpecFilterBody({
   const resultsHeld = resultsRead.data !== undefined;
   // The Verification document's blocks put each check under the statement it serves.
   const verificationBlocksHeld = verification === undefined || checksRead.data !== undefined;
-  const decisionsHeld = decisionsRead.data !== undefined;
+  const decisionsHeld = held !== undefined;
   // The asks read brings a person's answer, which their decision is drawn by, the answered
   // question a statement hangs under, which heads its run (`spec-decided-by.ts`), and the open
   // questions `q` goes to (`tree-keys.ts`'s `nextQuestion`).
@@ -273,20 +315,20 @@ export function SpecFilterBody({
   // and the Verification document's blocks. Before all three are held a mark would say Unknown
   // or no check of a statement that is Met, so none is drawn until they are.
   const marked = resultsHeld && coverageHeld && verificationBlocksHeld;
-  // What decided each statement comes from the decisions read and the asks read: until both are
+  // What decided each statement comes from the Spec view read and the asks read: until both are
   // held a run whose cell draws no decision may yet have one, so nothing says that none did.
   const decidedHeld = decisionsHeld && asksHeld;
   // Each line of the reads that stand failed (`standsFailed`), in the page's words for such a
-  // read (`STATE_LINES`), under the key it is drawn by: the coverage's and the spec's blocks' as
-  // the statements', the results' and the Verification document's blocks' as the results', which
-  // leave every statement unmarked alike, then the decisions' and the asks', in the outline's
-  // words for those two reads. A line stays, its Retry busy, while a read of it that stands
-  // failed runs again, until the read answers. A line's Retry asks again the reads of that line
-  // that stand failed (`failed`), and no other, and none of them while it is read again already.
-  // Each read of a line is paired with its key's hash (`lineRead`), and each line carries the
-  // refusals of its reads it has counted while the body lives, each once under its key
-  // (`useLineRefusals`), which keys its alert, whether it stands, which draws it, and whether it
-  // speaks.
+  // read (`STATE_LINES`), under the key it is drawn by: the coverage's, the spec's blocks' and
+  // the Spec view read's as the statements' - one line for that read, which the decisions come
+  // from (decision 450) - the results' and the Verification document's blocks' as the results',
+  // which leave every statement unmarked alike, and the asks'. A line stays, its Retry busy,
+  // while a read of it that stands failed runs again, until the read answers. A line's Retry
+  // asks again the reads of that line that stand failed (`failed`), and no other, and none of
+  // them while it is read again already. Each read of a line is paired with its key's hash
+  // (`lineRead`), and each line carries the refusals of its reads it has counted while the body
+  // lives, each once under its key (`useLineRefusals`), which keys its alert, whether it stands,
+  // which draws it, and whether it speaks.
   // The names read's line (`namesLine`) comes after all of these, as the outline draws it
   // last (`outline-reads.ts`): the tree reads the names last, once no read it is built from is
   // still out, and gives that line's state itself.
@@ -294,17 +336,16 @@ export function SpecFilterBody({
     {
       line: "statements",
       message: STATE_LINES.statements_unreadable,
-      reads: [lineRead(coverageQuery, coverageRead), lineRead(treeQuery, specBlocksRead)],
+      reads: [
+        lineRead(coverageQuery, coverageRead),
+        lineRead(treeQuery, specBlocksRead),
+        lineRead(specQuery, decisionsRead),
+      ],
     },
     {
       line: "results",
       message: STATE_LINES.spec_results_unreadable,
       reads: [lineRead(resultsQuery, resultsRead), lineRead(treeQuery, checksRead)],
-    },
-    {
-      line: "decisions",
-      message: STATE_LINES.issue_decisions_unreadable,
-      reads: [lineRead(decisionsQuery, decisionsRead)],
     },
     {
       line: "asks",
@@ -334,14 +375,15 @@ export function SpecFilterBody({
       specDecidedBy({
         asksHeld,
         checks: resultsRead.data?.checks ?? [],
-        decisions: decisionsRead.data,
+        decisions,
         lineNames,
         nodeIdOf,
         reader,
         root,
         view,
+        ...(heldTree === undefined ? {} : { viewTree: heldTree }),
       }),
-    [asksHeld, decisionsRead.data, lineNames, nodeIdOf, reader, resultsRead.data, root, view]
+    [asksHeld, decisions, heldTree, lineNames, nodeIdOf, reader, resultsRead.data, root, view]
   );
   const specSlug = spec?.slug ?? "";
   const summary = useMemo(() => specSummary(root, specSlug), [root, specSlug]);
@@ -572,7 +614,7 @@ export function SpecFilterBody({
     onPin: NOTHING,
     // The keymap's `q` and `w` say where they could not go only while its one `readsHeld` flag
     // holds. `q` walks the open questions, which the asks read brings, so the flag is
-    // `asksHeld`; `w` walks the decisions, so its report waits on the decisions read as well,
+    // `asksHeld`; `w` walks the decisions, so its report waits on the Spec view read as well,
     // here (`decidedHeld`, which holds only where `asksHeld` does). This filter tells `w`'s
     // report by its words because the keymap holds that one flag for every key; it goes once
     // the keymap takes a flag per key, when `w`'s flag is `decidedHeld`.
@@ -583,9 +625,9 @@ export function SpecFilterBody({
     // answer, as the tree's key handler answers a `w` it takes first. Where the view draws
     // nothing for it - an open question no address named, a decision that heads no run of the
     // view - the key goes to it in the conversation (`conversationPath`), which opens the
-    // outline there with the focus on it. Until the decisions and asks reads answer, a
+    // outline there with the focus on it. Until the Spec view read and the asks read answer, a
     // decision with no cell may yet have one, and the key does nothing. The node's kind
-    // comes from the tree the keymap found it in, not the body's decisions read.
+    // comes from the tree the keymap found it in, not the Spec view read.
     onReveal: (id) => {
       const node = nodesInOrder(root).find((one) => one.id === id);
       const decided = node?.type === "decision";
@@ -1126,8 +1168,8 @@ function Group({
 }: {
   drawStatement: (statement: SpecStatement, decision: SpecDecision | undefined) => ReactNode;
   group: SpecGroup;
-  /** Whether the decisions read and the asks read hold an answer, which is when a run with no
-   *  decision can say that none shaped it. */
+  /** Whether the Spec view read the decisions come from and the asks read hold an answer, which
+   *  is when a run with no decision can say that none shaped it. */
   known: boolean;
   /** Takes a focus inside a run's cell, with the decision the cell draws, and the run whose
    *  cell draws what only the focus draws where the cell itself has the focus. */
@@ -1204,9 +1246,9 @@ function GroupHeading({ parent }: { parent: SpecParent }): ReactNode {
  * The decision that shaped a run of statements, in the left column: the words it came from,
  * where they came from and when, and a link to the whole of it (R5). The bracket at its
  * trailing edge spans the statements it shaped, in the decisions' violet, dashed where an agent
- * decided; a run no decision shaped says so in words (R35), once the decisions read and the
- * asks read hold an answer, and says nothing before that or where either failed with none,
- * since it does not know.
+ * decided; a run no decision shaped says so in words (R35), once the Spec view read the
+ * decisions come from and the asks read hold an answer, and says nothing before that or where
+ * either failed with none, since it does not know.
  *
  * A person's words are quoted, their first sentence word for word in plain words with no limit
  * of characters; an agent's are drawn whole as a row draws a node's words (`RowText`), each
@@ -1242,6 +1284,11 @@ function DecisionCell({
 }): ReactNode {
   const words = useRef<HTMLDivElement | null>(null);
   const press = useOnScreenUnderHeads(words, focused);
+  const agentText = useAgentText();
+  // How the decision stands, with the person its state names: its keeper after "Kept by", and
+  // whoever asked to change it after "Changed by" (`standingParts`, R2, R3).
+  const standing =
+    decision?.state === undefined ? undefined : standingParts(decision.state, decision);
   const rule = decision === undefined ? pageHairBorder : "border-page-decision";
   const cap = decision === undefined ? pageHairBg : pageKindBullet.decision;
   return (
@@ -1252,7 +1299,7 @@ function DecisionCell({
       } ${rule} ${pageMutedText}`}
       data-decision-id={decision?.id}
       // The node the cell is drawn as, which Details draws while the cell has the focus: for a
-      // person's decision, drawn by their answer, the section of `decisions.md` that names it.
+      // person's decision, drawn by their answer, the question itself.
       data-node-id={decision?.node ?? decision?.id}
       data-said={decision?.said}
       data-spec-cell=""
@@ -1363,7 +1410,21 @@ function DecisionCell({
                   part:
                     decision.state === undefined ? null : (
                       <span data-node-state={decision.state} {...pageChrome}>
-                        {nodeStateWord(decision.state)}
+                        {standing?.word}
+                        {standing?.person === undefined ? null : (
+                          <>
+                            {" "}
+                            <span
+                              data-changed-by={
+                                decision.state === "change_requested" ? "" : undefined
+                              }
+                              data-kept-by={decision.state === "kept" ? "" : undefined}
+                              {...authorText}
+                            >
+                              {agentText.author(standing.person)}
+                            </span>
+                          </>
+                        )}
                       </span>
                     ),
                 },

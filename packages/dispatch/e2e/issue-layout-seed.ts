@@ -12,7 +12,6 @@ import {
   declineAsk,
   editArtifact,
   getIssue,
-  getIssueDecisions,
   getIssueEvents,
   keepDecision,
   patchIssue,
@@ -27,6 +26,7 @@ import {
   awaitBlockAsk,
   awaitSeededCheckStates,
   BASELINE_REPO,
+  decisionSum,
   PLANNER,
   PROJECT,
   REVIEWER,
@@ -735,14 +735,11 @@ export async function seedDecisionsFilter(): Promise<DecisionsFilterSeed> {
     asPlanner
   );
   await declineAsk(declined.id, { note: "The release owner decides this one." });
-  // The Keep is of the fifth decision's `decision` block in the spec, as its entry's text reads
-  // now; the sixth's words are then changed by the planner, in the spec, as an agent edits its
-  // own decision.
+  // The Keep is of the fifth decision's `decision` block in the spec, by the `text_sha256` the
+  // tree read answers on its decision node now; the sixth's words are then changed by the
+  // planner, in the spec, as an agent edits its own decision.
   const keptBlock = seeded.decisions[4] ?? "";
-  const kept = ((await getIssueDecisions(seeded.key)).entries ?? []).find(
-    (entry) => entry.document?.block_id === keptBlock
-  );
-  await keepDecision(seeded.specArtifactId, keptBlock, kept?.text_sha256 ?? "");
+  await keepDecision(seeded.specArtifactId, keptBlock, await decisionSum(seeded.key, keptBlock));
   await editArtifact(
     seeded.specArtifactId,
     {

@@ -36,15 +36,19 @@ import { userOnFakeClock } from "../../__tests__/user";
 import { ApiError, api } from "../../api/client";
 import { markCorrectedPost } from "../../api/corrected-post";
 import { primarySpec } from "../../api/issue-cache";
-import { issueAskThreadsQuery, issueCoverageQuery, issueResultsQuery } from "../../api/queries";
+import {
+  conversationTreeKey,
+  issueAskThreadsQuery,
+  issueCoverageQuery,
+  issueResultsQuery,
+} from "../../api/queries";
 import type {
   Artifact,
   Comment,
-  Decision,
+  DecisionKeep,
   DisplayTree,
   IDCandidate,
   IssueCoverage,
-  IssueDecisions,
   IssueDetails,
 } from "../../api/types";
 import { pageFocusedRow } from "../../theme/classes";
@@ -61,7 +65,7 @@ import { buildDispatchReference, buildIssuePath, parseIssuePath } from "../refs/
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { useKeymapScope } from "../shell/keymap";
 import { agentsOnlyIds } from "./agents-only";
-import { decisionsRead, issueDetails } from "./decisions-filter/decisions-fixtures";
+import { issueDetails } from "./decisions-filter/decisions-fixtures";
 import {
   DocumentAdmissionProvider,
   type ReportAdmission,
@@ -108,13 +112,15 @@ import { FAILED_READ_RETRY } from "./slots/failed-read-line";
 import { ProvidersSlot } from "./slots/providers";
 import { SLOT_FILLED, StageSlot, VIEW_SLOTS, type ViewSlots } from "./slots/stage";
 import { answerCommentReads, spyOnBoxes } from "./slots/stage-fixtures";
+import { blockNodeId } from "./tree-drafts";
 import { TAB_STOP_ROW } from "./tree-focus";
-import { markedCommentNode, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
+import { markedCommentNode, treeAnswer, treeNode, treeTuple } from "./tree-read/tree-fixtures";
 import {
   issueTreeQuery,
   outlineQuery,
   type TreeAnswer,
   type TreeAnswerNode,
+  type TreeTuple,
 } from "./tree-read/tree-read";
 import type { OnEditing, OnEditor } from "./useNodeEditing";
 import { overflowing } from "./words-scroll-fixtures";
@@ -147,23 +153,34 @@ const specDocument: Artifact = {
   versions: [],
 };
 
-/** The agent's one decision: a `decision` block of the spec's `## Decisions` part, whose entry the
- *  decisions read answers (`decisionsRead`), drawn as the spec's block node `spec#b-d1`. */
-const decision: Decision = {
-  asks: [],
+/** The model's decision the tree read answers on the issue's one decision node: an agent's
+ *  decision that waits for review. */
+const WAITING = { changed_at: null, text_sha256: "sha256:one", waiting_review: true };
+
+/** The issue's one decision as the tree read answers its node: an agent's decision, a `decision`
+ *  block of the spec's `## Decisions` part, that waits for review, whose first paragraph is the
+ *  words a Change is anchored to. */
+const decision: TreeAnswerNode = treeNode("d1", "decision", KEY, {
+  decision: WAITING,
+  document: { artifact_id: specDocument.id, position: 0, slug: specDocument.slug },
+  text: "Ship behind a flag\n\nWe ship it behind a flag.",
+});
+
+/** The decision's own address, by which its row and Keep and Change find it (`decisionNodes`). */
+const DECISION_REF = buildDispatchReference({
+  block: { id: "d1" },
+  key: KEY,
+  kind: "artifact",
+  slug: specDocument.slug,
+});
+
+/** What Dispatch answers a Keep of `decision` with. */
+const KEPT: DecisionKeep = {
+  artifact_id: specDocument.id,
   block_id: "d1",
-  changed_at: null,
   changed_version: 1,
-  heading: "Ship behind a flag",
-  kept: null,
-  kind: "agent",
-  links: [],
-  ref: `dispatch://${KEY}/spec#b-d1`,
-  replaced: false,
-  text: ":::decision{#d1}\n### Ship behind a flag\n\nWe ship it behind a flag.\n:::\n",
-  text_sha256: "sha256:one",
-  unsure: false,
-  waiting_review: true,
+  kept_at: "2026-11-06T00:00:00Z",
+  kept_by: "alice",
 };
 
 function node(partial: Partial<TreeNode> & { id: string; type: NodeType }): TreeNode {
@@ -334,15 +351,16 @@ function EditedDocument({
  *  draws the same tree with them held; `redraw` draws the same tree again, as a read answering
  *  does, and `reread` draws it over another tree, as a read answering with other nodes does;
  *  `admit` answers for a document's room, as the page's row editor reports what that room
- *  admitted the page to (`document-admission.tsx`). `published` is what the page publishes of
- *  its batched names read, to the store and to the tree (`Publisher`): where it is not given,
- *  what the page publishes for the chips of the tree it draws (`publishedTree`), each time it
- *  draws one. `publish` publishes another value, as a later answer of that read does. */
+ *  admitted the page to (`document-admission.tsx`). `tree` is the tree read's answer the page
+ *  holds, which a decision's Keep and Change find their node in, with the asks read beside it
+ *  (`DecisionActions.tsx`). `published` is what the page publishes of its batched names read,
+ *  to the store and to the tree (`Publisher`): where it is not given, what the page publishes
+ *  for the chips of the tree it draws (`publishedTree`), each time it draws one. `publish`
+ *  publishes another value, as a later answer of that read does. */
 function renderTree(
   root: TreeNode,
   {
     artifacts = [],
-    decisions,
     editor,
     emptyLine,
     isClosed = false,
@@ -350,9 +368,9 @@ function renderTree(
     readsHeld = true,
     readsSettled = true,
     reveal,
+    tree,
   }: {
     artifacts?: Artifact[];
-    decisions?: IssueDecisions;
     editor?: StandInEditor;
     emptyLine?: string;
     isClosed?: boolean;
@@ -360,19 +378,23 @@ function renderTree(
     readsHeld?: boolean;
     readsSettled?: boolean;
     reveal?: readonly TreeNode[];
+    tree?: TreeAnswer;
   } = {}
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  if (decisions !== undefined) client.setQueryData(["decisions", KEY], decisions);
+  if (tree !== undefined) {
+    client.setQueryData(conversationTreeKey(KEY), tree);
+    client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
+  }
   const edited: (string | undefined)[] = [];
   const reads = { held: readsHeld, settled: readsSettled };
   const names = {
     follows: published === undefined,
     published: published ?? publishedTree(root),
   };
-  const tree = { root };
+  const shown = { root };
   const editedDocument: { set?: OnEditing } = {};
   const seen: { path?: string } = {};
   const focused: { node?: FocusedNode } = {};
@@ -405,7 +427,7 @@ function renderTree(
                     readsHeld={reads.held}
                     readsSettled={reads.settled}
                     reveal={reveal}
-                    root={tree.root}
+                    root={shown.root}
                     rootRow
                   />
                   {editor === undefined ? null : (
@@ -425,6 +447,7 @@ function renderTree(
     address: () => seen.path,
     admit: (artifactId: string, readOnly: boolean) =>
       act(async () => admission.report?.(artifactId, readOnly)),
+    client,
     edited,
     focusedNode: () => focused.node,
     holdReads: () => {
@@ -440,13 +463,13 @@ function renderTree(
       view.rerender(draw());
     },
     reread: (next: TreeNode) => {
-      tree.root = next;
+      shown.root = next;
       if (names.follows) names.published = publishedTree(next);
       view.rerender(draw());
     },
     /** Draws `next` with every read answered, as the last read to answer draws it. */
     settle: (next: TreeNode) => {
-      tree.root = next;
+      shown.root = next;
       if (names.follows) names.published = publishedTree(next);
       reads.held = true;
       reads.settled = true;
@@ -678,10 +701,7 @@ function sizesByHand(): {
 test("the whole tree is one tab stop, and the focused row's keys work its controls", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const kept = spyOn(api, "keepDecision").mockResolvedValue({
-    ...decision,
-    waiting_review: false,
-  } as never);
+  const kept = spyOn(api, "keepDecision").mockResolvedValue(KEPT);
   const root = node({
     children: [
       node({
@@ -694,7 +714,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
           },
         ],
         id: "spec#b-d1",
-        reference: decision.ref,
+        reference: DECISION_REF,
         type: "decision",
         waiting: true,
       }),
@@ -704,7 +724,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
   });
   const view = renderTree(root, {
     artifacts: [specDocument],
-    decisions: decisionsRead([decision]),
+    tree: treeAnswer([decision]),
   });
   try {
     const [row] = rowsFor(view.container, "spec#b-d1");
@@ -728,7 +748,7 @@ test("the whole tree is one tab stop, and the focused row's keys work its contro
 
     await user.keyboard("{Shift>}K{/Shift}");
     await waitFor(() => expect(kept).toHaveBeenCalled());
-    expect(kept.mock.calls[0]?.[1]).toBe(decision.block_id);
+    expect(kept.mock.calls[0]?.[1]).toBe(decision.block_id ?? decision.id);
 
     await user.keyboard("{Shift>}C{/Shift}");
     const field = await view.findByRole("textbox", { name: "Your change" });
@@ -742,12 +762,11 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
   setViewport(1440);
   const user = userEvent.setup();
   const sent = spyOn(api, "createComment").mockResolvedValue({ id: "comment-1" } as never);
-  const read = readSpecText();
   const root = node({
     children: [
       node({
         id: "spec#b-d1",
-        reference: decision.ref,
+        reference: DECISION_REF,
         type: "decision",
         waiting: true,
       }),
@@ -757,7 +776,7 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
   });
   const view = renderTree(root, {
     artifacts: [specDocument],
-    decisions: decisionsRead([decision]),
+    tree: treeAnswer([decision]),
   });
   try {
     const [row] = rowsFor(view.container, "spec#b-d1");
@@ -776,26 +795,15 @@ test("Enter sends the change the reader typed, instead of putting a caret in the
     expect(view.edited.filter((artifactId) => artifactId !== undefined)).toEqual([]);
   } finally {
     sent.mockRestore();
-    read.mockRestore();
   }
 });
 
 /** The one decision's tree the two rows below press its controls in. */
 function decisionTree(): TreeNode {
   return node({
-    children: [node({ id: "spec#b-d1", reference: decision.ref, type: "decision", waiting: true })],
+    children: [node({ id: "spec#b-d1", reference: DECISION_REF, type: "decision", waiting: true })],
     id: KEY,
     type: "issue",
-  });
-}
-
-/** Answers the text of the spec, which holds the decision's block in its `## Decisions` part and
- *  which a Change reads as it is sent to count its quote's places over (`DecisionActions.tsx`). */
-function readSpecText() {
-  return spyOn(api, "getArtifactText").mockResolvedValue({
-    markdown: `## Decisions\n\n${decision.text}`,
-    token: "sha256:spec-text",
-    version: null,
   });
 }
 
@@ -806,11 +814,11 @@ function readSpecText() {
 test("Keep keeps the focus on its decision's row while its write is out, and after", async () => {
   setViewport(1440);
   const user = userEvent.setup();
-  const answer = Promise.withResolvers<never>();
+  const answer = Promise.withResolvers<DecisionKeep>();
   const kept = spyOn(api, "keepDecision").mockReturnValue(answer.promise);
   const view = renderTree(decisionTree(), {
     artifacts: [specDocument],
-    decisions: decisionsRead([decision]),
+    tree: treeAnswer([decision]),
   });
   try {
     const [row] = rowsFor(view.container, "spec#b-d1");
@@ -823,7 +831,20 @@ test("Keep keeps the focus on its decision's row while its write is out, and aft
     expect(document.activeElement, "the focus stayed on Keep, which its write disables").toBe(row);
     expect(row.querySelector("[data-node-body]"), "the decision's face closed").not.toBeNull();
 
-    await act(async () => answer.resolve({ ...decision, waiting_review: false } as never));
+    // Kept, and the tree the Keep read again answers the decision kept (`DecisionActions.tsx`).
+    await act(async () => {
+      answer.resolve(KEPT);
+      view.client.setQueryData(
+        conversationTreeKey(KEY),
+        treeAnswer([
+          treeNode("d1", "decision", KEY, {
+            decision: { ...WAITING, kept: KEPT, waiting_review: false },
+            document: decision.document,
+            text: decision.text,
+          }),
+        ])
+      );
+    });
     await waitFor(() => expect(view.queryByRole("button", { name: "Keep" })).toBeNull());
     expect(document.activeElement).toBe(row);
     expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
@@ -839,10 +860,9 @@ test("Send change keeps the focus on its decision's row while the comment is out
   const user = userEvent.setup();
   const answer = Promise.withResolvers<never>();
   const sent = spyOn(api, "createComment").mockReturnValue(answer.promise);
-  const read = readSpecText();
   const view = renderTree(decisionTree(), {
     artifacts: [specDocument],
-    decisions: decisionsRead([decision]),
+    tree: treeAnswer([decision]),
   });
   try {
     const [row] = rowsFor(view.container, "spec#b-d1");
@@ -866,7 +886,6 @@ test("Send change keeps the focus on its decision's row while the comment is out
     expect(view.getByRole("button", { name: "Change" })).toBeTruthy();
   } finally {
     sent.mockRestore();
-    read.mockRestore();
   }
 });
 
@@ -878,7 +897,7 @@ test("a Change the reader typed in stays on its decision's row as the focus move
   const user = userEvent.setup();
   const root = node({
     children: [
-      node({ id: "spec#b-d1", reference: decision.ref, type: "decision", waiting: true }),
+      node({ id: "spec#b-d1", reference: DECISION_REF, type: "decision", waiting: true }),
       node({ id: "comment-1", text: "The next words.", type: "comment" }),
     ],
     id: KEY,
@@ -886,7 +905,7 @@ test("a Change the reader typed in stays on its decision's row as the focus move
   });
   const view = renderTree(root, {
     artifacts: [specDocument],
-    decisions: decisionsRead([decision]),
+    tree: treeAnswer([decision]),
   });
   const [row] = rowsFor(view.container, "spec#b-d1");
   if (row === undefined) throw new Error("the decision has no row");
@@ -6803,6 +6822,51 @@ test("a focused row whose node has no words names it by its kind, not its id", a
   expect(panelWords(view.focusedNode())).toBe("plan task");
 });
 
+// R2, R3 (decision 435): the panel's state fact of a focused decision reads the standing word,
+// and carries the person the panel names after it: one a person kept, "Kept by" and its keeper;
+// one a person asked to change, "Changed by" and that person, where it read "Change requested".
+test("a focused decision's state fact reads Kept by or Changed by and carries who kept or changed it", async () => {
+  setViewport(1440);
+  const user = userEvent.setup();
+  const root = node({
+    children: [
+      node({
+        id: "spec#b-d1",
+        keptBy: { id: "alice", kind: "user" },
+        state: "kept",
+        text: "Keep the rail narrow.",
+        type: "decision",
+      }),
+      node({
+        changedBy: { id: "bob", kind: "user" },
+        id: "spec#b-d2",
+        state: "change_requested",
+        text: "Draw it once.",
+        type: "decision",
+      }),
+    ],
+    id: KEY,
+    type: "issue",
+  });
+  const view = renderTree(root);
+  await waitFor(() => expect(focusedRow(view.container)).toBe("spec#b-d1"));
+  expect(view.focusedNode()).toMatchObject({
+    state: "Kept by",
+    stateBy: { id: "alice", kind: "user" },
+  });
+
+  await user.keyboard("j");
+  await waitFor(() =>
+    expect(focusedRow(view.container), "j does not move the focus to the changed decision").toBe(
+      "spec#b-d2"
+    )
+  );
+  expect(view.focusedNode()).toMatchObject({
+    state: "Changed by",
+    stateBy: { id: "bob", kind: "user" },
+  });
+});
+
 // The page opens with the focus on the first open question that waits on the reader, in the
 // outline's own order, its path unfolded.
 test("the page opens with the focus on the first open question that waits on the reader", async () => {
@@ -8995,19 +9059,23 @@ function seedBodyReads(
   {
     comments,
     nodes = [],
-  }: { readonly comments?: readonly Comment[]; readonly nodes?: readonly TreeAnswerNode[] } = {}
+    tuples = [],
+  }: {
+    readonly comments?: readonly Comment[];
+    readonly nodes?: readonly TreeAnswerNode[];
+    readonly tuples?: readonly TreeTuple[];
+  } = {}
 ): void {
   client.setQueryData(["whoami"], { kind: "user", login: "alice" });
   client.setQueryData(issueCoverageQuery(KEY).queryKey, { requirements: [] } as never);
   client.setQueryData(issueResultsQuery(KEY).queryKey, { checks: [] } as never);
-  client.setQueryData(["decisions", KEY], decisionsRead([]));
   client.setQueryData(["asks", KEY], []);
   client.setQueryData(issueAskThreadsQuery(KEY).queryKey, []);
   client.setQueryData(["issue-messages", KEY], []);
-  client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf(comments ?? [], nodes));
+  client.setQueryData(issueTreeQuery(KEY).queryKey, treeReadOf(comments ?? [], nodes, tuples));
   client.setQueryData(
     outlineQuery(KEY, "conversation").queryKey,
-    treeReadOf(comments ?? [], nodes)
+    treeReadOf(comments ?? [], nodes, tuples)
   );
 }
 
@@ -9020,14 +9088,15 @@ function seedBodyReads(
  *  all. */
 function treeReadOf(
   comments: readonly Comment[],
-  nodes: readonly TreeAnswerNode[] = []
+  nodes: readonly TreeAnswerNode[] = [],
+  tuples: readonly TreeTuple[] = []
 ): TreeAnswer {
   const agentsOnly = agentsOnlyIds(comments, undefined, []);
   const turns = comments
     .filter((comment) => !agentsOnly.has(comment.id))
     .map((comment) => markedCommentNode(comment));
   const held = [...nodes, ...turns];
-  return treeAnswer(held.length === 0 ? [] : [treeNode(KEY, "issue", null), ...held]);
+  return treeAnswer(held.length === 0 ? [] : [treeNode(KEY, "issue", null), ...held], tuples);
 }
 
 /** A question as the tree read answers it: a node under the issue, with its words and who asked
@@ -9047,11 +9116,12 @@ function questionNode(ask: {
 }
 
 // The reviewer's finding on the outline's empty line: a tree with no node is also one whose reads
-// are still out - the asks, the messages, the decisions, the coverage, the results and the
-// documents' blocks each draw nodes once they answer, and only the children come with the
-// issue - so the line that the issue holds nothing was drawn on every cold load of an issue with
-// no children, and rows then drawn in its place. The body draws it only once those reads have
-// answered, and nothing in its place before. Here every read has answered but the messages'.
+// are still out - the asks, the messages, the coverage, the results and the documents' blocks
+// each draw nodes once they answer, and only the children come with the issue - so the line that
+// the issue holds nothing was drawn on every cold load of an issue with no children, and rows
+// then drawn in its place. The body draws it only once those reads have answered, and nothing in
+// its place before. Here every read has answered but the messages', the tree read among them,
+// with no node and so no decision.
 test("the outline says the issue holds nothing only once the reads its nodes come from have answered", async () => {
   setViewport(1440);
   const issue: IssueDetails = { ...issueDetails(), artifacts: [] };
@@ -9384,7 +9454,6 @@ test("the outline mounted again past 30 s reads none of the reads it waits on ag
   seedBodyReads(client, { comments: [] });
   const reads = [
     spyOn(api, "getIssueCoverage").mockResolvedValue({ requirements: [] } as never),
-    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     spyOn(api, "getIssueResults").mockResolvedValue({ checks: [] } as never),
     spyOn(api, "listIssueAskThreads").mockResolvedValue([] as never),
     spyOn(api, "listComments").mockResolvedValue([] as never),
@@ -9472,17 +9541,19 @@ function renderAddressedBody(
   {
     issue = { ...issueDetails(), artifacts: [] },
     nodes = [],
+    tuples = [],
     unread = [],
   }: {
     readonly issue?: IssueDetails | undefined;
     readonly nodes?: readonly TreeAnswerNode[];
+    readonly tuples?: readonly TreeTuple[];
     readonly unread?: readonly QueryKey[];
   } = {}
 ) {
   const client = new QueryClient({
     defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
   });
-  seedBodyReads(client, { comments, nodes });
+  seedBodyReads(client, { comments, nodes, tuples });
   for (const queryKey of unread) client.removeQueries({ queryKey });
   // The view reads a load of the stage sends with it, Plan's among them (`ViewReadProvider`),
   // answered with no node.
@@ -9494,15 +9565,17 @@ function renderAddressedBody(
   const held: { navigate?: NavigateFunction } = {};
   let drawn = issue;
   const draw = () => (
-    <MemoryRouter initialEntries={[path]}>
-      <QueryClientProvider client={client}>
-        <KeymapProvider>
-          <MarginProvider>
-            <AddressedBody held={held} issue={drawn} Slot={Slot} />
-          </MarginProvider>
-        </KeymapProvider>
-      </QueryClientProvider>
-    </MemoryRouter>
+    <ReferenceNamesProvider>
+      <MemoryRouter initialEntries={[path]}>
+        <QueryClientProvider client={client}>
+          <KeymapProvider>
+            <MarginProvider>
+              <AddressedBody held={held} issue={drawn} Slot={Slot} />
+            </MarginProvider>
+          </KeymapProvider>
+        </QueryClientProvider>
+      </MemoryRouter>
+    </ReferenceNamesProvider>
   );
   const view = render(draw());
   return {
@@ -11347,6 +11420,175 @@ test("a block or the children an address names that the tree holds none of draw 
       expect(body.view.queryByRole("tree"), `${path} drew the outline beside its line`).toBeNull();
       body.view.unmount();
     }
+  } finally {
+    names.mockRestore();
+  }
+});
+
+/** The tree read's nodes of an answered question and the two decisions the read stands under it
+ *  (INFRA-1196's decision 513): `d-restates`, whose `from_ask` names the question and which
+ *  restates the person's answer, with the agent's reading of it under it, and `d-untied`, which
+ *  names no `from_ask`. The read answers a person's decision on the question, as it does on every
+ *  ask a person answered. */
+const RESTATED_QUESTION: readonly TreeAnswerNode[] = [
+  treeNode("a-answered", "ask", KEY, {
+    decision: {},
+    text: "Which addresses must the new page still answer?",
+  }),
+  treeNode("d-restates", "decision", "a-answered", {
+    decision: { asks: ["a-answered"], waiting_review: true },
+    document: { artifact_id: specDocument.id, position: 1, slug: specDocument.slug },
+    text: "Keep every address the old page answered.",
+  }),
+  treeNode("g-restates", "reading", "d-restates", {
+    document: { artifact_id: specDocument.id, position: 2, slug: specDocument.slug },
+    text: "The agent reads the answer so.",
+  }),
+  treeNode("d-untied", "decision", "a-answered", {
+    decision: { waiting_review: true },
+    document: { artifact_id: specDocument.id, position: 3, slug: specDocument.slug },
+    text: "Fold to the frontier and not to a depth.",
+  }),
+];
+
+// INFRA-1196's decision 513: a decision whose `from_ask` names a question a person answered
+// restates the answer, and the person's decision is the question itself, so the outline draws no
+// row for it. What the read hangs under it stands under the question, its nearest drawn ancestor.
+// The test is the tie, not the place: a decision the read stands under the same question that
+// names no `from_ask` is drawn there as an agent's decision.
+test("the outline draws no row for a decision that restates a person's answer, and draws one under that question with no from_ask tie", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}#b-d-untied`, [], BodySlot, {
+      nodes: RESTATED_QUESTION,
+    });
+    const untied = blockNodeId(specDocument.slug, "d-untied");
+    await waitFor(() => expect(focusedRow(view.container)).toBe(untied));
+    const drawn = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+      (row) => [row.getAttribute("data-node-id"), row.getAttribute("aria-level")]
+    );
+    expect(drawn).toEqual([
+      ["a-answered", "1"],
+      [blockNodeId(specDocument.slug, "g-restates"), "2"],
+      [untied, "2"],
+    ]);
+    expect(rowsFor(view.container, untied)[0]?.getAttribute("data-node-type")).toBe("decision");
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// Root R20: no citation of a node dangles. The tree holds no node of a decision that restates a
+// person's answer, so an address naming its block lands on the question it restates, focused,
+// by the rule every view lands an address by (`pathToTarget`), and draws no line that the outline
+// holds no row of the block.
+test("an address naming a decision that restates a person's answer lands on the question it restates", async () => {
+  setViewport(1440);
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] } as never);
+  try {
+    const { view } = renderAddressedBody(`/issues/${KEY}#b-d-restates`, [], BodySlot, {
+      nodes: RESTATED_QUESTION,
+    });
+    await waitFor(
+      () => expect(focusedRow(view.container), "the address landed nowhere").toBe("a-answered"),
+      {
+        onTimeout: () =>
+          new Error(
+            `the address landed nowhere; ${view.queryByRole("heading", { name: "No row for this block" }) === null ? "no" : "the"} line that the outline holds no row of the block was drawn`
+          ),
+      }
+    );
+    expect(view.queryByRole("heading", { name: "No row for this block" })).toBeNull();
+    expect(rowsFor(view.container, blockNodeId(specDocument.slug, "d-restates"))).toEqual([]);
+  } finally {
+    names.mockRestore();
+  }
+});
+
+// INFRA-1196's decision 521 narrows decision 513: a decision whose `from_ask` names an answered
+// question and whose `shaped` tie names a node that question did not shape does not restate the
+// person's answer (as in Part I's `seedSpineCases`), so the outline draws it as an agent's
+// decision under that question, with its chip naming the node it shaped (root R35).
+test("the outline draws a decision under the answered question it settles when it shaped a node the question did not, with its chip", async () => {
+  setViewport(1440);
+  const shapedId = `${KEY}/${specDocument.slug}#r-shaped`;
+  const shapedRef = `dispatch://${KEY}/spec#b-r-shaped`;
+  const shapedText = "A decision links this requirement while the answered question does not.";
+  const names = spyOn(api, "getReferenceTargets").mockResolvedValue({
+    targets: [
+      {
+        exists: true,
+        kind: "block",
+        name: shapedText,
+        ref: shapedRef,
+        text_tree: readingOf(shapedText),
+      },
+    ],
+  } as never);
+  const nodes: readonly TreeAnswerNode[] = [
+    treeNode("r-shaped", "requirement", KEY, {
+      document: { artifact_id: specDocument.id, position: 0, slug: specDocument.slug },
+      text: shapedText,
+      text_tree: readingOf(shapedText),
+    }),
+    treeNode("a-answered", "ask", KEY, {
+      decision: {},
+      text: "Which node does a requirement with no parent sit under?",
+    }),
+    treeNode("d-shapes", "decision", "a-answered", {
+      decision: {
+        asks: ["a-answered"],
+        links: [
+          {
+            changed_since_tie: false,
+            created_at: "2026-11-05T00:00:00Z",
+            created_version: 1,
+            from_block: "d-shapes",
+            stale: false,
+            to: {
+              changed_at: null,
+              changed_by: null,
+              id: shapedId,
+              kind: "block",
+              made_at: null,
+              made_by: null,
+              parent: null,
+              parent_version: null,
+              ref: shapedRef,
+            },
+          },
+        ],
+        waiting_review: true,
+      },
+      document: { artifact_id: specDocument.id, position: 1, slug: specDocument.slug },
+      text: "Link a requirement the question does not.",
+    }),
+  ];
+  try {
+    const decisionId = blockNodeId(specDocument.slug, "d-shapes");
+    const requirementId = blockNodeId(specDocument.slug, "r-shaped");
+    const { view } = renderAddressedBody(`/issues/${KEY}#b-d-shapes`, [], BodySlot, {
+      issue: { ...issueDetails(), artifacts: [specDocument], primary_artifact_id: specDocument.id },
+      nodes,
+      tuples: [treeTuple("shaped", "d-shapes", "r-shaped")],
+    });
+    await waitFor(() => expect(focusedRow(view.container)).toBe(decisionId));
+    const drawn = [...view.container.querySelectorAll<HTMLElement>("[data-node-row]")].map(
+      (row) => [row.getAttribute("data-node-id"), row.getAttribute("aria-level")]
+    );
+    expect(drawn).toEqual([
+      [requirementId, "1"],
+      ["a-answered", "1"],
+      [decisionId, "2"],
+    ]);
+    const row = rowsFor(view.container, decisionId)[0];
+    expect(row?.getAttribute("data-node-type")).toBe("decision");
+    await waitFor(() => {
+      const chip = row?.querySelector<HTMLAnchorElement>("[data-node-chip] [data-chip-name]");
+      expect(chip?.getAttribute("href")).toBe(`/issues/${KEY}/spec#b-r-shaped`);
+      expect(chip?.textContent).toContain("A decision links this");
+    });
   } finally {
     names.mockRestore();
   }

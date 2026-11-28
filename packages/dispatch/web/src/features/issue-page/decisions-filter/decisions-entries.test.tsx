@@ -1,39 +1,36 @@
 import { expect, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
-import type { ReactNode } from "react";
+import { type ReactNode, useMemo } from "react";
 import { MemoryRouter } from "react-router-dom";
 
 import { commentDeliveryFields } from "../../../__tests__/comment-fixture";
 import { api } from "../../../api/client";
-import { issueCoverageQuery } from "../../../api/queries";
-import type {
-  Actor,
-  ArtifactBlock,
-  Comment,
-  Decision,
-  IssueDecisions,
-  IssueDetails,
-} from "../../../api/types";
+import { conversationTreeKey, issueCoverageQuery } from "../../../api/queries";
+import type { Actor, Comment } from "../../../api/types";
+import { presetPath } from "../issue-address";
 import type { TreeNode } from "../issue-tree";
-import { readComment } from "../outline-fixtures";
-import { presetView } from "../presets";
+import { DECISIONS_WORDS } from "../page-words";
+import { filterSignals, presetView } from "../presets";
+import { inDocument } from "../slots/stage-fixtures";
 import { coverageRead } from "../spec-filter/spec-fixtures";
-import { commentNode, markedCommentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
-import { outlineQuery, type TreeAnswer } from "../tree-read/tree-read";
-import { useDecisionsEntries } from "./decisions-entries";
+import { pagedAnswer, treeNode } from "../tree-read/tree-fixtures";
+import {
+  outlineQuery,
+  resetViews,
+  type TreeAnswer,
+  useDecisionsView,
+  viewKey,
+  viewQuery,
+} from "../tree-read/tree-read";
+import { useDecisionsEntries, useDecisionsTree } from "./decisions-entries";
 import {
   AGENT,
   answeredAsk,
-  artifact,
+  changeComment,
   closing,
-  commentsTree,
-  DECISIONS_DOCUMENT,
-  DECISIONS_SLUG,
   decision,
   decisionNode,
-  decisionsRead,
-  entryOf,
   issueDetails,
   issueTree,
   KEY,
@@ -46,115 +43,132 @@ import {
   shaped,
   specRef,
   statement,
+  treeAnswer,
 } from "./decisions-fixtures";
 import type { DecisionsAsk, DecisionsParts } from "./decisions-parts";
+import { entryStanding } from "./entry-standing";
 
 /**
- * The seam between today's reads and the Decisions view. Each case puts the reads the seam takes
- * in the cache under the keys the page's tree reads them by, as the cache holds them once the
- * tree is drawn - the decisions, the asks, and Conversation's tree read, whose comments are the
- * Changes - and the blocks of the spec its decisions stand in, as the cache holds them once the
- * view has read them, and no query reads again on mount, so any request the seam made would be
- * one of its own. The view is the one the slot passes: the tree as the Decisions view leaves it
+ * The seam between the page's reads and the Decisions view.
+ * Each case holds the decisions view on the tree's root,
+ * as `useIssueTree.ts` sets it there (`TreeNode.views`), and puts the tree read and the asks in
+ * the cache under the keys the page's tree reads them by, as the cache holds them once the tree
+ * is drawn, and no query reads again on mount, so any request the seam made would be one of its
+ * own. The tree read's answer holds the comments, each Change under its decision with its
+ * author's marks. The view is the one the slot passes: the tree as the Decisions view leaves it
  * (`presetView`).
  */
 
 const BOB: Actor = { id: "bob", kind: "user" };
 
-/** The seam mounted over the issue whose tree holds `children`, with `decisions`, `asks` and
- *  Conversation's tree read as the cache holds them - holding `comments`, or the answer the case
- *  gives (`answer`) - and the spec's `blocks`, until the case unmounts it. A read given as null
- *  is left out of the cache, as before it answers; the tree read with `comments` null. By default
- *  no answer ever goes stale; `staleTime` gives the client the app's own default instead, and
- *  `answeredAt` the moment the cache's answers were given, now where it is left out. The issue is
- *  `issueDetails()` where the case gives none (`issue`). */
-async function mountEntries(
-  children: readonly TreeNode[],
-  decisions: IssueDecisions | null,
-  asks: readonly DecisionsAsk[] | null = [],
-  comments: readonly Comment[] | null = [],
-  blocks: readonly ArtifactBlock[] | null = [],
-  {
-    answer,
-    answeredAt,
-    issue = issueDetails(),
-    staleTime = Number.POSITIVE_INFINITY,
-  }: { answer?: TreeAnswer; answeredAt?: number; issue?: IssueDetails; staleTime?: number } = {}
-) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime } } });
-  const given = { updatedAt: answeredAt };
-  if (decisions !== null) client.setQueryData(["decisions", KEY], decisions, given);
-  if (asks !== null) client.setQueryData(["asks", KEY, "thread"], asks, given);
-  if (comments !== null) {
-    client.setQueryData(
-      outlineQuery(KEY, "conversation").queryKey,
-      answer ?? commentsTree(comments),
-      given
-    );
-  }
-  // The decisions stand in the issue's spec (`issueDetails`), so the seam reads that document's
-  // blocks.
-  if (blocks !== null) {
-    client.setQueryData(["artifact", SPEC_DOCUMENT.id, "blocks"], blocks, given);
-  }
+/** A client that holds the page's reads as the cache holds them once the tree is drawn: the
+ *  tree read's answer `tree` and `asks`, neither of which is read again on mount. */
+function heldClient(asks: readonly DecisionsAsk[], tree: TreeAnswer): QueryClient {
+  const client = new QueryClient({
+    defaultOptions: { queries: { retry: false, staleTime: Number.POSITIVE_INFINITY } },
+  });
+  client.setQueryData(conversationTreeKey(KEY), tree);
+  client.setQueryData(["asks", KEY, "thread"], asks);
   // The coverage read, which places a decision whose statement the tree holds no node for: one
   // that holds no statement, so each decision here is placed by the statements the tree holds.
-  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]), given);
-  const root = issueTree(children);
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]));
+  return client;
+}
+
+/** A hook wrapper over `client` at the Decisions view's own address, where the page draws the
+ *  view's entries: the seam reads the view the address draws, as every reader of the decisions
+ *  view does (`useDecisionsView`). */
+function decisionsAddress(client: QueryClient) {
+  return function DecisionsAddress({ children }: { children: ReactNode }): ReactNode {
+    return (
+      <MemoryRouter initialEntries={[presetPath(KEY, "decisions")]}>
+        <QueryClientProvider client={client}>{children}</QueryClientProvider>
+      </MemoryRouter>
+    );
+  };
+}
+
+/** The seam mounted over `client` for the issue whose tree holds `children`, with `decisions`
+ *  the decisions view held on its root (undefined for a view that holds no answer), until the
+ *  case unmounts it. */
+async function mountOver(
+  client: QueryClient,
+  children: readonly TreeNode[],
+  decisions: TreeAnswer | undefined
+) {
+  const issue = issueDetails();
+  const whole = issueTree(children);
+  const root: TreeNode = decisions === undefined ? whole : { ...whole, views: { decisions } };
   const view = presetView(root, "decisions", "").root;
-  const wrapper = ({ children: inside }: { children: ReactNode }) => (
-    <MemoryRouter initialEntries={[`/issues/${KEY}`]}>
-      <QueryClientProvider client={client}>{inside}</QueryClientProvider>
-    </MemoryRouter>
-  );
   const hook = renderHook(() => useDecisionsEntries({ issue, reader: READER, root, view }), {
-    wrapper,
+    wrapper: decisionsAddress(client),
   });
   // A read the mount started has had its turn before the parts are read.
   await act(() => Promise.resolve());
-  return { client, hook };
+  return hook;
 }
 
-/** The seam's answer over the reads `mountEntries` is handed, read once. */
-async function entriesOf(
-  ...reads: Parameters<typeof mountEntries>
-): Promise<ReturnType<typeof useDecisionsEntries>> {
-  const { hook } = await mountEntries(...reads);
-  const entries = hook.result.current;
+/**
+ * The seam's parts over `client` as the view's slot hands it its tree (`slots/view-decisions.tsx`),
+ * for a case that reads a decision past Conversation's first page, which only that tree holds:
+ * the tree the decisions view read builds (`useDecisionsTree`) from `decisions`, held on the page
+ * tree's root and in `client`, and from the reads `client` holds, Conversation's among them, with
+ * the view as the slot leaves it (`presetView`); and the Decisions control's signal over that
+ * tree (`filterSignals`).
+ */
+async function slotOver(client: QueryClient, decisions: TreeAnswer) {
+  const issue = issueDetails();
+  const page: TreeNode = { ...issueTree([]), views: { decisions } };
+  client.setQueryData(viewKey(KEY, "decisions"), decisions);
+  const hook = renderHook(
+    () => {
+      const root = useDecisionsTree(issue, page, READER);
+      const view = useMemo(() => presetView(root, "decisions", "").root, [root]);
+      const { parts } = useDecisionsEntries({ issue, reader: READER, root, view });
+      return { parts, signal: filterSignals(root, "").decisions };
+    },
+    { wrapper: decisionsAddress(client) }
+  );
+  // A read the mount started has had its turn before the parts are read.
+  await act(() => Promise.resolve());
+  const drawn = hook.result.current;
   hook.unmount();
-  return entries;
+  return drawn;
 }
 
-/** The spec's blocks as the blocks read answers them, in document order: each decision's own
- *  `decision` block (`DecisionEntry.document.block_id`), holding one block for each paragraph of
- *  its words, each at the place it holds in the spec's markdown. */
-function specBlocks(made: readonly Decision[]): ArtifactBlock[] {
-  const blocks: ArtifactBlock[] = [];
-  const block = (id: string, type: string, from: number, to: number): ArtifactBlock => ({
-    attributes: [],
-    from,
-    id,
-    references: { asks: 0, comments: 0 },
-    to,
-    token: id,
-    type,
-  });
-  let at = 0;
-  for (const one of made) {
-    const from = at;
-    at += `:::decision{#${one.block_id}}\n`.length;
-    const held = one.text.split("\n\n").map((paragraph, index) => {
-      const inner = block(`${one.block_id}-${index + 1}`, "paragraph", at, at + paragraph.length);
-      // A blank line stands between two blocks of the markdown.
-      at += paragraph.length + 2;
-      return inner;
-    });
-    // The block closes on its own line after its last paragraph.
-    const to = at - 2 + "\n:::".length;
-    blocks.push(block(one.block_id, "decision", from, to), ...held);
-    at = to + 2;
-  }
-  return blocks;
+/** Statement `s1` of the spec as Conversation's read answers it: the statement a decision's
+ *  `shaped` tie names, which the decisions view read leaves to that read. */
+const S1 = treeNode("s1", "requirement", KEY, inDocument(SPEC_DOCUMENT));
+
+/** The decision members of a decision block tied to `S1`. */
+const TIED = { decision: { links: [shaped(specRef("s1"))] } };
+
+/** The same decision as the decisions view read answers it, a node its query took. */
+const VIEW_TIED = { ...TIED, role: "query" } as const;
+
+/** The seam's parts over `client` for the issue whose tree holds `children`, with `decisions`
+ *  the decisions view held on its root (undefined for a view that holds no answer), read once. */
+async function partsOver(
+  client: QueryClient,
+  children: readonly TreeNode[],
+  decisions: TreeAnswer | undefined
+): Promise<DecisionsParts> {
+  const hook = await mountOver(client, children, decisions);
+  const { parts } = hook.result.current;
+  hook.unmount();
+  return parts;
+}
+
+/** The seam's parts for the issue whose tree holds `children`, with `decisions` the decisions
+ *  view held on its root (undefined for a view that has not answered), and `asks` and the tree
+ *  read's answer `tree` as the cache holds them. */
+function entriesOf(
+  children: readonly TreeNode[],
+  decisions: TreeAnswer | undefined,
+  asks: readonly DecisionsAsk[] = [],
+  tree: TreeAnswer = treeAnswer([])
+): Promise<DecisionsParts> {
+  return partsOver(heldClient(asks, tree), children, decisions);
 }
 
 /** The node ids of each part, in the order the part draws them. */
@@ -175,10 +189,8 @@ const D = (block: string) => decisionNode(block).id;
 
 /** Two decisions that wait open with one paragraph, the reader's Change was asked on the second,
  *  and answers of the reader, of Bob and of one moment stand around them: the reads of the
- *  page's tree for the two cases below. The Change quotes the paragraph both decisions open
- *  with. The spec's blocks are held as the page holds them, unless `onNodes`, where each decision
- *  is a node of the tree read and none are held, so the read alone places the Change. */
-async function seamOf(onNodes = false) {
+ *  page's tree for the two cases below. */
+async function seamOf() {
   const tie = "2026-11-11T09:00:00Z";
   const opening = "The rail stays 56 px wide.";
   const reviewWords = `${opening}\n\nThe outline needs the room.`;
@@ -197,18 +209,28 @@ async function seamOf(onNodes = false) {
     decisionNode("minor"),
   ];
   const made = [
-    decision("review", { links: [shaped(specRef("s1"))], text: reviewWords }),
-    decision("asked", { links: [shaped(specRef("s1"))], text: askedWords }),
+    decision("review", {
+      text: reviewWords,
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
+    decision("asked", {
+      text: askedWords,
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
     decision("minor"),
   ];
-  // The reader's Change on the second decision, made after both last changed: its anchor
-  // quotes the decision's first paragraph, as the page's Change does, which the first decision
-  // holds too, and names that paragraph's block.
+  // The reader's Change on the second decision, made after both last changed, anchored on the
+  // spec with an anchor quoting the paragraph both decisions open with. Both reads hang the
+  // Change under the second decision, which is all the seam reads to place it.
   const change: Comment = {
     ...commentDeliveryFields(),
     anchor: {
       artifact_id: SPEC_DOCUMENT.id,
-      block_id: "asked-1",
+      block_id: null,
       mark_id: "mark-asked",
       orphaned: false,
       quote: opening,
@@ -235,39 +257,22 @@ async function seamOf(onNodes = false) {
     closing("a-late", { at: "2026-11-14T09:00:00Z", kind: "answered" }),
     closing("a-tie-mine", { at: tie, kind: "answered" }),
   ];
-  // Conversation's tree read: the Change under the issue, placed by the spec's blocks, or,
-  // `onNodes`, each decision a node of the read, and the Change under the node of the one it was
-  // asked on.
-  const answer = onNodes
-    ? treeAnswer([
-        treeNode(KEY, "issue", null),
-        ...made.map((row) =>
-          treeNode(row.block_id, "decision", KEY, {
-            decision: { changed_at: row.changed_at },
-            in: SPEC_SLUG,
-          })
-        ),
-        commentNode(change, "asked"),
-      ])
-    : undefined;
-  const blocks = onNodes ? [] : specBlocks(made);
-  const { parts } = await entriesOf(children, decisionsRead(made), asks, [change], blocks, {
-    ...(answer === undefined ? {} : { answer }),
-  });
+  const read = treeAnswer([
+    ...made,
+    changeComment(change.id, "asked", change.created_at, change.body, change.author),
+  ]);
+  const parts = await entriesOf(children, read, asks, read);
   return { change, parts };
 }
 
-// R8: the seam gives the view's four parts from the reads the page's tree already made. Bob's
-// answers stand under the reader's decisions, newest first among the reader's own. Two answers
-// of one moment stand in the order their nodes first stand in the tree, read depth first: Bob's
-// is under the statement at the tree's top and the reader's is the issue's last ask, so Bob's
-// stands first, which neither the reader's entries first nor a walk level by level gives. The
-// spec's blocks place a Change by the decision whose block holds its anchor: two decisions
-// that wait open with the same words, and the reader's Change was written in the second one's
-// block, so the second leaves the review list for her decisions and the first still waits. The
-// quote alone would put the Change on the first.
-test("the seam gives four parts from today's reads and makes no request", async () => {
+// The seam gives the view the model's parts from the reads the page's tree already made and the
+// decisions view the page holds. Bob's answers stand in a part of their own, what others decided,
+// newest first, and not among the reader's decisions (decision 502). The decisions view hangs the
+// reader's Change under the second decision, so the second leaves the review list for her
+// decisions and the first still waits.
+test("the seam gives the model's parts from today's reads and makes no request", async () => {
   const getIssueDecisions = spyOn(api, "getIssueDecisions");
+  const getIssueTree = spyOn(api, "getIssueTree");
   const listIssueAskThreads = spyOn(api, "listIssueAskThreads");
   const listComments = spyOn(api, "listComments");
   // Any request at all, past the reads the page's tree makes.
@@ -275,15 +280,8 @@ test("the seam gives four parts from today's reads and makes no request", async 
   try {
     const { change, parts } = await seamOf();
     const ids = idsOf(parts);
-    expect(ids.yours).toEqual([
-      D("asked"),
-      "a-late",
-      "a-bob",
-      "a-early",
-      "a-tie-bob",
-      "a-tie-mine",
-    ]);
-    expect(ids.others).toEqual([]);
+    expect(ids.yours).toEqual([D("asked"), "a-late", "a-early", "a-tie-mine"]);
+    expect(ids.others).toEqual(["a-bob", "a-tie-bob"]);
     expect(ids.open_questions).toEqual(["q-open"]);
     expect(ids.review).toEqual([D("review")]);
     expect(ids.agents).toEqual([D("minor")]);
@@ -298,11 +296,13 @@ test("the seam gives four parts from today's reads and makes no request", async 
     expect(parts.review[0]).not.toHaveProperty("change");
 
     expect(getIssueDecisions).not.toHaveBeenCalled();
+    expect(getIssueTree).not.toHaveBeenCalled();
     expect(listIssueAskThreads).not.toHaveBeenCalled();
     expect(listComments).not.toHaveBeenCalled();
     expect(request).not.toHaveBeenCalled();
   } finally {
     getIssueDecisions.mockRestore();
+    getIssueTree.mockRestore();
     listIssueAskThreads.mockRestore();
     listComments.mockRestore();
     request.mockRestore();
@@ -311,117 +311,53 @@ test("the seam gives four parts from today's reads and makes no request", async 
 
 // A Change stands under the decision it was asked on, though another decision holds its quote
 // too: here the Change quotes the paragraph both decisions open with, as the page's Change
-// quotes a decision's first paragraph. The tree read holds each decision as a node and hangs the
-// Change under the node of the one it was asked on, and the seam takes a decision node's Changes
-// from the read, as the outline does (`decision-review.ts`), so no quote is matched for it.
+// quotes a decision's first paragraph. The Decisions view read hangs the Change under the
+// decision it was asked on, so no quote is matched, and the first decision, whose words hold the
+// same quote, carries none.
 test("a Change stands under the decision it was asked on, where another decision holds its quote too", async () => {
-  const { change, parts } = await seamOf(true);
+  const { change, parts } = await seamOf();
   expect(idsOf(parts).yours[0]).toBe(D("asked"));
   expect(parts.yours[0]).toMatchObject({ change: { id: change.id }, kind: "decision" });
   expect(parts.review[0]).not.toHaveProperty("change");
 });
 
-/** Two decisions and a Change on each as Conversation's tree read answers them: `noded` a node of
- *  the read, with its Change under it; `quoted` no node of it, with its Change under the issue,
- *  quoting its words. Each Change is the reader's, made after both decisions last changed, with
- *  the server's reading of its words, and with what `marks` sets over it. */
-function twoChanges(marks: Partial<Comment> = {}) {
-  const made = [
-    decision("noded", { text: ":::decision{#noded}\nDraw the rail once.\n:::\n" }),
-    decision("quoted", { text: ":::decision{#quoted}\nKeep the model pure.\n:::\n" }),
-  ];
-  const changeOf = (id: string, quote: string | null): Comment => ({
-    ...readComment(id, 0, null, READER_ACTOR),
-    anchor:
-      quote === null
-        ? null
-        : {
-            artifact_id: SPEC_DOCUMENT.id,
-            block_id: null,
-            mark_id: `mark-${id}`,
-            orphaned: false,
-            quote,
-            version: 1,
-          },
-    body: `Change ${id}.`,
-    created_at: "2026-11-15T09:00:00Z",
-    ...marks,
-  });
-  const onNode = changeOf("c-noded", null);
-  const byQuote = changeOf("c-quoted", "Keep the model pure.");
-  const reading = { content: [{ text: "Change.", type: "text" }], type: "paragraph" };
-  const answer = treeAnswer([
-    treeNode(KEY, "issue", null),
-    treeNode("noded", "decision", KEY, { decision: { changed_at: made[0]?.changed_at } }),
-    { ...markedCommentNode(onNode, "noded"), text_tree: reading },
-    { ...markedCommentNode(byQuote, KEY), text_tree: reading },
-  ]);
-  return { answer, byQuote, made, onNode, reading };
-}
+// R3 of dispatch://INFRA-1523: a Change its author deleted asks nothing any more. The decisions
+// view still hangs it under its decision, with no body, and marks the delete on its node, as a
+// delete's correction writes it into the answer the cache holds (`api/corrected-post.ts`): the
+// decision is back on the review list and carries no Change. The same Change not deleted moves
+// the decision to the reader's own.
+test("a Change its author deleted asks nothing, and its decision waits for review again", async () => {
+  const children = [statement("s1"), decisionNode("asked")];
+  const made = [decision("asked", { decision: { links: [shaped(specRef("s1"))] } })];
+  const at = "2026-11-15T09:00:00Z";
+  const asked = changeComment("change-asked", "asked", at, "");
+  const tree = treeAnswer([...made, asked]);
+  const deleted = { ...asked, deleted_at: "2026-11-15T10:00:00Z", deleted_by: READER_ACTOR };
+  const goneTree = treeAnswer([...made, deleted]);
 
-// R8 over the Decisions filter: the seam reads the Changes from Conversation's tree read, as the
-// outline does, and no comments list. A decision node takes the Change the read hangs under it,
-// and a decision the read holds no node for the Change whose quote its words hold; each entry's
-// Change is drawn from the comment the read answers: its words, the server's reading of them and
-// its id.
-test("the seam takes a decision node's Change from under its node and another's by its quote, from the tree read alone", async () => {
-  const { answer, byQuote, made, onNode, reading } = twoChanges();
-  const listComments = spyOn(api, "listComments").mockResolvedValue([]);
-  const request = spyOn(globalThis, "fetch");
-  try {
-    const { client, hook } = await mountEntries(
-      [decisionNode("noded"), decisionNode("quoted")],
-      decisionsRead(made),
-      [],
-      [],
-      [],
-      { answer }
-    );
-    const entry = (id: string) =>
-      hook.result.current.parts.yours.find((one) => one.node.id === D(id));
-    expect(
-      [entry("noded"), entry("quoted")].map((one) =>
-        one?.kind === "decision"
-          ? { body: one.change?.body, id: one.change?.id, tree: one.change?.tree }
-          : undefined
-      )
-    ).toEqual([
-      { body: onNode.body, id: onNode.id, tree: reading },
-      { body: byQuote.body, id: byQuote.id, tree: reading },
-    ]);
-    expect(listComments, "the seam read the issue's comments").not.toHaveBeenCalled();
-    expect(
-      client.getQueryCache().find({ exact: true, queryKey: ["comments", KEY] }),
-      "the seam observes the issue's comments list"
-    ).toBeUndefined();
-    expect(request).not.toHaveBeenCalled();
-    hook.unmount();
-  } finally {
-    listComments.mockRestore();
-    request.mockRestore();
-  }
+  const standing = await entriesOf(children, tree, [], tree);
+  expect([idsOf(standing).review, idsOf(standing).yours]).toEqual([[], [D("asked")]]);
+  const gone = await entriesOf(children, goneTree, [], goneTree);
+  expect([idsOf(gone).review, idsOf(gone).yours]).toEqual([[D("asked")], []]);
+  expect(gone.review[0]).not.toHaveProperty("change");
 });
 
 // With the tree read answering a post's marks on its node (`edited_at`, `deleted_at`,
-// `deleted_by`): each entry's Change says when its author last edited it, read from the node the
-// read answers.
-test("each Change the seam takes from the tree read carries when its author last edited it", async () => {
+// `deleted_by`): a decision's Change says when its author last edited it, read from the node the
+// read hangs under the decision.
+test("a Change the seam takes from the tree read carries when its author last edited it", async () => {
   const editedAt = "2026-11-15T10:00:00Z";
-  const { answer, made } = twoChanges({ edited_at: editedAt });
-  const { hook } = await mountEntries(
-    [decisionNode("noded"), decisionNode("quoted")],
-    decisionsRead(made),
-    [],
-    [],
-    [],
-    { answer }
-  );
+  const children = [statement("s1"), decisionNode("asked")];
+  const made = [decision("asked", { decision: { links: [shaped(specRef("s1"))] } })];
+  const asked = {
+    ...changeComment("change-asked", "asked", "2026-11-15T09:00:00Z", "Name the read."),
+    edited_at: editedAt,
+  };
+  const tree = treeAnswer([...made, asked]);
+  const parts = await entriesOf(children, tree, [], tree);
   expect(
-    hook.result.current.parts.yours.map((one) =>
-      one.kind === "decision" ? one.change?.editedAt : undefined
-    )
-  ).toEqual([editedAt, editedAt]);
-  hook.unmount();
+    parts.yours.map((one) => (one.kind === "decision" ? one.change?.editedAt : undefined))
+  ).toEqual([editedAt]);
 });
 
 // A reading of an answered question is a person's write-up of that answer, and no entry of its
@@ -438,14 +374,17 @@ test("a reading under an answered question is a write-up, which no part draws an
     type: "reading",
   });
   const at = "2026-11-12T09:00:00Z";
-  const { parts, writeUps } = await entriesOf(
+  const made = [decision("minor")];
+  const hook = await mountOver(
+    heldClient([closing("a-answered", { at, kind: "answered" })], treeAnswer(made)),
     [
       answeredAsk("a-answered", { at, text: "Mine." }, { children: [writeUp], held: 1 }),
       decisionNode("minor"),
     ],
-    decisionsRead([decision("minor")]),
-    [closing("a-answered", { at, kind: "answered" })]
+    treeAnswer(made)
   );
+  const { parts, writeUps } = hook.result.current;
+  hook.unmount();
   expect(idsOf(parts)).toEqual({
     agents: [D("minor")],
     named: [],
@@ -457,39 +396,37 @@ test("a reading under an answered question is a write-up, which no part draws an
   expect(writeUps).toEqual(new Map([[writeUp.id, new Set(["a-answered"])]]));
 });
 
-// R8: each read the seam makes takes the page's freshness (`EVENT_FRESH`): events refresh it,
-// never its age. The stage mounts the view again on every press of Decisions, so under the app's
-// own defaults, whose `staleTime` is 30 s (`main.tsx`), a press more than 30 s after the page
-// loaded would otherwise read all four again. Here the four answers were given 31 s ago.
+// R8: each read the seam watches takes the page's freshness: events refresh it, never its age.
+// The stage mounts the view again on every press of Decisions, so under the app's own defaults,
+// whose `staleTime` is 30 s (`main.tsx`), a press more than 30 s after the page loaded would
+// otherwise read both again. Here the two answers - the tree read, which the decisions and their
+// Changes come from, and the asks - were given 31 s ago; the seam reads no document's blocks.
 test("answers older than the app's staleTime are not read again as the seam mounts", async () => {
   const made = [decision("minor")];
-  const names = [
-    "getIssueDecisions",
-    "listIssueAskThreads",
-    "getIssueTree",
-    "getArtifactBlocks",
-  ] as const;
-  // Each of the four reads, held, so a read the mount started reaches no server.
+  const names = ["getIssueTree", "listIssueAskThreads"] as const;
+  // Each of the two reads, held, so a read the mount started reaches no server.
   const reads = names.map((read) =>
     spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise)
   );
-  // Any request at all, past those four.
+  // Any request at all, past those two.
   const request = spyOn(globalThis, "fetch");
   try {
-    const { hook } = await mountEntries(
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 30_000 } },
+    });
+    const given = { updatedAt: Date.now() - 31_000 };
+    client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), given);
+    client.setQueryData(["asks", KEY, "thread"], [], given);
+    client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]), given);
+    const hook = await mountOver(
+      client,
       [statement("s1"), openAsk("q-open"), decisionNode("minor")],
-      decisionsRead(made),
-      [],
-      [],
-      specBlocks(made),
-      { answeredAt: Date.now() - 31_000, staleTime: 30_000 }
+      treeAnswer(made)
     );
     expect(hook.result.current.readsHeld).toBe(true);
     expect(
       Object.fromEntries(names.map((read, index) => [read, reads[index]?.mock.calls]))
     ).toEqual({
-      getArtifactBlocks: [],
-      getIssueDecisions: [],
       getIssueTree: [],
       listIssueAskThreads: [],
     });
@@ -501,75 +438,98 @@ test("answers older than the app's staleTime are not read again as the seam moun
   }
 });
 
-// The seam reads the blocks of the spec, the plan and the Verification document that a decision
-// stands in, in that order, and of no other document a decision stands in: a decision of a
-// `decisions.md` an older release stored is no node of the tree, and finds its Change by its words
-// (R3). Here the decisions read lists one of that document, one of the plan and one of the spec,
-// in that order, and the seam reads the spec's blocks, then the plan's, and not the decisions
-// document's.
-test("the seam reads the blocks of the spec and the plan its decisions stand in, and not those of another document", async () => {
-  const plan = artifact("artifact-plan", "plan-md");
-  const issue: IssueDetails = {
-    ...issueDetails(),
-    artifacts: [SPEC_DOCUMENT, plan, DECISIONS_DOCUMENT],
-    queries: [
-      { artifact_id: plan.id, query: "plan", subtree: `issue:${KEY}`, takes: ["plan_task"] },
-    ],
-  };
-  const atAddress = (block: string, slug: string) =>
-    decision(block, { ref: `dispatch://${KEY}/artifact/${slug}#b-${block}` });
-  const decisions: IssueDecisions = {
-    ...decisionsRead([]),
-    entries: [
-      // The view names a document only for a typed block of a role document.
-      { ...entryOf(atAddress("old", DECISIONS_SLUG)), document: null },
-      entryOf(atAddress("step", plan.slug), plan),
-      entryOf(decision("minor")),
-    ],
-  };
-  const blocksRead = spyOn(api, "getArtifactBlocks").mockResolvedValue([]);
+// Every reader of the decisions view takes it through `useDecisionsView`, and the control after
+// its last row (`useNextViewPage`) through `useViewAnswer`, as `useDecisionsView` does; the read
+// is tracked only as far as each reader reads it (`useLoadView`'s getters): a reader of the
+// answer alone - the page's tree, the header's count, each Decisions row's Keep and Change - is
+// drawn again only as the answer or its refusal changes, not as a read of the view starts and
+// ends. Here the view is read again, and its read answers what the view held, which TanStack's
+// structural sharing keeps as the same answer.
+test("a reader of the decisions view's answer draws once, and not again when the view is read again to the same answer", async () => {
+  const held = treeAnswer([decision("d1")]);
+  const read = spyOn(api, "getIssueTree").mockImplementation(async () =>
+    treeAnswer([decision("d1")])
+  );
   try {
-    const { hook } = await mountEntries(
-      [statement("s1"), decisionNode("minor")],
-      decisions,
-      [],
-      [],
-      null,
-      { issue }
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    client.setQueryData(viewKey(KEY, "decisions"), held);
+    let draws = 0;
+    const hook = renderHook(
+      () => {
+        draws += 1;
+        return useDecisionsView(KEY).answer;
+      },
+      { wrapper: decisionsAddress(client) }
     );
-    expect(blocksRead.mock.calls.map(([id]) => id)).toEqual([SPEC_DOCUMENT.id, plan.id]);
+    await act(() => Promise.resolve());
+    expect(hook.result.current, "the reader holds no answer of the decisions view").toBe(held);
+    expect(draws, "the reader drew more than once as it mounted").toBe(1);
+    await act(async () => {
+      await client.fetchQuery({ ...viewQuery(KEY, "decisions"), staleTime: 0 });
+    });
+    expect(read, "the decisions view was not read again").toHaveBeenCalledTimes(1);
+    expect(hook.result.current, "the read again changed the answer the reader holds").toBe(held);
+    expect(draws, "the reader of the answer drew again as the view was read again").toBe(1);
     hook.unmount();
   } finally {
-    blocksRead.mockRestore();
+    read.mockRestore();
   }
 });
 
-// R8: a decisions read that holds no decision, or none of its `entries` member, gives no
-// decision and no error, and the view draws the questions alone. The tree is the one the page
-// builds from that same read, which holds no decision node (`tree-drafts.ts`'s `addDecisions`).
-// Such a read holds its answer all the same (`readsHeld`). While the decisions read or the asks
-// have not answered, no entry is drawn, the questions included, so none is drawn in a part it
-// then leaves (decision 585); while the comments or the blocks are out, the questions are drawn
-// all the same. The reads hold once the decisions read and the asks have answered, which say
-// which questions and decisions there are; the comments and the blocks only move a decision
-// between parts, so the reads hold while those are out. Either
-// of the first two refused before it first answers is the seam's to name, with a retry of its
-// own, so the body can say so without naming a read; one refused only on a later read keeps
-// the answer it gave, and is none.
+// A reader of the decisions view first drawn while the issue's last load has ended, as the next
+// load's first render is, before its reset (`ViewReadProvider`): the view holds no answer then
+// (`useLoadView`), and the reader reads the view's state as the view's entries do
+// (`useDecisionsEntries`). Its read is tracked on that render all the same, so once the next
+// load's answer of the view lands the reader draws it, with nothing else drawing it again.
+test("a reader of the decisions view first drawn while the issue's last load has ended draws the view's answer once it lands", async () => {
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  resetViews(client, KEY)();
+  let draws = 0;
+  const hook = renderHook(
+    () => {
+      draws += 1;
+      const { answer, errorUpdateCount, isFetching, refetch, refused } = useDecisionsView(KEY);
+      return { answer, errorUpdateCount, isFetching, refetch, refused };
+    },
+    { wrapper: decisionsAddress(client) }
+  );
+  expect(hook.result.current.answer, "the reader drew an answer while the load had ended").toBe(
+    undefined
+  );
+  resetViews(client, KEY);
+  const answer = treeAnswer([decision("d1")]);
+  await act(async () => {
+    client.setQueryData(viewKey(KEY, "decisions"), answer);
+  });
+  expect(hook.result.current.answer, "the reader drew no answer of the view once it landed").toBe(
+    answer
+  );
+  expect(draws, "the reader drew other than once more as the answer landed").toBe(2);
+  hook.unmount();
+});
+
+// A decisions view that holds no decision gives no decision and no error, and the view draws
+// the questions alone; so does a view that has not answered yet over a tree read that holds no
+// decision node, which is the read the page's tree is built from. Such a read holds its answer
+// all the same (`readsHeld`). While the tree read or the asks have not answered, no entry is
+// drawn, the questions included, so none is drawn in a part it then leaves (decision 585); while
+// the decisions view is out, the questions are drawn all the same. The view knows what the issue
+// holds once the tree read and the asks have answered, which say which questions and decisions
+// there are, and the coverage read holds an answer or stands refused; the decisions view only
+// stands over the tree read's decisions, so the view knows while it is out. Either of the first
+// two refused before it first answers is the seam's to name, with a retry of its own, so the body
+// can say so without naming a read; one refused only on a later read keeps the answer it gave,
+// and is none.
 test("an empty decisions member gives the questions alone and no error", async () => {
   const children = [statement("s1"), openAsk("q-open")];
-  // A read with no `entries` member, which its type does not allow and an answer can still be.
-  const { decisions: none, document, open_questions } = decisionsRead([]);
-  const missing = { decisions: none, document, open_questions } as unknown as IssueDecisions;
   for (const [read, decisions] of [
-    ["an empty member", decisionsRead([])],
-    ["no member", missing],
+    ["an empty view", treeAnswer([])],
+    ["no view yet", undefined],
   ] as const) {
     const drawn = entriesOf(children, decisions);
     // The hook throws nothing on this read: the promise of its answer settles with it.
     await expect(drawn).resolves.toBeDefined();
-    const entries = await drawn;
-    expect({ parts: idsOf(entries.parts), read, readsHeld: entries.readsHeld }).toEqual({
+    expect({ parts: idsOf(await drawn), read }).toEqual({
       parts: {
         agents: [],
         named: [],
@@ -579,94 +539,94 @@ test("an empty decisions member gives the questions alone and no error", async (
         yours: [],
       },
       read,
-      readsHeld: true,
     });
   }
 
-  // Each read in turn is left out of the cache, and the fetch the mount starts for it never
-  // settles; its answer comes into the cache later, as a read that answers puts it there.
-  // `heldWhileOut` is whether the reads hold while that read is out. The blocks are read only of
-  // a document a decision stands in, so their case reads one decision, of the spec.
-  const noDecision = decisionsRead([]);
-  const oneDecision = decisionsRead([decision("minor")]);
+  // Each read in turn is left out of the cache, and a fetch of it would never settle; its answer
+  // comes into the cache later, as a read that answers puts it there. `knownWhileOut` is whether
+  // the view knows what the issue holds while that read is out. The seam watches each read and
+  // sends none of its own, so the fetch is never started.
+  const held = { asks: [], tree: treeAnswer([]) };
   const cold = [
     {
-      answer: noDecision,
-      heldWhileOut: false,
-      queryKey: ["decisions", KEY],
-      mount: () => mountEntries(children, null),
-      read: "getIssueDecisions",
-    },
-    {
-      answer: [],
-      heldWhileOut: false,
-      queryKey: ["asks", KEY, "thread"],
-      mount: () => mountEntries(children, noDecision, null),
-      read: "listIssueAskThreads",
-    },
-    {
-      answer: commentsTree([]),
-      heldWhileOut: true,
-      queryKey: outlineQuery(KEY, "conversation").queryKey,
-      mount: () => mountEntries(children, noDecision, [], null),
+      answer: held.tree,
+      key: conversationTreeKey(KEY),
+      knownWhileOut: false,
       read: "getIssueTree",
     },
     {
-      answer: [],
-      heldWhileOut: true,
-      queryKey: ["artifact", SPEC_DOCUMENT.id, "blocks"],
-      mount: () => mountEntries(children, oneDecision, [], [], null),
-      read: "getArtifactBlocks",
+      answer: held.asks,
+      key: ["asks", KEY, "thread"],
+      knownWhileOut: false,
+      read: "listIssueAskThreads",
+    },
+    {
+      answer: held.tree,
+      key: viewKey(KEY, "decisions"),
+      knownWhileOut: true,
+      read: "getIssueTree",
     },
   ] as const;
-  for (const { answer, heldWhileOut, mount, queryKey, read } of cold) {
+  for (const { answer, key, knownWhileOut, read } of cold) {
     const started = spyOn(api, read).mockReturnValue(Promise.withResolvers<never>().promise);
     try {
-      const { client, hook } = await mount();
+      const client = heldClient(held.asks, held.tree);
+      client.removeQueries({ exact: true, queryKey: key });
+      const hook = await mountOver(client, children, undefined);
       const reading = () => ({
         open_questions: idsOf(hook.result.current.parts).open_questions,
-        read,
+        out: key,
         readsHeld: hook.result.current.readsHeld,
       });
       expect(reading()).toEqual({
-        open_questions: heldWhileOut ? ["q-open"] : [],
-        read,
-        readsHeld: heldWhileOut,
+        open_questions: knownWhileOut ? ["q-open"] : [],
+        out: key,
+        readsHeld: knownWhileOut,
       });
-      expect(started).toHaveBeenCalledTimes(1);
-      await act(async () => client.setQueryData(queryKey, answer));
-      expect(reading()).toEqual({ open_questions: ["q-open"], read, readsHeld: true });
+      expect(started).not.toHaveBeenCalled();
+      await act(async () => client.setQueryData(key, answer));
+      expect(reading()).toEqual({ open_questions: ["q-open"], out: key, readsHeld: true });
       hook.unmount();
     } finally {
       started.mockRestore();
     }
   }
 
-  // Each of the two reads that say which entries there are is refused in turn before it first
-  // answers, with the other read in the cache. The refused read holds no answer, so the seam
-  // says it is unreadable and the reads do not hold; its retry asks that read again, which is
-  // refused again, and asks the other read nothing. The read stays refused while the retry runs,
-  // and once that run is refused too; no entry moves, so the parts are the very object they were
-  // before the retry.
+  // Each of the two reads the view's failed-read lines name is refused in turn before it first
+  // answers, with the other read in the cache: the tree read, which the view's rows come from,
+  // and the asks. The page's own read refuses it, since the seam sends none. The refused read
+  // holds no answer, so the seam says it is unreadable and the view does not know what the issue
+  // holds; its retry asks that read again, which is refused again, and asks the other read
+  // nothing. The read stays refused while the retry runs, and once that run is refused too; no
+  // entry moves, so the parts are the very object they were before the retry.
   const refused = [
     {
-      mount: () => mountEntries(children, null),
+      key: conversationTreeKey(KEY),
       other: "listIssueAskThreads",
-      read: "issue-decisions",
-      request: "getIssueDecisions",
+      read: "decisions",
+      refuse: (client: QueryClient) => client.prefetchQuery(outlineQuery(KEY, "conversation")),
+      request: "getIssueTree",
     },
     {
-      mount: () => mountEntries(children, noDecision, null),
-      other: "getIssueDecisions",
+      key: ["asks", KEY, "thread"],
+      other: "getIssueTree",
       read: "asks",
+      refuse: (client: QueryClient) =>
+        client.prefetchQuery({
+          queryFn: () => api.listIssueAskThreads(KEY, "all"),
+          queryKey: ["asks", KEY, "thread"],
+        }),
       request: "listIssueAskThreads",
     },
   ] as const;
-  for (const { mount, other, read, request } of refused) {
+  for (const { key, other, read, refuse, request } of refused) {
     const asked = spyOn(api, request).mockRejectedValue(new Error("refused"));
     const notAsked = spyOn(api, other);
     try {
-      const { hook } = await mount();
+      const client = heldClient(held.asks, held.tree);
+      client.removeQueries({ exact: true, queryKey: key });
+      await refuse(client);
+      const hook = await mountOver(client, children, undefined);
       const reading = () => ({
         read,
         readsHeld: hook.result.current.readsHeld,
@@ -694,25 +654,26 @@ test("an empty decisions member gives the questions alone and no error", async (
   // failed, the read still holds the answer it gave, which the view draws from, so it is not
   // unreadable, draws no line, and the reads still hold.
   const refetched = [
-    { queryKey: ["decisions", KEY], read: "issue-decisions", request: "getIssueDecisions" },
+    { queryKey: conversationTreeKey(KEY), read: "decisions", request: "getIssueTree" },
     { queryKey: ["asks", KEY, "thread"], read: "asks", request: "listIssueAskThreads" },
   ] as const;
   for (const { queryKey, read, request } of refetched) {
     const answer = Promise.withResolvers<never>();
     const asked = spyOn(api, request).mockReturnValue(answer.promise);
     try {
-      const { client, hook } = await mountEntries(children, noDecision);
+      const client = heldClient(held.asks, held.tree);
+      const hook = await mountOver(client, children, treeAnswer([]));
       const reading = () => ({
         read,
         readsHeld: hook.result.current.readsHeld,
         retrying: hook.result.current.retrying,
         unreadable: hook.result.current.unreadable,
       });
-      const held = { read, readsHeld: true, retrying: [], unreadable: [] };
-      expect(reading()).toEqual(held);
+      const holds = { read, readsHeld: true, retrying: [], unreadable: [] };
+      expect(reading()).toEqual(holds);
       const before = hook.result.current.parts;
       await act(async () => hook.result.current.retry(read));
-      await waitFor(() => expect(reading()).toEqual({ ...held, retrying: [read] }));
+      await waitFor(() => expect(reading()).toEqual({ ...holds, retrying: [read] }));
       expect(hook.result.current.parts).toBe(before);
       await act(async () => {
         answer.reject(new Error("refused"));
@@ -720,11 +681,171 @@ test("an empty decisions member gives the questions alone and no error", async (
       });
       await waitFor(() => expect(hook.result.current.retrying).toEqual([]));
       expect(client.getQueryState(queryKey)?.status).toBe("error");
-      expect(reading()).toEqual(held);
+      expect(reading()).toEqual(holds);
       expect(asked).toHaveBeenCalledTimes(1);
       hook.unmount();
     } finally {
       asked.mockRestore();
     }
+  }
+});
+
+// Until the decisions view answers - its first read, made the first time the filter is on in a
+// load, or a read of it made again after a change of the issue - and wherever that read fails,
+// the decisions are the decision nodes of the tree read the page holds: a decision that waits and
+// is tied to a statement stands in the review list with its state, and one tied to nothing in the
+// folded foot, as they stand once the view answers, never all in the foot with no state.
+test("a decision stands in its part with its state from the tree read until the view answers, and where it fails", async () => {
+  const children = [statement("s1"), decisionNode("review"), decisionNode("minor")];
+  const made = [
+    decision("review", {
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
+    decision("minor"),
+  ];
+  const tree = treeAnswer(made);
+  const failing = heldClient([], tree);
+  await failing.prefetchQuery({
+    ...viewQuery(KEY, "decisions"),
+    queryFn: () => Promise.reject(new Error("offline")),
+  });
+  expect(failing.getQueryState(viewKey(KEY, "decisions"))?.status).toBe("error");
+  const readings = [
+    ["the view answered", await entriesOf(children, treeAnswer(made), [], tree)],
+    ["the view not answered yet", await entriesOf(children, undefined, [], tree)],
+    ["the view's read failed", await partsOver(failing, children, undefined)],
+  ] as const;
+
+  for (const [read, parts] of readings) {
+    expect({ parts: idsOf(parts), read }).toEqual({
+      parts: {
+        agents: [D("minor")],
+        named: [],
+        open_questions: [],
+        others: [],
+        review: [D("review")],
+        yours: [],
+      },
+      read,
+    });
+    expect({ entry: parts.review[0], read }).toMatchObject({
+      entry: { kind: "decision", standing: "waiting_review" },
+      read,
+    });
+  }
+});
+
+// The Decisions view's parts are made from the Decisions view read's nodes (spec R2). Conversation's
+// tree read is paged: on a large issue its first page ends before the last decisions of the spec
+// (measured on a preview of 776d9d85: INFRA-1196's first page held 467 nodes with 462 remaining,
+// and no node of a person's answered question and the agent's decision under it, which the
+// decisions view held). A decision the view read holds stands in its part with its state, whether
+// or not the tree the page has read so far holds its node. The seam is handed the tree that read
+// builds, as the slot hands it (`slotOver`).
+test("a decision the view read holds stands in its part where the tree read has not reached it yet", async () => {
+  const view = treeAnswer([decision("first", VIEW_TIED), decision("later", VIEW_TIED)]);
+  const { parts } = await slotOver(heldClient([], treeAnswer([S1, decision("first", TIED)])), view);
+
+  expect(
+    [...idsOf(parts).review].sort(),
+    "the review list holds each waiting decision the Decisions view read holds"
+  ).toEqual([D("first"), D("later")].sort());
+});
+
+// R3 (dispatch://INFRA-4097/spec#b-r-change): a Change is the comment the tree read hangs under
+// its decision node, and the Decisions view read carries each comment on the text of a node it
+// returns, as context. Conversation's read is paged, and its first page here ends before the
+// later decision, which the view read holds with the reader's Change under it. The Change is read
+// from the view read, so that decision stands with the reader's own decisions, reads "Changed by"
+// with her name and is not on the review list, as a decision on the first page with its Change
+// does. The seam is handed the tree that read builds, as the slot hands it (`slotOver`).
+test("a waiting decision past Conversation's first page with the reader's Change in the view read stands with her decisions", async () => {
+  const asked = {
+    ...changeComment("change-later", "later", "2026-11-15T09:00:00Z", "Name the read."),
+    role: "context" as const,
+  };
+  const view = treeAnswer([decision("first", VIEW_TIED), decision("later", VIEW_TIED), asked]);
+  const firstPage = pagedAnswer(treeAnswer([S1, decision("first", TIED)]), "next-page", 30);
+  const { parts } = await slotOver(heldClient([], firstPage), view);
+
+  expect(
+    { review: idsOf(parts).review, yours: idsOf(parts).yours },
+    "the later decision, its Change in the view read, does not stand with the reader's decisions"
+  ).toEqual({ review: [D("first")], yours: [D("later")] });
+  const later = parts.yours[0];
+  expect(later).toMatchObject({
+    change: { by: READER_ACTOR, id: asked.id },
+    kind: "decision",
+    standing: "change_requested",
+  });
+  expect(
+    later === undefined ? undefined : entryStanding(later, (actor) => actor.id)?.words,
+    "the later decision does not read Changed by with the reader's name"
+  ).toBe(`${DECISIONS_WORDS.changed_by} ${READER}`);
+});
+
+// R2, R15: the Decisions view's parts and its count are the Decisions view read's. Conversation's
+// pages held so far hold two waiting decisions tied to a statement; the Decisions view read's
+// answer, a first page that names a next one, holds the first alone. The tree that read builds
+// holds the later decision as Conversation's context alone (`useIssueTree.ts`'
+// `viewWithContext`), so the view counts the first alone, with "+", its review list holds the
+// first, and its foot holds nothing: the later decision stands in no part until a page of the
+// Decisions view read holds it.
+test("a waiting decision Conversation's pages hold and the Decisions view read's page does not is no entry, count or part of the view", async () => {
+  const conversation = treeAnswer([S1, decision("first", TIED), decision("later", TIED)]);
+  const decisions = pagedAnswer(treeAnswer([decision("first", VIEW_TIED)]), "next-page", 30);
+  const { parts, signal } = await slotOver(heldClient([], conversation), decisions);
+
+  expect(
+    `${signal.count}${signal.more === true ? "+" : ""}`,
+    "the Decisions count reads a decision the Decisions view read's page does not hold"
+  ).toBe("1+");
+  expect({ agents: idsOf(parts).agents, review: idsOf(parts).review }).toEqual({
+    agents: [],
+    review: [D("first")],
+  });
+});
+
+// The seam's reads are refreshed by the events that change them alone, as every read of the page
+// is: mounted over reads older than the app's 30 s `staleTime` (`main.tsx`), as Decisions pressed
+// a minute after the load mounts it, the seam sends no request of its own.
+test("the seam mounted over reads older than the app's stale time sends no request", async () => {
+  const client = new QueryClient({
+    defaultOptions: { queries: { refetchOnWindowFocus: true, retry: false, staleTime: 30_000 } },
+  });
+  const minuteAgo = Date.now() - 60_000;
+  const made = [
+    decision("review", {
+      decision: {
+        links: [shaped(specRef("s1"))],
+      },
+    }),
+  ];
+  client.setQueryData(conversationTreeKey(KEY), treeAnswer(made), { updatedAt: minuteAgo });
+  client.setQueryData(["asks", KEY, "thread"], [], { updatedAt: minuteAgo });
+  client.setQueryData(issueCoverageQuery(KEY).queryKey, coverageRead([]), { updatedAt: minuteAgo });
+  const never = () => new Promise<never>(() => {});
+  const getIssueTree = spyOn(api, "getIssueTree").mockImplementation(never);
+  const listIssueAskThreads = spyOn(api, "listIssueAskThreads").mockImplementation(never);
+  const listComments = spyOn(api, "listComments").mockImplementation(never);
+  const request = spyOn(globalThis, "fetch");
+  try {
+    const parts = await partsOver(
+      client,
+      [statement("s1"), decisionNode("review")],
+      treeAnswer(made)
+    );
+    expect(idsOf(parts).review).toEqual([D("review")]);
+    expect(getIssueTree).not.toHaveBeenCalled();
+    expect(listIssueAskThreads).not.toHaveBeenCalled();
+    expect(listComments).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  } finally {
+    getIssueTree.mockRestore();
+    listIssueAskThreads.mockRestore();
+    listComments.mockRestore();
+    request.mockRestore();
   }
 });

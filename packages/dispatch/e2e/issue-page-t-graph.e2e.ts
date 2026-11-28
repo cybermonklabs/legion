@@ -119,7 +119,7 @@ async function expectGraphOpens(page: Page, key: string, where: string): Promise
   expect(
     idSet(opened.rows.flatMap((row) => (row.id === null ? [] : [row.id]))),
     `${where}, the drawn rows are the answer's nodes but the memo's callout and each comment on a node's text`
-  ).toEqual(answerRowIds(opened, nodesNoRowDraws(opened.answer, anchored, SUMMARY_BLOCK_ID)));
+  ).toEqual(answerRowIds(opened, nodesNoRowDraws(opened, anchored, SUMMARY_BLOCK_ID)));
   expect(
     firstRowOutOfPlace(`${where}, in Graph`, opened.rows, opened),
     `${where}, each row stands under the parent the answer names, in its order`

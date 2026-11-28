@@ -14,7 +14,25 @@
 import type { PartWords } from "./page-words-parts";
 
 export default {
-  add: {},
+  add: {
+    DECISIONS_WORDS: {
+      /** What a decision with a Change reads in place of its state's own word
+       *  (`NODE_STATE_WORDS.decision.change_requested`), wherever the page draws it, the
+       *  outline's row as much as this view: then the name of the person whose Change it waits
+       *  on, the reader's own where they asked (R2, R3). */
+      changed_by: "Changed by",
+      /** After the count of a part's entries not yet drawn, on the control under the part that
+       *  draws the next of them, which says it in brackets after what a press draws: "Show the
+       *  next 20 (25 left)" (R2: a control at a part's foot "that says how many are left",
+       *  decision 424). */
+      page_left: "left",
+      /** The control under a part whose entries are not all drawn, before the count of those a
+       *  press draws, at most 20, the size root R40 pages a flat list by: "Show the next 20 (25
+       *  left)". Each part draws its first 20 entries as the view opens, and a press draws the
+       *  next ones; a page is no fold (R2, decision 424). */
+      page_next: "Show the next",
+    },
+  },
   unasked: [],
   answers: [],
 } as const satisfies PartWords;

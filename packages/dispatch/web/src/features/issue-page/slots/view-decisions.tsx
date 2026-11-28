@@ -7,6 +7,7 @@ import { whoAmIQuery } from "../../../api/queries";
 import { EVENT_FRESH } from "../../refs/reference-target";
 import { useAddressTarget } from "../address-target";
 import { DecisionsFilterBody } from "../decisions-filter/DecisionsFilterBody";
+import { useDecisionsTree } from "../decisions-filter/decisions-entries";
 import { issueAddress } from "../issue-address";
 import { artifactsBySlug } from "../issue-artifacts";
 import { NoTooltips } from "../NoTooltips";
@@ -14,6 +15,7 @@ import { useOutlineReads } from "../outline-reads";
 import { useOutlineRequest } from "../outline-request";
 import { EMPTY_STATE_LINES } from "../page-words";
 import { presetView } from "../presets";
+import { NextViewPage } from "../tree-read/view-read";
 import { waitingPressOf } from "../waiting";
 import { useTellsAddressDrawn } from "./refused-reads";
 import type { ViewSlotProps } from "./stage";
@@ -33,12 +35,18 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   // (`published`), so none of them reads a reference the page asks for; and the outline's names
   // line while those reads stand failed (`names`), which the body draws over its list, since
   // every reference its rows draw waits on those names.
-  const { names, published, readsSettled, refused, root } = useOutlineReads(issue);
+  const { names, published, readsSettled, refused, root: outline } = useOutlineReads(issue);
   // Who is reading, whose own answers carry the ink rule and whose decisions stand under "Your
   // decisions": the shell's one read of who is signed in, so it costs no request of its own, and
   // kept fresh as the tree keeps it (`EVENT_FRESH`), so a press of Decisions reads it no second
   // time.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
+  // The tree the view is drawn over: the one the decisions view read builds once the page holds
+  // its answer, which holds every question and decision of the issue whatever page of
+  // Conversation's read the page has read, and the outline's until then (`useDecisionsTree`). So
+  // the node the address names, the nodes the words filter keeps and the rows are the nodes the
+  // view's parts stand on.
+  const root = useDecisionsTree(issue, outline, viewer);
   // The address's own node is resolved against the whole tree and then kept by the view, so an
   // address that names a node the words filter would not have matched still draws it, but for a
   // write-up of an answered question (below); the entry it names takes the focus, once per
@@ -46,21 +54,21 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
   const { named, reveal } = useAddressTarget(root, address);
   // Whether the list draws the node the address names, which the stage is told by the rule for
   // refused reads (`useTellsAddressDrawn`). The list draws a line of its own for the decisions
-  // read and the asks read (`DecisionsFilterBody`), each under the key the outline draws its line
-  // under (`outline-reads.ts`). Where the view may tell, the body says whether it draws the node
-  // (`onRevealDrawn`): only the body knows the rows it draws, and which nodes are a write-up of
-  // an answered question - a `reading` node under it - which is no row here, so that an address
-  // naming one lands on the row of the question it answers where the list draws one. Where the
-  // list draws none of the node - the tree holds none, the words filter matched not the question
-  // a write-up answers, or a read the list draws no line for stands refused - the stage draws the
-  // outline in the view's place, which lands on the node or says that the issue holds none of it
-  // or that its read failed.
-  const tells = useTellsAddressDrawn(
-    refused,
-    readsSettled,
-    ["issue-decisions", "asks"],
-    onAddressDrawn
-  );
+  // view read and the asks read (`DecisionsFilterBody`), and of the two only the asks read is one
+  // the tree is built from (`useOutlineReads`). Where the view may tell, the body says whether it
+  // draws the node (`onRevealDrawn`): only the body knows the rows it draws, and which nodes are a
+  // write-up of an answered question - a `reading` node under it - which is no row here, so that
+  // an address naming one lands on the row of the question it answers where the list draws one.
+  // Where the list draws none of the node - the tree holds none, the words filter matched not the
+  // question a write-up answers, or a read the list draws no line for stands refused - the stage
+  // draws the outline in the view's place, which lands on the node or says that the issue holds
+  // none of it or that its read failed. The view tells once the outline's reads have settled, and
+  // the body only once the decisions view read has answered or stands refused
+  // (`decisions-entries.ts`' `viewSettled`): a node only that read holds is in the tree by then,
+  // so it is drawn here, whichever of the reads answers first. Where that read stands refused the
+  // tree is the outline's, and where it holds none of the node the outline is drawn in the view's
+  // place, which reads its pages until it holds the node.
+  const tells = useTellsAddressDrawn(refused, readsSettled, ["asks"], onAddressDrawn);
   const view = useMemo(
     () => presetView(root, "decisions", address.filter, named),
     [address.filter, named, root]
@@ -91,6 +99,8 @@ export function ViewDecisionsSlot({ issue, onAddressDrawn, route }: ViewSlotProp
         // entry (part P): each press goes to the next thing that waits (the tester's F12).
         waitingPress={waitingPressOf(state)}
       />
+      {/* While the decisions view read answers a next page, the control that reads it (R15). */}
+      <NextViewPage filter="decisions" issueKey={issue.key} />
     </NoTooltips>
   );
 }

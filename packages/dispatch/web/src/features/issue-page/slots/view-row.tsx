@@ -7,6 +7,7 @@ import { TREE_FILTERS, whoAmIQuery } from "../../../api/queries";
 import { pageLineBorder, pagePaperBg } from "../../../theme/classes";
 import { useMediaQuery } from "../../shell/useDialog";
 import { CONTENTS_PANE_QUERY, drawsContents, OutlineSheet, PAGE_INSET } from "../contents-frame";
+import { useDecisionsTree } from "../decisions-filter/decisions-entries";
 import { IssuePresets } from "../IssuePresets";
 import { HEADER_SCROLLS_QUERY } from "../identity-block";
 import { issueAddress } from "../issue-address";
@@ -26,12 +27,12 @@ import { useIssueKeymap } from "../useIssueKeymap";
  * (`useIssueKeymap.ts`).
  *
  * Signals wait for the tree's reads (`readsHeld`): a read still out or failed leaves nodes
- * missing from the counts. They also wait for the reader's login: `tree-drafts.ts` marks no
- * decision `waiting` until the login answers, so the Decisions flag would omit decisions that
- * need review. Under a words filter (`?q=`) signals wait for the names (`namesHeld`), since
- * the names supply the words of plan tasks and callouts. Without a words filter the counts
- * do not depend on the names. A filter loaded cold with no outline read draws its own count
- * from its view answer alone (`viewRowSignals`).
+ * missing from the counts. They also wait for the reader's login: the outline marks no
+ * decision `waiting` until the login answers (`tree-read/tree-nodes.ts`' `draftDecision`), so
+ * the Decisions flag would omit decisions that need review. Under a words filter (`?q=`) signals
+ * wait for the names (`namesHeld`), since the names supply the words of plan tasks and callouts.
+ * Without a words filter the counts do not depend on the names. A filter loaded cold with no
+ * outline read draws its own count from its view answer alone (`viewRowSignals`).
  *
  * The row's rule runs the column's whole width, as the prototype's `#tabs` does, and its
  * controls keep the page's inset. At 760 px and below it stays at the top of the screen as the
@@ -46,10 +47,14 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
   const { namesHeld, readsHeld, root } = useOutlineReads(issue);
   // Decisions' flag counts the decisions marked `waiting` for the reader.
   const viewer = useQuery(whoAmIQuery()).data?.login;
+  // The tree the Decisions view is drawn over, which its count is read off: the one its own
+  // view read builds once the page holds that read, and the outline's until then.
+  const decisionsRoot = useDecisionsTree(issue, root, viewer);
   // What each control draws after its name (`viewRowSignals`).
   const signals = useMemo(
     () =>
       viewRowSignals({
+        decisionsRoot,
         filter: address.filter,
         namesHeld,
         preset: address.preset,
@@ -57,7 +62,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
         root,
         viewer,
       }),
-    [address.filter, address.preset, namesHeld, readsHeld, root, viewer]
+    [address.filter, address.preset, decisionsRoot, namesHeld, readsHeld, root, viewer]
   );
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
   const row = useRef<HTMLDivElement | null>(null);
@@ -89,6 +94,9 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
  * control draws none either while the plan's tasks are still to be read (`planTasksOut`): the
  * outline read holds none of them, so its count would read 0 for what the page has not read
  * yet, and then change; its room stays empty (`IssuePresets`'s `SIGNAL_ROOM`) so no control moves.
+ * Decisions is counted off the tree its view is drawn over (`decisionsRoot`, `presets.ts`'
+ * `filterSignals`): the one its own view read builds once the page holds that read, and `root`
+ * until then, as where none is given.
  *
  * A filter loaded cold with no outline read - Spec below 1024 px, which sends none until the
  * Outline sheet opens (R13) - never holds the outline's reads, and its count is its own view
@@ -96,6 +104,7 @@ export function ViewRowSlot(props: SlotProps): ReactNode {
  * draws that count alone, and every other control none.
  */
 export function viewRowSignals({
+  decisionsRoot,
   filter,
   namesHeld,
   preset,
@@ -103,6 +112,7 @@ export function viewRowSignals({
   root,
   viewer,
 }: {
+  decisionsRoot?: TreeNode;
   filter: string;
   namesHeld: boolean;
   preset: Preset;
@@ -112,7 +122,7 @@ export function viewRowSignals({
 }): Readonly<Record<Filter, PresetSignal | undefined>> | undefined {
   if (!namesHeld && filter !== "") return undefined;
   if (readsHeld && viewer !== undefined) {
-    const signals = filterSignals(root, filter);
+    const signals = filterSignals(root, filter, decisionsRoot);
     return planTasksOut(root, preset) ? { ...signals, plan: undefined } : signals;
   }
   const cold = TREE_FILTERS.find((one) => one === preset);

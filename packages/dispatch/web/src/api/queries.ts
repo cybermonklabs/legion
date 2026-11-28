@@ -138,8 +138,9 @@ export function conversationTreeKey(
   return [...issueTreeKey(key), { kind: CONVERSATION_KINDS }];
 }
 
-/** The filters that read a view of the tree, in this order. Decisions reads none: its view is
- *  the decisions read (`issueDecisionsQuery`), which the load reads already. */
+/** The filters that read a role document's view of the tree, in this order. Decisions reads a
+ *  view too, the decisions view, which plays no role (`features/issue-page/tree-read/tree-read.ts`'
+ *  `TREE_VIEWS`). */
 export const TREE_FILTERS = ["spec", "verification", "plan"] as const;
 
 /** The views of the tree a filter reads (`?view=`), each under the tree's key

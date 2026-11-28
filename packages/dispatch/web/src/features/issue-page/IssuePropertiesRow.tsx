@@ -20,7 +20,6 @@ import {
   pageWaitingChip,
 } from "../../theme/classes";
 import { ApprovalChip } from "../doc/ApprovalChip";
-import { issueDecisionsQuery } from "../doc/spec-marks";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { AssigneeControl } from "../issue/AssigneeControl";
@@ -36,8 +35,8 @@ import { statusGlyph, statusTone } from "./issue-status";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
 import { CONTROL_LABELS } from "./page-words";
 import { StatusGlyph } from "./StatusGlyph";
-import { nodeIdOf as issueNodeIdOf } from "./tree-drafts";
-import { useReadUnloadedPages, useTreeRead } from "./tree-read/tree-read";
+import { coverageStatements } from "./tree-drafts";
+import { useDecisionsView, useReadUnloadedPages, useTreeRead } from "./tree-read/tree-read";
 import type { IssueHeaderWrites } from "./useIssueHeaderWrites";
 import { type WaitingPress, waitingOnReader } from "./waiting";
 
@@ -82,41 +81,39 @@ export function IssuePropertiesRow({
   const status = writes.pendingStatus ?? issue.status;
   const openAsks = (issue.open_asks ?? []).filter((ask) => ask.state === "open");
   // What the count counts, read from what the outline already reads under the same keys - the
-  // reader's login, the decisions, the coverage's statements, and the tree read, which the
-  // outline keeps fresh by its own rule (`TREE_FRESH`), whose decision nodes hang the Changes
-  // written on them and whose comments are the Changes of a decision it holds no node for - and
-  // kept fresh by the outline's own rule (`reference-target.ts`'s `EVENT_FRESH`): events
-  // refresh them, never their age. Staleness is per observer, so each read here
-  // takes that rule too, and the count costs no request of its own (`waiting.ts`). Until a
-  // decision's node is held the count reads the Changes asked of it by their quotes, as
-  // `decision-review.ts` does with no blocks read; a Change in a document the outline does not
-  // read is read by its quote alone, as the tree places it.
+  // reader's login, the coverage's statements, and the decisions the tree read answers as nodes,
+  // with each Change it hangs under one, whose node says whether its author deleted it - and
+  // kept fresh by the outline's own rule
+  // (`reference-target.ts`'s `EVENT_FRESH`), but for the tree read, which keeps its own
+  // (`TREE_FRESH`): events refresh them, never their age (decision 180). Staleness is per
+  // observer, so each read here takes that rule too, and the count costs no request of its own
+  // (`waiting.ts`). A statement is one by the rule the outline's review list reads
+  // (`coverageStatements`), so the count counts the very decisions the outline marks as waiting.
+  // The decisions, and each Change that read hangs under its decision, are the decisions view
+  // read's wherever the page holds it, which holds each of them however many pages of the tree
+  // read the page holds, watched under the key the page reads it by and never sent, so the count
+  // sends no view read of its own; Conversation's read stands in until then. It is read through
+  // `useDecisionsView`, so the header's count and the Decisions control count the same answer.
   const viewer = useQuery({ ...whoAmIQuery(), ...EVENT_FRESH }).data?.login;
-  const decisions = useQuery({ ...issueDecisionsQuery(issue.key, true), ...EVENT_FRESH });
   const coverage = useQuery({ ...issueCoverageQuery(issue.key), ...EVENT_FRESH });
   const tree = useTreeRead(issue).answer;
-  const nodeIdOf = useMemo(() => issueNodeIdOf(issue), [issue]);
-  const statements = useMemo(
-    () => new Set((coverage.data?.requirements ?? []).map((one) => nodeIdOf(one.ref))),
-    [coverage.data, nodeIdOf]
+  const held = useDecisionsView(issue.key).answer;
+  const answer = held ?? tree;
+  const isCoverageStatement = useMemo(
+    () => coverageStatements(issue, coverage.data),
+    [issue, coverage.data]
   );
   const waiting = useMemo(
-    () =>
-      waitingOnReader(
-        issue,
-        viewer,
-        decisions.data,
-        (reference) => statements.has(nodeIdOf(reference)),
-        tree
-      ),
-    [issue, viewer, decisions.data, statements, nodeIdOf, tree]
+    () => waitingOnReader(issue, viewer, isCoverageStatement, { answer }),
+    [issue, viewer, isCoverageStatement, answer]
   );
-  // A decision whose Change may stand on a page the tree read has not loaded is left out of the
-  // count until that page is read (`waiting.ts`): the header reads the next pages and then the
-  // older comment pages once the stage's view has drawn (`useTellViewDrawn`), until each such
-  // Change is held or no such page is left (decisions 563 (4) and 574 (B)), so the count is right
-  // on every view that holds an outline read.
-  useReadUnloadedPages(issue, () => waiting.unread > 0);
+  // A decision whose Change may stand on a page the read the count is taken from has not loaded
+  // is left out of the count until that page is read (`waiting.ts`): the header reads the next
+  // pages and then the older comment pages of that read - the decisions view read where the page
+  // holds it, else the outline read - once the stage's view has drawn (`useTellViewDrawn`), until
+  // each such Change is held or no such page is left (decisions 563 (4) and 574 (B)), so the
+  // count is right on every view that holds either read.
+  useReadUnloadedPages(issue, () => waiting.unread > 0, held);
   // The detail carries waiting_on on every open ask; a response without it cannot say whose
   // turn it is, so the indicator stays off rather than shown wrong.
   const knowsWhoseTurn = openAsks.every((ask) => ask.waiting_on !== undefined);
@@ -223,14 +220,16 @@ export function IssuePropertiesRow({
           <span aria-hidden="true" className={`size-2 shrink-0 rounded-full ${pageWaitingBg}`} />
           {/* The words are one item, so the flex gap is the dot's alone: as items of their own,
               the brackets and the number each took the gap and the count drew "Waiting on
-              you ( 2 )". While a decision that may wait is marked (`waiting.mayWait`), the
-              number takes "+", as every count with more to read does (R15, decisions 580 and
-              583 (1)): "(1+)", or "(0+)" where only such decisions may wait. */}
+              you ( 2 )". The number carries "+" while the read its decisions are counted from
+              names a next page (R15), as each count of the view row does, and while a decision
+              that may wait is marked (`waiting.mayWait`), as every count with more to read does
+              (R15, decisions 580 and 583 (1)): "(1+)", or "(0+)" where only such decisions may
+              wait. */}
           <span>
             {PROPERTY_LABELS.waiting_on_you} (
             <span {...authorText}>
               {waiting.total}
-              {waiting.mayWait > 0 ? "+" : ""}
+              {waiting.more === true || waiting.mayWait > 0 ? "+" : ""}
             </span>
             )
           </span>

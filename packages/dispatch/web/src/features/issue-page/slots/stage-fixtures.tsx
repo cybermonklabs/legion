@@ -18,14 +18,16 @@ import { MarginProvider } from "../../margin/margin-context";
 import { ReferenceNamesProvider } from "../../refs/reference-names";
 import { parseIssuePath } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
-import { decisionsRead, issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
+import { issueDetails, KEY } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
 import type { Preset } from "../page-words";
 import { commentNode, treeAnswer, treeNode, wholeTreeOnly } from "../tree-read/tree-fixtures";
 import type { TreeAnswer, TreeAnswerNode, TreeTuple } from "../tree-read/tree-read";
 import { FAILED_READ_RETRY } from "./failed-read-line";
+import { HeaderSlot } from "./header";
 import { ProvidersSlot } from "./providers";
 import { type SlotsFilled, StageSlot, type ViewSlots } from "./stage";
+import { ViewRowSlot } from "./view-row";
 
 /**
  * What the stage's unit tests share (`stage.test.tsx`, `view-decisions-slot.test.tsx`,
@@ -59,19 +61,28 @@ interface StageViews {
 interface StageProps extends StageViews {
   readonly held: { navigate?: NavigateFunction };
   readonly issue: IssueDetails;
+  /** Whether the page's header and its view row are drawn before the stage, as the page's root
+   *  draws them. */
+  readonly page?: boolean;
 }
 
 /** The page's stage at the address the router holds, under the page's own providers, as the
  *  page's root draws it (`IssueOutlinePage.tsx`): the route read from the address at every
  *  render, and the slots `filled` and `views` give where the case gives them. `held.navigate`
  *  moves the router, as a press of a view's control does. */
-function AddressedStage({ filled, held, issue, views }: StageProps): ReactNode {
+function AddressedStage({ filled, held, issue, page, views }: StageProps): ReactNode {
   const { pathname, search } = useLocation();
   held.navigate = useNavigate();
   const route = parseIssuePath(pathname, search);
   if (route === undefined) throw new Error(`${pathname} names no route`);
   return (
     <ProvidersSlot issue={issue} route={route}>
+      {page ? (
+        <>
+          <HeaderSlot issue={issue} route={route} />
+          <ViewRowSlot issue={issue} route={route} />
+        </>
+      ) : null}
       <StageSlot filled={filled} issue={issue} route={route} views={views} />
     </ProvidersSlot>
   );
@@ -123,17 +134,20 @@ export function drawStage(
     client = new QueryClient({ defaultOptions: { queries: { retry: false } } }),
     held = {},
     issue = issueDetails(),
+    page,
     preset = "decisions",
   }: {
     client?: QueryClient;
     held?: { navigate?: NavigateFunction };
     issue?: IssueDetails;
+    /** Whether the page's header and its view row are drawn before the stage (`StageProps`). */
+    page?: boolean;
     preset?: Preset;
   } = {}
 ): RenderResult {
   return render(
     <MemoryRouter initialEntries={[`${presetPath(KEY, preset)}${after}`]}>
-      <ProvidedStage client={client} held={held} issue={issue} />
+      <ProvidedStage client={client} held={held} issue={issue} page={page} />
     </MemoryRouter>
   );
 }
@@ -168,6 +182,24 @@ export function drawnSlot(view: RenderResult): string {
     "[data-decisions-body], [data-plan-body], [data-spec-body], [data-verification-body], [data-stand-in-view]"
   );
   return drawn === null ? "nothing" : "the view";
+}
+
+/** Starts watching the page for an element `selector` matches, or one around one, put on it
+ *  or taken off it however briefly it stands. Answers the call that ends the watch and says
+ *  whether one was. */
+export function watchDrawn(selector: string): () => boolean {
+  const drawn = new MutationObserver(() => {});
+  drawn.observe(document.body, { childList: true, subtree: true });
+  return () => {
+    const records = drawn.takeRecords();
+    drawn.disconnect();
+    return records.some(({ addedNodes, removedNodes }) =>
+      [...addedNodes, ...removedNodes].some(
+        (one) =>
+          one instanceof Element && (one.matches(selector) || one.querySelector(selector) !== null)
+      )
+    );
+  };
 }
 
 /** The node id of the row that holds the focus, or undefined where no row does. */
@@ -268,14 +300,35 @@ export function treeOf(
   return treeAnswer(nodes.length === 0 ? [] : [treeNode(KEY, "issue", null), ...nodes], tuples);
 }
 
-/** Answers the tree read with `nodes` and `tuples` (`treeOf`): the whole tree at once, and each
- *  view of it never (`wholeTreeOnly`). The spy is the one `stubReads` set, which `spyOn` hands
- *  back, so the `afterEach` that restores those restores it. */
+/** The tree read's stub for the stage's cases: the whole tree answers `answer`, and so does the
+ *  decisions view read, as the server answers it whenever Decisions is on, so the Decisions view
+ *  says what it draws of the node an address names once that read has answered
+ *  (`decisions-entries.ts`' `viewSettled`); every other view never answers (`wholeTreeOnly`).
+ *  The decisions view answers each decision and each ask as a node its query took
+ *  (`role: "query"`), as the server's view does, and every other node as the tree read does. */
+function treeAndDecisions(
+  answer: TreeAnswer
+): (key: string, query?: { readonly view?: string }) => Promise<TreeAnswer> {
+  const whole = wholeTreeOnly(answer);
+  const decisions: TreeAnswer = {
+    ...answer,
+    nodes: (answer.nodes ?? []).map(
+      (node): TreeAnswerNode =>
+        node.supertag === "decision" || node.supertag === "ask" ? { ...node, role: "query" } : node
+    ),
+  };
+  return (key, query = {}) =>
+    query.view === "decisions" ? Promise.resolve(decisions) : whole(key, query);
+}
+
+/** Answers the tree read with `nodes` and `tuples` (`treeOf`): the whole tree and the decisions
+ *  view at once, and each other view never (`treeAndDecisions`). The spy is the one `stubReads`
+ *  set, which `spyOn` hands back, so the `afterEach` that restores those restores it. */
 export function answerTree(
   nodes: readonly TreeAnswerNode[],
   tuples: readonly TreeTuple[] = []
 ): void {
-  spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf(nodes, tuples)));
+  spyOn(api, "getIssueTree").mockImplementation(treeAndDecisions(treeOf(nodes, tuples)));
 }
 
 /** Each of `comments` as the tree read answers it (`commentNode`). */
@@ -289,10 +342,9 @@ export function inDocument(document: Pick<Artifact, "id" | "slug">, position = 0
   return { document: { artifact_id: document.id, position, slug: document.slug } };
 }
 
-/** Every read the page's tree is built from, answered with nothing, the blocks the Decisions view
- *  reads of each document a decision stands in, and who is reading. The issue's comments are the
- *  tree read's own, so no comments list is answered: a read of one reaches the network, which
- *  fails the file (`__tests__/network.ts`). */
+/** Every read the page's tree is built from, answered with nothing, and who is reading. The
+ *  issue's comments are the tree read's own, so no comments list is answered: a read of one
+ *  reaches the network, which fails the file (`__tests__/network.ts`). */
 export function stubReads(): { mockRestore(): void }[] {
   return [
     spyOn(api, "getIssueCoverage").mockResolvedValue({
@@ -302,7 +354,6 @@ export function stubReads(): { mockRestore(): void }[] {
       requirements: [],
       spec_artifact_id: "",
     }),
-    spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead([])),
     spyOn(api, "getIssueResults").mockResolvedValue({
       checks: [],
       issue: KEY,
@@ -312,8 +363,7 @@ export function stubReads(): { mockRestore(): void }[] {
     spyOn(api, "listIssueAsks").mockResolvedValue([]),
     spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
     spyOn(api, "listIssueMessages").mockResolvedValue([]),
-    spyOn(api, "getArtifactBlocks").mockResolvedValue([]),
-    spyOn(api, "getIssueTree").mockImplementation(wholeTreeOnly(treeOf([]))),
+    spyOn(api, "getIssueTree").mockImplementation(treeAndDecisions(treeOf([]))),
     spyOn(api, "whoAmI").mockResolvedValue({ event_head: "0", kind: "user", login: "alice" }),
     spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
   ];

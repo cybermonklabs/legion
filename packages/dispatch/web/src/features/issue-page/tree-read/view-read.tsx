@@ -11,7 +11,6 @@ import {
 } from "react";
 import { useLocation } from "react-router-dom";
 
-import { TREE_FILTERS, type TreeFilter } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { QueryError } from "../../../components/QueryError";
 import { pageQuietText } from "../../../theme/classes";
@@ -30,6 +29,8 @@ import {
   outlineQuery,
   resetViews,
   subscribeTreeFreshness,
+  TREE_VIEWS,
+  type TreeView,
   useNextViewPage,
   useStartOutlineRead,
   useTreeRead,
@@ -37,17 +38,17 @@ import {
 } from "./tree-read";
 
 /**
- * The filters' view reads of one load of the issue, around the stage. Each of Spec, Verification
- * and Plan is read the first time its filter is on in a load, and then held for the rest of it,
- * never stale by age. A filter's observer here watches its view only while the filter is on
- * (`ViewRead`), and `useIssueTree`'s, which never read, keep every view in the cache for the
- * load, so a filter turned off and on again finds its answer held and sends nothing; it finds a
- * refused view refused, whether it holds an answer or not, and sends nothing either, unless
- * something asked for that view again while the filter was off (`TREE_FRESH`): an event of the
- * issue, which reaches the views through its own target (`event-refresh.ts`). Once the stage
- * goes, the views are collected as any query nothing observes is.
- * `useIssueTree` watches the three reads without ever sending one, and sets what they hold on the
- * tree's root (`TreeNode.views`), which is what each filter draws from.
+ * The filters' view reads of one load of the issue, around the stage. Each filter's view is read
+ * the first time its filter is on in a load, and then held for the rest of it, never stale by
+ * age. A filter's observer here watches its view only while the filter is on (`ViewRead`), and
+ * `useIssueTree`'s, which never read, keep every view in the cache for the load, so a filter
+ * turned off and on again finds its answer held and sends nothing; it finds a refused view
+ * refused, whether it holds an answer or not, and sends nothing either, unless something asked
+ * for that view again while the filter was off (`TREE_FRESH`): an event of the issue, which
+ * reaches the views through its own target (`event-refresh.ts`). Once the stage goes, the views
+ * are collected as any query nothing observes is. `useIssueTree` watches the four reads without
+ * ever sending one, and sets what they hold on the tree's root (`TreeNode.views`), which is what
+ * each filter draws from.
  *
  * A filter whose own nodes Conversation's read does not hold has its view read sent with a load
  * of Conversation or of a filter, and held as the others are, for its count and, for Plan, for
@@ -66,7 +67,10 @@ import {
  *
  * The page mounts the stage once for each issue it opens (`IssueOutlinePage`'s `key`), so a mount
  * here is a load: it drops whatever view a past load of the issue held, so no load draws a view
- * older than its own tree. It holds the subscription that keeps the tree and its views fresh
+ * older than its own tree. That drop is an effect, after the page's first render, so the load's
+ * end, as the stage goes, marks the issue's views an earlier visit's (`resetViews`' answer):
+ * until the next load's drop no reader takes their answers (`loadEnded`), on that load's first
+ * render either. It holds the subscription that keeps the tree and its views fresh
  * (`subscribeTreeFreshness`), which holds them while a write of the issue is out: at the write's
  * settle, with the live feed up, only what the hold owes is asked for, and nothing for a write
  * Dispatch refused; with the feed down, every view is, so the open one is read again and draws
@@ -94,11 +98,13 @@ export function ViewReadProvider({
     [conversation, key]
   );
   // Whether the views of a past load are dropped. No view is read before then: a view read as the
-  // stage mounts would be dropped by that reset and read a second time.
+  // stage mounts would be dropped by that reset and read a second time. The reset's answer ends
+  // the load as the stage goes.
   const [dropped, setDropped] = useState(false);
   useEffect(() => {
-    resetViews(queryClient, key);
+    const end = resetViews(queryClient, key);
     setDropped(true);
+    return end;
   }, [key, queryClient]);
   useEffect(() => subscribeTreeFreshness(queryClient, key), [key, queryClient]);
   const paned = useMediaQuery(CONTENTS_PANE_QUERY);
@@ -111,15 +117,15 @@ export function ViewReadProvider({
   return (
     <>
       {dropped &&
-        TREE_FILTERS.map((filter) => (
+        TREE_VIEWS.map((view) => (
           <ViewRead
-            filter={filter}
             issueKey={key}
-            key={filter}
+            key={view}
             on={
-              preset === filter ||
-              sentWithLoad(filter, preset, issue, conversation !== undefined, holdsChildCheck)
+              preset === view ||
+              sentWithLoad(view, preset, issue, conversation !== undefined, holdsChildCheck)
             }
+            view={view}
           />
         ))}
       {children}
@@ -127,25 +133,30 @@ export function ViewReadProvider({
   );
 }
 
-/** Whether a load of `preset` sends `filter`'s view read with it (`ViewReadProvider`): a load of
+/** Whether a load of `preset` sends `view`'s read with it (`ViewReadProvider`): a load of
  *  Conversation or of a filter, for Plan always, for Spec where the issue is a child, and for
  *  Verification where the issue has children and Conversation's answer holds no check of an
- *  issue under it, which is not known until that answer is held. */
+ *  issue under it, which is not known until that answer is held. The decisions view is never
+ *  one: it is read once the Decisions filter is on, and until then the filter's count and the
+ *  header's count of what waits are read off Conversation's read, the pages of it held so far,
+ *  each with "+" while that read names a next page (`presets.ts`' `filterSignals`, `waiting.ts`). */
 function sentWithLoad(
-  filter: TreeFilter,
+  view: TreeView,
   preset: Preset,
   issue: IssueDetails,
   conversationHeld: boolean,
   holdsChildCheck: boolean
 ): boolean {
   if (outlineOf(preset) !== "conversation") return false;
-  switch (filter) {
+  switch (view) {
     case "plan":
       return true;
     case "spec":
       return issue.parent !== null;
     case "verification":
       return (issue.children ?? []).length > 0 && conversationHeld && !holdsChildCheck;
+    case "decisions":
+      return false;
   }
 }
 
@@ -157,16 +168,8 @@ function sentWithLoad(
  * press of its filter. A subscribed one reads it as a new observer of the tree's reads does
  * (`TREE_FRESH`).
  */
-function ViewRead({
-  filter,
-  issueKey,
-  on,
-}: {
-  filter: TreeFilter;
-  issueKey: string;
-  on: boolean;
-}): null {
-  useQuery({ ...viewQuery(issueKey, filter), subscribed: on });
+function ViewRead({ issueKey, on, view }: { issueKey: string; on: boolean; view: TreeView }): null {
+  useQuery({ ...viewQuery(issueKey, view), subscribed: on });
   return null;
 }
 
@@ -241,7 +244,21 @@ export function TreeReadFailed({ issue }: { issue: IssueDetails }): ReactNode {
  * view's own measure: it says how many nodes the read holds after the pages read
  * (`NextPageWords`), and a press, or Enter on it, reads the next page (`useNextViewPage`), whose
  * rows the view draws where the read's order puts them, and puts the focus on the first row the
- * view drew that it had not drawn before, once it is drawn, unless the reader acts first. A press
+ * view draws of a node that page brought (`readNextTreePage`), told by its node (`data-node-id`),
+ * once it is drawn, unless the reader acts first. No other row takes the focus, whatever draws it:
+ * not one the read the press waits for draws, as a Keep's read draws the kept decision anew in
+ * another part of the Decisions view and the entry its going uncovers, nor one a later read
+ * draws. So the landing ends where the press merges no page or the page is refused, and once the
+ * view has drawn the answer the page merged into with no row of the page there, as where the
+ * Decisions view draws the page's entries past the pages of entries a part draws. Whether the
+ * view has drawn that answer is looked at after each render of this control, which reads the
+ * view's own query's answer, which the view draws its rows from, and in no frame, and only once the
+ * press has merged its page: a press made during a Keep's or a Change's drop, while the read the
+ * drop started is out, waits in `readNextTreePage` for that read's answer and then reads the page
+ * after it, whatever answer this control reads meanwhile. A drop after the page merged and before a
+ * render of this control reads the merged answer resets the view's query, which has no initial
+ * data, so that render reads no answer and the cache holds none, and the landing ends at once, on
+ * the page's row where the view draws one, as the Decisions view may from the kept answer. A press
  * takes no focus from where it was (`preventDefault` on `mousedown`), since the control goes once
  * no page is left. Nothing while the view's answer names no next page.
  */
@@ -249,36 +266,83 @@ export function NextViewPage({
   filter,
   issueKey,
 }: {
-  filter: TreeFilter;
+  filter: TreeView;
   issueKey: string;
 }): ReactNode {
-  const next = useNextViewPage(issueKey, filter);
+  // The view's own query's answer, as `useNextViewPage` hands it beside the next page, and
+  // `drawnAnswer` it as the last render drew it. The view draws its rows from it in the same
+  // render, but on the Decisions view during a Keep's or a Change's drop the view draws the kept
+  // answer (`useViewAnswer`) while this one is undefined. That undefined answer plays no part in a
+  // press made during the drop: `ends` is set up only once `readNextTreePage` has the answer of the
+  // read the drop started and has merged the next page after it. A drop after the page merged,
+  // before a render draws the merged answer, resets the view's query, which has no initial data, so
+  // `drawnAnswer` and the cache's answer are both undefined and `ends` ends the landing at once, on
+  // the page's row where the view draws one, as the Decisions view may from the kept answer.
+  const { answer, next } = useNextViewPage(issueKey, filter);
+  const queryClient = useQueryClient();
+  const drawnAnswer = useRef(answer);
   const box = useRef<HTMLDivElement | null>(null);
-  // The landing on the first new row a press waits for, which the reader's next act, another
-  // press or the control leaving the page ends.
+  // The landing on the first row of the page a press merges, which the reader's next act,
+  // another press, the press merging no page, the view drawing that page with no row of it, or
+  // the control leaving the page ends; and its look, after each render, at what the view draws.
   const landing = useRef<AbortController | undefined>(undefined);
+  const look = useRef<(() => void) | undefined>(undefined);
   useEffect(() => () => landing.current?.abort(), []);
+  useLayoutEffect(() => {
+    drawnAnswer.current = answer;
+    look.current?.();
+  });
   if (next === undefined) return null;
   const press = (): void => {
     const view = box.current?.parentElement;
     if (view == null) return;
     landing.current?.abort();
-    const before = new Set(view.querySelectorAll(VIEW_ROW));
     const acts = abortOnReaderAct();
     landing.current = acts;
+    // The ids the view draws the rows of the page's nodes by, once the page has merged: none
+    // before.
+    let page: ReadonlySet<string> = new Set();
     // The view draws the page's rows in a render after the answer lands, so each change of what it
-    // draws is looked at until a row it did not draw before is there.
+    // draws is looked at until a row of the page is there. Where the view draws the merged answer
+    // in the same render as this control, the control's layout effect runs `ends` first, whose
+    // abort disconnects the observer, so the observer lands only where the view draws the merged
+    // page's rows in a commit before the one in which this control draws the merged answer.
     const drawn = new MutationObserver(() => {
-      const row = [...view.querySelectorAll<HTMLElement>(VIEW_ROW)].find((one) => !before.has(one));
+      const row = rowOfPage(view, page);
       if (row === undefined) return;
       acts.abort();
       moveToRow(row);
     });
     drawn.observe(view, { childList: true, subtree: true });
     acts.signal.addEventListener("abort", () => drawn.disconnect());
-    // A refused page, or one that names a cursor the read asked for already, leaves the answer as
-    // it was (`readNextTreePage`), and the control stays for another press.
-    next.read().catch(() => acts.abort());
+    // Once the view draws the answer the cache holds, which holds the merged page, the landing
+    // ends, on the page's first row where the view draws one.
+    const { queryKey } = viewQuery(issueKey, filter);
+    const ends = (): void => {
+      if (drawnAnswer.current !== queryClient.getQueryData(queryKey)) return;
+      const row = rowOfPage(view, page);
+      acts.abort();
+      if (row !== undefined) moveToRow(row);
+    };
+    acts.signal.addEventListener("abort", () => {
+      if (look.current === ends) look.current = undefined;
+    });
+    // A press that merged no page lands nowhere. A refused page, or one that names a cursor the
+    // read asked for already, leaves the answer as it was (`readNextTreePage`), and the control
+    // stays for another press.
+    next.read().then(
+      (merged) => {
+        if (acts.signal.aborted) return;
+        if (merged === undefined) {
+          acts.abort();
+          return;
+        }
+        page = merged;
+        look.current = ends;
+        ends();
+      },
+      () => acts.abort()
+    );
   };
   return (
     <div className={`text-xs leading-7 ${pageQuietText}`} data-tree-more="" ref={box}>
@@ -295,8 +359,16 @@ export function NextViewPage({
   );
 }
 
-/** A row a view draws, the outline's (`NodeRow.tsx`) or one of its own that carries the mark. */
+/** A row a view draws, the outline's (`NodeRow.tsx`) or one of its own that carries the mark,
+ *  each with its node's id (`data-node-id`). */
 const VIEW_ROW = "[data-node-row]";
+
+/** The first row `view` draws of a node of `page`, told by its node's id. */
+function rowOfPage(view: HTMLElement, page: ReadonlySet<string>): HTMLElement | undefined {
+  return [...view.querySelectorAll<HTMLElement>(VIEW_ROW)].find(
+    (row) => row.dataset.nodeId !== undefined && page.has(row.dataset.nodeId)
+  );
+}
 
 /** The outline's tree itself (`IssueTree.tsx`), by its name. */
 const OUTLINE_TREE = `[role="tree"][aria-label="${CONTROL_LABELS.tree}"]`;

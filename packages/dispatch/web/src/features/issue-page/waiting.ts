@@ -1,12 +1,9 @@
-import type { IssueDecisions, IssueDetails } from "../../api/types";
+import type { IssueDetails } from "../../api/types";
 import { waitingOnHuman } from "../inbox/BlockedOnYou";
-import {
-  decisionChangeComments,
-  deletedPostIds,
-  inReviewList,
-  treeComments,
-} from "./decision-review";
+import { askOfNode, decisionsOfAnswer } from "./decision-nodes/decision-nodes";
+import { decisionNodeChanges, deletedPostIds, inReviewList, treeComments } from "./decision-review";
 import { changeUnread } from "./tree-drafts";
+import { nextTreeCursor } from "./tree-read/comment-positions";
 import type { TreeAnswer } from "./tree-read/tree-read";
 
 /**
@@ -24,25 +21,56 @@ import type { TreeAnswer } from "./tree-read/tree-read";
  * not resolved.
  *
  * A decision is on the review list by its tie to a statement, and `isCoverageStatement` answers
- * which addresses name one: a caller passes `coverageStatements(issue, coverage)`
- * (`tree-drafts.ts`), the rule the tree's review list reads, so the count counts the decisions
- * the tree marks as waiting and no other.
+ * which addresses name one: the header's count (`IssuePropertiesRow.tsx`) passes
+ * `coverageStatements(issue, coverage)` (`tree-drafts.ts`), the rule the outline's
+ * `draftDecision` (`tree-read/tree-nodes.ts`) marks a decision waiting by, so the count counts
+ * the decisions the outline marks as waiting and no other.
  *
- * A decision the reader asked to change waits on its agent and is not counted, by the outline's
- * one rule (`decisionChangeComments`): a decision node's Change is a comment the tree read
- * (`tree`) hangs under it, and the Change of a decision the read holds no node for is a comment
- * of the read's answer (`treeComments`) whose quote its words hold, so the count reads no block
- * of a document and no comment list of its own. A person's decision - the
- * answered ask, or a `decision` block whose `decided_by` names a person - waits for no review
- * (the server's `waiting_review` is false for it) and is never counted here.
+ * A decision is a decision node of the answer the count is read from (`answer`), which its
+ * caller selects: the decisions view read (`?view=decisions`) wherever the page holds it, which
+ * holds every decision and every question of the issue, however many pages of Conversation's
+ * read the page holds - that read is paged (R15), and a decision past its pages held so far
+ * would otherwise go uncounted - and Conversation's read until then. The header takes that
+ * answer through `useDecisionsView` (`IssuePropertiesRow.tsx`), so its count and the Decisions
+ * control count the same answer, and Conversation's read stands in wherever it holds none.
+ * The decisions are read once per answer (`decision-nodes.ts`' `decisionsOfAnswer`) with no asks:
+ * the read answers a person's decision on every ask a person answered, which says, with no asks,
+ * which question is a person's decision, which never waits for review, and which agent's
+ * decision restates that answer and is no decision at all (`restatesAnswer`), so the count is
+ * the same without them. One the reader asked to change waits on its agent and is not counted,
+ * by the outline's one rule (`decisionNodeChanges`): its Change is a comment the read the
+ * decisions are counted from hangs under its node. The count matches no quote, reads no block
+ * of a document and no comment list of its own. A Change may stand on a page of either read the
+ * page has not loaded, a next page or an older comment page: a marked decision (`changeUnread`)
+ * is not counted until those pages resolve it (decisions 563 (4) and 574 (B)), which the header
+ * reads, the next pages and then the older comment pages of the read it counts, once the stage's
+ * view has drawn (`tree-read/tree-read.ts`' `useTellViewDrawn`, `useReadUnloadedPages`), as
+ * `unread` says. A Change on a decision past Conversation's pages can still be read with its
+ * decision. A marked decision that its ties put on the review list may wait on the reader once
+ * those pages are read, so while one does the count is not shown as final: it takes "+"
+ * (`WaitingOnReader.mayWait`, decisions 580 and 583 (1)), and the "+" goes once none is marked.
+ * A Change its author deleted asks nothing any more, as in the outline: the same
+ * answer's comment nodes carry their author's marks, which say which were (`treeComments`,
+ * `deletedPostIds`).
  *
- * A decision the outline marks as one whose Change may stand on a page the tree read has not
- * loaded (`changeUnread`, its state's "+") is not counted either, until that page is read
- * (decisions 563 (4) and 574 (B)): the header reads the next pages and then the older comment
- * pages for it once the stage's view has drawn (`tree-read/tree-read.ts`' `useTellViewDrawn`,
- * `useReadUnloadedPages`), as `unread` says, and counts what the Change it finds, or finds none
- * of, makes it. While the tree read holds no answer every decision with no Change held is such a
- * decision (decision 578 (2)), and none is read for it until the read answers.
+ * A decision a person decided, whose `decided_by` names a person, is that person's decision and
+ * never waits for review (`decision-review.ts`' `decidedByPerson`, INFRA-1196's decision 516),
+ * which the review list's own rule reads (`inReviewList`), so it is not counted, whatever the
+ * read's `waiting_review` says, as the outline marks it waiting on nobody (`draftDecision`). Who
+ * decided it is the answer's `decided_by` tuple, so the decisions read with no asks say it too.
+ *
+ * An overtaken decision or question, a node the read answers `overtaken`, counts in no
+ * count of what waits (R2), as the outline marks it waiting on nobody (`draftDecision`,
+ * `draftAsk`): neither a decision whose node is, nor an open ask whose node is, each ask found by
+ * the one rule the outline finds an ask node's row by (`askOfNode`), in the read the decisions
+ * are counted from.
+ *
+ * A count read from a read that names a next page, or while no tree answer is held yet
+ * (decisions 583 (1) and 586 (C)), counts only what is loaded (R15), so it says so
+ * (`WaitingOnReader.more`), and the header draws it with "+", as the view row draws each count
+ * (`presets.ts`' `filterSignals`): while no answer is held, Conversation's read while it names a
+ * next page, and the decisions view read, once the page holds it, only where it names one itself.
+ * So the count never claims a number the reads it is read from cannot hold.
  */
 export interface WaitingOnReader {
   /** The open asks other than an approval request whose turn is the reader's. */
@@ -55,9 +83,13 @@ export interface WaitingOnReader {
   readonly approvals: readonly string[];
   /** All three, which is the number the count draws. */
   readonly total: number;
+  /** Whether no tree answer is held yet or the read the decisions are counted from names a next
+   *  page (R15, decisions 583 (1) and 586 (C)), so `total` counts only what is loaded and the
+   *  header draws it with "+"; absent once an answer is held that names no next page. */
+  readonly more?: true;
   /** How many decisions carry the mark of a Change on a page not read yet (`changeUnread`),
    *  waiting for review or kept, none of them counted: while any does, the header reads those
-   *  pages (`useReadUnloadedPages`). */
+   *  pages of the answer it counts (`useReadUnloadedPages`). */
   readonly unread: number;
   /** How many of those marked decisions are on the review list by their ties, and so may wait on
    *  the reader once their pages are read (decisions 580 and 583 (1)): while any is, the count
@@ -69,15 +101,23 @@ export interface WaitingOnReader {
 export function waitingOnReader(
   issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
   viewer: string | undefined,
-  decisions: IssueDecisions | undefined,
   isCoverageStatement: (reference: string) => boolean,
-  tree: TreeAnswer | undefined
+  {
+    answer,
+  }: {
+    /** The read the decisions, the questions and the Changes are counted from: the decisions
+     *  view read where the page holds it, which hangs each Change under its decision, and
+     *  Conversation's read until then, as the caller selects it; none for a count of the
+     *  approvals alone. */
+    readonly answer?: TreeAnswer;
+  } = {}
 ): WaitingOnReader {
+  const overtaken = overtakenAsks(issue, viewer === undefined ? undefined : answer);
   const open =
     viewer === undefined
       ? []
       : waitingOnHuman((issue.open_asks ?? []).filter((ask) => ask.state === "open")).filter(
-          (ask) => ask.waiting_on_person === viewer
+          (ask) => ask.waiting_on_person === viewer && !overtaken.has(ask.id)
         );
   const approvals = open
     .filter((ask) => ask.kind === "approval")
@@ -88,39 +128,54 @@ export function waitingOnReader(
         issue.primary_artifact_id
     );
   const asks = open.length - approvals.length;
-  // The decisions a Change waits on, each by its address: a decision node's from the tree read
-  // alone, as the outline finds it. A Change its author deleted asks nothing any more, as in the
-  // outline (`decisionNodeChanges`).
-  const comments = treeComments(tree);
-  const deleted = deletedPostIds(comments);
-  const changed = new Set(
-    [...decisionChangeComments(decisions, comments, issue, undefined, tree)]
-      .filter(([comment]) => !deleted.has(comment))
-      .map(([, decision]) => decision)
-  );
-  // Each decision whose Change may stand on a page not read yet, which waits on no reader
-  // until that page is read, as in the outline (`changeUnread`).
-  const unread = new Set(
-    (decisions?.entries ?? []).flatMap((decision) =>
-      changeUnread(decision, changed.has(decision.ref), tree) ? [decision.ref] : []
-    )
-  );
-  // A person's decision never waits for review (`waiting_review`), so only an agent's counts.
-  const listed =
-    viewer === undefined
-      ? []
-      : (decisions?.entries ?? []).filter((decision) =>
-          inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
-        );
-  const reviewing = listed.filter((decision) => !unread.has(decision.ref)).length;
+  // Nothing waits on a reader whose login has not resolved, so the decisions are read only for
+  // one who has. The decision nodes a Change waits on, by the node's id, are from the read the
+  // decisions are counted from alone, by the one rule every reader of a Change reads, and so is
+  // which Changes their author deleted, which ask nothing any more, as in the outline.
+  let reviewing = 0;
+  let mayWait = 0;
+  let unread = 0;
+  if (viewer !== undefined && answer !== undefined) {
+    const changes = decisionNodeChanges(answer, undefined, deletedPostIds(treeComments(answer)));
+    for (const decision of decisionsOfAnswer(answer, issue.key).values()) {
+      const changed = changes.has(decision.node.id);
+      const marked = changeUnread(decision, changed, answer);
+      if (marked) unread += 1;
+      const listed =
+        decision.node.state !== "overtaken" && inReviewList(decision, isCoverageStatement, changed);
+      if (listed && !marked) reviewing += 1;
+      // One that its mark alone keeps off the count may wait on the reader once its pages are
+      // read (decisions 580 and 583 (1)).
+      if (listed && marked) mayWait += 1;
+    }
+  }
+  const more =
+    viewer !== undefined && (answer === undefined || nextTreeCursor(answer) !== undefined);
   return {
     approvals,
     asks,
     decisions: reviewing,
-    mayWait: listed.length - reviewing,
+    mayWait,
+    ...(more ? { more: true as const } : {}),
     total: asks + reviewing + approvals.length,
-    unread: unread.size,
+    unread,
   };
+}
+
+/** The ids of the issue's open asks whose tree-read node is overtaken (R2), each ask found by the
+ *  one rule the outline finds an ask node's row by (`askOfNode`); none without a tree. */
+function overtakenAsks(
+  issue: Pick<IssueDetails, "artifacts" | "key" | "open_asks" | "primary_artifact_id">,
+  tree: TreeAnswer | undefined
+): ReadonlySet<string> {
+  if (tree === undefined) return new Set();
+  const askOf = askOfNode({ issue });
+  return new Set(
+    (tree.nodes ?? []).flatMap((node) => {
+      const ask = node.supertag === "ask" && node.state === "overtaken" ? askOf(node) : undefined;
+      return ask === undefined ? [] : [ask.id];
+    })
+  );
 }
 
 /** What the count leaves in the address's history entry, which the Decisions filter reads to put

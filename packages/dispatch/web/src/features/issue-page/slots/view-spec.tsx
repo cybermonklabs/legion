@@ -74,18 +74,18 @@ export function ViewSpecSlot({ acts, issue, onAddressDrawn, route }: ViewSlotPro
   // Whether the view draws a row of the node the address names, which the stage is told by the
   // rule for refused reads (`useTellsAddressDrawn`), from the outline's reads above. The body
   // draws a line of its own for the coverage, the spec's blocks, the results, the Verification
-  // document's blocks, the decisions and the asks (`SpecFilterBody`). It draws a row for every
-  // node the view keeps below the issue: each statement, and any other node the address names,
-  // which the view keeps whatever the words filter leaves (`presetView`) and draws by its kind. So
-  // where the view may tell, it says it draws the node where its view holds it, and that it draws
-  // none where the tree holds no node the address names (`reveal` undefined).
+  // document's blocks and the asks (`SpecFilterBody`), and the decisions come from the Spec view
+  // read, which is no read of the outline's. It draws a row for every node the view keeps below
+  // the issue: each statement, and any other node the address names, which the view keeps
+  // whatever the words filter leaves (`presetView`) and draws by its kind. So where the view may
+  // tell, it says it draws the node where its view holds it, and that it draws none where the
+  // tree holds no node the address names (`reveal` undefined).
   // It says so before the browser paints, so where the reads were held as the view was drawn, as
   // on Back to its address, no statement is painted in the outline's place.
   const documents = [primarySpec(issue), roleDocument(issue, "verification")];
   const own: readonly ReadKey[] = [
     "coverage",
     "results",
-    "issue-decisions",
     "asks",
     ...documents.flatMap((one) => (one === undefined ? [] : [blocksKey(one.id)])),
   ];

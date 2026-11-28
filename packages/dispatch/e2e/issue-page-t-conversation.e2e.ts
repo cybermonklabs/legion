@@ -3,7 +3,6 @@
 
 import type { Page } from "@playwright/test";
 
-import type { IssueTreeRead } from "../web/src/api/types";
 import { presetPath } from "../web/src/features/issue-page/issue-address";
 import { GAP_LINES, PRESET_NAMES } from "../web/src/features/issue-page/page-words";
 import { treeIdOf } from "../web/src/features/issue-page/tree-read/tree-nodes";
@@ -144,9 +143,9 @@ async function seedConversationRead(): Promise<ConversationReadSeed> {
  *  outline draws (`nodesNoRowDraws`), each node of a kind Conversation draws no row of
  *  (`NO_CONVERSATION_ROW`), and each plain block of a document, which Graph draws and
  *  Conversation keeps out (spec R10). */
-function conversationLeftOut(answer: IssueTreeRead, anchored: ReadonlySet<string>): Set<string> {
-  const left = nodesNoRowDraws(answer, anchored, SUMMARY_BLOCK_ID);
-  for (const node of answer.nodes ?? []) {
+function conversationLeftOut(opened: OpenedOutline, anchored: ReadonlySet<string>): Set<string> {
+  const left = nodesNoRowDraws(opened, anchored, SUMMARY_BLOCK_ID);
+  for (const node of opened.answer.nodes ?? []) {
     const documentProse =
       node.kind === "block" && node.supertag === "block" && node.document !== undefined;
     if (documentProse || NO_CONVERSATION_ROW.includes(node.supertag)) left.add(node.id);
@@ -262,7 +261,7 @@ test("Conversation draws its read whole and unfolded @phone", async ({ browser }
       expect(
         idSet(rows.flatMap((row) => (row.id === null ? [] : [row.id]))),
         `${where}, the drawn rows are the answer's nodes but the memo's callout and the comment on text`
-      ).toEqual(answerRowIds(opened, conversationLeftOut(opened.answer, anchored)));
+      ).toEqual(answerRowIds(opened, conversationLeftOut(opened, anchored)));
       expect(
         firstRowOutOfPlace(`${where}, in Conversation`, rows, opened),
         `${where}, each row stands under the parent the answer names, in its order`

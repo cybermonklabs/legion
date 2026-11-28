@@ -20,6 +20,7 @@ import { PublishedReferenceNames, type PublishedReferences } from "../refs/refer
 import { EVENT_FRESH } from "../refs/reference-target";
 import { focusOnDocument } from "../shell/roving";
 import { ChangeDraftsProvider } from "./DecisionActions";
+import { standingParts } from "./decisions-filter/entry-standing";
 import { EditedRowContext } from "./edited-row";
 import { type FocusedNode, useSetFocusedNode } from "./focused-node";
 import { createHeld, type Held } from "./held-value";
@@ -33,7 +34,7 @@ import { useFocusBranch, useTakeOutlineRequest } from "./outline-request";
 import { type ThreadMark, threadMarks } from "./outline-thread-read";
 import { conversationItem, useOutlineWriter } from "./outline-writer";
 import { authorText, KEY_REPORTS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, nodeStateWord } from "./page-words";
+import { CONTROL_LABELS } from "./page-words";
 import { type Press, trackPress, usePressFocus } from "./press-focus";
 import { FAILED_READ_RETRY, FailedReadLine } from "./slots/failed-read-line";
 import { TreeRows } from "./TreeRows";
@@ -198,12 +199,12 @@ export function IssueTree({
    *  draws a row that reads what its page asks for. */
   published: PublishedReferences;
   /** Whether each read the tree's nodes come from holds an answer, which a failed read never
-   *  does: the tree read and the five reads beside it - the coverage, the decisions, the results,
-   *  the asks and the messages (`outline-reads.ts`'s `readsHeld`). Until then a
-   *  node the tree lacks may not have arrived yet, so a tree with no node draws no `emptyLine`,
-   *  and `q` and `w` with nowhere to go say nothing (`useTreeKeymap.ts`). The names are no part
-   *  of it: the page gives no `emptyLine` that reads the nodes' words until they are held
-   *  (`slots/body.tsx`). Held unless the page says otherwise. */
+   *  does: the tree read, which answers every node (`blocksHeld`), and the four reads beside it -
+   *  the coverage, the results, the asks and the messages (`outline-reads.ts`'s `readsHeld`).
+   *  Until then a node the tree lacks may not have arrived yet, so a tree with no node draws no
+   *  `emptyLine`, and `q` and `w` with nowhere to go say nothing (`useTreeKeymap.ts`). The names
+   *  are no part of it: the page gives no `emptyLine` that reads the nodes' words until they are
+   *  held (`slots/body.tsx`). Held unless the page says otherwise. */
   readsHeld?: boolean;
   /** Whether every read the tree's rows come from has answered, with its data or its failure
    *  (`outline-reads.ts`): the page's first focus waits for it, so it lands once, where every
@@ -1556,16 +1557,21 @@ function landingParent(
 
 /** The facts of `node` the panel draws while its row has the focus: who wrote it, the item it
  *  is, its own address and its state, and its own words, which the panel names it by as every
- *  place that names a node by its one line does (`FocusedNode.text`). */
+ *  place that names a node by its one line does (`FocusedNode.text`). Its state is the standing
+ *  word: a decision reads "Kept by", or "Changed by" where the person whose Change it waits on
+ *  is known, and `stateBy` is that person or its keeper, whom the panel names after the word
+ *  (`standingParts`, R2, R3). */
 export function focusedNodeOf(node: TreeNode): FocusedNode {
   const item = conversationItem(node);
+  const standing = node.state === undefined ? undefined : standingParts(node.state, node);
   return {
     ...(node.author === undefined ? {} : { author: node.author }),
     id: node.id,
     ...(item === undefined ? {} : { item }),
     ...(node.reference === undefined ? {} : { reference: node.reference }),
     ...(node.source === undefined ? {} : { source: node.source }),
-    ...(node.state === undefined ? {} : { state: nodeStateWord(node.state) }),
+    ...(standing === undefined ? {} : { state: standing.word }),
+    ...(standing?.person === undefined ? {} : { stateBy: standing.person }),
     text: node.text,
     ...(node.tree === undefined ? {} : { tree: node.tree }),
     type: node.type,

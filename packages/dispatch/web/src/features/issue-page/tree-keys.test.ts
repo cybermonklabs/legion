@@ -99,9 +99,9 @@ test("the decision behind a node is the first that names it, whatever version it
 });
 
 // A person's decision is the answered question itself, whose node carries a chip for each node
-// the decision shaped (`tree-drafts.ts`'s `addDecisions`): the decision behind what it shaped is
-// that question. A question still open, or one closed without an answer, decided nothing, so a
-// chip it carries puts no decision behind anything.
+// its `shaped` tuples point at (`tree-read/tree-nodes.ts`' `draftAsk`): the decision behind what
+// it shaped is that question. A question still open, or one closed without an answer, decided
+// nothing, so a chip it carries puts no decision behind anything.
 test("the decision behind a node may be the answered question that shaped it", () => {
   const shaped = {
     answered: true,
