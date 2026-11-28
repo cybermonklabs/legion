@@ -21,11 +21,21 @@ const (
 // record names. A launch that more models answered reports that its totals overflowed.
 const MaxTotalsModels = 4 * steprecord.AnswersMax
 
-// ModelCount is one model and the calls it answered. A model's name is the frame's provider, a
-// slash and its model, or the model alone where the provider is empty.
+// ModelCount is one model and the calls it answered. A model's name is the frame's provider and
+// model as ModelName joins them.
 type ModelCount struct {
 	Model string `json:"model"`
 	Calls uint64 `json:"calls"`
+}
+
+// ModelName is the name of the model a frame names: the provider, a slash and the model, or the
+// model alone where the provider is empty. The shim counts each call under it, and the daemon
+// names the model that answered a turn by it (superviseEvent, internal/daemon).
+func ModelName(provider, model string) string {
+	if provider == "" {
+		return model
+	}
+	return provider + "/" + model
 }
 
 // Totals is what one launch's shim counted since its harness started.

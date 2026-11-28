@@ -28,10 +28,9 @@ import (
 // with spaces. So are the set model and each model of the answers. An experiment and its variant
 // are a name the daemon's settings declare, under the daemon's rule for those names.
 var (
-	taskForm      = regexp.MustCompile(contracts.StepTaskPattern)
-	roleForm      = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
-	agentTextForm = regexp.MustCompile(contracts.StepAgentTextPattern)
-	nameForm      = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
+	taskForm = regexp.MustCompile(contracts.StepTaskPattern)
+	roleForm = regexp.MustCompile(`^[a-z][a-z0-9-]{0,31}$`)
+	nameForm = regexp.MustCompile(`^[a-z0-9-]{1,32}$`)
 )
 
 // taskRule and roleRule are taskForm and roleForm as a refusal states them.
@@ -373,7 +372,7 @@ func (write StepWrite) attributes() (string, []attribute, error) {
 		name  string
 		value *string
 	}{{AttributeAgent, write.Agent}, {AttributeSession, write.Session}, {AttributeModel, write.Model}, {AttributeSetModel, write.SetModel}} {
-		if value := text(field.name, field.value); value != "" && !agentTextForm.MatchString(value) {
+		if value := text(field.name, field.value); value != "" && !contracts.StepAgentTextHolds(value) {
 			return "", nil, refusal(ErrStepInput, "%s %q is not an agent's text: %s", field.name, value, contracts.StepAgentTextRule)
 		}
 	}

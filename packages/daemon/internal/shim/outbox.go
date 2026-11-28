@@ -56,14 +56,19 @@ func (o *outbox) write(frame [][]byte) {
 // newest frame stays. The caller holds o.mu.
 func (o *outbox) trim() {
 	for o.kept > backlogLimit && len(o.backlog) > 1 {
-		o.kept -= len(o.backlog[0])
-		o.backlog[0] = nil
-		o.backlog = o.backlog[1:]
+		o.dropOldest()
 		if !o.dropped {
 			o.dropped = true
 			o.log.Printf("[worker-shim] the oldest frames beyond the newest %d lines that wait for the daemon are dropped", backlogLimit)
 		}
 	}
+}
+
+// dropOldest drops the backlog's oldest frame. The caller holds o.mu.
+func (o *outbox) dropOldest() {
+	o.kept -= len(o.backlog[0])
+	o.backlog[0] = nil
+	o.backlog = o.backlog[1:]
 }
 
 func writeLines(w *shimwire.Writer, lines [][]byte) error {
@@ -85,9 +90,7 @@ func (o *outbox) attach(conn net.Conn, w *shimwire.Writer) {
 			_ = conn.Close()
 			return
 		}
-		o.kept -= len(o.backlog[0])
-		o.backlog[0] = nil
-		o.backlog = o.backlog[1:]
+		o.dropOldest()
 	}
 	o.backlog = nil
 	o.conn, o.w = conn, w

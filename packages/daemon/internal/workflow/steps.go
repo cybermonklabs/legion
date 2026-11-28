@@ -193,7 +193,7 @@ func (e *Engine) startStep(ctx context.Context, tx pgx.Tx, issue record.Issue, s
 	if err != nil {
 		return err
 	}
-	if err := e.keepStartTotals(ctx, tx, issue.Key, step.place, agent, write.ID, now); err != nil {
+	if err := e.keepStartTotals(ctx, tx, issue.Key, step.place, &write); err != nil {
 		return err
 	}
 	return e.enqueue(ctx, tx, issue.Key, write)

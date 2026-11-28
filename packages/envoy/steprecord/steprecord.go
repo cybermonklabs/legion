@@ -57,12 +57,10 @@ const (
 	CodePlanOtherIssue = contracts.PlanOtherIssueCode
 )
 
-var agentText = regexp.MustCompile(contracts.StepAgentTextPattern)
-
 // AgentTextHolds reports whether text is in the form a step record's agent, session and model
-// take.
+// take (contracts.StepAgentTextHolds, the rule Dispatch's store refuses a write by).
 func AgentTextHolds(text string) bool {
-	return agentText.MatchString(text)
+	return contracts.StepAgentTextHolds(text)
 }
 
 // AnswersMax is the most models a step record's answers names, each with its count of calls

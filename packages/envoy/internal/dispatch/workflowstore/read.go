@@ -170,8 +170,9 @@ func IssueRunsRevision(ctx context.Context, q Queryer, issue string) (int64, err
 // generation, nil where it has none), the rating of each retro in the order the retros ran, the
 // earliest start and the latest end its runs hold (nil where none holds one), its count of runs of
 // kind step that failed, and the experiment and the variant the runs of its newest generation name
-// (nil where none of them names one). It also carries the counts of its runs that name an agent on
-// their set model (SetModelSteps). A finished issue Legion never ran is listed with none of these.
+// (nil where none of them names one). It also carries the counts of its runs that name an agent
+// against their set model (SetModelSteps). A finished issue Legion never ran is listed with none
+// of these.
 //
 // It is one statement for the whole project, whatever the number of issues: the project's
 // finished issues, each left-joined through the `part_of` tuples into it (workflow_tuples_inbound,

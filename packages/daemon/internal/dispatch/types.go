@@ -127,8 +127,7 @@ type RoleHolder struct {
 // because their zero is a value (a moment, and the retro's place 0). Answers is a pointer because
 // an empty list is a value too, a step with no call, apart from not knowing. It mirrors the
 // record's own StepRecord, the rating and the experiment aside, because this package imports no
-// record of the
-// daemon's.
+// record of the daemon's.
 type StepWrite struct {
 	Task       string        `json:"task"`
 	Step       int           `json:"step"`

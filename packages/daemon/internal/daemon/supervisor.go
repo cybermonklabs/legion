@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -575,11 +576,7 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 		return supervise.StreamLateRefusal{Claim: ev.Claim, DeliveryID: ev.DeliveryID, Error: ev.Error, Outcome: ev.Outcome,
 			Replayed: ev.Replayed, ConnSequence: ev.ConnSequence}, nil
 	case stream.Answered:
-		model := ev.Model
-		if ev.Provider != "" {
-			model = ev.Provider + "/" + ev.Model
-		}
-		return supervise.StreamAnswered{Claim: ev.Claim, Model: model, Generation: ev.Generation}, nil
+		return supervise.StreamAnswered{Claim: ev.Claim, Model: shimwire.ModelName(ev.Provider, ev.Model), Generation: ev.Generation}, nil
 	case stream.Closed:
 		return supervise.StreamClosed{Claim: ev.Claim}, nil
 	}

@@ -220,6 +220,7 @@ func TestAgentLaunchesReadsEachLaunchSinceAGeneration(t *testing.T) {
 			{3, []Launch{{Generation: 3, Final: &ended}, {Generation: 5, Newest: &newest}}},
 			{4, []Launch{{Generation: 5, Newest: &newest}}},
 			{6, nil},
+			{SinceNow, []Launch{{Generation: 5, Newest: &newest}}},
 		} {
 			got, err := store.AgentLaunches(t.Context(), tx, agent, tc.since)
 			must(t, err)

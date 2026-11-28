@@ -125,11 +125,11 @@ type workflowRuntime struct {
 	// plan.totalsClock, which run sets before any fact applies. nil, in a runtime a test builds by
 	// hand, is the wall clock.
 	totalsClock supervise.Clock
-	// totalsRead is plan.totalsRead, a test's seam after each fact's reads (readTotals). nil runs
-	// nothing.
+	// totalsRead is overrides.totalsRead, a test's seam after each fact's reads (readTotals). nil
+	// runs nothing.
 	totalsRead func(agents []claim.Token, reads workflow.FactReads)
-	// taskConfirmedApplied is plan.taskConfirmedApplied, a test's seam after each confirmation of
-	// a task has been applied (taskConfirmed). nil runs nothing.
+	// taskConfirmedApplied is overrides.taskConfirmedApplied, a test's seam after each
+	// confirmation of a task has been applied (taskConfirmed). nil runs nothing.
 	taskConfirmedApplied func(token claim.Token, delivery string, err error)
 	// pauses is the project's pause (projectPause, dispatch://INFRA-3759): the pause service the
 	// API's routes are handed, with the stop transaction, the let-out stamp and the after-commit

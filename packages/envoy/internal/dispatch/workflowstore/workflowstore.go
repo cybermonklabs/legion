@@ -21,7 +21,7 @@
 // (NewestPlan); the read of a project (ProjectPlans) answers each of its finished issues with its
 // plan, its ratings, its time, its count of failed steps, and the experiment and the variant the
 // step records of its newest run name, nil where they name none. That read also counts each
-// issue's runs on their set model. A run's write that appends a tuple signals its issue on
+// issue's runs against their set model. A run's write that appends a tuple signals its issue on
 // RunsChannel at its commit, and IssueRunsRevision counts the tuples of an issue's runs, which each
 // such commit raises.
 //
@@ -272,7 +272,7 @@ type PlanWrite struct {
 // where no retro rated it; the route answers that as []), the earliest start and the latest end its
 // runs hold (each nil where none holds one), its count of runs of kind step that failed, and the
 // experiment and the variant the records of its newest run name (nil where they name none).
-// SetModelSteps counts its runs that name an agent on their set model.
+// SetModelSteps counts its runs that name an agent against their set model.
 type IssuePlan struct {
 	Issue, Title       string
 	ClosedAt           time.Time

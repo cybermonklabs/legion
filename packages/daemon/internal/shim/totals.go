@@ -55,8 +55,6 @@ type totals struct {
 	counts      map[string]uint64
 	outsideForm uint64
 	overflowed  bool
-	// called is whether any call came, counted by name or not.
-	called bool
 	// read numbers the reads the shim answered, and the final frame.
 	read uint64
 	// setModel is the launch's set model, and setModelDecided whether the shim has taken its
@@ -70,17 +68,20 @@ type totals struct {
 	pending map[string]string
 	// exited is set once the harness has exited and the shim has made its final totals.
 	exited bool
-	// sizeLogged is whether the shim has logged the size of a state answer of the harness.
-	sizeLogged bool
 }
 
-// modelName is the name of the model a frame names. It is the provider, a slash and the model, or
-// the model alone where the provider is empty (superviseEvent, internal/daemon).
-func modelName(provider, model string) string {
-	if provider == "" {
-		return model
+// called is whether any call came, counted by name or not. The caller holds t.mu.
+func (t *totals) called() bool {
+	return len(t.counts) > 0 || t.outsideForm > 0 || t.overflowed
+}
+
+// setModelName is the set model a frame names by provider and id: their name (shimwire.ModelName),
+// or "" where the id is empty or the name is outside the form of a step's agent text.
+func setModelName(provider, id string) string {
+	if name := shimwire.ModelName(provider, id); id != "" && steprecord.AgentTextHolds(name) {
+		return name
 	}
-	return provider + "/" + model
+	return ""
 }
 
 // call counts the message_end frame raw where it is a call.
@@ -100,10 +101,9 @@ func (t *totals) call(raw json.RawMessage) {
 	if m.Role != "assistant" || m.Model == "" || m.Model == shimwire.SyntheticModel || m.StopReason == "error" {
 		return
 	}
-	name := modelName(m.Provider, m.Model)
+	name := shimwire.ModelName(m.Provider, m.Model)
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	t.called = true
 	if !steprecord.AgentTextHolds(name) {
 		t.outsideForm++
 		return
@@ -138,9 +138,7 @@ func (t *totals) bridgeNames(f shimwire.LegionSetModel) {
 		return
 	}
 	t.setModelDecided = true
-	if name := modelName(f.Provider, f.ID); f.ID != "" && steprecord.AgentTextHolds(name) {
-		t.setModel = name
-	}
+	t.setModel = setModelName(f.Provider, f.ID)
 }
 
 // ask takes the daemon's read id: it answers the id of the get_state to send the harness, or the
@@ -164,12 +162,9 @@ func (t *totals) ask(readID string) (stateID, refusal string) {
 
 // answered takes the harness's answer to a get_state of the shim's own. The ready one decides
 // the set model, and a read's makes the result the daemon gets, which is nil for any other.
-// logSize is true for the first such answer the shim has, whose size it logs.
-func (t *totals) answered(response shimwire.Response) (result *shimwire.ModelTotalsResult, logSize bool) {
+func (t *totals) answered(response shimwire.Response) *shimwire.ModelTotalsResult {
 	t.mu.Lock()
 	defer t.mu.Unlock()
-	logSize = !t.sizeLogged
-	t.sizeLogged = true
 	if response.ID == t.readyID && !t.setModelDecided {
 		t.setModelDecided = true
 		var state struct {
@@ -178,19 +173,17 @@ func (t *totals) answered(response shimwire.Response) (result *shimwire.ModelTot
 				ID       string `json:"id"`
 			} `json:"model"`
 		}
-		if !t.called && response.Success && json.Unmarshal(response.Data, &state) == nil && state.Model != nil {
-			if name := modelName(state.Model.Provider, state.Model.ID); state.Model.ID != "" && steprecord.AgentTextHolds(name) {
-				t.setModel = name
-			}
+		if !t.called() && response.Success && json.Unmarshal(response.Data, &state) == nil && state.Model != nil {
+			t.setModel = setModelName(state.Model.Provider, state.Model.ID)
 		}
 	}
 	if readID, waiting := t.pending[response.ID]; waiting {
 		delete(t.pending, response.ID)
 		t.read++
 		answer := t.snapshot()
-		result = &shimwire.ModelTotalsResult{ID: readID, OK: true, Totals: &answer}
+		return &shimwire.ModelTotalsResult{ID: readID, OK: true, Totals: &answer}
 	}
-	return result, logSize
+	return nil
 }
 
 // exit ends the reads once the harness has exited: it refuses each read still waiting, and every

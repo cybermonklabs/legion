@@ -124,6 +124,9 @@ func pullRequestOf(fact intake.Fact) (string, int, bool) {
 		return fact.Repo, fact.Number, true
 	case intake.PullRequestOpened:
 		return fact.Repo, fact.Number, true
+	// It re-asks the review round, which can end the step (mergeStateUnread, settleRound).
+	case intake.PullRequestMergeStateUnread:
+		return fact.Repo, fact.Number, true
 	}
 	return "", 0, false
 }
@@ -132,16 +135,6 @@ func pullRequestOf(fact intake.Fact) (string, int, bool) {
 func factReads(ctx context.Context) FactReads {
 	applied, _ := appliedFactOf(ctx)
 	return applied.reads
-}
-
-// launchAt is the launch row of generation among launches, nil for none.
-func launchAt(launches record.AgentLaunches, generation uint64) *record.Launch {
-	for i := range launches.Launches {
-		if launches.Launches[i].Generation == generation {
-			return &launches.Launches[i]
-		}
-	}
-	return nil
 }
 
 // usedRead is the read a step uses of a live launch. It is the newer, by its read number, of the
@@ -160,22 +153,24 @@ func usedRead(reads FactReads, key record.LaunchKey, launch *record.Launch) *rec
 	return &read
 }
 
-// keepStartTotals keeps what the start of the step at place on issue read of agent. step is the
-// record's id and startedAt the moment the start wrote. It reads the agent's generation and
-// liveness now. A live launch's read is the one usedRead gives, which is kept and logged. A start
-// with no agent, or an engine that reads no totals, keeps nothing.
-func (e *Engine) keepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, agent claim.Token, step string, startedAt time.Time) error {
+// keepStartTotals keeps what the start of the step at place on issue read of its agent. start is
+// the record the start wrote: its id, its agent, and the moment it started. It reads the agent's
+// generation and liveness now, and its launch rows from that generation on (record.SinceNow), the
+// one row the start reads. A live launch's read is the one usedRead gives, which is kept and
+// logged. A start with no agent, or an engine that reads no totals, keeps nothing.
+func (e *Engine) keepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, start *record.StepRecord) error {
+	agent := claim.Token(start.Agent)
 	if agent == "" || e.cfg.ReadTotals == nil {
 		return nil
 	}
-	launches, err := e.store.AgentLaunches(ctx, tx, agent, 0)
+	launches, err := e.store.AgentLaunches(ctx, tx, agent, record.SinceNow)
 	if err != nil {
 		return err
 	}
 	key := record.LaunchKey{Claim: agent, Generation: launches.Generation}
 	var used *record.LaunchRead
 	if launches.Live {
-		used = usedRead(factReads(ctx), key, launchAt(launches, key.Generation))
+		used = usedRead(factReads(ctx), key, launches.At(key.Generation))
 	}
 	if err := e.store.KeepStartTotals(ctx, tx, issue, place, launches.StartTotals(used)); err != nil {
 		return err
@@ -186,7 +181,7 @@ func (e *Engine) keepStartTotals(ctx context.Context, tx pgx.Tx, issue string, p
 	if err := e.store.KeepRead(ctx, tx, key, *used); err != nil {
 		return err
 	}
-	e.logUsedRead(ctx, stepRead{step: step, issue: issue, place: place, startedAt: startedAt, side: "start", key: key, read: *used})
+	e.logUsedRead(ctx, stepRead{step: start.ID, issue: issue, place: place, startedAt: *start.StartedAt, side: "start", key: key, read: *used})
 	return nil
 }
 
@@ -230,7 +225,7 @@ func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaun
 	}
 	for _, generation := range generations {
 		key := record.LaunchKey{Claim: agent, Generation: generation}
-		launch := launchAt(now, generation)
+		launch := now.At(generation)
 		var span launchSpan
 		if began.Live && generation == began.Generation {
 			if began.Read != nil {
@@ -276,8 +271,9 @@ func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaun
 // The answers are each model's calls summed over the launches, without zeros, most calls first,
 // then by model. They are nil, not known, where a launch's start or end is not known, or its end
 // overflowed. They are nil too where a count outside the form changed, or a count fell. They are
-// nil where a name is outside the form of a step's agent text, or more than
-// steprecord.AnswersMax models remain.
+// nil where they break a rule of a step record's answers (steprecord.CheckAnswers): more than
+// steprecord.AnswersMax models remain, a name is outside the form of a step's agent text, or a
+// count is past the most an int64 holds.
 func countStep(spans []launchSpan) (string, *[]record.ModelCalls) {
 	if len(spans) == 0 {
 		none := []record.ModelCalls{}
@@ -317,19 +313,16 @@ func countStep(spans []launchSpan) (string, *[]record.ModelCalls) {
 			}
 		}
 	}
-	if len(sums) > steprecord.AnswersMax {
-		return setModel, nil
-	}
 	answers := make([]record.ModelCalls, 0, len(sums))
 	for model, calls := range sums {
-		if !steprecord.AgentTextHolds(model) {
-			return setModel, nil
-		}
 		answers = append(answers, record.ModelCalls{Model: model, Calls: calls})
 	}
 	slices.SortFunc(answers, func(a, b record.ModelCalls) int {
 		return cmp.Or(cmp.Compare(b.Calls, a.Calls), cmp.Compare(a.Model, b.Model))
 	})
+	if fault, _ := steprecord.CheckAnswers(answers, func(a record.ModelCalls) (string, int64) { return a.Model, int64(a.Calls) }); fault != steprecord.AnswersHold {
+		return setModel, nil
+	}
 	return setModel, &answers
 }
 
@@ -374,7 +367,7 @@ func (e *Engine) writeCounts(ctx context.Context, tx pgx.Tx, issue string, place
 // of that launch was written, so its process may run before the store records it, and no read of it
 // exists. Only a generation at or past began.FromZero can be a launch of the step.
 func (e *Engine) startingLaunch(ctx context.Context, tx pgx.Tx, agent claim.Token, began record.StartTotals, now record.AgentLaunches) (bool, error) {
-	if now.Live || now.Generation == 0 || now.Generation < began.FromZero || launchAt(now, now.Generation) != nil {
+	if now.Live || now.Generation == 0 || now.Generation < began.FromZero || now.At(now.Generation) != nil {
 		return false, nil
 	}
 	claims, err := e.store.RoleClaims(ctx, tx, []claim.Token{agent})

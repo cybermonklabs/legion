@@ -57,6 +57,16 @@ type AgentLaunches struct {
 	Launches []Launch
 }
 
+// At is the launch row of generation among a's, nil for none.
+func (a AgentLaunches) At(generation uint64) *Launch {
+	for i := range a.Launches {
+		if a.Launches[i].Generation == generation {
+			return &a.Launches[i]
+		}
+	}
+	return nil
+}
+
 // StartTotals is what a step's start keeps of the agent a, given the read the start used of a's
 // live launch, nil where it has none. A launch after the start counts from zero, and FromZero is
 // the first generation whose launch does. A live launch is the start's own, so it is the next
@@ -66,21 +76,19 @@ type AgentLaunches struct {
 // own generation, so a must be read from that generation or an earlier one.
 func (a AgentLaunches) StartTotals(used *LaunchRead) StartTotals {
 	start := StartTotals{Generation: a.Generation, Live: a.Live, Read: used, FromZero: a.Generation}
-	if a.Live {
+	if a.Live || a.At(a.Generation) != nil {
 		start.FromZero = a.Generation + 1
-		return start
-	}
-	for _, launch := range a.Launches {
-		if launch.Generation == a.Generation {
-			start.FromZero = a.Generation + 1
-		}
 	}
 	return start
 }
 
+// SinceNow, given as AgentLaunches' since, reads the launch rows from the claim's own generation
+// on.
+const SinceNow uint64 = math.MaxUint64
+
 // AgentLaunches reads the claim agent: its generation now, whether its row records a process, and
-// each of its launch rows from the generation since on. A claim the store does not hold has
-// generation 0, no process and no launch.
+// each of its launch rows from the generation since on, or from its generation now for SinceNow. A
+// claim the store does not hold has generation 0, no process and no launch.
 func (s *Postgres) AgentLaunches(ctx context.Context, tx pgx.Tx, agent claim.Token, since uint64) (AgentLaunches, error) {
 	var launches AgentLaunches
 	var generation int64
@@ -89,6 +97,9 @@ func (s *Postgres) AgentLaunches(ctx context.Context, tx pgx.Tx, agent claim.Tok
 		return AgentLaunches{}, fmt.Errorf("read the claim %s: %w", agent, err)
 	}
 	launches.Generation = uint64(generation)
+	if since == SinceNow {
+		since = launches.Generation
+	}
 	if since > math.MaxInt64 {
 		return launches, nil
 	}

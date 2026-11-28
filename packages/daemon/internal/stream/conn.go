@@ -521,8 +521,8 @@ func (c *Conn) AgentSecretsToken(ctx context.Context) (string, error) {
 // started. The shim answers the frame itself, so no negotiation goes first. The caller's ctx is
 // the read's one bound, and no RPC timeout bounds its wait for the answer. Its write also ends at
 // the RPC timeout, as every write does. A shim whose hello did not offer its totals fails the read
-// at once, with nothing written (ErrNoModelTotals). A shim built before the read forwards the
-// frame to OMP, whose unknown-command answer is a refusal.
+// at once, with nothing written (ErrNoModelTotals). A peer that forwards the frame anyway gets
+// OMP's unknown-command refusal.
 func (c *Conn) ModelTotals(ctx context.Context) (runtime.LaunchTotals, error) {
 	if !c.modelTotals {
 		return runtime.LaunchTotals{}, fmt.Errorf("worker-stream: %s %s: %w", c.claim, shimwire.TypeModelTotals, ErrNoModelTotals)
@@ -637,7 +637,7 @@ func (e *writtenError) Error() string { return e.err.Error() }
 func (e *writtenError) Unwrap() error { return e.err }
 
 // write writes a frame outside a request. No context bounds it, so the RPC timeout of
-// connWriter.Write bounds its write.
+// connWriter.WriteContext bounds its write.
 func (c *Conn) write(frame shimwire.Frame) error {
 	return c.writeWithin(context.Background(), frame)
 }

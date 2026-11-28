@@ -1433,10 +1433,7 @@ func (c *stepClaimant) count(provider, model string) {
 	if model == "" || model == shimwire.SyntheticModel {
 		return
 	}
-	name := model
-	if provider != "" {
-		name = provider + "/" + model
-	}
+	name := shimwire.ModelName(provider, model)
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !steprecord.AgentTextHolds(name) {

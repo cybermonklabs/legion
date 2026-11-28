@@ -1184,16 +1184,16 @@ func TestAFinalTotalsFrameIsAnEventOfItsLaunch(t *testing.T) {
 	}
 }
 
-// A shim built before the read forwards the frame to its harness, which refuses a command that it
-// does not know. A shim that cannot give its totals answers with its reason. Each is a refusal that
-// carries its words, and never a refused prompt.
+// A peer that forwards the frame to its harness gets the harness's refusal of a command that it
+// does not know. A shim that cannot give its totals answers with its reason. Each is a refusal
+// that carries its words, and never a refused prompt.
 func TestARefusalOfTheReadIsARefusedError(t *testing.T) {
 	for _, test := range []struct {
 		name   string
 		answer func(id string) shimwire.Frame
 		reason string
 	}{
-		{name: "an older shim forwards it to its harness", reason: "Unknown command: model_totals",
+		{name: "a peer that forwards it to its harness", reason: "Unknown command: model_totals",
 			answer: func(id string) shimwire.Frame {
 				return shimwire.Response{ID: id, Command: shimwire.TypeModelTotals, Success: false, Error: "Unknown command: model_totals"}
 			}},

@@ -31,7 +31,6 @@
 create table claim_launches (
   claim text not null,
   generation bigint not null check (generation > 0),
-  started_at timestamptz not null default now(),
   newest jsonb,
   final jsonb,
   primary key (claim, generation)

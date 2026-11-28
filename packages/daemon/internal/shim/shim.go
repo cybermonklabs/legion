@@ -255,6 +255,9 @@ type shim struct {
 	out       outbox
 	// totals is what the shim counted of its launch's calls, which the daemon reads (totals.go).
 	totals totals
+	// stateSizeLogged logs the size of the harness's first answer to a get_state of the shim's
+	// own, once (ownAnswer).
+	stateSizeLogged sync.Once
 
 	// order makes a dedupe decision and the daemon-bound frames it implies one step, as they are
 	// in the single-threaded shim this is ported from: a start replayed for a retried delivery
@@ -520,11 +523,7 @@ func (s *shim) readTotals(request shimwire.ModelTotals) {
 
 // askHarness sends the harness a get_state of the shim's own, whose answer is the shim's alone.
 func (s *shim) askHarness(id string) {
-	line := s.encode(shimwire.GetState{ID: id})
-	if line == nil {
-		return
-	}
-	if err := s.stdin.WriteLine(line); err != nil {
+	if err := s.stdin.WriteFrame(shimwire.GetState{ID: id}); err != nil {
 		s.log.Printf("[worker-shim] could not ask the wrapped process for its state: %v", err)
 	}
 }
@@ -749,19 +748,12 @@ func (s *shim) harnessFrame(frame shimwire.Frame, lines [][]byte, size int) {
 // ownAnswer takes the harness's answer to a get_state of the shim's own, of size bytes, and
 // sends the daemon the read it answers, if any.
 func (s *shim) ownAnswer(response shimwire.Response, size int) {
-	result, logSize := s.totals.answered(response)
-	if logSize {
-		s.log.Printf("[worker-shim] the harness's state answer is %d bytes", size)
+	s.stateSizeLogged.Do(func() { s.log.Printf("[worker-shim] the harness's state answer is %d bytes", size) })
+	if result := s.totals.answered(response); result != nil {
+		s.order.Lock()
+		s.toDaemon(*result)
+		s.order.Unlock()
 	}
-	var answer [][]byte
-	if result != nil {
-		if line := s.encode(*result); line != nil {
-			answer = [][]byte{line}
-		}
-	}
-	s.order.Lock()
-	s.out.send(answer)
-	s.order.Unlock()
 }
 
 // warmCodegraph starts cfg.WarmCodegraph for the workspace LEGION_WORKSPACE names, once the

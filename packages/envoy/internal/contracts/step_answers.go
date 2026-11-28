@@ -22,6 +22,14 @@ const (
 
 var stepAgentText = regexp.MustCompile(StepAgentTextPattern)
 
+// StepAgentTextHolds reports whether text is in the form a step record's agent, session and model
+// take (StepAgentTextPattern). It is the one compiled statement of the form: Dispatch's step store
+// refuses a write outside it, and the Legion daemon, through github.com/sjawhar/envoy/steprecord,
+// leaves such text out of the records it writes.
+func StepAgentTextHolds(text string) bool {
+	return stepAgentText.MatchString(text)
+}
+
 // CheckStepAnswers is the first rule of a step record's answers that answers break, and the index
 // of the entry that breaks it. The index is -1 where the answers hold, or break the rule of their
 // length. pair gives an entry's model and its calls. It is the one statement of the rule.
@@ -34,7 +42,7 @@ func CheckStepAnswers[E any](answers []E, pair func(E) (model string, calls int6
 	for i, answer := range answers {
 		model, calls := pair(answer)
 		switch {
-		case !stepAgentText.MatchString(model):
+		case !StepAgentTextHolds(model):
 			return StepAnswerModelForm, i
 		case calls < 1:
 			return StepAnswerNoCall, i

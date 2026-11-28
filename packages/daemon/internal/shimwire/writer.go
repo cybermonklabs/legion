@@ -95,17 +95,15 @@ func (w *Writer) WriteFrameContext(ctx context.Context, f Frame) error {
 	return w.writeHeld(ctx)
 }
 
-// WriteLine writes an already-encoded frame as one line. The newline is this writer's.
+// WriteLine writes an already-encoded frame as one line. The newline is this writer's. It waits
+// for the writer with no bound, so the wait cannot fail (take).
 func (w *Writer) WriteLine(line []byte) error {
-	ctx := context.Background()
-	if err := w.take(ctx); err != nil {
-		return fmt.Errorf("the line waited for the writer: %w", err)
-	}
+	w.slot <- struct{}{}
 	defer w.release()
 	w.buf.Reset()
 	w.buf.Write(line)
 	w.buf.WriteByte('\n')
-	return w.writeHeld(ctx)
+	return w.writeHeld(context.Background())
 }
 
 // take waits for the writer's slot, or for ctx to end, and then returns ctx's cause. A context

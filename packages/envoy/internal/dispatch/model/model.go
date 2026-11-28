@@ -4333,7 +4333,7 @@ type PlanRating struct {
 // that end is before that start), its count of step records of kind step that failed, and the
 // experiment a draw put it in and the variant it drew there, as the step records of its newest run
 // name them (each null where they name none). SetModelSteps counts its step records that name an
-// agent on their set model.
+// agent against their set model.
 type FinishedIssue struct {
 	Issue           string        `json:"issue"`
 	Title           string        `json:"title"`
