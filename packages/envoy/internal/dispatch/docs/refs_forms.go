@@ -132,7 +132,7 @@ rows:
 	for index, source := range owed {
 		switch source.Kind {
 		case "comment", "ask", "message":
-			indexed, err := refs.ReindexOwed(ctx, s.store.Pool, source, s.serverURL)
+			indexed, err := refs.ReindexOwed(ctx, s.store.Pool, source, s.origins)
 			switch {
 			case ctx.Err() != nil:
 				return tick, ctx.Err()

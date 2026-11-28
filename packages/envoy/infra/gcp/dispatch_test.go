@@ -811,6 +811,7 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		{"a seed in the Tailscale image", "tailscaleImage", func(a *gcp.DispatchArgs) { a.TailscaleImage = "example.invalid/" + seed + digest }},
 		{"a seed in the Cloud SQL proxy image", "cloudSqlProxyImage", func(a *gcp.DispatchArgs) { a.CloudSqlProxyImage = "example.invalid/" + seed + digest }},
 		{"a seed in the front-door tools image", "frontDoorToolsImage", func(a *gcp.DispatchArgs) { a.FrontDoorToolsImage = "example.invalid/" + seed + digest }},
+		{"a seed inside natsAudience", "natsAudience", func(a *gcp.DispatchArgs) { a.NatsAudience = "example-" + lower }},
 		{"a seed as the sign-in client ID", "signInClientId", func(a *gcp.DispatchArgs) { a.SignInClientId = seed }},
 		{"a seed inside the sign-in domain", "signInDomain", func(a *gcp.DispatchArgs) { a.SignInDomain = lower + ".example.com" }},
 		{"a seed inside a Workspace domain", "signInWorkspaceDomains[1]", func(a *gcp.DispatchArgs) {
@@ -818,6 +819,10 @@ func TestDispatchRefusesAnNKeySeedInAPlainInput(t *testing.T) {
 		}},
 		{"a seed inside the outside origin", "outsideOrigin", func(a *gcp.DispatchArgs) { a.OutsideOrigin = "https://" + lower + ".example.com" }},
 		{"a seed inside the public origin", "publicOrigin", func(a *gcp.DispatchArgs) { a.PublicOrigin = "https://" + lower + ".example.com" }},
+		{"a seed inside a served address", "servedOrigins[1]", func(a *gcp.DispatchArgs) {
+			a.ServedOrigins = []string{"https://b.example.com", "https://" + lower + ".example.com"}
+		}},
+		{"a seed inside a former address", "formerOrigins[0]", func(a *gcp.DispatchArgs) { a.FormerOrigins = []string{"https://" + lower + ".example.test"} }},
 		{"a seed in the database version", "databaseVersion", func(a *gcp.DispatchArgs) { a.DatabaseVersion = pulumi.StringRef(seed) }},
 		{"a seed in the database tier", "databaseTier", func(a *gcp.DispatchArgs) { a.DatabaseTier = pulumi.StringRef(seed) }},
 		{"a seed as the database availability type", "databaseAvailabilityType", func(a *gcp.DispatchArgs) { a.DatabaseAvailabilityType = pulumi.StringRef(seed) }},
@@ -2038,18 +2043,20 @@ func TestDispatchListenerKeepsServingUntilItsRemovalFromRoutingPropagates(t *tes
 // would already have stopped answering them. The app's container therefore waits before it is
 // signalled, and since the kubelet runs that wait inside the pod's one grace period, the pod asks
 // for the wait on top of the server's own drain budget, so the wait costs the server nothing.
-// This pins the pair the deployment renders; the inequality between the pod's budget and the
-// server's shutdown is held in packages/envoy/cmd/dispatch/pod_grace_period_test.go, which reads
-// stopGrace itself.
+// This pins the pair the deployment renders with preStopSeconds and terminationGracePeriodSeconds
+// unset; TestDispatchDrainInputsRenderAndRefuse holds the two inputs and the component's refusal
+// of a grace period under the wait plus its copy of stopGrace, and
+// packages/envoy/cmd/dispatch/pod_grace_period_test.go, which reads stopGrace itself, holds this
+// pod and that copy to stopGrace.
 func TestDispatchAppPodKeepsServingUntilItsRemovalFromRoutingPropagates(t *testing.T) {
 	m, err := runDispatch(t, dispatchArgs(), true)
 	require.NoError(t, err)
 
 	// The 35 s is this 5 s wait plus the 30 s cmd/dispatch/shutdown.go's stopGrace builds the
-	// server's shutdown for. Both numbers are spelled out here, since this test pins what the
-	// component renders; packages/envoy/cmd/dispatch/pod_grace_period_test.go is where the
-	// inequality between the pod's budget and that shutdown lives, held from the side that can
-	// read stopGrace.
+	// server's shutdown for, the two inputs' defaults. Both numbers are spelled out here, since
+	// this test pins what the component renders; packages/envoy/cmd/dispatch/pod_grace_period_test.go
+	// is where the inequality between the pod's budget and that shutdown lives, held from the side
+	// that can read stopGrace.
 	const wait = 5
 	template := deploymentPodTemplate(t, m, "example-dispatch")
 	require.EqualValues(t, 35, template["spec"].(map[string]any)["terminationGracePeriodSeconds"])

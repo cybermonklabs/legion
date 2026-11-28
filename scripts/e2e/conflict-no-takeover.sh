@@ -8,7 +8,7 @@
 # its own to hold, the architect is told once in a checks-red notice naming testing, and nothing at
 # all is sent to the tester's connection, whose turn runs on. Once the implementer's push lands the
 # tester is told so; its completion at the head the merge replaced is refused
-# HANDOFF_HEAD_MERGED_FORWARD and records nothing, and its completion at the new head is taken.
+# HANDOFF_HEAD_MERGED_FORWARD and moves nothing, and its completion at the new head is taken.
 # The control, a second issue whose required check passed on its conflicting head, gets nothing
 # from its second read. The whole daemon is booted by the function `legion start` calls, over a
 # real PostgreSQL and a real nats-server, and driven only through GitHub envelopes on the

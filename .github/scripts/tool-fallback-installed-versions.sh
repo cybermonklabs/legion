@@ -27,6 +27,7 @@ proof=.github/scripts/ci-tools-proof.sh
 wrong=""
 "$proof" version-answers crane "$(crane version)" || wrong="$wrong crane"
 "$proof" version-answers changie "$(changie --version)" || wrong="$wrong changie"
+"$proof" version-answers gotestsum "$(gotestsum --version)" || wrong="$wrong gotestsum"
 "$proof" version-answers jj "$(jj --version)" || wrong="$wrong jj"
 "$proof" version-answers bun-linux-x64 "$(bun --version)" || wrong="$wrong bun-linux-x64"
 "$proof" version-answers elan "$(elan --version)" || wrong="$wrong elan"

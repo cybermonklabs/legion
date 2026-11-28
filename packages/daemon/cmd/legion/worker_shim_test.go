@@ -147,7 +147,7 @@ func TestWorkerShimBridgesTheChildAndExitsWithItsStatus(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if frame, err := shimwire.Decode(line); err != nil || frame != (shimwire.Hello2{BootToken: "boot-token"}) {
+			if frame, err := shimwire.Decode(line); err != nil || frame != (shimwire.Hello2{BootToken: "boot-token", ModelTotals: true}) {
 				return errors.New("the first frame was " + string(line))
 			}
 			return shimwire.NewWriter(conn).WriteFrame(shimwire.HelloAck{})
@@ -333,7 +333,7 @@ init) mkdir -p .codegraph; : > .codegraph/begun; echo $$ > '` + building + `'; e
 index) exit 0 ;;
 esac
 `
-	if err := os.WriteFile(filepath.Join(bin, "codegraph"), []byte(standIn), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "codegraph"), []byte(standIn), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", bin+string(os.PathListSeparator)+os.Getenv("PATH"))

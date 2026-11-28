@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"net/http"
 	"slices"
 	"strings"
@@ -13,32 +12,41 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
-// The form of The Spec (R49) as the server holds it. A setting names the roots of The Spec
-// (DISPATCH_SPEC_ROOTS); a document under one of them is covered, and this file is the one place
-// that judges its form. A process builds its form once (NewSpecForm), which sets the gate of its
-// document service, and the API judges with that same form (Deps.SpecForm). refuseSpecForm
-// refuses, at its two call sites: the opening or hand-back of an approval request
+// The form of The Spec (R49) and its list of terms (R50) as the server holds them. A setting names
+// the roots of The Spec (DISPATCH_SPEC_ROOTS); a document under one of them is covered, and this
+// file is the one place that judges its form. A process builds its form once (NewSpecForm), which
+// sets the gate of its document service, and the API judges with that same form (Deps.SpecForm).
+// The list of a root is the term lines of the latest version of each covered document under it
+// that a person approved, its terms.md among them, with one definition of each term
+// (approvedSpecTexts), and a covered document that defines a term of the list again is refused.
+// refuseSpecForm refuses, at its two call sites: the opening or hand-back of an approval request
 // (requestArtifactApproval), and an approval in a person's name (approvalDocuments), which gives
 // the documents that approval covers and judges each of them. Every writer of an approval in a
 // person's name asks approvalDocuments: her review on either review route and her answer to an
 // approval request (queueApprovalReviews), and the carry of an approval to a new version
-// (carryBreaksForm, docs.FormGate), which carries nothing over a break. Two calls read findings
-// and refuse nothing: the read route (getArtifactSpecForm) and the restore of a reopen and of the
-// repair pass (prepareRestoration), which judges a request at the versions it names once the
-// reopen ends and leaves a broken approval request resolved rather than open it again
-// (docs.WriteRestoredAsks, which only it calls, writes the others open). Every route that opens
-// an approval request or answers one reaches one of these calls;
-// TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds the code to that census, and to
-// NewSpecForm as the one setter of the gate.
+// (carryBreaksForm, docs.FormGate), which carries nothing over a break. A person's approval
+// decides against the list and then changes it, so it takes the lock of the root's list before it
+// reads the list (lockSpecTerms), and two approvals under one root take turns. A move into a root
+// changes the list too, and takes the same lock before it appends its event
+// (lockSpecTermsOfMove), and the list reads that event. Two calls read findings and refuse
+// nothing: the read route (getArtifactSpecForm) and the restore of a reopen and of the repair pass
+// (prepareRestoration), which judges a request at the versions it names once the reopen ends and
+// leaves a broken approval request resolved rather than open it again (docs.WriteRestoredAsks,
+// which only it calls, writes the others open). Every route that opens an approval request or
+// answers one reaches one of these calls; TestOnlyTheFormGateOpensOrAnswersAPersonsApproval holds
+// the code to that census, and to NewSpecForm as the one setter of the gate.
 //
 // One way past the gate stays open, and it is known: an approval given before the setting named
 // the root, or while the issue stood outside it, never passed the gate, and a reparent out of a
-// root takes an issue's documents out of scope with one write; the read route's scope says so.
+// root takes an issue's documents out of scope with one write; the read route's scope says so. A
+// reparent into a root is not refused either, and it can bring a second definition of a term under
+// the root, as an approval from before the setting named the root can. The list still holds one
+// definition of that term, the one that joined it first, each definition at its own date
+// (approvedSpecTexts), and the read of the other document names it as a finding.
 
 // specFormCode is the code of the refusal.
 const specFormCode = "SPEC_FORM"
@@ -65,25 +73,26 @@ const (
 const actRead specform.Act = "read"
 
 // SpecForm is the form of The Spec that a process judges with: the roots that DISPATCH_SPEC_ROOTS
-// names, and the server's address, which a judgment reads (contextFor). The zero SpecForm names
-// no root, so only the read route judges anything with it.
+// names, and the server's origins, against which a judgment reads links (baseContext). The zero
+// SpecForm names no root, so only the read route judges anything with it.
 type SpecForm struct {
-	roots     []string
-	serverURL string
+	roots   []string
+	origins text.Origins
 }
 
 // NewSpecForm builds the form of The Spec from specRoots, as DISPATCH_SPEC_ROOTS writes them, and
-// the server's address, and sets its gate on documents (carryBreaksForm): each carry of an
-// approval that service writes is then judged as the person's own Approve is. It is the one setter
-// of a document service's gate. The server builds its form once, before the boot's restoration
-// schedules a settlement, and builds its API with it; each backfill command builds one for the
-// service it writes through. A value that is no list of issue keys refuses startup.
-func NewSpecForm(specRoots, serverURL string, documents docs.API) (SpecForm, error) {
+// the server's origins (text.ServerOrigins), and sets its gate on documents (carryBreaksForm):
+// each carry of an approval that service writes is then judged as the person's own Approve is. It
+// is the one setter of a document service's gate. The server builds its form once, before the
+// boot's restoration schedules a settlement, and builds its API with it; each backfill command
+// builds one for the service it writes through. A value that is no list of issue keys refuses
+// startup.
+func NewSpecForm(specRoots string, origins text.Origins, documents docs.API) (SpecForm, error) {
 	roots, err := parseSpecRoots(specRoots)
 	if err != nil {
 		return SpecForm{}, err
 	}
-	form := SpecForm{roots: roots, serverURL: strings.TrimSuffix(serverURL, "/")}
+	form := SpecForm{roots: roots, origins: origins}
 	documents.SetFormGate(form.carryBreaksForm)
 	return form, nil
 }
@@ -121,35 +130,29 @@ func (s specScope) inScope() bool {
 	return s.scope == specScopeCovered || s.scope == specScopeList
 }
 
-// specScopeOf is where artifact stands for the form, by the setting: the nearest named root among
-// its issue's ancestors (refs.IssueAncestors, parent first) is its root. A root's own documents
-// other than its terms.md are not covered, nested in another root or not, and nor is any document
-// of an issue under a root other than its spec and its Verification document.
+// specScopeOf is where artifact stands for the form, by the setting: the nearest named root at or
+// above its issue (nearestSpecRoot) is its root. A root's own documents other than its terms.md
+// are not covered, nested in another root or not, and nor is any document of an issue under a root
+// other than its spec and its Verification document.
 func (f SpecForm) specScopeOf(ctx context.Context, q queryer, artifact model.Artifact) (specScope, error) {
-	roots := f.roots
-	if len(roots) == 0 {
+	if len(f.roots) == 0 {
 		return specScope{scope: specScopeNoRoot}, nil
 	}
 	if artifact.IssueKey == nil {
 		return specScope{scope: specScopeOutside}, nil
 	}
 	issue := *artifact.IssueKey
-	if slices.Contains(roots, issue) {
-		if artifact.Kind == "doc" && artifact.Slug == termsSlug {
-			return specScope{scope: specScopeList, root: &issue}, nil
-		}
-		return specScope{scope: specScopeRoot, root: &issue}, nil
-	}
-	ancestors, err := refs.IssueAncestors(ctx, q, issue)
-	if err != nil {
-		return specScope{}, fmt.Errorf("read the ancestors of %s: %w", issue, err)
-	}
-	index := slices.IndexFunc(ancestors, func(ancestor string) bool { return slices.Contains(roots, ancestor) })
-	if index < 0 {
+	root, err := f.nearestSpecRoot(ctx, q, &issue)
+	switch {
+	case err != nil:
+		return specScope{}, err
+	case root == "":
 		return specScope{scope: specScopeOutside}, nil
-	}
-	root := ancestors[index]
-	if artifact.Kind == "doc" && (isSpecDocument(artifact) || documentPlays(artifact, model.ArtifactRoleVerification)) {
+	case root == issue && artifact.Kind == "doc" && artifact.Slug == termsSlug:
+		return specScope{scope: specScopeList, root: &root}, nil
+	case root == issue:
+		return specScope{scope: specScopeRoot, root: &root}, nil
+	case artifact.Kind == "doc" && (isSpecDocument(artifact) || documentPlays(artifact, model.ArtifactRoleVerification)):
 		return specScope{scope: specScopeCovered, root: &root}, nil
 	}
 	return specScope{scope: specScopeNotSpec, root: &root}, nil
@@ -179,32 +182,58 @@ type specFormError struct {
 	FindingsTotal int               `json:"findings_total"`
 }
 
-// specFormTerm is one term of the list of a root.
+// specFormTerm is one term of the list of a root: the term, its definition, and the document, the
+// version and the issue that define it.
 type specFormTerm struct {
 	Term       string `json:"term"`
 	Definition string `json:"definition"`
 	Document   string `json:"document"`
 	Version    int    `json:"version"`
+	Issue      string `json:"issue"`
 }
 
-// specFormUnread is an approved document under the root that a judgment did not compare with the
-// documents it judged, because Dispatch cannot read that approved version
-// (specform.UnreadableError). It refuses nothing, and line says so.
+// specFormUnread is an approved version of a document under the root that Dispatch cannot read
+// (specform.UnreadableError), so no rule compares its texts. cause is why the parser refuses it.
+// The latest approved version of a document is a source of the list, so the list holds none of its
+// terms: it refuses nothing of a document with no definition, and line says so, and a document that
+// holds a definition is refused for it (specform.UnreadListFinding), since no rule can compare the
+// definition with its terms, unless the judgment names its document (refusingDefinitions). An older
+// approved version (orders) is no source of the list: it only orders the definitions of its
+// document, as a version that holds no term (definitionJoins), so it refuses nothing, and line
+// says that (specform.UnreadOlderLine).
 type specFormUnread struct {
 	Document   string `json:"document"`
 	ArtifactID string `json:"artifact_id"`
 	Issue      string `json:"issue"`
 	Version    int    `json:"version"`
 	Line       string `json:"line"`
+	cause      string
+	orders     bool
+}
+
+// specFormList is the list of terms of a root as each answer gives it (R50), one value with the
+// record of what Dispatch could not read as it made the list. The list can lack the terms of each
+// latest approved version in Unread, so no answer gives Terms without Unread whole, the versions of
+// the documents that the answer judges among them. Under a root approvedSpec.read makes this
+// value, and with no root both are empty.
+type specFormList struct {
+	// Terms is the list of terms of the root, sorted by term: the term lines of the approved
+	// versions of the root's terms.md and of the covered documents under it. It is empty for a
+	// document that no root holds.
+	Terms []specFormTerm `json:"terms"`
+	// Unread is each approved version under the root that Dispatch could not read as it made
+	// Terms, the versions of the documents that the answer judges among them.
+	Unread []specFormUnread `json:"unread"`
 }
 
 // specFormSummary is what an approval request's answer says of the form of the documents it
 // handed the person, when the document it names is in scope: the root, the count of each kind of
-// text it read, and each approved document under the root that it could not read. It counts no
-// terms: Dispatch reads no list of terms until form slice 2 reads it.
+// text it read, the count of the terms of the root's list, and the record of what Dispatch could
+// not read as it made that list (specFormList.Unread).
 type specFormSummary struct {
 	Root   string                `json:"root"`
 	Texts  map[specform.Kind]int `json:"texts"`
+	Terms  int                   `json:"terms"`
 	Unread []specFormUnread      `json:"unread"`
 }
 
@@ -233,24 +262,25 @@ type specFormRead struct {
 	// form; then the line of each finding that a refusal writes for it; then, when Findings holds
 	// fewer than FindingsTotal, a line that says how many it lists. Empty with no finding.
 	FindingLines []string `json:"finding_lines"`
-	// Terms is the list of terms of the root. It is empty until the list is read.
-	Terms []specFormTerm `json:"terms"`
-	// Unread is each approved document under the root that the judgment could not read.
-	Unread []specFormUnread `json:"unread"`
+	// specFormList is the list of terms of the root and the record of what Dispatch could not read
+	// as it made the list, as one value.
+	specFormList
 	// RefusesApproval is whether an approval request or an approval of this version is refused.
 	RefusesApproval bool `json:"refuses_approval"`
 }
 
 // specFormDocument is one document a judgment named: the document, the version judged, where it
-// stands, and, once judged, the count of each kind of text, every finding, and each approved
-// document under its root that the judgment could not read.
+// stands, and, once judged, the count of each kind of text, every finding, and the list of terms
+// of its root with its record of what Dispatch could not read (specFormList). A named version
+// that the parser refuses has its one finding in unreadable once read.
 type specFormDocument struct {
 	artifact model.Artifact
 	version  int
 	specScope
-	texts    map[specform.Kind]int
-	findings []specFormFinding
-	unread   []specFormUnread
+	texts      map[specform.Kind]int
+	findings   []specFormFinding
+	list       specFormList
+	unreadable *specFormFinding
 }
 
 // specFormResult is the judgment of the documents specFormOf named, in their order.
@@ -269,12 +299,29 @@ func (r specFormResult) refusing() []specFormFinding {
 	return findings
 }
 
-// unread is each approved document that the judgment of a document in scope could not read, once.
+// unread is the record of what Dispatch could not read as it made the list of each document in
+// scope (specFormList.Unread), each version once: the documents of one root share one record, so
+// a version is the same entry in each.
 func (r specFormResult) unread() []specFormUnread {
-	unread := []specFormUnread{}
+	type version struct {
+		artifactID string
+		version    int
+		orders     bool
+	}
+	var lists [][]specFormUnread
+	total := 0
 	for _, document := range r.documents {
-		for _, each := range document.unread {
-			if document.inScope() && !slices.Contains(unread, each) {
+		if document.inScope() {
+			lists = append(lists, document.list.Unread)
+			total += len(document.list.Unread)
+		}
+	}
+	unread := make([]specFormUnread, 0, total) // an answer with no unread version answers [], not null
+	kept := make(map[version]bool, total)
+	for _, list := range lists {
+		for _, each := range list {
+			if key := (version{each.ArtifactID, each.Version, each.orders}); !kept[key] {
+				kept[key] = true
 				unread = append(unread, each)
 			}
 		}
@@ -313,7 +360,7 @@ func (r specFormResult) summary(artifactID string) *specFormSummary {
 	var summary *specFormSummary
 	for _, document := range r.documents {
 		if document.artifact.ID == artifactID && document.inScope() {
-			summary = &specFormSummary{Root: *document.root, Texts: map[specform.Kind]int{}, Unread: r.unread()}
+			summary = &specFormSummary{Root: *document.root, Texts: map[specform.Kind]int{}, Terms: len(document.list.Terms), Unread: r.unread()}
 		}
 	}
 	if summary == nil {
@@ -385,18 +432,27 @@ func (r *specFormRefusal) body() specFormError {
 // scope is judged on every act; the read route's act (actRead) judges every document, in scope or
 // not. With no root named, the other acts read nothing at all. It reads each version's stored
 // markdown, the projects (a bare key of a project names a record), the emails of the people who
-// signed in (a piece of one is a name) and, under a root, the names of the components and
-// interfaces of the approved covered documents under it (approvedSpecTexts), which are nouns of
-// the system and no person.
+// signed in (a piece of one is a name) and, under a root, the approved covered documents under it
+// (approvedSpecTexts): the names of their components and interfaces, which are nouns of the
+// system and no person, and their terms, which are the root's list of terms (R50). It reads every
+// document before it judges one, so that a line of the term-line form outside Terms is judged
+// against the definitions of every document of the call, whatever their order. A person's
+// approval (specform.ActApproval) judges in the transaction that writes it, and it takes the lock
+// of each root's list before it reads that list (lockSpecTerms).
 func (f SpecForm) specFormOf(ctx context.Context, q queryer, documents []model.AskApprovalDocument, act specform.Act) (specFormResult, error) {
 	var result specFormResult
 	if len(f.roots) == 0 && act != actRead {
 		return result, nil
 	}
-	judge := &specFormJudge{form: f, q: q, skip: map[string]bool{}, systemNames: map[string][]string{}, unread: map[string][]specFormUnread{}}
+	judge := &specFormJudge{
+		form: f, q: q, lock: act == specform.ActApproval,
+		skip: map[string]bool{}, approved: map[string]approvedSpec{},
+		defined: map[string][]requestTerm{}, governing: map[string][]requestTerm{},
+	}
 	for _, document := range documents {
 		judge.skip[document.ArtifactID] = true
 	}
+	var read []*specform.Extracted // each document's texts, nil for a document that is not judged
 	for _, named := range documents {
 		artifact, err := artifactMetadata(ctx, q, named.ArtifactID)
 		if err != nil {
@@ -407,12 +463,23 @@ func (f SpecForm) specFormOf(ctx context.Context, q queryer, documents []model.A
 			return specFormResult{}, err
 		}
 		document := specFormDocument{artifact: artifact, version: named.Version, specScope: scope}
+		var extracted *specform.Extracted
 		if scope.inScope() || act == actRead {
-			if err := judge.judge(ctx, &document); err != nil {
+			texts, err := judge.read(ctx, &document)
+			if err != nil {
+				return specFormResult{}, err
+			}
+			extracted = &texts
+		}
+		result.documents = append(result.documents, document)
+		read = append(read, extracted)
+	}
+	for index, extracted := range read {
+		if extracted != nil {
+			if err := judge.judge(ctx, &result.documents[index], *extracted); err != nil {
 				return specFormResult{}, err
 			}
 		}
-		result.documents = append(result.documents, document)
 	}
 	return result, nil
 }
@@ -484,46 +551,106 @@ func (f SpecForm) carryBreaksForm(ctx context.Context, tx pgx.Tx, request *model
 type specFormJudge struct {
 	form SpecForm
 	q    queryer
+	// lock is whether the judgment takes the lock of each root's list before it reads the list:
+	// a person's approval does, because it writes in q what it decides against the list.
+	lock bool
 	// skip is every document the call names: the version it names stands in for an approved one.
 	skip map[string]bool
 	// base is the context every document shares, read at the first judgment.
 	base *specform.Context
-	// systemNames is the names of the system under each root, and unread each approved document
-	// under it that Dispatch cannot read, both read at the first judgment under it.
-	systemNames map[string][]string
-	unread      map[string][]specFormUnread
+	// approved is what the approved covered documents under each root hold, read at the first
+	// judgment under it.
+	approved map[string]approvedSpec
+	// defined is the definitions under Terms of every document of the call, under each root, each
+	// with its document, in the order of the call.
+	defined map[string][]requestTerm
+	// governing is the definition of each term under each root that a judgment compares the call's
+	// definitions of the term with (governingUnder), made at the first judgment under the root.
+	governing map[string][]requestTerm
 }
 
-// judge reads document's named version and judges its texts, each definition of a term among them.
-// A version that the parser refuses is one finding of its document (specform.UnreadableError), so
-// the judgment that names it refuses it, and its detail says to write a new version.
-func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) error {
+// requestTerm is a definition under Terms of a document of one call, or of the list, with the
+// document.
+type requestTerm struct {
+	artifactID string
+	specform.Term
+}
+
+// read reads document's named version and its texts, and under a root keeps each definition
+// under Terms that it holds (defined), with its place as the list names one. A version that the
+// parser refuses (specform.UnreadableError) holds no text: it is one finding of its document,
+// kept in unreadable, so the judgment that names it refuses it, with its way out: a new version
+// of the document.
+func (j *specFormJudge) read(ctx context.Context, document *specFormDocument) (specform.Extracted, error) {
 	markdown, err := specFormMarkdown(ctx, j.q, document.artifact, document.version)
 	if err != nil {
-		return err
+		return specform.Extracted{}, err
 	}
-	document.findings, document.unread = []specFormFinding{}, []specFormUnread{}
 	extracted, err := specform.ExtractDocument(document.artifact.Name, document.version, markdown)
 	if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
-		document.texts = map[specform.Kind]int{}
-		document.findings = append(document.findings, specFormFinding{
+		document.unreadable = &specFormFinding{
 			Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version, Finding: unreadable.Finding(),
-		})
-		return nil
+		}
+		return specform.Extracted{Counts: map[specform.Kind]int{}}, nil
 	}
 	if err != nil {
-		return err
+		return specform.Extracted{}, err
 	}
-	context, err := j.contextFor(ctx, document.root)
+	if document.root != nil {
+		where := listedWhere(document.artifact.Name, document.version, *document.artifact.IssueKey)
+		for _, term := range extracted.Terms {
+			term.Where = where
+			j.defined[*document.root] = append(j.defined[*document.root], requestTerm{artifactID: document.artifact.ID, Term: term})
+		}
+	}
+	return extracted, nil
+}
+
+// judge judges the texts that read gave of document, each definition of a term among them, and
+// under a root each definition against the first approved definition of its term in join order
+// whose document the call does not name, or names at a version that still defines the term
+// (governingUnder), unless that one is the document's own. A line of the term-line form outside
+// Terms is no definition: it is judged against those definitions and against the definitions
+// under Terms of every other document of the call (defined), and it adds nothing. The answer gets
+// the root's whole list with its whole record of what Dispatch could not read
+// (approvedSpec.read): only the comparisons read the versions that the call names.
+func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument, extracted specform.Extracted) error {
+	context, err := j.baseContext(ctx)
 	if err != nil {
 		return err
 	}
 	context.Pages = documentPages(document.artifact)
-	document.texts = extracted.Counts
+	document.list = specFormList{Terms: []specFormTerm{}, Unread: []specFormUnread{}}
+	var (
+		compared, defined []specform.Term
+		refusing          []specFormUnread
+	)
 	if document.root != nil {
-		document.unread = append(document.unread, j.unread[*document.root]...)
+		approved, err := j.approvedUnder(ctx, *document.root)
+		if err != nil {
+			return err
+		}
+		context.SystemNames = approved.systemNames(j.skip)
+		for _, governing := range j.governingUnder(*document.root, approved) {
+			if governing.artifactID != document.artifact.ID {
+				compared = append(compared, governing.Term)
+			}
+		}
+		for _, other := range j.defined[*document.root] {
+			if other.artifactID != document.artifact.ID {
+				defined = append(defined, other.Term)
+			}
+		}
+		document.list = approved.read()
+		refusing = approved.refusingDefinitions(j.skip)
 	}
-	found, err := specform.Check(ctx, context, specform.Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+	document.texts = extracted.Counts
+	document.findings = []specFormFinding{}
+	if document.unreadable != nil {
+		document.findings = append(document.findings, *document.unreadable)
+		return nil
+	}
+	found, err := specform.Check(ctx, context, specform.Input{Texts: extracted.Texts, Proposed: extracted.Terms, List: compared, Defined: defined})
 	if err != nil {
 		return err
 	}
@@ -531,6 +658,16 @@ func (j *specFormJudge) judge(ctx context.Context, document *specFormDocument) e
 		document.findings = append(document.findings, specFormFinding{
 			Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version, Finding: finding,
 		})
+	}
+	// R50 is a gate: a definition that no rule can compare with the terms of an approved document
+	// that Dispatch cannot read is refused, naming that document (specform.UnreadListFinding).
+	if len(extracted.Terms) > 0 {
+		for _, unread := range refusing {
+			document.findings = append(document.findings, specFormFinding{
+				Document: document.artifact.Name, ArtifactID: document.artifact.ID, Version: document.version,
+				Finding: specform.UnreadListFinding(unread.Document, unread.Version, unread.Issue, unread.cause),
+			})
+		}
 	}
 	return nil
 }
@@ -552,8 +689,9 @@ func documentPages(artifact model.Artifact) []string {
 	return text.DocumentPages(owner)
 }
 
-// contextFor is what Check knows of the system for a document under root (nil for none).
-func (j *specFormJudge) contextFor(ctx context.Context, root *string) (specform.Context, error) {
+// baseContext is what Check knows of the system for every document: the project keys, the
+// emails of the people who signed in, and the server's origins.
+func (j *specFormJudge) baseContext(ctx context.Context) (specform.Context, error) {
 	if j.base == nil {
 		projects, err := specFormStrings(ctx, j.q, `select key from projects`)
 		if err != nil {
@@ -566,123 +704,10 @@ func (j *specFormJudge) contextFor(ctx context.Context, root *string) (specform.
 		j.base = &specform.Context{
 			IsProjectKey: func(key string) bool { return slices.Contains(projects, key) },
 			PersonNames:  people,
-			ServerURL:    j.form.serverURL,
+			Origins:      j.form.origins,
 		}
 	}
-	context := *j.base
-	if root == nil {
-		return context, nil
-	}
-	names, read := j.systemNames[*root]
-	if !read {
-		approved, err := j.form.approvedSpecTexts(ctx, j.q, *root, j.skip)
-		if err != nil {
-			return specform.Context{}, err
-		}
-		names = approved.SystemNames
-		j.systemNames[*root], j.unread[*root] = names, approved.Unread
-	}
-	context.SystemNames = names
-	return context, nil
-}
-
-// approvedSpec is what the approved covered documents under a root hold that a judgment of
-// another document reads: the names of the components and interfaces they define, which are
-// nouns of the system, and each of those documents whose approved version Dispatch cannot read.
-type approvedSpec struct {
-	SystemNames []string
-	Unread      []specFormUnread
-}
-
-// approvedSpecTexts reads the latest approved version of each covered document under root but
-// those skip names: the root's terms.md, and the spec and the Verification document of each issue
-// whose nearest named root is root (refs.IssueDescendants, less each named root below root and
-// its own subtree). One statement reads every such document with the markdown of that version,
-// in the order of docs.LatestApprovedReview, so the statements of a judgment do not grow with the
-// documents under its root; a document that no person approved has no row. An approved version
-// that the parser refuses gives nothing to compare: the judgment goes on without its texts, logs
-// it once, and names it in Unread. It reads the issues under root as everyReader: the judgment is
-// the same for each person whose request or approval it judges, and its findings are kept as the
-// reason of a request that others read, so an issue reserved for its author, and what is below it,
-// gives no text to it.
-func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string, skip map[string]bool) (approvedSpec, error) {
-	issues, err := refs.IssueDescendants(ctx, q, everyReader, root)
-	if err != nil {
-		return approvedSpec{}, fmt.Errorf("read the issues under %s: %w", root, err)
-	}
-	for _, inner := range f.roots {
-		if inner == root || !slices.Contains(issues, inner) {
-			continue
-		}
-		below, err := refs.IssueDescendants(ctx, q, everyReader, inner)
-		if err != nil {
-			return approvedSpec{}, fmt.Errorf("read the issues under %s: %w", inner, err)
-		}
-		issues = slices.DeleteFunc(issues, func(issue string) bool { return issue == inner || slices.Contains(below, issue) })
-	}
-	rows, err := q.Query(ctx, `
-		select covered.id::text, covered.name, covered.issue_key, approved.version, stored.number, coalesce(stored.markdown, '')
-		from artifacts covered
-		cross join lateral (
-			select artifact_reviews.version from artifact_reviews
-			where artifact_reviews.artifact_id = covered.id and artifact_reviews.state = 'approved'
-			order by `+docs.ReviewOrder+`
-			limit 1
-		) approved
-		left join artifact_versions stored on stored.artifact_id = covered.id and stored.number = approved.version
-		where covered.kind = 'doc' and (
-			(covered.issue_key = any($1::text[]) and (covered.is_primary or `+documentRolePredicate("covered", model.ArtifactRoleVerification)+`))
-			or (covered.issue_key = $2 and covered.slug = $3)
-		)
-		order by covered.issue_key, covered.id
-	`, issues, root, termsSlug)
-	if err != nil {
-		return approvedSpec{}, fmt.Errorf("read the approved documents under %s: %w", root, err)
-	}
-	type approvedVersion struct {
-		id, name string
-		issue    *string
-		version  int
-		stored   *int
-		markdown string
-	}
-	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (approvedVersion, error) {
-		var each approvedVersion
-		err := row.Scan(&each.id, &each.name, &each.issue, &each.version, &each.stored, &each.markdown)
-		return each, err
-	})
-	if err != nil {
-		return approvedSpec{}, fmt.Errorf("read the approved documents under %s: %w", root, err)
-	}
-	var approved approvedSpec
-	for _, each := range versions {
-		if skip[each.id] {
-			continue
-		}
-		if each.stored == nil {
-			return approvedSpec{}, errorf(http.StatusNotFound, "VERSION_NOT_FOUND", "%s has no version %d", each.name, each.version)
-		}
-		extracted, err := specform.ExtractDocument(each.name, each.version, each.markdown)
-		if unreadable := (*specform.UnreadableError)(nil); errors.As(err, &unreadable) {
-			issue := deref(each.issue)
-			slog.Warn("dispatch: the form of The Spec compares no text with an approved version that it cannot read",
-				"artifact", each.id, "document", each.name, "issue", issue, "version", each.version, "error", err)
-			approved.Unread = append(approved.Unread, specFormUnread{
-				Document: each.name, ArtifactID: each.id, Issue: issue, Version: each.version,
-				Line: specform.UnreadLine(each.name, each.version, issue),
-			})
-			continue
-		}
-		if err != nil {
-			return approvedSpec{}, err
-		}
-		for _, text := range extracted.Texts {
-			if text.Kind == specform.KindName {
-				approved.SystemNames = append(approved.SystemNames, text.Body)
-			}
-		}
-	}
-	return approved, nil
+	return *j.base, nil
 }
 
 // specFormMarkdown is the markdown of version of artifact as q sees it. When q is a transaction

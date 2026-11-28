@@ -498,7 +498,7 @@ func TestConcurrentSocketOpensStayWithinTheCapsAndAreRefusedWith503(t *testing.T
 			Store:             database,
 			Events:            events.NewBroker(),
 			Identity:          headerIdentity(database),
-			ServerURL:         "https://dispatch.example",
+			Origins:           testOrigins,
 			Settle:            time.Hour,
 			MaxLiveRooms:      rooms,
 			MaxDocConnections: connections,
@@ -658,7 +658,7 @@ func TestAPreloadOfferedWhileTheRoomLoadsIsReleasedAtThatLoad(t *testing.T) {
 		Persistence: store,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     testOrigins,
 		Settle:      time.Hour,
 	})
 	testcleanup.Add(t, func() {

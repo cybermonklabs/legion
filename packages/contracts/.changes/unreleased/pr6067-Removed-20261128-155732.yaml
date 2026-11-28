@@ -1,0 +1,9 @@
+kind: Removed
+body: |-
+  `DispatchWritingBoxRow` has no `hint` field, and `DISPATCH_WRITING_HINT_DELIVERED`,
+  `DISPATCH_WRITING_HINT_QUIET` and `DISPATCH_WRITING_HINT_ASK` are deleted: Dispatch draws no line
+  under a writing box. Each row still says whether its write tells a picked party (`delivers`) and
+  whose rows its picker lists (`issueRows`).
+time: 2026-11-28T15:57:32Z
+custom:
+    Issue: pr6067

@@ -4,6 +4,7 @@ import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import * as path from "node:path";
 import {
   controllerToken,
+  githubDefaultBranchWorkflowSubject,
   LISTENER_CALL_ATTEMPTS,
   legionControllerNoticeSubject,
   ROLE_TOPIC_PREFIX,
@@ -12,6 +13,7 @@ import {
 import { daemonContract } from "@legion/contracts/daemon-contract";
 import { LegionHealthResponse } from "@legion/contracts/legion-api";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { projectRefusal } from "@legion/envoy-client/test/subscribe-answer";
 import {
   type Block,
   type Cleanup,
@@ -193,8 +195,6 @@ afterEach(async () => {
 /** One Messages request the stand-in holds until the case answers it. */
 interface Turn {
   readonly request: Request;
-  /** When the stand-in took the request, on this process's `performance.now()` clock. */
-  readonly takenAt: number;
   /** Answers it with one text block. */
   reply(text: string): void;
   /** Answers it with `blocks` (a tool call among them). */
@@ -265,7 +265,21 @@ interface ControllerSession {
   /** Resolves once the screen shows all of `texts` at once; fails on `what` at the row's
    * deadline. */
   shows(what: string, ...texts: readonly string[]): Promise<void>;
+  /** pi-envoy's own record of the startup phase (`CardWakeStep`, packages/pi-envoy/src/
+   *  card-wake.ts, written to ENVOY_CARD_WAKE_RECORD_FILE), in the order it wrote it. */
+  cardWakeSteps(): Promise<z.infer<typeof CardWakeStepSchema>[]>;
 }
+
+/** One line of pi-envoy's record of the startup phase (`CardWakeStep`, pi-envoy's
+ *  src/card-wake.ts): a check the start-turn mark held, with the delay it reads the mark again
+ *  after and the moment the decision read; a check an unseen startup card held back, with the
+ *  delay to that card's cap, the moment the decision read and the card's send; the wake a check
+ *  sent. */
+const CardWakeStepSchema = z.union([
+  z.object({ heldFor: z.number(), at: z.number() }),
+  z.object({ unseenFor: z.number(), at: z.number(), sentAt: z.number() }),
+  z.object({ woke: z.number() }),
+]);
 
 /** A request the stand-in holds, the first of its kind, until the case releases it. */
 interface Hold {
@@ -452,7 +466,6 @@ async function serveController(
       const answer = Promise.withResolvers<string>();
       turns.push({
         request: { path: url.pathname, body },
-        takenAt: performance.now(),
         reply: (text) => answer.resolve(messageStream([{ type: "text", text }], `msg_${index}`)),
         replyBlocks: (blocks) => answer.resolve(messageStream(blocks, `msg_${index}`)),
       });
@@ -598,6 +611,8 @@ async function startController(
   // words out of the refusal the operator reads ("invalid controller capability").
   await writeFile(secretFile, `${fixtureSecret("ctl")}\n`, { mode: 0o600 });
   const startupHold = path.join(root, "startup-hold.ts");
+  // pi-envoy's record of its startup phase (`ENVOY_CARD_WAKE_RECORD_FILE`), which no deployment sets.
+  const cardWakeRecord = path.join(root, "card-wake-record.jsonl");
   if (hooks.startupHold !== undefined) await writeFile(startupHold, STARTUP_HOLD_EXTENSION);
 
   const terminal = spawnInteractive(
@@ -621,6 +636,7 @@ async function startController(
         ENVOY_URL: base,
         ENVOY_NATS_URL: nats,
         LEGION_TEST_STARTUP_HOLD_URL: `${base}${STARTUP_HOLD_ROUTE}`,
+        ENVOY_CARD_WAKE_RECORD_FILE: cardWakeRecord,
       },
       args,
       cols: COLUMNS,
@@ -688,6 +704,13 @@ async function startController(
         const screen = terminal.screen();
         return texts.every((text) => screen.includes(text)) ? true : undefined;
       });
+    },
+    async cardWakeSteps() {
+      const written = await readFile(cardWakeRecord, "utf8").catch(() => "");
+      return written
+        .split("\n")
+        .filter((line) => line !== "")
+        .map((line) => CardWakeStepSchema.parse(JSON.parse(line)));
     },
   };
 }
@@ -935,6 +958,12 @@ interface ControllerInbound {
    * controller's registered topic (`slackMentionTopic`) covers.
    */
   storeMention(channel: string): StoredMessage;
+  /**
+   * One completed run of a workflow, stored and not relayed, on `subject`, the default-branch
+   * topic Envoy publishes such a run's copy on (`githubDefaultBranchWorkflowSubject`), which names
+   * the run's event last.
+   */
+  storeWorkflowRun(subject: string): StoredMessage;
 }
 
 async function controllerInbound(nats: string): Promise<ControllerInbound> {
@@ -1023,6 +1052,20 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
         trace_id: randomUUID(),
       }
     );
+  const storeWorkflowRun = (subject: string): StoredMessage =>
+    store(subject, `workflow run RUN-${randomUUID().slice(0, 8)} completed: failure`, {
+      event_id: randomUUID(),
+      source: "github",
+      source_event_id: `github-${randomUUID()}`,
+      dedupe_key: `github:workflow_run:${randomUUID()}`,
+      issued_at: Date.now(),
+      payload: JSON.stringify({
+        conclusion: "failure",
+        event: subject.split(".").at(-1),
+        branch: "main",
+      }),
+      trace_id: randomUUID(),
+    });
   return {
     noticeSubject,
     card(sid, label) {
@@ -1074,6 +1117,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     fault: () => noticeFault,
     storeNotice,
     storeMention,
+    storeWorkflowRun,
   };
 }
 
@@ -2176,20 +2220,29 @@ test.skipIf(skip)(
   COLD_PANE_GUARD_MS
 );
 
-// The operator's controller marks its start unsent at `session_start`, and while the mark holds,
+// The operator's controller marks its start unsent at `session_start`, and while the mark stands,
 // a startup card waits for the start turn. Two ways leave that start unsent for good: the start
 // claim's registration that never answers (the daemon unreachable mid-request), and a session
-// launched without the start word on its command line. A card that reached the idle session must
-// still get a turn of its own, without waiting for the operator to type: pi-envoy holds it only
-// until the unsent mark's cap (STARTUP_TURN_CAP_MS, 30 s from its first read of the mark) and then
-// sends its wake. Nobody types here, so a model request at all is that wake's turn. The wait for it
-// runs to the row's deadline, so a hold with no end fails there by name; the bound is that the
-// request comes within three times that cap (90 s) of the startup hold's release, read from when
-// the stand-in took it.
-const UNSENT_MARK_BOUND_MS = 3 * 30_000;
+// launched without the start word on its command line. No clock ends an unsent mark's hold
+// (pi-envoy's src/card-wake.ts; only a sent one keeps a 30 s cap from its send): the operator at
+// the terminal is the one who can act on either, and their own first turn clears the mark. So the
+// card takes no turn of its own however long the mark stands; the operator's first turn is the
+// session's first, with the card in its context, and exactly one wake follows it, since that
+// turn's reply ran the operator's request rather than reading the card.
+//
+// How long "however long" is: past the 30 s at which main's STARTUP_TURN_CAP_MS, which now caps
+// only a sent mark, gave the card its own turn, read from pi-envoy's own record of when each check
+// that held decided (R4: the program's own record of when it acted, across the process boundary).
+// A check that held 30 s or more after the first one that held is a hold that outlasted main's cap
+// with no wake; a cap put back on the unsent mark shows here as a wake before it. pi-envoy reads
+// the mark again every STARTUP_TURN_POLL_MS, and an unseen startup card holds the check back for
+// STARTUP_CARD_CAP_MS from its send.
+const MAIN_STARTUP_TURN_CAP_MS = 30_000;
+const STARTUP_CARD_CAP_MS = 30_000;
+const STARTUP_TURN_POLL_MS = 1_000;
 for (const variant of ["the start claim never answers", "the start command never runs"] as const) {
   test.skipIf(skip)(
-    `a startup card held by an unsent start mark gets its turn when ${variant}`,
+    `a startup card held by an unsent start mark waits for the operator's first turn when ${variant}, and one wake follows that turn`,
     async () => {
       useRowGuard(COLD_PANE_GUARD_MS);
       const startupHold = newHold();
@@ -2218,12 +2271,52 @@ for (const variant of ["the start claim never answers", "the start command never
       await taken;
       await inbound.repeat(opened, card);
       startupHold.release();
-      const released = performance.now();
 
-      const first = await session.until("the startup card's model request", () => session.turns[0]);
-      expect(first.takenAt - released).toBeLessThanOrEqual(UNSENT_MARK_BOUND_MS);
+      // The mark holds the card past main's cap, with no wake and no turn: the wait ends on the
+      // first record that shows a check holding MAIN_STARTUP_TURN_CAP_MS or more after the first
+      // one that held, or on a wake, whichever comes first.
+      const held = await session.until(
+        "a check that held 30 s or more after the first one that held, or a wake",
+        async () => {
+          const steps = await session.cardWakeSteps();
+          const holds = steps.flatMap((step) => ("heldFor" in step ? [step] : []));
+          const firstHold = holds[0];
+          const outlasted =
+            firstHold !== undefined &&
+            holds.some((hold) => hold.at - firstHold.at >= MAIN_STARTUP_TURN_CAP_MS);
+          return outlasted || steps.some((step) => "woke" in step) ? steps : undefined;
+        }
+      );
+      expect(held.filter((step) => "woke" in step)).toEqual([]);
+      expect(session.turns).toHaveLength(0);
+      for (const step of held) {
+        if ("heldFor" in step) expect(step.heldFor).toBe(STARTUP_TURN_POLL_MS);
+        if (!("unseenFor" in step)) continue;
+        expect(step.at - step.sentAt).toBeLessThan(STARTUP_CARD_CAP_MS);
+        expect(step.at + step.unseenFor - step.sentAt).toBeLessThanOrEqual(STARTUP_CARD_CAP_MS);
+      }
+
+      // The operator types: theirs is the session's first turn, and it has the card.
+      const typed = `TYPED-${randomUUID().slice(0, 8)}`;
+      session.terminal.write(typed);
+      // Enter only once the composer holds the text, so the keystrokes reach the TUI as typing.
+      await session.shows("the typed text in the composer", typed);
+      session.terminal.write("\r");
+      const first = await session.nextTurn("the operator's first turn's model request");
+      expect(newestMessage(first.request.body)).toContain(typed);
       expect(conversation(first.request)).toContain(card.summary);
-      expect(newestMessage(first.request.body)).toContain(WAKE_ONE);
+      expect(conversation(first.request)).not.toMatch(WAKE_TEXT);
+      first.reply("Typed message answered.");
+
+      // That turn's run cleared the mark, and its end sends the one wake.
+      const wake = await session.nextTurn("the startup wake's model request");
+      expect(newestMessage(wake.request.body)).toContain(WAKE_ONE);
+      wake.reply("Read the startup card.");
+      await settledOn(session, "Read the startup card.");
+      expect(session.turns).toHaveLength(2);
+      expect((await session.cardWakeSteps()).filter((step) => "woke" in step)).toEqual([
+        { woke: 1 },
+      ]);
     },
     COLD_PANE_GUARD_MS
   );
@@ -2393,6 +2486,166 @@ test.skipIf(skip)(
       expect(conversation(request)).not.toContain(afterNotice.summary);
       expect(conversation(request)).not.toContain(afterMention.summary);
     }
+  },
+  COLD_PANE_GUARD_MS
+);
+
+// The real pair's proof of the controller's watched workflows. The daemon names the project's
+// watched workflows in the controller's registration (`watchedWorkflows`), here two entries, the
+// first `@schedule`, and the controller follows one default-branch topic for each event an entry
+// names once the rest of its claim is done, for as long as it holds its role. So a run's copy
+// stored on the first entry's `….completed.schedule` reaches the session through its own
+// consumer, and a copy of a run of that same workflow stored on `….completed.push`, an event the
+// entry does not name, is one the session follows no topic for: it drops that frame itself, as it
+// drops a frame of any topic it does not follow, and the frame relayed behind it is read. The
+// edge's answers about the second entry's topics leave the claim as it is: the topic of one event
+// it refuses for the session's projects (403 `repository_not_in_project`), which the session drops
+// and is told of, and the topic of the other it withholds once (503 `repositories_unknown`), which
+// the controller registers again after a wait and the edge then takes. The role, the notice lane
+// and the first entry's topic stay through both.
+test.skipIf(skip)(
+  "the controller's watched topics reach the session through its consumer, a run of an event its entry does not name does not, and a refused or withheld topic leaves its claim",
+  async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
+    const lane = legionControllerNoticeSubject(PROJECT);
+    const scheduled = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "nightly.yaml",
+      "completed",
+      "schedule"
+    );
+    const unnamedEvent = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "widgets",
+      "nightly.yaml",
+      "completed",
+      "push"
+    );
+    const refusedTopic = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "gadgets",
+      "deploy.yml",
+      "completed",
+      "push"
+    );
+    const withheldTopic = githubDefaultBranchWorkflowSubject(
+      "acme",
+      "gadgets",
+      "deploy.yml",
+      "completed",
+      "workflow_dispatch"
+    );
+    const fixture: unknown = JSON.parse(
+      await readFile(
+        path.resolve(
+          import.meta.dir,
+          "../../contracts/fixtures/daemon-api/register-controller.json"
+        ),
+        "utf8"
+      )
+    );
+    const inbound = await controllerInbound(setup().nats);
+    /** The topics of every registration the stand-in accepted, in order. */
+    const accepted: string[][] = [];
+    /** Every topic a removal from the registry named (`/v1/interests/unsubscribe`). */
+    const unregistered: string[] = [];
+    let refused = 0;
+    let withheld = 0;
+    let sid: string | undefined;
+    const session = await startDaemonController({
+      register: () =>
+        Response.json({
+          ...(fixture as object),
+          watchedWorkflows: [
+            { owner: "acme", repo: "widgets", workflow: "nightly.yaml", events: ["schedule"] },
+            {
+              owner: "acme",
+              repo: "gadgets",
+              workflow: "deploy.yml",
+              events: ["push", "workflow_dispatch"],
+            },
+          ],
+        }),
+      onRoleClaim: (claimed) => {
+        sid = claimed;
+      },
+      onRegistration: (_claimed, topics) => {
+        if (topics.includes(refusedTopic)) {
+          refused += 1;
+          return Response.json(projectRefusal([refusedTopic]), { status: 403 });
+        }
+        // Every attempt of the first registration that carries the topic: the client sends a
+        // registration the listener answers 503 once more before it fails.
+        if (topics.includes(withheldTopic) && withheld < LISTENER_CALL_ATTEMPTS) {
+          withheld += 1;
+          return Response.json(
+            {
+              error: "the project's repositories could not be read",
+              reason: "repositories_unknown",
+            },
+            { status: 503 }
+          );
+        }
+        accepted.push([...topics]);
+        return undefined;
+      },
+      onUnsubscribe: (topics) => unregistered.push(...topics),
+    });
+    const claimed = await session.until("the controller role's claim", () => sid);
+    await session.until("the registration that takes the withheld topic after its wait", () =>
+      accepted.some((topics) => topics.includes(withheldTopic)) ? true : undefined
+    );
+    expect(refused).toBeGreaterThan(0);
+    expect(withheld).toBe(LISTENER_CALL_ATTEMPTS);
+
+    // The daemon's start prompt and the turn it runs: the session's startup phase ends there, so
+    // what arrives after it is an idle session's to read.
+    session.deliver(START_MESSAGE);
+    const start = await session.nextTurn("the start turn's model request");
+    expect(newestMessage(start.request.body)).toContain(START_MESSAGE_JSON);
+    start.reply("Start procedure done.");
+    let answered = 1;
+    /** Answers every model request in order until the session has settled with `done` true. */
+    const settled = async (what: string, done: () => boolean = () => true): Promise<void> => {
+      for (;;) {
+        const next = await session.until(`the next model request, or ${what}`, async () => {
+          if (session.turns.length > answered) return "request";
+          return done() && (await session.state()).isSettled ? "settled" : undefined;
+        });
+        if (next === "settled") return;
+        answered += 1;
+        (await session.nextTurn(`model request ${answered}`)).reply(`Reply ${answered}.`);
+      }
+    };
+    await settled("the session settled after the start turn");
+
+    // The copy on the topic of an event the entry does not name goes first, and the scheduled
+    // run's copy behind it: once the second is read, the first had its turn at the session.
+    const unnamed = inbound.storeWorkflowRun(unnamedEvent);
+    await unnamed.deliver(claimed);
+    const run = inbound.storeWorkflowRun(scheduled);
+    await run.deliver(claimed);
+    await settled("the session settled having read the scheduled run", () =>
+      session.turns.some(({ request }) => conversation(request).includes(run.summary))
+    );
+
+    /** Every transcript line that holds `text`: what a reader of the session sees of it. */
+    const written = async (text: string): Promise<string[]> =>
+      (await session.transcriptLines()).filter((line) => line.includes(text));
+    const runWritten = await written(run.summary);
+    expect(runWritten).toHaveLength(1);
+    expect(runWritten[0]).toContain('"custom_message"');
+    expect(await written(unnamed.summary)).toEqual([]);
+    for (const { request } of session.turns) {
+      expect(conversation(request)).not.toContain(unnamed.summary);
+    }
+
+    // The claim stands: nothing of the role was handed back, no accepted registration carries the
+    // refused topic, and the newest carries the lane and both topics the edge took.
+    expect(unregistered).not.toContain(lane);
+    expect(accepted.filter((topics) => topics.includes(refusedTopic))).toEqual([]);
+    expect(accepted.at(-1)).toEqual(expect.arrayContaining([lane, scheduled, withheldTopic]));
   },
   COLD_PANE_GUARD_MS
 );

@@ -33,8 +33,8 @@ func TestExtractMatchesTheSharedHrefTable(t *testing.T) {
 
 	for _, row := range rows {
 		t.Run(row.Href, func(t *testing.T) {
-			fromHref := Extract(server+row.Href, server)
-			fromRef := Extract(row.Ref, server)
+			fromHref := Extract(server+row.Href, NewOrigins(server))
+			fromRef := Extract(row.Ref, NewOrigins(server))
 			if len(fromRef) != 1 {
 				t.Fatalf("%s is not a reference: %#v", row.Ref, fromRef)
 			}
@@ -53,7 +53,7 @@ func TestExtractMatchesTheSharedHrefTable(t *testing.T) {
 
 func TestExtractRefusesAnIssueDocumentHrefNamingTwoItems(t *testing.T) {
 	const server = "https://dispatch.test"
-	refs := Extract(server+"/issues/CORE-1/spec?comment=c1&ask=a1", server)
+	refs := Extract(server+"/issues/CORE-1/spec?comment=c1&ask=a1", NewOrigins(server))
 	if len(refs) != 1 || refs[0].Kind != "url" {
 		t.Fatalf("expected a plain URL reference, got %#v", refs)
 	}

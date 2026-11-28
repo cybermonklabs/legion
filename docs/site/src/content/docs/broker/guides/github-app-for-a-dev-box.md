@@ -226,11 +226,14 @@ token to Git on standard output.
 ## Use GitHub CLI
 
 Get the release JSON through `agent-secrets`. Select the token for the owner that you will access.
-Set `GH_TOKEN` only for the `gh` command that needs it.
+Set `GH_TOKEN` only for the `gh` command that needs it. `jq -e` exits 1 when the release holds no
+token for `<owner>`, so the command stops; `jq -r` alone prints `null`, exits 0, and `gh` sends
+`null` as the token, which GitHub answers 401.
 
 ```sh
 agent-secrets --reason "GitHub CLI <owner>" GITHUB_APP_<PERSON> -- sh -ceu '
-token=$(printf %s "$GITHUB_APP_<PERSON>" | jq -r ".installations[\"<owner>\"].token")
+token=$(printf %s "$GITHUB_APP_<PERSON>" | jq -er ".installations[\"<owner>\"].token") ||
+  { echo "no token for <owner>" >&2; exit 1; }
 GH_TOKEN=$token gh repo view <owner>/<repository>
 '
 ```
@@ -258,7 +261,9 @@ profile's accounts and repositories.
 ```sh
 agent-secrets --reason "read <repository> on <machine>" GITHUB_APP_<PERSON>_READ \
   --target <owner>/<repository> -- sh -ceu '
-printf %s "$GITHUB_APP_<PERSON>_READ" | jq -r ".installations[\"<owner>\"].token"
+token=$(printf %s "$GITHUB_APP_<PERSON>_READ" | jq -er ".installations[\"<owner>\"].token") ||
+  { echo "no token for <owner>" >&2; exit 1; }
+printf "%s\n" "$token"
 '
 ```
 

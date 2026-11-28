@@ -247,7 +247,7 @@ func pluginsLine(cfg config.Config) string {
 // boot makes, through the loader that runs neither GitHub App's private_key_command nor any
 // secretsd read, then every refusal boot makes from the configuration, the environment and the
 // files they name before it writes anything (daemon.CheckStart, the reads boot's own prepare
-// starts with, the daemon's own NATS nkey seed among them, then the store's refusals of a
+// starts with, the daemon's own NATS credential among them, then the store's refusals of a
 // postgres_dsn, which daemon.CheckStart lists), and nothing else: no store connection, no team, no
 // file written, and no process but `mise where <tool>` when a tmux configuration's omp_invocation
 // names a mise tool. Under dispatch_token_broker it reads the transition token's file where the
@@ -255,18 +255,22 @@ func pluginsLine(cfg config.Config) string {
 // (dispatch://INFRA-4425 R1). Each refusal is written to stderr through printRefusal, as `legion
 // start` writes its own, so a URL a refusal quotes loses its query and its userinfo in both
 // commands. The OK line names the design-gate steps the file resolved to, in the order it named
-// them (`design-gate-steps=`, `none` for a deployment that gates none), and each NATS nkey seed's
-// public key when there is one, never the seed.
+// them (`design-gate-steps=`, `none` for a deployment that gates none), each NATS nkey seed's
+// public key when there is one, never the seed, and the account the daemon's service token names
+// (`nats-daemon-service-account=`) when nats_daemon_service_token_file, or
+// NATS_DAEMON_SERVICE_TOKEN_FILE in its place, is set, never the token.
 // Right after it comes one line per loader warning (config.Config.Warnings) — a key the file
 // still sets that this daemon no longer reads, whether a project sets it or the file does at its
 // top level — in the words boot logs it with: what the key would have been refused for, and what
 // to change. A deprecation is the first thing an operator reads that way, and the exit stays 0,
 // since such a key is ignored and never refused.
-// Then two lines per project, in key order: one naming its `production_check` and what the word
+// Then per project, in key order: one line naming its `production_check` and what the word
 // decides (productionCheckLine), so an operator reads back which projects open a production
-// check at a merge, and one naming its `default_steps` (defaultStepsLine), so an operator reads
-// back the steps an issue runs when its owner gives no plan. After them, one line per configured
-// repository rename
+// check at a merge, one naming its `default_steps` (defaultStepsLine), so an operator reads back
+// the steps an issue runs when its owner gives no plan, and, for a project whose
+// `watched_workflows` names entries, one naming each entry with the events it resolved to
+// (watchedWorkflowsLine); a project that names none prints no such line. After them, one line per
+// configured repository rename
 // (`repository_renames`), so an operator reads back what the daemon will treat as one repository
 // before a transfer moves the events onto the new name; a file that configures none prints no
 // such line. Then one line per deployment capability the file alone leaves open, in the words
@@ -305,20 +309,23 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	if err == nil {
 		applyLinkedPlugins(&cfg)
 	}
-	paneNatsUser, daemonNatsUser := "", ""
+	var checked daemon.CheckedNATS
 	if err == nil {
-		paneNatsUser, daemonNatsUser, err = daemon.CheckStart(cfg, os.LookupEnv)
+		checked, err = daemon.CheckStart(cfg, os.LookupEnv)
 	}
 	if err != nil {
 		printRefusal(stderr, "legion config check", err)
 		return 1
 	}
 	ok := "Config OK: project=" + cfg.Project + " design-gate-steps=" + designGateSteps(cfg.Gates.Steps())
-	if paneNatsUser != "" {
-		ok += " nats-nkey-user=" + paneNatsUser
+	if checked.PaneUser != "" {
+		ok += " nats-nkey-user=" + checked.PaneUser
 	}
-	if daemonNatsUser != "" {
-		ok += " nats-daemon-nkey-user=" + daemonNatsUser
+	if checked.DaemonUser != "" {
+		ok += " nats-daemon-nkey-user=" + checked.DaemonUser
+	}
+	if checked.DaemonServiceAccount != "" {
+		ok += " nats-daemon-service-account=" + checked.DaemonServiceAccount
 	}
 	fmt.Fprintln(stdout, ok)
 	for _, warning := range cfg.Warnings {
@@ -327,6 +334,9 @@ func checkConfig(configPath string, stdout, stderr io.Writer) int {
 	for _, key := range slices.Sorted(maps.Keys(cfg.Projects)) {
 		fmt.Fprintln(stdout, productionCheckLine(key, cfg.Projects[key]))
 		fmt.Fprintln(stdout, defaultStepsLine(key, cfg.Projects[key]))
+		if line := watchedWorkflowsLine(key, cfg.Projects[key]); line != "" {
+			fmt.Fprintln(stdout, line)
+		}
 	}
 	for _, rename := range cfg.RepositoryRenames.Pairs() {
 		fmt.Fprintf(stdout, "repository rename: %s and %s are one repository wherever the daemon compares a name; keep the pair configured for as long as any record names %s\n",
@@ -413,6 +423,22 @@ func controllerAccountLine(pod config.PodConfig, cache config.RepositoryCacheCon
 func defaultStepsLine(key string, project config.Project) string {
 	return fmt.Sprintf("projects.%s.default_steps: [%s] — a task whose plan block names neither steps nor a sub-owner, and the one task of an issue whose owner gives no plan or whose experiment's group takes none, runs these steps, then Legion's retro and merge",
 		key, strings.Join(plan.Words(project.RunsByDefault()), ", "))
+}
+
+// watchedWorkflowsLine is `legion config check`'s line for one project's `watched_workflows`:
+// each entry with the events it resolved to (`schedule` for an entry that named none), quoted so
+// its commas stay inside it, and what they decide. A project that names none gets no line, so
+// every configuration without the key prints what it printed before.
+func watchedWorkflowsLine(key string, project config.Project) string {
+	if len(project.WatchedWorkflows) == 0 {
+		return ""
+	}
+	entries := make([]string, len(project.WatchedWorkflows))
+	for i, workflow := range project.WatchedWorkflows {
+		entries[i] = fmt.Sprintf("%q", workflow.String())
+	}
+	return fmt.Sprintf("projects.%s.watched_workflows: [%s] — the project's controller hears each workflow's completed runs on its repository's default branch, of the events after its @, and no run a pull request names",
+		key, strings.Join(entries, ", "))
 }
 
 // reservedUnder is a cpu or memory reservation as `legion config check` names it: the one quantity when

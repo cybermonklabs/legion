@@ -15,10 +15,11 @@ import (
 
 // stopGrace is how long Dispatch's runtime lets it run after SIGTERM before killing it: ECS's
 // default stop timeout, which Dispatch's task definition leaves unset, the compose file's
-// stop_grace_period, and the pod the gcp:Dispatch component renders, whose
-// terminationGracePeriodSeconds is this value plus its pre-stop wait, since the kubelet spends
-// that wait inside the same period (pod_grace_period_test.go fails when the pod's budget stops
-// covering it).
+// stop_grace_period, and the pod the gcp:Dispatch component renders, whose grace period is its
+// terminationGracePeriodSeconds input, 35 s by default, this value plus the default of its
+// preStopSeconds wait (5 s), since the kubelet spends that wait inside the same period; the
+// component refuses a grace period under the wait plus this value (pod_grace_period_test.go fails
+// when the pod's budget stops covering it).
 const stopGrace = 30 * time.Second
 
 // documentShutdownTimeout is the document service's budget in a deployment. A test process can

@@ -100,8 +100,9 @@ func TestOnlyDispatchMayPublishItsLane(t *testing.T) {
 // TestEachGrantMatchesTheSetItReplaces compares the allow lists alone, and the lane deny adds deny
 // entries alone, so these are the deny's own assertions: the listener grant's deny in every grant
 // built on it, Edge's included, the lane of each lane's one publisher taken off its own, the
-// resume lane added to Dispatch's, and no deny in a session's, the daemon's or the measurement
-// job's grant. The webhook listener's grants differ from the listener's in that deny alone.
+// resume lane added to Dispatch's, and no deny in a session's, the daemon's, the measurement job's
+// or the JetStream reader's grant. The webhook listener's grants differ from the listener's in that
+// deny alone.
 func TestEachGrantDeniesTheLanesItDoesNotPublish(t *testing.T) {
 	for _, id := range []string{"example-host-a", "example-dispatch", "example-hub"} {
 		edge, err := natsgrant.Edge(id, []string{"PRIV"})
@@ -136,6 +137,7 @@ func TestEachGrantDeniesTheLanesItDoesNotPublish(t *testing.T) {
 		"Session(ses_a)":   session,
 		"Daemon()":         natsgrant.Daemon(),
 		"Measure()":        natsgrant.Measure(),
+		"JSRead()":         natsgrant.JSRead(),
 	} {
 		require.Empty(t, grant.PublishDeny, "%s publish deny", name)
 		require.Empty(t, grant.SubscribeDeny, "%s subscribe deny", name)

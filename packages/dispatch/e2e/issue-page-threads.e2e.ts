@@ -33,6 +33,7 @@ import {
   contentsPane,
   gotoIssue,
   issuePage,
+  marginShell,
   openDetails,
   openMenu,
   phase,
@@ -54,6 +55,7 @@ import {
 } from "./issue-page-g";
 import { childrenSection, expectActivePreset, focusedNodeId, focusInside } from "./issue-page-i";
 import { composer, composerTarget, outlineEnd, panelEntry, replyFromRow } from "./issue-page-l";
+import { historyItem } from "./issue-page-m";
 import {
   agentsPages,
   allFirstPages,
@@ -1726,23 +1728,35 @@ test("/threads, /threads/<id> and the address of a message only Threads draws op
       `row 10 opened ${opened} held records by their rows' links, expected at least 1`
     ).toBeGreaterThan(0);
 
-    // `/messages/<id>` of a thread the outline draws opens there, as `main` opens it, and so does
-    // a message of the thread the Legion daemon began.
-    for (const message of [seed.messages.first, seed.messages.daemon]) {
-      const path = buildIssuePath({ id: message, key, kind: "message" });
-      await gotoIssue(page, path);
-      await expect(
-        threadsView(page),
-        `${path} opens Threads where the outline draws it`
-      ).toHaveCount(0);
-      await expectActivePreset(page, PRESET_NAMES.conversation);
-      await expectOpeningLanded(page);
-      await expect
-        .poll(() => focusedNodeId(page), {
-          message: `${path} does not focus its row in the outline`,
-        })
-        .toBe(message);
-    }
+    // `/messages/<id>` of a thread the outline draws opens there, as `main` opens it; the message
+    // of the thread the Legion daemon began opens Details at the history, marked and on screen
+    // (root R20, dispatch://INFRA-3948 R4).
+    const outlinePath = buildIssuePath({ id: seed.messages.first, key, kind: "message" });
+    await gotoIssue(page, outlinePath);
+    await expect(
+      threadsView(page),
+      `${outlinePath} opens Threads where the outline draws it`
+    ).toHaveCount(0);
+    await expectActivePreset(page, PRESET_NAMES.conversation);
+    await expectOpeningLanded(page);
+    await expect
+      .poll(() => focusedNodeId(page), {
+        message: `${outlinePath} does not focus its row in the outline`,
+      })
+      .toBe(seed.messages.first);
+    const daemonPath = buildIssuePath({ id: seed.messages.daemon, key, kind: "message" });
+    await gotoIssue(page, daemonPath);
+    await expect(
+      threadsView(page),
+      `${daemonPath} opens Threads where the history draws it`
+    ).toHaveCount(0);
+    await expect(marginShell(page), `${daemonPath} does not open Details`).toBeVisible();
+    const turn = historyItem(page, seed.messages.daemon);
+    await expect(turn, `${daemonPath} does not mark its turn in the history`).toHaveAttribute(
+      "aria-current",
+      "true"
+    );
+    await expect(turn, `${daemonPath} leaves its turn off screen`).toBeInViewport();
 
     // An id of another issue's thread, and an id that is no UUID, name no record of this issue;
     // the second is refused before any read.
@@ -1887,13 +1901,9 @@ test("an agent's note and a thread between agents are drawn in Threads and nowhe
   });
 });
 
-test.skip("an agent's note and a thread between agents are drawn in Threads and nowhere else on the page: the history in Details @owed", {
-  annotation: {
-    description:
-      "Owed on dispatch://INFRA-3948: the history in Details is a stub on the base (DetailsHistory in details-more.tsx draws nothing) until that part is on it, so this reading is skipped until then.",
-    type: "owed",
-  },
-}, async ({ browser }) => {
+test("an agent's note and a thread between agents are drawn in Threads and nowhere else on the page: the history in Details", async ({
+  browser,
+}) => {
   await phase(browser, seedThreads, async (page, seed) => {
     await gotoIssue(page, presetPath(seed.key, "conversation"));
     await expectIssuePageDrawn(page);
@@ -2390,10 +2400,8 @@ test("every word that Threads draws outside the text of an entry is in the page'
     const names = new Set(
       [...seed.names, LIVE_PLANNER.title, ...parties.map((party) => party.title)].flatMap(wordsIn)
     );
-    const hints = new Set(DISPATCH_WRITING_BOXES.map((row) => row.hint));
     const undeclared = (texts: readonly string[]) =>
       texts
-        .filter((text) => !hints.has(text))
         .flatMap(wordsIn)
         .filter(
           (word) => !DECLARED_WORDS.includes(word) && !/^\d+$/.test(word) && !names.has(word)

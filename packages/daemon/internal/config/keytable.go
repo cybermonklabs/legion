@@ -257,8 +257,13 @@ var topLevelKeys = func() []keyDescriptor {
 			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonNkeySeedFile = v }),
 		},
 		{
+			Name: "nats_daemon_service_token_file", Default: "the daemon's own connection presents an nkey seed, or no credential", RequiredBy: "no",
+			Description: "The file holding the token the daemon's own NATS connection presents, as user `service`, to a hub whose connections the NATS auth service admits: a projected Kubernetes ServiceAccount token for that service's audience, read afresh at each connect, whose account the broker's `BROKER_NATS_SERVICES` lists under a `daemon/-/*` entry. It outranks the variable `NATS_DAEMON_SERVICE_TOKEN_FILE`, which names the file otherwise. No agent receives it; a daemon seed setting beside it refuses boot naming both, and a refusal of the token is waited out.",
+			Read:        reads(readNonEmptyString, func(f *fileConfig, v *string) { f.NatsDaemonServiceTokenFile = v }),
+		},
+		{
 			Name: "projects", Default: "none: a file that configures the workflow is refused without it", RequiredBy: "when any of `dispatch_url`, `dispatch_token_file` and `github_apps` is set or `dispatch_token_broker` is true, and when runtime is kubernetes: every pod works one issue of one of the projects it names",
-			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
+			Description: "Each Dispatch project the daemon runs, by project key, one of them the daemon's own `project`; it names no repository to work in, since the daemon takes each issue's repository from Dispatch, which resolves it from the issue, its ancestors or the project, and an issue may name any repository both role Apps are installed on. Its block carries what only that project does — its Slack channels, its watched workflows, its production check, its default steps, its memory group, its experiments and the repositories whose commits carry their issue key.",
 			Read: func(value *yaml.Node, key string, file *fileConfig) error {
 				// The projects' own warnings join whatever a warned key above them raised, in file
 				// order: one list carries both, so neither producer may write over the other.
@@ -577,6 +582,8 @@ var nestedKeys = []memberGroup{
 			Description: "Who works the production check a merge closing one of this project's issues opens: `tester`, who takes its first look in the live session while the issue's other claims retire, or `off`, which opens none."},
 		{Name: "slack_channels", Default: "no channel's mentions reach the project", RequiredBy: "no",
 			Description: "The Slack channels whose mentions of the Legion app reach this project's controller, which answers in the thread; it needs `controller: daemon` and the secrets broker, and a channel belongs to one project."},
+		{Name: "watched_workflows", Default: "`[]`: the project's controller watches no workflow", RequiredBy: "no",
+			Description: "The workflows whose completed runs on their repository's default branch reach this project's controller, each `<owner>/<repo>/<file>` (a file of `.github/workflows/`, ending in `.yml` or `.yaml`) optionally followed by `@` and the trigger events that count, comma-separated; an entry with no `@` watches `schedule` runs alone. Write the owner and the repository as GitHub spells them (`gh api repos/<owner>/<repo> --jq .full_name`): a topic is case-sensitive, so an entry spelled otherwise hears nothing. A run a pull request names never reaches the controller. Needs no `controller` setting, runtime or secrets broker."},
 	}},
 	{Path: "projects.<KEY>.memory", Members: []member{
 		{Name: "mode", Default: "`off`", RequiredBy: "no",

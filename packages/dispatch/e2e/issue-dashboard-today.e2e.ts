@@ -41,8 +41,6 @@
 //   word in `span[data-statement-state]`; each check under it a `[data-verification-check]` with
 //   `data-node-id` and `data-node-state`.
 
-import { DISPATCH_WRITING_BOXES } from "@legion/contracts";
-
 import {
   DECLARED_WORDS,
   VERIFICATION_WORDS,
@@ -806,18 +804,14 @@ test("every text node of Dashboard is a number, a name, a time, a declared word 
   });
   const records = await recordTexts(seed);
   const names = new Set(seed.names.flatMap(wordsIn));
-  // The words the shared controls Dashboard draws carry as their own, the same on every surface:
-  // each writing box's hint (`DISPATCH_WRITING_BOXES`, the shared field reads its own), and the
-  // one approval control's actions, which name the version they approve (`doc/ApprovalChip.tsx`,
-  // R5).
-  const hints = new Set(DISPATCH_WRITING_BOXES.map((row) => row.hint));
-  const shared = (text: string) => hints.has(text) || /^Approve v\d+$/.test(text);
   // A reference in a record's words is drawn by its target's name, which a chip cuts to its
   // room with an ellipsis: the words before it are the target's own.
   const cut = (text: string) => text.replace(/…$/u, "");
   const explained = ({ text, time }: { text: string; time: boolean }) =>
     time ||
-    shared(text) ||
+    // The shared approval control's actions name the version they approve, the same on every
+    // surface (`doc/ApprovalChip.tsx`, R5).
+    /^Approve v\d+$/.test(text) ||
     wordsIn(text).every(
       (word) => DECLARED_WORDS.includes(word) || /^v?\d+$/.test(word) || names.has(word)
     ) ||

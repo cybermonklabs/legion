@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/testport"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // metadataServer stands in for a Google machine's metadata server (googleidentity.MetadataHostVar
@@ -178,6 +180,8 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 	t.Run("concurrent callers share one mint, and a caller whose context ends stops waiting", func(t *testing.T) {
 		token := accountToken(t, "dispatch@example-project.iam.gserviceaccount.com", time.Now().Add(time.Hour))
 		release := make(chan struct{})
+		var releasing sync.Once
+		open := func() { releasing.Do(func() { close(release) }) }
 		var minted atomic.Int32
 		metadata := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			minted.Add(1)
@@ -186,27 +190,57 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 			_, _ = w.Write([]byte(token))
 		}))
 		defer metadata.Close()
+		// Deferred after the server's Close, so it runs first: Close waits for the handler the
+		// mint holds, which returns once release closes.
+		defer open()
 		t.Setenv(googleidentity.MetadataHostVar, strings.TrimPrefix(metadata.URL, "http://"))
 		identity := &googleIdentity{audience: "envoy-listener"}
-		short, cancel := context.WithTimeout(context.Background(), 200*time.Millisecond)
+		// The first caller's context ends at the moment the row chooses: once its mint has reached
+		// the metadata server, so the caller is waiting on a mint in flight.
+		short, cancel := context.WithCancel(context.Background())
 		defer cancel()
-		if _, err := identity.token(short, time.Now()); !errors.Is(err, ErrAccountToken) {
+		shortAnswer := make(chan error, 1)
+		go func() {
+			_, err := identity.token(short, time.Now())
+			shortAnswer <- err
+		}()
+		testwait.Until(t, "the first caller's mint to reach the metadata server", func() (int32, bool) {
+			n := minted.Load()
+			return n, n == 1
+		})
+		cancel()
+		if err := testwait.Receive(t, "the caller whose context ended during the mint to stop waiting", shortAnswer); !errors.Is(err, ErrAccountToken) {
 			t.Fatalf("a caller whose context ended during the mint = %v, want ErrAccountToken", err)
 		}
+		// Each of the three callers reads its context's Done only once it waits on the mint in
+		// flight (googleIdentity.token's select), or once it sends a mint of its own, so its probe
+		// closing is the fact that it is in: the mint is released only then.
 		results := make(chan string, 3)
-		for range 3 {
+		probes := make([]*probedContext, 3)
+		for caller := range probes {
+			probes[caller] = &probedContext{Context: context.Background(), probe: make(chan struct{})}
 			go func() {
-				got, err := identity.token(context.Background(), time.Now())
+				got, err := identity.token(probes[caller], time.Now())
 				if err != nil {
 					got = "error: " + err.Error()
 				}
 				results <- got
 			}()
 		}
-		time.Sleep(100 * time.Millisecond)
-		close(release)
-		for range 3 {
-			if got := <-results; got != token {
+		testwait.Until(t, "the three callers to wait on the mint in flight", func() (int, bool) {
+			waiting := 0
+			for _, caller := range probes {
+				select {
+				case <-caller.probe:
+					waiting++
+				default:
+				}
+			}
+			return waiting, waiting == len(probes)
+		})
+		open()
+		for caller := range 3 {
+			if got := testwait.Receive(t, fmt.Sprintf("caller %d of the shared mint to answer once the mint is released", caller+1), results); got != token {
 				t.Fatalf("a caller waiting on the shared mint got %q, want the minted token", got)
 			}
 		}
@@ -214,4 +248,18 @@ func TestAGoogleIdentityTokenTheListenerRefusedIsMintedAgainAndMintsAreShared(t 
 			t.Fatalf("the metadata server was asked %d times by four callers, want once", n)
 		}
 	})
+}
+
+// probedContext is a context whose Done closes probe the first time a caller reads it: a caller of
+// googleIdentity.token reads it only once it waits on a mint in flight, so a probe that has closed
+// says that caller is waiting.
+type probedContext struct {
+	context.Context
+	probe chan struct{}
+	once  sync.Once
+}
+
+func (c *probedContext) Done() <-chan struct{} {
+	c.once.Do(func() { close(c.probe) })
+	return c.Context.Done()
 }

@@ -145,6 +145,12 @@
       "repo": "sjawhar/_github",
       "ok": true
     },
+    {
+      "subject": "notifications.github.acme.site_io.default_branch.workflow.ci_yml.completed.schedule",
+      "project": "",
+      "repo": "acme/site_io",
+      "ok": true
+    },
     { "subject": "notifications.slack.T1.C1.message", "project": "_", "repo": "", "ok": true },
     { "subject": "notifications.ghostwispr.rec1.ended", "project": "_", "repo": "", "ok": true },
     {

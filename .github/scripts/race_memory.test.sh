@@ -2,6 +2,7 @@
 # Tests for `race_memory.py`: a command's status passes through, a peak over the limit fails the
 # step and names the tests that were running, a run within the limit ends with the peak, a
 # `go test -json` stream's output reaches the log, and a line names at most NAMES_BYTES of tests.
+# The event file keeps the original JSON lines, and a local run removes its file.
 #
 # Each case runs the real script around a stand-in command — a shell or a Python program that
 # prints a -json stream and grows — so no Go, no race binary and no database are needed. The two
@@ -18,6 +19,9 @@ shopt -s inherit_errexit
 
 script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 sampler="$script_dir/race_memory.py"
+work=$(mktemp -d)
+trap 'rm -rf "$work"' EXIT
+export RUNNER_TEMP="$work/runner"
 
 # shellcheck source=.github/scripts/test-lib.sh
 source "$script_dir/test-lib.sh"
@@ -172,6 +176,25 @@ check "exits 0" "$(is "$status" 0)"
 check "the --- FAIL line shows" "$(contains "$out" '^--- FAIL: TestA (0.00s)$')"
 check "the package's own line shows" "$(contains "$out" '^FAIL.*legion/internal/dispatch/docs')"
 check "the -json envelope does not" "$(is "$(contains "$out" '"Action"')" false)"
+
+echo "case: the artifact keeps the original JSON lines, not other output"
+mkdir "$work/artifact" "$work/local"
+printf '%s\n' '{"Action": "run", "Test": "TestFixture"}' \
+  ' { "Action": "pass", "Test": "TestFixture" }' >"$work/want.jsonl"
+printf '%s\n' '{"Action": "run", "Test": "TestFixture"}' 'not JSON' \
+  >"$work/stream"
+printf '%s' ' { "Action": "pass", "Test": "TestFixture" }' >>"$work/stream"
+RUNNER_TEMP="$work/artifact" run_sampler '' cat "$work/stream"
+check "exits 0" "$(is "$status" 0)"
+check "the non-JSON line still reaches the log" "$(contains "$out" '^not JSON$')"
+events=("$work/artifact/go-test-events"/race-memory-*.jsonl)
+check "keeps one file with both JSON lines as received, newline-terminated" \
+  "$([ "${#events[@]}" -eq 1 ] && cmp -s "$work/want.jsonl" "${events[0]}" && echo true || echo false)"
+
+local_status=0
+env -u RUNNER_TEMP TMPDIR="$work/local" "$sampler" cat "$work/stream" >"$work/local.log" 2>&1 || local_status=$?
+check "the local run exits 0" "$(is "$local_status" 0)"
+check "the local run deletes its temporary file" "$(is "$(find "$work/local" -mindepth 1 -print)" '')"
 
 echo "case: a line names at most NAMES_BYTES of tests and counts the rest"
 # 3,000 tests running at once, each name about as long as a generated table's subtest: main's

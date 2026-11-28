@@ -1,8 +1,13 @@
 // Package specform decides the form of the texts of The Spec (R49): the sentences and words of
 // each statement, check, component purpose and definition of a term, the hard findings of the
 // ASD-STE100 program, and the links, incidents, pull requests and people that no text may name.
-// It works on plain texts and reads no store: ExtractDocument reads the texts of one document's
-// markdown, Check judges them, and Message and ChangesReason write the refusal.
+// It also decides the rules of the terms (R50): a definition is a term line under a heading
+// Terms, a term name holds only the letters a to z, the digits, spaces and hyphens, a definition
+// has one sentence, and a term has one definition, by its name in one Unicode form (TermKey). A
+// line in the form of a term line elsewhere is no definition, and it is refused when it names a
+// defined term, since a reader would take it for a second definition. It works on plain texts and
+// reads no store: ExtractDocument reads the texts of one document's markdown, Check judges them,
+// and Message and ChangesReason write the refusal.
 package specform
 
 import (
@@ -10,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // Kind is the kind of a text of The Spec.
@@ -23,14 +29,17 @@ const (
 	KindName           Kind = "name"            // a component's or interface's name; reference rules only
 	KindPurpose        Kind = "purpose"
 	KindDefinition     Kind = "definition"
-	KindTerm           Kind = "term"     // the name of a term; reference rules only
-	KindLine           Kind = "line"     // a line under a heading Terms that is no term line; the rule term-line only
-	KindDocument       Kind = "document" // a version that the parser refuses, named by its document; the rule unreadable only
+	KindTerm           Kind = "term"      // the name of a term; reference rules only
+	KindLine           Kind = "line"      // a line under a heading Terms that is no term line; the rule term-line only
+	KindHeading        Kind = "heading"   // a heading that reads as Terms in another form; the rule terms-heading only
+	KindTermLine       Kind = "term_line" // a line in the form of a term line outside Terms; the rule of a second definition only
+	KindDocument       Kind = "document"  // a version that the parser refuses, named by its document; the rule unreadable only
 )
 
 // kinds is every Kind that ExtractDocument counts in each document, in the order a count of them
 // is written. A line under Terms that is no term line (KindLine) is a break of the form, not a text
-// to read, so its count is written only for a document that holds one.
+// to read, so its count is written only for a document that holds one. A line in the form of a
+// term line outside Terms (KindTermLine) adds no term, so no count holds it.
 var kinds = []Kind{KindStatement, KindClaim, KindProcedure, KindFailingExample, KindName, KindPurpose, KindDefinition}
 
 // Rule is the stable id of a rule of the form, such as "sentences" or "ste100-semicolon".
@@ -130,24 +139,30 @@ type Term struct {
 
 // Context is what Check knows of the system: which project keys exist, the email of each person
 // who signed in, the names of the system's components and interfaces that a person approved, the
-// server's address, and the pages of the server that show the document whose texts Check judges.
+// server's origins, and the pages of the server that show the document whose texts Check judges.
 type Context struct {
 	IsProjectKey func(key string) bool
 	PersonNames  []string // emails of signed-in people (people.email)
 	SystemNames  []string // approved component and interface names, which are nouns of the system
-	ServerURL    string
-	// Pages is each path of the dashboard that draws the document, under ServerURL, such as
-	// "/issues/ACME-1/spec" and "/issues/ACME-1/artifacts/spec" for a spec (text.DocumentPages):
+	// Origins is the server's origins, canonical first (text.ServerOrigins): a link at any of them
+	// is read as the record its page names, and an address with no scheme is read against the
+	// canonical one. The zero value names none, and a path is then read against a stand-in server.
+	Origins text.Origins
+	// Pages is each path of the dashboard that draws the document, under the canonical origin, such
+	// as "/issues/ACME-1/spec" and "/issues/ACME-1/artifacts/spec" for a spec (text.DocumentPages):
 	// each page reads an address with no scheme against itself. It is empty for texts of no one
 	// document of the server, such as the files of a tree.
 	Pages []string
 }
 
-// Input is the texts to judge, the definitions a request proposes, and the approved list.
+// Input is the texts to judge, the definitions a request proposes in the document, the approved
+// list, and the definitions under Terms of the other documents of the request (Defined), which
+// only a line in the form of a term line outside Terms is judged against.
 type Input struct {
 	Texts    []Text
 	Proposed []Term
 	List     []Term
+	Defined  []Term
 }
 
 // Finding is one break of the form: the text, by its node, kind and place, the rule it breaks,
@@ -167,33 +182,64 @@ const excerptRunes = 160
 
 // Check judges each text of in, and each proposed term as two texts named by the term: its name,
 // of Kind term, and its definition, of Kind definition. It judges them by the rules of R49, in the
-// order of the texts. It judges each footnote that the texts refer to once (footnoteJudge), so its
-// work is in proportion to the texts and their footnotes, whatever the count of texts that share
-// one footnote. Once ctx ends it judges no other text and answers ctx's error, so a caller that
-// stops waiting stops the judgment within the work of one text.
+// order of the texts. A proposed definition first takes the rules of R50: its name holds only the
+// letters a to z, the digits, spaces and hyphens, it has one sentence, and it is the one
+// definition of its term, in the list and in the proposal. A text of Kind term_line, a line in the
+// form of a term line outside Terms, is no definition and takes only the rule of a second
+// definition: it is refused when it names a term that the list, the document's own terms or the
+// request's other documents (Defined) define. It judges each footnote that the texts refer to
+// once (footnoteJudge), so its work is in proportion to the texts and their footnotes, whatever
+// the count of texts that share one footnote. Once ctx ends it judges no other text and answers
+// ctx's error, so a caller that stops waiting stops the judgment within the work of one text.
 func Check(ctx context.Context, c Context, in Input) ([]Finding, error) {
 	texts := make([]Text, 0, len(in.Texts)+2*len(in.Proposed))
-	texts = append(texts, in.Texts...)
+	for _, text := range in.Texts {
+		if text.Kind != KindTermLine {
+			texts = append(texts, text)
+		}
+	}
 	for _, term := range in.Proposed {
-		texts = append(texts,
-			Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where, Held: term.NameHeld},
-			Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld, Notes: term.DefinitionNotes})
+		name, definition := termTexts(term)
+		texts = append(texts, name, definition)
 	}
 	people := peopleNames(c, in)
 	notes := newFootnoteJudge(c, people, texts)
+	terms := indexTerms(in)
 	var findings []Finding
-	for _, text := range texts {
-		if err := ctx.Err(); err != nil {
-			return nil, err
-		}
-		for _, broken := range breaks(c, people, text, notes) {
+	keep := func(text Text, found []broken) {
+		for _, broken := range found {
 			findings = append(findings, Finding{
 				Node: text.Node, Kind: text.Kind, Where: text.Where,
 				Rule: broken.rule, Detail: broken.detail, Excerpt: excerpt(text.Body),
 			})
 		}
 	}
+	for _, text := range in.Texts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		if text.Kind == KindTermLine {
+			keep(text, terms.lineBreaks(text))
+			continue
+		}
+		keep(text, breaks(c, people, text, notes))
+	}
+	for at, term := range in.Proposed {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		name, definition := termTexts(term)
+		keep(name, breaks(c, people, name, notes))
+		keep(definition, append(terms.breaks(at, term, notes.sentences(definition.Notes)), breaks(c, people, definition, notes)...))
+	}
 	return findings, nil
+}
+
+// termTexts is the two texts of a proposed term that Check judges: its name, of Kind term, and its
+// definition, of Kind definition, each named by the term.
+func termTexts(term Term) (name, definition Text) {
+	return Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where, Held: term.NameHeld},
+		Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld, Notes: term.DefinitionNotes}
 }
 
 // oneLine is a text as ste-lint reads one line: its lines trimmed and joined by one space.

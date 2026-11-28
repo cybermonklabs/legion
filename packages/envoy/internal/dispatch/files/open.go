@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/netip"
 	"strings"
+	"unicode/utf8"
 )
 
 // GCSScheme marks a setting that names a Google Cloud Storage bucket: gs://<bucket>.
@@ -49,7 +50,7 @@ func validGCSBucket(bucket string) error {
 	if strings.Contains(bucket, ".") {
 		limit = 222
 	}
-	if len(bucket) < 3 || len(bucket) > limit {
+	if n := utf8.RuneCountInString(bucket); n < 3 || n > limit {
 		return refuse(fmt.Sprintf("it must be 3 to %d characters long", limit))
 	}
 	for _, r := range bucket {
