@@ -445,6 +445,12 @@ const BrokerRequestReasonMax = 400
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = 262144
 
+// JSONRequestMaxBytes is the most bytes of a request's JSON body Dispatch reads on every route
+// whose body has no limit of its own; a body past it is 413 REQUEST_TOO_LARGE. Generated from
+// JSON_REQUEST_MAX_BYTES in packages/contracts so the server's refusal and the dashboard's bound
+// on a write of a priority's text cannot drift apart.
+const JSONRequestMaxBytes = 1048576
+
 // MarkdownDocumentMaxBytes is the most bytes of markdown one document may hold, and
 // MarkdownDocumentTooLarge what the 413 CAP_EXCEEDED of an upload past it says. Generated from
 // MARKDOWN_DOCUMENT_MAX_BYTES and MARKDOWN_DOCUMENT_TOO_LARGE in packages/contracts so the

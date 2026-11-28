@@ -43,6 +43,7 @@ import {
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
   ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
+  JSON_REQUEST_MAX_BYTES,
   KNOWN_SESSIONS_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
@@ -662,6 +663,12 @@ const BrokerRequestReasonMax = ${BROKER_REQUEST_REASON_MAX}
 // packages/contracts so the server's 413 and the \`dispatch handoff-write\` command's pre-send
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = ${DISPATCH_HANDOFF_BODY_MAX}
+
+// JSONRequestMaxBytes is the most bytes of a request's JSON body Dispatch reads on every route
+// whose body has no limit of its own; a body past it is 413 REQUEST_TOO_LARGE. Generated from
+// JSON_REQUEST_MAX_BYTES in packages/contracts so the server's refusal and the dashboard's bound
+// on a write of a priority's text cannot drift apart.
+const JSONRequestMaxBytes = ${JSON_REQUEST_MAX_BYTES}
 
 // MarkdownDocumentMaxBytes is the most bytes of markdown one document may hold, and
 // MarkdownDocumentTooLarge what the 413 CAP_EXCEEDED of an upload past it says. Generated from

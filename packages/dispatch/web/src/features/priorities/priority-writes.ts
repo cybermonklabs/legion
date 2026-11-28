@@ -1,4 +1,4 @@
-import { utf8Bytes } from "@legion/contracts";
+import { JSON_REQUEST_MAX_BYTES, utf8Bytes } from "@legion/contracts";
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, priorityPatchRequest } from "../../api/client";
@@ -175,23 +175,19 @@ function refusedAsList(error: unknown): boolean {
   return error instanceof ApiError && error.status === 400 && error.code === "INVALID_JSON";
 }
 
-/** The most bytes Dispatch reads of a write's body (`maxJSONRequestBytes` in
- *  `internal/dispatch/api/server.go`): it refuses a larger one `413 REQUEST_TOO_LARGE`, and a
- *  Retry sends the same body again. */
-const MAX_BODY_BYTES = 1 << 20;
-
 /**
  * The texts besides `write.expected` a write of the field may go over (`PriorityTextWrite.also`):
  * among `own`, the field's own texts the server may hold as its turn comes - its start, the texts
  * of its chain, and its writes whose end is unknown (`unknownTexts`) - each once, in that order,
- * while the write's body stays within `MAX_BODY_BYTES`; a text past that is left out. The body
- * holds the text written and the one it goes over already, so where the texts are about a quarter
- * of that size it names one more of them, and where they are a third of it, none. A text left out
- * may be the one the server holds, which then refuses the write as it refuses a write naming one
- * text, where a body past the bound would be refused every time. Absent where the field has no
- * such text. Empty where the body holds none of them: the write still names its one text as a
- * list (`textRequest`), as every write with texts of its own to go over does, so a build from
- * before the list refuses it as it refuses those, and it goes again naming that one text
+ * while the write's body stays within `JSON_REQUEST_MAX_BYTES`; a text past that is left out. The
+ * body holds the text written and the one it goes over already, so where the texts are about a
+ * quarter of that size it names one more of them, and where they are a third of it, none. A text
+ * left out may be the one the server holds, which then refuses the write as it refuses a write
+ * naming one text, where a body past the bound would be refused `413 REQUEST_TOO_LARGE` every
+ * time, since a Retry sends the same body again. Absent where the field has no such text. Empty
+ * where the body holds none of them: the write still names its one text as a list
+ * (`textRequest`), as every write with texts of its own to go over does, so a build from before
+ * the list refuses it as it refuses those, and it goes again naming that one text
  * (`priorityTextWrite.fallback`).
  */
 function ownTexts(
@@ -206,7 +202,7 @@ function ownTexts(
   const also: string[] = [];
   for (const text of texts) {
     const more = utf8Bytes(JSON.stringify(text)) + 1;
-    if (bytes + more > MAX_BODY_BYTES) continue;
+    if (bytes + more > JSON_REQUEST_MAX_BYTES) continue;
     bytes += more;
     also.push(text);
   }

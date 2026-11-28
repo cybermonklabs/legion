@@ -235,8 +235,7 @@ export type ListReadHold = (
 /**
  * One hold through a list's re-read, `readKey`'s read, for every row of the list
  * (`useReadBound`), for a list whose rows each press a write that reads the whole list again and
- * that says why that read has not settled on the row whose press made it: the expired requests of
- * the Inbox's Credential requests section (`CredentialRequestsSection`), and the documents of an
+ * that says why that read has not settled on the row whose press made it: the documents of an
  * issue, each of whose Remove takes the hold of the issue's one document list, on its row of the
  * Artifacts tab and in a document page's header alike (`RemoveDocument`). `holdThrough` takes the
  * row whose press made the read with the read (`ListReadHold`). Each press begins a new read of

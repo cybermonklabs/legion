@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS, utf8Bytes } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS, JSON_REQUEST_MAX_BYTES, utf8Bytes } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -725,9 +725,6 @@ test("a write whose list an older build refuses after a newer build landed the w
   ]);
 });
 
-/** The most bytes Dispatch reads of a write's body (`maxJSONRequestBytes`). */
-const MAX_BODY_BYTES = 1 << 20;
-
 /** The bytes of the body a write sent, as Dispatch counts them. */
 const bodyBytes = (input: PatchPriorityInput | undefined) => utf8Bytes(JSON.stringify(input));
 
@@ -759,7 +756,7 @@ test("a write of a long description names only those of its own texts its body h
   expect(lengths(await sentAt(1))).toEqual({ description: 400_001, expected: [400_000, 3] });
   await answer(1, false);
   const sent = await sentAt(2);
-  expect(bodyBytes(sent)).toBeLessThanOrEqual(MAX_BODY_BYTES);
+  expect(bodyBytes(sent)).toBeLessThanOrEqual(JSON_REQUEST_MAX_BYTES);
   expect(lengths(sent)).toEqual({ description: 400_002, expected: [400_001, 3] });
   await answer(2, false);
   expect(await third).toBe("landed");
@@ -780,20 +777,20 @@ test("overlapping writes of a growing description against an older build: the on
   expect(lengths(await sentAt(0))).toEqual({ description: 345_000, expected: 340_000 });
   await answer(0, false);
   const sentSecond = await sentAt(1);
-  expect(bodyBytes(sentSecond)).toBeLessThanOrEqual(MAX_BODY_BYTES);
+  expect(bodyBytes(sentSecond)).toBeLessThanOrEqual(JSON_REQUEST_MAX_BYTES);
   expect(lengths(sentSecond)).toEqual({ description: 350_000, expected: [345_000, 340_000] });
   await answer(1, listRefused());
   const fourth = describe(longText(360_000), start);
   expect(lengths(await sentAt(2))).toEqual({ description: 350_000, expected: 345_000 });
   await answer(2, false);
   const sentThird = await sentAt(3);
-  expect(bodyBytes(sentThird)).toBeLessThanOrEqual(MAX_BODY_BYTES);
+  expect(bodyBytes(sentThird)).toBeLessThanOrEqual(JSON_REQUEST_MAX_BYTES);
   expect(lengths(sentThird)).toEqual({ description: 355_000, expected: [350_000, 340_000] });
   await answer(3, listRefused());
   expect(lengths(await sentAt(4))).toEqual({ description: 355_000, expected: 350_000 });
   await answer(4, false);
   const sentFourth = await sentAt(5);
-  expect(bodyBytes(sentFourth)).toBeLessThanOrEqual(MAX_BODY_BYTES);
+  expect(bodyBytes(sentFourth)).toBeLessThanOrEqual(JSON_REQUEST_MAX_BYTES);
   expect(lengths(sentFourth)).toEqual({ description: 360_000, expected: [355_000] });
   await answer(5, listRefused());
   expect(lengths(await sentAt(6))).toEqual({ description: 360_000, expected: 355_000 });

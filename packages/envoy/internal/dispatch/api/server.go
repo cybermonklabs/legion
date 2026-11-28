@@ -2278,7 +2278,10 @@ func idPathProblem(kind string) string {
 	return kind + " id must be a full uuid"
 }
 
-const maxJSONRequestBytes int64 = 1 << 20
+// maxJSONRequestBytes is the most bytes of a JSON body a route reads when its body has no limit of
+// its own (routeBody): the contract's bound, contracts.JSONRequestMaxBytes, which the dashboard
+// holds a write of a priority's text within, as the int64 http.MaxBytesReader takes.
+const maxJSONRequestBytes int64 = contracts.JSONRequestMaxBytes
 
 type maxBytesDiscarder struct{}
 
