@@ -213,13 +213,12 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// (writeRecordedResult): the result's node with its base attributes, its values, its
 		// part_of, its result_of its check and her authored_by, which the term result counts. A
 		// person's result names no run_session, and her node stands from the issue's spec. The
-		// issue is born converted, so the result moves the Verification query's record: its batch
-		// marks the issue's queries owed, and the drain the route runs once the result has
-		// committed appends a version of that document under result.recorded (drainMark, the one
-		// writer of the drain's version, whose QueueCaused states its facts): the version's node, a
-		// query version with its definition_version.
+		// issue is born converted, so the result's batch marks the issue's queries owed, and the
+		// route runs the drain once the result has committed (drainMark). The Verification query's
+		// record reads the check nodes alone and no result (docs' recordTakes), so the drain finds
+		// the record unchanged and appends no version.
 		Name: "api/results.go#writeRecordedResult", Database: r.database,
-		Sites: []string{"api/results.go#writeRecordedResult", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
+		Sites: []string{"api/results.go#writeRecordedResult", "docs/query_marks.go#drainMark"},
 		Ready: func(t *testing.T) {
 			r.uploaded(t, "verification.md", ":::check{#"+sizedCheck+" surface=\"cli\"}\nThe sizing counts every writer.\n:::\n")
 		},
@@ -231,20 +230,19 @@ func externalDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				"negative_control": "Broke what the check proves and the run failed.", "failed": 1,
 			}, "alice", http.StatusCreated)).Result.ID
 		},
-		Counts: merged(graphcensus.ResultNodeCounted(), versionCounted, queryVersionCounted),
+		Counts: graphcensus.ResultNodeCounted(),
 	}, {
 		// alice's retraction of that result (writeCheckResultRetraction): its retracted value,
-		// which the term result_retraction counts, and the version of the Verification document
-		// the retraction moves the record of, which the drain appends under result.retracted
-		// (drainMark).
+		// which the term result_retraction counts. Its batch marks the issue's queries owed, as the
+		// result's does, and the drain the route runs once the retraction has committed
+		// (drainMark) finds the Verification query's record unchanged and appends no version.
 		Name: "api/results_retract.go#writeCheckResultRetraction", Database: r.database,
-		Sites: []string{"api/results_retract.go#writeCheckResultRetraction", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
+		Sites: []string{"api/results_retract.go#writeCheckResultRetraction", "docs/query_marks.go#drainMark"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/results/"+result+"/retract",
 				map[string]any{"reason": "The run measured the wrong build."}, "alice", http.StatusCreated)
 		},
-		Counts: merged(map[graphcensus.StoredKind][]string{{graphstore.KindResult, graphstore.AttributeRetracted}: {"result_retraction"}},
-			versionCounted, queryVersionCounted),
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindResult, graphstore.AttributeRetracted}: {"result_retraction"}},
 	}, {
 		// An accept of a suggestion whose mark is gone from a row the refresh did not reach
 		// (orphanCommentAnchor): the suggestion is anchored on a paragraph of a document of its

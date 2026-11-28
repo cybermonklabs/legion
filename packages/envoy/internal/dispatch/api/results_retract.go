@@ -123,10 +123,11 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The retraction moves the record of the check's issue's Verification query. This transaction
-	// writes no version of that query and takes no lock of the issue's room: its batch marks the
-	// issue's queries owed (writeCheckResultRetraction), and the drain writes the version once it
-	// has committed, below.
+	// This transaction writes no version of the check's issue's Verification query and takes no
+	// lock of the issue's room: its batch marks the issue's queries owed
+	// (writeCheckResultRetraction), and the drain runs once it has committed, below. The
+	// retraction leaves that query's record unchanged, as the record reads the check nodes alone
+	// (docs' recordTakes), so the drain appends no version of it.
 	if err := s.refuseRetractionBy(r.Context(), tx, actor, person, result); err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -175,9 +176,10 @@ func (s *server) retractCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The drain writes the version of the Verification query the retraction left owed, before the
-	// retraction's event is published (docs.Service.DrainOwedQueries), and what it appended
-	// follows that event.
+	// The drain runs before the retraction's event is published (docs.Service.DrainOwedQueries).
+	// It finds the Verification query's record unchanged, as the record reads the check nodes
+	// alone, and appends no version of it; what it does append for earlier writes follows that
+	// event.
 	var drained []model.Event
 	if marked {
 		drained = s.deps.Docs.DrainOwedQueries(r.Context(), result.CheckIssueKey)
@@ -378,14 +380,15 @@ func resultNodeHeld(ctx context.Context, tx pgx.Tx, id string) (bool, time.Time,
 // created_at, the transaction's now() (resultNodeHeld), and, where the store holds the result's
 // node (held), the retracted value of that result (graphstore.ResultRetracted): its reason, stated
 // by the retraction's actor at that time and caused by event, of which the row is the projection;
-// then the mark of the queries of the check's issue checkIssueKey owed a version, whose record the
-// value moved (docs.QueueQueryMark), with that event and the value's sequence as its causes, the
-// value's writer, the retraction's actor, being the one the drain names its version after, and
-// last the result's head rows. A result whose node the store does not hold yet - a row an earlier
-// release wrote, which the backfill has not reached - takes no value here, and so marks nothing:
-// the backfill writes its node and then its retracted value from the row (graphcensus'
-// census_results.go). It answers whether the batch marked the issue's queries, which it does only
-// where the issue has converted.
+// then the mark of the queries of the check's issue checkIssueKey owed (docs.QueueQueryMark), with
+// that event and the value's sequence as its causes, the value's writer, the retraction's actor,
+// being the one the drain names a version after where it writes one, and last the result's head
+// rows. The drain writes no version of the Verification query: its record reads the check nodes
+// alone (docs' recordTakes), so the value leaves it unchanged. A result whose node the store does
+// not hold yet - a row an earlier release wrote, which the backfill has not reached - takes no
+// value here, and so marks nothing: the backfill writes its node and then its retracted value from
+// the row (graphcensus' census_results.go). It answers whether the batch marked the issue's
+// queries, which it does only where the issue has converted.
 func writeCheckResultRetraction(ctx context.Context, tx pgx.Tx, retraction *model.CheckResultRetraction, checkIssueKey string, held bool, event int64) (bool, error) {
 	actorJSON, err := encodeJSON(retraction.Actor)
 	if err != nil {

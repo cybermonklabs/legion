@@ -179,11 +179,13 @@ func (s *server) recordCheckResult(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The result moved the record of the Verification query of the check's issue, whose version
-	// its transaction left owed (issue_query_marks): the drain writes it now that the result has
-	// committed, before the result's event is published, so a reader the event wakes reads the
-	// version (docs.Service.DrainOwedQueries). What the drain appended follows the result's event,
-	// in the log and in the publish below.
+	// The result's transaction marked the queries of the check's issue owed (issue_query_marks),
+	// and the drain runs now that the result has committed, before the result's event is
+	// published (docs.Service.DrainOwedQueries). The Verification query's record reads the check
+	// nodes alone (docs' recordTakes), so the drain finds it unchanged and appends no version of
+	// it. What the drain does append - a digest the fill records for an earlier write, or a
+	// version of a query an earlier write's mark moved - follows the result's event, in the log
+	// and in the publish below.
 	var drained []model.Event
 	if written.marked {
 		drained = s.deps.Docs.DrainOwedQueries(r.Context(), written.result.CheckIssueKey)
@@ -387,7 +389,8 @@ const checkContendedRetryAfter = 1
 
 // recordedCheckResult is what one results write produces: the row it wrote, the event it
 // appended, the check as the transaction that wrote them saw it, and whether the write marked the
-// queries of the check's issue owed a version (docs.QueueQueryMark), which its drain then writes.
+// queries of the check's issue owed (docs.QueueQueryMark), so that its caller runs the drain,
+// which finds the Verification query's record unchanged and appends no version of it.
 // That check is not the one the route resolved when a redo made the resolution again, so the
 // pull-request body line is written from this one.
 type recordedCheckResult struct {
@@ -487,10 +490,11 @@ func (s *server) recordResultUnderOwnerLocks(
 	if _, err := lockIssueOwners(ctx, tx, issueKey, check.IssueKey); err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
 	}
-	// The result moves the record of the check's issue's Verification query. This transaction
-	// writes no version of that query and takes no lock of the issue's room: its batch marks the
-	// issue's queries owed (writeRecordedResult), and the drain writes the version once it has
-	// committed (recordCheckResult).
+	// This transaction writes no version of the check's issue's Verification query and takes no
+	// lock of the issue's room: its batch marks the issue's queries owed (writeRecordedResult), and
+	// the drain runs once it has committed (recordCheckResult). The result leaves that query's
+	// record unchanged, as the record reads the check nodes alone (docs' recordTakes), so the drain
+	// appends no version of it.
 	recordingOpen, checkOpen, err := issuesOpenForResult(ctx, tx, issueKey, check.IssueKey)
 	if err != nil {
 		return recordedCheckResult{}, indexedCheck{}, err
@@ -1332,11 +1336,13 @@ func resultScope(ctx context.Context, tx pgx.Tx, checkIssueKey string) (string, 
 // result.recorded event whose id is event, in one batch (store.RunWrite), its write phase's last:
 // its check_results row, dated at the result's created_at, then the result's node, its values and
 // its tuples (graphstore.ResultFacts), caused by that event and dated at that same time, then the
-// mark of the queries of the check's issue owed a version, whose record the result moved
-// (docs.QueueQueryMark), with that event and the last tuple's sequence as its causes, that tuple's
-// writer, the result's recorder, being the one the drain names its version after, and last the
-// head rows of what the result states. project is the project of the check's issue, which the
-// node is in, and the time the transaction's now(), both read in the read phase (resultScope).
+// mark of the queries of the check's issue owed (docs.QueueQueryMark), with that event and the
+// last tuple's sequence as its causes, that tuple's writer, the result's recorder, being the one
+// the drain names a version after where it writes one, and last the head rows of what the result
+// states. The drain writes no version of the Verification query: its record reads the check nodes
+// alone (docs' recordTakes), so the result leaves it unchanged. project is the project of the
+// check's issue, which the node is in, and the time the transaction's now(), both read in the read
+// phase (resultScope).
 // check is the address of the check block's node, under the artifact the row is keyed by, and
 // screenshots the ref_key of each image the result names (refuseResultScreenshots). A result whose
 // check's address is past the store's bound keeps its row and states nothing, which the census
