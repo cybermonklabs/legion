@@ -302,3 +302,26 @@ func TestAFilesListThatWithholdsAFileIsBlockedByThatFileAlone(t *testing.T) {
 	requireBlocked(t, r, set.third, 1, false, "diff refused (422), files[] withheld 1 of 12 files")
 	requireSameWindows(t, r, whole, 4, 28)
 }
+
+// A files[] that withholds a file and leaves another out blocks the days whose 30 days hold its
+// commit, and says that it left files out (R9): the file it withheld is the count it knows, and
+// the files it did not list are a number no answer names, so its row states at least that count
+// and never an exact one. Day 3's commit of 12 files and 24 lines, which merged no pull request,
+// refuses on the diff route; its files[] lists 11 of them, the first with no patch and its 2
+// changed lines, 22 lines in all, while its stats count all 24. Days 0 to 3 are blocked by it,
+// each naming the commit, the one file withheld, files left unlisted, and the lines it holds of
+// the commit's; days 4 to 27 read what a run whose diff route answered reads.
+func TestAFilesListThatWithholdsAFileAndLeavesOneOutSaysItLeftFilesOut(t *testing.T) {
+	t.Parallel()
+	set := refusalBranch(t)
+	whole := widgetsRig(t, set.branch)
+	whole.passAt(firstPass)
+	r := widgetsRig(t, set.branch)
+	r.github.Refuse(set.third, codesurvivaltest.Refusal{Status: 422, Body: "diff too large", Withheld: 1, Unlisted: 1})
+	requests := r.passAt(firstPass)
+	if reads, pages := patchReads(requests)[set.third], filesReads(requests, set.third); reads != 1 || pages != 1 {
+		t.Fatalf("the refused patch was read %d times and its files[] %d times, want once each", reads, pages)
+	}
+	requireBlocked(t, r, set.third, 1, true, "diff refused (422), files[] withheld 1 of 11 files and listed 22 of the commit's 24 changed lines")
+	requireSameWindows(t, r, whole, 4, 28)
+}
