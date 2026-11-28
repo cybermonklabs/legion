@@ -880,10 +880,10 @@ What each part is for:
   in the same section lists what a deployment makes true for it, and the order to turn it on.
   Each kind refuses the other's key. An omitted `session_store` and `pvc`, the file store of
   earlier releases, are refused with the same line and its reason: an issue pod's disk is deleted
-  with the pod, so a conversation kept as a file on it dies with the pod and the next launch's
-  resume fails on the missing file, retiring the claim after three failures. A kept volume does
-  not change this: a reset or a suspension of the issue deletes that volume. Name the store and
-  its key, and have the database reachable from the pods, before the daemon boots.
+  with the pod, so a conversation kept as a file on it dies with the pod, and the next launch
+  finds no session to resume, so the claim starts a fresh agent without that conversation. A kept
+  volume does not change this: a reset or a suspension of the issue deletes that volume. Name the
+  store and its key, and have the database reachable from the pods, before the daemon boots.
 - **`nats_nkey_seed_file`** and **`nats_daemon_nkey_seed_file`** (optional) are the NATS nkey user
   seeds for the agents and for the daemon's own connection, each in a file only its owner can read.
 - **`runtime.kubernetes.agent_secrets`** (optional) enrolls every pod with the
@@ -1459,9 +1459,11 @@ Closing the terminal leaves the project without one, and the daemon logs
    the new image before it serves.
 
    **After the first upgrade to a release that counts the moves back by kind,** every issue starts
-   at no counts: the migration fills none in from the past. An issue already in flight therefore
-   reads counts that add up to less than its `rounds`, and a hook of `hooks:` counts from the
-   first move back after the upgrade.
+   at no counts: the migration fills none in from the past. An issue's counts add up to no more
+   than its `pass`, which counts every move back, while its `rounds` counts review rounds alone,
+   a conflict round included. They can add up to less, for example where a move was made at a
+   conflicting head, which raises `pass` and no pair, or where the issue was already in flight at
+   the upgrade. A hook of `hooks:` counts from the first move back after the upgrade.
 4. **Running agents carry on.** The restarted daemon re-adopts every running pod and its session. A
    pod keeps the image it started with; every pod the daemon starts afterwards, for the next phase
    or a resumed worker, runs the new one. At a release that moves the daemon API contract, the
