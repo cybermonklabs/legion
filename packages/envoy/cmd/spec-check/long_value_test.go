@@ -44,11 +44,11 @@ type longRow struct {
 // bytes as its first and its last 50 bytes with … between them, so the line stays under lineBound
 // and names the start and the end of the value. The table has a row for each kind of problem that
 // specgraph gives (ProblemKinds: the reader's, Validate's, Compare's and bad-approved-document), so
-// a new kind fails the test until it has a row; a row runs the three subcommands over its files and
-// its approved spec, and requires each line of each run under the bound, and the kind's line where
-// the row says, holding each part of shows. The rows of no-node and of a value that JSON cannot hold
-// name no value of the input: they hold only the bound. Then a valid id longer than the bound: state
-// and print match it whole, and each line shows it cut.
+// a new kind fails the test until it has a row; a row runs the three subcommands at once over its
+// files and its approved spec, and requires each line of each run under the bound, and the kind's
+// line where the row says, holding each part of shows. The rows of no-node and of a value that JSON
+// cannot hold name no value of the input: they hold only the bound. Then a valid id longer than the
+// bound: state and print match it whole, and each line shows it cut.
 func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 	t.Parallel()
 	binary := cmdtest.Build(t, "spec-check")
@@ -207,8 +207,8 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 			if row.approved != nil {
 				editApproved(t, approved, row.approved)
 			}
-			lines := func(run string, args ...string) []string {
-				r := runBinary(t, binary, "", args...)
+			lines := func(run string, wait func() result) []string {
+				r := wait()
 				all := strings.Split(strings.TrimSuffix(r.stdout+r.stderr, "\n"), "\n")
 				for _, line := range all {
 					if len(line) > lineBound {
@@ -217,9 +217,13 @@ func TestEachLineCutsALongValueOfTheInput(t *testing.T) {
 				}
 				return all
 			}
-			tree := lines("tree", "tree", "--dir", dir, "--retired", retired)
-			compare := lines("compare", "compare", "--dir", dir, "--approved", approved)
-			state := lines("state", "state", "--scenario", scenario)
+			// The three runs only read this row's files, so they run at once.
+			waitTree := startBinaryIn(t, binary, "", nil, "tree", "--dir", dir, "--retired", retired)
+			waitCompare := startBinaryIn(t, binary, "", nil, "compare", "--dir", dir, "--approved", approved)
+			waitState := startBinaryIn(t, binary, "", nil, "state", "--scenario", scenario)
+			tree := lines("tree", waitTree)
+			compare := lines("compare", waitCompare)
+			state := lines("state", waitState)
 			want := map[string][]string{}
 			switch row.in {
 			case "", "retired":
@@ -296,15 +300,20 @@ func testALongIDMatchesAndPrintsCut(t *testing.T, binary, carry, statement, chec
 	if err != nil {
 		t.Fatal(err)
 	}
-	expect(t, runBinary(t, binary, "", "state", "--scenario", scenario),
+	dir := filepath.Join(scenario, "files", "c2")
+	// state, state --json and checks only read the scenario, so they run at once; print takes the
+	// lock of dir and writes beside it, so it runs after them.
+	waitState := startBinaryIn(t, binary, "", nil, "state", "--scenario", scenario)
+	waitJSON := startBinaryIn(t, binary, "", nil, "state", "--scenario", scenario, "--json")
+	waitChecks := startBinaryIn(t, binary, "", nil, "checks", "--dir", dir, "--job", "go-checks")
+	expect(t, waitState(),
 		result{stdout: strings.NewReplacer(statementID, cut(statement), checkID, cut(check)).Replace(string(wantBytes))})
 
-	r := runBinary(t, binary, "", "state", "--scenario", scenario, "--json")
+	r := waitJSON()
 	if r.code != 0 || !strings.Contains(r.stdout, `"`+statement+`"`) || !strings.Contains(r.stdout, `"`+check+`"`) {
 		t.Errorf("state --json: exit %d, stdout of %d bytes, stderr %q; want exit 0 and each id whole in the JSON", r.code, len(r.stdout), r.stderr)
 	}
-	dir := filepath.Join(scenario, "files", "c2")
-	r = runBinary(t, binary, "", "checks", "--dir", dir, "--job", "go-checks")
+	r = waitChecks()
 	if r.code != 0 || !strings.Contains(r.stdout, `"id":"`+check+`"`) {
 		t.Errorf("checks: exit %d, stdout of %d bytes, stderr %q; want exit 0 and the check's id whole in the JSON", r.code, len(r.stdout), r.stderr)
 	}
