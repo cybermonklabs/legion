@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"os"
@@ -244,6 +245,112 @@ func TestTheDecisionsReadCarriesTheFootnoteReferencesTheDocumentHolds(t *testing
 		treeAt(t, handler, "/api/v1/issues/"+issue.Key+"/decisions", "decisions.0.text_tree"),
 		&footnotedReference{label: "1", follows: "We chose the table"},
 		tableDecision, "We chose the table", " over the file[^zz].")
+}
+
+// changeAnchorQuote is the quote today's writable decision card anchors a Change of the decision
+// of TestAChangeQuotingADecisionThatCallsADefinedNoteAnchorsToIt to: the words of the decision's
+// first block below its heading, as `decision-card/change-anchor.ts`'s anchorQuote reads them from
+// the decisions read's tree through `refs/tree-fragment.ts`'s wordsOf (decisionCardQuote). The
+// tree holds the defined call `[^1]` as a footnote reference, which wordsOf reads as one space
+// before the words after it, and those words open with their own space, so two spaces stand where
+// the markdown writes the call, as they do in the document's text that pmdoc.FindQuote matches.
+const changeAnchorQuote = "We chose the table  over the file."
+
+// decisionCardNode is a display tree as `refs/tree-fragment.ts`'s wordsOf reads it: a node's own
+// characters where it holds a string `text` (textOf), and otherwise its `content` (childrenOf).
+type decisionCardNode struct {
+	Type    string             `json:"type"`
+	Text    *string            `json:"text"`
+	Content []decisionCardNode `json:"content"`
+}
+
+// decisionCardWords is wordsOf over node: every text's characters in document order, with one
+// space before a text where anything that is no text stands between it and the text before - a
+// node's open or close, or a leaf that is no text, such as a footnote reference or a hard break.
+func decisionCardWords(node decisionCardNode) string {
+	var words strings.Builder
+	apart := false
+	var read func(current decisionCardNode)
+	read = func(current decisionCardNode) {
+		if current.Text != nil {
+			if apart && words.Len() > 0 {
+				words.WriteByte(' ')
+			}
+			words.WriteString(*current.Text)
+			apart = false
+			return
+		}
+		apart = true
+		for _, child := range current.Content {
+			read(child)
+		}
+		apart = true
+	}
+	read(node)
+	return words.String()
+}
+
+// decisionCardQuote is `decision-card/change-anchor.ts`'s anchorQuote of a decision whose
+// text_tree is tree: the words (decisionCardWords) of the tree holding its first top-level block
+// that is no heading and nothing else (anchorBlock).
+func decisionCardQuote(t *testing.T, tree json.RawMessage) string {
+	t.Helper()
+	var reading decisionCardNode
+	if err := json.Unmarshal(tree, &reading); err != nil {
+		t.Fatalf("decode the decision's text_tree %s: %v", tree, err)
+	}
+	for _, block := range reading.Content {
+		if block.Type != "heading" {
+			reading.Content = []decisionCardNode{block}
+			return decisionCardWords(reading)
+		}
+	}
+	t.Fatalf("the decision's text_tree holds no block below its heading, so the card quotes none:\n\t%s", tree)
+	return ""
+}
+
+// A Change that today's writable decision card writes of a decision whose first block calls a
+// note the document defines outside the decision is anchored to that block (INFRA-6257's R2, item
+// 7). The card quotes the block's words as the decisions read's tree holds them
+// (changeAnchorQuote), and posts the comment on the decisions document by its id with no
+// occurrence (`decision-card/change-anchor.ts`'s changeCommentInput); the server finds the quote
+// with pmdoc.FindQuote and records the block it stands in. On main the tree was read from the
+// decision's text alone and held the call as the text `[^1]`, so the card quoted "We chose the
+// table[^1] over the file.", which the document's text does not hold, and the server refused the
+// Change with 404 TARGET_NOT_FOUND.
+func TestAChangeQuotingADecisionThatCallsADefinedNoteAnchorsToIt(t *testing.T) {
+	t.Parallel()
+	handler, _ := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createReferenceAPIIssue(t, handler, "CORE")
+	const paragraph = "We chose the table[^1] over the file."
+	decisions := uploadIssueDocument(t, handler, issue.Key, "decisions.md",
+		"## "+tableDecision+"\n\n"+paragraph+"\n\n# Notes\n\n[^1]: The table is the simplest storage.\n")
+	view := readIssueDecisions(t, handler, issue.Key)
+	if len(view.Decisions) != 1 || view.Decisions[0].Heading != tableDecision {
+		t.Fatalf("decisions = %#v, want the one decision %q", view.Decisions, tableDecision)
+	}
+	tree := treeAt(t, handler, "/api/v1/issues/"+issue.Key+"/decisions", "decisions.0.text_tree")
+	if got := decisionCardQuote(t, tree); got != changeAnchorQuote {
+		t.Fatalf("the card quotes the decision's first block as %q, want %q:\n\t%s", got, changeAnchorQuote, tree)
+	}
+	ids := blockIDsByText(t, handler, decisions.ID)
+	block, held := ids[paragraph]
+	if !held {
+		t.Fatalf("the decisions document holds no block %q; its blocks are %v", paragraph, ids)
+	}
+
+	anchor := map[string]string{"artifact": decisions.ID, "quote": changeAnchorQuote}
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"anchor": anchor,
+		"body":   "Measure the file first.",
+	}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("the Change anchored to %q: status=%d body=%s", anchor["quote"], created.Code, created.Body.String())
+	}
+	if got := decodeBody[anchoredRecord](t, created).Anchor.BlockID; got != block {
+		t.Fatalf("the Change's anchor block_id = %q, want the decision's first block below its heading, %q", got, block)
+	}
 }
 
 // A link added to an existing decision is not out of date; a version that changes the decision's
