@@ -121,3 +121,68 @@ test("two links to the same address split by plain words stay two", async () => 
     unmount();
   }
 });
+
+/** `html` as the painter draws it, in an element of its own, with its split links joined. */
+function joined(html: string): HTMLElement {
+  const body = document.createElement("div");
+  body.innerHTML = html;
+  joinSplitLinks(body);
+  return body;
+}
+
+// A long text is painted in slices, and the row's pass joins after each, so it can meet a body the
+// reference pass has not reached: each `dispatch://` link is still Proof's `href=""`, its address
+// in `data-dispatch-href`. Two references side by side are two links all the same.
+test("two references to different targets side by side stay two links", () => {
+  const body = joined(
+    '<p><a href="" data-dispatch-href="dispatch://CORE-1/spec">one</a>' +
+      '<strong><a href="" data-dispatch-href="dispatch://CORE-2">two</a></strong></p>'
+  );
+  expect(
+    [...body.querySelectorAll("a")].map((anchor) => [
+      anchor.getAttribute("data-dispatch-href"),
+      anchor.textContent,
+    ]),
+    `the two references were drawn as ${body.innerHTML}`
+  ).toEqual([
+    ["dispatch://CORE-1/spec", "one"],
+    ["dispatch://CORE-2", "two"],
+  ]);
+});
+
+// ProseMirror draws two link marks side by side as one anchor only where their attributes are
+// equal: two links to one address with different titles are two.
+test("two pieces of a link with different titles stay two anchors", async () => {
+  const { body, unmount } = await painted(
+    '[a](https://example.com/u "t1")**[b](https://example.com/u "t2")**'
+  );
+  try {
+    expect(
+      [...body.querySelectorAll("a")].map((anchor) => [
+        anchor.getAttribute("title"),
+        anchor.textContent,
+      ]),
+      `the two links were drawn as ${body.innerHTML}`
+    ).toEqual([
+      ["t1", "a"],
+      ["t2", "b"],
+    ]);
+  } finally {
+    unmount();
+  }
+});
+
+// A dashboard address of this origin is one the reference pass rewrites later, and the portal it
+// hands each anchor draws that anchor's words: a join before that pass would take two of them off
+// the page.
+test("a dashboard link painted before the reference pass stays three anchors", () => {
+  const address = `${window.location.origin}/issues/CORE-1/spec`;
+  const body = joined(
+    `<p><a href="${address}">the </a><strong><a href="${address}">spec</a></strong>` +
+      `<a href="${address}"> rule</a></p>`
+  );
+  expect(
+    [...body.querySelectorAll("a")].map((anchor) => anchor.textContent),
+    `the dashboard link was drawn as ${body.innerHTML}`
+  ).toEqual(["the ", "spec", " rule"]);
+});

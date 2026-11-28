@@ -24,18 +24,42 @@ function marksOnly(node: Node | null, child: Node): node is HTMLElement {
   );
 }
 
-/** A link this joins: an anchor with an address that nothing else draws into or owns. A
- *  reference's or a picture's anchor is a portal's host, which the painter empties for the portal
- *  to draw into (`collectReferenceAnchors`, `collectPictureAnchors`), and a row's own reference
- *  belongs to the row's pass, which renames its words on a later pass (`linkRowReferences`).
- *  Joining one would take an anchor another pass draws into off the page, and its words with it. */
-const JOINABLE =
-  "a[href]:not([data-dispatch-ref]):not([data-dispatch-picture]):not([data-row-reference])";
+/** Whether `anchor` is a link this joins: one whose address opens another site, or a scheme of no
+ *  site such as `mailto:`, which the painter draws whole and no later pass rewrites or draws into.
+ *  An address of this dashboard never joins: a `dispatch://` reference (Proof draws it `href=""`
+ *  with its address in `data-dispatch-href`, which `RefLink`'s `addressOf` reads first), and a
+ *  path or a URL of this origin. The reference pass rewrites each such address, and a portal draws
+ *  into its anchor (`collectReferenceAnchors`, `collectPictureAnchors`, `linkRowReferences`); a
+ *  text painted in slices is joined after each slice, before that pass, so joining one would take
+ *  an anchor that pass needs off the page, and its target or its words with it. An address that
+ *  does not parse is no link this joins. */
+function joinable(anchor: HTMLAnchorElement): boolean {
+  const href = anchor.getAttribute("href");
+  if (href === null) return false;
+  let url: URL;
+  try {
+    url = new URL(anchor.getAttribute("data-dispatch-href") ?? href, window.location.href);
+  } catch {
+    return false;
+  }
+  return url.protocol !== "dispatch:" && url.origin !== window.location.origin;
+}
+
+/** Whether `a` and `b` carry the same attributes, each with the same value. ProseMirror draws two
+ *  link marks side by side as one anchor only where their attributes are equal, so two anchors
+ *  whose attributes differ, a title say, are two links. */
+function sameAttributes(a: Element, b: Element): boolean {
+  if (a.attributes.length !== b.attributes.length) return false;
+  for (const { name, value } of a.attributes) {
+    if (b.getAttribute(name) !== value) return false;
+  }
+  return true;
+}
 
 /** The link `node` is, or that it holds as the one child of its marks, at any depth of them; null
- *  where it is neither or it is no link this joins (`JOINABLE`). */
+ *  where it is neither or it is no link this joins (`joinable`). */
 function linkOf(node: Node | null): HTMLAnchorElement | null {
-  if (node instanceof HTMLAnchorElement) return node.matches(JOINABLE) ? node : null;
+  if (node instanceof HTMLAnchorElement) return joinable(node) ? node : null;
   const inner = node?.firstChild ?? null;
   return inner !== null && marksOnly(node, inner) ? linkOf(inner) : null;
 }
@@ -45,16 +69,16 @@ function linkOf(node: Node | null): HTMLAnchorElement | null {
  * schema ranks `link` innermost (emphasis 0, strong 1, inlineCode 2, link 3), so the serializer
  * closes the anchor around a marked run of its words and opens it again after it:
  * `[the **HTTP** rule](https://example.com/x)` draws `<a>the </a><strong><a>HTTP</a></strong><a>
- * rule</a>`, three stops of the row's `f` key and three links read aloud for one. Anchors to the
- * same `href` that stand side by side, with nothing between them but the mark elements around
+ * rule</a>`, three stops of the row's `f` key and three links read aloud for one. Anchors with the
+ * same attributes that stand side by side, with nothing between them but the mark elements around
  * each, are one link: the first anchor takes the words of every other, each marked run keeping
  * its mark inside it, and the others go. Two links to one address with any words between them
- * stay two. A join can leave a mark around one anchor only, which a pass that has gone by it never
- * joins to its neighbours, so this passes over the anchors until a pass joins nothing. Each paint
- * draws the anchors anew, so the row's pass calls this after each paint, before it links what the
- * words cite (`RowText.tsx`). An anchor something else draws into or owns, a reference's, a
- * picture's or the row's own, is left as it is (`JOINABLE`); a link the painter draws whole, such
- * as an `https://` one, is joined.
+ * stay two, and so do two whose attributes differ (`sameAttributes`). A join can leave a mark
+ * around one anchor only, which a pass that has gone by it never joins to its neighbours, so this
+ * passes over the anchors until a pass joins nothing. Each paint draws the anchors anew, so the
+ * row's pass calls this after each paint, before it links what the words cite (`RowText.tsx`).
+ * Only a link to another site joins (`joinable`): an address of this dashboard is left as it is,
+ * however far the reference pass has got.
  */
 export function joinSplitLinks(element: Element): void {
   while (joinPass(element)) {
@@ -66,20 +90,18 @@ export function joinSplitLinks(element: Element): void {
  *  joined any. */
 function joinPass(element: Element): boolean {
   let joined = false;
-  for (const anchor of [...element.querySelectorAll<HTMLAnchorElement>(JOINABLE)]) {
-    // An anchor an earlier one took the words of has left the element.
-    if (!element.contains(anchor)) continue;
+  for (const anchor of [...element.querySelectorAll<HTMLAnchorElement>("a")]) {
+    // An anchor an earlier one took the words of has left the element; one to this dashboard
+    // stays as it is.
+    if (!element.contains(anchor) || !joinable(anchor)) continue;
     let piece: ChildNode = anchor;
     while (piece.parentElement !== element && marksOnly(piece.parentElement, piece)) {
       piece = piece.parentElement;
     }
-    const href = anchor.getAttribute("href");
     const run: ChildNode[] = [piece];
-    for (
-      let next = piece.nextSibling;
-      next !== null && linkOf(next)?.getAttribute("href") === href;
-      next = next.nextSibling
-    ) {
+    for (let next = piece.nextSibling; next !== null; next = next.nextSibling) {
+      const link = linkOf(next);
+      if (link === null || !sameAttributes(link, anchor)) break;
       run.push(next);
     }
     if (run.length > 1) {
