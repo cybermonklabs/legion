@@ -116,11 +116,12 @@ export function waitingOnReader(
       unread.has(decision.ref)
     )
   ).length;
-  const mayWait = entries.filter(
-    (decision) =>
-      unread.has(decision.ref) &&
-      inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
+  // Each other entry of the review list carries the mark of a Change on a page not read yet, and
+  // may wait once that page is read: what waits on the reader is `waitsOnReader`'s to say alone.
+  const listed = entries.filter((decision) =>
+    inReviewList(decision, isCoverageStatement, changed.has(decision.ref))
   ).length;
+  const mayWait = listed - reviewing;
   return {
     approvals,
     asks,

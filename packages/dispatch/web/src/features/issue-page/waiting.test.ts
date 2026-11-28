@@ -1100,6 +1100,52 @@ test("no decision waits on the reader while the tree read holds no answer, and e
   });
 });
 
+// What waits on the reader is `waitsOnReader`'s to say alone (`decision-review.ts`), so the count's
+// "+" (`mayWait`) counts each other entry of the review list: each entry is counted once, as one
+// that waits, as the tree marks it, or as one that may wait, whatever that rule makes of a
+// decision whose Change may stand on an older comment page. A decision off the list - tied to no
+// statement, or whose Change the answer holds - is counted in neither, though the first carries
+// the mark too.
+test("each decision of the review list is counted once, as one that waits on the reader or as one that may wait", () => {
+  const older = waitingDecision("older", ["r1"]);
+  const newer: Decision = {
+    ...waitingDecision("newer", ["r1"]),
+    changed_at: "2026-11-05T13:00:00Z",
+  };
+  const untied = waitingDecision("untied", []);
+  const asked = waitingDecision("asked", ["r1"]);
+  const read = decisionsRead([older, newer, untied, asked]);
+  const askedChange: Comment = {
+    ...change,
+    anchor: null,
+    created_at: "2026-11-05T12:00:00Z",
+    id: "c-asked",
+  };
+  // The oldest comment the answer holds is newer than "older"'s and "untied"'s words and older
+  // than "newer"'s, so a Change of the first two may stand on the older page.
+  const tree: TreeAnswer = {
+    ...answerOf([
+      statement,
+      decisionTreeNode(older),
+      decisionTreeNode(newer),
+      decisionTreeNode(untied),
+      decisionTreeNode(asked),
+      commentNode(askedChange, "asked"),
+    ]),
+    comments_before: `${askedChange.created_at},${askedChange.id}`,
+  };
+  const root = buildIssueTree({ coverage, decisions: read, issue, tree, viewer: "alice" });
+  const counted = waitingOnReader(issue, "alice", read, isCoverageStatement, tree);
+  expect(counted.decisions, "the count and the tree disagree on what waits").toBe(
+    waitingIn(root).length
+  );
+  // The review list holds "older" and "newer".
+  expect(
+    counted.decisions + counted.mayWait,
+    "an entry of the review list was counted twice, or not at all"
+  ).toBe(2);
+});
+
 // Two documents of an issue may share a block id. A person's comment on the statement r1 is no
 // Change of a decision whose own block id is r1 too: the read's walk puts a parent before its
 // children, and it puts this comment after the statement and before the decision, so the comment

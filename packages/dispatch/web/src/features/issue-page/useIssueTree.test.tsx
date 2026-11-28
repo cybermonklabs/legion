@@ -1679,6 +1679,8 @@ test("the more control says the page's remaining count", async () => {
     async (_key, query) => pages[query?.cursor ?? "first"] ?? pages.first
   );
   const client = new DispatchQueryClient({ defaultOptions: { queries: { retry: false } } });
+  // The page holds the issue read, as `IssuePage` reads it before it draws the outline.
+  client.setQueryData(issueQuery(KEY).queryKey, issue);
   try {
     const view = renderHook(() => useIssueTree(issue), { wrapper: bodyWrapper(client) });
     await waitFor(() => expect(moreControl()?.textContent).toBe("1,240 more rows to load"));
@@ -1749,11 +1751,14 @@ function laterPage(comments: readonly Comment[]): TreeAnswer {
 }
 
 /** Draws the page's body around the hook with the issue's keys on, as the page has them (`k` on
- *  the first row presses the control above it), and answers the node id of the outline's first
- *  row once the outline's first focus has landed on it, and how to take the body off the page. */
+ *  the first row presses the control above it), and with the issue read held, as the page holds
+ *  it before it draws a slot (`IssueOutlinePage.tsx`), so a press's page is told by the ids the
+ *  page draws (`tree-read.ts`' `nodesBrought`). Answers the node id of the outline's first row
+ *  once the outline's first focus has landed on it, and how to take the body off the page. */
 async function drawnForPress(
   client: QueryClient
 ): Promise<{ readonly held: string; readonly unmount: () => void }> {
+  client.setQueryData(issueQuery(KEY).queryKey, issue);
   const view = renderHook(
     () => {
       useKeymapScope("issue");
