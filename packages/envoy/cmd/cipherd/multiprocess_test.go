@@ -1070,20 +1070,19 @@ func TestTwoBrokers(t *testing.T) {
 			time.Since(signalled).Round(time.Millisecond), time.Since(shutdownBegan).Round(time.Millisecond))
 		// The shutdown's own record says whether it finished that request inside its budget: stop
 		// logs "broker: shutdown" with the error when srv.Shutdown's budget runs out first
-		// (boot.go). The old ten-second budget runs out while the request is still held, and
-		// logs so, though the request is still answered before the process exits, since closing
-		// the store waits for the connection the request holds.
+		// (boot.go). The old ten-second budget runs out while the request is still held, and logs
+		// so. Neither the answer nor the exit shows it: closing the store waits for the request's
+		// connection only until the request commits, and the answer it writes after that races the
+		// process's exit.
 		if gaveUp := recordsWith(solo.Process.Log(), "broker: shutdown", nil); len(gaveUp) != 0 {
 			t.Fatalf("the broker's shutdown gave up on the request it held (%v), which it held %s into the shutdown; want a shutdown budget that outlasts the old %s:\n%s",
 				gaveUp[0]["error"], holdFor, oldShutdownBudget, solo.Process.Log())
 		}
 
-		// The control, which is what makes the serving window above mean anything: the same
-		// binary, with the drain set to zero and nothing in flight, stopped by one SIGTERM. It must
-		// log that it began a drain of 0s and exit cleanly with no second signal, so the window
-		// above came from BROKER_DRAIN_SECONDS and not from a process that happens to be slow to
-		// stop. That is read from the drain the broker logs it began, not from how soon its
-		// listener went, which the machine's load sets.
+		// The control: the same binary, with the drain set to zero and nothing in flight, stopped
+		// by one SIGTERM. It must log that it began a drain of 0s and exit cleanly with no second
+		// signal. That shows BROKER_DRAIN_SECONDS reaches stop, so the drain the row ended above
+		// came from the setting and not from its 5 s default (config.Load).
 		control := startSoloBroker(t, binary, 0)
 		if status, body := mustRequest(t, control.Process.Addr, "/v1/settings"); status != http.StatusOK {
 			t.Fatalf("GET /v1/settings at the control broker %s before its signal = %d %s; want 200",
