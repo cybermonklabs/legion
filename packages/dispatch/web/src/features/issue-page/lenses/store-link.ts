@@ -125,9 +125,9 @@ export function placedStorePath(title: string): string | undefined {
  * (`storeKindOf`): with a leading `<kind>/` taken off, the address's id (`dispatch://<kind>/<id>`)
  * for a lens, a risk and a constraint. A finding (`dispatch://lens/<id>#b-<block>`) is named only
  * by its own read id, `lens/<uuid>#<block id>`, as the server's `ParseFindingID` reads a finding's
- * id: the lens's id is the part between its leading `lens/` and its last `#`, and the block id the
- * part after that `#`. A read id with no leading `lens/` or no `#`, a bare block id among them,
- * names no finding.
+ * id: the lens's id is the part between its leading `lens/` and its first `#`, and the block id
+ * all the rest, which may hold a `#` (`findingHash`). A read id with no leading `lens/` or no
+ * `#`, a bare block id among them, names no finding.
  */
 function namesNode(address: string, readId: string): boolean {
   const kind = storeKindOf(address);
@@ -135,8 +135,8 @@ function namesNode(address: string, readId: string): boolean {
     case undefined:
       return false;
     case "finding": {
-      const hash = readId.lastIndexOf("#");
-      if (!readId.startsWith("lens/") || hash === -1) return false;
+      const hash = findingHash(readId);
+      if (hash === -1) return false;
       const lens = readId.slice(0, hash);
       return storeAddressReference(storeAddressOf(kind, readId, lens)) === address;
     }
@@ -156,16 +156,24 @@ export function storeKindOf(address: string): StoreKind | undefined {
 
 /**
  * The `dispatch://` address of the node of kind `type` whose read id is `readId`: its store id
- * after its kind, and for a finding its lens's, whose read id is `lens`, with the block id after
- * the last `#` of its own. The tree read answers no address per node, so the address is built
- * from the read id: a node's read id is its store id, bare or after its kind (`lens/<uuid>`), and
- * a finding's is its lens's and its block id after a `#` (`lens/<uuid>#<block id>`), as the
- * server's `ParseFindingID` reads it.
+ * after its kind, and for a finding its lens's, whose read id is `lens`, with the block id the
+ * rest of its own after its first `#`, which may hold a `#` (`findingHash`). The tree read answers
+ * no address per node, so the address is built from the read id: a node's read id is its store
+ * id, bare or after its kind (`lens/<uuid>`), and a finding's is its lens's and its block id after
+ * a `#` (`lens/<uuid>#<block id>`), as the server's `ParseFindingID` reads it.
  */
 export function storeAddressOf(type: StoreKind, readId: string, lens = ""): string {
   if (type !== "finding") return `dispatch://${type}/${storeId(readId, type)}`;
-  const block = readId.slice(readId.lastIndexOf("#") + 1);
+  const block = readId.slice(findingHash(readId) + 1);
   return `dispatch://lens/${storeId(lens, "lens")}#b-${block}`;
+}
+
+/** Where the server's `ParseFindingID` cuts a finding's read id `readId`,
+ *  `lens/<uuid>#<block id>`: the first `#` after its leading `lens/`, before which is the lens's
+ *  read id and after which the block id, all the rest, `#` included. -1 where `readId` has no
+ *  leading `lens/` or no `#`. */
+function findingHash(readId: string): number {
+  return readId.startsWith("lens/") ? readId.indexOf("#", "lens/".length) : -1;
 }
 
 /** `id` without the kind its store address starts with (`lens/`), where it carries one. */
