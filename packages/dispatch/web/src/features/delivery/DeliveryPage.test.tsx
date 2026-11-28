@@ -408,6 +408,7 @@ const listedPR: DeliveryPR = {
   parent_agent: null,
   partial: false,
   priority: "P0",
+  priority_from: null,
   repo: "acme/widgets",
   rework: false,
   sessions: [],

@@ -20,18 +20,19 @@ import (
 // The kinds of wake report, as the daemon's decoder reads them
 // (packages/daemon/internal/intake/decode.go, decodeListenerWake).
 const (
-	// wakeKindRole is a message published to a role topic with no live holder. The Legion daemon
-	// resumes the released claim of that role token, if one of its own is released. The publish
-	// route raises it once, beside the 202 kept or the 404 it answers (reportRoleWake): a kept
-	// copy reaches the session the wake brings back inside the copy's hour, and a message sent
-	// with keep: false keeps nothing and reaches that session on its sender's next attempt. The
-	// sweep raises it again while a copy the listener kept on the role's lane has at least twenty
-	// minutes of its hour left and no live session holds the role, at most once for each role in
-	// each roleWakeInterval across every listener (publishSweptRoleWake).
+	// wakeKindRole is a message published to a role topic with no live holder that no daemon took
+	// (handOffToLegion). The Legion daemon resumes the released claim of that role token, if one of
+	// its own is released. The publish route raises it once, beside the 202 kept or the 404 it
+	// answers, and never beside a hand-off (reportRoleWake): a kept copy reaches the session the
+	// wake brings back inside the copy's hour, and a message sent with keep: false keeps nothing
+	// and reaches that session on its sender's next attempt. The sweep raises it again while a copy
+	// the listener kept on the role's lane has at least twenty minutes of its hour left and no live
+	// session holds the role, at most once for each role in each roleWakeInterval across every
+	// listener (publishSweptRoleWake).
 	wakeKindRole = "role_message"
-	// wakeKindAgent is a message sent to the agent subject of a session that has no record: an
-	// Envoy direct message, or a person's answer, comment or message a Dispatch claim routes to
-	// that session.
+	// wakeKindAgent is a message sent to the agent subject of a session that has no record, which
+	// no daemon took (handOffToLegion): an Envoy direct message, or a person's answer, comment or
+	// message a Dispatch claim routes to that session.
 	wakeKindAgent = "agent_message"
 	// wakeKindReady is this listener saying it is alive and reporting, published at its start and
 	// every listenerReadyInterval after it. The daemon releases no pod unless it has read one
@@ -179,13 +180,13 @@ func publishWakeReport(lifetime context.Context, client *bus.Client, logger *log
 
 // storeAgentWake publishes one agent wake report for sessionID on bus.LegionWakeTopic and waits
 // for the stream to store it, for at most wakeReportAttempt. It is the agent delivery's report
-// (reportNoRecordWake, reached from noRecordAgentDelivery and from unreadAgentDelivery), made
-// inside the delivery and under no lifetime but its own bound: the delivery acknowledges its
-// message only once this answers nil, and a report the stream did not store sends the message
-// back, so the next delivery tries again. It makes one attempt, and each attempt is a report with
-// an event id of its own: the daemon takes the first wake of a released role and no second one
-// (TakePodWake). A report wakeReportEnvelope cannot build answers an error, as one the stream did
-// not store does.
+// (reportNoRecordWake, reached through decideNoRecordAgentMessage from noRecordAgentDelivery and
+// from unreadAgentDelivery once no daemon took the message), made inside the delivery and under no
+// lifetime but its own bound: the delivery acknowledges its message only once this answers nil,
+// and a report the stream did not store sends the message back, so the next delivery tries again.
+// It makes one attempt, and each attempt is a report with an event id of its own: the daemon takes
+// the first wake of a released role and no second one (TakePodWake). A report wakeReportEnvelope
+// cannot build answers an error, as one the stream did not store does.
 func storeAgentWake(client *bus.Client, logger *logging.Logger, sessionID string) error {
 	eventID := id.New()
 	report := wakeReport{Kind: wakeKindAgent, Session: sessionID, At: contracts.NowMillis()}
@@ -217,7 +218,11 @@ func sweptRoleWakeID(role string, now time.Time) string {
 // made from that key (keyedEventID), so the stream stores one report for a role in each interval
 // across every listener. A listener whose report the stream already held logs it as already
 // stored and not as published, so a count of published lines is a count of stored reports. A
-// report that did not reach the stream is logged and not retried: the next sweep raises it again.
+// report that did not reach the stream is logged and not retried: the next sweep raises it again
+// while no live session holds the role and its kept lane still holds a copy that wakes it
+// (raiseKeptRoleWake, keptLaneWakesItsRole). A report the bus refuses before it sends anything,
+// because the deployed stream, as the listener's client last read its subjects, does not capture
+// bus.LegionWakeTopic (bus.ErrSubjectNotDeployed, bus.Client.PublishStoredAck), is such a report.
 func publishSweptRoleWake(lifetime context.Context, client *bus.Client, logger *logging.Logger, role string, now time.Time) {
 	if client == nil {
 		return
@@ -269,9 +274,9 @@ func newWakeReporter(lifetime context.Context, client *bus.Client) *wakeReporter
 }
 
 // report publishes one report off the caller's path. The caller is writing a 404 the report
-// owes nothing, and every role send with no holder raises one — including the common case where
-// no daemon holds a released claim of that role at all — so publishing it inline would put the
-// report's retries in front of each of those 404s.
+// owes nothing, and every role send that no holder and no daemon took raises one — including
+// the common case where no daemon holds a released claim of that role at all — so publishing it
+// inline would put the report's retries in front of each of those 404s.
 func (r *wakeReporter) report(logger *logging.Logger, report wakeReport) {
 	if r == nil || r.client == nil {
 		return
@@ -290,9 +295,9 @@ func (r *wakeReporter) report(logger *logging.Logger, report wakeReport) {
 	}()
 }
 
-// reportRoleWake reports that a message was published to role and no live session held it. The
-// role is the claim token a Legion role topic is named by, which is what the daemon matches its
-// own released claims on.
+// reportRoleWake reports that a message was published to role, no live session held it, and no
+// daemon took it. The role is the claim token a Legion role topic is named by, which is what the
+// daemon matches its own released claims on.
 func reportRoleWake(d *listenerDeps, logger *logging.Logger, role string) {
 	if d == nil || role == "" {
 		return
@@ -301,7 +306,7 @@ func reportRoleWake(d *listenerDeps, logger *logging.Logger, role string) {
 }
 
 // reportAgentWake reports, off the send route's answer, that a message was sent to the agent
-// subject of sessionID while the session had no record.
+// subject of sessionID while the session had no record, and no daemon took it.
 func reportAgentWake(wakes *wakeReporter, logger *logging.Logger, sessionID string) {
 	if sessionID == "" {
 		return

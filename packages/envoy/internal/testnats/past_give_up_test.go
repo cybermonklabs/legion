@@ -59,6 +59,7 @@ var pastGiveUpDone = regexp.MustCompile(`published and flushed \S+ past the shar
 // flush waits for the server's answer at most nats.go's own 10 s (Conn.Flush, nats.go v1.55.0
 // nats.go:6162-6164).
 func TestAConnectionAWaitMadeKeepsWorkingPastTheGiveUp(t *testing.T) {
+	t.Parallel()
 	if uri := os.Getenv(pastGiveUpChildEnv); uri != "" {
 		publishPastTheGiveUp(t, uri)
 		return

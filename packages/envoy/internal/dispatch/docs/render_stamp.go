@@ -66,9 +66,10 @@ func renderStampOf(artifactID string, tree *pmdoc.Node) RenderStamp {
 	return RenderStamp{Token: &token, Renderer: &renderer}
 }
 
-// RenderStampOf is the render stamp of a version row storing markdown, for a caller that writes
-// its version row itself rather than through writeVersionTx: an upload's and an issue's first
-// spec (api/artifacts.go, api/issue_create.go). It stamps the tree this transaction's write of
+// RenderStampOf is the render stamp of a version row storing markdown, for a version a caller
+// queues itself rather than through writeVersionTx (QueueVersion, which stamps its row with it):
+// a document's text written whole (WriteDocumentText, which an upload and CreateDocument call)
+// and an issue's first spec (api/issue_create.go). It stamps the tree this transaction's write of
 // artifactID left, and only where that tree is what markdown was rendered from, as
 // IndexDocumentReferences shares the write's rendering only where it is the version's markdown.
 // Any other markdown takes the empty stamp.

@@ -70,6 +70,10 @@ const headWaitMs = 30_000;
 const intakeBindWaitMs = 60_000;
 const pollMs = 250;
 
+/** Mirrors delivery.AttributionRuleVersion in packages/envoy/internal/dispatch/delivery/attribution.go.
+ *  Raise this version when that constant increases. */
+const attributionRuleVersion = 8;
+
 const person = "alice";
 const session = "verification-results-e2e";
 /** The repository the proof's issues resolve to, and the one the App is not installed on. */
@@ -1718,7 +1722,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     });
   }
   for (const envelope of envelopes) {
-    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule 6)`;
+    const wanted = `${envelope.want} (open at ${envelope.head.slice(0, 12)}, rule ${attributionRuleVersion})`;
     const stored = await awaitStoredHead(envelope.number, wanted);
     note(`#${envelope.number} on ${envelope.head_ref}, titled ${JSON.stringify(envelope.title)}`);
     note(`  is stored as ${stored}`);
@@ -1800,7 +1804,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     note(`#${row.number} is stored ${row.state}, credited to ${parent} by title_body under rule 1`);
   }
   for (const row of stored) {
-    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule 6)`;
+    const wanted = `${child} by title_body (${row.state} at ${row.head.slice(0, 12)}, rule ${attributionRuleVersion})`;
     const seen = await awaitStoredHead(row.number, wanted);
     note(`the reconcile re-judged #${row.number}: ${seen}`);
     if (seen !== wanted) return `#${row.number} reads ${seen} after the reconcile, want ${wanted}`;
@@ -1841,7 +1845,7 @@ await runCase("k-attribution-what-decides-a-pull-request-issue", async () => {
     updated_at: new Date().toISOString(),
     url: `https://github.com/${repo}/pull/41`,
   });
-  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule 6)`;
+  const wantedHead = `${child} by branch (open at ${commits.attributionBranchMoved.slice(0, 12)}, rule ${attributionRuleVersion})`;
   const movedHead = await awaitStoredHead(41, wantedHead);
   note(`#41 after the push is stored as ${movedHead}`);
   if (movedHead !== wantedHead) return `#41 after the push is stored as ${movedHead}`;

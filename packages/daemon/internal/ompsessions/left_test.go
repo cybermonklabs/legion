@@ -19,6 +19,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/testpg/testdb"
 	"github.com/sjawhar/legion/daemon/internal/testtmp"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -970,7 +971,7 @@ func (r *leftRun) heldAppend(ctx context.Context, client leftClient, path string
 	for shown == "" && time.Since(held) < leftRowHold {
 		var name string
 		var waiting bool
-		if err := r.watcher.QueryRow(ctx, "SELECT application_name, wait_event_type IS NOT DISTINCT FROM 'Lock' FROM pg_catalog.pg_stat_activity WHERE pid = $1",
+		if err := r.watcher.QueryRow(ctx, "SELECT application_name, "+lockwaittest.Waiting+" FROM pg_catalog.pg_stat_activity WHERE pid = $1",
 			int64(backend)).Scan(&name, &waiting); err == nil && waiting {
 			shown = name
 		} else {

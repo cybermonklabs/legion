@@ -1,8 +1,10 @@
 import { useQuery } from "@tanstack/react-query";
 import { useCallback, useSyncExternalStore } from "react";
+import { useLocation } from "react-router-dom";
 
 import { whoAmIQuery } from "../../api/queries";
 import { userPreferenceStorageKey } from "../shell/userPreference";
+import { newPageIssue } from "./new-page-parameter";
 
 /** Which page an issue's address draws for the reader: `outline` is the new issue page, `tabs`
  *  is today's. */
@@ -52,9 +54,13 @@ function storedChoice(login: string | undefined): IssuePageChoice {
  * With nobody signed in the choice is `tabs` and a write stores nothing. A write the browser
  * refuses (private mode, a full quota) changes nothing, as `recordRecent` in
  * `features/search/recents.ts` does.
+ *
+ * A signed-in reader at an issue's address that carries `?issue_page=new` (`newPageIssue`) has
+ * the new page there whatever is stored, and nothing is stored for it.
  */
 export function useIssuePageChoice(): [IssuePageChoice, (next: IssuePageChoice) => void] {
   const login = useQuery(whoAmIQuery()).data?.login;
+  const { pathname, search } = useLocation();
   const choice = useSyncExternalStore(subscribe, () => storedChoice(login));
   const choose = useCallback(
     (next: IssuePageChoice) => {
@@ -69,5 +75,6 @@ export function useIssuePageChoice(): [IssuePageChoice, (next: IssuePageChoice) 
     },
     [login]
   );
-  return [choice, choose];
+  const opened = login !== undefined && newPageIssue(pathname, search) !== undefined;
+  return [opened ? "outline" : choice, choose];
 }

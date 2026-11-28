@@ -2,7 +2,9 @@
 # Tests for `release-push.sh version`, the one version step every build job
 # calls: the tag an earlier attempt pushed, the bump release-bump.sh computes
 # since the newest tag, the npm fallback for a first release, --expect and the
-# refusals; for `release-push.sh tagged`, which finds the tag an earlier
+# refusals; for `release-push.sh version-paths`, which prints the paths of the
+# same arguments, and refuses what `version` refuses; for
+# `release-push.sh tagged`, which finds the tag an earlier
 # attempt pushed and refuses one whose name is not <prefix>X.Y.Z; for
 # `release-push.sh tag`, which makes the release tag on $GITHUB_SHA, commits
 # nothing and pushes nothing; for `release-push.sh pair-version`, which prints
@@ -22,6 +24,8 @@
 # directories with a checked build and refuses a bad one untouched; for
 # `release-push.sh handed`, which checks the version and the files a build job
 # hands a publish job and prints the release tag; for `release-push.sh
+# legion-targets`, with release.yaml's legion archive check and
+# go-release-notices.sh run over what it prints and refuses; for `release-push.sh
 # no-credential`, the build job's tripwire; for `release-push.sh fold-notes`,
 # `fold-check` and `fold-orphans`, the changelog fragments; and for
 # release.yaml's worker_image_release step, which needs the checkout this
@@ -590,6 +594,44 @@ check "--expect abc: exits 2 printing nothing" "$(is "$rc|$out" "2|")"
 check "--expect abc: the error names it" "$(contains "$err" '^::error::release-push.sh version: --expect abc is not X\.Y\.Z')"
 version_run "$clone" pkg-v --bogus -- packages/pkg/
 check "an unknown option: exits 2 printing nothing, with the usage" "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version: unknown option --bogus; usage: release-push.sh version ')" "2||true")"
+
+echo
+echo "Case 10b2: version-paths prints the paths version reads, after the options version takes"
+# version_paths_run <arg>...: runs `release-push.sh version-paths <arg>...` from $work, which is
+# no repository, since the command reads none; leaves its exit code in rc, its stdout with each
+# NUL shown as a | in out, and its stderr in err.
+version_paths_run() {
+  set +e
+  (cd "$work" && "$release_push" version-paths "$@" >"$work/version-paths.out" 2>"$work/version-paths.err")
+  rc=$?
+  set -e
+  out=$(tr '\0' '|' <"$work/version-paths.out")
+  err=$(<"$work/version-paths.err")
+}
+version_paths_run pkg-v --first-npm @example/pkg --expect 1.0.1 --patch-path docs/ -- packages/pkg/ 'a path' docs/ '*'
+check "paths: exits 0, saying nothing on stderr" "$(is "$rc|$err" '0|')"
+check "paths: prints each word after --, each ended by a NUL, and none of the options" "$(is "$out" 'packages/pkg/|a path|docs/|*|')"
+version_paths_run pkg-v --patch-path docs/ --
+check "no word after --: exits 0 printing nothing, not even a NUL" \
+  "$(is "$rc|$([ -s "$work/version-paths.out" ] && echo printed || echo empty)" '0|empty')"
+version_paths_run pkg-v --bogus -- packages/pkg/
+check "an unknown option: exits 2 printing nothing, with the usage, as version refuses it" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: unknown option --bogus; usage: release-push.sh version-paths ')" "2||true")"
+version_paths_run pkg-v packages/pkg/
+check "a path with no -- before it: exits 2 printing nothing, an unknown option as version reads it" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: unknown option packages/pkg/; usage: ')" "2||true")"
+version_paths_run pkg-v --patch-path
+check "an option without its value: exits 2 printing nothing" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: --patch-path needs a value; usage: ')" "2||true")"
+version_paths_run pkg-v --expect abc -- packages/pkg/
+check "--expect abc: exits 2 printing nothing, as version refuses it" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: --expect abc is not X\.Y\.Z')" "2||true")"
+version_paths_run 'pkg v' -- packages/pkg/
+check "a prefix with a space: exits 2 printing nothing" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: tag prefix pkg\\ v holds more than letters, digits')" "2||true")"
+version_paths_run
+check "no tag prefix: exits 2 printing nothing" \
+  "$(is "$rc|$out|$(contains "$err" '^::error::release-push.sh version-paths: a tag prefix is needed; usage: ')" "2||true")"
 
 echo
 echo "Case 10c: tag makes the release tag on \$GITHUB_SHA, committing nothing and pushing nothing"
@@ -1891,6 +1933,129 @@ set -e
 refused "no file to check"
 
 echo
+echo "Case: legion-targets prints the legion targets, one a line, and refuses one that is not <os>/<arch>"
+# A copy of the script reads the list beside it, at ../go-release-targets.json, as the checkout's
+# own copy does.
+lt="$work/legion-targets"
+mkdir -p "$lt/.github/scripts"
+cp "$release_push" "$lt/.github/scripts/release-push.sh"
+# legion_targets_run <legion value>: the copy's target list with <legion value> as its legion key,
+# then legion-targets; leaves rc, out (stdout) and err (stderr).
+legion_targets_run() {
+  printf '{\n  "legion": %s,\n  "envoy": ["amd64"]\n}\n' "$1" > "$lt/.github/go-release-targets.json"
+  set +e
+  out=$("$lt/.github/scripts/release-push.sh" legion-targets 2>"$lt/err")
+  rc=$?
+  set -e
+  err=$(<"$lt/err")
+}
+legion_targets_run '["linux/amd64", "darwin/arm64"]'
+check "the real shape: exits 0, printing each target on a line of its own in the list's order" \
+  "$(is "$rc|$out|$err" $'0|linux/amd64\ndarwin/arm64|')"
+# The one message an empty list gets, at every caller.
+empty_list='::error file=.github/go-release-targets.json::release-push.sh legion-targets: .github/go-release-targets.json lists no legion target; refusing the list'
+legion_targets_run '[]'
+check "an empty list: exits 1 printing nothing, saying so" "$(is "$rc|$out|$err" "1||$empty_list")"
+# Each entry is named as JSON, so an empty one, a padded one and one holding a newline are seen.
+for entry in '""' '" darwin/arm64"' '"darwin/arm64 "' '"/arm64"' '"darwin/"' '"linux/amd64/v3"' \
+  '"Linux/amd64"' '"linux/amd64\ndarwin/arm64"' '1' 'null' '["darwin/arm64"]'; do
+  legion_targets_run "[\"linux/amd64\", $entry]"
+  check "the entry $entry: exits 1 printing nothing, naming it" \
+    "$(is "$rc|$out|$err" "1||::error file=.github/go-release-targets.json::release-push.sh legion-targets: the legion target $entry is not <os>/<arch>, two names of lower-case letters and digits on each side of one /; refusing the list")"
+done
+legion_targets_run '"linux/amd64"'
+check "a legion key that is no list: exits 1 printing nothing, saying it could not read it" \
+  "$(is "$rc|$out|$(contains "$err" '^::error file=\.github/go-release-targets\.json::release-push\.sh legion-targets: could not read the legion targets of .*its legion key is no list')" '1||true')"
+# A file jq cannot read and a file with no legion key are refused as a missing file is.
+for form in 'not json' '{"envoy": ["amd64"]}'; do
+  printf '%s\n' "$form" > "$lt/.github/go-release-targets.json"
+  set +e
+  out=$("$lt/.github/scripts/release-push.sh" legion-targets 2>"$lt/err")
+  rc=$?
+  set -e
+  check "a target list of $form: exits 1 printing nothing, saying it could not read it" \
+    "$(is "$rc|$out|$(contains "$(<"$lt/err")" '^::error file=\.github/go-release-targets\.json::release-push\.sh legion-targets: could not read the legion targets of ')" '1||true')"
+done
+rm "$lt/.github/go-release-targets.json"
+set +e
+out=$("$lt/.github/scripts/release-push.sh" legion-targets 2>"$lt/err")
+rc=$?
+set -e
+check "no target list: exits 1 printing nothing, saying it could not read it" \
+  "$(is "$rc|$out|$(contains "$(<"$lt/err")" '^::error file=\.github/go-release-targets\.json::release-push\.sh legion-targets: could not read the legion targets of ')" '1||true')"
+set +e
+out=$("$lt/.github/scripts/release-push.sh" legion-targets extra 2>"$lt/err")
+rc=$?
+set -e
+check "an argument: exits 1 printing nothing, with the usage" \
+  "$(is "$rc|$out|$(contains "$(<"$lt/err")" '^::error::release-push.sh legion-targets takes no argument; usage: release-push.sh legion-targets$')" '1||true')"
+
+echo
+echo "Case: release.yaml's legion archive check names the archives after legion-targets"
+# The step's own run: text, run as the publish job runs it: from a checkout of the run's commit,
+# with the archives the build job handed over in $RUNNER_TEMP/legion-assets. Each list is
+# committed, since the step checks the commit out again before it reads it.
+archive_step=$(workflow_step_run publish "\"legion: Check build's archives and write SHA256SUMS\"")
+check "the step reads the targets through the checkout's release-push.sh legion-targets" \
+  "$(contains "$archive_step" '"\$GITHUB_WORKSPACE/\.github/scripts/release-push\.sh" legion-targets')"
+pub="$work/legion-archives"
+mkdir -p "$pub/repo/.github/scripts"
+git init -q -b main "$pub/repo"
+identity "$pub/repo"
+cp "$release_push" "$pub/repo/.github/scripts/release-push.sh"
+# archive_step_run <legion value>: commits the target list with <legion value> as its legion key,
+# then runs the step over a handed linux/amd64 and darwin/arm64 archive; leaves rc, out (combined)
+# and what it wrote to $GITHUB_OUTPUT in outputs.
+archive_step_run() {
+  local archive
+  printf '{\n  "legion": %s,\n  "envoy": ["amd64"]\n}\n' "$1" > "$pub/repo/.github/go-release-targets.json"
+  git -C "$pub/repo" add -A
+  git -C "$pub/repo" commit -q --allow-empty -m "targets $1"
+  rm -rf "$pub/temp"
+  mkdir -p "$pub/temp/legion-assets"
+  for archive in legion-linux-amd64.tar.gz legion-darwin-arm64.tar.gz; do
+    printf 'archive %s\n' "$archive" > "$pub/temp/legion-assets/$archive"
+  done
+  : > "$pub/output"
+  set +e
+  out=$(cd "$pub/repo" && env GITHUB_WORKSPACE="$pub/repo" GITHUB_SHA="$(git -C "$pub/repo" rev-parse HEAD)" \
+    RUNNER_TEMP="$pub/temp" GITHUB_OUTPUT="$pub/output" VERSION=1.2.3 bash -e -o pipefail -c "$archive_step" 2>&1)
+  rc=$?
+  set -e
+  outputs=$(<"$pub/output")
+}
+archive_step_run '["linux/amd64", "darwin/arm64"]'
+check "the real list: exits 0 with the tag, both archives as subjects and SHA256SUMS over them" \
+  "$(is "$rc|$(sed -n 1p <<<"$outputs")|$(sed -n '3,4p' <<<"$outputs")|$(cut -d' ' -f3 "$pub/temp/legion-assets/SHA256SUMS" | tr '\n' ' ')" \
+    "0|tag=legion-v1.2.3|$pub/temp/legion-assets/legion-linux-amd64.tar.gz"$'\n'"$pub/temp/legion-assets/legion-darwin-arm64.tar.gz|legion-linux-amd64.tar.gz legion-darwin-arm64.tar.gz ")"
+archive_step_run '["linux/amd64", " darwin/arm64"]'
+check "a padded target: exits 1 naming it, with no output" \
+  "$(is "$rc|$(contains "$out" 'release-push.sh legion-targets: the legion target " darwin/arm64" is not <os>/<arch>')|$outputs" '1|true|')"
+archive_step_run '["linux/amd64", "", "darwin/arm64"]'
+check "an empty target: exits 1 naming it, with no output" \
+  "$(is "$rc|$(contains "$out" 'release-push.sh legion-targets: the legion target "" is not <os>/<arch>')|$outputs" '1|true|')"
+archive_step_run '[]'
+check "no legion target: exits 1 with legion-targets' message, with no output" \
+  "$(is "$rc|$(contains "$out" "^$empty_list\$")|$outputs" '1|true|')"
+
+echo
+echo "Case: go-release-notices.sh reads its legion targets through legion-targets"
+# The script, and release-push.sh beside it, symlinked into a tree whose legion list is empty: it
+# stops with legion-targets' refusal before it writes a notice. (The notices themselves need Go
+# and the modules; lint's notices step writes them on every pull request the filter selects.)
+nf="$work/notices-empty"
+mkdir -p "$nf/.github/scripts"
+ln -s "$script_dir/go-release-notices.sh" "$nf/.github/scripts/go-release-notices.sh"
+ln -s "$release_push" "$nf/.github/scripts/release-push.sh"
+printf '{\n  "legion": [],\n  "envoy": []\n}\n' > "$nf/.github/go-release-targets.json"
+set +e
+out=$("$nf/.github/scripts/go-release-notices.sh" "$nf/notices" 2>&1)
+rc=$?
+set -e
+check "an empty legion list: exits 1 with legion-targets' message, writing no notice" \
+  "$(is "$rc|$(contains "$out" "^$empty_list\$")|$(find "$nf/notices" -type f 2>/dev/null | wc -l)" '1|true|0')"
+
+echo
 echo "Case: no-credential names a reachable credential and never shows it"
 # Each case runs the tripwire from a clean clone under an environment of only PATH, a throwaway
 # HOME and the hermetic git settings, plants one credential at a time and checks the output names
@@ -2462,4 +2627,4 @@ latest_read "err:ERROR: ghcr.io/example/repo/envoy:sha-1: not found"
 check "the missing-tag line of another reference is no answer about this one" \
   "$(is "$rc|$(contains "$out" '^no latest image$')" "1|false")"
 
-summary "release-push.sh version, tagged, tag, pair-version, release, release-section, push-tag, the leak guard over all six of their writes to GitHub, check-built, extract-built, handed, no-credential, fold-notes, fold-check and fold-orphans, release.yaml's worker_image_release step, and the image read of release-envoy-listener.yaml's Determine latest step"
+summary "release-push.sh version, tagged, tag, pair-version, release, release-section, push-tag, the leak guard over all six of their writes to GitHub, check-built, extract-built, handed, legion-targets, no-credential, fold-notes, fold-check and fold-orphans, release.yaml's legion archive check and worker_image_release step, go-release-notices.sh's legion read, and the image read of release-envoy-listener.yaml's Determine latest step"

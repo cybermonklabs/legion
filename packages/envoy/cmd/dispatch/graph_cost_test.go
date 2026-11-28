@@ -57,6 +57,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/testpool"
 )
 
@@ -132,12 +133,12 @@ func startCostArms(t *testing.T, envoyURL string) (*costArm, *costArm) {
 	return head, base
 }
 
-// startCostArm starts one arm on an empty database of its own. The database is empty rather
-// than storetest's clone of a migrated template, because each build has to run its own
-// migrations on it: that is what makes the older arm the older schema.
+// startCostArm starts one arm on an empty database of its own (storetest.Empty). The database is
+// empty rather than storetest's clone of a migrated template, because each build has to run its
+// own migrations on it: that is what makes the older arm the older schema.
 func startCostArm(t *testing.T, name string, head bool, options dispatchOptions) *costArm {
 	t.Helper()
-	databaseURL := censusDatabase(t)
+	databaseURL := storetest.Empty(t)
 	pool, err := testpool.NewPool(context.Background(), databaseURL)
 	if err != nil {
 		t.Fatalf("open %s's own connections: %v", name, err)
@@ -148,12 +149,15 @@ func startCostArm(t *testing.T, name string, head bool, options dispatchOptions)
 	return &costArm{name: name, head: head, server: server, databaseURL: databaseURL, pool: pool}
 }
 
-// costDatabaseName is the database a URL names, for the line that says which arm served which.
+// costDatabaseName is the database a URL names, for the line that says which arm served which:
+// the URL's path, without the query the test server's URL carries (testdb's connect_timeout) and
+// without the credential the URL carries, which a test prints nowhere.
 func costDatabaseName(databaseURL string) string {
-	if cut := strings.LastIndex(databaseURL, "/"); cut >= 0 {
-		return databaseURL[cut+1:]
+	parsed, err := url.Parse(databaseURL)
+	if err != nil {
+		return "a database whose URL does not parse"
 	}
-	return databaseURL
+	return strings.TrimPrefix(parsed.Path, "/")
 }
 
 // costListener is a stub of the Envoy listener a comment delivery sends through: it answers the
