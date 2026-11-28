@@ -106,10 +106,12 @@ type dispatchDatabase struct {
 	// principal://iam.googleapis.com/projects/<project number>/locations/global/workloadIdentityPools/<pool>:
 	// principal adds /subject/ns/<namespace>/sa/<hostname>, a ServiceAccount by its name, and
 	// newDispatchSeedGrantByUID adds /kubernetes.serviceaccount.uid/<uid>, one by its uid.
-	poolRoot     pulumi.StringOutput
-	seedAccessor *secretmanager.SecretIamMember
-	// listenerSeedAccessor is the NATS seed's grant to the listener's own account,
-	// ServiceAccount <hostname>-listener, the one grant that account holds.
+	poolRoot pulumi.StringOutput
+	// seedAccessor is the NATS seed's grant by name to the app's account, and listenerSeedAccessor
+	// its grant to the listener's own account, ServiceAccount <hostname>-listener, the one grant
+	// that account holds. Both are nil with natsAudience, where no pod mounts the seed
+	// (newDispatchNATSCredential).
+	seedAccessor         *secretmanager.SecretIamMember
 	listenerSeedAccessor *secretmanager.SecretIamMember
 	// azureKeyAccessor is set only with azureEmbedKeySecret, and chatTokenAccessor only with
 	// chatTokenSecret: each is the per-secret grant that one feature's mounted secret needs.
@@ -434,17 +436,23 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 		return pulumi.Sprintf("%s/subject/ns/%s/sa/%s", poolRoot, s.namespace, account)
 	}
 	principal := principalOf(s.hostname)
-	seedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn(cloud.waitFor))
-	if err != nil {
-		return nil, err
-	}
-	// The listener runs as an account of its own, <hostname>-listener, so that no listener pod can
-	// project a token naming the app's account, the one principal the listener takes a send's role
-	// mark from (ENVOY_DISPATCH_PRINCIPAL). The NATS seed it mounts is granted to that account too,
-	// and nothing else is.
-	listenerSeedAccessor, err := secretmanager.NewSecretIamMember(ctx, s.hostname+"-listener-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principalOf(s.hostname + "-listener")}, child, pulumi.DependsOn(cloud.waitFor))
-	if err != nil {
-		return nil, err
+	// The NATS seed is granted only where the pods mount it: with natsAudience each pod presents its
+	// own account's projected token instead (newDispatchNATSCredential), and nothing of the seed is
+	// mounted, classed or granted.
+	var seedAccessor, listenerSeedAccessor *secretmanager.SecretIamMember
+	if s.natsAudience == "" {
+		seedAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principal}, child, pulumi.DependsOn(cloud.waitFor))
+		if err != nil {
+			return nil, err
+		}
+		// The listener runs as an account of its own, <hostname>-listener, so that no listener pod
+		// can project a token naming the app's account, the one principal the listener takes a
+		// send's role mark from (ENVOY_DISPATCH_PRINCIPAL). The NATS seed it mounts is granted to
+		// that account too, and nothing else is.
+		listenerSeedAccessor, err = secretmanager.NewSecretIamMember(ctx, s.hostname+"-listener-nats-seed-accessor", &secretmanager.SecretIamMemberArgs{SecretId: refuseDispatchSeed(args.NatsSeedSecret, dispatch, "natsSeedSecret"), Role: pulumi.String("roles/secretmanager.secretAccessor"), Member: principalOf(s.hostname + "-listener")}, child, pulumi.DependsOn(cloud.waitFor))
+		if err != nil {
+			return nil, err
+		}
 	}
 	var azureKeyAccessor *secretmanager.SecretIamMember
 	if s.azure.key {
@@ -473,15 +481,16 @@ func newDispatchDatabase(ctx *pulumi.Context, comp *Dispatch, name string, args 
 }
 
 // dispatchServiceAccountUID is account's metadata.uid as the cluster's API server gave it, the
-// one check of that value: the NATS seed's grant by uid and the serviceAccountUid output both take
-// it from here. In an update an account with no uid fails the apply, naming it, since no grant can
-// name it by uid. In a preview, pulumi-kubernetes' Create answers a ServiceAccount it cannot
-// dry-run with the registered inputs alone, which hold metadata and no uid: a namespace the same
-// update creates (turning Dispatch on after clusterOnly, the move onto existingCluster without
-// existingNamespace, a change of namespace), a cluster the preview cannot reach, or server-side
-// apply's AlreadyExists. There the uid is unknown, and so is everything built from it, rather than
-// a refusal that would fail the preview and so `pulumi up`. A dry run that succeeds answers a
-// dry-run uid, which the create replaces.
+// one check of that value: the NATS seed's grants by uid and the serviceAccountUid output both take
+// it from here, the app's account's in either mode and the listener's only without natsAudience,
+// where its seed grant reads it. In an update an account with no uid fails the apply, naming it,
+// since no grant can name it by uid. In a preview, pulumi-kubernetes' Create answers a
+// ServiceAccount it cannot dry-run with the registered inputs alone, which hold metadata and no
+// uid: a namespace the same update creates (turning Dispatch on after clusterOnly, the move onto
+// existingCluster without existingNamespace, a change of namespace), a cluster the preview cannot
+// reach, or server-side apply's AlreadyExists. There the uid is unknown, and so is everything built
+// from it, rather than a refusal that would fail the preview and so `pulumi up`. A dry run that
+// succeeds answers a dry-run uid, which the create replaces.
 func dispatchServiceAccountUID(ctx *pulumi.Context, dispatch, accountName string, account *corev1.ServiceAccount) pulumi.StringOutput {
 	return account.Metadata.Uid().ApplyT(func(uid *string) (pulumi.StringOutput, error) {
 		switch {
@@ -496,10 +505,11 @@ func dispatchServiceAccountUID(ctx *pulumi.Context, dispatch, accountName string
 
 // newDispatchSeedGrantByUID registers the NATS seed's grant that names ServiceAccount accountName
 // by uid, SecretIamMember <accountName>-nats-seed-uid-accessor, roles/secretmanager.secretAccessor
-// on natsSeedSecret alone, beside the grant by name that newDispatchDatabase registers. A member
-// by name, <pool>/subject/ns/<namespace>/sa/<name>, is every pod that runs as a ServiceAccount of
-// that namespace and name in any cluster of the project's pool, so whoever can make one in
-// another cluster of the project reads the seed. A member by uid,
+// on natsSeedSecret alone, beside the grant by name that newDispatchDatabase registers; with
+// natsAudience neither is registered (newDispatchNATSCredential). A member by name,
+// <pool>/subject/ns/<namespace>/sa/<name>, is every pod that runs as a ServiceAccount of that
+// namespace and name in any cluster of the project's pool, so whoever can make one in another
+// cluster of the project reads the seed. A member by uid,
 // <pool>/kubernetes.serviceaccount.uid/<uid>, is the one object the cluster's API server gave
 // that uid; uid is dispatchServiceAccountUID's, so the grant registers after its account, and an
 // account made again, which gets a new uid, replaces it. The grants by name stay in this release,

@@ -1,11 +1,12 @@
 package gcp
 
-// The Dispatch deployment's listener container: its NATS, seed and API-token environment
-// (dispatchListenerEnv), the part of it that verifies Dispatch's own identity and takes a send's
-// role mark from it alone, and the app's projected token for the listener's audience.
+// The Dispatch deployment's listener container: its NATS, NATS-credential and API-token
+// environment (dispatchListenerEnv), the part of it that verifies Dispatch's own identity and takes
+// a send's role mark from it alone, and the app's projected token for the listener's audience.
 
 import (
 	"errors"
+	"strconv"
 	"strings"
 
 	corev1 "github.com/pulumi/pulumi-kubernetes/sdk/v4/go/kubernetes/core/v1"
@@ -26,11 +27,13 @@ import (
 // streamMaxBytes, the sender limit and consumerNames reach no refusal of core's own, since
 // newDispatchSettings bounds them more tightly (1 to bus.MaxReplicas, at least 1,
 // core.CheckSenderLimit and core.CheckConsumerNames) before anything registers, which is why every
-// refusal that is not socks5Proxy's is natsUrl's.
+// refusal that is not socks5Proxy's is natsUrl's. The NATS credential is nats's
+// (newDispatchNATSCredential): its one variable, the seed's file or, with natsAudience, the
+// projected token's, follows core's rendering, in the place the seed's always held.
 // The listener serves on every address of its pod, and its API refuses to start on a non-loopback
 // listen host without a bearer (packages/envoy/cmd/listener/apiauth.go), so the environment names
 // the bearer in Secret listenerSecret.
-func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1.EnvVarArray, error) {
+func dispatchListenerEnv(s dispatchSettings, nats dispatchNATSCredential, listenerSecret, url string) (corev1.EnvVarArray, error) {
 	if s.natsInCluster && bus.LocalNATSURL(url) {
 		return nil, core.InputErrorf("natsUrl", "natsUrl names a local NATS server; with natsInCluster the pods dial it directly, so the URL must name the hub's in-cluster Service")
 	}
@@ -53,7 +56,7 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1
 		return nil, core.InputErrorf("natsUrl", "%s", strings.ReplaceAll(err.Error(), "natsUrls[0]", "natsUrl"))
 	}
 	values := envVars(env)
-	values = append(values, valueEnv("NATS_NKEY_SEED_FILE", "/var/run/secrets/envoy/nats-seed"))
+	values = append(values, nats.env)
 	values = append(values, secretEnv("ENVOY_API_TOKEN", listenerSecret, "ENVOY_API_TOKEN"))
 	return values, nil
 }
@@ -64,6 +67,13 @@ func dispatchListenerEnv(s dispatchSettings, listenerSecret, url string) (corev1
 // ENVOY_DISPATCH_PRINCIPAL.
 func dispatchServiceAccountSubject(s dispatchSettings) string {
 	return "system:serviceaccount:" + s.namespace + ":" + s.hostname
+}
+
+// dispatchListenerURL is the listener's own Service address, the one URL every caller reaches it
+// at: the app's ENVOY_URL, and the audience of the app's projected token for it, which the
+// listener verifies as its ENVOY_OIDC_AUDIENCE.
+func dispatchListenerURL(s dispatchSettings) string {
+	return "http://" + clusterLocal(s.hostname+"-listener", s.namespace) + ":" + strconv.Itoa(core.DefaultListenerPort)
 }
 
 // dispatchAccountTokenDir is where envoy-dispatch mounts its projected token for the listener's

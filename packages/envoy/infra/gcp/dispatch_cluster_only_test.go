@@ -184,6 +184,7 @@ func dispatchClusterOnlyRefusals() []dispatchInput {
 		{"natsSeedSecret", func(a *gcp.DispatchArgs) {
 			a.NatsSeedSecret = pulumi.String("projects/example-project/secrets/example-nats-seed")
 		}},
+		{"natsAudience", func(a *gcp.DispatchArgs) { a.NatsAudience = dispatchNatsAudience }},
 		{"agentSecretsUrl", func(a *gcp.DispatchArgs) { a.AgentSecretsUrl = "https://example-broker.internal.example" }},
 		{"agentSecretsAudience", func(a *gcp.DispatchArgs) { a.AgentSecretsAudience = "example-broker-audience" }},
 		{"oidcAudience", func(a *gcp.DispatchArgs) { a.OidcAudience = dispatchOidcAudience }},

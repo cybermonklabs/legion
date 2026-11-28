@@ -259,6 +259,13 @@ func TestSchemaServesTheDispatchComponentWithItsSecrets(t *testing.T) {
 	require.Equal(t, "string", dispatch.InputProperties["verdictAppId"].Type)
 	require.False(t, dispatch.InputProperties["verdictAppId"].Secret)
 	require.NotContains(t, dispatch.RequiredInputs, "verdictAppId")
+	// natsAudience, the audience of the projected token each of Dispatch's pods presents to the
+	// NATS auth service in natsSeedSecret's place, is an optional plain string and no secret: the
+	// broker and the kubelet both read it, and it admits nothing by itself.
+	require.Equal(t, "string", dispatch.InputProperties["natsAudience"].Type)
+	require.True(t, dispatch.InputProperties["natsAudience"].Plain)
+	require.False(t, dispatch.InputProperties["natsAudience"].Secret)
+	require.NotContains(t, dispatch.RequiredInputs, "natsAudience")
 	// The Azure embedder's inputs are references and identifiers, never the key: the key form
 	// takes a Secret Manager path, the keyless form a tenant and a client id.
 	for _, input := range []string{
