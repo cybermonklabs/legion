@@ -27,6 +27,11 @@ are written into the address, so a link shows the same figures to whoever opens 
 across the timeline narrows the measures to the stretch you dragged over; the timeline itself
 keeps the whole window. **clear brush window** puts the measures back.
 
+The **Priority** filter reads the priority that a pull request's Dispatch issue works at: its own,
+or the one it inherits from the nearest issue above it that has one (see
+[Priority](/legion/dispatch/issues-and-projects/#priority)). The list and the details show an
+inherited priority with the issue it comes from, such as `ACME-2 · P0 · from ACME-1`.
+
 ## Live updates
 
 An open Delivery or Pipeline page keeps itself current over one connection to Dispatch. A merge
@@ -98,9 +103,9 @@ newest day first; a day the window only partly covers is marked partial.
   pull requests merged in the window.
 - **Deploy runs reaching production**: runs that reached the production job, over runs that
   concluded success or failure. A cancelled run is not an attempt, and the card counts it apart.
-- **P0 issues with no owner**: open issues of priority P0 with neither a claim nor a route, in
-  every project. It follows neither the window nor the filters, and each issue on the card links
-  to it.
+- **P0 issues with no owner**: open issues that work at P0, by a priority of their own or one they
+  inherit from an issue above them, with neither a claim nor a route, in every project. It follows
+  neither the window nor the filters, and each issue on the card links to it.
 
 The filters narrow every figure drawn from pull requests: lead time, rework share and the per-pull
 request failure rate. Deploys and runs follow the window alone, and a deploy counts as one that

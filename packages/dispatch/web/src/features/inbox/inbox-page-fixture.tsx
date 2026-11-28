@@ -59,6 +59,8 @@ export function narrowIssueOf(row: InboxRow, assignee: string | null): Issue {
     decisions_artifact_id: "",
     primary_artifact_id: "artifact-3",
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     project: "CORE",
     rank: "U",
     route: null,

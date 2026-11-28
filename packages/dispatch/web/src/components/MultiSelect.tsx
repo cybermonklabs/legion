@@ -194,6 +194,10 @@ interface SharedProps {
    *  name starts with it in place of `label`, before what the trigger shows. */
   readonly triggerAriaLabel?: string;
   readonly triggerClassName?: string;
+  /** The id of an element whose words describe the trigger (`aria-describedby`), heard after its
+   *  name: words the trigger does not show, as the priority's "P0, from ACME-1" for a level it
+   *  inherits, whose badge shows P0 alone (`PriorityControl.tsx`). */
+  readonly triggerDescribedBy?: string;
   /** Classes for the element that holds the trigger's text, beside the chevron: where a trigger
    *  stands in a `<select>`'s place and has to take its box, the text's line is the place to
    *  say so (`features/settings/classes.ts`, `settingsListText`). */
@@ -286,6 +290,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
     size,
     triggerAriaLabel,
     triggerClassName,
+    triggerDescribedBy,
     triggerTextClassName = "",
     triggerTitle,
   } = props;
@@ -747,6 +752,7 @@ export function MultiSelect(props: MultiSelectProps): ReactNode {
       ) : null}
       <button
         aria-controls={open ? panelId : undefined}
+        aria-describedby={triggerDescribedBy}
         aria-disabled={ariaDisabled || undefined}
         aria-expanded={open}
         aria-haspopup="listbox"

@@ -2125,6 +2125,8 @@ test("AskCard restores its inbox entry if an optimistic answer fails", async () 
     ...input,
     last_reply: null,
     priority: null,
+    priority_from: null,
+    resolved_priority: null,
     snoozed_until: null,
     thread: {
       answers: [],
@@ -3112,6 +3114,8 @@ test("a document ask links its project and document page", async () => {
       ...input,
       last_reply: null,
       priority: null,
+      priority_from: null,
+      resolved_priority: null,
       snoozed_until: null,
       thread: {
         answers: [],

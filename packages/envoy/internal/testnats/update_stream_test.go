@@ -32,6 +32,7 @@ const updateReturnBound = jetStreamWait / 2
 // two stopped for twice jetStreamWait, past any helper that waits that wait out, so such a helper
 // returns while the group still has no leader and fails the bound by name.
 func TestAnUpdateSentWhileTheStreamElectsItsLeaderIsFoundByARead(t *testing.T) {
+	t.Parallel()
 	const stream = "ELECTING"
 	cluster := StartCluster(t, 5)
 	cluster.CreateStream(t, natsgo.StreamConfig{Name: stream, Subjects: []string{"electing.>"}, Replicas: 3, Storage: natsgo.FileStorage})
@@ -114,6 +115,7 @@ func givingUpIn(t testing.TB, d time.Duration) deadlineRecorder {
 // An update that never lands fails the test once the shared wait gives up (the test's deadline
 // less testwait's margin), and not before, naming the stream and the setting no read held.
 func TestAnUpdateThatNeverLandsFailsAtTheTestsDeadlineNamingTheStreamAndTheSetting(t *testing.T) {
+	t.Parallel()
 	const stream, waited = "NEVER", 2 * time.Second
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
@@ -163,6 +165,7 @@ const refusalWait = 5 * time.Second
 // longer fails on a refusal gives up on its read-back at that deadline and the row fails by name,
 // not at go test's own timeout.
 func TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal(t *testing.T) {
+	t.Parallel()
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
@@ -226,6 +229,7 @@ const resentWait = 10 * time.Second
 // An update answered with a 503, which no member applied, is sent again, one read wait later, and
 // lands; every other refusal still fails at once (TestUpdateStreamReturnsTheAnswerAndFailsOnARefusal).
 func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
+	t.Parallel()
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
@@ -259,6 +263,7 @@ func TestAnUpdateAnsweredWithA503IsSentAgainAndLands(t *testing.T) {
 // An update answered with a 503 that is not the leaderless one, insufficient resources (10023), is
 // a refusal: it fails the test at once with the server's answer, and is not sent again.
 func TestAnUpdateAnsweredWithAnother503IsARefusal(t *testing.T) {
+	t.Parallel()
 	conn := Connect(t, URL(t))
 	t.Cleanup(conn.Close)
 	js, err := conn.JetStream()
@@ -293,6 +298,7 @@ func TestAnUpdateAnsweredWithAnother503IsARefusal(t *testing.T) {
 // jetStreamWait; a read it answers sets the next to three times that read's own time, never under
 // firstUpdateReadWait.
 func TestUpdateStreamsReadWaitDoublesAfterALostReadAndFollowsAnAnsweredOne(t *testing.T) {
+	t.Parallel()
 	limit := &updateReadLimit{limit: firstUpdateReadWait}
 	limit.lost()
 	if limit.limit != 2*firstUpdateReadWait {
@@ -342,6 +348,7 @@ const slowLinkWait = 40 * time.Second
 // (updateReadLimit) finds the update. A read-back that keeps firstUpdateReadWait cuts every read
 // before its answer and gives up at slowLinkWait.
 func TestAReadBackOverALinkSlowerThanTheFirstReadWaitFindsTheUpdate(t *testing.T) {
+	t.Parallel()
 	uri := URL(t)
 	direct := Connect(t, uri)
 	t.Cleanup(direct.Close)

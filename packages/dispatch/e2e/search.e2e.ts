@@ -18,7 +18,8 @@ import { asUser } from "./users";
  * The search palette, in the rows whose claim is what the index found: the grouped hits and
  * their marks, an ask hit's own answer, and the two routes a hit opens. The keyboard-hints row
  * is here too: it is read in the desktop and the phone configurations at once, and a stubbed
- * row runs in one of them. What the palette draws over one fixed answer is in
+ * row runs in one of them. So is the row of a search the server cut at its bound, whose claim
+ * is how many requests the app sends for it. What the palette draws over one fixed answer is in
  * `search.stub.e2e.ts`, and the fixture both files read is in `search.ts`.
  */
 
@@ -630,6 +631,89 @@ test("a project-document hit is grouped under the document and opens it; a messa
     );
     await expect(documentEditor(page)).toContainText("sextant");
   } finally {
+    await context.close();
+  }
+});
+
+// A search statement that runs past the server's 15 s bound answers `503 SEARCH_TIMEOUT`, and
+// sending it again on its own costs the database the bound again and finds nothing more, so the
+// app never does: the query retry policy skips automatic retry for it (`isSearchTimeout`, which
+// `isRetryableQueryError` exempts, web/src/api/client.ts), where it retries every other failure
+// that function counts retryable twice, or `503 EVENT_HEAD_UNAVAILABLE` for as long as it lasts
+// (`queryRetry`), and no focus of the tab, return of the network, interval or refresh of the live
+// feed sends it either (`heldAfterSearchTimeout`, both in web/src/api/query-client.ts). A reader's
+// Retry, a palette reopened and the words typed, the words typed again or a changed query is a
+// new search.
+//
+// The route answers every search of the term itself: no seeding makes a statement run 15 s. The
+// bar sends two searches of it (`useTieredSearch`): the keystroke's, which asks for the keyword
+// leg alone (`keywords_only=true`, on /api/v1/search/results), and the pause's, which asks for
+// meaning too (/api/v1/search). The list is the keystroke's until the pause's search has an
+// answer, which it never has here, so "Search failed." and its Retry are the keystroke's, and
+// the requests counted are that search's. The bar draws the failure only once the app has given
+// the search up, every retry its policy makes included, so the count read beside it is settled.
+test("a search answered 503 SEARCH_TIMEOUT is sent once and says Search failed. with Retry, and Retry sends it once more", async ({
+  browser,
+}) => {
+  const context = await asUser(browser, "alice");
+  const page = await context.newPage();
+  const timedOut = {
+    body: JSON.stringify({
+      code: "SEARCH_TIMEOUT",
+      error:
+        "the search statement ran past its 15s bound, so nothing was found; try again later or narrow the query",
+    }),
+    contentType: "application/json",
+    status: 503,
+  };
+  let keystrokeSearches = 0;
+  let pauseSearches = 0;
+  // Set as Retry is clicked: from then on a request of the search is held until the bar has let
+  // go of the first failure, so the failure read after it is the second answer's and not the
+  // first one still drawn. Set no earlier, so a retry the app made on its own goes through.
+  let holdingRetry = false;
+  const retryHeld = Promise.withResolvers<void>();
+  try {
+    await page.route(
+      ({ pathname }) => pathname === "/api/v1/search/results" || pathname === "/api/v1/search",
+      async (route) => {
+        const asked = new URL(route.request().url()).searchParams;
+        if (asked.get("q") !== searchTerm) return route.fallback();
+        if (asked.get("keywords_only") === "true") {
+          keystrokeSearches += 1;
+          if (holdingRetry) await retryHeld.promise;
+        } else {
+          pauseSearches += 1;
+        }
+        await route.fulfill(timedOut);
+      }
+    );
+    await openSearchFromRail(page, false);
+    await page.getByRole("combobox", { name: "Search" }).fill(searchTerm);
+
+    const dialog = page.getByRole("dialog", { name: "Search" });
+    const failed = dialog.getByRole("alert");
+    const retry = failed.getByRole("button", { name: "Retry" });
+    await expect(failed).toContainText("Search failed.");
+    await expect(retry).toBeEnabled();
+    expect(keystrokeSearches, "requests of the search before the bar said it failed").toBe(1);
+
+    // Retry asks again for the search the list shows, and the bar waits on it in place of the
+    // failure until it answers.
+    holdingRetry = true;
+    await retry.click();
+    await expect.poll(() => keystrokeSearches).toBe(2);
+    await expect(dialog.getByText("Searching…")).toBeVisible();
+    await expect(failed).toHaveCount(0);
+    retryHeld.resolve();
+    await expect(failed).toContainText("Search failed.");
+    await expect(retry).toBeEnabled();
+    expect(keystrokeSearches, "requests of the search once Retry's had failed").toBe(2);
+    // The pause's search reached this route too, so no answer of the server's took the list.
+    await expect.poll(() => pauseSearches).toBeGreaterThan(0);
+  } finally {
+    await page.unrouteAll({ behavior: "ignoreErrors" });
+    retryHeld.resolve();
     await context.close();
   }
 });

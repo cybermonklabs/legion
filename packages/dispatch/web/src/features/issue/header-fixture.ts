@@ -1,6 +1,7 @@
 import { spyOn } from "bun:test";
 
 import { api } from "../../api/client";
+import { issuePriority } from "./issue-priority";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
 /** The priority write `IssueHeader` is handed in rows about another part of the header than its
@@ -9,7 +10,7 @@ export const idlePriorityWrite: IssuePriorityWrite = {
   failed: false,
   pending: false,
   retry: () => undefined,
-  shown: null,
+  shown: issuePriority({ priority: null }),
   stopped: undefined,
   submit: () => undefined,
 };

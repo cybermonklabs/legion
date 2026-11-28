@@ -97,6 +97,8 @@ const issue: IssueDetails = {
   resolved_repo: null,
   status: "in_progress",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   rank: "U",
   title: "Parent with a child in work",
   updated_at: "2026-09-09T00:00:00Z",
@@ -158,7 +160,7 @@ async function expectDryRunFirst(
 function Header({ shown }: { shown: IssueDetails }): ReactNode {
   // The issue page pushes the scope its palette rows are offered under.
   useKeymapScope("issue");
-  const priorityWrite = useIssuePriority(shown.key, issuePriority(shown.priority));
+  const priorityWrite = useIssuePriority(shown.key, issuePriority(shown));
   return (
     <IssueHeader
       documentArtifact={undefined}

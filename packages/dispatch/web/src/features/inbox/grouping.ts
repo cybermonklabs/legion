@@ -71,8 +71,8 @@ export function dimensionValue(
   viewer: string
 ): string {
   if (dimension === "priority") {
-    const priority = rowPriority(row);
-    return priority === null ? NO_FILTER_VALUE : `P${priority}`;
+    const { level } = rowPriority(row);
+    return level === null ? NO_FILTER_VALUE : `P${level}`;
   }
   if (dimension === "urgency") {
     return rowUrgency(row) ?? NO_FILTER_VALUE;

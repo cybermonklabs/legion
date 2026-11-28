@@ -192,6 +192,10 @@ var readsWithoutAViewer = map[string]string{
 		"may not see would leave that issue open under a done parent, and a move check that skipped one would let a writer " +
 		"take that issue by moving the issue above it; the plan names the issues it will move or unlink to the caller who " +
 		"asked to move or unlink them, in its dry run, its answer and its 403 PROJECT_SCOPE",
+	"IssueInheritingDescendantRows": "every caller is a rule of a write - the issues whose resolved priority a write of " +
+		"an issue's own priority or its parent moves, each of which takes its priority from that issue in whatever project " +
+		"it is in - and a set that skipped an issue its writer may not see would leave that issue's resolved priority, to " +
+		"every reader that keeps one from its events, as it was before the write; it names none of them to the writer",
 	"IssueRepository":  noNode,
 	"ItemBlockAt":      nodeDetail,
 	"ItemsOwedWindows": serverWork,

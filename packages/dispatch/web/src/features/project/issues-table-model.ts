@@ -4,6 +4,7 @@ import type { Actor, IssueSummary, UpdateIssueInput } from "../../api/types";
 import type { LayoutColumns } from "../../components/table-layout";
 import { copyAddress, type TableAddressView } from "../../lib/page-address";
 import { compareTimestamps } from "../../lib/timestamps";
+import { issuePriority } from "../issue/issue-priority";
 import { type IssueStatus, issueStatuses, openIssueStatuses, statusText } from "./board-model";
 
 export interface Item {
@@ -172,7 +173,7 @@ export const COLUMNS: readonly ColumnSpec[] = [
     size: 140,
     min: 140,
     pinned: true,
-    filter: one((item) => String(item.issue.priority ?? ""), {
+    filter: one((item) => String(issuePriority(item.issue).level ?? ""), {
       order: ["0", "1", "2", "3", ""],
       show: priorityName,
     }),

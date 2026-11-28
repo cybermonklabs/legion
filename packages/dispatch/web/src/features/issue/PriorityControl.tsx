@@ -1,4 +1,4 @@
-import { type ReactNode, useState } from "react";
+import { type ReactNode, useId, useState } from "react";
 
 import type { IssuePriority } from "../../api/types";
 import { type ListMarks, MultiSelect } from "../../components/MultiSelect";
@@ -23,6 +23,8 @@ import {
   badgeSelectTrigger,
   badgeSelectWrapper,
 } from "./badge-select";
+import { inheritedPriorityWords, type PriorityView } from "./issue-priority";
+import { PrioritySource } from "./PrioritySource";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
 /** The option that stands for no priority: a pick of it unsets the issue's priority. */
@@ -40,6 +42,7 @@ export const PRIORITY_TRIGGER_SELECTOR = `[${PRIORITY_TRIGGER_ATTRIBUTE}]`;
 /**
  * The priority editor for a surface that owns no write of its own - a list row, a board card,
  * an Inbox row - where this control is the only thing that writes that issue's priority.
+ * `priority` is the issue's as the surface reads it (`issuePriority`).
  */
 export function PriorityControl({
   disabled,
@@ -48,7 +51,7 @@ export function PriorityControl({
 }: {
   disabled?: boolean;
   issueKey: string;
-  priority: IssuePriority | null;
+  priority: PriorityView;
 }): ReactNode {
   const write = useIssuePriority(issueKey, priority);
   return <PriorityEditor disabled={disabled} issueKey={issueKey} write={write} />;
@@ -80,6 +83,17 @@ export function PriorityControl({
  * The priority drawn is the write's (`IssueFieldWrite.shown`), so a pick from any of them shows
  * from its press.
  *
+ * It draws the priority the issue works at, and where the issue inherits it, the issue it comes
+ * from beside the badge: "P0 · from ACME-1" (`PrioritySource`), whose key is a link to that
+ * issue. The source stands after the trigger and outside it, since its link is a control of its
+ * own, so a press on the key follows the link and a press on the badge opens the list. The list
+ * picks the issue's own priority, so for an inherited one it marks Unset, and a pick of a level
+ * makes that level the issue's own. The trigger shows the level the issue works at, and for an
+ * inherited one a hidden line describes it ("P0, from ACME-1", `aria-describedby`), so a screen
+ * reader hears where that level comes from as well. While a pick of none waits for Dispatch's
+ * answer, the control keeps the priority it drew and reads busy (`aria-busy`, and a quieter
+ * look), since only the answer says what the issue inherits then.
+ *
  * `variant="header"` draws the new issue page header's shape (the prototype's `.prio`): three
  * bars filled by how urgent the priority is, beside `P1` in the ink, or the word Priority in the
  * quiet grey while it has none. The list under it is the same either way.
@@ -97,8 +111,10 @@ export function PriorityEditor({
 }): ReactNode {
   const page = usePageWords();
   const [open, setOpen] = useState(false);
-  const priority = write.shown;
-  const value = priority === null ? UNSET : String(priority);
+  const { from, level: priority, own } = write.shown;
+  const waitsForAnswer = write.pending && own === null;
+  // The list picks the issue's own priority, so for an inherited one it marks Unset.
+  const value = own === null ? UNSET : String(own);
   const tone = priority === null ? badgeLow : priorityBadge[priority];
   // Inside `NoTooltips` the badge is the new issue page's label chip, and the word Priority its
   // quiet words on the same ground, as the header variant says it in the quiet grey: each colour
@@ -112,13 +128,23 @@ export function PriorityEditor({
         : pageLabelChip;
   const label = priority === null ? (page?.PROPERTY_LABELS.priority ?? "Priority") : `P${priority}`;
   const mark = priority === null ? page?.pageChrome : page?.authorText;
+  // The list's value is the issue's own priority, so an inherited one needs words of its own.
+  // An own priority or none draws no hidden line, and its trigger keeps no description.
+  const sourceId = useId();
+  const inheritedWords =
+    from === null || priority === null
+      ? null
+      : inheritedPriorityWords(priority, from, page?.CONTROL_LABELS.priority_from);
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
   // and its wrapper and the trigger in it narrow to the line rather than keep their width. The
-  // header variant is the new page's shape alone, so it wraps on every surface.
+  // header variant is the new page's shape alone, so it wraps on every surface. The source sits
+  // after the trigger, so "P0 · from ACME-1" reads whole, and outside it, so its link takes the
+  // press on it: a button holds no control of its own.
   return (
     <>
       <span
-        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled ? "opacity-50" : ""}`}
+        aria-busy={waitsForAnswer || undefined}
+        className={`${variant === "header" ? badgeSelectHeaderWrapper : page === null ? badgeSelectWrapper : badgeSelectPageWrapper} ${disabled || waitsForAnswer ? "opacity-50" : ""}`}
         {...badgeReachHandlers()}
       >
         <MultiSelect
@@ -144,6 +170,7 @@ export function PriorityEditor({
                 ? badgeSelectTrigger
                 : badgeSelectPageTrigger
           }
+          triggerDescribedBy={inheritedWords === null ? undefined : sourceId}
           value={value}
         >
           {variant === "header" ? (
@@ -165,6 +192,15 @@ export function PriorityEditor({
             </span>
           )}
         </MultiSelect>
+        <PrioritySource
+          className={`ml-1 min-w-0 [overflow-wrap:anywhere] ${variant === "header" ? "text-sm leading-5" : "text-xs"}`}
+          from={from}
+        />
+        {inheritedWords === null ? null : (
+          <span className="sr-only" id={sourceId}>
+            {inheritedWords}
+          </span>
+        )}
       </span>
       {write.failed ? (
         <QueryError

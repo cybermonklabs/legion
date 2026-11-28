@@ -47,6 +47,7 @@ export interface PageWords {
     | "none"
     | "not_requested"
     | "not_running"
+    | "priority_from"
     | "priority_to_advance"
     | "repository_inherited"
     | "takeable"

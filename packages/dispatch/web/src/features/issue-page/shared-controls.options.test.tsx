@@ -71,6 +71,7 @@ import { GitHubLink } from "../issue/GitHubLink";
 import type { StepEntry } from "../issue/gated-steps";
 import { IssueComponentsLine } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
+import { issuePriority } from "../issue/issue-priority";
 import { PriorityControl, PriorityEditor } from "../issue/PriorityControl";
 import { RepoControl } from "../issue/RepoControl";
 import {
@@ -632,12 +633,15 @@ test("the header variant draws the person and the priority bars on the trigger o
       <PriorityEditor
         issueKey="CORE-1"
         variant="header"
-        write={{ ...idlePriorityWrite, shown: level }}
+        write={{ ...idlePriorityWrite, shown: issuePriority({ priority: level }) }}
       />,
       "inside"
     );
     const badge = draw(
-      <PriorityEditor issueKey="CORE-1" write={{ ...idlePriorityWrite, shown: level }} />,
+      <PriorityEditor
+        issueKey="CORE-1"
+        write={{ ...idlePriorityWrite, shown: issuePriority({ priority: level }) }}
+      />,
       "inside"
     );
     try {
@@ -2354,13 +2358,16 @@ test("the default shapes keep their recorded class strings", async () => {
         <AssigneeControl assignee={null} issueKey="CORE-2" />
       </div>
       <div data-case="P0">
-        <PriorityControl issueKey="CORE-1" priority={0} />
+        <PriorityControl issueKey="CORE-1" priority={issuePriority({ priority: 0 })} />
       </div>
       <div data-case="P1">
-        <PriorityEditor issueKey="CORE-2" write={{ ...idlePriorityWrite, shown: 1 }} />
+        <PriorityEditor
+          issueKey="CORE-2"
+          write={{ ...idlePriorityWrite, shown: issuePriority({ priority: 1 }) }}
+        />
       </div>
       <div data-case="no priority">
-        <PriorityControl issueKey="CORE-3" priority={null} />
+        <PriorityControl issueKey="CORE-3" priority={issuePriority({ priority: null })} />
       </div>
       <div data-case="held">
         <ClaimChip claim={sessionClaim(LIVE_SESSION)} />

@@ -1054,6 +1054,9 @@ export const CONTROL_LABELS = joinWords("CONTROL_LABELS", {
   /** The row of six controls, Dashboard, Conversation and the four filters, as a reader hears it
    *  named (R2). */
   presets: "Filters",
+  /** What the priority says before the key of the issue it is inherited from, after the level:
+   *  "P0 · from ACME-1" (`PrioritySource`), in the header's priority and in Details' row. */
+  priority_from: "from",
   /** The priority picker, named by what the issue will do with the one picked. */
   priority_to_advance: "Priority to advance",
   /** Hands a claimed issue back, so another agent can take it (R11, row four). */

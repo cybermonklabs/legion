@@ -73,6 +73,8 @@ const summary: IssueSummary = {
   parent: null,
   primary_artifact_id: "artifact-1",
   priority: issue.priority,
+  priority_from: null,
+  resolved_priority: null,
   progress: { tasks: null, children: null },
   rank: "U",
   repo: null,
@@ -105,6 +107,8 @@ const inboxRow: InboxRow = {
   opened_event_id: 1,
   options: [],
   priority: issue.priority,
+  priority_from: null,
+  resolved_priority: null,
   question: "Which layout?",
   snoozed_until: null,
   state: "open",
@@ -150,7 +154,7 @@ interface Reads {
 function dispatchReads(): Reads {
   let stored: Stored = {
     assignee: issue.assignee,
-    priority: issuePriority(issue.priority),
+    priority: issuePriority({ priority: issue.priority }).own,
     updated_at: issue.updated_at,
   };
   let gate: Promise<void> | undefined;
@@ -197,9 +201,7 @@ function CachedPriority({ reads }: { reads: Reads }): ReactNode {
     staleTime: Number.POSITIVE_INFINITY,
   });
   if (cached.data === undefined) return null;
-  return (
-    <PriorityControl issueKey={cached.data.key} priority={issuePriority(cached.data.priority)} />
-  );
+  return <PriorityControl issueKey={cached.data.key} priority={issuePriority(cached.data)} />;
 }
 
 /** The three surfaces a priority shows on beside its picker: the issue, a project list's row and
@@ -1281,7 +1283,8 @@ test("a pick refused after a lapse and the same person's sign-in puts back the p
   const writes = writesOf(client);
   act(() => writes.signedIn("alice"));
   const picker = renderHook(
-    () => useIssueFieldWrite(issue.key, "priority", issuePriority(issue.priority)),
+    () =>
+      useIssueFieldWrite(issue.key, "priority", issuePriority({ priority: issue.priority }).own),
     {
       wrapper: ({ children }) => (
         <QueryClientProvider client={client}>{children}</QueryClientProvider>
@@ -2779,10 +2782,10 @@ test("a board move to another priority lane made over a live pick is the priorit
 /** The priority Dispatch stores for CORE-1 once it has applied every save sent so far, in the
  *  order they were sent. */
 function storedPriority(patchIssue: { mock: { calls: unknown[][] } }): IssuePriority | null {
-  let stored = issuePriority(issue.priority);
+  let stored = issuePriority({ priority: issue.priority }).own;
   for (const [key, input] of patchIssue.mock.calls) {
     const { priority } = input as UpdateIssueInput;
-    if (key === issue.key && priority !== undefined) stored = issuePriority(priority);
+    if (key === issue.key && priority !== undefined) stored = issuePriority({ priority }).own;
   }
   return stored;
 }
@@ -2801,8 +2804,8 @@ function BoardCard({ commits }: { commits?: Commits<IssuePriority | null> }): Re
     <>
       <p data-testid="board-priority">P{card?.priority}</p>
       {commits !== undefined && card !== undefined ? (
-        <commits.Recorded host={issuePriority(card.priority)}>
-          <PriorityControl issueKey={card.key} priority={issuePriority(card.priority)} />
+        <commits.Recorded host={issuePriority(card).own}>
+          <PriorityControl issueKey={card.key} priority={issuePriority(card)} />
         </commits.Recorded>
       ) : null}
     </>
