@@ -846,3 +846,56 @@ test("a default assignee the page has not read yet is never shown as Unassigned"
     await context.close();
   }
 });
+
+// INFRA-6244, the tester's: while a scope change of the Agent tokens list is out, its scope boxes
+// are held rather than disabled (`TokenScopeChoices`), so a press of one writes nothing. The base
+// drew them disabled, which the browser paints as boxes that cannot be pressed, and a held
+// control is painted as a disabled one is (`components/held-press.ts`, `heldPress`). Builds Job
+// infra-6244-tester2-tqsh9 read the row's other box while the first change was out: on the base
+// its picture differs from its picture at rest, and at 26160f4c it is the same picture.
+test("while a token's scope change is out, its other scope boxes look as boxes that cannot be pressed", async ({
+  page,
+}) => {
+  const writes: string[] = [];
+  const held = Promise.withResolvers<void>();
+  await page.route("**/api/v1/me/agent-tokens/*", async (route) => {
+    if (route.request().method() !== "PATCH") return route.fallback();
+    writes.push(new URL(route.request().url()).pathname);
+    await held.promise;
+    return route.fallback();
+  });
+  await page.goto("/settings");
+  await page.getByLabel("Token label").fill("Scoped");
+  await page.getByRole("button", { name: "New token" }).click();
+  const actAsYou = page.getByRole("checkbox", { exact: true, name: "Act as you (Scoped)" });
+  const approve = page.getByRole("checkbox", {
+    exact: true,
+    name: "Approve and control credentials (Scoped)",
+  });
+  // A new token holds both scopes. Clearing Approve leaves Act as you ticked, so Act as you is
+  // the box whose picture can be read against itself before, during and after the change.
+  await expect(approve).toBeChecked();
+  await expect(actAsYou).toBeChecked();
+  // No pointer over a box, so neither picture below carries a hover.
+  await page.mouse.move(0, 0);
+  const atRest = await actAsYou.screenshot();
+
+  await approve.click();
+  await expect.poll(() => writes.length).toBe(1);
+  await page.mouse.move(0, 0);
+  await expect
+    .poll(async () => (await actAsYou.screenshot()).equals(atRest), {
+      message: "a scope box held by the change still looks as it does at rest",
+    })
+    .toBe(false);
+
+  held.resolve();
+  await expect(approve).not.toBeChecked();
+  await expect
+    .poll(async () => (await actAsYou.screenshot()).equals(atRest), {
+      message: "the scope box does not look as it did at rest once the change is answered",
+    })
+    .toBe(true);
+  await expect(actAsYou).toBeChecked();
+  expect(writes).toHaveLength(1);
+});
