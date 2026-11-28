@@ -209,6 +209,10 @@ function isStrictPrefix(shorter: readonly KeyCombo[], longer: readonly KeyCombo[
  *  registry a key was pressed inside one (`isEditableTarget`). */
 export const PANEL_ATTRIBUTE = "data-anchored-panel";
 const IN_PANEL = `[${PANEL_ATTRIBUTE}]`;
+/** The attribute a list trigger carries whose host keeps the page's keys on it (`MultiSelect`'s
+ *  `triggerKeys="page"`): what tells the registry to read that trigger as the button it is, so
+ *  neither the list-trigger rule nor the open-panel rule takes its keys (`isEditableTarget`). */
+export const PAGE_KEYS_ATTRIBUTE = "data-page-keys";
 /** An option list's trigger: the button that names the `listbox` it opens (`MultiSelect`). */
 const LIST_TRIGGER = '[aria-haspopup="listbox"]';
 
@@ -305,13 +309,22 @@ export function commitsOnBlur(element: Element): boolean {
  * keys open a closed list is `MultiSelect`'s to say. So a digit on the issue header's Assignee is
  * no priority, and `c` on a Settings project list opens no Create issue. A key the trigger leaves
  * alone, such as a letter on a busy trigger, fires only the bindings that fire while the reader
- * types (`inEditable`).
+ * types (`inEditable`). A trigger whose host keeps the page's keys on it (`PAGE_KEYS_ATTRIBUTE`)
+ * is the plain button it is, inside an open panel too, so every page key fires from it.
  */
 function isEditableTarget(target: EventTarget | null): boolean {
   if (!(target instanceof HTMLElement)) {
     return false;
   }
-  if (takesText(target) || target.closest(IN_PANEL) !== null) {
+  if (takesText(target)) {
+    return true;
+  }
+  // A list trigger that keeps the page's keys is a button to the registry, before either rule
+  // below reads it as a select or as a control of the panel it stands in.
+  if (target.hasAttribute(PAGE_KEYS_ATTRIBUTE)) {
+    return false;
+  }
+  if (target.closest(IN_PANEL) !== null) {
     return true;
   }
   // An `<input>` that takes no text - a checkbox, radio or button - leaves its keys to the page,

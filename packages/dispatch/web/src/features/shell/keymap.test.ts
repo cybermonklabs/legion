@@ -5,6 +5,7 @@ import {
   DIALOG_SCOPE,
   type KeyBinding,
   type Keymap,
+  PAGE_KEYS_ATTRIBUTE,
   PANEL_ATTRIBUTE,
 } from "./keymap";
 
@@ -411,6 +412,50 @@ test("a key pressed on an option list's trigger fires only inEditable bindings, 
   } finally {
     trigger.remove();
     panelTrigger.remove();
+  }
+});
+
+// A host that keeps the keys its trigger had before the shared list marks the trigger, which the
+// registry then reads as the plain button it is: the Inbox's `f` and Escape fire from its
+// Assignee, on the page or inside an open panel. The same trigger unmarked takes a select's keys.
+test("a key pressed on an option list's trigger that keeps the page's keys fires the page's bindings, inside an open panel too", () => {
+  const { keymap, press } = harness();
+  const search = binding("search", "f");
+  const clear = binding("clear", "Escape");
+  keymap.register("global", [search.definition, clear.definition]);
+  const listTrigger = () => {
+    const trigger = document.createElement("button");
+    trigger.type = "button";
+    trigger.setAttribute("aria-haspopup", "listbox");
+    trigger.setAttribute(PAGE_KEYS_ATTRIBUTE, "");
+    return trigger;
+  };
+  const onPage = listTrigger();
+  const { panel } = openPanel();
+  const inPanel = listTrigger();
+  panel.appendChild(inPanel);
+  document.body.appendChild(onPage);
+  const triggers = [
+    ["on the page", onPage],
+    ["in a panel", inPanel],
+  ] as const;
+  try {
+    for (const [where, target] of triggers) {
+      expect(press("f", { target }), `f ${where}`).toBe(true);
+      expect(press("Escape", { target }), `Escape ${where}`).toBe(true);
+    }
+    expect(search.fired()).toBe(2);
+    expect(clear.fired()).toBe(2);
+    for (const [where, target] of triggers) {
+      target.removeAttribute(PAGE_KEYS_ATTRIBUTE);
+      expect(press("f", { target }), `f ${where}, unmarked`).toBe(false);
+      expect(press("Escape", { target }), `Escape ${where}, unmarked`).toBe(false);
+    }
+    expect(search.fired()).toBe(2);
+    expect(clear.fired()).toBe(2);
+  } finally {
+    onPage.remove();
+    panel.remove();
   }
 });
 

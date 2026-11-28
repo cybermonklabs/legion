@@ -240,6 +240,8 @@ export function InboxBar({
                 // Main's look, which draws no chevron, until a piece of INFRA-3135 converts this
                 // page.
                 chevron={false}
+                // Main's keys on the trigger, until a piece of INFRA-3135 converts this page.
+                triggerKeys="page"
                 emptyMessage={`No matching ${DIMENSION_LABELS[field].toLowerCase()}.`}
                 key={field}
                 label={DIMENSION_LABELS[field]}

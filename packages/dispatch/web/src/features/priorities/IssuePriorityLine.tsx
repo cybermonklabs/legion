@@ -253,6 +253,8 @@ export function IssuePriorityLine({
       ariaDisabled={saving}
       // The trigger draws its own look, a square holding "+", so it ends in no chevron.
       chevron={false}
+      // Main's keys on the trigger, until a piece of INFRA-3135 converts this page.
+      triggerKeys="page"
       disabled={disabled}
       emptyMessage={
         priorities.isPending
