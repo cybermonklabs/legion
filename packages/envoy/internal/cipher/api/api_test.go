@@ -40,6 +40,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -48,9 +51,9 @@ import (
 	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
+// testApprover owns DEEL_API_KEY, a human-tier secret, so every request for it is an approval
+// request to them; they are also every machine login's login_hint below.
 const (
-	// testApprover owns DEEL_API_KEY, a human-tier secret, so every request for it is an approval
-	// request to them; they are also every machine login's login_hint below.
 	testApprover = "sami@example.com"
 	// dispatchAccount is the ServiceAccount BROKER_API_ACCOUNTS names as the caller "dispatch",
 	// the one that reaches the routes Dispatch's server calls; unlistedAccount is a real account
@@ -62,13 +65,13 @@ const (
 
 // testServer is a live broker HTTP server (real handlers, real Postgres) plus a direct handle to
 // its store — needed to seed fixtures (an enrollment, a launcher credential) the API itself has
-// no route to create directly — the secrets.Local standing in for Secrets Manager, which a test
+// no route to create directly — the memory.Store standing in for Secrets Manager, which a test
 // writes to as a person would, and the local OIDC issuer its pod verifier trusts, which mints the
 // projected service-account tokens a pod enrollment presents.
 type testServer struct {
 	URL       string
 	Store     *store.Store
-	Secrets   *secrets.Local
+	Secrets   *memory.Store
 	podIssuer *oidctest.Issuer
 	podKey    *oidctest.Key
 	// keys is podIssuer's key set, which the server's own verifiers read: the listed callers' and
@@ -141,7 +144,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps), pr
 	t.Helper()
 	st := storetest.Open(t)
 
-	local := secrets.NewLocal(
+	local := memory.New(
 		policytest.Secret("DEEL_API_KEY", testApprover, policy.TierHuman, "deel-v1"),
 		policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "worker-v1"),
 		policytest.Secret("SHARED_KEY", policy.OwnerShared, policy.TierHuman, "shared-v1"),
@@ -200,7 +203,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps), pr
 	}
 
 	reqMachine := &requests.Machine{
-		Store: st, Policy: cur, Secrets: policytest.Store(local),
+		Store: st, Policy: cur, Secrets: local,
 		PendingTTL: 12 * time.Hour,
 		Audience:   srv.URL, Skew: time.Minute, Replay: enr.Replay,
 	}
@@ -221,7 +224,7 @@ func newProfiledTestServer(t *testing.T, file string, adjust func(*api.Deps), pr
 		PodRegistrars: podRegistrars, PodRegistrationTokens: enroll.K8sPodVerifier{Verifier: registrationVerifier},
 		OAuth: provider, DeviceLogin: mach.LoginDevice, TokenHooks: mach.TokenHooks(),
 		Proof:  &proof.Verifier{Skew: time.Minute, Lookup: enr.Lookup, LookupLauncher: enr.AuthenticateLauncher, Replay: enr.Replay},
-		Policy: cur, SecretsStore: secrets.StoreAWS, SecretsPrefix: policytest.Prefix, SecretsKMSKey: policytest.KeyARN,
+		Policy: cur, SecretsStore: aws.Name, SecretsPrefix: policytest.Prefix, SettingsFields: awsSettings(t),
 		// The page signs people in at the same local issuer, which stands in for every provider.
 		Approval: ciphertest.NewApprovalPage(t, ciphertest.SignIn(issuer, podKey), srv.URL, st, reqMachine),
 	}
@@ -1128,7 +1131,7 @@ func TestCreateRequestForASourceOrARefusedProfileIs403(t *testing.T) {
 func TestCreateRequestForASecretWaitingForItsValueIs400PendingValue(t *testing.T) {
 	ts := newTestServer(t)
 	waiting := policytest.Secret("TYPED_KEY", testApprover, policy.TierAgent, "")
-	waiting.Tags[secrets.CreateLabel] = "0123456789abcdef0123456789abcdef"
+	waiting.Tags[secretstore.CreateLabel] = "0123456789abcdef0123456789abcdef"
 	created := time.Now()
 	waiting.CreatedAt = &created
 	ts.Secrets.Put(waiting)

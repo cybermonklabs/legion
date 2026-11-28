@@ -33,16 +33,18 @@ const COLUMNS = [
   "Role",
   "Type",
   "Agent",
-  "Model",
+  "Last model",
   "Attempt",
   "Started",
   "Ended",
   "Result",
+  "Set model",
+  "Answered by",
 ] as const;
 
 /** A field the record does not hold: a merge GitHub made has no agent, a run that has not
  *  answered yet has no model, a run that started before the release that records steps has no
- *  start. */
+ *  start, and a record that names no set model has none. */
 const NONE = "—";
 
 function Cell({ children, className = "" }: { children: ReactNode; className?: string }) {
@@ -62,7 +64,7 @@ const dayOfAnotherYear = new Intl.DateTimeFormat(undefined, {
 });
 const timeOfDay = new Intl.DateTimeFormat(undefined, { hour: "numeric", minute: "2-digit" });
 
-function Time({ at }: { at: string | null }): ReactNode {
+export function Time({ at }: { at: string | null }): ReactNode {
   if (at === null) return NONE;
   const date = new Date(at);
   if (Number.isNaN(date.getTime())) return <time>{at}</time>;
@@ -98,10 +100,10 @@ function HyphenGroups({ piece }: { piece: string }): ReactNode {
 }
 
 /** An agent token or a model id, or the dash for one the record does not hold. A token breaks at
- *  its hyphens; a model id (`anthropic/claude-opus-5`) is also offered a break after each slash,
+ *  its hyphens; a model id (`anthropic/claude-opus-5`) is also offered a break before each slash,
  *  so neither forces its column wider than its longest part. A number or a single letter keeps
  *  to the part before it, so no line holds it alone (`legion-core-core-2-…` never leaves `2-`). */
-function Identifier({ value }: { value: string }): ReactNode {
+export function Identifier({ value }: { value: string }): ReactNode {
   if (value === "") return NONE;
   const pieces = value.split("/");
   // Each piece is keyed by the text up to and including it, which no other piece of the id shares.
@@ -118,6 +120,25 @@ function Identifier({ value }: { value: string }): ReactNode {
       </Fragment>
     );
   });
+}
+
+/** The models that answered a run's agent, as `answeredText` writes them. Each model with its
+ *  calls and its share stays whole, and the list is offered a break after each comma, as a model
+ *  id is at each slash, so a narrow column wraps it between models. A model whose own name holds
+ *  a comma is offered a break there too. */
+function Answered({ text }: { text: string }): ReactNode {
+  const parts = text.split(",");
+  // Each part is keyed by the text up to and including it, which no other part of the list shares.
+  return parts.map((part, index) => (
+    <Fragment key={parts.slice(0, index + 1).join(",")}>
+      {index === 0 ? null : (
+        <>
+          ,<wbr />
+        </>
+      )}
+      <span className="whitespace-nowrap">{part}</span>
+    </Fragment>
+  ));
 }
 
 /** The words and colours of a state a run's result and a planned step share (`ShownState`, built
@@ -181,19 +202,42 @@ function PlannedState({ step }: { step: PlannedStep }): ReactNode {
   return <StateLabel shown={step} />;
 }
 
+/** What a task's line of needs says, above its planned steps here and in Details' steps
+ *  (`DetailsSteps.tsx`): `Needs <task>, <task>` for the tasks of the plan it needs, `Needs not
+ *  recorded` where its plan node recorded none (`needs` null while the plan gives it steps), and
+ *  null - no line - for a task that needs none (`needs` []) or that the plan does not hold
+ *  (`needs` null and no planned step). */
+export function taskNeedsLine({
+  needs,
+  planned,
+}: Pick<StepTaskRows, "needs" | "planned">): string | null {
+  return needs === null
+    ? planned.length === 0
+      ? null
+      : "Needs not recorded"
+    : needs.length === 0
+      ? null
+      : `Needs ${needs.join(", ")}`;
+}
+
+/** The name of the list of the steps the plan gives `task`, as a reader hears it, here and in
+ *  Details' steps. */
+export function plannedStepsName(task: string): string {
+  return `Planned steps of task ${task}`;
+}
+
+/** What a task none of whose steps has run says in place of its runs, here and in Details'
+ *  steps. */
+export function noRunLine(task: string): string {
+  return `No step of task ${task} has run yet.`;
+}
+
 /** One task: the tasks of the plan it needs - nothing for a task that needs none or that the plan
  *  does not hold, and `Needs not recorded` where its plan node recorded none - each step the plan
  *  gives it with where it stands, then its runs, one row each, in the order the server read them.
  *  A task none of whose steps has run says so in place of the table. */
 function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskRows }): ReactNode {
-  const needsLine =
-    needs === null
-      ? planned.length === 0
-        ? null
-        : "Needs not recorded"
-      : needs.length === 0
-        ? null
-        : `Needs ${needs.join(", ")}`;
+  const needsLine = taskNeedsLine({ needs, planned });
   return (
     <section aria-label={`Task ${task}`} className="min-w-0 space-y-2">
       <h2 className={`text-sm font-semibold ${textSecondaryOnCanvas}`}>Task {task}</h2>
@@ -201,7 +245,7 @@ function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskR
         <p className={`text-xs ${textSecondaryOnCanvas}`}>{needsLine}</p>
       )}
       {planned.length === 0 ? null : (
-        <ol aria-label={`Planned steps of task ${task}`} className="flex flex-wrap gap-2 text-xs">
+        <ol aria-label={plannedStepsName(task)} className="flex flex-wrap gap-2 text-xs">
           {planned.map((step) => (
             <li className={`rounded-md border px-2 py-1 ${card}`} key={step.step}>
               <span className={`tabular-nums ${textMutedOnSurface}`}>{step.step}</span>{" "}
@@ -212,7 +256,7 @@ function TaskSection({ task: { needs, planned, rows, task } }: { task: StepTaskR
         </ol>
       )}
       {rows.length === 0 ? (
-        <p className={`text-xs ${textMutedOnCanvas}`}>{`No step of task ${task} has run yet.`}</p>
+        <p className={`text-xs ${textMutedOnCanvas}`}>{noRunLine(task)}</p>
       ) : (
         <RunsTable rows={rows} task={task} />
       )}
@@ -273,6 +317,12 @@ function RunsTable({ rows, task }: { rows: readonly StepRow[]; task: string }): 
                 <Cell className={textPrimaryOnSurface}>
                   <Result row={row} />
                 </Cell>
+                <Cell className={`font-mono break-words ${textSecondaryOnSurface}`}>
+                  <Identifier value={row.setModel} />
+                </Cell>
+                <Cell className={`font-mono ${textSecondaryOnSurface}`}>
+                  <Answered text={row.answered} />
+                </Cell>
               </tr>
             ))}
           </tbody>
@@ -302,7 +352,7 @@ const CATCH_UP_READS_MS = [2_000, 5_000, 15_000, 45_000, 120_000, 300_000] as co
  * `api/query-refresh.ts`): a read never cancels one already out, and the tab reads at most once a
  * second, however its starts and the feed's batches fall.
  */
-function useCatchUp(issueKey: string, shown: boolean): void {
+export function useCatchUp(issueKey: string, shown: boolean): void {
   const queryClient = useQueryClient();
   // Whether the page is shown, as TanStack reads `visibilitychange` for its own refetch on focus.
   const visible = useSyncExternalStore(focusManager.subscribe, () => focusManager.isFocused());
@@ -334,15 +384,15 @@ function useCatchUp(issueKey: string, shown: boolean): void {
  * The steps of the issue (`GET /issues/{key}/steps`): one section per task, in the server's order
  * - the tasks of the issue's plan first, then each other task that ran - each with the tasks it
  * needs, each step the plan gives it and where that step stands, and one row per run of a step:
- * its role, type, agent, model, attempt, start, end and result. Where the records of the issue's
- * newest run name an experiment, the tab shows `Experiment <experiment>: variant <variant>` once
- * above its tasks. The records are the Legion daemon's; this tab only reads them, and only
- * through its catch-up (`useCatchUp`) and Retry, so the query fetches nothing on its own: it is
- * never enabled, and a read that failed is asked again by the catch-up's next read, not by the
- * app's retry policy, whose retries no cleanup of the tab could stop. A failed read shows alone
- * only while the tab has drawn nothing; after a read that answered, the failure and its Retry
- * stand above the rows that read drew, since nothing may read again until the next start or
- * Retry.
+ * its role, type, agent, last model, attempt, start, end and result, the model its role was set
+ * to and the models that answered. Where the records of the issue's newest run name an
+ * experiment, the tab shows `Experiment <experiment>: variant <variant>` once above its tasks. The
+ * records are the Legion daemon's; this tab only reads them, and only through its catch-up
+ * (`useCatchUp`) and Retry, so the query fetches nothing on its own: it is never enabled, and a
+ * read that failed is asked again by the catch-up's next read, not by the app's retry policy,
+ * whose retries no cleanup of the tab could stop. A failed read shows alone only while the tab has
+ * drawn nothing; after a read that answered, the failure and its Retry stand above the rows that
+ * read drew, since nothing may read again until the next start or Retry.
  */
 export function StepsTab({ active, issueKey }: { active: boolean; issueKey: string }): ReactNode {
   const query = useQuery({ ...issueStepsQuery(issueKey), enabled: false, retry: false });

@@ -17,6 +17,8 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
+
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -50,7 +52,7 @@ func (r *podUpdateRig) awaitRecordWriteHeld() {
 	testwait.Eventually(r.t, "a write of the replacement's record to wait for the lock", func() bool {
 		var waiting int
 		err := r.pool.QueryRow(context.Background(), `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and query ilike '%insert into pod_replacements%'`).Scan(&waiting)
+			where datname = current_database() and `+lockwaittest.Waiting+` and query ilike '%insert into pod_replacements%'`).Scan(&waiting)
 		return err == nil && waiting > 0
 	})
 }

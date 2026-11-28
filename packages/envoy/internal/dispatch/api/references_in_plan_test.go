@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
@@ -87,7 +88,7 @@ func referencesInStatement(t *testing.T, ctx context.Context, seed linkedIntoSee
 	}
 	defer tx.Rollback(context.WithoutCancel(ctx))
 	recorded := &explaintest.RecordedTx{Tx: tx}
-	if _, err := refs.Closure(ctx, recorded, who, seed.issue.Key, ""); err != nil {
+	if _, err := refs.Closure(ctx, recorded, who, seed.issue.Key, text.Origins{}); err != nil {
 		t.Fatalf("read the references of %s: %v", seed.issue.Key, err)
 	}
 	return recorded.Holding(t, "targets (kind, id)")

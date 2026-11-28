@@ -22,6 +22,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/prioritystore"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 func TestPriorityPatchExpected(t *testing.T) {
@@ -210,7 +211,7 @@ func TestPriorityPatchExpected(t *testing.T) {
 			if err := database.Pool.QueryRow(ctx, `
 				select count(*) from pg_stat_activity
 				where datname = current_database() and pid <> pg_backend_pid()
-					and wait_event_type = 'Lock' and query like '%priority_nodes%'
+					and `+lockwaittest.Waiting+` and query like '%priority_nodes%'
 			`).Scan(&waiting); err != nil {
 				t.Fatalf("read the writes waiting on the row: %v", err)
 			}

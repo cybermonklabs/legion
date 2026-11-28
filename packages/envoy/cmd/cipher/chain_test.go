@@ -35,7 +35,9 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws/awstest"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/gcp"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testport"
@@ -117,10 +119,10 @@ func storeSettings(store, google string) map[string]any {
 	settings := map[string]any{}
 	switch store {
 	case "aws":
-		settings = map[string]any{"store": secrets.StoreAWS, "secrets_prefix": policytest.Prefix, "kms_key_arn": policytest.KeyARN,
+		settings = map[string]any{"store": aws.Name, "secrets_prefix": policytest.Prefix, "kms_key_arn": awstest.KeyARN,
 			"aws_account_id": testAccount, "aws_region": "us-east-1"}
 	case "gcp":
-		settings = map[string]any{"store": secrets.StoreGCP, "secrets_prefix": testGCPPrefix, "kms_key_name": testKMSKeyName,
+		settings = map[string]any{"store": gcp.Name, "secrets_prefix": testGCPPrefix, "kms_key_name": testKMSKeyName,
 			"gcp_project": testGCPProject}
 	}
 	if google != "" {

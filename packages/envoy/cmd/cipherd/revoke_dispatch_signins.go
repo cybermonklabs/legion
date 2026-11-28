@@ -29,7 +29,7 @@ func revokeDispatchSignIns(ctx context.Context, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: %v\n", revokeDispatchSignInsCommand, err)
 		return 1
 	}
-	st, _, err := openStore(ctx, cfg, false)
+	st, err := openStore(ctx, cfg)
 	if err != nil {
 		fmt.Fprintf(stderr, "%s: %v\n", revokeDispatchSignInsCommand, err)
 		return 1

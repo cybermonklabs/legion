@@ -436,6 +436,7 @@ packages/envoy:
       - subjectforms
       - testnatsimages
       - testnatsinprocess
+      - testnatscallout
       - internal/alonetest
       - internal/clock
       - internal/clock/clocktest

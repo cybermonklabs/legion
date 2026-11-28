@@ -2214,7 +2214,7 @@ would leave the human's Inbox unanswered and the approval refusal would find no 
 
 `dispatch request-approval` prints a refusal for the form of The Spec as Dispatch writes it, after its code (`SPEC_FORM: <error>`), and exits 1.
 A request that Dispatch records ends with one line on the form when a root of The Spec covers the document (the answer's `spec_form`): the count of each kind of text it read, or that it found no text of The Spec.
-Dispatch reads no list of terms yet, so the line names no terms.
+The line names no terms: `dispatch spec-form --terms` prints the list of terms of the root.
 
 `dispatch spec-form --issue <KEY> [--artifact <document>] [--version <N>]` prints the form of The Spec in one version of a document, as an approval request would judge it, and writes nothing (`specFormCommand`, `src/dispatch-commands/spec-form.ts`, over `GET /api/v1/artifacts/{id}/spec-form`).
 The version is the latest settled one by default.
@@ -2227,6 +2227,15 @@ With no `--artifact`, it reads the spec and the Verification document of the iss
 It reads them from the issue's own read, so for a key that names no issue it prints what `dispatch read` prints (`NOT_FOUND: not found`) and exits 1.
 `dispatch spec-form --root <KEY>` walks every issue under KEY with the issue list, one parent at a time, and prints one line for each issue and one for each spec and Verification document, with its version, its scope, the count of each kind of text and its findings.
 It ends with the count of issues and documents it read.
+
+`dispatch spec-form --issue <KEY> [--artifact <document>] --terms` prints the list of terms of the document's root in place of the findings.
+Each term has one line, `<term>: <definition> (<document> version <N> of <KEY>)`, which names the approved document that defines it.
+The lines keep the server's order, sorted by term.
+Before the list comes the line of each approved version under the root that Dispatch cannot read (the answer's `unread`).
+The list can lack the terms of such a version, also when the document read is that document, and the details carry `terms` and `unread` both.
+With no `--artifact`, it reads the list from the spec of the issue, or from its Verification document while the spec has no version.
+It reads them from the issue's own read too, so for a key that names no issue it prints what `dispatch read` prints and exits 1.
+A document that no root holds has no list, and `--terms` goes with no `--root`.
 
 `dispatch review --issue <KEY> [--artifact <document>] --version <N> --verdict <verdict>
 [--reason <text>]` records a person's review of one version of an issue's document: what the
