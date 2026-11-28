@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  When two issues tie for a pull request, Dispatch now credits the issue whose key sorts first
+  in byte order (`collate "C"`). Two issues for the pull request's repository tie when both
+  link its URL or the same source names both at the same position. Previously, the database's
+  link read order decided the tie.
+
+  After deployment, the Delivery reconcile rechecks stored attribution in batches and changes
+  the stored issue when the winning key differs. The Delivery timeline can then show the other
+  issue. When a reassigned pull request in the deploy repository later ships, Dispatch records
+  its `issue.deployed` event on the new issue.

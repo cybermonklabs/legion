@@ -98,9 +98,8 @@ func readMergedRows(ctx context.Context, q Querier, settings DeliverySettings, f
 // It reads the apply runs in one statement. Only answered days can take their part (windows).
 type ApplyRows struct {
 	from time.Time
-	// windows is each day whose window's apply runs a read of several days holds
-	// (DaysDeploys.Applies), by its Unix time, nil for rows that hold every run created from from
-	// on.
+	// windows is each answered day of a read of several days (DaysDeploys.Applies), whose part
+	// Since answers, by its Unix time; nil for rows that hold every run created from from on.
 	windows map[int64]bool
 	Runs    []DeliveryRun
 	Jobs    map[int64][]DeliveryRunJob
@@ -504,8 +503,8 @@ func ReadCIRows(ctx context.Context, q Querier, deployRepo string, from, to time
 // request instead of once per day. ReadCIDays reads PR-checks jobs separately for each day.
 // ListPullRequestsOnDays answers what ListPullRequestsInWindow answers for each day.
 // ReadDaysDeploys answers what ReadDeploys answers, with optional apply runs (DaysDeploys.Applies).
-// ReadCIDays answers what ReadCIRows answers. A day is the window [day, day+1) from a UTC midnight.
-// Give the days in order, each once. Each answer is index-aligned with the days.
+// ReadCIDays answers what ReadCIRows answers. Each day's window [day, day+1) must start at or
+// after the end of the previous day's window. Each answer is index-aligned with the days.
 // Each day is bounded on its own by maxPullRequestsPerWindow for merged pull requests and
 // maxRunsPerWindow for each list of its own runs. A day past either bound is refused alone and
 // by name (RefusedWindow), with none of the rows the refused window decides. Every other day is
@@ -560,14 +559,14 @@ func (w RefusedWindow) String() string {
 // the stated run rate). One statement for every day would read all those jobs on one connection.
 const daysSideBySide = 4
 
-// dayWindows is the window of each of days, [day, day+1), as the two lists of their starts and
-// ends a statement unnests; days in order and each once, or an error.
+// dayWindows returns the starts and ends a statement unnests for the windows [day, day+1).
+// It refuses a day whose window starts before the end of the previous day's window.
 func dayWindows(days []time.Time) (from, to []time.Time, err error) {
 	from, to = make([]time.Time, len(days)), make([]time.Time, len(days))
 	for i, day := range days {
-		if i > 0 && !day.After(days[i-1]) {
-			return nil, nil, fmt.Errorf("the days of a read of several days are in order and each once: %s follows %s",
-				day.Format(time.DateOnly), days[i-1].Format(time.DateOnly))
+		if i > 0 && day.Before(to[i-1]) {
+			return nil, nil, fmt.Errorf("day %s follows day %s: each day's window [day, day+1) must start at or after the end of the previous day's window",
+				day.Format(time.RFC3339), days[i-1].Format(time.RFC3339))
 		}
 		from[i], to[i] = day, day.AddDate(0, 0, 1)
 	}
