@@ -131,9 +131,38 @@ const LINE_FEED = /\r\n?|\n/gu;
  */
 const MARKUP = /[\\`*_[\]<>&|~\0\uFEFF]|^[ \t]*(?:[#+:=-]|\d{1,9}[.)])|^ {0,3}\t|^ {4}/mu;
 
-/** The spaces and tabs a line opens and ends with, which the parse leaves out of a paragraph's
- *  words; no other white space, which it keeps. */
-const EDGE_SPACE = /^[ \t]+|[ \t]+$/gu;
+/**
+ * How many characters `withoutEdgeSpace` has read in this process, so a test holds the trim of a
+ * plain text's lines to their length rather than to the time it took. It is a loop and runs no
+ * regular expression: the end-anchored `/[ \t]+$/` it once trimmed with (inside
+ * `/^[ \t]+|[ \t]+$/gu`) read, from every start in a run of spaces or tabs followed by any other
+ * character, the rest of the run, and JavaScriptCore counts no step a regular expression takes.
+ */
+let edgeCharactersRead = 0;
+
+/** How many characters `withoutEdgeSpace` has read in this process. */
+export function edgeSpaceReads(): number {
+  return edgeCharactersRead;
+}
+
+/** `line` less the spaces and tabs it opens and ends with, which the parse leaves out of a
+ *  paragraph's words; no other white space, which it keeps. Each loop stops at the first character
+ *  it does not skip, so no character is read more than twice. */
+function withoutEdgeSpace(line: string): string {
+  let read = 0;
+  let start = 0;
+  for (; start < line.length; start++) {
+    read++;
+    if (line[start] !== " " && line[start] !== "\t") break;
+  }
+  let end = line.length;
+  for (; end > start; end--) {
+    read++;
+    if (line[end - 1] !== " " && line[end - 1] !== "\t") break;
+  }
+  edgeCharactersRead += read;
+  return line.slice(start, end);
+}
 
 /**
  * The reading of a stored markdown text: the text parsed by the base of the page's markdown
@@ -215,7 +244,7 @@ export function plainReading(markdown: string): DisplayTree {
   const paragraphs: DisplayTree[] = [];
   let lines: string[] = [];
   for (const line of markdown.split(LINE_FEED)) {
-    const words = line.replace(EDGE_SPACE, "");
+    const words = withoutEdgeSpace(line);
     if (words !== "") {
       lines.push(words);
     } else if (lines.length > 0) {
@@ -233,11 +262,22 @@ function paragraphOf(lines: readonly string[]): DisplayTree {
   return { content: [{ text: lines.join(" "), type: "text" }], type: "paragraph" };
 }
 
+/** How many stored texts the parse has read (`parsedReading`) in this process: the work the
+ *  memo saves a redraw, counted, so a test reads what a draw parsed rather than how long it took
+ *  (`storedTextParses`). */
+let parses = 0;
+
+/** The count of `parsedReading`'s parses so far in this process. */
+export function storedTextParses(): number {
+  return parses;
+}
+
 /** The reading of a stored text by the parse alone (`STORED_TEXT_PARSE`), with no plain path and
  *  nothing remembered: what `storedReading` reads a text by where it holds no reading of it, and
  *  what a test holds the plain path (`plainReading`) equal to. The text's link reference
  *  definitions are read only once a reference link asks for one (`definedLinks`). */
 export function parsedReading(markdown: string): DisplayTree {
+  parses += 1;
   const root = fromMarkdown(markdown, STORED_TEXT_PARSE);
   let defined: ReadonlyMap<string, DisplayTree> | undefined;
   const links: DefinedLinks = (identifier) => {

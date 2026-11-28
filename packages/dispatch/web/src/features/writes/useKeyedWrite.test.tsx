@@ -1,4 +1,4 @@
-import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, spyOn, test } from "bun:test";
 import { onlineManager, QueryClientProvider, QueryObserver } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -19,6 +19,12 @@ import { writesOf } from "./write-store";
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `realClock`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 const refusal = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
@@ -596,13 +602,6 @@ function renderHeldWrite() {
   return { answer, client, hook, reads, server, stopReading };
 }
 
-/** Waits long enough for a read that is not held to have asked. */
-function aMoment(): Promise<void> {
-  const { promise, resolve } = Promise.withResolvers<void>();
-  setTimeout(resolve, 20);
-  return promise;
-}
-
 // A read asked while an optimistic write is out could be answered before Dispatch takes the
 // write, and would put back the value the press replaced. It waits for the write's answer, which
 // it then reads; the write still settles though its `onSettled` reads the query again.
@@ -615,15 +614,16 @@ test("a write that holds its query keeps a read asked while it is out until its 
     await waitFor(() => expect(client.getQueryData<string>(["things"])).toBe("optimistic"));
     await act(async () => {
       void client.invalidateQueries({ queryKey: ["things"] });
-      await aMoment();
     });
+    // The read is asked - TanStack marks its query fetching and calls the query's function in the
+    // same call - and the hold keeps it there before it reads.
+    expect(client.getQueryState(["things"])?.fetchStatus).toBe("fetching");
     expect(reads).toEqual(["before"]);
     expect(client.getQueryData<string>(["things"])).toBe("optimistic");
 
     server.value = "after";
     await act(async () => {
       answer.resolve("after");
-      await aMoment();
     });
     await waitFor(() => expect(hook.result.current.isSuccess).toBe(true));
     expect(reads.length).toBeGreaterThan(1);
@@ -645,13 +645,13 @@ test("a write that holds its query lets the reads it held go once its refusal is
     act(() => hook.result.current.mutate());
     await act(async () => {
       void client.invalidateQueries({ queryKey: ["things"] });
-      await aMoment();
     });
+    // Asked, and held before it reads, as above.
+    expect(client.getQueryState(["things"])?.fetchStatus).toBe("fetching");
     expect(reads).toEqual(["before"]);
 
     await act(async () => {
       answer.reject(verdict);
-      await aMoment();
     });
     await waitFor(() => expect(hook.result.current.isError).toBe(true));
     expect(reads.length).toBeGreaterThan(1);

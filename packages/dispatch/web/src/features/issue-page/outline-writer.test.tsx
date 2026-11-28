@@ -1,4 +1,4 @@
-import { beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, setSystemTime, spyOn, test } from "bun:test";
 import { focusManager, QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, type RenderResult, render, waitFor } from "@testing-library/react";
 
@@ -11,6 +11,12 @@ import { type OutlineWriter, OutlineWriterProvider, useOutlineWriter } from "./o
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+// A row that pins the clock (`setSystemTime`) and is ended by the command's guard never reaches
+// its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  setSystemTime();
 });
 
 // R7: the writer adds no request. It reads the issue's asks, comments and messages under the keys
@@ -43,12 +49,10 @@ test("a window focus more than 30 s after the load reads the writer's asks, comm
         focusManager.setFocused(false);
         focusManager.setFocused(true);
       });
-      // Long enough for a read the focus started to have been sent.
-      await act(async () => {
-        const waited = Promise.withResolvers<void>();
-        setTimeout(waited.resolve, 50);
-        await waited.promise;
-      });
+      // A read the focus started is out from the focus on: TanStack marks a refetch as fetching
+      // and calls its read as it starts it (`Query.fetch`), inside the focus itself, so the state
+      // read here is the one a read the focus started would have changed.
+      expect(client.isFetching(), "the window's focus started a read").toBe(0);
       expect(
         reads.map((read) => read.mock.calls.length),
         "the window's focus read the asks, the comments or the messages again"

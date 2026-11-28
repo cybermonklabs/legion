@@ -1,4 +1,4 @@
-import { beforeAll, expect, jest, test } from "bun:test";
+import { afterEach, beforeAll, expect, jest, test } from "bun:test";
 import type { ChangeDecorations, DocumentJSON } from "@legion/proof-editor";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, waitFor, within } from "@testing-library/react";
@@ -21,6 +21,12 @@ import { VersionView } from "./VersionView";
 // loaded before the first row builds a tree.
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `realClock`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 function createQueryClient(): QueryClient {
@@ -139,6 +145,9 @@ test("VersionView keeps its editor when the parent renders again with an equal h
 // event, so each re-read of that answer is a new object. The editor is built from the login in
 // it, and the same person read again must leave the reader where they were reading.
 test("VersionView keeps its editor when the signed-in person is read again with a later event head", async () => {
+  // On the fake clock, as the row above: a rebuild the re-read would start runs within the
+  // 20 ms the clock is moved, and none is left on a timer of the real clock to land after it.
+  jest.useFakeTimers();
   const { editors, setWhoAmI, view } = renderVersionView({
     highlight: undefined,
     markdown: "Read the current specification",
@@ -148,10 +157,11 @@ test("VersionView keeps its editor when the signed-in person is read again with 
     await waitFor(() => expect(editors).toHaveLength(1));
     setWhoAmI({ ...signedIn, event_head: "12" });
     setWhoAmI({ ...signedIn, event_head: "13" });
-    await Bun.sleep(20);
+    await tick(20);
     expect(editors).toHaveLength(1);
     expect(editors[0]?.destroyed).toBe(false);
   } finally {
+    realClock();
     view.unmount();
   }
 });

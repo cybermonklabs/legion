@@ -100,12 +100,11 @@ let tableReadings: TableReading[] | undefined;
  * This fill is the file's whole cost, and whichever reader runs first pays it: 2.04 to 2.22 s
  * over six runs alone on an issue pod's two cores, 3.39 to 3.70 s over three runs with two
  * spinners holding both cores, against 1 to 3 ms for the second reader's own work once the
- * table is filled and under 30 ms for any other row of the file. The cost has no single
- * number - run alone with its own bound taken off, the oracle row below failed
- * `--timeout 1900` and `--timeout 2000` three times out of three, passed `--timeout 2500`,
- * 3000, 3500, 4000 and 5000 three times out of three, and went both ways at 2100, 2200, 2300
- * and 2400 - so bun's 5 s default is only about twice the idle cost, which one busy core
- * takes: the oracle row red once in four runs of `bun run test` at 5,660 ms (INFRA-1404).
+ * table is filled and under 30 ms for any other row of the file. Bun's 5 s default is only
+ * about twice the idle cost, which one busy core takes: the oracle row went red once in four
+ * runs of `bun run test` at 5,660 ms (INFRA-1404). So the rows that read it set no number of
+ * their own: they run under the one guard `package.json`'s `test:web` script sets for every
+ * row of the command, which is far above this fill however loaded the machine.
  */
 function wholeTable(): TableReading[] {
   tableReadings ??= pmdocFixtures.map((entry) => {
@@ -119,13 +118,6 @@ function wholeTable(): TableReading[] {
   });
   return tableReadings;
 }
-
-/** The bound every row that reads `wholeTable()` carries, since the one that runs first pays
- *  the whole fill above and bun's 5 s default stands too near it. Thirty seconds leaves room
- *  over a loaded run and still fails a hung row, where sixty would mostly cost run time. A row
- *  left on bun's default can time out as the first reader on a loaded machine, the default
- *  being about twice the idle cost; alone under `--timeout 1900`, the leaf-mark row did. */
-const WHOLE_TABLE_TIMEOUT_MS = 30_000;
 
 // (a) The reading the table stores for a document - its paragraphs and its tables - is the
 // reading a DOM shows for it.
@@ -150,30 +142,26 @@ const WHOLE_TABLE_TIMEOUT_MS = 30_000;
 // This row draws every one of the 193 documents through the real engine and `DOMSerializer` and
 // compares its drawn paragraphs and tables with the reading the table stores. It is one of the
 // two rows that read `wholeTable()` - the other is the leaf-mark row below - so it pays the
-// whole fill wherever it runs first, and carries that bound.
-test(
-  "every document of the table reads in a DOM as the table says it reads",
-  () => {
-    const differing: string[] = [];
-    for (const { entry, paragraphs, tables } of wholeTable()) {
-      const readings = [
-        { drawn: paragraphs, stored: entry.reading.paragraphs, what: "paragraphs" },
-        { drawn: tables, stored: entry.reading.tables, what: "tables" },
-      ];
-      for (const { drawn, stored, what } of readings) {
-        if (JSON.stringify(drawn) !== JSON.stringify(stored)) {
-          differing.push(
-            `${entry.name} ${what}\n  stored: ${JSON.stringify(stored)}\n  drawn:  ${JSON.stringify(drawn)}`
-          );
-        }
+// whole fill wherever it runs first.
+test("every document of the table reads in a DOM as the table says it reads", () => {
+  const differing: string[] = [];
+  for (const { entry, paragraphs, tables } of wholeTable()) {
+    const readings = [
+      { drawn: paragraphs, stored: entry.reading.paragraphs, what: "paragraphs" },
+      { drawn: tables, stored: entry.reading.tables, what: "tables" },
+    ];
+    for (const { drawn, stored, what } of readings) {
+      if (JSON.stringify(drawn) !== JSON.stringify(stored)) {
+        differing.push(
+          `${entry.name} ${what}\n  stored: ${JSON.stringify(stored)}\n  drawn:  ${JSON.stringify(drawn)}`
+        );
       }
     }
-    // Named one by one rather than compared whole: a drift is one corpus document, and a failure
-    // that printed all 193 readings would bury it.
-    expect(differing).toEqual([]);
-  },
-  WHOLE_TABLE_TIMEOUT_MS
-);
+  }
+  // Named one by one rather than compared whole: a drift is one corpus document, and a failure
+  // that printed all 193 readings would bury it.
+  expect(differing).toEqual([]);
+});
 
 // (b) The claims `leaf-marks.e2e.ts`'s comment row carried, which no paragraph reading holds: an
 // inline leaf - raw HTML, a picture, a footnote reference - carries no text, so no mark may wrap
@@ -272,25 +260,21 @@ test("every declaration spelling that is raw HTML draws a leaf, and the rest dra
 // leaf - which `marks-on-footnote-references`, `marks-on-images`, `marks-on-inline-html` and
 // `links-holding-an-autolink` do in every shape the two readers argued over - no mark element
 // stands between that leaf and its paragraph.
-test(
-  "no mark element stands between an inline leaf and its paragraph, in any document of the table",
-  () => {
-    const wrapped: string[] = [];
-    for (const { entry, leaves: paragraphs } of wholeTable()) {
-      for (const { leaves } of paragraphs) {
-        for (const leaf of leaves) {
-          if (leaf.marks.length > 0) {
-            wrapped.push(
-              `${entry.name}: ${leaf.kind} ${leaf.identity} inside ${leaf.marks.join(", ")}`
-            );
-          }
+test("no mark element stands between an inline leaf and its paragraph, in any document of the table", () => {
+  const wrapped: string[] = [];
+  for (const { entry, leaves: paragraphs } of wholeTable()) {
+    for (const { leaves } of paragraphs) {
+      for (const leaf of leaves) {
+        if (leaf.marks.length > 0) {
+          wrapped.push(
+            `${entry.name}: ${leaf.kind} ${leaf.identity} inside ${leaf.marks.join(", ")}`
+          );
         }
       }
     }
-    expect(wrapped).toEqual([]);
-  },
-  WHOLE_TABLE_TIMEOUT_MS
-);
+  }
+  expect(wrapped).toEqual([]);
+});
 
 // (c) The claims `indented-code-whitespace-lines.e2e.ts`'s comment row carried, which no paragraph
 // reading holds either: the whole text of each `pre code` block, and the `data-spread` of every

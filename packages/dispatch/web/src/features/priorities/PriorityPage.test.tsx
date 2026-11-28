@@ -148,6 +148,12 @@ afterEach(() => {
   localStorage.clear();
 });
 
+// A row that holds Bun's fake clock (`onFakeClock`) and is ended by the command's guard never
+// reaches its own `realClock`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 function page(id = "rocq-lean", issues: IssueSummary[] = [], writer = true) {
   const priorities = spyOn(api, "listPriorities").mockResolvedValue(BODY);
   const listing = spyOn(api, "listIssues").mockImplementation(async (options = {}) =>
@@ -312,9 +318,7 @@ test("the description is a disclosure that closes, and the work fills the page b
   await waitFor(() => expect(screen.queryByRole("textbox", { name: "Description" })).toBeNull());
   expect(screen.getByRole("button", { name: "Description, closed" })).toBeDefined();
   // The work fills the page with the description closed.
-  expect(
-    await screen.findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
-  ).toBeDefined();
+  expect(await screen.findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   await user.click(screen.getByRole("button", { name: "Description, closed" }));
   expect(await screen.findByRole("textbox", { name: "Description" })).toBeDefined();
 });
@@ -337,7 +341,7 @@ test("the description is the documents' editor, with no action on a selection, a
     expect(screen.queryByRole("button", { name })).toBeNull();
   }
   writeAtEnd(handle, " More.", "More");
-  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1), { timeout: 3000 });
+  await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.[0]).toBe("rocq-lean");
   expect(patch.mock.calls[0]?.[1]).toEqual({
     description: "# Rocq and Lean speed work restarted\n\nSpeedruns run again. **More**.\n",
@@ -533,9 +537,7 @@ test("one link out leaves the scope, naming the issues and why", async () => {
 test("the work under the priority is the issues table, scoped and under its own prefix", async () => {
   const { listing } = page("rocq-lean", [issue("CORE-1", ["rocq-lean"]), issue("OPS-2")]);
   const work = await screen.findByRole("region", { name: "Work advancing this priority" });
-  expect(
-    await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" }, { timeout: 3000 })
-  ).toBeDefined();
+  expect(await within(work).findByRole("row", { name: "CORE-1 Work CORE-1" })).toBeDefined();
   expect(within(work).queryByRole("row", { name: "OPS-2 Work OPS-2" })).toBeNull();
   expect(listing).toHaveBeenCalledWith({ advances: ["rocq-lean"], open: true });
 });

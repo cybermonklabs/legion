@@ -1,5 +1,6 @@
 import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { turn as realTurn } from "@legion/test-fixtures/fake-clock";
 import { QueryClient } from "@tanstack/react-query";
 // biome-ignore lint/style/noRestrictedImports: a paste of a file into the box, which user-event's paste cannot carry
 import { act, cleanup, fireEvent, screen, waitFor, within } from "@testing-library/react";
@@ -10,7 +11,7 @@ import {
   newQueryClient,
   signedInAsReader,
 } from "../../__tests__/draft-matrix-fixture";
-import { jump, onRealTurns, realClock } from "../../__tests__/fake-clock";
+import { jump, realClock } from "../../__tests__/fake-clock";
 import { keyedAttempt } from "../../__tests__/keyed-attempt";
 import { messageCorrectionFields } from "../../__tests__/message-fixture";
 import { issueCollaborators, plannerAgent, searchResponse } from "../../__tests__/search-fixture";
@@ -253,6 +254,12 @@ beforeEach(() => {
 afterEach(() => {
   cleanup();
   for (const restore of restores.splice(0)) restore();
+});
+
+// A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+// `realClock`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
 });
 
 // R2: with no target the box writes one of two kinds, Comment on at first and Question, drawn
@@ -2025,7 +2032,10 @@ test("a reply open when its comment is deleted is refused before Send, and a pre
   await user.click(send);
   await user.click(writeField());
   await user.keyboard("{Enter}");
-  await onRealTurns(() => createComment.mock.calls.length > 0, 100);
+  // A send either press set going would call `createComment` within a few turns of the real
+  // event loop; a hundred turns bring none. `onRealTurns` waits for a fact and takes no count of
+  // turns, so the absence is read after a count of turns of its own.
+  for (let turns = 0; turns < 100; turns += 1) await act(realTurn);
   expect(createComment).not.toHaveBeenCalled();
   expect(writeField().value).toBe("Ship it.");
   expect(targetWords()).toBe(replyingTo("bob", "comment"));

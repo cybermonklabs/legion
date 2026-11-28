@@ -144,6 +144,12 @@ afterEach(() => {
   sockets.restore();
 });
 
+// A row that holds Bun's fake clock (`onFakeClock`) and is ended by the command's guard never
+// reaches its own `realClock`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  jest.useRealTimers();
+});
+
 /** A query client whose live socket the teardown closes. */
 function newClient(): QueryClient {
   const client = new QueryClient({
@@ -3203,7 +3209,11 @@ test("a rebuild from a replay that cleared the window after its reading draws no
 
   await waitFor(() => expect(screen.queryByTestId("agent-context-ring")).toBeNull());
   expect(within(screen.getByTestId("agent-composer-footer")).queryByText(/%/)).toBeNull();
-  expect(within(screen.getByTestId("agent-thread")).getByText("Before the rotation.")).toBeTruthy();
+  // The message's body is drawn by the markdown engine, which loads lazily: the web-cold lane holds
+  // that load, so the row waits for the text rather than reading it at once.
+  expect(
+    await within(screen.getByTestId("agent-thread")).findByText("Before the rotation.")
+  ).toBeTruthy();
 });
 
 // The Layout rule (`web/src/AGENTS.md`), point 6: a panel the reader opened is the reader's. A
