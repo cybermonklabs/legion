@@ -60,6 +60,33 @@ func idleRoot() pods.IdleView {
 	return view
 }
 
+// idleRetroChild is a merged child closed as done in testing under a root still in the workflow,
+// whose retro after the close holds its pod (pods.IdleView.RetroHolds): its implementer, the
+// retro's agent, and its tester, the production check's role, are both live and idle, each
+// reported no background work after its last turn, and the pod has been quiet past the idle
+// period. Only the retro's hold keeps the pod live: the ordinary rule
+// (pods.InWorkflowNotLingering with RetroHolds false) is false for it.
+func idleRetroChild() pods.IdleView {
+	view := idleChild()
+	view.Phase, view.Status, view.RetroHolds = phase.Done, "done", true
+	view.Claims[1] = view.Claims[0]
+	view.Claims[1].Role = claim.RoleTester
+	return view
+}
+
+// idleRetroRoot is a root closed as done that does not linger, whose tree takes the wake of a
+// retro's finding (pods.IdleView.RetroHolds: a retro after a close in its tree is open, or the
+// last one ended within the hour), with its architect and its tester live and idle as
+// idleRetroChild's roles are. Only the retro's hold keeps it live as well.
+func idleRetroRoot() pods.IdleView {
+	view := idleRoot()
+	view.Phase, view.Status, view.RetroHolds = phase.Done, "done", true
+	view.Root.Phase, view.Root.Status = phase.Done, "done"
+	view.Claims = append(view.Claims, view.Claims[0])
+	view.Claims[1].Role = claim.RoleTester
+	return view
+}
+
 // Every condition of the idle rule is one row here: it holds the pod and names the hold the
 // daemon records, and the pod with every condition met is released with its live roles named.
 // The rule is pure, so each row is the view, the clock, the idle period, the image verdict and
@@ -114,6 +141,47 @@ func TestTheIdleRuleNamesTheOneConditionThatHeldEachPod(t *testing.T) {
 			name:  "the tree root lingers",
 			view:  func() pods.IdleView { v := idleChild(); v.Root.LingerUntil = &idleNow; return v }(),
 			image: true, want: IdleHoldTreeNotLive,
+		},
+		{
+			// The look runs in the tester's session, and its end is the close that stops the
+			// tester and deletes the Sandbox, which LeftPodClose keeps a left pod for. A release
+			// would suspend the tester, and a wake brings back a released claim of a closed
+			// issue only where it is the retro's agent (RetroWakeOf), so a message to the tester
+			// would wake nothing.
+			name:  "a retro after the close holds a closed child's pod while a look of its check is open",
+			view:  func() pods.IdleView { v := idleRetroChild(); v.CheckLookOpen = true; return v }(),
+			image: true, want: IdleHoldTreeNotLive,
+		},
+		{
+			// With no look open the retro's agent is released once its turn ends, for a message to
+			// its role to wake it, and so is the tester beside it.
+			name: "a retro after the close holds a closed child's pod and no look of its check is open",
+			view: idleRetroChild(), image: true, want: IdleHoldNone,
+			roles: []claim.Role{claim.RoleImplementer, claim.RoleTester},
+		},
+		{
+			// The root's own look holds its pod while its tree takes a retro's wake, as a child's
+			// look holds the child's: a wake brings back only the root's architect.
+			name:  "a closed root's tree takes a retro's wake while a look of the root's check is open",
+			view:  func() pods.IdleView { v := idleRetroRoot(); v.CheckLookOpen = true; return v }(),
+			image: true, want: IdleHoldTreeNotLive,
+		},
+		{
+			name: "a closed root's tree takes a retro's wake and no look of the root's check is open",
+			view: idleRetroRoot(), image: true, want: IdleHoldNone,
+			roles: []claim.Role{claim.RoleArchitect, claim.RoleTester},
+		},
+		{
+			// The ordinary rule makes the pod live, so a look holds nothing here, whatever the
+			// retro's hold says: a root back in the workflow inside its tree's retro hour, say,
+			// with a look of its check still open.
+			name: "a look is open on a pod the ordinary rule makes live",
+			view: func() pods.IdleView {
+				v := idleRoot()
+				v.RetroHolds, v.CheckLookOpen = true, true
+				return v
+			}(),
+			image: true, want: IdleHoldNone, roles: []claim.Role{claim.RoleArchitect},
 		},
 		{
 			name:  "the project is paused",

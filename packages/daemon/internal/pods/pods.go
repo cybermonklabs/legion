@@ -203,10 +203,11 @@ type IdleView struct {
 	// IssueSuspendQueued is whether the issue's issue_suspend row does, the act of a close that
 	// deletes its Sandbox, its pod and its disk. CheckLookOpen is whether a look of the issue's
 	// production check is open: its bound row (record.CheckLook) still waits, and the look's end
-	// stops the checking role and deletes the Sandbox. Only the rule for the pod of an issue the
+	// stops the checking role and deletes the Sandbox. The rule for the pod of an issue the
 	// workflow has taken out reads the three (workflow.LeftPodClose): each says a close of that
 	// pod is still under way or still to come, so the rule leaves the pod to it rather than
-	// stopping it a second time.
+	// stopping it a second time. The idle rule reads CheckLookOpen too, and hands that rule a pod
+	// that only RetroHolds keeps the workflow's while the look is open (workflow.IdleRelease).
 	RoleStopQueued     bool
 	IssueSuspendQueued bool
 	CheckLookOpen      bool
