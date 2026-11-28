@@ -83,16 +83,23 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		dir := t.TempDir()
 		lock, ready, mark := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready"), filepath.Join(dir, "started")
 		readyAt := filepath.Join(dir, "ready-at")
+		// CONTROL (never merged): trappedAt is the moment the command's SIGTERM trap ran, which
+		// the diagnosis orders against the hold's own end.
+		trappedAt := filepath.Join(dir, "trapped-at")
 		budget := time.Second
 		ctx := budgetPassedOnceExists(t, ready)
+		// CONTROL (never merged): the machine holds the command on CPU 0's run queue, at nice 19
+		// behind 16 busy loops, until it reports that it is running.
+		hold := holdOnCPU0(t, 16, ready)
 		// The lock is taken before the command reports that it is running, so a lock that is gone
 		// at the end is one the command's own SIGTERM handler removed.
-		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap 'rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
+		script := testexec.MarkStart(`"$3"`) + `; : >"$1"; trap '` + testexec.MarkNow(`"$5"`) + `; rm -f "$1"; exit 0' TERM; ` + markWaited("self", `"$4"`) + `; : >"$2"; ` + commandLives
 
 		call := calling(t)
 		started := time.Now()
-		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready, mark, readyAt})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"nice", "-n", "19", "taskset", "-c", "0", "sh", "-c", script, "sh", lock, ready, mark, readyAt, trappedAt})
 		returned := time.Now()
+		returnedBoot := testexec.SinceBoot(t)
 		cpu := processCPU(t)
 		elapsed := returned.Sub(started)
 
