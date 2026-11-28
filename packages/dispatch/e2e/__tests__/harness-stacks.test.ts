@@ -146,6 +146,9 @@ test("harnessPorts resolves the stack's ports and keeps both of its refusals", (
 test("a run of more than one stack refuses every variable one stack owns, by name", () => {
   const refused: Record<string, string> = {
     DATABASE_URL: "postgres://localhost/dispatch",
+    // One NATS, on which every stack's server would bind the same durables, so the stack whose
+    // server bound one first would keep it and the others' intakes would deliver nothing.
+    DISPATCH_E2E_NATS_URLS: "nats://127.0.0.1:4222",
     DISPATCH_E2E_PROCESSES: "2",
     DISPATCH_E2E_REUSE_SERVERS: "1",
     PLAYWRIGHT_BASE_URL: "https://dispatch.example",

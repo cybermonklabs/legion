@@ -5,7 +5,11 @@
 //
 // The bus is the harness's: DISPATCH_E2E_NATS_URLS, which e2e/run-server.sh hands the server as its
 // NATS_URLS, which turns its publisher and its Legion intake on (e2e/fake-envoy.ts reads the same
-// variable). A run that names none has no intake, and `requireNats` fails the row by that name.
+// variable). A run of more than one stack gives each stack a NATS of its own, from
+// DISPATCH_E2E_NATS_BIN (e2e/harness-nats.ts), so the feed reads its own stack's
+// (`stackValue`): a feed on another stack's bus would publish to a server whose intake holds no
+// setting of the row's project. A run that names none has no intake, and `requireNats` fails the
+// row by that name.
 //
 // Each message is the daemon's shape, read from packages/contracts/fixtures/daemon-api/
 // state-events.json and the intake's decoder (packages/envoy/internal/dispatch/legion/
@@ -27,6 +31,8 @@ import { EnvelopeSchema, legionProjectToken, legionStateSubject } from "@legion/
 import { legionStateMessage } from "@legion/contracts/legion-api";
 import { connect, StringCodec } from "nats";
 
+import { natsBinVariable, natsUrlsVariable } from "./harness-nats";
+import { stackValue } from "./harness-ports";
 import {
   type AdmissionRecords,
   admissionBlock,
@@ -54,15 +60,16 @@ const IN_FLIGHT = 8;
  *  ENTRIES_PER_MESSAGE readings is one transaction of the intake's, and the bound is many of them. */
 const INTAKE_WAIT_MS = 180_000;
 
-/** The servers DISPATCH_E2E_NATS_URLS names, failing the row by that name where it names none. */
+/** The servers this worker's stack names in DISPATCH_E2E_NATS_URLS, failing the row by that name
+ *  where it names none. */
 export function requireNats(): string[] {
-  const servers = (process.env.DISPATCH_E2E_NATS_URLS ?? "")
+  const servers = (stackValue(process.env, natsUrlsVariable) ?? "")
     .split(",")
     .map((server) => server.trim())
     .filter((server) => server !== "");
   if (servers.length === 0) {
     throw new Error(
-      "DISPATCH_E2E_NATS_URLS names no NATS server: this row feeds Dispatch's Legion intake, which runs only where e2e/run-server.sh hands the server a NATS (a nats-server with JetStream, NATS=1 in the browser Job)"
+      `${natsUrlsVariable} names no NATS server: this row feeds Dispatch's Legion intake, which runs only where e2e/run-server.sh hands the server a NATS: ${natsBinVariable}, a nats-server binary the harness starts for each stack, or for a run of one worker ${natsUrlsVariable}, a nats-server with JetStream`
     );
   }
   return servers;

@@ -395,7 +395,10 @@ fi
 # developer's shell exports NATS_URLS for the Envoy listener, and a server that took it would
 # publish test notifications to the bus that listener delivers to real sessions. Every NATS_*
 # variable a shell exported is still swept below, and a caller that names none gets exactly the
-# server every spec has always run against.
+# server every spec has always run against. A NATS is one stack's, as its database is: a run of
+# more than one stack names the binary instead (DISPATCH_E2E_NATS_BIN), the pool starts one per
+# stack and hands each stack's processes its own under this name (e2e/harness-nats.ts says why no
+# two stacks share one).
 nats_urls="${DISPATCH_E2E_NATS_URLS:-}"
 if [ -n "$nats_urls" ]; then
   nats_env=(NATS_URLS="$nats_urls")

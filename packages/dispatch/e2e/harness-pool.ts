@@ -14,6 +14,12 @@
  *  `stopStacks` removes. A run of one stack with `DATABASE_URL` set uses that database and starts
  *  no Postgres, as this harness always has.
  *
+ *  Each stack's NATS, where the run has one, comes from `DISPATCH_E2E_NATS_BIN`
+ *  (`e2e/harness-nats.ts`, which says why two stacks cannot share one), with its store under the
+ *  stack's directory of the run, and reaches that stack's processes as `DISPATCH_E2E_NATS_URLS`.
+ *  A run of one stack with `DISPATCH_E2E_NATS_URLS` set uses that server and starts none, as
+ *  this harness always has.
+ *
  *  WHY NO CHECK COMPARES THE STACKS' PORTS WITH EACH OTHER. The wrapper this replaced held every
  *  lane itself and started the Playwright command afterwards, so it could compare every lane's
  *  ports once they were all up and refuse a port two lanes had been handed. The check that
@@ -27,6 +33,7 @@ import { mkdtempSync, readdirSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
+import { natsStoreDirectory, natsUrlsVariable, type StackNats, stackNats } from "./harness-nats";
 import {
   pgBinVariable,
   pgImageVariable,
@@ -41,24 +48,27 @@ import { armsStopListener } from "./signal-ignores";
 const named = "e2e/harness-pool.ts";
 
 /** One started stack as its callers read it: the index a worker selects it by, and every variable
- *  it carries - its ports, its `DATABASE_URL`, its file-store bucket. */
+ *  it carries - its ports, its `DATABASE_URL`, its file-store bucket, its NATS. */
 export interface Stack {
   readonly index: number;
   readonly env: Readonly<Record<string, string>>;
 }
 
 export interface StackPoolOptions {
-  /** Where this run's own inputs are read: `DATABASE_URL`, the file store and the Postgres
-   *  provider (`e2e/harness-postgres.ts`). This process's environment when absent, which is what
-   *  both callers pass; a test names one of its own to reach a refusal whatever the machine it
-   *  runs on has. The harness itself always starts from this process's environment with the
-   *  stack's own variables on top (`e2e/harness-start.ts`). */
+  /** Where this run's own inputs are read: `DATABASE_URL`, the file store, the Postgres provider
+   *  (`e2e/harness-postgres.ts`) and the NATS (`e2e/harness-nats.ts`). This process's environment
+   *  when absent, which is what both callers pass; a test names one of its own to reach a refusal
+   *  whatever the machine it runs on has. The harness itself always starts from this process's
+   *  environment with the stack's own variables on top (`e2e/harness-start.ts`). */
   readonly env?: NodeJS.ProcessEnv;
 }
 
 /** One stack and what it takes to stop it. */
 interface Running extends Stack {
   readonly database: StackDatabase | undefined;
+  /** Its NATS server, unset where the run names no binary or a run of one stack names a server
+   *  of its own (`DISPATCH_E2E_NATS_URLS`). */
+  readonly nats: StackNats | undefined;
   readonly harness: Harness;
   /** Where its processes write their output, unset for a run of one stack, which writes to this
    *  process's stderr as it always has. */
@@ -230,8 +240,9 @@ async function stackBucket(
 
 /** Removes the run's own directory, which holds every stack's data directory. `keepLogs` keeps
  *  the stacks' logs, the only record of what their servers said, and loses the data directories,
- *  which are the bulk of it; a directory a stack's Postgres made as another user (the image
- *  provider's container) can outlive the run rather than fail its exit status. */
+ *  which are the bulk of it, and each stack's NATS store; a directory a stack's Postgres made as
+ *  another user (the image provider's container) can outlive the run rather than fail its exit
+ *  status. */
 function clearRunDir(keepLogs: boolean): void {
   if (runDir === "") return;
   const root = runDir;
@@ -240,7 +251,12 @@ function clearRunDir(keepLogs: boolean): void {
   // Every data directory under the run's own, named from that directory rather than from the
   // stacks that started: a stack that failed to start left a copy of the template there and no
   // entry among them, and those copies are the bulk this branch is here to lose.
-  const removed = keep ? readdirSync(root).map((entry) => join(root, entry, "pgdata")) : [root];
+  const removed = keep
+    ? readdirSync(root).flatMap((entry) => [
+        join(root, entry, "pgdata"),
+        join(root, entry, natsStoreDirectory),
+      ])
+    : [root];
   for (const path of removed) {
     try {
       rmSync(path, { force: true, recursive: true });
@@ -295,13 +311,23 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
           `${pgBinVariable} (a directory holding initdb and pg_ctl) must name one.`
       );
     }
+    // A run of one stack on the NATS the caller named starts none, as one on the database the
+    // caller named starts no Postgres; a run of more than one refuses that variable before it
+    // gets here (`refuseStackConflicts`, e2e/harness-ports.ts).
+    const nats =
+      count === 1 && (env[natsUrlsVariable] ?? "").trim() !== ""
+        ? undefined
+        : stackNats({ dir: runDir, env });
     const startStack = async (index: number): Promise<void> => {
       const logDir = count === 1 ? undefined : join(runDir, `worker-${index}`, "log");
       const database =
         postgres === undefined ? undefined : await postgres.start(index, stopping.signal);
+      let bus: StackNats | undefined;
       // Everything from here on runs with a server of this stack's own up, so each of them — the
-      // bucket the file store makes as much as the harness — stops it rather than leave it behind.
+      // NATS and the bucket the file store makes as much as the harness — stops it rather than
+      // leave it behind.
       try {
+        bus = nats === undefined ? undefined : await nats.start(index, logDir, stopping.signal);
         const own: Record<string, string> = {};
         // How many stacks share this machine, which each stack's own server reads: it divides the
         // machine's CPUs by this for its GOMAXPROCS, so four servers on a four-vCPU runner take
@@ -310,11 +336,20 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
         own.DISPATCH_E2E_STACK_COUNT = String(count);
         const url = database?.url ?? given;
         if (url !== "") own.DATABASE_URL = url;
+        if (bus !== undefined) own[natsUrlsVariable] = bus.url;
         const bucket = await stackBucket(index, count, env);
         if (bucket !== undefined) own.DISPATCH_E2E_FILE_STORE_BUCKET = bucket;
         const harness = await startHarness({ env: own, logDir, signal: stopping.signal });
-        stacks.push({ database, env: { ...own, ...harness.env }, harness, index, logDir });
+        stacks.push({
+          database,
+          env: { ...own, ...harness.env },
+          harness,
+          index,
+          logDir,
+          nats: bus,
+        });
       } catch (error) {
+        await bus?.stop();
         await database?.stop(true);
         throw error;
       }
@@ -329,14 +364,16 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
 
     if (postgres !== undefined)
       console.error(`${named}: each stack's Postgres is ${postgres.name}`);
+    if (nats !== undefined) console.error(`${named}: each stack's NATS is ${nats.name}`);
     for (const stack of stacks) {
       const ports = Object.entries(stack.harness.env)
         .map(([variable, port]) => `${variable}=${port}`)
         .join(" ");
       const postgresSocket =
         stack.database === undefined ? "" : `POSTGRES_SOCKET=${stack.database.socketDirectory} `;
+      const bus = stack.nats === undefined ? "" : `${natsUrlsVariable}=${stack.nats.url} `;
       const output = stack.logDir ?? "its output is on this process's stderr";
-      console.error(`${named}: stack ${stack.index}: ${postgresSocket}${ports} (${output})`);
+      console.error(`${named}: stack ${stack.index}: ${postgresSocket}${bus}${ports} (${output})`);
     }
     // The two numbers a reader of a CI log reads this line for. One stack per worker is the
     // invariant: a start that could not give a worker its own stack throws above rather than
@@ -344,12 +381,15 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
     // are up and the second is the workers they were started for.
     console.error(`${named}: ${stacks.length} stacks for ${count} workers`);
 
-    // A harness process that stops by itself is named, so rows failing against a server that died
-    // say why, and every stack is watched, since a row runs in whichever stack its worker took.
+    // A harness process or a NATS server that stops by itself is named, so rows failing against a
+    // server that died say why, and every stack is watched, since a row runs in whichever stack
+    // its worker took.
     for (const stack of stacks) {
-      stack.harness.firstExit().catch((error: Error) => {
-        if (!stopped) console.error(`${named}: stack ${stack.index}: ${error.message}`);
-      });
+      for (const exit of [stack.harness.firstExit(), stack.nats?.firstExit()]) {
+        exit?.catch((error: Error) => {
+          if (!stopped) console.error(`${named}: stack ${stack.index}: ${error.message}`);
+        });
+      }
     }
     // The stacks are up, so there is a run for Playwright's runner to tear down, and its own
     // Ctrl-C handling is the whole answer from here (the listeners above say why). SIGTERM
@@ -365,11 +405,12 @@ async function startPool(count: number, options: StackPoolOptions): Promise<read
 /** The stop under way, which a second call of `stopStacks` waits for. */
 let stoppingStacks: Promise<void> | undefined;
 
-/** Stops every harness and every database, clears the run's directory and takes the pool's
- *  signal listeners off again. `keepLogs` is the one decision this cannot make for itself: the
- *  logs are what a failed run is read from, and this module never learns whether the run passed
- *  (`e2e/run-outcome.ts`). `printContainerLogs`, which follows it unless said otherwise, is
- *  whether each stack's Postgres container prints its log before it goes (`StackDatabase.stop`).
+/** Stops every harness, every NATS server and every database, clears the run's directory and
+ *  takes the pool's signal listeners off again. `keepLogs` is the one decision this cannot make
+ *  for itself: the logs are what a failed run is read from, and this module never learns whether
+ *  the run passed (`e2e/run-outcome.ts`). `printContainerLogs`, which follows it unless said
+ *  otherwise, is whether each stack's Postgres container prints its log before it goes
+ *  (`StackDatabase.stop`).
  *
  *  A call while a stop is under way waits for that stop, whatever it is given, and stops nothing
  *  a second time. Two callers can answer one signal: `e2e/harness-up.ts` stops its stack on a
@@ -391,6 +432,7 @@ export function stopStacks(
 async function stopEveryStack(keepLogs: boolean, printContainerLogs: boolean): Promise<void> {
   stopped = true;
   await Promise.allSettled(stacks.map((stack) => stack.harness.stop()));
+  await Promise.allSettled(stacks.map((stack) => stack.nats?.stop()));
   await Promise.allSettled(stacks.map((stack) => stack.database?.stop(printContainerLogs)));
   clearRunDir(keepLogs);
   stacks.length = 0;

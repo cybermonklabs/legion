@@ -98,6 +98,9 @@ requests at a broker the caller runs, as the secrets broker's docs rig
 publisher on for a driver that proves what a delivery writes. It is the rig's
 own variable because a shell's `NATS_URLS` is the Envoy listener's, and a server
 that took it would publish test notifications where real sessions receive them.
+It names one server, which one stack owns: a run of more than one worker names a
+nats-server binary in `DISPATCH_E2E_NATS_BIN` instead, and each stack runs one
+of its own (stacks, below).
 
 `DATABASE_URL` is a one-stack run's input unless it names a Postgres of its own
 (stacks, below), and must name an isolated
@@ -266,11 +269,14 @@ its memory map. A server short of any of them fails the row, naming what it
 lacks.
 
 A run of more than one worker is one stack per worker, each with a Postgres, a
-file-store bucket and ports of its own, so five variables that name one of
+file-store bucket and ports of its own, so six variables that name one of
 those are refused before anything starts:
 
 - `DATABASE_URL`, because each stack runs its own Postgres, whose URL the
   harness hands its servers and its psql,
+- `DISPATCH_E2E_NATS_URLS`, because every stack's server binds the same
+  durables on the one NATS it names: the first holds them, and the other
+  stacks' intakes deliver nothing (`e2e/harness-nats.ts`),
 - `PLAYWRIGHT_BASE_URL`, because a deployed run has one server every stack
   would share,
 - `DISPATCH_E2E_REUSE_SERVERS`, because the servers a person started are one
@@ -279,15 +285,20 @@ those are refused before anything starts:
   stack's database,
 - any harness port you set yourself, because a port is one listener's.
 
-Run instead a Postgres provider with those five unset: `DISPATCH_E2E_PG_BIN`, a
+Run instead a Postgres provider with those six unset: `DISPATCH_E2E_PG_BIN`, a
 directory holding `initdb` and `pg_ctl`, or `DISPATCH_E2E_PG_IMAGE`, each of
-which is a Postgres per stack. The other way is one worker, which the config
-defaults to and the one case that takes a `DATABASE_URL`.
+which is a Postgres per stack. A run whose rows need a bus names a nats-server
+binary in `DISPATCH_E2E_NATS_BIN` (`go build -o <path>
+github.com/nats-io/nats-server/v2` in `packages/envoy`), and each stack runs
+one with JetStream, its store under the stack's `worker-<i>` directory, and
+hands its URL to that stack's processes as `DISPATCH_E2E_NATS_URLS`. The other
+way is one worker, which the config defaults to and the one case that takes a
+`DATABASE_URL` or a `DISPATCH_E2E_NATS_URLS`.
 `e2e/global-setup.ts` refuses the run before it starts anything, naming the
 variable and the reason, so you meet a sentence rather than an `EADDRINUSE`.
 The refusal is the harness's own rule, not one caller's habit: a run of more
 than one worker meets it however you started it, because one stack owns each of
-the five. CI's shard leg sets `DISPATCH_E2E_PG_BIN` and none of the five, so
+the six. CI's shard leg sets `DISPATCH_E2E_PG_BIN` and none of the six, so
 the rule reaches no job of this repository and only a run by hand.
 
 Every other mode runs on the default one worker, and so one stack: the deployed
