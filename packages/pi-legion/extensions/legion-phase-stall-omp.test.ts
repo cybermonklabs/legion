@@ -166,10 +166,19 @@ const STALL_STATE = {
   consumers: [],
 };
 
+// Each case starts a cold Oh My Pi pane (a pinned binary spawning and registering over NATS, which
+// reads 5-6 s) and runs it to its settle, so it needs more than Bun's 5000 ms default in every
+// mode: `bun run test`'s workers declare 300000 ms (`test-timeout-preload.ts`), but a run of this
+// file alone takes no worker and keeps 5000 ms. Each case and the afterEach, whose cleanup kills a
+// real Oh My Pi, therefore take that same 300000 ms as a guard of their own, as the cases of
+// `legion-stall-watchdog-omp.test.ts` do; the pane's waits here are the harness's own, not the
+// shared wait, so no case sets a row guard for it.
+const COLD_PANE_GUARD_MS = 300_000;
+
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** The text of every user message in a Messages request, joined. */
 function userText(request: Request): string {
@@ -441,7 +450,7 @@ test.skipIf(skip)(
     expect(stallCounts(entries)).toEqual([0, 1, 0]);
     expect(entries.at(-1)).toMatchObject({ state: "active", count: 0 });
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -497,7 +506,7 @@ test.skipIf(skip)(
     expect(pane.publishes()).toHaveLength(1);
     expect(pane.completions()).toHaveLength(1);
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -580,7 +589,7 @@ test.skipIf(skip)(
     expect(entries.at(-1)).toMatchObject({ state: "active", count: 0 });
     expect(pane.completions()).toHaveLength(1);
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -647,7 +656,7 @@ test.skipIf(skip)(
     expect(pane.turns()).toHaveLength(7);
     expect(pane.completions()).toHaveLength(1);
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -681,7 +690,7 @@ test.skipIf(skip)(
     expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2, 0, 1, 2]);
     expect(pane.publishes()).toEqual([]);
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 /** The stand-in daemon's answer that the claim owes nothing: its record has moved on. */
@@ -715,7 +724,7 @@ test.skipIf(skip)(
     // Nothing was put in front of the worker, so nothing was counted.
     expect(stallCounts(await pane.phaseEntries())).toEqual([0]);
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -752,7 +761,7 @@ test.skipIf(skip)(
     expect(stallCounts(entries)).toEqual([0, 1]);
     expect(entries.at(-1)).toMatchObject({ state: "active", count: 1 });
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 // Where the daemon's answer does not arrive the worker is still nudged, and the nudge says
@@ -795,7 +804,7 @@ test.skipIf(skip)(
     }
     expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2]);
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 // The run-end ask nudge (extensions/envoy.ts) is a hidden side-turn self-check whose
@@ -835,7 +844,7 @@ test.skipIf(skip)(
     const asks = pane.requests.filter((request) => request.path === "/api/v1/asks/open");
     expect(asks).toHaveLength(2);
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -870,7 +879,7 @@ test.skipIf(skip)(
     const asks = pane.requests.filter((request) => request.path === "/api/v1/asks/open");
     expect(asks).toHaveLength(2);
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );
 
 // Background work is on for every role, so a worker can end its turn with a job of its own
@@ -911,5 +920,5 @@ test.skipIf(skip)(
     expect(entries.at(-1)).toMatchObject({ state: "waiting", count: 0 });
     expect(pane.completions()).toHaveLength(0);
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );

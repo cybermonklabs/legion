@@ -856,11 +856,13 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 // Acknowledged, the copy is handed to a holder that claimed the role while the keep was in
 // flight, before that answer is given (handOverKept), so the route's own answer stays the keep's
 // and the handover is behind it; the handover is given the time of this publish, which is the
-// copy's own age and what its forward carries (contracts.Envelope.KeptAt). The publish is made on
-// the batch's own goroutine, which issues every send of a window without waiting for any of them
-// (sendChains), so the wait for the acknowledgement and the handover behind it run on a goroutine
-// of their own, and the record of what those handovers delivered is shared between them (handed,
-// keptHandovers).
+// copy's own age and what its forward carries (contracts.Envelope.KeptAt). The answer is the
+// stream's acknowledgement, or the error of a handover that failed on a connection that no
+// longer answers a probe (handOverKept), which wraps errHandoverProbeFailed and
+// bus.ErrUnavailable. The publish is made on the batch's own goroutine, which issues every send of
+// a window without waiting for any of them (sendChains), so the wait for the acknowledgement and
+// the handover behind it run on a goroutine of their own, and the record of what those handovers
+// delivered is shared between them (handed, keptHandovers).
 func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, item contracts.Envelope, handed *keptHandovers) <-chan error {
 	keptAt := time.Now()
 	item.MentionDedupeKeys = f.settledKeys
@@ -869,12 +871,20 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 	go func() {
 		err := <-stored
 		if err == nil {
-			handOverKept(ctx, deps, sender, f.keptFor, item, keptAt, handed)
+			err = handOverKept(ctx, deps, sender, f.keptFor, item, keptAt, handed)
 		}
 		answer <- err
 	}()
 	return answer
 }
+
+// errHandoverProbeFailed is in the answer of a keep whose handover failed and whose probe of the
+// keep's connection then failed too (handOverKept), beside the probe's own error, which wraps
+// bus.ErrUnavailable. It says that the connection was probed already, and found not answering: a
+// batch a send of which answered it gives the hold up for NATS lost without a second probe of the
+// same connection (publishBatch), and a fallback pass reports NATS lost for it
+// (publishFallbackCopies), so the holder gives the hold up there too (Outbox.serve).
+var errHandoverProbeFailed = errors.New("the probe after the failed handover found its NATS connection not answering")
 
 // handOverKept hands the copy just kept on role's kept lane to the session holding the role now,
 // when one claimed it while the keep was in flight and that copy is the one the role's drain
@@ -941,15 +951,38 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // owner do; before it, the kept copy waited for the sweep and lost to every such event.
 //
 // A read that failed - the lane, its cursor, the claim or the holder's session - ends the
-// handover at Warn on the one line this writes, and so does a forward that failed; a read this
-// process's own stop cancelled is not one of them (lostToContextEnd), the batch saying that
-// itself. Nothing follows such a failure: the route was reached when the stream acknowledged the
-// keep, so the event is published and nothing retries the handover, and it is not counted among
-// the destinations a publish did not reach (countPublishFailure), which are the ones the outbox
-// then sends again. What it costs is this issue's order at that holder: the copy reaches it only
-// at the listener's next handover of the lane - the role's next claim, a keep, the registration
-// that makes the holder live again or the claim route's refresh that does, or the sweep, up to
-// its interval later - behind every event the holder takes meanwhile.
+// handover, and so does a forward that failed; a read this process's own stop cancelled is not one
+// of them (lostToContextEnd), the batch saying that itself. Each read is bounded at 2 s - the lane
+// and its cursor at probeTimeout (boundedKeptLanes, which New puts in front of Deps.KeptLanes),
+// the claim and the session at readTimeout in internal/roles - and the forward at its
+// acknowledgement window, roleForwardAckTimeout (Deps.forwardAckTimeout). Such a failure, while
+// the batch's ctx stands, is followed by a probe of sender's connection (bus.Sender.Probe,
+// probeTimeout), because a silence fails the read at its bound and sends no connection event: the
+// keep would answer reached, and the chain would send its next send - another keep of the role -
+// into the silence, waiting out that send's acknowledgement before the batch probes and gives the
+// hold up, past the take-over (TestAnOutboxThatLosesNATSInAKeepsHandoverGivesThePublisherToTheOther).
+// A probe that fails is logged at Error and answers the keep with an error wrapping
+// errHandoverProbeFailed and the probe's own error, and so bus.ErrUnavailable: the batch settles
+// the send lost and makes no further send, and gives the hold up for NATS lost with no second
+// probe of that connection, unless its client has reconnected since it began (sendChains,
+// publishBatch), counting the send failed (countPublishFailure), which it is to everyone reading
+// the outage. The copy is on the lane all the same, as the stream acknowledged it, and the
+// released event is sent again by the next scan: kept again under the same message id, which the
+// stream holds once, or forwarded to a holder that claimed the role meanwhile under the id every
+// forward of that copy to that holder carries, which the stream and the holder each take once. A
+// pass's keep answered so, the fallback pass's or the expiry pass's, is a send that found NATS
+// unavailable (judgeSend): its row is released after retry.BaseDelay and kept again under the
+// same id, and the fallback pass reports NATS lost for it, so the holder gives the hold up as it
+// does for such a batch (publishFallbackCopies, Outbox.serve).
+//
+// A probe that answers, or a failure once the batch's ctx has ended that is not that end's own,
+// is logged at Warn, and nothing follows it: the route was reached when the stream acknowledged
+// the keep, so the event is published and nothing retries the handover, and it is not counted
+// among the destinations a publish did not reach (countPublishFailure), which are the ones the
+// outbox then sends again. What it costs is this issue's order at that holder: the copy reaches
+// it only at the listener's next handover of the lane - the role's next claim, a keep, the
+// registration that makes the holder live again or the claim route's refresh that does, or the
+// sweep, up to its interval later - behind every event the holder takes meanwhile.
 //
 // The forward carries the time of the keep itself (contracts.Envelope.KeptAt), as the drain's
 // forward of a copy carries the stream's store time of it, so a holder can judge the message's
@@ -958,18 +991,28 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // unless a drain that read the cursor before this handover reaches the agent subject ahead of it.
 // A keep the outbox retried stamps the retry's own time, the stream having kept the copy the
 // first publish stored.
-func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) {
-	if err := handOverKeptCopy(ctx, deps, sender, role, item, keptAt, handed); err != nil && !lostToContextEnd(ctx, err) {
-		slog.Warn("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it",
-			"role", role, "event_id", item.EventID, "error", err)
+func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) error {
+	err := handOverKeptCopy(ctx, deps, sender, role, item, keptAt, handed)
+	if err == nil || lostToContextEnd(ctx, err) {
+		return nil
 	}
+	if ctx.Err() == nil {
+		if probeErr := sender.Probe(probeTimeout); probeErr != nil {
+			slog.Error("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it, and the handover's NATS connection does not answer",
+				"role", role, "event_id", item.EventID, "error", err, "probe_error", probeErr)
+			return fmt.Errorf("hand role %s's kept copy of %s over: %w: %w", role, item.EventID, errHandoverProbeFailed, probeErr)
+		}
+	}
+	slog.Warn("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it",
+		"role", role, "event_id", item.EventID, "error", err)
+	return nil
 }
 
-// handOverKeptCopy is the handover's reads and its forward, whose failure handOverKept logs: one
-// line for all of them, since what each costs the copy is the same and the batch's own stop
-// quiets them alike (lostToContextEnd). Nothing to hand over is no failure: a role no live holder
-// can take, a lane another copy leads and a Deps with no lane reader each come back nil with
-// nothing sent.
+// handOverKeptCopy is the handover's reads and its forward, whose failure handOverKept judges:
+// one judgement for all of them, since what each costs the copy is the same and the batch's own
+// stop quiets them alike (lostToContextEnd). Nothing to hand over is no failure: a role no live
+// holder can take, a lane another copy leads and a Deps with no lane reader each come back nil
+// with nothing sent.
 //
 // The holder is resolved before the lane is read, because what this batch has already handed over
 // counts only for the holder it reached (keptHandovers.handedTo), and because a keep is made for
@@ -1092,6 +1135,38 @@ type KeptLaneReader interface {
 	// stream that carries none (bus.Client.StreamID): what tells the expiry notices' cursor to
 	// start again in a stream created again since it was written (keptExpiryStart).
 	StreamID(ctx context.Context) (string, error)
+}
+
+// boundedKeptLanes is the outbox's kept-lane reader: New puts it in front of Deps.KeptLanes, so
+// every read the outbox makes through that reader - the expiry pass's, and the handover's behind a
+// keep, a scan batch's or a pass's (handOverKept) - runs under a deadline of probeTimeout within
+// its caller's ctx. A stored-message read's flush does not end at its ctx's cancellation: it waits
+// out the call's deadline (bus confirmFlushed, nats.go's FlushTimeout), and a ctx with no deadline
+// gets storedMessageWait in internal/bus, 10 s, so on a connection that is gone or silent the read
+// ends at this deadline at the latest. A healthy stream answers each read in milliseconds. The
+// role and session buckets need no such bound, since each of their reads honours ctx and is
+// bounded at readTimeout in internal/roles, and nor does a keep, whose answer a pass reads within
+// its ctx (awaitAnswer).
+type boundedKeptLanes struct {
+	reader KeptLaneReader
+}
+
+func (b boundedKeptLanes) NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.NextStoredMessage(ctx, subject, seq)
+}
+
+func (b boundedKeptLanes) ReadKeptRoleCursor(ctx context.Context, role string) (bus.StoredKeptRoleCursor, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.ReadKeptRoleCursor(ctx, role)
+}
+
+func (b boundedKeptLanes) StreamID(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.StreamID(ctx)
 }
 
 // keptCopyLeadsTheLane reports whether the copy of item just kept on role's kept lane is the one

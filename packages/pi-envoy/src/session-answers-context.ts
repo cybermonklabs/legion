@@ -74,9 +74,9 @@ decidingGlobal[DECIDING_KEY] = deciding;
  *  failure line (`source: "failure"`), a read that threw gives its error's message with the
  *  failure line (the extension's `sessionAnswersText`), and a list an older copy rendered from its
  *  cache gives the sentence its read line names (`placedLegacy`), as that copy's renderer wrote it,
- *  ending with a full stop, `?` or `!`; and whether Dispatch answered the read (`source: "fresh"`,
- *  or an older copy's list with no read line), which ends the session's failure episode
- *  (`episodes`). */
+ *  ending with a full stop, `?` or `!`; and whether Dispatch answered the read (`source: "fresh"`
+ *  or `"omitted"`, or an older copy's list with no read line), which ends the session's failure
+ *  episode (`episodes`). */
 export interface CarriedAnswers {
   readonly text: string | undefined;
   readonly words?: readonly string[] | undefined;
@@ -94,9 +94,10 @@ type ShownAnswers = CarriedAnswers & { readonly text: string };
  * without, since a read whose window holds no item still tells which items of the newest list
  * sent left it (`SESSION_ANSWERS_NO_ITEM`), the `reason` of a read that gave the cached list
  * (`source: "cache"`) or the failure line (`source: "failure"`), which the log names, and whether
- * Dispatch answered the read (`source: "fresh"`). Undefined when it gave neither text nor words:
- * Dispatch is off, or has no answers route and no list read from it before has an item inside the
- * 72 hours (none was read, or every item of the one read has aged out). The extension's
+ * Dispatch answered the read (`source: "fresh"`, or `"omitted"`: an explicit omission at a cut is
+ * Dispatch's answer too). Undefined when it gave neither text nor words: Dispatch is off, or has
+ * no answers route and no list read from it before has an item inside the 72 hours (none was
+ * read, or every item of the one read has aged out). The extension's
  * `sessionAnswersText` calls it, and so does `session-answers-read.test.ts`, whose cases check on
  * reads through the real `readSessionAnswers` the rules by which `withSessionAnswers` keeps every
  * list sent, so those cases check the extension's own mapping.
@@ -104,7 +105,7 @@ type ShownAnswers = CarriedAnswers & { readonly text: string };
 export function carriedAnswers(read: SessionAnswersRead): CarriedAnswers | undefined {
   if (read.text === undefined && read.words === undefined) return undefined;
   const reason = read.source === "cache" || read.source === "failure" ? read.reason : undefined;
-  const answered = read.source === "fresh";
+  const answered = read.source === "fresh" || read.source === "omitted";
   return { text: read.text, words: read.words, since: read.since, reason, answered };
 }
 

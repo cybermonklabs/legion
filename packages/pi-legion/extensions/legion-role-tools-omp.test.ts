@@ -34,10 +34,19 @@ const TREE = "TOOLS-1";
 /** The roles the deleted gate refused tools to (LEGION-630). */
 type Role = "architect" | "reviewer" | "merger";
 
+// Each case starts a cold Oh My Pi pane (a pinned binary spawning and registering over NATS, which
+// reads 5-6 s) and runs its turns, so it needs more than Bun's 5000 ms default in every mode:
+// `bun run test`'s workers declare 300000 ms (`test-timeout-preload.ts`), but a run of this file
+// alone takes no worker and keeps 5000 ms. Each case and the afterEach, whose cleanup kills a real
+// Oh My Pi, therefore take that same 300000 ms as a guard of their own, as the cases of
+// `legion-stall-watchdog-omp.test.ts` do; the pane's waits here are the harness's own, not the
+// shared wait, so no case sets a row guard for it.
+const COLD_PANE_GUARD_MS = 300_000;
+
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** Runs `jj` with a test identity, so it commits in CI too, failing loudly on a non-zero exit. */
 async function runJj(jj: string, args: readonly string[]): Promise<void> {
@@ -149,7 +158,7 @@ test.skipIf(skip)(
     // A cgroup line: `hierarchy:controllers:path`, under either cgroup version.
     expect(cgroup?.text).toMatch(/^\d+:.*:/m);
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -158,7 +167,7 @@ test.skipIf(skip)(
     const pane = await toolsPane(setup(), { role: "reviewer", root: false }, SCRATCH_TURNS);
     await expectEverySucceeded(pane, 4);
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -167,5 +176,5 @@ test.skipIf(skip)(
     const pane = await toolsPane(setup(), { role: "merger", root: false }, SCRATCH_TURNS);
     await expectEverySucceeded(pane, 4);
   },
-  120_000
+  COLD_PANE_GUARD_MS
 );

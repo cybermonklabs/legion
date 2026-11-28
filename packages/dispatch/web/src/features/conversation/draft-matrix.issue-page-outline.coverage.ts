@@ -21,6 +21,7 @@ const REASONS = {
   8: "8. The box is drawn whenever the writer edits a comment (`useComposerShown`), so this section never hides a mounted edit line: it hides the box only once the edit has ended, which takes the edit line off the page, the edit rows.",
   9: "9. `place` tells the edit line where to put the reader once the edit ends, and its placeholder's words; neither moves the edit's address, which its comment names (`edit`), nor its draft.",
   10: "10. A refused or stopped send holds the box on its own target (the writer's `redirectedReplyTarget` and `keptOnTarget`), so the box keeps nothing away for that target and has no kept line whose way back can go; only a typed draft is kept for a target the box moved away from, the typed cells of the gone rows.",
+  11: "11. Threads draws no box at the foot, at rest or with a held target (dispatch://INFRA-5704 R16): a record opened there has a box of its own. So under Threads the foot mounts no box, which ends the box's mount as leaving the issue does; the box drawn again once the reader leaves Threads is the one the issue-left rows draw again on return.",
 } as const;
 
 const WRITE_MOUNT = "WriteLine <MentionComposer mutationKey={writer.sendKey}>";
@@ -188,6 +189,7 @@ export const coverage: readonly CoverageEntry[] = [
     GONE_ROWS,
     { reason: REASONS[10] }
   ),
+  ...answers("FootSlot | IssueComposer | conditional | !(threads) ? …", { reason: REASONS[11] }),
   ...answers(
     "IssueOutline | FootSlot | address prop | <FootSlot {...props}>",
     cells(`${HOST} · issue left, then back`),

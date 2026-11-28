@@ -13,7 +13,8 @@ import (
 // priority 0 (P0) is refused with, where its credential does not hold the p0 scope. It names the
 // scope and says how to get it, since the command prints it as it is.
 const p0ScopeRefusal = "this request's credential does not hold the p0 scope, which a priority of 0 needs: " +
-	"a person sets P0 at a browser, or gives p0 to a personal token in Settings, Agent tokens"
+	"a person sets P0 at a browser, gives p0 to a personal token in Settings, Agent tokens, " +
+	"or ticks Set P0 for a Dispatch sign-in (dispatch login --device --scope person,p0)"
 
 // refuseP0WithoutScope is the one rule that holds an issue's own priority 0 to the p0 scope
 // (model.ScopeP0): it answers the 403 OAUTH_SCOPE_REQUIRED, with the challenge naming p0
