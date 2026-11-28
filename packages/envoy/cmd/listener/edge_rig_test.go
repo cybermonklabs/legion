@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/cipher/api/unreadablekeysettest"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
@@ -70,13 +71,14 @@ const edgeAccountToken = "listener-account-token"
 
 // repositoryStandIn is the broker's GET /v1/project-repositories as the edge listener reads it:
 // the answer of each project it serves, 403 PROJECT_NOT_LISTED for any other, and the status the
-// test sets in place of every answer while it sets one.
+// test sets, or the broker's own answer it replays, in place of every answer while it sets one.
 type repositoryStandIn struct {
 	server  *httptest.Server
 	serves  []string
 	mu      sync.Mutex
 	answers map[string][]string
 	status  int
+	outage  *unreadablekeysettest.Answer
 	calls   atomic.Int64
 	bearers []string
 }
@@ -92,9 +94,13 @@ func newRepositoryStandIn(t *testing.T, serves []string, answers map[string][]st
 		stand.calls.Add(1)
 		stand.mu.Lock()
 		stand.bearers = append(stand.bearers, r.Header.Get("Authorization"))
-		status, answers := stand.status, stand.answers
+		status, outage, answers := stand.status, stand.outage, stand.answers
 		stand.mu.Unlock()
 		project := r.URL.Query().Get("project")
+		if outage != nil {
+			outage.Write(w)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case status != 0:
@@ -132,6 +138,25 @@ func (s *repositoryStandIn) failWith(status int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.status = status
+}
+
+// replay makes every later call answer outage as the broker wrote it, nil for the answers again:
+// the broker's own answer through a key set it could not read (unreadablekeysettest), with the
+// Retry-After the row sets on its copy.
+func (s *repositoryStandIn) replay(outage *unreadablekeysettest.Answer) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.outage = outage
+}
+
+// keySetOutage is the broker's own answer to a call whose token it could not check because the
+// key set of the token's issuer could not be read, as a JSON route answers it
+// (unreadablekeysettest, json_route), asking for retryAfter, "" for no wait.
+func keySetOutage(t *testing.T, retryAfter string) *unreadablekeysettest.Answer {
+	t.Helper()
+	outage := unreadablekeysettest.Read(t).JSONRoute
+	outage.RetryAfter = retryAfter
+	return &outage
 }
 
 func (s *repositoryStandIn) lastBearer() string {

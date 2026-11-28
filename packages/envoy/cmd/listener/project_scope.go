@@ -64,6 +64,7 @@ import (
 	"log/slog"
 	"net/http"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -74,6 +75,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/logging"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -126,10 +128,12 @@ const (
 	edgeSenderNotSession         = "sender_not_session"
 )
 
-// edgeRefusal is one answer an edge rule gives a request it refuses.
+// edgeRefusal is one answer an edge rule gives a request it refuses, with the Retry-After it
+// carries in whole seconds, 0 for none.
 type edgeRefusal struct {
-	status int
-	body   listenerwire.EdgeRefusal
+	status     int
+	body       listenerwire.EdgeRefusal
+	retryAfter int
 }
 
 // refuseEdge is the refusal of reason under status, its sentence message, about the request
@@ -138,7 +142,12 @@ func refuseEdge(status int, reason, message string, expected ...string) *edgeRef
 	return &edgeRefusal{status: status, body: listenerwire.EdgeRefusal{Error: message, Reason: reason, Expected: expected}}
 }
 
-func (e *edgeRefusal) write(w http.ResponseWriter) { writeJSON(w, e.status, e.body) }
+func (e *edgeRefusal) write(w http.ResponseWriter) {
+	if e.retryAfter > 0 {
+		w.Header().Set("Retry-After", strconv.Itoa(e.retryAfter))
+	}
+	writeJSON(w, e.status, e.body)
+}
 
 // edgeHoldKey is the context key that marks a request an edge listener admitted.
 type edgeHoldKey struct{}
@@ -723,14 +732,20 @@ func (h *edgeTopicHold) holdPlan(ctx context.Context, plan store.InterestPlan) (
 // (renewThroughOutage), so the session outlives the outage. The answer is the 503
 // repositories_unknown: it names no topic, since the edge cannot say which of the GitHub topics
 // to refuse, and its text is the listener's own, since the broker's answer, which err may quote,
-// goes to the log alone.
+// goes to the log alone. Where the broker's 503 named a wait (repositoryRetryAfter), the answer
+// carries it as Retry-After, rounded up to whole seconds, so the client registers again no sooner
+// than the broker asked; otherwise it carries none.
 func (h *edgeTopicHold) answerRepositoryOutage(ctx context.Context, w http.ResponseWriter, registry *store.Registry, sessions *session.SessionRegistry, machineID string, err error) {
 	h.logger.Warn("edge listener could not read the repositories of the session's projects; the registration is refused 503",
 		slog.String("session_id", h.sessionID), slog.Any("projects", h.projects), slog.String("error", err.Error()))
 	registry.RecordRenewalFailures(h.sessionID, err)
 	h.renewThroughOutage(ctx, sessions, machineID)
-	refuseEdge(http.StatusServiceUnavailable, edgeRepositoriesUnknown,
-		fmt.Sprintf("the repositories of %s's issues could not be read, so no GitHub topic is followed now; register again shortly", strings.Join(h.projects, ", "))).write(w)
+	refusal := refuseEdge(http.StatusServiceUnavailable, edgeRepositoriesUnknown,
+		fmt.Sprintf("the repositories of %s's issues could not be read, so no GitHub topic is followed now; register again shortly", strings.Join(h.projects, ", ")))
+	if wait, named := repositoryRetryAfter(err); named {
+		refusal.retryAfter = ratelimit.RetryAfterSeconds(wait)
+	}
+	refusal.write(w)
 }
 
 // renewThroughOutage renews the session entry of a registration the edge refused for want of a

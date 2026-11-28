@@ -48,6 +48,7 @@ type StubBroker struct {
 	mu      sync.Mutex
 	answers map[string]ciphertoken.Introspection
 	raw     map[string]string
+	written map[string]func(http.ResponseWriter)
 	bearers []string
 
 	introspections atomic.Int64
@@ -56,7 +57,7 @@ type StubBroker struct {
 // NewStubBroker serves the stub until the test ends.
 func NewStubBroker(t testing.TB) *StubBroker {
 	t.Helper()
-	broker := &StubBroker{answers: map[string]ciphertoken.Introspection{}, raw: map[string]string{}}
+	broker := &StubBroker{answers: map[string]ciphertoken.Introspection{}, raw: map[string]string{}, written: map[string]func(http.ResponseWriter){}}
 	broker.Server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != ciphertoken.IntrospectPath {
 			http.Error(w, "not the introspection route", http.StatusNotFound)
@@ -71,7 +72,12 @@ func NewStubBroker(t testing.TB) *StubBroker {
 		broker.bearers = append(broker.bearers, r.Header.Get("Authorization"))
 		answer := broker.answers[r.PostForm.Get("token")]
 		raw, isRaw := broker.raw[r.PostForm.Get("token")]
+		write := broker.written[r.PostForm.Get("token")]
 		broker.mu.Unlock()
+		if write != nil {
+			write(w)
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
 		if isRaw {
 			_, _ = w.Write([]byte(raw))
@@ -97,6 +103,16 @@ func (b *StubBroker) SaysRaw(token, body string) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.raw[token] = body
+}
+
+// Answers makes the broker answer token with what write writes: its status, its headers and its
+// body, an answer that is no introspection's, such as the broker's own 503 with Retry-After when
+// it could not check its caller's token (internal/cipher/api/unreadablekeysettest, whose
+// Answer.Write replays it).
+func (b *StubBroker) Answers(token string, write func(http.ResponseWriter)) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.written[token] = write
 }
 
 // Count is how many introspections have reached the broker.

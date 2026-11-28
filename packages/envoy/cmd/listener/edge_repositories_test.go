@@ -886,6 +886,82 @@ func TestAnEdgeRepositoriesRefusalCopiesNoBrokerText(t *testing.T) {
 	}
 }
 
+// TestAnEdgeRegistrationRelaysTheBrokersRetryAfter: the broker answers the edge's read of a
+// project's repositories 503 asking for a wait when it could not check the listener's own account
+// token because the key set of that token's issuer could not be read. A registration refused on
+// that read is answered 503 repositories_unknown asking for the same wait, so its session
+// registers again no sooner than the broker asked. The stand-in replays the broker's own answer,
+// captured from its server (unreadablekeysettest), asking for 7 s.
+func TestAnEdgeRegistrationRelaysTheBrokersRetryAfter(t *testing.T) {
+	t.Parallel()
+	rig := newEdgeRig(t)
+	if !rig.edgeOn() {
+		t.Fatal("this row tests an edge listener: ENVOY_EDGE_PROJECTS is set empty")
+	}
+	const sessionID = "ses_edge_retry_after"
+	rig.repositories.replay(keySetOutage(t, "7"))
+	recorder := rig.subscribe(t, rig.personToken(sessionID, "PRIV"), sessionID, "notifications.github.acme.pub.>")
+	requireEdgeRefusal(t, recorder, http.StatusServiceUnavailable, edgeRepositoriesUnknown, "a registration naming acme/pub while the broker answers 503 asking 7 s")
+	if got := recorder.Header().Get("Retry-After"); got != "7" {
+		t.Fatalf("the registration's 503 carries Retry-After %q, want the broker's 7", got)
+	}
+}
+
+// TestAnEdgeRefreshWaitsOutA503sRetryAfter: a project whose refresh read the broker answered 503
+// asking for a wait, as it does when it could not check the listener's own account token because
+// the key set of that token's issuer could not be read, is read again no sooner than the wait
+// has passed: the refresh at each tick (edgeRepositoryRefresh, 30 s) skips it until then. So a
+// wait of 45 s is read out at the 60 s tick, one of 5 s at the next 30 s tick, the loop's own
+// step, and one of 90 s, read as 60 s, at the 60 s tick and never later. Each row ends with the
+// stand-in's 200, whose answer is the project's fresh one. The stand-in replays the broker's own
+// answer, captured from its server (unreadablekeysettest), asking for the row's wait.
+func TestAnEdgeRefreshWaitsOutA503sRetryAfter(t *testing.T) {
+	t.Parallel()
+	for _, row := range []struct {
+		name       string
+		retryAfter string
+		readAt     time.Duration
+	}{
+		{"45 s", "45", 2 * edgeRepositoryRefresh},
+		{"5 s at 30 s", "5", edgeRepositoryRefresh},
+		{"90 s", "90", 2 * edgeRepositoryRefresh},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
+			rig := newEdgeRig(t)
+			if !rig.edgeOn() {
+				t.Fatal("this row tests an edge listener: ENVOY_EDGE_PROJECTS is set empty")
+			}
+			// The loop takes a tick only once its first read has ended, so every read the row
+			// counts from here on is a tick's.
+			rig.tick(t)
+			rig.repositories.replay(keySetOutage(t, row.retryAfter))
+			before := rig.repositories.calls.Load()
+			rig.tick(t)
+			if asked := rig.repositories.calls.Load() - before; asked != 1 {
+				t.Fatalf("the refresh asked the broker %d times, want once, answered 503 asking %s s", asked, row.retryAfter)
+			}
+			rig.repositories.replay(nil)
+			rig.repositories.answer("PRIV", "acme/after")
+			for elapsed := edgeRepositoryRefresh; elapsed <= row.readAt; elapsed += edgeRepositoryRefresh {
+				rig.clock.advance(edgeRepositoryRefresh)
+				before := rig.repositories.calls.Load()
+				rig.tick(t)
+				asked := rig.repositories.calls.Load() - before
+				if elapsed < row.readAt && asked != 0 {
+					t.Fatalf("the refresh %s after the 503 asking %s s asked the broker %d times, want none before the wait has passed", elapsed, row.retryAfter, asked)
+				}
+				if elapsed == row.readAt && asked != 1 {
+					t.Fatalf("the refresh %s after the 503 asking %s s asked the broker %d times, want once: the wait has passed", elapsed, row.retryAfter, asked)
+				}
+			}
+			if repositories, complete := rig.reader.standing([]string{"PRIV"}); !complete || !slices.Equal(repositories, []string{"acme/after"}) {
+				t.Fatalf("after the read %s on, PRIV stands at %v (complete %t), want the stand-in's 200 naming [acme/after]", row.readAt, repositories, complete)
+			}
+		})
+	}
+}
+
 // A subject writes a dot in a repository's name as an underscore, so acme/a.b and acme/a_b
 // publish on one subject (notifications.github.acme.a_b): the session follows it through an
 // answer that names acme/a.b, and the event of acme/a_b on that subject is withheld

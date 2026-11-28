@@ -19,6 +19,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/api/unreadablekeysettest"
 	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/ciphertoken/ciphertokentest"
@@ -1151,6 +1152,41 @@ func TestABrokerThatCannotBeReachedIsTheUnreachableOutcome(t *testing.T) {
 	}
 	if errors.Is(err, ciphertoken.ErrNotActive) {
 		t.Fatalf("a broker that cannot be reached refused the token: %v", err)
+	}
+}
+
+// TestAnIntrospectionTheBrokerAnswered503CarriesItsRetryAfter: the broker answers an
+// introspection 503 asking for a wait when it could not check Dispatch's own account token
+// because the key set of that token's issuer could not be read. That is the unreachable outcome,
+// never a refusal of the token presented, and it carries the broker's wait (RetryAfter), which
+// whoever mounts the check sends on as its own Retry-After; a 503 naming no wait carries none.
+// The stub replays the broker's own answer, captured from its server (unreadablekeysettest).
+func TestAnIntrospectionTheBrokerAnswered503CarriesItsRetryAfter(t *testing.T) {
+	outage := unreadablekeysettest.Read(t).JSONRoute
+	for _, row := range []struct {
+		name       string
+		retryAfter string
+		wait       time.Duration
+		carried    bool
+	}{
+		{"a 503 asking 5 s", "5", 5 * time.Second, true},
+		{"a 503 naming no wait", "", 0, false},
+	} {
+		t.Run(row.name, func(t *testing.T) {
+			rig := newRig(t)
+			const presented = "a-token-the-broker-could-not-check-its-caller-for"
+			answer := outage
+			answer.RetryAfter = row.retryAfter
+			rig.broker.Answers(presented, answer.Write)
+
+			_, err := rig.verifier.Verify(t.Context(), newSigner(t).at(resourcePath, presented))
+			if !errors.Is(err, ciphertoken.ErrBrokerUnreachable) || errors.Is(err, ciphertoken.ErrNotActive) {
+				t.Fatalf("a broker answering %d with Retry-After %q answered %v, want ErrBrokerUnreachable and no refusal", answer.Status, answer.RetryAfter, err)
+			}
+			if wait, carried := ciphertoken.RetryAfter(err); wait != row.wait || carried != row.carried {
+				t.Fatalf("RetryAfter(%v) = %s, %t, want %s, %t", err, wait, carried, row.wait, row.carried)
+			}
+		})
 	}
 }
 

@@ -24,11 +24,13 @@ import (
 	"io/fs"
 	"log/slog"
 	"net/http"
+	"strconv"
 
 	"github.com/sjawhar/envoy/fileerr"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/ratelimit"
 )
 
 // noteActingAgent names the agent behind a decision on this request's access-log line: the
@@ -61,18 +63,23 @@ func (s *server) requireAgentSecrets(w http.ResponseWriter) (*cipher.Client, boo
 
 // relayBrokerResponse writes the broker's answer verbatim: its raw JSON body on success, its
 // exact status and body for a *cipher.Error (the browser must see the broker's own status
-// and code, e.g. 409 RECORD_TERMINAL — Dispatch never re-wraps it), 500
-// AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that stopped at Dispatch's own ServiceAccount
-// token, or 503 AGENT_SECRETS_UNAVAILABLE for anything else (a transport failure). The token
-// gets its own code because the broker was never asked: the fix is in Dispatch's deployment. The
-// log line names the setting that holds the file, DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, and
-// why it could not be read, never the path, which can be a token pasted where the path goes: the
-// operator reads the path from Dispatch's own configuration by that name.
+// and code, e.g. 409 RECORD_TERMINAL — Dispatch never re-wraps it) with the wait its 503 named
+// (cipher.Error.RetryAfter) as Retry-After, rounded up to whole seconds, so a page does not ask
+// again sooner than the broker asked; 500 AGENT_SECRETS_ACCOUNT_TOKEN_UNREADABLE for a call that
+// stopped at Dispatch's own ServiceAccount token, or 503 AGENT_SECRETS_UNAVAILABLE, with no
+// Retry-After, for anything else (a transport failure). The token gets its own code because the
+// broker was never asked: the fix is in Dispatch's deployment. The log line names the setting
+// that holds the file, DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE, and why it could not be read,
+// never the path, which can be a token pasted where the path goes: the operator reads the path
+// from Dispatch's own configuration by that name.
 func relayBrokerResponse(w http.ResponseWriter, body json.RawMessage, err error) {
 	if err != nil {
 		var brokerErr *cipher.Error
 		if errors.As(err, &brokerErr) {
 			w.Header().Set("Content-Type", "application/json")
+			if brokerErr.RetryAfter > 0 {
+				w.Header().Set("Retry-After", strconv.Itoa(ratelimit.RetryAfterSeconds(brokerErr.RetryAfter)))
+			}
 			w.WriteHeader(brokerErr.Status)
 			_, _ = w.Write(brokerErr.Body)
 			return

@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/cipher/api/unreadablekeysettest"
 	"github.com/sjawhar/envoy/internal/dispatch/accesslog"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -157,7 +158,7 @@ func TestListCredentialPendingWithAndWithoutABroker(t *testing.T) {
 }
 
 // fakeBrokerRig is a fake broker recording the last request it served, answering canned
-// status/body pairs keyed by "METHOD path".
+// status/body pairs keyed by "METHOD path", each with the headers set for its route.
 type fakeBrokerRig struct {
 	server        *httptest.Server
 	lastAuth      string
@@ -166,11 +167,12 @@ type fakeBrokerRig struct {
 	calls         int
 	statusByRoute map[string]int
 	bodyByRoute   map[string]string
+	headerByRoute map[string]http.Header
 }
 
 func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 	t.Helper()
-	rig := &fakeBrokerRig{statusByRoute: map[string]int{}, bodyByRoute: map[string]string{}}
+	rig := &fakeBrokerRig{statusByRoute: map[string]int{}, bodyByRoute: map[string]string{}, headerByRoute: map[string]http.Header{}}
 	rig.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rig.calls++
 		rig.lastAuth = r.Header.Get("Authorization")
@@ -187,6 +189,9 @@ func newFakeBrokerRig(t *testing.T) *fakeBrokerRig {
 			responseBody = `{"ok":true}`
 		}
 		w.Header().Set("Content-Type", "application/json")
+		for name, values := range rig.headerByRoute[key] {
+			w.Header()[name] = values
+		}
 		w.WriteHeader(status)
 		_, _ = w.Write([]byte(responseBody))
 	}))
@@ -246,6 +251,29 @@ func TestCredentialRouteForwardsBrokerErrorStatusAndBodyVerbatim(t *testing.T) {
 				t.Fatalf("body = %s, want the broker's error body verbatim", response.Body.String())
 			}
 		})
+	}
+}
+
+// TestACredentialRouteRelaysTheBrokersRetryAfter: the broker answers 503 ISSUER_UNAVAILABLE,
+// asking for a wait, when it could not check Dispatch's own account token because the key set of
+// that token's issuer could not be read. The page gets the broker's answer whole: its 503, its
+// body and its Retry-After, so it does not ask again sooner than the broker asked. The stand-in
+// replays the broker's own answer, captured from its server (unreadablekeysettest).
+func TestACredentialRouteRelaysTheBrokersRetryAfter(t *testing.T) {
+	t.Parallel()
+	outage := unreadablekeysettest.Read(t).JSONRoute
+	outage.RetryAfter = "5"
+	rig := newFakeBrokerRig(t)
+	const route = "GET /v1/pending"
+	rig.statusByRoute[route] = outage.Status
+	rig.bodyByRoute[route] = string(outage.Body)
+	rig.headerByRoute[route] = http.Header{"Content-Type": {outage.ContentType}, "Retry-After": {outage.RetryAfter}}
+	handler := newCredentialTestHandler(t, rig.server.URL)
+
+	response := dispatchRequest(t, handler, http.MethodGet, "/api/v1/credential-requests?approver=me", nil, "alice")
+	if response.Code != http.StatusServiceUnavailable || response.Header().Get("Retry-After") != "5" || response.Body.String() != string(outage.Body) {
+		t.Fatalf("the pending list = %d, Retry-After %q, %s; want the broker's 503 with Retry-After 5 and its body %s",
+			response.Code, response.Header().Get("Retry-After"), response.Body.String(), outage.Body)
 	}
 }
 

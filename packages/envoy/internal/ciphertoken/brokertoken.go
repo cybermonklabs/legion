@@ -8,7 +8,8 @@
 // internal/dispatch and reaches Dispatch only through the interfaces in Options.
 //
 // What it does not do is write the reasons down for a browser: Verify answers one of the
-// sentinels below and whoever mounts it turns each into a status.
+// sentinels below and whoever mounts it turns each into a status, and the wait a broker's 503
+// named (RetryAfter) into its own Retry-After.
 package ciphertoken
 
 import (
@@ -54,7 +55,8 @@ var (
 	// status the broker does not answer a sound request with, a body that does not decode, or
 	// Dispatch's own account token unread. It is not a refusal — a caller told its token was
 	// refused would discard a token that may be live — so whoever mounts this check answers 503
-	// and the caller comes back.
+	// and the caller comes back, after the wait the broker's 503 named where it named one
+	// (RetryAfter).
 	ErrBrokerUnreachable = errors.New("brokertoken: the broker could not be reached")
 	// ErrRateLimited is a source address with no introspection left in its bucket
 	// (DefaultAddressLimit). Nothing was asked of the broker.
