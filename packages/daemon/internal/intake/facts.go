@@ -873,11 +873,19 @@ type PullRequestOpened struct {
 	Branch  string
 	HeadSHA string
 	// HeadRepo is the repository the pull request's head branch lives in, as GitHub names it
-	// (head.repo.full_name; the listener's head_repo): Repo itself for a branch of the repository,
-	// another for a fork's, and empty when GitHub no longer has it (a deleted fork) or the source
-	// read none. The workflow records a pull request only when this is Repo, since anyone may open a
-	// fork's pull request and name its head an issue's branch or a task's.
+	// (head.repo.full_name; the listener's head_repo): the repository the pull request merges into
+	// for a branch of that repository, another for a fork's, and empty when GitHub no longer has it
+	// (a deleted fork) or the source read none. The workflow records a pull request only when this
+	// is the repository it merges into (BaseRepository), since anyone may open a fork's pull request
+	// and name its head an issue's branch or a task's.
 	HeadRepo string
+	// BaseRepo is the repository the pull request merges into, as GitHub names it now
+	// (base.repo.full_name), where the fact names the pull request by another name in Repo: the
+	// read of a pull request an issue links (the workflow's linkReadOf) names it by the name the
+	// record keys it under, its link's, which for a repository GitHub renamed with no configured
+	// rename is the name it had. Empty for an event and for every other read, whose Repo is that
+	// repository.
+	BaseRepo string
 	// Base is the branch the pull request merges into (the listener's `base_ref`, GitHub's
 	// base.ref), empty from a listener that predates the field; the workflow records it so a push
 	// onto that branch finds the pull request again (record.PullRequest.Base).
@@ -891,6 +899,15 @@ type PullRequestOpened struct {
 }
 
 func (PullRequestOpened) namedIssue() (string, bool) { return "", false }
+
+// BaseRepository is the repository the pull request merges into, as GitHub names it: BaseRepo
+// where the fact carries one, and Repo, the repository an event or a read names, otherwise.
+func (f PullRequestOpened) BaseRepository() string {
+	if f.BaseRepo != "" {
+		return f.BaseRepo
+	}
+	return f.Repo
+}
 
 // OpenedOn is the PullRequestOpened a read of GitHub that found pull open on branch of repo stands
 // for, as its webhook would have carried it, with its base, which the reads of the merge state

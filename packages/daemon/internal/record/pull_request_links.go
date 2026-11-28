@@ -12,8 +12,10 @@ import (
 // The links of each issue to pull requests (PullRequestLink) are the table pull_request_links
 // (migration 20261127234212), keyed by the pull request's repository and number, with a unique
 // index on the lowered repository and the number that each write and read of one link keys on, as
-// the reads of pull_requests do (a link names a repository as its URL spells it), and an index on
-// the issue that the reads and the replacement of an issue's links key on.
+// the reads of pull_requests do (a link names a repository as its URL spells it, or as its issue's
+// record does where the URL names the issue's own repository by the other name of a configured
+// rename: PullRequestLink.Repo), and an index on the issue that the reads and the replacement of an
+// issue's links key on.
 
 // ReplacePullRequestLinks deletes each link of issue that links does not name, and writes each of
 // links that the record does not hold for issue, taken and untold, in one statement. A link that

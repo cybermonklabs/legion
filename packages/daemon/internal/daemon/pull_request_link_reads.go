@@ -241,17 +241,22 @@ func (w *workflowRuntime) loadLinksAtBoot(ctx context.Context) error {
 }
 
 // linksTaken is workflow.Config.LinksTaken: the whole of an issue's links as the transaction that
-// replaced them wrote them. Once that transaction has committed (store.OnCommit, as hearRecorded's
-// is) the decoder's index takes them (intake.Consumers.ReplaceLinks) and GitHub intake hears the
-// repository of each, with the repository cache and the live set a recorded issue's repository
-// joins (decision 17): a new link of a pull request in another repository is heard in the same
-// pass, with no restart. A write outside any commit scope changes nothing here; the boot's own set
-// covers it (loadLinksAtBoot, heardRepositories).
-func (w *workflowRuntime) linksTaken(ctx context.Context, issue string, links []intake.PullRequestLink) {
+// replaced them wrote them, each of the issue's own repository in the issue's spelling, the
+// spelling the boot loads them in (loadLinksAtBoot). Once that transaction has committed
+// (store.OnCommit, as hearRecorded's is) the decoder's index takes them
+// (intake.Consumers.ReplaceLinks) and GitHub intake hears the repository of each, with the
+// repository cache and the live set a recorded issue's repository joins (decision 17): a new link
+// of a pull request in another repository is heard in the same pass, with no restart. A write
+// outside any commit scope changes nothing here; the boot's own set covers it (loadLinksAtBoot,
+// heardRepositories).
+func (w *workflowRuntime) linksTaken(ctx context.Context, issue string, links []record.PullRequestLink) {
 	if !store.CommitScoped(ctx) {
 		return
 	}
-	named := slices.Clone(links)
+	named := make([]intake.PullRequestLink, len(links))
+	for at, link := range links {
+		named[at] = intake.PullRequestLink{Repo: link.Repo, Number: link.Number}
+	}
 	store.OnCommit(ctx, func() {
 		if w.consumers != nil {
 			w.consumers.ReplaceLinks(issue, named)

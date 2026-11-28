@@ -9,6 +9,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -161,14 +162,18 @@ func (e *Engine) takeBootLinks(ctx context.Context, tx pgx.Tx, fact intake.Daemo
 	}
 	// Any link whose read the boot could not complete (for example a transient GitHub error) is
 	// queued for the outbox executor so it is read on backoff rather than left unread until the
-	// next boot.
+	// next boot. The boot read a link under the name Dispatch's URL carries, and a link of an
+	// issue's own repository by the other name of a configured rename is written in the issue's
+	// name (takeLinks), so the reads are looked up under both names of its pair (ghrepo.Under).
 	for _, key := range updated {
 		links, err := e.store.PullRequestLinksOf(ctx, tx, key)
 		if err != nil {
 			return err
 		}
 		for _, link := range links {
-			if read[PullRequestKey{Repo: strings.ToLower(link.Repo), Number: link.Number}] {
+			if wasRead, _ := ghrepo.Under(e.cfg.RepositoryRenames, link.Repo, func(name string) (bool, error) {
+				return read[PullRequestKey{Repo: strings.ToLower(name), Number: link.Number}], nil
+			}); wasRead {
 				continue
 			}
 			switch {

@@ -121,11 +121,11 @@ type Config struct {
 	// repository already heard, which costs the daemon one comparison. Nil tells none.
 	HearRepository func(ctx context.Context, repo string)
 	// LinksTaken is told, inside the transaction that replaces an issue's links to pull requests
-	// (takeLinks), the issue and the whole of its links as written: the daemon replaces the issue's
-	// entries in the intake decoder's index (intake.Consumers.ReplaceLinks) and hears each linked
-	// repository once the transaction has committed (store.OnCommit, daemon's linksTaken). Nil
-	// tells none.
-	LinksTaken func(ctx context.Context, issue string, links []intake.PullRequestLink)
+	// (takeLinks), the issue and the whole of its links as written, each of its own repository in
+	// the issue's spelling: the daemon replaces the issue's entries in the intake decoder's index
+	// (intake.Consumers.ReplaceLinks) and hears each linked repository once the transaction has
+	// committed (store.OnCommit, daemon's linksTaken). Nil tells none.
+	LinksTaken func(ctx context.Context, issue string, links []record.PullRequestLink)
 	// FollowIssue is asked, on the commit of a fact whose correction ApplyRepositoryChange did not
 	// write, for a follow of that issue where nothing else asked one: the record's repository
 	// moved after the fact was prepared (intake.DispatchIssue.PreparedAgainst), or the fact was
@@ -289,6 +289,16 @@ func (e *Engine) byReviewApp(login string) bool {
 // sameRepository is whether a and b name one repository: the same name, compared without case as
 // GitHub compares names, or the two names of a configured rename (Config.RepositoryRenames).
 func (e *Engine) sameRepository(a, b string) bool { return e.cfg.RepositoryRenames.Same(a, b) }
+
+// forkHead says whether a pull request whose head lives in head (GitHub's head.repo.full_name, ""
+// once GitHub no longer has a fork) and that merges into base (the repository GitHub names it
+// merges into) is a fork's: its head is no branch of base, as sameRepository compares two names
+// (dispatch://INFRA-5910 D2). It is the one fork test of a pull request, which the open of one
+// (pullRequestOpened, base the repository its event names, or the one GitHub answers for a linked
+// pull request its read reopens) and the read of a linked one (pullRequestLinkRead, base the
+// repository GitHub answers) both read: base is never the name a link carries, which for a
+// repository GitHub renamed with no configured rename is the name it had.
+func (e *Engine) forkHead(head, base string) bool { return head == "" || !e.sameRepository(head, base) }
 
 // Apply changes workflow-owned phase state for one durable intake fact. It never performs I/O;
 // every externally visible consequence is an outbox row committed with the record change.

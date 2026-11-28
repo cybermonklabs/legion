@@ -96,18 +96,32 @@ func (e *Engine) putPullRequest(ctx context.Context, tx pgx.Tx, pr record.PullRe
 
 // issueSpelling is the name of its issue's own repository, as the issue's record keeps it
 // (record.Issue.GitHubRepo), that pr is to be written under, where pr names that repository by the
-// other name of a configured rename; "" where pr is written under its own name: a repository no
-// pair names, which costs no read, a name the issue's record keeps in any case, and a pull request
-// of another repository, a linked one, which keeps its own name.
+// other name of a configured rename (issueNameOf); "" where pr is written under its own name: a
+// repository no pair names, which costs no read, a name the issue's record keeps in any case, and
+// a pull request of another repository, a linked one, which keeps its own name.
 func (e *Engine) issueSpelling(ctx context.Context, tx pgx.Tx, pr record.PullRequest) (string, error) {
 	if _, paired := e.cfg.RepositoryRenames.Partner(pr.Repo); !paired {
 		return "", nil
 	}
 	issue, err := e.store.Issue(ctx, tx, pr.Issue)
-	if err != nil || issue == nil || strings.EqualFold(issue.GitHubRepo, pr.Repo) || !e.sameRepository(issue.GitHubRepo, pr.Repo) {
+	if err != nil || issue == nil {
 		return "", err
 	}
-	return issue.GitHubRepo, nil
+	return e.issueNameOf(*issue, pr.Repo), nil
+}
+
+// issueNameOf is the name of issue's own repository as its record keeps it
+// (record.Issue.GitHubRepo) where repo names that repository by the other name of a configured
+// rename (Config.RepositoryRenames, sameRepository), and "" for every other repo: the issue's own
+// name in any case, and another repository. It is the one rule of the name the record keeps a
+// repository of an issue under: each row of a pull request of the issue's own repository
+// (issueSpelling, putPullRequest) and each link to one (takeLinks), so a link and the row of the
+// pull request it names name one repository.
+func (e *Engine) issueNameOf(issue record.Issue, repo string) string {
+	if strings.EqualFold(issue.GitHubRepo, repo) || !e.sameRepository(issue.GitHubRepo, repo) {
+		return ""
+	}
+	return issue.GitHubRepo
 }
 
 // replacedPullRequest is the row a write of pull request number of repo replaces
@@ -215,20 +229,21 @@ func pullRequestNews(before, after record.PullRequest) bool {
 // One on any other branch of an issue's shape that the issue does not link, a reopen or a
 // redelivered open of a pull request whose row the record deleted among them, is none of the
 // issue's. A row the record holds for another issue stays with its issue (decision 8): the open
-// records nothing. And it is recorded only when its head is a branch of its own repository
-// (fact.HeadRepo is fact.Repo, as sameRepository compares names): a fork's pull request, which
-// anyone may open and whose branch may carry any name, an issue's or a task's among them, is none
-// of the issue's, linked or not, and neither is one whose source named no repository for the head,
-// which no source can show is the issue's.
+// records nothing. And it is recorded only when its head is a branch of the repository it merges
+// into (forkHead, over intake.PullRequestOpened.BaseRepository: the repository an event names, or
+// the one GitHub answers for a linked pull request whose read names it by its link, linkReadOf): a
+// fork's pull request, which anyone may open and whose branch may carry any name, an issue's or a
+// task's among them, is none of the issue's, linked or not, and neither is one whose source named
+// no repository for the head, which no source can show is the issue's.
 //
 // It is the pull request of the task it is of (scopeOfPullRequest): the merge it waits on is the
 // task's, and it moves the task where its implementer's completion waits for it, where it is the
 // task's own pull request (ownOfTask), and never where it is another of the task's or a linked pull
 // request worked in a task's scope.
 func (e *Engine) pullRequestOpened(ctx context.Context, tx pgx.Tx, fact intake.PullRequestOpened) (intake.Result, error) {
-	if !e.sameRepository(fact.HeadRepo, fact.Repo) {
+	if e.forkHead(fact.HeadRepo, fact.BaseRepository()) {
 		e.logOnCommit(ctx, "workflow: a pull request whose head is no branch of its own repository is not recorded",
-			"repo", fact.Repo, "pullRequest", fact.Number, "branch", fact.Branch, "headRepo", fact.HeadRepo)
+			"repo", fact.Repo, "pullRequest", fact.Number, "branch", fact.Branch, "headRepo", fact.HeadRepo, "baseRepo", fact.BaseRepository())
 		return intake.Result{}, nil
 	}
 	issue, err := e.issueForBranch(ctx, tx, fact.Repo, fact.Branch)

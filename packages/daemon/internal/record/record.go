@@ -2117,9 +2117,13 @@ const (
 // issue's links whole (Store.ReplacePullRequestLinks). The store keeps the links in
 // pull_request_links (migration 20261127234212), keyed by Repo and Number, the repository
 // compared without case, since Dispatch lets one URL link one issue alone, so a pull request is
-// linked by one issue at most. A link and the record of its pull request are two rows: a link
-// whose pull request the record holds no row of yet is a link whose read is still owed, and a pull
-// request reads whether its issue links it at each read (PullRequest.Linked).
+// linked by one issue at most. Repo is the repository as the link's URL names it, but for a link
+// of the issue's own repository by the other name of a configured rename, which the workflow
+// writes in the issue's spelling (Issue.GitHubRepo), the name the record keeps that repository's
+// pull requests under (the workflow's takeLinks), so a link and the row of its pull request name
+// one repository. A link and the record of its pull request are two rows: a link whose pull
+// request the record holds no row of yet is a link whose read is still owed, and a pull request
+// reads whether its issue links it at each read (PullRequest.Linked).
 //
 // Refused is why the daemon took the link into no set of pull requests, "" for a link it took
 // (LinkRefusal). ToldAt is when a notice to the issue's architect named the link, nil while none

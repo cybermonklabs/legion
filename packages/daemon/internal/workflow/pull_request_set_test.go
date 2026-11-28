@@ -77,7 +77,13 @@ func planRoot(t *testing.T, pool *pgxpool.Pool) record.Issue {
 //   - a link that names a repository by a name GitHub renamed, acme/deploy-legacy, which no
 //     configured rename names, to a pull request whose head is in its own repository, acme/deploy
 //     as GitHub answers it for the base and the head, is in the set under the link's name and
-//     refused as nothing: the fork test compares the head with the base GitHub answers;
+//     refused as nothing: the fork test compares the head with the base GitHub answers; and a read
+//     of it that finds it reopened after a read found it closed records it open again, the reopen
+//     tested for a fork by the same rule;
+//   - a link of the issue's own repository written under the other name of a configured rename,
+//     https://github.com/cybermonklabs/legion/pull/61 for LEGION-208 recorded on sjawhar/legion,
+//     to a pull request on a branch no task holds, read open, is in the set as the record keeps it,
+//     sjawhar/legion#61, and holds the close (setHolds): the set and the close read one link;
 //   - a link to a pull request the record holds for another issue is refused as that issue's, with
 //     one pr-link-refused however often the link is named, and the row stays with its issue;
 //   - a pull request linked after the retro began joins the set;
@@ -96,10 +102,13 @@ func planRoot(t *testing.T, pool *pgxpool.Pool) record.Issue {
 // task's pull request, or that drops a linked one with the task, which fails the removed task's
 // row; a set that takes a fork's pull request; a fork test that compares the head's repository
 // with the link's name, which refuses the renamed repository's own pull request as a fork's and
-// fails its row; a link that moves another issue's row; a set read once and never again, which
-// fails the row of the link after the retro began; a moved link refused as the issue's that held
-// it, whose close nothing judges again, which fails the rows of the move where LEGION-207's link
-// comes first and at the boot; and links unknown read as links none, which fails the last row.
+// fails its row, and so does a reopen tested that way; a link of the issue's own repository kept
+// under the URL's name of a configured pair, which joins no row the record keeps in the issue's
+// name, so its pull request is in no set while it holds the close; a link that moves another
+// issue's row; a set read once and never again, which fails the row of the link after the retro
+// began; a moved link refused as the issue's that held it, whose close nothing judges again, which
+// fails the rows of the move where LEGION-207's link comes first and at the boot; and links unknown
+// read as links none, which fails the last row.
 func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 	t.Parallel()
 	const status = "in_progress"
@@ -207,6 +216,48 @@ func TestThePullRequestsOfAnIssueAreItsTasksAndItsLinks(t *testing.T) {
 			t.Errorf("the read of #7001 sent pr-link-refused %+v, want none", told)
 		}
 		assertSet(t, pool, root.Key, "the read of a link under the name GitHub renamed", "acme/deploy-legacy#7001")
+	})
+
+	t.Run("a link under a name GitHub renamed, with no configured rename, read reopened, is open again", func(t *testing.T) {
+		pool := migratedPool(t)
+		root := tasksRoot(t, pool)
+		apply := applyFacts(t, pool, stepEngine(nil))
+		legacy := intake.PullRequestLink{Repo: "acme/deploy-legacy", Number: 7001}
+		mustSpend(t, "the link of acme/deploy-legacy#7001", apply("linked-7001", linksOf(root.Key, 2, status, legacy)))
+		read := func(state record.PullRequestState, minutes int) intake.PullRequestLinkReadDone {
+			read := linkRead(root.Key, legacy.Repo, legacy.Number, state, "fix/renamed")
+			read.HeadRepo, read.BaseRepo, read.UpdatedAt = "acme/deploy", "acme/deploy", linkedAt.Add(time.Duration(minutes)*time.Minute)
+			return read
+		}
+		mustSpend(t, "the read of #7001 open", apply("read-7001-open", read(record.PullRequestOpen, 0)))
+		mustSpend(t, "the read of #7001 closed", apply("read-7001-closed", read(record.PullRequestClosed, 1)))
+		if pr := pullRequestOf(t, pool, legacy.Repo, legacy.Number); pr == nil || pr.State != record.PullRequestClosed {
+			t.Fatalf("after the read that found it closed acme/deploy-legacy#7001 is %+v, want it closed", pr)
+		}
+		mustSpend(t, "the read of #7001 reopened", apply("read-7001-reopened", read(record.PullRequestOpen, 2)))
+		if pr := pullRequestOf(t, pool, legacy.Repo, legacy.Number); pr == nil || pr.State != record.PullRequestOpen {
+			t.Errorf("after the read that found it reopened acme/deploy-legacy#7001 is %+v, want it open again: its head is in the repository GitHub answers as its base", pr)
+		}
+		assertSet(t, pool, root.Key, "the reopen of a link under the name GitHub renamed", "acme/deploy-legacy#7001")
+	})
+
+	t.Run("a link of the issue's own repository under the other name of a configured rename is in the set and holds the close", func(t *testing.T) {
+		pool := migratedPool(t)
+		root := tasksRoot(t, pool)
+		engine := renamedEngine(renamedLegion)
+		apply := applyFacts(t, pool, engine)
+		own := intake.PullRequestLink{Repo: "cybermonklabs/legion", Number: 61}
+		mustSpend(t, "the link of cybermonklabs/legion#61", apply("linked-61", linksOf(root.Key, 2, status, own)))
+		mustSpend(t, "the read of #61", apply("read-61", linkRead(root.Key, own.Repo, own.Number, record.PullRequestOpen, "fix/own-link")))
+		assertSet(t, pool, root.Key, "the read of a link of the issue's own repository under the pair's other name", "sjawhar/legion#61")
+		var holds []heldLink
+		seedRecord(t, pool, func(tx pgx.Tx) (err error) {
+			holds, err = setHolds(t.Context(), engine.store, engine.RepositoryRenames(), tx, root.Key)
+			return err
+		})
+		if len(holds) != 1 || holds[0].row == nil || holds[0].row.Number != 61 || holds[0].row.State != record.PullRequestOpen {
+			t.Errorf("the links that hold the close of %s are %+v, want the link of #61, open", root.Key, holds)
+		}
 	})
 
 	t.Run("a link to another issue's pull request is refused, told once, and the row stays with its issue", func(t *testing.T) {
