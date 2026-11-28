@@ -2592,7 +2592,7 @@ LOADTEST_CLUSTER = "Test loadtest/cluster/cluster.sh (fakes kubectl, gh and curl
 # scripts/approve/scan.ts.
 SCAN_TESTS_STEP = "Scan tests of approve-check's session (bun; a stand-in Dispatch, no stack)"
 # The step that waits for the script harnesses a job queued through .github/scripts/harness-pool.sh
-# and is the verdict on them; envoy-go-checks and the test job each end with one.
+# and is the verdict on them; envoy-go-checks, the test job and envoy-session-stall each have one.
 HARNESS_POOL_WAIT_STEP = "Wait for the script harnesses and judge them"
 # The check that no migration a database may have run is edited without its replaces line: a
 # script that builds the command with `go build` and runs the binary, so pinned whole, and the Run

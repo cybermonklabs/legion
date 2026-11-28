@@ -49,7 +49,7 @@ func TestARepeatWhoseCopyReadDoesNotAnswerAnswers503(t *testing.T) {
 	t.Parallel()
 	const seq = 7
 	item := contracts.MessageEnvelope(contracts.Message{SourceSession: "ses_slow_read", Text: "read slowly"},
-		"notifications.team.slow-read", publishDedupePrefix+uuid.NewString())
+		"notifications.team.slow-read", bus.PublishDedupePrefix+uuid.NewString())
 	sender := requestSender{source: item.Source, session: item.SourceSession}
 	duplicateVerdict := func(context.Context, contracts.Envelope) (bus.StoredAck, error) {
 		return bus.StoredAck{Sequence: seq, Duplicate: true}, nil

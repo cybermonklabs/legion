@@ -60,10 +60,10 @@ func (g gitRepo) defaultRevision() string {
 }
 
 // startMerge makes the merge this step works in, of here (the commit sidesOf read as this
-// checkout's own) and there. The step writes route files, takes routes_table.go and
-// routes_shapes.go whole from the new side, and writes conflicts into the index, so it must own
-// the merge. Afterwards the tree is mid-merge, and refuseATreeThisDidNotStart refuses another
-// run for that reason alone.
+// checkout's own) and there. The step writes route files, takes routes_table.go, routes_shapes.go
+// and read_classes.go whole from the new side, removes read_classes.go where the new side removed
+// it, and writes conflicts into the index, so it must own the merge. Afterwards the tree is
+// mid-merge, and refuseATreeThisDidNotStart refuses another run for that reason alone.
 func (g gitRepo) startMerge(into, here, there string) error {
 	if g.jj {
 		// git answers a revision the branch holds already with "Already up to date" and no
@@ -92,7 +92,7 @@ func (g gitRepo) startMerge(into, here, there string) error {
 	// that tree would leave changes nobody asked for, so the failure is answered here.
 	mergeHead, err := g.mergeHead()
 	if err != nil {
-		return fmt.Errorf("%w\ngit merge %s ran, and whether it left a merge is unread: if `git status` says a merge is in progress, end it with %s", err, into, g.gitAbort())
+		return fmt.Errorf("%w\ngit merge %s ran, and whether it left a merge is unread: if `git -C %s status` says a merge is in progress, end it with %s", err, into, shellQuoted(g.root), g.gitAbort())
 	}
 	if mergeHead == "" {
 		if mergeErr != nil {
@@ -171,7 +171,9 @@ func (g gitRepo) leaveTheMerge(here string, written []string) string {
 
 // refuseATreeThisDidNotStart refuses a tree that is mid-merge or holds a change, naming what the
 // person must do and what it costs them, since the step's safety rests on starting from a tree
-// nobody has touched.
+// nobody has touched. Every command it names acts on this checkout by its root, since the person
+// runs the step with -C from wherever they are, and a bare command pasted there acts on that
+// directory's repository instead.
 func (g gitRepo) refuseATreeThisDidNotStart() error {
 	const lost = "any resolution you have already made in that merge is lost, this step's route files included"
 	if g.jj {
@@ -196,7 +198,7 @@ func (g gitRepo) refuseATreeThisDidNotStart() error {
 			if err != nil {
 				return err
 			}
-			return fmt.Errorf("@ holds changes of its own, and this step begins from a commit nobody has touched: describe them and run `jj new` to sit on a fresh commit, then run this again:\n%s", strings.TrimRight(changed, "\n"))
+			return fmt.Errorf("@ holds changes of its own, and this step begins from a commit nobody has touched: describe them and run `jj -R %s new` to sit on a fresh commit, then run this again:\n%s", shellQuoted(g.root), strings.TrimRight(changed, "\n"))
 		}
 		return nil
 	}
@@ -209,8 +211,10 @@ func (g gitRepo) refuseATreeThisDidNotStart() error {
 	if err != nil {
 		return err
 	}
+	// -u, because `git status --porcelain` lists an untracked file, which a plain `git stash`
+	// leaves behind, so the run after it would be refused again.
 	if strings.TrimSpace(string(changed)) != "" {
-		return fmt.Errorf("the tree holds changes, and this step begins from a tree nobody has touched: commit or stash them, then run this again:\n%s", strings.TrimRight(string(changed), "\n"))
+		return fmt.Errorf("the tree holds changes, and this step begins from a tree nobody has touched: commit them, or stash them with `git -C %s stash -u`, then run this again:\n%s", shellQuoted(g.root), strings.TrimRight(string(changed), "\n"))
 	}
 	return nil
 }
@@ -232,9 +236,11 @@ func (g gitRepo) stage(names, removed []string) error {
 		}
 	}
 	// A route the branch removes is a file the incoming side added, so git's index holds it as a
-	// staged addition, which a plain `git rm` refuses to drop. adopt removes only a file whose bytes
-	// are the merge base's own, or the fixture the new layout no longer commits, so nobody's change
-	// is lost: the index entry is forced out and the file deleted.
+	// staged addition, which a plain `git rm` refuses to drop. adopt removes only a route file whose
+	// bytes are the merge base's own; read_classes.go where the new side removed it, whose
+	// readClasses entries are the route files' now and whose other edits the report prints to
+	// carry; or the fixture the new layout no longer commits. So nobody's change is lost: whatever
+	// the index holds for the file is forced out and the file deleted.
 	if len(removed) > 0 {
 		if _, err := g.run(append([]string{"rm", "-q", "-f", "--ignore-unmatch", "--"}, prefixed(removed)...)...); err != nil {
 			return err
@@ -273,9 +279,10 @@ type conflictSides struct {
 // recordConflict writes one path into git's index as a conflict, in git's own stage order: the
 // merge base at stage 1, HEAD's side at 2 and MERGE_HEAD's at 3, which is what `git merge` leaves
 // for a path it could not merge, and what `git checkout --ours` and `--theirs` read. git then
-// refuses to commit until the person resolves the file and runs `git add`. jj takes the working
-// copy as it is, markers and all, and keeps the file as a conflict of its own, so nothing is
-// written there.
+// refuses to commit until the person resolves the file and runs `git add`. jj reads no index:
+// it snapshots the file, markers and all, as plain content, not as a conflict of its own, so
+// `jj resolve --list` does not name it and nothing is written there. Under jj only this step's
+// report ("resolve the conflict markers in ...") names the file.
 func (g gitRepo) recordConflict(name string, sides conflictSides) error {
 	if g.jj {
 		return nil

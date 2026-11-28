@@ -166,12 +166,13 @@ func (r *outbox) mergeQueueRemoval(ctx context.Context, row record.OutboxRow, pa
 // published, the attributes of the row's log lines, and the two lines the delivery itself logs: the
 // row's end on a claim that failed or retired, and the delivery. Each message is for the session
 // of the role's current launch: it is published only once that launch has registered its session,
-// and it is delivered unless the listener names a session other than the one the claim records
-// (deliverHeld). end, where set, is the row's end itself, which deletes the row: end's delivered
-// argument says whether the row was delivered, and told is the launch whose session the listener
-// stored the message for, 0 for the end at a claim that failed or retired, and for a delivery
-// where the listener named no holder (a merge-forward ask's, endMergeForwardAsk). nil leaves the
-// row's end to its settle.
+// and while the role's claim has no launch yet the row waits for the claim's first launch to
+// register its session, whatever the listener would answer. It is delivered unless the listener
+// names a session other than the one the claim records (deliverHeld). end, where set, is the row's
+// end itself, which deletes the row: end's delivered argument says whether the row was delivered,
+// and told is the launch whose session the listener stored the message for, 0 for the end at a
+// claim that failed or retired, and for a delivery where the listener named no holder (a
+// merge-forward ask's, endMergeForwardAsk). nil leaves the row's end to its settle.
 type heldMessage struct {
 	issue      record.Issue
 	token      claim.Token
@@ -193,7 +194,9 @@ type heldMessage struct {
 // resume, for its turn, reading the claim again at most parkedWakeBound apart (parkedWait), as it
 // waits while the listener answers that nobody holds the role (notify.ErrNoHolder) or that its
 // holder is unresponsive (notify.ErrHolderUnresponsive). A role with no claim yet, its start still
-// owed, is no end either: the row waits for it.
+// owed, or with a claim no launch has reached, is no end either: the row waits for the claim's
+// first launch to register its session, whatever the listener would answer, since a publish before
+// it reaches no session of the claim and a listener that takes it names no launch told.
 //
 // It reads, in this order, what ends or holds the row. The row finishes undelivered, logging
 // m.claimEnded, once the role's claim has failed or retired, since that launch will not hold its
@@ -261,6 +264,10 @@ func (r *outbox) deliverHeld(ctx context.Context, row record.OutboxRow, m heldMe
 		return wait.Errorf("%s waits for its %s's released pod to come back", m.what, m.role)
 	}
 	launch := r.supervisedClaim(m.token)
+	if launch.Generation == 0 {
+		return wait.Errorf("%s waits for its %s's claim's first launch to register its session: no launch of that claim holds the role yet",
+			m.what, m.role)
+	}
 	if supervise.Unregistered(launch.State) {
 		return wait.Errorf("%s waits for its %s's launch %d, which is %s, to register its session: a publish now would reach an earlier launch's session or none",
 			m.what, m.role, launch.Generation, launch.State)

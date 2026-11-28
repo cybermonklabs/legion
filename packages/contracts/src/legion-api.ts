@@ -2286,6 +2286,18 @@ export const LegionReleaseRecordsResponse = z.object({
 
 export type LegionReleaseRecords = z.output<typeof LegionReleaseRecordsResponse>;
 
+/** One entry of the project's watched workflows (`api.WatchedWorkflow`, contract entry
+ * 20261127193422): the owner, the repository and the workflow file as the project's
+ * `legion.yaml` spells them, and the trigger events whose completed runs on that repository's
+ * default branch the controller hears, never empty. The controller's plugin subscribes one
+ * default-branch topic per event, built from all four, so each is required. */
+const legionWatchedWorkflow = z.object({
+  owner: nonEmptyString,
+  repo: nonEmptyString,
+  workflow: nonEmptyString,
+  events: z.array(nonEmptyString).min(1),
+});
+
 /** `api.ControllerRegisterResponse`, for a session that registered as the project's controller
  * (the `bootToken` of `POST /legion/v1/claims/register` is the secret `legion controller start`
  * fetched, or a daemon-launched controller's own boot token): the project's controller role token,
@@ -2293,25 +2305,31 @@ export type LegionReleaseRecords = z.output<typeof LegionReleaseRecordsResponse>
  * launch's for the daemon's own, which its `claims/ready` names — and the secret its controller
  * grants authenticate with. No tree, no issue. `replaces` (contract entry 20261125170509) is the session this
  * registration replaces, as on a claim's registration: the session names it as
- * `previous_session_id` in its Envoy role claim. */
+ * `previous_session_id` in its Envoy role claim. `watchedWorkflows` (contract entry
+ * 20261127193422) is the project's watched workflows, whose default-branch topics the plugin
+ * subscribes once its claim is done: absent for a project that watches none, and from a daemon
+ * before the entry, which reads as none. */
 export const LegionControllerRegisterResponse = z.object({
   claimToken: nonEmptyString,
   role: z.literal("controller").optional(),
   generation: z.number().int().positive(),
   secret: nonEmptyString,
   replaces: nonEmptyString.optional(),
+  watchedWorkflows: z.array(legionWatchedWorkflow).optional(),
 });
 
 export type LegionControllerRegistration = z.output<typeof LegionControllerRegisterResponse>;
 
 /** `api.ControllerSecretResponse`, the body of `POST /legion/v1/controller/secret`: the controller
- * capability the operator's bearer bought, and the design-gate steps the project gates
+ * capability the operator's bearer bought, the design-gate steps the project gates
  * (`gates.design`), in the order it gates them, which `legion controller start` tells the
- * controller (contract 55). The list is empty for a deployment that gates no step and is never
- * absent. The CLI reads it; the plugin never does. */
+ * controller (contract 55), and the project's watched workflows, which it tells the controller in
+ * the same prompt (contract entry 20261127193422). Each list is empty for a deployment that names
+ * none and is never absent. The CLI reads it; the plugin never does. */
 export const LegionControllerSecretResponse = z.object({
   secret: nonEmptyString,
   designGateSteps: z.array(legionDesignStep),
+  watchedWorkflows: z.array(legionWatchedWorkflow),
 });
 
 /** `api.ControllerCredentialResponse`, the answer of `POST /legion/v1/controller/github-credential`:
@@ -3394,9 +3412,20 @@ export const LEGION_ANSWER_READS: Readonly<Record<string, readonly string[]>> = 
     "replaces",
   ],
   // `controller-session.ts` checks the controller's claim token, mints every controller grant
-  // with the secret, names `replaces` in the role claim, and sends the generation on
-  // `claims/ready`.
-  LegionControllerRegisterResponse: ["claimToken", "generation", "secret", "replaces"],
+  // with the secret, names `replaces` in the role claim, sends the generation on
+  // `claims/ready`, and subscribes each watched workflow's default-branch topic for each of its
+  // events, built from its owner, repository and workflow file.
+  LegionControllerRegisterResponse: [
+    "claimToken",
+    "generation",
+    "secret",
+    "replaces",
+    "watchedWorkflows",
+    "watchedWorkflows[].owner",
+    "watchedWorkflows[].repo",
+    "watchedWorkflows[].workflow",
+    "watchedWorkflows[].events",
+  ],
   // Every write of the `legion` tool posts the grant id `mintClaimGrant` took.
   LegionGrantResponse: ["grantId"],
   // `daemon-client.ts` reads both fields of a refusal: the code is the refusal's stable name, which
