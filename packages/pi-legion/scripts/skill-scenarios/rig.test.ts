@@ -2103,7 +2103,7 @@ describe("label_tree", () => {
 
   const controls = path.join(scenarios, "controls");
   /** The two files of #4902's plan guidance change at its head
-   * (16eba363aa980d9d611cbaa0553341cda4e4a895, on branch legion/INFRA-4115, whose pull request
+   * (25463ff115d309756d8f4fb101ec2d3c2a96cc03, on branch legion/INFRA-4115, whose pull request
    * carries the change since #4902 closed) that the control manifests change, committed as
    * controls/pr-4902-head/ (controls/patches/README.md): each fixture, the path it has in the head,
    * and its blob there. The names here say #4902, whose change it is. */
@@ -2111,12 +2111,12 @@ describe("label_tree", () => {
     [
       "architect-common.md",
       "packages/daemon/internal/prompts/go/architect-common.md",
-      "952c8827eb045bb1f0ecc87145f09b88c17a262e",
+      "fbb7e914ba5829ff824b65db6aacfdf4e2d854d8",
     ],
     [
       "plan.md",
       "skills/legion-architect/references/plan.md",
-      "81379eb0bd43a2951527e6ad6c9818d3b1891731",
+      "4f4fd934e859e507cddf191b9f19be7da9e55217",
     ],
   ] as const;
   /** A repository of one commit that holds #4902's head's two files at their paths, built from the

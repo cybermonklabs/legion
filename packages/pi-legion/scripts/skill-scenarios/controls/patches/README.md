@@ -15,9 +15,10 @@ paragraph.
 The change was #4902's. Since #4902 closed, the pull request of branch `legion/INFRA-4115` carries
 it, and the patch and the fixtures below were read at the change's head there:
 
-- The change's head: `16eba363aa980d9d611cbaa0553341cda4e4a895`, the commit of branch
+- The change's head: `25463ff115d309756d8f4fb101ec2d3c2a96cc03`, the commit of branch
   `legion/INFRA-4115` that changes the owner's paragraph on the choice of an agent (line 6 of
-  `architect-common.md`) and the `plan_task` example of `plan.md`.
+  `architect-common.md`), the `plan_task` example of `plan.md` (lines 18-21) and form E's two drop
+  texts.
 - `main` when read: `c8f964411c1f7236c168d57f4cfc2faa9a650c76`, which
   `4fa95e8167f5d341e8ab8dae153c56f34910c726` merged into the branch, so the merge base of the two is
   `main` itself. The patch is no diff of `main` and the head: the head also changes the choice
@@ -27,7 +28,7 @@ it, and the patch and the fixtures below were read at the change's head there:
   the file at the head.
 
   ```bash
-  c=16eba363aa980d9d611cbaa0553341cda4e4a895
+  c=25463ff115d309756d8f4fb101ec2d3c2a96cc03
   f=packages/daemon/internal/prompts/go/architect-common.md
   s=$(mktemp -d)
   mkdir -p "$s/a/${f%/*}" "$s/b/${f%/*}"
@@ -39,7 +40,7 @@ it, and the patch and the fixtures below were read at the change's head there:
 
 - `git apply --numstat` of the patch reads `2 0`. Its `index` line names the blob of the file
   without the paragraph, which no commit holds, and the file's blob at the head. Its sha256 is
-  `34ef10263750d3aacb6339e6c8d6d9d8c1fe31d0223b86f5be8a244c21cff277`.
+  `731310886e98bf8361c89fce4eaebde4ac8028f30e775e408a97f39d75cc45ee`.
 - `git apply --cached -R --check` of the patch passes on an index of the change's head, and fails
   on an index of `main` (`patch does not apply`), which holds no such paragraph.
 
@@ -52,10 +53,10 @@ so D's tree differs from its commit in those lines too.
 
 `architect-common.md` and `plan.md` are `packages/daemon/internal/prompts/go/architect-common.md`
 and `skills/legion-architect/references/plan.md` at the change's head
-`16eba363aa980d9d611cbaa0553341cda4e4a895`, byte for byte: their blobs there are
-`952c8827eb045bb1f0ecc87145f09b88c17a262e` and `81379eb0bd43a2951527e6ad6c9818d3b1891731`, and
-their sha256 are `9547dfe5a36a1b2b6806e78a0d7407cfc43328ef3f7efa68aa09932048f3c377` and
-`43cfdcc9340cb4f955d0cdba92a1d9a5e94f05deceff67817828c99e9a1de1a8`. The directory keeps the name
+`25463ff115d309756d8f4fb101ec2d3c2a96cc03`, byte for byte: their blobs there are
+`fbb7e914ba5829ff824b65db6aacfdf4e2d854d8` and `4f4fd934e859e507cddf191b9f19be7da9e55217`, and
+their sha256 are `3bdc4df1bb09f707075c98dfd63131b47d6996a8d04513506c98224fa882adba` and
+`cf6e49d44ef54fb6bf897987aabb8f774a1b584e15b80bc232892571bcf6f284`. The directory keeps the name
 of #4902, whose change the files hold. They are the only files the three manifests
 (`owner-walk-head.txt`, `owner-walk-D.txt` and `owner-walk-E.txt`) change, and no manifest names a
 commit (no `file` or `reverse` line), so rig.test.ts's rows of the manifests ("the owner-walk
@@ -65,7 +66,7 @@ commit from them and hold each to its blob (`PR_4902_FILES`): the rows read no n
 that moves. The command, in a checkout that holds the commit:
 
 ```bash
-git archive --format=tar 16eba363aa980d9d611cbaa0553341cda4e4a895 \
+git archive --format=tar 25463ff115d309756d8f4fb101ec2d3c2a96cc03 \
   packages/daemon/internal/prompts/go/architect-common.md \
   skills/legion-architect/references/plan.md | tar -x -C <dir>
 ```
@@ -76,10 +77,10 @@ Each file holds the exact bytes a `drop` line takes out, with no final newline. 
 starts with one or two newlines, those are the end of the line before it and the blank line after
 the paragraph above it, so the file keeps one blank line between the paragraphs that stay. Each
 text was read with `git show <commit>:<path>` and occurs once in its file at the change's head
-`16eba363aa980d9d611cbaa0553341cda4e4a895`. Each count below was read there and at `main`
+`25463ff115d309756d8f4fb101ec2d3c2a96cc03`. Each count below was read there and at `main`
 `c8f964411c1f7236c168d57f4cfc2faa9a650c76`, and each line number is the text's line at the head.
 
-| Drop text | Its file | What it takes out | Forms that take it | Count at the change's head `16eba363aa9` | Count at `main` `c8f964411c1f` |
+| Drop text | Its file | What it takes out | Forms that take it | Count at the change's head `25463ff115d` | Count at `main` `c8f964411c1f` |
 | --- | --- | --- | --- | --- | --- |
 | `owner-walk-E-choice-paragraph.txt` | `packages/daemon/internal/prompts/go/architect-common.md` | the paragraph "For every step of every task, your own `acceptance:owner` step included, write in the task's text which agent works it, and why. …" (line 6) | E | 1 | 0 |
 | `owner-walk-E-choice-sentence.txt` | `skills/legion-architect/references/plan.md` | the sentences "For every step, `acceptance:owner` included where the task has it, the agent the work needs …" and "Where this release cannot start that agent, …" of the task block's example (lines 18-21) | E | 1 | 0 |
@@ -94,8 +95,8 @@ earlier|fresh or an earlier|earlier agent'` over `packages/daemon/internal/promp
 then dropped, and no other: `architect-common.md:4`, "For each step, decide whether a fresh agent
 works it or the agent of an earlier step, …", and `plan.md:11`, "For each step, a fresh agent or
 the agent of an earlier step, and why.". Commit `16eba363aa98` rewrote both texts in place, and the
-commit that last wrote E's two drop texts rewrote them again. At that commit the same grep over the
-same paths finds five lines, of `architect-common.md` and of three files in
+change's head `25463ff115d3` rewrote them again, and E's two drop texts with them. At the head the
+same grep over the same paths finds five lines, of `architect-common.md` and of three files in
 `skills/legion-architect/references/`:
 
 - `architect-common.md:6`, the paragraph E drops ("That agent is a fresh agent, or the agent of an
@@ -114,7 +115,7 @@ No unit test holds E to the texts a label of this checkout carries: a change tha
 E's two texts stops the Job's build of E's tree, since `label_tree` refuses a drop it finds other
 than once.
 
-| Drop text | Its file | What it takes out | Forms that take it | Count at the change's head `16eba363aa9` | Count at `main` `c8f964411c1f` |
+| Drop text | Its file | What it takes out | Forms that take it | Count at the change's head `25463ff115d` | Count at `main` `c8f964411c1f` |
 | --- | --- | --- | --- | --- | --- |
 | `owner-walk-plans-read.txt` | `skills/legion-architect/references/plan.md` | the three lines of "Reading how plans went" that name `dispatch plans --project` and ask for its read (lines 83-85) | every form: A, B and C (`owner-walk-head.txt`), D and E | 1 | 0 |
 

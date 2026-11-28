@@ -1,9 +1,9 @@
-# COPIES of two files of #4902's plan guidance change, at its head `16eba363aa9`
+# COPIES of two files of #4902's plan guidance change, at its head `25463ff115d`
 
 `architect-common.md` and `plan.md` here are copies, byte for byte, of
 `packages/daemon/internal/prompts/go/architect-common.md` and
 `skills/legion-architect/references/plan.md` at the change's head
-`16eba363aa980d9d611cbaa0553341cda4e4a895`, the commit of branch `legion/INFRA-4115` that changes
+`25463ff115d309756d8f4fb101ec2d3c2a96cc03`, the commit of branch `legion/INFRA-4115` that changes
 the owner's paragraph on the choice of an agent; that branch's pull request carries the change
 since #4902 closed. This directory's name is #4902's, whose change it holds. The files are
 fixtures of the owner-walk manifests of every form (`owner-walk-head.txt` for A, B and C,
