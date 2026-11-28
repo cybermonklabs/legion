@@ -1220,7 +1220,9 @@ dorny/paths-filter filter per job, the jobs that read those paths; each job runs
 filter matches (lint and priority-conflicts run on every change, and typecheck, test,
 tooling-checks, daemon-go, plugin-pack, private-names-port, sessions-script and text-checks also
 run when `changes` itself failed). A pull request runs the fast jobs its paths select, and the
-merge queue runs a job when the queue's own generator, against the queue's base, selects it
+merge queue runs a job when the queue's own generator, against the queue's base, selects it,
+except a job whose `if:` admits only a pull request (dispatch-browser-pr, dispatch-references and
+worker-image), which never runs there
 (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 ci-ok condenses every job's result into one check: it fails when a job `changes` selected did
 not succeed.
@@ -1838,7 +1840,8 @@ of its own, and gates nothing
 
 A pull request's run is a fast filter: the builds, the vets, the format, typecheck and lint
 checks, and the fast tests. The merge queue runs a job when the queue's own generator selects it,
-on the tree the change lands as, so a slow test runs once, in the queue, and main stays green. The rule that
+on the tree the change lands as, except the three jobs that run on a pull request alone (below),
+so a slow test runs once, in the queue, and main stays green. The rule that
 sorts a job, read off its pull-request runs (attempt 1, every leg of the job that ran succeeded,
 a job's time from its first leg's start to its last leg's end; the numbers below are
 2026-11-22's):
@@ -1877,7 +1880,10 @@ dashboard is held to (.github/ci-notes/ci.md#the-browser-suites-two-outputs-one-
 A job whose numbers cross the line moves class by the same rule. dispatch-references is in
 neither class: it is outside ci-ok, runs on a pull request alone and never in the queue, whose
 full lane already runs every row of it
-(.github/ci-notes/ci.md#the-reference-rows-preview-job).
+(.github/ci-notes/ci.md#the-reference-rows-preview-job). dispatch-browser-pr and worker-image,
+the two jobs CI_OK_PULL_REQUEST_ONLY names, run on a pull request alone too, and ci-ok accepts
+their skip in the queue
+(.github/ci-notes/ci.md#what-ci_ok_selected_by-holds-and-which-programs-read-it).
 
 What this accepts: a slow test that would have failed the pull request now fails first in the
 queue, where the failure takes the entry out and the queue rebuilds the groups behind it. Every
