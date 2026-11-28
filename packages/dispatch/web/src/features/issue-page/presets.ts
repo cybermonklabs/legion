@@ -243,11 +243,12 @@ function filterView(
   };
 }
 
-/** What one control of the filter row draws after its name (R2): its count, then, where the
- *  picture draws one, the noun the count is in or what of it waits on the reader. */
+/** What a filter control or the Threads control draws after its name (R2,
+ *  dispatch://INFRA-5704/spec#b-r-control): its count, with a unit or a flag where applicable.
+ *  Dashboard and Conversation draw no signal. */
 export interface PresetSignal {
-  /** How many nodes of the view's main kind it draws (R2), or for Conversation how many entries
-   *  the Contents list holds, as the prototype's signal counts them. */
+  /** How many nodes of the filter's main kind it draws (R2), or for Threads how many rows Waiting
+   *  on me holds (`slots/view-row.tsx`). */
   readonly count: number;
   /** The part of the count that asks something of the reader, with the word it is drawn with:
    *  the checks that failed, the decisions waiting for the reader's review. */

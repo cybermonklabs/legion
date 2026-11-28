@@ -10,6 +10,6 @@ var _ = declareRoute(routeDecl{
 	Auth:        authAny,
 	Description: "Whether this deployment has a text model configured: {model_configured} and nothing else, so no endpoint, deployment name or credential can appear in it. Any caller Dispatch admits reads it, a pod's own agent token included.",
 	Handler:     (*server).getGoingCapability,
-	Read:        readEntry{Writes: readWritesNothing},
+	Read:        readEntry{Writes: readWritesNothing, AsOf: asOfNoHistory},
 	Shape:       routeShape{Status: http.StatusOK, Response: goingCapability{}},
 })

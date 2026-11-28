@@ -238,6 +238,18 @@ func (f *fixture) newCredential(t *testing.T) string {
 	return id
 }
 
+// newSignInCredential inserts a Dispatch sign-in's launcher credential holding scopes, as an
+// approval mints one (its dispatch_scopes is written once, at the insert).
+func (f *fixture) newSignInCredential(t *testing.T, scopes []string) string {
+	t.Helper()
+	id := uuid.NewString()
+	if _, err := f.pool.Exec(context.Background(), `insert into launcher_credentials (id, operator, host, key_thumbprint, public_jwk, expires_at, dispatch_scopes)
+		values ($1, 'ada@example.com', 'example-host', $2, '{}'::jsonb, now() + interval '30 days', $3)`, id, "thumbprint-"+id, scopes); err != nil {
+		t.Fatalf("insert launcher_credentials: %v", err)
+	}
+	return id
+}
+
 // login runs a device login with key to its first token pair, answering its refresh token.
 func (f *fixture) login(t *testing.T, key *ecdsa.PrivateKey) string {
 	t.Helper()

@@ -502,8 +502,8 @@ test("the controls are toggles with an address each, one line at every width, an
     await gotoIssue(page, `/issues/${key}/conversation`);
 
     // The toolbar Filters: the controls in `PRESET_ORDER`, Dashboard first, each named by its
-    // view's word alone and, where its view carries a signal, described by its signal, whose
-    // count is the seed's.
+    // view's word alone. The four filters are described by their signals, with the seed's counts.
+    // Dashboard and Conversation have no count, and Threads has none for this seed (below).
     await expect(presetToolbar(page), "no toolbar named Filters holds the controls").toHaveCount(1);
     await expect(presetToggles(page)).toHaveCount(PRESET_ORDER.length);
     const expectedNames = PRESET_ORDER.map((preset) => PRESET_NAMES[preset]);
@@ -520,7 +520,7 @@ test("the controls are toggles with an address each, one line at every width, an
         "aria-pressed",
         preset === "conversation" ? "true" : "false"
       );
-      if (preset === "dashboard") continue;
+      if (preset === "dashboard" || preset === "conversation") continue;
       // Threads counts the rows of Waiting on me, and no thread of this seed waits on the reader,
       // so it draws no count (dispatch://INFRA-5704/spec#b-r-control).
       if (preset === "threads") {
@@ -533,6 +533,8 @@ test("the controls are toggles with an address each, one line at every width, an
         `${PRESET_NAMES[preset]} is not described by its count`
       ).toHaveAccessibleDescription(new RegExp(`^${SEEDED_COUNTS[preset]}\\b`));
     }
+    await expect(presetCount(page, "conversation"), "Conversation drew a count").toHaveCount(0);
+    await expect(presetToggle(page, "conversation")).toHaveAccessibleDescription("");
 
     // A press turns a view on and the others off, a second press turns it off, and each state
     // is its own address.
