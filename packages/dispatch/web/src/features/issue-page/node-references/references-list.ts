@@ -9,6 +9,7 @@ import type {
 } from "../../../api/types";
 import { LINE_FEED } from "../../decision-card/stored-reading";
 import { isBlockItemKind } from "../../refs/block-reference";
+import { listItemNumber } from "../../refs/markdown-engine";
 import { isPartyRoute } from "../../refs/party-references";
 import type { KnownReferences } from "../../refs/reference-names";
 import type { DispatchReferenceRoute, PartyRoute } from "../../refs/routes";
@@ -261,12 +262,14 @@ const CODE_BLOCK = "code_block";
  * `addDocumentBlocks`, `useNodeLine`), read from the server's reading of the block's own content
  * (`ReferenceTarget.text_tree`), which a typed block's opening line is no part of, by the
  * outline's own rule (`lineReading`): the first top-level block of it that holds any words, so a
- * task that opens on a heading is named by the heading alone. Its words, each reference in them
- * named first (`namedWords`), as the outline's line names its references before it cuts, by the
- * citing block's own `issue`, are cut by R1's first-line rule (`firstLineOf`) with its ellipsis
- * (`drawnLine`). A code block is named by the first line of its code instead, the first that
- * holds any characters, as typed: code is literal, so no address in it is a reference and none
- * is named, and the component draws it as code (`ReferenceRow.code`).
+ * task that opens on a heading is named by the heading alone. Its words open on the number of each
+ * item of an ordered list they stand in, as the outline's projection writes them (`itemNumbers`),
+ * so a task that opens on `1. Stand the harness up.` keeps its `1.`. They are named, each
+ * reference in them first (`namedWords`), as the outline's line names its references before it
+ * cuts, by the citing block's own `issue`, and cut by R1's first-line rule (`firstLineOf`) with
+ * its ellipsis (`drawnLine`). A code block is named by the first line of its code instead, the
+ * first that holds any characters, as typed: code is literal, so no address in it is a reference
+ * and none is named, and the component draws it as code (`ReferenceRow.code`).
  *
  * No line for a block whose member has not answered, is gone or holds no reading, and for a
  * reading none of whose blocks holds a word: such a block is named by its word. The member's
@@ -289,8 +292,32 @@ function blockLine(
     const code = wordsOf(block).split(LINE_FEED);
     return { code: true, words: code.find((line) => line.trim() !== "")?.trim() ?? "" };
   }
-  const words = namedWords(wordsOf(reading), known, issues, issue);
+  const words = namedWords(`${itemNumbers(reading)}${wordsOf(reading)}`, known, issues, issue);
   return { code: false, words: drawnLine(firstLineOf(words)) };
+}
+
+/**
+ * The numbers the outline's projection writes before the words of `reading`, a reading as
+ * `firstWordedBlock` cuts it: one of each item of an ordered list it stands in, the outermost
+ * first, by the projection's own rule (`listItemNumber`), so an item that opens on a list of its
+ * own keeps both numbers. Each container of that reading holds its one block that holds words,
+ * whose place `firstWordedBlock` wrote into its list's `order`, so the words are that block's and
+ * every number read stands before them; `""` for a block in no ordered list.
+ */
+function itemNumbers(reading: DisplayTree): string {
+  let numbers = "";
+  let node: DisplayTree | undefined = reading;
+  while (node !== undefined) {
+    const child: DisplayTree | undefined = Array.isArray(node.content)
+      ? node.content[0]
+      : undefined;
+    if (node.type === "ordered_list" && child?.type === "list_item") {
+      const attrs = node.attrs as { readonly order?: unknown } | undefined;
+      numbers = listItemNumber(attrs?.order, 0, numbers);
+    }
+    node = child;
+  }
+  return numbers;
 }
 
 /**

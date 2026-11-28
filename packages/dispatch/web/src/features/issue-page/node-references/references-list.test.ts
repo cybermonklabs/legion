@@ -1,10 +1,12 @@
-import { expect, test } from "bun:test";
+import { beforeAll, expect, test } from "bun:test";
 
 import { graphNode } from "../../../__tests__/graph-fixture";
 import type { DisplayTree, GraphEdge, GraphReferences, ReferenceTarget } from "../../../api/types";
+import { warmMarkdownRenderer } from "../../refs/markdown-engine";
 import type { KnownReferences } from "../../refs/reference-names";
 import { buildDispatchReference } from "../../refs/routes";
 import { NODE_REFERENCES_WORDS } from "../page-words";
+import { nodeLineOf } from "../projection-fixture";
 import { issueItemWords, referenceRows } from "./references-list";
 import {
   blockTarget,
@@ -14,6 +16,12 @@ import {
 } from "./serving-task-fixture";
 
 const AT = "2026-11-15T10:00:00Z";
+
+// One row reads the outline's own line of a block through the shared engine, which loads lazily,
+// and the rows run in random order, so the file loads the engine before its first row.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 /** No item of the issue has words the page holds. */
 const NO_WORDS: ReadonlyMap<string, string> = new Map();
@@ -649,6 +657,56 @@ test("a task whose words open on a heading is named by the heading's words alone
   expect(rows[0]?.words, "the task's line runs its heading into the paragraph under it").toBe(
     "Draw the history"
   );
+});
+
+/** The server's reading of an ordered list from `order` (left out where it is 1, as the server
+ *  leaves it), one item of one paragraph per element of `items`, or of the list an item holds. */
+function orderedList(order: number, ...items: (string | DisplayTree)[]): DisplayTree {
+  return {
+    ...(order === 1 ? {} : { attrs: { order } }),
+    content: items.map((item) => ({
+      content: [typeof item === "string" ? { content: [run(item)], type: "paragraph" } : item],
+      type: "list_item",
+    })),
+    type: "ordered_list",
+  };
+}
+
+// R8: a citing block is named by its first line as the outline names its row, and the outline's
+// projection opens an item of an ordered list on its number (`listItemNumber`): the list's `order`
+// and the item's place, and both numbers for an item that opens on a list of its own. So a task
+// that opens on a numbered list keeps its number in the row, as the outline's line of the same
+// reading (`useNodeLine`) keeps it. It read "Stand the harness up.": the words of the reading,
+// which write no number.
+test("a task that opens on a numbered list keeps the list's number, as the outline's line keeps it", () => {
+  for (const [stored, list, line] of [
+    [
+      "1. Stand the harness up.\n2. Run it.",
+      orderedList(1, "Stand the harness up.", "Run it."),
+      "1. Stand the harness up.",
+    ],
+    [
+      "3. Stand the harness up.\n4. Run it.",
+      orderedList(3, "Stand the harness up.", "Run it."),
+      "3. Stand the harness up.",
+    ],
+    [
+      "2. 1. bun install, then stand the harness up.",
+      orderedList(2, orderedList(1, "bun install, then stand the harness up.")),
+      "2. 1. bun install, then stand the harness up.",
+    ],
+  ] as const) {
+    const task = servingTask("t1", stored, [list]);
+    const [row] = taskRows([task]);
+    const outline = nodeLineOf({
+      id: "plan-md#t1",
+      text: stored,
+      tree: task.target.text_tree,
+      type: "plan_task",
+    });
+    expect(row?.words, `${stored}: the row does not keep the list's number`).toBe(line);
+    expect(row?.words, `${stored}: the row does not read as the outline's line`).toBe(outline);
+  }
 });
 
 // A citing block's words cite two nodes by their bare addresses: a comment the page's batched read
