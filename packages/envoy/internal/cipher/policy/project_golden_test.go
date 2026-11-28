@@ -16,7 +16,7 @@ import (
 // (testdata/evaluate-merge-base.json): a public project's tag changes no answer.
 func TestAPrivateProjectSecretTagOfAPublicProjectAnswersAsTheMergeBase(t *testing.T) {
 	store, names := gridSecrets(func(s *memory.Secret) { s.Tags[policy.TagProject] = pubProject })
-	loader := policytest.Loader(store, gridService)
+	loader := policytest.Loader(arnSourced{store}, gridService)
 	loader.ProjectChecks = true
 	set, err := loader.Load(context.Background())
 	if err != nil {

@@ -165,7 +165,7 @@ func compareWithMergeBase(t *testing.T, answers map[string]gridAnswer) {
 // comment allows at the merge base alone.
 func TestAPrivateProjectSecretBaseGridIsRecorded(t *testing.T) {
 	store, names := gridSecrets(nil)
-	set, err := policytest.Loader(store, gridService).Load(context.Background())
+	set, err := policytest.Loader(arnSourced{store}, gridService).Load(context.Background())
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}

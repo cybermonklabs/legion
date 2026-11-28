@@ -3,14 +3,18 @@ package policy_test
 // This file is the merge-base half of the project tags' rollback guard check: secrets that carry
 // dispatch-project or project-channels as `agent-secrets secret` writes them, with the guard entry
 // in their requesters tag, a bare twin of each that carries the same project tags without it, and
-// what legion main 545b2116, the release before the project tags, answers for each. It uses only
-// API that exists at that commit, so it is the one file the golden is generated from. At that
-// commit the package is internal/broker/policy (#4634 moved it to internal/cipher/policy later), so
-// the recipe puts the file there with its imports pointed back at internal/broker.
+// what legion main 545b2116, the release before the project tags, answers for each. It is the one
+// file the golden is generated from. At that commit the package is internal/broker/policy (#4634
+// moved it to internal/cipher/policy later), and it holds no secretstore/memory package: its store
+// is the fake AWS one, secrets.Local holding secrets.LocalSecret, built by secrets.NewLocal, which
+// its policytest.Secret answers and its policytest.Loader takes. So the recipe puts the file there
+// with its imports pointed back at internal/broker, internal/broker/secrets in place of the memory
+// store, and this file's memory.Secret, memory.New and *memory.Store spelled as
+// secrets.LocalSecret, secrets.NewLocal and *secrets.Local.
 // testdata/rollback-guard-merge-base.json was written once, at the merge base, by:
 //
 //	git worktree add --detach <tmp>/guard-base 545b2116
-//	sed 's#envoy/internal/cipher/#envoy/internal/broker/#' packages/envoy/internal/cipher/policy/rollbackguard_base_test.go > <tmp>/guard-base/packages/envoy/internal/broker/policy/rollbackguard_base_test.go
+//	sed -e 's#envoy/internal/cipher/secretstore/memory#envoy/internal/broker/secrets#' -e 's#envoy/internal/cipher/#envoy/internal/broker/#' -e 's/memory\.Secret/secrets.LocalSecret/g; s/memory\.New/secrets.NewLocal/g; s/\*memory\.Store/*secrets.Local/g' packages/envoy/internal/cipher/policy/rollbackguard_base_test.go > <tmp>/guard-base/packages/envoy/internal/broker/policy/rollbackguard_base_test.go
 //	go test -C <tmp>/guard-base/packages/envoy ./internal/broker/policy -run TestTheRollbackGuardBaseAnswersAreRecorded -count=1 -v -args -write-rollback-golden
 //	cp <tmp>/guard-base/packages/envoy/internal/broker/policy/testdata/rollback-guard-merge-base.json packages/envoy/internal/cipher/policy/testdata/
 //
