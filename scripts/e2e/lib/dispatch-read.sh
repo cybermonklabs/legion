@@ -1,8 +1,10 @@
 # shellcheck shell=bash
-# The prologue the two read scripts of a deployed issue share, step-records-read.sh and
-# plan-ratings-read.sh: how each says it could judge nothing, and each run of `dispatch` each
-# makes, printed or not. Each script keeps its own usage and its own awk, since each judges other
-# lines. read_require_dispatch calls no command a PATH may lack, so a script whose PATH holds no
+# The prologue the three read scripts of a deployed issue share, step-records-read.sh,
+# plan-ratings-read.sh and step-models-check.sh: how each says it could judge nothing, and each
+# run of `dispatch` each makes, printed or not. Each script keeps its own usage and its own
+# judging, since each judges other lines. A script may redefine read_unknown after sourcing this,
+# as step-models-check.sh does to print its verdict lines; the reads below call the script's own.
+# read_require_dispatch calls no command a PATH may lack, so a script whose PATH holds no
 # `dispatch` still says so; read_dispatch also runs mktemp and rm. Sourced, never run.
 
 # read_unknown REASON prints `UNKNOWN: REASON` and exits 2: the script could read nothing to judge.

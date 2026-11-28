@@ -12,9 +12,13 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/shimwire"
 	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/stream"
 	"github.com/sjawhar/legion/daemon/internal/supervise"
@@ -356,14 +360,19 @@ func (s *supervisor) drained(token claim.Token, done chan<- struct{}) {
 	m.inbox.mark(done)
 }
 
-// pump hands each worker-stream event to its claim's machine, in the order the stream queued
-// them, until the stream ends: a mark an agent's request queued (stream.Drained) goes behind the
-// events posted before it (supervisor.drained), and every other event is the machine's own
-// (superviseEvent).
+// pump hands each worker-stream event to its claim's machine, in the order the stream queued them,
+// until the stream ends. A mark an agent's request queued (stream.Drained) goes behind the events
+// posted before it (supervisor.drained). A launch's last model totals (stream.FinalTotals) are kept
+// in the store (keepFinal). Every other event is the machine's own (superviseEvent).
 func (s *supervision) pump() {
 	for ev := range s.stream.Events() {
 		if mark, ok := ev.(stream.Drained); ok {
 			s.supervisor.drained(mark.Claim, mark.Done)
+			continue
+		}
+		if final, ok := ev.(stream.FinalTotals); ok {
+			// No machine decides on what a launch counted. So the pump takes the totals itself.
+			s.keepFinal(final)
 			continue
 		}
 		mapped, err := superviseEvent(ev)
@@ -375,8 +384,31 @@ func (s *supervision) pump() {
 	}
 }
 
+// keepFinalBound bounds the write of one launch's final totals (keepFinal).
+const keepFinalBound = 30 * time.Second
+
+// keepFinal keeps final, what a launch's shim counted as its harness exited, as the final totals
+// of that launch (record.Store.KeepFinal). A step that the launch ended during reads them in the
+// place of a read at its end. The write runs on a goroutine of its own, so the pump waits on no
+// store. It is bounded by keepFinalBound, and a failure is logged. A step that needed the totals
+// then says that it does not know its counts.
+func (s *supervision) keepFinal(final stream.FinalTotals) {
+	key := record.LaunchKey{Claim: final.Claim, Generation: final.Generation}
+	read := record.LaunchRead{Totals: final.Totals, At: s.plan.totalsClock.Now()}
+	go func() {
+		ctx, cancel := context.WithTimeout(store.ForConcurrentWorker(s.supervisor.ctx), keepFinalBound)
+		defer cancel()
+		if err := store.Transact(ctx, s.supervisor.store.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+			return record.NewStore().KeepFinal(ctx, tx, key, read)
+		}); err != nil {
+			s.log.Warn("worker stream: a launch's final totals were not kept, so a step it ended in does not know its counts",
+				"claim", string(final.Claim), "generation", final.Generation, "error", err)
+		}
+	}()
+}
+
 // streamDrainBound bounds how long an agent's request waits for its claim's machine
-// (supervision.awaitStream).
+// (supervision.awaitStream), and each read of an agent's totals before a fact (readTotals).
 const streamDrainBound = 5 * time.Second
 
 // awaitStream is awaitStreamWithin at streamDrainBound: what an agent's own request — a
@@ -544,11 +576,7 @@ func superviseEvent(ev stream.Event) (supervise.Event, error) {
 		return supervise.StreamLateRefusal{Claim: ev.Claim, DeliveryID: ev.DeliveryID, Error: ev.Error, Outcome: ev.Outcome,
 			Replayed: ev.Replayed, ConnSequence: ev.ConnSequence}, nil
 	case stream.Answered:
-		model := ev.Model
-		if ev.Provider != "" {
-			model = ev.Provider + "/" + ev.Model
-		}
-		return supervise.StreamAnswered{Claim: ev.Claim, Model: model, Generation: ev.Generation}, nil
+		return supervise.StreamAnswered{Claim: ev.Claim, Model: shimwire.ModelName(ev.Provider, ev.Model), Generation: ev.Generation}, nil
 	case stream.Closed:
 		return supervise.StreamClosed{Claim: ev.Claim}, nil
 	}
