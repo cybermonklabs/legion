@@ -3850,6 +3850,33 @@ check "passes" "$(is "$status" 0)"
 check "and widens the command, naming the directory the step runs in" \
   "$(contains "$out" 'which this check does not reduce (its step runs in alt, the Run in mod)')"
 
+echo "case: a gotestsum step reduces to the closure of its go test"
+gotestsum_prefix='gotestsum --jsonfile "$RUNNER_TEMP/go-test-events/app.jsonl" --format standard-quiet --raw-command -- go test -json'
+reading=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$gotestsum_prefix" <<'PY'
+import sys
+from ci_filter_coverage import gotestsum_prefix, reduce_line, step_go_lines
+
+prefix = sys.argv[1]
+print(gotestsum_prefix("app"))
+args = " ./internal/integration/ -timeout 300s -count=1"
+bare = reduce_line("go test" + args)
+print(not bare[-1] and reduce_line(prefix + args) == bare)
+print(reduce_line(prefix.replace(" --raw-command", "") + args)[-1])
+step = {"run": prefix.replace("app.jsonl", "natslive.sh.jsonl") + " -tags live -run TestApp ./pkg"}
+print(*step_go_lines({}, {}, step))
+PY
+)
+check "the builder writes the prefix the step uses" "$(is "${reading%%$'\n'*}" "$gotestsum_prefix")"
+check "the reducer returns the same closure inputs and no refusal" "$(contains "$reading" '^True$')"
+check "a prefix without --raw-command stays unreduced" "$(contains "$reading" '^it has `"`$')"
+check "the tag and run reader sees the bare command's flags" \
+  "$(contains "$reading" '^go test -tags live -run TestApp ./pkg$')"
+root=$(fixture gotestsum-step)
+replace "$root/.github/workflows/ci.yaml" "run: go test ./cmd/app ./lib" "run: $gotestsum_prefix ./cmd/app ./lib"
+run_check "$root"
+check "passes" "$(is "$status" 0)"
+check "counts the job's files" "$(contains "$out" '^report: app: 8 files (filter app)$')"
+
 # `go -C <directory>` names the directory the command runs in on the line the check already
 # reads, so it is held exactly as a step's working-directory is: joined with the step's own
 # directory, the result must be the Run's.
@@ -4112,6 +4139,15 @@ check "names the file, the step, the gate and both lines" \
   "$(contains "$out" '::error file=.github/workflows/ci.yaml::job app step "Test the app" is off the script and directory gate app.s exact entry pins it to: its line 2 reads `  go test -count=2 ".pkg"` where the pinned text.s reads `  go test -count=1 ".pkg"`; make the step run that text there again, or change the entry')"
 check "and still reads the step as its runs, not as everything" \
   "$(is "$(contains "$out" '::error file=mod/other/other.go::')" false)"
+
+echo "case: an exact pin still checks the gotestsum prefix"
+root=$(fixture exact-step-gotestsum-prefix)
+exact_step_table "$root"
+replace "$root/.github/workflows/ci.yaml" 'go test -count=1 "$pkg"' "$gotestsum_prefix"' -count=1 "$pkg"'
+run_check "$root"
+check "fails on the new prefix even though the underlying go test is the same" "$(is "$status" 1)"
+check "names the step and the line with the prefix" \
+  "$(contains "$out" 'step "Test the app" is off the script and directory .* its line 2 reads .*gotestsum')"
 
 echo "case: a step pinned whole that runs in another directory is refused, naming both"
 root=$(fixture exact-step-moved)
@@ -5288,6 +5324,7 @@ check "the repository's filters are computed" \
 uncovered=$(PYTHONDONTWRITEBYTECODE=1 PYTHONPATH="$script_dir" python3 - "$real_filters" "$script_dir/../.." <<'PY'
 import re, sys, tempfile, yaml, workflow_paths as wp
 from pathlib import Path
+from ci_filter_coverage import flatten
 
 SOURCE = "packages/cipher-client/src/token-client.ts"
 
@@ -5383,12 +5420,8 @@ def json_reads(root):
 filters = yaml.load(Path(sys.argv[1]).read_text(), Loader=wp.UniqueKeyLoader)
 
 
-def flat(entry):
-    return [entry] if isinstance(entry, str) else [p for x in entry for p in flat(x)]
-
-
 def covers(name, path):
-    return wp.Filter(flat(filters[name])).covers(path)
+    return wp.Filter(flatten(filters[name])).covers(path)
 
 
 root = Path(sys.argv[2])

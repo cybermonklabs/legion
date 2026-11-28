@@ -1,0 +1,19 @@
+name: Install gotestsum
+description: >-
+  Builds the gotestsum version pinned in this action's Go module and puts it on PATH for later
+  steps. It uses the Go already on PATH and its own module and build caches, so it can run
+  before or after the job restores its Go caches.
+runs:
+  using: composite
+  steps:
+    - name: Build the pinned gotestsum
+      shell: bash
+      run: |
+        set -euo pipefail
+        mkdir -p "$RUNNER_TEMP/gotestsum/bin"
+        env -u GOOS -u GOARCH \
+          GOWORK=off GOTOOLCHAIN=local GOFLAGS= GOENV=off \
+          GOMODCACHE="$RUNNER_TEMP/gotestsum/mod" GOCACHE="$RUNNER_TEMP/gotestsum/build" \
+          go -C "$GITHUB_ACTION_PATH" build -buildvcs=false -o "$RUNNER_TEMP/gotestsum/bin/gotestsum" gotest.tools/gotestsum
+        echo "$RUNNER_TEMP/gotestsum/bin" >> "$GITHUB_PATH"
+        "$RUNNER_TEMP/gotestsum/bin/gotestsum" --version
