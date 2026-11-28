@@ -181,7 +181,7 @@ type evalRequestReads struct {
 // pr-ci's jobs and its day rows both read, and the record's rows behind a failure measure, which
 // its deploys and its failures both read.
 type evalRangeReads struct {
-	counted      map[string]map[string][]string
+	counted      map[string]map[string][]evals.Member
 	days         []evals.DayRow
 	read         bool
 	failures     []evals.FailureItem
@@ -724,11 +724,12 @@ func (s *server) unownedItemRows(ctx context.Context, read evalItemsRead) ([]eva
 
 // counted is the items family's day rows of the project counted on the days of days, under the
 // deploy repositories the eval's read reads (evals.DeployRepoOf), those of the repositories the
-// request names where it names any: each item's row key, with what each member that counts it
-// names as the deploy that ships it (evals.Member.ShippedBy, "" for a member that names none), so
-// a key the rows count holds an entry and any other key none. Those of the range's own days are
-// read once a range (evalRangeReads), for every reader of the range that reads them.
-func (s *server) counted(ctx context.Context, read evalItemsRead, family string, days evals.Range) (map[string][]string, error) {
+// request names where it names any: each item's row key, with each member that counts it, which
+// names the deploy repository it counts under and the deploy that ships it (evals.Member.ShippedBy,
+// "" for a member that names none), so a key the rows count holds an entry and any other key none.
+// Those of the range's own days are read once a range (evalRangeReads), for every reader of the
+// range that reads them.
+func (s *server) counted(ctx context.Context, read evalItemsRead, family string, days evals.Range) (map[string][]evals.Member, error) {
 	ranged := days == read.rng.days
 	if keys, held := read.shared.counted[family]; ranged && held {
 		return keys, nil
@@ -737,13 +738,13 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 	if err != nil {
 		return nil, err
 	}
-	keys := make(map[string][]string, len(items))
+	keys := make(map[string][]evals.Member, len(items))
 	for _, item := range items {
-		keys[item.RowKey] = append(keys[item.RowKey], item.ShippedBy)
+		keys[item.RowKey] = append(keys[item.RowKey], item.Member)
 	}
 	if ranged {
 		if read.shared.counted == nil {
-			read.shared.counted = map[string]map[string][]string{}
+			read.shared.counted = map[string]map[string][]evals.Member{}
 		}
 		read.shared.counted[family] = keys
 	}
@@ -760,17 +761,28 @@ func (s *server) counted(ctx context.Context, read evalItemsRead, family string,
 // eval reads, under that repository's rule (repoRules, the apply runs delivery.ReadApplyRows reads
 // of the range, as delivery.ReadMergedRows reads them beside the same pull requests), or a deploy
 // posted to the project's route (prodevents.PostedDeploysFrom, read once from the range's start
-// where a member names one), whose finish times it and which holds no run id. Of them, by the one
-// comparison the day builder picks a first shipper by (evals.Shipping.Before), merge-to-production
-// times it to the first of all, and first-commit-to-production and open-to-production to the
-// first GitHub deploy, since a posted deploy times merge-to-production alone (evals' firstShipped,
-// dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3); its deploy_run_id
+// where a member names one), whose finish times it and which holds no run id. Each member names
+// its own repository's first deploy of the pull request (evals' DeliveryDay.Rows), and the items
+// make the choice the folds make over the rows the read reads (evals' shippedOnce,
+// dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8): of the deploys its members
+// name, by evals.Shipping.Before (the first to finish, a GitHub deploy where it ties a post, then
+// the deploy repository first by name), merge-to-production times it to the first of all, and
+// first-commit-to-production and open-to-production to the first GitHub deploy, since a posted
+// deploy times merge-to-production alone
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3); its deploy_run_id
 // and deployed_at are those of the deploy the eval's own measure times it to, merge-to-production's
 // the first of all and any other's the first GitHub deploy. So a pull request of a GitHub
 // repository that a deploy posted to the project ships first is timed to the post in
-// merge-to-production and to the GitHub deploy in the other two, and one the project reads in an
-// owner key's row and in its events repository's is one item, timed to the deploy the project's
-// fold keeps (evals' shippedOnce), whichever repositories the request names.
+// merge-to-production and to the GitHub deploy in the other two, each pull request is one item
+// timed to the deploy whose minutes the read's numbers keep, and that holds whichever
+// repositories the request names. Of first-commit-to-production and open-to-production it lists
+// only a pull request that eval's own measure times, one a GitHub deploy of a repository the read
+// reads ships (and, of first-commit-to-production, whose first commit is known), as their numbers
+// count it: an events repository's day counts its pull requests in merge-to-production alone
+// (evals' DeliveryDay.buildFamilies), and every repository's day counts each pull request of the
+// day, unshipped where it is not that repository's (evals' attribution.dayAs), so a pull request
+// that only a post ships, or whose own repository the project no longer reads, is in neither
+// number and in neither eval's items.
 func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	members, err := s.counted(ctx, read, evals.KindDelivery, read.rng.days)
 	if err != nil {
@@ -803,7 +815,7 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 	}
 	anchored := false
 	for _, ships := range members {
-		anchored = anchored || slices.ContainsFunc(ships, evals.IsPostedMember)
+		anchored = anchored || slices.ContainsFunc(ships, func(member evals.Member) bool { return evals.IsPostedMember(member.ShippedBy) })
 	}
 	if anchored {
 		posted, err := prodevents.PostedDeploysFrom(ctx, read.tx, read.project, read.rng.days.From)
@@ -840,7 +852,7 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 		// first is the first of the deploys its members name, and github the first GitHub one.
 		var first, github *shipping
 		for _, by := range ships {
-			candidate, named := deploys[by]
+			candidate, named := deploys[by.ShippedBy]
 			if !named {
 				continue
 			}
@@ -857,6 +869,11 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 			shown = merge
 		}
 		day := measures.Midnight(*pr.MergedAt)
+		firstCommit := sampleOf(measures.FirstCommitToProductionDay(day, []measures.PR{lead}))
+		opened := sampleOf(measures.OpenToProductionDay(day, []measures.PR{lead}))
+		if (slug == evals.SlugFirstCommitToProduction && firstCommit == nil) || (slug == evals.SlugOpenToProduction && opened == nil) {
+			continue
+		}
 		rows = append(rows, evalItemRow{
 			RowKey:  merge.ID,
 			RowKind: evalRowPullRequest,
@@ -865,8 +882,8 @@ func (s *server) pullRequestItemRows(ctx context.Context, read evalItemsRead) ([
 				"created_at": pr.CreatedAt, "merged_at": pr.MergedAt, "first_commit_at": pr.FirstCommitAt,
 				"rework": pr.Rework, "deploy_run_id": shown.DeployRunID, "deployed_at": shown.DeployedAt,
 				"merge_to_production_minutes":        sampleOf(measures.MergeToProductionDay(day, []measures.PR{merge})),
-				"first_commit_to_production_minutes": sampleOf(measures.FirstCommitToProductionDay(day, []measures.PR{lead})),
-				"open_to_production_minutes":         sampleOf(measures.OpenToProductionDay(day, []measures.PR{lead})),
+				"first_commit_to_production_minutes": firstCommit,
+				"open_to_production_minutes":         opened,
 				"open_to_merge_minutes":              sampleOf(measures.OpenToMergeDay(day, []measures.PR{lead})),
 			},
 			MeasuredAt: *pr.MergedAt,

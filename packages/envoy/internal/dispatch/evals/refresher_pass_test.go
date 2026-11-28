@@ -1110,9 +1110,11 @@ func TestAPostedDeployCountsInItsRoutesProjectsDeployFrequencyAlone(t *testing.T
 
 // TestAPostedDeployTimesThePullRequestsItShipsFirst: OMEGA's post at 11:00 names acme/omega-app#7,
 // merged at 09:00, which OMEGA's GitHub deploy 3001 shipped at 10:19 first, and #8, merged at 10:30,
-// which no GitHub deploy ships, each in another case than GitHub's. merge-to-production times each
-// pull request once, from its merge to the first deploy that ships it: #7 in acme/omega-app's rows
-// (79 minutes) and #8 in OMEGA's events repository's (30 minutes), whose rows hold #7 nowhere.
+// which no GitHub deploy ships, each in another case than GitHub's. Each repository's rows time a
+// pull request by their own deploys (dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8):
+// acme/omega-app's #7 at 79 minutes, OMEGA's events repository's #7 at 120 and #8 at 30. OMEGA's
+// merge-to-production counts each pull request once, from its merge to the first deploy that
+// ships it: #7 at 79 and #8 at 30 (n 2, max 79).
 func TestAPostedDeployTimesThePullRequestsItShipsFirst(t *testing.T) {
 	r := newRefresherRig(t)
 	r.seedSources(t)
@@ -1148,13 +1150,15 @@ func TestAPostedDeployTimesThePullRequestsItShipsFirst(t *testing.T) {
 	if got := samples(omegaApp); !slices.Equal(got, []float64{79}) {
 		t.Errorf("acme/omega-app's merge-to-production of OMEGA times %v, want #7's 79 minutes alone", got)
 	}
-	if got := samples(EventsRepo("OMEGA")); !slices.Equal(got, []float64{30}) {
-		t.Errorf("OMEGA's posted merge-to-production times %v, want #8's 30 minutes alone", got)
+	if got := samples(EventsRepo("OMEGA")); !slices.Equal(got, []float64{30, 120}) {
+		t.Errorf("OMEGA's posted merge-to-production times %v, want #8's 30 minutes and #7's 120", got)
 	}
 	if n := r.count(t, `select count(*) from eval_day_members where deploy_repo = $1 and row_key = $2`,
-		EventsRepo("OMEGA"), PullRequestMember(omegaApp, 7)); n != 0 {
-		t.Errorf("OMEGA's events repository counts #7, which a GitHub deploy shipped first, %d times, want none", n)
+		EventsRepo("OMEGA"), PullRequestMember(omegaApp, 7)); n != 1 {
+		t.Errorf("OMEGA's events repository counts #7, which its post ships, %d times, want once", n)
 	}
+	wantFigures(t, "after the posted deploy", map[string]SeriesValues{SlugMergeToProduction: r.mergeValues(t, "OMEGA", Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 1)})},
+		map[string]*float64{SlugMergeToProduction + ".n": new(2.0), SlugMergeToProduction + ".max": new(79.0)})
 	expectTruth(t, "after the posted deploy timing pull requests", r.storedFigures(t), r.truthFigures(t))
 }
 
@@ -1162,11 +1166,13 @@ func TestAPostedDeployTimesThePullRequestsItShipsFirst(t *testing.T) {
 // (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3): acme/omega-app#9 of
 // OMEGA-1, first committed at 07:00, opened at 08:00 and merged at 09:00, is named by a deploy
 // posted to OMEGA that finished at 09:30, before OMEGA's GitHub deploy 3001 ships it at 10:19.
-// OMEGA's merge-to-production times it once, to the post: 30 minutes in its events repository's
-// row and none in acme/omega-app's. Its first-commit-to-production (199 minutes) and
-// open-to-production (139) stay timed to 3001 in acme/omega-app's rows, and its member there names
-// 3001, as its events repository's names the post. Red where the GitHub row drops 3001 for the
-// post: those two lead times lose #9.
+// Each repository's merge-to-production row times it by its own deploy
+// (dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8): 30 minutes in its events
+// repository's row and 79 in acme/omega-app's, and OMEGA's merge-to-production reads it once, at
+// the post (n 1, max 30). Its first-commit-to-production (199 minutes) and open-to-production (139)
+// stay timed to 3001 in acme/omega-app's rows, and its member there names 3001, as its events
+// repository's names the post. Red where the GitHub row drops 3001 for the post: those two lead
+// times lose #9.
 func TestAPostThatShipsAPullRequestFirstTimesItsMergeToProductionAlone(t *testing.T) {
 	t.Parallel()
 	r := newRefresherRig(t)
@@ -1200,7 +1206,7 @@ func TestAPostThatShipsAPullRequestFirstTimesItsMergeToProductionAlone(t *testin
 		minutes          []float64
 	}{
 		{SlugMergeToProduction, EventsRepo("OMEGA"), []float64{30}},
-		{SlugMergeToProduction, omegaApp, []float64{}},
+		{SlugMergeToProduction, omegaApp, []float64{79}},
 		{SlugFirstCommitToProduction, omegaApp, []float64{199}},
 		{SlugOpenToProduction, omegaApp, []float64{139}},
 		{SlugFirstCommitToProduction, EventsRepo("OMEGA"), []float64{}},

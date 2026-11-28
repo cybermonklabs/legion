@@ -180,8 +180,8 @@ type DayPoint struct {
 // into in place, as the stored figures are folded (figures.go, newFigureGroup), so a fold whose
 // sums depend on the order of its parts answers the stored figures' bits whatever order the read's
 // plan answered its rows in, and a read of the stored figures (StoredFigures.SeriesValues) answers
-// what this does, bit for bit. It folds their parts as those folds do too, each pull request two
-// kinds of row time counted once (shippedOnce).
+// what this does, bit for bit. It folds their parts as those folds do too, each pull request
+// counted once, at the first deploy of those its rows time it to (shippedOnce).
 func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, window Range, compare *Range) []SeriesValues {
 	listed, headline := listedAndHeadline(entry)
 	sortWindowRows(rows)
@@ -216,46 +216,78 @@ func SeriesValuesOf(entry Entry, rows []WindowRow, firsts map[string]time.Time, 
 }
 
 // shippedOnce is the parts of rows, one eval's rows of one read, in their order, as the folds of
-// the eval's numbers read them (SeriesValuesOf, newFigureGroup), with each pull request that a
-// project reads the lead time of in two kinds of row counted once
-// (dispatch://INFRA-978/comment/9cdcf9d2-532d-4431-9332-3ced4d4329f2). A pull request that counts
-// for a project through an owner key of its repository (a pull request no issue attributes, or one
-// whose attribution hangs on the published defaults) and that a deploy posted to the project's
-// route names is timed in two merge-to-production rows of the day it merged: the owner key's,
-// from the first GitHub deploy of its repository that ships it, and the project's events
-// repository's, from the first deploy posted to the project that names it. Each day is built
-// before the published defaults say which projects read the key (firstShipped keeps each pull
-// request's first deploy for each project or owner key alone), so the read keeps, of the pull
-// request's samples in one range, day, series and repository, the one of the deploy that finished
-// first (Shipping.Before: each counts its minutes from the one merge, and the GitHub deploy's
-// stands where both finished at once), and leaves the other out of its row's part: its samples,
-// n, sum and max, and, of an owner key's part the project reads through the repository, one of its
-// via_repository. So a move of a default repository moves the projects that read the key and
-// rewrites no events repository's row (R14). The rows that name each sample's pull request are
-// those the builder keyed (DayRow.sampleKeys); a row whose keys are not one for each sample (a row
-// an earlier release wrote holds none) is taken as it stands. Every part it changes is a copy with
-// samples of its own, so rows that share their samples with another group's (readFoldGroups)
-// keep them; and it keeps and leaves out the same samples, and makes the same sum, whatever order
-// each row's samples are in (newFigureGroup sorts them, a read of the rows does not).
+// the eval's numbers read them (SeriesValuesOf, newFigureGroup), with each pull request counted once,
+// at the first deploy to ship it of those the rows the read reads time it to
+// (dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8). Each repository's rows time a
+// pull request by that repository's own first deploy of it alone: a GitHub repository's, a
+// project's own rows and an owner key's, by its runs, and a project's events repository's by the
+// deploys posted to the project (DeliveryDay.Rows). Which repositories a project reads is chosen
+// when it reads (DeployReposIn, and the owner keys the published defaults give it), so the choice
+// is the read's: of one pull request's samples in one range, day, series and cut (repository), it
+// keeps the smallest, the first deploy's, since each counts its minutes from the one moment the
+// lead time starts (the merge, the opening, the first commit), a tie going to a GitHub deploy and
+// then to the deploy repository first by name (Shipping.Before), and leaves the others out of their
+// rows' parts: their samples, n, sum and max, and, of an owner key's part the project reads through
+// the repository, one of its via_repository each. An events repository holds merge-to-production
+// rows alone, so a post takes part in that eval alone
+// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3). The rows that name
+// each sample's pull request are those the builder keyed (DayRow.sampleKeys: every row of the three
+// lead times to production); a row whose keys are not one for each sample (a row an earlier release
+// wrote holds none) is taken as it stands. Only one repository's rows time a pull request in a read
+// of one deploy repository, whose rows carry none (WindowRow.deployRepo ""), and two rows can time
+// one pull request only where they are of two deploy repositories, so the samples of a cell are
+// looked into only where keyed rows of two deploy repositories share it: a read with none costs one
+// pass over its rows and no allocation. Every part it changes is a copy with samples of its own, so
+// rows that share their samples with another group's (readFoldGroups) keep them; and it keeps and
+// leaves out the same samples, and makes the same sum, whatever order each row's samples are in
+// (newFigureGroup sorts them, a read of the rows does not).
 func shippedOnce(rows []WindowRow) []measures.DayPart {
 	parts := make([]measures.DayPart, len(rows))
-	posted, owned := false, false
+	// cell is one range, day, series and cut of the rows, whose samples of one pull request are the
+	// ones a read counts once.
+	type cell struct {
+		within, series, repo string
+		day                  int64
+	}
+	cellOf := func(row *WindowRow) cell {
+		return cell{within: row.Range, series: row.Part.Series, repo: row.repo, day: row.Part.Day.Unix()}
+	}
+	// timesEach reports whether row is a keyed row of a read of several deploy repositories: one
+	// whose keys name the pull request of each of its samples.
+	timesEach := func(row *WindowRow) bool {
+		return row.deployRepo != "" && len(row.sampleKeys) > 0 && len(row.sampleKeys) == len(row.Part.Samples)
+	}
+	// seen is the deploy repository of the first keyed row of each cell, and shared each cell keyed
+	// rows of another deploy repository share with it.
+	var seen map[cell]string
+	var shared map[cell]bool
 	for index := range rows {
 		row := &rows[index]
 		parts[index] = row.Part
-		if row.sampleKeys != nil && len(row.sampleKeys) == len(row.Part.Samples) {
-			owner := isOwner(row.owner)
-			posted, owned = posted || !owner, owned || owner
+		if !timesEach(row) {
+			continue
+		}
+		if seen == nil {
+			seen = map[cell]string{}
+		}
+		at := cellOf(row)
+		if was, held := seen[at]; !held {
+			seen[at] = row.deployRepo
+		} else if was != row.deployRepo {
+			if shared == nil {
+				shared = map[cell]bool{}
+			}
+			shared[at] = true
 		}
 	}
-	if !posted || !owned {
+	if len(shared) == 0 {
 		return parts
 	}
-	// timed is one pull request's samples in one range, day, series and repository, and sample one
-	// of them: its row, its place among that row's samples, and the deploy that ships it.
+	// timed is one pull request's samples in one cell, and sample one of them: its row, its place
+	// among that row's samples, and the deploy that ships it.
 	type timed struct {
-		within, series, repo, pr string
-		day                      int64
+		cell
+		pr string
 	}
 	type sample struct {
 		row, at  int
@@ -264,19 +296,23 @@ func shippedOnce(rows []WindowRow) []measures.DayPart {
 	samples := map[timed][]sample{}
 	for index := range rows {
 		row := &rows[index]
-		if row.sampleKeys == nil || len(row.sampleKeys) != len(row.Part.Samples) {
+		if !timesEach(row) {
 			continue
 		}
-		for at, pr := range row.sampleKeys {
-			key := timed{within: row.Range, series: row.Part.Series, repo: row.repo, pr: pr, day: row.Part.Day.Unix()}
-			finished := time.Time{}.Add(time.Duration(math.Round(row.Part.Samples[at] * float64(time.Minute))))
-			samples[key] = append(samples[key], sample{row: index, at: at, shipping: Shipping{At: finished, Posted: !isOwner(row.owner), Repo: row.deployRepo}})
+		at := cellOf(row)
+		if !shared[at] {
+			continue
+		}
+		posted := IsEventsRepo(row.deployRepo)
+		for k, pr := range row.sampleKeys {
+			finished := time.Time{}.Add(time.Duration(math.Round(row.Part.Samples[k] * float64(time.Minute))))
+			key := timed{cell: at, pr: pr}
+			samples[key] = append(samples[key], sample{row: index, at: k, shipping: Shipping{At: finished, Posted: posted, Repo: row.deployRepo}})
 		}
 	}
 	dropped := map[int][]bool{}
 	for _, of := range samples {
-		if !slices.ContainsFunc(of, func(one sample) bool { return one.shipping.Posted }) ||
-			!slices.ContainsFunc(of, func(one sample) bool { return !one.shipping.Posted }) {
+		if len(of) < 2 {
 			continue
 		}
 		first := 0

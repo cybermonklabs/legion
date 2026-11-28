@@ -280,9 +280,10 @@ type DayRow struct {
 	BuiltBy   string    `json:"built_by"`
 	UpdatedAt time.Time `json:"updated_at"`
 	// sampleKeys is the pull request each of the part's samples times (eval_days.sample_keys,
-	// measures.MergeToProductionKeys), in their order: on a merge-to-production row of an owner
-	// key or of an events repository, the two kinds of row one project can read one pull request's
-	// lead time in (shippedOnce); nil on every other row, and on a row an earlier release wrote.
+	// measures.MergeToProductionKeys and the other two lead times' keys), in their order: on every
+	// row of the three lead times to production, whose samples of one pull request a read that
+	// reads several of its rows counts once (shippedOnce); nil on every other row, on a row that
+	// times no pull request, and on a row an earlier release wrote.
 	sampleKeys []string
 }
 

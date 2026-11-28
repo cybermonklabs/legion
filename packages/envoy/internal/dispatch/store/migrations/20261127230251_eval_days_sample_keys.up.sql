@@ -1,22 +1,24 @@
 -- 20261127230251_eval_days_sample_keys.up.sql — the pull request each sample of a day row times.
 --
--- dispatch://INFRA-978/comment/9cdcf9d2-532d-4431-9332-3ced4d4329f2: a project can read one pull
--- request's merge-to-production in two day rows of the day it merged. One is the row of an owner
--- key of the pull request's repository (a pull request no issue attributes, or one whose
--- attribution hangs on the published defaults), timed to the first GitHub deploy of the
--- repository that ships it. The other is the project's own row of its events repository, timed to
--- the first deploy posted to the project's route that names it. Each row is built before the
--- published defaults say which projects read the owner key, so both stand, and the read of the
--- project counts the pull request once: of its samples in one range, day, series and repository,
--- it keeps the one of the deploy that finished first, the GitHub deploy's where both finished at
--- once (evals.shippedOnce). A default-repository move then moves which projects read the key, and
--- rewrites no events repository's row.
+-- dispatch://INFRA-978/comment/9cdcf9d2-532d-4431-9332-3ced4d4329f2 and
+-- dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8: a project can read one pull
+-- request's lead time to production in day rows of several deploy repositories of the day it
+-- merged: its repository's GitHub rows (the project's own, or an owner key's: a pull request no
+-- issue attributes, or one whose attribution hangs on the published defaults), timed to that
+-- repository's first deploy that ships it, and the project's own row of its events repository,
+-- timed to the first deploy posted to the project's route that names it. Each row is built from
+-- its own repository's deploys alone, and which repositories a project reads is chosen when it
+-- reads, so the read of the project counts the pull request once: of its samples in one range,
+-- day, series and repository, it keeps the smallest, the first deploy's, a GitHub deploy's where
+-- it ties a post's (evals.shippedOnce). A move of a default repository or of a source then moves
+-- which rows a project reads, and rewrites no other repository's row.
 --
 --   eval_days.sample_keys           the pull request of each of the row's samples, in their order,
 --                                   each `owner/repo#n` as delivery_pull_requests spells the
---                                   repository (measures.MergeToProductionKeys). The refresher
---                                   writes it on the merge-to-production rows of owner keys and of
---                                   events repositories alone, and null on every other row.
+--                                   repository (measures.MergeToProductionKeys and the other two
+--                                   lead times' keys). The refresher writes it on every row of the
+--                                   three lead times to production (merge, first commit and open
+--                                   to production), and null on every other row.
 --   eval_rebuild_days.sample_keys   the same of a row a rebuild stages, which its flip writes.
 --
 -- A row whose keys are null, or are not one for each of its samples, is read as it stands: every

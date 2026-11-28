@@ -311,13 +311,7 @@ func MergeToProductionDay(day time.Time, prs []PR) []DayPart {
 // MergeToProductionKeys is the ID of each of prs whose minutes MergeToProductionDay's part holds, in
 // the order of its samples, nil where it holds none: which pull request each sample times.
 func MergeToProductionKeys(prs []PR) []string {
-	var keys []string
-	for _, pr := range prs {
-		if _, timed := mergeToProductionMinutes(pr); timed {
-			keys = append(keys, pr.ID)
-		}
-	}
-	return keys
+	return leadTimeKeys(prs, mergeToProductionMinutes)
 }
 
 // mergeToProductionMinutes is the minutes from pr's merge to its deploy, false while no deploy
@@ -333,24 +327,44 @@ func mergeToProductionMinutes(pr PR) (float64, bool) {
 // population pull requests merged that day: the minutes from each deployed one's first commit to
 // its deploy, where its first commit is known (dora.ts:176-184).
 func FirstCommitToProductionDay(day time.Time, prs []PR) []DayPart {
-	return leadTimeDay(day, prs, func(pr PR) (float64, bool) {
-		if pr.DeployedAt == nil || pr.FirstCommitAt == nil {
-			return 0, false
-		}
-		return minutesBetween(*pr.FirstCommitAt, *pr.DeployedAt), true
-	})
+	return leadTimeDay(day, prs, firstCommitToProductionMinutes)
+}
+
+// FirstCommitToProductionKeys is the ID of each of prs whose minutes FirstCommitToProductionDay's
+// part holds, in the order of its samples, nil where it holds none.
+func FirstCommitToProductionKeys(prs []PR) []string {
+	return leadTimeKeys(prs, firstCommitToProductionMinutes)
+}
+
+// firstCommitToProductionMinutes is the minutes from pr's first commit to its deploy, false while
+// no deploy ships it or where its first commit is not known.
+func firstCommitToProductionMinutes(pr PR) (float64, bool) {
+	if pr.DeployedAt == nil || pr.FirstCommitAt == nil {
+		return 0, false
+	}
+	return minutesBetween(*pr.FirstCommitAt, *pr.DeployedAt), true
 }
 
 // OpenToProductionDay is open-to-production's part of one UTC day, from the population pull
 // requests merged that day: the minutes from each deployed one's opening to its deploy
 // (dora.ts:176-184).
 func OpenToProductionDay(day time.Time, prs []PR) []DayPart {
-	return leadTimeDay(day, prs, func(pr PR) (float64, bool) {
-		if pr.DeployedAt == nil {
-			return 0, false
-		}
-		return minutesBetween(pr.CreatedAt, *pr.DeployedAt), true
-	})
+	return leadTimeDay(day, prs, openToProductionMinutes)
+}
+
+// OpenToProductionKeys is the ID of each of prs whose minutes OpenToProductionDay's part holds, in
+// the order of its samples, nil where it holds none.
+func OpenToProductionKeys(prs []PR) []string {
+	return leadTimeKeys(prs, openToProductionMinutes)
+}
+
+// openToProductionMinutes is the minutes from pr's opening to its deploy, false while no deploy
+// ships it.
+func openToProductionMinutes(pr PR) (float64, bool) {
+	if pr.DeployedAt == nil {
+		return 0, false
+	}
+	return minutesBetween(pr.CreatedAt, *pr.DeployedAt), true
 }
 
 // OpenToMergeDay is pr-open-to-merge's part of one UTC day, from the population pull requests
@@ -371,6 +385,18 @@ func leadTimeDay(day time.Time, prs []PR, minutesOf func(PR) (float64, bool)) []
 		}
 	}
 	return []DayPart{SamplesPart(day, SeriesMinutes, minutes, nil)}
+}
+
+// leadTimeKeys is the ID of each of prs minutesOf times, in leadTimeDay's order of its samples,
+// nil where it times none.
+func leadTimeKeys(prs []PR, minutesOf func(PR) (float64, bool)) []string {
+	var keys []string
+	for _, pr := range prs {
+		if _, timed := minutesOf(pr); timed {
+			keys = append(keys, pr.ID)
+		}
+	}
+	return keys
 }
 
 // ReworkShareDay is rework-share's part of one UTC day, from the population pull requests merged

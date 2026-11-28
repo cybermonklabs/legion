@@ -3026,11 +3026,13 @@ func TestARuleChangeOfOneRepositoryRewritesThatRepositorysRowsAlone(t *testing.T
 // post, and run 3002, created at 12:00, holds a job of another name alone. OMEGA's source then names
 // that job alone, so 3002 ships #9 at 12:19, after the post; and then omegaJob again. After the one
 // pass that follows each change OMEGA's merge-to-production counts #9 once, from the deploy that
-// ships it first (79 minutes to 3001, then 120 to the post, then 79 again); #9 is a member of
-// OMEGA's events repository, naming the post, exactly while the post ships it first, the one item
-// the items route then times to the post; the pass leaves no day owed; and the stored figures are
-// the fold of the rows. Red where the rewrite leaves the events repository's rows as they stood: no
-// row times #9 after the first change, and both do after the second.
+// ships it first (79 minutes to 3001, then 120 to the post, then 79 again): the rewrite moves
+// acme/omega-app's row and its member of #9 to the run that ships it under the rule (3001, 3002,
+// 3001), OMEGA's events repository's row and member stand timing #9 to the post throughout, and the
+// read keeps the first (dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8), as the
+// items route times the one item; the pass leaves no day owed; and the stored figures are the fold
+// of the rows. Red where the read counts both rows' samples, or the rewrite leaves acme/omega-app's
+// row as it stood.
 func TestARuleChangeThatFlipsWhichDeployShipsAPullRequestFirstCountsItOnce(t *testing.T) {
 	t.Parallel()
 	const omegaRelease = "omega / release"
@@ -3047,32 +3049,30 @@ func TestARuleChangeThatFlipsWhichDeployShipsAPullRequestFirstCountsItOnce(t *te
 	posted := r.post(t, "OMEGA", "release-9", at(11), omegaApp+"#9")
 	r.settle(t)
 	day := Range{From: sourcesDay, To: sourcesDay.AddDate(0, 0, 1)}
-	expect := func(what string, minutes float64, postedFirst bool) {
+	expect := func(what string, minutes float64, run int64) {
 		t.Helper()
 		wantFigures(t, what, map[string]SeriesValues{SlugMergeToProduction: r.mergeValues(t, "OMEGA", day)}, map[string]*float64{
 			SlugMergeToProduction + ".n": new(1.0), SlugMergeToProduction + ".max": new(minutes),
 		})
-		want := 0
-		if postedFirst {
-			want = 1
-		}
-		if n := r.count(t, `select count(*) from eval_day_members where project_key = 'OMEGA' and deploy_repo = $1 and row_key = $2 and shipped_by = $3`,
-			EventsRepo("OMEGA"), PullRequestMember(omegaApp, 9), PostedMember(posted.ID)); n != want {
-			t.Errorf("%s: OMEGA's events repository counts %s#9 shipped by the post %d times, want %d", what, omegaApp, n, want)
+		for deployRepo, shipper := range map[string]string{omegaApp: RunMember(omegaApp, run), EventsRepo("OMEGA"): PostedMember(posted.ID)} {
+			if n := r.count(t, `select count(*) from eval_day_members where project_key = 'OMEGA' and deploy_repo = $1 and row_key = $2 and shipped_by = $3`,
+				deployRepo, PullRequestMember(omegaApp, 9), shipper); n != 1 {
+				t.Errorf("%s: OMEGA's member of %s#9 under %s names %s %d times, want once", what, omegaApp, deployRepo, shipper, n)
+			}
 		}
 		if n := r.count(t, `select count(*) from eval_days_owed`); n != 0 {
 			t.Errorf("%s: %d days are owed a rewrite after the pass, want none", what, n)
 		}
 		expectTruth(t, what, r.storedFigures(t), r.truthFigures(t))
 	}
-	expect("before the change", 79, false)
+	expect("before the change", 79, 3001)
 	authors := []string{"dev-ana"}
 	putSources(t, r.database.Pool, "OMEGA", authors, deliveryseed.SourceOf(ruleOfJob(omegaRelease), nil), eventsSource)
 	r.pass(t)
-	expect("once 3002, after the post, is the deploy that ships #9", 120, true)
+	expect("once 3002, after the post, is the deploy that ships #9", 120, 3002)
 	putSources(t, r.database.Pool, "OMEGA", authors, deliveryseed.SourceOf(ruleOfJob(omegaJob), nil), eventsSource)
 	r.pass(t)
-	expect("once 3001, before the post, ships #9 again", 79, false)
+	expect("once 3001, before the post, ships #9 again", 79, 3001)
 }
 
 // stagePauses is a tracer (storetest.TracedStore) that, while armed (passPausedAtStagings), holds

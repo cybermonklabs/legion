@@ -729,13 +729,10 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 // rule writes them, in one pass that begins no walk. It rewrites repo's rows alone, a kept
 // repository (keptRepos) that holds a deploy run, which the production rule and the deploy cards
 // judge; every other source repository's rows stand built under their own rules, which the change
-// does not move. A project's events repository's merge-to-production does hang on repo's deploys:
-// it times a pull request of repo that a deploy posted to the project names where the post ships
-// it before repo's first deploy does (firstShipped). So each day built whose rows of such a project
-// the change moved is recorded owed to that project (postedShares, oweDays), which the same page
-// writes whole (apply, owedDays), its events repository's rows and members with the rest. A
-// repository that holds no deploy run moves with no field of its rule, and its rows and members
-// are left as they are:
+// does not move, and so do the events repositories' rows, which time each pull request by the
+// project's own posted deploys alone (postedDayAs): a read chooses, among the rows it reads, the
+// first deploy to ship a pull request (shippedOnce). A repository that holds no deploy run moves
+// with no field of its rule, and its rows and members are left as they are:
 //
 //   - the reads, side by side: every deploy run on main of the repository with its jobs of the
 //     names either rule judges by and each card the change moves follows under either settings
@@ -789,8 +786,7 @@ func keepPushRuns(stored map[memberKey]memberAt, deploys map[string]delivery.Run
 //   - then one transaction publishes them: it flips the staging, records the rule as the one
 //     the repository's rows stand built under (recordRule), the repositories they stand built for
 //     left as they are (syncKept's), writes the staged rows and members, set-based over the
-//     staging (stagedRowWrites, stagedMemberWrites), records owed the days of the events
-//     repositories above (oweDays), marks stale each cut the changed and deleted
+//     staging (stagedRowWrites, stagedMemberWrites), marks stale each cut the changed and deleted
 //     rows reach, naming the evals those rows moved (markMovedCuts: one mark of a cut stands for
 //     every deploy repository of it, the project's union cut, `deploy_repo` `*`, among them),
 //     folds the first paints of the marked cuts whose marks name only computed evals
@@ -869,15 +865,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	// history counts rows for that the store holds none of yet, added below once it is attributed.
 	owners := slices.Clone(r.owners)
 	var firsts map[string]map[evalKey]time.Time
-	// The events repositories' posted deploys, which ship a pull request first where one finishes
-	// before the repository's own deploy does (firstShipped).
-	var events []keptRepo
-	for _, one := range kept {
-		if IsEventsRepo(one.rule.DeployRepo) {
-			events = append(events, one)
-		}
-	}
-	posted := make([]postedRecord, len(events))
 	var storedByDay map[projectDay][]DayRow
 	// memberDays is every day a stored member of the repository rewritten can stand on: from the
 	// start of its history (keptRepo.since, before which none is kept) through today.
@@ -952,14 +939,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		func(ctx context.Context) (err error) {
 			served, err = r.servingNext(ctx, walkDelivery, "")
 			return err
-		},
-		func(ctx context.Context) (err error) {
-			for i, one := range events {
-				if posted[i], err = postedDeploys(ctx, pool, one.rule.Project, time.Time{}); err != nil {
-					return err
-				}
-			}
-			return nil
 		},
 	}
 	stored := map[memberKey]memberAt{}
@@ -1120,34 +1099,18 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 	}
 	r.noteOwners(owners)
 	// dayOf is each project's rows of day: the repository's DeliveryDay of it, as readDeliveryDays
-	// builds it, from the history's rows under the new rule (repoHistory.deliveryDay), each pull
-	// request's lead times kept where its first deploy is the repository's (firstShipped); and the
-	// projects whose events repository's merge-to-production of the day hangs on the repository's
-	// deploys (postedShares), whose day is owed where the rewrite moves their rows.
-	dayOf := func(day time.Time) ([]ProjectDay, []string) {
-		var merged []delivery.DeliveryPullRequest
-		for _, i := range prsByDay[day] {
-			merged = append(merged, prs[i])
-		}
-		compared := []DeliveryDay{history.deliveryDay(day, prs, prsByDay, attribute)}
-		for i, eventsRepo := range events {
-			compared = append(compared, postedDayAs(day, merged, posted[i], eventsRepo))
-		}
-		shares := postedShares(compared, func(deployRepo string) bool { return deployRepo == name })
-		firstShipped(compared)
-		read := deliveryRead{Day: day, rules: []delivery.DeliverySettings{next}, days: compared[:1]}
+	// builds it, from the history's rows under the new rule (repoHistory.deliveryDay).
+	dayOf := func(day time.Time) []ProjectDay {
+		read := deliveryRead{Day: day, rules: []delivery.DeliverySettings{next}, days: []DeliveryDay{history.deliveryDay(day, prs, prsByDay, attribute)}}
 		rows := make([]ProjectDay, len(owners))
 		for p, project := range owners {
 			rows[p] = read.Rows(project)
 		}
-		return rows, shares
+		return rows
 	}
 	if movedOnly {
 		began := time.Now()
-		days = r.lostFirstDays(days, owners, firsts, ids, names, func(day time.Time) []ProjectDay {
-			rows, _ := dayOf(day)
-			return rows
-		})
+		days = r.lostFirstDays(days, owners, firsts, ids, names, dayOf)
 		times.lost = time.Since(began)
 	}
 	times.days = times.lap()
@@ -1167,9 +1130,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		}
 		moved[row.ProjectKey][evalRepo{eval: row.EvalID, repo: row.Repo}] = true
 	}
-	// owed is each project's day whose events repository's rows the rewrite moves (dayOf), which it
-	// records owed with its rows.
-	var owed []projectDay
 
 	// Each chunk of days is built, compared with the stored rows of its days (diffDay) and handed to
 	// a goroutine that stages what moved aside, in a short transaction of its own under the rule's
@@ -1204,7 +1164,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 			chunk := pending[:min(rewriteDays, len(pending))]
 			pending = pending[len(chunk):]
 			// The chunk's days built side by side.
-			built, shares := make([][]ProjectDay, len(chunk)), make([][]string, len(chunk))
+			built := make([][]ProjectDay, len(chunk))
 			group, groupCtx := errgroup.WithContext(ctx)
 			group.SetLimit(min(runtime.GOMAXPROCS(0), rewriteWorkers))
 			chunkBegan := time.Now()
@@ -1213,7 +1173,7 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 					if err := groupCtx.Err(); err != nil {
 						return err
 					}
-					built[index], shares[index] = dayOf(day)
+					built[index] = dayOf(day)
 					return nil
 				})
 			}
@@ -1278,9 +1238,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 						note(&gone[i])
 					}
 					write.changed, write.gone = append(write.changed, changed...), append(write.gone, gone...)
-					if len(changed)+len(gone) > 0 && slices.Contains(shares[index], project) {
-						owed = append(owed, projectDay{project: project, day: day})
-					}
 					if only == nil {
 						written[projectDay{project: project, day: day}] = true
 						for _, member := range full.Members {
@@ -1371,9 +1328,6 @@ func (r *refresh) rewriteSettings(ctx context.Context, prev delivery.DeliverySet
 		return err
 	}
 	if err := staging.writeMembers(ctx, tx); err != nil {
-		return err
-	}
-	if err := oweDays(ctx, tx, owed); err != nil {
 		return err
 	}
 	times.published = times.lap()
@@ -1536,8 +1490,8 @@ func markSettingsApplied(ctx context.Context, tx pgx.Tx) error {
 //     deployRunsRead), its pull requests (pullRequestsRead) and then their attribution
 //     (attributionRead), each project's first days (firstDaysRead), the stored rows of the moved
 //     evals (rowsRead), the stored members, read in parts (membersRead, the slowest part's), the
-//     walk's first input day, the walks' records, the serving record and the events repositories'
-//     posted deploys, side by side: the wall time of the slowest;
+//     walk's first input day, the walks' records and the serving record, side by side: the wall
+//     time of the slowest;
 //   - containment, each repository's containment under each rule, and beside it the stored
 //     members of the CI family no day builds dropped (pushMembers, keepPushRuns);
 //   - days, the owner keys the history adds and the days to build (movedDeliveryDays, and

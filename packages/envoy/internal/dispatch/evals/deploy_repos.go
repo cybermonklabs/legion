@@ -41,16 +41,17 @@ import (
 // source api, dispatch://INFRA-978 D1, R12), which count for that project alone while it has
 // delivery on and the source: they are kept under a deploy repository of the project's own
 // (EventsRepo), whose deploy-frequency counts each posted deploy on the day it finished and whose
-// merge-to-production times each pull request a posted deploy names from its merge to the deploy
-// (postedDayAs), where that deploy ships it before a GitHub deploy that counts it for that project
-// does. A posted deploy times merge-to-production alone
-// (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57, point 3): a pull request's
-// merge-to-production counts once for each project, at the first deploy that ships it for that
-// project, its first-commit-to-production and open-to-production at the first GitHub deploy that
-// does, and a posted deploy moves no other project's timing (firstShipped; where the project reads
-// the GitHub deploy's time through an owner key of the repository, its read keeps the first of the
-// two, shippedOnce). It is kept, recorded and selected as a source repository is, under no job
-// name.
+// merge-to-production times each pull request a posted deploy names from its merge to the first
+// posted deploy that names it (postedDayAs), whatever a GitHub deploy does. A posted deploy times
+// merge-to-production alone (dispatch://INFRA-978/comment/ed4092f8-cdb6-4d99-b37c-fbb56755cc57,
+// point 3). Each repository's rows time a pull request by that repository's own first deploy of
+// it, and a project's read keeps, of a pull request's samples in the rows of the repositories it
+// reads, the one of the first deploy, a GitHub deploy's where it ties a post's (shippedOnce,
+// dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8): so a pull request's
+// merge-to-production counts once for each project, at the first deploy that ships it of those the
+// project reads, its first-commit-to-production and open-to-production at the first GitHub deploy,
+// and a posted deploy moves no other project's timing. It is kept, recorded and selected as a
+// source repository is, under no job name.
 //
 // The repositories kept are the repositories that hold a delivery run and a rule, one a source reads
 // now or one recorded with the rows (readDeployRepos, refresh.keptRepos), and the events repository

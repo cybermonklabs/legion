@@ -93,3 +93,45 @@ func TestAPullRequestTwoKindsOfRowTimeCountsOnceAtTheDeployThatFinishedFirst(t *
 	compared.Range = RangeCompare
 	expect("an events row of the compare range", []WindowRow{github(), compared}, []measures.DayPart{part(3, 50, 79, 79), part(0, 30, 50, 120)})
 }
+
+// TestAPullRequestAnyTwoDeployRepositoriesTimeCountsOnceAtTheFirstDeploy
+// (dispatch://INFRA-978/comment/66926e49-2f97-4c05-8eb0-d62d1f31fee8): every row of a lead time to
+// production names its samples' pull requests, and a read of several deploy repositories keeps
+// each pull request's smallest sample. OMEGA's own row of acme/app times #1 at 79 and #2 at 50,
+// its events repository's row #1 at 30 and #2 at 50: the read keeps #1's post (30) and #2's GitHub
+// deploy (50, the tie going to the GitHub deploy). Two GitHub repositories' rows that time #3 at
+// once keep the sample of the one first by name. A read of one deploy repository names none
+// (WindowRow.deployRepo ""), and takes its rows as they stand. Red where the fold keeps both
+// samples of a pull request a project's own row and a post time, or of a tie of two GitHub
+// repositories.
+func TestAPullRequestAnyTwoDeployRepositoriesTimeCountsOnceAtTheFirstDeploy(t *testing.T) {
+	t.Parallel()
+	day := time.Date(2026, 11, 26, 0, 0, 0, 0, time.UTC)
+	row := func(deployRepo string, samples []float64, keys ...string) WindowRow {
+		return WindowRow{Range: RangeWindow, EvalID: EvalID("OMEGA", SlugMergeToProduction), owner: "OMEGA", deployRepo: deployRepo,
+			Part: measures.SamplesPart(day, measures.SeriesMinutes, samples, nil), sampleKeys: keys}
+	}
+	for _, test := range []struct {
+		name string
+		rows []WindowRow
+		// kept is each row's samples the read keeps, in ascending order.
+		kept [][]float64
+	}{
+		{"a project's own GitHub row and its events row",
+			[]WindowRow{row("acme/app", []float64{79, 50}, "acme/app#1", "acme/app#2"), row(EventsRepo("OMEGA"), []float64{30, 50}, "acme/app#1", "acme/app#2")},
+			[][]float64{{50}, {30}}},
+		{"two GitHub repositories at once",
+			[]WindowRow{row("acme/b", []float64{40}, "acme/app#3"), row("acme/a", []float64{40}, "acme/app#3")},
+			[][]float64{{}, {40}}},
+		{"a read of one deploy repository",
+			[]WindowRow{row("", []float64{79}, "acme/app#1"), row("", []float64{30}, "acme/app#1")},
+			[][]float64{{79}, {30}}},
+	} {
+		parts := shippedOnce(test.rows)
+		for index, part := range parts {
+			if kept := slices.Sorted(slices.Values(part.Samples)); !slices.Equal(kept, test.kept[index]) || part.N != len(test.kept[index]) {
+				t.Errorf("%s: row %d keeps %v (n %d), want %v", test.name, index, kept, part.N, test.kept[index])
+			}
+		}
+	}
+}
