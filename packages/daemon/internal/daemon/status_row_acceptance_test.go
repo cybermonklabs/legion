@@ -3,6 +3,7 @@ package daemon
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -76,6 +77,61 @@ func TestASetBackWritesNothingOverACloseTheRecordHolds(t *testing.T) {
 			}
 			if !slices.Equal(client.statuses, tc.writes) {
 				t.Fatalf("Dispatch writes with the record in %s = %q, want %q", tc.at, client.statuses, tc.writes)
+			}
+		})
+	}
+}
+
+// lateLanding is outboxDispatch in front of which an act's write lands just before the set-back's
+// fence posts: the issue moves to landed at the next sequence, and the fence takes the one after.
+// With landed empty, nothing lands, and the fence alone moves the sequence.
+type lateLanding struct {
+	*outboxDispatch
+	landed string
+}
+
+func (d *lateLanding) PostMessage(ctx context.Context, key, body string) error {
+	if d.landed != "" {
+		d.issue.Status, d.issue.LastSeq = d.landed, d.issue.LastSeq+1
+	}
+	d.issue.LastSeq++
+	return d.outboxDispatch.PostMessage(ctx, key, body)
+}
+
+// A set-back that finds Dispatch still at the sequence its act read, at another status than the act
+// wrote, cannot tell a write that never landed from one still in flight in front of Dispatch. It
+// posts a fence first, an event after which no write made at that sequence can land, and judges the
+// read after it: where the act's done landed before the fence, the set-back writes the old status
+// back; where nothing landed, it finishes having written nothing, and nothing can land later. The
+// control is a set-back that finds Dispatch moved past the act's read, written back already, which
+// posts no fence.
+func TestASetBackFencesAWriteThatHasNotLanded(t *testing.T) {
+	t.Parallel()
+	pool := isolatedOutboxPool(t)
+	records := record.NewStore()
+	for _, tc := range []struct {
+		name, key, landed string
+		seq               int64
+		fences            int
+		writes            []string
+	}{
+		{name: "the act's write lands before the fence", key: "LEGION-787", landed: "done", seq: 9, fences: 1, writes: []string{"in_progress"}},
+		{name: "nothing lands", key: "LEGION-788", seq: 9, fences: 1},
+		{name: "control: Dispatch moved past the act's read", key: "LEGION-789", seq: 11},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			putOutboxIssue(t, pool, records, record.Issue{Key: tc.key, Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets",
+				Project: "LEGION", Tree: tc.key, Title: tc.key, Phase: phase.Admitted, Generation: 1, Status: "in_progress", DispatchStatus: "in_progress"})
+			client := &lateLanding{outboxDispatch: &outboxDispatch{issue: dispatch.Issue{Key: tc.key, Status: "in_progress", LastSeq: tc.seq}}, landed: tc.landed}
+			runner := &outbox{pool: pool, records: records, dispatch: client, log: quietLogger(), issueLocks: &issuelock.Locks{}}
+			if err := runner.execute(context.Background(), mustOutboxRow(t, tc.key, record.ReassertStatusWrite("in_progress", "done", 9), time.Now())); err != nil {
+				t.Fatalf("execute the row: %v", err)
+			}
+			if len(client.messages) != tc.fences || tc.fences > 0 && !strings.Contains(client.messages[0], "ends any chance that it lands later") {
+				t.Fatalf("messages = %q, want %d fence", client.messages, tc.fences)
+			}
+			if !slices.Equal(client.statuses, tc.writes) {
+				t.Fatalf("Dispatch writes = %q, want %q", client.statuses, tc.writes)
 			}
 		})
 	}

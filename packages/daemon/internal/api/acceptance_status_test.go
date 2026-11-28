@@ -277,6 +277,31 @@ func TestAFailedReadAfterARefusalIsNoLostAnswer(t *testing.T) {
 	}
 }
 
+// A write Dispatch refused never lands, so the set-back queued before it has nothing to undo and is
+// dropped: left, it would post its fence on the issue for a write that is not coming. A write that
+// failed with no refusal, and that the read after it shows has not landed, may still land in
+// front of Dispatch, so its set-back stands to fence it, and the answer says so.
+func TestASetBackIsDroppedOnlyWhereDispatchRefusedTheWrite(t *testing.T) {
+	h, _, statuses := newAcceptanceHarness(t, nil, nil)
+	architect := newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.foreignOpen = map[string][]dispatch.ForeignChild{"LEGION-208": {{Key: "OTHR-5", Project: "OTHR", Status: "triage"}}}
+	refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusConflict, "SIGNOFF_CHILD_OPEN")
+	if rows := outboxRowsOf(t, h, "LEGION-208"); rows != 0 {
+		t.Fatalf("outbox rows of LEGION-208 after Dispatch refused the write = %d, want the set-back dropped", rows)
+	}
+
+	h, _, statuses = newAcceptanceHarness(t, nil, nil)
+	architect = newLiveClaim(t, h, "LEGION-208", claim.RoleArchitect)
+	statuses.err = errors.New("read the answer of PATCH /api/v1/issues/LEGION-208: context deadline exceeded")
+	message := refused(t, h.request(http.MethodPost, "/legion/v1/signoff", map[string]any{"grantId": architect.grant(t), "issue": "LEGION-208"}, nil),
+		http.StatusBadGateway, "DISPATCH_FAILED")
+	if !strings.Contains(message, "has not landed") || !strings.Contains(message, "fences it once Dispatch answers") {
+		t.Fatalf("the answer to a write that failed with no refusal = %q, want it naming the set-back that fences it", message)
+	}
+	setBackQueued(t, h, "LEGION-208", "needs_review", "retro")
+}
+
 // The set-back is queued before the act's write, so the write never lands with no undo standing.
 // A close_root whose fact is refused and whose write back fails too leaves Dispatch at done for an
 // issue the daemon still runs, which the status repair passes over: the set-back, queued before

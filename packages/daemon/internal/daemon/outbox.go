@@ -1177,6 +1177,14 @@ func (r *outbox) status(ctx context.Context, row record.OutboxRow, payload recor
 	if err != nil || !proceed {
 		return err
 	}
+	if fenced, ok, err := r.fenceUnlanded(ctx, row, payload, issue); err != nil {
+		return err
+	} else if ok {
+		if proceed, err := rule.firstAttempt(ctx, r, row, payload, fenced); err != nil || !proceed {
+			return err
+		}
+		issue = fenced
+	}
 	// Somebody moved the issue after the row read it, so the write this row carries is
 	// superseded and the row finishes having written nothing. A kind with something of its own
 	// to settle when that happens — a hand-over's fence — has just settled it above, which is
@@ -1396,6 +1404,33 @@ func (r *outbox) overAcceptance(ctx context.Context, row record.OutboxRow, paylo
 	r.log.Info("outbox status write finished without writing: the daemon records the acceptance or the close Dispatch shows",
 		"row", row.ID, "issue", row.Issue, "status", payload.Status, "dispatch", shown.Status, "phase", recorded.Phase, "recorded", recorded.Status)
 	return true, nil
+}
+
+// fenceUnlanded settles a set-back an acceptance or a close queued before its write (the API's
+// queueSetBack) where Dispatch still stands at the sequence the act read (ObservedSeq), at another
+// status than the act wrote (ObservedStatus): the act's write has not landed by this read, and
+// after an answer the act lost, or a daemon that stopped mid-write, it may still be in flight in
+// front of Dispatch, where a later commit would stand with nothing left to undo it. Dispatch
+// refuses a write made at a sequence after which any event came (expected_sequence), so the row
+// posts a fence, a message, as its own message (posted once whatever its retries), and answers the
+// read made after it, true: the act's status where its write landed first, which the row then
+// sets back; the old status otherwise, off which no write of the act can now move it. A session's
+// set-back observes the session's own write at its sequence, so it never matches, and every other
+// row and read is answered as it stands, false.
+func (r *outbox) fenceUnlanded(ctx context.Context, row record.OutboxRow, payload record.StatusWrite, issue dispatch.Issue) (dispatch.Issue, bool, error) {
+	if payload.Kind != record.ReassertStatusRow || issue.LastSeq != payload.ObservedSeq || issue.Status == payload.ObservedStatus {
+		return issue, false, nil
+	}
+	fence := fmt.Sprintf("The daemon's %s write of %s may not have landed when it was made: this message ends any chance that it lands later. "+
+		"If it landed before this message, the daemon writes %s back.", payload.ObservedStatus, row.Issue, payload.Status)
+	if err := r.message(ctx, row, record.MessagePost{Body: fence}); err != nil {
+		return issue, false, fmt.Errorf("post the fence of %s's %s write: %w", row.Issue, payload.ObservedStatus, err)
+	}
+	read, err := r.dispatch.GetIssue(ctx, row.Issue)
+	if err != nil {
+		return issue, false, fmt.Errorf("read Dispatch issue %s after fencing its %s write: %w", row.Issue, payload.ObservedStatus, err)
+	}
+	return read, true, nil
 }
 
 // ordinaryRule judges the workflow moving an issue along inside the workflow
