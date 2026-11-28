@@ -56,6 +56,7 @@ Every launch opens with a start message: run the start procedure in `skill://leg
 | A comment that mentions your role and asks for an action on an agent | `skill://legion-controller/references/operations.md#an-action-another-agent-asks-for` |
 | A scope question, a routing request | `skill://legion-controller/references/backlog-stewardship.md` |
 | A Slack mention | `skill://legion-controller/references/slack-mentions.md` |
+| A run on a `default_branch.workflow` topic | `skill://legion-controller/references/watched-workflows.md` |
 | An answer to a park ask; a deferral ask | `skill://legion-controller/references/park-asks.md`; `skill://legion-controller/references/backlog-stewardship.md#a-root-the-plan-defers` |
 | Any other wake, a GitHub mention | `skill://legion-controller/references/wakes.md` |
 
