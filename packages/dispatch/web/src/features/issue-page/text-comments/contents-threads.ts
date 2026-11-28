@@ -2,7 +2,7 @@ import { useQuery } from "@tanstack/react-query";
 import { useCallback, useMemo } from "react";
 import { useNavigate } from "react-router-dom";
 
-import { CONVERSATION_KINDS, whoAmIQuery } from "../../../api/queries";
+import { whoAmIQuery } from "../../../api/queries";
 import type { IssueDetails } from "../../../api/types";
 import { isViewer } from "../../refs/actor";
 import { buildIssuePath } from "../../refs/routes";
@@ -85,10 +85,6 @@ interface WithEntries {
   readonly node: TreeNode;
 }
 
-/** The kinds of node that Conversation's read returns (`CONVERSATION_KINDS`), each the supertag
- *  the tree read names such a node by. */
-const CONVERSATION_SUPERTAGS: ReadonlySet<string> = new Set(CONVERSATION_KINDS);
-
 /**
  * The tree `root` with an entry for each comment on text the reader wrote - the root of a thread
  * of `threads`, by node (`textThreadsOf`), which no row of the outline draws (R1) - as a node
@@ -101,14 +97,15 @@ const CONVERSATION_SUPERTAGS: ReadonlySet<string> = new Set(CONVERSATION_KINDS);
  * it loads (R8, root R15). A thread that stands by a node `root` holds none of - a block of a
  * converted document, which Conversation draws no row of, or a node the words filter leaves out
  * - has its entry under the node it hangs from (`NodeThreads.parent`) instead, where its node is
- * of a kind that Conversation's read returns (`CONVERSATION_KINDS`). A thread on a node of
- * another kind (`NodeThreads.supertag`), a result or a plan task, that `root` holds none of has
- * no entry: Conversation's read does not return that node, so Graph's read, which does, adds no
- * entry for it either, the list holds the same entries beside every view (R8), and Threads lists
- * the thread (root R37). A node that is a comment or a message takes no entry as a
- * child, which the rule refuses as a reply: its entries follow it, in its parent's place, under
- * the nearest entry above it. The entries are no row: `held` stays as it was, and `root` is the
- * same object where no entry is added.
+ * of a kind that Conversation's read returns: one its `kind` filter names
+ * (`NodeThreads.conversationKind`, in `CONVERSATION_KINDS`' names), a finding and a prose block
+ * among them. A thread on a node of another kind, whose `conversationKind` is undefined - a
+ * result or a plan task - that `root` holds none of has no entry: Conversation's read does not
+ * return that node, so Graph's read, which does, adds no entry for it either, the list holds the
+ * same entries beside every view (R8), and Threads lists the thread (root R37). A node that is a
+ * comment or a message takes no entry as a child, which the rule refuses as a reply: its entries
+ * follow it, in its parent's place, under the nearest entry above it. The entries are no row:
+ * `held` stays as it was, and `root` is the same object where no entry is added.
  *
  * `viewer` is the reader's login, and `key` the issue, which an entry's address names where its
  * comment names none.
@@ -123,8 +120,8 @@ export function withThreadEntries(
   const entries = new Map<string, TreeNode[]>();
   const present =
     threads.size === 0 ? new Set<string>() : new Set(nodesInOrder(root).map((node) => node.id));
-  for (const [nodeId, { parent, supertag, threads: held }] of threads) {
-    if (!present.has(nodeId) && !CONVERSATION_SUPERTAGS.has(supertag)) continue;
+  for (const [nodeId, { conversationKind, parent, threads: held }] of threads) {
+    if (!present.has(nodeId) && conversationKind === undefined) continue;
     const host = present.has(nodeId) ? nodeId : parent;
     if (!present.has(host)) continue;
     for (const { thread } of held) {

@@ -1,3 +1,4 @@
+import { CONVERSATION_KINDS } from "../../../api/queries";
 import type { Anchor } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
 import type { Thread, ThreadComment } from "../../margin/useMarginItems";
@@ -78,18 +79,54 @@ function nodesHold(nodes: readonly TreeNode[], id: string): boolean {
   return nodes.some((node) => node.id === id || node.readId === id || nodesHold(node.children, id));
 }
 
+/** A kind of node as Conversation's read names it: one of the names its `kind` filter takes
+ *  (`?kind=`, `CONVERSATION_KINDS`). */
+export type ConversationKind = (typeof CONVERSATION_KINDS)[number];
+
 /** The threads of one drawn node, in the order of their words. */
 export interface NodeThreads {
+  /** The node's kind as Conversation's read names it, in its `kind` filter's names
+   *  (`CONVERSATION_KINDS`, `conversationKindOf`), which are not the tree read's supertags: a
+   *  finding (a `block` or a `lens_block` under its lens) is `finding`, a plain block (`block`)
+   *  is `prose`, and any other node is its supertag where the filter names that kind. Undefined
+   *  for a node of a kind that read does not return, a result or a plan task among them: the
+   *  Contents list gives no entry to a thread on such a node where its tree holds no such node
+   *  (`withThreadEntries`). */
+  readonly conversationKind: ConversationKind | undefined;
   /** The tree id of the node's stored parent (its read parent, else its nearest drawn ancestor,
    *  else the issue): a node drawn under several parents - a check or a plan task also under each
    *  other requirement it serves - has its threads beside its row under this parent alone. */
   readonly parent: string;
-  /** The node's supertag, its kind as the tree read names it (a typed block's type, `comment`,
-   *  `result`, ...): the Contents list gives no entry to a thread on a node of a kind that
-   *  Conversation's read does not return, where its tree holds no such node
-   *  (`withThreadEntries`). */
-  readonly supertag: string;
   readonly threads: readonly TextThread[];
+}
+
+/**
+ * `node`'s kind as Conversation's read names it (`NodeThreads.conversationKind`), read as the
+ * page reads the kinds that the tree read answers under another supertag. A block (`block` or
+ * `lens_block`) is a finding where its id names its lens (`lens/<uuid>#<block id>`) or its read
+ * parent is a lens, as `lensTypeOf` and `subjectOf` read one; else a plain block (`block`, of the
+ * store kind `block`) is prose, which the filter takes by the server's kind rule
+ * (`isPlainBlock`); else it is of no kind the filter names. Every other node is its supertag
+ * where the filter names that kind, and of none otherwise.
+ */
+function conversationKindOf(
+  node: TreeAnswerNode,
+  onText: OnTextReads
+): ConversationKind | undefined {
+  if (node.supertag === "block" || node.supertag === "lens_block") {
+    const parent = node.parent;
+    if (
+      node.id.startsWith("lens/") ||
+      (parent !== null &&
+        (parent.kind === "lens" ||
+          parent.supertag === "lens" ||
+          onText.nodes.get(parent.id)?.supertag === "lens"))
+    ) {
+      return "finding";
+    }
+    return node.kind === "block" && node.supertag === "block" ? "prose" : undefined;
+  }
+  return CONVERSATION_KINDS.find((kind) => kind === node.supertag);
 }
 
 /** A root of a thread, with where its words are. */
@@ -170,8 +207,8 @@ export function textThreadsOf(
         compareIds(left.thread.thread.key, right.thread.thread.key)
     );
     threads.set(nodeId, {
+      conversationKind: conversationKindOf(node, onText),
       parent: storedParentOf(node, onText, idOf, drawn, key),
-      supertag: node.supertag,
       threads: rows.map((row) => row.thread),
     });
   }

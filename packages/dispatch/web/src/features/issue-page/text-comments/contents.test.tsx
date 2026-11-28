@@ -8,11 +8,14 @@ import type { Actor, Comment } from "../../../api/types";
 import { producingMessages } from "../contents-entries";
 import { KEY, node, SPEC_DOCUMENT } from "../decisions-filter/decisions-fixtures";
 import { type ContentsEntry, contentsOf } from "../IssueContents";
-import type { TreeNode } from "../issue-tree";
+import { buildIssueTree, type IssueTreeReads, type TreeNode } from "../issue-tree";
 import { readComment } from "../outline-fixtures";
 import { CONTROL_LABELS } from "../page-words";
-import { treeOf } from "../slots/stage-fixtures";
+import { presetView } from "../presets";
+import { inDocument, treeOf } from "../slots/stage-fixtures";
+import { nodesInOrder } from "../tree-keys";
 import { commentNode, treeAnswer, treeNode } from "../tree-read/tree-fixtures";
+import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { withThreadEntries } from "./contents-threads";
 import {
   answerSeededReads,
@@ -29,19 +32,23 @@ import {
   rowOf,
   SERVES,
   STATEMENT,
+  seededIssue,
   seededNodes,
   type TextThreadSeed,
   threadOn,
 } from "./margin-fixtures";
 import { THREAD_NODE_ATTRIBUTE } from "./TextMargin";
-import type { NodeThreads, TextThread } from "./text-threads";
+import type { ConversationKind, NodeThreads, TextThread } from "./text-threads";
+import { viewThreadsOf } from "./useTextThreads";
 
 /**
  * R8 (root R14): the Contents list holds an entry for each comment on text that the reader wrote,
  * since it begins a thread, and none for a reply in its thread; the entry stands in the tree's
  * order at the node the comment is on, under the nearest entry above that node, and a press on it
- * opens its thread as an address of R8 does. A comment on a node of a kind that Conversation's
- * read does not return, a result or a plan task, has no entry beside any view, Graph included.
+ * opens its thread as an address of R8 does. A comment on a node the list's tree does not hold
+ * has its entry under the node that node hangs from, where Conversation's read returns nodes of
+ * its kind, a finding and a prose block among them; a comment on a node of a kind that read does
+ * not return, a result or a plan task, has no entry beside any view, Graph included.
  * The page is drawn by its own root (`drawPage`), whose Contents pane stands beside the stage
  * from 1024 px.
  */
@@ -141,15 +148,17 @@ function threadOf(comment: Comment): TextThread {
   };
 }
 
-/** The threads of each node, by the node's id, with the node's supertag and the node it hangs
- *  from. */
-function threadsOn(
-  ...nodes: readonly (readonly [string, string, string, readonly Comment[]])[]
-): ReadonlyMap<string, NodeThreads> {
+/** One node's threads as a case names them: the node's id, its kind as Conversation's read names
+ *  it (`NodeThreads.conversationKind`), the node it hangs from, and the comments that root them. */
+type NodeSeed = readonly [string, ConversationKind | undefined, string, readonly Comment[]];
+
+/** The threads of each node, by the node's id, with the node's kind as Conversation's read names
+ *  it and the node it hangs from. */
+function threadsOn(...nodes: readonly NodeSeed[]): ReadonlyMap<string, NodeThreads> {
   return new Map(
-    nodes.map(([id, supertag, parent, comments]): [string, NodeThreads] => [
+    nodes.map(([id, conversationKind, parent, comments]): [string, NodeThreads] => [
       id,
-      { parent, supertag, threads: comments.map(threadOf) },
+      { conversationKind, parent, threads: comments.map(threadOf) },
     ])
   );
 }
@@ -168,6 +177,62 @@ const mine = (id: string): Comment => readComment(id, 1, null, alice);
 
 function tree(...children: TreeNode[]): TreeNode {
   return node({ children, id: KEY, type: "issue" });
+}
+
+/** Alice's comment `id`, written `at` minutes past the hour, on the words `quote` of the node of
+ *  the store kind `kind` whose read id is `nodeId`: the comments read's comment, and its node as
+ *  the tree read answers a comment anchored on a node, under that node with its node anchor. */
+function onNode(
+  id: string,
+  at: number,
+  nodeId: string,
+  kind: string,
+  quote: string
+): { readonly comment: Comment; readonly node: TreeAnswerNode } {
+  const comment = readComment(id, at);
+  return {
+    comment,
+    node: {
+      ...commentNode(comment, nodeId),
+      anchor: {
+        node: { id: nodeId, kind, state: "live" },
+        occurrence: 0,
+        orphaned: false,
+        quote,
+      },
+    },
+  };
+}
+
+/**
+ * The tree the Contents list is given and the threads its entries are built from, each through
+ * the page's own step, for the answer `tree` with `comments` as the comments read: Conversation's
+ * view under the words filter `query` (`presetView`, as `slots/contents.tsx` draws the list) of
+ * the tree `buildIssueTree` draws, and the threads of that answer (`viewThreadsOf`, as
+ * `useTextThreads` builds them), each by its node's kind as `textThreadsOf` reads it.
+ */
+function listAndThreads(
+  tree: TreeAnswer,
+  comments: readonly Comment[],
+  query = ""
+): { readonly list: TreeNode; readonly threads: ReadonlyMap<string, NodeThreads> } {
+  const reads: IssueTreeReads = { comments, issue: seededIssue(), tree };
+  return {
+    list: presetView(buildIssueTree(reads), "conversation", query).root,
+    threads: viewThreadsOf(tree, reads).threads,
+  };
+}
+
+/** The id of each node `root` holds, itself included, at any depth. */
+function idsIn(root: TreeNode): string[] {
+  return nodesInOrder(root).map(({ id }) => id);
+}
+
+/** The ids of the children of the node `id` names in `root`, in their order; undefined where
+ *  `root` holds no such node. */
+function childrenOf(root: TreeNode, id: string): string[] | undefined {
+  const held = nodesInOrder(root).find((one) => one.id === id);
+  return held?.children.map((child) => child.id);
 }
 
 // R8: the entry stands in the tree's order at the node its comment is on, under the nearest entry
@@ -301,6 +366,106 @@ test("beside Graph, the reader's comment on a result or a plan task has no entry
     view.finish();
     client.clear();
   }
+});
+
+// R8: a thread on a node the list's tree does not hold has its entry under the node that node
+// hangs from, where Conversation's read returns nodes of its kind. A finding is one, though the
+// tree read answers it as a block under its lens - of the supertag `block` (by an id that names
+// its lens) or `lens_block` - and never by the `kind` filter's name, `finding`. The words filter
+// "verdict" keeps the lens, whose verdict holds the word, and leaves out both its findings, as
+// the list is drawn (`presetView`), so the reader's comment on the words of each finding has its
+// entry under the lens. A list that read a node's supertag as the filter's kind gives neither
+// comment an entry.
+test("the reader's comment on a finding the list's tree does not hold has its entry under the finding's lens", () => {
+  const lens = treeNode("lens-1", "lens", KEY, {
+    attributes: { verdict: "The verdict keeps its source." },
+    text: "The verdict keeps its source.",
+  });
+  const block = {
+    ...treeNode("f1", "block", "lens-1", { text: "A finding explains where it came from." }),
+    id: "lens/lens-1#f1",
+  };
+  const lensBlock = treeNode("f2", "lens_block", "lens-1", { text: "A finding says when." });
+  const onBlock = onNode("on-f1", 7, block.id, "block", "explains");
+  const onLensBlock = onNode("on-f2", 8, lensBlock.id, "block", "says");
+  const tree = treeOf(
+    [...seededNodes([]), lens, block, lensBlock, onBlock.node, onLensBlock.node],
+    SERVES
+  );
+  const comments = [onBlock.comment, onLensBlock.comment];
+  const { list, threads } = listAndThreads(tree, comments, "verdict");
+  const entries = [onBlock.comment.id, onLensBlock.comment.id];
+
+  expect(
+    ["f1", "f2"].map((id) => threads.get(id)?.conversationKind),
+    "a finding's kind is not the read's kind of a finding"
+  ).toEqual(["finding", "finding"]);
+  expect(
+    ["f1", "f2"].map((id) => threads.get(id)?.parent),
+    "a finding's thread does not hang from its lens"
+  ).toEqual(["lens-1", "lens-1"]);
+  const ids = idsIn(list);
+  expect(ids, "the words filter leaves out the lens").toContain("lens-1");
+  expect(ids, "the list's tree holds the finding read as `block`").not.toContain("f1");
+  expect(ids, "the list's tree holds the finding read as `lens_block`").not.toContain("f2");
+  const { kinds, root } = withThreadEntries(list, threads, "alice", KEY);
+  expect(childrenOf(root, "lens-1"), "the entries under the lens").toEqual(entries);
+  const listed = shape(contentsOf(root, "alice", producingMessages(root)));
+  expect(listed, "the list's entries").toEqual(entries);
+  expect([...kinds.keys()], "what each entry opens").toEqual(entries);
+});
+
+// R8: a block of a converted document is a node Conversation's read returns, as prose, though
+// the tree read answers it as a plain block (`block`) and Conversation, with no filter on, draws
+// no row of it (root R1: the conversation's own blocks are the ones written in it). The reader's
+// comment on the words of such a block under the statement has its entry under the statement,
+// the node the block hangs from, first among its children. A list that read a node's supertag
+// as the filter's kind gives the comment no entry.
+test("the reader's comment on a prose block the list's tree does not hold has its entry under the node the block hangs from", () => {
+  const prose = treeNode("p1", "block", STATEMENT, {
+    ...inDocument(SPEC_DOCUMENT, 2),
+    text: "A converted paragraph under the statement.",
+  });
+  const onProse = threadOn("on-p1", SPEC_DOCUMENT, "p1", "converted paragraph", 9);
+  const tree = treeOf([...seededNodes([onProse]), prose], SERVES);
+  const { list, threads } = listAndThreads(tree, [onProse.comment]);
+  const held = threads.get(onProse.node);
+
+  expect(held?.conversationKind, "a plain block's kind is not the read's prose").toBe("prose");
+  expect(held?.parent, "the block's thread hangs from another node").toBe(ON_STATEMENT.node);
+  const ids = idsIn(list);
+  expect(ids, "Conversation draws no row of the statement").toContain(ON_STATEMENT.node);
+  expect(ids, "Conversation draws a row of the converted block").not.toContain(onProse.node);
+  const { kinds, root } = withThreadEntries(list, threads, "alice", KEY);
+  const under = childrenOf(root, ON_STATEMENT.node);
+  expect(under?.[0], "the first node under the statement").toBe(onProse.comment.id);
+  const listed = shape(contentsOf(root, "alice", producingMessages(root)));
+  expect(listed, "the list's entries").toEqual([onProse.comment.id]);
+  expect([...kinds.keys()], "what each entry opens").toEqual([onProse.comment.id]);
+});
+
+// R8: a thread on a node of a kind that Conversation's read does not return has no entry where
+// the list's tree does not hold its node, though that tree holds the node it hangs from. The
+// reader's comment on the words of a result, anchored on the result itself, stands by the
+// result, which hangs from the check; Conversation draws the check and no row of the result. The
+// list gives the comment no entry, as beside Graph (above). A list that gave every thread on a
+// node it does not hold an entry under the node that node hangs from fails.
+test("the reader's comment on a result the list's tree does not hold has no entry, though that tree holds the check the result hangs from", () => {
+  const onResult = onNode("on-res1", 7, RESULT, "result", "result words");
+  const tree = treeOf([...seededNodes([]), onResult.node], SERVES);
+  const { list, threads } = listAndThreads(tree, [onResult.comment]);
+  const held = threads.get(RESULT);
+
+  const keys = held?.threads.map(({ thread }) => thread.key);
+  expect(keys, "the threads by the result").toEqual([onResult.comment.id]);
+  expect(held?.parent, "the result's thread does not hang from the check").toBe(ON_CHECK.node);
+  expect(held?.conversationKind, "Conversation's read returns a result").toBeUndefined();
+  const ids = idsIn(list);
+  expect(ids, "Conversation draws no row of the check").toContain(ON_CHECK.node);
+  expect(ids, "Conversation draws a row of the result").not.toContain(RESULT);
+  const { kinds, root } = withThreadEntries(list, threads, "alice", KEY);
+  expect([...kinds.keys()], "what each entry opens").toEqual([]);
+  expect(root, "the list's tree holds an entry for the comment on the result").toBe(list);
 });
 
 // R8 (root R14, R15), through the page: the reader's comment on a statement that the first page of
