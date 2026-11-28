@@ -362,20 +362,48 @@ func TestReadDoesNotInferASyntheticAssistantModel(t *testing.T) {
 	assertMessages(t, s.Messages, []conversation.Message{user("request"), claude(text("answer"))})
 }
 
+// session-context.ts:69–84,657–673: a user-attributed skill prompt or a parent's IRC
+// message can be the last request restored before the kept tail.
+func TestReadRestoresCustomRolloverRequests(t *testing.T) {
+	for _, tc := range []struct{ name, record, want string }{
+		{"user skill prompt", `{"type":"custom_message","customType":"skill-prompt","attribution":"user","content":"skill request"}`, "skill request"},
+		{"agent skill prompt", `{"type":"custom_message","customType":"skill-prompt","attribution":"agent","content":"skill request"}`, "plain request"},
+		{"parent IRC", `{"type":"custom_message","customType":"irc:incoming","details":{"fromParent":true},"content":"parent request"}`, "parent request"},
+		{"other IRC", `{"type":"custom_message","customType":"irc:incoming","details":{"fromParent":false},"content":"another IRC message"}`, "plain request"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("plain request"))
+			f.add(tc.record)
+			kept := f.add(claudeEntry("stop", `[{"type":"text","text":"kept answer"}]`))
+			f.add(`{"type":"compaction","summary":"summary","firstKeptEntryId":` + quote(kept) +
+				`,"details":{"kind":"experimental-context-rollover"}}`)
+			messages := read(t, f.bytes()).Messages
+			if len(messages) != 3 {
+				t.Fatalf("messages = %+v, want summary, restored request, kept answer", messages)
+			}
+			assertMessages(t, messages[1:], []conversation.Message{user(tc.want), claude(text("kept answer"))})
+		})
+	}
+}
+
 // sdk.ts:5547–5562 and agent/src/compaction/compaction.ts:1429–1435:
 // native Responses history belongs to its provider and needs a Responses API.
 // A model that cannot read it resumes from the previous readable compaction.
 func TestReadUsesTheLastCompactionItsModelCanReplay(t *testing.T) {
-	for _, tc := range []struct{ name, provider, api string }{
-		{"different provider", "other", conversation.OpenAIResponses},
-		{"different API", "openai", conversation.AnthropicMessages},
+	const providerBound = `{"provider":"openai","replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}]}`
+	for _, tc := range []struct{ name, provider, api, preserve string }{
+		{"different provider", "other", conversation.OpenAIResponses, providerBound},
+		{"different API", "openai", conversation.AnthropicMessages, providerBound},
+		{"missing provider on classic compaction", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}],"compactionItem":{"type":"compaction","encrypted_content":"encoded"}}`},
+		{"missing provider on compaction summary", "openai", conversation.OpenAIResponses, `{"replacementHistory":[{"type":"compaction_summary"}],"compactionItem":{"type":"compaction_summary"}}`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
 			f.add(userEntry("cut"))
 			f.add(`{"type":"compaction","summary":"Readable summary.","firstKeptEntryId":""}`)
 			f.add(userEntry("keep"))
-			f.add(`{"type":"compaction","summary":"Replacement placeholder.","firstKeptEntryId":"","preserveData":{"openaiRemoteCompaction":{"provider":"openai","replacementHistory":[{"type":"compaction","encrypted_content":"encoded"}]}}}`)
+			f.add(`{"type":"compaction","summary":"Replacement placeholder.","firstKeptEntryId":"","preserveData":{"openaiRemoteCompaction":` + tc.preserve + `}}`)
 			f.add(assistantEntry(tc.provider, tc.api, "model", "stop", `[{"type":"text","text":"answer"}]`))
 			s := read(t, f.bytes())
 			if len(s.Messages) != 3 || s.Messages[0].Native != nil ||
@@ -391,7 +419,7 @@ func TestReadUsesTheLastCompactionItsModelCanReplay(t *testing.T) {
 
 // agent/src/compaction/compaction.ts:1509–1521: keep firstKeptEntryId itself
 // or the successor of the native replay-through entry. session-entries.ts:437–446
-// visits each ID once, so the old forward lookup and the pin's backward lookup
+// visits each ID once, so the reader's forward lookup and the pin's backward lookup
 // select the same entry even if the links form a cycle.
 func TestReadRespectsCompactionTailBoundaries(t *testing.T) {
 	for _, tc := range []struct{ name, boundary string }{
@@ -435,18 +463,50 @@ func TestReadRejectsMalformedNativeToolChanges(t *testing.T) {
 	}
 }
 
-// ai/src/providers/transform-messages.ts:1110–1128,1159–1164:
-// a failed turn drops the signature of trailing thinking. A tool call on a
-// failed turn does not invalidate the earlier thinking signature.
+// ai/src/providers/transform-messages.ts:1110–1128,1159–1164,1215–1219:
+// a failed turn drops only its trailing thinking signature. An abandoned
+// tool-use turn strips every signature except on the latest replay from the
+// same Anthropic provider.
 func TestReadReplaysOnlyTrustedFailedTurnSignatures(t *testing.T) {
-	f := newFixture()
-	f.add(userEntry("request"))
-	f.add(withMessageFields(claudeEntry("aborted", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"c2ln"},{"type":"toolCall","id":"call","name":"read","arguments":{}},{"type":"thinking","thinking":"trailing","thinkingSignature":"dGFpbA=="}]`), `,"continued":true`))
-	f.add(toolResultEntry("call", "read", "plum", false))
-	f.add(claudeEntry("stop", `[{"type":"text","text":"answer"}]`))
-	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
-		user("request"), claude(thinking("earlier", "c2ln"), call("call", "read", `{}`)),
-		result("call", "read", "plum", false), claude(text("answer")),
+	t.Run("Anthropic continued abort", func(t *testing.T) {
+		f := newFixture()
+		f.add(userEntry("request"))
+		f.add(withMessageFields(claudeEntry("aborted", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"c2ln"},{"type":"toolCall","id":"call","name":"read","arguments":{}},{"type":"thinking","thinking":"trailing","thinkingSignature":"dGFpbA=="}]`), `,"continued":true`))
+		f.add(toolResultEntry("call", "read", "plum", false))
+		f.add(claudeEntry("stop", `[{"type":"text","text":"answer"}]`))
+		assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+			user("request"), claude(thinking("earlier", "c2ln"), call("call", "read", `{}`)),
+			result("call", "read", "plum", false), claude(text("answer")),
+		})
+	})
+
+	responsesEntry := func(stop, content string) string {
+		return assistantEntry("openai", conversation.OpenAIResponses, "gpt-6.1", stop, content)
+	}
+	responses := func(blocks ...conversation.Block) conversation.Message {
+		return conversation.Message{Role: conversation.Assistant, Provider: "openai", API: conversation.OpenAIResponses, Model: "gpt-6.1", Content: blocks}
+	}
+	t.Run("OpenAI Responses continued error", func(t *testing.T) {
+		f := newFixture()
+		f.add(userEntry("request"))
+		f.add(withMessageFields(responsesEntry("error", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"complete"},{"type":"text","text":"partial answer"},{"type":"thinking","thinking":"trailing","thinkingSignature":"incomplete"}]`), `,"continued":true`))
+		f.add(continueReminderEntry())
+		f.add(responsesEntry("stop", `[{"type":"text","text":"answer"}]`))
+		assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+			user("request"),
+			responses(thinking("earlier", "complete"), text("partial answer"), thinking("trailing", "")),
+			user("Pick up where you stopped."), responses(text("answer")),
+		})
+	})
+	t.Run("OpenAI Responses abandoned tool use", func(t *testing.T) {
+		f := newFixture()
+		f.add(userEntry("request"))
+		f.add(responsesEntry("stop", `[{"type":"thinking","thinking":"earlier","thinkingSignature":"stale"},{"type":"toolCall","id":"call","name":"read","arguments":{}},{"type":"thinking","thinking":"","thinkingSignature":"stale-empty"}]`))
+		f.add(toolResultEntry("call", "read", "tool not run", true))
+		assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+			user("request"), responses(thinking("earlier", ""), call("call", "read", `{}`)),
+			result("call", "read", "tool not run", true),
+		})
 	})
 }
 
@@ -520,29 +580,33 @@ func TestReadKeepsContinuedFailedTurnsAndTheirReminders(t *testing.T) {
 func TestReadDropsContinueRemindersWithoutTheirContinuedTurn(t *testing.T) {
 	const partial = `[{"type":"text","text":"partial"}]`
 	for _, tc := range []struct {
-		name, stop, content, fields, between string
-		kept                                 []conversation.Message
+		name, stop, content, fields string
+		beforeTurn, afterTurn       string
+		kept                        []conversation.Message
 	}{
-		{"retry recovery even after an earlier continued turn", "error", partial, `,"retryRecovery":{}`, "", nil},
-		{"continued must be a boolean", "stop", partial, `,"retryRecovery":true,"continued":"true"`, "", nil},
-		{"empty error even if continued", "error", `[{"type":"text","text":"  "}]`, `,"continued":true`, "", nil},
-		{"empty fallback error even if continued", "error", `[{"type":"fallback"}]`, `,"continued":true`, "", nil},
-		{"failed turn without continuation", "aborted", partial, "", "", nil},
-		{"successful turn without continuation", "stop", partial, "", "", []conversation.Message{user("Continue."), claude(text("partial"))}},
-		{"its tool call was stripped", "error", `[{"type":"toolCall","id":"missing","name":"read","arguments":{}}]`, `,"continued":true`, userEntry("new request"), []conversation.Message{user("new request")}},
-		{"another user turn intervenes", "error", partial, `,"continued":true`, userEntry("new request"), []conversation.Message{user("Continue."), claude(text("partial")), user("new request")}},
-		{"another custom turn intervenes", "error", partial, `,"continued":true`, `{"type":"custom_message","customType":"other","content":"other note"}`, []conversation.Message{user("Continue."), claude(text("partial")), user("other note")}},
+		{name: "retry recovery even after an earlier continued turn", stop: "error", content: partial, fields: `,"retryRecovery":{}`},
+		{name: "continued must be a boolean", stop: "stop", content: partial, fields: `,"retryRecovery":true,"continued":"true"`},
+		{name: "empty error even if continued", stop: "error", content: `[{"type":"text","text":"  "}]`, fields: `,"continued":true`},
+		{name: "empty fallback error even if continued", stop: "error", content: `[{"type":"fallback"}]`, fields: `,"continued":true`},
+		{name: "failed turn without continuation", stop: "aborted", content: partial},
+		{name: "successful turn without continuation", stop: "stop", content: partial, kept: []conversation.Message{user("Continue."), claude(text("partial"))}},
+		{name: "its tool call was stripped", stop: "error", content: `[{"type":"toolCall","id":"missing","name":"read","arguments":{}}]`, fields: `,"continued":true`,
+			beforeTurn: userEntry("new request"), kept: []conversation.Message{user("new request")}},
+		{name: "another user turn intervenes", stop: "error", content: partial, fields: `,"continued":true`,
+			afterTurn: userEntry("new request"), kept: []conversation.Message{user("Continue."), claude(text("partial")), user("new request")}},
+		{name: "another custom turn intervenes", stop: "error", content: partial, fields: `,"continued":true`,
+			afterTurn: `{"type":"custom_message","customType":"other","content":"other note"}`, kept: []conversation.Message{user("Continue."), claude(text("partial")), user("other note")}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			f := newFixture()
 			f.add(userEntry("request"))
 			f.add(withMessageFields(claudeEntry("error", `[{"type":"text","text":"earlier continued turn"}]`), `,"continued":true`))
-			if tc.between != "" && tc.name == "its tool call was stripped" {
-				f.add(tc.between)
+			if tc.beforeTurn != "" {
+				f.add(tc.beforeTurn)
 			}
 			f.add(withMessageFields(claudeEntry(tc.stop, tc.content), tc.fields))
-			if tc.between != "" && tc.name != "its tool call was stripped" {
-				f.add(tc.between)
+			if tc.afterTurn != "" {
+				f.add(tc.afterTurn)
 			}
 			f.add(continueReminderEntry())
 			want := append([]conversation.Message{user("request"), claude(text("earlier continued turn"))}, tc.kept...)
@@ -569,6 +633,34 @@ func TestReadKeepsAReminderAcrossToolResultsAndContextNotes(t *testing.T) {
 	assertMessages(t, messages[4:], []conversation.Message{user("Pick up where you stopped.")})
 }
 
+// context-notes.ts:22–43,54–63: count UTF-8 bytes and ignore an invalid revision
+// without hiding the last valid one.
+func TestReadLimitsContextNotesByUTF8Bytes(t *testing.T) {
+	const previous = "Previous notes."
+	atLimit := strings.Repeat("é", 8_192)
+	for _, tc := range []struct{ name, latest, want string }{
+		{"at 16384 bytes", atLimit, atLimit},
+		{"over 16384 bytes", atLimit + "x", previous},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := newFixture()
+			f.add(userEntry("request"))
+			f.add(claudeEntry("stop", `[{"type":"text","text":"answer"}]`))
+			for _, note := range []string{previous, tc.latest} {
+				f.add(`{"type":"custom","customType":"experimental_context_notes","data":{"version":1,"text":` + quote(note) + `}}`)
+			}
+			messages := read(t, f.bytes()).Messages
+			if len(messages) != 3 || len(messages[0].Content) != 1 {
+				t.Fatalf("want one context notes block, a request, and an answer, got %d messages", len(messages))
+			}
+			_, got, ok := strings.Cut(messages[0].Content[0].Text, "\nLatest notebook revision:\n")
+			if !ok || got != tc.want+"\n</experimental-context-notes>" {
+				t.Errorf("wrong notebook revision for %d-byte entry: want the %d-byte revision", len(tc.latest), len(tc.want))
+			}
+		})
+	}
+}
+
 func TestReadDropsAReminderWhoseTurnCompactionCut(t *testing.T) {
 	f := newFixture()
 	f.add(userEntry("request"))
@@ -586,7 +678,11 @@ func TestReadKeepsInterruptedThinkingContinuity(t *testing.T) {
 	f.add(userEntry("request"))
 	f.add(claudeEntry("aborted", `[{"type":"text","text":"partial"},{"type":"thinking","thinking":"unfinished"},{"type":"text","text":" "}]`))
 	f.add(`{"type":"custom_message","customType":"interrupted-thinking","content":"Continuity note."}`)
-	assertMessages(t, read(t, f.bytes()).Messages, []conversation.Message{
+	s, err := Read(f.bytes(), Options{ReplayUnsignedThinking: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	assertMessages(t, s.Messages, []conversation.Message{
 		user("request"), claude(text("partial")), user("Continuity note."),
 	})
 }

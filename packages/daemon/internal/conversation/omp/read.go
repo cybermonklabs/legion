@@ -1,15 +1,13 @@
-// Package omp reads an Oh My Pi session into the provider-neutral conversation model exactly as
-// the pinned Oh My Pi (.omp-pin) rebuilds it on resume, and appends a question and its answer to
-// one as Oh My Pi writes entries.
+// Package omp reads an Oh My Pi session into the provider-neutral conversation model and
+// appends a question and its answer as the pinned Oh My Pi (.omp-pin) writes them.
 //
 // A session is Oh My Pi's JSONL (session-loader.ts, session-entries.ts): an optional fixed-width
 // title slot line, the version 3 header, then one entry per line, each naming its parent. The
 // reader resolves the active leaf with the rules of resolveSessionLeafId (session-entries.ts).
 // It walks from that leaf to the root and builds the model context as buildSessionContext does
-// (session-context.ts), then shapes it as the provider layer does for the resumed model
-// (transform-messages.ts). Like Oh My Pi it skips a line that is not JSON, a torn last record
-// among them; unlike it, it refuses a well-formed record it does not know (conversation.
-// ErrUnknownFormat).
+// (session-context.ts). It shapes replay for the resumed model under the assumptions in Options
+// (transform-messages.ts). Like Oh My Pi it skips a line that is not JSON, including a torn last
+// record. Unlike Oh My Pi it refuses a well-formed record it does not know (conversation.ErrUnknownFormat).
 //
 // The caller supplies per-request context. The reader omits the system prompt and the date and
 // working-directory reminders Oh My Pi journals as date-cwd-reminder custom entries.
@@ -57,9 +55,23 @@ type Session struct {
 // the resumed agent will see it.
 func (s *Session) Answered(questionID string) bool { return s.answered[questionID] }
 
-// Options is what the reader must know that the session does not say: how the endpoint the
-// conversation's model is called through treats replayed thinking, which Oh My Pi takes from its
-// models.yml compat for the model, not from the session.
+// Options supplies the Anthropic endpoint's unsigned-thinking replay policy, which the session
+// does not record. The reader does not resolve the pin's model catalog or credentials.
+// In transform-messages.ts:
+//
+//   - foreignCredential does not drop thinking unless the target enforces Anthropic signatures
+//     and both credential IDs are known and different.
+//   - dropsForeignThinking leaves thinking alone for the same model, or when the target has
+//     neither modelRouter nor the classifierCotExtraction catalog policy.
+//   - With prefixBinding off, the pin has no rewrite gate. With it on, the pin drops thinking
+//     only if a preceding historyRewriteAt or prunedAt timestamp is at or after the turn's.
+//     It can also retain signatures on older, different-model turns in same-provider Anthropic
+//     replay where officialEndpoint is false.
+//   - targetReadsForeignThinking matches ReplayUnsignedThinking on Anthropic Messages.
+//     It is false on OpenAI Responses.
+//   - On the cross-model fallback path, carriesSameModelReasoning leaves the text fallback
+//     in place if the turn ended in error, targetHasReasoningSlot or carriesReasoning is false,
+//     or summary is not explicitly false.
 type Options struct {
 	// ReplayUnsignedThinking is an Anthropic-compatible endpoint that verifies no thinking
 	// signature and takes unsigned thinking replayed as thinking (Oh My Pi's

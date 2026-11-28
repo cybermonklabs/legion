@@ -165,8 +165,10 @@ const (
 type Conversation struct {
 	Messages []Message
 	// Model is the model the conversation resumes on, "<provider>/<model>".
+	// It is empty when the session has no active branch.
 	Model string
 	// API is the provider API that model is called through (AnthropicMessages or OpenAIResponses).
+	// It is empty when the session has no active branch.
 	API string
 	// ThinkingLevel is the reasoning level the conversation last ran at ("off", "low", "high", …).
 	ThinkingLevel string

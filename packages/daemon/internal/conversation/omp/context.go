@@ -24,7 +24,8 @@ type llmMessage struct {
 	toolCallID, toolName string
 	isError              bool
 	synthetic            bool
-	customType           string
+	// custom user message
+	customType string
 	// user: a compaction summary's provider-native replay
 	native *conversation.Native
 }
@@ -42,6 +43,7 @@ const (
 	defaultCustomType       = "custom"
 	toolResultPruneType     = "tool_result_prune"
 	contextNotesType        = "experimental_context_notes"
+	maxContextNotesBytes    = 16_384
 	snapcompactPreserveKey  = "snapcompact"
 	anthropicCompactionKey  = "anthropicCompaction"
 	openaiRemoteCompaction  = "openaiRemoteCompaction"
@@ -249,7 +251,7 @@ func contextNotes(path []*entry) string {
 		var version float64
 		var text *string
 		if json.Unmarshal(data["version"], &version) != nil || version != 1 ||
-			json.Unmarshal(data["text"], &text) != nil || text == nil || len(*text) > 16_384 {
+			json.Unmarshal(data["text"], &text) != nil || text == nil || len(*text) > maxContextNotesBytes {
 			continue
 		}
 		if *text != "" {

@@ -156,27 +156,30 @@ func assistantMessage(m llmMessage, t target, latest bool, idOf map[string]strin
 		case "thinking":
 			visibleThinking = true
 			thinking := conversation.Block{Type: conversation.Thinking, Text: b.Thinking, Signature: b.ThinkingSignature}
+			signatureUntrustworthy := abandonedToolUse || (failed && i == len(m.blocks)-1)
+			if signatureUntrustworthy {
+				thinking.Signature = ""
+			}
 			switch {
 			case anthropicReplay && latest && abandonedToolUse && !crossProvider:
 				// Anthropic's latest turn replays byte for byte.
+				thinking.Signature = b.ThinkingSignature
 			case anthropicReplay:
-				if abandonedToolUse || (failed && i == len(m.blocks)-1) {
-					thinking.Signature = ""
-				}
 				stale := !sameDeployment && ((latest && crossProvider) || (!latest && !sameModel))
 				if stale && signingInvolved {
 					thinking.Signature = ""
 				}
-				if blank(thinking.Signature) && (blank(b.Thinking) || (sameModel && t.signing)) {
+				if (thinking.Signature == "" && blank(thinking.Text)) || (sameModel && t.signing && blank(thinking.Signature)) {
 					continue
 				}
-			case sameModel && b.ThinkingSignature != "":
-			case blank(b.Thinking):
+			case sameModel && thinking.Signature != "":
+			case blank(thinking.Text):
 				continue
-			case sameModel || replaysUnsigned:
+			case sameModel:
+			case replaysUnsigned:
 				thinking.Signature = ""
 			default:
-				text, err := demotedThinking(t.model, b.Thinking)
+				text, err := demotedThinking(t.model, thinking.Text)
 				if err != nil {
 					return conversation.Message{}, err
 				}

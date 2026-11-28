@@ -9,9 +9,10 @@ import (
 // The pinned Oh My Pi's context templates, byte for byte (each file ends in a newline): the
 // compaction summary's and the handoff summary's (agent/src/compaction/prompts/
 // compaction-summary-context.md, handoff-summary-context.md), the branch summary's
-// (branch-summary-context.md), and the envelope of a steering user message
-// (coding-agent/src/prompts/steering/user-interjection.md). Each holds one {{summary}} or
-// {{message}}, which Oh My Pi's Handlebars fills without escaping.
+// (branch-summary-context.md), the envelope of a steering user message
+// (coding-agent/src/prompts/steering/user-interjection.md), and the context notes.
+// Each holds one placeholder ({{summary}}, {{message}}, or {{notes}}), which Oh My Pi's
+// Handlebars fills without escaping.
 const (
 	compactionSummaryTemplate = "Prior model work/tool state available.\n" +
 		"MUST build on prior work; NEVER duplicate prior work.\n\n<summary>\n{{summary}}\n</summary>\n"

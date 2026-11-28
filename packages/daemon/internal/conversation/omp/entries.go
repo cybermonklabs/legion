@@ -52,8 +52,9 @@ type entry struct {
 	FirstKeptEntryID             string                     `json:"firstKeptEntryId"`
 	ProviderReplayThroughEntryID string                     `json:"providerReplayThroughEntryId"`
 	Method                       string                     `json:"method"`
-	Details                      json.RawMessage            `json:"details"`
 	PreserveData                 map[string]json.RawMessage `json:"preserveData"`
+	// compaction, branch_summary, custom_message
+	Details json.RawMessage `json:"details"`
 	// thinking_level_change
 	ThinkingLevel *string `json:"thinkingLevel"`
 	// model_change
@@ -199,8 +200,8 @@ func parseBlocks(raw json.RawMessage, allowed map[string]bool, where string) ([]
 
 // The block types each kind of content holds (pi-ai types.ts): a user, developer, custom or tool
 // result message holds text and images; an assistant message also thinking, redacted thinking
-// and tool calls. The reader drops fallback blocks only as part of an otherwise empty error
-// turn. It refuses other turns with fallback or anthropicServerTool blocks.
+// and tool calls. The reader drops fallback blocks with an otherwise empty error turn or an
+// uncontinued retry-recovered turn. It refuses other turns with fallback or anthropicServerTool blocks.
 var (
 	inputBlocks     = map[string]bool{"text": true, "image": true}
 	assistantBlocks = map[string]bool{"text": true, "image": true, "thinking": true, "redactedThinking": true, "toolCall": true, "fallback": true}
