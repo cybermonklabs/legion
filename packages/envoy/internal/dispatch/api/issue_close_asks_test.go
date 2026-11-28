@@ -15,6 +15,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -58,14 +60,31 @@ func newCloseAsksFixture(t *testing.T) closeAsksFixture {
 	return newCloseAsksFixtureSettlingAfter(t, 20*time.Millisecond)
 }
 
+// newCloseAsksFixtureSettlingWhenAsked is closeAsksFixture over a document service on a clock
+// nothing moves, so the settle timer each write arms never fires: a settlement runs only where
+// the test runs it (SettleIssueDocuments). A test that reads what a write left, and would read a
+// settlement's own events if one landed first, builds its fixture here.
+func newCloseAsksFixtureSettlingWhenAsked(t *testing.T) closeAsksFixture {
+	t.Helper()
+	return newCloseAsksFixtureOn(t, 20*time.Millisecond, clocktest.Held())
+}
+
 // newCloseAsksFixtureSettlingAfter is closeAsksFixture over a document service whose settle delay
-// is settle. Wherever the fixture needs a settlement it runs it itself (SettleIssueDocuments), so
-// it is built the same whatever the delay, and it leaves no document owing one.
+// is settle, on the real clock. Wherever the fixture needs a settlement it runs it itself
+// (SettleIssueDocuments), so it is built the same whatever the delay, and it leaves no document
+// owing one.
 func newCloseAsksFixtureSettlingAfter(t *testing.T, settle time.Duration) closeAsksFixture {
+	t.Helper()
+	return newCloseAsksFixtureOn(t, settle, nil)
+}
+
+// newCloseAsksFixtureOn is closeAsksFixture over a document service whose settle delay is settle
+// and whose timers run on serviceClock; nil is the real clock.
+func newCloseAsksFixtureOn(t *testing.T, settle time.Duration, serviceClock clock.Clock) closeAsksFixture {
 	t.Helper()
 	var documents *docs.Service
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		documents = docs.New(docs.Deps{Store: database, Settle: settle})
+		documents = docs.New(docs.Deps{Store: database, Settle: settle, Clock: serviceClock})
 		t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 		return documents
 	})

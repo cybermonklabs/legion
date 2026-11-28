@@ -9,6 +9,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/reearth/ygo/provider/websocket"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
@@ -35,7 +36,7 @@ func TestEveryRoomStateHolderKeepsADetachedState(t *testing.T) {
 				service.settleWG.Add(1)
 				timerID := service.nextSettleTimer.Add(1)
 				service.registerSettleTimer(timerID)
-				timer := time.NewTimer(time.Hour)
+				timer := clock.Real().NewTimer(time.Hour)
 				service.attachSettleTimer(timerID, timer)
 				state.settle = timer
 			},

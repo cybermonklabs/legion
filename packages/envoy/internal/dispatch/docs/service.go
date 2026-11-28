@@ -94,9 +94,10 @@ type Deps struct {
 	// EditNoticeQuiet is how long a document stays quiet after a person's last settled version
 	// before its edit notice goes (recordEditNotice, RunEditNotices); zero means 30 s.
 	EditNoticeQuiet time.Duration
-	// Clock is the clock Shutdown's drain budget (ShutdownDrainBudget) runs on; nil means the real
-	// clock. A test hands a clocktest fake and moves it past the moments it means, so how long a
-	// loaded machine takes between them does not spend the budget.
+	// Clock is the clock Shutdown's drain budget (ShutdownDrainBudget) and every document's settle
+	// timer (scheduleSettleAfterLocked) run on; nil means the real clock. A test hands a clocktest
+	// fake and moves it past the moments it means, so how long a loaded machine takes between them
+	// does not spend the budget, and no settlement runs while the test reads what a write left.
 	Clock clock.Clock
 	// BuildCommit is the commit this process's binary was built from (cmd/dispatch's buildCommit),
 	// the empty string for an unstamped build. The block-index tick keys its build's event cursor
@@ -495,7 +496,7 @@ type Service struct {
 	timerMu         sync.Mutex
 	// timers reserve their ID before creating an immediate timer, whose callback
 	// can run before time.AfterFunc returns the *time.Timer to its caller.
-	timers     map[uint64]*time.Timer
+	timers     map[uint64]clock.Timer
 	suppressMu sync.Mutex
 	suppressed map[string][]*suppressSlot
 	// serviceOrigins holds the transaction origins of the service's own in-flight Server.Apply
@@ -1001,7 +1002,7 @@ func New(deps Deps) *Service {
 		markWait:          markWait,
 		now:               time.Now,
 		markTimer:         wallMarkTimer,
-		timers:            make(map[uint64]*time.Timer),
+		timers:            make(map[uint64]clock.Timer),
 		unrecordedMarkTTL: unrecordedMarkTTL,
 		editNoticeQuiet:   editNoticeQuiet,
 		clock:             serviceClock,
@@ -1558,7 +1559,7 @@ func (s *Service) scheduleSettleAfterLocked(room string, state *roomState, delay
 	// service's owner holds the service, and the service keeps an armed room's state
 	// (unusedLocked).
 	owner, record := weak.Make(s), weak.Make(state)
-	timer := time.AfterFunc(delay, func() {
+	timer := s.clock.AfterFunc(delay, func() {
 		s := owner.Value()
 		if s == nil {
 			return
@@ -1589,7 +1590,7 @@ func (s *Service) registerSettleTimer(timerID uint64) {
 	s.timerMu.Unlock()
 }
 
-func (s *Service) attachSettleTimer(timerID uint64, timer *time.Timer) {
+func (s *Service) attachSettleTimer(timerID uint64, timer clock.Timer) {
 	s.timerMu.Lock()
 	if _, found := s.timers[timerID]; found {
 		s.timers[timerID] = timer
@@ -1604,7 +1605,7 @@ func (s *Service) unregisterSettleTimer(timerID uint64) {
 }
 
 // stopSettleTimer stops an armed settlement timer and releases the settleWG count it held.
-func (s *Service) stopSettleTimer(timer *time.Timer) bool {
+func (s *Service) stopSettleTimer(timer clock.Timer) bool {
 	if !s.takeSettleTimer(timer) {
 		return false
 	}
@@ -1627,7 +1628,7 @@ func (s *Service) takeOverSettlementLocked(state *roomState) bool {
 // takeSettleTimer stops an armed settlement timer and hands its caller the settleWG count the timer
 // held, for a settlement the caller runs in the timer's place, so Shutdown joins it as it would the
 // timer's own. The caller releases the count once that settlement has returned.
-func (s *Service) takeSettleTimer(timer *time.Timer) bool {
+func (s *Service) takeSettleTimer(timer clock.Timer) bool {
 	if timer == nil {
 		return false
 	}
@@ -1648,7 +1649,7 @@ func (s *Service) takeSettleTimer(timer *time.Timer) bool {
 
 func (s *Service) stopAllSettleTimers() {
 	s.timerMu.Lock()
-	timers := make([]*time.Timer, 0, len(s.timers))
+	timers := make([]clock.Timer, 0, len(s.timers))
 	for _, timer := range s.timers {
 		if timer != nil {
 			timers = append(timers, timer)
@@ -1664,7 +1665,7 @@ func (s *Service) stopAllSettleTimers() {
 // with its callback not yet returned (the callback leaves the register as it returns), and not
 // stopped. A state that never armed one has none: the register's nil entries are other rooms'
 // timers between their registration and attachSettleTimer.
-func (s *Service) isSettleTimerArmed(timer *time.Timer) bool {
+func (s *Service) isSettleTimerArmed(timer clock.Timer) bool {
 	if timer == nil {
 		return false
 	}

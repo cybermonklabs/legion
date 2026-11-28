@@ -20,12 +20,17 @@ import (
 // the route itself queued answers short. The reopen moves the issue the close left done, so the
 // two moves run in order against the one issue, not as subtests a reader could run alone, and
 // each failure names the move it came from.
+//
+// Each move's document write also leaves the issue's two documents owing a settlement, which saves
+// a version of each and appends an artifact.version event of the issue for it (commitVersion). On
+// a settle timer the machine runs, those events landed between the move and the test's read of the
+// issue, which then answered their sequence, not the move's (INFRA-3904: 20 for a close at 19 in a
+// main run). This fixture's document service is on a clock nothing moves, so no settle timer
+// fires and a settlement runs only where this test runs it: once it has read each move, as the
+// timer would have, before the next move.
 func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T) {
-	// Not parallel: it reads the issue right after the move and wants the sequence the move
-	// committed, so it assumes no later event of its own issue lands between the move and that
-	// read. Among this package's parallel tests on CI's runner one did, and the read answered 20
-	// for a close at 19 (job 137359069610).
-	f := newCloseAsksFixture(t)
+	t.Parallel()
+	f := newCloseAsksFixtureSettlingWhenAsked(t)
 	anchored := createThreadComment(t, f.handler, f.issue, map[string]any{
 		"body":   "Does this still hold?",
 		"anchor": map[string]any{"artifact": "spec", "quote": "Context"},
@@ -56,6 +61,10 @@ func TestClosingAndReopeningAnswerTheSequenceTheWritePhaseCommitted(t *testing.T
 		if response.LastSeq != event.seq || event.payloadLastSeq != event.seq || detail.LastSeq != event.seq {
 			t.Fatalf("%s answered last_seq %d and stored %s at seq %d with payload last_seq %d, and a read of the issue answers %d: want all four at %d, the sequence the write phase committed",
 				move.name, response.LastSeq, move.eventType, event.seq, event.payloadLastSeq, detail.LastSeq, event.seq)
+		}
+		// The settlement the move's document write left owed, which the timer would have run.
+		if err := f.documents.SettleIssueDocuments(context.Background(), f.issue); err != nil {
+			t.Fatalf("settle the documents %s wrote: %v", move.name, err)
 		}
 	}
 }
