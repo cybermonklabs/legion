@@ -197,6 +197,13 @@ func readWindowRuns(ctx context.Context, pool *store.Pool, settings DeliverySett
 // reads itself from from. Rows a read of several days holds (DaysDeploys.Applies) answer only a
 // window from one of those days: the runs of that day's window, which are every run its rows'
 // answers read, and those of the later days' windows created after it.
+//
+// a's runs come oldest creation first (runCreatedAt, as every read of them orders them), so those
+// created from from on are a's last ones, found by a binary search, and the answer's runs are that
+// end of a's, which it shares rather than copies; its jobs are those of its runs alone. A reader of
+// many days (the read-time path of the delivery evals, evals.ComputeAtRead, and the refresher's
+// read of a page's days) takes a part of one read for each day, so a copy of every run created from
+// each day on, grown run by run, made its reads of many days grow with the days times the runs.
 func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
 	if from.Before(a.from) {
 		return ApplyRows{}, fmt.Errorf("apply rows read from %s hold no run of a window from %s", a.from.Format(time.RFC3339), from.Format(time.RFC3339))
@@ -204,12 +211,17 @@ func (a ApplyRows) Since(from time.Time) (ApplyRows, error) {
 	if a.windows != nil && !a.windows[from.Unix()] {
 		return ApplyRows{}, fmt.Errorf("apply rows read of %d days' windows hold no window from %s", len(a.windows), from.Format(time.RFC3339))
 	}
-	rows := ApplyRows{from: from, Runs: []DeliveryRun{}, Jobs: map[int64][]DeliveryRunJob{}}
-	for _, run := range a.Runs {
+	first, _ := slices.BinarySearchFunc(a.Runs, from, func(run DeliveryRun, from time.Time) int {
 		if run.Created().Before(from) {
-			continue
+			return -1
 		}
-		rows.Runs = append(rows.Runs, run)
+		return 1
+	})
+	rows := ApplyRows{from: from, Runs: a.Runs[first:len(a.Runs):len(a.Runs)], Jobs: make(map[int64][]DeliveryRunJob, len(a.Runs)-first)}
+	if rows.Runs == nil {
+		rows.Runs = []DeliveryRun{}
+	}
+	for _, run := range rows.Runs {
 		if jobs, held := a.Jobs[run.RunID]; held {
 			rows.Jobs[run.RunID] = jobs
 		}

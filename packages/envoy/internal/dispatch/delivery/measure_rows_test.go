@@ -66,3 +66,61 @@ func TestADeployHistoryReadAFewRunsAtATimeAnswersWhatOneReadAnswers(t *testing.T
 		}
 	}
 }
+
+// TestADaysPartOfApplyRowsIsTheEndOfItsRunsShared (dispatch://INFRA-2918, D25 step 6): the part of
+// one read of apply rows a reader of many days takes for each day (ApplyRows.Since) is the runs
+// created from that day on, in the read's order, with their jobs and no other run's; and its runs
+// are the end of the read's own, shared, which an append to the part cannot write past, where a
+// copy of every run created from each day on made a read of many days (the narrowed evals'
+// read-time rows, evals.ComputeAtRead) grow with the days times the runs. Runs created in one
+// instant, runs whose creation is unknown (read by their start), runs with no job and the day
+// after the last run are among them.
+func TestADaysPartOfApplyRowsIsTheEndOfItsRunsShared(t *testing.T) {
+	t.Parallel()
+	from := time.Date(2026, 9, 1, 0, 0, 0, 0, time.UTC)
+	read := ApplyRows{from: from, Jobs: map[int64][]DeliveryRunJob{}}
+	for i := range 40 {
+		created := from.Add(time.Duration(i/2) * 7 * time.Hour)
+		run := DeliveryRun{Repo: "acme/widgets", RunID: int64(i + 1), Kind: DeliveryRunKindDeploy, StartedAt: created.Add(time.Minute), CreatedAt: &created}
+		if i%5 == 0 {
+			run.CreatedAt, run.StartedAt = nil, created
+		}
+		read.Runs = append(read.Runs, run)
+		if i%3 != 0 {
+			read.Jobs[run.RunID] = []DeliveryRunJob{{Repo: run.Repo, RunID: run.RunID, Name: "deploy / production"}}
+		}
+	}
+	parts := 0
+	for day := from; !day.After(from.AddDate(0, 0, 7)); day = day.AddDate(0, 0, 1) {
+		part, err := read.Since(day)
+		if err != nil {
+			t.Fatalf("the part of %s: %v", day.Format(time.DateOnly), err)
+		}
+		want := ApplyRows{from: day, Runs: []DeliveryRun{}, Jobs: map[int64][]DeliveryRunJob{}}
+		for _, run := range read.Runs {
+			if !run.Created().Before(day) {
+				want.Runs = append(want.Runs, run)
+				if jobs, held := read.Jobs[run.RunID]; held {
+					want.Jobs[run.RunID] = jobs
+				}
+			}
+		}
+		if !reflect.DeepEqual(part, want) {
+			t.Errorf("the part of %s holds %d runs with the jobs of %d, want %d with the jobs of %d:\n%+v\nwant %+v",
+				day.Format(time.DateOnly), len(part.Runs), len(part.Jobs), len(want.Runs), len(want.Jobs), part, want)
+		}
+		if n := len(part.Runs); n > 0 {
+			parts++
+			if &part.Runs[0] != &read.Runs[len(read.Runs)-n] {
+				t.Errorf("the part of %s copies the %d runs created from it on, want the end of the read's runs, shared", day.Format(time.DateOnly), n)
+			}
+			if cap(part.Runs) != n {
+				t.Errorf("the part of %s holds %d runs with room for %d, so an append to it would write over the read's", day.Format(time.DateOnly), n, cap(part.Runs))
+			}
+		}
+	}
+	if parts == 0 {
+		t.Fatalf("no day's part holds a run, so the parts compare nothing")
+	}
+	t.Logf("%d days' parts of %d runs, each the end of the read's runs", parts, len(read.Runs))
+}
