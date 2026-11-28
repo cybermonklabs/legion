@@ -12,14 +12,19 @@ body: |-
   block's text calls is used. The references read takes a pinned block's definitions from the
   version it pins, and an edge's excerpt that its cut leaves inside a code block keeps the tree of
   its text alone. The reference-targets read's ETag hashes each tree, so a definition added or
-  removed elsewhere in the document changes the tag. Each markdown's footnote labels are kept in a
-  process cache, so a repeat read parses the document once. Today's issue page draws the trees of
-  the decisions, reference-targets and references reads in its decision cards, its Dashboard tab,
-  the title and card of a block reference, the Referenced by lists and the reference picker, so
-  there a defined call no longer shows as the text `[^1]`: a plain line leaves it out, and a drawn
-  body shows it as a raised label, as the document does. One reference-targets or references
-  request reads the notes of at most 16 documents, in the order the request names them, and a
-  block of any further document keeps the tree of its stored text alone.
+  removed elsewhere in the document changes the tag. The reference-targets, references and
+  decisions reads keep each markdown's footnote labels in a process cache, so a later read of the
+  same markdown does not parse it again. The tabbed issue page draws the trees of the decisions,
+  reference-targets and references reads in its decision cards, its Dashboard tab, the title and
+  card of a block reference, the Referenced by lists and the reference picker, so there a defined
+  call no longer shows as the text `[^1]`: a plain line leaves it out, and a drawn body shows it
+  as a raised label, as the document does. A Change that the page's writable decision card writes
+  of a decision whose first block holds such a call now anchors to that block, where the server
+  refused it before with 404 `TARGET_NOT_FOUND` (the card quoted the literal `[^1]`, which the
+  document's text does not hold). One reference-targets or references request reads the notes of
+  at most 16 documents: the reference-targets read in the order its `ref` parameters name them,
+  the references read in the order it draws their texts (the node, each edge's excerpt, then the
+  version a pin names); a block of any further document keeps the tree of its stored text alone.
 time: 2026-11-27T12:17:20Z
 custom:
     Issue: INFRA-6257

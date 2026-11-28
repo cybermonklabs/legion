@@ -244,8 +244,8 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 		keys = append(keys, key)
 		texts[key] = text
 	}
-	block, documentBlock := graphDocumentBlock(node, "")
-	if documentBlock {
+	block, ofDocument := graphDocumentBlock(node, "")
+	if ofDocument {
 		hold(graphNodeText, drawnText{block: block, text: node.Text})
 	}
 	for index, edge := range edges {
@@ -262,7 +262,7 @@ func (s *server) readGraphFootnotes(ctx context.Context, node model.GraphNode, e
 		footnotes.node = footnotes.excerpts[graphNodeText]
 		delete(footnotes.excerpts, graphNodeText)
 	}
-	if pin := node.Pin; documentBlock && pin != nil && strings.Contains(pin.Text, "[^") {
+	if pin := node.Pin; ofDocument && pin != nil && strings.Contains(pin.Text, "[^") {
 		pinned := calledFootnotes(ctx, s, []int{graphNodeText}, map[int]drawnText{graphNodeText: {block: block, text: pin.Text}},
 			pin.Version, &budget)
 		footnotes.pin = pinned[graphNodeText]

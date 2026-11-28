@@ -152,19 +152,18 @@ func missingCheckGaps(coverage model.IssueCoverage) []string {
 // caller fills in the rest of each row in place.
 func (s *server) requirementBlocksIn(ctx context.Context, artifactID string, trees *displayTreeReader) ([]model.RequirementCoverage, error) {
 	var requirements []model.RequirementCoverage
-	var markdowns []string
-	var sources []blockTreeSource
-	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id, markdown string, source blockTreeSource) {
+	var typedTrees []typedBlockTree
+	err := s.typedBlocksIn(ctx, artifactID, "requirement", trees != nil, func(node *pmdoc.Node, id string, tree typedBlockTree) {
 		requirements = append(requirements, model.RequirementCoverage{BlockID: id, Text: blockWords(node)})
 		if trees != nil {
-			markdowns, sources = append(markdowns, markdown), append(sources, source)
+			typedTrees = append(typedTrees, tree)
 		}
 	})
 	if err != nil {
 		return nil, err
 	}
-	for index, source := range sources {
-		registerBlockTree(trees, &requirements[index].TextTree, markdowns[index], source)
+	for index, tree := range typedTrees {
+		registerBlockTree(trees, &requirements[index].TextTree, tree.markdown, tree.source)
 	}
 	return requirements, nil
 }

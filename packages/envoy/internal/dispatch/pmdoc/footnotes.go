@@ -265,9 +265,11 @@ func (footnoteReferenceParser) Trigger() []byte { return []byte{'!', '['} }
 
 // footnoteLabelKey is a footnote label as the browser editor's parser compares it: with full case
 // mapping, lowered and then uppercased, so `ß` matches `SS` and `İ` matches `i̇`, which simple case
-// folding keeps apart.
+// folding keeps apart. It folds label through a keyer of its own (footnoteKeyer), so the fold is
+// written once; a reading that keys many labels keeps one keyer for all of them.
 func footnoteLabelKey(label string) string {
-	return cases.Upper(language.Und).String(cases.Lower(language.Und).String(label))
+	var keyer footnoteKeyer
+	return keyer.key(label)
 }
 
 // referenceLabelAttr is the label a reference resolved by footnoteReferenceParser only up to case

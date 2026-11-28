@@ -586,6 +586,9 @@ func graphEdgeReads(edges []model.GraphEdge, trees bool, excerpts map[int]blockT
 	}
 	shapeBuilt(trees, func(reader *displayTreeReader) {
 		for index := range reads {
+			if _, withSource := excerpts[index]; !withSource {
+				continue
+			}
 			if excerpt := reads[index].Excerpt; excerpt != nil && excerpt.TextTree == nil {
 				reader.text(&excerpt.TextTree, excerpt.Text)
 			}

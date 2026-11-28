@@ -3,11 +3,11 @@ package api
 import (
 	"bytes"
 	"context"
-	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"log/slog"
 	"maps"
+	"slices"
 	"strings"
 
 	"github.com/sjawhar/envoy/internal/dispatch/bytelru"
@@ -22,22 +22,22 @@ import (
 // decision's section of decisions.md, or a text of a document's block the reference graph's read
 // draws. labels is the footnotes that markdown calls that its document defines outside it: the
 // ones the block's node calls (pmdoc.CalledFootnoteLabels), or, for a text no node of the
-// document's parse holds, the ones it writes as a call (footnotesCalledIn); artifactID and
-// blockID are the document that holds the block and the id it holds it under, which
-// registerBlockTree logs a tree it cannot set with. Every source with labels names them. cut is
-// set, where the source is made (drawnText), for a markdown that is a cut of the block's text, an
-// edge's excerpt, which can stop inside a block whose end the cut leaves out (a fenced code
-// block): the stand-ins read after it then stand inside that block, so a tree that does not end
-// in them is no fault of the read, and registerBlockTree sets it nowhere and logs nothing, for
-// the caller to read the cut alone.
+// document's parse holds, the ones it writes as a call (footnotesCalledIn); block is where the
+// block stands, the document that holds it and the id it holds it under, which registerBlockTree
+// logs a tree it cannot set with. Every source with labels names it. cut is set, where the source
+// is made (drawnText), for a markdown that is a cut of the block's text, an edge's excerpt, which
+// can stop inside a block whose end the cut leaves out (a fenced code block): the stand-ins read
+// after it then stand inside that block, so a tree that does not end in them is no fault of the
+// read, and registerBlockTree sets it nowhere and logs nothing, for the caller to read the cut
+// alone.
 type blockTreeSource struct {
-	artifactID, blockID string
-	labels              []string
-	cut                 bool
+	block  refs.DocumentBlock
+	labels []string
+	cut    bool
 }
 
 // registerBlockTree registers with trees, as field, the display tree of markdown, the content of
-// the block source names: the one its artifactID's document holds under its blockID. Every read
+// the block source names: the one its block's document holds under that block's id. Every read
 // that answers a block's tree registers it here: the coverage read's requirements, the results
 // read's checks, the batched reference read's blocks, the decisions read's decisions and the
 // reference graph read's texts of documents' blocks, so one block answers one tree in each read
@@ -60,7 +60,7 @@ func registerBlockTree(trees *displayTreeReader, field *model.DisplayTree, markd
 		if !ok {
 			if !source.cut {
 				slog.Warn("dispatch: take the stand-in footnote definitions out of a block's tree",
-					"artifact", source.artifactID, "block", source.blockID, "labels", source.labels)
+					"artifact", source.block.ArtifactID, "block", source.block.BlockID, "labels", source.labels)
 			}
 			return
 		}
@@ -122,8 +122,7 @@ func withoutStandInDefinitions(tree json.RawMessage, count int) (json.RawMessage
 			return nil, false
 		}
 		cut, closing := ends[kept-1], decoder.InputOffset()-1
-		shown := make(json.RawMessage, 0, int64(len(tree))-(closing-cut))
-		return append(append(shown, tree[:cut]...), tree[closing:]...), true
+		return slices.Concat(tree[:cut], tree[closing:]), true
 	}
 	return nil, false
 }
@@ -170,12 +169,13 @@ func (d *footnoteDocuments) warnUnread(route string) {
 // documents are taken in the order in which keys first names a text of each that holds a call; a
 // document none of whose texts here holds one is not read and takes no place. budget is what the
 // request has spent of footnoteDocumentsMax over all of its calls: while the bound has room, each
-// document spends one place and is read, a document whose read fails included, since it was
-// loaded; once the bound is spent, a document is not read and is counted unread in budget, and
-// its texts have no entry, so they keep the tree of their stored text alone, as a text whose
-// document cannot be read does. The request's order alone decides which documents are read, never
-// what footnoteParses holds, so the same request answers the same trees. The caller logs the
-// count of unread documents once the request's last call is done (footnoteDocuments.warnUnread).
+// document spends one place and is read, and a document whose read fails spends its place too, so
+// that the request's order alone decides which documents are read; once the bound is spent, a
+// document is not read and is counted unread in budget, and its texts have no entry, so they keep
+// the tree of their stored text alone, as a text whose document cannot be read does. What
+// footnoteParses holds never decides which documents are read, so the same request answers the
+// same trees. The caller logs the count of unread documents once the request's last call is done
+// (footnoteDocuments.warnUnread).
 //
 // version is the version of their documents the texts were cut from, 0 for the latest. Each
 // document is read once, however many of its blocks' texts texts holds. Its id, and the id it
@@ -299,7 +299,7 @@ func footnotesCalledIn[K comparable](markdown, artifactID string, texts map[K]dr
 			labels = defined.Written(text.text)
 		}
 		if len(labels) > 0 {
-			called[key] = blockTreeSource{artifactID: artifactID, blockID: text.block.BlockID, labels: labels, cut: text.cut}
+			called[key] = blockTreeSource{block: text.block, labels: labels, cut: text.cut}
 		}
 	}
 	return called
@@ -324,12 +324,12 @@ type footnoteParse struct {
 // with artifactID, by the parse that meets it. Two reads that miss one markdown at once both parse
 // it, and the entry the first keeps stands.
 func footnoteParseOf(markdown, artifactID string) footnoteParse {
-	sum := sha256.Sum256([]byte(markdown))
+	sum := pmdoc.TextSum(markdown)
 	if held, ok := footnoteParses.Get(sum); ok {
+		// held is json.Marshal of a footnoteParse, which decodes back without fail.
 		var parse footnoteParse
-		if json.Unmarshal(held, &parse) == nil {
-			return parse
-		}
+		_ = json.Unmarshal(held, &parse)
+		return parse
 	}
 	var parse footnoteParse
 	tree, err := pmdoc.ParseRendering(markdown)
@@ -348,9 +348,9 @@ func footnoteParseOf(markdown, artifactID string) footnoteParse {
 			return true
 		})
 	}
-	if encoded, err := json.Marshal(parse); err == nil {
-		footnoteParses.PutSize(sum, encoded, int64(len(encoded))+footnoteParseEntryBytes)
-	}
+	// Marshal cannot fail on a bool, a map of string slices and a string slice.
+	encoded, _ := json.Marshal(parse)
+	footnoteParses.PutSize(sum, encoded, int64(len(encoded))+footnoteParseEntryBytes)
 	return parse
 }
 
