@@ -162,6 +162,7 @@ function blockEnd(code: readonly string[], start: number, indent: string): numbe
  *  extension picks the grammar the comments are read with. */
 export function markersIn(file: string, source: string): readonly Marker[] {
   const lines = source.split("\n");
+  if (!lines.some((line) => markerPattern.test(line))) return [];
   // The source with every comment blanked and every line where it was: a line left blank here is
   // blank or comment alone, and a line that still holds text is code, a string's or a
   // template's text included.

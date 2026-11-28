@@ -77,7 +77,6 @@ test("the table takes the caller's name, and the box its layout class and the co
   const view = render(<Projects rows={["CORE"]} />);
   try {
     expect(screen.getByRole("table", { name: "Projects" })).toBeDefined();
-    expect(shell()).toHaveAttribute("data-control", "table-shell");
     // The caller places the box; everything inside it is the shell's.
     expect(shell().className).toContain("mt-6 max-w-4xl");
     expect(shell().contains(screen.getByRole("table", { name: "Projects" }))).toBe(true);

@@ -27,7 +27,8 @@ interface TableRecipe {
   /** The text colour every row takes unless a row or a cell says otherwise. */
   readonly body: string;
   readonly cell: string;
-  /** The cell of the line drawn in place of the rows: roomier than a row of data. */
+  /** The cell of the line drawn in place of the rows, in the muted tone: roomier than a row of
+   *  data in the comfortable density, and as roomy as one in the others. */
   readonly empty: string;
   readonly head: string;
   readonly headCell: string;

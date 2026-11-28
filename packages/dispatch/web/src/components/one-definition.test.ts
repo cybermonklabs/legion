@@ -50,7 +50,7 @@ const SHARED_MARKS: readonly Mark[] = [
     pattern: /type\s*[:=]\s*(?:\{\s*)?["'`]search["'`]|role=(?:\{\s*)?["'`]searchbox["'`]/,
   },
   {
-    what: "writes a `<table>` of its own — draw `components/DataTable.tsx`",
+    what: "writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
     pattern:
       /<table(?![\w-])|\bcreateElement\(\s*["'`]table["'`]|role=(?:\{\s*)?["'`](?:table|grid)["'`]/,
   },
@@ -352,7 +352,7 @@ describe("no page builds a control or an address of its own", () => {
       ");",
     ].join("\n");
     expect(refusals("features/inbox/Probe.tsx", source)).toEqual([
-      "features/inbox/Probe.tsx:2 writes a `<table>` of its own — draw `components/DataTable.tsx`",
+      "features/inbox/Probe.tsx:2 writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
     ]);
   });
 
@@ -491,7 +491,7 @@ describe("no page builds a control or an address of its own", () => {
     ].join("\n");
     expect(refusals("features/inbox/Upload.tsx", source)).toEqual([
       'features/inbox/Upload.tsx:4 writes a search box of its own (`type="search"`) — draw `components/SearchBox.tsx`',
-      "features/inbox/Upload.tsx:5 writes a `<table>` of its own — draw `components/DataTable.tsx`",
+      "features/inbox/Upload.tsx:5 writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`",
     ]);
   });
 
@@ -602,7 +602,8 @@ describe("no page builds a control or an address of its own", () => {
   });
 
   test('the table mark catches `createElement("table")` and a div table\'s role', () => {
-    const what = "writes a `<table>` of its own — draw `components/DataTable.tsx`";
+    const what =
+      "writes a `<table>` of its own — draw `components/TableShell.tsx` or `components/DataTable.tsx`";
     for (const source of [
       'export const T = () => createElement("table");',
       'export const T = () => <div role="table" />;',

@@ -209,18 +209,18 @@ function ExpiredRowLines({ row }: { row: CredentialPendingRow }): ReactNode {
 }
 
 /** The Inbox's supplementary credential-requests section, mounted above the ask sections, from the
- *  Inbox's own reading of the list (`useCredentialRequests`), which its Blocked on you control and
- *  its empty state read too. A pending request's line leads to where it is decided; an expired
- *  one's is marked, links nowhere and offers Dismiss (`ExpiredRowLines`), and the broker lists
- *  every pending row before the expired ones. A Dispatch with no secrets broker lists none, so the
- *  whole section hides silently - the one deliberate quiet path; a failure is surfaced only when no
- *  list has ever loaded (a later poll failing keeps showing the last list it held,
- *  `useCredentialRequests`'s `status` stays `listed`). Calls `useAgents` once for every row in
- *  the list (before either early return, so the hook always runs), rather than once per
- *  `CredentialSessionLines` instance, for every row's directory and machine; the shell's one
- *  poller (`AgentRegistryPoller`) refreshes that list, so N listed rows never phase N polls of
- *  their own (LEGION-587's review, round 3). A Dispatch sign-in names no session, so its row shows
- *  its reason where another shows its session (`SignInReasonLine`). */
+ *  Inbox's own reading of the list (`useCredentialRequests`), which its banner and empty state read
+ *  too. A pending request's line leads to where it is decided; an expired one's is marked, links
+ *  nowhere and offers Dismiss (`ExpiredRowLines`), and the broker lists every pending row before
+ *  the expired ones. A Dispatch with no secrets broker lists none, so the whole section hides
+ *  silently - the one deliberate quiet path; a failure is surfaced only when no list has ever
+ *  loaded (a later poll failing keeps showing the last list it held, `useCredentialRequests`'s
+ *  `status` stays `listed`). Calls `useAgents` once for every row in the list (before either early
+ *  return, so the hook always runs), rather than once per `CredentialSessionLines` instance, for
+ *  every row's directory and machine; the shell's one poller (`AgentRegistryPoller`) refreshes
+ *  that list, so N listed rows never phase N polls of their own (LEGION-587's review, round 3). A
+ *  Dispatch sign-in names no session, so its row shows its reason where another shows its session
+ *  (`SignInReasonLine`). */
 export function CredentialRequestsSection({
   credentials: { requests, status },
 }: {
