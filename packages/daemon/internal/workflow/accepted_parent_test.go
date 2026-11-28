@@ -223,9 +223,29 @@ func TestASignOffBeforeAnotherStepAcceptsNothing(t *testing.T) {
 			if refusal != nil || accepts != tc.accepts {
 				t.Fatalf("the sign-off judgement = %+v, accepts %v; want none, accepts %v", refusal, accepts, tc.accepts)
 			}
+			// A session wrote retro while the issue was in accepting, and the daemon queued its
+			// set-back. A sign-off that accepts the issue drops it, since the acceptance now stands
+			// for that retro; one that moves the issue to a later step keeps it, so Dispatch does not
+			// stay at a retro the daemon does not record.
+			if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+				row, err := record.NewOutboxRow("LEGION-208", record.ReassertStatusWrite("needs_review", "retro", 5), time.Now().UTC())
+				if err != nil {
+					return err
+				}
+				return record.NewStore().Enqueue(context.Background(), tx, row)
+			}); err != nil {
+				t.Fatalf("queue a session's set-back of retro: %v", err)
+			}
 			applyRefusingNothing(t, pool, engine, fact)
 			if got := issuePhase(t, pool); got != tc.next {
 				t.Fatalf("after the sign-off the issue is in %s, want %s", got, tc.next)
+			}
+			var setBacks int
+			if err := pool.QueryRow(context.Background(), "select count(*) from outbox where issue = 'LEGION-208' and payload->>'kind' = 'reassert' and payload->>'observedStatus' = 'retro'").Scan(&setBacks); err != nil {
+				t.Fatalf("count the set-backs of retro: %v", err)
+			}
+			if want := map[bool]int{true: 0, false: 1}[tc.accepts]; setBacks != want {
+				t.Fatalf("set-backs of retro after the sign-off = %d, want %d: a sign-off that accepts drops them, one that moves to a later step keeps them", setBacks, want)
 			}
 		})
 	}

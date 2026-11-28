@@ -3244,8 +3244,8 @@ Where Dispatch still stands at the request's sequence, this release first posts 
 The row is a set-back as the release before writes one: the kind `reassert` with `observedSeq`, which that release decodes and runs.
 That release writes the status before the act back where Dispatch shows the act's status and no one but the daemon changed the issue's status after the request's sequence, and writes nothing where Dispatch shows another status.
 It does not post the fence.
-So a request still in flight in front of Dispatch when the earlier release runs the row can land after it, and that status then stays until a person or the next status repair moves it.
-That needs a write Dispatch did not answer, a stop or a rollback within the same seconds, and a request that reaches Dispatch after the row ran.
+So a request still in flight in front of Dispatch when the earlier release runs the row can land after it, and nothing then moves that status back by itself: a late `retro` stays until a person or a status repair of the earlier release moves it, and a late `done` stays until a person moves it, because the status repair of the earlier release passes over an issue Dispatch shows done.
+That needs a write Dispatch did not answer, a stop or a rollback while it is in flight, and a request that reaches Dispatch after the row ran; Dispatch runs a keyed request for at most ten minutes.
 
 To see what a project carries before it rolls back, run this with `<PROJECT>` replaced by the project's key, as the block above takes it:
 
