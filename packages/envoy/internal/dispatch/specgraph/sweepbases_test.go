@@ -12,6 +12,7 @@ import (
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 
@@ -19,13 +20,45 @@ import (
 )
 
 // sweepBases is each base that the sweeps read, by its name (sweepBaseNames), each built alone by
-// sweepBase from a read of its scenario of its own: the setup of each sweep. No code that builds one
-// base holds another, so a writer of a base reaches its own base alone.
+// sweepBase from a read of its scenario of its own: the setup of each sweep. The builders are
+// deterministic, so the test process builds the bases once (builtSweepBases), and each caller gets
+// a copy of each base of its own (cloneFiles), each file a MapFile of its own with its bytes copied.
+// No code that builds one base holds another, and no caller holds another caller's copy, so a writer
+// of a base reaches its own base alone.
 func sweepBases(t *testing.T) map[string]fstest.MapFS {
 	t.Helper()
+	built := builtSweepBases(t)
+	bases := make(map[string]fstest.MapFS, len(built))
+	for name, base := range built {
+		bases[name] = cloneFiles(base)
+	}
+	return bases
+}
+
+// sweepBasesBuilt holds the bases of sweepBases once a build of them has passed, for each later
+// caller in the test process to copy; no code writes them after the build.
+var sweepBasesBuilt struct {
+	sync.Mutex
+	bases map[string]fstest.MapFS
+}
+
+// builtSweepBases is the bases of sweepBases: built by the first caller in the test process, under
+// the lock, and held for each later caller (sweepBasesBuilt). A build in a test that has failed is
+// not held, so where a builder or a check of sweepBase fails, each test that asks builds the bases
+// again and fails with the same message, as the builders are deterministic.
+func builtSweepBases(t *testing.T) map[string]fstest.MapFS {
+	t.Helper()
+	sweepBasesBuilt.Lock()
+	defer sweepBasesBuilt.Unlock()
+	if sweepBasesBuilt.bases != nil {
+		return sweepBasesBuilt.bases
+	}
 	bases := map[string]fstest.MapFS{}
 	for _, name := range sweepBaseNames(t) {
 		bases[name] = sweepBase(t, name)
+	}
+	if !t.Failed() {
+		sweepBasesBuilt.bases = bases
 	}
 	return bases
 }

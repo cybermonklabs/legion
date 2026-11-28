@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"testing/fstest"
 )
@@ -87,9 +88,10 @@ func notRepoPaths(path string) []string {
 // of its own and copies of the place and the value (changedFile, filesWritten). So a writer that
 // writes another value, writes it at another place, under another key or under another file name,
 // or changes another place of the file too, fails by name. Each sweep derives each input in the
-// test process (scenarioStates), judges it against its base (sweepAgainst), and reads and refuses
-// at least its floors of inputs of each base (sweepFloors), so that a sweep that builds no input,
-// or drops some, fails by name too. One right, which sweepInputs gives the input where it writes
+// test process (scenarioStates), judges it against its base (sweepAgainst) in parallel subtests of
+// at most sweepChunk inputs each (sweepChunks), and reads and refuses at least its floors of inputs
+// of each base (sweepFloors), so that a sweep that builds no input, or drops some, fails by name
+// too. One right, which sweepInputs gives the input where it writes
 // it: a repository path of a tree written " " is a real path, since git holds a file of that name
 // (git ls-tree of a tree that holds one lists the path " "), so the tree changed at a path that a
 // tie covers, and a result before it that counts across commits, a caught failing example or a run
@@ -113,7 +115,7 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 			if got, err := scenarioStates(roundTrip); err != nil || !maps.Equal(got, baseStates(t, base)) {
 				t.Fatalf("each JSON file of the scenario written again by the sweep does not read as the scenario: %v", err)
 			}
-			n := sweepAgainst(t, base, inputs)
+			n := sweepAgainst(t, "inputs", base, inputs)
 			atFloor(t, "tree", name, n)
 			legs := 0 // the inputs that write the leg of no matrix at the leg of a record
 			for _, in := range inputs {
@@ -127,15 +129,25 @@ func TestNoInputThatSaysNothingMovesAStateTowardTrue(t *testing.T) {
 	}
 }
 
-// baseStates is the state of each check, statement and wait of the base (scenarioStates).
+// baseStates is the state of each check, statement and wait of the base (scenarioStates), a copy of
+// its caller's own. The states are a function of the files of the base alone, so the test process
+// derives them once for each base, by the key of its files (filesKey), and holds the derivation and
+// its refusal (baseStatesOf): a base that the reader or the derivation refuses fails each test that
+// asks with the same message.
 func baseStates(t *testing.T, base fstest.MapFS) map[string]string {
 	t.Helper()
-	whole, err := scenarioStates(base)
+	files := cloneFiles(base)
+	derive, _ := baseStatesOf.LoadOrStore(filesKey(files), sync.OnceValues(func() (map[string]string, error) { return scenarioStates(files) }))
+	whole, err := derive.(func() (map[string]string, error))()
 	if err != nil {
 		t.Fatalf("the base: %v", err)
 	}
-	return whole
+	return maps.Clone(whole)
 }
+
+// baseStatesOf is, by the key of the files of each base that baseStates derived (filesKey), the
+// derivation of its states (scenarioStates), made once in the test process.
+var baseStatesOf sync.Map
 
 // sweepCount is what a sweep read of the inputs that it built (sweepAgainst): how many it built, how
 // many of them the reader or the derivation refused, how many it read with no state moved toward
@@ -145,6 +157,43 @@ func baseStates(t *testing.T, base fstest.MapFS) map[string]string {
 type sweepCount struct {
 	inputs, refused, read, byRight int
 	rights                         []string
+}
+
+// judge counts the input in, against whole, the states of its base: got, its states as the reader
+// and the derivation read it (scenarioStates), or err, their refusal, which counts as refused. It
+// judges an input that they read against whole (judgeAnswer): one that moves a state toward true
+// beyond its right fails the test by its line, and one that does not counts as read, and as moved by
+// its right where it moved a state toward true.
+func (n *sweepCount) judge(t *testing.T, whole map[string]string, in sweepInput, got map[string]string, err error) {
+	t.Helper()
+	if err != nil {
+		n.refused++
+		return
+	}
+	toward, beyond, err := judgeAnswer(whole, got, in.right != "", in.allowed)
+	switch {
+	case err != nil:
+		t.Errorf("%s: %v", in.what, err)
+	case len(beyond) > 0 && in.right != "":
+		t.Errorf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(beyond, "; "))
+	case len(beyond) > 0:
+		t.Errorf("%s: %s", in.what, strings.Join(beyond, "; "))
+	default:
+		n.read++
+		if len(toward) > 0 {
+			n.byRight++
+			n.rights = append(n.rights, in.what)
+		}
+	}
+}
+
+// add adds to n what c, the count of a part of the inputs of n, read: its refused, read and byRight,
+// and its rights after those of n.
+func (n *sweepCount) add(c sweepCount) {
+	n.refused += c.refused
+	n.read += c.read
+	n.byRight += c.byRight
+	n.rights = append(n.rights, c.rights...)
 }
 
 // sweepAgainst derives base and each of its inputs in the test process (scenarioStates) and judges
@@ -157,16 +206,48 @@ type sweepCount struct {
 // whose statement then sits at the top of the tree, so the statement above it loses it, which can
 // leave that one and each above it met. The places that such an input may move are those that the
 // derivation itself reaches from its change, so a list of them would be a second derivation. An
-// input whose files are the base's (sameFiles) fails the test too: its writer wrote nothing, and it
-// would read as the base and pass. So does an input whose files are those of an earlier input of the
-// list, byte for byte (filesKey): the sweep would read one case twice and the case that it means not
-// at all, as when a writer or a table turned one input into another.
-func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCount {
+// input whose files are the base's, or those of an earlier input of the list, fails the test too
+// (distinctInputs), in the caller's subtest, before any input is judged. Each other input is derived
+// and judged in the parallel subtests of the group subtest group (sweepChunks), and the counts of
+// the subtests are summed once the group returns.
+func sweepAgainst(t *testing.T, group string, base fstest.MapFS, inputs []sweepInput) sweepCount {
 	t.Helper()
 	whole := baseStates(t, base)
+	distinct := distinctInputs(t, base, inputs)
+	var judged []sweepInput
+	for i, in := range inputs {
+		if distinct[i] {
+			judged = append(judged, in)
+		}
+	}
 	n := sweepCount{inputs: len(inputs)}
+	for _, c := range sweepChunks(t, group, judged, sweepWhat, func(t *testing.T, chunk []sweepInput) sweepCount {
+		var c sweepCount
+		for _, in := range chunk {
+			got, err := scenarioStates(in.fsys)
+			c.judge(t, whole, in, got, err)
+		}
+		return c
+	}) {
+		n.add(c)
+	}
+	return n
+}
+
+// sweepWhat is what the input in changed, the name of the input in the name of a subtest
+// (sweepChunks).
+func sweepWhat(in sweepInput) string { return in.what }
+
+// distinctInputs is, for each input of inputs, whether the sweep judges it. An input whose files are
+// the base's (sameFiles) fails the test, and is not judged: its writer wrote nothing, and it would
+// read as the base and pass. So does an input whose files are those of an earlier input of the
+// list, byte for byte (filesKey): the sweep would read one case twice and the case that it means not
+// at all, as when a writer or a table turned one input into another.
+func distinctInputs(t *testing.T, base fstest.MapFS, inputs []sweepInput) []bool {
+	t.Helper()
+	distinct := make([]bool, len(inputs))
 	seen := map[[sha256.Size]byte]string{}
-	for _, in := range inputs {
+	for i, in := range inputs {
 		if sameFiles(t, base, in.fsys) {
 			t.Errorf("%s: the input's files are the base's, so the sweep wrote nothing", in.what)
 			continue
@@ -177,28 +258,45 @@ func sweepAgainst(t *testing.T, base fstest.MapFS, inputs []sweepInput) sweepCou
 			continue
 		}
 		seen[key] = in.what
-		got, err := scenarioStates(in.fsys)
-		if err != nil {
-			n.refused++
-			continue
-		}
-		toward, beyond, err := judgeAnswer(whole, got, in.right != "", in.allowed)
-		switch {
-		case err != nil:
-			t.Errorf("%s: %v", in.what, err)
-		case len(beyond) > 0 && in.right != "":
-			t.Errorf("%s, beyond its right (%s): %s", in.what, in.right, strings.Join(beyond, "; "))
-		case len(beyond) > 0:
-			t.Errorf("%s: %s", in.what, strings.Join(beyond, "; "))
-		default:
-			n.read++
-			if len(toward) > 0 {
-				n.byRight++
-				n.rights = append(n.rights, in.what)
-			}
-		}
+		distinct[i] = true
 	}
-	return n
+	return distinct
+}
+
+// sweepChunk is the most inputs that one subtest of a sweep judges (sweepChunks): few enough that a
+// subtest of the costliest inputs, those of the member sweep, most of which the reader reads and the
+// derivation derives at each subject, ends well within a second.
+const sweepChunk = 50
+
+// sweepChunks hands inputs, in their order, to parallel subtests of at most sweepChunk inputs each,
+// inside the subtest group, and gives what each of them counted (judge), in the order of the
+// inputs. Each subtest is named by what its first and its last input changed (what), so that its
+// name says which inputs it judges; judge judges the inputs of one subtest, in that subtest. A
+// subtest puts its count in its own place under the lock, and the group returns only once each of
+// its parallel subtests has ended, so each count is whole when sweepChunks gives them.
+func sweepChunks[In, Count any](t *testing.T, group string, inputs []In, what func(In) string, judge func(t *testing.T, chunk []In) Count) []Count {
+	t.Helper()
+	var mu sync.Mutex
+	counts := make([]Count, (len(inputs)+sweepChunk-1)/sweepChunk)
+	t.Run(group, func(t *testing.T) {
+		for i := range counts {
+			chunk := inputs[i*sweepChunk : min((i+1)*sweepChunk, len(inputs))]
+			name := what(chunk[0])
+			if len(chunk) > 1 {
+				name += " to " + what(chunk[len(chunk)-1])
+			}
+			t.Run(name, func(t *testing.T) {
+				t.Parallel()
+				count := judge(t, chunk)
+				mu.Lock()
+				counts[i] = count
+				mu.Unlock()
+			})
+		}
+	})
+	mu.Lock()
+	defer mu.Unlock()
+	return counts
 }
 
 // filesKey is the sha256 of the files of the scenario fsys, each by its name and the length and the
@@ -261,7 +359,10 @@ func sameFiles(t *testing.T, a, b fstest.MapFS) bool {
 // as the reader reads it, against the refusals that it means, built before its writer runs
 // (refusalAdded, refusalRead). A row of the table that names no refusal that the sweep adds, a base
 // that is no base of the sweeps, and a seq that names no one result of the row's check fail the
-// test by name.
+// test by name. The subtest of each base builds its refusals and runs the checks of distinctInputs
+// on them; parallel subtests of at most sweepChunk refusals each (sweepChunks) then derive each
+// refusal once, and read those states both against its row and in the judgment of the sweeps
+// (sweepCount.judge), whose counts are summed once each subtest has ended.
 func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -271,6 +372,14 @@ func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
 		if _, held := bases[name]; !held {
 			t.Errorf("refusalsTakeOut states the refusals of %s, which is no base of the sweeps", name)
 		}
+	}
+	// refusal is one input of the sweep: CI's refusal of a check at commit, the row of takesOut that
+	// names it, -1 for none, and whether the sweep judges it (distinctInputs).
+	type refusal struct {
+		sweepInput
+		commit string
+		row    int
+		judged bool
 	}
 	for _, name := range slices.Sorted(maps.Keys(bases)) {
 		t.Run(name, func(t *testing.T) {
@@ -284,6 +393,7 @@ func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
 			whole := baseStates(t, base)
 			rows := takesOut[name]
 			added := make([]bool, len(rows))
+			var refusals []refusal
 			var inputs []sweepInput
 			for _, commit := range namesOf(t, base)["commit"] {
 				for _, c := range current.Checks {
@@ -293,18 +403,10 @@ func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
 					fsys := refusalAdded(t, base, commit, c.ID)
 					in := sweepInput{what: fmt.Sprintf("uncited.json: a refusal of %s at %s", c.ID, commit), fsys: fsys}
 					i := slices.IndexFunc(rows, func(r refusalOut) bool { return r.commit == commit && r.check == c.ID })
-					got, err := scenarioStates(fsys)
-					switch {
-					case err != nil && i >= 0:
-						t.Fatalf("%s: %v", in.what, err)
-					case i >= 0:
+					if i >= 0 {
 						added[i] = true
-						if want := withoutResultsOf(t, base, rows[i]); !maps.Equal(awayFrom(s, commit, got), want) {
-							t.Errorf("%s reads at the subjects at other commits than %s:\n%v\nand the base with the results of seq %v taken out reads:\n%v", in.what, commit, awayFrom(s, commit, got), rows[i].seqs, want)
-						}
-					case err == nil && !maps.Equal(awayFrom(s, commit, got), awayFrom(s, commit, whole)):
-						t.Errorf("%s, which refusalsTakeOut does not name, reads at the subjects at other commits than %s:\n%v\nand the base reads:\n%v", in.what, commit, awayFrom(s, commit, got), awayFrom(s, commit, whole))
 					}
+					refusals = append(refusals, refusal{sweepInput: in, commit: commit, row: i})
 					inputs = append(inputs, in)
 				}
 			}
@@ -313,7 +415,32 @@ func TestAddingARefusalOfCIMovesNoStateTowardTrue(t *testing.T) {
 					t.Errorf("refusalsTakeOut states that a refusal of %s at %s takes out the results of seq %v, and the sweep adds no such refusal, or the row is there twice", r.check, r.commit, r.seqs)
 				}
 			}
-			n := sweepAgainst(t, base, inputs)
+			for i, judged := range distinctInputs(t, base, inputs) {
+				refusals[i].judged = judged
+			}
+			n := sweepCount{inputs: len(inputs)}
+			for _, c := range sweepChunks(t, "inputs", refusals, func(r refusal) string { return r.what }, func(t *testing.T, chunk []refusal) sweepCount {
+				var c sweepCount
+				for _, r := range chunk {
+					got, err := scenarioStates(r.fsys)
+					switch {
+					case err != nil && r.row >= 0:
+						t.Fatalf("%s: %v", r.what, err)
+					case r.row >= 0:
+						if want := withoutResultsOf(t, base, rows[r.row]); !maps.Equal(awayFrom(s, r.commit, got), want) {
+							t.Errorf("%s reads at the subjects at other commits than %s:\n%v\nand the base with the results of seq %v taken out reads:\n%v", r.what, r.commit, awayFrom(s, r.commit, got), rows[r.row].seqs, want)
+						}
+					case err == nil && !maps.Equal(awayFrom(s, r.commit, got), awayFrom(s, r.commit, whole)):
+						t.Errorf("%s, which refusalsTakeOut does not name, reads at the subjects at other commits than %s:\n%v\nand the base reads:\n%v", r.what, r.commit, awayFrom(s, r.commit, got), awayFrom(s, r.commit, whole))
+					}
+					if r.judged {
+						c.judge(t, whole, r.sweepInput, got, err)
+					}
+				}
+				return c
+			}) {
+				n.add(c)
+			}
 			atFloor(t, "refusals", name, n)
 			t.Logf("%d refusals added: %d refused, %d read", n.inputs, n.refused, n.read)
 		})
@@ -507,9 +634,10 @@ type addableRecords struct {
 // the two it reads unknown with the reason that names the other (deriveChecks, step 7). A planted_on
 // that names a commit of the history has one right: at a subject at another commit, a record whose
 // test missed its fault counts nowhere, and one whose test caught it counts nowhere where the ties
-// do not carry that commit there, and the base without that record decides (plantedOnElsewhere). A
-// planted_on that names no commit of the history has none: such a record
-// reads unknown, planted_on_outside_history.
+// do not carry that commit there, and the base without that record decides (plantedOnElsewhere),
+// derived once for the record (withoutResult). A planted_on that names no commit of the history has
+// none: such a record reads unknown, planted_on_outside_history. The subtest of each base builds its
+// inputs, and parallel subtests of at most sweepChunk inputs each judge them (sweepAgainst).
 func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	bases := sweepBases(t)
@@ -551,6 +679,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 				}
 				for i, record := range list.([]any) {
 					place := append(slices.Clone(addable[file].records), strconv.Itoa(i))
+					var without map[string]string // the states of base with record i taken out, derived once for the record
 					for _, m := range addable[file].members {
 						if _, set := record.(map[string]any)[m[0]]; set {
 							continue
@@ -563,7 +692,10 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 							in := sweepInput{what: fmt.Sprintf("%s %s with %s %s", file, treePointer(place), m[0], encodeTree(t, v)), fsys: fsys}
 							if commit, named := v.(string); file == "results.json" && m[0] == "planted_on" && named {
 								if _, held, err := s.History.Changed(commit, commit); err == nil && held {
-									in.right, in.allowed = plantedOnElsewhere, withoutResult(t, base, i)
+									if without == nil {
+										without = withoutResult(t, base, i)
+									}
+									in.right, in.allowed = plantedOnElsewhere, without
 								}
 							}
 							inputs = append(inputs, in)
@@ -571,7 +703,7 @@ func TestAddingAMemberMovesNoStateTowardTrue(t *testing.T) {
 					}
 				}
 			}
-			n := sweepAgainst(t, base, inputs)
+			n := sweepAgainst(t, "inputs", base, inputs)
 			atFloor(t, "members", name, n)
 			t.Logf("%d members added: %d refused, %d read", n.inputs, n.refused, n.read)
 		})

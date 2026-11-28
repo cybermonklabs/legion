@@ -604,10 +604,12 @@ func approvedDocuments(t *testing.T, data []byte) map[[2]int]string {
 	return documents
 }
 
-// yamlScenarioInput is one changed YAML input for the same scenario.
+// yamlScenarioInput is one changed YAML input for the same scenario, and whether it changes a
+// document of its approved.json, not a spec file.
 type yamlScenarioInput struct {
-	what string
-	fsys fstest.MapFS
+	what     string
+	fsys     fstest.MapFS
+	approved bool
 }
 
 // yamlInputStates derives every check, statement and own-statement state of each subject of fsys.
@@ -661,12 +663,19 @@ func yamlStatesTowardTrue(before, after map[string]string) []string {
 // sweep leaves no member out of an approved document. Each *.yaml file of each scenario and each
 // document of its approved.json is read as YAML, and the sweep derives the states of each of those
 // inputs: a file as null, each document as null, null, an empty value and " " at each place (each
-// text for " "), and in the spec files each member of each mapping left out. It reads each base
+// text for " "), and in the spec files each member of each mapping left out. An input of a document
+// of approved.json is the base with approved.json as its writer writes it with that document
+// changed (editTree), and one whose files are the base's fails the test by name (sameFiles): it
+// would read as the whole scenario and pass. It reads each base
 // that the sweep of the JSON files reads (sweepBases), silent-leg with its matrix dropped at m2
 // among them. The reader may refuse the input. The documents written again unchanged must give
 // each text byte for byte, so the sweep writes each input in the printer's form, and an input that
 // leaves out a member that the node does not need reads as a node, not as a text that is not
-// printed: some inputs must read, or the sweep could not see a state move.
+// printed: some inputs must read, or the sweep could not see a state move. The subtest of each base
+// builds its inputs, and parallel subtests of at most sweepChunk inputs each (sweepChunks) derive
+// and judge them; their counts are summed once each has ended, and logged with those of the inputs
+// of the approved documents apart: how many the reader refused, and how many it read, as the whole
+// scenario and as another state.
 func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 	t.Parallel()
 	// read counts the inputs that the reader read, of each scenario: in a scenario whose tree each
@@ -691,7 +700,7 @@ func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 			with := func(what string, change func(fsys fstest.MapFS)) {
 				fsys := maps.Clone(base)
 				change(fsys)
-				inputs = append(inputs, yamlScenarioInput{what, fsys})
+				inputs = append(inputs, yamlScenarioInput{what: what, fsys: fsys})
 			}
 			readBack := func(what string, text []byte) []*yaml.Node {
 				docs := specDocuments(t, text)
@@ -721,36 +730,67 @@ func TestNoInputThatSaysNothingInASpecFileMovesAStateTowardTrue(t *testing.T) {
 			for _, at := range slices.SortedFunc(maps.Keys(documents), func(a, b [2]int) int { return cmp.Or(a[0]-b[0], a[1]-b[1]) }) {
 				where := fmt.Sprintf("approved.json /nodes/%d/versions/%d/document", at[0], at[1])
 				for _, in := range documentInputs(t, readBack(where, []byte(documents[at])), false) {
-					with(where+" "+in.what, func(fsys fstest.MapFS) {
-						editTree(t, fsys, "approved.json", func(tree any) any {
-							versions := tree.(map[string]any)["nodes"].([]any)[at[0]].(map[string]any)["versions"].([]any)
-							versions[at[1]].(map[string]any)["document"] = string(in.text)
-							return tree
-						})
+					what := where + " " + in.what
+					fsys := editTree(t, base, "approved.json", func(tree any) any {
+						versions := tree.(map[string]any)["nodes"].([]any)[at[0]].(map[string]any)["versions"].([]any)
+						versions[at[1]].(map[string]any)["document"] = string(in.text)
+						return tree
 					})
+					if sameFiles(t, base, fsys) {
+						t.Errorf("%s: the input's files are the base's, so the sweep wrote nothing", what)
+						continue
+					}
+					inputs = append(inputs, yamlScenarioInput{what: what, fsys: fsys, approved: true})
 				}
 			}
-			refused, same, moved, names := 0, 0, 0, 0
+			names, approved := 0, 0
 			for _, in := range inputs {
 				if strings.HasSuffix(in.what, ` as " "`) {
 					names++
 				}
-				got, err := yamlInputStates(in.fsys)
-				switch {
-				case err != nil:
-					refused++
-				case maps.Equal(got, whole):
-					same++
-				default:
-					moved++
-					if toward := yamlStatesTowardTrue(whole, got); len(toward) > 0 {
-						t.Errorf("%s: %s", in.what, strings.Join(toward, "; "))
-					}
+				if in.approved {
+					approved++
 				}
 			}
+			// count is what the inputs of one subtest read, those of the spec files ([0]) and those of
+			// the approved documents ([1]) apart: how many the reader refused, how many read as the
+			// whole scenario and how many read another state.
+			type count [2]struct{ refused, same, moved int }
+			var n count
+			for _, c := range sweepChunks(t, "inputs", inputs, func(in yamlScenarioInput) string { return in.what }, func(t *testing.T, chunk []yamlScenarioInput) count {
+				var c count
+				for _, in := range chunk {
+					k := &c[0]
+					if in.approved {
+						k = &c[1]
+					}
+					got, err := yamlInputStates(in.fsys)
+					switch {
+					case err != nil:
+						k.refused++
+					case maps.Equal(got, whole):
+						k.same++
+					default:
+						k.moved++
+						if toward := yamlStatesTowardTrue(whole, got); len(toward) > 0 {
+							t.Errorf("%s: %s", in.what, strings.Join(toward, "; "))
+						}
+					}
+				}
+				return c
+			}) {
+				for i := range n {
+					n[i].refused += c[i].refused
+					n[i].same += c[i].same
+					n[i].moved += c[i].moved
+				}
+			}
+			refused, same, moved := n[0].refused+n[1].refused, n[0].same+n[1].same, n[0].moved+n[1].moved
 			read.Add(int64(same + moved))
 			t.Logf(`%d inputs of %d spec files and %d approved documents: %d refused, %d read as the whole scenario, %d read another state; %d of them a text written as " "`,
 				len(inputs), files, len(documents), refused, same, moved, names)
+			t.Logf("%d of them inputs of the approved documents: %d refused, %d read, %d of them as the whole scenario and %d as another state",
+				approved, n[1].refused, n[1].same+n[1].moved, n[1].same, n[1].moved)
 		})
 	}
 }
