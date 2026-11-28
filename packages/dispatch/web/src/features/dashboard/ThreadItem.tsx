@@ -21,6 +21,7 @@ import { deliveryMode } from "../conversation/delivery";
 import { KeptReplyToDeleted } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
 import { AskReplyComposer, takesReply } from "../inbox/AskThread";
+import { useIssuePageChoice } from "../issue-page/choice";
 import { authorText, pageChrome } from "../issue-page/page-structure";
 import { DASHBOARD_WORDS } from "../issue-page/page-words";
 import { RowText } from "../issue-page/RowText";
@@ -114,6 +115,24 @@ function EntryView({ entry, source }: { entry: Entry; source: TextSource | undef
 }
 
 function ThreadLink({ to }: { to: string }): ReactNode {
+  // On the new page the link opens the thread's record in Threads, `/issues/<KEY>/threads/<id>`
+  // with the key and the id of the thread's own address (dispatch://INFRA-5704/spec#b-r-addresses,
+  // R12): a thread's record goes by its ask's, its first comment's or its root message's id. On
+  // today's page it keeps the thread's own address.
+  const [page] = useIssuePageChoice();
+  const own = /^\/issues\/([^/]+)\/(?:asks|comments|messages)\/([^/?#]+)$/.exec(to);
+  if (page === "outline" && own !== null) {
+    const record = buildIssuePath({ key: own[1] ?? "", kind: "threads", record: own[2] ?? "" });
+    return (
+      <Link
+        className={`text-xs font-medium underline ${pageMutedText}`}
+        to={record}
+        {...pageChrome}
+      >
+        {DASHBOARD_WORDS.thread_link}
+      </Link>
+    );
+  }
   return (
     <Link className={`text-xs font-medium underline ${pageMutedText}`} to={to} {...pageChrome}>
       {DASHBOARD_WORDS.thread_link}
@@ -129,6 +148,8 @@ function useReachedAgents(): { agents: typeof EMPTY_AGENTS; reach: () => void } 
   const agents = useQuery({ ...agentsQuery(), enabled: reached }).data ?? EMPTY_AGENTS;
   return { agents, reach: () => setReached(true) };
 }
+
+export { useReachedAgents };
 
 /** Where a reply's send is held, by the thread it answers. */
 export function replySendKey(threadId: string): readonly unknown[] {

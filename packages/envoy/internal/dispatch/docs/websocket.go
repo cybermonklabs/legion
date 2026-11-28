@@ -303,13 +303,16 @@ func (a *servicePersistenceAdapter) StoreUpdateContext(ctx context.Context, room
 	}
 	defer class.instance.unlistUnstored(class)
 	defer class.credit.landed()
-	// The update's suppression slot is consumed whatever its class says, since slots are taken in
-	// order. The class decides when the observer recorded one: a published write's and a
-	// repair's are queued stored, and a browser update whose bytes match a repair's - a deletion
-	// leaves an update that carries no struct, only its own deletes, so a browser's deletion of
-	// the items a repair deleted leaves the repair's bytes - takes that repair's slot while its own
-	// class is not stored, and is stored all the same; the repair's own update then finds its
-	// class stored.
+	// The update's suppression slot is consumed whatever its class says, so the slot leaves the
+	// queue with its own writer's update and no later update waits on a slot whose update has gone
+	// by. Each update takes the slot of the writer whose update it is, wherever that slot stands
+	// (consumeSuppressedPersistence). The class decides what is stored: a published write's and a
+	// repair's are queued stored, so neither is stored here. The one exception to taking a
+	// writer's own slot is a browser update whose bytes match a repair's - a deletion leaves an
+	// update that carries no struct, only its own deletes, so a browser's deletion of the items a
+	// repair deleted leaves the repair's bytes - which takes that repair's slot while its own class
+	// is not stored, and is stored all the same; the repair's own update then finds its class
+	// stored.
 	suppressed := a.service.consumeSuppressedPersistence(room, update)
 	if class.stored.Load() || (suppressed && !found) || a.service.roomFailed(room) {
 		return nil
@@ -769,10 +772,10 @@ func (s *Service) onLoadDocument(ctx context.Context, room string, doc *crdt.Doc
 		if repair, identityRepair := origin.(*identityClosureOrigin); identityRepair {
 			s.recordSuppressedCommit(repair.slot, update)
 			// A repair's update is classified like any other, and its class names the room
-			// instance it was made in: one that reaches the room's persistence outside its
-			// suppression slot, which another writer's update can take first
-			// (consumeSuppressedPersistence), is stored as any other update, and the room it was
-			// made in has to take that version in or stand behind the head for good.
+			// instance it was made in. A browser update carrying the repair's exact bytes can
+			// take the repair's slot first (consumeSuppressedPersistence); the repair's own update
+			// then finds its class queued stored (classifyDrained) and is not stored again: the
+			// repair's writer stores it (storeRepair).
 		} else if s.beforeObserveUpdate != nil {
 			s.beforeObserveUpdate(room)
 		}
