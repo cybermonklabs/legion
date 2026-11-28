@@ -67,6 +67,59 @@ import { navigateInApp } from "./sends";
 import { type Browser, expect, type Locator, type Page, test } from "./test";
 import { asUser } from "./users";
 
+// INFRA-6245's R2 keeps every grouping the project List had on `main`, where **Group by** was a
+// select over the same columns; the piece moved it into the **View** display menu. The menu's
+// choices are read whole and in their order, and each one is then opened by its `?group=` and
+// read back as the heading it bands the one issue under, so a grouping dropped from the menu or
+// one that no longer bands the table fails here by name.
+test("the project List's View menu offers every grouping it had, and each one bands the table under its heading", async ({
+  page,
+}) => {
+  await createProject({ key: "CORE", name: "Core" });
+  const issue = await createIssue({ project: "CORE", title: "Grouped row" });
+  await patchIssue(issue.key, { status: "todo" });
+  const table = page.getByRole("table", { name: "Project issues table" });
+  await page.goto("/projects/CORE/issues");
+  await expect(table.locator(`[data-issue-row="${issue.key}"]`)).toBeVisible();
+  const groupings = (await openDisplayMenu(page))
+    .getByRole("group", { exact: true, name: "Group by" })
+    .locator('input[type="radio"]');
+  await expect(groupings).toHaveCount(9);
+  expect(
+    await groupings.evaluateAll((inputs) =>
+      inputs.map((input) => (input as HTMLInputElement).value)
+    ),
+    "the View menu's Group by choices"
+  ).toEqual(["", "priority", "status", "epic", "assignee", "author", "claim", "created", "updated"]);
+  await page.keyboard.press("Escape");
+  // The one issue's heading under each grouping: no priority, Todo, no epic, the assignee the
+  // server gave it (the creator, alice), nobody claiming it, made and changed today, and its
+  // author's name as the server writes it.
+  // A heading's button reads Collapse or Expand by the band's state, then the heading and count.
+  const headings: readonly [string, string][] = [
+    ["priority", "No priority"],
+    ["status", "Todo"],
+    ["epic", "No epic"],
+    ["assignee", issue.assignee ?? "Unassigned"],
+    ["author", "\\S.*"],
+    ["claim", "Nobody"],
+    ["created", "Today"],
+    ["updated", "Today"],
+  ];
+  for (const [grouping, heading] of headings) {
+    await page.goto(`/projects/CORE/issues?group=${grouping}`);
+    await expect(
+      table.getByRole("button", { name: new RegExp(`^(?:Collapse|Expand) ${heading}, 1 issue$`) }),
+      `?group=${grouping} bands the issue under its heading`
+    ).toBeVisible();
+    await expect(
+      displayChoice(await openDisplayMenu(page), "Group by", grouping),
+      `?group=${grouping} is the View menu's ticked grouping`
+    ).toBeChecked();
+    await page.keyboard.press("Escape");
+  }
+});
+
 test("the table sorts, searches facets and fuzzy text, groups, pages and receives a second page's edit live", async ({
   browser,
 }, testInfo) => {
