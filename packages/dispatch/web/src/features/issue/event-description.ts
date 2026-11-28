@@ -16,7 +16,7 @@ import { capabilityLabel } from "../conversation/delivery";
 import type { AgentPart } from "../refs/AgentName";
 import { type DeletablePost, postDeletion } from "../refs/post-marks";
 import { textSourceOf } from "../refs/text-references";
-import { issuePriority } from "./issue-priority";
+import { inheritedPriorityWords, issuePriority } from "./issue-priority";
 
 /** The line of an `issue.updated` whose `changed` names only `resolved_priority` and
  *  `priority_from`: Dispatch appends one on each issue whose inherited priority another write
@@ -31,7 +31,9 @@ function inheritedPriorityLine(payload: IssueEventPayload): string | undefined {
   if (changed.length === 0 || !inheritedOnly) return undefined;
   const { from, level } = issuePriority(payload);
   if (level === null) return "Priority now none";
-  return from === null ? `Priority now P${level}` : `Priority now P${level}, from ${from}`;
+  return from === null
+    ? `Priority now P${level}`
+    : `Priority now ${inheritedPriorityWords(level, from)}`;
 }
 
 /** An event's line in the Pinned tab, as `SentencePart`s: an agent it names keeps its identity

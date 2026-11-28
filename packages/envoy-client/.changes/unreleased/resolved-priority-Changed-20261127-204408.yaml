@@ -8,7 +8,8 @@ body: |-
   Dispatch that sends no `resolved_priority`, each line prints the issue's own priority, as
   before. The help of `dispatch issue-update` (its `--parent` and `--clear-priority`) and of
   `dispatch issue` says when a move, a clear or a new child of a P0 issue needs the `p0` scope. A
-  refusal of one prints `OAUTH_SCOPE_REQUIRED` and `p0` and exits 1.
+  refusal of one prints `OAUTH_SCOPE_REQUIRED` and `p0` and exits 1. The help of `dispatch login`
+  says that `p0` makes work P0: setting P0, or moving, clearing or filing work under a P0 issue.
 time: 2026-11-27T20:44:08Z
 custom:
     Issue: resolved-priority

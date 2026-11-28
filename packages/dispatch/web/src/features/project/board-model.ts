@@ -381,24 +381,16 @@ export function moveIssueToLane(
     inLane,
     (issue) => {
       if (!relaned) return { ...issue, status: targetStatus };
-      if (targetLane !== null) {
-        return {
-          ...issue,
-          status: targetStatus,
-          priority: targetLane,
-          priority_from: null,
-          resolved_priority: targetLane,
-        };
+      if (targetLane === null && issue.parent !== null) {
+        return { ...issue, status: targetStatus, priority: null };
       }
-      return issue.parent === null
-        ? {
-            ...issue,
-            status: targetStatus,
-            priority: null,
-            priority_from: null,
-            resolved_priority: null,
-          }
-        : { ...issue, status: targetStatus, priority: null };
+      return {
+        ...issue,
+        status: targetStatus,
+        priority: targetLane,
+        priority_from: null,
+        resolved_priority: targetLane,
+      };
     },
     (candidate) => candidate.status === targetStatus && inLane(candidate),
     isVisible

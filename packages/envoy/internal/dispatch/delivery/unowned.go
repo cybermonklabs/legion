@@ -12,23 +12,19 @@ type UnownedIssue struct {
 	Title string `json:"title"`
 }
 
-// The reads of the open P0 issues: the issues not done whose resolved priority is 0, the issue's
-// own priority where it has one, else that of the nearest issue above it that has one, at any
-// status of that issue and in any project, within refs.IssueDepthCap links (J1 of
-// dispatch://INFRA-5793, the rule refs.IssuePriorityTerms climbs). They descend rather than climb:
-// from every issue whose own priority is 0, through issues_parent_key, to its children whose own
-// priority is null, their children whose own priority is null, and so on, at most
-// refs.IssueDepthCap links, at any status, so each issue they reach takes its P0 from the issue
-// they descended from, and they read the few issues with an own P0 and the issues under them where
-// a climb would start from every issue. The seeds repeat the predicates of the two partial indexes
-// that hold them as the migrations spell them, issues_open_p0 (20261117100010) for the open ones and
-// issues_done_p0 (20261127112234) for the done ones, which pass P0 to an open child all the same, so
-// the planner proves each index from the statement's own clauses and reads it whole, and no other
-// row of issues, for its seeds. Both are read, so neither is left for a later release to drop. The
-// status, the claim, the route and a project are each a filter over what the descent reaches. A
-// read of one project starts from every project's P0 issues too: an issue takes the priority of an
-// issue of another project above it, so one project's open P0 issues are not all under its own,
-// and Postgres computes a recursive term whole, so the project filter never narrows the seeds.
+// The reads of the open P0 issues: the issues not done whose resolved priority is 0 (J1 of
+// dispatch://INFRA-5793). They descend by refs.IssueInheritingDescent, which holds the stop and the
+// depth cap of the descent, from two seeds, the issues whose own priority is 0: the open ones, and
+// the done ones, which pass P0 to an open child all the same. So they read those few issues and the
+// issues under them, where a climb would start from every issue. Each seed repeats the predicate of
+// the partial index that holds it as its migration spells it, issues_open_p0 (20261117100010) for
+// the open ones and issues_done_p0 (20261127112234) for the done ones, so the planner proves each
+// index from the statement's own clauses and reads it whole, and no other row of issues, for its
+// seeds. Both are read, so neither is left for a later release to drop. The status, the claim, the
+// route and a project are each a filter over what the descent reaches. A read of one project starts
+// from every project's P0 issues too: an issue takes the priority of an issue of another project
+// above it, so one project's open P0 issues are not all under its own, and Postgres computes a
+// recursive term whole, so the project filter never narrows the seeds.
 const (
 	// openP0Predicate is issues_open_p0's predicate (migration 20261117100010), which the
 	// descent's open seeds repeat.
@@ -49,10 +45,11 @@ const (
 // openP0Descent is the term every read of the open P0 issues starts with (here and openP0KeysQuery
 // in store.go): refs.IssueInheritingDescent, the one descent by the priority-resolution rule, from
 // two seeds, the open and the done issues whose own priority is 0. p0 holds each of them at depth
-// 0, and each issue under one of them that takes its P0, at its depth below it, with the columns
-// its readers read. The two seeds hold no issue in common, so no row comes twice.
+// 0, and each issue under one of them that takes its P0, at its depth below it, with its key, which
+// the descent writes first, and the columns its readers read. The two seeds hold no issue in common,
+// so no row comes twice.
 var openP0Descent = `with recursive ` + refs.IssueInheritingDescent("p0",
-	`c.key, c.project_key, c.number, c.title, c.status, c.claimed_by, c.route`,
+	`c.project_key, c.number, c.title, c.status, c.claimed_by, c.route`,
 	openP0Predicate, doneP0Predicate) + `
 	`
 

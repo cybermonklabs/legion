@@ -59,9 +59,10 @@ export function issuePriority(issue: PriorityFields): PriorityView {
 
 /**
  * The words of an inherited priority where a surface names it in text rather than draws its
- * source beside it, as an accessible name or description: "P0, from ACME-1". `level` and `from`
- * are a `PriorityView`'s, and `fromWord` is the word that joins them, which the new issue page
- * passes in its own words (`CONTROL_LABELS.priority_from`).
+ * source beside it: "P0, from ACME-1", in an accessible name or description, a tooltip, or the
+ * line of an activity event ("Priority now P0, from ACME-1"). `level` and `from` are a
+ * `PriorityView`'s, and `fromWord` is the word that joins them, which the new issue page passes
+ * in its own words (`CONTROL_LABELS.priority_from`).
  */
 export function inheritedPriorityWords(
   level: IssuePriority,

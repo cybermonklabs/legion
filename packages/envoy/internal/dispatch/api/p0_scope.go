@@ -12,12 +12,17 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
+// p0GrantClause is the clause every p0 refusal ends with, after the browser way to proceed that
+// each says in its own words: the two other ways a person gives a credential the p0 scope. It is
+// written once, so a new way to get p0 is one edit and no refusal tells a caller less than another.
+const p0GrantClause = "gives p0 to a personal token in Settings, Agent tokens, " +
+	"or ticks Set P0 for a Dispatch sign-in (dispatch login --device --scope person,p0)"
+
 // p0ScopeRefusal is the message of the 403 OAUTH_SCOPE_REQUIRED a write that makes an issue's own
 // priority 0 (P0) is refused with, where its credential does not hold the p0 scope. It names the
 // scope and says how to get it, since the command prints it as it is.
 const p0ScopeRefusal = "this request's credential does not hold the p0 scope, which a priority of 0 needs: " +
-	"a person sets P0 at a browser, gives p0 to a personal token in Settings, Agent tokens, " +
-	"or ticks Set P0 for a Dispatch sign-in (dispatch login --device --scope person,p0)"
+	"a person sets P0 at a browser, " + p0GrantClause
 
 // p0MoveRefusal is the message of the 403 OAUTH_SCOPE_REQUIRED that refuses a move of the issue key
 // under parent that makes key, and each issue under it that takes its priority from it, P0
@@ -26,9 +31,8 @@ const p0ScopeRefusal = "this request's credential does not hold the p0 scope, wh
 func p0MoveRefusal(key, parent string) string {
 	return fmt.Sprintf("this request's credential does not hold the p0 scope, which a move that makes work P0 needs: "+
 		"under %s, which reads P0, %s would take priority 0, and so would each issue under it that takes its priority from it. "+
-		"Give %s a priority from 1 to 3 before the move, or ask a person with p0: a person moves it at a browser, "+
-		"gives p0 to a personal token in Settings, Agent tokens, "+
-		"or ticks Set P0 for a Dispatch sign-in (dispatch login --device --scope person,p0)", parent, key, key)
+		"Give %s a priority from 1 to 3 before the move, or ask a person with p0: a person moves it at a browser, %s",
+		parent, key, key, p0GrantClause)
 }
 
 // p0ClearRefusal is the message of the 403 OAUTH_SCOPE_REQUIRED that refuses a clear of the issue
@@ -37,9 +41,8 @@ func p0MoveRefusal(key, parent string) string {
 func p0ClearRefusal(key, from string) string {
 	return fmt.Sprintf("this request's credential does not hold the p0 scope, which a clear that makes work P0 needs: "+
 		"with no priority of its own, %s would take priority 0 from %s, and so would each issue under it that takes its priority from it. "+
-		"Set a priority from 1 to 3 in place of the clear, or ask a person with p0: a person clears it at a browser, "+
-		"gives p0 to a personal token in Settings, Agent tokens, "+
-		"or ticks Set P0 for a Dispatch sign-in (dispatch login --device --scope person,p0)", key, from)
+		"Set a priority from 1 to 3 in place of the clear, or ask a person with p0: a person clears it at a browser, %s",
+		key, from, p0GrantClause)
 }
 
 // p0NewChildRefusal is the message of the 403 OAUTH_SCOPE_REQUIRED that refuses a new issue with no
@@ -48,9 +51,8 @@ func p0ClearRefusal(key, from string) string {
 func p0NewChildRefusal(parent string) string {
 	return fmt.Sprintf("this request's credential does not hold the p0 scope, which a new issue with no priority under a P0 issue needs: "+
 		"%s reads P0, so the new issue would take priority 0 from it. "+
-		"Give it a priority from 1 to 3, file it as the architect of %s, or ask a person with p0: a person files it at a browser, "+
-		"gives p0 to a personal token in Settings, Agent tokens, "+
-		"or ticks Set P0 for a Dispatch sign-in (dispatch login --device --scope person,p0)", parent, parent)
+		"Give it a priority from 1 to 3, file it as the architect of %s, or ask a person with p0: a person files it at a browser, %s",
+		parent, parent, p0GrantClause)
 }
 
 // refuseP0WithoutScope is the one rule that holds an issue's own priority 0 to the p0 scope

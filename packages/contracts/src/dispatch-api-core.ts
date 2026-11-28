@@ -61,11 +61,12 @@ export type DispatchScope = (typeof DISPATCH_SCOPES)[number];
 /** The scopes of `DISPATCH_SCOPES` a person may approve for a Dispatch sign-in (a device login
  *  its person approves for Dispatch alone), in the order a page lists them: `person`, which lets
  *  the sign-in act as its person on the routes a person's own credential reaches, and `p0`, which
- *  lets it make an issue's own priority 0. The consent page starts `p0` unticked, so the sign-in
- *  holds it only where its person ticks it. `approve` is never among them, since it settles what
- *  only the person settles. The broker (`oauthwire.ConsentableScopes`), the token verifier
- *  (`ciphertoken`'s `shapeOf`), the clients and the machine-login page each read this one list;
- *  `scripts/gen-go.ts` emits it as `contracts.DispatchSignInScopes`. */
+ *  lets it make work P0 as `DISPATCH_SCOPES` says: set P0, or move, clear or file work under a P0
+ *  issue. The consent page starts `p0` unticked, so the sign-in holds it only where its person
+ *  ticks it. `approve` is never among them, since it settles what only the person settles. The
+ *  broker (`oauthwire.ConsentableScopes`), the token verifier (`ciphertoken`'s `shapeOf`), the
+ *  clients and the machine-login page each read this one list; `scripts/gen-go.ts` emits it as
+ *  `contracts.DispatchSignInScopes`. */
 export const DISPATCH_SIGN_IN_SCOPES = ["person", "p0"] as const satisfies readonly DispatchScope[];
 export type DispatchSignInScope = (typeof DISPATCH_SIGN_IN_SCOPES)[number];
 

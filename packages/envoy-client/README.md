@@ -1699,9 +1699,10 @@ sign-in may ask for, or a reason over `BROKER_REQUEST_REASON_MAX` (400) characte
 error before any request (`startDeviceLogin`'s `RangeError`). The person ticks some or all of the
 scopes on Dispatch's machine-login page, which starts `person` ticked and `p0` unticked; whatever
 is ticked, the session writes in Dispatch and works on Envoy as its own session within its
-person's projects, `person` adds acting as the person, and `p0` adds making an issue's own
-priority 0. A broker whose `BROKER_DISPATCH_SIGNIN` is off answers the request
-`400 invalid_scope` in its own words, which the command prints as it got them:
+person's projects, `person` adds acting as the person, and `p0` adds making work P0: setting P0,
+or moving, clearing or filing work under a P0 issue. A broker whose `BROKER_DISPATCH_SIGNIN` is
+off answers the request `400 invalid_scope` in its own words, which the command prints as it got
+them:
 "DISPATCH_SIGNIN_OFF: this broker serves no Dispatch sign-in: BROKER_DISPATCH_SIGNIN is off". A
 broker that predates sign-ins answers `400 invalid_scope` in its OAuth library's words, which
 this client does not know, and the command prints its own sentence in their place: "this broker

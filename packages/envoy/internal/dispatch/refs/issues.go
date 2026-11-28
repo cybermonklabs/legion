@@ -170,16 +170,23 @@ func IssueInheritingDescendantRows(ctx context.Context, q Queryer, key string) (
 // to its own (J1 of dispatch://INFRA-5793), and it goes at most IssueDepthCap links down, the
 // farthest IssuePriorityTerms' climb takes a priority, which bounds the walk whatever the rows hold.
 // Each of seeds is a condition on the issue c, and the term holds each issue that meets one at
-// depth 0, and each issue under one at its depth below it, with columns, issue columns of c, then
-// its depth. Each seed is a select of its own, so a seed that repeats a partial index's predicate
-// lets the planner read that index whole for it, and the issues under the seeds are read through
-// issues_parent_key. It is a `union all`: an issue is reached only through its one parent, one
-// link deeper than that parent, so the term holds no row twice unless two seeds hold one issue.
+// depth 0, and each issue under one at its depth below it, with c.key, then extraColumns, more
+// columns of c where it names any, then its depth. c.key is always the term's first column: the
+// recursive arm joins each issue to its parent by it (c.parent_key = d.key), so the builder writes
+// it itself and no caller can leave it out. Each seed is a select of its own, so a seed that
+// repeats a partial index's predicate lets the planner read that index whole for it, and the
+// issues under the seeds are read through issues_parent_key. It is a `union all`: an issue is
+// reached only through its one parent, one link deeper than that parent, so the term holds no row
+// twice unless two seeds hold one issue.
 //
 // It is the one descent by the priority-resolution rule: IssueInheritingDescendantRows descends
 // through it from one issue, and delivery's openP0Descent from every issue whose own priority is 0,
 // so the stop and the cap of a write's events and of the open P0 reads are one text.
-func IssueInheritingDescent(term, columns string, seeds ...string) string {
+func IssueInheritingDescent(term, extraColumns string, seeds ...string) string {
+	columns := `c.key`
+	if extraColumns != "" {
+		columns += `, ` + extraColumns
+	}
 	arms := make([]string, 0, len(seeds)+1)
 	for _, seed := range seeds {
 		arms = append(arms, `select `+columns+`, 0 as depth from issues c where `+seed)
@@ -195,12 +202,14 @@ func IssueInheritingDescent(term, columns string, seeds ...string) string {
 }
 
 // issueDescendantColumns are the columns of the issue c that the walks of IssueDescendantRows and
-// IssueInheritingDescendantRows carry, and issueDescendantRowsAnswer the select both answer their
-// rows by, in IssueDescendant's order, nearest first and at one depth in the order of their
-// projects and numbers, so the two answer the same rows the same way and differ only in where the
-// walk stops. The answer leaves out depth 0, the issue IssueInheritingDescent starts from.
+// IssueInheritingDescendantRows carry after its key, c.key, which IssueInheritingDescent writes
+// first itself and IssueDescendantRows' walk writes before them; and issueDescendantRowsAnswer the
+// select both answer their rows by, in IssueDescendant's order, nearest first and at one depth in
+// the order of their projects and numbers, so the two answer the same rows the same way and differ
+// only in where the walk stops. The answer leaves out depth 0, the issue IssueInheritingDescent
+// starts from.
 const (
-	issueDescendantColumns    = `c.key, c.parent_key, c.status, c.project_key, c.number`
+	issueDescendantColumns    = `c.parent_key, c.status, c.project_key, c.number`
 	issueDescendantRowsAnswer = `
 		select key, parent_key, status, depth, project_key from descendants
 		where depth > 0
@@ -215,10 +224,10 @@ const (
 var (
 	issueDescendantRowsStatement = `
 		with recursive descendants as (
-			select ` + issueDescendantColumns + `, 1 as depth
+			select c.key, ` + issueDescendantColumns + `, 1 as depth
 			from issues c where c.parent_key = $1
 			union
-			select ` + issueDescendantColumns + `, d.depth + 1
+			select c.key, ` + issueDescendantColumns + `, d.depth + 1
 			from issues c join descendants d on c.parent_key = d.key
 			where d.depth < ` + issueDepthCapSQL + `
 		)` + issueDescendantRowsAnswer
