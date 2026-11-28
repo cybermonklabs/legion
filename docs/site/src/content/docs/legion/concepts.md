@@ -797,10 +797,14 @@ that the work is done.
 Where the record shows no merge, Legion first looks for one: in the issue's links, in its checks'
 results in Dispatch, and on GitHub.
 Where it finds none, it starts nothing and tells the controller (`merge-unread`).
-A person then ends the wait: links the merged pull request to the issue
-(`dispatch issue-update --external-links`), or confirms that the work never merged by setting the
-issue to `backlog`, then `todo`.
+A person then ends the wait in one of two ways.
+They link the merged pull request to the issue (`dispatch issue-update --external-links`).
+A link counts only in the issue's own repository, or in the one Dispatch resolves it to.
+Or they confirm that the work never merged: they set the issue to `backlog`, then `todo`, in
+Dispatch.
 A `backlog` by anyone else leaves the issue closed, so its next `todo` waits again.
+That holds for the operator's `legion issue status` too: under `controller: operator`, the
+controller's agent holds the operator token as well.
 For a closed issue, only that confirmation runs the tree again whole, as a new generation from its
 architect.
 An issue parked before it closed is no closed issue: where its record shows no merge, its `todo`

@@ -270,12 +270,16 @@ func (e *Engine) pendingRequestEvent(ctx context.Context, tx pgx.Tx, issue recor
 // closedHistoryMove takes a move of issue, at done, to backlog, icebox, triage or done (D17, "A
 // person's confirmation is separate from merge evidence"). The move ends a request that waits for
 // its merge read. Where the issue closed (closedHistory) and its record holds no proof of its
-// merge, only a person's backlog moves it as today, and it records that person's confirmation
-// that the work never merged (record.Store.ConfirmNeverMerged): the next todo takes today's rerun.
-// Any other move of it, by a controller, an architect, a session, the boot listing or an event of
-// no actor, keeps the record's own status done with the observation, so the next request is again
-// a closed issue's, and answers true: nothing leaves the workflow again. A done move, and every
-// move of an issue whose merge is known or that never closed, goes on as today.
+// merge, only a person's backlog in Dispatch moves it as today: a Dispatch user's event
+// (intake.DispatchIssue.PersonActor on no write of the daemon's own). It records that person's
+// confirmation that the work never merged (record.Store.ConfirmNeverMerged): the next todo takes
+// today's rerun. The operator's backlog through its grant (the daemon's own write) confirms
+// nothing: under `controller: operator` the controller's agent holds the operator's token too, so
+// the grant proves no person. Any move of it but a person's, by the operator's grant, a
+// controller, an architect, a session, the boot listing or an event of no actor, keeps the
+// record's own status done with the observation, so the next request is again a closed issue's,
+// and answers true: nothing leaves the workflow again. A done move, and every move of an issue
+// whose merge is known or that never closed, goes on as today.
 func (e *Engine) closedHistoryMove(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.DispatchIssue) (bool, error) {
 	pending, err := e.store.PendingMergeRead(ctx, tx, issue.Key)
 	if err != nil {
@@ -295,7 +299,7 @@ func (e *Engine) closedHistoryMove(ctx context.Context, tx pgx.Tx, issue record.
 	if err != nil || history.Class == record.MergeHistoryAnswered {
 		return false, err
 	}
-	if fact.PersonActor != "" && fact.Status == "backlog" {
+	if fact.PersonActor != "" && !fact.DaemonActor && fact.Status == "backlog" {
 		e.logOnCommit(ctx, "workflow: a person confirms that the work of a closed issue never merged", "issue", issue.Key,
 			"person", fact.PersonActor, "class", history.Class)
 		return false, e.store.ConfirmNeverMerged(ctx, tx, issue.Key)

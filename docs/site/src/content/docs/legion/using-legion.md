@@ -198,7 +198,7 @@ a re-admission makes them afresh.
   generation, from its architect. Where its work merged, `todo` starts one next change of the issue,
   and its tree does not run again ([The close](/legion/legion/concepts/#the-close)). A closed issue
   whose record shows no merge waits while Legion looks for its merge. To run its tree again, set it
-  to `backlog`, then `todo`: that confirms that its work never merged.
+  to `backlog`, then `todo`, from the dashboard: that confirms that its work never merged.
 - **To close it without a change**, tell the architect at the design gate that no change is needed;
   it closes the issue with that reason. You can also close the issue yourself from the dashboard.
 

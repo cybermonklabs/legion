@@ -936,15 +936,18 @@ stands:
 - **Its root is parked or lingers, or the controller restarted the tree** (`backlog`, then `todo`
   in the same turn): leave the claim as it is. The tree's re-admission retries it at a new
   generation. A retry by hand would run it outside the admission cap, and it would be sent no
-  catch-up. A root that closed with no merge in its record is the exception: the controller's pair
-  leaves it waiting for its merge read, and only a person's pair runs its tree again. To restart
-  the tree by hand, write the same pair. On a root whose work merged, the pair starts one next
-  change of it instead:
+  catch-up. To restart the tree by hand, write the same pair. On a root whose work merged, the pair
+  starts one next change of it instead:
 
   ```sh
   legion issue status <KEY> backlog --config legion.yaml --operator-token-file operator-token
   legion issue status <KEY> todo    --config legion.yaml --operator-token-file operator-token
   ```
+
+  A root that closed with no merge in its record is the exception. The controller's pair and this
+  pair leave it waiting for its merge read. Only a person's pair in the Dispatch dashboard runs its
+  tree again. The operator's grant proves no person: under `controller: operator`, the
+  controller's agent holds the operator token too.
 
 `legion claims retry --claim <token>` relaunches a failed architect on its session with fresh
 budgets, or on a new one once supervise's `forgetSession` has dropped that, and retries a failed
@@ -973,8 +976,8 @@ the daemon reads. It reaches a root alone: a held child set to `todo` comes back
 of its own, and a root whose tree lingers or stands at `phase: done` is re-admitted. Where its work
 merged, that is one next change of it. Where it was parked and its record shows no merge, it is a
 new generation of its tree. A closed root whose record shows no merge waits for its merge read
-instead: write `backlog`, then `todo`, as the restart above does, to confirm that its work never
-merged.
+instead. To confirm that its work never merged, a person sets it to `backlog`, then `todo`, in the
+Dispatch dashboard.
 
 `legion claims compact --claim <token>` is the first recovery for a claim whose session a
 provider keeps refusing: the daemon has Oh My Pi write a handoff document of that session, with
