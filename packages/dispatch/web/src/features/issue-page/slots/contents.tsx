@@ -17,6 +17,7 @@ import { CONTROL_LABELS } from "../page-words";
 import { presetView } from "../presets";
 import type { SlotProps } from "../slot-props";
 import { specSummary } from "../spec-summary";
+import { useThreadEntries } from "../text-comments/contents-threads";
 import { useOlderComments } from "../tree-read/tree-read";
 
 /**
@@ -73,6 +74,9 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
   // reads the same page as the control above the outline's first row, so each page is read once
   // whichever of them is pressed (`useOlderComments`).
   const older = useOlderComments(issue);
+  // The reader's comments on text are no row of the outline (R1), so the tree has no node for
+  // them: the list gets an entry for each, under the node its thread stands by (R8).
+  const threads = useThreadEntries(issue, view.root, address.preset);
   return (
     <NoTooltips>
       {sentences ? (
@@ -92,11 +96,16 @@ export function ContentsSlot({ issue, route }: SlotProps): ReactNode {
           ask(current, !focusBranch);
         }}
         onGo={(id) => {
+          if (threads.go(id)) {
+            chosen();
+            return;
+          }
           ask(id, focusBranch);
           chosen();
         }}
         producing={producing}
         root={view.root}
+        {...threads.props}
       />
       {older.remain ? (
         // A refused page leaves the answer as it was, and the control stays for another press

@@ -10,7 +10,12 @@ import {
   textMutedOnSurfaceMuted,
   textPrimaryOnSurface,
 } from "../../theme/classes";
-import type { ComposerAnchor, ComposerKind, ComposerOwner } from "../conversation/composer-model";
+import type {
+  ComposerAnchor,
+  ComposerKind,
+  ComposerOwner,
+  DocumentComposerAnchor,
+} from "../conversation/composer-model";
 import { useHeldSend, useHeldSends } from "../conversation/held-sends";
 import { DraftOffer, KIND_WORDS } from "../conversation/KeptDraftOffers";
 import { MentionComposer } from "../conversation/MentionComposer";
@@ -33,7 +38,7 @@ import type {
 /** The composer on the open document: the compose the reader has open, or the one the held-send
  *  store holds for the document - out, or refused - from Send on. At most one per document. */
 export interface MarginComposer {
-  anchor: ComposerAnchor;
+  anchor: DocumentComposerAnchor;
   kind: ComposerKind;
   /** Where its sends go: the owner it was opened under. */
   owner: ComposerOwner;

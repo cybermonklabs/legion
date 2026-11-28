@@ -1,0 +1,2776 @@
+{
+  "comments": [
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "The sample has room for another sample.\n\nRead the next line in `order`.\n\n- First item\n- Second item",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "The sample has room for another sample.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Read the next line in ",
+                "type": "text"
+              },
+              {
+                "marks": [
+                  {
+                    "type": "inlineCode"
+                  }
+                ],
+                "text": "order",
+                "type": "text"
+              },
+              {
+                "text": ".",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "attrs": {
+                  "spread": false
+                },
+                "content": [
+                  {
+                    "content": [
+                      {
+                        "text": "First item",
+                        "type": "text"
+                      }
+                    ],
+                    "type": "paragraph"
+                  }
+                ],
+                "type": "list_item"
+              },
+              {
+                "attrs": {
+                  "spread": false
+                },
+                "content": [
+                  {
+                    "content": [
+                      {
+                        "text": "Second item",
+                        "type": "text"
+                      }
+                    ],
+                    "type": "paragraph"
+                  }
+                ],
+                "type": "list_item"
+              }
+            ],
+            "type": "bullet_list"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-001",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "post",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": "post",
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "An answer to the whole post.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "An answer to the whole post.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-002",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "postReply",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": "post",
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": "postReply",
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "An answer to the previous reply.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "An answer to the previous reply.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-003",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "postReplyToReply",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": "post",
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": "post",
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "An answer to the second paragraph without a quote.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "An answer to the second paragraph without a quote.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-004",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "postBlockReply",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": {
+        "block_id": "b2",
+        "node": "comment/post#b2",
+        "ref": "dispatch://key/comment/post#b-b2",
+        "removed": false,
+        "text": "Read the next line in `order`.",
+        "text_tree": {
+          "content": [
+            {
+              "content": [
+                {
+                  "text": "Read the next line in ",
+                  "type": "text"
+                },
+                {
+                  "marks": [
+                    {
+                      "type": "inlineCode"
+                    }
+                  ],
+                  "text": "order",
+                  "type": "text"
+                },
+                {
+                  "text": ".",
+                  "type": "text"
+                }
+              ],
+              "type": "paragraph"
+            }
+          ],
+          "type": "doc"
+        }
+      },
+      "reply_to": "post",
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS1[0].anchorBlock",
+        "mark_id": "threadsS1[0]",
+        "orphaned": false,
+        "quote": "thread",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "On thread: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "On thread: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-005",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS1[0]",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS1[0].anchorBlock",
+        "mark_id": "threadsS1[1]",
+        "orphaned": false,
+        "quote": "words",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "On words: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "On words: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-006",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS1[1]",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS1[0].anchorBlock",
+        "mark_id": "threadsS1[2]",
+        "orphaned": false,
+        "quote": "answers",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "On answers: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "On answers: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-007",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS1[2]",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": "threadsS1[0]",
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Read this next to the first statement.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Read this next to the first statement.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-008",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "statementReply",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": "threadsS1[0]",
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS2[0].anchorBlock",
+        "mark_id": "threadsS2[0]",
+        "orphaned": false,
+        "quote": "first",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A note about the first.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A note about the first.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-009",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS2[0]",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS2[0].anchorBlock",
+        "mark_id": "threadsS2[1]",
+        "orphaned": false,
+        "quote": "marker",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A note about the marker.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A note about the marker.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-010",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS2[1]",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "agentComment.anchorBlock",
+        "mark_id": "agentComment",
+        "orphaned": false,
+        "quote": "planner's notes",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "issue-layout-planner",
+        "kind": "session",
+        "origin": {
+          "session_title": "Planner (issue layout)"
+        }
+      },
+      "body": "The planner left this for the reader.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "The planner left this for the reader.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-011",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "agentComment",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "resolvedThread.anchorBlock",
+        "mark_id": "resolvedThread",
+        "orphaned": false,
+        "quote": "settled question",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "This part is settled.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "This part is settled.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-012",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "resolvedThread",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": true,
+      "resolved_at": "instant-013",
+      "resolved_by": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "orphanedThread.anchorBlock",
+        "mark_id": "orphanedThread",
+        "orphaned": true,
+        "quote": "temporary blue note",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "These words are about to go away.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "These words are about to go away.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-014",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "orphanedThread",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "verificationArtifactId",
+        "block_id": "checkComment.anchorBlock",
+        "mark_id": "checkComment",
+        "orphaned": false,
+        "quote": "placement",
+        "version": 2
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Check this once even though it serves two statements.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Check this once even though it serves two statements.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-015",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "checkComment",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "planArtifactId",
+        "block_id": "planTaskComment.anchorBlock",
+        "mark_id": "planTaskComment",
+        "orphaned": false,
+        "quote": "column",
+        "version": 1
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Keep the column in view while reading the task.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Keep the column in view while reading the task.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-016",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "planTaskComment",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "decisionComment.anchorBlock",
+        "mark_id": "decisionComment",
+        "orphaned": false,
+        "quote": "space",
+        "version": 5
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Leave enough room between the rows.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Leave enough room between the rows.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-017",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "decisionComment",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "change.anchorBlock",
+        "mark_id": "change",
+        "orphaned": false,
+        "quote": "narrow spacing",
+        "version": 5
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Change the spacing so a reader can see the quoted words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Change the spacing so a reader can see the quoted words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-018",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "change",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "pagedChildThread.anchorBlock",
+        "mark_id": "pagedChildThread",
+        "orphaned": false,
+        "quote": "note 55",
+        "version": 5
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Open the page that holds this note.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Open the page that holds this note.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-019",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "pagedChildThread",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "uncitedArtifactId",
+        "block_id": "uncitedBlocks[0]",
+        "mark_id": "uncitedThreads[0]",
+        "orphaned": false,
+        "quote": "The draft has a paper copy.",
+        "version": 1
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A note on background paragraph 1.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A note on background paragraph 1.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-020",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "uncitedThreads[0]",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "uncitedArtifactId",
+        "block_id": "uncitedBlocks[1]",
+        "mark_id": "uncitedThreads[1]",
+        "orphaned": false,
+        "quote": "The copy sits in the reading room.",
+        "version": 1
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A note on background paragraph 2.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A note on background paragraph 2.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-021",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "uncitedThreads[1]",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the constraint's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the constraint's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-022",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "constraintComment",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the finding's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the finding's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-023",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "findingComment",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the lens's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the lens's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-024",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "lensComment",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the result's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the result's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-025",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "resultComment",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the risk's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the risk's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-026",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "riskComment",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    }
+  ],
+  "commentsWithNodeAnchor": [
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "The sample has room for another sample.\n\nRead the next line in `order`.\n\n- First item\n- Second item",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "The sample has room for another sample.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Read the next line in ",
+                "type": "text"
+              },
+              {
+                "marks": [
+                  {
+                    "type": "inlineCode"
+                  }
+                ],
+                "text": "order",
+                "type": "text"
+              },
+              {
+                "text": ".",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "attrs": {
+                  "spread": false
+                },
+                "content": [
+                  {
+                    "content": [
+                      {
+                        "text": "First item",
+                        "type": "text"
+                      }
+                    ],
+                    "type": "paragraph"
+                  }
+                ],
+                "type": "list_item"
+              },
+              {
+                "attrs": {
+                  "spread": false
+                },
+                "content": [
+                  {
+                    "content": [
+                      {
+                        "text": "Second item",
+                        "type": "text"
+                      }
+                    ],
+                    "type": "paragraph"
+                  }
+                ],
+                "type": "list_item"
+              }
+            ],
+            "type": "bullet_list"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-001",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "post",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": "post",
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "An answer to the whole post.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "An answer to the whole post.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-002",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "postReply",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": "post",
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": "postReply",
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "An answer to the previous reply.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "An answer to the previous reply.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-003",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "postReplyToReply",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": "post",
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": "post",
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "An answer to the second paragraph without a quote.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "An answer to the second paragraph without a quote.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-004",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "postBlockReply",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": {
+        "block_id": "b2",
+        "node": "comment/post#b2",
+        "ref": "dispatch://key/comment/post#b-b2",
+        "removed": false,
+        "text": "Read the next line in `order`.",
+        "text_tree": {
+          "content": [
+            {
+              "content": [
+                {
+                  "text": "Read the next line in ",
+                  "type": "text"
+                },
+                {
+                  "marks": [
+                    {
+                      "type": "inlineCode"
+                    }
+                  ],
+                  "text": "order",
+                  "type": "text"
+                },
+                {
+                  "text": ".",
+                  "type": "text"
+                }
+              ],
+              "type": "paragraph"
+            }
+          ],
+          "type": "doc"
+        }
+      },
+      "reply_to": "post",
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS1[0].anchorBlock",
+        "mark_id": "threadsS1[0]",
+        "orphaned": false,
+        "quote": "thread",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "On thread: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "On thread: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-005",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS1[0]",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#threadsS1[0].anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "thread"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS1[0].anchorBlock",
+        "mark_id": "threadsS1[1]",
+        "orphaned": false,
+        "quote": "words",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "On words: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "On words: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-006",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS1[1]",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#threadsS1[0].anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "words"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS1[0].anchorBlock",
+        "mark_id": "threadsS1[2]",
+        "orphaned": false,
+        "quote": "answers",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "On answers: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.\n\nReaders need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "On answers: Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          },
+          {
+            "content": [
+              {
+                "text": "Readers need to see the whole reply before deciding whether to answer it. Keep these lines in the card so they can compare the reply with the words it answers.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-007",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS1[2]",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#threadsS1[0].anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "answers"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": "threadsS1[0]",
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Read this next to the first statement.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Read this next to the first statement.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-008",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "statementReply",
+      "issue_key": "key",
+      "mentions": [],
+      "reply_block": null,
+      "reply_to": "threadsS1[0]",
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS2[0].anchorBlock",
+        "mark_id": "threadsS2[0]",
+        "orphaned": false,
+        "quote": "first",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A note about the first.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A note about the first.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-009",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS2[0]",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#threadsS2[0].anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "first"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "threadsS2[0].anchorBlock",
+        "mark_id": "threadsS2[1]",
+        "orphaned": false,
+        "quote": "marker",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A note about the marker.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A note about the marker.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-010",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "threadsS2[1]",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#threadsS2[0].anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "marker"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "agentComment.anchorBlock",
+        "mark_id": "agentComment",
+        "orphaned": false,
+        "quote": "planner's notes",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "issue-layout-planner",
+        "kind": "session",
+        "origin": {
+          "session_title": "Planner (issue layout)"
+        }
+      },
+      "body": "The planner left this for the reader.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "The planner left this for the reader.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-011",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "agentComment",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#agentComment.anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "planner's notes"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "resolvedThread.anchorBlock",
+        "mark_id": "resolvedThread",
+        "orphaned": false,
+        "quote": "settled question",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "This part is settled.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "This part is settled.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-012",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "resolvedThread",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#resolvedThread.anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "settled question"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": true,
+      "resolved_at": "instant-013",
+      "resolved_by": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "orphanedThread.anchorBlock",
+        "mark_id": "orphanedThread",
+        "orphaned": true,
+        "quote": "temporary blue note",
+        "version": 4
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "These words are about to go away.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "These words are about to go away.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-014",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "orphanedThread",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#orphanedThread.anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": true,
+        "quote": "temporary blue note"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "verificationArtifactId",
+        "block_id": "checkComment.anchorBlock",
+        "mark_id": "checkComment",
+        "orphaned": false,
+        "quote": "placement",
+        "version": 2
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Check this once even though it serves two statements.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Check this once even though it serves two statements.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-015",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "checkComment",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#checkComment.anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "placement"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "planArtifactId",
+        "block_id": "planTaskComment.anchorBlock",
+        "mark_id": "planTaskComment",
+        "orphaned": false,
+        "quote": "column",
+        "version": 1
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Keep the column in view while reading the task.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Keep the column in view while reading the task.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-016",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "planTaskComment",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#planTaskComment.anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "column"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "decisionComment.anchorBlock",
+        "mark_id": "decisionComment",
+        "orphaned": false,
+        "quote": "space",
+        "version": 5
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Leave enough room between the rows.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Leave enough room between the rows.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-017",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "decisionComment",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#decisionComment.anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "space"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "change.anchorBlock",
+        "mark_id": "change",
+        "orphaned": false,
+        "quote": "narrow spacing",
+        "version": 5
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Change the spacing so a reader can see the quoted words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Change the spacing so a reader can see the quoted words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-018",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "change",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#change.anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "narrow spacing"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "specArtifactId",
+        "block_id": "pagedChildThread.anchorBlock",
+        "mark_id": "pagedChildThread",
+        "orphaned": false,
+        "quote": "note 55",
+        "version": 5
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "Open the page that holds this note.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "Open the page that holds this note.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-019",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "pagedChildThread",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/tree#pagedChildThread.anchorBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "note 55"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "uncitedArtifactId",
+        "block_id": "uncitedBlocks[0]",
+        "mark_id": "uncitedThreads[0]",
+        "orphaned": false,
+        "quote": "The draft has a paper copy.",
+        "version": 1
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A note on background paragraph 1.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A note on background paragraph 1.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-020",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "uncitedThreads[0]",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/background-md#uncitedBlocks[0]",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "The draft has a paper copy."
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": {
+        "artifact_id": "uncitedArtifactId",
+        "block_id": "uncitedBlocks[1]",
+        "mark_id": "uncitedThreads[1]",
+        "orphaned": false,
+        "quote": "The copy sits in the reading room.",
+        "version": 1
+      },
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A note on background paragraph 2.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A note on background paragraph 2.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-021",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "uncitedThreads[1]",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "key/background-md#uncitedBlocks[1]",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": null,
+        "orphaned": false,
+        "quote": "The copy sits in the reading room."
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the constraint's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the constraint's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-022",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "constraintComment",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "constraint",
+          "kind": "constraint",
+          "state": "live"
+        },
+        "occurrence": 1,
+        "orphaned": false,
+        "quote": "standard"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the finding's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the finding's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-023",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "findingComment",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "lens/rowLens#rowFindingBlock",
+          "kind": "block",
+          "state": "live"
+        },
+        "occurrence": 1,
+        "orphaned": false,
+        "quote": "record"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the lens's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the lens's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-024",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "lensComment",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "rowLens",
+          "kind": "lens",
+          "state": "live"
+        },
+        "occurrence": 1,
+        "orphaned": false,
+        "quote": "margin"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the result's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the result's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-025",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "resultComment",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "result",
+          "kind": "result",
+          "state": "live"
+        },
+        "occurrence": 1,
+        "orphaned": false,
+        "quote": "reading"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    },
+    {
+      "anchor": null,
+      "answers": null,
+      "artifact_id": null,
+      "ask_id": null,
+      "author": {
+        "id": "alice",
+        "kind": "user",
+        "proven": true
+      },
+      "body": "A remark on the risk's words.",
+      "body_tree": {
+        "content": [
+          {
+            "content": [
+              {
+                "text": "A remark on the risk's words.",
+                "type": "text"
+              }
+            ],
+            "type": "paragraph"
+          }
+        ],
+        "type": "doc"
+      },
+      "created_at": "instant-026",
+      "deleted_at": null,
+      "deleted_by": null,
+      "deliveries": [],
+      "edited_at": null,
+      "id": "riskComment",
+      "issue_key": "key",
+      "mentions": [],
+      "node_anchor": {
+        "node": {
+          "id": "rowRisk",
+          "kind": "risk",
+          "state": "live"
+        },
+        "occurrence": 1,
+        "orphaned": false,
+        "quote": "slow"
+      },
+      "reply_block": null,
+      "reply_to": null,
+      "resolved": false,
+      "resolved_at": null,
+      "resolved_by": null,
+      "suggestion": null,
+      "turn": null
+    }
+  ],
+  "gate": "G2",
+  "recordedOn": "aea248bb422de8f2b435ecfd6398fc78a94ec3ce"
+}

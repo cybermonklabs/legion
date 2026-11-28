@@ -79,6 +79,7 @@ import { usePressFocus } from "../press-focus";
 import { RowText, useOutOfTabOrder } from "../RowText";
 import { FailedReadLine } from "../slots/failed-read-line";
 import { specSummary } from "../spec-summary";
+import { NodeThreads, useSheetFocusOnScreen } from "../text-comments/NodeThreads";
 import { treeContext } from "../tree-drafts";
 import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
@@ -690,6 +691,10 @@ export function SpecFilterBody({
           speaks={line.speaks}
         />
       ))}
+      {/* The two columns' step by the width of the Spec view's own column, while the column of
+          comments on text is drawn (`SPEC_IN_COLUMN`): drawn ahead of the legend, the head and
+          the tree it reaches. */}
+      <i aria-hidden="true" className={SPEC_IN_COLUMN} hidden />
       <Legend />
       <div
         className={`sticky top-[var(--issue-identity-height,0px)] z-[6] grid grid-cols-[280px_minmax(0,1fr)] gap-x-5 border-b pt-2 pb-1.5 max-[901px]:hidden ${pageLineBorder} ${pagePaperBg}`}
@@ -843,6 +848,7 @@ export function SpecFilterBody({
             group={group}
             key={group.parent?.id ?? group.runs[0]?.statements[0]?.node.id ?? ""}
             known={decidedHeld}
+            nodeIdOf={nodeIdOf}
             onCellFocus={focusCell}
             openCell={openCell}
           />
@@ -935,6 +941,9 @@ function useOnScreenUnderHeads(
     grown.observe(element);
     return () => grown.disconnect();
   }, [focused, item]);
+  // The focus in the item's sheet of threads stands on screen after the placing above, which puts
+  // a statement taller than the screen at its top (`useSheetFocusOnScreen`).
+  useSheetFocusOnScreen(item, focused, pressed);
   return () => {
     placeByRule();
     pressed.current = true;
@@ -1006,6 +1015,49 @@ function markToken(mark: SpecMark): string {
 function markWord(mark: SpecMark): string {
   return mark === "no_check" ? SPEC_WORDS.no_check : VERIFICATION_WORDS.states[mark];
 }
+
+/**
+ * The two columns' step by the width of the Spec view's own column, while the column of comments
+ * on text is drawn beside the main column (INFRA-5706's R2, decision 472): the two columns from a
+ * column of 672 px - the view's column at 1024 px of window on part W's head, the narrowest at
+ * which that head draws them while a column of comments can stand - and one column below it. Each
+ * is a container variant of a class of this file that makes the view one column below 902 px of
+ * window: no head, the legend and each group's heading at the column's left, each run one column
+ * with its cell above its statements, the cell's bracket a rule at its left with no caps and its
+ * words no longer held under the heads, and a row that is no statement at the column's left. The
+ * box of the issue's three sentences takes none: the column of comments is drawn from 1024 px of
+ * window, where the Contents pane draws those sentences and the body does not. With no column the
+ * classes apply nothing, and the view keeps its window steps: each is read only under the stage's
+ * attribute (`text-comments/TextMargin.tsx`'s `TEXT_MARGIN_ATTRIBUTE`). They stand on an element
+ * drawn in the body ahead of the legend, which reaches the legend, the head and the tree as its
+ * later siblings, so no class of the view's own elements changes; each names more attributes than
+ * the class it takes back, so it wins over that class wherever both apply. The first makes the
+ * body the container they are measured against, only while the column of comments is drawn.
+ */
+const SPEC_IN_COLUMN = [
+  "[*:has(>&~[data-spec-tree])]:in-data-[text-margin]:@container",
+  // The legend at the column's left, and no head over the columns.
+  "in-data-[text-margin]:[&~[data-spec-legend]]:@max-[672px]:ml-0",
+  "in-data-[text-margin]:[&~[data-spec-head]]:@max-[672px]:hidden",
+  // One column in each run, under its group's heading at the column's left.
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-run]]:@max-[672px]:grid-cols-[minmax(0,1fr)]",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-group-heading]]:@max-[672px]:ml-0",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-group-heading]]:@max-[672px]:pl-0",
+  // The cell above its statements: a 2 px rule at its left with no corners and no caps, and its
+  // words where the cell stands rather than held under the heads.
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-cell]]:@max-[672px]:my-1.5",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-cell]]:@max-[672px]:rounded-none",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-cell]]:@max-[672px]:border-r-0",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-cell]]:@max-[672px]:border-l-2",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-cell]]:@max-[672px]:py-0.5",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-cell]]:@max-[672px]:pr-0",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-cell]]:@max-[672px]:pl-2.5",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-cell]>span[aria-hidden]]:@max-[672px]:hidden",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-cell-words]]:@max-[672px]:static",
+  // A row that is no statement at the column's left.
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-other]]:@max-[672px]:ml-0",
+  "in-data-[text-margin]:[&~[data-spec-tree]_[data-spec-other]]:@max-[672px]:pl-0",
+].join(" ");
 
 /** What each mark means, above the columns: a shape and the word for it, since neither colour
  *  nor shape alone tells a reader what one says (R6). */
@@ -1122,6 +1174,7 @@ function Group({
   drawStatement,
   group,
   known,
+  nodeIdOf,
   onCellFocus,
   openCell,
 }: {
@@ -1130,6 +1183,9 @@ function Group({
   /** Whether the decisions read and the asks read hold an answer, which is when a run with no
    *  decision can say that none shaped it. */
   known: boolean;
+  /** The tree id of the node a reference names, by the rule the tree was built with
+   *  (`treeContext`'s `nodeIdOf`). */
+  nodeIdOf: (reference: string) => string | undefined;
   /** Takes a focus inside a run's cell, with the decision the cell draws, and the run whose
    *  cell draws what only the focus draws where the cell itself has the focus. */
   onCellFocus: (
@@ -1159,6 +1215,7 @@ function Group({
             decision={run.decision}
             focused={openCell !== undefined && openCell === run.statements[0]?.node.id}
             known={known}
+            nodeIdOf={nodeIdOf}
             onFocus={(cell, itself) =>
               onCellFocus(cell, run.decision, itself ? run.statements[0]?.node.id : undefined)
             }
@@ -1226,6 +1283,7 @@ function DecisionCell({
   decision,
   focused,
   known,
+  nodeIdOf,
   onFocus,
   statements,
 }: {
@@ -1236,6 +1294,8 @@ function DecisionCell({
   /** Whether the cell knows what shaped its run, which is when a run with no decision can say
    *  that none shaped it. */
   known: boolean;
+  /** The tree id of the node a reference names (`Group`'s `nodeIdOf`). */
+  nodeIdOf: (reference: string) => string | undefined;
   /** Takes a focus anywhere in the cell, which no statement holds any longer: the cell, and
    *  whether the focus is on the cell itself. */
   onFocus: (cell: HTMLElement, itself: boolean) => void;
@@ -1245,6 +1305,15 @@ function DecisionCell({
   const press = useOnScreenUnderHeads(words, focused);
   const rule = decision === undefined ? pageHairBorder : "border-page-decision";
   const cap = decision === undefined ? pageHairBg : pageKindBullet.decision;
+  // The node whose threads the cell's sheet holds: the decision's node where the tree holds it,
+  // else the node its reference names by the tree's one rule, since below 1024 px the Spec view
+  // reads no outline, and the tree holds no decision there.
+  const sheetNode =
+    decision === undefined
+      ? undefined
+      : (decision.node ??
+        (decision.reference === undefined ? undefined : nodeIdOf(decision.reference)) ??
+        decision.id);
   return (
     <div
       aria-level={1}
@@ -1258,6 +1327,9 @@ function DecisionCell({
       data-said={decision?.said}
       data-spec-cell=""
       data-spec-statements={statements.map((statement) => statement.node.id).join(" ")}
+      // The canonical tree id of the decision whose sheet this cell mounts (`sheetNode`), where
+      // `data-node-id` holds a `dispatch://` address because no outline read ran below 1024 px.
+      data-text-node={sheetNode}
       // An item of the outline, as the statements beside it are: it is where the focus goes
       // from a statement (R5's `w`), and the prototype's own cell takes the focus the same way.
       // A person's whole answer and "Author unknown" are drawn only while the cell itself has
@@ -1382,6 +1454,10 @@ function DecisionCell({
           </>
         )}
       </div>
+      {/* The decision's threads below 1024 px, under its words (R3): the cell is the row the
+          view draws the decision as. A run no decision shaped draws no node, so it has no
+          sheet. */}
+      {sheetNode === undefined ? null : <NodeThreads node={{ id: sheetNode }} />}
     </div>
   );
 }
@@ -1544,6 +1620,9 @@ function Statement({
           token={markToken(statement.mark)}
         />
       ) : null}
+      {/* The statement's threads below 1024 px, after its words, the line under them, its report,
+          its count and its mark, on a row of the grid of their own (R3). */}
+      <NodeThreads node={node} />
     </div>
   );
 }
@@ -1641,6 +1720,8 @@ function OtherRow({
         </div>
       )}
       <RowReport line={report} />
+      {/* The row's threads below 1024 px, after its words and its report (R3). */}
+      <NodeThreads node={node} />
     </div>
   );
 }

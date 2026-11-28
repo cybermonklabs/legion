@@ -6,7 +6,7 @@ import { MemoryRouter, useLocation } from "react-router-dom";
 
 import { api } from "../api/client";
 import type { Artifact, ArtifactText, DocumentRead, IssueAskRow } from "../api/types";
-import type { ComposerAnchor } from "../features/conversation/composer-model";
+import type { DocumentComposerAnchor } from "../features/conversation/composer-model";
 import { type DocumentToolbar, ProofDocument } from "../features/doc/ProofDocument";
 import { DocumentRuntime } from "../features/doc/runtime";
 import { MarginProvider, useMargin } from "../features/margin/margin-context";
@@ -179,7 +179,9 @@ export function renderProofDocument({
           composes: ReadonlyMap<
             string,
             {
-              open: { anchor: ComposerAnchor; kind: "ask" | "comment" | "suggestion" } | undefined;
+              open:
+                | { anchor: DocumentComposerAnchor; kind: "ask" | "comment" | "suggestion" }
+                | undefined;
               seq: number;
             }
           >;

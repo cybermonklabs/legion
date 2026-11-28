@@ -110,6 +110,9 @@ export type ThreadComment = Omit<CommentWithTrees, "mentions" | "deliveries">;
 export interface Thread {
   anchor: Anchor | null;
   key: string;
+  /** `"message"` for a thread whose root is a message, which the margin of comments on text draws
+   *  (INFRA-5706): its reply writes a message. Every other thread is a comment's and sets none. */
+  kind?: "message";
   lastReplyAt: string | undefined;
   replies: ThreadComment[];
   resolved: boolean;
@@ -379,6 +382,11 @@ export function useMarginItems(
     queryFn: () => {
       if (owner === undefined) {
         throw new Error("Margin comments require an owner.");
+      }
+      // On the new issue page (`freshness`), the shell margin shares `["comments", key]` with
+      // `issueCommentsQuery`, so both send `node_anchor=true` and neither starts a second read.
+      if (owner.kind === "issue" && freshness !== undefined) {
+        return api.listComments(owner.key, undefined, true);
       }
       return owner.kind === "document"
         ? api.listArtifactComments(owner.artifactId)
