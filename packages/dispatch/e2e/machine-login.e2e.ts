@@ -14,6 +14,7 @@ const typedCode = "wxyz4321";
 const pendingLogin: RecordResponse = {
   approver: "alice",
   decided: null,
+  dispatch_scopes: null,
   enrollment: null,
   expires_at: new Date(Date.now() + 60 * 60_000).toISOString(),
   identifiers: ["worker-7.example.com"],

@@ -56,8 +56,8 @@ import {
 } from "./outline-writer";
 import { authorText, pageChrome } from "./page-structure";
 import { ANSWER_LINES, CONTROL_LABELS } from "./page-words";
+import { abortOnReaderAct } from "./reader-acts";
 import { nearestScroll, scrollingAncestor } from "./scroll-box";
-import { abortOnReaderAct } from "./useNodeEditing";
 
 /** How many events a page of the log holds, as the server answers it. */
 const PAGE = 200;

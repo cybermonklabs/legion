@@ -362,8 +362,8 @@ export interface TreeNode {
    *  Keep and Change are drawn and what the Decisions preset opens on (R7), or an open question
    *  whose turn is the reader's own - it waits on a person, and that person
    *  (`Ask.waiting_on_person`) is the reader's login. Nothing waits on a reader whose login has
-   *  not resolved. The header's count of what waits puts the focus on the first of them (R13,
-   *  `waiting.ts`). */
+   *  not resolved. The header's count counts the same question and decision by Dashboard's rule
+   *  (`dashboard/useWaitingItems.ts`; `waiting.test.ts` pins the agreement). */
   readonly waiting: boolean;
 }
 

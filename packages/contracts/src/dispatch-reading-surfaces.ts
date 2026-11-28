@@ -1032,9 +1032,16 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "change-view-diff",
   },
-  // The reason an agent gave for a credential it asks for.
+  // The reason an agent gave for a credential it asks for: on the machine-login page as it is
+  // looked up and once it is decided, in a pending Dispatch sign-in's Inbox row, and on the
+  // machine-logins list, where it tells one sign-in of a host from another.
   {
-    files: ["packages/dispatch/web/src/features/credentials/CredentialRecordFacts.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/credentials/CredentialRecordFacts.tsx",
+      "packages/dispatch/web/src/features/credentials/CredentialRequestsSection.tsx",
+      "packages/dispatch/web/src/features/credentials/MachineLoginPage.tsx",
+      "packages/dispatch/web/src/features/credentials/MachineLoginsSection.tsx",
+    ],
     reach: "/credentials/machine, a machine login request's reason",
     reason: `A credential request's reason is what the asking agent typed for it. ${ONE_LINE_FIELD_REASON}`,
     record: false,

@@ -90,6 +90,7 @@ import {
   NEW_THREAD_BOX,
   NOT_FOUND_LINE,
   newThreadPanel,
+  OPEN_IN_CONVERSATION,
   openedRecord,
   openRow,
   PLANNER,
@@ -919,8 +920,9 @@ test("each row draws its kind, its first line, who is in it, its last activity a
 // Row 5
 // =============================================================================================
 
-// SLOW(>=2s): the whole seed, then every page of All drawn, four records opened, and one reply
-// sent from a record a reply with a quote begins, read back after a reload.
+// SLOW(>=2s): the whole seed, then every page of All drawn, four records opened, one reply sent
+// from a record a reply with a quote begins and read back after a reload, and two records' links
+// to their nodes followed.
 test("a reply with a quote begins its own record, and a thread on a deleted node keeps its row with a mark", async ({
   browser,
 }) => {
@@ -928,15 +930,18 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
   await phase(browser, seedThreads, async (page, seed) => {
     const key = seed.key;
     const { comments, messages } = seed;
+    // Each record of `linked` is one that a reply with a quote begins: `id` is the record's,
+    // `post` its node's, and `segment` the route segment of that node's address.
+    const linked = [
+      { id: comments.postQuote, post: comments.post, segment: "comments" },
+      { id: messages.quotingReply, post: messages.quoting, segment: "messages" },
+    ] as const;
     const [records, reads] = await Promise.all([recordsById(key), markReads(key)]);
     await loadThreads(page, key);
     await drawEveryPage(page, "All");
 
     // The post and the record its quoting reply begins are two rows, the reply in one of them.
-    for (const [post, quote] of [
-      [comments.post, comments.postQuote],
-      [messages.quoting, messages.quotingReply],
-    ] as const) {
+    for (const { id: quote, post } of linked) {
       await expect(
         threadRow(page, quote),
         `the reply with a quote ${quote} begins no row`
@@ -965,7 +970,14 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
 
     // Each record drawn opened: the quoting record with its quoted words above its root, the
     // post's without the quoting reply's entries, and the record on text with the reply that
-    // joined it.
+    // joined it. A record that a quoting reply begins links to its node, where a view draws that
+    // node (R8): the post or the message that reply answers, which Conversation's outline draws.
+    // The post's own record is on no text, and the link of the comment on the spec's text is owed
+    // until dispatch://INFRA-1253's node anchor is on the base, so neither draws a link. Each
+    // record of `linked` draws one.
+    const nodeLinks = new Map(
+      linked.map(({ id, post, segment }) => [id, `/issues/${key}/${segment}/${post}`] as const)
+    );
     for (const id of [comments.postQuote, comments.post, messages.quotingReply, comments.text]) {
       const known = records.get(id);
       if (known === undefined) continue;
@@ -976,6 +988,22 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
           openedRecord(page).locator(SELECTORS.quote),
           `the record on text ${id} draws no words it quotes above its root`
         ).toHaveText(known.record.quote);
+      }
+      const link = openedRecord(page).locator(SELECTORS.nodeLink);
+      const href = nodeLinks.get(id);
+      if (href === undefined) {
+        await expect(
+          link,
+          `the record ${id}, on no text or with its link owed, draws a link to a node`
+        ).toHaveCount(0);
+      } else {
+        await expect(link, `the record on text ${id} draws no link to its node`).toHaveText(
+          OPEN_IN_CONVERSATION
+        );
+        await expect(link, `the link of ${id} goes elsewhere than its node`).toHaveAttribute(
+          "href",
+          href
+        );
       }
       await page.goBack();
       await expect(openedRecord(page)).toHaveCount(0);
@@ -996,6 +1024,25 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
     ).toBeVisible();
     const stored = (await getComment(comments.post)).replies?.find((one) => one.id === reply.id);
     expect(stored?.answers, "the reply is stored answering another entry").toBe(comments.postQuote);
+
+    // Each link opens the view that draws its node, Conversation, with the focus on the post or
+    // the message its record's quoting reply answers. Each record is loaded at its own address
+    // before its link is followed.
+    for (const { id, post } of linked) {
+      await loadThreads(page, key, id);
+      await openedRecord(page).locator(SELECTORS.nodeLink).click();
+      await expectActivePreset(page, PRESET_NAMES.conversation);
+      await expectOpeningLanded(page);
+      await expect(
+        nodeRow(page, post).first(),
+        `the link of ${id} opens no view that draws its node`
+      ).toBeVisible();
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the link of the record ${id} does not focus its node ${post} in Conversation`,
+        })
+        .toBe(post);
+    }
   });
 });
 

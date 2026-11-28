@@ -1,0 +1,62 @@
+-- pgmigrate:non-transactional
+-- 20261120004316_events_ask_state.up.sql: the index on events through which a read at a cut
+-- finds the state of each ask, built concurrently.
+--
+-- Why it exists. A read at a cut reads each ask from its newest event at or before the cut whose
+-- payload is the whole ask, by event id (internal/dispatch/asof, asksShadow). The inbox and the
+-- open asks at a cut do this read for every ask of every project. On a copy of production's event
+-- log (813,034 events, 2026-11-19), the read of the state of every ask at a cut took 2,382 ms with
+-- the indexes that production had, and 1,534 ms with this index. The index holds only the events
+-- of those types, keyed by the ask's id in the payload and in id order for each ask. So the read
+-- finds the newest of them at the cut with no sort. The index includes created_at, which the read
+-- compares with the cut. On the copy it was 1.7 MB. events_ask_payload_id (0030) has the same
+-- first key, but its predicate names four of these seven types, so it cannot serve this read.
+--
+-- The predicate is the shadow's type list and `created_at is not null`. The types must stay the
+-- shadow's word for word: they are asof.AskStateTypes (internal/dispatch/asof/shadows_asks.go),
+-- in its order, and the shadow writes its type list from them. The planner uses a partial index
+-- only when it can prove that the condition of the read implies the predicate of the index. When
+-- the two lists do not agree, the answer stays correct, but the read does not use this index, or
+-- the index holds events that no read uses.
+-- asof.TestEachEventIndexNamesTheTypesItsShadowReads reads this file and compares the two lists,
+-- and asof.TestTheShadowsUseTheirIndexes reads the plan.
+--
+-- Why `created_at is not null`. Every read of this index compares created_at with a cut (the asks
+-- shadow's `created_at <= cut`, asof.AsksWordingUnknownStatement's `created_at > $2`), which
+-- implies it, since the comparison is strict. A present read of an ask's events names no time, so
+-- it cannot take this index, and its plan stays the plan it had before this index. With the type
+-- list alone, three present reads (the edits and answers of an issue's asks and of one ask, and an
+-- agent's answers) read an ask's events through this index in place of events_ask_payload_id, the
+-- same key. No measurement showed that cost them anything: on a copy of production's event log,
+-- timed warm in five alternating rounds, their medians were 66.9 ms against 69.9 ms, 5.67 ms
+-- against 5.72 ms and 80.3 ms against 81.9 ms with the index and without it. A past-time index
+-- changes no plan of a present read all the same. api.TestPresentAskReadsDoNotUseEventsAskState
+-- holds that: on PostgreSQL 18.7 a partial index whose predicate holds `created_at is not null`
+-- serves a read that compares created_at, and not one that does not, though the column is not
+-- null, because the planner does not count the column's constraint as proving the predicate.
+--
+-- What it costs at boot. Dispatch applies its migrations before it serves, and the deployment
+-- runs one replica under a Kubernetes Deployment's `strategy: Recreate`
+-- (packages/envoy/infra/README.md). So the build's time is downtime. The build reads all of
+-- events two times; on the copy, events and its indexes were 1,359 MB. This change did not
+-- measure the build's time, which depends on the machine.
+--
+-- Why it is exempt from the census's size limit. events is larger than the 1 GiB that a
+-- migration may touch (pgmigrate.CensusTableLimit). A migration whose first line is
+-- `-- pgmigrate:non-transactional` and that holds exactly one non-unique
+-- CREATE INDEX CONCURRENTLY IF NOT EXISTS - this one - runs outside the runner's transaction, and
+-- the census does not apply its size limit to it (pgmigrate/nontransactional.go, concurrentIndex,
+-- and pgmigrate/census.go, Census). The build takes SHARE UPDATE EXCLUSIVE on events, which no
+-- ordinary read or write of events waits on. It waits for each older snapshot between its two
+-- reads of the table.
+--
+-- What a failed build leaves. A build that fails, or that is cancelled or killed, leaves an index
+-- of this name that is marked invalid. The planner does not use an invalid index, and PostgreSQL
+-- can go on updating it on each write. Reads at a cut stay correct, but slow, until the index is
+-- built. The runner records the version only after a build that finished. At the next boot it
+-- drops the invalid index with DROP INDEX CONCURRENTLY and builds it again
+-- (pgmigrate/nontransactional.go, ExecNonTransactional and dropOwnLeftover). Do not drop it by
+-- hand.
+create index concurrently if not exists events_ask_state
+    on events ((payload->>'id'), id desc) include (created_at)
+    where type in ('ask.opened', 'ask.answered', 'ask.edited', 'ask.resolved', 'ask.handed_back', 'ask.asked_of', 'ask.anchor_refreshed') and created_at is not null;
