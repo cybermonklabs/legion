@@ -487,7 +487,7 @@ func (e *Engine) startChangeIfDue(ctx context.Context, tx pgx.Tx, key string) (b
 	if view, err = e.closeWait(ctx, tx, *issue); err != nil {
 		return false, err
 	}
-	reasons := changeReasons(issue, view)
+	reasons := changeReasons(*issue, view)
 	if len(reasons) == 0 {
 		return false, nil
 	}
