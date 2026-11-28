@@ -134,8 +134,8 @@ entry_state() {
 }
 
 # utf8 <text>: true when <text> is UTF-8. It is false too when the reader does not answer, which is
-# no proof either way, so the caller reads reader_answer: no when the reader answered that it is no
-# UTF-8, and empty when it did not answer.
+# no proof either way, so the caller reads reader_answer: no when the reader answered that <text> is
+# no UTF-8, and anything else when it gave no such answer.
 utf8() {
   gate_reader_call utf8 "$1" && [ "${reader_answer[0]-}" = yes ]
 }
