@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -726,30 +725,16 @@ func loggedInBroker(t *testing.T, f *fakeBroker, operator string, tune ...func(*
 // interval the fake names), so a row that waits for an issued login waits for that poll.
 func waitFor(t *testing.T, cond func() bool) {
 	t.Helper()
-	testwait.Until(t, "the condition the row waits on", func() (bool, bool) {
-		held := cond()
-		return held, held
-	})
+	waitUpTo(t, cond, "the condition the row waits on")
 }
 
-// awaitArmedAt waits until a timer of fake is armed for at, the wait the row means. The code
-// arms it only once what came before it has run, while other timers (a credential's expiry
-// watch, the refresh or renew loop's own) can stand armed beside it, so the earliest armed
-// timer is not the one the row means until this one is armed: a row that moved the fake to the
-// earliest moved it to the expiry watch, a week out, whenever it read the timers first.
-func awaitArmedAt(t *testing.T, fake *clocktest.Fake, at time.Time, what string) {
-	t.Helper()
-	testwait.Until(t, what, func() ([]time.Time, bool) {
-		armed := fake.Armed()
-		return armed, slices.ContainsFunc(armed, at.Equal)
-	})
-}
-
-// fireArmedAt waits for the timer armed for at (awaitArmedAt) and moves fake there, which fires
-// it.
+// fireArmedAt waits for a timer of fake armed for at (clocktest.Fake.AwaitArmedAt) and moves fake
+// there, which fires it. It waits for that one deadline rather than taking the earliest armed:
+// other timers (a credential's expiry watch, the refresh or renew loop's own) can stand armed
+// beside it, and the code arms the one the row means only once what came before it has run.
 func fireArmedAt(t *testing.T, fake *clocktest.Fake, at time.Time, what string) {
 	t.Helper()
-	awaitArmedAt(t, fake, at, what)
+	fake.AwaitArmedAt(t, what, at)
 	fake.Set(at)
 }
 
@@ -901,7 +886,7 @@ func TestLoginStatusReadsARefusalWithTheClearThatCausedIt(t *testing.T) {
 	if err := b.clearOnInvalid(context.Background(), held, rejected); !errors.Is(err, errNoCredential) {
 		t.Fatal(err)
 	}
-	if got := <-read; got.State != "expired" || !got.Refused || got.CredentialHeld {
+	if got := testwait.Receive(t, "the login-status read the drop held, once the drop let the state go", read); got.State != "expired" || !got.Refused || got.CredentialHeld {
 		t.Fatalf("login-status read as the credential was refused after a denied re-login: %+v, want expired, refused, no credential", got)
 	}
 }
@@ -932,8 +917,9 @@ func TestALoginPendingWhenTheCredentialIsRefusedReportsItsOwnOutcome(t *testing.
 	f.mu.Lock()
 	f.loginOutcome = "denied"
 	f.mu.Unlock()
-	// pollLogin's own backoff, 2 s then 4 s between polls, is x/oauth2's, which no clock of
-	// Envoy's reaches: the row waits for the denial it brings.
+	// pollLogin polls again a second after the pending poll, the interval the fake names, on its
+	// own wait (loginWait), which this row asserts nothing of: the row waits for the denial that
+	// poll brings.
 	waitFor(t, func() bool { return b.login.Load().State != "pending" })
 	if got := b.LoginStatus(); got.State != "denied" || got.Refused || got.CredentialHeld {
 		t.Fatalf("that re-login once denied: %+v, want denied, not refused, no credential", got)
@@ -988,10 +974,17 @@ func TestEnrollSendsKindSessionAndAcceptsBothStatuses(t *testing.T) {
 	t.Parallel()
 	f := newFakeBroker(t)
 	b := loggedInBroker(t, f, "ada@example.com")
+	// The fake grants its lease on a clock the row holds still, so the lease the helper reads must
+	// be exactly the one the fake granted, read against no clock.
+	leases := clocktest.New(time.Now())
+	f.mu.Lock()
+	f.clock = leases.Now
+	granted := leases.Now().Add(f.lease)
+	f.mu.Unlock()
 	sess, _ := newSession(1234, 77, "example-host-devbox:1234:77", "", nil, nil)
 	id, lease, err := b.EnrollIdentity(context.Background(), sess.identity())
-	if err != nil || id == "" || time.Until(lease) < 10*time.Minute {
-		t.Fatalf("enroll: %q %v %v", id, lease, err)
+	if err != nil || id == "" || !lease.Equal(granted) {
+		t.Fatalf("enroll: %q %v %v; want the lease the broker granted, %s", id, lease, err, granted)
 	}
 	posts, _, _ := f.snapshot()
 	post := posts[0]

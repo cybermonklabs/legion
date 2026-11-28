@@ -26,17 +26,19 @@ import (
 // broker's answer after the broker gave it, so the broker has acted when the hold begins.
 
 // holdingTransport sends each request through base and, for the next holds requests whose method
-// is method and whose path is path, holds the broker's answer for hold before it hands it on: a
-// broker that acted at once and is slow to say so. It watches the request's context while it
-// holds, as a transport waiting on a slow answer does, so the op's bound ends the hold: the
-// answer's body is closed and the context's error returned. A hold of zero holds the answer until
-// that end alone. held counts the answers it began to hold, so a row can tell that its hold
-// happened.
+// is method and whose path is path, holds the broker's answer for hold on clock before it hands
+// it on: a broker that acted at once and is slow to say so. clock is the server's too
+// (heldContractRig), so a row moves one clock past both the hold and the op's bound. It watches
+// the request's context while it holds, as a transport waiting on a slow answer does, so the op's
+// bound ends the hold: the answer's body is closed and the context's error returned. A hold of
+// zero holds the answer until that end alone. held counts the answers it began to hold, so a row
+// can tell that its hold happened.
 type holdingTransport struct {
 	base   http.RoundTripper
 	method string
 	path   string
 	hold   time.Duration
+	clock  *clocktest.Fake
 	holds  atomic.Int64
 	held   atomic.Int64
 }
@@ -61,9 +63,9 @@ func (h *holdingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	h.held.Add(1)
 	var done <-chan time.Time
 	if h.hold > 0 {
-		timer := time.NewTimer(h.hold)
+		timer := h.clock.NewTimer(h.hold)
 		defer timer.Stop()
-		done = timer.C
+		done = timer.C()
 	}
 	select {
 	case <-done:
@@ -74,23 +76,16 @@ func (h *holdingTransport) RoundTrip(req *http.Request) (*http.Response, error) 
 	}
 }
 
-// heldContractRig is a logged-in contract rig whose helper sends its broker calls through held.
+// heldContractRig is a logged-in contract rig whose helper sends its broker calls through held
+// and runs its server's timers on held's clock. The helper reads that clock in a broker-call op
+// only once it has read the op's request, which a row writes after this returns, so the write
+// here is ordered before every read.
 func heldContractRig(t *testing.T, held *holdingTransport) *contractRig {
 	t.Helper()
 	cr := startContractHelper(t, ciphertest.NewRig(t), filepath.Join(t.TempDir(), "agent-secrets", "machine.json"), &http.Client{Transport: held})
+	cr.srv.Clock = held.clock
 	cr.login(t)
 	return cr
-}
-
-// callBroker asks cr's helper req and waits for the answer as long as a client of a broker-call
-// op does.
-func callBroker(t *testing.T, cr *contractRig, req Request) Response {
-	t.Helper()
-	resp, err := Call(cr.sock, req, BrokerCallWait)
-	if err != nil {
-		t.Fatalf("%s: %v", req.Op, err)
-	}
-	return resp
 }
 
 // brokerEnrollment is one row of the broker's enrollments table: its id, and whether it is live
@@ -125,23 +120,26 @@ func liveIDs(rows []brokerEnrollment) []string {
 }
 
 // TestContractASlowBrokersEnrollmentAnswersWithItsID: the broker makes the enrollment at once and
-// its answer reaches the helper 8 s later, past the 5 s a helper once gave every op. The client
-// that waits BrokerCallWait gets OK with the enrollment's id, and the broker holds exactly that
-// one live enrollment for the runtime id.
+// its answer reaches the helper 8 s later on the server's clock, past the 5 s a helper once gave
+// every op and inside the op's bound, which the row's clock never reaches. The client gets OK with
+// the enrollment's id, and the broker holds exactly that one live enrollment for the runtime id.
 func TestContractASlowBrokersEnrollmentAnswersWithItsID(t *testing.T) {
 	t.Parallel()
-	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", hold: 8 * time.Second}
+	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", hold: 8 * time.Second, clock: clocktest.New(time.Now())}
 	cr := heldContractRig(t, held)
 	runtimeID := "slow-box-" + t.Name()
 
+	const what = "enroll-session-key against a broker 8 s slow to answer"
 	held.holds.Store(1)
-	resp := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
+	replies := sendCall(t, cr.sock, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
+	fireArmedAt(t, held.clock, held.clock.Now().Add(held.hold), what+": the transport's hold of the broker's answer")
+	resp := replyOf(t, replies, what)
 	rows := enrollmentsOf(t, cr, runtimeID)
 	if n := held.held.Load(); n != 1 {
 		t.Fatalf("the transport held %d answers of POST /v1/enrollments, want 1; answer %+v, the broker's rows %+v", n, resp, rows)
 	}
 	if !resp.OK || resp.EnrollmentID == "" {
-		t.Fatalf("enroll-session-key against a broker 8 s slow to answer: %+v; want OK with an id (the broker's rows %+v)", resp, rows)
+		t.Fatalf("%s: %+v; want OK with an id (the broker's rows %+v)", what, resp, rows)
 	}
 	if live := liveIDs(rows); len(live) != 1 || live[0] != resp.EnrollmentID {
 		t.Fatalf("the broker's rows for %s: %+v; want exactly one live row, %s", runtimeID, rows, resp.EnrollmentID)
@@ -149,26 +147,29 @@ func TestContractASlowBrokersEnrollmentAnswersWithItsID(t *testing.T) {
 }
 
 // TestContractASlowBrokersRevokeAnswersOK: the broker revokes the enrollment at once and its
-// answer reaches the helper 8 s later. unenroll-session-key answers OK, and the broker's row is
-// revoked.
+// answer reaches the helper 8 s later on the server's clock, inside the op's bound.
+// unenroll-session-key answers OK, and the broker's row is revoked.
 func TestContractASlowBrokersRevokeAnswersOK(t *testing.T) {
 	t.Parallel()
-	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodDelete, path: "/v1/enrollments/", hold: 8 * time.Second}
+	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodDelete, path: "/v1/enrollments/", hold: 8 * time.Second, clock: clocktest.New(time.Now())}
 	cr := heldContractRig(t, held)
 	runtimeID := "slow-revoke-box-" + t.Name()
-	enrolled := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
+	enrolled := cr.call(t, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
 	if !enrolled.OK || enrolled.EnrollmentID == "" {
 		t.Fatalf("enroll-session-key: %+v", enrolled)
 	}
 
+	const what = "unenroll-session-key against a broker 8 s slow to answer"
 	held.holds.Store(1)
-	resp := callBroker(t, cr, Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID})
+	replies := sendCall(t, cr.sock, Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID})
+	fireArmedAt(t, held.clock, held.clock.Now().Add(held.hold), what+": the transport's hold of the broker's answer")
+	resp := replyOf(t, replies, what)
 	rows := enrollmentsOf(t, cr, runtimeID)
 	if n := held.held.Load(); n != 1 {
 		t.Fatalf("the transport held %d answers of DELETE /v1/enrollments/{id}, want 1; answer %+v, the broker's rows %+v", n, resp, rows)
 	}
 	if !resp.OK {
-		t.Fatalf("unenroll-session-key against a broker 8 s slow to answer: %+v; want OK (the broker's rows %+v)", resp, rows)
+		t.Fatalf("%s: %+v; want OK (the broker's rows %+v)", what, resp, rows)
 	}
 	if len(rows) != 1 || rows[0].ID != enrolled.EnrollmentID || rows[0].Live {
 		t.Fatalf("the broker's rows for %s: %+v; want only %s, revoked", runtimeID, rows, enrolled.EnrollmentID)
@@ -184,25 +185,21 @@ func TestContractASlowBrokersRevokeAnswersOK(t *testing.T) {
 // enrollment, and makes no second one.
 func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow(t *testing.T) {
 	t.Parallel()
-	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments"}
+	held := &holdingTransport{base: http.DefaultTransport, method: http.MethodPost, path: "/v1/enrollments", clock: clocktest.New(time.Now())}
 	cr := heldContractRig(t, held)
-	// The helper reads its clock in a broker-call op only once it has read the op's request, which
-	// this goroutine's call writes after this, so the write is ordered before every read.
-	clock := clocktest.New(time.Now())
-	cr.srv.Clock = clock
 	runtimeID := "past-bound-box-" + t.Name()
 	req := Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)}
 
 	const what = "enroll-session-key past its bound"
 	held.holds.Store(1)
 	replies := sendCall(t, cr.sock, req)
-	armBrokerCall(t, clock, replies, what)
+	armBrokerCall(t, held.clock, replies, what)
 	// The broker has made the row and answered, and the transport holds that answer.
 	testwait.Until(t, "the transport to hold the broker's answer to POST /v1/enrollments", func() (int64, bool) {
 		n := held.held.Load()
 		return n, n == 1
 	})
-	clock.Advance(DefaultBrokerCallBound)
+	held.clock.Advance(DefaultBrokerCallBound)
 	first := replyOf(t, replies, what)
 	rows := enrollmentsOf(t, cr, runtimeID)
 	if n := held.held.Load(); n != 1 {
@@ -214,7 +211,7 @@ func TestContractAnEnrollPastTheBoundIsUnknownAndTheSameEnrollAgainAnswersItsRow
 		t.Fatalf("the broker's rows for %s after the enroll past the bound: %+v; want the one live row it made", runtimeID, rows)
 	}
 
-	again := callBroker(t, cr, req)
+	again := cr.call(t, req)
 	rows = enrollmentsOf(t, cr, runtimeID)
 	if !again.OK || again.EnrollmentID != live[0] {
 		t.Fatalf("the same enroll again: %+v; want OK with %s, the row the first made (the broker's rows %+v)", again, live[0], rows)
@@ -233,13 +230,13 @@ func TestContractAnEnrollTheBrokerRefusesIsAKnownFailureThatAddsNoRow(t *testing
 	cr := newContractRig(t)
 	cr.login(t)
 	runtimeID := "refused-box-" + t.Name()
-	first := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
+	first := cr.call(t, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
 	if !first.OK || first.EnrollmentID == "" {
 		t.Fatalf("enroll-session-key: %+v", first)
 	}
 	before := enrollmentsOf(t, cr, runtimeID)
 
-	refused := callBroker(t, cr, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
+	refused := cr.call(t, Request{Op: "enroll-session-key", RuntimeID: runtimeID, Thumbprint: sessionThumbprint(t)})
 	after := enrollmentsOf(t, cr, runtimeID)
 	if refused.OK || refused.Code != CodeEnrollFailed {
 		t.Fatalf("a second key under a live runtime id: %+v; want %s (the broker's rows %+v)", refused, CodeEnrollFailed, after)

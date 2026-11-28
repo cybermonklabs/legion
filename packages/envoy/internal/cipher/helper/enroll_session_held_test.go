@@ -67,8 +67,9 @@ func (h *holderSignIns) signIn(authority *cipherclient.Authority) {
 	h.authority = authority
 }
 
-// waitUpTo waits for cond, failing with why when it never holds. It is waitFor with a message
-// of the row's own, since what never came is what such a failure has to say.
+// waitUpTo waits for cond through the shared wait (testwait.Until), failing with why when it never
+// holds, since what never came is what such a failure has to say. waitFor is waitUpTo with a why
+// that names no fact.
 func waitUpTo(t *testing.T, cond func() bool, why string) {
 	t.Helper()
 	testwait.Until(t, why, func() (bool, bool) {
@@ -135,8 +136,6 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 		<-done
 	})
 
-	// It asks again: a loop that read the refusal as the name's final answer would send one
-	// POST and return, and this session would sign nothing ever again.
 	posts := func() int {
 		sent, _, _ := f.snapshot()
 		return len(sent)
@@ -157,7 +156,7 @@ func TestAnEnrollRefusedSessionHeldBacksOffAndEnrolsWhenThePrincipalChanges(t *t
 
 	// And it backs off rather than spinning: the ladder is 1 s doubling, read from the wait
 	// the second failure arms rather than from a count of attempts in a window of real time.
-	awaitArmedAt(t, fake, fake.Now().Add(2*time.Second), "the enroll retry's second wait, two seconds from now: the ladder doubles")
+	fake.AwaitArmedAt(t, "the enroll retry's second wait, two seconds from now: the ladder doubles", fake.Now().Add(2*time.Second))
 
 	// The session keeps the refusal meanwhile: `sessions`, a register reply and every sign
 	// answer report it, so the launcher learns why this session is not signing yet.

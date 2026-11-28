@@ -60,7 +60,7 @@ func TestContractARebootKeepsAGrantTheSessionWasGiven(t *testing.T) {
 	sessionID := "11111111-2222-4333-8444-66666666cafe"
 
 	// --- the session registers under its omp session id ---
-	reg := cr.call(t, Request{Op: "register", WaitSeconds: 5, SessionID: &sessionID}) // under Call's own 10 s read deadline
+	reg := cr.call(t, Request{Op: "register", WaitSeconds: 5, SessionID: &sessionID})
 	if !reg.OK || reg.State != "enrolled" || reg.EnrollmentID == "" {
 		t.Fatalf("register --session-id: %+v", reg)
 	}

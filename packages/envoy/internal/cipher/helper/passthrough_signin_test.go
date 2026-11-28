@@ -80,8 +80,10 @@ func signedInBox(t *testing.T, tokenURL string) *cipherclient.SignInAuthority {
 	}); err != nil {
 		t.Fatalf("keep the sign-in: %v", err)
 	}
+	// No timeout of the fixture's own: the row holds the trade at its gate for as long as it
+	// needs, and a client timeout would end that hold, and the row, on a slow host.
 	return &cipherclient.SignInAuthority{
-		Store: store, Machine: boxMachine{}, Flow: flow, BrokerURL: cipheraddr.New(tokenURL), HTTP: &http.Client{Timeout: 30 * time.Second},
+		Store: store, Machine: boxMachine{}, Flow: flow, BrokerURL: cipheraddr.New(tokenURL), HTTP: &http.Client{},
 	}
 }
 

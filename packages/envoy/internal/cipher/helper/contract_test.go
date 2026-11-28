@@ -61,7 +61,7 @@ func newContractRig(t *testing.T, options ...ciphertest.Option) *contractRig {
 // and the socket under a short temporary directory of its own, never under $HOME — the caller is
 // expected to have set HOME to a separate, otherwise-untouched TempDir of its own so it can later
 // assert nothing wrote there. Each of configure runs on the Broker before it starts, for a row
-// that sets a test seam the Broker's start already reads (its expiry timers, for one).
+// that sets a field the Broker's start already reads (its Clock, for one).
 func startContractHelper(t *testing.T, broker *ciphertest.Rig, machineFile string, client *http.Client, configure ...func(*Broker)) *contractRig {
 	t.Helper()
 	artifacts := t.TempDir()
@@ -119,19 +119,15 @@ func (cr *contractRig) login(t *testing.T) string {
 	return credentialID
 }
 
-// call sends one request to the helper and waits for its answer as rig.call does (sendCall,
-// testwait.Receive), failing t on a transport error.
+// call is rig.call for cr's helper: it sends one request (sendCall) and waits for its answer
+// (replyOf), failing t on a transport error.
 func (cr *contractRig) call(t *testing.T, req Request) Response {
 	t.Helper()
-	got := testwait.Receive(t, "the helper's answer to "+strconv.Quote(req.Op), sendCall(t, cr.sock, req))
-	if got.err != nil {
-		t.Fatal(got.err)
-	}
-	return got.resp
+	return replyOf(t, sendCall(t, cr.sock, req), "the helper's answer to "+strconv.Quote(req.Op))
 }
 
-// waitForIssued blocks until the background login poller (pollLogin, at the broker's 5 s
-// interval, which is x/oauth2's own) installs the machine credential.
+// waitForIssued blocks until the background login poller installs the machine credential:
+// pollLogin, at the interval the broker names (5 s), on its own wait (loginWait).
 func waitForIssued(t *testing.T, b *Broker) {
 	t.Helper()
 	testwait.Until(t, "the machine login to reach issued", func() (loginState, bool) {

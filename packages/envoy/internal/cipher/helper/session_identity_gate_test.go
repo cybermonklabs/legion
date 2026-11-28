@@ -482,10 +482,9 @@ func reclaimedIdentityRigAmending(t *testing.T, amend func(*Record)) (*rig, *ecd
 	r := newRigOn(t, state)
 	gate, release := testGate(t)
 	// The confirming renew this gate holds is a FIRST confirmation, so the helper bounds it
-	// (Server.FirstConfirmBound, DefaultFirstConfirmBound = 3 s in production). That bound is
-	// armed on this rig's own clock, which no row moves unless it is the bound it reads, so
-	// the rows that hold the gate across the confirmation and release it cannot race it at
-	// all, however loaded the host.
+	// (DefaultFirstConfirmBound, 3 s). That bound is armed on this rig's own clock, which no row
+	// moves unless it is the bound it reads, so the rows that hold the gate across the
+	// confirmation and release it cannot race it at all, however loaded the host.
 	r.fake.mu.Lock()
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
@@ -543,14 +542,13 @@ func reclaimedIdentityRigFailingRenew(t *testing.T) *rig {
 // reclaimedIdentityRigNeverAnswering is that same fixture against the outage the bound exists
 // for: a broker that ACCEPTS the connection and never answers, which the gate — held, and
 // never released by the row — is exactly. The first confirmation's renew then runs into
-// FirstConfirmBound, the production DefaultFirstConfirmBound, which the row fires on this
-// rig's clock rather than waiting out; unbounded it would run into the helper's whole client
-// timeout (leasetime.RenewClientTimeout, 30 s). The gate still opens at cleanup, before the
-// fake's Close, so no held request outlives the row.
+// DefaultFirstConfirmBound, which the row fires on this rig's clock rather than waiting out;
+// unbounded it would run into the helper's whole client timeout (leasetime.RenewClientTimeout,
+// 30 s). The gate still opens at cleanup, before the fake's Close, so no held request outlives
+// the row.
 func reclaimedIdentityRigNeverAnswering(t *testing.T) *rig {
 	t.Helper()
 	r, _, _, _ := reclaimedIdentityRig(t)
-	r.srv.FirstConfirmBound = DefaultFirstConfirmBound
 	return r
 }
 

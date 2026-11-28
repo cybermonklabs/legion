@@ -3,7 +3,12 @@
 
 package helper
 
-import "testing"
+import (
+	"testing"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/testwait"
+)
 
 // TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown drives, through the REAL helper socket, the
 // one case of a slow broker that contract_brokercall_test.go and brokercall_test.go leave out:
@@ -29,6 +34,13 @@ func TestAnUnenrollPastItsBoundSaysItsOutcomeIsUnknown(t *testing.T) {
 	r.fake.mu.Lock()
 	r.fake.revokeGate = gate
 	r.fake.mu.Unlock()
+	// The enroll's op and connection disarm what they armed on the server's clock once they are
+	// done, a moment after the answer this row read; armBrokerCall reads every timer the clock
+	// holds as the unenroll's own.
+	testwait.Until(t, "the enroll's op and connection to disarm their timers", func() ([]time.Time, bool) {
+		armed := r.clock.Armed()
+		return armed, len(armed) == 0
+	})
 
 	const what = "unenroll-session-key past its bound"
 	replies := sendCall(t, r.sock, Request{Op: "unenroll-session-key", EnrollmentID: enrolled.EnrollmentID})

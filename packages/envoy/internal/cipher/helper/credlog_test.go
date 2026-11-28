@@ -53,7 +53,8 @@ func TestTheHelperLogsEveryChangeOfTheLauncherCredential(t *testing.T) {
 	f.mu.Lock()
 	f.loginOutcome = "issued"
 	f.mu.Unlock()
-	// pollLogin's next poll comes 2 s after the pending one, on x/oauth2's own interval.
+	// pollLogin's next poll comes a second after the pending one, the interval the fake names, on
+	// its own wait (loginWait), which this row asserts nothing of.
 	testwait.Until(t, "the login to issue", func() (loginState, bool) {
 		ls := b.LoginStatus()
 		return ls, ls.State == "issued"

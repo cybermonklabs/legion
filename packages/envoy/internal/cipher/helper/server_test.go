@@ -7,6 +7,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"math"
 	"net"
 	"net/http"
 	"os"
@@ -72,8 +73,14 @@ func newRig(t *testing.T, statePath string) *rig {
 // refresh are the fake broker's real HTTP, and the records it signs are verified against it.
 func newRigOn(t *testing.T, statePath string) *rig {
 	t.Helper()
+	return newLoggedRigOn(t, statePath, slog.New(slog.NewTextHandler(os.Stderr, nil)))
+}
+
+// newLoggedRigOn is newRigOn with log as the helper's logger, as newLoggedRig is newRig with it.
+func newLoggedRigOn(t *testing.T, statePath string, log *slog.Logger) *rig {
+	t.Helper()
 	fake := clocktest.New(time.Now())
-	r := newLoggedRig(t, statePath, slog.New(slog.NewTextHandler(os.Stderr, nil)), func(s *Server) { s.Clock = fake })
+	r := newLoggedRig(t, statePath, log, func(s *Server) { s.Clock = fake })
 	r.clock = fake
 	return r
 }
@@ -190,11 +197,7 @@ func (r *rig) login(t *testing.T) {
 // a wait_seconds the helper honours, never a span of the test's own, bounds an answer it gives.
 func (r *rig) call(t *testing.T, req Request) Response {
 	t.Helper()
-	got := testwait.Receive(t, "the helper's answer to "+strconv.Quote(req.Op), sendCall(t, r.sock, req))
-	if got.err != nil {
-		t.Fatal(got.err)
-	}
-	return got.resp
+	return replyOf(t, sendCall(t, r.sock, req), "the helper's answer to "+strconv.Quote(req.Op))
 }
 
 // callAnswer is a helper call's reply, or the error that ended the call.
@@ -204,19 +207,34 @@ type callAnswer struct {
 }
 
 // sendCall sends req to the helper at sock on a goroutine of its own and returns the channel its
-// one answer comes on. The call's own deadline is the test binary's (testwait.Remaining, read here
-// on the test's goroutine), so no span of the test's ends it; its caller waits for the answer with
-// testwait.Receive, which gives up first, at testwait's margin, naming what it waited for. A call
-// the helper never answers outlives its test on that goroutine and ends with the binary.
+// one answer comes on. The call's own deadline is the moment the shared wait gives up
+// (testwait.GiveUpAt, read here on the test's goroutine), and under -timeout 0, where no wait has
+// an end, it has none, so no span of the test's ends it; its caller waits for the answer with
+// testwait.Receive, which gives up at that same moment, naming what it waited for. A call the
+// helper never answers ends there on that goroutine.
 func sendCall(t *testing.T, sock string, req Request) <-chan callAnswer {
 	t.Helper()
-	deadline := testwait.Remaining(t, 0)
+	deadline := time.Duration(math.MaxInt64)
+	if at, bounded := testwait.GiveUpAt(t); bounded {
+		deadline = time.Until(at)
+	}
 	answers := make(chan callAnswer, 1)
 	go func() {
 		resp, err := Call(sock, req, deadline)
 		answers <- callAnswer{resp, err}
 	}()
 	return answers
+}
+
+// replyOf waits for the answer on replies (sendCall), and fails the row when the call ended in
+// an error.
+func replyOf(t *testing.T, replies <-chan callAnswer, what string) Response {
+	t.Helper()
+	reply := testwait.Receive(t, what, replies)
+	if reply.err != nil {
+		t.Fatalf("%s: %v", what, reply.err)
+	}
+	return reply.resp
 }
 
 // TestDrainRefusesARegisterThatArrivesAfterIt: a drain that finds no sessions leaves a helper
@@ -273,9 +291,7 @@ func TestUndrainTakesSessionsAgain(t *testing.T) {
 func TestADrainNoRestartFollowsEndsAtItsBound(t *testing.T) {
 	t.Parallel()
 	logs := &logtest.Buffer{}
-	fake := clocktest.New(time.Now())
-	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(logs, nil)), func(s *Server) { s.Clock = fake })
-	r.clock = fake
+	r := newLoggedRigOn(t, "", slog.New(slog.NewTextHandler(logs, nil)))
 	r.login(t)
 	ended := func() int { return strings.Count(logs.Lines(DrainEndedMessage), "\n") }
 	const bound = time.Second
@@ -591,15 +607,17 @@ func TestRenewRunsAndARefusedRenewReenrolls(t *testing.T) {
 	})
 	runtimeID := sess.RuntimeID()
 
-	// fireRenew waits for the one timer on the rig's clock, the renew renewLoop arms for the
-	// lease the fake last gave, which ends 900 s on. It requires that timer at a third of it,
-	// 300 s on, and fires it.
+	// fireRenew waits until the rig's clock holds one timer, the renew renewLoop arms for the
+	// lease the fake last gave, which ends 900 s on, at a third of it, 300 s on, and fires it. The
+	// deadline of the row's own register connection is no longer among them by then: its handler
+	// disarms it once done.
 	fireRenew := func(what string) {
 		t.Helper()
 		want := r.clock.Now().Add(300 * time.Second)
-		if armed := r.clock.AwaitArmed(t, what, 1); len(armed) != 1 || !armed[0].Equal(want) {
-			t.Fatalf("%s: armed %v; want one timer, the renew at %s, a third of the 900 s lease", what, armed, want)
-		}
+		testwait.Until(t, fmt.Sprintf("%s: one timer on the rig's clock, the renew at %s, a third of the 900 s lease", what, want), func() ([]time.Time, bool) {
+			armed := r.clock.Armed()
+			return armed, len(armed) == 1 && armed[0].Equal(want)
+		})
 		r.clock.Set(want)
 	}
 	renews := func() int {
@@ -909,19 +927,21 @@ func TestRecoverDropsDeadRecords(t *testing.T) {
 // before enrolling again, and this proves it does: within a bounded time the session ends up
 // enrolled under a genuinely NEW id, having explicitly revoked the old one, never spinning.
 //
-// The lapse is the fake's genuine expiry path, with nothing timed against it: the fake holds the
-// session's first renew at its renew gate until the test has seen the enrollment's stored lease
-// pass, and only then lets it through, so the renew is refused because the lease has passed
-// however slow the host is. The first enrollment's short lease is the fake's nextLease, so the
-// fresh enrollment gets the fake's 900 s default and cannot lapse again under the assertions.
+// The lapse is the fake's genuine expiry path, with nothing timed against it: the fake's leases
+// and the server's renew cadence run on the rig's one clock, which only the row moves. The row
+// moves it to the end of the enrollment's stored lease, which fires the session's first renew, a
+// third of the way in, and the fake holds that renew at its renew gate until the clock stands at
+// the lease's end, so the renew is refused because the lease has passed however slow the host is.
+// The fresh enrollment's lease runs from there, and the row moves the clock no further.
 func TestRenewRefusedRevokesTheLapsedEnrollmentBeforeReenrolling(t *testing.T) {
 	t.Parallel()
-	r := startRig(t, "")
+	r := newRigOn(t, "")
 	gate, open := testGate(t)
 	r.fake.mu.Lock()
-	r.fake.nextLease = 60 * time.Millisecond
+	r.fake.clock = r.clock.Now
 	r.fake.renewGate = gate
 	r.fake.mu.Unlock()
+	r.login(t)
 	reg := r.call(t, Request{Op: "register", WaitSeconds: 5})
 	if !reg.OK || reg.State != "enrolled" {
 		t.Fatalf("register: %+v", reg)
@@ -929,12 +949,10 @@ func TestRenewRefusedRevokesTheLapsedEnrollmentBeforeReenrolling(t *testing.T) {
 	r.fake.mu.Lock()
 	expiry := r.fake.leaseExpiry[reg.EnrollmentID]
 	r.fake.mu.Unlock()
-	// The fake broker judges a lease by the wall clock, as the broker judges one by its
-	// database's: the renew is let through once that clock has passed the stored lease.
-	testwait.Until(t, "the fake broker's stored lease to pass", func() (time.Time, bool) {
-		now := time.Now()
-		return now, now.After(expiry)
-	})
+	// The renew is armed only once the enrollment has started its renew loop; a move made before
+	// that would leave the loop's first wait armed past the clock's last move, never fired.
+	r.clock.AwaitArmedAt(t, "the session's first renew, a third of the way into its lease", r.clock.Now().Add(expiry.Sub(r.clock.Now())/3))
+	r.clock.Set(expiry)
 	open()
 	testwait.Until(t, "a renew refused because the lease lapsed to revoke the old id and re-enroll with a new one", func() (string, bool) {
 		id := r.srv.Registry.Get(os.Getpid()).identity().EnrollmentID

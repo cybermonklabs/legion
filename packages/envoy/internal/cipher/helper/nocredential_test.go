@@ -227,10 +227,11 @@ func TestALoginWakesTheEnrollmentOfASessionRegisteredWithoutACredential(t *testi
 		t.Fatalf("register with no credential: %+v", reg)
 	}
 	// Without a credential each attempt fails at once, and the retry's ladder is armed on
-	// the server's own clock. The row moves that clock nowhere from here on, so the next
-	// attempt is due at a moment that never comes and only the login's wake can enroll the
-	// session: a helper that waited for the backoff instead would never sign.
-	r.clock.AwaitArmed(t, "the enroll retry's wait", 1)
+	// the server's own clock, its first wait a second out. The row moves that clock nowhere
+	// from here on, so the next attempt is due at a moment that never comes and only the
+	// login's wake can enroll the session: a helper that waited for the backoff instead would
+	// never sign.
+	r.clock.AwaitArmedAt(t, "the enroll retry's first wait", r.clock.Now().Add(time.Second))
 	r.login(t)
 	testwait.Until(t, "the session to sign once the login woke its enrollment", func() (Response, bool) {
 		signed := r.call(t, Request{Op: "sign", Method: "GET", URL: "https://secrets.test/v1/enrollments/self"})
@@ -387,12 +388,7 @@ func TestARegisterWaitAnswersAtOnceWhenNoConfirmationIsInFlight(t *testing.T) {
 		// own in flight while that register runs — the very attempt a register that did not
 		// see it start must not wait on. The retry's backoff runs on the rig's clock, which only
 		// the test moves, so the row moves it to the retry once the 503 has armed it.
-		retry := r.clock.Now().Add(time.Second)
-		testwait.Until(t, "the confirming renew's retry, a second after its 503", func() ([]time.Time, bool) {
-			armed := r.clock.Armed()
-			return armed, slices.ContainsFunc(armed, retry.Equal)
-		})
-		r.clock.Set(retry)
+		fireArmedAt(t, r.clock, r.clock.Now().Add(time.Second), "the confirming renew's retry, a second after its 503")
 		waitFor(t, func() bool {
 			r.fake.mu.Lock()
 			defer r.fake.mu.Unlock()
@@ -456,7 +452,7 @@ func TestARegisterWaitAnswersAtOnceWhenALapsedIDBlocksTheConfirmation(t *testing
 // (leasetime.RenewClientTimeout, 30 s): every launch of this session's process tree is a new
 // pid that reclaims afresh, gets its own first renew, and pays its whole `--wait` — 10 s at
 // the dotfiles launcher gate (scripts/agent-secrets-session) — for as long as the outage
-// lasts. So the first confirming renew is bounded (Server.FirstConfirmBound): when the bound
+// lasts. So the first confirming renew is bounded (DefaultFirstConfirmBound): when the bound
 // expires that attempt has answered as one that did not reach the broker, the wait ends, and
 // the enroll loop retries on its own schedule, exactly as it does for a 503.
 func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.T) {
@@ -486,12 +482,13 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheBrokerNeverAnswers(t *testing.
 	// (startRegister), so a first renew the bound did not end is read here as this row's own
 	// failure and not as a client that gave up.
 	replies := registerWaitBlocked(t, r, &id)
-	// The bound is armed on the renew in flight, and the register's own wait beside it. Moving
-	// the clock to the bound alone ends the first renew; the register's wait is left unspent,
-	// which is what parts a reply at the bound from one that paid the wait.
-	armed := r.clock.AwaitArmed(t, "the first confirming renew's bound and the register's wait", 2)
-	if want := r.clock.Now().Add(DefaultFirstConfirmBound); !armed[0].Equal(want) {
-		t.Fatalf("the first confirming renew is bounded at %s; want %s, DefaultFirstConfirmBound", armed[0], want)
+	// The bound is armed on the renew in flight, the earliest of the server's timers: the
+	// register's own wait and every connection's deadline come later. Moving the clock to the
+	// bound alone ends the first renew; the register's wait is left unspent, which is what parts
+	// a reply at the bound from one that paid the wait.
+	want := r.clock.Now().Add(DefaultFirstConfirmBound)
+	if armed := r.clock.AwaitArmedAt(t, "the first confirming renew's bound, DefaultFirstConfirmBound", want); !armed[0].Equal(want) {
+		t.Fatalf("the server armed %v; want the first confirming renew's bound, %s, earliest", armed, want)
 	}
 	select {
 	case got := <-replies:
@@ -554,7 +551,7 @@ func TestARegisterWaitAnswersWithinTheBoundWhenTheCredentialWentAwayUnderTheRene
 	// so it waits for the confirmation in flight — the one started under a credential — and
 	// what ends that is the bound this row fires, never the wait it asked for.
 	replies := registerWaitBlocked(t, r, &id)
-	r.clock.AwaitArmed(t, "the first confirming renew's bound and the register's wait", 2)
+	r.clock.AwaitArmedAt(t, "the first confirming renew's bound, DefaultFirstConfirmBound", r.clock.Now().Add(DefaultFirstConfirmBound))
 	r.clock.Advance(DefaultFirstConfirmBound)
 	got := testwait.Receive(t, "register --wait to answer once the first confirming renew hit its bound", replies)
 	if got.err != nil || got.resp.Code != CodeNoCredential {
@@ -582,15 +579,14 @@ func TestANameTakenDuringAnEnrollRetryConfirmsItsInheritedEnrollmentAtOnce(t *te
 		t.Fatalf("register with no name: %+v; want NO_CREDENTIAL", first)
 	}
 
-	// Into that backoff: the ladder's first two waits are fired on the rig's own clock, so the
-	// loop is parked on a third the row never fires. Nothing but the rename's own wake can
-	// answer the register below, and a retry woken by a login alone would leave it unanswered
-	// rather than merely late.
-	for range 2 {
-		r.clock.AwaitArmed(t, "the enroll retry's wait", 1)
-		r.clock.Advance(time.Second)
+	// Into that backoff: the ladder's first two waits, a second and then two, are fired on the
+	// rig's own clock, so the loop is parked on a third, four seconds out, which the row never
+	// fires. Nothing but the rename's own wake can answer the register below, and a retry woken
+	// by a login alone would leave it unanswered rather than merely late.
+	for _, wait := range []time.Duration{time.Second, 2 * time.Second} {
+		fireArmedAt(t, r.clock, r.clock.Now().Add(wait), "the enroll retry's wait of "+wait.String())
 	}
-	r.clock.AwaitArmed(t, "the enroll retry's wait the rename's wake cuts short", 1)
+	r.clock.AwaitArmedAt(t, "the enroll retry's wait the rename's wake cuts short", r.clock.Now().Add(4*time.Second))
 
 	// The name, with the wait the dotfiles launcher gate asks for
 	// (scripts/agent-secrets-session). The rename installs the record's enrollment and wakes

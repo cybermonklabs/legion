@@ -17,7 +17,6 @@ import (
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/ciphertest"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // failingTokenTransport fails every request to the broker's token endpoint as an unreachable
@@ -217,18 +216,11 @@ func TestContractAnUnrefreshedLoginDropsAtItsExpiry(t *testing.T) {
 	if !second.srv.Broker.HasCredential() {
 		t.Fatal("the restarted helper holds no login")
 	}
-	drop := testwait.Until(t, "the expiry watch to arm its drop at the kept expiry", func() (time.Time, bool) {
-		for _, at := range fake.Armed() {
-			if at.Equal(kept.ExpiresAt) {
-				return at, true
-			}
-		}
-		return time.Time{}, false
-	})
+	fake.AwaitArmedAt(t, "the expiry watch's drop at the kept expiry", kept.ExpiresAt)
 	if !second.srv.Broker.HasCredential() {
 		t.Fatal("the restarted helper dropped its login before its expiry timer fired")
 	}
-	fake.Set(drop)
+	fake.Set(kept.ExpiresAt)
 	waitFor(t, func() bool { return !second.srv.Broker.HasCredential() })
 	if got := second.call(t, Request{Op: "login-status"}); got.LoginState != "expired" || got.CredentialDropped != dropExpired {
 		t.Fatalf("login-status after the expiry: %+v; want expired, dropped for %q", got, dropExpired)

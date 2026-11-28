@@ -193,11 +193,8 @@ func TestANewerLoginSilencesTheExpiryOfTheCredentialItReplaces(t *testing.T) {
 	old := expiryLogin(t, b)
 	fresh := expiryLogin(t, b)
 	timers.fire(t, "the warning of the credential the newer login replaced")
-	// The old credential's watch has said all it will once it ends.
-	for ended := range watchEnded {
-		if ended == old {
-			break
-		}
+	// The old credential's watch has said all it will once it ends; another watch may end first.
+	for testwait.Receive(t, "the expiry watch of the credential the newer login replaced to end", watchEnded) != old {
 	}
 
 	if b.cred.Load() != fresh {

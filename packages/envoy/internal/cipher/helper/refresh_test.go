@@ -13,16 +13,15 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"slices"
 	"syscall"
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/internal/clock/clocktest"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"golang.org/x/oauth2"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // keptLogin logs a Broker in against f and returns the machine file it kept, for a second Broker
@@ -309,10 +308,8 @@ func TestARefreshMovesTheExpiryAndSilencesTheOldWatch(t *testing.T) {
 		t.Fatal(err)
 	}
 	timers.fire(t, "the warning of the expiry the refresh moved")
-	for ended := range watchEnded {
-		if ended == old {
-			break
-		}
+	// The old credential's watch has said all it will once it ends; another watch may end first.
+	for testwait.Receive(t, "the expiry watch of the credential the refresh replaced to end", watchEnded) != old {
 	}
 	now := b.cred.Load()
 	if now == nil || now.id != old.id || now.expiresAt.Sub(timers.fake.Now()) < 6*24*time.Hour {
@@ -363,7 +360,7 @@ func heldRefresh(t *testing.T, f *fakeBroker, b *Broker) (release func() error) 
 	})
 	return func() error {
 		close(gate)
-		return <-done
+		return testwait.Receive(t, "the held refresh to return once it was let go", done)
 	}
 }
 
@@ -392,20 +389,27 @@ func TestAnExpiryDuringARefreshNeverUndoesIt(t *testing.T) {
 	b.stateMu.Unlock()
 	close(login.gone)
 
+	// The fake names the refreshed credential's expiry on a clock the row holds still, so the
+	// verdict below reads that expiry against the moment the fake named it from, never the wall
+	// clock.
+	expiries := clocktest.New(time.Now())
+	f.mu.Lock()
+	f.clock = expiries.Now
+	f.mu.Unlock()
 	release := heldRefresh(t, f, b)
 	waiting := make(chan struct{})
 	b.testBeforeDrop = func() { close(waiting) }
 	watched := make(chan struct{})
 	go func() { b.watchExpiry(lapsing); close(watched) }()
-	<-waiting // the expiry's drop has been reached, while the refresh holds credMu
+	testwait.Receive(t, "the expiry's drop to be reached while the refresh holds credMu", waiting)
 	if err := release(); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	<-watched
+	testwait.Receive(t, "the expiry watch to return once the refresh was let go", watched)
 
 	held := b.cred.Load()
-	if held == nil || held == lapsing || held.id != login.id || time.Until(held.expiresAt) < 6*24*time.Hour {
-		t.Fatalf("after an expiry that raced a refresh the helper holds %+v; want the refreshed %s, a week out", held, login.id)
+	if held == nil || held == lapsing || held.id != login.id || held.expiresAt.Sub(expiries.Now()) < 6*24*time.Hour {
+		t.Fatalf("after an expiry that raced a refresh the helper holds %+v; want the refreshed %s, a week out by the broker's clock", held, login.id)
 	}
 	if ls := b.LoginStatus(); ls.State != "issued" || ls.Refused || !ls.CredentialHeld {
 		t.Fatalf("login-status: %+v; want issued and held", ls)
@@ -435,11 +439,11 @@ func TestARefusalDuringARefreshNeverUndoesIt(t *testing.T) {
 	rejected := &BrokerError{Status: http.StatusUnauthorized, Code: "LAUNCHER_INVALID", Message: "the launcher credential is not valid"}
 	refused := make(chan error, 1)
 	go func() { refused <- b.clearOnInvalid(context.Background(), signed, rejected) }()
-	<-waiting
+	testwait.Receive(t, "the refusal's drop to be reached while the refresh holds credMu", waiting)
 	if err := release(); err != nil {
 		t.Fatalf("refresh: %v", err)
 	}
-	if err := <-refused; err != rejected {
+	if err := testwait.Receive(t, "the refusal's clear to return once the refresh was let go", refused); err != rejected {
 		t.Fatalf("a refusal of the credential a refresh replaced reached its caller as %v; want the broker's refusal as it came", err)
 	}
 	if held := b.cred.Load(); held == nil || held == signed || held.id != signed.id {
@@ -696,7 +700,7 @@ func TestALauncherRefusalWhoseSettlementSaveFailsIsRetried(t *testing.T) {
 		fireArmedAt(t, fake, fake.Now().Add(b.refreshRetryOrDefault()), "the refresh loop's retry of the settlement's save")
 	}
 	retry := fake.Now().Add(b.refreshRetryOrDefault())
-	awaitArmedAt(t, fake, retry, "the refresh loop's retry after the third save met the unwritable directory")
+	fake.AwaitArmedAt(t, "the refresh loop's retry after the third save met the unwritable directory", retry)
 	restore()
 	fake.Set(retry)
 	waitFor(t, func() bool { return fileHoldsTheHeldLogin(b, original) })
@@ -779,18 +783,13 @@ func TestAStartWhoseRefreshHangsResumesTheLoginWithinItsBound(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	fake := clocktest.New(time.Now())
-	start := fake.Now()
 	b := &Broker{URL: cipheraddr.New(f.srv.URL), OperatorFile: operatorFile(t, "ada@example.com"), MachineFile: path, HTTP: f.srv.Client(), Clock: fake}
 	// One cleanup, gate first: Close waits on credMu, which a Start that ignored its bound would
 	// hold until the gate opens.
 	t.Cleanup(func() { close(gate); b.Close() })
 	done := make(chan error, 1)
 	go func() { done <- b.Start(ctx) }()
-	bound := testwait.Until(t, "Start to bound its refresh at defaultStartRefreshBound", func() (time.Time, bool) {
-		want := start.Add(defaultStartRefreshBound)
-		return want, slices.ContainsFunc(fake.Armed(), want.Equal)
-	})
-	fake.Set(bound)
+	fireArmedAt(t, fake, fake.Now().Add(defaultStartRefreshBound), "Start to bound its refresh at defaultStartRefreshBound")
 	if err := testwait.Receive(t, "Start to return once its refresh's bound ran out", done); err != nil {
 		t.Fatal(err)
 	}
@@ -825,14 +824,11 @@ func TestAShortLivedCredentialIsRefreshedBeforeItLapses(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := expiryLogin(t, b)
-	refreshAt := testwait.Until(t, "the refresh loop to reschedule its refresh at half the time left", func() (time.Time, bool) {
-		want := fake.Now().Add(first.expiresAt.Sub(fake.Now()) / 2)
-		return want, slices.ContainsFunc(fake.Armed(), want.Equal)
-	})
+	refreshAt := fake.Now().Add(first.expiresAt.Sub(fake.Now()) / 2)
 	if !refreshAt.Before(first.expiresAt) {
-		t.Fatalf("the refresh is armed for %s, not before the credential's expiry %s", refreshAt, first.expiresAt)
+		t.Fatalf("half the time left is %s, not before the credential's expiry %s", refreshAt, first.expiresAt)
 	}
-	fake.Set(refreshAt)
+	fireArmedAt(t, fake, refreshAt, "the refresh loop to reschedule its refresh at half the time left")
 	waitFor(t, func() bool {
 		cred := b.cred.Load()
 		return cred != nil && cred != first && cred.id == first.id && cred.expiresAt.After(first.expiresAt)

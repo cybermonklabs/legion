@@ -47,34 +47,25 @@ func wantSettled(t *testing.T, what string, resp Response, code string) {
 	}
 }
 
-// armBrokerCall waits for a broker-call op to arm its bound and brokerCall's timer on clock, the
+// armBrokerCall waits for a broker-call op to arm what brokerCall arms for it on clock, the
 // server's, and requires each where brokerCall arms it: the end of the op's context at
-// DefaultBrokerCallBound from the clock's present, and the timer a second after that. It then
-// requires that no reply has come yet, so whatever answers the op comes once the row moves the
-// clock.
+// DefaultBrokerCallBound from the clock's present, the timer a second after that, and the
+// connection's deadline 4 s after the timer (connDeadline). A row calls it with no other timer of
+// the server pending, so those three are all the clock holds. It then requires that no reply has
+// come yet, so whatever answers the op comes once the row moves the clock.
 func armBrokerCall(t *testing.T, clock *clocktest.Fake, replies <-chan callAnswer, what string) {
 	t.Helper()
 	now := clock.Now()
-	want := []time.Time{now.Add(DefaultBrokerCallBound), now.Add(DefaultBrokerCallBound + time.Second)}
-	if armed := clock.AwaitArmed(t, what+": the op's bound and brokerCall's timer", 2); !slices.EqualFunc(armed, want, time.Time.Equal) {
-		t.Fatalf("%s: the server armed %v; want the op's bound at %v and brokerCall's timer at %v", what, armed, want[0], want[1])
+	timer := now.Add(DefaultBrokerCallBound + DefaultBrokerCallSlack)
+	want := []time.Time{now.Add(DefaultBrokerCallBound), timer, timer.Add(4 * time.Second)}
+	if armed := clock.AwaitArmed(t, what+": the op's bound, brokerCall's timer and the connection's deadline", len(want)); !slices.EqualFunc(armed, want, time.Time.Equal) {
+		t.Fatalf("%s: the server armed %v; want the op's bound at %v, brokerCall's timer at %v and the connection's deadline at %v", what, armed, want[0], want[1], want[2])
 	}
 	select {
 	case reply := <-replies:
 		t.Fatalf("%s: answered before the server's clock moved: %+v %v", what, reply.resp, reply.err)
 	default:
 	}
-}
-
-// replyOf waits for the answer on replies (sendCall), and fails the row when the call ended in
-// an error.
-func replyOf(t *testing.T, replies <-chan callAnswer, what string) Response {
-	t.Helper()
-	reply := testwait.Receive(t, what, replies)
-	if reply.err != nil {
-		t.Fatalf("%s: %v", what, reply.err)
-	}
-	return reply.resp
 }
 
 // TestAFailedRequestIsKnownOrUnknownByWhetherTheBrokerGotIt: a broker request that failed after
@@ -163,18 +154,17 @@ func (s *heldSignIns) SignedIn() (string, string, error) { return "", "", nil }
 func TestAnOpHeldOnALockAnswersUnknownAtTheBoundAndSendsNothingAfter(t *testing.T) {
 	t.Parallel()
 	var out syncBuffer
-	clock := clocktest.New(time.Now())
-	r := newLoggedRig(t, "", slog.New(slog.NewTextHandler(&out, nil)), func(s *Server) { s.Clock = clock })
+	r := newLoggedRigOn(t, "", slog.New(slog.NewTextHandler(&out, nil)))
 	r.login(t)
 	release, open := testGate(t)
 	r.srv.Broker.SignIns = &heldSignIns{release: release}
 
 	const what = "enroll-session-key held on a lock past its bound"
 	replies := sendCall(t, r.sock, Request{Op: "enroll-session-key", RuntimeID: "box-1", Thumbprint: "tp-1"})
-	armBrokerCall(t, clock, replies, what)
+	armBrokerCall(t, r.clock, replies, what)
 	// The op's context ends at the bound, which the lock does not watch, so what answers is the
 	// timer a second later.
-	clock.Advance(DefaultBrokerCallBound + time.Second)
+	r.clock.Advance(DefaultBrokerCallBound + time.Second)
 	resp := replyOf(t, replies, what)
 	if resp.OK || resp.Code != CodeEnrollUnknown || !strings.Contains(resp.Error, "the outcome is unknown") {
 		t.Fatalf("%s: %+v; want %s saying the outcome is unknown", what, resp, CodeEnrollUnknown)
@@ -283,13 +273,17 @@ func TestAStoppingHelperAnswersItsBrokerCallBeforeServeReturns(t *testing.T) {
 	if n <= 0 {
 		t.Fatalf("Serve returned before the helper answered: nothing was on the connection (%d, %v)", n, readErr)
 	}
-	// The helper closed the connection before Serve returned, so the rest, if any, ends at once.
-	if err := conn.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
-		t.Fatal(err)
+	// The helper closed the connection before Serve returned, so the rest, if any, ends at once. A
+	// connection left open holds the read until the shared wait's give-up (testwait.GiveUpAt),
+	// which fails it there; under -timeout 0 it has no end.
+	if at, bounded := testwait.GiveUpAt(t); bounded {
+		if err := conn.SetReadDeadline(at); err != nil {
+			t.Fatal(err)
+		}
 	}
 	rest, err := io.ReadAll(conn)
 	if err != nil {
-		t.Fatalf("read the rest of the answer: %v", err)
+		t.Fatalf("read the rest of the answer: %v; the helper must close the connection before Serve returns", err)
 	}
 	answer := append(buf[:n], rest...)
 	var resp Response
