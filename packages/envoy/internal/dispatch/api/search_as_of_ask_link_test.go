@@ -19,6 +19,7 @@ import (
 // deleted after the cut: at the cut the hit linked the block, and the present graph has no node
 // for it.
 func TestAnAskHitAtACutLinksItsBlockAsTheGraphStoodThen(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "ASAL", "Ask block links", "Context paragraph.")
 	spec := decodeBody[model.Issue](t, dispatchRequest(t, w.handler, http.MethodGet, "/api/v1/issues/"+w.issue, nil, "alice")).PrimaryArtifactID
 	if written := sessionRequest(t, w.handler, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{

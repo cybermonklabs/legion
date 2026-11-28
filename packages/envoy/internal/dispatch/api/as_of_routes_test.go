@@ -145,6 +145,8 @@ func (c *cutRecorder) handler(w http.ResponseWriter, r *http.Request) {
 // the route each time. The refusals replace the package's declarations for their length
 // (withRouteRegistry), so the test is not parallel.
 func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
+	// Not parallel: it writes the package variable routeRegistry, the declarations every server of
+	// the package reads at Register (plantedRefusal, withRouteRegistry).
 	gets := 0
 	kinds := map[asOfKind]int{}
 	var problems []string
@@ -215,6 +217,7 @@ func TestEveryGETRowNamesItsAsOfKind(t *testing.T) {
 // is not of kind answers fails by name, and so does a row of kind answers that the plan does not
 // list. GET /api/v1/whoami is the one row of kind asOfCaller.
 func TestTheAsOfKindsAreThePlansTable(t *testing.T) {
+	t.Parallel()
 	listed := map[string]bool{}
 	for _, name := range thePlansAnswersRows {
 		if listed[name] {
@@ -277,6 +280,7 @@ func TestTheAsOfKindsAreThePlansTable(t *testing.T) {
 // assertions have run, and the count is held to the rows the registered server mounts, so a walk
 // that skipped a row fails.
 func TestEveryRowThatDoesNotAnswerAsOfRefusesIt(t *testing.T) {
+	t.Parallel()
 	_, _, _, served := newRegisteredTestServer(t, testServerOptions{testHooks: true})
 	replays := served.keyedReplays()
 	mounted := len(served.routeIndex)
@@ -349,6 +353,10 @@ func TestEveryRowThatDoesNotAnswerAsOfRefusesIt(t *testing.T) {
 // a semicolon. A time with nine fractional digits is taken rounded down to the microsecond, never
 // up into the next second, and the handler runs under that cut.
 func TestAnAnswersRowRefusesAMalformedOrFutureAsOf(t *testing.T) {
+	// Not parallel: it holds its rows to a wall-clock budget, one second (`now.Add(time.Second)`):
+	// the as_of one second after the database's now() must still be ahead of the database's clock
+	// when its row is sent, after every row before it, and the package's parallel tests would share
+	// the machine with them.
 	_, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	const name = "GET /api/v1/issues/{key}"
 	var route apiRoute

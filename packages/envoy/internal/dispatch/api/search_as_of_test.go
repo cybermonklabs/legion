@@ -214,6 +214,7 @@ func requireNoWord(t *testing.T, answer searchAnswer, word, why string) {
 // answers the status and updated_since rows otherwise, and so would a search at the cut that read
 // the present status or edited_at.
 func TestAPastTimeKeywordSearchFindsTheTextThen(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "ASKW", "Chart the lagoon soundings", "The survey's first notes.")
 	kept := w.comment(t, "The beacon tower stands on the point.")
 	changed := w.comment(t, "The ferry leaves at dawn.")
@@ -326,6 +327,7 @@ func TestAPastTimeKeywordSearchFindsTheTextThen(t *testing.T) {
 // found by meaning. The present search finds all three by meaning, so the cut is what leaves them
 // out.
 func TestAPastTimeMeaningSearchSkipsAnItemChangedSinceTheCut(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "ASME", "Rig the schooner", "The rigging plan.")
 	w.embedder.vectors["rope"] = queryVector()
 	unchanged := w.comment(t, "The keel needs fresh varnish.")
@@ -395,6 +397,7 @@ func TestAPastTimeMeaningSearchSkipsAnItemChangedSinceTheCut(t *testing.T) {
 // fill has reached no time, it names none; on one whose fill stands before a comment written
 // after it, the reach is before that comment, and a cut the fill has reached is answered.
 func TestASearchAtACutTheFillHasNotReachedIsRefused(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "ASNF", "Fill the keyword table", "The fill's notes.")
 	w.comment(t, "The lighthouse log, before the fill.")
 	before := w.cut(t)
@@ -455,6 +458,7 @@ func requireNotFilled(t *testing.T, handler http.Handler, target string) *httpte
 // their author deletes after the cut give no hit and no snippet at the cut, by keyword or by
 // meaning, though the search read at the cut found them; the fill read both deletes.
 func TestAPastTimeSearchFindsNoPostDeletedAfterTheCut(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "ASDL", "Count the shorebirds", "The count's notes.")
 	comment := w.comment(t, "A note on the zebrafinch survey.")
 	message := w.message(t, "The kingfisher count is due.")
@@ -499,6 +503,7 @@ func TestAPastTimeSearchFindsNoPostDeletedAfterTheCut(t *testing.T) {
 // after. The edit before the cut is longer than an event carries whole, with a word past what its
 // event holds, so the fill reads that body whole from the message's body history.
 func TestAPastTimeSearchFindsAnEditedMessageByItsTextThen(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "ASEM", "Count the waders", "The count's notes.")
 	message := w.message(t, "The tern count is due.")
 	paragraph := strings.Repeat("shoreline ", 2000)
@@ -538,6 +543,7 @@ func TestAPastTimeSearchFindsAnEditedMessageByItsTextThen(t *testing.T) {
 // embedded before the cut and the present search finds it. The keyword search at the cut still
 // finds it by its words then.
 func TestAnEditOfCaseOrPunctuationAloneIsAChangeForMeaningSearch(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "ASCP", "Rig the schooner", "The rigging plan.")
 	comment := w.comment(t, "The keel needs fresh varnish")
 	w.embedPost(t, "comment", comment, angledVector(0.9, 2))
@@ -576,6 +582,7 @@ func TestAnEditOfCaseOrPunctuationAloneIsAChangeForMeaningSearch(t *testing.T) {
 // The search read at the cut broadened it and found the text that holds the one word, so a build
 // that broadens at the cut answers a result.
 func TestAPastTimeSearchDoesNotBroaden(t *testing.T) {
+	t.Parallel()
 	w := newSearchAtCutWorld(t, "ASBR", "Keep the light", "The keeper's notes.")
 	held := w.comment(t, "The lighthouse keeps its log.")
 	cut := w.cut(t)

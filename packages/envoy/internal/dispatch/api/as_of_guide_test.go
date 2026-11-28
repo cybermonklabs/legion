@@ -26,6 +26,7 @@ const asOfGuideList = "**The members an answer can leave out at a cut**"
 // members in code spans that start with /, or none, and the list ends at the next paragraph that
 // is not a list item.
 func TestTheGuideNamesTheMembersEachAnswersRouteCanLeaveOut(t *testing.T) {
+	t.Parallel()
 	guide, err := os.ReadFile(filepath.Join("..", "..", "..", "cmd", "dispatch", "README.md"))
 	if err != nil {
 		t.Fatalf("read the guide: %v", err)

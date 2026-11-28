@@ -303,6 +303,11 @@ func asOfCostTargetsAt(t *testing.T, database *store.Store, cut asof.Cut) asOfCo
 // holds an embedding, so a search with meaning is not timed. A database that holds no
 // corpus.events, such as a restored dump, is read as it stands, with no such notes.
 func TestAsOfCostOnACorpusCopy(t *testing.T) {
+	// Not parallel: it times reads with a wall clock and holds each run to its bound (asOfCostBound,
+	// or a search's present median and asOfCostSearchMargin: a run over it is the last), and the
+	// clock, the cores and Postgres's shared buffers are the whole process's and server's, which the
+	// package's parallel tests use at the same time. It runs only where DISPATCH_ASOF_CORPUS_URL is
+	// set, which CI never sets, and the marker holds all the same.
 	databaseURL := os.Getenv(asOfCorpusURLEnv)
 	if databaseURL == "" {
 		t.Skip(asOfCorpusURLEnv + " must name a database that holds a copy of production's event log in corpus.events " +

@@ -152,6 +152,7 @@ func oauthErrorCode(t *testing.T, err error) (string, string) {
 // The named reverts: answer the credential's approved scopes on the issued lookup, and it answers
 // the empty list; store no dispatch_scopes with the record, and both lookups answer null.
 func TestADispatchSignInIsLookedUpApprovedAndListed(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, da, looked := openDispatchSignIn(t, rig, "a Dispatch session", []string{oauthwire.ScopePerson})
 	if looked.State != "pending" || looked.DispatchScopes == nil || !slices.Equal(*looked.DispatchScopes, []string{oauthwire.ScopePerson}) {

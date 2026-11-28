@@ -250,6 +250,7 @@ func launcherRouteCall(t *testing.T, rig *ciphertest.Rig, machine *deviceMachine
 // nothing, and a refused decision leaves its record pending. Each row is a permissive branch
 // away from minting a credential or a record where it must leave none.
 func TestADispatchSignInRefusesScopesOutsideItsConsent(t *testing.T) {
+	t.Parallel()
 	// refusedWithoutLogin fails t unless rig holds no credential and no machine-login record.
 	refusedWithoutLogin := func(t *testing.T, rig *ciphertest.Rig) {
 		t.Helper()
@@ -403,6 +404,7 @@ func TestADispatchSignInRefusesScopesOutsideItsConsent(t *testing.T) {
 // The named reverts: drop the gate from ApplyDecision, from the token hooks or from the trade, and
 // the replica approves, refreshes or trades the sign-in.
 func TestTurningTheDispatchSignInOffStopsEveryStepButADenial(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	replica := rig.ReplicaWithoutDispatchSignIn(t)
 
@@ -495,6 +497,7 @@ func TestTurningTheDispatchSignInOffStopsEveryStepButADenial(t *testing.T) {
 // The named revert: let AuthenticateLauncher take a credential whose dispatch_scopes is set, and
 // every row of the sign-in is answered past 401.
 func TestADispatchSignInsCredentialAuthenticatesNoLauncherRoute(t *testing.T) {
+	t.Parallel()
 	routes := api.LauncherRoutes()
 	if len(routes) == 0 {
 		t.Fatal("the route table lists no launcher route, so this test would call nothing")
@@ -532,6 +535,7 @@ func TestADispatchSignInsCredentialAuthenticatesNoLauncherRoute(t *testing.T) {
 //
 // The named revert: drop the read refusal of a consented claim, and the sign-in's trade is minted.
 func TestADispatchSignInHasNoReadTrade(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	tokenURL := rig.URL + "/v1/oauth/token"
 	signIn, signInToken, _ := approvedDispatchSignIn(t, rig, []string{oauthwire.ScopePerson}, []string{oauthwire.ScopePerson})
@@ -570,6 +574,7 @@ func TestADispatchSignInHasNoReadTrade(t *testing.T) {
 // dispatch_scopes out of the refresh grant's answer, and a row fails naming the answer; answer a
 // consented token's sign_in as anything but its credential, and a refresh's row fails naming it.
 func TestEachRefreshOfADispatchSignInIsADispatchSignIn(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	m, tok, credential := approvedDispatchSignIn(t, rig, []string{oauthwire.ScopePerson}, []string{oauthwire.ScopePerson})
 	requireAnswer := func(what string, tok *oauth2.Token) {
@@ -617,6 +622,7 @@ func TestEachRefreshOfADispatchSignInIsADispatchSignIn(t *testing.T) {
 //
 // The named revert: end no OAuth token in the credential's revoke, and the traded token stays live.
 func TestRevokingADispatchSignInEndsItsTokens(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	m, tok, credential := approvedDispatchSignIn(t, rig, []string{oauthwire.ScopePerson}, []string{oauthwire.ScopePerson})
 	exchanged, answer := m.traded(t, tok.AccessToken)
@@ -651,6 +657,7 @@ func TestRevokingADispatchSignInEndsItsTokens(t *testing.T) {
 // The named revert: store no dispatch_scopes for an empty approval, and the trade mints a
 // person-scoped token.
 func TestADispatchSignInApprovedWithNoScopeTradesForAnEmptyConsent(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	m, tok, _ := approvedDispatchSignIn(t, rig, []string{oauthwire.ScopePerson}, []string{})
 	if got := dispatchScopes(t, tok); len(got) != 0 {
@@ -670,6 +677,7 @@ func TestADispatchSignInApprovedWithNoScopeTradesForAnEmptyConsent(t *testing.T)
 // SCOPE_NOT_CONSENTABLE; grant a sign-in its asked scopes in place of its approved ones, and the
 // row approved with person alone holds p0.
 func TestADispatchSignInAskingP0TradesForTheScopesItsPersonTicked(t *testing.T) {
+	t.Parallel()
 	asked := []string{oauthwire.ScopeP0, oauthwire.ScopePerson}
 	for _, row := range []struct {
 		name     string
@@ -699,6 +707,7 @@ func TestADispatchSignInAskingP0TradesForTheScopesItsPersonTicked(t *testing.T) 
 //
 // The named revert: leave the switch out of the device login, and the Dispatch sign-in opens.
 func TestABrokerWithTheDispatchSignInOffOpensNone(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithoutDispatchSignIn())
 	m := newDeviceMachine(t, rig)
 	m.config.Scopes = []string{oauthwire.ScopeDispatch}
@@ -721,6 +730,7 @@ func TestABrokerWithTheDispatchSignInOffOpensNone(t *testing.T) {
 // The named reverts: leave dispatch_scopes off the pending rows, and both sign-ins answer null;
 // read them from the device code, and the swept sign-in's lookup answers null.
 func TestThePendingListNamesWhatADispatchSignInAsks(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, _, asking := openDispatchSignIn(t, rig, "a session asking person", []string{oauthwire.ScopePerson})
 	_, askingNoneCode, askingNone := openDispatchSignIn(t, rig, "a session asking nothing", nil)
@@ -772,6 +782,7 @@ func TestThePendingListNamesWhatADispatchSignInAsks(t *testing.T) {
 //
 // The named revert: list no reason, and both rows answer "".
 func TestTwoDispatchSignInsOfOneHostAreToldApartByTheirReasons(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, _, first := approvedDispatchSignInFor(t, rig, "the first session", []string{oauthwire.ScopePerson}, []string{oauthwire.ScopePerson})
 	_, _, second := approvedDispatchSignInFor(t, rig, "the second session", []string{oauthwire.ScopePerson}, []string{})
@@ -799,6 +810,7 @@ func TestTwoDispatchSignInsOfOneHostAreToldApartByTheirReasons(t *testing.T) {
 //
 // The named revert: take any signed-in person's approval, and the other person's is issued.
 func TestOnlyThePersonADispatchSignInNamesDecidesIt(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	_, da, looked := openDispatchSignIn(t, rig, "a session of its own person", []string{oauthwire.ScopePerson})
 	status, body := decideAt(t, rig, rig.URL, looked.RecordID, "approve",
@@ -828,6 +840,7 @@ func TestOnlyThePersonADispatchSignInNamesDecidesIt(t *testing.T) {
 // The named reverts: give a consented claim PersonPrincipal, and X is minted a token naming the
 // machine login's session; give it one principal per person, and Y is minted a token naming X's.
 func TestEachDispatchSignInTakesNoSessionNameAnotherCredentialOfItsPersonHolds(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t)
 	const held, xName, yName = "ada-machine-session", "ada-sign-in-x", "ada-sign-in-y"
 	trade := func(m *deviceMachine, token, session string) answered {

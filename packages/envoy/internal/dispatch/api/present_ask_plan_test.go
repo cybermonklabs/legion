@@ -22,6 +22,7 @@ import (
 // The control adds the same index with only the type predicate: at least one of the same
 // statements must take it, so a fixture too small to prefer it cannot pass the test.
 func TestPresentAskReadsDoNotUseEventsAskState(t *testing.T) {
+	t.Parallel()
 	ctx := t.Context()
 	probe := newRelationProbe()
 	handler, db, _, _ := newRegisteredTestServer(t, testServerOptions{tracer: probe})

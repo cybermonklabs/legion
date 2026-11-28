@@ -131,6 +131,7 @@ const pastResultsChecks = ":::check{#k1 surface=\"cli\" run=\"go test ./...\" ne
 // pull_request_heads, branch_commits or events, and the counts of those rows do not move. ?at=
 // with a cut is refused 400 AS_OF_NOT_SERVED naming at, and asks GitHub nothing either.
 func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
+	t.Parallel()
 	statements := &markedStatements{}
 	handler, github, served := newPastResultsRig(t, statements)
 	database := served.deps.Store
@@ -254,6 +255,7 @@ func TestPastTimeResultsWriteNothingAndAskGitHubNothing(t *testing.T) {
 // write. So does the read at the cut after the respelling once the block index holds the
 // rewording's version.
 func TestARespelledChecksWordsAreLeftOutAtACut(t *testing.T) {
+	t.Parallel()
 	handler, database, served := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
 	issue := issueInRepository(t, handler, "RSPC", "acme/widgets", "Respelled at a cut")
@@ -343,6 +345,7 @@ func TestARespelledChecksWordsAreLeftOutAtACut(t *testing.T) {
 // the read then gave, no version while the document is owed its index, the digest the re-index
 // moved, and a later version.
 func TestAChecksDigestThatAReindexChangedInPlaceIsLeftOutAtACut(t *testing.T) {
+	t.Parallel()
 	handler, database, served := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
 	issue := issueInRepository(t, handler, "RIDX", "acme/widgets", "Re-indexed in place")
@@ -431,6 +434,7 @@ func TestAChecksDigestThatAReindexChangedInPlaceIsLeftOutAtACut(t *testing.T) {
 // moved, and names each in Dispatch-As-Of-Absent, before the reconciliation and after it: it gives
 // no value from the index that the reconciliation wrote after the cut.
 func TestAVersionFirstIndexedAfterTheCutGivesNoCheckDigestAtTheCut(t *testing.T) {
+	t.Parallel()
 	handler, database, served := resultsGitHubServed(t, map[string]bool{"acme/widgets": true}, nil, "main",
 		func(string, string) (int, string) { return http.StatusOK, "diverged" }, nil)
 	issue := issueInRepository(t, handler, "RLTX", "acme/widgets", "Indexed after the cut")

@@ -18,6 +18,7 @@ const approvalMovedTwoPaths = `(a.kind = 'approval'
 // and not moved), an object whose documents is null, and documents of which one is moved or none
 // is, and for an ask that is not an approval.
 func TestTheMovedApprovalRuleAnswersAsTheTwoPathRuleDid(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	rows, err := database.Pool.Query(t.Context(), `
 		select a.label, `+approvalMoved+` as moved, `+approvalMovedTwoPaths+` as was

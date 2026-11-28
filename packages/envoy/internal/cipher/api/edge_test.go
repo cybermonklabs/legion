@@ -99,6 +99,7 @@ func (m *deviceMachine) edgeLogin(t *testing.T, loginHint string) (*oauth2.Devic
 // TestTheEdgeAcceptsADispatchSignIn holds the edge's preflight to the new device scope. Removing
 // dispatch from that preflight makes the broker serve it on its own address only.
 func TestTheEdgeAcceptsADispatchSignIn(t *testing.T) {
+	t.Parallel()
 	rig := ciphertest.NewRig(t, ciphertest.WithEdge())
 	m := newEdgeMachine(t, rig, throughBalancer{client: "203.0.113.201"})
 	m.config.Scopes = []string{oauthwire.ScopeDispatch}
