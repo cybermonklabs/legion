@@ -705,7 +705,7 @@ stderr. A run of its own also prints each package's `pass|fail PACKAGE <seconds>
 over the packages `.github/go-legs.yaml` lists for that leg, with `--timeout 20m`, `--skip` of
 the web display fixture's two tests, which `envoy-go-build` runs, of the five that
 `envoy-go-skips`' "Count the store-form rows on each backend" runs (`backend-count.sh`, above),
-and of the 37 rows whose bound is on time, which `envoy-go-alone` runs on a runner nothing else
+and of the 38 rows whose bound is on time, which `envoy-go-alone` runs on a runner nothing else
 loads (`UNIT_ALONE_TESTS` in `.github/scripts/ci_job_reads.py`), `--count-table`, and a step
 limit of its own (`timeout-minutes: 30`) that its time budget counts; one go test a leg lets the
 broker's packages share its `-p` slots with the rest of the leg.

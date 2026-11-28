@@ -2836,7 +2836,7 @@ product. Two kinds, each built from a list in `.github/scripts/ci_job_reads.py`,
 texts and the legs' `-skip` are both built from:
 
 - the unit packages' rows whose bound, measured from the test's own clock, is under twice its
-  slowest reading (`UNIT_ALONE_TESTS`, thirty-seven tests in eleven packages, by the rule of
+  slowest reading (`UNIT_ALONE_TESTS`, thirty-eight tests in eleven packages, by the rule of
   dispatch://INFRA-1075 that #2733 applied over its paired runs), one package and one test at a
   time (`-parallel 1`); the legs skip each by its name, which `hold_unit_alone_tests` holds to one
   package of the module;

@@ -59,6 +59,7 @@ BACKEND_COUNT_TESTS = (
 # go_legs.py's, which the legs step's lister runs.
 UNIT_SKIP = ("'^(TestABatchCutOffInFlightKeepsItsOrder|"
              "TestAClaimLeftByAnotherProcessIsTakenWhenItLapses|TestADeletedBucketFailsAWriteWithinTheBudget|"
+             "TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound|"
              "TestAHolderWhoseRecordFindsTheHoldAnothersStopsItsRenewal|"
              "TestAProcessReportsASilentNATSCutWithinSeconds|"
              "TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce|"

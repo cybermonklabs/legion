@@ -276,7 +276,7 @@ const roomAppendsApplicationName = "dispatch-room-appends"
 // so one is not a ration but the whole design.
 const healthPoolSize = 1
 
-// healthProbeTimeout bounds the health probe's own wait, dial and query together, and owns the
+// HealthProbeTimeout bounds the health probe's own wait, dial and query together, and owns the
 // argument for why the probe is bounded at all. Every prober treats silence as a dead process:
 // the ALB fails a poll at five seconds and three consecutive failures replace the task,
 // cancelling every in-flight request of every other client, and the compose healthcheck and
@@ -293,7 +293,12 @@ const healthPoolSize = 1
 // and an idle connection lives for half an hour. A link that drops packets - a security-group
 // change, an availability-zone partition, an endpoint that accepts and then stalls - is the
 // unbounded case whenever the connection was already open.
-const healthProbeTimeout = 2 * time.Second
+//
+// It is exported for cmd/dispatch: its shutdown's health probes each run within it
+// (shutdownProbes), its boot refuses a test process's DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT longer
+// than it, and TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound holds a
+// probe over an open connection, the warm case above, to it on the wall clock.
+const HealthProbeTimeout = 2 * time.Second
 
 // ErrPoolClosed is a connection asked for after the pool was released.
 var ErrPoolClosed = errors.New("connection pool is closed")
@@ -319,7 +324,7 @@ func (p *Pool) RoomAppends() (*pgxpool.Pool, error) {
 }
 
 // Healthy reports the highest schema migration Postgres has applied, read within
-// healthProbeTimeout on a connection of a pool nothing else uses; the read is the reachability
+// HealthProbeTimeout on a connection of a pool nothing else uses; the read is the reachability
 // probe too, so an error means the database did not answer. /healthz asks it, and it must never
 // queue behind a writer: proving the shared pool has a free connection is the wrong question,
 // because during a busy period it legitimately has none. Like the rooms pool this one is outside
@@ -334,13 +339,13 @@ func (p *Pool) RoomAppends() (*pgxpool.Pool, error) {
 // answering; once Close has closed every other pool it closes this one and Healthy refuses
 // (ErrPoolClosed).
 func (p *Pool) Healthy(ctx context.Context) (int, error) {
-	return p.HealthyWithin(ctx, healthProbeTimeout)
+	return p.HealthyWithin(ctx, HealthProbeTimeout)
 }
 
 // HealthyWithin is Healthy with a bound the caller names, for the one caller whose read is not
 // the serving process's: it reads the highest schema migration Postgres has applied, within
 // bound, on a connection of a pool nothing else uses, and an error means the database did not
-// answer. healthProbeTimeout is argued for a warm process - /healthz runs every few seconds on a
+// answer. HealthProbeTimeout is argued for a warm process - /healthz runs every few seconds on a
 // connection this pool already holds open - and it must stay tight, because the probers that
 // read a slow answer as a dead process are tighter still. The boot's one probe
 // (cmd/dispatch/registry.go) is the opposite case: the health pool opens on its first read

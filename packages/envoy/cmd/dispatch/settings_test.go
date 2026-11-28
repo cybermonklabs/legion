@@ -29,6 +29,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
@@ -2236,23 +2237,33 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": func(t *testing.T) {
-			if boot := resolveWith(t, map[string]string{}); boot.ShutdownProbe != 0 || shutdownProbes(boot.ShutdownProbe) != (silenceBounds{}) {
-				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT unset: ShutdownProbe = %v and the shutdown's probes %+v, want 0 and the zero silenceBounds (the store's two-second probe and drainPollInterval between two)",
-					boot.ShutdownProbe, shutdownProbes(boot.ShutdownProbe))
+			production := silenceBounds{clock: clock.Real(), probeTimeout: store.HealthProbeTimeout, pause: drainPollInterval}
+			if boot := resolveWith(t, map[string]string{}); boot.ShutdownProbe != 0 || shutdownProbes(boot.ShutdownProbe) != production {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT unset: ShutdownProbe = %v and the shutdown's probes %+v, want 0 and production's %+v (store.HealthProbeTimeout and drainPollInterval between two, on the wall clock)",
+					boot.ShutdownProbe, shutdownProbes(boot.ShutdownProbe), production)
 			}
 			const quick = 120 * time.Millisecond
 			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": quick.String()}); boot.ShutdownProbe != quick ||
-				shutdownProbes(boot.ShutdownProbe) != (silenceBounds{probeTimeout: quick, pause: quick / 8}) {
-				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=%s: ShutdownProbe = %v and the shutdown's probes %+v, want %v and a probe of %v with an eighth of it between two",
+				shutdownProbes(boot.ShutdownProbe) != (silenceBounds{clock: clock.Real(), probeTimeout: quick, pause: 15 * time.Millisecond}) {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=%s: ShutdownProbe = %v and the shutdown's probes %+v, want %v and a probe of %v with an eighth of it, 15ms, between two, on the wall clock",
 					quick, boot.ShutdownProbe, shutdownProbes(boot.ShutdownProbe), quick, quick)
 			}
-			if got, want := shutdownProbes(4*time.Second), (silenceBounds{probeTimeout: 4 * time.Second, pause: drainPollInterval}); got != want {
+			// shutdownProbes never lengthens the pause past drainPollInterval, even for a probe the
+			// boot refuses.
+			if got, want := shutdownProbes(4*time.Second), (silenceBounds{clock: clock.Real(), probeTimeout: 4 * time.Second, pause: drainPollInterval}); got != want {
 				t.Errorf("a 4s shutdown probe gives the shutdown's probes %+v, want %+v: the pause is never longer than drainPollInterval", got, want)
 			}
 			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": invalid},
 					fmt.Sprintf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=%q (expected a positive Go duration)", invalid))
 			}
+			// The ceiling: the store's own bound is taken, and anything longer would name a probe
+			// the store cuts to its two seconds (store.HealthProbeTimeout).
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": "2s"}); boot.ShutdownProbe != 2*time.Second {
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=2s: ShutdownProbe = %v, want 2s", boot.ShutdownProbe)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": "2.001s"},
+				`DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT="2.001s" (expected at most 2s`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": "120ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": func(t *testing.T) {
@@ -2267,6 +2278,13 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": invalid},
 					fmt.Sprintf("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT=%q (expected a positive Go duration)", invalid))
 			}
+			// The ceiling: the hold's renewal interval is taken, and anything longer would name a
+			// release the fill cuts to that interval (textversions.MaxReleaseTimeout).
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": "5s"}); boot.SearchFillReleaseTimeout != 5*time.Second {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT=5s: SearchFillReleaseTimeout = %v, want 5s", boot.SearchFillReleaseTimeout)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": "5.001s"},
+				`DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT="5.001s" (expected at most 5s`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT": "90ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_ROSTER_UNCACHED": func(t *testing.T) {

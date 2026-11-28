@@ -259,19 +259,14 @@ func (l *handoverListener) lastSend() time.Time {
 	return l.last
 }
 
-// waitForSent waits until all want attempts of comments are sent, polling the database, and fails
-// the test with process's output once deadline passes first.
+// waitForSent waits until all want attempts of comments are sent, polling the database
+// (sentAttempts), and fails the test with process's output once deadline passes first.
 func waitForSent(
 	t *testing.T, database *store.Store, process *dispatchProcess, comments []string, want int, deadline time.Time,
 ) {
 	t.Helper()
 	for {
-		var settled int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from comment_deliveries where comment_id = any($1) and state = 'sent'
-		`, comments).Scan(&settled); err != nil {
-			t.Fatalf("read the attempts: %v", err)
-		}
+		settled := sentAttempts(t, database, comments)
 		if settled == want {
 			return
 		}
@@ -280,6 +275,19 @@ func waitForSent(
 		}
 		time.Sleep(200 * time.Millisecond)
 	}
+}
+
+// sentAttempts counts the delivery attempts of comments that are sent, read from the database:
+// what waitForSent and the rolling update row's wait read.
+func sentAttempts(t *testing.T, database *store.Store, comments []string) int {
+	t.Helper()
+	var sent int
+	if err := database.Pool.QueryRow(context.Background(), `
+		select count(*) from comment_deliveries where comment_id = any($1) and state = 'sent'
+	`, comments).Scan(&sent); err != nil {
+		t.Fatalf("read the attempts: %v", err)
+	}
+	return sent
 }
 
 // backDatePendingAttempts moves every pending attempt's claim and creation two minutes back, past
@@ -471,12 +479,7 @@ func TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce(t *testin
 	// below, read off when the listener took the last one.
 	owed := []string{inFlight, queued, drained}
 	testwait.Until(t, "the successor's delivery sweep to send the three attempts the old process left owed (the count sent)", func() (int, bool) {
-		var sent int
-		if err := database.Pool.QueryRow(context.Background(), `
-			select count(*) from comment_deliveries where comment_id = any($1) and state = 'sent'
-		`, owed).Scan(&sent); err != nil {
-			t.Fatalf("read the attempts: %v", err)
-		}
+		sent := sentAttempts(t, database, owed)
 		return sent, sent == len(owed)
 	})
 	lastSend := listener.lastSend().Sub(owedAt)

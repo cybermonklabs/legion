@@ -33,7 +33,6 @@ import (
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
@@ -583,11 +582,11 @@ func TestShutdownWaitsForDeliveryWorkBeforeClosingThePool(t *testing.T) {
 	entered, release, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(clock.Real(), server.Config, documentService, database.Pool, func() {
+		shutdown(server.Config, documentService, database.Pool, func() {
 			close(entered)
 			<-release
 			background.Wait()
-		}, func() {}, func() {}, nil, httpDrainBeforeDocuments, silenceBounds{})
+		}, func() {}, func() {}, nil, httpDrainBeforeDocuments, shutdownProbes(0))
 	}()
 	select {
 	case <-entered:
@@ -719,7 +718,7 @@ func TestShutdownWaitsForTheOutboxToReleaseThePublisherHold(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		shutdown(clock.Real(), server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, silenceBounds{})
+		shutdown(server.Config, documentService, database.Pool, background.Wait, func() {}, func() {}, outboxStopped, httpDrainBeforeDocuments, shutdownProbes(0))
 	}()
 	select {
 	case <-done:
@@ -879,7 +878,7 @@ func TestShutdownWaitsForAnIntakeHandlerBeforeClosingThePool(t *testing.T) {
 		// As main does: the stop of the intakes, which begins as ctx is cancelled, is what shutdown
 		// waits for beside the delivery sockets.
 		served <- serveUntilStopped(ctx, cancel, &http.Server{Handler: http.NotFoundHandler()}, listener, documentService,
-			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments, silenceBounds{})
+			database.Pool, func() {}, stopIntakes, func() {}, nil, nil, httpDrainBeforeDocuments, shutdownProbes(0))
 	}()
 	cancel()
 	select {
@@ -1000,23 +999,19 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 // by its statement, the owner-lock statement a PATCH sends first (lockIssueOwners in
 // internal/dispatch/api/issue_parent.go). A settlement sends the same statement for the same lock
 // before it takes its document's advisory lock (settleRoomWithin calls lockArtifactOwner before
-// readLocked takes lockSettlementCursor), so neither the statement nor the advisory locks tell a
-// settlement waiting there from the title change: the row calls this before the edit's settle
-// timer can fire (inFlightSettleDelay), so the backend it finds is the title change's. The query
-// leaves out the owner lock's gate, which every write of this build takes shared in that same
-// statement before it waits on the owner (store.OwnerLockGateNamespace, migration 20261115200014).
+// readLocked takes lockSettlementCursor), so while it waits there it holds no advisory lock but
+// the owner lock's gate, which every write of this build takes shared in that same statement
+// (store.OwnerLockGateNamespace), as the title change does: nothing the database shows tells the
+// two apart. The row calls this before the edit's settle timer can fire (inFlightSettleDelay), so
+// the backend waiting on the owner-lock statement behind holder is the title change's.
 func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx) {
 	t.Helper()
 	ctx := context.Background()
-	testwait.Until(t, "the title change's backend to queue behind the issue lock (the backends last read waiting on an owner lock and holding no advisory lock but its gate)", func() ([]uint32, bool) {
+	testwait.Until(t, "the title change's backend to queue behind the issue lock (the backends last read waiting on an owner lock)", func() ([]uint32, bool) {
 		rows, err := database.Pool.Query(ctx, `
 			select pid from pg_stat_activity
 			where datname = current_database() and query = $1
-			  and pid not in (
-			    select pid from pg_locks
-			    where locktype = 'advisory' and granted
-			      and not (objsubid = 2 and classid = $2::oid and objid = $3::oid))
-		`, store.OwnerLockStatement, int64(store.OwnerLockGateNamespace), int64(store.OwnerLockGateKey))
+		`, store.OwnerLockStatement)
 		if err != nil {
 			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
 		}
@@ -1172,7 +1167,7 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	// failed probe takes its quickShutdownProbe and the pause after it, as the process sets them
 	// (shutdownProbes). quickShutdownSlack is the rest of the exit on this real binary.
 	probes := shutdownProbes(quickShutdownProbe)
-	if bound := quickHTTPDrain + silentProbes*(probes.probeTimeout+probes.betweenProbes()) + quickShutdownSlack; exited > bound {
+	if bound := quickHTTPDrain + silentProbes*(probes.probeTimeout+probes.pause) + quickShutdownSlack; exited > bound {
 		t.Errorf("Dispatch exited %v after SIGTERM with the database unanswering, want within %v", exited, bound)
 	}
 	output := process.Output.String()
@@ -1189,31 +1184,14 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 	}
 }
 
-// storeProbeTimeout is the store's own bound on a health probe, the two seconds store.Pool.Healthy
-// probes within (store's healthProbeTimeout, which this package cannot read): the bound each probe
-// of a deployment's shutdown runs within, which the row below runs on its fake clock.
-const storeProbeTimeout = 2 * time.Second
-
-// A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
-// as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
-// waits for it. On a database that has stopped answering it never comes back, so closePool gives up
-// on it by waitUntilIdle's rule, silentProbes failed health probes in a row with no connection taken
-// back, and says so, instead of waiting on it until the runtime kills Dispatch. closePool runs
-// production's probe and pause, storeProbeTimeout and drainPollInterval, on a clocktest.Fake: the
-// row moves the fake to each pause's end and each probe's timeout once closePool has armed it, and
-// the frozen relay holds every probe until the fake ends its context. It asserts that closePool
-// waits out a pause before each probe and gives each probe the store's bound, by the deadline each
-// is armed for; that it had not returned after the first and the second failed probe, read once
-// the pause after each was armed, when closePool waits on it; that it returned once the third
-// failed; that the late taker's connection never came back; and that its warning names the cause
-// and the three failed probes. The store's own two seconds still bound each probe underneath, on
-// the wall clock (store.Pool.HealthyWithin), and the row ends each probe on the fake as soon as its
-// timeout is armed, well inside them. The test's pool pings every connection it hands out, as
-// pgxpool pings one idle for over a second, so the late taker is held by a ping the frozen database
-// never answers without the test waiting out that second.
-func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
-	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
-	ctx := context.Background()
+// relayedPool opens a test database and a store.Pool on it through a databaseRelay, and answers a
+// health probe through the relay before it returns, so the health pool holds one connection open
+// and a probe's failure once the relay freezes is the freeze's. The pool pings every connection it
+// hands out, as pgxpool pings one idle for over a second, so a connection taken once the relay has
+// frozen is held by a ping the frozen database never answers, without the test waiting out that
+// second.
+func relayedPool(t *testing.T) (*store.Pool, *databaseRelay) {
+	t.Helper()
 	database := storetest.Open(t)
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
 	config, err := testpool.ParseConfig(relay.url)
@@ -1221,15 +1199,85 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 		t.Fatalf("parse the relay's URL: %v", err)
 	}
 	config.ShouldPing = func(context.Context, pgxpool.ShouldPingParams) bool { return true }
-	opened, err := pgxpool.NewWithConfig(ctx, config)
+	opened, err := pgxpool.NewWithConfig(context.Background(), config)
 	if err != nil {
 		t.Fatalf("open a pool through the relay: %v", err)
 	}
 	pool := store.NewPool(opened)
-	// The probe answers through the relay before it freezes, so its failures after are the freeze's.
-	if _, err := pool.Healthy(ctx); err != nil {
+	if _, err := pool.Healthy(context.Background()); err != nil {
 		t.Fatalf("health probe through the relay: %v", err)
 	}
+	return pool, relay
+}
+
+// healthProbeSlack is what the row below allows past store.HealthProbeTimeout: a loaded box's
+// scheduling on top of the store's own timer - the timer firing, pgxpool giving up the ping the
+// probe waits on, and the probe's goroutine running again to read the clock. The row's verdict is
+// a bound on wall time, which the issue's non-goal keeps: the store's bound runs on the wall clock,
+// and the row measures that bound itself.
+const healthProbeSlack = time.Second
+
+// A health probe over a connection the health pool already holds open, to a database that has
+// stopped answering, ends at the store's own bound, store.HealthProbeTimeout. That is the warm case
+// its doc comment names as production's normal state, and the one nothing else bounds: pgxpool's
+// two-minute ConnectTimeout floor covers only a dial, and a /healthz request's context carries no
+// deadline. TestHealthzAnswersWhilePostgresStopsAnswering holds the cold case, the probe's first
+// dial. The row warms the health connection through the relay (relayedPool), freezes the relay,
+// and runs store.Pool.Healthy on context.Background(), on a goroutine of its own, which times it;
+// it waits for the probe's return through internal/testwait with no bound of its own. It requires
+// the probe to have failed with the store's deadline (context.DeadlineExceeded, from the context
+// store.Pool.HealthyWithin bounds), within store.HealthProbeTimeout and healthProbeSlack of its
+// start, so a bound on the dial alone (the two seconds moved into the pool's ConnectTimeout, say)
+// fails it. The probe waits on pgxpool's ping of the open connection, as /healthz's probe every few
+// seconds does once its connection has been idle for over a second.
+func TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound(t *testing.T) {
+	// Not parallel: its verdict is a bound on wall time, which a parallel row's load could break.
+	pool, relay := relayedPool(t)
+	relay.freeze()
+	type probed struct {
+		err  error
+		took time.Duration
+	}
+	returned := make(chan probed, 1)
+	go func() {
+		started := time.Now()
+		_, err := pool.Healthy(context.Background())
+		returned <- probed{err: err, took: time.Since(started)}
+	}()
+	got := testwait.Receive(t, "the health probe over the open connection to the frozen database to return", returned)
+	t.Logf("the health probe over the open connection to the frozen database returned %v after it began: %v", got.took, got.err)
+	if got.err == nil {
+		t.Fatalf("the health probe answered over the open connection to the frozen database, want it to fail at the store's bound")
+	}
+	if !errors.Is(got.err, context.DeadlineExceeded) {
+		t.Errorf("the health probe over the open connection to the frozen database failed with %v, want the store's deadline (context.DeadlineExceeded)", got.err)
+	}
+	if bound := store.HealthProbeTimeout + healthProbeSlack; got.took > bound {
+		t.Errorf("the health probe over the open connection to the frozen database returned %v after it began, want within %v (store.HealthProbeTimeout and healthProbeSlack)", got.took, bound)
+	}
+}
+
+// A connection taken after shutdown saw the pools idle - ygo's persistence worker compacting a room
+// as it exits takes one with no deadline - is in use when the pool closes, and closing the pool
+// waits for it. On a database that has stopped answering it never comes back, so closePool gives up
+// on it by waitUntilIdle's rule, silentProbes failed health probes in a row with no connection taken
+// back, and says so, instead of waiting on it until the runtime kills Dispatch. closePool runs
+// production's probe and pause, shutdownProbes(0)'s store.HealthProbeTimeout and drainPollInterval,
+// with its clock replaced by a clocktest.Fake: the row moves the fake to each pause's end and each
+// probe's timeout once closePool has armed it, and the frozen relay holds every probe until the
+// fake ends its context. It asserts that closePool waits out a pause before each probe and gives
+// each probe the store's bound, by the deadline each is armed for; that it had not returned after
+// the first and the second failed probe, read once the pause after each was armed, when closePool
+// waits on it; that it returned once the third failed; that the late taker's connection never came
+// back; and that its warning names the cause and the three failed probes. The store's own two
+// seconds still bound each probe underneath, on the wall clock (store.Pool.HealthyWithin), and the
+// row ends each probe on the fake as soon as its timeout is armed, well inside them. The pool
+// (relayedPool) pings every connection it hands out, so the late taker is held by a ping the frozen
+// database never answers.
+func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault).
+	ctx := context.Background()
+	pool, relay := relayedPool(t)
 	if _, err := pool.Exec(ctx, "select 1"); err != nil {
 		t.Fatalf("open a shared connection through the relay: %v", err)
 	}
@@ -1251,10 +1299,12 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 	logged := capturedLog(t)
 	start := time.Date(2026, 11, 28, 9, 0, 0, 0, time.UTC)
 	fake := clocktest.New(start)
+	bounds := shutdownProbes(0)
+	bounds.clock = fake
 	returned := make(chan struct{})
 	go func() {
 		defer close(returned)
-		closePool(fake, pool, silenceBounds{probeTimeout: storeProbeTimeout, pause: drainPollInterval})
+		closePool(pool, bounds)
 	}()
 	// awaitArmed waits until closePool has armed a timer due at at on the fake, with failed probes
 	// failed so far. It reads whether closePool has returned after it reads what is armed, so a
@@ -1272,15 +1322,15 @@ func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *
 			return armed, slices.ContainsFunc(armed, at.Equal)
 		})
 	}
-	// Each probe comes after a pause of drainPollInterval and fails at storeProbeTimeout through the
+	// Each probe comes after a pause of bounds.pause and fails at bounds.probeTimeout through the
 	// frozen relay, so the fake moves to each deadline in turn. The pause after the first and the
 	// second failed probe, seen armed, is the read that closePool had not returned after them.
 	at := start
 	for failed := range silentProbes {
-		at = at.Add(drainPollInterval)
+		at = at.Add(bounds.pause)
 		awaitArmed(fmt.Sprintf("the pause before probe %d", failed+1), at, failed)
 		fake.Set(at)
-		at = at.Add(storeProbeTimeout)
+		at = at.Add(bounds.probeTimeout)
 		awaitArmed(fmt.Sprintf("probe %d's timeout", failed+1), at, failed)
 		fake.Set(at)
 	}

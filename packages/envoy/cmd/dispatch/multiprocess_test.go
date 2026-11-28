@@ -1498,7 +1498,7 @@ func (p *dispatchPair) requireRunning(t *testing.T) {
 // readBracket is when one read of /healthz was issued and when it was answered. The field
 // outbox_publisher describes an instant somewhere in there and nowhere narrower: healthzHandler
 // evaluates Publishing() in the response's encode, after a probe of the database bounded at
-// store.healthProbeTimeout (2 s), and the body still has to reach the reader. So a read is
+// store.HealthProbeTimeout (2 s), and the body still has to reach the reader. So a read is
 // compared with the publishing periods as a span, and one that straddles an edge of them decides
 // nothing. A fixed tolerance in its place would be twenty times too small under the load this row
 // is soaked at, and would fail at random, which is the kind of assertion this row was rid of.

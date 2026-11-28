@@ -1938,6 +1938,7 @@ UNIT_ALONE_TESTS = {
         "TestIdentity",
     ],
     "cmd/dispatch": [
+        "TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound",
         "TestAProcessReportsASilentNATSCutWithinSeconds",
         "TestARollingUpdatesSuccessorHandsEachMentionTheOldProcessLeftOnce",
         "TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering",

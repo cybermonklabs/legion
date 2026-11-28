@@ -214,17 +214,19 @@ type bootConfig struct {
 	// httpDrainBeforeDocuments (outboxStopBudget).
 	HTTPDrain time.Duration
 	// ShutdownProbe bounds each health probe by which the shutdown learns that the database has
-	// stopped answering, zero for the store's own two-second probe and drainPollInterval between
-	// two; shutdownProbes turns it into the shutdown's silenceBounds. Only
+	// stopped answering, zero for production's: store.HealthProbeTimeout's two seconds, and
+	// drainPollInterval between two; shutdownProbes turns it into the shutdown's silenceBounds. Only
 	// DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT, under the test hooks, sets it, since a test whose
-	// database stops answering waits silentProbes probes out before the process exits; it can only
-	// shorten a probe, since store.Pool.HealthyWithin keeps its own bound past a longer context.
+	// database stops answering waits silentProbes probes out before the process exits;
+	// resolveBootConfig refuses one longer than store.HealthProbeTimeout, which no probe runs past
+	// whatever its context, so the setting can only shorten a probe.
 	ShutdownProbe time.Duration
 	// SearchFillReleaseTimeout bounds the keyword fill's release of its hold as the process stops
 	// (textversions.Config.ReleaseTimeout), zero for the hold's renewal interval, five seconds; only
 	// DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT, under the test hooks, sets it, since a test whose
-	// database stops answering at shutdown waits the release out. The fill cuts a longer one to
-	// its renewal interval, so it can only shorten the release.
+	// database stops answering at shutdown waits the release out. resolveBootConfig refuses one
+	// longer than that interval (textversions.MaxReleaseTimeout), so it can only shorten the
+	// release.
 	SearchFillReleaseTimeout time.Duration
 	// ListenerRosterUncached makes every read of the listener's session list ask the listener
 	// rather than share the process's five-second copy; only DISPATCH_TEST_ROSTER_UNCACHED=1, under
@@ -1831,6 +1833,14 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_HTTP_DRAIN")), httpDrainBeforeDocuments, stopGrace, documentShutdownTimeout)
 	}
+	if boot.ShutdownProbe > store.HealthProbeTimeout {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=%q (expected at most %s, a deployment's probe: the store's own bound on a health probe, which bounds every probe whatever the setting)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT")), store.HealthProbeTimeout)
+	}
+	if boot.SearchFillReleaseTimeout > textversions.MaxReleaseTimeout {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT=%q (expected at most %s, a deployment's release: the keyword fill's hold renewal interval, which bounds every release whatever the setting)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT")), textversions.MaxReleaseTimeout)
+	}
 	if boot.ReviewerAppID, err = reviewerAppID(env); err != nil {
 		return bootConfig{}, err
 	}
@@ -2771,7 +2781,7 @@ func proofOrigins(serverURL string, added []string) []string {
 // at this build's own version (pmdoc.Install), and the process keeps serving, so a release that
 // ships a type migration takes no process of the previous build out of service. Nothing
 // here waits on the shared pool, and each probe bounds its own wait
-// (store.healthProbeTimeout, files.healthTimeout), which records why a probe that answers late is
+// (store.HealthProbeTimeout, files.healthTimeout), which records why a probe that answers late is
 // as bad as one that never answers. The database and file-store probes run side by side: each
 // takes up to two seconds, and one after the other they would take four, past the three-second
 // prober (the compose healthcheck and the deploy script). A probe that fails while the database is
