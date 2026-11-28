@@ -47,6 +47,7 @@ import {
 import {
   heldRead,
   type NodeWrites,
+  placeNode,
   readOutlinesAgain,
   refusalLine,
   useNodeWrites,
@@ -958,9 +959,8 @@ test("a placing answered with the placement_seq it went under lets the row go on
 // holds, sends `after: null`, and the server answers it with the last ranked sibling of the spec's
 // band it holds: a statement an edit removed, gone, which keeps its part_of and its rank and which
 // no tree read holds. The answer written into the held read finds no such sibling and puts the
-// node last under the issue, ranked, which lets the row go by the parent the answer names; the
-// read made again holds it right after the criterion, first in its band, the place the body asked
-// for.
+// node at the place the body asked for, ranked, first in its band, right after the criterion,
+// which lets the row go by the parent the answer names; the read made again holds it there too.
 test("a placing whose answer names a gone sibling as after lets the row go once the held read holds the node under the answer's parent", async () => {
   const ask = belowCriterion();
   const gone = "<owed-gone-statement>";
@@ -1833,6 +1833,21 @@ test("a taken move after a block whose subtree goes on to the next page stands a
   expect(heldNode(client, STATEMENT)?.parent?.id).toBe("<question>");
 });
 
+/** The criterion's subtree, which goes on to the second page with its block of the issue's own
+ *  fragment. */
+const CRITERION_SUBTREE = [
+  "<criterion>",
+  "<statement-1>",
+  "<check-shared>",
+  "<result>",
+  "<child-check>",
+  "<plan-task>",
+  "<statement-2>",
+  "<check-agent>",
+  ...STATEMENT_SUBTREE,
+  UNDER_CRITERION,
+];
+
 // Outdent on the criterion goes under the issue, last of the spec's blocks: the server answers
 // after the decision, which the second page holds. The criterion's subtree goes on to the second
 // page with its block of the issue's own fragment, which moves with it: the whole subtree stands
@@ -1851,22 +1866,10 @@ test("a taken move of a block whose children go on to the next page takes all of
   });
   expect(outcome).toMatchObject({ status: "taken" });
   expect(patches.calls.map((call) => call.body)).toEqual([{ parent }]);
-  const subtree = [
-    "<criterion>",
-    "<statement-1>",
-    "<check-shared>",
-    "<result>",
-    "<child-check>",
-    "<plan-task>",
-    "<statement-2>",
-    "<check-agent>",
-    ...STATEMENT_SUBTREE,
-    UNDER_CRITERION,
-  ];
   expect(
     heldIds(client),
     "the criterion's whole subtree stands right after the decision's reading"
-  ).toEqual(placedAfter(twoPageIds, subtree, "<reading>"));
+  ).toEqual(placedAfter(twoPageIds, CRITERION_SUBTREE, "<reading>"));
   expect(heldNode(client, "<criterion>")?.parent?.id).toBe(KEY);
 });
 
@@ -2009,4 +2012,155 @@ test("a refused next page before R7's re-read still ends in the re-read", async 
   expect(reads.cursors, "a refused page was read again").toEqual([firstPage.cursor, null]);
   expect(writes().busy(PAGED), "the chain is busy once the re-read went").toBe(false);
   expect(writes().lines.get(PAGED), "the row draws a line").toBeUndefined();
+});
+
+// ---------------------------------------------------------------------------------------------
+// An answer that names a gone `after` (R4): a move or a placing that sends `after: null` is
+// answered with the last ranked sibling of an earlier band, one that sends no `after` with the
+// last ranked sibling of its own band or an earlier one, and one that names an `after` with that
+// same sibling, and each can be a block an edit removed, gone, which keeps its rank and which no
+// page holds. The page writes the node under the answer's `parent` at the place the body asked
+// for - first in its band where the body's `after` was null, last in its band where the body
+// named none - and reads the next pages only until it holds that place.
+// ---------------------------------------------------------------------------------------------
+
+/** The second block of the issue's own fragment, which Move up makes the first. */
+const HEADING = "<tree/heading>";
+
+/** A block of the spec under the issue that an edit removed, gone, which keeps its rank and which
+ *  no page holds: the last ranked sibling of the spec's band there. */
+const GONE_SPEC = "<gone-spec-under-issue>";
+
+/** The server's answer to Move up on the heading: under the issue, after the gone block of the
+ *  spec, which is how it answers the first place of the issue's own blocks, under the heading's
+ *  next placement_seq. */
+const headingFirst: Exchange = {
+  body: { after: GONE_SPEC, parent: `issue/${KEY}`, placement_seq: "<seq:tree/heading>@2" },
+  status: 200,
+};
+
+// Move up on the heading, on the fixture's two pages, makes it the first of the issue's own
+// blocks: the body sends `after: null`, and the server answers with the gone block of the spec.
+// R7's re-read is held out, so the case reads the held read the answer was written into: the
+// heading stands first in its band, right before the paragraph, after the decision's reading, and
+// not last under the issue, where a move key would be judged on an order the server never had.
+test("a taken move whose answer names a gone after is written at the place its body asked for", async () => {
+  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  expect(
+    twoPages.nodes?.some((node) => node.id === GONE_SPEC),
+    "a page holds the gone block"
+  ).toBe(false);
+  const patches = answerPatches(headingFirst);
+  const { client, writes } = mount(twoPages);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await writes().move(HEADING, "move_up");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(
+    patches.calls.map((call) => call.body),
+    "Move up names another place"
+  ).toEqual([{ after: null, parent: `issue/${KEY}` }]);
+  expect(heldIds(client), "the node stands last under its parent").toEqual(
+    placedAfter(twoPageIds, [HEADING], "<reading>")
+  );
+  expect(heldNode(client, HEADING)?.parent?.id).toBe(KEY);
+});
+
+/** The fixture's two pages as a read that names a third page past them. */
+const twoPagesAndMore: TreeAnswer = { ...twoPages, cursor: "<cursor:third>" };
+
+// The same Move up on a read of the fixture's two pages that names a next page: the issue's
+// children may go on past the pages loaded, and none of them is a block of the Verification
+// document or of the plan, so no child of a later band shows the issue's own blocks to be all
+// held. The place the body asked for, right before the paragraph, after every block of the spec
+// under the issue, is on the loaded pages all the same: the chain reads no next page for it, and
+// R7's re-read reads the first page alone.
+test("a gone after under the issue reads no page past the place the body asked for", async () => {
+  const cursors: (string | null)[] = [];
+  answerRequests(
+    http.get(`/api/v1/issues/${KEY}/tree`, ({ request }) => {
+      const cursor = new URL(request.url).searchParams.get("cursor");
+      cursors.push(cursor);
+      return Response.json(cursor === null ? firstPage : secondPage);
+    })
+  );
+  const patches = answerPatches(headingFirst);
+  const { writes } = mount(twoPagesAndMore);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await writes().move(HEADING, "move_up");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(
+    patches.calls.map((call) => call.body),
+    "Move up names another place"
+  ).toEqual([{ after: null, parent: `issue/${KEY}` }]);
+  await waitFor(() => expect(cursors, "R7's re-read did not go").toContain(null));
+  await waitInAct(50);
+  expect(
+    cursors.filter((cursor) => cursor !== null),
+    "the chain reads a next page"
+  ).toEqual([]);
+});
+
+// Outdent on the criterion, on the fixture's two pages, puts it under the issue with a body that
+// names no `after`: last of the spec's blocks there. The server answers with the last ranked
+// sibling of the spec's band under the issue, here the gone block of the spec, which no page
+// holds. The issue holds the paragraph, a block of the issue's own fragment, a later band. R7's
+// re-read is held out, so the case reads the held read the answer was written into: the
+// criterion's whole subtree stands last in its band, right before the paragraph, after the
+// decision's reading, and not last under the issue.
+test("a taken move whose body names no after and whose answer names a gone after stands last in its band", async () => {
+  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  const parent = `issue/${KEY}`;
+  const patches = answerPatches({
+    body: { after: GONE_SPEC, parent, placement_seq: "<seq:criterion>@2" },
+    status: 200,
+  });
+  const { client, writes } = mount(twoPages);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await writes().move("<criterion>", "outdent");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(
+    patches.calls.map((call) => call.body),
+    "the outdent names another place"
+  ).toEqual([{ parent }]);
+  expect(heldIds(client), "the node stands last under its parent").toEqual(
+    placedAfter(twoPageIds, CRITERION_SUBTREE, "<reading>")
+  );
+  expect(heldNode(client, "<criterion>")?.parent?.id).toBe(KEY);
+});
+
+/** A block of the issue's own fragment under the criterion that an edit removed, gone, which
+ *  keeps its rank and which no page holds. */
+const GONE_UNDER_CRITERION = "<gone-under-criterion>";
+
+// A new row's placing goes with the body its row was drawn with, so its `after` can name a sibling
+// gone since, which no loaded page holds: the paragraph placed under the criterion, after a block
+// of the issue's own fragment gone there. The server takes it and answers with that same sibling,
+// so the held read holds neither the answer's `after` nor the body's, and the node goes last under
+// the criterion: right after the criterion's whole subtree, which goes on past the first page's
+// context nodes to its block of the issue's own fragment on the second page.
+test("a body after that no loaded page holds puts the node last under its parent, after its subtree on both pages", async () => {
+  answerRequests(http.get(`/api/v1/issues/${KEY}/tree`, () => new Promise<never>(() => {})));
+  const body = { after: GONE_UNDER_CRITERION, parent: "<criterion>" };
+  const patches = answerPatches({
+    body: { ...body, placement_seq: "<seq:tree/paragraph>@2" },
+    status: 200,
+  });
+  const { client } = mount(twoPages);
+  let outcome: unknown;
+  await act(async () => {
+    outcome = await placeNode(client, KEY, PAGED, body, "new_below");
+  });
+  expect(outcome).toMatchObject({ status: "taken" });
+  expect(patches.calls.map((call) => call.body)).toEqual([body]);
+  expect(
+    heldIds(client),
+    "the node stands elsewhere than right after the criterion's subtree on both pages"
+  ).toEqual(placedAfter(twoPageIds, [PAGED], UNDER_CRITERION));
+  expect(heldNode(client, PAGED)?.parent?.id).toBe("<criterion>");
 });

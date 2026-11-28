@@ -97,6 +97,17 @@ export interface Place extends MoveBody {
   readonly after: string | null;
 }
 
+/** A taken move's or placing's place: the one its answer names (`answer`), and the body that
+ *  asked for it (`body`), which says what an answer's `after` that names a gone sibling stands
+ *  for: the server answers a body's null `after` with the last ranked sibling of an earlier band,
+ *  a body with no `after` with the last ranked sibling of the node's band or an earlier one, and
+ *  a named `after` with that same sibling, and each can be a gone block that keeps its rank,
+ *  which no tree read holds. */
+export interface TakenPlace {
+  readonly answer: Place;
+  readonly body: MoveBody;
+}
+
 /** Where a new block stands: `body` is the `PATCH` that gives it its place once it holds a rank
  *  and a `placement_seq`, `after` the read id of the row the new row is drawn right after under
  *  `body.parent`, null where it is that parent's first child. */
@@ -334,21 +345,35 @@ export function standsAt(
   return before === undefined || bandOf(before) < bandOf(node);
 }
 
-/** Whether `held` holds the place a taken move's answer, `place`, names for `node`, a node it
- *  holds: the node `parent` names, and the sibling `after` names, or nothing more where `after` is
- *  null. Where it holds no node `after` names, the place is held once every child of that parent
- *  of `node`'s band is (`incomplete`): no next page holds that sibling then, which is gone, since
- *  the tree read leaves a gone block out. */
+/** Whether `held` holds the place of a taken move or placing (`TakenPlace`) for `node`, a node it
+ *  holds: the node the answer's `parent` names, and the sibling the answer's `after` names, or
+ *  nothing more where that `after` is null. Where it holds no node that `after` names - a gone
+ *  sibling, since the tree read leaves a gone block out, or one past the loaded pages - the place
+ *  is the one the body asked for (`node-writes.ts`' `movedIn`), held once the parent's children
+ *  that stand before it are: where the parent's children cannot go on past the loaded pages
+ *  (`Walk.open`), or where `held` holds a ranked child other than `node` that the server stands
+ *  after them all. Where the body's `after` was null, the place is the first of `node`'s band, and
+ *  that child is one of that band or a later one. Where the body named no `after`, the place is
+ *  the last of `node`'s band, and that child is one of a later band (`incomplete`, which never
+ *  counts `node`, a child of its own band). Where the body named an `after`, it is held as that
+ *  last place is: no next page holds that sibling then, which is gone. */
 export function holdsPlace(
   held: TreeAnswer,
   node: TreeAnswerNode,
-  { after, parent }: Place
+  { answer, body }: TakenPlace
 ): boolean {
   const nodes = held.nodes ?? [];
-  const under = nodes.find((each) => names(each, parent));
+  const under = nodes.find((each) => names(each, answer.parent));
   if (under === undefined) return false;
+  const { after } = answer;
   if (after === null || nodes.some((each) => names(each, after))) return true;
-  return !incomplete(walkOf(held), under.id, bandOf(node));
+  const walk = walkOf(held);
+  const band = bandOf(node);
+  if (body.after !== null) return !incomplete(walk, under.id, band);
+  return (
+    !walk.open.has(under.id) ||
+    rankedChildren(walk, under.id).some((child) => child.id !== node.id && bandOf(child) >= band)
+  );
 }
 
 /** Indexes `held`: its nodes by read id, each parent's children and its ranked children in the

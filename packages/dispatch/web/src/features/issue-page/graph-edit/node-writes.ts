@@ -32,9 +32,9 @@ import {
   type MoveBody,
   type MoveEntry,
   names,
-  type Place,
   type PlacementRow,
   placementOf,
+  type TakenPlace,
 } from "./placement";
 
 /**
@@ -53,19 +53,23 @@ import {
  * body is made by `placement.ts` as the move's turn comes, from Graph's held read with each
  * earlier answer of the chain written into it (`movedIn`): the answer's `parent`, `after` and
  * `placement_seq`, and nothing else, so every other field of the node stays as the read answered
- * it. A move whose entry is grey by then is dropped with its reason, and so is each move after
- * it; a refusal of an act drops each move after it too, and the row's line says why and how many
- * moves were not sent. A delete waits its turn the same way and goes with the `placement_seq`
- * the held read holds then. Where the body, or the node itself, stands on a page the page has not
- * loaded, that page is read first (`readNextTreePage`). If a move's answer puts the node on a
- * page not loaded, the chain reads up to that place before planning the next act (`readToPlace`),
- * and reads for no place a read cannot hold: an `after` that names a gone sibling, which no read
- * holds, under a parent whose children of the node's band the loaded pages hold all of
- * (`placement.ts`' `holdsPlace`). If no pages are needed, the next act goes out within the
- * answer's own reaction, before the write store's hold on the tree reads ends
- * (`subscribeTreeFreshness`). The editor's move keys check `NodeWrites.busy` so a key pressed
- * while an act is out waits its turn, rather than being judged on the read that act's answer is
- * about to change.
+ * it. Where the read holds no node the answer's `after` names - a gone sibling, which no read
+ * holds, or one past the loaded pages - the node is written at the place its body asked for:
+ * first in its band where the body's `after` was null, last in its band where the body named no
+ * `after`. A move whose entry is grey by then is dropped with its reason, and so is each move
+ * after it; a refusal of an act drops each move after it too, and the row's line says why and how
+ * many moves were not sent. A delete waits its turn the same way and goes with the
+ * `placement_seq` the held read holds then. Where the body, or the node itself, stands on a page
+ * the page has not loaded, that page is read first (`readNextTreePage`). If a move's answer puts
+ * the node on a page not loaded, the chain reads up to that place before planning the next act
+ * (`readToPlace`), and reads for no place a read cannot hold: an `after` that names a gone
+ * sibling, which no read holds, where the loaded pages hold the parent's children that stand
+ * before the place the body asked for - each child of the earlier bands where the body's `after`
+ * was null, each child of the node's band otherwise (`placement.ts`' `holdsPlace`). If no pages
+ * are needed, the next act goes out within the answer's own reaction, before the write store's
+ * hold on the tree reads ends (`subscribeTreeFreshness`). The editor's move keys check
+ * `NodeWrites.busy` so a key pressed while an act is out waits its turn, rather than being judged
+ * on the read that act's answer is about to change.
  *
  * A new row's node (R3) is placed the same way, on its own chain (`placeNode`): one `PATCH` of
  * the place its entry gave it, under the `placement_seq` the read that first held it ranked
@@ -254,10 +258,11 @@ interface Chain {
   readonly issue: string;
   readonly node: string;
   readonly acts: Act[];
-  /** The place the last move or placing put the node at. The chain reads for that place before
-   *  planning its next act or refreshing the outlines; `advance` clears it once the held read
-   *  holds it (`lacksPlace`), or where no read is held. */
-  place: Place | undefined;
+  /** The place the last move or placing put the node at: its answer, and the body it answered
+   *  (`TakenPlace`). The chain reads for that place before planning its next act or refreshing
+   *  the outlines; `advance` clears it once the held read holds it (`lacksPlace`), or where no
+   *  read is held. */
+  place: TakenPlace | undefined;
   /** Whether an act of the chain was taken, or refused with an answer that says the tree is
    *  stale: what reads the outline reads again once the chain is empty. */
   reads: boolean;
@@ -506,31 +511,53 @@ export function parentRefOf(parent: TreeAnswerNode): NonNullable<TreeAnswerNode[
 }
 
 /** The index in `held.nodes` a subtree of `band` goes to under the parent at `held.nodes[from]`,
- *  among all of the parent's children that `held` holds, on every page (`childrenOf`): right after
- *  the subtree of the child `after` names, wherever that child stands; first in its band where
- *  `after` is null, before the first ranked child of that band or a later one; and last under the
- *  parent where no child it holds is the one `after` names - one past the loaded pages, or a gone
- *  one, which no read holds: right after the parent's own subtree, which ends with the subtree of
- *  its last child that `held` holds, and is the parent alone where it holds none. */
-function placeIn(held: TreeAnswer, from: number, after: string | null, band: number): number {
+ *  among all of the parent's children that `held` holds, on every page (`childrenOf`), for a
+ *  taken move's place (`TakenPlace`): right after the subtree of the child the answer's `after`
+ *  names, wherever that child stands, or first in its band where that `after` is null. Where no
+ *  child it holds is the one the answer's `after` names - a gone one, which no read holds, or one
+ *  past the loaded pages - it is the place the body asked for: first in its band where the body's
+ *  `after` is null; last in its band where the body names no `after`; right after the subtree of
+ *  the child the body's `after` names, where `held` holds it; and last under the parent where it
+ *  holds neither, the place past the loaded pages. First in its band is right before the first
+ *  ranked child of that band or a later one, last in its band right before the first ranked
+ *  child of a later band, and either is last under the parent where `held` holds no such child:
+ *  right after the parent's own subtree, which ends with the subtree of its last child that
+ *  `held` holds, and is the parent alone where it holds none. */
+function placeIn(
+  held: TreeAnswer,
+  from: number,
+  band: number,
+  { answer, body }: TakenPlace
+): number {
   const nodes = held.nodes ?? [];
   const parent = nodes[from];
   if (parent === undefined) return nodes.length;
-  for (const child of childrenOf(held, parent.id)) {
-    if (after !== null && names(child, after)) return subtreeEnd(nodes, nodes.indexOf(child));
-    if (after === null && typeof child.rank === "string" && bandOf(child) >= band) {
-      return nodes.indexOf(child);
-    }
-  }
-  return subtreeEnd(nodes, from);
+  const children = childrenOf(held, parent.id);
+  const last = subtreeEnd(nodes, from);
+  // Right before the first ranked child of band `start` or a later one, else last under the parent.
+  const bandFrom = (start: number): number => {
+    const first = children.find(
+      (child) => typeof child.rank === "string" && bandOf(child) >= start
+    );
+    return first === undefined ? last : nodes.indexOf(first);
+  };
+  // Where `after` puts the subtree, or undefined where it names no child held.
+  const placed = (after: string | null | undefined): number | undefined => {
+    if (after === null) return bandFrom(band);
+    if (after === undefined) return bandFrom(band + 1);
+    const named = children.find((child) => names(child, after));
+    return named === undefined ? undefined : subtreeEnd(nodes, nodes.indexOf(named));
+  };
+  return placed(answer.after) ?? placed(body.after) ?? last;
 }
 
-/** `held` with the taken move of `node` written into it: the node's whole subtree, on every page
- *  it stands on (`cutSubtree`), under the answer's `parent`, after its `after` among all of that
- *  parent's children the pages hold (`placeIn`), in the walk's order, so each later body reads it
- *  there, and the node's `placement_seq` the answer's. Where the read holds no such parent, the
- *  node keeps its place and takes the sequence alone. */
-function movedIn(held: TreeAnswer, node: string, answer: NodeMoved): TreeAnswer {
+/** `held` with the taken move of `node`, `answer` to `body`, written into it: the node's whole
+ *  subtree, on every page it stands on (`cutSubtree`), under the answer's `parent`, among all of
+ *  that parent's children the pages hold, after the answer's `after`, or at the place `body`
+ *  asked for where the pages hold no child that `after` names (`placeIn`), in the walk's order,
+ *  so each later body reads it there, and the node's `placement_seq` the answer's. Where the read
+ *  holds no such parent, the node keeps its place and takes the sequence alone. */
+function movedIn(held: TreeAnswer, node: string, answer: NodeMoved, body: MoveBody): TreeAnswer {
   const nodes = held.nodes ?? [];
   const at = nodes.findIndex((each) => each.id === node);
   const own = nodes[at];
@@ -543,7 +570,7 @@ function movedIn(held: TreeAnswer, node: string, answer: NodeMoved): TreeAnswer 
     return { ...held, nodes: [...nodes.slice(0, at), renewed, ...nodes.slice(at + 1)] };
   }
   const ref = own.parent?.id === parent.id ? own.parent : parentRef(rest, parent);
-  const to = placeIn({ ...held, nodes: rest }, from, answer.after, bandOf(own));
+  const to = placeIn({ ...held, nodes: rest }, from, bandOf(own), { answer, body });
   const placed = [{ ...renewed, parent: ref }, ...subtree.slice(1)];
   return { ...held, nodes: [...rest.slice(0, to), ...placed, ...rest.slice(to)] };
 }
@@ -559,15 +586,23 @@ function writeHeld(client: QueryClient, issue: string, answer: TreeAnswer): void
   }
 }
 
-/** Writes the taken move of `node` into Graph's held read of `issue` (`movedIn`). */
-function placeHeld(client: QueryClient, issue: string, node: string, answer: NodeMoved): void {
+/** Writes the taken move of `node`, `answer` to `body`, into Graph's held read of `issue`
+ *  (`movedIn`). */
+function placeHeld(
+  client: QueryClient,
+  issue: string,
+  node: string,
+  answer: NodeMoved,
+  body: MoveBody
+): void {
   const held = heldRead(client, issue);
-  if (held !== undefined) writeHeld(client, issue, movedIn(held, node, answer));
+  if (held !== undefined) writeHeld(client, issue, movedIn(held, node, answer, body));
 }
 
-/** Whether `held` names a next page and lacks `place`, where a taken answer put the node of read
- *  id `node`: it lacks that node, or holds it and not the place (`placement.ts`' `holdsPlace`). */
-function lacksPlace(held: TreeAnswer, node: string, place: Place): boolean {
+/** Whether `held` names a next page and lacks `place`, where a taken move put the node of read id
+ *  `node` (its answer, and the body it answered): it lacks that node, or holds it and not the
+ *  place (`placement.ts`' `holdsPlace`). */
+function lacksPlace(held: TreeAnswer, node: string, place: TakenPlace): boolean {
   if (nextTreeCursor(held) === undefined) return false;
   const moved = held.nodes?.find((each) => each.id === node);
   return moved === undefined || !holdsPlace(held, moved, place);
@@ -696,7 +731,7 @@ function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
   if (act.kind === "place") {
     const request = placed(writeRequest("patch", NODE_ROUTE, params, act.body), node);
     const label = CONTROL_LABELS[`edit_${act.entry}`];
-    return { kind: "send", send: () => sendMove(client, chain, act, request, label) };
+    return { kind: "send", send: () => sendMove(client, chain, act, act.body, request, label) };
   }
   const verdict = placementOf({
     closed: act.closed,
@@ -714,7 +749,10 @@ function nextOf(client: QueryClient, chain: Chain, act: Act): Next {
     case "move": {
       const request = placed(writeRequest("patch", NODE_ROUTE, params, verdict.body), node);
       const label = CONTROL_LABELS[`edit_${act.entry}`];
-      return { kind: "send", send: () => sendMove(client, chain, act, request, label) };
+      return {
+        kind: "send",
+        send: () => sendMove(client, chain, act, verdict.body, request, label),
+      };
     }
   }
 }
@@ -825,12 +863,15 @@ function giveUpGraphRead(client: QueryClient, issue: string): void {
   void client.invalidateQueries({ exact: true, queryKey, refetchType: "none" });
 }
 
-/** The `PATCH` of a move, or of a new row's placing, labelled `label` in the write store: a taken
- *  answer is written into the held read at its place, and the chain goes on. */
+/** The `PATCH` of `body`, a move's or a new row's placing's, labelled `label` in the write store:
+ *  a taken answer is written into the held read at its place, or at the place `body` asked for
+ *  where the read holds no node the answer's `after` names (`movedIn`), the chain reads for that
+ *  place (`Chain.place`), and goes on. */
 function sendMove(
   client: QueryClient,
   chain: Chain,
   act: MoveAct | PlaceAct,
+  body: MoveBody,
   request: WriteRequest<NodeMoved>,
   label: string
 ): void {
@@ -845,8 +886,8 @@ function sendMove(
       try {
         // A landing with no answer to give says nothing of the place: the next act goes from the
         // read as it stands, and its refusal reads the tree again.
-        if (answer !== null) placeHeld(client, chain.issue, chain.node, answer);
-        chain.place = answer ?? undefined;
+        if (answer !== null) placeHeld(client, chain.issue, chain.node, answer, body);
+        chain.place = answer === null ? undefined : { answer, body };
       } finally {
         advance(client, chain);
       }
@@ -934,8 +975,9 @@ function pressDelete(
  * Places the node of read id `node`, a new row's (R3), with the one `PATCH` of `body` - the place
  * `placement.ts` gave the row as `entry` made it - under the node's `placement_seq` as Graph's
  * held read of `issue` holds it, on the node's own chain, as a move goes (`PlaceOutcome`): a taken
- * answer is written into the held read at its `parent` and `after`, and answered, a refusal draws
- * the row's line (R8), and once the chain is empty the outline reads are read again (R7).
+ * answer is written into the held read at its `parent` and `after`, or at the place of `body`
+ * where the read holds no node that `after` names (`movedIn`), and answered, a refusal draws the
+ * row's line (R8), and once the chain is empty the outline reads are read again (R7).
  */
 export function placeNode(
   client: QueryClient,
