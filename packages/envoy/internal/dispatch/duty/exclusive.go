@@ -220,10 +220,11 @@ const leaseCallTimeout = 5 * time.Second
 // LeaseCall is the context of one statement on a session lock's own connection: a lease's, any
 // lock FreeSessionLock gives back, and the rollback a room's batch of browser updates sends on
 // that connection before its unlock (internal/dispatch/docs, appendRoomTx), which must be bounded
-// for the same reason the unlock is (leaseCallTimeout). Two writes outside that set take it for
-// the same two reasons, detached and bounded, and move with leaseCallTimeout: a CI reconcile
-// pass's record of its own start and of its own end (internal/dispatch/cireconcile, beginPass
-// and endPass), neither of which may run on the pass's context, which a shutdown cancels.
+// for the same reason the unlock is (leaseCallTimeout). Three statements outside that set also
+// use it to run detached and bounded by leaseCallTimeout: a CI reconcile pass's start write
+// (internal/dispatch/cireconcile, beginPass), and its end write and the prune of old rows that
+// follows it on the same context (endPass). None may run on the pass's context, which a shutdown
+// cancels.
 func LeaseCall() (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.Background(), leaseCallTimeout)
 }

@@ -391,14 +391,14 @@ func TestAPassCancelledByItsCallerRecordsThatItWasCancelled(t *testing.T) {
 // the caller cancelled it. It stands in for the window no test can hit on demand: a shutdown
 // landing while the insert is in flight, where Postgres commits the row and the read of its id
 // fails. Cancelling first reaches the same code by a shorter road -- on the pass's own context
-// pgxpool refuses at the acquire, before any insert is sent -- and what both leave behind is a
-// pass parted from its row. beginPass says why the insert runs on a context of its own.
+// pgxpool refuses at the acquire, before any insert is sent -- and in both cases the pass holds
+// no row's id, so it records nothing of how it ended. beginPass says why the insert runs on a
+// context of its own.
 func TestAPassWhoseCallerIsAlreadyCancelledStillRecordsTheCancellation(t *testing.T) {
 	t.Parallel()
 	h := newHarness(t, reviewerAppID)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
-	h.reconciler.PassTimeout = 0
 
 	shutting, shutdown := context.WithCancel(h.ctx)
 	shutdown()
@@ -406,7 +406,7 @@ func TestAPassWhoseCallerIsAlreadyCancelledStillRecordsTheCancellation(t *testin
 
 	passes := recent(t, h.pool)
 	if len(passes) != 1 {
-		t.Fatalf("the pass left %d rows, want the one row a pass writes: a pass that never read its row's id back records nothing of a process that was in a pass", len(passes))
+		t.Fatalf("the pass left %d rows, want the one row a pass writes: a pass that holds no row's id records nothing of how it ended", len(passes))
 	}
 	pass := passes[0]
 	if pass.State != outcomeCancelled {
