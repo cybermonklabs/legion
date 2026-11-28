@@ -375,6 +375,54 @@ func TestASourceMovedToAnotherProjectAndBackKeepsItsDeployRowsAndTheirFailures(t
 	requireStep("once the source moved back to ALPHA", alpha)
 }
 
+// TestARefusedCheckFailStaysRefusedThroughASourceMoveAndBack (the architect's ruling,
+// dispatch://INFRA-978/comment/d57e8d06-afb3-4456-9e3d-516923e2b706): a fail of an after_merge
+// check on a BETA issue, at a commit only ALPHA's deploy holds, is refused while that deploy counts
+// for ALPHA alone (ruling 2(a)), and it stays refused. When acme/widgets's one source moves from
+// ALPHA to BETA, the derive that moves run 298's row binds no row to the result; when the source
+// moves back, no BETA row blames ALPHA's deploy, so ALPHA's numbers are as they were before the
+// move.
+func TestARefusedCheckFailStaysRefusedThroughASourceMoveAndBack(t *testing.T) {
+	r := newRig(t)
+	r.project("BETA", "acme/beta")
+	r.deployRun(298, at(60), sha("a"), prodJob, success, success)
+	r.passDeploys()
+	deploy := r.deployOf(298)
+	result := r.checkResult(r.issueOf("BETA", 1), "c1", sha("a"), VerdictFail, model.CheckWhenAfterMerge)
+	if created, err := RecordCheckFailure(r.ctx, r.pool, result); err != nil || created {
+		t.Fatalf("RecordCheckFailure on BETA's issue at ALPHA's commit = %v, %v; want no row", created, err)
+	}
+	pass := func() {
+		t.Helper()
+		r.passDeploys()
+		r.passEvents()
+	}
+	requireRefused := func(step, owner string) {
+		t.Helper()
+		if moved := r.deployOf(298); moved.ID != deploy.ID || moved.ProjectKey != owner {
+			t.Fatalf("%s, run 298's row is %s of %s; want %s of %s", step, moved.ID, moved.ProjectKey, deploy.ID, owner)
+		}
+		if bound := r.boundTo(result); bound != "" {
+			t.Errorf("%s, BETA's refused result is bound to %q; want it unbound", step, bound)
+		}
+		var rows int
+		if err := r.pool.QueryRow(r.ctx, `select count(*) from production_events where kind = 'failure'`).Scan(&rows); err != nil || rows != 0 {
+			t.Errorf("%s, the record holds %d failure rows across every project (%v); want none", step, rows, err)
+		}
+	}
+
+	pass()
+	requireRefused("under ALPHA's source", alpha)
+	r.deliveryOff(alpha)
+	r.saveSource("BETA", new(widgets), revertsSince, prodJob)
+	pass()
+	requireRefused("once the source moved to BETA", "BETA")
+	r.deliveryOff("BETA")
+	r.saveRule(prodJob)
+	pass()
+	requireRefused("once the source moved back to ALPHA", alpha)
+}
+
 // TestTheDeployRowWriteTakesNoChangeLogLock: the adapter writes a deploy row in a transaction of its
 // own that takes the delivery change log's lock nowhere (dispatch://INFRA-978, D8 and R13), so the
 // row commits while another transaction holds that lock, with its change row waiting in the outbox;
