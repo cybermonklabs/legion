@@ -1993,11 +1993,12 @@ def exec_wrapped_files(units: list, gates) -> set:
     return {path for own, path, _, _, _ in units if own in readers}
 
 
-def env_reason(document: dict, job: dict, steps: list, exec_wrapped: bool) -> str:
+def env_reason(document: dict, job: dict, steps: list, exec_wrapped: bool = False) -> str:
     """The first env: block of the workflow, the job or one of the steps that can change what a go
     command compiles (an expression, or a name outside ENV_ALLOWED), or ''. `exec_wrapped` says
     the file holding them is one of exec_wrapped_files, whose workflow and job env: may set GOFLAGS
-    to GO_CPU_GOFLAGS."""
+    to GO_CPU_GOFLAGS; a caller that does not say refuses every GOFLAGS, as a file no gate of the
+    wrapper reads does."""
     blocks = [("the workflow's", document.get("env"), exec_wrapped), ("the job's", job.get("env"), exec_wrapped)]
     blocks += [(f'step "{step_label(s)}"\'s', s.get("env"), False) for s in steps]
     for where, env, takes_exec in blocks:
@@ -2060,10 +2061,11 @@ def job_up_to(job: dict, step: dict, including: bool = True) -> dict:
     return job if at is None else {**job, "steps": steps[:at + 1] if including else steps[:at]}
 
 
-def around_reason(document: dict, job: dict, steps: list, exec_wrapped: bool) -> str:
+def around_reason(document: dict, job: dict, steps: list, exec_wrapped: bool = False) -> str:
     """The first thing outside a go command's line that can change what it compiles: an env:,
     a step writing the job's environment, a shell or a container; or ''. `steps` are the steps
-    that may start it, and `exec_wrapped` is env_reason's."""
+    that may start it, and `exec_wrapped` is env_reason's: a caller that reads a workflow no gate of
+    the wrapper reads passes none."""
     return env_reason(document, job, steps, exec_wrapped) or job_reason(job) or shell_reason(document, job, steps)
 
 
