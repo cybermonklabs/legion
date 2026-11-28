@@ -42,6 +42,6 @@ func (s *shim) readWorkspaceWork(request shimwire.WorkspaceWork) (head string, c
 		return "", false, nil, err
 	}
 	defer done()
-	run := func(args ...string) (string, error) { return opened.run(nil, args...) }
+	run := func(in string, args ...string) (string, error) { return opened.runIn(in, nil, args...) }
 	return workspace.ReadWork(run, opened.jj, opened.dir)
 }

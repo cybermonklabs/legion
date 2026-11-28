@@ -120,8 +120,8 @@ func (m *manager) workspaceWork(ctx context.Context, request shimwire.WorkspaceW
 	bounded, cancel := context.WithTimeout(ctx, budget)
 	defer cancel()
 	started, env := time.Now(), launcherReadEnv(home)
-	run := func(args ...string) (string, error) {
-		return workspace.RunCommand(bounded, start, budget, started, env, dir, nil, args)
+	run := func(in string, args ...string) (string, error) {
+		return workspace.RunCommand(bounded, start, budget, started, env, in, nil, args)
 	}
 	return workspace.ReadWork(run, jj, dir, launcherReadConfig...)
 }
