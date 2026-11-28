@@ -241,21 +241,31 @@ nats_url="nats://127.0.0.1:$(docker port "$nats_container" 4222/tcp | head -1 | 
 # Neither service inherits this shell: an operator's ENVOY_NATS_URL names production NATS, and a
 # HOME or XDG_CONFIG_HOME holding legion/envoy.json would hand Dispatch a production configuration.
 # Each serves on a port the kernel chose, held from that choice until it serves on it (lib/rig.sh's
-# start_held); `env -i` clears the descriptor's variable the helper sets, so each names its own: the
-# helper hands the socket over as descriptor 3.
-start_held listener envoy_port ENVOY_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" PORT='{port}' \
-  ENVOY_LISTEN_HOST=127.0.0.1 ENVOY_MACHINE_ID="legion-e2e-user-turns-$$" NATS_URLS="$nats_url" \
-  "$work/envoy-listener"
+# start_held); the helper hands the socket over as descriptor 3 and names it.
+#
+# Each setting is a --setting, so it is the service's environment and nothing else's: its value is
+# in no process's arguments, where every user of the machine would read it (the two bearer tokens,
+# Dispatch's database password and its signing key). The values holding {port} are --env, which
+# held-port.py substitutes the port into.
+listener_settings=(PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work"
+  ENVOY_API_TOKEN="$(cat "$work/envoy-token")" ENVOY_LISTEN_HOST=127.0.0.1
+  ENVOY_MACHINE_ID="legion-e2e-user-turns-$$" NATS_URLS="$nats_url")
+setting_flags "${listener_settings[@]}"
+start_held listener envoy_port ENVOY_LISTEN_FD "${setting_flags[@]}" \
+  --env 'PORT={port}' -- "$work/envoy-listener"
 until_true 60 "the Envoy listener" listener "http://127.0.0.1:$envoy_port/v1/sessions"
-start_held dispatch dispatch_port DISPATCH_LISTEN_FD -- \
-  env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
-  DATABASE_URL="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch?sslmode=disable" \
-  DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" DISPATCH_LISTEN_FD=3 \
-  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT='{port}' \
-  DISPATCH_SERVER_URL='http://127.0.0.1:{port}' DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
-  DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port" \
-  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url" \
+dispatch_settings=(PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work"
+  XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent
+  DATABASE_URL="postgres://dispatch:dispatch@127.0.0.1:$pg_port/dispatch?sslmode=disable"
+  DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")"
+  DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1
+  DISPATCH_LISTEN_HOST=127.0.0.1
+  DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')"
+  DISPATCH_WEB_DIST="$root/packages/dispatch/web/dist" ENVOY_URL="http://127.0.0.1:$envoy_port"
+  ENVOY_TOKEN="$(cat "$work/envoy-token")" NATS_URLS="$nats_url")
+setting_flags "${dispatch_settings[@]}"
+start_held dispatch dispatch_port DISPATCH_LISTEN_FD "${setting_flags[@]}" \
+  --env 'DISPATCH_PORT={port}' --env 'DISPATCH_SERVER_URL=http://127.0.0.1:{port}' -- \
   "$work/dispatch"
 until_true 90 "Dispatch to serve, with NATS" sh -c "curl -fsS http://127.0.0.1:$dispatch_port/healthz | jq -e '.ok and .nats'"
 note "listener port $envoy_port; Dispatch port $dispatch_port"

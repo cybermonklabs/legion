@@ -37,7 +37,9 @@ mkdir -p "$work" "$evidence/model-gateway"
 : >"$soft_failures"
 # The merger starved during merge-held and was never served again.
 printf '%s\\t%s\\t%s\\t%s\\t%s\\t%s\\n' 2026-09-30T12:00:10Z 4242 /x merger/1 timeout no-key >"$evidence/model-gateway/hawk-token.calls"
-stop_pid() { :; }; stop_marked_processes() { :; }; collect_transcripts() { :; }; github_cleanup() { :; }
+# app_key_left is lib/github-apps.sh's, which the script reaches through lib/workflow.sh; the
+# teardown calls it for the key the run leaves behind, and this harness keeps no key.
+stop_pid() { :; }; stop_marked_processes() { :; }; collect_transcripts() { :; }; github_cleanup() { :; }; app_key_left() { :; }
 ${helperGuard}
 first_soft_check=
 first_soft_since=

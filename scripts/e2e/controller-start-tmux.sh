@@ -159,9 +159,13 @@ note "legion $("$work/legion" version); OMP pin $pin; daemon port $daemon_port"
 
 refuse_leftovers legion-e2e-controller
 (umask 077 && head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' >"$work/postgres-password")
-# Docker assigns the containers' host ports when it binds them, so neither can lose a race.
+# Docker assigns the containers' host ports when it binds them, so neither can lose a race. The
+# password reaches the container through a file of the run's own that only its user reads
+# (--env-file, as lib/session-db.sh does), not through docker's arguments, which every user of the
+# machine can read until the container starts.
+(umask 077 && printf 'POSTGRES_USER=legion\nPOSTGRES_PASSWORD=%s\nPOSTGRES_DB=legion\n' "$(cat "$work/postgres-password")" >"$work/postgres.env")
 docker run -d --name "$pg_container" --cpus 2 --memory 2g --mount type=tmpfs,destination=/var/lib/postgresql \
-  -e POSTGRES_USER=legion -e POSTGRES_PASSWORD="$(cat "$work/postgres-password")" -e POSTGRES_DB=legion \
+  --env-file "$work/postgres.env" \
   -p "127.0.0.1::5432" mirror.gcr.io/library/postgres@sha256:979bccfde35445db618c65107d27d08c6c21339d8dc3ad4c830c6633947be0e4 >/dev/null
 pg_port=$(docker port "$pg_container" 5432/tcp | head -1 | sed 's/.*://')
 until_true 60 "Postgres to accept TCP connections" docker exec "$pg_container" pg_isready -h 127.0.0.1 -p 5432 -U legion -d legion

@@ -281,7 +281,10 @@ two_builds_identity() {
 start_server() {
   local name=$1 binary=$2 port=$3
   shift 3
-  start_process "$name" env -i \
+  # The settings are this shell's and reach the server through the environment
+  # (start_with_settings), so the database password and the agent token are in no process's
+  # arguments, which every user of the machine reads while it runs.
+  start_with_settings "$name" \
     PATH="$PATH" \
     TMPDIR="$work" \
     HOME=/nonexistent \
@@ -301,5 +304,5 @@ start_server() {
     DISPATCH_WEB_DIST="$work/web-dist" \
     ENVOY_URL="http://127.0.0.1:$envoy_port" \
     "$@" \
-    "$binary"
+    -- "$binary"
 }
