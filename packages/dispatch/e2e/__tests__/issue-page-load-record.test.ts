@@ -189,6 +189,26 @@ test("the recorder refuses a server id or an instant, and two rows with one key 
   expect(() => expectRowsNamedApart(served.rows, "Verification")).not.toThrow();
 });
 
+test("the recorder writes a day as {day} where the next word follows it with no space", () => {
+  // A row's words are its text with no space between its elements, so the day a post or an ask
+  // was made runs into the word after it, as the page draws "alice · 27 Nov" before "3 checks" and
+  // "Reviewer · 27 Nov" before "Answered": a record that kept that day would differ from the page
+  // on every later day.
+  const ran = row({
+    ...POST_ROW,
+    words: "Reviewer · 27 NovAnsweredShould it? — alice · 27 Nov3 checks, as of 1 Dec 2026.",
+  });
+  const named = viewRecord(view([ran]), NAMING, "Conversation at 1440 px");
+  expect(named.rows.map((one) => one.words)).toEqual([
+    "Reviewer · {day}AnsweredShould it? — alice · {day}3 checks, as of {day}.",
+  ]);
+  // A month's name inside a longer word is no day.
+  const word = row({ ...POST_ROW, words: "Item 3 Mayor, page 2 Decks." });
+  expect(viewRecord(view([word]), NAMING, "Conversation at 1440 px").rows[0]?.words).toBe(
+    "Item 3 Mayor, page 2 Decks."
+  );
+});
+
 test("each recorded row holds its links, its tab stops and its accessible tree", () => {
   const recorded = viewRecord(view([POST_ROW, REPLY_ROW], 1), NAMING, "Conversation at 1440 px");
   expect(recorded).toEqual({

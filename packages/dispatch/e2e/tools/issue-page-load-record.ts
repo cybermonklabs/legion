@@ -336,8 +336,12 @@ export interface ViewFile {
 // ---------------------------------------------------------------------------------------------
 
 /** The page's short form of a day (`node-time.ts`'s `shortDay`), which is when the server took a
- *  write, so it is written as its name. */
-const DAY = /\b\d{1,2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?: \d{4})?\b/g;
+ *  write, so it is written as its name. A row's words join its elements' texts with no space, so
+ *  the word after a day can follow it with none ("27 NovAnswered", "27 Nov3 checks"): the day ends
+ *  where no lower-case letter follows the month's name, and starts where no digit stands before
+ *  it, rather than at a word's edge. */
+const DAY =
+  /(?<!\d)\d{1,2} (?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)(?![a-z])(?: \d{4}(?!\d))?/g;
 
 /** What a day is written as. */
 const DAY_NAME = "{day}";
