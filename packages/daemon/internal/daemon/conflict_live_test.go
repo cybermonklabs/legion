@@ -5,12 +5,13 @@
 // (dispatch://INFRA-4374), and conflict_merger_live_test.go's, a conflict past the review that the
 // merger merges forward (cybermonklabs/legion#4979). Each driver embeds conflictLive, liveIssueProof
 // (live_issue_proof_test.go) grown for a conflict: the daemon booted with its own log kept in
-// memory as it is written, which the steps read the daemon's decisions of a conflicting head from;
-// what the listener stand-in took on each role topic of an issue since a step's baseline; the
-// notices the issue's architect took since then; the wait for the outbox to have published every
-// message of an issue; the read of a role's connection that must stay silent; and what GitHub
-// answers of the base branch for a head it answers conflicting. What one proof alone drives stays
-// in its driver.
+// memory as it is written, which the steps read the daemon's decisions of a conflicting head from,
+// and with the listener stand-in refusing a publish to a role no session holds, as the real
+// listener does; what the listener stand-in took on each role topic of an issue since a step's
+// baseline; the notices the issue's architect took since then; the wait for the outbox to have
+// published every message of an issue; the read of a role's connection that must stay silent; and
+// what GitHub answers of the base branch for a head it answers conflicting. What one proof alone
+// drives stays in its driver.
 package daemon
 
 import (
@@ -68,10 +69,14 @@ type conflictLive struct {
 
 // bootLogged boots the daemon as liveIssueProof.boot does, with the daemon's own log also kept in
 // memory as it is written (recordingLog, as sub_architect_live_test.go keeps it), since the steps
-// read what the daemon decided of a conflicting head from the lines it logs for it.
+// read what the daemon decided of a conflicting head from the lines it logs for it. The listener
+// stand-in refuses a publish to a role no session holds, as the real listener does
+// (noticeListener's refuseUnheldRoles), so a message to a role waits until a session holds it, and
+// the holder the stand-in names is the session liveIssueProof.register registered.
 func (r *conflictLive) bootLogged() {
 	r.t.Helper()
 	r.rt.InPod = true
+	r.notices.refuseUnheldRoles()
 	o := fakeRuntime(r.rt, r.built)
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url

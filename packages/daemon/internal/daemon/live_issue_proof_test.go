@@ -284,7 +284,9 @@ type liveSession struct {
 
 // register brings the launched claim of role to a registered session, as its pane's shim and its
 // agent do: it waits for the launch, dials the worker stream with the launch's boot token and
-// registers the session. ready then reports it ready.
+// registers the session, which then holds its role on the proof's Envoy stand-in (noticeListener's
+// holds), as the session's own claim of its role makes it the holder the real listener names.
+// ready then reports it ready.
 func (p *liveIssueProof) register(role claim.Role, session string) *liveSession {
 	t := p.t
 	t.Helper()
@@ -305,6 +307,7 @@ func (p *liveIssueProof) register(role claim.Role, session string) *liveSession 
 	if err := json.Unmarshal(body, &registered); err != nil {
 		t.Fatalf("decode the registration of %s: %v", token, err)
 	}
+	p.notices.holds(string(token), session)
 	return &liveSession{p: p, token: token, role: role, session: session, secret: registered.Secret, sh: sh,
 		generation: launch.Generation}
 }

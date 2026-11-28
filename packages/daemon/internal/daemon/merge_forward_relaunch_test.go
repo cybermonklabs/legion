@@ -203,6 +203,43 @@ func TestTheReadyOfTheLaunchAnAskWasDeliveredToSendsNothing(t *testing.T) {
 	askToldOnce(t, pool, publisher, owedAsk, launch)
 }
 
+// An ask whose role has no claim yet - its start still owed, as the merger's is when the move into
+// merging asks it in the transaction that queues that start - waits for the claim's first launch to
+// register its session (deliverHeld), whatever the listener would answer. The listener here takes
+// every publish: it names no holder while no session of the claim has registered, and the session
+// the claim records once one has, as the real listener names the session it stored a message for
+// (notify.Publisher.Publish). A delivery before that launch reaches no session of the claim and
+// credits no launch, so the ready of the claim's first launch would send the ask a second time. The
+// row is delivered once the launch has registered, credited to that launch, and the implementer is
+// told the ask once.
+func TestAnAskToARoleWithNoClaimYetWaitsForItsLaunch(t *testing.T) {
+	t.Parallel()
+	publisher := &holderPublisher{}
+	asked := &record.MergeForward{Head: owedAskHead, Base: "main", Role: claim.RoleImplementer, Phase: phase.Testing,
+		Why: record.ConflictCheckNotGreen, AskedAt: time.Now()}
+	runner, sup, pool, _ := mergeForwardRunner(t, publisher, asked)
+	token := mustClaimToken(t, "LEGION-208", claim.RoleImplementer)
+	publisher.holdBy(func() string {
+		if machine, ok := sup.Machine(token); ok {
+			return machine.View().Claim.Session
+		}
+		return ""
+	})
+	engine := workflow.New(runner.records, workflow.Config{Project: "legion", Repositories: testRepositories}, quietLogger())
+	sup.OnDurableState((&workflowRuntime{pool: pool, records: runner.records, handlers: []intake.Handler{engine}, log: quietLogger()}).terminal)
+	enqueueOutbox(t, pool, runner.records, mustOutboxRow(t, "LEGION-208", owedAsk, time.Now().Add(-time.Minute)))
+	drainAt(t, runner, 0, "the ask's attempt while the implementer has no claim")
+	if _, delivered := publisher.snapshot(); len(delivered) != 0 {
+		t.Fatalf("the ask was published %+v while the implementer had no claim, want it to wait for the claim's launch", delivered)
+	}
+
+	launchedClaim(t, sup, "LEGION-208", "LEGION-208", claim.RoleImplementer)
+	drainAt(t, runner, 10*time.Minute, "the attempt once the launch has registered")
+	drainAt(t, runner, 20*time.Minute, "a later attempt")
+	machine, _ := sup.Machine(token)
+	askToldOnce(t, pool, publisher, owedAsk, machine.Claim().Generation)
+}
+
 // A launch that resumes the session an earlier launch was told the ask in can be told the ask a
 // second time. The second ask names the same head, and its delivery changes nothing the daemon
 // holds: after the second row of the ask reaches the launch the first reached, the record's ask is

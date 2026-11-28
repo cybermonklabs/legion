@@ -147,7 +147,9 @@ func newConflictNoTakeoverLive(t *testing.T) *conflictNoTakeoverLive {
 // issue's implementer's phases row is left unwritten, as a daemon that minted no assignment for that
 // phase would leave it, which is why its completion is not held to one (api/handoff.go: either side
 // empty is nothing to compare); the tester's assignment is minted live, by the start that
-// completion makes.
+// completion makes. A session holds the issue's architect role on the Envoy stand-in, with no
+// architect claim this daemon supervises, so the stand-in, which refuses a publish to a role no
+// session holds (conflictLive's bootLogged), takes the architect's notices.
 func (r *conflictNoTakeoverLive) seed() {
 	t := r.t
 	t.Helper()
@@ -175,7 +177,12 @@ func (r *conflictNoTakeoverLive) seed() {
 	if _, err := r.st.OpenTreeLifecycle(ctx, r.project, r.control, treelifecycle.AuthorityWorkflow); err != nil {
 		t.Fatalf("open the lifecycle of %s: %v", r.control, err)
 	}
-	r.note("seeded: %s implementing on pull request #%d at %s, base %s requiring [%s], its implementer mid-launch serving run 1; and the control %s in testing on pull request #%d at %s, onto the same base, with %s passed there",
+	// An architect session holds the issue's architect role topic, as one does in production. The
+	// daemon supervises no architect claim here, and a notice needs none: its publish compares no
+	// holder the listener names to a claim's session, which only a held message does (the daemon's
+	// deliverHeld).
+	r.notices.holds(string(r.token(claim.RoleArchitect)), "ses_architect")
+	r.note("seeded: %s implementing on pull request #%d at %s, base %s requiring [%s], its implementer mid-launch serving run 1, and session ses_architect holding its architect's role on the Envoy stand-in; and the control %s in testing on pull request #%d at %s, onto the same base, with %s passed there",
 		r.key, r.number, conflictFirstHead, conflictBase, conflictRequiredCheck, r.control, r.controlNumber,
 		conflictControlHead, conflictRequiredCheck)
 }

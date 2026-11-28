@@ -52,13 +52,14 @@
 // minute between the two reads is the daemon's own (workflow's conflictConfirmWait); no seam a
 // test may set shortens it, so step 1 waits it out. Dispatch is the board the package's
 // whole-daemon live proofs share (liveDispatch), which keeps every status the daemon writes, and
-// Envoy's listener is that harness's noticeListener, which takes every publish whether or not a
-// session holds the role. The two Apps' tokens are workflowTokenRecorder's placeholders. No agent
-// runs: every claim is launched by the package's fake runtime, which says it provisions each
-// workspace in the claim's own pod, so the daemon clones nothing, and each role the proof acts as is
-// driven over the daemon's own worker stream and HTTP routes. The issue, its pull request, its slot
-// and its architect's claim are seeded through the store, as every daemon test seeds its fixture;
-// what is driven is the change.
+// Envoy's listener is that harness's noticeListener, which names the session a role registered as
+// the holder it stored a message for and refuses a publish to a role no session holds, as the real
+// listener does (conflictLive's bootLogged). The two Apps' tokens are workflowTokenRecorder's
+// placeholders. No agent runs: every claim is launched by the package's fake runtime, which says it
+// provisions each workspace in the claim's own pod, so the daemon clones nothing, and each role the
+// proof acts as is driven over the daemon's own worker stream and HTTP routes. The issue, its pull
+// request, its slot, its architect's claim and its reviewer's are seeded through the store, as
+// every daemon test seeds its fixture; what is driven is the change.
 package daemon
 
 import (
@@ -141,11 +142,15 @@ func newConflictMergerLive(t *testing.T) *conflictMergerLive {
 // its lifecycle open under the workflow, on an open pull request at the accepted head onto a base
 // that requires ci, where ci passed (the record's CheckRuns, stamped with that head) and GitHub
 // last answered the head mergeable and clean. Its architect's claim is a launch a previous daemon
-// began and never recorded, which the boot relaunches. Every other role is started by the daemon
-// itself when the issue reaches the phase that needs it: the implementer by retro and the merger by
-// merging. The architect's and the implementer's prompts are written to disk as a launch writes
-// one; the merger's is not, so its launch carries the role prompt the daemon composed at boot
-// (specs.rolePromptPaths), which step 6 reads.
+// began and never recorded, which the boot relaunches. Its reviewer's claim, launched in reviewing,
+// whose review approved the head, stands as the release of its idle pod leaves it
+// (supervise.SuspendedByReleased) at launch 1, its session ses_reviewer kept, as production holds
+// it once the issue has passed its review: the boot's resume by rule resumes no such claim, and the
+// review a landed merge forward asks of it wakes it (step 3). Every other role is started by the
+// daemon itself when the issue reaches the phase that needs it: the implementer by retro and the
+// merger by merging. The architect's, the implementer's and the reviewer's prompts are written to
+// disk as a launch writes one; the merger's is not, so its launch carries the role prompt the
+// daemon composed at boot (specs.rolePromptPaths), which step 6 reads.
 func (r *conflictMergerLive) seed() {
 	t := r.t
 	t.Helper()
@@ -179,10 +184,18 @@ func (r *conflictMergerLive) seed() {
 	}); err != nil {
 		t.Fatalf("record the architect's unfinished launch: %v", err)
 	}
-	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer} {
+	if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
+		Token: r.token(claim.RoleReviewer), Project: r.project, Tree: r.key, Issue: r.key, Role: claim.RoleReviewer,
+		Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+		Session: "ses_reviewer", SessionFile: t.TempDir() + "/ses_reviewer.jsonl",
+		BootTokenHash: supervise.HashBootToken("seeded-" + randomSuffix(t)), ServingGeneration: 1,
+	}); err != nil {
+		t.Fatalf("record the reviewer's released claim: %v", err)
+	}
+	for _, role := range []claim.Role{claim.RoleArchitect, claim.RoleImplementer, claim.RoleReviewer} {
 		writePrompt(t, r.cfg, r.token(role))
 	}
-	r.note("seeded: %s in accepting on pull request #%d at %s, base %s requiring [%s], %s passed there; its architect mid-launch",
+	r.note("seeded: %s in accepting on pull request #%d at %s, base %s requiring [%s], %s passed there; its architect mid-launch, and its reviewer's claim released at launch 1 with session ses_reviewer kept",
 		r.key, r.number, mergerAcceptedHead, conflictBase, conflictRequiredCheck, conflictRequiredCheck)
 }
 
@@ -242,13 +255,18 @@ func (r *conflictMergerLive) acceptingRecordsTheConflict() {
 // Step 2. The architect, in a turn of its own, signs off the issue through its own route, which
 // moves it to retro and starts the implementer there. Still nothing is asked: the daemon logs no
 // merge forward, the record holds none, the architect takes no checks-red notice and the
-// implementer's role topic takes nothing. The implementer takes its retro task and completes it at
-// the accepted head, rating the plan, which moves the issue to merging. That move asks the merger,
-// whose merge it is: the daemon logs the merge forward asked in merging for the merge being next
-// (record.ConflictMergeNext), starts the merger, and publishes the ask to the merger's own role
-// topic, which says the merge and its conflict are the merger's to resolve. The implementer's
-// topic takes nothing, and the architect is told once, in a checks-red notice naming merging and
-// the merger. The merger registers and takes its merging task. Nothing repeats.
+// implementer's role topic takes nothing. The implementer takes its retro task, and before it
+// completes it the stand-in names session ses_merger as the holder of the merger's role, though
+// the merger has no claim yet: R2's case (dispatch://INFRA-5792), a session holding a role at the
+// listener before the role's claim has a launch. The implementer completes retro at the accepted
+// head, rating the plan, which moves the issue to merging. That move asks the merger, whose merge
+// it is: the daemon logs the merge forward asked in merging for the merge being next
+// (record.ConflictMergeNext) and starts the merger, which registers its session; the ask waits for
+// that registration (the daemon's deliverHeld), not for the holder the stand-in already names, and
+// is then published to the merger's own role topic, once, which says the merge and its conflict
+// are the merger's to resolve. The implementer's topic takes nothing, and the architect is told
+// once, in a checks-red notice naming merging and the merger. The merger takes its merging task.
+// Nothing repeats.
 func (r *conflictMergerLive) mergingAsksTheMerger() {
 	t := r.t
 	r.arch.startTurn("")
@@ -279,6 +297,11 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	}
 	r.note("read back: in retro the daemon asked no merge forward, the record holds none, the architect took no notice and the implementer's role topic took nothing")
 
+	// A publish of the ask before the merger's first launch registers would be stored for this
+	// session and credited to no launch, and the ready of launch 1 would ask the merger again.
+	r.notices.holds(string(r.token(claim.RoleMerger)), "ses_merger")
+	r.note("staged: session ses_merger holds the merger's role on the Envoy stand-in, while the merger has no claim")
+
 	rating, reason := 4, "The plan fit the work."
 	status, failure := r.imp.completeWith(api.HandoffCompleteRequest{Summary: "retro written", Commit: mergerAcceptedHead,
 		PlanRating: &rating, PlanReason: &reason})
@@ -299,6 +322,10 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	r.note("read back: the daemon logged %q for %s: head %v, phase %v, why %v", asked.Message, r.key, asked.Attrs["head"], asked.Attrs["phase"], asked.Attrs["why"])
 	launch := r.awaitLaunch(r.token(claim.RoleMerger))
 	r.note("read back: the merger was launched, generation %d", launch.Generation)
+	// The ask waits for the merger's launch to register its session (the daemon's deliverHeld),
+	// whatever holder the listener names, so the merger registers before the ask is read.
+	r.merger = r.claimant(claim.RoleMerger, "ses_merger")
+	r.note("read back: the merger registered its session ses_merger and reported it ready")
 	ask := record.MergeForwardMessage{Role: claim.RoleMerger, Step: record.MergeForwardAsk, Head: mergerAcceptedHead,
 		Base: conflictBase, Phase: phase.Merging, PullRequest: r.number, Why: record.ConflictMergeNext}
 	told := r.awaitHeard(claim.RoleMerger, 1, bound)
@@ -327,9 +354,8 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 	}
 	r.note("read back: one checks-red notice on the architect's role topic, naming %s — %s", red[0].Phase, red[0].Reason)
 
-	r.merger = r.claimant(claim.RoleMerger, "ses_merger")
 	task := r.merger.takeTask("Phase: merging")
-	r.note("read back: the merger registered and was prompted its merging task — %s", task.Message)
+	r.note("read back: the merger took its merging task — %s", task.Message)
 	r.published(r.key)
 	time.Sleep(liveSettle)
 	red, other = checksRed()
@@ -354,8 +380,10 @@ func (r *conflictMergerLive) mergingAsksTheMerger() {
 // mergeForwardLanded). The merger, the worker of merging, is told so on its role topic, with both
 // heads, how to read what the merge changed and to merge the new head only once the reviewer's
 // approval of it is on the pull request; the reviewer is asked on its own to read the merge with
-// `git show --remerge-diff` and approve the new head or request changes. The record holds the
-// merge forward asked of the merger, landed at the new head, with the reviewer's review asked. The
+// `git show --remerge-diff` and approve the new head or request changes. That review is held for
+// the reviewer's session (the daemon's deliverHeld): its row wakes the reviewer's released claim,
+// whose new launch registers its session before the review is read. The record holds the merge
+// forward asked of the merger, landed at the new head, with the reviewer's review asked. The
 // merger's connection is sent nothing, and the issue stays in merging.
 func (r *conflictMergerLive) mergerMergeLands() {
 	t := r.t
@@ -377,6 +405,9 @@ func (r *conflictMergerLive) mergerMergeLands() {
 	r.note("read back: the merger's role topic took the landing — %s", told[1].Message)
 	review := landed
 	review.Role, review.Step = claim.RoleReviewer, record.MergeForwardReview
+	reviewer := r.claimant(claim.RoleReviewer, "ses_reviewer")
+	r.note("read back: the review woke the reviewer's released claim into launch %d, which registered its session ses_reviewer and reported it ready",
+		reviewer.generation)
 	asked := r.awaitHeard(claim.RoleReviewer, 1, bound)
 	if asked[0].Message != review.Message(r.key, landedPR) || !strings.Contains(asked[0].Message, "git show --remerge-diff "+mergerMergeHead) ||
 		!strings.Contains(asked[0].Message, mergerAcceptedHead) {
