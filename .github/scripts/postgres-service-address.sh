@@ -39,9 +39,9 @@
 # (pg-connection-ceiling.sh), so nothing here depends on a network name or a subnet staying what
 # it is today. A runner whose services stop being reachable this way fails the job at this script
 # or at the first connection, and never skips the tests for want of a database: the tests that
-# open the store skip only when DISPATCH_TEST_DATABASE_URL is unset or empty (storetest.go's
-# `ready`), the test step sets it to a URL that is never empty, and a failure of this script stops
-# the job before that step runs.
+# open the store skip only when DISPATCH_TEST_DATABASE_URL is unset or empty
+# (`packages/envoy/internal/dispatch/store/storetest/storetest.go#ready`), the test step sets it
+# to a URL that is never empty, and a failure of this script stops the job before that step runs.
 set -euo pipefail
 
 if [ "$#" -ne 1 ]; then
