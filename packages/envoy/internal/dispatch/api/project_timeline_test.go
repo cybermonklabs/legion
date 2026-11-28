@@ -206,7 +206,8 @@ func checkProjectTimelinePages(t *testing.T, pages []map[string]any, limit int, 
 // deploy source reads the deploy repository), the project timeline read 50 rows at a time over
 // eight days is the base timeline's answer for the same window (GET /api/v1/delivery/timeline,
 // deliveryTimelineCompute), every field but measures: its merges are the base's prs[] each with its
-// kind, its runs the base's runs[] each with its kind, its repository and its creation, its waiting
+// kind and its resolved_priority, the number the base's priority labels (null where it is null),
+// its runs the base's runs[] each with its kind, its repository and its creation, its waiting
 // line, counts, labels, window and freshness the base's; no row is on two pages, each page's oldest
 // row comes before the next page's newest, and waiting is on the last page alone. The same holds
 // with a facet set, which narrows the merges and leaves the runs.
@@ -249,7 +250,18 @@ func TestTheProjectTimelinePagesNewestFirstAndHoldsTheBaseAnswer(t *testing.T) {
 			for _, row := range projectTimelineRows(pages) {
 				kinds[row["kind"].(string)]++
 				if row["kind"] == projectTimelineMerge {
-					merges[liveID(t, row)] = withoutKeys(row, "kind")
+					merges[liveID(t, row)] = withoutKeys(row, "kind", "resolved_priority")
+					var labeled any
+					if label, named := row["priority"].(string); named {
+						number, err := strconv.Atoi(strings.TrimPrefix(label, "P"))
+						if err != nil {
+							t.Fatalf("merge %s has priority %q, which is no label P0 to P3", liveID(t, row), label)
+						}
+						labeled = float64(number)
+					}
+					if resolved, carried := row["resolved_priority"]; !carried || resolved != labeled {
+						t.Errorf("merge %s has resolved_priority %v (carried: %t) beside priority %v, want %v", liveID(t, row), resolved, carried, row["priority"], labeled)
+					}
 					continue
 				}
 				runs[liveID(t, row)] = withoutKeys(row, "kind", "repo", "created_at")
@@ -687,6 +699,83 @@ func TestTheProjectTimelineRowsNameTheirRunsRepository(t *testing.T) {
 	}
 	if len(got) != 4 {
 		t.Errorf("rows %v, want the two merges of HUB and the two runs shipping them; #2 names no issue and run 43 ships nothing", slices.Sorted(maps.Keys(got)))
+	}
+}
+
+// TestTheProjectTimelineMergeRowCarriesItsIssuesResolvedPriority: a merge row answers the priority
+// its pull request's issue resolves to, as every issue read answers it (dispatch://INFRA-5793's
+// J1) and as the delivery timeline's prs[] label it: resolved_priority, the issue's own priority,
+// else that of the nearest issue above it that has one; priority, that priority's label; and
+// priority_from, the key of the issue it comes from, null where it is the issue's own. In project
+// HUB, a root R at P0 with a child C that has none, a middle M under R at its own P2 with a child
+// Mc that has none, and a root N with none: the merge naming C reads 0 from R, Mc's 2 from M, R's
+// and M's their own, and N's none. A row that reads the issue's own priority answers C and Mc
+// none, and one that reads the root's answers Mc 0.
+func TestTheProjectTimelineMergeRowCarriesItsIssuesResolvedPriority(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{})
+	seedHubSettings(t, database)
+	names := issueNames{}
+	file := func(name, title, parent string, priority *int) string {
+		t.Helper()
+		fields := map[string]any{"title": title, "force": true}
+		if parent != "" {
+			fields["parent"] = parent
+		}
+		if priority != nil {
+			fields["priority"] = *priority
+		}
+		key := createHubIssue(t, handler, fields)
+		names[key] = name
+		return key
+	}
+	r := file("R", "Ship the root", "", new(0))
+	c := file("C", "Ship the root's child", r, nil)
+	m := file("M", "Ship the middle", r, new(2))
+	mc := file("Mc", "Ship the middle's child", m, nil)
+	n := file("N", "Ship the other root", "", nil)
+	// A merge row carries no own priority of its issue, so each want holds what the row reads.
+	wants := []resolvedWant{
+		{key: r, resolved: new(0)},
+		{key: c, resolved: new(0), from: r},
+		{key: m, resolved: new(2)},
+		{key: mc, resolved: new(2), from: m},
+		{key: n},
+	}
+	at := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	for index, want := range wants {
+		upsertPR(t, database, prNaming(index+1, at.Add(time.Duration(index)*time.Minute), want.key))
+	}
+
+	page := projectTimelineBody(t, getBody(t, handler, projectTimelineTarget("HUB", at.Add(-time.Hour), at.Add(time.Hour), nil)))
+	merges := map[string]map[string]any{}
+	for _, item := range page["items"].([]any) {
+		if row := item.(map[string]any); row["kind"] == projectTimelineMerge {
+			merges[liveID(t, row)] = row
+		}
+	}
+	for index, want := range wants {
+		id := "acme/widgets#" + strconv.Itoa(index+1)
+		row := merges[id]
+		if row == nil {
+			t.Errorf("no merge row %s, the pull request of %s, among %v", id, names.name(want.key), slices.Sorted(maps.Keys(merges)))
+			continue
+		}
+		var resolved, label, from any
+		if want.resolved != nil {
+			resolved, label = float64(*want.resolved), "P"+strconv.Itoa(*want.resolved)
+		}
+		if want.from != "" {
+			from = want.from
+		}
+		for _, field := range []struct {
+			name string
+			want any
+		}{{"resolved_priority", resolved}, {"priority", label}, {"priority_from", from}} {
+			if got, carried := row[field.name]; !carried || got != field.want {
+				t.Errorf("the merge row of %s, the pull request of %s, has %s %v (carried: %t), want %v: it reads %s",
+					id, names.name(want.key), field.name, got, carried, field.want, names.reads(want))
+			}
+		}
 	}
 }
 

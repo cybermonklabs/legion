@@ -23,6 +23,7 @@
         "issue": "ACME-1",
         "issue_title": "First issue",
         "priority": "P1",
+        "priority_from": null,
         "components": [
           "ACME/api"
         ],
@@ -33,7 +34,8 @@
         "deploy_run": null,
         "deployed_at": null,
         "deployed_status": "waiting",
-        "unfetchable_reason": null
+        "unfetchable_reason": null,
+        "resolved_priority": 1
       },
       {
         "kind": "deploy",
@@ -77,6 +79,7 @@
         "issue": "ACME-1",
         "issue_title": "First issue",
         "priority": "P1",
+        "priority_from": null,
         "components": [
           "ACME/api"
         ],
@@ -87,7 +90,8 @@
         "deploy_run": 42,
         "deployed_at": "2026-10-01T04:00:00Z",
         "deployed_status": "deployed",
-        "unfetchable_reason": null
+        "unfetchable_reason": null,
+        "resolved_priority": 1
       },
       {
         "kind": "merge",
@@ -107,6 +111,7 @@
         "issue": "ACME-1",
         "issue_title": "First issue",
         "priority": "P1",
+        "priority_from": null,
         "components": [
           "ACME/api"
         ],
@@ -117,7 +122,8 @@
         "deploy_run": null,
         "deployed_at": null,
         "deployed_status": "waiting",
-        "unfetchable_reason": null
+        "unfetchable_reason": null,
+        "resolved_priority": 1
       }
     ],
     "total": 4,
@@ -207,9 +213,9 @@
     "items": {
       "items": {
         "42": "3bf0d70cc78ca3ef",
-        "acme/widgets#1": "e5f9cac549859f97",
-        "acme/widgets#2": "bb1f989c25871b88",
-        "acme/widgets#5": "60da3c763deb74c7"
+        "acme/widgets#1": "1ced342e88fb6fff",
+        "acme/widgets#2": "e210ff922dd91d2c",
+        "acme/widgets#5": "a32e46a2ba8a418f"
       },
       "session_groups": {}
     },

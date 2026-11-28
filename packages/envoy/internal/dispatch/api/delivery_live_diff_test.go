@@ -1282,8 +1282,10 @@ func TestTheLiveFixturesAreWhatTheDiffWrites(t *testing.T) {
 		[]delivery.DeliveryWaitingPRView{{MergedAt: liveFrom.Add(-3 * time.Hour)}},
 		[]delivery.DeliveryRunView{liveRun(42, 3, shipped42)}).DeliveryTimelineResponse
 	timelineRuns := map[int64]delivery.DeliveryRun{42: {Repo: liveRepo, RunID: 42, StartedAt: liveFrom.Add(3 * time.Hour), CreatedAt: &created42}}
-	timelineHeld := mustEncodeLive(t, deliveryLiveProjectTimeline, projectTimelinePage(timeline, timelineRuns, 2, 0))
-	timelineNext := mustEncodeLive(t, deliveryLiveProjectTimeline, projectTimelinePage(timeline, timelineRuns, 4, 0))
+	// ACME-1, which every pull request names, is the P1 its own priority makes it (livePR).
+	timelineIssues := map[string]deliveryIssue{"ACME-1": {project: "ACME", title: "First issue", resolvedPriority: new(1), components: []string{"ACME/api"}}}
+	timelineHeld := mustEncodeLive(t, deliveryLiveProjectTimeline, projectTimelinePage(timeline, timelineRuns, timelineIssues, 2, 0))
+	timelineNext := mustEncodeLive(t, deliveryLiveProjectTimeline, projectTimelinePage(timeline, timelineRuns, timelineIssues, 4, 0))
 	timelineDelta, ok := liveDiff(t, timelineHeld, timelineNext)
 	if !ok {
 		t.Fatal("the project timeline fixture's growth sent no delta")

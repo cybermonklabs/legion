@@ -41,6 +41,7 @@ export function mergeRow(
     priority: null,
     priority_from: null,
     repo: "acme/widgets",
+    resolved_priority: null,
     rework: false,
     sessions: [],
     title: `feat: widget ${number}`,

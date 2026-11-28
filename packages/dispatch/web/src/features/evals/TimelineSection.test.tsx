@@ -469,6 +469,35 @@ test("the table mode's rows are the loaded rows, one per merge, deploy or failed
   await waitFor(() => expect(run).toHaveBeenCalledWith("ACME", 41, "acme/deploys"));
 });
 
+// A merge row's priority is the one its issue resolves to, labelled, and priority_from the issue
+// it comes from (GET /api/v1/projects/{key}/timeline): the list's Issue cell and the merge's
+// drill-down say both, as the Delivery page's do (`issuePriorityLabel`).
+test("the list and a merge's drill-down show the priority its issue inherits, with the issue it comes from", async () => {
+  const user = userEvent.setup();
+  renderTab();
+  const socket = await openSocket();
+  const first = await openTimeline(socket);
+  const inherited = mergeRow(3, "2026-11-23T10:00:00Z", {
+    issue: "ACME-2",
+    issue_title: "Second issue",
+    priority: "P0",
+    priority_from: "ACME-1",
+    resolved_priority: 0,
+  });
+  serve(socket, timelineSnapshot(first.sub, timelineAnswer([inherited], 1)));
+
+  const section = region("Merge timeline");
+  await user.click(within(section).getByRole("button", { name: "List" }));
+  const list = within(section).getByRole("table", { name: "Merged pull requests" });
+  const row = list.querySelector<HTMLElement>(`tbody [data-row="${inherited.id}"]`);
+  if (row === null) throw new Error(`the list draws no row ${inherited.id}`);
+  expect(row, "the list's row of the merge").toHaveTextContent("ACME-2 · P0 · from ACME-1");
+
+  await user.click(within(row).getByText(inherited.title));
+  const details = await screen.findByRole("dialog", { name: "Details" });
+  expect(details, "the merge's drill-down").toHaveTextContent("ACME-2 · P0 · from ACME-1");
+});
+
 test("the timeline draws no compare control and no compare overlay", async () => {
   const user = userEvent.setup();
   renderTab();

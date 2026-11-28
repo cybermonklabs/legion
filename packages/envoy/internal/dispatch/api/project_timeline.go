@@ -72,10 +72,17 @@ type projectTimelineResponse struct {
 	Freshness       delivery.DeliveryFreshnessView            `json:"freshness"`
 }
 
-// projectTimelineMergeRow is a merge: one of the base timeline's prs[], by its pull request id.
+// projectTimelineMergeRow is a merge: one of the base timeline's prs[], by its pull request id,
+// with the priority its issue resolves to as a number beside it. As in prs[], priority is that
+// priority's label and priority_from the key of the issue it comes from.
 type projectTimelineMergeRow struct {
 	Kind string `json:"kind" enum:"merge"`
 	delivery.DeliveryPRView
+	// ResolvedPriority is the priority the pull request's issue resolves to (model.Issue's
+	// ResolvedPriority): its own, else that of the nearest issue above it that has one, read in
+	// the statement that reads the issue's other facts (deliveryIssueFactsQuery). Null where the
+	// row names no issue or the issue resolves to no priority.
+	ResolvedPriority *int `json:"resolved_priority"`
 }
 
 // projectTimelineRunRow is a deploy run started in the window: one of the base timeline's runs[],
@@ -252,26 +259,32 @@ func (s *server) projectTimelinePopulation(ctx context.Context, rules *delivery.
 
 // projectTimelineCompute is GET /api/v1/projects/{key}/timeline's body for [from, to) from the
 // project's population (projectTimelinePopulation), read for that window or narrowed to it: the
-// base timeline's answer over it (deliveryTimelineOf), cut to the page (projectTimelinePage). It
-// reads nothing.
+// base timeline's answer over it (deliveryTimelineOf), cut to the page (projectTimelinePage), each
+// merge with the priority its issue resolves to from the population's issue facts. It reads
+// nothing.
 func projectTimelineCompute(rules *delivery.SourceRules, pop deliveryPopulation, from, to time.Time, limit, offset int) projectTimelineResponse {
 	runs := make(map[int64]delivery.DeliveryRun, len(pop.applyRuns))
 	for _, run := range pop.applyRuns {
 		runs[run.RunID] = run
 	}
-	return projectTimelinePage(deliveryTimelineOf(rules, pop, pop.derive(rules), from, to), runs, limit, offset)
+	return projectTimelinePage(deliveryTimelineOf(rules, pop, pop.derive(rules), from, to), runs, pop.issues, limit, offset)
 }
 
 // projectTimelinePage is a timeline's merges and runs listed as rows in the one total order
 // (compareProjectTimelineEntries) and cut to [offset, offset+limit), with the members each page
 // carries beside them (projectTimelineResponse). runs holds every run the timeline lists, by id,
-// for the repository and the creation each run row names.
-func projectTimelinePage(timeline delivery.DeliveryTimelineResponse, runs map[int64]delivery.DeliveryRun, limit, offset int) projectTimelineResponse {
+// for the repository and the creation each run row names; issues holds the facts of the issues
+// its merges name, by key (deliveryPopulation.issues), for the priority each one resolves to.
+func projectTimelinePage(timeline delivery.DeliveryTimelineResponse, runs map[int64]delivery.DeliveryRun, issues map[string]deliveryIssue, limit, offset int) projectTimelineResponse {
 	entries := make([]projectTimelineEntry, 0, len(timeline.PRs)+len(timeline.Runs))
 	for _, pr := range timeline.PRs {
+		merge := &projectTimelineMergeRow{Kind: projectTimelineMerge, DeliveryPRView: pr}
+		if pr.Issue != nil {
+			merge.ResolvedPriority = issues[*pr.Issue].resolvedPriority
+		}
 		entries = append(entries, projectTimelineEntry{
 			at: *pr.MergedAt, kind: slices.Index(projectTimelineKinds, projectTimelineMerge), merge: pr.ID,
-			row: projectTimelineRow{merge: &projectTimelineMergeRow{Kind: projectTimelineMerge, DeliveryPRView: pr}},
+			row: projectTimelineRow{merge: merge},
 		})
 	}
 	for _, view := range timeline.Runs {

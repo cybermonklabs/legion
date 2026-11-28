@@ -23,6 +23,7 @@
         "issue": "ACME-1",
         "issue_title": "First issue",
         "priority": "P1",
+        "priority_from": null,
         "components": [
           "ACME/api"
         ],
@@ -33,7 +34,8 @@
         "deploy_run": null,
         "deployed_at": null,
         "deployed_status": "waiting",
-        "unfetchable_reason": null
+        "unfetchable_reason": null,
+        "resolved_priority": 1
       },
       {
         "kind": "deploy",
@@ -142,7 +144,7 @@
     "items": {
       "items": {
         "42": "3bf0d70cc78ca3ef",
-        "acme/widgets#5": "60da3c763deb74c7"
+        "acme/widgets#5": "a32e46a2ba8a418f"
       },
       "session_groups": {}
     },
