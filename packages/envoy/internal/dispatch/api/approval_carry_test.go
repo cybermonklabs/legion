@@ -754,6 +754,10 @@ func TestAForgedServerAttributeOnADecidedBlockCarriesNothing(t *testing.T) {
 // no route's checks hold, and stays connected for the rest of the test, as an open editor does. No
 // server write puts a block's attributes on it alone any more: an answer is held on the ask's node
 // alone, and the roll window's copy is settlement's (docs' rollWindowAskAttributes).
+//
+// It returns once the room holds the edit (syncedPeer.barrier). The peer's update reaches the room
+// on the document server's own goroutine, so a version the test names next could otherwise read
+// the live document before the room applied it, and store the block without the attributes.
 func setLiveBlockAttributes(t *testing.T, documents *docs.Service, artifactID, blockID string, attributes map[string]any) {
 	t.Helper()
 	peer := connectBrowserPeer(t, documents, artifactID)
@@ -774,6 +778,7 @@ func setLiveBlockAttributes(t *testing.T, documents *docs.Service, artifactID, b
 		}
 		return nil
 	})
+	peer.barrier(t)
 }
 
 // settledVersion settles the document at once and waits until version number reads: the version a
