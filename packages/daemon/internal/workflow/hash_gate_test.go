@@ -1496,4 +1496,64 @@ func TestHashGateFollowsDispatchApprovalVerdict(t *testing.T) {
 		openOnBasis()
 		assertNoticeCount(t, pool, "basis-ended", 0)
 	})
+
+	// W28: a step pending on LEGION-100's request ask-100, registered at its own version 3 while
+	// versions 2 and 3 owe their digests (its own verdict is false at 1). The digest of 2 reports
+	// the approval current for 2 while 3 still owes its digest, and a person then approves the
+	// ancestor's request: the person's own approval at the verdict's version holds the step
+	// (record.OpenOnBasis), so it stays pending and nobody is told anything. The digest of 3,
+	// false, settles the row and leaves the step pending, since 3 is the version registered; like
+	// a digest of the basis document (R5) it is a cue that reads again, so it queues the step's
+	// pending-basis seed, and the seed's read of the ancestor's standing approval opens the step on
+	// its basis at version 3, told open, with design-approved naming the basis.
+	t.Run("W28", func(t *testing.T) {
+		t.Parallel()
+		pool, apply := rig(t)
+		seedGatedTree(t, pool)
+		seedLiveAncestor(t, pool)
+		seedGate(t, pool, record.DesignGate{Issue: gatedRoot, ArtifactID: gateDoc, LatestVersion: 1,
+			Verdict: &record.GateVerdict{Version: 1, Current: false, Mark: hashMark(9)}, ToldOpen: new(false)})
+		apply("version-2", versionOf(t, owedVersion, gatedRoot, gateDoc, 2, 20))
+		apply("version-3", versionOf(t, owedVersion, gatedRoot, gateDoc, 3, 21))
+		fact := onBasis(pendingBasis(), 22)
+		fact.Version, fact.DispatchVersion, fact.DigestOwed = 3, 3, new(true)
+		apply("register-pending", fact)
+		// stillPending holds the step pending on ask-100 at root version 3, closed and told closed,
+		// owing its digest as owed says, with nothing opened on the basis.
+		stillPending := func(owed bool) {
+			t.Helper()
+			if gate := assertHashGate(t, pool, gatedRoot, false, false, 0); !gate.PendingOnBasis() || gate.Basis.RootVersion != 3 || record.DigestOwed(gate) != owed {
+				t.Fatalf("the spec row = %+v (basis %+v), want it pending at root version 3, owing its digest %t", gate, gate.Basis, owed)
+			}
+			assertNoticeCount(t, pool, "design-approved", 0)
+		}
+		stillPending(true)
+
+		apply("digest-2", digestOf(t, gatedRoot, gateDoc, 2, 23, true, 2))
+		if gate := gatesOf(t, pool, gatedRoot)[record.DesignStepSpec]; gate.Verdict == nil || gate.Verdict.Version != 2 || !gate.Verdict.Current {
+			t.Fatalf("the spec row = %+v (verdict %+v), want the verdict true at 2", gate, gate.Verdict)
+		}
+		stillPending(true)
+		apply("read-in-the-window", seedRead(standing("approved", new(false)), ancestorAtWork))
+		stillPending(true)
+
+		seeds := pendingSeeds(t, pool, gatedRoot)
+		apply("digest-3", digestOf(t, gatedRoot, gateDoc, 3, 24, false, 0))
+		stillPending(false)
+		assertNoticeCount(t, pool, "basis-ended", 0)
+		if queued := pendingSeeds(t, pool, gatedRoot); len(queued) != len(seeds)+1 || queued[len(queued)-1] != theSeed {
+			t.Fatalf("pending-basis seeds = %#v, want the %d before the digest of 3 and its %#v", queued, len(seeds), theSeed)
+		}
+
+		apply("seed-read", seedRead(standing("approved", new(false)), ancestorAtWork))
+		gate := assertHashGate(t, pool, gatedRoot, true, true, 3)
+		if !gate.OnBasis() || gate.Basis.Version != 4 || gate.Basis.RootVersion != 3 ||
+			gate.Basis.Approval != (record.EventMark{Seq: 60, At: hashMark(60).At}) || gate.Basis.Approver != askPerson.Name() {
+			t.Fatalf("the spec row = %+v (basis %+v), want it open on the person's approval of LEGION-100's version 4 at m60, at root version 3", gate, gate.Basis)
+		}
+		approved := noticesOfKind(t, pool, gatedRoot, "design-approved")
+		if len(approved) != 1 || approved[0].Ref != "dispatch://LEGION-100/spec" || approved[0].Version != 4 || approved[0].Actor != askPerson.Name() {
+			t.Fatalf("design-approved notices = %+v, want the one that names LEGION-100's version 4 as the basis", approved)
+		}
+	})
 }

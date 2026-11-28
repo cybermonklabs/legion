@@ -1305,7 +1305,10 @@ func copyTakes(gate record.DesignGate, fact intake.DispatchArtifact) bool {
 //     deferred, by today's rules, whatever standing it settled at: the answer of a root's wait as
 //     a version fact at the settled version (answerArtifact), and the end of a basis that a newer
 //     version of the root's own document ends, which the function has made and this tells
-//     (tellPendingEnded, and the close putGateTold tells).
+//     (tellPendingEnded, and the close putGateTold tells). A step it leaves pending on an
+//     ancestor's request takes it as a cue that reads the ancestor again (readBasisLater), as R5
+//     takes a digest of the basis document, so an approval of the request the window held back
+//     opens the step.
 //   - The opening is told on a change of the row's told standing from closed to open, as the
 //     close is told by putGateTold. An opening that Dispatch's verdict gives with no new approval
 //     (Departure D6) answers a root's wait on that gate as an approval does (answerVerdictOpening),
@@ -1428,6 +1431,21 @@ func (e *Engine) applyArtifact(ctx context.Context, tx pgx.Tx, gate record.Desig
 		}
 		// The members the opening releases take their first phase from admission's pass over this
 		// same fact, each at the slot that phase needs (record.Waiting's LineFirstPhase).
+	}
+	// "An artifact.digest of the basis document is a cue that reads again" (R5 of
+	// dispatch://INFRA-6065, pendingBasisCue): a read made while that version owed its digest
+	// decided nothing. The digest that ends the root's own fill window, or any fact that settles
+	// the row (classify.GateFactResult.Settled), is the same kind of cue for a step it leaves
+	// pending on an ancestor's request: inside the window a read decided nothing either, since the
+	// person's own approval at the verdict's version held the step (record.OpenOnBasis), so an
+	// approval of the ancestor's request that the window held back opens the step once the seed
+	// reads it again.
+	if result.Settled && updated.PendingOnBasis() {
+		root, err := e.store.Issue(ctx, tx, key)
+		if err != nil || root == nil {
+			return err
+		}
+		return e.readBasisLater(ctx, tx, *root, updated)
 	}
 	if gate.PendingOnBasis() && !updated.PendingOnBasis() && !carried {
 		// Dispatch's fill is the actor of a digest, and no person.

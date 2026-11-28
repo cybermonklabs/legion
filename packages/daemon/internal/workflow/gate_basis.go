@@ -973,7 +973,8 @@ func approvesVersion(approval dispatch.Approval, version int) bool {
 }
 
 // readBasisLater queues the pending-basis seed of gate, a step of root that waits, closed, on an
-// ancestor's request, for an event that is a cue for it (pendingBasisCue). The seed reads Dispatch,
+// ancestor's request, for an event that is a cue for it (pendingBasisCue), or for a fact that
+// settles the root's own row while the step still waits (applyArtifact). The seed reads Dispatch,
 // and that read alone opens or ends the wait (pendingBasisRead), so no event opens or ends it, and
 // an event delivered late or replayed is judged by what Dispatch shows when the seed runs.
 func (e *Engine) readBasisLater(ctx context.Context, tx pgx.Tx, root record.Issue, gate record.DesignGate) error {
@@ -1000,7 +1001,10 @@ func (e *Engine) readBasisLater(ctx context.Context, tx pgx.Tx, root record.Issu
 // and the approval is only logged. That digest ends the wait, as a newer version ends it today
 // before an approval could open it, and the existing pending path tells the end
 // (applyArtifact, basis-ended): a step opened there would read closed, and an opening told
-// to the root's architect would be followed by an end of the basis that nobody is told.
+// to the root's architect would be followed by an end of the basis that nobody is told. A
+// pending step that the person's own approval of the root's document holds through a fill window
+// (record.OpenOnBasis) stays pending too, and the fact that settles that window queues the seed
+// again (applyArtifact), whose read then opens it.
 //
 // A root out of the workflow, or whose tree lingers (record.Stopped), opens nothing: its leave
 // ended the waits of its steps (leaveBases), and a registration after the leave takes no basis
