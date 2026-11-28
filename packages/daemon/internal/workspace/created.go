@@ -126,6 +126,12 @@ func created(dir string, held func()) (at time.Time, ok bool, err error) {
 		return time.Time{}, false, nil
 	}
 	if err != nil {
+		// OpenRegular names a link, a special file or a directory there in an error of its own;
+		// the refusal names the record as a path error, as a failed open does.
+		var pathErr *fs.PathError
+		if !errors.As(err, &pathErr) {
+			err = &fs.PathError{Op: "open", Path: record, Err: err}
+		}
 		return time.Time{}, false, fmt.Errorf("read the creation record of workspace %s: %w", dir, err)
 	}
 	defer file.Close()
