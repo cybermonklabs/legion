@@ -1,4 +1,4 @@
-import { beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, expect, type Mock, setSystemTime, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, render, renderHook, waitFor } from "@testing-library/react";
 import type { ReactNode } from "react";
@@ -46,6 +46,12 @@ function useKnownReferenceName(reference: string): string | undefined {
 // random order, so the file loads the engine before its first row, whichever row that is.
 beforeAll(async () => {
   await warmMarkdownRenderer();
+});
+
+// A row that pins the clock (`setSystemTime`) and is ended by the command's guard never reaches
+// its own `finally`, so the real clock comes back here too, before the next row.
+afterEach(() => {
+  setSystemTime();
 });
 
 /**
@@ -113,6 +119,8 @@ const issue: IssueDetails = {
   plan_artifact_id: plan.id,
   primary_artifact_id: "",
   priority: null,
+  priority_from: null,
+  resolved_priority: null,
   progress: { children: null, tasks: null },
   project: "CORE",
   rank: "U",
@@ -364,6 +372,45 @@ test("a names read that fails for a tree that grew keeps the names in hand, and 
     expect(taskWords(view.result.current.tree.root)).toBe(TASK_WORDS);
     view.unmount();
   } finally {
+    for (const stub of stubs) stub.mockRestore();
+  }
+});
+
+// A names read back on a set of addresses whose failure the names line has counted holds no
+// answer there, so the line stands on it, busy while it runs again, but that failure is one the
+// line has said, so its count stays (`useLineRefusals`).
+test("a names read back on a set of addresses whose failure the line counted stands busy with its failure unchanged", async () => {
+  // Where set, a names read stays out until it settles; every one of them fails.
+  let out: Promise<void> | undefined;
+  const stubs = stubTreeReads(async () => {
+    await out;
+    throw new Error("the names read failed");
+  });
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const wrapper = ({ children }: { children: ReactNode }) => (
+    <QueryClientProvider client={client}>{children}</QueryClientProvider>
+  );
+  const held = Promise.withResolvers<void>();
+  try {
+    const view = renderHook(() => useIssueTree(issue).namesFailure, { wrapper });
+    await waitFor(() => expect(view.result.current?.failure).toBe(1));
+    expect(view.result.current?.speaks, "the line's first failure was not said").toBe(true);
+    // A comment arrives, and the names read of the tree's new set fails too.
+    await act(async () => client.setQueryData(["comments", KEY], [comment]));
+    await waitFor(() => expect(view.result.current?.failure).toBe(2));
+    // The new set's names read answers, the one active read holding none, and the line leaves.
+    await act(async () => client.setQueriesData({ type: "active" }, (d) => d ?? { targets: [] }));
+    await waitFor(() => expect(view.result.current).toBeUndefined());
+    // The comment goes: the read moves back to the first set, whose failure the line counted, and
+    // is out.
+    out = held.promise;
+    await act(async () => client.setQueryData(["comments", KEY], []));
+    await waitFor(() => expect(view.result.current?.retrying).toBe(true));
+    expect(view.result.current?.failure, "the first set's failure was said again").toBe(2);
+    expect(view.result.current?.speaks, "the line said again a failure it had said").toBe(false);
+    view.unmount();
+  } finally {
+    held.resolve();
     for (const stub of stubs) stub.mockRestore();
   }
 });
@@ -1587,13 +1634,12 @@ test("a tree mounted again past 30 s reads nothing, and a comment event reads th
     setSystemTime(Date.now() + 31_000);
     const again = renderHook(() => useIssueTree(issue).root, { wrapper });
     expect(taskWords(again.result.current)).toBe(TASK_WORDS);
-    // Long enough for a read the mount started to have been sent.
-    await act(async () => {
-      const waited = Promise.withResolvers<void>();
-      setTimeout(waited.resolve, 50);
-      await waited.promise;
-    });
-    expect(client.isFetching()).toBe(0);
+    // What a read the mount started would change: React Query starts a read the mount calls for
+    // in the mount's own effect, which `act` flushes, and calls its function as it starts it, so
+    // the state and the count read here are the ones such a read would have changed; no clock
+    // decides it.
+    await act(async () => {});
+    expect(client.isFetching(), "a read the mount started").toBe(0);
     expect(requests(), "no read is sent for a slot mounted again").toBe(loaded);
 
     // The comment is edited, and the feed refreshes what that event names.

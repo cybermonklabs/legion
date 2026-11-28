@@ -62,7 +62,7 @@ func itemsOwedWindowsAntiJoins(kind ItemKind, tables itemTables) string {
 			      and w.block_state = ` + itemBlockState + `
 			left join (
 				select split_part(e.id, '#', 1) as owner_key from embeddings e
-				where e.kind = '` + kind.WindowKind() + `' and e.kind in ` + windowKinds + `
+				where e.kind = '` + kind.WindowKind() + `' and e.kind in ` + WindowKinds + `
 				group by 1
 			) e on e.owner_key = ` + ownerKey + `
 			where s.` + tables.item + ` > $1::uuid

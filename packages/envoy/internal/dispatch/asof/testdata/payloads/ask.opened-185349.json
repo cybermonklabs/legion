@@ -1,0 +1,92 @@
+{
+  "id": 185349,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 529,
+  "type": "ask.opened",
+  "actor": {
+    "kind": "session",
+    "id": "01a16551-5d7c-72f0-bd54-d1c97d2adfdc",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum ",
+      "tmux": "lorem ip",
+      "pane": "lo",
+      "session_title": "lorem ipsum dolor sit amet lorem ipsu"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-04T14:20:51.246787Z",
+  "payload": {
+    "anchor": {
+      "artifact_id": "db7a00b6-3584-45ce-8944-7ea3c78c6719",
+      "block_id": "723a4f15-6558-4557-9749-84b86c4f645e",
+      "mark_id": "8b968331-a5fe-45bd-9b25-2aad66a11064",
+      "orphaned": false,
+      "quote": "lorem ipsum dolor sit amet lorem ipsum dolor sit",
+      "version": 7
+    },
+    "anchor_artifact": {
+      "project": "ACME",
+      "slug": "lorem ipsum dolor",
+      "name": "lorem ipsum dolor",
+      "primary": false
+    },
+    "answer": null,
+    "artifact_id": null,
+    "author": {
+      "id": "01a16551-5d7c-72f0-bd54-d1c97d2adfdc",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum ",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit",
+        "pane": "lo",
+        "session_title": "lorem ipsum dolor sit amet lorem ipsu",
+        "tmux": "lorem ip"
+      },
+      "owner": "alice@example.com"
+    },
+    "block_id": null,
+    "created_at": "2026-11-04T14:20:51.246787Z",
+    "edited_at": null,
+    "id": "8b968331-a5fe-45bd-9b25-2aad66a11064",
+    "issue_key": "ACME-1",
+    "kind": "question",
+    "multiple": false,
+    "opened_event_id": 185349,
+    "options": [
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dol",
+        "id": "b2",
+        "label": "lorem ipsum dolor sit amet lorem ipsum "
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lo",
+        "id": "b3",
+        "label": "lorem ipsum dolor sit a"
+      },
+      {
+        "description": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lore",
+        "id": "b4",
+        "label": "lorem ipsum dolor sit amet lorem ipsu"
+      }
+    ],
+    "question": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+    "referenced_by_count": 3,
+    "references_changed": [
+      {
+        "id": "db7a00b6-3584-45ce-8944-7ea3c78c6719",
+        "kind": "artifact",
+        "ref": "dispatch://ACME-1"
+      }
+    ],
+    "revision": 3,
+    "state": "open",
+    "thread_logins": [],
+    "urgency": "med"
+  }
+}

@@ -56,6 +56,19 @@ func (g gitRepo) line(args ...string) (string, error) {
 	return strings.TrimSpace(string(output)), err
 }
 
+// holdsCommit reports whether rev names a commit this checkout holds. The id is peeled to a
+// commit because that makes git find the object: `git rev-parse --verify` alone answers any
+// full-length id with itself, held or not. git answers 1 for a name it cannot resolve to a
+// commit, and anything else is git failing to be asked.
+func (g gitRepo) holdsCommit(rev string) (bool, error) {
+	_, err := g.run("rev-parse", "--verify", "-q", rev+"^{commit}")
+	var exit *exec.ExitError
+	if errors.As(err, &exit) && exit.ExitCode() == 1 {
+		return false, nil
+	}
+	return err == nil, err
+}
+
 // findRepo is the checkout that holds dir: the jj workspace when jj answers for dir, else the git
 // checkout. jj is asked first, since a colocated jj workspace is a git checkout too, whose git
 // HEAD is no merge in progress.

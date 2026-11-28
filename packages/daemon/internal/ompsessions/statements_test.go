@@ -35,7 +35,8 @@ const pinnedName = "pinned"
 // connection it holds, so no other package can hand it to code of its own.
 const connName = "Conn"
 
-// constructorName is the one function that opens a connection and builds a Conn.
+// constructorName is the one function that builds a Conn. The helper opens a new connection only in
+// place of one that ended, inside the Conn it was handed, and builds none.
 const constructorName = "ConnectURL"
 
 // connMethods are the methods of Conn that may reach its connection: they close it, and say
@@ -83,10 +84,12 @@ var allowedMethods = []string{
 }
 
 // constructorFunctions are the package functions of those packages that run no statement, and
-// that the constructor alone may call: pgx's Connect, ConnectConfig and ParseConfig, which read a
-// URL and open a connection with its startup packet alone, and database/sql's Open, which opens
-// nothing until a statement runs. Each answers a raw connection, so a call of one anywhere else is
-// a connection no Conn holds, which the package's code could hand to another package's.
+// that, outside the helper's body, where every driver call counts as the helper's own, the
+// constructor alone may call: pgx's Connect, ConnectConfig and ParseConfig, which read a URL and
+// open a connection with its startup packet alone, and database/sql's Open, which opens nothing
+// until a statement runs. Each answers a raw connection, so a call of one anywhere else is a
+// connection no Conn holds, which the package's code could hand to another package's; the
+// helper's reopen puts the one it opens straight into the Conn it holds.
 var constructorFunctions = []string{
 	"github.com/jackc/pgx/v5.Connect",
 	"github.com/jackc/pgx/v5.ConnectConfig",

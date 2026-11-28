@@ -78,10 +78,23 @@
 #      such a job's steps are - that starts a go command (test, vet, build, run, list, install,
 #      generate) no Run of a gate on that job claims and no exact entry's step holds, or a
 #      claimed line in the simple form (below) whose packages, -tags, -race or mode (test, vet,
-#      or build) are not exactly its Run's. A job that calls a reusable workflow keeps its id,
-#      its needs: changes and the whole if: that tests its filter in ci.yaml and holds its steps
-#      in the called file, which runs them inside the caller's own run, so the steps of every one
-#      of those files are read here and each refusal names the file the step is in,
+#      or build) are not exactly its Run's. A job that calls a reusable workflow keeps its id, its
+#      needs: changes and the whole if: that tests its filter in ci.yaml and holds its steps in
+#      the called file, which runs them inside the caller's own run, so the steps of every one of
+#      those files are read here and each refusal names the file the step is in.
+#
+#      Rule 4's script half (ci_filter_coverage.check_script_steps): a step that a filter gates
+#      and whose text names a script a Run's go command is in (its `source`) fails unless, for
+#      each filter that gates it, a Run of that script in a gate of that filter on the step's job
+#      cites the step with at(), and no other step of the job answers to that citation. The
+#      failure names the file, the job, the step, the script and the filter. A step's text is its
+#      run:, or the values of its with: and the run: of each step of a composite action of this
+#      repository that it uses, through the composite actions those steps use in turn. The check
+#      visits each action once per step and does not follow a uses: path outside the repository.
+#      A word is a run of that text between blanks, quotes, = and ;&|()<>, less one leading ./.
+#      It names a script when the shorter of the word and the script's path is the end of the
+#      longer, whole or after a /. No shell or expression syntax is evaluated: a name spelled
+#      another way is the review's to catch, as rules 10 and 15 say for their own cases.
 #   5. a Run whose pinned text its step or script no longer holds, an exact entry whose step the
 #      job no longer has, a step its exact entry pins whose run: script or directory is not the
 #      entry's, or whose env, shell, container or job could move what it compiles (below), or a
@@ -452,9 +465,18 @@
 #
 # Every rule reads the filters from the same run of the engine that computes them, in memory, and
 # names the gate file, the //ci: line or the workflow a fault is in. The go commands of every gate
-# and every //ci:builds line run at once, in a pool of CI_FILTERS_JOBS (default: the machine's
-# processors, at most 8; 1 runs them one after another), each answer keyed by what it asks, so the
-# filters are the same text whatever the pool's size.
+# and every //ci:builds line run at once, in two pools of CI_FILTERS_JOBS threads each (default:
+# the machine's processors, at most 8; 1 runs them one after another, in no pool), each answer
+# keyed by what it asks, so the filters are the same text whatever the pools' size. With more than
+# one, each Run's `go list -deps` starts in the first pool as the table declares the Run
+# (ci_filter_coverage.start_early), so those listings run while the rest of the table loads, and
+# toolchain()'s `go env GOROOT`, once per module directory, runs on the table's thread during the
+# load; the other go commands, module_files()'s `go env -json` and `go work edit -json` and
+# check_vet_tags()'s `go list`, run when the walk asks them. The second pool runs what the walk
+# asks of each Run (ci_filter_coverage.Session.prefetch): a listing the first pool began is waited
+# for there, not run again, but module_files()'s commands run beside the early listings still
+# running, so up to twice CI_FILTERS_JOBS go commands can run at once. A listing's failure waits
+# in its answer and is reported when the walk asks it, as it is when the command runs then.
 #
 # A claimed go command is reduced only in its simple forms, never parsed further: one line of
 # `go test|vet|build`, or of `go -C <directory>` and one of those three, under a leading run of
@@ -657,8 +679,14 @@ export CI_FILTERS_MODE="${1:-check}"
 # The first reading comes before the audit hook too, since it opens every file of the tree and none
 # of those opens is the computation's. A run whose imports fail is a failure before the second
 # read has anything to add. The generate mode starts its TypeScript listings
-# (ci_ts_listing.start) right after the engine's own import, so tsc and Bun list while the table
-# loads and the go commands run; they read the tree and write nothing in it.
+# (ci_ts_listing.start), with tsgo (ci_ts_listing.COMPILER), right after the engine's own import,
+# and every mode starts each Run's `go list -deps` as the table declares the Run
+# (ci_filter_coverage.start_early), so they run while the table loads. The TypeScript listings
+# read the tree and write nothing in it; the early go list commands run, like the walk's, in the
+# Session's environment (GOPROXY=off over an empty module cache), which rewrites no go.sum or
+# go.work.sum, and the guard below names any file of the tree that still changes. After the load,
+# the generate mode prints the command the programs are listed with and how many listings start()
+# began (ci_ts_listing.started_summary).
 PYTHONDONTWRITEBYTECODE=1 PYTHONPATH=.github/scripts exec python3 -c '
 import hashlib
 import os
@@ -727,36 +755,49 @@ before = tree()
 opened = []
 sys.addaudithook(lambda event, args: opened.append(args[0]) if event == "open" and isinstance(args[0], str) else None)
 
+import contextlib
 import secrets
 import time
 import warnings
 
 token = secrets.token_hex(16)
 print(f"::stop-commands::{token}", flush=True)
-with warnings.catch_warnings(record=True) as caught:
-    warnings.simplefilter("always")
-    import ci_filter_coverage
-    ci_filter_coverage.OPENED = opened
-    if os.environ["CI_FILTERS_MODE"] == "generate":
-        import ci_ts_listing
-        ci_ts_listing.start()
-    started = time.monotonic()
-    try:
-        import ci_job_reads
-    except ci_filter_coverage.RepositoryInputError as exc:
-        print(f"::{token}::", flush=True)
-        ci_filter_coverage.print_annotation(exc.annotation())
-        sys.exit(1)
-    loaded = time.monotonic() - started
-    import ci_workflow_rules
-print(f"::{token}::", flush=True)
-print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
-for import_warning in caught:
-    ci_filter_coverage.print_import_warning(import_warning)
-status = ci_filter_coverage.main()
+mode = os.environ["CI_FILTERS_MODE"]
+# Every way out after start_early() passes its one stop_early() before the second reading of the
+# tree: a table that fails to load, any other fault of the imports, and main(), however it ends.
+with contextlib.ExitStack() as stop:
+    with warnings.catch_warnings(record=True) as caught:
+        warnings.simplefilter("always")
+        import ci_filter_coverage
+        ci_filter_coverage.OPENED = opened
+        ci_filter_coverage.TREE_FILES = list(before) if isinstance(before, dict) else None
+        if mode == "generate":
+            import ci_ts_listing
+            ci_ts_listing.COMPILER = "tsgo"
+            ci_ts_listing.start()
+        ci_filter_coverage.start_early()
+        stop.callback(ci_filter_coverage.stop_early)
+        started = time.monotonic()
+        try:
+            import ci_job_reads
+        except ci_filter_coverage.RepositoryInputError as exc:
+            print(f"::{token}::", flush=True)
+            ci_filter_coverage.print_annotation(exc.annotation())
+            sys.exit(1)
+        loaded = time.monotonic() - started
+        progress = ci_filter_coverage.early_progress()
+        import ci_workflow_rules
+    print(f"::{token}::", flush=True)
+    print(f"the table, its gate files and the //ci: lines loaded in {loaded:.1f} s", flush=True)
+    if progress is not None:
+        print(progress, flush=True)
+    if mode == "generate":
+        print(ci_ts_listing.started_summary(), flush=True)
+    for import_warning in caught:
+        ci_filter_coverage.print_import_warning(import_warning)
+    status = ci_filter_coverage.main()
 after = tree(before if isinstance(before, dict) else None)
 
-mode = os.environ["CI_FILTERS_MODE"]
 written = []
 if mode == "write":
     written = list(getattr(ci_job_reads, "PUSH_WORKFLOWS", {}).values())

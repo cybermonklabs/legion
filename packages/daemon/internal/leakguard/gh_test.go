@@ -495,9 +495,9 @@ func TestTheFilesAGhCallWouldSend(t *testing.T) {
 
 // The files the caller parsed are the files read, and the table is not consulted for a caller
 // that handed its parse: `legion gh` reads the command with gh's own help of the leaf, which
-// knows shapes the table cannot (cmd/legion's ghSentFiles), and two readers of one argv would be
-// two answers to one question. A caller that hands no parse at all — a nil GhRequest.Sent, which
-// is what a bare argv is — still gets the table.
+// knows shapes the table cannot (internal/ghroute's sentFiles), and two readers of one argv would
+// be two answers to one question. A caller that hands no parse at all — a nil GhRequest.Sent,
+// which is what a bare argv is — still gets the table.
 func TestTheFilesTheCallerParsedAreTheFilesRead(t *testing.T) {
 	dir := t.TempDir()
 	named := filepath.Join(dir, "named.md")
@@ -619,7 +619,7 @@ func TestGhAPIGraphQLStandardInputIsReadByTheFieldsThatTakeIt(t *testing.T) {
 	})
 	t.Run("a query no option is known for", func(t *testing.T) {
 		// A parse that names the field and no use, as one naming two uses of the input does: the
-		// field's `@-`, and then `--input -`, in the order cmd/legion's ghSentFiles reads them.
+		// field's `@-`, and then `--input -`, in the order internal/ghroute's sentFiles reads them.
 		sent := stdinParse("--field", graphQLQuery, StdinField)
 		sent.UsesStdin(StdinRequestBody)
 		if sent.stdinUse != StdinUnknown || !sent.StdinSent() {

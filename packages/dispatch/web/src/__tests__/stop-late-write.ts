@@ -38,7 +38,10 @@ export async function untilAttempted(
   upload: { readonly mock: { readonly calls: readonly unknown[] } },
   calls: number
 ): Promise<void> {
-  await onRealTurns(() => upload.mock.calls.length >= calls);
+  await onRealTurns(
+    () => upload.mock.calls.length >= calls,
+    `the press's file kept and its upload attempted ${calls} times`
+  );
 }
 
 /** How each held draft is named in a row's title: typed and never sent, refused by Dispatch, or

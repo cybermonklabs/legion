@@ -119,7 +119,12 @@ export type DispatchReadingSurface =
   | "node-row-chip"
   | "outline-crumb"
   | "issue-pin"
+  | "issue-page-history-turn"
+  | "issue-page-history-handoff-body"
+  | "issue-page-history-handoff-data"
+  | "issue-page-history-block"
   | "plan-task-line"
+  | "spec-decision-line"
   | "document-page-title"
   | "agent-artifact-page-title"
   | "write-label"
@@ -682,6 +687,48 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     surface: "issue-pin",
   },
   {
+    files: ["packages/dispatch/web/src/features/issue-page/history-entries.tsx"],
+    reach: "/issues/<ISSUE>/activity with the new issue page on, a turn in Details' History",
+    record: true,
+    rendered: true,
+    surface: "issue-page-history-turn",
+  },
+  {
+    cannotCarry: NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's opened fields in Details' History",
+    reason:
+      "A handoff is no record of the reference graph (`textSourceKind`): the renderer draws the words its session wrote - each string field, each proof entry, a body that is no JSON object - from the reading the server sends for each (`field_trees`), and is given no `source`, so a `#id` in them names nothing.",
+    record: false,
+    rendered: true,
+    surface: "issue-page-history-handoff-body",
+  },
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/HistoryHandoff.tsx"],
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, a handoff's field of JSON in Details' History",
+    reason:
+      "A handoff field that holds an array, an object, a number, a boolean or null is the data its session wrote, not words: it is shown as the JSON it is.",
+    record: false,
+    rendered: false,
+    surface: "issue-page-history-handoff-data",
+  },
+  {
+    cannotCarry: NODE_LINE_NO_QUESTION_ID,
+    files: ["packages/dispatch/web/src/features/issue-page/history-entries.tsx"],
+    proof: {
+      file: "packages/dispatch/web/src/features/issue-page/IssueHistory.test.tsx",
+      test: "a block's line in the history reads a reference as its target's name",
+    },
+    reach:
+      "/issues/<ISSUE>/activity with the new issue page on, the line of a repaired or refused block in Details' History",
+    reason: `A line of the history names a block by the one line of the node that carries it, its first line cut by the page's first-line rule. ${PLAIN_WORDS_REASON}`,
+    record: true,
+    rendered: false,
+    surface: "issue-page-history-block",
+  },
+  {
     cannotCarry: NODE_LINE_NO_QUESTION_ID,
     files: ["packages/dispatch/web/src/features/issue-page/plan-filter/PlanFilterBody.tsx"],
     proof: {
@@ -693,6 +740,17 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     record: true,
     rendered: false,
     surface: "plan-task-line",
+  },
+  // The Spec view's decision cell and its because line: the quote of a decision and the question an
+  // answer answers, each one line of words `specDecidedBy` has named before the view draws it.
+  {
+    files: ["packages/dispatch/web/src/features/issue-page/spec-filter/SpecFilterBody.tsx"],
+    reach: "/issues/<ISSUE>/spec with the new issue page on, a decision cell or because line",
+    reason:
+      "The Spec view draws what decided a statement as one line of plain text with no markup: a decision's quote, the first sentence of the answer's or the decision's words, and the question an answer answers, each cut to one line by `specDecidedBy` (`spec-filter/spec-decided-by.ts`), which names each reference from the page's published names via `one-line.ts`'s `referenceStandIns` before the view draws the string, rather than mounting `PlainText` or `usePlainHeadline`. It passes no source record: the plain string reads no per-record question map for `#id` references and makes no per-record reads, drawing only from the page's published names.",
+    record: false,
+    rendered: false,
+    surface: "spec-decision-line",
   },
   // The reason a reviewer asked for changes: in a document's Reviews dialog, and on the line
   // under the design gate's steps in a root issue's header.
@@ -974,9 +1032,16 @@ export const DISPATCH_READING_SURFACES: readonly DispatchReadingSurfaceRow[] = [
     rendered: false,
     surface: "change-view-diff",
   },
-  // The reason an agent gave for a credential it asks for.
+  // The reason an agent gave for a credential it asks for: on the machine-login page as it is
+  // looked up and once it is decided, in a pending Dispatch sign-in's Inbox row, and on the
+  // machine-logins list, where it tells one sign-in of a host from another.
   {
-    files: ["packages/dispatch/web/src/features/credentials/CredentialRecordFacts.tsx"],
+    files: [
+      "packages/dispatch/web/src/features/credentials/CredentialRecordFacts.tsx",
+      "packages/dispatch/web/src/features/credentials/CredentialRequestsSection.tsx",
+      "packages/dispatch/web/src/features/credentials/MachineLoginPage.tsx",
+      "packages/dispatch/web/src/features/credentials/MachineLoginsSection.tsx",
+    ],
     reach: "/credentials/machine, a machine login request's reason",
     reason: `A credential request's reason is what the asking agent typed for it. ${ONE_LINE_FIELD_REASON}`,
     record: false,

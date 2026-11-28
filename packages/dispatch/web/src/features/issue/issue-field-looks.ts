@@ -24,8 +24,12 @@ const issueLists: readonly unknown[] = ["project", "advances"];
 export const inboxKey = inboxQuery().queryKey;
 
 /** The fields of an issue a pick changes, as its detail and its row of each list of issues carry
- *  them. */
-type IssueFields = Pick<Issue, "assignee" | "priority" | "repo" | "resolved_repo">;
+ *  them, with the priority and the repository the issue resolves to, which a pick of its own moves
+ *  too. */
+type IssueFields = Pick<
+  Issue,
+  "assignee" | "priority" | "priority_from" | "repo" | "resolved_priority" | "resolved_repo"
+>;
 
 /** How one field of an issue shows wherever the issue is drawn: the issue's own fields, and, for
  *  the assignee, the person each of its Inbox rows waits on as Dispatch last answered it, by ask
@@ -42,8 +46,10 @@ export interface Showing {
   readonly look: Look;
 }
 
-/** How `pick` shows. An own repository is also the one the issue resolves to; an inherited one
- *  is left to Dispatch's answer. */
+/** How `pick` shows. A pick of a priority writes the issue's own alone: an own priority is the
+ *  one every surface draws, whatever the row says the issue inherits (`issuePriority`), and a
+ *  pick of none leaves what it inherits to Dispatch's answer. An own repository is also the one
+ *  the issue resolves to; an inherited one is left to Dispatch's answer. */
 export function pickLook(pick: IssueFieldPick): Look {
   switch (pick.field) {
     case "assignee":
@@ -65,7 +71,13 @@ export function issueLook(field: IssueField, issue: Partial<IssueFields>): Look 
     case "assignee":
       return { fields: { assignee: issue.assignee } };
     case "priority":
-      return { fields: { priority: issue.priority } };
+      return {
+        fields: {
+          priority: issue.priority,
+          priority_from: issue.priority_from,
+          resolved_priority: issue.resolved_priority,
+        },
+      };
     case "repo":
       return { fields: { repo: issue.repo, resolved_repo: issue.resolved_repo } };
   }
@@ -80,13 +92,26 @@ function inboxRows(client: QueryClient): InboxRow[] {
 
 /** The fields of `issue` a pick changes, copied apart from the rest of it, which a kept answer
  *  then does not hold. */
-function pickedFields({ assignee, priority, repo, resolved_repo }: IssueFields): IssueFields {
-  return { assignee, priority, repo, resolved_repo };
+function pickedFields({
+  assignee,
+  priority,
+  priority_from,
+  repo,
+  resolved_priority,
+  resolved_repo,
+}: IssueFields): IssueFields {
+  return { assignee, priority, priority_from, repo, resolved_priority, resolved_repo };
 }
 
 /** What an answer that is an issue carries as its own: its key, each field of it a pick changes,
- *  and the repository it resolves to. */
-const answerNames: readonly string[] = ["key", ...everyField, "resolved_repo"];
+ *  and the priority and the repository it resolves to. */
+const answerNames: readonly string[] = [
+  "key",
+  ...everyField,
+  "priority_from",
+  "resolved_priority",
+  "resolved_repo",
+];
 
 /** `answer`, Dispatch's answer to a write, as an issue: an object whose `key` names the issue and
  *  that carries each field of it a pick changes as its own. Undefined for any other answer - for
@@ -104,14 +129,16 @@ function waitingOf(rows: readonly InboxRow[]): ReadonlyMap<string, string | unde
 }
 
 /** How `rows`, the Inbox rows of one issue, show the fields of the issue a pick changes: as the
- *  first of them carries them - its priority, and its issue's assignee where it names its issue -
- *  with the person each of them waits on. Undefined where there is no row. */
+ *  first of them carries them - its priority with the one it resolves to, and its issue's
+ *  assignee where it names its issue - with the person each of them waits on. Undefined where
+ *  there is no row. */
 function inboxLook(rows: readonly InboxRow[]): Look | undefined {
   const [row] = rows;
   if (row === undefined) return undefined;
-  const { issue, priority } = row;
+  const { issue, priority, priority_from, resolved_priority } = row;
+  const priorities = { priority, priority_from, resolved_priority };
   return {
-    fields: issue === undefined ? { priority } : { assignee: issue.assignee, priority },
+    fields: issue === undefined ? priorities : { ...priorities, assignee: issue.assignee },
     waiting: waitingOf(rows),
   };
 }
@@ -211,7 +238,8 @@ function withFields<T extends IssueFields>(issue: T, fields: Partial<IssueFields
 }
 
 /** `row` with `showing` over it, where the row is of its issue: `row` itself where it shows it
- *  already. A row is judged by the person it waits on, which Dispatch answers as
+ *  already. A priority shows on a row with the priority it resolves to, as the look carries them.
+ *  A row is judged by the person it waits on, which Dispatch answers as
  *  `coalesce(a.asked_of, i.assignee, p.default_assignee)`: so a row whose ask nobody has handed on
  *  follows the assignee here, and one somebody handed to a person keeps that person whoever holds
  *  its issue. An unassign moves a row nobody handed on to its project's default assignee, taken
@@ -225,8 +253,17 @@ function showOnInboxRow(row: InboxRow, showing: Showing, fallback: string | unde
   if (row.issue_key !== showing.issueKey) return row;
   const { fields, waiting } = showing.look;
   if (showing.field === "priority") {
-    const { priority } = fields;
-    return priority === undefined || row.priority === priority ? row : { ...row, priority };
+    const {
+      priority,
+      priority_from = row.priority_from,
+      resolved_priority = row.resolved_priority,
+    } = fields;
+    if (priority === undefined) return row;
+    return row.priority === priority &&
+      row.priority_from === priority_from &&
+      row.resolved_priority === resolved_priority
+      ? row
+      : { ...row, priority, priority_from, resolved_priority };
   }
   const { assignee } = fields;
   if (showing.field !== "assignee" || assignee === undefined || row.issue === undefined) return row;

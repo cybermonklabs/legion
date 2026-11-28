@@ -8,12 +8,15 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -84,6 +87,13 @@ const eventSelect = `select e.id, e.issue_key, e.artifact_id::text, coalesce(e.p
 // entry, and the read behind it attaches all of them again. An entry the cache evicts and a
 // restart end it sooner. Those fields are an ask's own facts rather than the feed's, and the
 // Inbox, the ask read and the issue read answer them fresh, from no kept list.
+//
+// A page at a cut is read whole every time. It reads no validator of metadata, since the issue's
+// sequence at the cut does not move for a post deleted after the cut, which the page then reads
+// as deleted, and it reads nothing kept, which holds present answers under keys that name no cut.
+// It goes out under an ETag over the cut and its own bytes, and is kept under no key
+// (writePastListAnswer). It leaves out what the records at the cut do not give
+// (eventPageAtTheCut).
 func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -94,22 +104,32 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	lastSeq, createdAt, issueHeld, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+	trees := wantsDisplayTrees(r)
+	cut, atCut := asof.CutFrom(r.Context())
+	var key listAnswerKey
+	issueHeld := false
+	if !atCut {
+		lastSeq, createdAt, held, err := s.issueEventSequence(r.Context(), r.PathValue("key"))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
+		if answerNotModified(w, r, etag) {
+			return
+		}
+		key = listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
+		if s.listAnswers.answer(w, key) {
+			return
+		}
+		issueHeld = held
+	}
+	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	trees := wantsDisplayTrees(r)
-	etag := s.eventFeedETag(lastSeq, createdAt, options, trees)
-	if answerNotModified(w, r, etag) {
-		return
-	}
-	key := listAnswerKeyFor(r, eventFeedRoute, r.PathValue("key"), etag)
-	if s.listAnswers.answer(w, key) {
-		return
-	}
-	events, err := s.readEvents(r.Context(), who, issueOwner(r.PathValue("key")), options)
-	if err != nil {
+	if err := eventPageAtTheCut(r.Context(), events); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -121,6 +141,10 @@ func (s *server) listIssueEvents(w http.ResponseWriter, r *http.Request) {
 	encoded, err := encodeListAnswer(events)
 	if err != nil {
 		s.writeHandlerError(w, err)
+		return
+	}
+	if atCut {
+		s.writePastListAnswer(w, r, cut, encoded, trees)
 		return
 	}
 	s.writeListAnswer(w, key, encoded, issueHeld)
@@ -149,6 +173,9 @@ func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventLi
 		createdAt.UnixMicro(), lastSeq, options.after, options.before, options.hasBefore, options.descending, options.limit)
 	for _, id := range options.ids {
 		_, _ = fmt.Fprintf(hash, "id=%d\n", id)
+	}
+	for _, kind := range options.excludeTypes {
+		_, _ = fmt.Fprintf(hash, "exclude_type=%s\n", kind)
 	}
 	return s.listETag(hash, trees)
 }
@@ -184,6 +211,10 @@ func (s *server) issueEventSequence(ctx context.Context, key string) (int, time.
 // therefore capped at the safe horizon, at or below which every event is final, the same cap and
 // the same wait GET /api/v1/references?since= reads under (sinceHorizon): every event committed
 // before the request stands at or below it, so paging to the end of this answer skips nothing.
+// At a cut the page also ends at the newest event id at the cut (newestEventIDAtTheCut). The wait
+// for the horizon runs with no cut: it reads no table as it stood at the cut, and where the
+// horizon observes through the shared pool, which binds each statement under a cut, the begin of
+// its observation would be refused.
 func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -200,13 +231,25 @@ func (s *server) listEventLog(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	through, err := s.sinceHorizon(r.Context())
+	through, err := s.sinceHorizon(asof.WithoutCut(r.Context()))
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
+	if _, atCut := asof.CutFrom(r.Context()); atCut {
+		newest, err := s.newestEventIDAtTheCut(r.Context())
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		through = min(through, newest)
+	}
 	events, err := s.readEventsAfterID(r.Context(), who, after, through, limit)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := eventPageAtTheCut(r.Context(), events); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -239,16 +282,21 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 	if err != nil {
 		return eventListOptions{}, err
 	}
+	excludeTypes, err := parseEventExcludeTypes(query.Get("exclude_types"))
+	if err != nil {
+		return eventListOptions{}, err
+	}
 	if query.Has("after") && (hasBefore || descending) {
 		return eventListOptions{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "after cannot be combined with before or order=desc")
 	}
 	return eventListOptions{
-		after:      after,
-		before:     before,
-		hasBefore:  hasBefore,
-		descending: descending || hasBefore,
-		ids:        ids,
-		limit:      limit,
+		after:        after,
+		before:       before,
+		hasBefore:    hasBefore,
+		descending:   descending || hasBefore,
+		ids:          ids,
+		limit:        limit,
+		excludeTypes: excludeTypes,
 	}, nil
 }
 
@@ -259,6 +307,22 @@ type eventListOptions struct {
 	descending bool
 	ids        []int64
 	limit      int
+	// excludeTypes are the event types the page leaves out, sorted with no repeat
+	// (parseEventExcludeTypes); nil leaves out none.
+	excludeTypes []string
+}
+
+// excludeTypesCondition is the where-clause condition that leaves options.excludeTypes out of a
+// readEvents statement, and that statement's arguments with the type list appended, which the
+// condition names by its place. readEvents puts it before order by and limit, so a page counts
+// only the events it keeps. With no excluded type it adds neither, and the statement is the one
+// it was without the filter.
+func (options eventListOptions) excludeTypesCondition(arguments ...any) (string, []any) {
+	if len(options.excludeTypes) == 0 {
+		return "", arguments
+	}
+	arguments = append(arguments, options.excludeTypes)
+	return fmt.Sprintf(" and not (e.type = any($%d))", len(arguments)), arguments
 }
 
 func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, options eventListOptions) ([]model.Event, error) {
@@ -272,27 +336,31 @@ func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, o
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	if len(options.ids) > 0 {
+		exclude, arguments := options.excludeTypesCondition(ownerValue, options.ids)
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+` and e.id = any($2)
+			where `+predicate+` and e.id = any($2)`+exclude+`
 			order by e.seq asc
-		`, ownerValue, options.ids)
+		`, arguments...)
 	}
 	if options.descending {
 		if options.hasBefore {
+			exclude, arguments := options.excludeTypesCondition(ownerValue, options.before, options.limit)
 			return s.readEventRows(ctx, who, eventSelect+`
-				where `+predicate+` and e.seq < $2
+				where `+predicate+` and e.seq < $2`+exclude+`
 				order by e.seq desc limit $3
-			`, ownerValue, options.before, options.limit)
+			`, arguments...)
 		}
+		exclude, arguments := options.excludeTypesCondition(ownerValue, options.limit)
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+`
+			where `+predicate+exclude+`
 			order by e.seq desc limit $2
-		`, ownerValue, options.limit)
+		`, arguments...)
 	}
+	exclude, arguments := options.excludeTypesCondition(ownerValue, options.after, options.limit)
 	return s.readEventRows(ctx, who, eventSelect+`
-		where `+predicate+` and e.seq > $2
+		where `+predicate+` and e.seq > $2`+exclude+`
 		order by e.seq asc limit $3
-	`, ownerValue, options.after, options.limit)
+	`, arguments...)
 }
 
 // readEventsAfterID reads one page of the global event log in id order: at most limit of the
@@ -424,6 +492,16 @@ func (s *server) readEventRows(ctx context.Context, who model.Actor, query strin
 	}
 	return events, nil
 }
+
+// askEventKinds are the kinds of event whose payload is an ask, to which a read adds the ask's
+// fields (attachAskEventFields): the types the asks shadow reads an ask's state from.
+var askEventKinds = func() map[string]bool {
+	kinds := map[string]bool{}
+	for _, kind := range asof.AskStateTypes() {
+		kinds[kind] = true
+	}
+	return kinds
+}()
 
 // postBodyEventKinds is the kind of post each event kind's payload is about: the kind whose
 // table the payload's `id` names, and whose own body the payload carries under `body`. They are
@@ -669,9 +747,7 @@ func (s *server) attachAskEventFields(ctx context.Context, who model.Actor, even
 	asks := []model.Ask{}
 	payloads := []decodedAskEventPayload{}
 	for index := range events {
-		switch events[index].Type {
-		case "ask.opened", "ask.anchor_refreshed", "ask.answered", "ask.resolved", "ask.edited", "ask.handed_back", "ask.asked_of":
-		default:
+		if !askEventKinds[events[index].Type] {
 			continue
 		}
 		raw, ok := events[index].Payload.(json.RawMessage)
@@ -707,7 +783,10 @@ func (s *server) attachAskEventFields(ctx context.Context, who model.Actor, even
 	}
 	for index := range payloads {
 		payloads[index].payload["opened_event_id"] = *asks[index].OpenedEventID
-		payloads[index].payload[model.ReferencedByCountKey] = *asks[index].ReferencedByCount
+		// A read at a cut reads no count (queueAskDetails): the payload then carries none.
+		if count := asks[index].ReferencedByCount; count != nil {
+			payloads[index].payload[model.ReferencedByCountKey] = *count
+		}
 		attachAskEventPartIDs(payloads[index].payload, asks[index])
 	}
 	if err := s.attachAskDocumentArtifacts(ctx, payloads); err != nil {
@@ -932,4 +1011,33 @@ func parseEventIDs(raw string) ([]int64, error) {
 		ids[index] = id
 	}
 	return ids, nil
+}
+
+// parseEventExcludeTypes reads an event list's exclude_types: at most 50 comma-separated event
+// types, each one Dispatch writes (contracts.DispatchEventTypes), which the page leaves out. A
+// blank value leaves out none; an empty item or a type Dispatch does not write is refused 400
+// INVALID_QUERY. The types come back sorted with no repeat, so every spelling of one set is read,
+// and hashed into the feed's ETag, as the same list.
+func parseEventExcludeTypes(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > 50 {
+		return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must include at most 50 values")
+	}
+	kinds := make([]string, len(parts))
+	for index, part := range parts {
+		kind := strings.TrimSpace(part)
+		if kind == "" {
+			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must not hold an empty value")
+		}
+		// contracts.DispatchEventTypes is sorted, which a binary search needs.
+		if _, known := slices.BinarySearch(contracts.DispatchEventTypes, kind); !known {
+			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must be event types Dispatch writes: %q is not one", kind)
+		}
+		kinds[index] = kind
+	}
+	slices.Sort(kinds)
+	return slices.Compact(kinds), nil
 }

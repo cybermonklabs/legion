@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  A document of many footnotes parses in time in proportion to its size. The parser looked up each
+  footnote reference by a walk over every footnote definition of the document, so 1 MiB of
+  references and definitions took about 6 s to parse, and now takes about 0.3 s.
+time: 2026-11-17T13:30:06Z
+custom:
+    Issue: pr4179

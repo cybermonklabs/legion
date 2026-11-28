@@ -49,7 +49,7 @@ const (
 	rigHuman = "alice"
 	// rigUserHeader is the header the test identity reads that login from, and rigAgentToken the
 	// shared bearer a session's own write carries (DISPATCH_AGENT_TOKEN).
-	rigUserHeader = "X-Dispatch-User"
+	rigUserHeader = identity.UserHeader
 	rigAgentToken = "agent-token"
 	// rigDeliveryMode is the targeted delivery mode every mention and broadcast here asks for,
 	// and one every session in this file advertises: resolution, not capability, is under test.
@@ -245,7 +245,7 @@ func queueingDispatchMux(
 	}
 	people := dispatchstore.NewPgPeopleStore(database.Pool, auth.SingleSigningKey("signing-key"), nil)
 	broker := events.NewBroker()
-	caller := identity.HeaderIdentity{Header: rigUserHeader, People: people}
+	caller := identity.HeaderIdentity{People: people}
 	// The test shuts the document service NewDeps requires down: an issue's spec schedules a
 	// settlement, and a service nobody ended would still be warming that document after the
 	// database pool had closed.
@@ -649,9 +649,10 @@ func TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer(t *testing.T) {
 	if attempt.State != "failed" || attempt.Error == nil {
 		t.Fatalf("the mention's attempt = %#v, want it failed with a recorded cause", attempt)
 	}
-	// "no live session <id>" and anything starting with it alike: that prefix is the contract
-	// comment_delivery.go classifies a gone session on, and the dashboard prints verbatim.
-	if strings.HasPrefix(*attempt.Error, "no live session ") {
+	// "no live session <id>" (contracts.NoLiveSession, then the id) and anything starting with it
+	// alike: that prefix is the contract comment_delivery.go classifies a gone session on, and the
+	// dashboard prints verbatim.
+	if strings.HasPrefix(*attempt.Error, contracts.NoLiveSession+" ") {
 		t.Fatalf("the mention recorded %q, which Dispatch and the dashboard read as a session that has ended",
 			*attempt.Error)
 	}

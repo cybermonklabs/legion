@@ -278,8 +278,10 @@ async function seedInbox(): Promise<SeededInbox> {
     {
       approve_url: "https://secrets.internal.example/approve/record-inbox-cli",
       approver: "alice",
+      dispatch_scopes: null,
       identifiers: ["ROLLOUT_API_KEY"],
       kind: "agent_secret",
+      reason: "",
       record_id: "record-inbox-cli",
       requested_at: new Date().toISOString(),
       session: { enrollment: worker.session_id, request: worker.session_id },
@@ -288,8 +290,10 @@ async function seedInbox(): Promise<SeededInbox> {
       {
         approve_url: "https://secrets.internal.example/approve/record-inbox-cli-expired",
         approver: "alice",
+        dispatch_scopes: null,
         identifiers: ["RETIRED_API_KEY"],
         kind: "agent_secret",
+        reason: "",
         record_id: "record-inbox-cli-expired",
         requested_at: new Date(Date.now() - 2 * 3_600_000).toISOString(),
         session: { enrollment: worker.session_id, request: worker.session_id },

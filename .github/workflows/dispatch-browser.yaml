@@ -105,13 +105,13 @@ jobs:
       image: ghcr.io/cybermonklabs/legion/ci@sha256:398fb2e8a6c44a549a3b0a9c9bf562948c83a16917b2d3ce09190b2f663c3df3
       options: --user 1001 --ipc=host --init
     # why: .github/ci-notes/dispatch-browser.md#the-shard-jobs-shell-rule-its-measured-steps-and-its-budget
-    # 1,080 + 120 + 120 + 565 = 1,885 s, 31 min 25 s, rounded up to the 32 minutes below.
-    timeout-minutes: 32
+    # 1,080 + 120 + 120 + 530 + 180 + 120 = 2,150 s, 35 min 50 s, rounded up to the 36 minutes below.
+    timeout-minutes: 36
     strategy:
       fail-fast: false
-      # why: .github/ci-notes/dispatch-browser.md#why-the-leg-count-stands-in-two-places
+      # why: .github/ci-notes/dispatch-browser.md#where-the-leg-count-is-written-and-how-it-was-chosen
       matrix:
-        shard: [1, 2, 3, 4]
+        shard: [1, 2, 3, 4, 5, 6]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -168,26 +168,37 @@ jobs:
             -master.raftHashicorp -master.raftBootstrap \
             > "$RUNNER_TEMP/weed.log" 2>&1 &
       - name: Wait for the S3-compatible server
+        id: file-store
         # why: .github/ci-notes/dispatch-browser.md#why-the-stores-readiness-wait-writes-reads-and-deletes-an-object
+        # 3 minutes hold the port wait's 120 s and the 24 s the step takes once the store answers.
+        timeout-minutes: 3
         run: .github/scripts/dispatch-browser-wait-for-store.sh
-      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of 4)
+      - name: Browser-test dispatch dashboard (shard ${{ matrix.shard }} of ${{ strategy.job-total }})
         # why: .github/ci-notes/dispatch-browser.md#why-the-shard-job-calls-playwright-directly-and-what-its-browser-steps-budget-is
-        # A hang guard, not a verdict: 534 s x 1.75 x 1.11 = 1,037 s -> 18 min. 534 s is the p90
-        # of 347 legs of 2026-11-21/22 each rescaled to the balanced leg the time split gives
-        # (1,698 s of row time; step = 24.0 s + 0.2549 x row time over 68 legs of main); 1.75 is
-        # the slowest runner seen (run 44985914477 ran its rows 1.75 times slower, per-row median,
-        # than a runner of the same minute); 1.11 is the worst share of the mean the heaviest leg
-        # took under a row-time table up to 7 days old. A p90 leg on that runner under such a table
-        # ends under it, so no row's verdict rests on it; it cuts a leg that has stopped running rows.
+        # A hang guard, read from a p90 and not a bound on a healthy leg: 529 s x 1.75 x 1.115 =
+        # 1,032 s -> 18 min. 529 s is the p90 of the 72 six-leg legs of 12 dispatched full-lane runs
+        # of 2026-11-27 at this placement, 502 s, grown with the lane's row time by 1.055 to the
+        # size of main's newest full-lane runs of 2026-11-28; 1.75 is the slowest runner seen (run
+        # 44985914477 ran its rows 1.75 times slower, per-row median, than a runner of the same
+        # minute); 1.115 is the worst share of the mean the heaviest of six legs took under a
+        # row-time table up to 7 days old. A cut is not by itself a hang: the leg's log says whether
+        # rows had stopped.
         timeout-minutes: 18
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/dispatch-browser-shard-suite.sh" "${{ matrix.shard }}" "${{ inputs.lane }}" \
-            "${{ needs.binaries.outputs.connections }}"
+            "${{ needs.binaries.outputs.connections }}" "${{ strategy.job-total }}"
         working-directory: packages/dispatch
         # why: .github/ci-notes/dispatch-browser.md#why-the-file-stores-address-is-set-on-the-step-and-not-in-the-environment
         env:
           DISPATCH_E2E_FILE_STORE_ENDPOINT: http://127.0.0.1:18333
           DISPATCH_E2E_FILE_STORE_BUCKET: dispatch-e2e-files
+      # why: .github/ci-notes/dispatch-browser.md#why-the-file-store-is-checked-again-after-the-browser-step
+      - name: Check that no write grew the file store
+        if: always() && steps.file-store.outcome == 'success'
+        # 2 minutes, past the check's own bounds (10 s for the master, 60 s for a weed shell), so a
+        # store that stops answering fails it by the request that hung, not by this step's end.
+        timeout-minutes: 2
+        run: packages/envoy/internal/tests3/one-collection.sh check dispatch-e2e-objects "$RUNNER_TEMP/weed.log"
       # why: .github/ci-notes/dispatch-browser.md#why-the-shard-jobs-blob-upload-is-always-and-takes-one-directory
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         if: always()

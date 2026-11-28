@@ -392,7 +392,9 @@ export function ThreadCard({
   const rootSuggestion = root.suggestion;
   const terminalSuggestion = rootSuggestion !== null && rootSuggestion.accepted !== null;
   // The server refuses accept and reject on an orphaned anchor (409 ANCHOR_ORPHANED), so the
-  // card offers neither; the thread is closed with Resolve like a comment.
+  // card offers neither; the thread is closed with Resolve like a comment. It refuses accept on a
+  // suggestion tied to no text ("accept requires an anchored suggestion"), and takes its reject,
+  // so the card offers Reject alone there.
   const actionableSuggestion =
     !isClosed &&
     rootSuggestion !== null &&
@@ -583,14 +585,16 @@ export function ThreadCard({
             <Pill>Suggestion</Pill>
             {actionableSuggestion ? (
               <span className="flex items-center gap-2">
-                <button
-                  aria-label="Accept suggestion"
-                  className={`${suggestionActionButton} ${calloutSuccessBorder} ${successText} ${successHoverText}`}
-                  onClick={() => onAction(root.id, "accept")}
-                  type="button"
-                >
-                  Accept
-                </button>
+                {root.anchor === null ? null : (
+                  <button
+                    aria-label="Accept suggestion"
+                    className={`${suggestionActionButton} ${calloutSuccessBorder} ${successText} ${successHoverText}`}
+                    onClick={() => onAction(root.id, "accept")}
+                    type="button"
+                  >
+                    Accept
+                  </button>
+                )}
                 <button
                   aria-label="Reject suggestion"
                   className={`${suggestionActionButton} ${calloutDangerBorder} ${dangerText} ${dangerHoverText}`}

@@ -31,14 +31,14 @@ const sessionSuccessorsPattern = "/v1/sessions/{session}/successors"
 // it made stay on the successor's subject.
 //
 // The answer names that principal (Principal) only to Dispatch's own verified identity
-// (ENVOY_DISPATCH_PRINCIPAL, the one caller whose send may carry a role mark, roleMarkRefusal):
-// Dispatch holds a successor's reply on a broker token to it (actsForSuccessorPrincipal), and no
-// other caller needs it. Every other caller - a session's broker token, the shared token, another
-// identity, an open /v1, and every caller of a listener that names no Dispatch principal - is
-// answered the same successors with no principal, so no session reads which person or service
-// another session registered as. A principal-less answer names a principal no broker token acts
-// for, so Dispatch refuses every broker-token successor reply it reads it for, as it refuses one
-// against a listener that predates the route.
+// (ENVOY_DISPATCH_PRINCIPAL, the one caller whose send may carry a role mark,
+// dispatchFieldRefusal): Dispatch holds a successor's reply on a broker token to it
+// (actsForSuccessorPrincipal), and no other caller needs it. Every other caller - a session's
+// broker token, the shared token, another identity, an open /v1, and every caller of a listener
+// that names no Dispatch principal - is answered the same successors with no principal, so no
+// session reads which person or service another session registered as. A principal-less answer
+// names a principal no broker token acts for, so Dispatch refuses every broker-token successor
+// reply it reads it for, as it refuses one against a listener that predates the route.
 //
 // The read runs within sendRequestBudget of the request's own context, as the registry route's
 // does, and one that did not answer is the bus-unavailable 503 with Retry-After: 1
