@@ -200,8 +200,8 @@ func delimitersInText(nodes []*Node) (held, lastHeld delimiterEscapes) {
 		if node.Type != "text" {
 			continue
 		}
-		marked := nodeHasMark(node, "strong") || nodeHasMark(node, "emphasis")
-		if nodeHasMark(node, "inlineCode") {
+		marked := HasMark(node, "strong") || HasMark(node, "emphasis")
+		if HasMark(node, "inlineCode") {
 			if marked {
 				codeStars++
 			}
@@ -752,7 +752,7 @@ func linkLabel(nodes []*Node, index int, link Mark) string {
 		if len(marks) == 0 || marks[0].Type != "link" || !attrsEqual(marks[0].Attrs, link.Attrs) {
 			break
 		}
-		if nodeHasMark(node, "inlineCode") {
+		if HasMark(node, "inlineCode") {
 			continue
 		}
 		scan := newForwardScan(node.Text)

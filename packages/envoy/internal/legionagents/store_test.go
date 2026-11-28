@@ -16,8 +16,11 @@ import (
 	"github.com/nats-io/nats.go/jetstream"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/legionagents"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
@@ -837,8 +840,14 @@ func TestGetAnswersTheSessionKeyWithItsReplacementAfterAnEndedWrite(t *testing.T
 // no end-of-existing-keys marker, as a bucket whose consumer has stopped answering (the store
 // package's earlyEndKV stalls a scan the same way). Only the read's own bounds end a listing
 // through it. Its stop closes what it handed out, so the drain the scan leaves behind ends with
-// it.
-type stalledWatchKV struct{ jetstream.KeyValue }
+// it. It sends on watching once the bucket's own watch is subscribed, as it hands the scan the
+// stalled one, so a test knows the read has come past the consumer's create: from there the scan
+// waits only on the stalled watch, its idle bound and the read's context.
+type stalledWatchKV struct {
+	jetstream.KeyValue
+
+	watching chan<- struct{}
+}
 
 func (k stalledWatchKV) Watch(ctx context.Context, keys string, opts ...jetstream.WatchOpt) (jetstream.KeyWatcher, error) {
 	watcher, err := k.KeyValue.Watch(ctx, keys, opts...)
@@ -849,6 +858,7 @@ func (k stalledWatchKV) Watch(ctx context.Context, keys string, opts ...jetstrea
 		for range watcher.Updates() {
 		}
 	}()
+	k.watching <- struct{}{}
 	return &stalledWatcher{KeyWatcher: watcher, updates: make(chan jetstream.KeyValueEntry)}, nil
 }
 
@@ -866,15 +876,17 @@ func (w *stalledWatcher) Stop() error {
 	return w.KeyWatcher.Stop()
 }
 
-// stallMargin is what a read of a stalled bucket may take beyond its own bound before the test
-// calls it unbounded: the scheduling of one goroutine, not another wait.
-const stallMargin = 500 * time.Millisecond
-
-// A listing of a bucket that stops delivering fails within the caller's context, not at some
-// longer bound of the scan's own: the route that reads under legionagents.ReadTimeout answers its
-// 503 inside the listener's HTTP write timeout rather than dropping the connection
+// A listing of a bucket that stops delivering fails at the caller's context, not at some longer
+// bound of the scan's own: the route that reads under legionagents.ReadTimeout answers its 503
+// inside the listener's HTTP write timeout rather than dropping the connection
 // (dispatch://INFRA-448). Get fails there too, since its session key is answered and only its role
-// token's listing stalls.
+// token's listing stalls. Each read's caller context is production's, legionagents.ReadTimeout, on
+// a clocktest.Fake. The read runs on a goroutine of its own; the row waits until it has started its
+// watch of the stalled bucket (stalledWatchKV), moves the fake to the context's deadline, waits for
+// the read to return, and requires its error to be that context's end (context.DeadlineExceeded)
+// and not the scan's idle bound's (kvwatch.ErrScanTimedOut). The idle bound is a real ReadTimeout
+// on the wall clock, which the fake does not move, so a read that ignored its caller's context
+// would return there, 2 s on, with the scan's error, and fail the row.
 func TestAStalledListingFailsWithinTheReadTimeout(t *testing.T) {
 	uri := testnats.URL(t)
 	r := openRegistryAt(t, uri)
@@ -882,22 +894,40 @@ func TestAStalledListingFailsWithinTheReadTimeout(t *testing.T) {
 		t.Fatalf("put: %v", err)
 	}
 	stalled := openRegistryAt(t, uri)
-	stalled.store.WrapWatch(func(kv jetstream.KeyValue) jetstream.KeyValue { return stalledWatchKV{KeyValue: kv} })
+	// Each subtest's read starts one watch, whose send the subtest takes before the next subtest's
+	// read begins, so one slot lets the read go on without waiting for the test to take it.
+	watching := make(chan struct{}, 1)
+	stalled.store.WrapWatch(func(kv jetstream.KeyValue) jetstream.KeyValue {
+		return stalledWatchKV{KeyValue: kv, watching: watching}
+	})
 	for name, read := range map[string]func(context.Context) error{
 		"Get":     func(c context.Context) error { _, err := stalled.store.Get(c, "ses-stalled"); return err },
 		"ByIssue": func(c context.Context) error { _, err := stalled.store.ByIssue(c, "INFRA-448"); return err },
 	} {
 		t.Run(name, func(t *testing.T) {
-			c, cancel := context.WithTimeout(context.Background(), legionagents.ReadTimeout)
+			fake := clocktest.New(time.Now())
+			c, cancel := fake.WithTimeout(context.Background(), legionagents.ReadTimeout)
 			defer cancel()
-			start := time.Now()
-			err := read(c)
-			elapsed := time.Since(start)
-			if err == nil {
-				t.Fatalf("%s on a stalled watch answered no error, after %s", name, elapsed)
-			}
-			if bound := legionagents.ReadTimeout + stallMargin; elapsed > bound {
-				t.Fatalf("%s on a stalled watch failed after %s (%v), want its failure within %s", name, elapsed, err, bound)
+			returned := make(chan error, 1)
+			go func() { returned <- read(c) }()
+			testwait.Until(t, name+" to start its watch of the stalled bucket", func() (bool, bool) {
+				select {
+				case <-watching:
+					return true, true
+				default:
+				}
+				select {
+				case err := <-returned:
+					t.Fatalf("%s returned (%v) before it started its watch of the stalled bucket", name, err)
+				default:
+				}
+				return false, false
+			})
+			fake.Advance(legionagents.ReadTimeout)
+			err := testwait.Receive(t, name+" to return once its caller's context ended", returned)
+			if !errors.Is(err, context.DeadlineExceeded) || errors.Is(err, kvwatch.ErrScanTimedOut) {
+				t.Fatalf("%s on a stalled watch returned %v once its caller's context ended, want that context's end (%v) and not the scan's idle bound (%v)",
+					name, err, context.DeadlineExceeded, kvwatch.ErrScanTimedOut)
 			}
 		})
 	}

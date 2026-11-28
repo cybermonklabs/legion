@@ -508,10 +508,12 @@ and its token keeps the person, the session and the project `EXAMPLE`, carries t
 trade. Such a token writes nothing.
 
 Dispatch serves a read-only token on the GET routes it classes as reads, and answers it
-`403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`. It answers a
-read-only token that carries a cut `403 AS_OF_TOKEN_NOT_SERVED` on every read but
-`GET /api/v1/whoami`. `packages/dispatch/e2e/read-token-live.ts` shows each of these against this
-stack. Leave the stack running. `bun run dispatch:local` runs until Ctrl-C, so it takes a shell of
+`403 READ_ONLY_TOKEN` on every other route of its route table and on `GET /ws/live`. A read-only
+token that carries a cut reads as of its cut on each route that answers `as_of`, and
+`GET /api/v1/whoami` names the cut. Every other read and `GET /ws/live` answer it
+`403 AS_OF_TOKEN_NOT_SERVED`. `packages/dispatch/e2e/read-token-live.ts` shows each of these
+against this stack. Leave the stack running. `bun run dispatch:local` runs until Ctrl-C, so it
+takes a shell of
 its own: open a new one and paste the dev broker's exports into it too, as you pasted them into
 the second shell. A shell without them expands `$AGENT_SECRETS_URL` and
 `$AGENT_SECRETS_ACCOUNT_TOKEN_FILE` to nothing, and Dispatch then starts with no broker. In that new
@@ -543,8 +545,9 @@ ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token]: 200 - (want 200)
 ok   GET /ws/live [machine login's read token]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
 ok   POST /v1/oauth/introspect [machine login's read token with a cut]: the answer machine-login-with-a-cut (want machine-login-with-a-cut)
 ok   GET /api/v1/whoami [machine login's read token with a cut]: 200 cut 2026-11-18T09:30:00.123456Z (want 200 cut 2026-11-18T09:30:00.123456Z)
-ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token with a cut]: 403 AS_OF_TOKEN_NOT_SERVED (want 403 AS_OF_TOKEN_NOT_SERVED)
-ok   GET /ws/live [machine login's read token with a cut]: 403 READ_ONLY_TOKEN (want 403 READ_ONLY_TOKEN)
+ok   GET /api/v1/issues/EXAMPLE-1 [machine login's read token with a cut]: 404 NOT_FOUND (want 404)
+ok   GET /api/v1/issues/EXAMPLE-1/references [machine login's read token with a cut]: 403 AS_OF_TOKEN_NOT_SERVED (want 403 AS_OF_TOKEN_NOT_SERVED)
+ok   GET /ws/live [machine login's read token with a cut]: 403 AS_OF_TOKEN_NOT_SERVED (want 403 AS_OF_TOKEN_NOT_SERVED)
 ```
 
 The script creates the project `EXAMPLE` and an issue in that Dispatch. It trades the read entry's
@@ -554,8 +557,10 @@ account entry's ordinary token, which may write `EXAMPLE`. It logs a machine in,
 this stack, and trades that machine login's token with `scope=read`, then with `scope=read` and
 the cut the golden answers name. It checks each answer of the broker's introspection against
 `packages/envoy/internal/ciphertoken/testdata/narrowed-answers.json`, sends the first token a read
-and a `GET /ws/live`, and sends the cut token its `GET /api/v1/whoami`, a read and a
-`GET /ws/live`. It prints one line for each request, with its status and its code, and exits 1
+and a `GET /ws/live`, and sends the cut token its `GET /api/v1/whoami`, the issue read, a read of
+the issue's references and a `GET /ws/live`. The issue read answers `404`, because the script
+made the issue after the cut. The references hold no past answer. It prints one line for each
+request, with its status and its code, and exits 1
 when any answer is not the one it wants. Project `EXAMPLE` then exists, so a second run needs
 `bun run dispatch:local` started again, which empties the instance.
 

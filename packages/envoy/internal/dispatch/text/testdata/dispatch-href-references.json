@@ -1,15 +1,59 @@
 [
   {
+    "href": "/issues/CORE-1/verification",
+    "ref": "dispatch://CORE-1/verification"
+  },
+  {
+    "href": "/issues/CORE-1/plan",
+    "ref": "dispatch://CORE-1/plan"
+  },
+  {
+    "href": "/issues/CORE-1/steps",
+    "ref": "dispatch://CORE-1/steps"
+  },
+  {
+    "href": "/issues/CORE-1/conversation",
+    "ref": "dispatch://CORE-1/log"
+  },
+  {
+    "href": "/issues/CORE-1/children",
+    "ref": "dispatch://CORE-1/children"
+  },
+  {
+    "href": "/issues/CORE-1/artifacts",
+    "ref": "dispatch://CORE-1/artifacts"
+  },
+  {
+    "href": "/issues/CORE-1/activity",
+    "ref": "dispatch://CORE-1/activity"
+  },
+  {
+    "href": "/issues/CORE-1/collaborators",
+    "ref": "dispatch://CORE-1/collaborators"
+  },
+  {
+    "href": "/issues/CORE-1/artifacts/notes-md",
+    "ref": "dispatch://CORE-1/artifact/notes-md"
+  },
+  {
+    "href": "/issues/CORE-1/artifacts/notes-md?v=2",
+    "ref": "dispatch://CORE-1/artifact/notes-md@v2"
+  },
+  {
+    "href": "/issues/CORE-1/artifact/notes-md",
+    "ref": "dispatch://CORE-1/artifact/notes-md"
+  },
+  {
+    "href": "/issues/CORE-1/artifact/notes-md?v=2",
+    "ref": "dispatch://CORE-1/artifact/notes-md@v2"
+  },
+  {
     "href": "/issues/CORE-1",
     "ref": "dispatch://CORE-1"
   },
   {
     "href": "/issues/CORE-1/spec",
     "ref": "dispatch://CORE-1/spec"
-  },
-  {
-    "href": "/issues/CORE-1/artifacts/notes-md",
-    "ref": "dispatch://CORE-1/artifact/notes-md"
   },
   {
     "href": "/issues/CORE-1/decisions",

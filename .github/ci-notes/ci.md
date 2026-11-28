@@ -78,9 +78,31 @@ copying the unpacked toolchain into the runner's tool cache, which no later job 
 reads (the script's header). Its checkout starts from main's objects, which a push to main leaves
 in the cache (.github/ci-notes/ci-caches.md#the-two-entries-the-changes-job-restores), and fetches
 only what the run's commit adds to them. The generation starts its TypeScript listings
-(`.github/scripts/ci_ts_listing.py#start`) before it loads the read table: tsc's listing of the
-dashboard's program is 9 s of the generation's 16 s, and it then runs beside the load and the go
-commands rather than after the load.
+(`.github/scripts/ci_ts_listing.py#start`) before it loads the read table, and each run's
+`go list -deps` as the table declares the run (`.github/scripts/ci_filter_coverage.py#start_early`),
+both on threads at nice 10 (`.github/scripts/ci_filter_coverage.py#background_priority`), so they
+run beside the load, which is one interpreter thread, rather than after it; the `go env GOROOT` of
+`.github/scripts/ci_filter_coverage.py#toolchain`, once per module directory, runs on the table's
+thread during the load, and the generation's other go commands run when the walk asks them. It
+lists the programs with tsgo, TypeScript's native compiler, pinned in the root package.json
+(`.github/scripts/ci_ts_listing.py#COMPILER`); the lint job's check-ts-filters.sh lists them again
+with tsc, the typecheck's own compiler, and holds every listed block to what tsc lists, so a file
+tsgo resolves differently fails that pull request's lint job by name. A bump of the pinned tsgo
+that changes a listing fails the same way, on the pull request that bumps it. The listing runs
+`bunx --no-install` (`.github/scripts/ci_ts_listing.py#BUNX`), so a checkout whose node_modules
+lacks the pin lists with a tsgo on PATH where there is one, and otherwise fails the listing,
+naming the cause; either way it fetches no package.
+
+On a 4-processor runner the generation spends about 7 s in the table's thread, 14 s of
+processor time in go list and, with tsc, 11 s listing the dashboard's and the proof editor's
+programs. Each piece alone gained nothing (3 runs each, run 45885103288 and earlier, every
+output the same): the go list commands begun during the load slowed the load from 4.3 to 7.3 s
+until their threads were lowered to nice 10, which left the step at 13.8 s against 14.3 s; tsgo
+without the early listings left it at 13.8 to 14.7 s, the listings then waiting for the load as
+before. Together the listing's processor time falls from 11 s to under 4 s, and the go list
+commands take what the load leaves. On main's a36aa52d, whose table loads in about 7.5 s, the
+step took 17.5 to 18.0 s with tsc and no early listings, and 14.3 to 15.5 s with both, five runs
+of each in one window, every output the same (run 46108073231).
 
 Why computed. The filters were one file every job's filter was in, and every pull request that
 added a read, a test file or a package a job compiles edited it, most of them at the same lines:
@@ -395,9 +417,10 @@ reader's table is the same table" and src/dispatch-text-references.test.ts's "th
 reader's text table is the same table" read the Go reader's JSON tables,
 src/dispatch-block-ref.test.ts reads pmdoc's block pointer and typed block id
 tables, scripts/gen-go.test.ts checks every file scripts/gen-go.ts writes - the
-Go contract, the Go copy of the tool specs, pmdoc's generated block schema and contracts'
-own generated TypeScript - is current, and src/dispatch-tools.test.ts reads that Go copy
-of the tool specs for the rule and the bounds each tool states. Not pmdoc/schema, the
+Go contract, the Go copy of the tool specs, pmdoc's generated block schema, the server's copy
+of the dashboard's pages file and contracts' own generated TypeScript - is current, and
+src/dispatch-tools.test.ts reads that Go copy of the tool specs for the rule and the bounds
+each tool states. Not pmdoc/schema, the
 block schema those generated types are the shape of: this job generates that Go from
 packages/contracts/schemas, and reads no file of pmdoc/schema itself.
 
@@ -781,11 +804,11 @@ workspace's module files are not on it.
 
 ## text_checks: The text checks of the three Go modules, the Dispatch
 
-The text checks of the three Go modules, the Dispatch API's ten static source
+The text checks of the three Go modules, the Dispatch API's eleven static source
 checks, and the two pure pins of packages/daemon's supervise table: the tests whose
 subject is a file's words. Their job runs packages/envoy/internal/textcheck,
 packages/envoy/infra/internal/textcheck and packages/daemon/internal/textcheck,
-which the three Go lanes leave out of their own runs, those checks' twenty-two tests
+which the three Go lanes leave out of their own runs, those checks' twenty-three tests
 by name, and those two pins by name, which the daemon-go plain step skips.
 packages/envoy stays a wide
 root: file_copy_test.go walks every .go file under it (infra included), the API's
@@ -1093,11 +1116,11 @@ and whenever that job's own definition does, for the same reason
 
 The API race job. Not packages/envoy/**, as envoy_go_race has: that root was here
 because internal/dispatch/api's lock_level_test.go, event_insert_guard_test.go,
-issue_route_writer_guard_test.go and review_write_guard_test.go walk every non-test
-.go file of the module, and those source guards carry `//go:build !race`, so the race
-build compiles none of them and the text-check job runs their tests instead.
-one_expression_guard_test.go walks the module the same way and is on that side of
-the tag for the same reason,
+issue_route_writer_guard_test.go, review_write_guard_test.go and spec_form_guard_test.go
+walk every non-test .go file of the module, and those source guards carry
+`//go:build !race`, so the race build compiles none of them and the text-check job
+runs their tests instead. one_expression_guard_test.go walks the module the same way
+and is on that side of the tag for the same reason,
 so no module-wide walk is left in this job's build (dispatch://INFRA-1413). What is
 left is the closure of `go test -race ./internal/dispatch/api/` (`go list -deps
 -test -race` in packages/envoy), one pattern per directory, with what those
@@ -2813,13 +2836,16 @@ product. Two kinds, each built from a list in `.github/scripts/ci_job_reads.py`,
 texts and the legs' `-skip` are both built from:
 
 - the unit packages' rows whose bound, measured from the test's own clock, is under twice its
-  slowest reading (`UNIT_ALONE_TESTS`, thirty-eight tests in twelve packages, by the rule of
+  slowest reading (`UNIT_ALONE_TESTS`, thirty-seven tests in eleven packages, by the rule of
   dispatch://INFRA-1075 that #2733 applied over its paired runs), one package and one test at a
   time (`-parallel 1`); the legs skip each by its name, which `hold_unit_alone_tests` holds to one
   package of the module;
 - the rows of the plain run the race build cannot make that measure time
   (`RACE_IMPOSSIBLE_ALONE_*`): every xid window test, the xid rig's own tests, the API's 200 ms
   bound on the issue list and the auth service's restart storm.
+
+It sets up no Bun and pulls no test image
+([below](#why-envoy-go-alone-sets-up-no-bun-and-pulls-no-test-image)).
 
 Measured with these legs on their own ubuntu-24.04-arm runners, each with its job's setup
 (throwaway run 45676312472): the unit legs took 607, 532, 398, 413 and 233 s as jobs, setup 76-90 s
@@ -2881,6 +2907,19 @@ Postgres), install nothing and set no testcontainers variable.
 Standard runners on this public repository bill no money; the cost is runner concurrency and that
 wait.
 
+## Why envoy-go-alone sets up no Bun and pulls no test image
+
+Like envoy-go-race-impossible and envoy-go-skips, envoy-go-alone runs no row that calls `bun` or
+starts a container, so it has no setup-bun step, no `bun install` and no "Pull test container
+images" step. Only internal/dispatch/pmdoc's tests run `bun` (`update_test.go` and
+`render_readback_test.go`), and cmd/dispatch's `twobuild_cli_test.go`, which builds only under the
+`twobuild` tag; neither runs here. The job's go test lines pass no `-tags`, so the NATS rig's
+container half, built only under `natslive`, is not compiled, and the starters of the two rigs an
+untagged build can link, internal/testpg's `URL` and internal/tests3's `Start`, have no caller in
+the rows' packages. At main the three steps took 13 to 15 s of each run: setup-bun 1 to 2 s,
+`bun install` 5 s and the pull 7 to 8 s (jobs 140853846659 and 140850239615, of runs 46104362970
+and 46103162044). A row that comes to need Bun or a test image brings back the step it needs.
+
 ## The envoy-infra module, its own workspace and its live tests
 
 The envoy-infra Pulumi plugin's module (packages/envoy/infra). It is not in the root go.work:
@@ -2921,10 +2960,10 @@ job's notices step.
 ## The checks whose subject is text: each module's internal/textcheck package, the Dispatch
 
 The checks whose subject is text: each module's internal/textcheck package, the Dispatch API's
-ten static source checks, which read the module's own source, and the two pure pins of
+eleven static source checks, which read the module's own source, and the two pure pins of
 packages/daemon's supervise table. None of them opens a database or starts a container, so the
 job carries no service and no `bun install`, and the three Go lanes (daemon-go, envoy-go and envoy-infra-build) leave those
-packages, those twenty-two tests and those two pins out of their own runs
+packages, those twenty-three tests and those two pins out of their own runs
 (.github/scripts/ci_job_reads.py builds both sides). Its filter names the trees those tests
 walk, so it is selected often, which is why the job is kept this cheap: five `go test` calls —
 the four that preceded the supervise pins take 4 minutes 4 seconds with an empty build cache,
