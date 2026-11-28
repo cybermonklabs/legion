@@ -330,8 +330,9 @@ const identityProbeBody = `{"message":"identity probe","role":"-identity-probe"}
 
 // startCopysListener starts the listener binary as the copy's manifests/listener.yaml configures
 // it, against the issuer at issuer and a NATS of its own, with ENVOY_OIDC_ACCOUNTS accounts and
-// Dispatch's principal testDispatchSubject; it answers the process and its port.
-func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest.Process, int) {
+// Dispatch's principal testDispatchSubject, under the name what for its waits and failures; it
+// answers the process and its port.
+func startCopysListener(t *testing.T, what, binary, issuer, accounts string) (*cmdtest.Process, int) {
 	t.Helper()
 	_, natsURL := testnats.Start(t)
 	held := cmdtest.HoldPort(t)
@@ -348,7 +349,7 @@ func startCopysListener(t *testing.T, binary, issuer, accounts string) (*cmdtest
 		"ENVOY_DISPATCH_PRINCIPAL=" + testDispatchSubject,
 	}
 	held.Pass(cmd, "ENVOY_LISTEN_FD")
-	return cmdtest.Start(t, "the copy's listener", cmd), held.Port
+	return cmdtest.Start(t, what, cmd), held.Port
 }
 
 // healthRead is one read of a listener's /healthz: the status it answered and the body it decoded,
@@ -388,31 +389,6 @@ func healthyAt(t *testing.T, what string, p *cmdtest.Process, base string) map[s
 	return read.Health
 }
 
-// awaitLogged waits until the output of p, which what names, holds every one of lines, each
-// anywhere in it. A process that exited without them fails the row at once: its output is whole
-// once Exited is closed, so the read after it is final.
-func awaitLogged(t *testing.T, what string, p *cmdtest.Process, lines ...string) {
-	t.Helper()
-	testwait.Until(t, fmt.Sprintf("%s to log %q", what, lines), func() (string, bool) {
-		exited := false
-		select {
-		case <-p.Exited:
-			exited = true
-		default:
-		}
-		output := p.Output.String()
-		for _, line := range lines {
-			if !strings.Contains(output, line) {
-				if exited {
-					t.Fatalf("%s exited before it logged %q:\n%s", what, line, output)
-				}
-				return output, false
-			}
-		}
-		return output, true
-	})
-}
-
 // TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRest: the listener
 // binary, configured as the copy's, starts against the issuer oidc-issuer.yaml serves and takes
 // the three tokens one oidc-mint run wrote, all under the one served key, by its own list: the
@@ -432,16 +408,15 @@ func awaitLogged(t *testing.T, what string, p *cmdtest.Process, lines ...string)
 func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRest(t *testing.T) {
 	binary := cmdtest.BuildCommand(t, cmdtest.Command{Name: "envoy-listener", Target: "../cmd/listener"})
 	issuer, run := startCopyIssuer(t, testDispatchSubject, testRunnerSubject, testStrangerSubject)
-	listener, port := startCopysListener(t, binary, issuer, testDispatchSubject+","+testRunnerSubject)
+	listener, port := startCopysListener(t, "the copy's listener", binary, issuer, testDispatchSubject+","+testRunnerSubject)
 	// The control: an issuer the listener cannot reach, as the cluster's own is from the fenced
 	// namespace (there a connection that never answers, here one refused). The listener starts and
 	// serves, but answers Dispatch's token for that issuer 503, not the 400 that says it took the
 	// mark: the copy's fault before the fix, a token whose issuer the listener cannot read. The
 	// port is one the test holds and nothing listens on: a closed listener's port is any process's
 	// to take, and an issuer that takes it is reached.
-	unreachable := "http://" + testport.Refused(t)
-	strandedIssuer := unreachable
-	stranded, strandedPort := startCopysListener(t, binary, strandedIssuer, testDispatchSubject)
+	strandedIssuer := "http://" + testport.Refused(t)
+	stranded, strandedPort := startCopysListener(t, "the listener given an unreachable issuer", binary, strandedIssuer, testDispatchSubject)
 	base := "http://127.0.0.1:" + strconv.Itoa(port)
 	healthyAt(t, "the copy's listener", listener, base)
 
@@ -470,7 +445,7 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	if status, body := send(run.tokens[testStrangerSubject]); status != http.StatusUnauthorized {
 		t.Errorf("a minted token whose subject the listener does not list was answered %d %s, not 401", status, body)
 	}
-	awaitLogged(t, "the copy's listener", listener, "not_listed", testStrangerSubject)
+	listener.WaitForOutput(t, "not_listed", testStrangerSubject)
 	elsewhere := mintWithKey(t, run.private, issuer+"/elsewhere", testDispatchSubject)
 	if elsewhere.key.KeyID != run.key.KeyID {
 		t.Fatalf("the token of another issuer names key %s, not the served %s", elsewhere.key.KeyID, run.key.KeyID)
@@ -478,7 +453,7 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	if status, body := send(elsewhere.tokens[testDispatchSubject]); status != http.StatusUnauthorized {
 		t.Errorf("Dispatch's token signed by the served key with iss %s/elsewhere was answered %d %s, not 401", issuer, status, body)
 	}
-	awaitLogged(t, "the copy's listener", listener, `"reason":"issuer"`)
+	listener.WaitForOutput(t, `"reason":"issuer"`)
 
 	// The control's listener, started beside the first.
 	strandedBase := "http://127.0.0.1:" + strconv.Itoa(strandedPort)
@@ -501,7 +476,7 @@ func TestTheCopysListenerTakesTheSubjectsItListsUnderTheMintedKeyAndRefusesTheRe
 	if response.StatusCode != http.StatusServiceUnavailable || response.Header.Get("Retry-After") != "1" {
 		t.Errorf("Dispatch's token for the issuer the listener cannot reach was answered %d %s (Retry-After %q), not 503 with Retry-After 1", response.StatusCode, body, response.Header.Get("Retry-After"))
 	}
-	awaitLogged(t, "the listener given an unreachable issuer", stranded, "oidc: discover the issuer; retrying in the background", strandedIssuer)
+	stranded.WaitForOutput(t, "oidc: discover the issuer; retrying in the background", strandedIssuer)
 }
 
 // TestOIDCMintWritesOneTokenPerSubjectUnderTheKeyItPrints: one run prints the key's public half
