@@ -1017,6 +1017,17 @@ func (r *Rig) DropServiceLogin(account string) {
 	delete(r.serviceLogins, account)
 }
 
+// FailPodKeys makes the key set of this Rig's pod issuer, the issuer every token it mints is
+// signed under, answer status in place of the set, as oidctest.Issuer.FailKeys does; a status of 0
+// serves the set again. While it fails, every token the broker checks against that set (a
+// service's token login, a pod's enrolment and its renewal, a listed caller's token, a token
+// exchange's subject) reaches no verdict, and the broker answers 503 ISSUER_UNAVAILABLE with
+// Retry-After. The broker reads a failed set again only once the FailureSpacing of its last failed
+// read has passed (oidc.DefaultKeysFailureSpacing, 5 s), so a set served again answers from then.
+func (r *Rig) FailPodKeys(status int) {
+	r.podIssuer.FailKeys(status)
+}
+
 // SetPodOperator changes account's entry in this Rig's BROKER_POD_OPERATORS, as an operator
 // editing that entry and redeploying the broker does: a person maps account to that person, and
 // "" drops the entry. The broker reads the setting at each decision, so the next call that reads

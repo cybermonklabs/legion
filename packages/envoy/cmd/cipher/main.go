@@ -905,7 +905,14 @@ func tokenUnreadable(enrollmentID string, err error) string {
 
 // renewLoop renews enrollmentID until ctx ends or the broker refuses it for good. podTokenFile
 // is a pod's projected token file, read again before every renewal because the kubelet rotates
-// it in place, and "" is every other session's renewal, which carries no body.
+// it in place, and "" is every other session's renewal, which carries no body. After a failed
+// renewal it waits its backoff (leasetime.NextBackoff), or, where the broker answered 503
+// ISSUER_UNAVAILABLE, the wait that answer asked for where that is longer (apiError.RetryAfter, a
+// minute at most): the broker answers so when it could not check the pod's token because its
+// issuer's key set could not be read, and asks for no renewal before then. Only that answer of the
+// broker's own is read: a broker that does not serve answers no such code, so through a gap in
+// its serving renew keeps the backoff the broker's lease bound walks (leasetime), whatever wait a
+// front door's 503 names.
 func renewLoop(ctx context.Context, c *client, signer Signer, enrollmentID, podTokenFile string, stderr io.Writer, after func(time.Duration) <-chan time.Time) int {
 	backoff := leasetime.RenewBackoffInitial
 	for {
@@ -923,20 +930,26 @@ func renewLoop(ctx context.Context, c *client, signer Signer, enrollmentID, podT
 			if ctx.Err() != nil {
 				return 0
 			}
+			wait := backoff
 			var refused *apiError
-			if errors.As(err, &refused) && refused.Permanent() {
-				fmt.Fprintf(stderr, "agent-secrets renew: enrollment %s permanently refused by %s: %s\n", enrollmentID, brokerSource(c.baseURL), refusalWords(refused))
-				return exitRenewRefused
+			if errors.As(err, &refused) {
+				if refused.Permanent() {
+					fmt.Fprintf(stderr, "agent-secrets renew: enrollment %s permanently refused by %s: %s\n", enrollmentID, brokerSource(c.baseURL), refusalWords(refused))
+					return exitRenewRefused
+				}
+				if refused.Code == issuerUnavailable {
+					wait = max(wait, refused.RetryAfter)
+				}
 			}
 			if tokenErr != nil {
-				fmt.Fprintf(stderr, "agent-secrets renew: %s; retrying in %s\n", tokenUnreadable(enrollmentID, tokenErr), backoff)
+				fmt.Fprintf(stderr, "agent-secrets renew: %s; retrying in %s\n", tokenUnreadable(enrollmentID, tokenErr), wait)
 			} else {
-				fmt.Fprintf(stderr, "agent-secrets renew: %v; retrying in %s\n", err, backoff)
+				fmt.Fprintf(stderr, "agent-secrets renew: %v; retrying in %s\n", err, wait)
 			}
 			select {
 			case <-ctx.Done():
 				return 0
-			case <-after(backoff):
+			case <-after(wait):
 			}
 			backoff = leasetime.NextBackoff(backoff)
 			continue

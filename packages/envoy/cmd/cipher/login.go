@@ -56,6 +56,14 @@ func cmdLogin(args []string, stdout, stderr io.Writer) int {
 	return 0
 }
 
+// signInTradeTimeout bounds the trade of the person's identity inside the sign-in. The token
+// client waits out a broker's 503 for as long as its context's deadline leaves room
+// (cipherclient's Token), and the broker answers one while it cannot read the key set of the
+// person's or the machine's issuer; inside signInTimeout alone the trade would wait for what is
+// left of it, so this gives the trade two minutes of its own and the person at the terminal
+// learns of such an outage within them.
+const signInTradeTimeout = 2 * time.Minute
+
 // login runs the whole ceremony and keeps what it leaves.
 func login(ctx context.Context, stdout, stderr io.Writer) error {
 	base := brokerBaseURL()
@@ -113,7 +121,9 @@ func login(ctx context.Context, stdout, stderr io.Writer) error {
 	if err != nil {
 		return err
 	}
-	token, err := client.Token(ctx)
+	tradeCtx, cancelTrade := context.WithTimeout(ctx, signInTradeTimeout)
+	token, err := client.Token(tradeCtx)
+	cancelTrade()
 	if err != nil {
 		return err
 	}

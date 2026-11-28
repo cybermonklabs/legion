@@ -10,10 +10,11 @@
 // broker's mint (internal/cipher/secrets, serverWait), the model loop's one retry (agentloop,
 // retryable), the broker helper's refresh and its machine login's device code poll
 // (internal/cipher/helper, retryAfter, which names its readers there), the NATS writer hold's
-// client (internal/holdrecord, RouteError.RetryAfter), and the broker's token exchange client
-// (internal/cipherclient, UnavailableError.RetryAfter), which the legion binary links too. Each
-// keeps its own fallback for an answer that names no wait. It imports the standard library alone,
-// so no binary that links it links a module more.
+// client (internal/holdrecord, RouteError.RetryAfter), the broker's token exchange client
+// (internal/cipherclient, UnavailableError.RetryAfter), which the legion binary links too, and
+// agent-secrets' own calls to the broker (cmd/cipher, apiError.RetryAfter). Each keeps its own
+// fallback for an answer that names no wait. It imports the standard library alone, so no binary
+// that links it links a module more.
 package serverwait
 
 import (
