@@ -371,12 +371,12 @@ function ChildrenProgress({ childIssues }: { childIssues: readonly IssueChild[] 
  * its first line only, so a chip that no longer fits goes onto a line the box clips away rather
  * than past its edge, and each frame draws a chip whole or not at all.
  *
- * On each width change in a reading's frame, compare the drawn chips' measured extent with the
- * box's current width. Read the chip positions again only if that width is too small. Remove
- * chips that no longer fit before paint and include them in the count. The check never adds a
- * chip, so the line settles without a reading loop. Each layout read is timed with
- * `issue-header-labels` (`measured`), which the row of `c-header-labels` sums over a load
- * (`e2e/issue-page-n-header.e2e.ts`).
+ * Each reading is one `issue-header-labels` measure (`measured`). The row of `c-header-labels`
+ * sums these over a load (`e2e/issue-page-n-header.e2e.ts`).
+ * In a reading's frame, each width change uses the box's current width from the observer entry.
+ * The check uses the chip extents and count width from that reading, without reading layout.
+ * It removes chips that no longer fit and counts them. If the fit drew no count, it restores the
+ * count at its measured width. It never adds a chip, so the line settles without a reading loop.
  */
 function HeaderLabels({
   labels,
@@ -412,28 +412,38 @@ function HeaderLabels({
     let fitting = 0;
     let frameFit: KeyedLabelsFit | null = null;
     let frameEnds: readonly number[] = [];
+    let countWidest: number | undefined;
+    let countRoom = 0;
     const drawFit = (next: KeyedLabelsFit) => {
       frameFit = next;
       flushSync(() => setFit(next));
     };
-    const observer = new ResizeObserver(() => {
+    const observer = new ResizeObserver((entries) => {
       const reading = owed.current;
       if (reading === null) {
-        const now = element.getBoundingClientRect().width;
-        if (now === width) return;
-        width = now;
         if (frameFit === null) {
+          const now = element.getBoundingClientRect().width;
+          if (now === width) return;
+          width = now;
           // Outside a reading's frame, lay the chips out in their own commit for a new reading.
           setFit(null);
-        } else if (frameFit.shown > 0) {
-          // Use the extent of the chips still drawn, not the box width the reading found.
-          const need = frameEnds[frameFit.shown - 1];
-          if (now + FIT_SLACK >= need) return;
-          // Remove chips that no longer fit and update the count before paint. Never add a chip,
-          // so the line settles without a new reading.
-          const shown = measured(() => drawnChipsThatFit(element));
-          if (shown < frameFit.shown) drawFit({ ...frameFit, shown });
+          return;
         }
+        // In the reading's frame, use the reported width and measured chip extents, not layout.
+        const entry = entries.find((entry) => entry.target === element);
+        if (entry === undefined) return;
+        const now = entry.borderBoxSize[0]?.inlineSize ?? entry.contentRect.width;
+        if (now === width) return;
+        width = now;
+        const fitsNow = within(frameEnds, now);
+        if (fitsNow >= frameFit.shown) return;
+        // Reserve room for the measured count if it returns. Remove chips, but never add them.
+        const restoresCount = frameFit.countWidth === undefined;
+        const room = restoresCount ? now - countRoom : now;
+        const shown = Math.min(frameFit.shown, restoresCount ? within(frameEnds, room) : fitsNow);
+        // The next notification of the width with the count beside the box needs no reading.
+        if (restoresCount) width = room;
+        drawFit({ ...frameFit, shown, countWidth: frameFit.countWidth ?? countWidest });
         return;
       }
       owed.current = null;
@@ -441,11 +451,14 @@ function HeaderLabels({
       const read = measured(() => fitOf(element, count.current));
       width = read.width;
       frameEnds = read.ends;
+      countWidest = read.countWidest;
+      countRoom = read.countRoom;
       cancelAnimationFrame(fitting);
       fitting = requestAnimationFrame(() => {
-        fitting = 0;
         frameFit = null;
         frameEnds = [];
+        countWidest = undefined;
+        countRoom = 0;
       });
       // Drawn before this frame is painted, so no frame draws the chips as they were read.
       drawFit({ ...read.fit, key: reading });
@@ -551,15 +564,10 @@ function missesFirstLine(chip: DOMRect, outer: DOMRect): boolean {
   return chip.top > outer.top + 0.5 || chip.right > outer.right + FIT_SLACK;
 }
 
-/** How many of the drawn chips the box still holds, up to the first one that no longer fits. */
-function drawnChipsThatFit(box: HTMLElement): number {
-  const outer = box.getBoundingClientRect();
-  let shown = 0;
-  for (const chip of box.querySelectorAll("[data-header-label]")) {
-    if (missesFirstLine(chip.getBoundingClientRect(), outer)) break;
-    shown += 1;
-  }
-  return shown;
+/** How many chips, from the first, end within `room`. */
+function within(ends: readonly number[], room: number): number {
+  const over = ends.findIndex((end) => end > room + FIT_SLACK);
+  return over === -1 ? ends.length : over;
 }
 
 /** `read`, wrapped whole in an `issue-header-labels` measure, so any layout it forces is inside
@@ -578,9 +586,10 @@ function measured<T>(read: () => T): T {
 /**
  * Reads the labels' box as a reading lays it out - every chip, and the count at its widest - in
  * one run of reads with no write among them: the box's own box, each chip's, the count's and the
- * chips' gap, and the line's where the box goes on to the count's line. Taken after the browser's
- * own layout, it forces none. Returns the fit, the box's width, and where each chip would end
- * if they were all on one line.
+ * chips' gap, and the spare room on the line if the box moves to the count's line. It also reads
+ * the line's gap where the count stands beside the box. It runs after the browser's own layout,
+ * so it forces none. It returns the fit, the box's width, where each chip would end on one line,
+ * and the widest count's width and the room it takes beside the box.
  *
  * The chips the box's first line holds whole beside the count, by the browser's own wrap, are the
  * ones the line draws. Drawn with no count, the box would take the count's room and the gap
@@ -595,7 +604,13 @@ function measured<T>(read: () => T): T {
 function fitOf(
   box: HTMLElement,
   count: HTMLElement | null
-): { readonly fit: LabelsFit; readonly width: number; readonly ends: readonly number[] } {
+): {
+  readonly fit: LabelsFit;
+  readonly width: number;
+  readonly ends: readonly number[];
+  readonly countWidest?: number;
+  readonly countRoom: number;
+} {
   const outer = box.getBoundingClientRect();
   const chips = Array.from(box.querySelectorAll<HTMLElement>("[data-header-label]"), (chip) =>
     chip.getBoundingClientRect()
@@ -618,20 +633,17 @@ function fitOf(
     }
     ends.push(from + chip.right - start);
   }
-  /** How many chips, from the first, end within `room`. */
-  const within = (room: number): number => {
-    const over = ends.findIndex((end) => end > room + FIT_SLACK);
-    return over === -1 ? ends.length : over;
-  };
-  if (counter === undefined) return { fit: { shown: chips.length }, width, ends };
+  if (counter === undefined) return { fit: { shown: chips.length }, width, ends, countRoom: 0 };
   const beside = counter.top < outer.bottom;
-  if (within(beside ? counter.right - outer.left : width) === ends.length) {
-    return { fit: { shown: chips.length }, width, ends };
+  const line = box.parentElement;
+  const lineGap = beside && line !== null ? pixels(getComputedStyle(line).columnGap) : 0;
+  const countRoom = beside ? lineGap + counter.width : 0;
+  if (within(ends, beside ? counter.right - outer.left : width) === ends.length) {
+    return { fit: { shown: chips.length }, width, ends, countWidest: counter.width, countRoom };
   }
   const wrapped = chips.findIndex((chip) => missesFirstLine(chip, outer));
   let shown = wrapped === -1 ? chips.length : wrapped;
   let boxMinWidth: string | undefined;
-  const line = box.parentElement;
   if (shown === 0 && !beside && line !== null) {
     const least = Math.ceil(ends[0] ?? 0);
     const style = getComputedStyle(line);
@@ -643,10 +655,16 @@ function fitOf(
       pixels(style.borderRightWidth);
     const after = pixels(style.columnGap) + counter.width;
     const room = Math.min(least, across) + after <= across + FIT_SLACK ? across - after : across;
-    shown = within(room);
+    shown = within(ends, room);
     boxMinWidth = `min(${least}px, 100%)`;
   }
-  return { fit: { boxMinWidth, countWidth: counter.width, shown }, width, ends };
+  return {
+    fit: { boxMinWidth, countWidth: counter.width, shown },
+    width,
+    ends,
+    countWidest: counter.width,
+    countRoom,
+  };
 }
 
 /** A computed length in px, and 0 where it is none. */

@@ -3752,14 +3752,64 @@ test("with 20 labels the line draws no chip it hides and the count names every c
   }
 });
 
+/** Sends the box's size as a browser would in a ResizeObserver entry. */
+function installLabelResizeObserver() {
+  const original = globalThis.ResizeObserver;
+  const live = new Set<ObserverStub>();
+
+  class ObserverStub implements ResizeObserver {
+    readonly targets = new Set<Element>();
+
+    constructor(readonly callback: ResizeObserverCallback) {
+      live.add(this);
+    }
+
+    observe(target: Element): void {
+      this.targets.add(target);
+    }
+
+    unobserve(target: Element): void {
+      this.targets.delete(target);
+    }
+
+    disconnect(): void {
+      live.delete(this);
+    }
+  }
+
+  globalThis.ResizeObserver = ObserverStub;
+  return {
+    resize(target: Element) {
+      const contentRect = target.getBoundingClientRect();
+      const size = [{ inlineSize: contentRect.width, blockSize: contentRect.height }];
+      const entry: ResizeObserverEntry = {
+        target,
+        borderBoxSize: size,
+        contentBoxSize: size,
+        devicePixelContentBoxSize: [],
+        contentRect,
+      };
+      act(() => {
+        for (const observer of [...live]) {
+          if (observer.targets.has(target)) observer.callback([entry], observer);
+        }
+      });
+    },
+    restore() {
+      globalThis.ResizeObserver = original;
+    },
+  };
+}
+
 test("a box that narrows in the frame of a reading draws no chip it hides, and its count names every chip left out", async () => {
   const measureCount = () => performance.getEntriesByName(LABELS_MEASURE, "measure").length;
   performance.clearMeasures(LABELS_MEASURE);
-  const sizes = installResizeObserver();
+  const sizes = installLabelResizeObserver();
   const room = { width: 480 };
   const layout = layOutLabels(room);
   const restore = stubHeader({ ...issue, labels: [...TWENTY_LABELS] });
-  const view = renderHeader();
+  const queryClient = headerClient();
+  const view = renderHeader("/issues/CORE-1", queryClient);
   try {
     const box = await screen.findByTestId("issue-header-labels");
     sizes.resize(box);
@@ -3818,6 +3868,57 @@ test("a box that narrows in the frame of a reading draws no chip it hides, and i
     expect(labelsDrawn(room.width), "the fit changed after the line should have settled").toEqual(
       beforeWidening
     );
+
+    // At 150 px all three chips fit with no count. At 115 px only two fit without
+    // the count, and only one fits once the count comes back.
+    const shortLabels = ["api", "web", "docs"];
+    room.width = 150;
+    act(() => {
+      queryClient.setQueryData<IssueDetails>(["issue", "CORE-1"], {
+        ...issue,
+        labels: shortLabels,
+      });
+    });
+    sizes.resize(box);
+    expect(labelsDrawn(room.width), "all three chips should fit without a count").toEqual({
+      count: null,
+      hidden: [],
+      shown: shortLabels,
+    });
+    const afterAllFit = afterSecondReading + 1;
+    expect(measureCount(), "fitting the three chips should take one reading").toBe(afterAllFit);
+    sizes.resize(box);
+
+    room.width = 115;
+    expect(
+      labelsDrawn(room.width).hidden,
+      "only the last chip should fail to fit without the count"
+    ).toEqual(["docs"]);
+    sizes.resize(box);
+    const withCount = labelsDrawn(room.width);
+    expect(withCount.hidden, "the count clips a chip when it comes back").toEqual([]);
+    expect(withCount.shown, "only the first chip fits beside the count").toEqual(["api"]);
+    expect(withCount.count, "the count should include both chips that no longer fit").toBe(
+      "+2 labels"
+    );
+    expect(
+      screen.getByTestId("issue-labels-left").style.minWidth,
+      "the count should keep the width measured for three labels"
+    ).toBe("63px");
+    const afterCountReturns = measureCount();
+    expect(
+      afterCountReturns,
+      "bringing back the count took more than one extra reading"
+    ).toBeLessThanOrEqual(afterAllFit + 1);
+
+    await act(nextFrame);
+    sizes.resize(box);
+    await act(nextFrame);
+    sizes.resize(box);
+    expect(measureCount(), "another reading followed the return of the count").toBe(
+      afterCountReturns
+    );
+    expect(labelsDrawn(room.width), "the fit changed after the count came back").toEqual(withCount);
   } finally {
     view.unmount();
     restore();
