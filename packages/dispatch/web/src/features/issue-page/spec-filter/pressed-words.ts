@@ -6,11 +6,10 @@ export function focusedTreeItem(tree: HTMLElement): HTMLElement | null {
   return tree.contains(item) ? item : null;
 }
 
-/** Which row's words a press hit - the element `selector` names, a statement's words in this view
- *  or a row's in the outline (`IssueTree.tsx`, R18) - excluding their links, controls and chips. */
-export function statementWordsAt(target: EventTarget, selector: string): HTMLElement | null {
+/** Which statement's words a press hit, excluding their links, controls and chips. */
+export function statementWordsAt(target: EventTarget): HTMLElement | null {
   if (!(target instanceof Element)) return null;
-  const words = target.closest<HTMLElement>(selector);
+  const words = target.closest<HTMLElement>("[data-spec-statement] [data-node-words]");
   const control = target.closest(
     `${FOCUSABLE}, summary, [role="button"], [role="link"], [data-node-trail]`
   );

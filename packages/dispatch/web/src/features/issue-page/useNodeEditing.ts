@@ -101,7 +101,6 @@ export function nodeEditable(
  * does. That act is the reader's latest press, or a key pressed after that press had ended: a key
  * pressed while a press is held is part of the press, and a key after it - Tab out, `j` - or a
  * press in the tree moves on from the row.
- * A press starts at the pressed text without moving the page; Enter starts at the block's start.
  * The editor's own redrawing can drop that caret before the reader has done anything, and this
  * puts it back until they have. From then on, a focus the editor drops while the reader writes
  * goes back to the caret they had, or to the node's block where the editor has redrawn the text

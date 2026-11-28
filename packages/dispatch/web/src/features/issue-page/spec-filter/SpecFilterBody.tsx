@@ -800,7 +800,7 @@ export function SpecFilterBody({
           if (
             event.detail > 0 &&
             words !== null &&
-            words === statementWordsAt(event.target, STATEMENT_WORDS) &&
+            words === statementWordsAt(event.target) &&
             window.getSelection()?.isCollapsed !== false &&
             rowKey !== undefined &&
             rowKey !== editingRow &&
@@ -868,9 +868,7 @@ export function SpecFilterBody({
           pressReadPlacement.current = undefined;
           press.onMouseDown();
           const words =
-            event.button === 0 && !event.defaultPrevented
-              ? statementWordsAt(event.target, STATEMENT_WORDS)
-              : null;
+            event.button === 0 && !event.defaultPrevented ? statementWordsAt(event.target) : null;
           pressedWords.current = words;
           const row = words?.closest<HTMLElement>("[data-spec-statement]")?.dataset.nodeId;
           wordsPressActs.current?.abort();
@@ -987,10 +985,6 @@ function clearOfHeads(element: HTMLElement): void {
   const top = element.getBoundingClientRect().top;
   if (top < heads.bottom) window.scrollBy({ top: top - heads.bottom - CLEARANCE });
 }
-
-/** The element holding a statement's words, which a press on them is read against
- *  (`statementWordsAt`). */
-const STATEMENT_WORDS = "[data-spec-statement] [data-node-words]";
 
 /** The key `event` is as one of the keymap's single-key bindings reads it - a letter in lower
  *  case - or undefined where the keymap would read it otherwise: with a modifier held, in an
