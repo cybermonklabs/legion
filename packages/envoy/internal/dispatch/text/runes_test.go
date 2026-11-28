@@ -938,10 +938,15 @@ func TestHeadRunesCutsAtARuneAndCopiesNothing(t *testing.T) {
 		shaped += len(pairs)
 	}
 	wantCount(t, "the shape rows", shaped, 1016173, "pairs", "they would cut fewer of the first row's pairs")
+	// The loop that runs them is counted too: the two counts above read the map, so a loop over
+	// fewer of its shapes would leave a shape's pairs uncut and still pass them.
+	ran := 0
 	for _, shape := range slices.Sorted(maps.Keys(shapes)) {
 		pairs := shapes[shape]
+		ran++
 		t.Run(shape+" copies nothing", func(t *testing.T) { copiesNothing(t, pairs) })
 	}
+	wantCount(t, "the shape rows run", ran, 19, "rows", "a shape's pairs would go uncut")
 
 	kept := []struct {
 		name, value string
