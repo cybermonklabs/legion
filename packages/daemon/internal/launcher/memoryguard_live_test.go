@@ -11,7 +11,6 @@ import (
 	"io"
 	"maps"
 	"math"
-	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -736,22 +735,21 @@ func (r *controllerLiveRun) startGeneration() string {
 		return previous(guard)
 	}
 	r.t.Cleanup(func() { newMemoryGuard = previous })
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		return err.Error()
-	}
-	r.t.Cleanup(func() { _ = listener.Close() })
+	token := ownToken("launcher-token")
+	listener := listenForLauncher(r.t, token)
 	ctx, cancel := context.WithCancel(context.Background())
 	result := make(chan error, 1)
 	cfg := Config{
-		Connect: "tcp://" + listener.Addr().String(), Token: "launcher-token", Sandbox: "legion-legion-controller",
+		Connect: "tcp://" + listener.Addr().String(), Token: token, Sandbox: "legion-legion-controller",
 		Role: "controller", PodUID: "pod-live", PrivateDir: shortTempDir(r.t),
 		Stdout:    &controllerLiveLines{out: r.out, name: "stdout"},
 		Stderr:    &controllerLiveLines{out: r.out, name: "stderr", onLine: r.noteLine},
 		StopGrace: controllerLiveStopGrace,
 	}
 	go func() {
-		result <- Run(ctx, cfg)
+		err := Run(ctx, cfg)
+		listener.codeReturned(err)
+		result <- err
 	}()
 	r.t.Cleanup(func() {
 		cancel()
@@ -765,7 +763,7 @@ func (r *controllerLiveRun) startGeneration() string {
 		}
 	})
 	conn := acceptRole(r.t, listener)
-	if conn.hello.Role != "controller" || conn.hello.Token != "launcher-token" {
+	if conn.hello.Role != "controller" || conn.hello.Token != token {
 		return fmt.Sprintf("the launcher's hello is %#v, want the controller's", conn.hello)
 	}
 	conn.acknowledgeWith(controllerDefaultsAck())

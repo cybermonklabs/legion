@@ -157,6 +157,10 @@ func (e *Engine) stopUnreturned(ctx context.Context, tx pgx.Tx, issue record.Iss
 // root's leave begins, since the task's own state is the truer answer. A stop in a lingering tree
 // changes nothing and says so, and so does a stop where its hold cannot stand: a root that waits on
 // a person before its first step (stopRefusal).
+//
+// An issue whose group takes no plan from its owner (groupOf, takesNoPlan) takes no stop of its
+// tasks from that owner either: the experiment decides how the issue is done. The stop is
+// answered PLAN_NOT_TAKEN before anything else is read, and the task goes on as it stood.
 func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskStopped) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil {
@@ -164,6 +168,13 @@ func (e *Engine) taskStopped(ctx context.Context, tx pgx.Tx, fact intake.TaskSto
 	}
 	if issue == nil {
 		return intake.Result{Refusal: intake.TaskNotFound(fact.Issue, fact.Task, nil)}, nil
+	}
+	group, err := e.groupOf(ctx, tx, issue.Key)
+	if err != nil {
+		return intake.Result{}, err
+	}
+	if takesNoPlan(group) {
+		return intake.Result{Refusal: intake.TaskNotStopped(issue.Key, group)}, nil
 	}
 	w, err := e.walk(ctx, tx, *issue)
 	if err != nil {
@@ -285,7 +296,7 @@ func (e *Engine) restartTask(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if err := e.clearHandoff(ctx, tx, issue, w, role); err != nil {
 		return err
 	}
-	pr, err := e.store.PullRequest(ctx, tx, issue.Key)
+	pr, err := e.store.PullRequestRow(ctx, tx, issue.Key)
 	if err != nil {
 		return err
 	}

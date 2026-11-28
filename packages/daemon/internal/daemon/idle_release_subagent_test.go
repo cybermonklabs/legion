@@ -45,7 +45,7 @@ const idleRigHeldPasses = 4
 // runs, and the next pass that reads the pod quiet releases it: the hold stood exactly as long as
 // the report did.
 func TestIdleReleaseHoldsForARunningSubagent(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	rig := newIdleWakeRig(t, nil, idleRigSubagent)
 	issue := rig.issue(idleRigSubagent)
 	token := rig.token(issue)
@@ -103,7 +103,7 @@ func TestIdleReleaseHoldsForARunningSubagent(t *testing.T) {
 // quiet past the idle bound the daemon's idle tick releases it, and nothing held it for
 // background work on the way.
 func TestIdleReleaseReleasesASessionWithNothingRunning(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (newIdleWakeRig).
+	t.Parallel()
 	rig := newIdleWakeRig(t, nil, idleRigNothingRunning)
 	issue := rig.issue(idleRigNothingRunning)
 	token := rig.token(issue)

@@ -12,8 +12,8 @@ import (
 )
 
 // anyRoleHoldersVersion is the migration that widens issue_role_holders.role from the six Legion
-// roles to the role grammar (20261123182001_issue_role_holders_any_role).
-const anyRoleHoldersVersion = 20261123182001
+// roles to the role grammar (20261124122030_issue_role_holders_any_role).
+const anyRoleHoldersVersion = 20261124122030
 
 // The migration keeps every row the table holds and takes a role the deployment defines from then
 // on: a database migrated through the version before it holds a tester's row, which the migration

@@ -95,7 +95,7 @@ import type {
  * its agent subject in `session_start`, ran a whole turn inside the drain, and the host answered
  * no RPC command (`get_state`, `prompt`) until it ended. 18.16.0 passed `drainSends: false`, and
  * held every RPC frame but an extension dialog's answer and `set_ask_dialog` until its startup
- * was over. The pinned build (18.18.6-sami.20261122-091943, `rpc-mode.ts` `runRpcMode`) passes
+ * was over. The pinned build (18.18.6-sami.20261123-024918, `rpc-mode.ts` `runRpcMode`) passes
  * `drainSends: false` too and reads input while its startup runs: it answers `get_state` and every
  * other command that starts no turn at once, and holds one that starts a turn or changes the
  * session (`waitsForStartup`, `STARTUP_HELD_TYPES`: `prompt`, `steer`, `follow_up`,

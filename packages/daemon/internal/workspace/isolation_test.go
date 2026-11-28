@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -68,6 +69,14 @@ func advanceRemote(t *testing.T, remote string) {
 // provision's error.
 func provisionTwice(t *testing.T, plant func(t *testing.T, run *recordingRunner, clone string)) error {
 	t.Helper()
+	return provisionTwiceThen(t, plant, func(*testing.T) {})
+}
+
+// provisionTwiceThen is provisionTwice with arm run after the remote has advanced and before the
+// second provision, so what arm sets in the test's environment reaches the second provision and
+// none of the fixture's own commands.
+func provisionTwiceThen(t *testing.T, plant func(t *testing.T, run *recordingRunner, clone string), arm func(t *testing.T)) error {
+	t.Helper()
 	run := newLocalRunner(t)
 	req := provisionRequest(t)
 	if _, err := Provision(context.Background(), run, req); err != nil {
@@ -75,6 +84,7 @@ func provisionTwice(t *testing.T, plant func(t *testing.T, run *recordingRunner,
 	}
 	plant(t, run, filepath.Join(req.StateDir, "repos", "github.com", "acme", "widgets"))
 	advanceRemote(t, run.remote)
+	arm(t)
 	req.Issue = "WIDGETS-43"
 	_, err := Provision(context.Background(), run, req)
 	return err
@@ -120,6 +130,52 @@ func TestProvisionRunsNoHookTheTreePlanted(t *testing.T) {
 			}
 			requireAbsent(t, sink, "hooks the tree planted")
 		})
+	}
+}
+
+// No git that provisioning starts, directly or through jj, starts git's automatic maintenance:
+// each reads gc.auto=0 and maintenance.auto=false among the pins (pinnedGitConfig), so the
+// credentialed fetch starts no `git maintenance run --auto` and no `git gc --auto`, which git 2.47
+// would leave running behind the fetch holding the clone's ref locks while jj exports the refs the
+// fetch moved (#5349). The clone's own configuration asks for it at every fetch:
+// gc.auto=1 and gc.autoPackLimit=1 make a gc due on any clone, and maintenance.auto=true is what
+// the pin overrules. git's trace2 event target records every git process the second provision
+// starts and every child each of them starts; it is set after advanceRemote, so it holds that
+// provision's fetch and nothing the fixture ran.
+func TestProvisionStartsNoGitMaintenance(t *testing.T) {
+	trace := filepath.Join(t.TempDir(), "trace2.json")
+	err := provisionTwiceThen(t, func(t *testing.T, _ *recordingRunner, clone string) {
+		for _, pair := range [][2]string{{"gc.auto", "1"}, {"gc.autoPackLimit", "1"}, {"maintenance.auto", "true"}} {
+			runSetup(t, clone, "git", "--git-dir="+filepath.Join(clone, ".git"), "config", pair[0], pair[1])
+		}
+	}, func(t *testing.T) { t.Setenv("GIT_TRACE2_EVENT", trace) })
+	if err != nil {
+		t.Fatalf("second provision: %v", err)
+	}
+
+	body, err := os.ReadFile(trace)
+	if err != nil {
+		t.Fatalf("read the second provision's git trace: %v", err)
+	}
+	fetched := false
+	for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
+		var event struct {
+			Event string   `json:"event"`
+			Argv  []string `json:"argv"`
+		}
+		if err := json.Unmarshal([]byte(line), &event); err != nil {
+			t.Fatalf("decode the git trace event %q: %v", line, err)
+		}
+		if event.Event == "start" && slices.Contains(event.Argv, "fetch") {
+			fetched = true
+		}
+		if slices.Contains(event.Argv, "maintenance") || slices.Contains(event.Argv, "gc") {
+			t.Errorf("the second provision's git traced %s of %q: git's automatic maintenance ran under provisioning",
+				event.Event, strings.Join(event.Argv, " "))
+		}
+	}
+	if !fetched {
+		t.Fatalf("the second provision's git trace holds no git fetch, so it says nothing of the fetch's maintenance:\n%s", body)
 	}
 }
 

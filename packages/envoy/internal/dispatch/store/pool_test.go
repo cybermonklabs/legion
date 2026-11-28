@@ -460,9 +460,10 @@ func TestHealthyAnswersWhileCloseWaitsForAConnectionInUse(t *testing.T) {
 
 // The event log's safe horizon observes on a pool of its own: with every shared connection held,
 // as under request load, an observation - the shape of the batch events.Horizon sends, one short
-// transaction that reads its snapshot's xmin and takes a transaction id - and the stall
-// diagnosis's single-row read are still served. Queued behind the shared pool, the observation
-// holds back every live reader of the event log for as long as the requests ahead of it take.
+// transaction that takes a transaction id and then reads pg_locks for the event writers - and the
+// stall diagnosis's single-row read are still served. Queued behind the shared pool, the
+// observation holds back every live reader of the event log for as long as the requests ahead of
+// it take.
 func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 	ctx := context.Background()
 	config := openTestStore(t).Pool.Config().Copy()
@@ -498,13 +499,18 @@ func TestHorizonIsServedWhileTheSharedPoolIsFullyAcquired(t *testing.T) {
 		waitCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 		batch := &pgx.Batch{}
 		batch.Queue(`begin`)
-		batch.Queue(`select pg_snapshot_xmin(pg_current_snapshot())::text, pg_current_xact_id()::text`)
+		batch.Queue(`select pg_current_xact_id()::text`)
+		batch.Queue(`select count(*) from pg_locks`)
 		batch.Queue(`commit`)
 		results := horizon.SendBatch(waitCtx, batch)
-		var xmin, xid string
+		var xid string
+		var locks int64
 		_, err := results.Exec()
 		if err == nil {
-			err = results.QueryRow().Scan(&xmin, &xid)
+			err = results.QueryRow().Scan(&xid)
+		}
+		if err == nil {
+			err = results.QueryRow().Scan(&locks)
 		}
 		if err == nil {
 			_, err = results.Exec()

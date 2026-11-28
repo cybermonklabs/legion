@@ -1,13 +1,18 @@
 package main
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
+	"path/filepath"
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -21,7 +26,101 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests, or, run by seedInChild with seedChildEnv set, is that test's
+// seed: one run of seed over the database seedChildDatabaseEnv names.
+func TestMain(m *testing.M) {
+	if report := os.Getenv(seedChildEnv); report != "" {
+		os.Exit(seedAsChild(os.Getenv(seedChildDatabaseEnv), report))
+	}
+	os.Exit(storetest.Main(m))
+}
+
+// seedChildEnv and seedChildDatabaseEnv make this test binary a seed rather than a test run: the
+// file to write the run's subjects to, and the database to fill (seedInChild).
+const (
+	seedChildEnv         = "DISPATCH_SEED_TEST_CHILD_REPORT"
+	seedChildDatabaseEnv = "DISPATCH_SEED_TEST_CHILD_DATABASE_URL"
+)
+
+// seedAsChild fills the database at databaseURL as seed does in a test, and writes the run's
+// subjects to report as JSON. It writes the seed's progress and report on stdout and a failure
+// on stderr, which seedInChild prints when the run fails.
+func seedAsChild(databaseURL, report string) int {
+	ctx := context.Background()
+	database, err := store.Open(ctx, databaseURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "open the test database: %v\n", err)
+		return 1
+	}
+	defer database.Pool.Close()
+	run, err := seed(ctx, database, testScale, os.Stdout)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "seed at scale %v: %v\n", testScale, err)
+		return 1
+	}
+	encoded, err := json.Marshal(run.subject)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "encode the run's subjects: %v\n", err)
+		return 1
+	}
+	if err := os.WriteFile(report, encoded, 0o600); err != nil {
+		fmt.Fprintf(os.Stderr, "write the run's subjects: %v\n", err)
+		return 1
+	}
+	return 0
+}
+
+// seedInChildren seeds each of databases in a process of its own, all at once, this test binary
+// run as a seed (seedAsChild), and answers each run as the tests read it: its subjects, and the
+// plan every run at testScale writes. A seed sets the block id generator for its whole process
+// (pmdoc.SetBlockIDGenerator, seedRun.do), so two seeds in one process would draw each other's
+// ids; in processes of their own, they run at once, and so do the seeds of the package's parallel
+// tests.
+func seedInChildren(t *testing.T, databases ...*store.Store) []*seedRun {
+	t.Helper()
+	runs := make([]*seedRun, len(databases))
+	failures := make([]error, len(databases))
+	var seeds sync.WaitGroup
+	for index, database := range databases {
+		report := filepath.Join(t.TempDir(), "subjects.json")
+		seeds.Go(func() {
+			runs[index], failures[index] = seedInChild(t, database, report)
+		})
+	}
+	seeds.Wait()
+	for index, failure := range failures {
+		if failure != nil {
+			t.Fatalf("seed %d of %d: %v", index+1, len(databases), failure)
+		}
+	}
+	return runs
+}
+
+// seedInChild runs one seed of database in a process of its own and reads back the subjects it
+// wrote to report. It answers an error rather than failing t, because seedInChildren calls it
+// from a goroutine of its own.
+func seedInChild(t *testing.T, database *store.Store, report string) (*seedRun, error) {
+	command := exec.CommandContext(t.Context(), os.Args[0])
+	command.Env = append(os.Environ(),
+		seedChildEnv+"="+report, seedChildDatabaseEnv+"="+database.Pool.Config().ConnString())
+	var output bytes.Buffer
+	command.Stdout = &output
+	command.Stderr = &output
+	started := time.Now()
+	if err := command.Run(); err != nil {
+		return nil, fmt.Errorf("seed at scale %v in a child process: %w\n%s", testScale, err, output.String())
+	}
+	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
+	encoded, err := os.ReadFile(report)
+	if err != nil {
+		return nil, fmt.Errorf("read the subjects the seed wrote: %w\n%s", err, output.String())
+	}
+	run := &seedRun{plan: newPlan(newSizes(testScale))}
+	if err := json.Unmarshal(encoded, &run.subject); err != nil {
+		return nil, fmt.Errorf("decode the subjects the seed wrote: %w", err)
+	}
+	return run, nil
+}
 
 // testScale is the scale the suite seeds at: about 200 issues, which is small enough that two
 // whole runs fit in one test and large enough that every arm of the graph, every size band and
@@ -30,10 +129,12 @@ const testScale = 0.01
 
 // TestSeedAtASmallScale seeds two fresh databases and holds the pair, and then one of them, to
 // everything the seed promises. Both runs are in one test because each one takes most of a
-// minute: a test of its own for each check would seed six databases to read one data set.
+// minute: a test of its own for each check would seed six databases to read one data set. The two
+// seeds run at once, each in a process of its own (seedInChildren).
 func TestSeedAtASmallScale(t *testing.T) {
-	first, firstRun := seedTestDatabase(t)
-	second, _ := seedTestDatabase(t)
+	t.Parallel()
+	first, second := storetest.Open(t), storetest.Open(t)
+	firstRun := seedInChildren(t, first, second)[0]
 
 	t.Run("two runs at one scale write the same rows", func(t *testing.T) {
 		assertSameRowCounts(t, first, second)
@@ -80,19 +181,6 @@ func TestSeedAtASmallScale(t *testing.T) {
 	})
 }
 
-// seedTestDatabase seeds a database of its own and answers it with the run that filled it.
-func seedTestDatabase(t *testing.T) (*store.Store, *seedRun) {
-	t.Helper()
-	database := storetest.Open(t)
-	started := time.Now()
-	run, err := seed(context.Background(), database, testScale, io.Discard)
-	if err != nil {
-		t.Fatalf("seed at scale %v: %v", testScale, err)
-	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
-	return database, run
-}
-
 // TestSeedBuildsTermStatisticsOnMainsSchema seeds the shape the measurement protocol's "before"
 // side seeds: a database migrated from a checkout of the release before this change, filled by
 // this tool with --no-migrate. Its search_term_totals carries no snapshot column (migration
@@ -106,19 +194,14 @@ func seedTestDatabase(t *testing.T) (*store.Store, *seedRun) {
 // the step reads the catalogue for; the rest of that release's schema is older still, and the
 // step's build reads nothing of it that this head does not also have.
 func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx,
 		`alter table search_term_totals drop column snapshot, drop column snapshot_at`); err != nil {
 		t.Fatalf("drop the snapshot columns 20261101182515 added: %v", err)
 	}
-
-	started := time.Now()
-	run, err := seed(ctx, database, testScale, io.Discard)
-	if err != nil {
-		t.Fatalf("seed at scale %v on main's search_term_totals: %v", testScale, err)
-	}
-	t.Logf("seeded at scale %v in %s", testScale, time.Since(started).Round(time.Millisecond))
+	run := seedInChildren(t, database)[0]
 
 	var built int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from search_term_totals`).Scan(&built); err != nil {
@@ -145,6 +228,7 @@ func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
 }
 
 func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	rollback, err := os.ReadFile("../../internal/dispatch/store/migrations/20261105014808_comments_answers.down.sql")
 	if err != nil {
@@ -153,9 +237,7 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), string(rollback)); err != nil {
 		t.Fatalf("restore the schema before comment answers: %v", err)
 	}
-	if _, err := seed(context.Background(), database, testScale, io.Discard); err != nil {
-		t.Fatalf("seed with --no-migrate on the schema before comment answers: %v", err)
-	}
+	seedInChildren(t, database)
 	var replies int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from comments where reply_to is not null`).Scan(&replies); err != nil {
 		t.Fatal(err)

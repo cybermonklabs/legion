@@ -18,7 +18,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/sjawhar/legion/daemon/internal/shimwire"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The size walk's cases. They build a volume of their own, as the trimmer's cases do
@@ -240,13 +239,13 @@ func TestTheWalkEndsOnItsBudgetAgainstAWalkerThatBlocks(t *testing.T) {
 	if period := ticks.periodOf(0); period != volumeWalkBudget {
 		t.Errorf("the walk asked for a budget of %s, want the %s the rule names", period, volumeWalkBudget)
 	}
-	if !ticks.offer(t, 0, testwait.Bounded(t, 10*time.Second, time.Second)) {
+	if !ticks.offer(t, 0, beforeDeadline(t)) {
 		t.Fatal("the walk is not waiting on its budget: nothing took the tick")
 	}
 	var result walkResult
 	select {
 	case result = <-results:
-	case <-time.After(testwait.Bounded(t, 10*time.Second, time.Second)):
+	case <-time.After(beforeDeadline(t)):
 		t.Fatal("the walk did not end when its budget ran out")
 	}
 

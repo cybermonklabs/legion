@@ -127,12 +127,20 @@ interface CodexScenario {
   /** OUTSIDE_CODEX_START_SECONDS (default 30): how long each start may hold before its turn. */
   readonly startSeconds?: number;
   /** The first-run menus draw each move late, 2.5 s after the keys, as a slow machine's Codex can:
-   *  a key sent before the last move is drawn is one move more. */
+   *  a key sent before the last move is drawn is one move more. A move comes sooner than that
+   *  once the leg has looked at the pane three times since, seeing the old one each time. */
   readonly slowScreens?: boolean;
-  /** Each run's model log holds an `end` line right after its tools, and its turn goes on 3 s
-   *  later, as the stand-in model logged one for the request Codex 0.171.0 sends 107 ms into an
-   *  interactive turn (it offers apply_patch alone) before that request was ignored. */
+  /** Each run's model log holds an `end` line right after its tools, and its turn goes on once the
+   *  leg has looked at the pane twice since, at most 3 s later, as the stand-in model logged one
+   *  for the request Codex 0.171.0 sends 107 ms into an interactive turn (it offers apply_patch
+   *  alone) before that request was ignored. A leg that took `end` for the turn's end would stop
+   *  Codex at its first read of the model log after it. */
   readonly endBeforeTurn?: boolean;
+  /** The session record of each run comes late: 0.5 s after the turn's first request, before its
+   *  next (`before-next`), as a hook slower than that request would file it; or only as the leg
+   *  stops that run's Codex (`at-stop`), on the TERM the stand-in tmux's `kill-server` sends, which
+   *  comes after the turn's next request, once the leg has read that no record comes. */
+  readonly recordLate?: "before-next" | "at-stop";
 }
 
 /** Where the real provenance helper is: the stand-in imports its tree comparison. */
@@ -171,7 +179,7 @@ console.log("Session " + process.env.CODEX_THREAD_ID + " acts for " + owner + ":
  *  turn); the new model lists no plugin tool. It answers no `exec`. */
 function standInCodex(state: string): string {
   return `#!/usr/bin/env bun
-import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 const state = ${JSON.stringify(state)};
 const scenario = JSON.parse(readFileSync(join(state, "scenario.json"), "utf8"));
@@ -239,10 +247,20 @@ const menu = async (title, options) => {
       if (key === "Up") chosen = Math.max(chosen - 1, 0);
       if (key === "Enter") return options[chosen];
     }
-    await Bun.sleep(pause);
+    await (scenario.slowScreens ? looked(3, pause) : Bun.sleep(pause));
   }
 };
 const forever = () => new Promise(() => {});
+// The leg's looks at the pane, which the stand-in tmux counts. looked(n, ms): once the leg has
+// looked n times since, or ms have passed. finish_run reads the model log before each of its looks,
+// so there two looks past a line hold a read of the log after it; drive looks twice in each loop,
+// its own look and answer_screen's, after one read of the log, so there two looks can hold none.
+const looks = () => (existsSync(join(pane, "looks")) ? statSync(join(pane, "looks")).size : 0);
+const looked = async (n, ms) => {
+  const from = looks();
+  const latest = Date.now() + ms;
+  while (looks() < from + n && Date.now() < latest) await Bun.sleep(25);
+};
 if (scenario.unexpectedScreen) {
   show(["Do you trust the files in this folder?", "", "› 1. Yes, continue", "  2. No, quit"]);
   await forever();
@@ -280,12 +298,14 @@ const log = (line) => appendFileSync(logFile, JSON.stringify({ run, ...line }) +
 const configured = existsSync(config) ? readFileSync(config, "utf8") : "";
 const plugin = configured.includes('[plugins."codex-envoy@outside-e2e"]') && configured.includes("model_provider = ");
 // The SessionStart hook records the session at the first prompt, whatever model then runs.
-if (plugin && hooksRun) {
+const fileRecord = () => {
   const records = join(home, "plugins", "data", "codex-envoy-outside-e2e", "codex-sessions");
   mkdirSync(records, { recursive: true });
   writeFileSync(join(records, process.pid + ".json"), JSON.stringify({ session_id: session }));
   if (scenario.registers !== false) appendFileSync(join(state, "sessions"), session + "\\n");
-}
+};
+const records = plugin && hooksRun;
+if (records && scenario.recordLate === undefined) fileRecord();
 if (newModel || !plugin) {
   log({ step: "tools", dispatch: "", send: "" });
   log({ step: "end" });
@@ -293,9 +313,15 @@ if (newModel || !plugin) {
 }
 const until = async (file) => { while (!existsSync(join(state, file))) await Bun.sleep(25); };
 log({ step: "tools", dispatch: "mcp__envoy.dispatch", send: "mcp__envoy.envoy_send" });
+// A record late by 0.5 s of the turn's first request: a time on purpose, since the scenario is a
+// hook slower than that request, and no line of the leg's marks the moment it reads the records.
+if (records && scenario.recordLate === "before-next") {
+  await Bun.sleep(500);
+  fileRecord();
+}
 if (scenario.endBeforeTurn) {
   log({ step: "end" });
-  await Bun.sleep(3000);
+  await looked(2, 3000);
 }
 const wanted = (scenario.whoami ?? {})[run] ?? (run === "inside" ? { exit: 2 } : { exit: 0 });
 log({
@@ -307,6 +333,14 @@ log({
   elsewhere: "",
   ...(wanted.exit === 0 ? {} : { detail: wanted.detail ?? "dispatch: Dispatch did not answer [exit " + wanted.exit + "]" }),
 });
+// A record filed only as the leg stops this Codex, on the TERM of the stand-in tmux's kill-server:
+// the leg stops it only after it has read that no record comes, so no clock decides what it reads.
+if (records && scenario.recordLate === "at-stop") {
+  process.on("SIGTERM", () => {
+    fileRecord();
+    process.exit(143);
+  });
+}
 if (run === "main") {
   if (scenario.registers === false) await forever();
   if (plan.issue !== "") {
@@ -317,7 +351,7 @@ if (run === "main") {
   // sleeps until the leg stops it.
   if (!hooksRun) await forever();
   await until("send-attempted");
-  if (scenario.endBeforeTurn) await Bun.sleep(3000);
+  if (scenario.endBeforeTurn) await looked(2, 3000);
   // The PostToolUse hook puts what reached the session into the turn: only a trusted hook runs.
   if (existsSync(join(state, "control"))) log({ step: "control", at: Date.now() });
   if (existsSync(join(state, "inbound"))) {
@@ -350,9 +384,10 @@ await forever();
 }
 
 /** The stand-in `tmux`: a pane is a directory beside the socket path, holding the pid of the
- *  command it runs, the screen that command last showed and the keys it was sent. As tmux does, the
- *  server makes its socket as it starts and leaves it when `kill-server` stops it; a stopped
- *  server's pane names no process, so no later command signals a pid the system has reused. */
+ *  command it runs, the screen that command last showed, the keys it was sent and a byte for each
+ *  look at it (`looks`). As tmux does, the server makes its socket as it starts and leaves it when
+ *  `kill-server` stops it; a stopped server's pane names no process, so no later command signals
+ *  a pid the system has reused. */
 function standInTmux(): string {
   return `#!/usr/bin/env bash
 sock=''
@@ -374,7 +409,7 @@ case $command in
     (cd "$cwd" && STANDIN_PANE="$pane" exec "$@") </dev/null >"$pane/out" 2>&1 &
     echo "$!" >"$pane/pid"
     ;;
-  capture-pane) cat "$pane/screen" 2>/dev/null ;;
+  capture-pane) printf . >>"$pane/looks"; cat "$pane/screen" 2>/dev/null ;;
   send-keys) shift 2; for key in "$@"; do printf '%s\\n' "$key" >>"$pane/keys"; done ;;
   has-session) kill -0 "$(cat "$pane/pid" 2>/dev/null)" 2>/dev/null ;;
   display-message) cat "$pane/pid" 2>/dev/null ;;
@@ -1053,6 +1088,35 @@ describe.skipIf(skipWithout("bash", "bun"))("the Codex leg, against stand-ins", 
   );
 
   test(
+    "the wait for a session record ends at the turn's next request: a record filed before it is read, one filed after it is none",
+    async () => {
+      const [inTime, late] = await Promise.all([
+        codexStandInRun({ recordLate: "before-next" }),
+        codexStandInRun({ recordLate: "at-stop" }),
+      ]);
+      // The control: a record 0.5 s after the turn's first request is still read, and every row
+      // passes, so the wait does not end at that first request.
+      expect({ verdicts: verdictsOf(inTime.stdout), stdout: inTime.stdout }).toMatchObject({
+        verdicts: Object.fromEntries(codexRows.map((name) => [name, "PASS"])),
+      });
+      // A record filed only as the leg stops Codex, after the turn's next request, is read as
+      // none, by name, in C1: the name says the wait ended at that request, where a wait that ran
+      // on to its bound names the bound. C6, read only once C2 named the session, reads UNKNOWN
+      // with it.
+      expect({ C1: rowOf(late, "C1").row, C6: rowOf(late, "C6").row }).toMatchObject({
+        C1: { verdict: "UNKNOWN" },
+        C6: { verdict: "UNKNOWN" },
+      });
+      expect(rowOf(late, "C1").row?.got).toContain(
+        "Codex filed no session record by its turn's next request"
+      );
+      expect(late.code).not.toBe(0);
+    },
+    // The two runs at once, each a bounded child under the Codex run's bound.
+    rowLimit({ atOnce: ["codexRun", "codexRun"] })
+  );
+
+  test(
     `the leg exits within ${exitAfterRows / 1000} s of its last row, the new-model control run as every other`,
     async () => {
       // A leg still running at the Codex run's bound fails here as well: runBounded throws.
@@ -1405,9 +1469,9 @@ describe("the Codex leg's provenance reads", () => {
 
 describe.skipIf(skipWithout("bash"))("the leg's waits, on a clock only `sleep` moves", () => {
   /** The leg's own `screen_text`, `answer_screen` and `drive`, cut from the leg as they stand, run
-   *  in bash on a clock that only `sleep` moves: `pane` and `tools` are bash commands that read
-   *  `$clock`, the pane's text and the stand-in model's tools line at that moment. Answers the
-   *  call's status and its `drive_problem`. */
+   *  in bash on a clock that only `sleep` and `pause` (a tenth of a second) move: `pane` and `tools`
+   *  are bash commands that read `$clock`, the whole seconds passed, the pane's text and the stand-in
+   *  model's tools line at that moment. Answers the call's status and its `drive_problem`. */
   const onFakeClock = async (call: string, pane: string, tools = ":") => {
     const file = join(scratch("fake-clock"), "harness.sh");
     writeFileSync(
@@ -1420,9 +1484,11 @@ for name in screen_text answer_screen drive; do
   [ -n "$body" ] || { echo "the leg holds no $name"; exit 3; }
   eval "$body"
 done
+tenths=0
 clock=0
 now() { printf '%s\\n' "$clock"; }
-sleep() { clock=$((clock + $1)); }
+sleep() { tenths=$((tenths + $1 * 10)); clock=$((tenths / 10)); }
+pause() { tenths=$((tenths + 1)); clock=$((tenths / 10)); }
 codex_pane() { ${pane}; }
 logged() { ${tools}; }
 codex_alive() { return 0; }

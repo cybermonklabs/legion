@@ -1,5 +1,7 @@
 package podsafety
 
+//ci:reads packages/daemon/docker/worker.Dockerfile TestTheWorkerImageShipsItsGhExtensionsWhereTheShimLinksFrom
+
 import (
 	"encoding/json"
 	"errors"

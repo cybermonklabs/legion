@@ -36,7 +36,7 @@ import {
   failureNoticeFields,
 } from "@legion/envoy-client/delivery-ledger"
 import { activeDispatchSettings } from "@legion/envoy-client/dispatch-config"
-import { DispatchClient } from "@legion/envoy-client/dispatch-http"
+import { DispatchClient, DispatchWriteLandedError } from "@legion/envoy-client/dispatch-http"
 import { sessionDirectory as dispatchSessionDirectory } from "@legion/envoy-client/dispatch-session-directory"
 import { writeSessionTitle } from "@legion/envoy-client/dispatch-session-state"
 import {
@@ -573,6 +573,13 @@ export function createChannelDelivery(input: {
     if (envelope === undefined) return
     const eventId = envelope.event_id
     if (eventId !== undefined && inbox.some((entry) => entry.event_id === eventId)) return
+    // A payload the card could not lay out is shown as the text its sender sent: said here, for
+    // the message the inbox lists the first time, so a copy Envoy sends again says nothing new.
+    if (rendered.payloadShownAsText !== undefined) {
+      process.stderr.write(
+        `envoy-channel: message ${eventId ?? "unknown"}'s payload is shown as its text; the card could not lay it out (${rendered.payloadShownAsText})\n`,
+      )
+    }
     inbox.unshift({
       event_id: eventId ?? "unknown",
       at: inboundTimestamp(envelope.issued_at),
@@ -606,7 +613,9 @@ export function createChannelDelivery(input: {
       if (rendered.skip) return tail.then(() => false)
       // A targeted Dispatch delivery the shared renderer could not validate is
       // never shown to the model: it is answered on Dispatch when it names a
-      // message, and dropped with a log line when it does not.
+      // message, and dropped with a log line when it does not. A report Dispatch
+      // made and gave no copy of its answer for (`DispatchWriteLandedError`)
+      // answered the attempt, and its line says it landed.
       if (rendered.rejectedDelivery !== undefined) {
         const rejected = rendered.rejectedDelivery
         process.stderr.write(
@@ -618,7 +627,9 @@ export function createChannelDelivery(input: {
           () => false,
           (error: unknown) => {
             process.stderr.write(
-              `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
+              error instanceof DispatchWriteLandedError
+                ? `envoy-channel: the report of the rejected delivery landed on Dispatch, which gave no copy of its answer — ${error.message}\n`
+                : `envoy-channel: could not report the rejected delivery to Dispatch — ${messageFor(error)}\n`,
             )
             return false
           },

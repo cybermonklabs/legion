@@ -2,10 +2,20 @@
 // BROKER_TEST_DATABASE_URL server, dropped when the test ends. Every broker package's tests run
 // against one server at once, and the poller's passes act on every row of their tables, so tests
 // that shared tables would act on each other's rows; with a schema per test no test can see
-// another's rows, in its own package, a sibling package, or a concurrent run of either. It also
-// writes the rows only a database writer other than the broker could (Exec, ForgeRequestSignature,
-// CopyAsOtherKind), for the tests that pin what a release or an authentication refuses. It is an
-// ordinary package rather than a _test.go file so every broker package can import it.
+// another's rows, in its own package, a sibling package, or a concurrent run of either.
+//
+// The schemas of one test binary are made in a database of that binary's own
+// (testdb.ProcessDatabaseOn), which Main drops after the binary's tests. Every migration takes the
+// broker's advisory lock (store.go's lockAndPin), and Postgres holds an advisory lock for the
+// whole database: with every package's schemas in one database, each migration, a broker's at
+// its boot among them, waited for the migrations of every other package of the run and of every
+// other run on the server. In a database of the binary's own it waits only for its own binary's
+// tests. So a package that uses URL or Open runs its tests through Main.
+//
+// It also writes the rows only a database writer other than the broker could (Exec,
+// ForgeRequestSignature, CopyAsOtherKind), for the tests that pin what a release or an
+// authentication refuses. It is an ordinary package rather than a _test.go file so every broker
+// package can import it.
 package storetest
 
 import (
@@ -57,12 +67,15 @@ func randomName(t testing.TB) string {
 	return "broker_test_" + hex.EncodeToString(suffix[:])
 }
 
-// URL creates a fresh schema on the DatabaseURLEnv server, migrates it, drops it when t ends, and
+// URL creates a fresh schema in the test binary's own database on the DatabaseURLEnv server
+// (testdb.ProcessDatabaseOn: the package comment says why), migrates it, drops it when t ends, and
 // returns a connection string whose connections use that schema. params are extra connection
-// parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset.
+// parameters as key=value (e.g. "pool_max_conns=2"). It skips t when DatabaseURLEnv is unset, and
+// fails it when the package's TestMain does not run its tests through Main. The server's login
+// needs CREATEDB.
 func URL(t testing.TB, params ...string) string {
 	t.Helper()
-	raw := serverURL(t)
+	raw := testdb.ProcessDatabaseOn(t, serverURL(t), "broker_test_binary")
 	ctx := context.Background()
 	schema := randomName(t)
 	admin(t, raw, "create schema "+schema)
@@ -107,6 +120,15 @@ func Open(t testing.TB, params ...string) *store.Store {
 	t.Cleanup(st.Close)
 	return st
 }
+
+// Main runs the package's tests and then drops the database URL made their schemas in. A package
+// whose tests call URL or Open uses it as its TestMain:
+// func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }.
+func Main(m *testing.M) int { return testdb.Main(m) }
+
+// Run is Main for a package whose TestMain also runs another harness's Main, or runs its tests
+// more than once (testdb.Run).
+func Run(run func() int) int { return testdb.Run(run) }
 
 // RepeatableReadByDefault opens a second pool on st's database whose connections begin every
 // transaction at REPEATABLE READ unless it names a level (default_transaction_isolation), closed

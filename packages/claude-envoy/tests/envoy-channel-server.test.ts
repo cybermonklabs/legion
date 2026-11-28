@@ -1,8 +1,9 @@
-import { expect, test } from "bun:test"
+import { beforeEach, expect, setDefaultTimeout, spyOn, test } from "bun:test"
 import { mkdir, readFile, writeFile } from "node:fs/promises"
 import { dirname, join, resolve } from "node:path"
 import { BROKER_VARIABLES } from "@legion/cipher-client/environment"
 import { METADATA_HOST_VAR } from "@legion/cipher-client/metadata-identity"
+import { IDEMPOTENCY_KEY_COMMITTED } from "@legion/contracts"
 import { ENVOY_INBOUND_VAR } from "@legion/envoy-client/envoy-settings"
 import { NATS_AUTH_VAR } from "@legion/envoy-client/nats-credential"
 import { sessionConfigFile } from "@legion/envoy-client/session-settings"
@@ -44,6 +45,8 @@ import {
 } from "./channel-session-harness"
 import { FakeNatsServer } from "./fake-nats-server"
 import { isolatePaneEnvironment } from "./pane-environment"
+import { beforeTheGuard, collected, ROW_GUARD_MS, rowStarted } from "./row-deadline"
+import { NO_TRANSPILER_CACHE } from "./transpiler-cache"
 
 isolatePaneEnvironment()
 
@@ -94,6 +97,77 @@ test("writes each Envoy envelope into the session as the rendered card that name
       eventId: "evt-42",
     },
   ])
+})
+
+/** A comment event on CORE-1's owner topic, as Dispatch's outbox publishes it: `payload` is the
+ *  event's own. */
+function commentEventRaw(type: string, eventId: string, payload: Record<string, unknown>): string {
+  return JSON.stringify({
+    event_id: eventId,
+    source: "dispatch",
+    source_event_id: "7",
+    topic: `notifications.dispatch.issue.CORE-1.${type}`,
+    dedupe_key: eventId,
+    issued_at: 1_760_000_000_000,
+    payload_summary: "CORE-1 comment",
+    payload: JSON.stringify({
+      id: 7,
+      seq: 7,
+      issue_key: "CORE-1",
+      type,
+      actor: { kind: "user", id: "alice" },
+      notify: true,
+      quiet: false,
+      created_at: "2026-11-02T00:00:00Z",
+      payload: {
+        id: "22222222-2222-4222-8222-222222222222",
+        issue_key: "CORE-1",
+        author: { kind: "user", id: "alice" },
+        created_at: "2026-11-02T00:00:00Z",
+        ...payload,
+      },
+    }),
+    trace_id: eventId,
+  })
+}
+
+// This server never reads a cut body whole: its card is the delivery Dispatch sent, which keeps
+// what its frame carried. A comment event that carried its body's first part alone keeps that
+// part and the note naming the route that answers it whole, and a delete's event is a card of its
+// own kind, which carries no body.
+test("a cut comment's card keeps the part its frame carried and the note, and a delete is a card of its own kind", async () => {
+  const notifier = new FakeNotifier()
+  const delivery = createChannelDelivery({
+    identity: new SessionIdentity("ses_claude", "/tmp"),
+    notifier,
+    configFile: sessionConfigFile("claude", process.env),
+  })
+  const subject = "notifications.dispatch.issue.CORE-1.comment"
+
+  await delivery.enqueue({
+    subject,
+    raw: commentEventRaw("comment.created", "dispatch-cut", {
+      body: "The first paragraph.",
+      body_truncated: true,
+    }),
+  })
+  await delivery.enqueue({
+    subject,
+    raw: commentEventRaw("comment.deleted", "dispatch-deleted", {
+      deleted_at: "2026-11-03T00:00:00Z",
+      deleted_by: { kind: "user", id: "alice" },
+    }),
+  })
+
+  const [cut, deleted] = notifier.notifications.map((notification) => notification.content)
+  expect(cut).toContain("type: comment.created")
+  expect(cut).toContain("body: The first paragraph.")
+  expect(cut).toContain(
+    "the body is its first part only; read it whole with GET /api/v1/comments/22222222-2222-4222-8222-222222222222",
+  )
+  expect(deleted).toContain("type: comment.deleted")
+  expect(deleted).toContain('deleted_at: "2026-11-03T00:00:00Z"')
+  expect(deleted).not.toContain("body:")
 })
 
 test("delivers each dedupe key once and answers each relayed frame, never a receipt", async () => {
@@ -692,6 +766,49 @@ test("answers a rejected targeted frame on Dispatch instead of notifying the mod
   }
 })
 
+// A report Dispatch made and gave no copy of its answer for (`409 KEY_COMMITTED`) answered the
+// attempt: its line says it landed, never that it could not be reported.
+test("a rejected frame's report that landed with no answer back is not said to be unreported", async () => {
+  let server: Server<undefined> | undefined
+  const written = spyOn(process.stderr, "write").mockImplementation(() => true)
+  try {
+    const replies: string[] = []
+    server = Bun.serve({
+      port: 0,
+      fetch: (request) => {
+        replies.push(new URL(request.url).pathname)
+        return Response.json(
+          { code: IDEMPOTENCY_KEY_COMMITTED, error: "this request already ran" },
+          { status: 409 },
+        )
+      },
+    })
+    process.env["DISPATCH_URL"] = `http://127.0.0.1:${server.port}`
+    process.env["DISPATCH_TOKEN"] = DISPATCH_TOKEN
+    const delivery = createChannelDelivery({
+      identity: new SessionIdentity("ses_claude", process.cwd()),
+      notifier: new FakeNotifier(),
+      configFile: sessionConfigFile("claude", process.env),
+    })
+
+    expect(await delivery.enqueue({ subject: directSubject, raw: rejectedFrameRaw })).toBe(false)
+
+    const lines = written.mock.calls.map((call) => String(call[0]))
+    expect(replies).toEqual(["/api/v1/messages/44444444-4444-4444-8444-444444444444/reply"])
+    expect(lines.filter((line) => line.includes("could not report"))).toEqual([])
+    expect(
+      lines.filter((line) =>
+        line.startsWith(
+          "envoy-channel: the report of the rejected delivery landed on Dispatch, which gave no copy of its answer — POST ",
+        ),
+      ),
+    ).toHaveLength(1)
+  } finally {
+    written.mockRestore()
+    server?.stop(true)
+  }
+})
+
 // The forwarder releases the claim of a frame Claude Code was not handed, so the re-send of a
 // Dispatch frame the channel answered with an error is answered again rather than dropped as a
 // repeat of its dedupe key.
@@ -824,6 +941,15 @@ test("drops a malformed targeted frame that has no reply address", async () => {
 
 const channelEntry = resolve(import.meta.dir, "..", "bin", "envoy-channel.ts")
 
+// The rows below run the channel server as a child process of its own, with Bun's transpiler cache
+// off (`./transpiler-cache.ts`), and wait for what it answers or does: one that ends first is
+// named with its exit, and an answer or an exit that never comes fails the row by name before the
+// hang guard this file sets as its rows' default (`ROW_GUARD_MS`, 120 s, `./row-deadline.ts`). A
+// fixed 20 s decided these rows before: at a load near 1,000 a server that wrote that cache into
+// its empty HOME first had not answered its `initialize` in 20 s.
+beforeEach(rowStarted)
+setDefaultTimeout(ROW_GUARD_MS)
+
 /**
  * Runs the channel server as Claude Code does, in `env.HOME` with `env` as its whole environment:
  * it initializes over MCP, lists the tools, calls `envoy_whoami`, then each of `calls` (request ids
@@ -839,12 +965,15 @@ async function runChannelServer(
 }> {
   const server = Bun.spawn(["bun", channelEntry], {
     cwd: env.HOME,
-    env: { PATH: process.env["PATH"] ?? "", ...env },
+    env: { PATH: process.env["PATH"] ?? "", ...NO_TRANSPILER_CACHE, ...env },
     stdin: "pipe",
     stdout: "pipe",
     stderr: "pipe",
   })
+  const stderr = collected(server.stderr)
   const responses = new Map<number, Record<string, unknown>>()
+  const state = () =>
+    `it answered requests [${[...responses.keys()].join(", ")}] and wrote to stderr: ${stderr.text()}`
   const waiters = new Map<number, () => void>()
   // A response, or the server's exit naming the request it never answered.
   const answered = (id: number): Promise<void> => {
@@ -884,7 +1013,7 @@ async function runChannelServer(
         clientInfo: { name: "test", version: "0" },
       },
     })
-    await answered(1)
+    await beforeTheGuard(answered(1), "the channel server's answer to initialize", state)
     send({ jsonrpc: "2.0", method: "notifications/initialized" })
     send({ jsonrpc: "2.0", id: 2, method: "tools/list", params: {} })
     send({
@@ -896,14 +1025,18 @@ async function runChannelServer(
     for (const [index, call] of calls.entries()) {
       send({ jsonrpc: "2.0", id: 4 + index, method: "tools/call", params: call })
     }
-    await Promise.all([answered(2), answered(3), ...calls.map((_, index) => answered(4 + index))])
+    await beforeTheGuard(
+      Promise.all([answered(2), answered(3), ...calls.map((_, index) => answered(4 + index))]),
+      "the channel server's answers to requests 2 and on",
+      state,
+    )
     await server.stdin.end()
-    const [exitCode, stderr] = await Promise.all([
-      server.exited,
-      new Response(server.stderr).text(),
-      reading,
-    ])
-    return { exitCode, responses, stderr }
+    const [exitCode] = await beforeTheGuard(
+      Promise.all([server.exited, stderr.ended, reading]),
+      "the channel server's exit once stdin ended",
+      state,
+    )
+    return { exitCode, responses, stderr: stderr.text() }
   } finally {
     server.kill("SIGKILL")
   }
@@ -945,7 +1078,7 @@ test("with CLAUDE_CONFIG_DIR holding no envoy.json the server names the unread o
     `envoy-channel: no envoy.json at ${file}: Dispatch and Envoy are off; ${notice}`,
   )
   expect(exitCode).toBe(0)
-}, 20_000)
+})
 
 test("an envoy.json that turns Envoy off opens no NATS connection and calls no listener, whatever the variables name", async () => {
   let stopBroker: (() => Promise<void>) | undefined
@@ -986,7 +1119,7 @@ test("an envoy.json that turns Envoy off opens no NATS connection and calls no l
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+})
 
 // The listener's bearer and the NATS seed are resolved once and handed to the client and the
 // connection: a server that dropped either would leave the session unregistered or signed out.
@@ -1047,7 +1180,7 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         },
       }),
     )
-    server = Bun.spawn(["bun", channelEntry], {
+    const running = Bun.spawn(["bun", channelEntry], {
       cwd: home,
       env: {
         PATH: process.env["PATH"] ?? "",
@@ -1055,25 +1188,42 @@ test("the server calls the listener with the file's envoy.token and signs in to 
         CLAUDE_CONFIG_DIR: configDirectory,
         CLAUDE_CODE_SESSION_ID: "ses_credentials",
         CLAUDE_PLUGIN_DATA: home,
+        ...NO_TRANSPILER_CACHE,
       },
       stdin: "pipe",
       stdout: "pipe",
       stderr: "pipe",
     })
+    server = running
+    const stderr = collected(running.stderr)
+    const state = () => `stderr: ${stderr.text()}`
 
-    await Promise.all([registered.promise, broker.until(() => broker.connects.length > 0)])
+    await beforeTheGuard(
+      Promise.race([
+        Promise.all([registered.promise, broker.until(() => broker.connects.length > 0)]),
+        running.exited.then(async (code) => {
+          throw new Error(
+            `the channel server exited ${code} before it registered: ${await stderr.ended}`,
+          )
+        }),
+      ]),
+      "the channel server's registration and its NATS sign-in",
+      state,
+    )
     expect(broker.connects[0]).toMatchObject({ nkey: user.getPublicKey() })
     expect(new Set(auth)).toEqual(new Set([`Bearer ${listenerToken}`]))
     // The bundle runs from this checkout, outside Claude Code's plugin cache.
     expect(plugins[0]).toEqual({ plugin: "@sjawhar/claude-envoy", plugin_version: "source" })
     server.kill("SIGTERM")
-    expect(await server.exited).toBe(0)
+    expect(
+      await beforeTheGuard(running.exited, "the channel server's exit on SIGTERM", state),
+    ).toBe(0)
   } finally {
     server?.kill("SIGKILL")
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+})
 
 /** A listener that answers `GET /v1/sessions` with no session and records every call. */
 function recordingListener(calls: string[]) {
@@ -1140,7 +1290,7 @@ test("with Envoy on and no NATS server the server serves its listener tools with
   } finally {
     listener?.stop(true)
   }
-}, 20_000)
+})
 
 test("a tool call the listener refused because its sender is rate limited answers a result with isError that holds the listener's sentence, and no JSON-RPC error", async () => {
   const sentence =
@@ -1202,7 +1352,7 @@ test("a tool call the listener refused because its sender is rate limited answer
   } finally {
     listener?.stop(true)
   }
-}, 20_000)
+})
 
 test("a refused NATS seed leaves the listener tools on, opens no NATS connection, and says why", async () => {
   let listener: Server<undefined> | undefined
@@ -1249,7 +1399,7 @@ test("a refused NATS seed leaves the listener tools on, opens no NATS connection
     listener?.stop(true)
     await stopBroker?.()
   }
-}, 20_000)
+})
 
 test("a Legion pane takes Aside and Send from the start and gains BTW when its mod connects", () => {
   // The pane's messages go through the bridge's inbox, which needs no mod; the side turn a BTW

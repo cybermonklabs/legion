@@ -1,7 +1,7 @@
 # A workflow file holds the structure of its jobs, and nothing else
 
 A file of `.github/workflows/` names its jobs, their triggers, their conditions, their runners and what they call.
-The path-filter data is in `.github/ci-filters.yaml`, which `dorny/paths-filter` reads by path, in one step of `ci.yaml`'s `changes` job.
+No file holds the path filters: `ci.yaml`'s `changes` job computes them when it runs, from each job's gate in `.github/ci-gates` and the `//ci:` lines of the tests (`.github/scripts/ci-filters-generate.sh`), and `dorny/paths-filter` reads the file it writes by path.
 A `run:` body of more than 10 lines is a script under `.github/scripts/`, run by its path, with each budget comment on the line it sizes, but for two kinds of job.
 A body stays inline where its job makes no checkout, and where its job holds a credential of a release workflow, as `release.yaml`'s publish job does, because `.github/scripts/check-release-credentials.sh` refuses a credentialed job that runs any script under a `scripts/` directory but `.github/scripts/release-push.sh` and `.github/scripts/check-private-names.sh`, each run by its path behind `$GITHUB_WORKSPACE/`.
 The longer bodies of `ci.yaml`, `dispatch-browser.yaml`, `release.yaml` and `ci-job-tool-fallback.yaml` are moved, but for those two kinds of job.

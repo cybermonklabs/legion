@@ -968,6 +968,23 @@ jobs:
         run: |
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" tag "$VERSION" "$TAG"
           "$GITHUB_WORKSPACE/.github/scripts/release-push.sh" push-tag "$TAG"
+      # The release just tagged is the previous build every pull request and merge group from now
+      # on resolves for ci.yaml's dispatch-two-builds job, and that job only restores it: the fill of
+      # this push in .github/workflows/ci-caches.yaml ran before the tag existed and built the
+      # release before. So this asks ci-caches.yaml on main to fill the Dispatch builds alone
+      # (`only: dispatch-builds`). A workflow_dispatch made with this job's GITHUB_TOKEN creates a
+      # run, and actions: write lets the token make it. Plain gh, as this credentialed job runs no
+      # script but release-push.sh (check-release-credentials.sh rule 1). A refused dispatch costs
+      # builds, not the release, so it warns and the job goes on.
+      - name: Fill the cache of the earlier Dispatch builds with this release
+        if: steps.confirm.outputs.release == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh workflow run ci-caches.yaml --ref main -f only=dispatch-builds; then
+            echo "::warning::ci-caches.yaml was not dispatched, so dispatch-two-builds builds this release until the next push to main fills it"
+          fi
       # Build provenance for the host binaries a mise pin installs, linux or darwin, which the
       # release below uploads exactly. `--repo` alone accepts an archive any workflow of this
       # repository attested, so the check pins the signer as docs/kubernetes.md ("Pin by digest,

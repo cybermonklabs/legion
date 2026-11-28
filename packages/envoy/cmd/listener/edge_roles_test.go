@@ -285,6 +285,27 @@ func (kv stalledSessionGetKV) Get(key string) (natsgo.KeyValueEntry, error) {
 	return nil, errors.New("the session bucket's read of the entry never answered")
 }
 
+// stalledSessionReadKV is stalledSessionGetKV whose read of key from the stream's leader
+// (bus.LeaderReads) does not answer either, until released is closed or its context ends: a
+// bucket whose stream stopped answering for that entry. A leader read of any other key goes to
+// the stream through leader, a handle on the bucket that is no stall.
+type stalledSessionReadKV struct {
+	stalledSessionGetKV
+	leader bus.KeyValue
+}
+
+func (kv stalledSessionReadKV) NewestFromLeader(ctx context.Context, key string) (natsgo.KeyValueEntry, error) {
+	if key != kv.key {
+		return kv.leader.NewestFromLeader(ctx, key)
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-kv.released:
+		return nil, errors.New("the session bucket's leader read of the entry never answered")
+	}
+}
+
 // The edge names a role's holder only when that holder is a session of the reader's projects
 // (edgeScope.holderConfirmed): a role of the reader's project can be claimed by any session, and its claim
 // record can be written by any writer of the role bucket, so a holder outside the reader's
@@ -402,11 +423,14 @@ func TestAnEdgeRoleAnswerNamesNoForeignHolder(t *testing.T) {
 	}
 
 	// The read of S_gone's session from the bucket, which a resolution makes for a holder the
-	// listener's copy does not hold live (roleHolderSessions.Holder), stalls until the test ends.
+	// listener's copy does not hold live (roleHolderSessions.Holder), stalls until the test ends,
+	// and so does its read from the stream's leader, which a soft claim makes of the holder it
+	// would take the role from (roleSupersessionVerdict).
 	released := make(chan struct{})
 	t.Cleanup(func() { close(released) })
-	swapSessionBucket(t, rig.deps.sessions, func(kv natsgo.KeyValue) natsgo.KeyValue {
-		return stalledSessionGetKV{KeyValue: kv, key: gone, released: released}
+	swapSessionHandle(t, rig.deps.sessions, func(old bus.KeyValue) bus.KeyValue {
+		stalled := stalledSessionReadKV{stalledSessionGetKV{KeyValue: old.Legacy(), key: gone, released: released}, old}
+		return bus.NewKeyValue(stalled, old.WatchHandle(), old.Streams())
 	})
 	sent := fmt.Sprintf(`{"topic":%q,"source":"agent","source_session":%q,"message":"to the role"}`, contracts.RoleTopicPrefix+"PRIV."+goneRole, reader)
 	for _, unread := range []struct{ method, path, body string }{

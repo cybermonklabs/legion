@@ -1,5 +1,8 @@
 package contracts
 
+//ci:reads packages/contracts/fixtures/github-envelopes/* TestGithubTopicKindsHoldEveryTokenAfterTheRepository
+//ci:reads packages/envoy/scripts/fixtures/github/* TestEveryPublishedGithubEnvelopeCarriesAJSONObjectPayload and TestAGithubEnvelopeStaysUnderNATSMaxPayloadWhateverItsFieldsHold
+
 import (
 	"encoding/json"
 	"maps"
@@ -1055,7 +1058,7 @@ func TestGithubCIObservations(t *testing.T) {
 	}
 
 	t.Run("check_run one PR", func(t *testing.T) {
-		obs := GithubCIObservations("check_run", checkRunBody([]any{map[string]any{"number": 42}}))
+		obs := GithubCIObservations("check_run", checkRunBody([]any{map[string]any{"number": 42}}), "")
 		if len(obs) != 1 {
 			t.Fatalf("expected 1 observation, got %d", len(obs))
 		}
@@ -1072,7 +1075,8 @@ func TestGithubCIObservations(t *testing.T) {
 		obs := GithubCIObservations("check_run", checkRunBody([]any{
 			map[string]any{"number": 42},
 			map[string]any{"number": 43},
-		}))
+		}), "")
+
 		if len(obs) != 2 {
 			t.Fatalf("expected 2 observations, got %d", len(obs))
 		}
@@ -1082,7 +1086,7 @@ func TestGithubCIObservations(t *testing.T) {
 	})
 
 	t.Run("check_run no PR yields nothing", func(t *testing.T) {
-		if obs := GithubCIObservations("check_run", checkRunBody([]any{})); len(obs) != 0 {
+		if obs := GithubCIObservations("check_run", checkRunBody([]any{}), ""); len(obs) != 0 {
 			t.Fatalf("expected no observations for un-PR'd check_run, got %d", len(obs))
 		}
 	})
@@ -1102,7 +1106,8 @@ func TestGithubCIObservations(t *testing.T) {
 		obs := GithubCIObservations("check_run", suiteBody(map[string]any{
 			"id":          float64(900),
 			"head_branch": "refs/pull/42/head",
-		}))
+		}), "")
+
 		if len(obs) != 1 {
 			t.Fatalf("expected 1 observation, got %d", len(obs))
 		}
@@ -1127,14 +1132,14 @@ func TestGithubCIObservations(t *testing.T) {
 	} {
 		t.Run("check_run with no PR on "+head.name+" yields nothing", func(t *testing.T) {
 			body := suiteBody(map[string]any{"id": float64(900), "head_branch": head.branch})
-			if obs := GithubCIObservations("check_run", body); len(obs) != 0 {
+			if obs := GithubCIObservations("check_run", body, ""); len(obs) != 0 {
 				t.Fatalf("head branch %q yielded %+v", head.branch, obs)
 			}
 		})
 	}
 
 	t.Run("check_run with no PR and no check_suite yields nothing", func(t *testing.T) {
-		if obs := GithubCIObservations("check_run", suiteBody(nil)); len(obs) != 0 {
+		if obs := GithubCIObservations("check_run", suiteBody(nil), ""); len(obs) != 0 {
 			t.Fatalf("a run carrying no check suite yielded %+v", obs)
 		}
 	})
@@ -1158,7 +1163,7 @@ func TestGithubCIObservations(t *testing.T) {
 				"pull_requests": []any{},
 			},
 		}
-		obs := GithubCIObservations("check_suite", body)
+		obs := GithubCIObservations("check_suite", body, "")
 		if len(obs) != 1 {
 			t.Fatalf("expected 1 observation, got %d", len(obs))
 		}
@@ -1180,7 +1185,7 @@ func TestGithubCIObservations(t *testing.T) {
 	t.Run("check_run missing head_sha yields nothing", func(t *testing.T) {
 		body := checkRunBody([]any{map[string]any{"number": 42}})
 		delete(body["check_run"].(map[string]any), "head_sha")
-		if obs := GithubCIObservations("check_run", body); len(obs) != 0 {
+		if obs := GithubCIObservations("check_run", body, ""); len(obs) != 0 {
 			t.Fatalf("expected no observations without head_sha, got %d", len(obs))
 		}
 	})
@@ -1201,7 +1206,7 @@ func TestGithubCIObservationsSkipMalformedPRNumbers(t *testing.T) {
 				"pull_requests": []any{map[string]any{"number": number}},
 			},
 		}
-		if observations := GithubCIObservations("check_run", body); len(observations) != 0 {
+		if observations := GithubCIObservations("check_run", body, ""); len(observations) != 0 {
 			t.Fatalf("PR number %v yielded observations: %+v", number, observations)
 		}
 	}
@@ -1220,7 +1225,7 @@ func TestGithubCIObservationsSkipMalformedCheckRunIDs(t *testing.T) {
 				"pull_requests": []any{map[string]any{"number": 42}},
 			},
 		}
-		if observations := GithubCIObservations("check_run", body); len(observations) != 0 {
+		if observations := GithubCIObservations("check_run", body, ""); len(observations) != 0 {
 			t.Fatalf("check run ID %v yielded observations: %+v", checkRunID, observations)
 		}
 	}
@@ -1287,7 +1292,7 @@ func TestGithubCIObservationAgreesWithTheWebhooksFanOut(t *testing.T) {
 		},
 		"check_run": run,
 	}
-	fanned := GithubCIObservations("check_run", body)
+	fanned := GithubCIObservations("check_run", body, "")
 	if len(fanned) != 1 {
 		t.Fatalf("expected 1 observation, got %d", len(fanned))
 	}
@@ -2755,7 +2760,8 @@ func TestACheckRunIsCappedAtTheEnvelopeTextCap(t *testing.T) {
 		observations := GithubCIObservations("check_run", map[string]any{
 			"repository": map[string]any{"name": "widgets", "owner": map[string]any{"login": "acme"}},
 			"check_run":  fields,
-		})
+		}, "")
+
 		if len(observations) != 1 {
 			t.Fatalf("observations = %d, want 1", len(observations))
 		}

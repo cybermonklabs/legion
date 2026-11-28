@@ -47,6 +47,9 @@ type callResult struct {
 	body   []byte
 	// etag is the answer's ETag header, empty when it carries none.
 	etag string
+	// replayed is whether the answer carried contracts.IdempotencyReplayedHeader: Dispatch
+	// answered it from the first request under its key rather than running it again.
+	replayed bool
 	// start is when the client began the request; wrote is when the whole request was in the
 	// socket (httptrace WroteRequest), 0 when it never got there; end is when the response body
 	// was read.
@@ -64,6 +67,20 @@ func (r callResult) errorCode() string {
 		return ""
 	}
 	return errorCode(r.body)
+}
+
+// landed says the keyed write this answers ran and Dispatch gives no copy of its answer: a 409
+// KEY_COMMITTED (it landed before its answer was lost) or a replayed 2xx whose body reads
+// ANSWER_NOT_KEPT (contracts.IdempotencyKeyCommitted, IdempotencyAnswerNotKept). What it made is
+// there, and is read back for anything its caller needs of it; it is no refusal.
+func (r callResult) landed() bool {
+	if r.err != nil {
+		return false
+	}
+	if r.status == http.StatusConflict {
+		return errorCode(r.body) == contracts.IdempotencyKeyCommitted
+	}
+	return r.replayed && r.status/100 == 2 && errorCode(r.body) == contracts.IdempotencyAnswerNotKept
 }
 
 // transient is a failure worth retrying: a transport error, 429 or 5xx.
@@ -143,6 +160,7 @@ func (a *api) callRawKeyed(ctx context.Context, method, path string, w who, cont
 	if err == nil {
 		res.status = resp.StatusCode
 		res.etag = resp.Header.Get("ETag")
+		res.replayed = resp.Header.Get(contracts.IdempotencyReplayedHeader) == "?1"
 		res.body, err = io.ReadAll(resp.Body)
 		_ = resp.Body.Close()
 	}

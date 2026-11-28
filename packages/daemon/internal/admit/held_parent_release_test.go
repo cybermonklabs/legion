@@ -106,7 +106,7 @@ func TestAParentHeldForItsChildrenIsReleasedWheneverNothingBeneathItIsOpen(t *te
 		steps := record.NameAgents(nil, nil, []record.PlanStep{
 			{Issue: parent, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: parent, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-		})
+		}, nil)
 		inTx(t, pool, func(tx pgx.Tx) {
 			records := record.NewStore()
 			for _, put := range []error{
@@ -200,7 +200,7 @@ func TestARetryOfAParentHeldForItsChildrenSaysWhyItsRetroWaits(t *testing.T) {
 		steps := record.NameAgents(nil, nil, []record.PlanStep{
 			{Issue: parent, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: parent, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-		})
+		}, nil)
 		// The operator paused the project, so nothing promotes the parent once it is a root.
 		pauseTestProject(t, pool, fixedNow)
 		inTx(t, pool, func(tx pgx.Tx) {

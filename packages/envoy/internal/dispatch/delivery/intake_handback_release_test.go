@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // durableEvents records, in the order the server sent them, every answer published to the delivery
@@ -234,21 +235,20 @@ func (r heldHandBack) handBackPending() bool {
 // stopBudget is the stop's deadline in the rows below (intakeStopBudget).
 const stopBudget = 3 * time.Second
 
-// untilTheBinaryDeadline is how long the rows below wait for an event that ends a wait of their own
-// or of the stop's: what the test binary's deadline leaves less rowDeadlineMargin, so that a row
-// whose event never comes fails by name before go test's own timeout, and none of these waits ends
-// at a span a loaded runner can outlast. A run with no deadline (-timeout 0) waits rowWaitUnbounded.
+// untilTheBinaryDeadline is how long the rows below, and awaitBoundDurable, wait for an event that
+// ends a wait of their own or of the stop's: what the test binary's deadline leaves less
+// rowDeadlineMargin (testwait.Remaining), so that a row whose event never comes fails by name before
+// go test's own timeout, and none of these waits ends at a span a loaded runner can outlast. A
+// deadline that leaves no more than the margin fails the row by name, saying whether the -timeout
+// was too short or what ran before used it up. A run with no deadline (-timeout 0) waits
+// rowWaitUnbounded, which the intake's ack wait (intakeAckWait: intakeMaxAckPending times
+// intakeMessageTimeout, plus a minute) still takes.
 func untilTheBinaryDeadline(t *testing.T) time.Duration {
 	t.Helper()
-	deadline, bounded := t.Deadline()
-	if !bounded {
+	if _, bounded := t.Deadline(); !bounded {
 		return rowWaitUnbounded
 	}
-	left := time.Until(deadline)
-	if left <= rowDeadlineMargin {
-		t.Fatalf("the test binary's deadline leaves %s, not more than rowDeadlineMargin (%s): this looks like a misconfigured run; raise -timeout", left.Round(time.Millisecond), rowDeadlineMargin)
-	}
-	return left - rowDeadlineMargin
+	return testwait.Remaining(t, rowDeadlineMargin)
 }
 
 const (

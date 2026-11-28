@@ -208,7 +208,7 @@ func lockDeploymentIssueDependencies(ctx context.Context, tx pgx.Tx) error {
 // the object the path names and no key of the body (project_scope.go), and a caller that may not
 // write at all would otherwise take the deployment-wide lock first. A create runs the same check
 // earlier still, before its near-copy gate writes anything (createIssue), and a PATCH before a
-// close settles the issue's documents (patchIssue). The write refuses it again under the locks,
+// close settles the issue's documents (writeIssue). The write refuses it again under the locks,
 // which is the authoritative refusal: writeBlockedBy for a target, and validateIssueParent or the
 // create's own read for the parent. Each pair words it through one function,
 // refuseBlockedByOutsideCallerProject and refuseParentOutsideCallerProject.

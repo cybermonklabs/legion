@@ -811,6 +811,7 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 // moment the server announces its creation finds it bound, even with the taking process's link to
 // the server slow.
 func TestATakeOverCreatesTheDurableAlreadyBound(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)

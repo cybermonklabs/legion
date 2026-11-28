@@ -37,6 +37,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -753,6 +754,96 @@ func TestTheBinaryExchangesAReadEntrysPodTokenForOneThatOnlyReads(t *testing.T) 
 		status, body := live.exchange(t, with(form, "scope", oauthwire.ScopeRead))
 		if status != http.StatusBadRequest || body["error"] != "invalid_scope" || body["access_token"] != nil {
 			t.Fatalf("an exchange naming the scope %s = %d %v, want 400 invalid_scope and no access token: the exchange client is registered for %s alone, and the read entry grants read without being asked", oauthwire.ScopeRead, status, body, oauthwire.Scope)
+		}
+	})
+}
+
+// TestTheBinaryExchangesAPersonlessAccountEntrysPodToken is the live proof of an account entry
+// that names no person and no project (<service account>===<session>), on the real binary and a
+// fresh schema: the broker boots with it beside two entries naming a person, a pod of the account
+// presenting its projected token with a DPoP proof of its own key and no client credential is
+// answered a token, and the listed API account reads that token back as the account's own: the
+// project scope named, the account as its service, the session the entry fixes, no person, no
+// project and no scope, and this test's own key. That very answer is a session's credential to
+// the rule every resource server reads (ciphertoken.SessionCaller), so the verifier admits what
+// the broker mints. The same pod naming a project is refused, as under any entry naming none, and
+// a broker whose entry names a project and no person refuses to start, naming the rule.
+func TestTheBinaryExchangesAPersonlessAccountEntrysPodToken(t *testing.T) {
+	const (
+		personlessAccount = "system:serviceaccount:example-ns:example-public"
+		personlessSession = "example-public-session"
+		personlessPodUID  = "pod-uid-public"
+	)
+	databaseURL := storetest.URL(t)
+	cluster, github := oidctest.New(t), oidctest.New(t)
+	clusterKey := cluster.PublishKey(t, "cluster-key")
+	github.PublishKey(t, "github-key")
+	key := proofKey(t)
+	jkt, err := proof.Thumbprint(&key.PublicKey)
+	if err != nil {
+		t.Fatal(err)
+	}
+	apiToken := accountToken(t, cluster, clusterKey, apiAccount)
+	binary := buildBroker(t)
+	broker := startBroker(t, brokerOptions{Binary: binary, Env: append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+		"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+project+"="+person+" "+listedAccount+"=OTHER=mallory@example.com "+
+			personlessAccount+"==="+personlessSession)})
+	broker.AwaitRecord(t, "token exchange", map[string]any{"state": "on", "accounts": 3})
+	live := newLiveBroker(broker.Addr, key)
+	form := exchangeForm(mintPodToken(t, cluster, clusterKey, personlessAccount, exchangeAudience, personlessPodUID), "")
+	var token string
+
+	t.Run("the pod of an entry naming no person mints a token", func(t *testing.T) {
+		status, body := live.exchange(t, form)
+		token, _ = body["access_token"].(string)
+		if status != http.StatusOK || token == "" || body["token_type"] != "DPoP" {
+			t.Fatalf("the exchange of %s's pod token = %d %v, want 200 with a DPoP-bound access token: the entry names no person and fixes the session, so the pod names none and is registered for nothing", personlessAccount, status, body)
+		}
+	})
+
+	t.Run("a listed service account introspects it as the account's own token", func(t *testing.T) {
+		if token == "" {
+			t.Fatal("the exchange minted no access token, so there is nothing to read back")
+		}
+		status, body := live.introspect(t, token, apiToken)
+		if status != http.StatusOK {
+			t.Fatalf("introspection by the listed API account %s = %d %v, want 200", apiAccount, status, body)
+		}
+		raw, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var answer oauthwire.Introspection
+		if err := json.Unmarshal(raw, &answer); err != nil {
+			t.Fatalf("the introspection answer %s is not an introspection: %v", raw, err)
+		}
+		want := oauthwire.Introspection{Active: true, ClientID: oauthwire.ExchangeClientID, Thumbprint: jkt, Session: personlessSession, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed, ExpiresAt: answer.ExpiresAt}
+		if !reflect.DeepEqual(answer, want) {
+			t.Errorf("introspection answered %+v, want %+v: an entry naming no person mints a named token that names the account as its service and the session it fixes, and names no person, no project and no scope", answer, want)
+		}
+		if answer.ExpiresAt <= time.Now().Unix() {
+			t.Errorf("introspection answered exp %d, which is not in the future", answer.ExpiresAt)
+		}
+		caller, err := ciphertoken.SessionCaller(answer)
+		wantCaller := ciphertoken.Caller{Session: personlessSession, Service: personlessAccount, ProjectScope: oauthwire.ProjectScopeNamed}
+		if err != nil || !reflect.DeepEqual(caller, wantCaller) {
+			t.Errorf("the shared verifier rule read the broker's answer as %+v, %v; want %+v: every resource server must admit the token the broker mints for an entry naming no person", caller, err, wantCaller)
+		}
+	})
+
+	t.Run("the same pod naming a project mints nothing", func(t *testing.T) {
+		status, body := live.exchange(t, with(form, oauthwire.FormProjects, project))
+		if status != http.StatusBadRequest || body["error"] != "invalid_request" || body["access_token"] != nil {
+			t.Fatalf("an exchange naming %s under an entry naming no project = %d %v, want 400 invalid_request and no access token", project, status, body)
+		}
+	})
+
+	t.Run("an entry naming a project and no person refuses the start", func(t *testing.T) {
+		out := runRefusedBroker(t, binary, append(exchangeEnv(t, databaseURL, cluster, github, longAccessSeconds),
+			"BROKER_EXCHANGE_ACCOUNTS="+podAccount+"="+project+"="+person+" "+listedAccount+"=OTHER=mallory@example.com "+
+				personlessAccount+"="+project+"=")...)
+		if !strings.Contains(out, "names no person only when it names no project either") {
+			t.Fatalf("the broker refused to start, but its output does not name the rule:\n%s", out)
 		}
 	})
 }

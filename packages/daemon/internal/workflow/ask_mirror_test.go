@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"reflect"
+	"slices"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -490,5 +492,93 @@ func TestTheGatesRequestIsNoPersonsActWhateverTheOrder(t *testing.T) {
 		if row.PersonActSeq(gate.ArtifactID) != 0 || row.PersonAnswerSeq != 11 || row.Artifact != gateDoc {
 			t.Fatalf("%s: the gate's request row = %#v, want its answer at 11 kept and no person's act on it", name, *row)
 		}
+	}
+}
+
+// parkedAskRoot is LEGION-208 as a person's park leaves a root that ran: its phase done, its tree
+// lingering, in backlog, so nobody in its tree hears a decision made on it (relayParkedDecision).
+func parkedAskRoot() record.Issue {
+	until := time.Date(2026, 9, 26, 0, 0, 0, 0, time.UTC)
+	return record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208",
+		Project: "LEGION", Title: "root", Phase: phase.Done, Generation: 1, Status: "backlog", DispatchStatus: "backlog", Rank: "U",
+		HandedOver: true, LastDispatchSeq: 1, LingerUntil: &until}
+}
+
+// keptDecision is the decision LEGION-208 keeps under ref, nil when it keeps none.
+func keptDecision(t *testing.T, pool *pgxpool.Pool, ref string) *record.ParkedDecision {
+	t.Helper()
+	var kept *record.ParkedDecision
+	seedRecord(t, pool, func(tx pgx.Tx) error {
+		decisions, err := record.NewStore().ParkedDecisions(context.Background(), tx, "LEGION-208")
+		for _, decision := range decisions {
+			if decision.Ref == ref {
+				kept = &decision
+			}
+		}
+		return err
+	})
+	return kept
+}
+
+// parkedDecisionRefs is the decision and the ref of every parked-decision controller notice in
+// the outbox, oldest first.
+func parkedDecisionRefs(t *testing.T, pool *pgxpool.Pool) []string {
+	t.Helper()
+	return outboxStrings(t, pool, "select (payload->>'decision') || ' ' || (payload->>'ref') from outbox where kind = 'controller_notice' and payload->>'kind' = $1 order by id",
+		string(record.ParkedDecisionNotice))
+}
+
+// A person's decision on a question of a parked tree is kept under the question's ref, newest
+// first, until an architect of the tree is told it: a decision that reached the daemon late, or
+// was replayed from a message the intake gave up on, however late, takes nothing from a newer one
+// kept under the same ref. Here alice answered the question at sequence 5, it was restored open at
+// 6, and she resolved it at 7; the resolution was relayed, and an architect start claimed it. The
+// answer at 5, delivered after all of that, is no newest close of the question: it is relayed to
+// nobody, and the resolution stays kept, at its own time, and claimed. A reply of hers that names
+// no comment is kept under the question's ref too, at the time Dispatch recorded it: one delivered
+// after the resolution replaces nothing kept.
+func TestALateAskCloseLeavesTheNewerParkedDecision(t *testing.T) {
+	at := func(seq int64) record.EventMark {
+		return record.EventMark{Seq: seq, At: time.Date(2026, 9, 22, 12, 0, int(seq), 0, time.UTC)}
+	}
+	const ref = "dispatch://LEGION-208/ask/ask-q"
+	for _, tc := range []struct {
+		name string
+		late intake.Fact
+		// relayed is every parked-decision notice the outbox holds after the late fact.
+		relayed []string
+	}{
+		{name: "an earlier close of the question",
+			late:    intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, State: "answered", Actor: askPerson, Mark: at(5)},
+			relayed: []string{"ask-resolved " + ref}},
+		{name: "an earlier reply naming no comment",
+			late:    intake.DispatchAskReply{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, WaitingOn: "agent", Actor: askPerson, Mark: at(4)},
+			relayed: []string{"ask-resolved " + ref, "ask-reply " + ref}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedIssue(t, pool, parkedAskRoot())
+			apply := applyFacts(t, pool, testEngine(config.DesignGateRootIssues, nil))
+			apply("opened", intake.DispatchAskOpened{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, Mark: at(3)})
+			apply("restored", intake.DispatchAskRestored{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, Open: true, Mark: at(6)})
+			apply("resolved", intake.DispatchAskClosed{Key: "LEGION-208", Ask: "ask-q", Kind: record.AskQuestion, State: "resolved", Actor: askPerson, Mark: at(7)})
+			// The start that names the decision claims it (record.Store.ClaimKeptDecisions).
+			if _, err := pool.Exec(context.Background(), `update parked_decisions set claimed_by = (select max(id) from outbox) where issue = 'LEGION-208'`); err != nil {
+				t.Fatalf("claim the kept resolution: %v", err)
+			}
+			newer := keptDecision(t, pool, ref)
+			if newer == nil || newer.Decision != record.DecisionAskResolved || newer.ClaimedBy == 0 {
+				t.Fatalf("the kept decision before the late fact = %+v, want the claimed resolution", newer)
+			}
+
+			apply("late", tc.late)
+
+			if got := keptDecision(t, pool, ref); got == nil || got.Decision != newer.Decision || !got.At.Equal(newer.At) || got.ClaimedBy != newer.ClaimedBy {
+				t.Fatalf("the kept decision after the late %T = %+v, want the newer %+v as it stood, claimed", tc.late, got, *newer)
+			}
+			if got := parkedDecisionRefs(t, pool); !slices.Equal(got, tc.relayed) {
+				t.Fatalf("the parked-decision notices = %q, want %q", got, tc.relayed)
+			}
+		})
 	}
 }

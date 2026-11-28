@@ -891,7 +891,7 @@ func agentSubjectDelivery(cfg listenerDeliveryHandlerConfig, message deliveryMes
 	// (unplaceableAgentDelivery). The interest path tells the two apart (gone): a gone session is
 	// held and given up the same way, with the wake that brings a released session back, while a
 	// read that did not answer fails and is NAKed.
-	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone)
+	entry, _, entryErr := liveSessionEntry(context.Background(), cfg.sessions, sessionID, deliverySessionReadTimeout, notGone, cfg.sessions.Refresh)
 	gone := errors.Is(entryErr, nats.ErrKeyNotFound)
 	var entryPtr *session.SessionEntry
 	if entryErr == nil {

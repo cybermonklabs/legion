@@ -1,3 +1,4 @@
+import { editedName } from "../refs/post-marks";
 import {
   buildReferencePath,
   type DispatchReferenceRoute,
@@ -181,6 +182,9 @@ export function knownIssueKeys(names: ReadonlyMap<string, string>): string[] {
 /** No reference read as ambiguous: what a caller that hands no set of them reads by. */
 const NO_AMBIGUOUS: ReadonlySet<string> = new Set();
 
+/** No reference read as edited: what a caller that hands no set of them reads by. */
+const NO_EDITED: ReadonlySet<string> = new Set();
+
 /** The references of `text` a row links, in the order it holds them: every address that names
  *  something, and each bare key among `issues`. A `#id` is left as written: its question map is
  *  a read of its own, one per document, which a row does not make. A reference in `ambiguous` -
@@ -215,18 +219,25 @@ export function rowReferences(
  * What a row draws a reference as: an issue by its key, then its title once the batched read
  * has brought it; anything else by its target's own words, cut to at most `TITLE_MAX`
  * characters by `textHead` - at a word where one ends in the budget's second half - and drawn
- * with no ellipsis; and until the read names it, or where nothing answers to it, by its short
- * form, as a link of any other body reads until its title resolves (`shortForm`).
+ * with no ellipsis, then ` · edited` where the read answered that the target's post was edited
+ * (`edited`, `useKnownEditedReferences`), after the cut as a link's title takes it
+ * (`editedName`), so no cut takes the mark; and until the read names it, or where nothing
+ * answers to it, by its short form, as a link of any other body reads until its title resolves
+ * (`shortForm`).
  */
 export function rowReferenceWords(
   one: Pick<RowReference, "reference" | "route">,
-  names: ReadonlyMap<string, string>
+  names: ReadonlyMap<string, string>,
+  edited: ReadonlySet<string> = NO_EDITED
 ): { readonly key: string | undefined; readonly words: string } {
   const name = (names.get(one.reference) ?? "").replace(/\s+/gu, " ").trim();
   if (one.route.kind === "issue") return { key: one.route.key, words: name };
   return {
     key: undefined,
-    words: name === "" ? shortForm(one.route) : textHead(name, TITLE_MAX),
+    words:
+      name === ""
+        ? shortForm(one.route)
+        : editedName(textHead(name, TITLE_MAX), edited.has(one.reference)),
   };
 }
 
@@ -249,9 +260,10 @@ export const ROW_LINK = "underline decoration-page-bullet underline-offset-[3px]
 function nameAnchor(
   anchor: HTMLAnchorElement,
   one: Pick<RowReference, "reference" | "route">,
-  names: ReadonlyMap<string, string>
+  names: ReadonlyMap<string, string>,
+  edited: ReadonlySet<string>
 ): void {
-  const { key, words } = rowReferenceWords(one, names);
+  const { key, words } = rowReferenceWords(one, names, edited);
   if (key === undefined) {
     if (anchor.textContent !== words) anchor.textContent = words;
     return;
@@ -267,16 +279,18 @@ function nameAnchor(
 /**
  * The row's own link pass over words a reading painted into `root` (`RowText.tsx`): every
  * reference its text holds outside a link and outside code becomes a link to its target, named
- * from `names`, and a link an earlier pass made takes the name the read has brought since. A
- * reference in `ambiguous` links nothing (`rowReferences`), and a link an earlier pass made for
- * one the read has answered ambiguous since is put back as the words it was made over, so it is
- * drawn as written. Out of the tab order, as everything inside a row is (R9). Run again after
- * every paint and whenever `names` or `ambiguous` changes; it finds nothing to do twice.
+ * from `names` and marked from `edited` (`rowReferenceWords`), and a link an earlier pass made
+ * takes the name the read has brought since. A reference in `ambiguous` links nothing
+ * (`rowReferences`), and a link an earlier pass made for one the read has answered ambiguous
+ * since is put back as the words it was made over, so it is drawn as written. Out of the tab
+ * order, as everything inside a row is (R9). Run again after every paint and whenever `names`,
+ * `ambiguous` or `edited` changes; it finds nothing to do twice.
  */
 export function linkRowReferences(
   root: HTMLElement,
   names: ReadonlyMap<string, string>,
-  ambiguous: ReadonlySet<string> = NO_AMBIGUOUS
+  ambiguous: ReadonlySet<string> = NO_AMBIGUOUS,
+  edited: ReadonlySet<string> = NO_EDITED
 ): void {
   for (const anchor of root.querySelectorAll<HTMLAnchorElement>(`a[${ROW_REFERENCE}]`)) {
     const reference = anchor.getAttribute(ROW_REFERENCE) ?? "";
@@ -285,7 +299,7 @@ export function linkRowReferences(
       continue;
     }
     const route = parseNodeReference(reference);
-    if (route !== undefined) nameAnchor(anchor, { reference, route }, names);
+    if (route !== undefined) nameAnchor(anchor, { reference, route }, names, edited);
   }
   const issues = knownIssueKeys(names);
   const walker = document.createTreeWalker(root, NodeFilter.SHOW_TEXT);
@@ -308,7 +322,7 @@ export function linkRowReferences(
       anchor.setAttribute(ROW_REFERENCE, one.reference);
       anchor.setAttribute(ROW_WRITTEN, value.slice(one.start, one.end));
       anchor.tabIndex = -1;
-      nameAnchor(anchor, one, names);
+      nameAnchor(anchor, one, names, edited);
       pieces.push(anchor);
       at = one.end;
     }

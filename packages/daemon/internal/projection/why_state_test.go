@@ -241,13 +241,20 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 		"LEGION-100": {State: api.WhyClaimStopped,
 			Reason: "Its phase is accepting and its tree's architect claim is stranded at suspended, so nothing will wake it."},
 		"LEGION-101": {State: api.WhyClaimStopped,
+<<<<<<< HEAD
 			Reason: "Its phase is implementing and its implementer is stranded at failed, so nothing will wake it."},
+=======
+			Reason: "Its phase is implementing and the implementer's claim is stranded at failed, so nothing will wake it."},
+		// Neither root has a priority, so each waits after P3 and its sentence says so.
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 		"LEGION-200": {State: api.WhyWaiting,
-			Reason: "It has not started. It is 1st of 2 issues that have not started, by its own Dispatch rank."},
+			Reason: "It has not started. It has no priority, so it waits after every issue at P0 to P3. " +
+				"It is 1st of 2 issues with no priority that have not started, by its own Dispatch rank."},
 		// The member's own sentence and one clause more, because the line holds it and a link
 		// holds it at once; the line's own `reason` carries no such clause.
 		"LEGION-201": {State: api.WhyWaiting,
-			Reason: "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank. " +
+			Reason: "It has not started. It has no priority, so it waits after every issue at P0 to P3. " +
+				"It is 2nd of 2 issues with no priority that have not started, by its own Dispatch rank. " +
 				"It waits on LEGION-900, which is not done."},
 		"LEGION-110": {State: api.WhyBlocked,
 			Reason: "It waits on LEGION-900 and LEGION-901, which are not done."},
@@ -275,7 +282,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 				"so no slot has been offered to it. No rule of the held list says what it waits for."},
 		"LEGION-711": {State: api.WhyUnlisted,
 			Reason: "Its tree is closed: LEGION-710 has finished, or lingers after leaving the workflow, " +
-				"and the daemon starts no issue of that tree."},
+				"or waits in the line for the promotion that opens its tree again, and the daemon starts no issue of that tree; " +
+				"in the last case that root's promotion ends this hold."},
 	}
 	for key, view := range got.Issues {
 		answer, answered := answers[key]
@@ -296,7 +304,8 @@ func TestWhyStateAnswersEveryIssueThatIsNotWorkingNow(t *testing.T) {
 	}
 	// The clause the blocked member takes is the issue's own and never the line's: the two are
 	// separate fields, and a reader of `waitingLine.reason` reads the place alone.
-	if line.Reason != "It has not started. It is 2nd of 2 issues that have not started, by its own Dispatch rank." {
+	if line.Reason != "It has not started. It has no priority, so it waits after every issue at P0 to P3. "+
+		"It is 2nd of 2 issues with no priority that have not started, by its own Dispatch rank." {
 		t.Errorf("LEGION-201's waitingLine.reason = %q, want the place alone", line.Reason)
 	}
 }

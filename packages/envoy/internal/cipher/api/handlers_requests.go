@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
+	"github.com/sjawhar/envoy/internal/cipher/oauthwire"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
@@ -338,36 +339,7 @@ type grantValuesResponse struct {
 	// are not in "values" at all, and this says where the proxy that holds them is. Absent when
 	// no granted name is behind the airlock, which is every release of a broker with no rules
 	// file.
-	Airlock *airlockRelease `json:"airlock,omitempty"`
-}
-
-// airlockRelease is how a session reaches the values the airlock holds back: the proxy it sends
-// their requests through, the certificate authority that proxy's certificates are signed by, the
-// password every connection to it opens with, and one entry per name held back.
-type airlockRelease struct {
-	// The URL the command points HTTPS_PROXY at (BROKER_AIRLOCK_PROXY_URL).
-	ProxyURL string `json:"proxy_url"`
-	// The PEM certificate the command must trust to reach the proxy, which signs a certificate
-	// for each host it carries a request to.
-	CACertificate string `json:"ca_certificate"`
-	// The password every proxy connection authenticates with: one of this grant's own
-	// placeholders, the first (name, slot) pair in sorted order.
-	ProxyPassword string `json:"proxy_password"`
-	// Each name the airlock holds back, by the name the command knows it as.
-	Names map[string]airlockName `json:"names"`
-}
-
-// airlockName is one name the airlock holds back.
-type airlockName struct {
-	// What the command's environment variable of that name holds: the released shape of the
-	// secret with a placeholder wherever its value would be.
-	Value string `json:"value"`
-	// Each slot of the secret and the placeholder standing for it, so a command that takes one
-	// value of the secret apart knows which placeholder is which.
-	Slots map[string]string `json:"slots"`
-	// The hosts the secret's airlock entry allows, which the command keeps off its NO_PROXY so
-	// their requests reach the proxy.
-	Hosts []string `json:"hosts"`
+	Airlock *oauthwire.AirlockRelease `json:"airlock,omitempty"`
 }
 
 // requestWaitStep is how often a held read reads its request again.
@@ -566,6 +538,12 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 	case errors.Is(err, requests.ErrSecretNotInStore):
 		writeError(w, http.StatusNotFound, "SECRET_NOT_IN_STORE", err.Error())
 		return
+	case errors.Is(err, requests.ErrMintedOnly):
+		// A stored secret under a proxy block of kind dpop: that name is a capability the broker
+		// mints and holds, and nothing of the stored value is released, to the session or to the
+		// proxy. The refusal is the policy's, never a fault of the broker's.
+		writeError(w, http.StatusForbidden, "MINTED_ONLY", err.Error())
+		return
 	case errors.Is(err, requests.ErrMintFailed):
 		// The type's upstream (GitHub or Google) refused or failed a mint the profile's scope is
 		// not at fault for: an App with no installation, a Google login that needs a new sign-in,
@@ -591,17 +569,7 @@ func (s *server) grantValues(w http.ResponseWriter, r *http.Request, enrollmentI
 		values = map[string]string{}
 	}
 	answer := grantValuesResponse{ExpiresAt: release.Expires, Values: values, GitHubLeftOut: release.GitHubLeftOut, Locations: release.Locations}
-	if release.Airlock != nil {
-		answer.Airlock = &airlockRelease{
-			ProxyURL:      release.Airlock.ProxyURL,
-			CACertificate: release.Airlock.CACertificate,
-			ProxyPassword: release.Airlock.ProxyPassword,
-			Names:         map[string]airlockName{},
-		}
-		for name, held := range release.Airlock.Names {
-			answer.Airlock.Names[name] = airlockName{Value: held.Value, Slots: held.Slots, Hosts: held.Hosts}
-		}
-	}
+	answer.Airlock = airlockReleaseOf(release.Airlock)
 	writeJSON(w, http.StatusOK, answer)
 }
 
@@ -632,4 +600,17 @@ func (s *server) revokeGrant(w http.ResponseWriter, r *http.Request, enrollmentI
 		return
 	}
 	writeJSON(w, http.StatusOK, stateResponse{State: "revoked"})
+}
+
+// airlockReleaseOf is a release's airlock in its wire shape, nil for a release that holds no name
+// back.
+func airlockReleaseOf(release *requests.AirlockRelease) *oauthwire.AirlockRelease {
+	if release == nil {
+		return nil
+	}
+	names := make(map[string]oauthwire.AirlockName, len(release.Names))
+	for name, held := range release.Names {
+		names[name] = oauthwire.AirlockName{Value: held.Value, Slots: held.Slots, Hosts: held.Hosts}
+	}
+	return &oauthwire.AirlockRelease{ProxyURL: release.ProxyURL, CACertificate: release.CACertificate, ProxyPassword: release.ProxyPassword, Names: names}
 }

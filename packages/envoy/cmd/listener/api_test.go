@@ -1,5 +1,8 @@
 package main
 
+//ci:reads packages/contracts/fixtures/dispatch-targeted-delivery.json TestDispatchClientSendUsesListenerWireContract and TestSendHandlerRefusesUnadvertisedModeFromDerivedPayload and TestDispatchClientSendFrameModeIsGuardedEndToEnd
+//ci:reads packages/contracts/fixtures/envoy-session-no-interests.json readNoInterestRecordFixture
+
 import (
 	"bytes"
 	"context"
@@ -1075,7 +1078,8 @@ func TestTheInterestReaperWhoseSessionCacheTrailsTheBucketKeepsALiveSessionsInte
 }
 
 // stalledReadKV is a session bucket whose writes land and whose reads never answer, like a bucket
-// the listener can write through but whose direct get has stopped answering.
+// the listener can write through but whose direct get and stream message get have stopped
+// answering: a leader read (bus.LeaderReads) waits until its context ends.
 type stalledReadKV struct {
 	nats.KeyValue
 	released <-chan struct{}
@@ -1084,6 +1088,15 @@ type stalledReadKV struct {
 func (kv stalledReadKV) Get(string) (nats.KeyValueEntry, error) {
 	<-kv.released
 	return nil, errors.New("the session bucket's read never answered")
+}
+
+func (kv stalledReadKV) NewestFromLeader(ctx context.Context, _ string) (nats.KeyValueEntry, error) {
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-kv.released:
+		return nil, errors.New("the session bucket's leader read never answered")
+	}
 }
 
 // swapSessionBucket puts the handle sessions' (stopped) watcher hands out behind what wrap

@@ -16,6 +16,8 @@ import (
 	"strings"
 	"testing"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/internal/pgmigrate"
 )
 
 // storeMigrations is the directory of the store's migrations, from the repository's root.
@@ -99,6 +101,12 @@ func requireTheScanFindsWhatItShould(t *testing.T) {
 		{"insert into graph_tuples (kind) values ('a')", ""},
 		{"update graph_nodes set state = 'gone'", ""},
 		{"-- delete from graph_nodes", ""},
+		// A -- comment ends at a carriage return, as Postgres's scan.l ends it, so the delete after
+		// one is a statement.
+		{"select 1 -- c\rdelete from graph_nodes", "delete from graph_nodes"},
+		// A dollar quote's tag takes bytes 0x80-0xff, so the -- between its two tags is inside its
+		// body and comments out nothing after the closing tag.
+		{"select $é$ -- $é$; delete from graph_tuples", "delete from graph_tuples"},
 		{`delete from "Graph_Nodes"`, ""},
 	} {
 		var clauses []string
@@ -179,48 +187,6 @@ var storeRowRemoval = regexp.MustCompile(`(?i)\b(` +
 	`(?:` + removalName + `\s*\.\s*){0,2}(?:graph_(?:nodes|tuples)|(?-i:"graph_(?:nodes|tuples)"))` +
 	`)(?:\s*(?:[^a-z0-9_$.\s]|\z)|\s+[^.\s])`)
 
-// withoutSQLComments is text with each -- and /* */ comment blanked out, a block comment nested
-// in another included, and no comment found inside a quoted string or name. A line break stays
-// and every other byte of a comment becomes a space, so an offset into the answer is the same
-// offset into text, and a comment between two words still parts them, as it does for Postgres.
-func withoutSQLComments(text string) string {
-	out := []byte(text)
-	var quote byte
-	for i := 0; i < len(out); i++ {
-		switch c := out[i]; {
-		case quote != 0:
-			if c == quote {
-				quote = 0
-			}
-		case c == '\'' || c == '"':
-			quote = c
-		case c == '-' && i+1 < len(out) && out[i+1] == '-':
-			for ; i < len(out) && out[i] != '\n'; i++ {
-				out[i] = ' '
-			}
-		case c == '/' && i+1 < len(out) && out[i+1] == '*':
-			for depth := 0; i < len(out); i++ {
-				switch {
-				case out[i] == '/' && i+1 < len(out) && out[i+1] == '*':
-					depth++
-					out[i], out[i+1] = ' ', ' '
-					i++
-				case out[i] == '*' && i+1 < len(out) && out[i+1] == '/':
-					depth--
-					out[i], out[i+1] = ' ', ' '
-					i++
-				case out[i] != '\n':
-					out[i] = ' '
-				}
-				if depth == 0 {
-					break
-				}
-			}
-		}
-	}
-	return string(out)
-}
-
 // storeRemoval is one statement found that takes rows out of the store: the file, from the
 // repository's root, the line its verb is on, and the clause as the scan read it.
 type storeRemoval struct {
@@ -274,7 +240,9 @@ func storeRemovalsIn(value built) []storeRemoval {
 		starts[i] = length
 		length += len(piece.text)
 	}
-	statement := withoutSQLComments(value.text())
+	// pgmigrate.WithoutComments blanks each comment byte for byte, a line break kept, so an offset
+	// into statement is one into the pieces, and reads a dollar quote's body as SQL too.
+	statement := pgmigrate.WithoutComments(value.text())
 	var removals []storeRemoval
 	for _, match := range storeRowRemoval.FindAllStringSubmatchIndex(statement, -1) {
 		start, end := match[2], match[3]

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/sjawhar/envoy/internal/cipher/config"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 )
@@ -23,7 +24,7 @@ const (
 
 // profilesCheckForm is the subcommand as a person writes it, which its usage line and every
 // message that points at it name.
-const profilesCheckForm = profilesCommand + " " + profilesCheckCommand + " <file> [--against <old file>]"
+const profilesCheckForm = profilesCommand + " " + profilesCheckCommand + " <file> [--against <old file>] [--private-upstream '<host>=<url> ...']"
 
 // profilesCheckUsage is the one line every usage error of the subcommand prints, in the form the
 // end-sessions usage line takes.
@@ -59,8 +60,15 @@ const removedAirlockCheckCommand = "airlock-check"
 //
 // On a file it would not serve it exits 1 with one line on stderr naming the file and what the
 // refusal says: the profile and the field, or the parse position for a file that is not JSON. A
-// usage error is exit 2 and the usage line. It reads no configuration, opens no database and binds
-// nothing: the file and the --against file are all it reads.
+// usage error is exit 2 and the usage line, and so is a --private-upstream value that is not one
+// BROKER_PROXY_PRIVATE_UPSTREAM takes. It reads no configuration, opens no database and binds
+// nothing: the file, the --against file and the flags are all it reads.
+//
+// The dpop blocks are held to every rule of the boot's that the file alone decides
+// (config.MintedEntryRules). Their tie to the private destinations is the boot's to check with the
+// broker's own BROKER_PROXY_PRIVATE_UPSTREAM: given that value as --private-upstream, this runs
+// the boot's whole check (config.ProxyMintedRules), and without it, it writes, for each dpop
+// block, one line saying that tie was not checked, so a reader knows what it did not see.
 //
 // The --against file is decoded and never held to the file's rules (policy.DecodeProfiles): the
 // profiles in force may be a file this broker would refuse, and what changed is the point of the
@@ -70,6 +78,7 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 	flags.SetOutput(stderr)
 	flags.Usage = func() { fmt.Fprintln(stderr, profilesCheckUsage) }
 	against := flags.String("against", "", "the profiles file in force now, the one the report is made against")
+	upstreamFlag := flags.String("private-upstream", "", "the <host>=<url> entries the broker's BROKER_PROXY_PRIVATE_UPSTREAM holds, against which the dpop blocks' hosts are checked")
 	// The subcommand's form puts the file first and the flag after it, and flag.Parse stops at
 	// the first argument that is not a flag, so the files are taken out one at a time and what
 	// follows each is parsed again. A flag then works wherever it is written, and a second file
@@ -97,6 +106,31 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "%s: %v\n", profilesCheckName, err)
 		return 1
 	}
+	rules := now.ProxyRules()
+	if err := config.MintedEntryRules(rules); err != nil {
+		fmt.Fprintf(stderr, "%s: %s: %v\n", profilesCheckName, path, err)
+		return 1
+	}
+	if text := strings.TrimSpace(*upstreamFlag); text != "" {
+		upstreams, err := config.ParsePrivateUpstreams(text)
+		for _, upstream := range upstreams {
+			if err != nil {
+				break
+			}
+			// The broker's start refuses a destination no dial reaches; this knows no dial
+			// allow, the local stack's alone, so it refuses every such destination.
+			err = config.PrivateUpstreamDialable(upstream, nil)
+		}
+		if err != nil {
+			fmt.Fprintf(stderr, "%s: --private-upstream: %v\n", profilesCheckName, err)
+			flags.Usage()
+			return 2
+		}
+		if err := config.ProxyMintedRules(rules, upstreams); err != nil {
+			fmt.Fprintf(stderr, "%s: %s: %v\n", profilesCheckName, path, err)
+			return 1
+		}
+	}
 	var old policy.Profiles
 	oldName := "an empty profiles file, so every profile reads as added"
 	if name := strings.TrimSpace(*against); name != "" {
@@ -107,6 +141,13 @@ func runProfilesCheck(args []string, stdout, stderr io.Writer) int {
 		oldName = name
 	}
 	fmt.Fprintf(stdout, "%s: %s is valid: %s\n", profilesCheckName, path, profileCount(len(now.Names())))
+	if strings.TrimSpace(*upstreamFlag) == "" {
+		for _, entry := range rules.Secrets {
+			if entry.Kind == proxyrules.KindDPoP {
+				fmt.Fprintf(stdout, "%s: %s binds %s; its tie to BROKER_PROXY_PRIVATE_UPSTREAM was not checked (no --private-upstream)\n", profilesCheckName, entry.Name, strings.Join(entry.Hosts, " "))
+			}
+		}
+	}
 	fmt.Fprintf(stdout, "%s: compared against %s\n", profilesCheckName, oldName)
 	writeProfilesChanges(stdout, old, now)
 	return 0

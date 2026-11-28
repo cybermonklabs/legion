@@ -305,8 +305,8 @@ func readyDocumentEdit(t *testing.T, base routeFixture) lockedItemWrite {
 
 // readyMentionRetry drives POST /api/v1/comments/{id}/deliveries, a person's Retry of a mention
 // already delivered, which claims an attempt of its own under the comment's owner lock
-// (claimCommentDeliveryAttempt, lockedCommentForDelivery) before it sends. The mention needs a
-// listener to resolve against, so this row stands one up and lets the create's delivery settle.
+// (claimCommentDeliveryAttempt, lockedCommentAllowingClosed) before it sends. The mention needs
+// a listener to resolve against, so this row stands one up and lets the create's delivery settle.
 //
 // The claim is a transaction of its own that appends no event: it commits the attempt it opens
 // and the send's later transactions take the owner's lock again. A claim that took no lock would
@@ -315,11 +315,40 @@ func readyDocumentEdit(t *testing.T, base routeFixture) lockedItemWrite {
 // tells them apart: while the route waits, the mention must still hold its one attempt.
 func readyMentionRetry(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	listener := itemRowSessionListener(t, "steer")
-	base.options.envoyURL = listener.URL
+	return mentionRetryWrite(t, base, itemRowSessionListener(t, "steer").URL,
+		"The session this mention names is sent it twice.",
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated || decodeBody[commentDeliveryRead](t, answer).Attempt != 2 {
+				t.Fatalf("retry the mention once the lock was released: status=%d body=%s, want 201 and attempt 2",
+					answer.Code, answer.Body.String())
+			}
+		},
+		func(t *testing.T, _ pgx.Tx, fixture itemRowFixture, commentID string) {
+			if attempts := fixture.rowCount(t, `select count(*) from comment_deliveries where comment_id = $1`, commentID); attempts != 1 {
+				t.Fatalf("the mention holds %d attempts while this test holds its owner's lock, want its one "+
+					"first attempt: the Retry committed its claim under a writer holding that owner", attempts)
+			}
+		})
+}
+
+// mentionRetryWrite readies a person's Retry of a mention as a row's write, on a server of base's
+// options whose Envoy is the listener at listenerURL, which holds session s1: it files the issue,
+// posts a comment of body mentioning s1 and lets its first delivery settle, and the write is POST
+// /api/v1/comments/{id}/deliveries of that comment, steered. answered checks the Retry's answer
+// once the lock is given back, and meanwhile is the holder's write while the Retry waits, handed
+// the fixture and the comment's id.
+func mentionRetryWrite(
+	t *testing.T,
+	base routeFixture,
+	listenerURL, body string,
+	answered func(t *testing.T, answer *httptest.ResponseRecorder),
+	meanwhile func(t *testing.T, holder pgx.Tx, fixture itemRowFixture, commentID string),
+) lockedItemWrite {
+	t.Helper()
+	base.options.envoyURL = listenerURL
 	fixture := base.issue(t, "Mention retry")
 	comment := decodeMentionedComment(t, postMentionedComment(t, fixture.handler, fixture.issueKey, map[string]any{
-		"body":     "The session this mention names is sent it twice.",
+		"body":     body,
 		"mentions": []map[string]any{{"target": "session:s1"}},
 	}))
 	settledCommentDeliveries(t, fixture.database, comment.ID)
@@ -328,18 +357,8 @@ func readyMentionRetry(t *testing.T, base routeFixture) lockedItemWrite {
 			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/comments/"+comment.ID+"/deliveries",
 				map[string]any{"delivery": "steer"}, "alice")
 		},
-		func(t *testing.T, answer *httptest.ResponseRecorder) {
-			if answer.Code != http.StatusCreated || decodeBody[commentDeliveryRead](t, answer).Attempt != 2 {
-				t.Fatalf("retry the mention once the lock was released: status=%d body=%s, want 201 and attempt 2",
-					answer.Code, answer.Body.String())
-			}
-		})
-	write.meanwhile = func(t *testing.T, _ pgx.Tx) {
-		if attempts := fixture.rowCount(t, `select count(*) from comment_deliveries where comment_id = $1`, comment.ID); attempts != 1 {
-			t.Fatalf("the mention holds %d attempts while this test holds its owner's lock, want its one "+
-				"first attempt: the Retry committed its claim under a writer holding that owner", attempts)
-		}
-	}
+		answered)
+	write.meanwhile = func(t *testing.T, holder pgx.Tx) { meanwhile(t, holder, fixture, comment.ID) }
 	return write
 }
 
@@ -351,11 +370,39 @@ func readyMentionRetry(t *testing.T, base routeFixture) lockedItemWrite {
 // (readyMentionRetry): while the route waits, the message must still hold its one attempt.
 func readyMessageRetry(t *testing.T, base routeFixture) lockedItemWrite {
 	t.Helper()
-	listener := itemRowSessionListener(t, "btw")
-	base.options.envoyURL = listener.URL
+	return messageRetryWrite(t, base, itemRowSessionListener(t, "btw").URL, "Did this ship?",
+		func(t *testing.T, answer *httptest.ResponseRecorder) {
+			if answer.Code != http.StatusCreated || decodeBody[model.MessageDelivery](t, answer).Attempt != 2 {
+				t.Fatalf("retry the message once the lock was released: status=%d body=%s, want 201 and attempt 2",
+					answer.Code, answer.Body.String())
+			}
+		},
+		func(t *testing.T, _ pgx.Tx, fixture itemRowFixture, messageID string) {
+			if attempts := fixture.rowCount(t, `select count(*) from message_deliveries where message_id = $1`, messageID); attempts != 1 {
+				t.Fatalf("the message holds %d attempts while this test holds its issue's lock, want its one "+
+					"first attempt: the Retry committed its claim under a writer holding that owner", attempts)
+			}
+		})
+}
+
+// messageRetryWrite readies a person's Retry of an issue message as a row's write, on a server of
+// base's options whose Envoy is the listener at listenerURL, which holds session s1: it files the
+// issue and sends s1 a message of body as a btw, which the listener takes, and the write is POST
+// /api/v1/messages/{id}/deliveries of that message, as a btw again. answered checks the Retry's
+// answer once the lock is given back, and meanwhile is the holder's write while the Retry waits,
+// handed the fixture and the message's id.
+func messageRetryWrite(
+	t *testing.T,
+	base routeFixture,
+	listenerURL, body string,
+	answered func(t *testing.T, answer *httptest.ResponseRecorder),
+	meanwhile func(t *testing.T, holder pgx.Tx, fixture itemRowFixture, messageID string),
+) lockedItemWrite {
+	t.Helper()
+	base.options.envoyURL = listenerURL
 	fixture := base.issue(t, "Message retry")
 	message := createIssueMessage(t, fixture.handler, fixture.issueKey, map[string]any{
-		"body": "Did this ship?", "target": "session:s1", "delivery": "btw",
+		"body": body, "target": "session:s1", "delivery": "btw",
 	}, "alice")
 	if len(message.Deliveries) != 1 || message.Deliveries[0].State != "sent" {
 		t.Fatalf("the message this row retries = %#v, want one attempt sent to the listener's session",
@@ -366,18 +413,8 @@ func readyMessageRetry(t *testing.T, base routeFixture) lockedItemWrite {
 			return dispatchRequest(t, handler, http.MethodPost, "/api/v1/messages/"+message.ID+"/deliveries",
 				map[string]any{"delivery": "btw"}, "alice")
 		},
-		func(t *testing.T, answer *httptest.ResponseRecorder) {
-			if answer.Code != http.StatusCreated || decodeBody[model.MessageDelivery](t, answer).Attempt != 2 {
-				t.Fatalf("retry the message once the lock was released: status=%d body=%s, want 201 and attempt 2",
-					answer.Code, answer.Body.String())
-			}
-		})
-	write.meanwhile = func(t *testing.T, _ pgx.Tx) {
-		if attempts := fixture.rowCount(t, `select count(*) from message_deliveries where message_id = $1`, message.ID); attempts != 1 {
-			t.Fatalf("the message holds %d attempts while this test holds its issue's lock, want its one "+
-				"first attempt: the Retry committed its claim under a writer holding that owner", attempts)
-		}
-	}
+		answered)
+	write.meanwhile = func(t *testing.T, holder pgx.Tx) { meanwhile(t, holder, fixture, message.ID) }
 	return write
 }
 

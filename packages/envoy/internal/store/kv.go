@@ -9,6 +9,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 )
 
@@ -22,9 +23,15 @@ type Registry struct {
 	openedAt              time.Time
 	restoredRoleRevisions map[string]uint64
 	mu                    sync.RWMutex
-	// cache is the copy of the interest bucket: its interests, revision fence, marks and read epoch
-	// (kvwatch.Copy, newInterestCopy), which every write site reaches through.
-	cache kvwatch.Copy[Interest]
+	// cache is the copy of the interest bucket: its interests with the layout each is stored in,
+	// its revision fence, marks and read epoch (kvwatch.Copy, newInterestCopy), which every write
+	// site reaches through.
+	cache kvwatch.Copy[storedRow]
+	// chunks is the copy of the interest bucket's chunks (kvchunk.Prefix), fed and swept by the
+	// same reads as cache (interestCache): the cache joins a chunked record's row from it
+	// (decodeStoredLocked), and the reaper collects from it the chunks no row names
+	// (collectInterestChunks).
+	chunks *kvchunk.Chunks
 	// index indexes the cached interests' topic patterns by subject token (subjectIndex), which is
 	// what Match walks rather than every cached interest. The copy's own hooks keep it
 	// in step (indexInterestLocked, unindexInterestLocked), so a recreated bucket's read takes its
@@ -156,6 +163,7 @@ func Open(ctx context.Context, conn *nats.Conn, options ...OpenOption) (*Registr
 		legacySubjects:        opts.legacySubjects,
 	}
 	r.cache = newInterestCopy(r)
+	r.chunks = kvchunk.NewChunks(r.now)
 	r.roleHolders = newRoleHolderCopy(r)
 	r.watcher = kvwatch.New("interest registry", kv, interestCache{r}, kvwatch.WithLogger(opts.log))
 	r.roleWatcher = r.newRoleWatcher(roleKV, opts.roleWatch...)

@@ -124,8 +124,12 @@ var preparedPlans atomic.Int64
 // plan-cache mode is what Postgres does with a prepared statement: an EXPLAIN that binds its own
 // parameters is planned for those values, a custom plan, whatever the mode says. EXECUTE takes no
 // bind parameter, so each argument is written as the text pgx encodes it in for the type
-// Postgres inferred for that parameter, quoted as a literal of that type. The statement runs, so
-// the caller explains in a transaction it rolls back.
+// Postgres inferred for that parameter, quoted as a literal of that type. pgx answers a nil buffer
+// for the SQL value NULL alone, so the buffer it appends to is an empty one, not nil: from nil, a
+// value whose text is empty, an empty string, would come back nil too and be written as null, and
+// a statement explained with null where its writer bound the empty string is another statement (a
+// keyset walk from the empty string reads every row, from null none). The statement runs, so the
+// caller explains in a transaction it rolls back.
 //
 // The statement's own failure - Postgres refusing to prepare it, to plan it or to run it - is
 // answered as an error, which a control's caller reads as the control proving nothing
@@ -148,7 +152,7 @@ func explainExecuted(t testing.TB, ctx context.Context, tx pgx.Tx, statement str
 	}
 	literals := make([]string, len(args))
 	for index, argument := range args {
-		text, err := conn.TypeMap().Encode(description.ParamOIDs[index], pgtype.TextFormatCode, argument, nil)
+		text, err := conn.TypeMap().Encode(description.ParamOIDs[index], pgtype.TextFormatCode, argument, []byte{})
 		if err != nil {
 			t.Fatalf("write argument %d (%T) as a literal: %v", index+1, argument, err)
 		}

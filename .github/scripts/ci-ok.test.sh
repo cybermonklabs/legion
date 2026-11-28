@@ -126,7 +126,8 @@ push_selects='{"typecheck": "true", "envoy_client": "false", "worker_image": "tr
 # `changes` publishes the paths filter's own verdict for every filter beside its outputs
 # (ci.yaml's changes job, filter_verdicts), as the JSON text toJSON() gives. The slow
 # suites' outputs carry a `full-ci` term in front of that verdict, so on a pull request without
-# the label the output is false whatever the filter said; docs stands for one of them below.
+# the label `full-ci` or the job's own `lane:<output>` the output is false whatever the filter
+# said; docs stands for one of them below.
 with_verdicts() { # with_verdicts <outputs> <the filter's own verdicts>
   jq -nc --argjson outputs "$1" --argjson verdicts "$2" '$outputs + {filter_verdicts: ($verdicts | tojson)}'
 }

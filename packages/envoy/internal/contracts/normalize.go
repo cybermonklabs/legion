@@ -147,13 +147,10 @@ type CIObservation struct {
 // one place a webhook's CI observations are built (the webhook route's only source of them), so
 // the CI store takes a check suite only once it completes, as Dispatch's CI reconcile records
 // only completed suites.
-func GithubCIObservations(event string, body map[string]any) []CIObservation {
-	if event == "check_suite" {
-		switch stringValue(body["action"]) {
-		case "requested", "rerequested":
-			return nil
-		}
-	}
+//
+// A check suite the verdict App created (VerdictAppsOwnSuite) maps to nothing, in every action,
+// and the listener logs a line for each one left out, a requested suite's too.
+func GithubCIObservations(event string, body map[string]any, verdictAppID string) []CIObservation {
 	numbers := githubCIPullRequests(event, body)
 	if len(numbers) == 0 {
 		// A check suite GitHub runs on a pull request's head carries that head's ref even when it
@@ -172,12 +169,47 @@ func GithubCIObservations(event string, body map[string]any) []CIObservation {
 	if !ok {
 		return nil
 	}
+	if VerdictAppsOwnSuite(obs, verdictAppID) {
+		log.Printf("ci: left out the verdict App's own check suite suite=%s app_id=%s action=%s repo=%s/%s sha=%s pr=%s",
+			obs.SuiteID, obs.AppID, stringValue(body["action"]), owner, repo, obs.SHA, strings.Join(numbers, ","))
+		return nil
+	}
+	if event == "check_suite" {
+		switch stringValue(body["action"]) {
+		case "requested", "rerequested":
+			return nil
+		}
+	}
 	out := make([]CIObservation, 0, len(numbers))
 	for _, number := range numbers {
 		obs.Number = number
 		out = append(out, obs)
 	}
 	return out
+}
+
+// VerdictAppsOwnSuite reports whether an observation is a check suite the verdict App created,
+// in any state, which is no CI result: GitHub makes the App a check suite on every push, queued
+// until the App writes a run in it, and a head's record that kept it would never settle. With no
+// verdict App id nothing is the App's own.
+func VerdictAppsOwnSuite(observation CIObservation, verdictAppID string) bool {
+	return verdictAppID != "" && observation.CheckName == "" && observation.AppID == verdictAppID
+}
+
+// IsGithubAppID reports whether id is a GitHub App's id as GitHub's JSON gives it and an
+// observation's AppID writes it (nestedNumberString): a whole number above 0, in decimal digits
+// with no leading zero. Any other id would match no App's suite, so a verdict App setting of one
+// is refused rather than read as a filter that leaves nothing out.
+func IsGithubAppID(id string) bool {
+	if id == "" || id[0] == '0' {
+		return false
+	}
+	for _, digit := range []byte(id) {
+		if digit < '0' || digit > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // GithubCIObservation maps one GitHub check-run or check-suite object (event is "check_run" or

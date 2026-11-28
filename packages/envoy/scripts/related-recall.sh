@@ -8,7 +8,8 @@
 # close reason is the issue's last top-level message posted at or before its close: closing with a
 # reason posts the reason as a message just before the close (envoy-client's
 # dispatch_issue_update), and the issue.closed event carries no reason. A reason naming only a pull
-# request, several issues or the issue itself is not a pair, and is counted by what it names.
+# request, several issues or the issue itself is not a pair, and is counted by what it names. A
+# reason its author deleted since has no words left to name anything, and is counted as deleted.
 #
 # The query is the later-filed issue of a pair as it was filed: its title at its creation and its
 # spec at version 1. That is the closed issue when the issue it names came first (forward) and the
@@ -73,7 +74,8 @@ def refs($projects):
       | {offset, key: $token}) ];
 $row[0].closed_at as $closed
 | ([.[] | .message | select(.body != null and $closed != null and (.created_at | t) <= $closed)]
-   | sort_by(.created_at | t) | last | .body // "") as $body
+   | sort_by(.created_at | t) | last) as $reason
+| ($reason.body // "") as $body
 | ($body | refs($projects)) as $refs
 | ([$refs[].key | select(. != $key)] | unique) as $others
 | [$body | match("duplicate\\s+of|duplicate:|folded\\s+into|covered\\s+by|superseded\\s+by"; "gi")
@@ -85,7 +87,8 @@ $row[0].closed_at as $closed
   as $wordings
 | (first($wordings[] | select(.issue != null or .pull_request)) // null) as $hit
 | {closed: $key, closed_at: $closed, created_at: $row[0].created_at}
-  + if ($wordings | length) == 0 then {kind: "none"}
+  + if $reason.deleted_at != null then {kind: "deleted"}
+    elif ($wordings | length) == 0 then {kind: "none"}
     elif $hit == null then {kind: "no_reference", wording: $wordings[0].wording}
     elif $hit.issue == null then {kind: "pull_request", wording: $hit.wording}
     elif $hit.issue == $key then {kind: "self", wording: $hit.wording}
@@ -191,8 +194,9 @@ jq -rs --argjson issues "$(wc -l <"$workdir/keys")" --slurpfile closes "$workdir
   ($closes | map(select(.kind == "pair") | .closed) | unique) as $closed
   | map(select(.reason == "")) as $kept
   | "done issues read: \($closes | length)",
-    "close reasons with a wording: \($closes | map(select(.kind != "none")) | length)",
-    ($closes | map(select(.kind != "none" and .kind != "pair")) | group_by(.kind)[] | "not a pair, \(.[0].kind): \(length)"),
+    "close reasons with a wording: \($closes | map(select(.kind != "none" and .kind != "deleted")) | length)",
+    "close reasons deleted since, whose words are gone: \($closes | map(select(.kind == "deleted")) | length)",
+    ($closes | map(select(.kind != "none" and .kind != "deleted" and .kind != "pair")) | group_by(.kind)[] | "not a pair, \(.[0].kind): \(length)"),
     "close reasons naming one other issue: \($closes | map(select(.kind == "pair")) | length)",
     "pairs found (two issues, counted once): \(length)",
     (group_by(.wording)[] | "pairs found, \(.[0].wording): \(length)"),

@@ -54,7 +54,11 @@ func seedStepsPlan(t *testing.T, pool *pgxpool.Pool, key string, generation uint
 			AgentKey: key, Type: roles[role].Type})
 	}
 	seedRecord(t, pool, func(tx pgx.Tx) error {
+<<<<<<< HEAD
 		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, nil, steps))
+=======
+		return record.NewStore().PutPlan(t.Context(), tx, v, []record.PlanTask{task}, record.NameAgents(nil, steps, nil))
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 	})
 }
 
@@ -111,6 +115,28 @@ func taskOf(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string) record
 		t.Fatalf("the plan of %s at generation %d = %+v, want one task", key, issue.Generation, stored)
 	}
 	return stored.Tasks[0]
+}
+
+// topEntryOf is the highest entry of every phases row of key, 0 for none: the one counter of the
+// issue's entries, which the next raise passes by one (Engine.enter).
+func topEntryOf(t *testing.T, pool *pgxpool.Pool, key string) int64 {
+	t.Helper()
+	var top int64
+	if err := pool.QueryRow(t.Context(), `select coalesce(max(entry), 0) from phases where issue = $1`, key).Scan(&top); err != nil {
+		t.Fatalf("read the highest entry of %s: %v", key, err)
+	}
+	return top
+}
+
+// topEntryOfOthers is the highest entry of the phases rows of key but role's, 0 for none: what a
+// raise of role's row, made last, stands one above (Engine.enter).
+func topEntryOfOthers(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) int64 {
+	t.Helper()
+	var top int64
+	if err := pool.QueryRow(t.Context(), `select coalesce(max(entry), 0) from phases where issue = $1 and role <> $2`, key, string(role)).Scan(&top); err != nil {
+		t.Fatalf("read the highest entry of %s's rows but %s's: %v", key, role, err)
+	}
+	return top
 }
 
 // roleRowOf is role's phases row of key as the store holds it now.

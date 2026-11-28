@@ -55,7 +55,7 @@ func TestAStoppedStepsRoleStaysStoppedWhenItsIssueLeavesItsTree(t *testing.T) {
 		steps := record.NameAgents(nil, nil, []record.PlanStep{
 			{Issue: childKey, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 			{Issue: childKey, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-		})
+		}, nil)
 		for _, put := range []error{
 			records.PutIssue(ctx, tx, root),
 			records.PutIssue(ctx, tx, child),

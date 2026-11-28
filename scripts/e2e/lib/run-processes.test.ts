@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, beforeEach, expect, setDefaultTimeout, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, setDefaultTimeout } from "bun:test";
 import {
   existsSync,
   mkdirSync,
@@ -9,7 +9,7 @@ import {
 } from "node:fs";
 import { endianness } from "node:os";
 import { join } from "node:path";
-import { hostTool, skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate, hostTool, requireHostTools } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "./arg-max-force";
 import { ownGroup, untilRunning } from "./own-group";
@@ -50,9 +50,9 @@ function rowWaitsEnd(): number {
 }
 const dir = temporaryDirectory("run-processes-test");
 // perl: every process a row starts, and every harness, runs through ownGroup (lib/own-group.ts).
-const skip = skipWithout("perl");
-// python3: the newline-name row renames its process through prctl (ctypes).
-const withoutPython = skipWithout("python3");
+const host = hostGate({ programs: ["perl"] });
+// python3: the newline-name row renames its process through prctl (ctypes), and fails by name
+// without it rather than skipping (requireHostTools).
 const bin = join(dir, "bin");
 const calls = join(dir, "calls");
 beforeAll(() => {
@@ -209,7 +209,7 @@ function rowRoot(): string {
 }
 const pids = (out: string) => out.split("\n").filter(Boolean);
 
-test.skipIf(skip)(
+host.test(
   "names each process that carries the run's mark and none that only works under the run's directory or names it, running no command for each /proc entry",
   () => {
     const work = join(dir, "work");
@@ -260,7 +260,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "names a marked process of the run that left every tree the run started, double-forked to pid 1 or a subreaper",
   async () => {
     // run_processes is the run's search for its leftovers: a daemon that forked twice and whose
@@ -302,8 +302,15 @@ test.skipIf(skip)(
 );
 
 // The force cannot hold under gVisor (a Legion pod's kernel), which starts a program past ARG_MAX:
-// there these two rows are skipped, by this name (argMaxForceHolds), rather than failed or passed.
-test.skipIf(skip || !argMaxForceHolds())(
+// there these two rows are skipped outside CI, naming why, and failed by name under GITHUB_ACTIONS,
+// whose runner holds it (hostGate).
+const argMax = hostGate({
+  programs: ["perl"],
+  reason: argMaxForceHolds()
+    ? ""
+    : "This kernel starts a program past ARG_MAX under a 512 KiB stack (gVisor does), so the force lib/arg-max-force.sh puts these rows under cannot be put in force.",
+});
+argMax.test(
   "names every marked process of the run where argv and the environment past ARG_MAX would stop a program handed every /proc entry",
   () => {
     // The force (lib/arg-max-force.sh): an exec handed every <pid> entry of the row's proc root as an
@@ -325,7 +332,7 @@ run_processes`
   }
 );
 
-test.skipIf(skip || !argMaxForceHolds())(
+argMax.test(
   "listening_holders names the holder of a listening socket where a program handed every /proc/<pid>/fd would not start",
   () => {
     // listening_holders (lib/rig.sh) walks every process for the one holding a socket, held_only_by's
@@ -352,7 +359,8 @@ listening_holders ${listener.port}`
 
 // otherLoopback says whether this host lets a socket listen on 127.0.0.2, an address of the
 // loopback network other than 127.0.0.1. Linux routes all of 127.0.0.0/8 to lo; a host that does
-// not skips the row that needs it, by this name.
+// not skips the row that needs it outside CI, naming why, and under GITHUB_ACTIONS fails it by its
+// own name (hostGate's reason).
 const otherLoopback = (() => {
   try {
     Bun.listen({ hostname: "127.0.0.2", port: 0, socket: { data() {} } }).stop(true);
@@ -361,11 +369,10 @@ const otherLoopback = (() => {
     return false;
   }
 })();
-if (!otherLoopback) {
-  console.warn(
-    `Skipped the same-port row of ${import.meta.path}: this host lets no socket listen on 127.0.0.2.`
-  );
-}
+const sameAddress = hostGate({
+  programs: ["perl"],
+  reason: otherLoopback ? "" : "This host lets no socket listen on 127.0.0.2.",
+});
 // A python3 that listens on 1.0.0.127 at a port the kernel chooses, prints the port, and stays: an
 // address no interface holds, which IP_FREEBIND (15 on Linux) lets a socket bind.
 const freeBound = `import socket, time
@@ -375,19 +382,20 @@ s.bind(("1.0.0.127", 0))
 s.listen()
 print(s.getsockname()[1], flush=True)
 time.sleep(60)`;
-// freeBind says whether this host lets that socket listen; a host that does not (no python3, or a
-// kernel that refuses IP_FREEBIND) skips the row that needs it, by this name.
+// freeBind says whether this host lets that socket listen; a kernel that refuses IP_FREEBIND skips
+// the row that needs it outside CI, naming why, and under GITHUB_ACTIONS fails it by its own name
+// (hostGate's reason). A host without python3 is not read as such a kernel: the row needs python3
+// and fails by name without it on any host (requireHostTools).
 const freeBind =
-  !withoutPython &&
+  hostTool("python3") === null ||
   Bun.spawnSync(["python3", "-c", freeBound.replace("time.sleep(60)", "")], {
     stdout: "ignore",
     stderr: "ignore",
   }).exitCode === 0;
-if (!freeBind) {
-  console.warn(
-    `Skipped the byte-order row of ${import.meta.path}: this host lets no python3 socket listen on 1.0.0.127 (IP_FREEBIND).`
-  );
-}
+const byteOrder = hostGate({
+  programs: ["perl"],
+  reason: freeBind ? "" : "This host lets no python3 socket listen on 1.0.0.127 (IP_FREEBIND).",
+});
 // spelled is how /proc/net/tcp writes the IPv4 address ADDRESS: the hexadecimal of its 32 bits in
 // this host's byte order, so 127.0.0.1 is 0100007F on a little-endian host.
 function spelled(address: string): string {
@@ -463,7 +471,7 @@ async function onlyTheLoopbackHolder(name: string, program: string[], other: str
   }
 }
 
-test.skipIf(skip || !otherLoopback)(
+sameAddress.test(
   "listening_holders counts only the socket on 127.0.0.1:PORT: one another process listens with on the same port of another loopback address is none of it",
   async () => {
     // The kernel's bind of port 0 on 127.0.0.1 can hand out a port another process already listens
@@ -483,9 +491,10 @@ test.skipIf(skip || !otherLoopback)(
   }
 );
 
-test.skipIf(skip || !freeBind)(
+byteOrder.test(
   "listening_holders reads 127.0.0.1 in this host's byte order: a socket on 1.0.0.127, the other order's spelling of it, is none of it",
   async () => {
+    requireHostTools("python3");
     // /proc/net/tcp writes 127.0.0.1 as 0100007F on a little-endian host, and 7F000001 there is
     // 1.0.0.127; a read that took both spellings counted a socket on 1.0.0.127:PORT beside the one
     // on 127.0.0.1:PORT and read "2 sockets listen".
@@ -493,7 +502,7 @@ test.skipIf(skip || !freeBind)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "a walk whose reader a signal ended after part of its output is no answer: listening_holders and run_processes exit 2",
   () => {
     // A find that writes 2000 bytes and is then SIGKILLed prints no complaint of its own; neither does
@@ -540,7 +549,7 @@ st=0; run_processes >/dev/null 2>"$work/rp.err" || st=$?; echo "run_processes $s
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "a run that has not marked itself has no processes to read: run_processes and stop_marked_processes exit 2",
   () => {
     const work = join(dir, "unmarked");
@@ -557,7 +566,7 @@ st=0; stop_marked_processes "$work" 2>"$work/stop.err" || st=$?; echo "stop_mark
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "an empty run directory names no process: marked_processes, procs_naming and names_dir refuse it with 2",
   () => {
     // With DIR empty and the mark unset, `LEGION_E2E_RUN=` and `XDG_CONFIG_HOME=` followed by any
@@ -585,7 +594,7 @@ st=0; names_dir "" XDG_CONFIG_HOME ${bystander} 2>"$work/nd.err" || st=$?; echo 
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends every marked process of the run, an escaped one too, and leaves a person's shell and tail -f under the run's directory running",
   async () => {
     const work = join(dir, "sweep");
@@ -621,7 +630,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace gives each marked process SIGTERM and the grace to exit, then SIGKILLs only the survivors",
   async () => {
     const work = join(dir, "grace");
@@ -662,7 +671,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes signals no pid whose start time is not the one its walk read, and leaves it running",
   async () => {
     // The walk's pairs stand in for a pid that ended and passed to another marked process between the
@@ -683,7 +692,7 @@ stop_marked_processes "$work"; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a child that cleared its environment with the marked process that started it",
   async () => {
     // A marked bash starts a child under `env -i`, which carries no mark and no other variable of the
@@ -717,7 +726,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace ends a child that cleared its environment when the marked process that started it exits on its SIGTERM",
   async () => {
     // The marked process exits on the TERM and leaves its child behind; its children were read while
@@ -747,7 +756,7 @@ test.skipIf(skip)(
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes ends a marked process it froze even where its parent reads otherwise the second time, as when the parent exits after the freeze",
   async () => {
     // proc_parent answers the real parent on its first read of the process and pid 1 on every read
@@ -771,7 +780,7 @@ stop_marked_processes "$work"; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running a pid below a marked process whose parent is not the process it was read under, as a pid a stranger took",
   async () => {
     // proc_children answers, for the marked bash's child, the pid of a stranger: an unmarked process
@@ -803,7 +812,7 @@ stop_marked_processes "$work" 1; echo "status $?"`
   }
 );
 
-test.skipIf(skip)(
+host.test(
   "stop_marked_processes with a grace leaves running the children of a stranger that took the pid of a process below a marked one",
   async () => {
     // The marked bash's child, which carries no mark, is read and printed; then its pid passes to
@@ -844,9 +853,10 @@ stop_marked_processes "$work" 1; echo "status $?"`
   }
 );
 
-test.skipIf(skip || withoutPython)(
+host.test(
   "names and ends a marked process whose name holds a newline and a `) `, which a read of the stat's first line took for another parent and no start",
   async () => {
+    requireHostTools("python3");
     // The process renames itself to `) S 1` and a newline (prctl PR_SET_NAME, through python3's
     // ctypes: perl's $0 would write over the environment the walk reads the mark from): the first
     // line of its /proc/<pid>/stat then reads as a process whose parent is pid 1, with nothing

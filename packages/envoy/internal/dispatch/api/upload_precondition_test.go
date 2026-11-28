@@ -488,26 +488,7 @@ func TestFirstUploadNamingABaseIsRefused(t *testing.T) {
 	}
 }
 
-// A file holds no document tree and so no token, so a token on one guards nothing: it is refused
-// rather than taken and dropped, since the caller believes its write was conditional.
-func TestFileUploadNamingABaseIsRefused(t *testing.T) {
-	t.Parallel()
-	handler, _ := uploadBaseHandler(t)
-	issue := createArtifactIssue(t, handler)
-	path := "/api/v1/issues/" + issue.Key + "/artifacts"
-	base := `{"document":"sha256:` + strings.Repeat("a", 64) + `"}`
-
-	refused := multipartRequest(t, handler, path, map[string]string{"name": "diagram.png", "precondition": base},
-		"diagram.png", "image/png", []byte("\x89PNG\r\n\x1a\nfirst"), "alice")
-	if refused.Code != http.StatusBadRequest {
-		t.Fatalf("a file upload naming a base = %d (want 400), body=%s", refused.Code, refused.Body.String())
-	}
-	if code := decodeBody[uploadPreconditionConflict](t, refused).Code; code != "INVALID_PRECONDITION" {
-		t.Fatalf("the refusal's code = %q, want INVALID_PRECONDITION: %s", code, refused.Body.String())
-	}
-}
-
-// A file is not a document: it is replaced naming no token.
+// A file replaced naming no token is taken unchecked, as a document replaced naming none is.
 func TestFileUploadNeedsNoBase(t *testing.T) {
 	t.Parallel()
 	handler, _ := uploadBaseHandler(t)

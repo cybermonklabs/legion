@@ -110,6 +110,11 @@ import (
 // which each add a column at its default, nor the plan of an issue (20261117034837), which
 // creates the three tables of the plan and adds `phases.step_task` and `phases.step_place`, each
 // at a default that every row it finds reads as no plan (migration_20261117034837_test.go).
+// The plan of an experiment's draw (20261123165139) adds `experiment_assignments.plan` at its
+// default, which every row it finds reads as no group (migration_20261123165139_test.go), stands
+// above every migration named here but dispatch://INFRA-5463's 20261123212127,
+// dispatch://INFRA-5471's 20261123224717, the roles of a deployment (20261124192838) and
+// 20261124213820 to 20261124213824, and touches no outbox_kind_check.
 // dispatch://INFRA-4109's cutover of the update ask's mark (20261117200337) is applied after all
 // of these and touches no outbox_kind_check: it clears a claim's ask mark where that claim's ask
 // is still queued.
@@ -136,30 +141,31 @@ import (
 // The applied sequence of the copy of Dispatch's issues (20261121170714) is applied after all of
 // these and touches no outbox_kind_check: it adds dispatch_issues.applied_seq at its default, 0, on
 // every row it finds. So the design news stays the last word of that check.
-// The key of a phases row by its step (20261124044450) touches no outbox_kind_check: it writes the
+// The key of a phases row by its step (20261125001300) touches no outbox_kind_check: it writes the
 // primary key of phases over step_task and step_place, which the plan of an issue (20261117034837)
-// added, and every row it finds keeps its step (migration_20261124044450_test.go).
-// The roles of a deployment (20261123181746) are named here too: the migration writes the role
+// added, and every row it finds keeps its step (migration_20261125001300_test.go).
+// The roles of a deployment (20261124192838) are named here too: the migration writes the role
 // checks of `claims`, `phases` and `issue_releases` and the phase checks of `issues` again, each
 // wider than the check it replaces, so every row an upgrade finds passes them
-// (migration_20261123181746_test.go), and it touches no outbox_kind_check.
-// The name of each step's agent (20261123203837) is applied after it and touches no
+// (migration_20261124192838_test.go), and it touches no outbox_kind_check.
+// The name of each step's agent (20261124213820) is applied after it and touches no
 // outbox_kind_check: it adds `plan_steps.agent` to the plan's step table and names the agent of
-// every row it finds (migration_20261123203837_test.go).
-// The claim of each resume (20261123203838) is applied after it and touches no
+// every row it finds (migration_20261124213820_test.go).
+// The claim of each resume (20261124213821) is applied after it and touches no
 // outbox_kind_check: it adds pod_resumes.claim, names on every row it finds the claim of its role,
 // and makes the one open resume per role one per claim, and closes no row, so it needs no row of
-// its own here (migration_20261123203838_test.go).
-// The claim of each backstop (20261123203839) is applied after it and touches no
+// its own here (migration_20261124213821_test.go).
+// The claim of each backstop (20261124213822) is applied after it and touches no
 // outbox_kind_check: it adds pod_wake_backstops.claim, names on every row it finds the claim of its
 // role, and makes the one open backstop per role one per claim, so it needs no row of its own here
-// (migration_20261123203839_test.go).
-// The claims a release suspended (20261123203840) is applied after it and touches no
+// (migration_20261124213822_test.go).
+// The claims a release suspended (20261124213823) is applied after it and touches no
 // outbox_kind_check: it rewrites a release's mark in flight as the tokens of the claims of the
 // roles it names and adds pod_releases.claims at its default, the empty string, on every row it
-// finds, so it needs no row of its own here (migration_20261123203840_test.go).
-// The record that a claim took another role (20261123203841) is applied after it and touches no
+// finds, so it needs no row of its own here (migration_20261124213823_test.go).
+// The record that a claim took another role (20261124213824) is applied after it and touches no
 // outbox_kind_check: it adds claims.role_change, null on every row it finds, so it needs no row of
+<<<<<<< HEAD
 // its own here (migration_20261123203841_test.go).
 // The repair of the claim tables (20261123203842) is applied after it and touches no
 // outbox_kind_check: over the present shapes of 20261123203838 and 20261123203839 it changes no
@@ -172,6 +178,9 @@ import (
 // latest plan row of its name, and writes no queued row; this test seeds no plan row and no step
 // start, so it needs no row of its own here (migration_20261124172711_test.go and
 // migration_20261124172711_keys_test.go).
+=======
+// its own here (migration_20261124213824_test.go).
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 var thisBranchsMigrations = []int{
 	20261029120000, 20261029120100, 20261029120200, 20261029120300, 20261029120400,
 	20261029120600, 20261029120700, 20261029120800, 20261029120900, 20261029121000,
@@ -182,9 +191,16 @@ var thisBranchsMigrations = []int{
 	20261113090512, 20261113110610, 20261113181500, 20261113182000, 20261114020537, 20261114031356,
 	20261114061900, 20261115194357, 20261116144907, 20261116165926, 20261116234034, 20261117000528,
 	20261117004117, 20261117023932, 20261117034837, 20261117064152, 20261117112334, 20261117200337,
+<<<<<<< HEAD
 	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261121170714,
 	20261123181746, 20261123203837, 20261123203838, 20261123203839, 20261123203840, 20261123203841,
 	20261123203842, 20261124044450, 20261124172711,
+=======
+	20261119003157, 20261119203047, 20261120012547, 20261120042902, 20261120055717, 20261120144241,
+	20261121170714, 20261123050533, 20261123165139, 20261123212127, 20261123224717, 20261124060500,
+	20261124073512, 20261124192838, 20261124213820, 20261124213821, 20261124213822, 20261124213823,
+	20261124213824, 20261125001300,
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 }
 
 // mainsNewestMigration is the newest version main carries, the cause a claim records for its
@@ -202,6 +218,7 @@ var thisBranchsMigrations = []int{
 // issue's 20261117034837, dispatch://INFRA-1997's 20261117112334, dispatch://INFRA-4109's
 // 20261117200337, dispatch://INFRA-4374's 20261119003157, dispatch://INFRA-175's 20261119203047,
 // dispatch://INFRA-3178's 20261120012547, dispatch://INFRA-4108's 20261120042902,
+<<<<<<< HEAD
 // dispatch://INFRA-4729's 20261120055717, the copy's applied sequence, 20261121170714, the roles of
 // a deployment's 20261123181746, the name of each step's agent's 20261123203837, the claim of each
 // resume's 20261123203838, the claim of each backstop's 20261123203839, the claims a release
@@ -210,6 +227,16 @@ var thisBranchsMigrations = []int{
 // 20261124044450 and the agent of a claim's session's 20261124172711. That is why the loop below
 // holds the list rather than counting it, so that a version added above any of them is named here
 // rather than read as main's.
+=======
+// dispatch://INFRA-4729's 20261120055717, dispatch://INFRA-1575's 20261120144241, the copy's
+// applied sequence, 20261121170714, the release that keeps no saved workspace's 20261123050533,
+// the experiment draw's 20261123165139, 20261123212127 and 20261123224717, the waiting line's
+// priority 20261124060500, the cause times 20261124073512 and the roles of a deployment
+// 20261124192838. The five keyed-agent migrations, 20261124213820 to 20261124213824, follow all
+// of them, then the key of a phases row by its step's 20261125001300. The loop below holds the
+// actual list rather than a count, so every version above main must be named here instead of
+// silently read as main's.
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 const mainsNewestMigration = 20261111212544
 
 // mainsKindCheck is the constraint main's own 20261110235320 wrote, which is what a database main

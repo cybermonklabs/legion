@@ -519,6 +519,13 @@ func (r *Reconciler) recordSuites(ctx context.Context, writer Writer, head pullH
 			if !mapped || observation.Status != "completed" {
 				continue
 			}
+			// The verdict App's suite is no CI result, and the listener leaves it out of the
+			// record (contracts.VerdictAppsOwnSuite). Written here, a change to a settled record
+			// re-arms it (cistore's rearm), and the head would be published a second time once
+			// the App's run completes its suite.
+			if contracts.VerdictAppsOwnSuite(observation, r.VerdictAppID) {
+				continue
+			}
 			wanted++
 			changed, err := writer.RecordSuite(ctx, observation)
 			if err != nil {

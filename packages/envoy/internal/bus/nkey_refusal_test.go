@@ -28,6 +28,7 @@ import (
 // authorization violations and "envoy nats connection closed"; the client built at the head logged
 // one authorization violation a second for 12 s and never closed.
 func TestANkeyConnectionRefusedTwiceClosesAsAtTheMergeBase(t *testing.T) {
+	t.Parallel()
 	seed, public := testnats.User(t)
 	_, other := testnats.User(t)
 	server, url := testnats.StartNkeyAuthorizedServer(t, public)

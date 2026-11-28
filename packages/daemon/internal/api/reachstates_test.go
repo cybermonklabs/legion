@@ -1,5 +1,9 @@
 package api
 
+// main's #2780 added the guard that holds internal/api's reachable claim states to the ones
+// internal/supervise declares, which it reads by parsing that package's own sources.
+//ci:reads packages/daemon/internal/supervise/*.go !**/*_test.go claimStates lists ../supervise and parses each .go file of it but the test files
+
 import (
 	"io"
 	"log/slog"

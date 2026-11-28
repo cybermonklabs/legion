@@ -59,6 +59,7 @@ func TestASeverableDialThroughTheProxyKeepsItsTCPSocket(t *testing.T) {
 // the guard on Sever's answer fails it; one that reset no socket would let the first marker go out
 // once the link moves.
 func TestASeveredConnectionSendsNothingAPublishWaitedBehindAHeldWrite(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	const subject = "testbus.sever.marker"
 	start := func(t *testing.T) (*Client, *testnats.HandshakeHold, *nats.Conn, chan *nats.Msg, chan error, func()) {
 		t.Helper()

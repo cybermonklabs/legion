@@ -1,5 +1,18 @@
 package api
 
+// The three checks main's #2989 put under packages/daemon, and the waiting-line block check
+// main's #3718 brought, read no text outside it any more: each is held to a copy committed
+// beside its own package, and the row above is what holds those copies to the texts, in the
+// text-check job, where a documentation edit is the run that should start
+// (dispatch://INFRA-1413). cmd/legion/main_test.go is left with no row at all -
+// awaiting_summary_extract.txt and waiting_line_block_extract.txt stand in its own directory
+// - and what is left of the two rows below is what each reads of packages/daemon outside its
+// own package, which daemon_go_tests covers with the module itself.
+//ci:reads packages/daemon/cmd/legion/main.go readContractTexts reads every name of its list under the root it joins
+//ci:reads packages/daemon/cmd/legion/main_test.go readContractTexts reads every name of its list under the root it joins
+//ci:reads packages/daemon/internal/projection/project.go readContractTexts reads every name of its list under the root it joins
+//ci:reads packages/daemon/internal/projection/project_test.go readContractTexts reads every name of its list under the root it joins
+
 import (
 	"encoding/json"
 	"fmt"

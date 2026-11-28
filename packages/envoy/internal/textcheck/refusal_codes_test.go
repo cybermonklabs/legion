@@ -1,5 +1,8 @@
 package textcheck
 
+//ci:reads packages/envoy/**/*.go TestTheStepAndPlanRefusalCodesAreWrittenOnlyWhereContractsGeneratesThem calls refusalCodeCopies on ../.. (refusalCodeRoots,), whose walk reads every .go file under packages/envoy, infra included
+//ci:reads packages/daemon/**/*.go TestTheStepAndPlanRefusalCodesAreWrittenOnlyWhereContractsGeneratesThem calls refusalCodeCopies on ../../../daemon (refusalCodeRoots,), whose walk reads every .go file under packages/daemon
+
 import (
 	"go/scanner"
 	"go/token"

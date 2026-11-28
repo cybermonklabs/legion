@@ -3,16 +3,22 @@ namespace, under the ServiceAccount `--service-account` names, labelled so a Net
 select it, and run on the image the driver's own pod runs.
 
 `job_spec` builds the Job from the driver's own pod: its security contexts, resources,
-tolerations, node selector and runtime class, and three of its mounts beside one `emptyDir` (the
-gateway key's one Secret item, and `models.yml` and the overlay from their ConfigMap). No service
-account token is mounted, no variable comes from a Secret, and no service link is set. The program
-(`s10_sandbox.py`), the bundles and the calls travel in environment variables, so the program is no
-file of the sandbox; the result comes back on the pod's log (`result_of`), and `KubeRunner` deletes
-the Job once it has read it. Before a run's first request, `KubeRunner.preflight` runs the same
-Job with no bundle: every check of the sandbox, and no judge.
+tolerations, node selector, runtime class and priority class, and its gateway key's one Secret
+item, beside one `emptyDir` and point 2's `models.yml` and overlay from the ConfigMap
+`ROUTE_CONFIG_MAP`. No service account token is mounted, no variable comes from a Secret, and no
+service link is set. The program (`s10_sandbox.py`), the bundles and the calls travel in
+environment variables, so the program is no file of the sandbox; the result comes back on the
+pod's log (`result_of`), and `KubeRunner` deletes the Job once it has read it. Before a run's first
+request, `KubeRunner.preflight` runs the same Job with no bundle: every check of the sandbox, and
+no judge.
 
 A failed call of the Kubernetes API is tried again (`RETRY_PAUSES`); one that still fails is no
 fault of the request's, and stops the run (`KubeUnavailable`), which writes nothing more for it.
+A Job none of whose pods the driver has seen started once `PLACEMENT_LIMIT` has passed stops the
+run the same way, since every later request would wait on the same cluster. A run's deadline is its
+pod's (`activeDeadlineSeconds`, counted from the pod's start on its node), so the time a pod waits
+for a node is never taken from its judge; the Job's own deadline is `PLACEMENT_LIMIT` and `MARGIN`
+longer.
 A Job that ran and gave no readable result is that request's own (`SandboxRun.failure`).
 """
 
@@ -40,11 +46,27 @@ LABEL = {"app.kubernetes.io/name": "s10-judge-sandbox"}
 # The ServiceAccount a sandbox runs as unless `--service-account` names another: one of its own,
 # bound to no cloud identity and no role. The driver's own pod's account is refused.
 SERVICE_ACCOUNT = "s10-judge-sandbox"
+# The ConfigMap of the driver's namespace that the sandbox mounts `models.yml` and the overlay from,
+# by these keys: point 2's route, which the deployment repository's cluster-grants/agentsessions.go
+# declares immutable (`s10JudgeRouteName`). A session pod's own route is no such file: it holds
+# Legion's live route as of the session's last apply, and `runtime_refusal` refuses any bytes but
+# point 2's.
+ROUTE_CONFIG_MAP = "s10-judge-route"
+ROUTE_ITEMS = ({"key": "models.yml", "path": "models.yml"}, {"key": "overlay.yml", "path": "overlay.yml"})
 # The pauses, in seconds, before each new try of a failed Kubernetes API call: a transient failure
 # passes, and one that lasts past them stops the run.
 RETRY_PAUSES = (5, 15, 45, 90)
 # How long the preflight's Job may run, in seconds: its checks, and no judge.
 PREFLIGHT_DEADLINE = 900
+# How long, in seconds, a Job's pod may wait to be started on a node before the run stops: twenty
+# times the waits measured for this sandbox (about 3 minutes), so only an outage of the cluster's
+# capacity, or a pod it can never place, reaches it.
+PLACEMENT_LIMIT = 3600
+# An allowance, in seconds, for how late the driver sees what the cluster did: a poll, and the
+# retries of its calls (a call that hangs longer can pass it). The Job's deadline holds it, so a pod
+# the driver sees started a little after PLACEMENT_LIMIT keeps its whole deadline; and the driver
+# waits as long past the Job's.
+MARGIN = 600
 # Where Kubernetes writes the namespace of the driver's own pod, in which each Job runs.
 NAMESPACE_FILE = "/var/run/secrets/kubernetes.io/serviceaccount/namespace"
 
@@ -60,8 +82,9 @@ PAYLOAD_WIDTH = 100_000
 
 
 class KubeUnavailable(Exception):
-    """A Kubernetes API call failed past its retries: no fault of the request's. The run stops and
-    writes nothing more, and the same command resumes the stage."""
+    """A Kubernetes API call failed past its retries, or the driver saw no pod of a Job started once
+    `PLACEMENT_LIMIT` had passed: no fault of the request's. The run stops and writes nothing more,
+    and the same command resumes the stage."""
 
 
 @dataclass
@@ -105,19 +128,7 @@ def job_spec(name, pod, image, account, variables, environ, deadline=SANDBOX.OMP
     items = secret.get("items") or []
     if len(items) != 1 or items[0].get("path") != "key" or mounts[SANDBOX.KEY_MOUNT].get("subPath"):
         raise CannotRun(f"this pod's {SANDBOX.KEY_MOUNT} is not one item of one Secret, named key")
-    route_items = []
-    route_name = None
-    for path in (SANDBOX.MODELS_FILE, SANDBOX.OVERLAY_FILE):
-        mount = mounts.get(path)
-        config_map = (volumes.get((mount or {}).get("name"), {}) or {}).get("configMap")
-        if mount is None or config_map is None or not mount.get("subPath"):
-            raise CannotRun(f"this pod mounts no {path} from a ConfigMap for the sandbox to copy")
-        if route_name not in (None, config_map["name"]):
-            raise CannotRun("this pod mounts models.yml and the overlay from two ConfigMaps")
-        route_name = config_map["name"]
-        item = next((one for one in config_map.get("items") or [] if one.get("path") == mount["subPath"]),
-                    {"key": mount["subPath"], "path": mount["subPath"]})
-        route_items.append({"key": item["key"], "path": item["path"]})
+    route_items = [dict(one) for one in ROUTE_ITEMS]
     own_env = {one["name"]: one.get("value") for one in container.get("env", []) if "valueFrom" not in one}
     env = [{"name": one, "value": own_env.get(one) or environ.get(one, "")} for one in PROFILE_VARIABLES]
     env.append({"name": "PYTHONDONTWRITEBYTECODE", "value": "1"})
@@ -129,6 +140,9 @@ def job_spec(name, pod, image, account, variables, environ, deadline=SANDBOX.OMP
         "automountServiceAccountToken": False,
         "enableServiceLinks": False,
         "restartPolicy": "Never",
+        # The run's own deadline, counted from the pod's start on its node, so a wait for a node
+        # takes nothing from the judge.
+        "activeDeadlineSeconds": deadline,
         "securityContext": spec.get("securityContext") or {},
         "containers": [{
             "name": "sandbox",
@@ -149,18 +163,22 @@ def job_spec(name, pod, image, account, variables, environ, deadline=SANDBOX.OMP
         "volumes": [
             {"name": "gateway-key", "secret": {"secretName": secret["secretName"], "items": [dict(items[0])],
                                                **({"defaultMode": secret["defaultMode"]} if "defaultMode" in secret else {})}},
-            {"name": "route", "configMap": {"name": route_name, "items": route_items}},
+            {"name": "route", "configMap": {"name": ROUTE_CONFIG_MAP, "items": route_items}},
             {"name": "work", "emptyDir": {}},
         ],
     }
-    for copied in ("tolerations", "nodeSelector", "runtimeClassName"):
+    # The priority class too: where the cluster has no default class, a pod that names none runs at
+    # priority 0, so a pod above it whose class may preempt can take its node mid-run, and that
+    # request becomes a deviation counted against the claim. A session pod names
+    # `agent-session-priority`, whose `preemptionPolicy: Never` lets the judge evict no pod.
+    for copied in ("tolerations", "nodeSelector", "runtimeClassName", "priorityClassName"):
         if spec.get(copied):
             pod_spec[copied] = spec[copied]
     return {
         "apiVersion": "batch/v1",
         "kind": "Job",
         "metadata": {"name": name, "namespace": pod["metadata"]["namespace"], "labels": dict(LABEL)},
-        "spec": {"backoffLimit": 0, "activeDeadlineSeconds": deadline,
+        "spec": {"backoffLimit": 0, "activeDeadlineSeconds": deadline + PLACEMENT_LIMIT + MARGIN,
                  "ttlSecondsAfterFinished": 86400,
                  "template": {"metadata": {"labels": dict(LABEL)}, "spec": pod_spec}},
     }
@@ -227,7 +245,8 @@ class KubeRunner:
     once a run, the same Job with no bundle (`preflight`). It refuses an image its own pod does not
     run and its own pod's account, and holds the gateway key's bytes, which the driver keeps out of
     every file it keeps. Each Kubernetes API call is tried again after each of `pauses`; one that
-    still fails raises `KubeUnavailable`."""
+    still fails raises `KubeUnavailable`, as does a Job none of whose pods the driver has seen
+    started once `PLACEMENT_LIMIT` has passed. `clock` measures the driver's own waits."""
 
     def __init__(self, image, account, environ, poll=15, pauses=RETRY_PAUSES):
         self.image = image
@@ -235,6 +254,7 @@ class KubeRunner:
         self.environ = environ
         self.poll = poll
         self.pauses = pauses
+        self.clock = time.monotonic
         self.program = program_variable()
         self._pod = None
         refusal = image_refusal(self.own_pod(), image) or account_refusal(self.own_pod(), account)
@@ -291,8 +311,8 @@ class KubeRunner:
 
     def run_job(self, name, files, mode, extra_env=None, deadline=SANDBOX.OMP_TIMEOUT + 900):
         """One Job in `mode` (`SANDBOX.MODES`): created, waited for, its one pod's log read,
-        deleted. `KubeUnavailable` where the API fails; `failure` where the Job ran and gave no
-        readable result."""
+        deleted. `KubeUnavailable` where the API fails, or where no pod of the Job has started at a
+        poll at or past `PLACEMENT_LIMIT`; `failure` where the Job ran and gave no readable result."""
         pod = self.own_pod()
         variables = {SANDBOX.PROGRAM_VARIABLE: self.program, SANDBOX.MODE_VARIABLE: mode, **payload_variables(files),
                      **(extra_env or {})}
@@ -305,12 +325,19 @@ class KubeRunner:
                 return run
             run.facts["spec"] = redacted(spec)
             self.kubectl("create", "-f", "-", stdin=json.dumps(spec))
-            deadline = time.time() + spec["spec"]["activeDeadlineSeconds"] + 600
+            created = self.clock()
+            deadline = created + spec["spec"]["activeDeadlineSeconds"] + MARGIN
+            started = False
             while True:
                 status = self.kubectl_json("get", "job", name, "-o", "json").get("status") or {}
                 if status.get("succeeded") or status.get("failed"):
                     break
-                if time.time() > deadline:
+                now = self.clock()
+                started = started or self.started(name)
+                if not started and now - created >= PLACEMENT_LIMIT:
+                    raise KubeUnavailable(f"no pod of Job {name} had started at a poll {PLACEMENT_LIMIT} s or more "
+                                          "after its create, no fault of the request's")
+                if now > deadline:
                     run.failure = "the Job did not finish by its deadline"
                     return run
                 time.sleep(self.poll)
@@ -331,3 +358,9 @@ class KubeRunner:
         finally:
             self.kubectl("delete", "job", name, "--cascade=background", "--wait=false", "--ignore-not-found",
                          check=False)
+
+    def started(self, name):
+        """Whether a pod of Job `name` has started on a node: its `status.startTime`, from which its
+        own deadline counts."""
+        pods = self.kubectl_json("get", "pods", "-l", f"job-name={name}", "-o", "json").get("items") or []
+        return any((one.get("status") or {}).get("startTime") for one in pods)

@@ -27,7 +27,7 @@ import (
 func TestALaunchItsPodRefusesLeavesTheClaimSuspendedUntilAnotherPodStands(t *testing.T) {
 	h := newHarness(t)
 	var told []string
-	h.deps.PodRefused = func(_ Claim, pod, _ string) { told = append(told, pod) }
+	h.deps.PodRefused = func(_ *Machine, _ Claim, pod, _ string) { told = append(told, pod) }
 	h.restart()
 	issue := h.claim().Issue
 	h.rt.ScriptIssuePod(issue, "pod-1")
@@ -86,7 +86,7 @@ func TestALaunchItsPodRefusesLeavesTheClaimSuspendedUntilAnotherPodStands(t *tes
 func TestAResumeWhileTheRuntimeCannotReadTheIssuesPodIsRefusedAsWhileThePodStands(t *testing.T) {
 	h := newHarness(t)
 	var told []string
-	h.deps.PodRefused = func(_ Claim, pod, _ string) { told = append(told, pod) }
+	h.deps.PodRefused = func(_ *Machine, _ Claim, pod, _ string) { told = append(told, pod) }
 	h.restart()
 	issue := h.claim().Issue
 	h.rt.ScriptIssuePod(issue, "pod-1")
@@ -125,39 +125,52 @@ func TestAResumeWhileTheRuntimeCannotReadTheIssuesPodIsRefusedAsWhileThePodStand
 	h.wantCalls("Spawn", 2)
 }
 
-// RefusalStands answers the refusal of the claim's last launch while the pod that refused it still
-// stands, which the outbox holds a start on (internal/daemon's start), and nil once another pod
-// stands, which drops the refusal, as it answers nil for a claim no launch of which was refused. It
-// launches nothing and writes nothing of the claim.
-func TestRefusalStandsWhileThePodThatRefusedTheLaunchStands(t *testing.T) {
+// Each fact of a refused launch that the store does not take has a mark of its own on the claim,
+// keyed by the fact's event id, and the claim shows the oldest (Claim.UnrecordedRefusal). Here the
+// refusal's report fails twice, then a re-check at the end of a start row fails once and is taken:
+// the report's mark stands, with when its first try failed and both its tries, since that fact is
+// still not taken. Once the machine drops the refusal both facts name — another pod stands — every
+// mark goes at once, not at a fact's next try, which may be an hour off; and a failed try of a fact
+// about a refusal the machine no longer reports marks nothing.
+func TestEachUnrecordedRefusalFactKeepsItsOwnMarkUntilItsRefusalGoes(t *testing.T) {
 	h := newHarness(t)
 	issue := h.claim().Issue
-	if err := h.m.RefusalStands(); err != nil {
-		t.Fatalf("a claim no launch of which was refused answered %v, want nil", err)
-	}
 	h.rt.ScriptIssuePod(issue, "pod-1")
 	h.rt.ScriptSpawn(fake.SpawnResult{Err: runtime.AwaitsPodUpdate{Pod: "pod-1", Reason: "launch " + string(testToken) + ": the pod pod-1 of " + issue + " was built without checker"}})
 	if err := h.handle(RequestSpawn{Claim: testToken}); !errors.Is(err, runtime.ErrAwaitsPodUpdate) {
 		t.Fatalf("the spawn answered %v, want the runtime's refusal", err)
 	}
-	writes := 0
-	h.store.onPut = func(Claim) { writes++ }
+	const report, recheck = "pod-refused:tester:1", "refused-start-ended:tester:7"
+	first := h.clock.Now()
+	h.m.RefusalNotRecorded(report, "pod-1", errors.New("the database did not answer"))
+	h.clock.Advance(2 * time.Second)
+	h.m.RefusalNotRecorded(recheck, "pod-1", errors.New("the serializer was busy"))
+	h.clock.Advance(2 * time.Second)
+	h.m.RefusalNotRecorded(report, "pod-1", errors.New("the database did not answer again"))
+	h.m.RefusalRecorded(recheck)
 
-	var awaits runtime.AwaitsPodUpdate
-	if err := h.m.RefusalStands(); !errors.As(err, &awaits) || awaits.Pod != "pod-1" {
-		t.Fatalf("while pod-1 stands the refusal answered %v, want pod-1's refusal, which is runtime.AwaitsPodUpdate", err)
+	want := &UnrecordedRefusal{Since: first, Attempts: 2, Error: "the database did not answer again"}
+	if got := h.m.View().UnrecordedRefusal; got == nil || *got != *want {
+		t.Fatalf("the view shows %+v, want the report's mark %+v: the re-check taken clears its own mark alone", got, *want)
 	}
+	if got := h.m.Claim().UnrecordedRefusal; got == nil || *got != *want {
+		t.Fatalf("the claim shows %+v, want the report's mark %+v", got, *want)
+	}
+
+	h.m.RefusalNotRecorded(recheck, "pod-1", errors.New("the serializer was busy"))
 	h.rt.ScriptIssuePod(issue, "pod-2")
-	if err := h.m.RefusalStands(); err != nil {
-		t.Fatalf("once pod-2 stands the refusal answered %v, want nil", err)
+	if err := h.handle(RequestRuleResume{Claim: testToken, Reason: "pod-2 stands"}); err != nil {
+		t.Fatalf("the resume once pod-2 stands answered %v, want the claim brought back", err)
 	}
 	if pod := h.m.RefusedPod(); pod != "" {
 		t.Fatalf("once pod-2 stands the claim is refused by %q, want the refusal dropped", pod)
 	}
-	h.wantCalls("Spawn", 1)
-	h.wantState(StateSuspended)
-	if writes != 0 {
-		t.Fatalf("asking whether the refusal stands wrote the claim %d times, want none", writes)
+	if got := h.m.View().UnrecordedRefusal; got != nil {
+		t.Fatalf("once the refusal is dropped the view shows %+v, want no mark", *got)
+	}
+	h.m.RefusalNotRecorded(report, "pod-1", errors.New("the database did not answer"))
+	if got := h.m.View().UnrecordedRefusal; got != nil {
+		t.Fatalf("a failed try of a fact about pod-1's dropped refusal marked %+v, want nothing", *got)
 	}
 }
 

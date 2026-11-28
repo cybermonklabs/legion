@@ -160,19 +160,22 @@ func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry,
 }
 
 // sessionMayBeLive is the reapers' test of a session: it answers false only for a session that is
-// gone (session.Gone), and the session bucket itself is what says so (liveSessionEntry: a record
-// the cache holds, or else a read of the session's own key). So a reaper takes nothing from a
-// session that has merely stopped answering - its interests and its role claims stand for the
-// whole gone horizon - nor from one another listener registered a moment ago, nor from one the
-// session cache does not hold because it has not read its bucket yet or is reading it again. Its
-// error is a read that did not answer, on which the reaper keeps what it would have removed for
-// its next cycle.
+// gone (session.Gone), and the session bucket's stream leader is what says so (liveSessionEntry: a
+// record the cache holds, or else a read of the session's own key from the leader,
+// session.SessionRegistry.RefreshFromLeader). A direct get would not do: on a replicated bucket a
+// copy that has not applied a registration made a moment ago answers that the session has no
+// record, and the reaper would delete a live session's interest or release its role. So a reaper
+// takes nothing from a session that has merely stopped answering - its interests and its role
+// claims stand for the whole gone horizon - nor from one another listener registered a moment
+// ago, nor from one the session cache does not hold because it has not read its bucket yet or is
+// reading it again. Its error is a read that did not answer, on which the reaper keeps what it
+// would have removed for its next cycle.
 //
 // A reaper answers no caller, so it holds no request context and reads under context.Background()
 // with roleHolderReadTimeout as its bound, the same bound each read of role delivery's resolution
 // waits.
 func sessionMayBeLive(sessions *session.SessionRegistry, sessionID string) (bool, error) {
-	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone)
+	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone, sessions.RefreshFromLeader)
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return false, nil
 	}
@@ -875,7 +878,7 @@ func webhookRoutes(cfg *webhook.WebhookConfig, refused *metrics.Counter) []webho
 	var routes []webhookRoute
 	if github := cfg.GitHub; github != nil {
 		routes = append(routes, webhookRoute{"/webhook/github", func(publisher webhook.Publisher, ciStore *cistore.Store) http.Handler {
-			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, publisher, ciStore, bodies)
+			return webhook.GitHubHandler(github.Secret, github.MentionTrigger, github.ReviewerAppID, github.VerdictAppID, publisher, ciStore, bodies)
 		}})
 	}
 	if slack := cfg.Slack; slack != nil {
@@ -2122,9 +2125,12 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// 1. Relay sockets — an edge listener closes each with 1012, on which its client opens it
 	//    again at once on another replica, and refuses every upgrade after it. The HTTP server's
 	//    shutdown below does not wait for a hijacked connection, so nothing else would close them.
-	// 2. Session relays — publish no frame and ack nothing more; each one pulling returns the
+	// 2. Session relays — stop relaying: each run is cancelled and, if it was pulling, returns the
 	//    messages it holds to the server with a nak (sessionRelays.release), so they are
-	//    delivered again at once rather than after their ack wait.
+	//    delivered again at once rather than after their ack wait, and the stop waits for the
+	//    relay loop and every run within shutdownCtx. When shutdownCtx ends first, the stop warns
+	//    and the shutdown goes on, and a run still going may publish a frame, have one acked on
+	//    the session's done reply (onReply) or nak what it holds (sessionRelays.stop).
 	// 3. HTTP server — stop accepting new requests, drain in-flight.
 	shutdownCtx, cancel := context.WithTimeout(context.Background(), stopHTTPGrace)
 	defer cancel()
@@ -2152,17 +2158,11 @@ func shutdownListener(logger *logging.Logger, parts listenerParts, loops listene
 	// in-flight deliveries without reconnecting, end the retired watchers and delete their
 	// consumers (endListenerKVWatchers, the drain hook main adds), and drain the connection, but
 	// never let a blocked NATS request pin the process after its HTTP listener is gone.
-	if loops.monitorDone != nil {
-		select {
-		case <-loops.monitorDone:
-		case <-shutdownCtx.Done():
-			logger.Warn("self-health monitor still running at shutdown")
-		}
+	if loops.monitorDone != nil && !closedWithin(shutdownCtx, loops.monitorDone) {
+		logger.Warn("self-health monitor still running at shutdown")
 	}
 	for _, done := range loops.kvLoopsDone {
-		select {
-		case <-done:
-		case <-shutdownCtx.Done():
+		if !closedWithin(shutdownCtx, done) {
 			logger.Warn("a KV bucket pass still running at shutdown")
 		}
 	}

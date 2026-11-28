@@ -9,14 +9,16 @@
 # naming it:
 #   - run one, in three checks: the boot's relaunch of the implementer spends the burst, so the
 #     daemon's wake pacing has not let the tester's launch run and that role's start waits for it,
-#     its claim queued entry 1's task; the pace then lets the launch run while the implementer is
-#     still in the turn its completion was made from, so the tester comes up holding that task
-#     unsent, since the daemon sends no role a task that adopts the issue's working copy while
-#     another role of the issue is in a turn; the issue's phase changes twice while the claim
-#     holds it — the tester asks for the work back with its own backward move, from a turn of its
-#     own, and the implementer, still in its turn, pushes a second head and completes there — which
-#     raises the tester's phases row to entry 2 and writes that entry's own task; once both turns
-#     end the tester is sent the task it held, the completion it reports for that work is refused
+#     its claim queued the task of the tester's first entry; the pace then lets the launch run
+#     while the implementer is still in the turn its completion was made from, so the tester comes
+#     up holding that task unsent, since the daemon sends no role a task that adopts the issue's
+#     working copy while another role of the issue is in a turn; the issue's phase changes twice
+#     while the claim holds it — the tester asks for the work back with its own backward move,
+#     from a turn of its own, and the implementer, still in its turn, pushes a second head and
+#     completes there — which raises the tester's phases row to a second entry and writes that
+#     entry's own task. Every entry is one above the highest entry of every row of the issue, of
+#     any role, so the driver reads each off the rows and names no number; once both turns end the
+#     tester is sent the task it held, the completion it reports for that work is refused
 #     409 HANDOFF_STALE_ENTRY naming both entries and recording nothing, and the entry the phase is
 #     on then reaches the same connection as a task of its own, whose completion the daemon takes;
 #   - run two: the driver holds the advisory lock a lane takes before it claims a lifecycle row,

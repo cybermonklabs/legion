@@ -666,7 +666,8 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
 		// A local commit and a ref the destination does not hold yet: the guard asks git for the
-		// commits the push would add, which is the read the stand-in git never answers.
+		// repository's remotes and then for the commits the push would add, which are reads the
+		// stand-in git never answers.
 		req := PushRequest{
 			Dir:     t.TempDir(),
 			Remote:  "origin",

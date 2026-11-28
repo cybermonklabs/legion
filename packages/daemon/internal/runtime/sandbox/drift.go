@@ -618,6 +618,15 @@ func templateRoles(s *sandbox) []claim.Role {
 	return builtRoles(s.Spec.PodTemplate.Spec)
 }
 
+// templateLacks answers, for a role, whether the Sandbox s's template was built without it: a
+// template that holds roles (templateRoles) lacks each role it does not hold, and a template no
+// launcher of this layout wrote holds none and lacks nothing. It is the one rule both a launch into
+// a kept pod (runtime.PodLacks, in relaunch) and PodLacksRole judge a pod by.
+func templateLacks(s *sandbox) func(role claim.Role) bool {
+	held := templateRoles(s)
+	return func(role claim.Role) bool { return len(held) > 0 && !slices.Contains(held, role) }
+}
+
 // builtRoles are the roles a pod of spec runs: the --role values its launcher container's command
 // names (issuePod.launcherContainer writes one for each role of the launch,
 // controllerPod.launcherContainer the controller's), read off a running pod's spec or off a stored
@@ -720,6 +729,7 @@ func (r *Runtime) slotsDrift(agents map[claim.Agent]claim.Role, u *unstructured.
 }
 
 // PodLacksRole satisfies runtime.IssuePodRoles: the uid of the issue's live pod (livePod) whose
+<<<<<<< HEAD
 // template was built without name (templateRoles), and true; "" and false where the issue has no
 // Sandbox, no live pod, or a pod built with name, and for a template no launcher of this layout
 // wrote, which binds none. It reads the informers' stores alone and makes no API call. The outbox
@@ -730,6 +740,13 @@ func (r *Runtime) slotsDrift(agents map[claim.Agent]claim.Role, u *unstructured.
 // agent, not by its step's role, and the claim's token names the slot alone.
 func (r *Runtime) PodLacksRole(issue string, name claim.Role) (string, bool) {
 	sandbox, err := issueSandboxName(r.project, issue)
+=======
+// template was built without role (templateLacks), and true; "" and false where the issue has
+// no Sandbox, no live pod, or a pod built with role. It reads the informers' stores alone and
+// makes no API call.
+func (r *Runtime) PodLacksRole(issue string, role claim.Role) (string, bool) {
+	name, err := issueSandboxName(r.project, issue)
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 	if err != nil {
 		return "", false
 	}
@@ -741,7 +758,11 @@ func (r *Runtime) PodLacksRole(issue string, name claim.Role) (string, bool) {
 	if !livePod(s, pod) {
 		return "", false
 	}
+<<<<<<< HEAD
 	if held := templateRoles(s); len(held) == 0 || slices.Contains(held, name) {
+=======
+	if !templateLacks(s)(role) {
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 		return "", false
 	}
 	return string(pod.UID), true

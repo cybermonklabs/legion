@@ -96,3 +96,28 @@ func TestTheValuesAnswerCarriesTheAirlock(t *testing.T) {
 		t.Errorf("the answer carries %d fields: %s; want expires_at, values and airlock", len(keys), body)
 	}
 }
+
+// TestAStoredSecretUnderADPoPBlockIsRefusedItsRelease: a session's release of a stored secret
+// whose proxy block is of kind dpop - a capability the broker mints and holds, never a stored
+// secret's release - is answered 403 MINTED_ONLY, naming the rule, with nothing of the
+// value in it, rather than as a broker fault.
+func TestAStoredSecretUnderADPoPBlockIsRefusedItsRelease(t *testing.T) {
+	ts := newTestServerWith(t, func(d *api.Deps) {
+		d.Machine.Airlock = proxyrules.Rules{Secrets: []proxyrules.SecretRule{{Name: "WORKER_TOKEN", Hosts: []string{"api.example.com"}, Kind: proxyrules.KindDPoP}}}
+		d.Machine.AirlockProxyURL, d.Machine.AirlockCACertificate = "http://127.0.0.1:13381", "-----BEGIN CERTIFICATE-----\ntest-airlock-ca\n-----END CERTIFICATE-----\n"
+	})
+	enrollmentID, sessionKey := ts.newSessionEnrollment(t, "session-"+t.Name(), testApprover)
+	_, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/requests",
+		map[string]any{"request": signAgentSecretRequest(t, sessionKey, ts.URL, "read the worker token", "WORKER_TOKEN"), "session_id": nil})
+	created := decode[wireCreateRequestResponse](t, body)
+	if created.GrantID == nil {
+		t.Fatalf("POST /v1/requests = %s, want an automatic grant", body)
+	}
+	status, body := ts.session(t, sessionKey, enrollmentID, http.MethodPost, "/v1/grants/"+*created.GrantID+"/values", nil)
+	if status != http.StatusForbidden || !strings.Contains(string(body), `"MINTED_ONLY"`) || !strings.Contains(string(body), "never a stored secret's release") {
+		t.Fatalf("POST values of a stored secret under a dpop block = %d %s; want 403 MINTED_ONLY naming the rule", status, body)
+	}
+	if strings.Contains(string(body), "worker-v1") {
+		t.Errorf("the refusal carries WORKER_TOKEN's real value: %s", body)
+	}
+}

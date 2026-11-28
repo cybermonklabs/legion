@@ -86,17 +86,13 @@ func (e *Engine) phaseWorkerRecord(ctx context.Context, tx pgx.Tx, key string, g
 	if err != nil {
 		return nil, err
 	}
-	phases, err := e.store.Phases(ctx, tx, issue.Key)
-	if err != nil {
-		return nil, err
-	}
-	// The run is the run of the agent that works the role's step (record.WorkerClaim), a keyed
-	// agent on a step of another role included. A key that yields no claim token has no run, and
-	// is passed over as admission's resumeSlottedWorkers passes over one. A fact the sweep read
-	// off another claim of the role (swept) — two claims of one issue can hold one role — says
-	// nothing of the worker's quiet, and is passed over too; a fact that names no claim is the
-	// worker's.
-	token, err := record.WorkerClaim(project, issue.Key, role, phases)
+	// The run is the run of the agent that works the role's step (record.WorkerClaim over the role's
+	// row PhaseWorkerOwedTurn read), a keyed agent on a step of another role included. A key that
+	// yields no claim token has no run, and is passed over as admission's resumeSlottedWorkers
+	// passes over one. A fact the sweep read off another claim of the role (swept) — two claims of
+	// one issue can hold one role — says nothing of the worker's quiet, and is passed over too; a
+	// fact that names no claim is the worker's.
+	token, err := record.WorkerClaim(project, issue.Key, role, []record.PhaseRow{row})
 	if err != nil || swept != "" && swept != token {
 		return nil, nil
 	}

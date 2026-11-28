@@ -11,6 +11,7 @@ import (
 	"testing"
 	"unicode/utf8"
 
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
@@ -254,16 +255,16 @@ func TestAReleaseCommandHoldingAValueIsRedacted(t *testing.T) {
 		if err != nil || first.Airlock == nil {
 			t.Fatalf("Values = %+v, %v; want the airlock's placeholder", first, err)
 		}
-		placeholder := first.Airlock.Names["AUTO_TOKEN"].Value
+		held := first.Airlock.Names["AUTO_TOKEN"].Value
 		// A second release of the grant hands out the same placeholder, which a command written
 		// after the first can hold.
-		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: []string{"curl", "-u", "x:" + placeholder}}); err != nil {
+		if _, err := m.Values(t.Context(), grantID, enr, ReleaseCall{Command: []string{"curl", "-u", "x:" + held}}); err != nil {
 			t.Fatalf("Values: %v", err)
 		}
 		if got, want := loggedCommandOf(t, m, grantID), []string{"curl", "-u", "x:[redacted]"}; !reflect.DeepEqual(got, want) {
 			t.Errorf("the row's command = %q, want %q", got, want)
 		}
-		hidden(t, m, grantID, loggedText(capture), strings.TrimPrefix(placeholder, PlaceholderPrefix))
+		hidden(t, m, grantID, loggedText(capture), strings.TrimPrefix(held, placeholder.Prefix))
 	})
 
 	t.Run("a-value-across-the-cut", func(t *testing.T) {

@@ -48,7 +48,7 @@ func (r *podUpdateRig) heldStartUntilHeld(role claim.Role, reached <-chan struct
 	m, _ := r.sup.Machine(r.tokens[role])
 	start := r.heldStartRequest(role)
 	go func() {
-		_ = m.Handle(r.ctx, start)
+		_ = m.Handle(r.worker(), start)
 	}()
 	select {
 	case <-reached:

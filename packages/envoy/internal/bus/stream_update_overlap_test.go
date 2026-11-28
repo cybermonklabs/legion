@@ -27,6 +27,7 @@ import (
 // not hold it, each update sent again built from the read before it, so it carries what another
 // writer changed since; any other refusal is returned at once.
 func TestAnUpdateRefusedAsOverlappingItsOwnStreamIsSettledFromTheStream(t *testing.T) {
+	t.Parallel()
 	overlap := &nats.APIError{Code: 400, ErrorCode: jsStreamSubjectOverlap, Description: "subjects overlap with an existing stream"}
 	otherRefusal := &nats.APIError{Code: 503, ErrorCode: 10023, Description: "insufficient resources"}
 	for _, test := range []struct {
@@ -118,6 +119,7 @@ func TestAnUpdateTheServerNeverAnswersIsSentAgainUntilTheWaitEnds(t *testing.T) 
 // sent its update again from that read, the stream would carry this build's generation and its
 // 72 h age again.
 func TestALostUpdateIsNotSentAgainOntoANewerBuildsStream(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		name string
 		run  func(t *testing.T, js nats.JetStreamContext, cfg *nats.StreamConfig) error
@@ -256,6 +258,7 @@ func (js *scriptedUpdateJetStream) counts() ([]nats.StreamConfig, int) {
 // every round's byte limit. The rounds are the measurement, so they are many and each is cheap: no
 // round restarts the cluster.
 func TestConcurrentUpdatesOfOneStreamEndWithTheStreamHoldingThem(t *testing.T) {
+	t.Parallel()
 	const rounds = 300
 	cluster, js := startClusterJetStream(t)
 	startOnCluster(t, cluster, WithReplicas(3))

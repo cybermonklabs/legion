@@ -27,8 +27,9 @@ import {
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { blockId } from "./editor";
+import { awaitFact } from "./local-instance-support";
 import { sql } from "./psql";
-import type { ReviewSeed } from "./review-routes";
+import type { ReviewSeed, SeededReadMarks } from "./review-routes";
 import { seedWorkspace, workspaceSessions } from "./workspace";
 
 /** The decision `decisions.md` records, which the Decisions tab lists under the reader's review
@@ -100,16 +101,18 @@ function createReviewPriority() {
  *  the broadcast page's read of the replies its recipients wrote (`BroadcastPage.tsx`,
  *  `useMarkShownRepliesRead`), and the Spec tab's read of the issue's spec at its newest version,
  *  in the desktop row and again in the phone row (`useSpecMarks`). These are those writes, the same
- *  requests the pages send; after them each page's own write changes nothing. A page of the shot
- *  set that comes to write a mark as it draws needs that mark written here too: until it is, the
- *  visual job's reverse-order run (`DISPATCH_E2E_VISUAL_ORDER=reverse`, e2e/visual-order.ts) fails
- *  by the name of a row that read it. */
+ *  requests the pages send; after them each page's own write changes nothing. It answers the marks
+ *  it wrote, which the visual rows' guard lets a page write again only exactly as they stand
+ *  (`isSeededReadMark`, e2e/visual-guard.ts): a page of the shot set that comes to write another
+ *  mark as it draws needs that mark written here, and until it is, the guard stops the write and
+ *  fails the row that made it, by name. */
 async function markWhatTheShotPagesRead(
   broadcastId: string,
   issue: string,
   specId: string
-): Promise<void> {
+): Promise<SeededReadMarks> {
   const broadcast = await getBroadcast(broadcastId);
+  const agents: Record<string, readonly string[]> = {};
   let replies = 0;
   for (const recipient of broadcast.recipients ?? []) {
     // The page's own filter: a reply its session wrote, by kind and id, which is what the server
@@ -121,6 +124,7 @@ async function markWhatTheShotPagesRead(
       .map((reply) => reply.id);
     if (shown.length > 0) {
       await putAgentState(recipient.session_id, { read_replies: shown });
+      agents[recipient.session_id] = [...(agents[recipient.session_id] ?? []), ...shown];
       replies += shown.length;
     }
   }
@@ -140,7 +144,39 @@ async function markWhatTheShotPagesRead(
   if (numbers.length === 0) {
     throw new Error(`seedReviewRoutes: ${issue}'s spec has no version for its Spec tab to read`);
   }
-  await putDocumentRead(specId, Math.max(...numbers));
+  const version = Math.max(...numbers);
+  await putDocumentRead(specId, version);
+  return { agents, documents: { [specId]: version } };
+}
+
+/** Waits, within `boundMs`, until the document service owes no document a settlement, then holds
+ *  that the corpus records no check result and holds no pull request's head, so no read of a shot
+ *  page has a settlement to run or a commit to ask GitHub about. */
+async function awaitNothingOwed(boundMs: number): Promise<void> {
+  await awaitFact({
+    boundMs,
+    fact: "seedReviewRoutes: the document service owes no document of the corpus a settlement",
+    holds: (owed) => owed === "",
+    // A tenth of a second between reads, as the seed's other waits read.
+    intervalMs: 100,
+    read: () =>
+      sql(
+        `SELECT coalesce(string_agg(artifact_id::text, ', ' ORDER BY artifact_id), '')
+           FROM doc_settlements_pending`
+      ),
+    show: (owed) => `settlements owed to ${owed}`,
+  });
+  const held = await sql(
+    `SELECT (SELECT count(*) FROM check_results) || ' ' || (SELECT count(*) FROM pull_request_heads)`
+  );
+  if (held !== "0 0") {
+    const [results, heads] = held.split(" ");
+    throw new Error(
+      `seedReviewRoutes: the corpus records ${results} check result(s) and ${heads} pull request ` +
+        "head(s): the Verification tab's read would ask GitHub which pull request holds a " +
+        "result's commit and write the answer, a write the visual rows' corpus must not take"
+    );
+  }
 }
 
 /** Seeds the review corpus into an empty database; the caller resets first. `boundMs` is the
@@ -245,8 +281,16 @@ Each page is read once it is drawn.
   // so a rename there fails this seed instead of the page it opens.
   const runbook = await getProjectArtifact("CORE", "runbook");
 
+  // Nothing owed before any row draws: a settlement the document service still owes runs when a
+  // page opens that document's room and writes a version the shot would draw, and a result's
+  // commit is one `GET /issues/{key}/results` asks GitHub the pull request of, writing what it
+  // learns. The rows stop every write their pages send (e2e/visual-guard.ts) and a Go test holds
+  // what the server writes while it answers their reads (visual_shot_reads_test.go); these two
+  // the seed must leave settled itself.
+  await awaitNothingOwed(boundMs);
+
   // Last, so the spec's newest version is the one its tab will show.
-  await markWhatTheShotPagesRead(workspace.broadcast.id, issue, specId);
+  const readMarks = await markWhatTheShotPagesRead(workspace.broadcast.id, issue, specId);
 
   return {
     broadcast: workspace.broadcast.id,
@@ -258,6 +302,7 @@ Each page is read once it is drawn.
     machine: firstMachine(),
     person: PERSON,
     pipelineAt: PIPELINE_AT,
+    readMarks,
     // The id the create answered, which is this title written as a slug: read back rather than
     // spelled again here, so the rule that derives it stays the server's.
     priority: priority.id,

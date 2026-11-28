@@ -12,6 +12,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -70,6 +71,41 @@ func forgedBroker(t *testing.T, bodies map[string]any) *httptest.Server {
 	t.Setenv("AGENT_SECRETS_HELPER_SOCK", "")
 	t.Setenv("AGENT_SECRETS_WAIT", "")
 	return srv
+}
+
+// reachedAs is srv's address with its host spelled host, a name this test resolves itself: for
+// the rest of t, each request this process sends to host and srv's port through
+// http.DefaultTransport, which the CLI's broker client sends through (newClient leaves its
+// Transport unset), dials srv's own listener and takes no proxy. Every other request goes on as
+// it would. So no machine decides whether a request to that name reaches srv. A name the machine
+// resolves would not do: Go does not match localhost. to the usual /etc/hosts entry, which
+// spells localhost with no dot, so that spelling goes to the machine's DNS, which answers it, or
+// not, as that machine is set up.
+func reachedAs(t *testing.T, srv *httptest.Server, host string) string {
+	t.Helper()
+	at, err := url.Parse(srv.URL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	named := net.JoinHostPort(host, at.Port())
+	direct := &http.Transport{
+		DialContext: func(ctx context.Context, network, address string) (net.Conn, error) {
+			if address != named {
+				return nil, fmt.Errorf("this test resolves %s alone, not %s", named, address)
+			}
+			return (&net.Dialer{}).DialContext(ctx, network, srv.Listener.Addr().String())
+		},
+	}
+	t.Cleanup(direct.CloseIdleConnections)
+	base := http.DefaultTransport
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		if r.URL.Host != named {
+			return base.RoundTrip(r)
+		}
+		return direct.RoundTrip(r)
+	})
+	t.Cleanup(func() { http.DefaultTransport = base })
+	return at.Scheme + "://" + named
 }
 
 // TestTheRequestFormsPrintTheBrokersValuesOnOneLine: request, status, self and the exec form print
@@ -336,11 +372,12 @@ func TestTheEnrollmentIDsPrintOnOneLine(t *testing.T) {
 }
 
 // TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress: beside an AGENT_SECRETS_URL
-// that Clean refuses and that carries no credential - a host name with a trailing dot - the exec
-// form that stops while its request waits still prints the request's id where it is a UUID, the
-// shape of every id the broker makes, and the command that reads it again, which runs when pasted.
-// An id of another shape, 32 hex digits among them, is not printed, and the hint says so in place
-// of a command that would not run.
+// that Clean refuses and that carries no credential - a host name with a trailing dot, which the
+// test resolves to its forged broker itself (reachedAs) - the exec form that stops while its
+// request waits still prints the request's id where it is a UUID, the shape of every id the
+// broker makes, and the command that reads it again, which runs when pasted. An id of another
+// shape, 32 hex digits among them, is not printed, and the hint says so in place of a command
+// that would not run.
 func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testing.T) {
 	const shaped = "0f3b6c2e-5a1d-4e7f-9b80-2c4d6e8f0a1b"
 	const hex32 = "0123456789abcdef0123456789abcdef"
@@ -359,7 +396,7 @@ func TestTheExecFormNamesARequestItLeavesWaitingBesideAnUncleanAddress(t *testin
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			srv := forgedBroker(t, map[string]any{"POST /v1/requests": map[string]any{"request_id": row.id, "state": "pending"}})
-			unclean := strings.Replace(srv.URL, "127.0.0.1", "localhost.", 1)
+			unclean := reachedAs(t, srv, "broker.example.")
 			if cipheraddr.New(unclean).Clean() {
 				t.Fatalf("%s is clean; the test needs an address Clean refuses", unclean)
 			}

@@ -1,5 +1,7 @@
 package main
 
+//ci:reads-set refgen_api TestOnlyTheRenewCredentialListsEnrollmentNotLive readAPI(repo root) parses it
+
 import (
 	"path/filepath"
 	"testing"

@@ -69,14 +69,14 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 
 	// The implementer's second round ends and the issue is in testing again: the tester's second
 	// entry, which its first task's turn knows nothing of.
-	takeStart(t, h, implementer.token, "LEGION-208", claim.RoleImplementer)
+	implementing := takeStart(t, h, implementer.token, "LEGION-208", claim.RoleImplementer)
 	completion(t, h.complete(HandoffCompleteRequest{GrantID: implementer.grant(t), Summary: "covered the empty list", Commit: "handoff-2",
 		HandoffID: implementer.writeHandoff("implement", 2), HandoffVersion: 2}))
 	assertIssuePhase(t, h, phase.Testing)
 	_, secondStart := queuedStart(t, h, "LEGION-208", claim.RoleTester)
-	if secondStart.Entry != firstTesting+1 {
-		t.Fatalf("the second testing start is of entry %d, want the %d after the first: an entry rises above every row of its role, every row of the step's claim and the entry that claim was given, the tester's own here",
-			secondStart.Entry, firstTesting+1)
+	if secondStart.Entry <= implementing || secondStart.Entry <= firstTesting {
+		t.Fatalf("the second testing start is of entry %d, want above the implementer's entry %d and the tester's first entry %d",
+			secondStart.Entry, implementing, firstTesting)
 	}
 	if run := issueGeneration(t, h, "LEGION-208"); run != 1 {
 		t.Fatalf("the issue is on run %d, want 1: the run never moved, which is why it cannot refuse this completion", run)
@@ -93,8 +93,8 @@ func TestAStaleEntrysCompletionDoesNotTakeTheNextTestingPhases(t *testing.T) {
 	before := recordedCompletions(t, h, claim.RoleTester)
 	message := complete()
 	for _, want := range []string{
-		fmt.Sprintf("LEGION-208 handed the tester phase testing again: this completion is of entry %d, which is 1 behind the entry %d the phase is on",
-			firstTesting, secondStart.Entry),
+		fmt.Sprintf("LEGION-208 handed the tester phase testing again: this completion is of entry %d, which is %d behind the entry %d the phase is on",
+			firstTesting, secondStart.Entry-firstTesting, secondStart.Entry),
 		"nothing was recorded",
 		// The second entry's task is queued and no delivery has carried it to this claim, which
 		// is the state the daemon sends the row's own work in (workflow's SendOwedEntry).

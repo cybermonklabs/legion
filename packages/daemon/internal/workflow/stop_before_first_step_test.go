@@ -12,14 +12,15 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// A recorded issue that stands before its first step has no plan rows at its generation yet: the
-// first step settles the plan it walks (planFirstStep), the plan its owner gave, which may wait at
-// generation 0, or the project's default steps. stop_task stops every task that is not done, so
-// the stop settles that plan as the first step would, under the fact lock, and then stops its
-// task, which stands stopped before its first step: held from admitted, at no act, with plan rows
-// at the issue's generation. A stop of a task that plan does not hold names the plan's tasks and
-// writes nothing. The control is a task that is done, refused TASK_DONE. A person's todo on such
-// a root then takes the stopped task back to its first step's gate and line (waitForFirstStep).
+// A recorded issue of no experiment's group that stands before its first step has no plan rows
+// at its generation yet: the first step settles the plan it walks (planFirstStep), the plan its
+// owner gave, which may wait at generation 0, or the project's default steps. stop_task stops every
+// task of such an issue that is not done, so the stop settles that plan as the first step would,
+// under the fact lock, and then stops its task, which stands stopped before its first step: held
+// from admitted, at no act, with plan rows at the issue's generation. A stop of a task that plan
+// does not hold names the plan's tasks and writes nothing. The control is a task that is done,
+// refused TASK_DONE. A person's todo on such a root then takes the stopped task back to its first
+// step's gate and line (waitForFirstStep).
 func TestAStopBeforeTheFirstStepSettlesThePlanAndStopsItsTask(t *testing.T) {
 	t.Run("a child whose owner's plan waits at generation 0", func(t *testing.T) {
 		pool := migratedPool(t)

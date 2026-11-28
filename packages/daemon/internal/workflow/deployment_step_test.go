@@ -369,13 +369,9 @@ func TestARetryOfADeploymentStepRestartsItsRole(t *testing.T) {
 		engine := deploymentEngine()
 		root := checkerAtStep2(t, pool)
 		applyRefusingNothing(t, pool, engine, intake.ClaimFailed{Issue: root.Key, Role: "checker", Reason: "the pane died"})
-		project, err := claim.ProjectToken(root.Project)
+		checker, err := stepClaim(root, root.Key, "checker")
 		if err != nil {
-			t.Fatalf("the project token: %v", err)
-		}
-		checker, err := claim.NewToken(project, root.Key, "checker")
-		if err != nil {
-			t.Fatalf("the checker's token: %v", err)
+			t.Fatal(err)
 		}
 
 		applyRefusingNothing(t, pool, engine, intake.RetryOrEscalate{Issue: root.Key, Decision: intake.RetryDecision, Claim: checker})

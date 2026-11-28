@@ -51,23 +51,9 @@ func backfillComments(ctx context.Context, database *store.Store) (KindBackfill,
 // that name no node and whose relations fit the store's bound: each one's id, and beside it the
 // first comment.created event that names it, or the sentinel (graphstore.NoEvent) where no event
 // does, which is the cause of what the batch states of it (refs.CommentsNamingNoNode reads the
-// rest of the row again under the owner locks).
+// rest of the row again under the owner locks) (CommentRowsStatement).
 func readCommentRows(ctx context.Context, database *store.Store, after string) (ids []string, causes []int64, err error) {
-	rows, err := database.Pool.Query(ctx, `
-		select c.id::text,
-		       coalesce((
-			select e.id from events e
-			where coalesce(e.issue_key, e.artifact_id::text, e.project_key)
-			      = coalesce(c.issue_key, c.artifact_id::text)
-			  and e.type = 'comment.created'
-			  and e.payload->>'id' = c.id::text
-			order by e.id limit 1
-		       ), $3)
-		from comments c`+refs.CommentStoreJoins+`
-		where c.node_kind is null and c.id > $1::uuid and `+refs.CommentInTheStore+`
-		order by c.id
-		limit $2
-	`, after, backfillBatch, graphstore.NoEvent)
+	rows, err := database.Pool.Query(ctx, CommentRowsStatement, after, backfillBatch, graphstore.NoEvent)
 	if err != nil {
 		return nil, nil, fmt.Errorf("read the comments naming no node: %w", err)
 	}
@@ -82,6 +68,31 @@ func readCommentRows(ctx context.Context, database *store.Store, after string) (
 	}
 	return ids, causes, rows.Err()
 }
+
+// CommentRowsStatement is readCommentRows' selection: at most $2 of the comments naming no node
+// whose relations fit the store's bound, past the comment $1, in id order, each with the first
+// comment.created event that names it, or $3, the store's sentinel, where none does.
+//
+// The event is read once per comment, and each such read probes events_comment_created_id
+// (migration 20261119020800) by the comment, whose expression it compares as that index writes it,
+// and whose predicate its own type clause proves: with no index to serve it, each one read the
+// whole of events, so a run took time growing with the square of the data
+// (TestTheBackfillsEventReadsProbeTheirIndexes).
+var CommentRowsStatement = `
+		select c.id::text,
+		       coalesce((
+			select e.id from events e
+			where coalesce(e.issue_key, e.artifact_id::text, e.project_key)
+			      = coalesce(c.issue_key, c.artifact_id::text)
+			  and e.type = 'comment.created'
+			  and e.payload->>'id' = c.id::text
+			order by e.id limit 1
+		       ), $3)
+		from comments c` + refs.CommentStoreJoins + `
+		where c.node_kind is null and c.id > $1::uuid and ` + refs.CommentInTheStore + `
+		order by c.id
+		limit $2
+	`
 
 // writeCommentBatch writes one batch's comment nodes, the comments of ids each caused by the event
 // beside it in causes (readCommentRows), the facts each row projects and who wrote each, in one

@@ -1,6 +1,6 @@
-import { describe, expect, test } from "bun:test";
+import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { skipWithout } from "@legion/test-fixtures/host-tools";
+import { hostGate } from "@legion/test-fixtures/host-tools";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
 import {
   inOwnGroup,
@@ -21,7 +21,9 @@ import {
 
 const root = join(import.meta.dir, "..", "..", "..");
 const scratch = temporaryDirectories("live-daemon-proof-test");
-const withoutSetsid = skipWithout("setsid");
+// Read once, at module scope: a host without setsid skips these rows naming it, and under
+// GITHUB_ACTIONS fails each by its own name (hostGate).
+const setsidHost = hostGate({ programs: ["setsid"] });
 
 const testName = "TestAFixtureProofLive";
 // What a driver whose one test passed prints.
@@ -55,7 +57,7 @@ live_daemon_proof 'fixture proof' fixture-proof ${testName} ${JSON.stringify(evi
   return { ...run, evidence };
 }
 
-describe.skipIf(withoutSetsid)("the run's last line", () => {
+setsidHost.describe("the run's last line", () => {
   for (const signal of ["TERM", "HUP", "INT"] as const) {
     test(`reads FAIL at the proof check a group SIG${signal} ended the run in`, () => {
       const run = fixtureProof({ at: "proof", signal });
@@ -88,7 +90,7 @@ describe.skipIf(withoutSetsid)("the run's last line", () => {
 // A caller that built the driver before the run hands it over as DRIVER, and the driver check
 // builds nothing: the stand-in build that would end the run with a group SIGTERM never runs, and
 // the proof runs the binary it was handed.
-describe.skipIf(withoutSetsid)("the driver check", () => {
+setsidHost.describe("the driver check", () => {
   test("builds nothing for a run handed its driver", () => {
     const run = fixtureProof({ at: "build", signal: "TERM" }, true);
     expect(run.code).toBe(0);

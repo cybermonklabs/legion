@@ -2028,7 +2028,7 @@ func (g *rig) scriptedStartLauncher(
 	}
 	server, client := net.Pipe()
 	pod := g.pod(SandboxName(token))
-	session := g.r.launchers.accept(token, launcherIssue(token), pod.CreationTimestamp.Time, g.keptSince(token), shimwire.LauncherHello{
+	session := g.r.launchers.accept(token, launcherIssue(token), shimwire.LauncherHello{
 		LauncherID: "scripted-" + string(token), PodUID: string(pod.UID), ResumesBySession: g.resumesBySession,
 	})
 	g.t.Cleanup(func() { _ = client.Close() })
@@ -2166,6 +2166,10 @@ type sandboxMachineClock struct{}
 func (sandboxMachineClock) Now() time.Time { return rigNow }
 
 func (sandboxMachineClock) AfterFunc(time.Duration, func()) supervise.Cancel {
+	return sandboxMachineCancel{}
+}
+
+func (sandboxMachineClock) At(time.Time, func()) supervise.Cancel {
 	return sandboxMachineCancel{}
 }
 

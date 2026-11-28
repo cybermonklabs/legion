@@ -215,10 +215,16 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 	otherClient.ClientID = "another-client"
 	unknownScope := liveToken(caller.jkt, time.Hour)
 	unknownScope.ProjectScope = "everything"
-	// A named answer may name no project when it names a person (an account entry may
-	// name none), and names at most one.
+	// A named answer may name no project when it names a person (an account entry may name
+	// none), or when it names no person and names the account it acts as (an account entry may
+	// name neither), and names at most one. A named answer naming no person and a fleet is no
+	// token the broker mints: the service of that shape is always an account.
 	namedNoProject := liveToken(caller.jkt, time.Hour)
 	namedNoProject.ProjectScope, namedNoProject.Projects = ciphertoken.ProjectScopeNamed, nil
+	namedForAnAccount := liveToken(caller.jkt, time.Hour)
+	namedForAnAccount.Person, namedForAnAccount.Service, namedForAnAccount.Projects = "", "system:serviceaccount:example-ns:example-public", nil
+	namedForAFleet := liveToken(caller.jkt, time.Hour)
+	namedForAFleet.Person, namedForAFleet.Service, namedForAFleet.Projects = "", "example-fleet", nil
 	namedTwoProjects := liveToken(caller.jkt, time.Hour)
 	namedTwoProjects.ProjectScope, namedTwoProjects.Projects = ciphertoken.ProjectScopeNamed, []string{"ACME", "OTHER"}
 	serviceWithProjects := serviceToken(caller.jkt, time.Hour)
@@ -240,6 +246,8 @@ func TestSessionCallerIsTheVerifyRule(t *testing.T) {
 		{"another client", otherClient, false},
 		{"unknown scope", unknownScope, false},
 		{"named with no project, for a person", namedNoProject, true},
+		{"named with no project, for an account", namedForAnAccount, true},
+		{"named with no project and no person, for a fleet", namedForAFleet, false},
 		{"named with two projects", namedTwoProjects, false},
 		{"service with projects", serviceWithProjects, false},
 	} {

@@ -26,6 +26,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // writeCorpusLine is one spec's record in the dump: what each pass wrote, in pass order.
@@ -251,7 +252,7 @@ func writeCorpusSha256(text string) string {
 // operation with "<mode>/<transaction>/<operation>".
 func runWriteCorpus(t *testing.T, service *Service, specName, markdown string, observe func(step string)) writeCorpusLine {
 	t.Helper()
-	t.Cleanup(func() { pmdoc.SetBlockIDGenerator(nil) })
+	testcleanup.Add(t, func() { pmdoc.SetBlockIDGenerator(nil) })
 	if observe == nil {
 		observe = func(string) {}
 	}

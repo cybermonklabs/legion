@@ -51,7 +51,7 @@ func PutPlan(ctx context.Context, tx pgx.Tx, write PlanWrite, actor model.Actor,
 	}
 	// A default plan states no document, so its version reads 0 (PlanWrite.Document).
 	version := write.Document.Version
-	written, err := putNode(ctx, tx, nodeWrite{
+	written, _, err := putNode(ctx, tx, nodeWrite{
 		kind: KindPlan, id: id, issue: write.Issue, stated: stated, makes: true, actor: actor, at: at,
 		replaces: func(held map[string]json.RawMessage) ([]string, error) {
 			heldVersion := 0

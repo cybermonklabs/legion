@@ -123,10 +123,12 @@
 # created and nothing else, and leaves the logs; it runs on a normal exit, on Ctrl-C, on SIGTERM
 # and on a failure part way through, so a start that fails before "ready" leaves nothing running,
 # and ends within seconds of the process that failed, one that exited after it reported its port
-# among them: every readiness request gives up after 5 s. Each process gets 10 s after its SIGTERM
-# and is then killed, which the log says, so one that ignores the signal delays the drops and does
-# not prevent them. Only a process this script started and that is still running is signalled,
-# never whatever holds the pid of one that exited earlier. A SIGTERM sent to the whole process
+# among them: every readiness request gives up after 5 s (DEV_STACK_READINESS_REQUEST_SECONDS sets
+# another whole number of seconds). Each process gets 10 s after its SIGTERM
+# (DEV_STACK_STOP_GRACE_SECONDS sets another) and is then killed, which the log says, so one that
+# ignores the signal delays the drops and does not prevent them. Only a process this script started
+# and that is still running is signalled, never whatever holds the pid of one that exited earlier,
+# and one that has exited is never waited on. A SIGTERM sent to the whole process
 # group, as a supervisor's stop sends it, is that same stop, and so is the same signal repeated
 # while the stop runs, and so is either with this script's standard error piped to a reader the
 # signal stops too (`dev-stack.sh 2>&1 | tee`: the stop writes its lines there), and so is a closed
@@ -175,6 +177,12 @@ HELD_PORT="$REPO_ROOT/scripts/e2e/lib/held-port.py"
 # shellcheck source-path=SCRIPTDIR source=lib/exec-env.sh
 . "$SCRIPT_DIR/lib/exec-env.sh"
 
+# The stop's grace and a readiness request's bound when the caller sets neither
+# DEV_STACK_STOP_GRACE_SECONDS nor DEV_STACK_READINESS_REQUEST_SECONDS (usage, below). Each is a
+# line of its own: scripts/dev-stack.test.sh reads both here rather than copying the numbers.
+DEFAULT_STOP_GRACE_SECONDS=10
+DEFAULT_READINESS_REQUEST_SECONDS=5
+
 usage() {
   cat <<'EOF'
 Usage: dev-stack.sh [--database-url <postgres url>] [--binaries <dir>] [--callout]
@@ -203,6 +211,15 @@ option none of this runs, as before.
 
 --callout and --project-access cannot run together: both of --callout's brokers would take the
 airlock proxy's one port. The pair is refused with exit 2 before anything is created or started.
+
+EOF
+  cat <<EOF
+DEV_STACK_STOP_GRACE_SECONDS ($DEFAULT_STOP_GRACE_SECONDS unless set) is how long the stop gives
+each process after its SIGTERM before it kills it, and DEV_STACK_READINESS_REQUEST_SECONDS
+($DEFAULT_READINESS_REQUEST_SECONDS unless set) how long each readiness request waits for an
+answer. Each is a whole number of seconds from 1 to 9999, written without a leading zero; any
+other value, an empty one among them, is refused with exit 2 before anything is created or
+started.
 EOF
 }
 
@@ -268,6 +285,19 @@ if [ "$CALLOUT" = true ] && [ "$PROJECT_ACCESS" = true ]; then
   echo "dev-stack: --callout and --project-access cannot run together: both of --callout's brokers would take the airlock proxy's one port" >&2
   exit 2
 fi
+
+# --- The stop's grace and a readiness request's bound (usage, above), checked before anything is
+# created: a value bash arithmetic cannot read would end the stop between the kills and the drops,
+# and one with a leading zero it reads as octal. A variable that is set is checked even when
+# empty, which would otherwise read as unset. The stop reads its grace where it runs
+# (stop_bounded), so scripts/dev-stack.test.sh can run it alone. ---
+for bound in DEV_STACK_STOP_GRACE_SECONDS DEV_STACK_READINESS_REQUEST_SECONDS; do
+  if [[ -v $bound ]] && ! [[ ${!bound} =~ ^[1-9][0-9]{0,3}$ ]]; then
+    echo "dev-stack: $bound must be a whole number of seconds from 1 to 9999, not '${!bound}'" >&2
+    exit 2
+  fi
+done
+READINESS_REQUEST_SECONDS="${DEV_STACK_READINESS_REQUEST_SECONDS:-$DEFAULT_READINESS_REQUEST_SECONDS}"
 
 # --- The one input, checked before anything is created, so a missing or malformed URL leaves
 # nothing behind. The three sources in order, as the header names them. ---
@@ -488,40 +518,66 @@ DISPATCH_PID=""
 BROKER_DB_CREATED=false
 DISPATCH_DB_CREATED=false
 
-# running_child PID: whether PID is a process this shell started that bash still counts as running
-# (jobs -rp), the one test each stop below makes before every signal it sends. A process of the
-# stack that exited early, a crash during a long run or the second broker callout-check.sh kills,
-# has been reaped and is listed no longer, and its pid is free: on a busy box the kernel hands it
-# to another process within minutes, which kill -0 cannot tell from the one this run started, so a
-# stop that signalled by pid alone could SIGTERM, and 10 s later SIGKILL, a process of someone
-# else's. A child that has exited and is not yet reaped still holds its pid, so it is listed and a
-# signal to it reaches no one else.
+# running_child PID: whether PID is a process this shell started that is still there, the one test
+# each stop below makes before every signal it sends. Bash must still count it as running (jobs
+# -rp): a process of the stack that exited early, a crash during a long run or the second broker
+# callout-check.sh kills, has been reaped and is listed no longer, and its pid is free: on a busy
+# box the kernel hands it to another process within minutes, which kill -0 cannot tell from the one
+# this run started, so a stop that signalled by pid alone could SIGTERM, and 10 s later SIGKILL, a
+# process of someone else's. And the kernel must still name this shell its parent (field 4 of
+# /proc/PID/stat, read past the last `) ` because a process names itself; ps on a host with no
+# /proc): bash 5.2 loses the exit of a child that ends while a trapped signal interrupts the
+# `wait -n` below, which a group's SIGTERM does to every child at once, and then lists that child
+# as running for good although the kernel has reaped it. The stop of such a run waited out the
+# whole grace on the Dispatch port keeper, gone since the signal, and logged that it killed it.
+# A child that has exited and is not yet reaped still holds its pid and its parent, so it is
+# running here and a signal to it reaches no one else. Each answer is an explicit return 0 or 1:
+# cleanup runs inside a trap, where a bare `return` gives the status of the command the trap
+# interrupted (130 from the `wait -n` an INT cut short), not that of the test before it.
 running_child() {
-  local child
+  local child stat=""
+  local -a fields
   for child in $(jobs -rp); do
-    [ "$child" = "$1" ] && return 0
+    [ "$child" = "$1" ] || continue
+    if [ -d /proc/self ]; then
+      { IFS= read -r -d '' stat <"/proc/$1/stat"; } 2>/dev/null || :
+      [ -n "$stat" ] || return 1
+      read -r -a fields <<<"${stat##*) }"
+      [ "${fields[1]}" = "$$" ] && return 0
+      return 1
+    fi
+    [ "$(ps -o ppid= -p "$1" 2>/dev/null | tr -d ' ')" = "$$" ] && return 0
+    return 1
   done
   return 1
 }
 
-# stop_bounded NAME PID stops one process of the stack for cleanup: SIGTERM, then up to 10 s for it
-# to exit, then SIGKILL, which the log names, so a process that ignores or outlives its SIGTERM
-# holds the stop 10 s at most and the drops below still run. Cleanup ignores every further INT and
-# TERM, so a `wait` on such a process would have held the stop, and both databases, for good. The
-# look is running_child every 0.1 s, so a process that exits during the 10 s is never signalled
-# again, whatever holds its pid by then.
+# stop_bounded NAME PID stops one process of the stack for cleanup: SIGTERM, then up to the grace,
+# DEV_STACK_STOP_GRACE_SECONDS or DEFAULT_STOP_GRACE_SECONDS, for it to exit, then SIGKILL, which
+# the log names with the time from the SIGTERM to the kill, so a process that ignores or outlives
+# its SIGTERM holds the stop that long at most and the drops below still run. Cleanup ignores every
+# further INT and TERM, so a `wait` on such a process would have held the stop, and both
+# databases, for good. The look is running_child every 0.1 s, so a process that exits during the
+# grace is never signalled again, whatever holds its pid by then. The grace is counted in
+# microseconds of the wall clock (EPOCHREALTIME, its decimal mark dropped, which a locale may make
+# a comma), so it is the whole grace: SECONDS counts whole seconds, and a deadline of SECONDS plus
+# 10 came up to a second short.
 stop_bounded() {
-  local name="$1" pid="$2" deadline
+  local name="$1" pid="$2" grace="${DEV_STACK_STOP_GRACE_SECONDS:-$DEFAULT_STOP_GRACE_SECONDS}"
+  local termed deadline waited
   if [ -z "$pid" ] || ! running_child "$pid"; then
     return 0
   fi
   kill "$pid" 2>/dev/null
-  deadline=$((SECONDS + 10))
-  while running_child "$pid" && ((SECONDS < deadline)); do
+  termed=${EPOCHREALTIME//[!0-9]/}
+  deadline=$((termed + grace * 1000000))
+  while running_child "$pid" && ((${EPOCHREALTIME//[!0-9]/} < deadline)); do
     sleep 0.1
   done
   if running_child "$pid"; then
-    echo "dev-stack: $name (pid $pid) did not stop within 10 s of its SIGTERM; killing it" >&2
+    waited=$((${EPOCHREALTIME//[!0-9]/} - termed))
+    printf 'dev-stack: %s (pid %s) did not stop within %s s of its SIGTERM; killing it %d.%03d s after it\n' \
+      "$name" "$pid" "$grace" $((waited / 1000000)) $((waited % 1000000 / 1000)) >&2
     kill -KILL "$pid" 2>/dev/null
   fi
   wait "$pid" 2>/dev/null
@@ -680,13 +736,14 @@ await() {
 
 # answered_at URL is await's reader for a server's answer: it prints "answered" once URL answers
 # with no HTTP error (curl -f), so a server is watched by its process as well as by its port. Each
-# request gives up after 5 s, over the listener's own 3 s health budget, and that bound is what lets
-# await's deadline and its look at the process hold: the listener and Dispatch serve on a socket
-# their keeper holds for the whole run, so once either has exited the kernel still queues a request
-# on its port and no process ever answers it. A request with no bound waited there for good, and a
+# request gives up after READINESS_REQUEST_SECONDS, 5 s unless DEV_STACK_READINESS_REQUEST_SECONDS
+# sets another, over the listener's own 3 s health budget, and that bound is what lets await's
+# deadline and its look at the process hold: the listener and Dispatch serve on a socket their
+# keeper holds for the whole run, so once either has exited the kernel still queues a request on
+# its port and no process ever answers it. A request with no bound waited there for good, and a
 # stop signal to this script with it, since bash runs a trap only once the command in the
 # foreground has returned.
-answered_at() { curl -sf --max-time 5 "$1" >/dev/null && echo answered; }
+answered_at() { curl -sf --max-time "$READINESS_REQUEST_SECONDS" "$1" >/dev/null && echo answered; }
 
 issuer_url_in() { grep -o 'issuer listening url=[^ ]*' "$1" | head -n1 | cut -d= -f2-; }
 broker_addr_in() { jq -Rnr '[inputs | fromjson? | select(.message == "broker listening") | .addr][0] // empty' "$1"; }

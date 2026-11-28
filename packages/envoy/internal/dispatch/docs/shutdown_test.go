@@ -24,6 +24,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/logtest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // A deploy usually finds someone with a document open, its tab connected to the room with what it
@@ -32,13 +33,14 @@ import (
 // does not load a room during shutdown, so a room closed first would leave the edit unversioned
 // until someone next opened the document.
 func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
 	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
 		t.Fatal(err)
@@ -71,6 +73,7 @@ func TestShutdownSettlesARoomWithAnEditorConnectedBeforeClosingIt(t *testing.T) 
 // inside that delay stops the timer, and Shutdown's own settlement of the document loads the room
 // in its place, so the write is versioned before the process exits rather than left to resume.
 func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
@@ -106,15 +109,16 @@ func TestShutdownSettlesTheDocumentAColdWriteLeftOwing(t *testing.T) {
 // it reports which documents settled, and stops ygo, only once the settlement has returned, and the
 // process does not close the store under it.
 func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
 	pause := pauseRepairCommits(service)
-	t.Cleanup(pause.let)
+	testcleanup.Add(t, pause.let)
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	browser := connectPeer(t, httpServer.URL, artifactID, "alice")
 	if err := browser.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
 		t.Fatal(err)
@@ -171,11 +175,12 @@ func TestShutdownJoinsTheSettlementItsLastBrowserLeavingStarted(t *testing.T) {
 // what it owes and settles on its own, so the quiet document's edit is versioned while the held
 // room's append is still outstanding, and the held room alone is left to resume.
 func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	quiet := createIssueDocument(t, database, 1, "quiet")
 	held := createIssueDocument(t, database, 2, "held")
 	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: held, entered: make(chan struct{}), release: make(chan struct{})}
-	t.Cleanup(appends.let)
+	testcleanup.Add(t, appends.let)
 	service := newShutdownTestService(t, database, appends)
 	seedServiceText(t, service, quiet, "quiet")
 	settleCurrentGeneration(t, service, quiet)
@@ -235,12 +240,13 @@ func TestShutdownSettlesEveryOtherRoomWhileOneRoomsQueuedAppendIsHeld(t *testing
 // The barrier on service.shuttingDown makes that ordering deterministic rather than a race the
 // goroutine scheduler happens to win (LEGION-501).
 func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	first := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	second := &burstGate{entered: make(chan struct{}), release: make(chan struct{})}
 	appends := &burstStore{VersionedStore: NewPgVersioned(database), room: artifactID, gates: []*burstGate{first, second}}
-	t.Cleanup(func() {
+	testcleanup.Add(t, func() {
 		first.let()
 		second.let()
 	})
@@ -248,7 +254,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 	seedServiceText(t, service, artifactID, "before")
 	settleCurrentGeneration(t, service, artifactID)
 	httpServer := httptest.NewServer(http.HandlerFunc(service.ServeHTTP))
-	t.Cleanup(httpServer.Close)
+	testcleanup.Add(t, httpServer.Close)
 	editor := connectPeer(t, httpServer.URL, artifactID, "alice")
 	if err := editor.WaitForText(peerMarkdown, "before\n", 10*time.Second); err != nil {
 		t.Fatal(err)
@@ -315,6 +321,7 @@ func TestShutdownSettlesABurstOfAppendsIncludingOneRecordedAfterItsScan(t *testi
 // resume (a documented, non-error outcome), but the worker returns in time for Shutdown itself to
 // read that back and finish cleanly rather than time out (LEGION-501).
 func TestShutdownReturnsNilForARenderStillRunningPastItsDrainBudget(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "before")
 	service := newShutdownTestService(t, database, nil)
@@ -423,7 +430,7 @@ func newShutdownTestService(t *testing.T, database *store.Store, appends Version
 	// A test that already called Shutdown runs this one a second time; it logs its own
 	// "left to resume" line but does no second settlement attempt (settleRoomWithin's
 	// s.stopping guard returns it almost instantly), so it is a harmless no-op, not a race.
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	return service
 }
 

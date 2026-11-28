@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -472,36 +473,168 @@ func TestARelaySocketWhoseWriteFailsIsDroppedAtOnce(t *testing.T) {
 // A socket whose client reads its frames slower than they come falls past what one socket may
 // hold for its client (relaySocketPendingMsgs, relaySocketPendingBytes): the frame that would pass
 // them closes the socket 1013 slow_consumer, on which its client opens it again and the owning
-// relay sends the frames it held again, since it heard no receipt for them. The client here reads
-// one frame each 50 ms, and 80 frames of 512 KiB come at once, past the socket's 32 frames and
-// 16 MiB: it reads the frames written before the close and then the close. Control: the socket's
-// own check of what it holds removed (enqueue); the replica's budget is far past the flood, so
-// nothing closes the socket, and the row fails naming it.
+// relay sends the frames it held again, since it heard no receipt for them. The row holds the
+// socket's pump from writing (its write lock), so every frame the socket takes stays held, and
+// raises nats.go's own pending limits on the socket's subscription above the flood, so nats.go
+// drops none ahead of the queue: of 80 frames of 512 KiB, the one past the socket's 32 frames or
+// 16 MiB closes it, however fast they come. The socket checks its token once an hour, so no ping
+// and no read deadline ends it first, and the grace its close is written in is raised to an hour
+// (withCloseGrace), so no clock decides the row; it waits for the client's read to end, bounded
+// only by the test binary's deadline. Control: the socket's own check of what it holds removed
+// (enqueue); the replica's budget is far past the flood, so nothing closes the socket, and the row
+// fails at the deadline naming the wait.
 func TestARelaySocketWhoseSubscriptionFallsBehindClosesSlowConsumer(t *testing.T) {
-	rig := newRelaySocketRig(t)
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withCloseGrace(time.Hour))
 	const session = "ses_edge_slow_consumer"
 	token := "access-token-of-a-slow-consumer"
 	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
-	conn, _ := rig.dialStalled(t, session, token)
+	conn, socket := rig.dialStalled(t, session, token)
+	if err := socket.awaitSubscription(t).SetPendingLimits(1<<16, 1<<30); err != nil {
+		t.Fatalf("raise the subscription's pending limits: %v", err)
+	}
+	socket.writeMu.Lock()
+	t.Cleanup(sync.OnceFunc(socket.writeMu.Unlock))
+	client := startRelaySocketClient(t, conn)
+	flood(t, rig.owner.url, session, 80)
+	err := testwait.Receive(t, "the socket whose pump is held to end, after 80 frames of 512 KiB came at once", client.closed)
+	var closed *websocket.CloseError
+	if !errors.As(err, &closed) || closed.Code != websocket.CloseTryAgainLater || closed.Text != relaySocketReasonSlowConsumer {
+		heldMsgs, heldBytes := socket.held()
+		t.Fatalf("the socket that fell behind ended with %v, want a close %d %q (it holds %d frames, %d bytes)", err, websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer, heldMsgs, heldBytes)
+	}
+}
+
+// relaySocketFrameWire is about what one flood frame (512 KiB of data, base64 inside its JSON)
+// takes on the wire; the order rows below call a control frame behind half of it, or more, one
+// that waited for the frame's data.
+const relaySocketFrameWire = 700 << 10
+
+// A socket that closes 1013 slow_consumer while a data frame is being written to its client
+// writes the close in the middle of that frame, behind one fragment of its data rather than all
+// of it: write hands gorilla/websocket each frame in pieces of relaySocketWriteFragment, which it
+// sends as fragments of that size, and a control frame may go between two fragments (RFC 6455,
+// section 5.4). A close behind all of a frame's data waits as long as the client takes to read it,
+// and past relaySocketCloseGrace the connection is dropped with no close frame: a client that
+// reads slowly read 1006. The client here reads through the least buffers the kernel allows
+// (dialHeldReader) and is held after the first bytes of a frame of 512 KiB, so that frame's write
+// blocks; 2 frames more come, and the second of them closes the socket, which holds at most 2. The
+// row waits until the close waits for the connection's write lock (awaitControlWriteWaiting), so
+// it is handed the lock the moment the write holding it lets go, and only then lets the client
+// read. The grace and the write deadline are raised to an hour and the socket checks its token
+// once an hour, so no clock decides the row; it reads the order on the wire: the client has read
+// less than half the frame (relaySocketFrameWire) when the close comes, and it waits on the
+// client's own reads, bounded only by the test binary's deadline. Control: write handing gorilla
+// each frame whole (WriteJSON), which writes a frame past twice its buffer as one fragment under
+// its connection's write lock, and the frame's empty last fragment after it; the close waits for
+// all of the frame's data, which the client reads first, and the row names it.
+func TestARelaySocketsCloseGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(2, 1<<30), withCloseGrace(time.Hour), withWriteWait(time.Hour))
+	const session = "ses_edge_held_reader"
+	token := "access-token-of-a-held-reader"
+	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
+	conn, held, socket := rig.dialHeldReader(t, session, token)
+	// nats.go's own pending limits on the subscription are the socket's 2 frames; a frame counts
+	// there until enqueue returns, so they are raised above the 3 frames the row sends, leaving the
+	// socket's own limit of 2 the one that closes it.
+	if err := socket.awaitSubscription(t).SetPendingLimits(1<<16, 1<<30); err != nil {
+		t.Fatalf("raise the subscription's pending limits: %v", err)
+	}
+	resume := make(chan struct{})
+	held.resume = resume
+	client := startRelaySocketClient(t, conn)
+	before := held.read.Load()
+	flood(t, rig.owner.url, session, 1)
+	testwait.Until(t, "the client to read the first bytes of the first frame", func() (int64, bool) {
+		read := held.read.Load()
+		return read, read > before
+	})
+	flood(t, rig.owner.url, session, 2)
+	awaitControlWriteWaiting(t, "the socket's close to wait for its connection's write lock")
+	close(resume)
+	err := testwait.Receive(t, "the held reader's socket to end, after 2 frames more of 512 KiB came", client.closed)
+	if read := held.read.Load() - before; read >= relaySocketFrameWire/2 {
+		t.Fatalf("the client read %d bytes of the first frame before the socket's close, half the frame's %d or more: the close waited for the frame's data being written", read, relaySocketFrameWire)
+	}
+	var closed *websocket.CloseError
+	if !errors.As(err, &closed) || closed.Code != websocket.CloseTryAgainLater || closed.Text != relaySocketReasonSlowConsumer {
+		heldMsgs, heldBytes := socket.held()
+		t.Fatalf("the client read %v after %d bytes, want the close %d %q in the middle of the first frame (the socket ended %v, holding %d frames, %d bytes)", err, held.read.Load()-before, websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer, socket.ended.Load(), heldMsgs, heldBytes)
+	}
+}
+
+// A socket's ping goes between two fragments of the data frame being written to its client,
+// behind one fragment of its data rather than all of it, as the close does: the ping is not held
+// behind a frame for up to relaySocketWriteWait, past which it would take a client that reads
+// slowly for gone. The client reads through the least buffers the kernel allows (dialHeldReader)
+// and is held after the first bytes of a frame of 512 KiB, so that frame's write blocks; the row
+// starts a ping (socket.ping), waits until the ping waits for the connection's write lock
+// (awaitControlWriteWaiting), and only then lets the client read. The client's ping handler notes
+// how many bytes it had read: under half the frame (relaySocketFrameWire). The frame then comes
+// whole, its data intact across the fragments and the ping between them. The write deadline is
+// raised to an hour and the socket checks its token once an hour, so no clock decides the row; it
+// reads the order on the wire and waits on the client's own reads, bounded only by the test
+// binary's deadline. Control: write handing gorilla each frame whole (WriteJSON); the ping waits
+// for all of the frame's data, which the client reads first, and the row names it.
+func TestARelaySocketsPingGoesBetweenTheFragmentsOfAFrame(t *testing.T) {
+	rig := newRelaySocketRig(t, withCheckEvery(time.Hour), withPendingLimits(1<<16, 1<<30), withWriteWait(time.Hour))
+	const session = "ses_edge_held_ping"
+	token := "access-token-of-a-held-pinged-reader"
+	rig.broker.Says(token, relaySocketAnswer(session, rig.caller.JKT(), time.Hour, relaySocketProject))
+	conn, held, socket := rig.dialHeldReader(t, session, token)
+	resume := make(chan struct{})
+	held.resume = resume
+	// pinged carries how many bytes the client had read in all when the first ping came, or -1
+	// when its read ended first (ended then holds why).
+	pinged := make(chan int64, 1)
+	conn.SetPingHandler(func(data string) error {
+		select {
+		case pinged <- held.read.Load():
+		default:
+		}
+		return conn.WriteControl(websocket.PongMessage, []byte(data), time.Time{})
+	})
+	messages := make(chan []byte, 1)
 	ended := make(chan error, 1)
 	go func() {
 		for {
-			if _, _, err := conn.ReadMessage(); err != nil {
+			_, data, err := conn.ReadMessage()
+			if err != nil {
 				ended <- err
+				select {
+				case pinged <- -1:
+				default:
+				}
 				return
 			}
-			time.Sleep(50 * time.Millisecond)
+			select {
+			case messages <- data:
+			default:
+			}
 		}
 	}()
-	flood(t, rig.owner.url, session, 80)
-	select {
-	case err := <-ended:
-		var closed *websocket.CloseError
-		if !errors.As(err, &closed) || closed.Code != websocket.CloseTryAgainLater || closed.Text != relaySocketReasonSlowConsumer {
-			t.Fatalf("the socket that fell behind ended with %v, want a close %d %q", err, websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatalf("the socket whose client reads one frame each 50 ms was still open 10s after 80 frames of 512 KiB came at once, want it closed %d %q", websocket.CloseTryAgainLater, relaySocketReasonSlowConsumer)
+	before := held.read.Load()
+	flood(t, rig.owner.url, session, 1)
+	testwait.Until(t, "the client to read the first bytes of the frame", func() (int64, bool) {
+		read := held.read.Load()
+		return read, read > before
+	})
+	socket.ping()
+	awaitControlWriteWaiting(t, "the socket's ping to wait for its connection's write lock")
+	close(resume)
+	atPing := testwait.Receive(t, "the client's ping handler to run", pinged)
+	if atPing < 0 {
+		t.Fatalf("the client's read ended before any ping came: %v", <-ended)
+	}
+	if read := atPing - before; read >= relaySocketFrameWire/2 {
+		t.Fatalf("the ping reached the client after %d bytes of the frame, half the frame's %d or more: the ping waited for the frame's data being written", read, relaySocketFrameWire)
+	}
+	var frame relayFrameRead
+	if err := json.Unmarshal(testwait.Receive(t, "the frame the ping went into to come whole", messages), &frame); err != nil {
+		t.Fatalf("the frame the ping went into is no JSON frame: %v", err)
+	}
+	data, err := base64.StdEncoding.DecodeString(frame.Data)
+	if frame.Op != "msg" || err != nil || !bytes.Equal(data, bytes.Repeat([]byte("x"), 512<<10)) {
+		t.Fatalf("the frame the ping went into came as op %q with %d bytes of data (%v), want the msg frame of 512 KiB of x the row sent", frame.Op, len(data), err)
 	}
 }
 
@@ -763,6 +896,12 @@ func TestARelaySocketOfAPromptClientTakesABacklogPastItsPendingLimits(t *testing
 	}
 	client, _ := rig.open(t, session)
 	client.subscribeOwn(session)
+	// The relay sent the first relayEdgeInFlight frames to no socket, and the registration below
+	// restarts it at the floor, which deletes the consumer holding them and creates it again, so
+	// the row waits for that many in flight and then for the consumer's stored state
+	// (awaitSessionConsumerStored).
+	awaitAckState(t, rig.owner.consumers, session, relayEdgeInFlight, 0)
+	awaitSessionConsumerStored(t, rig.owner.harness.client.Conn, session)
 	rig.owner.subscribe(t, consumerRegistration(session, "epoch-2"))
 	seen := map[string]bool{}
 	deadline := time.After(60 * time.Second)
@@ -807,8 +946,12 @@ func TestARelaySocketClosesOnAFrameOverItsReadLimit(t *testing.T) {
 
 // A frame the socket cannot read as the wire's - one that is not JSON, one of an unknown op, a sub or
 // unsub that names no sid, and a sub of a sid the socket already holds - is answered the err frame
-// bad_frame, and the socket is closed 1008 with reason bad_frame. Control: a well-formed sub on the
-// same rig is taken and closes nothing.
+// bad_frame, and the socket is closed 1008 with reason bad_frame. Each row reads the err frame only
+// once the client's reader has read the close behind it (closeQueued), the state load puts a run
+// in, where a read that took the close first would miss the frame that came before it. Its waits
+// for the close, the frame and the close's code set no span of their own: each ends on its fact or
+// 30 s before the test binary's deadline (testwait), so a loaded machine slows the row and does not
+// fail it. Control: a well-formed sub on the same rig is taken and closes nothing.
 func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 	rig := newRelaySocketRig(t)
 	const session = "ses_edge_bad_frames"
@@ -829,10 +972,12 @@ func TestARelaySocketClosesOnAFrameItCannotRead(t *testing.T) {
 			for _, frame := range append(row.before, row.frame) {
 				client.sendRaw(websocket.TextMessage, []byte(frame))
 			}
-			if frame := client.next(5 * time.Second); frame.Op != "err" || frame.Code != relayErrBadFrame {
+			client.closeQueued()
+			bound := testwait.Remaining(t, 30*time.Second)
+			if frame := client.next(bound); frame.Op != "err" || frame.Code != relayErrBadFrame {
 				t.Fatalf("%s was answered %s, want err %s", row.frame, frame.raw, relayErrBadFrame)
 			}
-			if code, text := client.closeCode(5 * time.Second); code != websocket.ClosePolicyViolation || text != relayErrBadFrame {
+			if code, text := client.closeCode(bound); code != websocket.ClosePolicyViolation || text != relayErrBadFrame {
 				t.Fatalf("%s closed the socket %d %q, want %d %q", row.frame, code, text, websocket.ClosePolicyViolation, relayErrBadFrame)
 			}
 		})

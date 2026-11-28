@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  An issue's references read (`GET /api/v1/issues/{key}/references`) now leaves the issue's own
+  nodes out by an anti-join, so the read of a large issue answers inside its 2 s budget. Before,
+  each statement of the read tested every link row against an array of the issue's own nodes,
+  which Postgres could not hash, so the read's cost was the links times the own nodes. An issue
+  with about 3,840 nodes of its own answered `503 REFERENCES_TIMEOUT` on 7 of 10 reads. The
+  answer is the same.
+time: 2026-11-24T13:03:44Z
+custom:
+    Issue: INFRA-5685

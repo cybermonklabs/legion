@@ -1,5 +1,8 @@
 package main
 
+//ci:reads packages/envoy/infra/gcp/testdata/clustered-hub-listener-pod.golden listenerPodGoldens lists it, and TestListenerPodGracesCoverTheStopBudget reads it through readListenerPod
+//ci:reads packages/envoy/infra/gcp/testdata/dispatch-listener-pod.golden listenerPodGoldens lists it, and TestListenerPodGracesCoverTheStopBudget reads it through readListenerPod
+
 import (
 	"encoding/json"
 	"os"

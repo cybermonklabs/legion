@@ -1,5 +1,9 @@
 package sandbox
 
+//ci:reads deploy/kubernetes/operator-route/pod.yml operatorRouteFixture
+//ci:reads packages/contracts/fixtures/dispatch-public-url.json TestCheckPodHoldsDispatchPublicURLToTheAgentsRule reads it through ../../../../contracts/fixtures
+//ci:reads packages/daemon/docker/worker.Dockerfile TestTheRuntimeRefusesAnOperatorPodCollidingWithLegionsOwn
+
 import (
 	"bufio"
 	"bytes"

@@ -208,7 +208,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 
 // Step 2. Another pull request lands on the base and GitHub answers the issue's head conflicting
 // with it, while the tester's turn runs. The push onto the base asks the daemon to read every open
-// pull request on that base (workflow's basePush, askMergeStateFor: the issue stands in testing),
+// pull request on that base (workflow's basePush, mergeStateOwed: the issue stands in testing),
 // and this read of the issue's head is its first conflicting one: the daemon records it, queues its
 // second read a minute on (record.ConflictConfirm), logs it and acts on nothing. No role of the
 // issue is sent anything on its role topic, the architect's included, and neither the tester's

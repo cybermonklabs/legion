@@ -9,7 +9,7 @@ import type { Actor, Agent } from "../../api/types";
 import { liveDotBg, offlineDotBorder, unknownDotBorder } from "../../theme/classes";
 import { useAgents } from "../conversation/useAgents";
 import { AgentName, AskResolutionLine, askResolutionParts, useAgentText } from "./AgentName";
-import { AGENT_REGISTRY_POLL_MS, AgentRegistryPoller } from "./agent-registry";
+import { AGENT_REGISTRY_POLL_MS, AgentRegistryPoller, agentRegistryPollMs } from "./agent-registry";
 
 /** One live session, as `GET /api/v1/agents` lists it. */
 function listed(sessionId: string, title: string, lastSeen = Date.now() - 3 * 60_000): Agent {
@@ -569,6 +569,58 @@ test("names mounted at staggered times plus a polled useAgents caller fetch at m
     expect(fetchedAt.length).toBe(before);
   } finally {
     view.unmount();
+    jest.useRealTimers();
+    environmentManager.setIsServer(() => wasServer);
+    agents.mockRestore();
+  }
+});
+
+// The production cadence is 15 s, and the browser suite's seam (`__dispatchAgentRegistryPollMs`,
+// set before the page loads) is what moves it: unset, or set to nothing a timer can hold, the
+// poller keeps 15 s; set, it polls at that cadence, never closer.
+test("the poller keeps its 15 s cadence unless the browser suite set one of its own", async () => {
+  expect(AGENT_REGISTRY_POLL_MS).toBe(15_000);
+  window.__dispatchAgentRegistryPollMs = undefined;
+  expect(agentRegistryPollMs()).toBe(15_000);
+  for (const unusable of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+    window.__dispatchAgentRegistryPollMs = unusable;
+    expect(agentRegistryPollMs()).toBe(15_000);
+  }
+
+  const wasServer = environmentManager.isServer();
+  environmentManager.setIsServer(() => false);
+  jest.useFakeTimers();
+  const start = Date.now();
+  jest.setSystemTime(start);
+  window.__dispatchAgentRegistryPollMs = 1_000;
+  const fetchedAt: number[] = [];
+  const agents = spyOn(api, "listAgents").mockImplementation(async () => {
+    fetchedAt.push(Date.now() - start);
+    return [listed(LISTED_ID, "Planner")];
+  });
+  const view = render(
+    <MemoryRouter>
+      <QueryClientProvider client={newClient()}>
+        <AgentRegistryPoller />
+        <AgentName actor={{ id: LISTED_ID, kind: "session" }} />
+      </QueryClientProvider>
+    </MemoryRouter>
+  );
+  try {
+    await act(async () => {});
+    for (let second = 0; second < 10; second += 1) {
+      await act(async () => {
+        jest.advanceTimersByTime(1_000);
+      });
+    }
+    // A first load and a poll each second after it, none closer than the cadence set.
+    expect(fetchedAt.length).toBeGreaterThanOrEqual(10);
+    for (let index = 1; index < fetchedAt.length; index += 1) {
+      expect((fetchedAt[index] ?? 0) - (fetchedAt[index - 1] ?? 0)).toBeGreaterThanOrEqual(1_000);
+    }
+  } finally {
+    view.unmount();
+    window.__dispatchAgentRegistryPollMs = undefined;
     jest.useRealTimers();
     environmentManager.setIsServer(() => wasServer);
     agents.mockRestore();

@@ -16,6 +16,7 @@ const beforeDocCompactionOwed = 157
 // with more than one doc_updates row, and no other: a document of one row, or of none, has nothing
 // a compaction could fold.
 func TestTheCompactionOwedMigrationNamesEveryDocumentOfMoreThanOneRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, beforeDocCompactionOwed)
 	documents := map[string]int{"none": 0, "one": 1, "two": 2, "three": 3}

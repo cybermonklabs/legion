@@ -208,11 +208,16 @@ func TestTheLauncherCredentialOfADeploymentRoleIsForgottenWithItsSandbox(t *test
 	s := &sandbox{ObjectMeta: metav1.ObjectMeta{Name: name, UID: "uid-sandbox"}}
 	secret := &corev1.Secret{ObjectMeta: metav1.ObjectMeta{Name: roleSecretName(name, "checker")}, Data: map[string][]byte{LauncherTokenFile: []byte("token")}}
 	r.cacheLauncherCredential(s, secret)
-	if _, held, _ := r.launcherAuth.lookup(secret.Name, s.UID); !held {
+	if _, held := r.launcherAuth.lookup(secret.Name, s.UID); !held {
 		t.Fatalf("the checker's credential was not cached")
 	}
+<<<<<<< HEAD
 	r.launcherAuth.forgetSandbox(name)
 	if _, held, _ := r.launcherAuth.lookup(secret.Name, s.UID); held {
+=======
+	r.forgetLauncherCredentials(name)
+	if _, held := r.launcherAuth.lookup(secret.Name, s.UID); held {
+>>>>>>> 92fa6581b8d4c64f13b4f7fb8241f6ce08133fe5
 		t.Errorf("the checker's launcher credential is still held after its Sandbox %s was forgotten", name)
 	}
 }

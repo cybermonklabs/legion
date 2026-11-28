@@ -106,7 +106,7 @@ func (g *rig) startByID(generation uint64, dsnFile, session, told string) shimwi
 func resumesTold(t *testing.T, told string) []string {
 	t.Helper()
 	var said string
-	if !testwait.Holds(10*time.Second, testwait.Poll, func() bool {
+	if !testwait.Holds(beforeDeadline(t), testwait.Poll, func() bool {
 		body, err := os.ReadFile(told)
 		if err != nil {
 			return false
@@ -464,7 +464,7 @@ func TestAnAgentKeepsWritingPastItsCredentialsExpiry(t *testing.T) {
 	child := publishedAll(t, marker)
 	endpoint := ompsessions.Endpoint{SocketDir: g.generationDir(2), Database: database.Name, User: database.User}
 	ask := func() error {
-		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), beforeDeadline(t))
 		defer cancel()
 		conn, err := ompsessions.ConnectURL(ctx, endpoint.ClientURL())
 		if err != nil {

@@ -40,6 +40,7 @@ import (
 // (indexVersionAsThePreviousRelease), and then runs this build's ticks while that release serves
 // and once it has left.
 func TestADeferredVersionThePreviousReleaseIndexesAfterThisBuildsTickReadItReachesTheStore(t *testing.T) {
+	t.Parallel()
 	database, service := blockIndexService(t)
 	ctx := context.Background()
 

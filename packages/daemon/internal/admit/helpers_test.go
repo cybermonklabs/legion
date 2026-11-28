@@ -107,8 +107,16 @@ func newAdmissionWithSteps(t *testing.T, cap int, steps []record.DesignStep, log
 // under, and a test of two keys proves a behaviour reads none of it.
 func newAdmissionForProject(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger) *Admission {
 	t.Helper()
+	return newAdmissionDrawing(t, project, cap, steps, log, nil)
+}
+
+// newAdmissionDrawing is newAdmissionForProject whose engine draws every `random` experiment from
+// source, the one source admission draws with too (workflow.Engine's ExperimentSource); nil is the
+// engine's own, experiment.CryptoSource.
+func newAdmissionDrawing(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger, source func(uint64) (uint64, error)) *Admission {
+	t.Helper()
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: project, Repositories: testRepositories, Steps: steps,
-		Clock: func() time.Time { return fixedNow }}, log)
+		ExperimentSource: source, Clock: func() time.Time { return fixedNow }}, log)
 	admission := New(record.NewStore(), engine, cap, project, log)
 	admission.now = func() time.Time { return fixedNow }
 	return admission
@@ -172,8 +180,8 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 // row of any other kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
-// which the transition raised on the role's phases row, above every row of the role, every row
-// that names the step's claim and the entry that claim was last given (workflow's enter): the
+// which the transition raised on the role's phases row, one above the highest entry of every row
+// of the issue (workflow's enter): the
 // record counts the entries, so two runs of the same events write the same number and a
 // comparison of two runs reads it like any other field.
 func effects(t *testing.T, pool *pgxpool.Pool) []effect {

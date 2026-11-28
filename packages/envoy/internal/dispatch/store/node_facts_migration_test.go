@@ -65,6 +65,7 @@ func seedNodeFactsDocuments(t *testing.T, store *Store) (spec, doc string) {
 // keeps it. Once the document reaches version 3, a new unanchored comment records 3 and the
 // first still holds 2.
 func TestTheWrittenVersionTriggerRecordsWhatAnyBuildInserts(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, latestVersion)
 	seedCoreWithADefaultAssignee(t, store)
@@ -137,6 +138,7 @@ func TestTheWrittenVersionTriggerRecordsWhatAnyBuildInserts(t *testing.T) {
 // recorded before the backfill ran keeps the version it recorded, and an issue's comment keeps
 // null.
 func TestTheWrittenVersionBackfillFillsOlderRows(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, beforeNodeFacts)
 	_, doc := seedNodeFactsDocuments(t, store)
@@ -204,6 +206,7 @@ func TestTheWrittenVersionBackfillFillsOlderRows(t *testing.T) {
 // Every component stored before component_facts has a row, with made_at, changed_at and digest
 // null: when it was made or last changed was never recorded.
 func TestComponentFactsSeedEveryComponentUnrecorded(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, beforeNodeFacts)
 	if _, err := store.Pool.Exec(ctx, `

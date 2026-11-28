@@ -179,6 +179,7 @@ func TestSOCKS5ProxyCarriesEveryConnectionWithTheHostUnresolved(t *testing.T) {
 // nats.go resolves a URL's host itself unless told not to, and the address it found would reach
 // nothing through a proxy that knows names this machine's resolver does not.
 func TestSOCKS5ProxyIsHandedANameTheResolverKnows(t *testing.T) {
+	t.Parallel()
 	uri := testnats.URL(t)
 	server := hostOf(t, uri)
 	_, port, err := net.SplitHostPort(server)
@@ -250,6 +251,7 @@ func TestNoProxyIsDialedWhenTheSettingIsUnset(t *testing.T) {
 // setting. Each connect makes the bus's ten attempts a second apart, so each subtest takes about
 // ten seconds; they run in parallel. Every proxy is a loopback address: nothing is looked up.
 func TestAFailedConnectThroughAProxyNamesIt(t *testing.T) {
+	t.Parallel()
 	urls := []string{"nats://" + unresolvable}
 	silent := testsocks5.Start(t, "127.0.0.1:1")
 	unreachable := testsocks5.StartRefusing(t, 0x04)
@@ -395,6 +397,7 @@ func TestAMalformedProxyIsRefusedBeforeAnyDial(t *testing.T) {
 // (underscores allowed, as in a Compose service name), passes the check, as does a port written
 // with leading zeros or the highest port.
 func TestAWellFormedProxyIsAccepted(t *testing.T) {
+	t.Parallel()
 	for _, value := range []string{
 		"127.0.0.1:1055", "[::1]:1055", "localhost:1055", "localhost.:1055",
 		"127.0.0.1:01055", "127.0.0.1:65535", "proxy.example.test:1080", "tailscale-sidecar:1055",
@@ -412,6 +415,7 @@ func TestAWellFormedProxyIsAccepted(t *testing.T) {
 // refusal prints the value: not the remote-reach refusal of a run that has not opted in, and not
 // the address check's.
 func TestARefusalNeverPrintsTheProxyValue(t *testing.T) {
+	t.Parallel()
 	const secret = "hunter2"
 	for _, value := range []string{
 		"socks5://user:" + secret + "@proxy.example:1080", "user:" + secret + "@127.0.0.1:1055",

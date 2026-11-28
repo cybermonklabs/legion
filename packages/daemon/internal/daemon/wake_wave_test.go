@@ -44,11 +44,11 @@ import (
 // waveSize is how many claims each wave wakes at once.
 const waveSize = 40
 
-// waveClock is the machines' time, held still until a test moves it: a timer is due at a moment
-// rather than after a wait, because a paced wake is armed for the turn the limiter gave it and a
-// test that advances to that turn must fire that timer and no other. heldClock
-// (supervision_test.go) fires by the exact wait a timer was armed for, which no wave can name: the
-// daemon jitters every paced release, so the forty waits of one wave are forty different numbers.
+// waveClock is the machines' time, held still until a test moves it, with each timer due at a
+// moment: a test that advances to a paced wake's turn fires that timer and no other. heldClock
+// (supervision_test.go) fires by the exact wait a timer was armed for, and no wave can name its
+// waits, since the daemon jitters every paced release: the forty turns of one wave are forty
+// different moments.
 type waveClock struct {
 	mu     sync.Mutex
 	now    time.Time
@@ -82,7 +82,18 @@ func (c *waveClock) Sleep(ctx context.Context, _ time.Duration) error { return c
 func (c *waveClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	timer := &waveTimer{clock: c, due: c.now.Add(d), f: f}
+	return c.armLocked(c.now.Add(d), f)
+}
+
+func (c *waveClock) At(at time.Time, f func()) supervise.Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.armLocked(at, f)
+}
+
+// armLocked arms f for due. The caller holds mu.
+func (c *waveClock) armLocked(due time.Time, f func()) supervise.Cancel {
+	timer := &waveTimer{clock: c, due: due, f: f}
 	c.timers = append(c.timers, timer)
 	return timer
 }
@@ -1792,6 +1803,101 @@ func TestARestartRaisesTheWakesStillWaitingAndEachHappensOnce(t *testing.T) {
 	}
 }
 
+// dispatch://INFRA-5472: a restart while the pacing holds the relaunch of a process the daemon
+// found dead raises that relaunch again in the restart's own wave, beside the unfinished launches,
+// and does not wait for the runtime to report the death a second time. Such a claim records the
+// dead process (the park writes nothing of it), so boot restores it as live rather than as an
+// unfinished launch, and before this the only path that raised its relaunch again was the
+// sweep's next report of the death. In an issue pod whose roles container restarted, that report
+// waits for the pod's launcher to reconnect and say it runs no child, which is a probe interval
+// after boot: by then the boot wave holds the pacing, and the relaunch went in behind all of it
+// (in the outage this was filed from, a pod's five roles whose turns were due 53 minutes after a
+// restart ran 67 minutes after it, behind the 248 unfinished launches that restart raised first).
+//
+// What the stored claim says is what the boot reads: the death was charged (DeathCharged), so
+// no new report is needed to know the process is gone. That relaunch is the one the death
+// raised, so the report that does come later decides nothing, and no death is charged twice.
+func TestARestartRaisesTheRelaunchOfARecordedDeathInItsOwnWave(t *testing.T) {
+	t.Parallel()
+	cfg := waveConfig(t)
+	tokens := waveClaims(t, cfg, claim.RoleImplementer, func(i int, _ claim.Token) supervise.Claim { return unfinishedLaunch(t, i) })
+	dead := waveClaimsFrom(t, cfg, claim.RoleImplementer, waveSize+1, 1, func(i int, token claim.Token) supervise.Claim {
+		return liveClaim(i, token, api.DaemonAPIVersion)
+	})[0]
+	clock, logged := newWaveClock(), &syncBuffer{}
+	rt := newWaveRuntime(clock)
+
+	d := startWaveDaemon(t, cfg, clock, rt, logged, nil)
+	awaitWave(t, d, waveSize)
+	// The roles container of the dead claim's pod restarted: the runtime reports its process gone,
+	// and the daemon charges the death and parks the relaunch behind the wave.
+	recorded := d.claim(dead)
+	death := runtime.Observation{Locator: *recorded.Locator, Kind: runtime.Gone, At: clock.Now(), OutOfMemory: true,
+		Detail: "pod legion-acme-1 (uid 1) role implementer's launcher reports no child; container roles restarted 1 times"}
+	rt.fake().Emit(death)
+	testwait.Eventually(t, "the relaunch of the dead process to wait its turn behind the wave", func() bool {
+		return slices.ContainsFunc(waitingWakes(t, d), func(w api.WakeWaiting) bool { return w.Claim == dead })
+	})
+	charged := d.claim(dead).Budgets
+	launchedFirst := map[claim.Token]int{}
+	for _, launch := range rt.launches() {
+		launchedFirst[launch.claim]++
+	}
+	if launchedFirst[dead] != 0 {
+		t.Fatalf("the dead claim launched %d times before the restart, want none: its relaunch waits its turn", launchedFirst[dead])
+	}
+	d.stop()
+
+	rebindHeldPorts(t, &cfg)
+	restartClock, restartLog := newWaveClock(), &syncBuffer{}
+	restarted := newWaveRuntime(restartClock)
+	restartOrigin := restartClock.Now()
+	second := startWaveDaemon(t, cfg, restartClock, restarted, restartLog, nil)
+
+	// The runtime reports nothing of the dead process to this daemon: its launcher has not
+	// reconnected. The wave is every unfinished launch the first daemon had not run, and the
+	// relaunch of the death with them.
+	waveLeft := len(tokens) - len(rt.launches()) + 1
+	again := awaitWave(t, second, waveLeft)
+	inWave := slices.ContainsFunc(again, func(w api.WakeWaiting) bool { return w.Claim == dead }) ||
+		slices.ContainsFunc(restarted.launches(), func(l waveLaunch) bool { return l.claim == dead })
+	if !inWave {
+		t.Fatalf("the restart's wave of %d wakes holds no relaunch of %s, whose death the first daemon recorded", waveLeft, dead)
+	}
+	assertSpread(t, "the restart's own wave", wakeMoments(restartOrigin, again), restartOrigin)
+
+	// The launcher reconnects and reports the death again. The relaunch the boot raised is that
+	// death's relaunch, so the report reserves no second wake and moves no turn. Where the burst
+	// let that relaunch straight out, it has already replaced the process the report is about.
+	if slices.ContainsFunc(again, func(w api.WakeWaiting) bool { return w.Claim == dead }) {
+		restarted.fake().Emit(death)
+		testwait.Eventually(t, "the late report of the recorded death to be judged", func() bool {
+			return second.claim(dead).ProcessGone
+		})
+		assertQueueLeft(t, second, "the late report of the recorded death", again)
+	}
+	runWave(t, restartClock, restarted, again, 1)
+
+	for _, token := range append(slices.Clone(tokens), dead) {
+		launches := launchedFirst[token] + restarted.launchesOf(token)
+		if launches != 1 {
+			t.Fatalf("%s launched %d times over the restart, want exactly once", token, launches)
+		}
+	}
+	for _, launch := range restarted.launches() {
+		if launch.claim == dead && !launch.resumed {
+			t.Fatalf("%s was spawned rather than resumed; the relaunch of a death comes back on its recorded session", dead)
+		}
+	}
+	if got := second.claim(dead).Budgets; got.Deaths != charged.Deaths || got.LaunchFailures != charged.LaunchFailures {
+		t.Fatalf("the dead claim has %d deaths and %d launch failures after the restart, want the %d and %d the first daemon charged: one death is charged once",
+			got.Deaths, got.LaunchFailures, charged.Deaths, charged.LaunchFailures)
+	}
+	if left := waitingWakes(t, second); len(left) != 0 {
+		t.Fatalf("wakesWaiting once the restart's wave has gone = %+v, want none", left)
+	}
+}
+
 // R2 of dispatch://INFRA-976/spec asks of a waiting wake that it lose nothing, not only that its
 // claim still decide: an operator's suspend of a claim whose wake waits over no process writes no
 // outbox row and, were it held, would live in the machine's memory alone, so a restart inside the
@@ -1887,7 +1993,7 @@ func pacedLaneTree(t *testing.T, log *slog.Logger) (*laneTree, *wakepace.Limiter
 	tree := startLaneTree(t, log)
 	limiter := pacedWakes()
 	tree.runner.supervisor.deps.Clock = tree.clock
-	tree.runner.supervisor.deps.WakePace = supervise.WakePace{Reserve: limiter.Reserve, Rate: testWakeRate, Burst: testWakeBurst}
+	tree.runner.supervisor.deps.WakePace = wakePaceOf(limiter)
 	for range waveSize {
 		limiter.Reserve(tree.clock.Now())
 	}

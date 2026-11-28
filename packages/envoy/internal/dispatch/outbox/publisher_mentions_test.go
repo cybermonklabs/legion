@@ -807,7 +807,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 		// seeded is the attempt's outcome (seedDelivery).
 		seeded string
 		// claimFirst takes the attempt's claim, as a sender's claim transaction does - the
-		// comment's owner lock (the api's lockedCommentForDelivery), then the attempt's update -
+		// comment's owner lock (the api's lockedCommentAllowingClosed), then the attempt's update -
 		// and commits it only once the outbox waits on that owner lock to settle it, holding no
 		// transaction id (settleAbandoned takes the lock before its update).
 		claimFirst bool

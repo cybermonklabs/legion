@@ -1,5 +1,8 @@
 package prompts
 
+//ci:reads packages/pi-legion/agents/*.md TestEveryTaskAgentARolePromptDispatchesIsShipped stats agents/<name>.md for each task agent
+//ci:reads skills/legion-worker/references/tools.md TestThePodMemoryRuleAndTheToolsSkillSendTheSameRunsToCI reads the skill the headless fragment sends a role to, by relative path
+
 import (
 	"embed"
 	"io/fs"
@@ -232,18 +235,13 @@ func TestTheHeadlessFragmentHoldsTheWorkersSharedRules(t *testing.T) {
 	}
 }
 
-// Each phase worker's residue is headed by its role, and only the roles whose plan names skills for
-// them are told to read those.
-func TestEachResidueNamesItsRoleAndOnlyTheSkilledRolesReadRequiredSkills(t *testing.T) {
-	const requiredSkills = "Then read the plan handoff's `requiredSkills` for your role and follow those too."
-	skilled := []string{"implementer", "reviewer", "tester"}
+// Each phase worker's role part is headed by its role: its first line is `# Legion <Role>`, as
+// `# Legion Planner` heads roles/planner.md. Taking the heading out of a role part fails here and
+// names that part. This shows the text is loaded, never that a role follows it.
+func TestEachPhaseWorkersRolePartIsHeadedByItsRole(t *testing.T) {
 	for _, role := range phaseRoles {
-		residue := rolePart(t, role+".md")
-		if heading := "# Legion " + strings.ToUpper(role[:1]) + role[1:]; !strings.Contains(residue, heading) {
-			t.Errorf("%s.md omits its heading %q", role, heading)
-		}
-		if got, want := strings.Contains(residue, requiredSkills), slices.Contains(skilled, role); got != want {
-			t.Errorf("%s.md tells it to read requiredSkills = %t, want %t", role, got, want)
+		if heading := "# Legion " + strings.ToUpper(role[:1]) + role[1:]; !strings.HasPrefix(rolePart(t, role+".md"), heading+"\n") {
+			t.Errorf("roles/%s.md does not start with its heading %q", role, heading)
 		}
 	}
 }

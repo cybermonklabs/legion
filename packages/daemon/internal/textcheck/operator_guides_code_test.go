@@ -8,8 +8,8 @@ import (
 // Nine sentences of the operator guides each say what the code does, and the sentence each one
 // replaced is gone from its text. Each text is read as prose (proseOf), so a line break or a
 // comment's `#` decides nothing. Each case names the code its sentence states:
-//   - a role's model: a role of `roles` that names a `model` is launched on it
-//     (daemon's workerSpawnSpec sets SpawnSpec.Model), so its `modelRoles` line does not apply;
+//   - a role's model: a role of `roles` that names a `model` is launched on it, and any other role
+//     on `@default` (daemon's workerSpawnSpec sets SpawnSpec.Model, sandbox's agentArgv);
 //   - the daemon's controller: `controller: daemon` launches a pane of its own window under tmux
 //     too (runtime/tmux's controllerWindow);
 //   - a review bot's red: a CI settlement moves no phase and tells three roles (workflow's
@@ -50,20 +50,23 @@ func TestTheOperatorGuidesSayWhatTheCodeDoes(t *testing.T) {
 			name: "a role of roles that names a model runs on it",
 			texts: []text{
 				{path: runningLegion, want: []string{
-					"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under `modelRoles` applies to it.",
+					"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the `default` line.",
 				}},
 				{path: routeReadme, want: []string{
-					"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under `modelRoles` applies to it.",
+					"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the `default` line.",
 				}},
 				{path: routeOverlay, want: []string{
-					"A role of roles that names a model runs on that model in legion.yaml, and no line under modelRoles applies to it.",
+					"A role of roles that names a model runs on that model in legion.yaml, in place of the default line.",
 				}},
 				{
 					path: kubernetes,
 					want: []string{
-						"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, and no line under `modelRoles` applies to it.",
+						"A role of `roles` that names a `model` runs on that `model` in `legion.yaml`, in place of the `default` line.",
 					},
-					gone: []string{"A role of `roles` that names a `model` runs on it, and its line under `modelRoles` does not apply to it."},
+					gone: []string{
+						"A role of `roles` that names a `model` runs on it, and its line under `modelRoles` does not apply to it.",
+						"and no line under `modelRoles` applies to it.",
+					},
 				},
 			},
 		},

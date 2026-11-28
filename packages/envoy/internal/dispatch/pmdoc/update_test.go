@@ -1,5 +1,12 @@
 package pmdoc
 
+//ci:reads packages/envoy/internal/dispatch/pmdoc/gen/** genScript bun run gen/<script> (imports @legion/proof-editor)
+//ci:reads packages/proof-editor/** genScript bun run gen/<script> (imports @legion/proof-editor)
+//ci:reads packages/contracts/src/** genScript bun run gen/<script> (imports @legion/proof-editor)
+//ci:reads package.json genScript bun run gen/<script> (imports @legion/proof-editor)
+//ci:reads bun.lock genScript bun run gen/<script> (imports @legion/proof-editor)
+//ci:reads patches/** genScript bun run gen/<script> (imports @legion/proof-editor)
+
 import (
 	"bytes"
 	"encoding/base64"

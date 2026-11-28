@@ -6,6 +6,7 @@ package delivery
 import (
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"log/slog"
 	"os"
@@ -27,9 +28,28 @@ import (
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// TestMain removes the NATS server the package's tests share (testnats.Main) and the databases
-// their pools are cloned on (storetest.Run).
-func TestMain(m *testing.M) { os.Exit(storetest.Run(func() int { return testnats.Main(m) })) }
+// deliveryTestParallelism is how many of this package's tests run at once when the command line
+// names no -parallel. Every test calls t.Parallel except those that change or read back something
+// the whole process shares, which stay serial and run before the rest: a package variable a test
+// shortens (intakeStopBudget, intakeMessageTimeout, callNATSWait and the like), the default logger
+// (captureLogs), t.Setenv, the process's goroutines, a select on a short time.After, or a read of
+// Postgres's whole-server views. Each parallel test has a database of its own (storetest.Open's
+// clone) and a JetStream account of its own (testnats.URL), and waits on NATS and Postgres far more
+// than on a core. go test's default of GOMAXPROCS is four on CI's arm runner, but hundreds on a dev
+// box, where every test's database and pools at once would open more connections than the test
+// server allows.
+//
+// go test parses its flags inside m.Run, so a -parallel on the command line still wins.
+const deliveryTestParallelism = 8
+
+// TestMain sets the package's default -parallel, and removes the NATS server the package's tests
+// share (testnats.Main) and the databases their pools are cloned on (storetest.Run).
+func TestMain(m *testing.M) {
+	if err := flag.Set("test.parallel", strconv.Itoa(deliveryTestParallelism)); err != nil {
+		panic("set this package's default -parallel: " + err.Error())
+	}
+	os.Exit(storetest.Run(func() int { return testnats.Main(m) }))
+}
 
 // deliveryTestPool returns the pool of a database of the test's own, with the test's context:
 // storetest.Open's clone of the template this test process migrated once, dropped after the test,
@@ -327,13 +347,13 @@ func intakeTestClient(t *testing.T) *bus.Client {
 
 // awaitBoundDurable waits for the intake to have created its durable and subscribed to it, so a
 // test that means to publish into a bound consumer does not race the bind. Its one bound is what
-// the test binary's deadline leaves less boundDurableSpare (testwait.Remaining): a bind that is
+// the test binary's deadline leaves less rowDeadlineMargin (untilTheBinaryDeadline): a bind that is
 // merely slow on a loaded machine still passes, and one that never comes fails the row with time
 // left for its cleanups.
 func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 	t.Helper()
 	var state string
-	waitFor(t, testwait.Remaining(t, boundDurableSpare), func() bool {
+	waitFor(t, untilTheBinaryDeadline(t), func() bool {
 		info, err := natsClient.JS().ConsumerInfo(bus.Stream, bus.DispatchDeliveryDurable)
 		if err != nil {
 			state = err.Error()
@@ -345,11 +365,6 @@ func awaitBoundDurable(t *testing.T, natsClient *bus.Client) {
 		return fmt.Sprintf("intake never bound its durable with max_ack_pending=%d: %s", intakeMaxAckPending, state)
 	})
 }
-
-// boundDurableSpare is what awaitBoundDurable leaves of the test binary's deadline for a failed
-// row's cleanups: stopping its intakes, which wait out their stop's deadline, and dropping its
-// database.
-const boundDurableSpare = time.Minute
 
 // awaitRuns waits for the intake to have stored want delivery_runs rows, and fails with the
 // stream's message count and the consumer's whole state when it does not -- the numbers that say

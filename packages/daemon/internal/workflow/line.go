@@ -133,9 +133,7 @@ func (w Walk) stepAt(place record.TaskPlace) (record.PlanStep, bool) {
 	}
 	switch place.Kind {
 	case record.PlaceStep:
-		if place.Position >= 1 && place.Position <= len(w.Steps) {
-			return w.Steps[place.Position-1], true
-		}
+		return w.planStepAt(place)
 	case record.PlaceRetro:
 		for i := len(w.Steps) - 1; i >= 0; i-- {
 			if w.Steps[i].Type == plan.TypeImplementation {

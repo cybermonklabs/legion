@@ -311,10 +311,12 @@ func PoolBounded(server, dsn string) (string, error) {
 
 // rewrite is what a caller of rewriteDSN changes about the DSN it was given: the database the
 // rewrite must name (DatabaseURL), the address it must send the connection to (Delayed,
-// CommitFaults), and the pool keys of its query. With pools set, the rewrite takes every pool key
-// out of the query and appends pool, the raw pairs pgx reads as poolRead: none for DatabaseURL,
-// the server's own or pool_max_conns=PoolConns for PoolBounded. A field left empty is one the
-// rewrite keeps.
+// CommitFaults, Outage), the pool keys of its query, and whether TLS is off. With pools set, the
+// rewrite takes every pool key out of the query and appends pool, the raw pairs pgx reads as
+// poolRead: none for DatabaseURL, the server's own or pool_max_conns=PoolConns for PoolBounded.
+// With plain set, it appends sslmode=disable, which pgx reads over an sslmode the query already
+// holds since it keeps the last of a repeated key (pgconn's parse_url.go), so an attempt makes no
+// TLS connection and falls back to none (Outage). A field left empty is one the rewrite keeps.
 type rewrite struct {
 	database string
 	host     string
@@ -322,6 +324,7 @@ type rewrite struct {
 	pools    bool
 	pool     []string
 	poolRead map[string]string
+	plain    bool
 }
 
 // applied is read with this rewrite in it, which is what pgx must read from the rewritten DSN.
@@ -341,6 +344,9 @@ func (r rewrite) applied(read reading) reading {
 		}
 		maps.Copy(params, r.poolRead)
 		read.params = params
+	}
+	if r.plain {
+		read.settings.tls, read.settings.fallbacks = tlsReading{}, ""
 	}
 	return read
 }
@@ -474,6 +480,12 @@ func rewriteDSN(name, dsn string, want rewrite) (string, error) {
 	if want.pools {
 		_, rest := splitPoolPairs(parsed.RawQuery)
 		parsed.RawQuery = strings.Join(append(rest, want.pool...), "&")
+	}
+	if want.plain {
+		if parsed.RawQuery != "" {
+			parsed.RawQuery += "&"
+		}
+		parsed.RawQuery += "sslmode=disable"
 	}
 	rewritten := parsed.String()
 	after, err := pgconn.ParseConfig(rewritten)

@@ -99,13 +99,7 @@ func TestSuspendWithAStaleLocator(t *testing.T) {
 	t.Run("a pod the controller recreated is not the recorded process", func(t *testing.T) {
 		g := newRig(t, nil)
 		loc := g.spawn(workerSpec(t))
-		if err := g.kube.Tracker().Delete(podsGVR, testNamespace, name); err != nil {
-			t.Fatal(err)
-		}
-		g.eventually("the store to see the recreated pod", func() bool {
-			pod := g.r.storedPod(name)
-			return pod != nil && string(pod.UID) != loc.Sandbox.PodUID
-		})
+		g.recreatePod(name, loc.Sandbox.PodUID)
 		g.clearActions()
 		if err := g.r.Suspend(g.ctx, loc); err != nil {
 			t.Fatal(err)

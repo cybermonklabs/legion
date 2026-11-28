@@ -17,17 +17,23 @@ import { askThreadQuery } from "../../api/queries";
 import type { MyReplyRow, MyReplyThreadRow } from "../../api/types";
 import { textPrimaryOnCanvas } from "../../theme/classes";
 import type { ProofDocumentProps } from "../doc/ProofDocument";
+import { DeletedBody, EditedMark } from "../refs/PostBody";
+import { postDeletion } from "../refs/post-marks";
 import { isDecisionAsk } from "./ask-decision";
 import { DocumentPane, PaneFrame } from "./PaneDocument";
 import { questionLine } from "./question-line";
-import { ThreadPaneHead } from "./ReadingPaneHead";
+import { type QuestionDocument, ThreadPaneHead } from "./ReadingPaneHead";
 import { ThreadBody } from "./ThreadBody";
 
-/** The subject line a thread body opens with: what the thread is about, in one line. */
+/** The subject line a thread body opens with: what the thread is about, in one line - or the
+ *  deleted line for a root its author deleted, whose subject the delete cleared - with the
+ *  root's ` · edited` once its author edited it. */
 function ThreadSubject({ thread }: { thread: MyReplyRow }): ReactNode {
+  const deleted = postDeletion(thread);
   return (
     <h2 className={`text-sm font-semibold ${textPrimaryOnCanvas}`} data-inbox-thread-subject="">
-      {questionLine(thread.subject)}
+      {deleted === null ? questionLine(thread.subject) : <DeletedBody deleted={deleted} />}
+      <EditedMark at={thread.edited_at} deleted={deleted} />
     </h2>
   );
 }
@@ -86,6 +92,7 @@ function ThreadDocumentBody({
   blockId,
   body,
   issueKey,
+  questionDocument,
   thread,
 }: {
   anchoredThread: ProofDocumentProps["anchoredThread"];
@@ -93,6 +100,9 @@ function ThreadDocumentBody({
   blockId: string;
   body: Extract<ThreadPaneBody, "ask" | "document">;
   issueKey: string | null;
+  /** The issue document of a decision block's ask, which the head's **Open page** opens once
+   *  the column shows it; undefined for every other thread. */
+  questionDocument: QuestionDocument | undefined;
   thread: MyReplyThreadRow;
 }): ReactNode {
   return (
@@ -102,7 +112,11 @@ function ThreadDocumentBody({
       blockId={blockId}
       fallback={<ThreadBodyContent body={body} fallback quote thread={thread} />}
       head={(document) => (
-        <ThreadPaneHead sectionBlockId={document.sectionBlockId} thread={thread} />
+        <ThreadPaneHead
+          questionDocument={document.showsDocument ? questionDocument : undefined}
+          sectionBlockId={document.sectionBlockId}
+          thread={thread}
+        />
       )}
       issueKey={issueKey}
       item={thread.thread_id}
@@ -129,6 +143,11 @@ function AskThreadPane({ thread }: { thread: MyReplyThreadRow }): ReactNode {
         blockId={ask.block_id}
         body="ask"
         issueKey={ask.issue_key}
+        questionDocument={
+          ask.issue_key === null
+            ? undefined
+            : { blockId: ask.block_id, document: ask.block_artifact, issueKey: ask.issue_key }
+        }
         thread={thread}
       />
     );
@@ -172,6 +191,7 @@ export function ThreadPane({ thread }: { thread: MyReplyRow }): ReactNode {
         blockId={blockId}
         body="document"
         issueKey={null}
+        questionDocument={undefined}
         thread={row}
       />
     );

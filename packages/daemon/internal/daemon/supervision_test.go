@@ -1,5 +1,7 @@
 package daemon
 
+//ci:reads packages/daemon/internal/stream/*.go !**/*_test.go endTurn Glob ../stream/*.go, and streamEventTypes parses each file it finds but the test files
+
 import (
 	"context"
 	"crypto/sha256"
@@ -367,7 +369,9 @@ func TestRunFeedsTheStreamAndTheSweepIntoTheClaimsMachine(t *testing.T) {
 // heldClock is the machines' and the outbox's time held still until the test fires the timers
 // armed for one wait, so a daemon test sees the deadline it fires and nothing else. Its time is the
 // wall clock, or at when set, so a deadline the daemon names as a time is armed as an exact wait
-// from at; advance moves at, so a lease or a backoff the daemon measured from it lapses.
+// from at; advance moves at, so a lease or a backoff the daemon measured from it lapses. A timer
+// armed for a moment (At) keeps that moment, which fireAt fires it by; fire matches it by the wait
+// from the clock's time at the arm.
 type heldClock struct {
 	mu     sync.Mutex
 	at     time.Time
@@ -377,13 +381,20 @@ type heldClock struct {
 type heldTimer struct {
 	clock *heldClock
 	after time.Duration
-	f     func()
-	done  bool
+	// moment is the time an At timer was armed for, zero for an AfterFunc one.
+	moment time.Time
+	f      func()
+	done   bool
 }
 
 func (c *heldClock) Now() time.Time {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.nowLocked()
+}
+
+// nowLocked is Now for a caller that holds mu.
+func (c *heldClock) nowLocked() time.Time {
 	if !c.at.IsZero() {
 		return c.at
 	}
@@ -427,6 +438,14 @@ func (c *heldClock) AfterFunc(d time.Duration, f func()) supervise.Cancel {
 	return timer
 }
 
+func (c *heldClock) At(at time.Time, f func()) supervise.Cancel {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	timer := &heldTimer{clock: c, after: max(0, at.Sub(c.nowLocked())), moment: at, f: f}
+	c.timers = append(c.timers, timer)
+	return timer
+}
+
 func (t *heldTimer) Stop() bool {
 	t.clock.mu.Lock()
 	defer t.clock.mu.Unlock()
@@ -440,19 +459,31 @@ func (t *heldTimer) Stop() bool {
 // fire runs, once each, every timer armed for after that has neither fired nor been stopped, and
 // reports how many it ran. A timer one of them arms waits for the next fire.
 func (c *heldClock) fire(after time.Duration) int {
+	return c.run(func(timer *heldTimer) bool { return timer.after == after })
+}
+
+// fireAt is fire for the timers armed for the moment at (At), whatever wait the clock's time at
+// the arm made of it.
+func (c *heldClock) fireAt(at time.Time) int {
+	return c.run(func(timer *heldTimer) bool { return !timer.moment.IsZero() && timer.moment.Equal(at) })
+}
+
+// run runs, once each, every timer due matches that has neither fired nor been stopped, and
+// reports how many it ran.
+func (c *heldClock) run(due func(*heldTimer) bool) int {
 	c.mu.Lock()
-	var due []*heldTimer
+	var ran []*heldTimer
 	for _, timer := range c.timers {
-		if !timer.done && timer.after == after {
+		if !timer.done && due(timer) {
 			timer.done = true
-			due = append(due, timer)
+			ran = append(ran, timer)
 		}
 	}
 	c.mu.Unlock()
-	for _, timer := range due {
+	for _, timer := range ran {
 		timer.f()
 	}
-	return len(due)
+	return len(ran)
 }
 
 // An agent registered over the API that never says it is ready is relaunched at the deadline as
@@ -1388,22 +1419,24 @@ func TestRunRelaunchesAStaleAddressChargingNothing(t *testing.T) {
 	}
 }
 
-// Every architect is told, in its addressing, the roles a step of its plan may name with the type
-// of each: Legion's five, then each role the deployment defines in the file's order, with the
-// model its agent starts with where the settings give one. A root architect's addressing still
-// ends with its design gate's line, then the project's production check (ProductionCheckFragment),
-// which every architect is told last; no other launch is told the roles.
+// Every architect is told, in its addressing, each role the deployment defines with the type of
+// its step and, where the settings give one, the model its agent starts with. An architect under
+// another deployment is told that deployment's roles and none of these, one under a deployment
+// that defines no role is told none of them, and no other launch is told the deployment's roles.
+// A root architect's addressing still ends with its design gate's line, then the project's
+// production check (ProductionCheckFragment), which every architect is told last. The test holds
+// the values the settings give, not the words that carry them.
 func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 	t.Parallel()
 	composer, err := prompts.New(t.TempDir())
 	if err != nil {
 		t.Fatal(err)
 	}
-	const legion = "The roles of this deployment, each with the type of its step: planner (planning), implementer (implementation), tester (testing), reviewer (review), acceptance (review)"
 	deployed := []config.Role{
 		{Name: "checker", Type: "testing", PromptFile: "/etc/legion/checker.md", Model: "checker-model"},
 		{Name: "audit", Type: "security", PromptFile: "/etc/legion/audit.md"},
 	}
+	other := []config.Role{{Name: "critic", Type: "review", PromptFile: "/etc/legion/critic.md", Model: "critic-model"}}
 	gate := DesignGateFragment(config.DesignGateRootIssues.Steps())
 	addressing := func(roles []config.Role, issue string, role claim.Role) string {
 		t.Helper()
@@ -1419,23 +1452,42 @@ func TestTheOwnersPromptListsTheDeploymentsRoles(t *testing.T) {
 		}
 		return spec.Prompt.Addressing
 	}
+	pair := func(role config.Role) string { return string(role.Name) + " (" + string(role.Type) + ")" }
+	every := slices.Concat(deployed, other)
 
-	want := legion + ", checker (testing) with the model checker-model, audit (security)."
-	root := addressing(deployed, "S1-1", claim.RoleArchitect)
-	if !strings.Contains(root, want) {
-		t.Errorf("the root architect's addressing = %q, want it to hold %q", root, want)
+	for _, tc := range []struct {
+		name  string
+		roles []config.Role
+		issue string
+	}{
+		{"the root architect", deployed, "S1-1"},
+		{"a sub-architect", deployed, "S1-2"},
+		{"a sub-architect under another deployment", other, "S1-2"},
+		{"a sub-architect under a deployment that defines no role", nil, "S1-2"},
+	} {
+		got := addressing(tc.roles, tc.issue, claim.RoleArchitect)
+		for _, role := range every {
+			defined := slices.ContainsFunc(tc.roles, func(r config.Role) bool { return r.Name == role.Name })
+			if named := strings.Contains(got, pair(role)); named != defined {
+				t.Errorf("%s's addressing = %q: names %q %v, want %v", tc.name, got, pair(role), named, defined)
+			}
+			if role.Model == "" {
+				continue
+			}
+			if named := strings.Contains(got, role.Model); named != defined {
+				t.Errorf("%s's addressing = %q: names the model %q %v, want %v", tc.name, got, role.Model, named, defined)
+			}
+		}
 	}
+	root := addressing(deployed, "S1-1", claim.RoleArchitect)
 	if check := " " + gate + " " + ProductionCheckFragment(""); !strings.HasSuffix(root, check) {
 		t.Errorf("the root architect's addressing = %q, want it to end with %q", root, check)
 	}
-	if sub := addressing(deployed, "S1-2", claim.RoleArchitect); !strings.Contains(sub, want) {
-		t.Errorf("a sub-architect's addressing = %q, want it to hold %q", sub, want)
-	}
-	if none := addressing(nil, "S1-2", claim.RoleArchitect); !strings.Contains(none, legion+".") {
-		t.Errorf("an architect's addressing under a deployment that defines no role = %q, want it to hold %q", none, legion+".")
-	}
-	if tester := addressing(deployed, "S1-2", claim.RoleTester); strings.Contains(tester, "The roles of this deployment") {
-		t.Errorf("a tester's addressing = %q, want no list of the deployment's roles", tester)
+	tester := addressing(deployed, "S1-2", claim.RoleTester)
+	for _, role := range deployed {
+		if strings.Contains(tester, pair(role)) {
+			t.Errorf("a tester's addressing = %q, want no role of the deployment named, %q among them", tester, pair(role))
+		}
 	}
 }
 

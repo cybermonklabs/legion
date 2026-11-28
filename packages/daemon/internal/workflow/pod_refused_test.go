@@ -356,3 +356,95 @@ func TestAStartTheEndOfARowQueuesIsMarkedWithThePodThatRefusesTheClaim(t *testin
 		t.Fatalf("the end of the start row told the issue %v and the controller %v, want nobody told", posted, kinds)
 	}
 }
+
+// seedRefusedClaim stores the tester's claim of LEGION-209 at generation, suspended by the daemon,
+// as the claim store holds a claim whose launch at that generation its pod refused, or one that has
+// launched since at a later generation.
+func seedRefusedClaim(t *testing.T, pool *pgxpool.Pool, token claim.Token, generation uint64) {
+	t.Helper()
+	if _, err := pool.Exec(t.Context(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
+		state, launch_failures, prompt_failures, prompt_retires, uncertain_streak, suspended_by)
+		values ($1, 'legion', 'LEGION-209', 'LEGION-209', 'tester', $2, 'ses', '/sessions/ses.jsonl', 'suspended', 0, 0, 0, 0, 'daemon')`,
+		string(token), int64(generation)); err != nil {
+		t.Fatalf("seed the tester's claim: %v", err)
+	}
+}
+
+// A fact of a refused launch is judged, in the fact's own transaction, against the claim the store
+// holds: the fact names the generation of the claim whose launch the pod refused
+// (intake.PodRefusedLaunch.Generation, intake.RefusedStartEnded.Generation), and a claim the store
+// holds at a later generation has launched since, on the pod that replaced the refusing one. Such a
+// fact tells nobody that the claim cannot be started, which is no longer true, and queues no start,
+// whose owed entry would hand the running worker its task again. The two orders are set by the
+// stored claim, not by time: the claim at the refused launch's generation (the fact came first) is
+// told of and sent its owed entry, and the claim a generation on (the launch came first) is not.
+// The claim's row is read for update, so a launch whose write comes after the fact's read waits for
+// the fact's commit, and the fact's effects stand for a claim that had not launched.
+func TestAFactOfARefusedLaunchAfterItsClaimLaunchedTellsNothingAndQueuesNothing(t *testing.T) {
+	token := claim.Token("legion-legion-legion-209-tester")
+	for _, tc := range []struct {
+		name   string
+		ended  bool
+		stored uint64
+		acts   bool
+	}{
+		{name: "the report comes first: the claim stands at the refused launch's generation", stored: 4, acts: true},
+		{name: "the claim launched first: it stands a generation on", stored: 5},
+		{name: "the end of a start row comes first", ended: true, stored: 4, acts: true},
+		{name: "the claim launched before the end of a start row's fact", ended: true, stored: 5},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pool := migratedPool(t)
+			seedTestingIssue(t, pool, "LEGION-209")
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: token, Entry: 3, EntryTask: refusedTesterTask,
+				EntryRaisedAt: time.Now().UTC().Add(-time.Hour)})
+			seedRefusedClaim(t, pool, token, tc.stored)
+			engine := testEngine(config.DesignGateRootIssues, nil)
+			var fact intake.Fact = intake.PodRefusedLaunch{Issue: "LEGION-209", Role: claim.RoleTester, Claim: token, Pod: "pod-1", Generation: 4,
+				Detail: "the pod pod-1 of LEGION-209 was built without checker"}
+			if tc.ended {
+				fact = intake.RefusedStartEnded{Issue: "LEGION-209", Role: claim.RoleTester, Claim: token, Pod: "pod-1", Generation: 4}
+			}
+			if _, err := intake.ApplyFact(t.Context(), pool, "supervise", "refusal:1", fact, engine, admissionStub{}); err != nil {
+				t.Fatalf("apply the fact: %v", err)
+			}
+			starts, kinds, posted := queuedStarts(t, pool), controllerNoticeKinds(t, pool), messageBodies(t, pool)
+			if !tc.acts {
+				if len(starts) != 0 || len(kinds) != 0 || len(posted) != 0 {
+					t.Fatalf("the fact applied after the claim launched queued %+v, told the controller %v and the issue %v, want nothing", starts, kinds, posted)
+				}
+				return
+			}
+			if len(starts) != 1 {
+				t.Fatalf("the fact queued %+v, want the owed entry", starts)
+			}
+			wantOwedEntryStart(t, starts[0], "pod-1")
+			if told := len(kinds) == 1 && len(posted) == 1; told == tc.ended {
+				t.Fatalf("the fact told the controller %v and the issue %v; want the report to tell both and the end of a start row neither", kinds, posted)
+			}
+		})
+	}
+}
+
+// A queued start brings a refused claim back whatever role its payload names, since it reaches the
+// claim's token: key k's claim is refused while it holds the tester's role, and the start of its
+// next step, the reviewer's, is queued naming that claim. The report reads that start as the claim's
+// start and queues none of its own. Read by the tester's run alone, it queued a start of no phase,
+// which would have launched the claim with no task.
+func TestAQueuedStartOfAnotherRoleOfTheClaimBringsItBack(t *testing.T) {
+	token := claim.Token("legion-legion-legion-209-tester")
+	pool := migratedPool(t)
+	seedTestingIssue(t, pool, "LEGION-209")
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleTester, Claim: token, Entry: 3, EntryTask: refusedTesterTask,
+		EntryRaisedAt: time.Now().UTC().Add(-time.Hour)})
+	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-209", Role: claim.RoleReviewer, Claim: token, Entry: 4, EntryTask: "Review the change.",
+		EntryRaisedAt: time.Now().UTC()})
+	queueStart(t, pool, record.SuperviseRequest{Op: "start", Tree: "LEGION-209", Role: claim.RoleReviewer, Claim: token, Phase: phase.Reviewing,
+		Entry: 4, Task: "Review the change.", Generation: 1})
+	engine := testEngine(config.DesignGateRootIssues, nil)
+
+	reportRefusal(t, pool, engine, "pod-refused:legion-legion-legion-209-tester:1", token)
+	if got := queuedStarts(t, pool); len(got) != 1 || got[0].Role != claim.RoleReviewer {
+		t.Fatalf("after the report the outbox holds the starts %+v, want the reviewer's start of the claim alone: it brings the claim back", got)
+	}
+}

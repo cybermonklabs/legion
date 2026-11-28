@@ -215,20 +215,6 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
-      # The image's TLS probe serves the public test sites' own chains, checked in under
-      # packages/daemon/cmd/legion/tls-fixtures (docs/kubernetes.md). Once a leaf there has expired,
-      # every client is held to the public host in its place, so this step warns 30 days before:
-      # a warning on the run, never a failure. The probe prints the same warning inside the build,
-      # where BuildKit prefixes each line of the RUN step, so the runner reads it as a log line and
-      # makes no annotation of it; this step's own output is what annotates.
-      - name: Warn before a served TLS leaf expires
-        id: served-leaves
-        run: |
-          for chain in packages/daemon/cmd/legion/tls-fixtures/vendored-*-chain.pem; do
-            end=$(openssl x509 -in "$chain" -noout -enddate 2>&1) || { echo "::warning file=$chain::openssl could not read its leaf: $end"; continue; }
-            openssl x509 -in "$chain" -noout -checkend 2592000 >/dev/null || echo "::warning file=$chain::its leaf is valid until ${end#notAfter=}, within 30 days or past: vendor the chains again (cd packages/daemon/cmd/legion/tls-fixtures && go run vendor.go) and commit what it writes, or from then every client of the TLS probe is held to the public site in its place"
-          done
-
       - name: Build and push
         id: build
         uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0

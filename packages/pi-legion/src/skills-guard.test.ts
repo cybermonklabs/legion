@@ -343,9 +343,7 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
     expect(silent).toEqual([]);
     expect(dispatching.sort()).toEqual([
       "skills/AGENTS.md",
-      "skills/dispatch-writing-specs/SKILL.md",
       "skills/legion-architect/SKILL.md",
-      "skills/legion-architect/references/decomposition.md",
       "skills/legion-architect/references/design-gate.md",
       "skills/legion-controller/references/consolidation.md",
       "skills/legion-oracle/SKILL.md",
@@ -353,7 +351,6 @@ test("no skill, agent or plugin file keeps work in the foreground, and each that
       "skills/legion-worker/references/merge-gate.md",
       "skills/simplify-settled-diff/SKILL.md",
       "the fresh Claude plugin's skills/legion-architect/SKILL.md",
-      "the fresh Claude plugin's skills/legion-architect/references/decomposition.md",
       "the fresh Claude plugin's skills/legion-architect/references/design-gate.md",
       "the fresh Claude plugin's skills/legion-controller/references/consolidation.md",
       "the fresh Claude plugin's skills/legion-oracle/SKILL.md",
@@ -390,17 +387,6 @@ function countedOncePerFile(rule: string, relativePaths: string[]) {
   }));
   expect(counts).toEqual(relativePaths.map((file) => ({ file, found: 1 })));
 }
-
-// R3: a forward merge brings instances from the base that the branch's own diff never shows, so a
-// merge can bring a new instance of a class the branch already answered. The implementer's merge
-// procedure carries the class search.
-test("a forward merge searches the new head for each earlier finding's class", () => {
-  expect(
-    collapsed(path.join(staged, "legion-worker", "references", "conflicts-and-rewrites.md"))
-  ).toContain(
-    "A merge brings instances from the base that the branch's own diff never shows, so before you push the merge search its head for the class of every finding of every earlier review round"
-  );
-});
 
 // R4: a planner waits on a decision its plan needs rather than completing around it
 // (dispatch://INFRA-206). The role prompts carry the rest of R4; roles_test.go pins those.
@@ -726,14 +712,14 @@ test("the architect skill names the versions that keep the design gate open", ()
   ).toEqual([]);
 });
 
-// With no tester step only the implementer runs the checks, except the owner's subagent in the
+// With no tester step only the implementer runs the checks, except the owner or its subagent in the
 // last round of a parent whose pull request already merged (`references/acceptance.md`, "The last
 // round"). Each sentence a reader of the acceptance showed false is gone. This shows the text
 // ships, never that a role follows it.
 test("the architect's references say who runs the checks again", () => {
   expect([
     ...lacks("legion-architect/references/plan.md", [
-      /no other step runs them again, except where a parent's pull request merged before its last round[^.;]*your subagent then runs and records them/,
+      /no other step runs them again, except where a parent's pull request merged before its last round[^.;]*you, or a subagent you dispatch, then run and record them/,
       /^(?![\s\S]*nobody runs them again)/,
     ]),
   ]).toEqual([]);
@@ -999,16 +985,13 @@ test("each duty a role skill routes to a reference stands in that reference", ()
     ...lacks("legion-worker/references/results.md", [
       /The implementer re-runs once a red check whose failure is not in this pull request's code/,
     ]),
-    ...lacks("legion-worker/references/pr-body.md", [
-      /only the deploy can show it[^.]*plan names its observation/,
-    ]),
   ]).toEqual([]);
 });
 
 // Each sentence that held only in the default steps holds for every order the plan validator
 // allows: a task may leave out the reviewer and the owner's acceptance, a parent whose last step
-// is not the acceptance is held before its retro, retro's `Handoff:` line names the report of the
-// task's last step, and the daemon accepts the head an ancestor's last step passed, which is the
+// is not the acceptance is held before its retro, retro reads the GitHub review of the last
+// worker step's head, and the daemon accepts the head an ancestor's last step passed, which is the
 // reviewed head only where its task has a reviewer step. Each old sentence is gone. This shows the
 // text ships, never that a role follows it.
 test("the skills' sentences that held only in the default steps hold for every order", () => {

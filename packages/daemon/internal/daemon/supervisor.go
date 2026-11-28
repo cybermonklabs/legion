@@ -215,16 +215,17 @@ func (s *supervisor) restore(ctx context.Context, claims []supervise.Claim) ([]c
 	var unfinished []claim.Token
 	live := supervise.LiveStates()
 	for i, c := range claims {
+		// Before the repair below moves a ready, working or idle claim to launch_uncertain: the
+		// start failure goes by the state the claim's agent last reached.
+		dropped := supervise.DropStaleStartFailure(&c)
 		repaired := (c.Locator == nil && slices.Contains(live, c.State)) || c.ReleasedLaunch()
 		if repaired {
 			s.log.Warn("supervise: restoring a launch the previous daemon did not finish as launch_uncertain; no process is recorded for it",
 				"claim", c.Token, "stored", c.State, "generation", c.Generation)
 			c.State = supervise.StateLaunchUncertain
 		}
-		before := c
-		enrollment := supervise.NormalizeClaim(&c)
-		normalized := repaired || len(c.CapabilityHash) != len(before.CapabilityHash) ||
-			c.SuspendedBy != before.SuspendedBy || c.Enrollment != before.Enrollment
+		enrollment, normalized := supervise.NormalizeClaim(&c)
+		normalized = normalized || repaired || dropped
 		if normalized {
 			if err := s.deps.Store.PutClaim(ctx, supervise.StoredClaim(c)); err != nil {
 				return nil, err

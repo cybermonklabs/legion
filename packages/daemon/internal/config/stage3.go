@@ -133,9 +133,10 @@ var unsetDefaultSteps = func() []plan.Step {
 
 // RunsByDefault is the project's default steps: the steps a task whose plan block names neither
 // steps nor a sub-owner runs, and the steps of the one task `default` of an issue whose owner
-// gives no plan. They are `default_steps`, or today's line up to the owner's acceptance for
-// a project that names none, and for a Project the loader never read, so a configuration built
-// without the field runs today's line rather than no step. The answer is the caller's own.
+// gives no plan or whose experiment's group takes none. They are `default_steps`, or today's line
+// up to the owner's acceptance for a project that names none, and for a Project the loader never
+// read, so a configuration built without the field runs today's line rather than no step. The
+// answer is the caller's own.
 func (p Project) RunsByDefault() []plan.Step {
 	if p.DefaultSteps != nil {
 		return slices.Clone(p.DefaultSteps)
@@ -282,7 +283,12 @@ func readProject(value *yaml.Node, key string) (Project, []string, error) {
 		// The block and `experiments.memory` are one experiment spelled two ways, and only here
 		// are both spellings in view: the memory member is read by the mapping's own key rather
 		// than by the block's value, so an empty block counts as written (checkExperimentMemory).
+		// The rules of `plan` come after it, so `plan` on `experiments.memory` gets that check's
+		// one refusal rather than the plan rules' advice to write `unit: issue`.
 		if err := checkExperimentMemory(project.Experiments, fields["memory"] != nil, key); err != nil {
+			return Project{}, nil, err
+		}
+		if err := checkExperimentPlans(project.Experiments, key); err != nil {
 			return Project{}, nil, err
 		}
 	}

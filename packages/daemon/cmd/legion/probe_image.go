@@ -70,11 +70,11 @@ var digits = regexp.MustCompile(`^[0-9]+$`)
 // bootprobe.OKLine with the capabilities and model-fallback marks; a failed capability is the
 // probe's message, exit 1, so a broken image never publishes. Each check is judged as it returns,
 // by the deadline --probe-budget sets: what it saw fail before the deadline is exit 1, while a
-// check the deadline cut, a capability row among them (capabilities.StatusUnanswered), and a TLS
-// run with no verdict (probeTLSClients) have no verdict, which ends nothing, so the later checks
-// still run. Where nothing failed and something has no verdict, it prints
-// bootprobe.NoVerdictLine, naming each, to stderr and exits bootprobe.NoVerdictExit, which
-// asks the daemon's probe Sandbox for another attempt rather than refusing the image. Unlike the
+// check the deadline cut, a capability row among them (capabilities.StatusUnanswered), has no
+// verdict, which ends nothing, so the later checks still run. Where nothing failed and something
+// has no verdict, it prints bootprobe.NoVerdictLine, naming each, to stderr and exits
+// bootprobe.NoVerdictExit, which asks the daemon's probe Sandbox for another attempt rather than
+// refusing the image. Unlike the
 // TypeScript command, the contract is always checked:
 // with none named, against this binary's own DaemonAPIVersion, which the plugin packed from the
 // same commit must declare. The load probe also holds every task agent the
@@ -257,7 +257,7 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 	// From here on each step is judged as it returns: a failure it saw while ctx was alive ends
 	// the probe with exit 1, and what the probe's deadline (--probe-budget) cut has no verdict,
 	// which ends nothing, so the later steps still run and a failure they see still fails. noVerdict
-	// names each step and TLS run with no verdict; where nothing failed, they make the exit
+	// names each step with no verdict; where nothing failed, they make the exit
 	// bootprobe.NoVerdictExit.
 	var noVerdict []string
 	err = daemon.ProbeImage(ctx, daemon.ImageProbe{
@@ -298,12 +298,6 @@ func runProbeImage(ctx context.Context, f *probeImageFlags, args []string, stdou
 			noVerdict = append(noVerdict, "capability "+string(line.Name)+": not checked")
 		}
 	}
-	clientsNoVerdict, err := runTLSProbe(ctx, invocation, environ, stdout)
-	if err != nil {
-		fmt.Fprintf(stderr, "legion probe-image: %v\n", err)
-		return 1
-	}
-	noVerdict = append(noVerdict, clientsNoVerdict...)
 	modelFallback, err := capabilities.ReadModelFallback(ctx, img)
 	if err != nil {
 		fmt.Fprintf(stderr, "legion probe-image: model-fallback not read; the deployment's capability report shows the row open: %v\n", err)

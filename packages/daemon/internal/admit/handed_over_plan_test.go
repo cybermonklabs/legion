@@ -39,7 +39,7 @@ func TestAHandedOverOrphanKeepsItsPlan(t *testing.T) {
 	steps := record.NameAgents(nil, nil, []record.PlanStep{
 		{Issue: child, Generation: 1, Task: "a", Position: 1, Role: "implementer", Type: "implementation"},
 		{Issue: child, Generation: 1, Task: "a", Position: 2, Role: "reviewer", Type: "review"},
-	})
+	}, nil)
 	inTx(t, pool, func(tx pgx.Tx) {
 		records := record.NewStore()
 		for _, put := range []error{

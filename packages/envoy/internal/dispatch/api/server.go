@@ -222,6 +222,10 @@ type Deps struct {
 	// it empty, which is one identity for every such build and is why a deploy is what it is
 	// for rather than a key anything depends on being unique.
 	BuildCommit string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE: while it is on, a write that would leave
+	// a parent's status out of line with its children's (R24) is refused 409
+	// PARENT_STATUS_CONFLICT. The zero value is off.
+	ParentStatusRule ParentStatusRule
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -324,6 +328,8 @@ type DepsInput struct {
 	DashboardEntry string
 	// BuildCommit is the commit this process was built from; see Deps.BuildCommit.
 	BuildCommit string
+	// ParentStatusRule is DISPATCH_PARENT_STATUS_RULE; see Deps.ParentStatusRule.
+	ParentStatusRule ParentStatusRule
 }
 
 // NewDeps parses boot configuration once and returns API dependencies. It refuses an input with
@@ -332,7 +338,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 	newIssue, problem := newIssueSettingsFrom(input.NewIssueLabel, input.NewIssueSession)
 	switch problem {
 	case "label":
-		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, maxIssueLabel16)
+		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_LABEL %q (at most %d characters)", newIssue.Label, contracts.IssueLabelMax)
 	case "session":
 		return Deps{}, fmt.Errorf("invalid DISPATCH_NEW_ISSUE_SESSION %q (expected a session id)", newIssue.Session)
 	}
@@ -409,6 +415,7 @@ func NewDeps(input DepsInput) (Deps, error) {
 		AnswersLatency:         input.AnswersLatency,
 		DashboardEntry:         input.DashboardEntry,
 		BuildCommit:            input.BuildCommit,
+		ParentStatusRule:       input.ParentStatusRule,
 	}, nil
 }
 
@@ -435,9 +442,11 @@ type server struct {
 	// write, held to the table this server mounts (going_catalogue.go).
 	going GoingCatalogue
 	// unguardedReplacements counts the document replacements stored naming no token
-	// (noteUnguardedReplacement); nil, which counts nothing, where Deps.Metrics is nil.
-	unguardedReplacements *metrics.Counter
-	adviceQueryHook       func(context.Context, pgx.Tx, string) error
+	// (noteUnguardedReplacement), and unguardedFileReplacements the file and picture ones
+	// (noteUnguardedFileReplacement); nil, which counts nothing, where Deps.Metrics is nil.
+	unguardedReplacements     *metrics.Counter
+	unguardedFileReplacements *metrics.Counter
+	adviceQueryHook           func(context.Context, pgx.Tx, string) error
 	// suggestionTimeout overrides the allowance the related-item check runs under; zero, which
 	// every server the deployment builds leaves it, means relatedCheckAllowance. Only tests set it
 	// (newFailingAdviceHandler, and the check's bound tests), so a case's outcome is its own choice
@@ -493,6 +502,15 @@ type server struct {
 	// Only a test sets it, so a budget that ends before every selected session is read is the
 	// test's choice rather than a race against five seconds of wall clock (INFRA-249).
 	broadcastResolveBudget time.Duration
+	// mentionLookupBound replaces mentionLookupTimeout, the bound on each try of each listener
+	// lookup a comment's creation makes, for the target that lookup is of (commentLookupBound);
+	// nil, which every server the deployment builds leaves it, keeps mentionLookupTimeout for every
+	// target. Only a test sets it, so which of a comment's lookups that bound ends and which the
+	// listener's answer ends is the test's choice rather than a race between a loaded machine and
+	// 250 ms of wall clock. It is called as each lookup try starts, on that try's own goroutine,
+	// just before the try's bound begins, so a test may block in it to hold the start of a lookup
+	// (TestAListenerThatAnswersNoLookupDelaysARoutedCommentByOneTimeoutAtMost does).
+	mentionLookupBound func(target string) time.Duration
 	// rosters is how this process reads and refreshes the stored listener answer every process's
 	// issue reads judge routes against and agents lists list (issue_route_status.go). Only
 	// register gives it non-zero TTLs.
@@ -570,6 +588,23 @@ type server struct {
 	// the deployment builds leaves it, calls nothing. Only a test sets it, to send the rest of a
 	// body it held back once the repeat is waiting on it.
 	repeatFoundInFlight func()
+	// statusChangeAfterStep is called after each step of a status change commits, with the
+	// step's index in the call's plan (status_change.go); nil, which every server the deployment
+	// builds leaves it, calls nothing. Only a test sets it, to make another writer's write between
+	// two steps of one call.
+	statusChangeAfterStep func(ctx context.Context, step int)
+	// afterMentionCopyRule is called inside a comment mention's send once its copy rule answered
+	// that the send waits for no earlier event, before the re-check of its claim
+	// (deliverResolvedCommentMention); nil, which every server the deployment builds leaves it,
+	// calls nothing. Only a test sets it, to commit a delete of the comment while the copy rule runs.
+	afterMentionCopyRule func()
+	// deleteLeavesSettlement has the delete of a comment whose pending insert suggestion it
+	// rejects leave the document's next version to the settlement the reject arms, as the delete
+	// did before it wrote that version itself (deleteComment, docs.SettleVersion); false, which
+	// every server the deployment builds leaves it, settles in the delete. Only a benchmark sets
+	// it, to time the delete without its settle beside the delete with it
+	// (BenchmarkDeleteOfAPendingInsertSettle).
+	deleteLeavesSettlement bool
 	// slowWrites is the slow-write test hook's delay for each keyed method and path it was armed
 	// for (POST /api/v1/writes/_test/slow), by "METHOD path"; it holds nothing on a server without
 	// TestHooksEnabled, which mounts no hook.
@@ -797,6 +832,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	s.mentions = s.startMentionSender()
 	s.registerHeldGauges(deps.Metrics)
 	s.unguardedReplacements = registerUnguardedReplacements(deps.Metrics)
+	s.unguardedFileReplacements = registerUnguardedFileReplacements(deps.Metrics)
 	s.deliveryHub = newDeliveryHub(s, lifetime, deliveryHubClock{})
 	if deps.TestHooksEnabled && deps.Store != nil {
 		s.testHooks = startTestHookFanout(s, lifetime)
@@ -844,9 +880,9 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 		panic("api.Register: the route table's shape map names a route the table does not mount: " + strings.Join(unshaped, "; "))
 	}
 	s.routeIndex = routeIndexEntries(routes)
-	replays := s.keyedReplays()
+	keyed := s.keyedReplays()
 	for _, route := range routes {
-		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, replays[route.Method+" "+route.Pattern]))
+		mux.HandleFunc(route.Method+" "+route.Pattern, s.routeHandler(route, keyed[route.Method+" "+route.Pattern]))
 	}
 	if websocket, ok := deps.Docs.(interface {
 		ServeHTTP(http.ResponseWriter, *http.Request)
@@ -864,28 +900,30 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // routeHandler is the chain register mounts one row of the table behind: the row's own handler
 // inside every layer the row runs, in the one order every row runs them. It is the one place that
 // order is written, so register and a test that walks the table with each row's handler replaced
-// (read_only_token_test.go) build the same chain. replay is the row's keyed replay
-// (keyedReplays), nil for a row that has none.
-func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFunc {
+// (read_only_token_test.go) build the same chain. keyed is the row's entry of keyedReplays, the
+// zero value for a row that has none.
+func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc {
 	handler := route.Handler
 	if keyedMethod(route.Method) {
-		handler = s.keyedWrites(route.Method, route.Pattern, handler, replay)
+		handler = s.keyedWrites(route.Method, route.Pattern, handler, keyed)
 	}
 	if route.Method+" "+route.Pattern == issueUploadRoute {
 		handler = s.refuseUploadToAClosedIssue(handler)
 	}
 	if route.Method != http.MethodGet {
 		// Outside the keyed layer and the upload's spool, so a write to another project's
-		// object, into another session's own rows, or by a credential that names no person
-		// claims no idempotency key and costs no body (withinProjectScope,
+		// object, into another session's own rows, or by a machine's credential that names no
+		// person claims no idempotency key and costs no body (withinProjectScope,
 		// withinSessionScope, writeNeedsASignedInPerson).
 		handler = s.withinProjectScope(route, handler)
 		handler = s.withinSessionScope(route, handler)
-		// Outermost of the three, so a caller whose credential names a service and no person
+		// Outermost of the three, so a machine whose credential names a service and no person
 		// is told it may make no write at all rather than which session the write it tried
 		// belongs to. The project check has nothing to tell it: a token naming a service is
-		// held to no one project (broker_token.go). A read-only token names a service and no
-		// person too, and never reaches here: the read-only gate further out has answered it
+		// held to no one project (broker_token.go). An account entry's token naming no person
+		// passes it, recorded under its account, and meets the two checks behind it as any
+		// credential naming no project does. A read-only token names a service and no person
+		// too, and never reaches here: the read-only gate further out has answered it
 		// (refuseReadOnlyToken).
 		handler = s.writeNeedsASignedInPerson(handler)
 		handler = s.refuseChangedLogin(handler)
@@ -936,6 +974,16 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 		// pins: without either, the client is told to continue and the answer waits on its body.
 		handler = s.drainBeforeAnswer(route.Method, route.Pattern, handler)
 	}
+	handler = s.decideBrokerToken(trackTransactions(handler))
+	if route.Method+" "+route.Pattern == statusChangeRoute {
+		// Outside every layer above and outside decideBrokerToken, so it sees each answer the
+		// route gives, and inside compression, so it reads the JSON a layer wrote rather than
+		// gzip. The route's declared refusals carry changed: the handler and the keyed layer
+		// write it, and every layer outside the keyed layer refuses before any step runs with
+		// the {code, error} it answers every route, to which this adds changed []
+		// (addChangedToRefusals).
+		handler = addChangedToRefusals(handler)
+	}
 	// The access-log line is outermost, so it records what every layer answered - a keyed
 	// replay, a refused login, an early answer the drain held - and the caller the first of
 	// them resolved. Compression sits just inside it, with nothing between them but the answers
@@ -943,7 +991,7 @@ func (s *server) routeHandler(route apiRoute, replay keyedReplay) http.HandlerFu
 	// gzip and the line counts the bytes that went on the wire. The two websockets register
 	// mounts beside the table carry no compressed answer: the upgrade is not a body, and the
 	// frames after it are the socket's (compressAnswers).
-	served := compressAnswers(s.decideBrokerToken(trackTransactions(handler)))
+	served := compressAnswers(handler)
 	if route.Method+" "+route.Pattern == sessionAnswersRoute && s.deps.AnswersLatency != nil {
 		// Just inside the access-log line, so the time of an answers read the keyword fill
 		// pauses on is the time the line records for it, every layer of the chain included.
@@ -1075,9 +1123,10 @@ type apiError struct {
 	message string
 	// retryAfter is the Retry-After the answer carries, in whole seconds, and 0 for an answer
 	// that carries none. Only a refusal that knows when the caller may come back sets it:
-	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, and linkedReadRefusal's
-	// 502 for a linked repository's read GitHub rate-limited with a wait. writeHandlerError
-	// writes the header.
+	// brokerTokenActor's 429, the results write's 409 CHECK_CONTENDED, both deletes' 409
+	// DELETE_CONTENDED, linkedReadRefusal's 502 for a linked repository's read GitHub
+	// rate-limited with a wait, and the keyed layer's 409 KEY_IN_FLIGHT (writeKeyInFlight,
+	// writeKeyFreed). writeHandlerError writes the header.
 	retryAfter int
 	// scope is the OAuth scope a missing-scope refusal names, and is empty for every other
 	// refusal. Only missingScopeError sets it; writeHandlerError writes the challenge header
@@ -1280,12 +1329,34 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 	if err != nil {
 		return model.Actor{}, err
 	}
+	return recordedActor(r, actor, present, supplied)
+}
+
+// recordedActor is actorFrom for a caller that optionalActor already resolved: the caller, when
+// present says the caller is a person at a browser, else the session that bearerSessionActor
+// resolves, with no credential.
+func recordedActor(r *http.Request, caller model.Actor, present bool, supplied *model.Actor) (model.Actor, error) {
 	if !present {
-		if actor, err = bearerSessionActor(r, actor, supplied); err != nil {
+		var err error
+		if caller, err = bearerSessionActor(r, caller, supplied); err != nil {
 			return model.Actor{}, err
 		}
 	}
-	return actor.Recorded(), nil
+	return caller.Recorded(), nil
+}
+
+// credentialProvesSession is whether the request's credential proved a session of its own - a
+// broker-issued token, which the broker binds to one session - rather than a caller that must
+// name its session in the body.
+func credentialProvesSession(authenticated model.Actor) bool {
+	return authenticated.Kind == "session" && authenticated.ID != ""
+}
+
+// actorNamesWriter is whether a request body names a writer at all: an actor carrying a kind or
+// an id, either of which is the caller saying who writes. A body that names neither leaves the
+// writer to the credential.
+func actorNamesWriter(supplied *model.Actor) bool {
+	return supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
 }
 
 // bearerSessionActor resolves the acting session for a bearer caller: the caller names its own
@@ -1302,10 +1373,10 @@ func (s *server) actorFrom(r *http.Request, supplied *model.Actor) (model.Actor,
 // session the caller merely asked for. Every credential that proves no session — a cookie, a
 // personal token, a Kubernetes service-account token — keeps the rule above exactly.
 func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *model.Actor) (model.Actor, error) {
-	if authenticated.Kind == "session" && authenticated.ID != "" {
+	if credentialProvesSession(authenticated) {
 		// A body that names no writer at all leaves the session to the credential; one that names
 		// anything else than that same session is the mismatch.
-		named := supplied != nil && (strings.TrimSpace(supplied.ID) != "" || strings.TrimSpace(supplied.Kind) != "")
+		named := actorNamesWriter(supplied)
 		if named && (supplied.Kind != "session" || strings.TrimSpace(supplied.ID) != authenticated.ID) {
 			return model.Actor{}, errorf(http.StatusForbidden, "ACTOR_SESSION_MISMATCH",
 				"this request's credential acts for session %s; its actor names another writer", authenticated.ID)

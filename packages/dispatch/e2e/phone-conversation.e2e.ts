@@ -747,9 +747,9 @@ test("on a phone, Jump to latest covers none of the docked composer's Retry @pho
 // latest`: the pending-writes indicator above the connection pill (`app.tsx`), wider than the
 // pill and painted over it. So while a write of the reader's is out and the live socket is let
 // go, the corner would take the taps a reader scrolled back through the turns means for the
-// pill. The corner publishes how far up from the screen's bottom edge it reaches, as a composer
-// does (`useFootInset`), and the pill rides above that, so neither the indicator nor the
-// connection pill covers any of it.
+// pill. The corner is a float of the foot's status layer and the pill one of its top layer
+// (`useFootInset`): the hook holds the corner's height and floor and places the pill clear of it,
+// so neither the indicator nor the connection pill covers any of it.
 test("on a phone, the shell's status corner covers none of Jump to latest @phone", async ({
   browser,
 }) => {
@@ -798,15 +798,17 @@ test("on a phone, the shell's status corner covers none of Jump to latest @phone
 });
 
 // Both foot controls at once, which is the reader's ordinary case while the live socket is down:
-// the shell's status corner shows and the docked composer sits under it. `Jump to latest` is
-// placed above the reach the corner publishes (`--foot-status-inset`, `useFootInset`). That
-// reach was once measured only when the corner's own box or the screen changed size, never when
-// `--foot-composer-inset` moved the corner. So a corner shown before the composer published its
-// reach (the socket refused while the page loads, below), and one the composer's growth moved
-// afterwards (a refusal's Retry row), both left the pill placed against a reach the corner had
+// the shell's status corner shows and the docked composer sits under it. The composer is in the
+// foot's page layer, the corner is a float of its status layer, and `Jump to latest` is a float
+// of its top layer (`web/src/hooks/useFootInset.ts` lists the foot's layers). An earlier rule
+// measured where the corner stood, and only when the corner's own box or the screen changed
+// size, never when the composer's layer moved the corner. So a corner shown before the composer
+// counted (the socket refused while the page loads, below), and one the composer's growth moved
+// afterwards (a refusal's Retry row), both left the pill placed against a place the corner had
 // left: it dropped down the screen into the docked composer and took the taps meant for Send,
-// Retry and the draft. The hook's cascade measures every element it holds again whenever a
-// published value changes, and this row is what guards that fix.
+// Retry and the draft. The hook now places each float from the property it reads, its floor and
+// its height, never from where the float stands, and this row guards that the pill keeps clear
+// of the composer in both cases.
 test("on a phone, Jump to latest covers none of the docked composer while the status corner shows @phone", async ({
   browser,
 }) => {

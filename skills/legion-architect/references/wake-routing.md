@@ -13,7 +13,7 @@ Where a row says to ask a person, a child's own architect sends the question to 
 | `design-approved` | One gated step opened; `gatedSteps` in `read_record` says which. Once every step is `approved`, release the children (section 2). A task saying "this resume is your design-approved wake" is this wake. On a `handed_over` root, or a version a person's answer to a decision block wrote, start nothing. |
 | `design-changes-requested` | Revise the document of the step whose `status` is `changes_requested` as the reason asks, then request approval again ("The armed gate" in design-gate.md) and end your turn. One for an older version came late: answer its reason if the latest version does not. |
 | `carried-gate-opened` | Start nothing and release nothing for it. |
-| `phase-finished` | The next phase started, or `retro-held` came too. Read the finished handoff (`dispatch handoff-read --issue <issue> --phase <word>`) or the notice's `verdict`, and tell the working role of any gap. A planner's departure from the design: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting that no surface reaches the changed path: build the surface in this tree, then tell it to continue. |
+| `phase-finished` | The next phase started, or `retro-held` came too. Read `dispatch results`, the pull request and its review, or the notice's `verdict`, and tell the working role of any gap. A departure in `plan.md` under `## Departures from the spec`: keep the plan while the Summary, requirements, checks, scope and settled decisions hold, else change the spec ("After approval" in design-gate.md). When the step before `acceptance:owner` finishes, section 6 applies. A worker reporting that no surface reaches the changed path: build the surface in this tree, then tell it to continue. |
 | `retro-held`, `task-stopped`, `plan-not-taken` | Act as "The notices" in `skill://legion-architect/references/plan-changes.md` says. |
 | `pr-blocked` | The review round cap is reached: decide in this turn, as "A capped pull request" below says. |
 | `checks-red` | The daemon asked the implementer, or in `merging` the merger, to merge the base forward; the issue stays in the phase the notice names. Start nothing ("A conflicting head" in acceptance.md). |
@@ -22,7 +22,7 @@ Where a row says to ask a person, a child's own architect sends the question to 
 | `pr-closed-unmerged` | Decide whether the work reopens, restarts or ends, and give the reason. A phase worker makes the repository change. |
 | `pull-request-missing` | Tell the implementer to open the pull request from the branch the reason names. |
 | `child-status` | A child left, re-entered, joined the tree or started. The daemon starts what runs. |
-| `child-closed` | Section 2. File any new child it calls for after the red-team check, and release it as section 2 says. When it was the last child an issue in `accepting` waits on, run that issue's last round. |
+| `child-closed` | Section 2. File any new child it calls for as `skill://legion-architect/references/decomposition.md` says, and release it as section 2 says. When it was the last child an issue in `accepting` waits on, run that issue's last round. |
 | `children-first` | Release every child that should run. Move one that should not run now where your role prompt's `children-first` paragraph says, then ask the person on the root when it should run; sign off neither issue until they answer. A `blocked_by` link up the parent chain: ask a person to remove it. |
 | `child-release-stalled` | Read the parent's record (`read_record`), release the parent first when the reason says so, then release the child again. Tell the controller if the parent never records. |
 | `child-not-recorded` | Set the child's repository (`dispatch issue-update --repo owner/name`) or get the named App installed, then release it again; else tell the controller. |
@@ -48,7 +48,7 @@ Read what every counted round found, choose one, act on it, and post the rounds 
 
 - **Split**: part of the work cannot settle here.
   On a child, it becomes a child of this issue's parent (a child's own architect sends it up with `envoy_publish`);
-  that parent's architect files it after the red-team check with `--blocked-by <this issue>` and releases it as section 2 says.
+  that parent's architect files it with `--blocked-by <this issue>` and releases it as section 2 says.
   On the root, open a `dispatch ask`; the part stays a requirement until the person's answer says otherwise.
 
 - **Accept the rounds**: each round found less than the one before, and the last found no defect in the change itself.

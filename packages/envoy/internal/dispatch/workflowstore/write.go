@@ -41,6 +41,16 @@ var (
 	stepResults = []string{ResultPassed, ResultFailed, ResultStopped}
 )
 
+// RunsChannel is the Postgres notification channel a write of a run signals its issue on, with the
+// issue's key as its payload. A run's write appends no event (NoEvent), so no event a page follows
+// comes with a run: the live hub listens on this channel to mark an open view of the issue's Legion
+// state owed, whose body carries the count IssueRunsRevision reads. PutStep sends it inside the
+// write's own transaction, so Postgres delivers it at the commit, to every Dispatch process that
+// listens, and never for a write rolled back; and only where the write appended a tuple, so a write
+// sent again, which sets nothing, sends nothing, and each signal comes with a rise of that count. A
+// plan's write (PutPlan) sends nothing: a plan is no run.
+const RunsChannel = "dispatch_workflow_runs"
+
 // PutStep writes one run of one step inside the caller's transaction and answers its node as it
 // stands after the write. It sets each field the write states that the node does not hold yet,
 // appending one value tuple for each, and leaves each field the node holds as it is, appending
@@ -58,13 +68,16 @@ var (
 // against the kind the write names and against the kind the node holds (typeOfKind,
 // ratingOfKind), so a run made as a step never takes a rating, whatever kind a later write calls
 // it.
+//
+// A write that appends a tuple signals its issue on RunsChannel inside tx, so the signal goes at
+// the commit and a write rolled back sends none; a write that sets nothing sends nothing.
 func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor, at time.Time) (Step, error) {
 	id, stated, err := write.attributes()
 	if err != nil {
 		return Step{}, err
 	}
 	missing := write.missingIdentity()
-	written, err := putNode(ctx, tx, nodeWrite{
+	written, appended, err := putNode(ctx, tx, nodeWrite{
 		kind: KindStep, id: id, issue: write.Issue, stated: stated, makes: len(missing) == 0,
 		actor: actor, at: at,
 		check: func(held map[string]json.RawMessage) error {
@@ -114,6 +127,11 @@ func PutStep(ctx context.Context, tx pgx.Tx, write StepWrite, actor model.Actor,
 	case err != nil:
 		return Step{}, err
 	}
+	if appended {
+		if _, err := tx.Exec(ctx, `select pg_notify($1, $2)`, RunsChannel, write.Issue); err != nil {
+			return Step{}, fmt.Errorf("signal the runs of %s: %w", write.Issue, err)
+		}
+	}
 	return stepFrom(id, written)
 }
 
@@ -153,20 +171,21 @@ type nodeOfAnotherIssue struct{ issue string }
 func (other *nodeOfAnotherIssue) Error() string { return "the node is part of " + other.issue }
 
 // putNode is the one write of a node, a run's or a plan's, inside the caller's transaction, and
-// answers the node's attributes as they stand after it. It sets each attribute the write states
-// that the node does not hold yet or that the write replaces (nodeWrite.replaces), where the write
-// sets it (nodeWrite.sets), appending one value tuple for each, and leaves every other the node
-// holds, appending nothing for it; the write that makes the node states its `part_of` relation to
-// the issue. A refusal comes before anything is moved, but the node a refused write made is the
+// answers the node's attributes as they stand after it, and whether it appended a tuple, which a
+// write that sets nothing does not. It sets each attribute the write states that the node does not
+// hold yet or that the write replaces (nodeWrite.replaces), where the write sets it
+// (nodeWrite.sets), appending one value tuple for each, and leaves every other the node holds,
+// appending nothing for it; the write that makes the node states its `part_of` relation to the
+// issue. A refusal comes before anything is moved, but the node a refused write made is the
 // caller's to roll back with its transaction.
 //
 // Two writes of one id at one time take turns: the insert that makes the node comes before the
 // read of what it holds, and that read locks the row (for update), so the second write waits for
 // the first to commit and then reads everything the first wrote.
-func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
+func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, bool, error) {
 	writer, err := json.Marshal(write.actor)
 	if err != nil {
-		return nil, fmt.Errorf("encode the writer of %s %s: %w", write.kind, write.id, err)
+		return nil, false, fmt.Errorf("encode the writer of %s %s: %w", write.kind, write.id, err)
 	}
 	made := false
 	if write.makes {
@@ -181,7 +200,7 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 		case err == nil:
 			made = true
 		case !errors.Is(err, pgx.ErrNoRows):
-			return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
+			return nil, false, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 		}
 	}
 
@@ -190,33 +209,33 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 		select attributes from workflow_nodes where kind = $1 and id = $2 for update
 	`, write.kind, write.id).Scan(&heldText)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return nil, errNoNode
+		return nil, false, errNoNode
 	}
 	if err != nil {
-		return nil, fmt.Errorf("read %s %s: %w", write.kind, write.id, err)
+		return nil, false, fmt.Errorf("read %s %s: %w", write.kind, write.id, err)
 	}
 	var held map[string]json.RawMessage
 	if err := json.Unmarshal(heldText, &held); err != nil {
-		return nil, fmt.Errorf("decode the attributes of %s %s: %w", write.kind, write.id, err)
+		return nil, false, fmt.Errorf("decode the attributes of %s %s: %w", write.kind, write.id, err)
 	}
 	if !made {
 		issue, err := heldString(held, AttributeIssue)
 		if err != nil {
-			return nil, fmt.Errorf("decode the issue of %s %s: %w", write.kind, write.id, err)
+			return nil, false, fmt.Errorf("decode the issue of %s %s: %w", write.kind, write.id, err)
 		}
 		if issue != write.issue {
-			return nil, &nodeOfAnotherIssue{issue: issue}
+			return nil, false, &nodeOfAnotherIssue{issue: issue}
 		}
 	}
 	if write.check != nil {
 		if err := write.check(held); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 	var replaced []string
 	if write.replaces != nil {
 		if replaced, err = write.replaces(held); err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
 
@@ -241,12 +260,12 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 		tuples = append(tuples, write.relations(texts)...)
 	}
 	if len(setting) == 0 {
-		return heldText, nil
+		return heldText, false, nil
 	}
 
 	moved, err := json.Marshal(setting)
 	if err != nil {
-		return nil, fmt.Errorf("encode the attributes of %s %s: %w", write.kind, write.id, err)
+		return nil, false, fmt.Errorf("encode the attributes of %s %s: %w", write.kind, write.id, err)
 	}
 	var written []byte
 	if err := tx.QueryRow(ctx, `
@@ -254,12 +273,12 @@ func putNode(ctx context.Context, tx pgx.Tx, write nodeWrite) ([]byte, error) {
 		where kind = $1 and id = $2
 		returning attributes
 	`, write.kind, write.id, moved).Scan(&written); err != nil {
-		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
+		return nil, false, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 	}
 	if err := appendTuples(ctx, tx, write.kind, write.id, tuples, writer, write.at); err != nil {
-		return nil, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
+		return nil, false, fmt.Errorf("write %s %s: %w", write.kind, write.id, err)
 	}
-	return written, nil
+	return written, true, nil
 }
 
 // attribute is one field a write states: its name, the value the node row holds, and the text its

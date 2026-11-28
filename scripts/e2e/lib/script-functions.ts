@@ -37,6 +37,26 @@ export function scriptAssignments(path: string): (name: string) => string {
   };
 }
 
+/**
+ * Reads the shell script at `path` once and returns `checkpoint`, which gives the checkpoint the
+ * line `begin <name>` opens, exactly as the script writes it: from that line, which is the whole
+ * line, to the line before the next line that starts with `begin `. `name` is written as the
+ * script writes it, quotes included (`"done"`). `checkpoint` throws, naming the script by its path
+ * under scripts/e2e, when the script has no such line or no checkpoint after it.
+ */
+export function scriptCheckpoints(path: string): (name: string) => string {
+  const lines = readFileSync(path, "utf8").split("\n");
+  const shown = relative(dirname(import.meta.dir), path);
+  return (name) => {
+    const start = lines.indexOf(`begin ${name}`);
+    const end = lines.findIndex((text, index) => index > start && text.startsWith("begin "));
+    if (start < 0 || end < 0) {
+      throw new Error(`${shown} has no checkpoint begin ${name} with another after it`);
+    }
+    return lines.slice(start, end).join("\n");
+  };
+}
+
 // Every function a script defines at the start of a line, one-line definitions included.
 const definition = /^([A-Za-z_][A-Za-z0-9_]*)\(\) \{/gm;
 // A library of scripts/e2e/lib a script sources, as every stage script and library writes it.

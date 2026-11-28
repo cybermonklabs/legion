@@ -895,21 +895,27 @@ func RepoFromURL(url string) string {
 
 // afterHost is what a remote URL holds after github.com, in the three shapes a remote is written
 // in: a URL with a scheme (https://github.com/owner/name), scp syntax (git@github.com:owner/name)
-// and the same two with a user in front.
+// and the same two with a user in front. The host is read from the URL's authority alone, and
+// only for one of git's network schemes (gitSchemes). The authority ends at the first "/", "?" or
+// "#" after the scheme, as git's credential code (`strcspn(cp, "/?#")`) and curl end it, and a
+// URL whose authority ends at a "?" or a "#" names no repository path here. scp syntax is read
+// only where its ":" comes before any "/", which is how git tells it from a local path. So a
+// path, a query or a fragment that holds "@github.com", on another host or on this machine, names
+// no host here.
 func afterHost(url string) (string, bool) {
-	if scheme := strings.Index(url, "://"); scheme >= 0 {
-		rest := url[scheme+len("://"):]
-		if at := strings.LastIndex(rest, "@"); at >= 0 {
-			rest = rest[at+1:]
-		}
-		host, path, ok := strings.Cut(rest, "/")
-		if !ok {
+	if scheme, rest, ok := strings.Cut(url, "://"); ok {
+		end := strings.IndexAny(rest, "/?#")
+		if end < 0 || rest[end] != '/' || !gitSchemes[strings.ToLower(scheme)] {
 			return "", false
 		}
-		return path, isGitHub(host)
+		authority, path := rest[:end], rest[end+1:]
+		if at := strings.LastIndex(authority, "@"); at >= 0 {
+			authority = authority[at+1:]
+		}
+		return path, isGitHub(authority)
 	}
 	host, path, ok := strings.Cut(url, ":")
-	if !ok {
+	if !ok || strings.Contains(host, "/") {
 		return "", false
 	}
 	if at := strings.LastIndex(host, "@"); at >= 0 {
@@ -917,6 +923,10 @@ func afterHost(url string) (string, bool) {
 	}
 	return path, isGitHub(host)
 }
+
+// gitSchemes are the schemes of the URLs git reaches a host over the network with (git's
+// urls.adoc, "GIT URLS"): a file URL, whatever host it names, is a path on this machine.
+var gitSchemes = map[string]bool{"https": true, "http": true, "ssh": true, "git": true, "git+ssh": true, "ssh+git": true}
 
 // isGitHub is whether host is github.com, port and case aside.
 func isGitHub(host string) bool {

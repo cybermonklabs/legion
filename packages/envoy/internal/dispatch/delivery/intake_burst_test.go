@@ -54,6 +54,7 @@ func startIntakesForBurst(t *testing.T, ctx context.Context, connect func(string
 // long the intake took to acknowledge them all with 200 ms added to every GitHub call. Run with
 // DISPATCH_INTAKE_BURST=1.
 func TestIntakeBurstOfMergedPullRequests(t *testing.T) {
+	t.Parallel()
 	if os.Getenv("DISPATCH_INTAKE_BURST") != "1" {
 		t.Skip("a measurement: set DISPATCH_INTAKE_BURST=1 to run it")
 	}

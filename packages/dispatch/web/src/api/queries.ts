@@ -23,6 +23,7 @@ import type {
   InboxRow,
   IssueDetails,
   MyRepliesResponse,
+  ReferenceTarget,
 } from "./types";
 
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
@@ -185,6 +186,11 @@ function referenceTargetBatches(named: readonly string[]): string[][] {
   return batches;
 }
 
+/** What a names read (`referenceTargetsQuery`) holds: one member per address it names. */
+export interface ReferenceTargetsAnswer {
+  readonly targets: readonly ReferenceTarget[];
+}
+
 /** What the `dispatch://` references a page names point at (`GET /api/v1/reference-targets`): a
  *  page that names many references reads their names with this query, in as few requests as
  *  both bounds of one request allow. The key holds the references themselves, sorted, so two
@@ -205,7 +211,7 @@ export const referenceTargetsQuery = (refs: readonly string[]) => {
   return queryOptions({
     enabled: named.length > 0,
     queryKey: ["reference-targets", named],
-    queryFn: async () => {
+    queryFn: async (): Promise<ReferenceTargetsAnswer> => {
       const answers = await Promise.all(
         referenceTargetBatches(named).map((batch) => api.getReferenceTargets(batch))
       );

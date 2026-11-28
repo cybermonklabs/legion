@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/fixtures/ask-reply-recipients.json TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers os.ReadFile (askReplyRecipientsFixture, ../../../../contracts/fixtures): TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers compares the copies the outbox published with the committed fixture, which writes under -update
+
 import (
 	"bytes"
 	"context"

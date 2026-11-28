@@ -1,5 +1,7 @@
 package config
 
+//ci:reads deploy/kubernetes/operator-route/pod.yml TestLoadForValidationRefusesUnderKubernetes
+
 import (
 	"fmt"
 	"os"
@@ -1919,10 +1921,38 @@ func TestAgentSecretsBlockSettlesWithDefaults(t *testing.T) {
 	}
 	got := cfg.Runtime.Kubernetes.AgentSecrets
 	want := &AgentSecretsConfig{
-		URL: "https://secrets.internal.example", TokenFile: "/var/run/legion/agent-secrets-token/token", Audience: "agent-secrets", TokenExpirySeconds: 3600,
+		URL: "https://secrets.internal.example", TokenFile: "/var/run/legion/agent-secrets-token/token", Audience: "cipher", TokenExpirySeconds: 3600,
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("agent_secrets = %+v, want %+v", got, want)
+	}
+}
+
+// A runtime.kubernetes.agent_secrets block that names no audience reads Cipher's, `cipher`, and
+// `legion config reference` documents that default as the loader applies it.
+func TestKubernetesAudienceDefaultsToCipher(t *testing.T) {
+	path := writeConfigFile(t, kubernetesFile+"    agent_secrets:\n      url: https://secrets.internal.example\n"+agentSecretsTokenFile)
+	cfg, err := LoadForValidation(path, noEnv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := cfg.Runtime.Kubernetes.AgentSecrets.Audience; got != "cipher" {
+		t.Errorf("a block with no audience reads the audience %q, want cipher", got)
+	}
+	const key = agentSecretsKey + ".audience"
+	var row *ConfigNestedKey
+	for _, entry := range ConfigReference() {
+		for i, nested := range entry.Nested {
+			if nested.Path+"."+nested.Name == key {
+				row = &entry.Nested[i]
+			}
+		}
+	}
+	switch {
+	case row == nil:
+		t.Errorf("the config reference has no row for %s", key)
+	case row.Default != "`cipher`":
+		t.Errorf("the config reference gives %s the default %q, want `cipher`", key, row.Default)
 	}
 }
 
@@ -1980,7 +2010,7 @@ func TestExchangeAudienceNeedsAgentSecrets(t *testing.T) {
 	for name, tc := range map[string]struct{ block, want string }{
 		"no broker url":        {"    agent_secrets:\n" + tf + "      exchange_audience: legion-broker-exchange\n", "runtime.kubernetes.agent_secrets.url is required"},
 		"blank":                {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: \"\"\n", "runtime.kubernetes.agent_secrets.exchange_audience must not be empty"},
-		"the default audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: agent-secrets\n", "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both agent-secrets)"},
+		"the default audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      exchange_audience: cipher\n", "runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both cipher)"},
 		"the named audience": {"    agent_secrets:\n      url: https://s\n" + tf + "      audience: broker\n      exchange_audience: broker\n",
 			"runtime.kubernetes.agent_secrets.exchange_audience must differ from runtime.kubernetes.agent_secrets.audience (both broker)"},
 	} {

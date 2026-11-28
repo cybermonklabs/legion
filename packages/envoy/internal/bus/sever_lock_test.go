@@ -27,6 +27,7 @@ import (
 // server: once the client has a connection of its own again, a second marker published and flushed
 // on it is the first the subscriber receives.
 func TestASeverDoesNotWaitForACallerHoldingTheClientsLock(t *testing.T) {
+	testnats.RequireSocketQueues(t)
 	const subject = "testbus.sever.locked-marker"
 	for _, withRead := range []bool{false, true} {
 		name := "no read of the connection waits"

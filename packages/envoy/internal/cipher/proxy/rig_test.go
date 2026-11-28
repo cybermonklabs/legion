@@ -36,9 +36,11 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/answer"
 	"github.com/sjawhar/envoy/internal/cipher/logmask"
+	"github.com/sjawhar/envoy/internal/cipher/placeholder"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules"
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
 	"github.com/sjawhar/envoy/internal/cipher/requests"
+	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/logtest"
 )
@@ -61,7 +63,7 @@ const (
 
 // workerPlaceholder is a placeholder in the shape the broker mints them, so a row that asserts a
 // body never names the placeholder is asserting about the real thing.
-var workerPlaceholder = requests.PlaceholderPrefix + "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"
+var workerPlaceholder = placeholder.Prefix + "AaBbCcDdEeFfGgHhIiJjKkLlMmNnOoPp"
 
 // The two protocols a command's client may speak to a bound host, by their ALPN names:
 // HTTP/1.1, which every client that offers it is answered in, and HTTP/2, which a client that
@@ -81,16 +83,20 @@ var suiteProtocol = protocolHTTP1
 // request handling whichever framing carried the request. A row that speaks to the proxy on a
 // socket of its own - a CONNECT written by hand, an upgrade, a frame written by hand - runs the
 // same bytes in both runs. The banner before each run names the protocol of the run below it.
+// Both runs go through storetest.Run, which drops the test binary's own database the rows'
+// schemas are made in once both have ended.
 func TestMain(m *testing.M) {
-	code := 0
-	for _, protocol := range []string{protocolHTTP1, protocolH2} {
-		suiteProtocol = protocol
-		fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
-		if run := m.Run(); run != 0 {
-			code = run
+	os.Exit(storetest.Run(func() int {
+		code := 0
+		for _, protocol := range []string{protocolHTTP1, protocolH2} {
+			suiteProtocol = protocol
+			fmt.Printf("proxy: every rig's client speaks %s to a bound host in the run below\n", protocol)
+			if run := m.Run(); run != 0 {
+				code = run
+			}
 		}
-	}
-	os.Exit(code)
+		return code
+	}))
 }
 
 // testRules is the rules file every row but the two-name one runs under.
@@ -126,7 +132,7 @@ func storedValues(name, value string) map[string]requests.AirlockSecret {
 const (
 	githubAcmeSlot  = requests.SlotGitHubPrefix + "acme"
 	githubZedSlot   = requests.SlotGitHubPrefix + "zed"
-	githubZedHolder = requests.PlaceholderPrefix + "zedzedzedzedzedzedzedzedzedzed02"
+	githubZedHolder = placeholder.Prefix + "zedzedzedzedzedzedzedzedzedzed02"
 	githubAcmeToken = "ghs_the-real-acme-installation-token"
 	githubZedToken  = "ghs_the-real-zed-installation-token"
 )
@@ -293,10 +299,10 @@ func (f *fakeGrants) AirlockAccessPlaceholder(_ context.Context, grantID, name, 
 	defer f.mu.Unlock()
 	f.accessCalls++
 	key := grantID + "\x00" + name + "\x00" + slot
-	placeholder, minted := f.access[key]
+	mint, minted := f.access[key]
 	if !minted {
-		placeholder = fmt.Sprintf("%saccessToken%021d", requests.PlaceholderPrefix, len(f.access))
-		f.access[key] = placeholder
+		mint = fmt.Sprintf("%saccessToken%021d", placeholder.Prefix, len(f.access))
+		f.access[key] = mint
 	}
 	for password, conn := range f.connections {
 		held, carries := conn.Names[name]
@@ -306,13 +312,13 @@ func (f *fakeGrants) AirlockAccessPlaceholder(_ context.Context, grantID, name, 
 		// Copied rather than written to: a connection already open is reading the map it was
 		// handed, and the row this mints reaches it only on its next connection.
 		slots := maps.Clone(held.Slots)
-		slots[slot] = placeholder
+		slots[slot] = mint
 		names := maps.Clone(conn.Names)
 		names[name] = requests.AirlockGrantName{Slots: slots, Type: held.Type}
 		conn.Names = names
 		f.connections[password] = conn
 	}
-	return placeholder, nil
+	return mint, nil
 }
 
 // accessMints is how many exchanges asked the broker for a placeholder.

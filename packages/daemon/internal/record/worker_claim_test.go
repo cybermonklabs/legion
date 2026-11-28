@@ -219,12 +219,12 @@ func TestAPayloadNamesTheClaimItsProducerHolds(t *testing.T) {
 			roundTrip: SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1, Claim: keyed},
 		},
 		{
-			name:      "a release's workspace save",
+			name:      "a release's workspace check",
 			kind:      OutboxKindIssueBundle,
 			named:     `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester","claim":"` + string(keyed) + `"}`,
 			unnamed:   `{"tree":"LEGION-208","generation":1,"treeGeneration":1,"role":"tester"}`,
-			claimOf:   func(p OutboxPayload) claim.Token { return p.(IssueBundle).Claim },
-			roundTrip: IssueBundle{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: keyed},
+			claimOf:   func(p OutboxPayload) claim.Token { return p.(IssueWorkspaceCheck).Claim },
+			roundTrip: IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: keyed},
 		},
 		{
 			name:      "an update round's ask",
@@ -270,7 +270,7 @@ func TestAPayloadNamesTheClaimItsProducerHolds(t *testing.T) {
 func TestAPayloadRefusesAClaimThatIsNoClaimToken(t *testing.T) {
 	for _, payload := range []OutboxPayload{
 		SuperviseRequest{Op: "suspend", Tree: "LEGION-208", Role: claim.RoleTester, Generation: 1, Claim: "tester"},
-		IssueBundle{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: "tester"},
+		IssueWorkspaceCheck{Tree: "LEGION-208", Generation: 1, TreeGeneration: 1, Role: claim.RoleTester, Claim: "tester"},
 		UpdateAsk{Role: claim.RoleTester, Round: "r1", Text: "Push.", Claim: "tester"},
 		HookPrompt{Hook: "back", Role: claim.RoleTester, Claim: "tester", From: phase.Testing, To: phase.Implementing, Count: 1, Prompt: "Read it."},
 		MergeForwardMessage{Role: claim.RoleImplementer, Claim: "tester", Step: MergeForwardAsk, Head: "c0de", Base: "main",

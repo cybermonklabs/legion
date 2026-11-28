@@ -373,7 +373,8 @@ func atWorkInSlotlessPhase(issue record.Issue, running map[string]struct{}) bool
 var heldSentences = map[record.HeldReason]heldSentence{
 	record.HeldTreeClosed: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree is closed: " + heldBy + " has finished, or lingers after leaving the workflow, " +
-			"and the daemon starts no issue of that tree."
+			"or waits in the line for the promotion that opens its tree again, and the daemon starts no issue of that tree; " +
+			"in the last case that root's promotion ends this hold."
 	}},
 	record.HeldTreeParked: {states: []api.WhyState{api.WhyBlocked, api.WhyUnlisted}, sentence: func(heldBy string) string {
 		return "Its tree is parked: " + heldBy + " stands in backlog or icebox, " +

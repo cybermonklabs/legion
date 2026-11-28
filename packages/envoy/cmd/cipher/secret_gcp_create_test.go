@@ -597,7 +597,8 @@ func (blockedStdin) Read([]byte) (int, error) { select {} }
 // most, policy.PendingValueWindow (ten minutes), the time the broker holds the empty secret as
 // pending, and here shortened: a value that has not come by then ends the read, the empty secret
 // is discarded through the common cleanup, the broker asked to reread the name, and the create
-// exits 1 naming the window and the command to run again, with nothing stored.
+// exits 1 naming the window and the command to run again, with nothing stored. The create is
+// timed against its window, less the time this process was held up (endsByItsDeadline).
 func TestGCPSecretCreateValueReadEndsAtItsWindow(t *testing.T) {
 	if valueReadWindow != policy.PendingValueWindow || policy.PendingValueWindow != 10*time.Minute {
 		t.Fatalf("the create reads its value for %s and the broker holds it pending for %s; want both ten minutes", valueReadWindow, policy.PendingValueWindow)
@@ -613,24 +614,20 @@ func TestGCPSecretCreateValueReadEndsAtItsWindow(t *testing.T) {
 	secretStdin = blockedStdin{}
 	t.Cleanup(func() { secretStdin = restoreStdin })
 
-	done := make(chan struct {
+	type result struct {
 		stderr string
 		code   int
-	}, 1)
+	}
+	done := make(chan result, 1)
+	meter := startStallMeter(t)
+	start := time.Now()
 	go func() {
 		_, stderr, code := runSecret("create", "NEW_TEST", "--owner", "me", "--tier", "agent")
-		done <- struct {
-			stderr string
-			code   int
-		}{stderr, code}
+		done <- result{stderr, code}
 	}()
-	select {
-	case got := <-done:
-		if got.code != 1 || !strings.Contains(got.stderr, "300ms") || !strings.Contains(got.stderr, "agent-secrets secret create NEW_TEST") {
-			t.Fatalf("exit %d, stderr %q; want 1 naming the window and the command to run again", got.code, got.stderr)
-		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("the create was still reading its value 10s on, past its 300ms window")
+	got := endsByItsDeadline(t, meter, "the create reading a value that never comes", start, valueReadWindow, done)
+	if got.code != 1 || !strings.Contains(got.stderr, "300ms") || !strings.Contains(got.stderr, "agent-secrets secret create NEW_TEST") {
+		t.Fatalf("exit %d, stderr %q; want 1 naming the window and the command to run again", got.code, got.stderr)
 	}
 	requireNothingLeft(t, fake, broker, "NEW_TEST")
 }

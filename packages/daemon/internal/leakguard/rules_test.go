@@ -210,13 +210,18 @@ func TestARuleScanThatRanOutOfTimeRefuses(t *testing.T) {
 // one that names no repository on github.com names none, and the guard scans such a write as if
 // it were public rather than skipping it. A URL whose two names are no repository GitHub serves
 // names none either: the guard refuses a slug its exemption could not cover (Guard.scanThrough),
-// so a URL that answered one would refuse the push over the spelling of its remote.
+// so a URL that answered one would refuse the push over the spelling of its remote. The host is
+// read from the URL's authority alone, which ends at the first "/", "?" or "#", as git's
+// credential code and curl end it, and from scp syntax only where git reads that syntax: a path,
+// a query or a fragment that holds "@github.com", on another host or on this machine, names no
+// repository there, and neither does a file URL.
 func TestRepoFromURL(t *testing.T) {
 	for _, tc := range []struct{ url, want string }{
 		{"https://github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"https://github.com/invented-org/invented-repo", "invented-org/invented-repo"},
 		{"https://x-access-token:secret@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"ssh://git@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
+		{"git+ssh://git@github.com/invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"git@github.com:invented-org/invented-repo.git", "invented-org/invented-repo"},
 		{"https://github.com/invented-org/invented-repo/", "invented-org/invented-repo"},
 		{"https://example.invalid/invented-org/invented-repo.git", ""},
@@ -224,6 +229,13 @@ func TestRepoFromURL(t *testing.T) {
 		{"https://github.com/invented-org", ""},
 		{"https://github.com/-invented-org/invented-repo", ""},
 		{"https://github.com/invented-org/../invented-repo", ""},
+		{"https://example.invalid/a@github.com/invented-org/invented-repo.git", ""},
+		{"file:///a/local/path/@github.com/invented-org/invented-repo.git", ""},
+		{"file://github.com/invented-org/invented-repo.git", ""},
+		{"/a/local/path@github.com:invented-org/invented-repo.git", ""},
+		{"https://example.invalid?@github.com/invented-org/invented-repo.git", ""},
+		{"https://example.invalid#@github.com/invented-org/invented-repo.git", ""},
+		{"http://example.invalid?x=@github.com/invented-org/invented-repo.git", ""},
 	} {
 		if got := RepoFromURL(tc.url); got != tc.want {
 			t.Errorf("RepoFromURL(%q) = %q, want %q", tc.url, got, tc.want)

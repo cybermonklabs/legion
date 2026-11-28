@@ -1,5 +1,7 @@
 package graphcensus
 
+//ci:builds packages/envoy ./cmd/dispatch-seed seedRunDrives cmdtest.BuildCommand . in ../../../cmd/dispatch-seed, whose binary TestTheSizingCountsEveryTupleTheWritersAppend runs as the seed's three store writers
+
 import (
 	"context"
 	"maps"

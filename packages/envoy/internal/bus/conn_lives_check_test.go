@@ -190,6 +190,7 @@ func TestAConnectionsCheckKeepsALifePinnedAfterItsRead(t *testing.T) {
 // control is an endReconnected that ends the life whatever waits in the listener: the read ends
 // the pinned life at once.
 func TestAWatchsReadLeavesALifeToAReportTheDrainHasNotTaken(t *testing.T) {
+	t.Parallel()
 	l := &connLife{reports: make(chan nats.Status, 10), checks: make(chan reconnectRead), quit: make(chan struct{}), life: make(chan struct{})}
 	pinned := l.current()
 	if !l.pinIf(pinned, 0) {

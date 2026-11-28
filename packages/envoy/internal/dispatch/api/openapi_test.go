@@ -1,5 +1,7 @@
 package api
 
+//ci:reads packages/contracts/schemas/dispatch-openapi.json TestARefusalStatusAlsoAnswersThePlainErrorBody (the path built runtime-relative ../../../../.., then read: the committed document TestTheCommittedOpenAPIDocumentIsWhatTheEmitterWrites compares the emitter's bytes with)
+
 import (
 	"bytes"
 	"encoding/json"

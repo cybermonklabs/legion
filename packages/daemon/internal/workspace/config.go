@@ -223,9 +223,16 @@ type Workspace struct {
 
 // pinnedGitConfig is git configuration every process provisioning starts reads last, after the
 // shared clone's and after the command's own: no hook runs, wherever the clone's hooks directory
-// or its core.hooksPath points. git would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so
-// no process provisioning starts inherits it.
-var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}}
+// or its core.hooksPath points, and no git starts git's automatic maintenance, whatever the
+// clone's own gc.auto, gc.autoPackLimit or maintenance.auto say. Every git fetch, the one jj
+// starts included, otherwise starts `git maintenance run --auto --detach`, whose `git gc --auto`
+// outlives the fetch and takes the clone's ref locks, HEAD's among them, while jj is still
+// exporting the refs that fetch moved: jj gives up on such a lock and fails the provision
+// (#5349). git 2.51 made that maintenance let go of the locks, and the image's git
+// is older. So no process provisioning starts holds a lock of the clone once it has returned. git
+// would read GIT_CONFIG_PARAMETERS (its `-c`) after the pins, so no process provisioning starts
+// inherits it.
+var pinnedGitConfig = [][2]string{{"core.hooksPath", "/dev/null"}, {"gc.auto", "0"}, {"maintenance.auto", "false"}}
 
 // transportEnvironment is set on every process provisioning starts before the command's own
 // environment: git reaches a remote over https alone, so a url.<base>.insteadOf the tree wrote

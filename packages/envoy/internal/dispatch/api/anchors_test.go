@@ -100,7 +100,7 @@ func TestMarkAnchorVerifiesBrowserMark(t *testing.T) {
 // follows is that client's next update, which the persisted document can only integrate once this
 // mark is persisted too. Committing the mark in its own transaction makes it durable first, where
 // ygo's persistence worker would otherwise store it on its own schedule.
-func writeBrowserMark(t *testing.T, database *store.Store, documentService *docs.Service, artifactID string, mark docs.MarkSpec, quote string) {
+func writeBrowserMark(t testing.TB, database *store.Store, documentService *docs.Service, artifactID string, mark docs.MarkSpec, quote string) {
 	t.Helper()
 	tx, err := database.Pool.Begin(context.Background())
 	if err != nil {
@@ -203,8 +203,16 @@ const malformedAsk = ":::ask{#a1 urgency=\"med\" multiple=\"false\" state=\"open
 // browserDocumentService is a document service a browser peer can connect to (writeBrowserDocument).
 func browserDocumentService(t *testing.T) (*docs.Service, http.Handler, *store.Store) {
 	t.Helper()
+	documentService, handler, database, _ := browserDocumentServer(t)
+	return documentService, handler, database
+}
+
+// browserDocumentServer is browserDocumentService, answering also the server it registered, for a
+// benchmark that sets one of the fields only test code sets (server.deleteLeavesSettlement).
+func browserDocumentServer(t testing.TB) (*docs.Service, http.Handler, *store.Store, *server) {
+	t.Helper()
 	var documentService *docs.Service
-	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database, _, served := newInteractionServer(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{
 			Store: database, Settle: time.Hour, MarkWait: 50 * time.Millisecond,
 			Identity: headerIdentity(database),
@@ -212,7 +220,7 @@ func browserDocumentService(t *testing.T) (*docs.Service, http.Handler, *store.S
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
 	})
-	return documentService, handler, database
+	return documentService, handler, database, served
 }
 
 // writeBrowserDocument stands in for a browser editor that turns the live document into

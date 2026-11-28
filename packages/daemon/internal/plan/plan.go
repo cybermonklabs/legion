@@ -99,7 +99,7 @@ func (id AgentID) Key() (string, bool) {
 // names its agent by (the record's PlanStep.AgentName, and the store's read of a plan's agents for
 // an issue pod's slots). A step of the key owner names none, since its agent is the tree's
 // architect, whose token names the tree and no name on the issue. Every other step holds its name,
-// which 20261123203837 gave every step a release before the stored names wrote, except where the
+// which 20261124213820 gave every step a release before the stored names wrote, except where the
 // first form of that migration ran: a row it left holds "" and reads as no name, and the third pass
 // of record.NameAgents leaves such a step to its fourth.
 func StoredAgentName(key, stored string) string {
@@ -109,8 +109,8 @@ func StoredAgentName(key, stored string) string {
 	return stored
 }
 
-// DefaultTask is the id of the one task of an issue whose owner gives no plan, which runs the
-// project's default steps.
+// DefaultTask is the id of the one task of an issue whose owner gives no plan, or whose
+// experiment's group takes none, which runs the project's default steps.
 const DefaultTask = "default"
 
 // Task is one `plan_task` block of a plan, as FromBlocks reads it.

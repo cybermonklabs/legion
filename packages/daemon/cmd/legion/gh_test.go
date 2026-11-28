@@ -1,5 +1,7 @@
 package main
 
+//ci:reads packages/daemon/docker/gh TestGhTargetOfRoutesEverySelectorKindOfARead ../../docker/gh
+
 import (
 	"bytes"
 	"cmp"
@@ -26,6 +28,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/runtime/workerbin"
 	"github.com/sjawhar/legion/daemon/internal/testfifo"
+	"github.com/sjawhar/legion/daemon/internal/testkernel"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
@@ -396,6 +399,9 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghMarkerLine("remote.origin.gh-resolved sjawhar/legion")), err: "sjawhar (the working directory's remote.origin.gh-resolved sjawhar/legion)"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "fork", url: "ssh://git@ssh.github.com:443/Sjawhar/legion"}), err: "more than one owner"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "work", url: "git@gh-work:sjawhar/legion.git"}), err: "is an ssh remote whose host gh may read as github.com"},
+		// A remote whose host holds a letter beyond ASCII is refused, not passed over as another
+		// host's: gh lowers `gİthub.com` (U+0130) to github.com and acts on its repository.
+		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(ghRemote{name: "origin", url: "https://g\u0130thub.com/acme/widgets.git"}), err: "whose host holds a letter beyond ASCII"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: remotes(acmeClone, ghRemote{name: "mirror", url: "https://gitlab.example.com/sjawhar/legion"}, ghRemote{name: "local", url: "/srv/legion"}), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_CONFIG_DIR": "/owners", "LEGION_GH_OWNERS_DIR": "/owners"}, remotes: remotes(acmeClone), owner: "acme"},
 		{argv: []string{"pr", "list"}, env: pane, remotes: func() ([]ghRemote, error) { return nil, fmt.Errorf("bad config line 3") }, err: "cannot be read (bad config line 3)"},
@@ -628,6 +634,7 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		// A URL is one in any case, as gh parses it.
 		{argv: []string{"pr", "view", "HTTPS://GITHUB.COM/sjawhar/legion/pull/1"}, owner: "sjawhar"},
 		{argv: []string{"api", "HTTPS://API.GITHUB.COM/repos/sjawhar/legion"}, owner: "sjawhar"},
+		{argv: []string{"api", "HTTPS://UPLOADS.GITHUB.COM/repos/sjawhar/legion/releases/1/assets?name=x"}, owner: "sjawhar"},
 		{argv: []string{"api", "REPOS/sjawhar/legion"}, owner: "sjawhar"},
 		// A command naming no repository, and GH_REPO where the leaf reads it.
 		{argv: []string{"pr", "list"}},
@@ -672,6 +679,19 @@ func TestGhTargetOfFailsClosed(t *testing.T) {
 		{argv: []string{"--bogus", "pr", "list"}, err: `"--bogus" comes before the command's name`},
 		{argv: []string{"api", "repositories/12345"}, err: "by its id"},
 		{argv: []string{"api", "https://ghe.example.com/api/v3/repos/acme/w"}, err: "another host"},
+		// gh api's whole URL is placed only over https and on api.github.com or uploads.github.com,
+		// spelled in ASCII: another GitHub host, http, and `ſ` (U+017F), which strings.EqualFold
+		// folds onto `s`, are refused.
+		{argv: []string{"api", "https://github.com/repos/acme/widgets"}, err: "another host"},
+		{argv: []string{"api", "https://gist.github.com/repos/acme/widgets"}, err: "another host"},
+		{argv: []string{"api", "https://upload\u017f.github.com/repos/acme/widgets/releases/1/assets?name=x"}, err: "names another host than api.github.com or uploads.github.com"},
+		{argv: []string{"api", "http://uploads.github.com/repos/acme/widgets/releases/1/assets?name=x"}, err: "is no https URL"},
+		{argv: []string{"api", "http://api.github.com/repos/acme/widgets"}, err: "is no https URL"},
+		// A host is compared in ASCII alone: `İ` (U+0130), which strings.ToLower lowers to `i`,
+		// makes no github.com of `gİthub.com`, in -R, a URL argument or --hostname.
+		{argv: []string{"pr", "view", "1", "-R", "g\u0130thub.com/acme/widgets"}, err: "names another host than github.com"},
+		{argv: []string{"pr", "view", "https://g\u0130thub.com/acme/widgets/pull/1"}, err: "names another host than github.com"},
+		{argv: []string{"api", "--hostname", "g\u0130thub.com", "repos/acme/w"}, err: "names another host than github.com"},
 		{argv: []string{"api", "--hostname", "ghe.example.com", "repos/acme/w"}, err: "another host"},
 		{argv: []string{"api", "repos/../x/y"}, err: `"..", which is no GitHub login`},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "../x/y"}, err: `names another host`},
@@ -848,6 +868,7 @@ func TestGhTargetOfNamesTheOneRepositoryEverySelectorNames(t *testing.T) {
 		{argv: []string{"search", "issues", "repo:sjawhar/legion", "is:open"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/sjawhar/legion/pulls/1/files"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "REPOS/sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
+		{argv: []string{"api", "https://uploads.github.com/repos/acme/widgets/releases/1/assets?name=x"}, owner: "acme", repo: "widgets"},
 		{argv: []string{"api", "search/issues?q=repo:sjawhar/legion+is:open"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"pr", "list"}, env: map[string]string{"GH_REPO": "sjawhar/Legion"}, owner: "sjawhar", repo: "legion"},
 		{argv: []string{"api", "repos/{owner}/{repo}/pulls"}, env: map[string]string{"GH_REPO": "sjawhar/legion"}, owner: "sjawhar", repo: "legion"},
@@ -2958,17 +2979,17 @@ func requireGhStartedIgnoringHangup(t *testing.T, path string) {
 const hangupBit = uint64(1) << (syscall.SIGHUP - 1)
 
 // requireHangupIgnored fails the row unless process pid ignores SIGHUP and has no handler for it,
-// as /proc/<pid>/status reports; when names the moment. A process whose status cannot be read, or
-// whose masks do not parse, fails the row too: the row then has no answer, not a clean one.
-//
-// A kernel that reports neither mask line has no source of the answer: gVisor's
-// release-20260803.0 is one, whose /proc/<pid>/stat also gives 0 for the masks of a process that
-// ignores a signal, and no other interface reports another process's disposition. There the row
-// follows the daemon's rule for a test this machine cannot run (internal/launcher's
-// skipOutsideCI): under GITHUB_ACTIONS it fails, since CI's runners report the masks and a runner
-// that reports none is broken; anywhere else it skips, naming why.
+// as /proc/<pid>/status reports; when names the moment. It first reads that this kernel's status
+// records both masks, and records what a process does with a signal there
+// (testkernel.RequireSignalMasks): gVisor's release-20260803.0 records neither, its
+// /proc/<pid>/stat gives 0 for the masks of a process that ignores a signal, and no other interface
+// reports another process's disposition, so where the kernel has no such record the row follows
+// the daemon's rule for a test this machine cannot run, skipping by name outside CI and failing
+// under GITHUB_ACTIONS. A process whose status cannot be read, lacks a line the probe found, or
+// holds a mask that does not parse, fails the row too: the row then has no answer, not a clean one.
 func requireHangupIgnored(t *testing.T, pid int, when string) {
 	t.Helper()
+	testkernel.RequireSignalMasks(t, "SigIgn", "SigCgt")
 	status, err := os.ReadFile(filepath.Join("/proc", strconv.Itoa(pid), "status"))
 	if err != nil {
 		t.Fatalf("read the signal masks of `legion gh` (pid %d) %s: %v", pid, when, err)
@@ -2976,14 +2997,8 @@ func requireHangupIgnored(t *testing.T, pid int, when string) {
 	ignored, ignoredOK := statusSignalMask(t, status, "SigIgn")
 	caught, caughtOK := statusSignalMask(t, status, "SigCgt")
 	switch {
-	case !ignoredOK && !caughtOK:
-		reason := "this kernel's /proc/<pid>/status reports no signal masks (gVisor's release-20260803.0 is one), so nothing reports whether `legion gh` ignores SIGHUP or holds a handler for it"
-		if os.Getenv("GITHUB_ACTIONS") == "true" {
-			t.Fatalf("%s: CI's runners report them, so this runner is broken", reason)
-		}
-		t.Skip(reason)
 	case !ignoredOK || !caughtOK:
-		t.Fatalf("the status of `legion gh` (pid %d) %s holds one of SigIgn and SigCgt and not the other:\n%s", pid, when, status)
+		t.Fatalf("the status of `legion gh` (pid %d) %s lacks SigIgn or SigCgt, which this kernel's probe found in a shell's:\n%s", pid, when, status)
 	case caught&hangupBit != 0:
 		t.Fatalf("`legion gh` has a handler for SIGHUP %s (SigCgt %#x): the handler takes the hangup, and may end `legion gh` or forward it to gh at any later moment", when, caught)
 	case ignored&hangupBit == 0:

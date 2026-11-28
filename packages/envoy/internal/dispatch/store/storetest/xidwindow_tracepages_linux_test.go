@@ -20,6 +20,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // xidBurstLogs is how many trace events the burst of TestTheTracersEventsInAWindowTouchNoFreshPage
@@ -208,7 +209,7 @@ func xidStallTheCalibration(t *testing.T) {
 		}
 		return now
 	}
-	t.Cleanup(func() { xidTraceNow = time.Now })
+	testcleanup.Add(t, func() { xidTraceNow = time.Now })
 }
 
 // A stall inside the trace's calibration shifts no moment the rig maps onto the trace. With the
@@ -585,7 +586,7 @@ func TestACommitThatEndsAfterTheCaptureIsInsideTheTrace(t *testing.T) {
 			t.Errorf("the late COMMIT: %v", err)
 		}
 	}
-	t.Cleanup(func() { xidCaptureEnded = nil })
+	testcleanup.Add(t, func() { xidCaptureEnded = nil })
 	commitBegun := func() bool {
 		tracer.mu.Lock()
 		defer tracer.mu.Unlock()
