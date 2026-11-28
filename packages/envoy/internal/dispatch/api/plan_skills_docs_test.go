@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"net/http"
 	"slices"
 	"strings"
 	"testing"
@@ -84,7 +85,8 @@ func requirePlanJSONLists(t *testing.T, what string, raw json.RawMessage) {
 // (`GET /api/v1/issues/{key}/tree?view=plan`) answers the same lists on each task's node, and `[]`
 // for each on the issue's own entry and on each of its two halves. The check's control - skills
 // and docs dropped from plan_task in pmdoc/schema/blocks.json - has the parse refuse the upload,
-// and the test fails naming the upload's answer before it reads anything.
+// and the test fails before it reads anything, printing `the upload of the plan of <key> answered
+// <status>: <body>`.
 func TestAPlanTasksSkillsAndDocsReadBackFromTheOrderedRead(t *testing.T) {
 	ctx := context.Background()
 	handler, database := blockIndexHandler(t)
@@ -94,10 +96,17 @@ func TestAPlanTasksSkillsAndDocsReadBackFromTheOrderedRead(t *testing.T) {
 	key := issue.Key
 	serves := "dispatch://" + key + "/spec#b-r1"
 	skills, docs := []string{"writing-plans", "dispatch"}, []string{"docs/testing.md", "packages/envoy/AGENTS.md"}
-	uploadDocument(t, handler, "/api/v1/issues/"+key, "plan.md",
-		":::plan_task{#t-reads serves=\""+serves+"\" size=\"1h30m\" skills=\""+writtenList(t, skills)+"\" docs=\""+writtenList(t, docs)+"\"}\n"+
-			"The task that names what to read.\n:::\n\n"+
-			":::plan_task{#t-bare serves=\""+serves+"\" size=\"45m\"}\nThe task that names nothing to read.\n:::\n")
+	artifacts := "/api/v1/issues/" + key + "/artifacts"
+	uploaded := dispatchRequest(t, handler, http.MethodPost, artifacts, map[string]any{
+		"name": "plan.md",
+		"content": ":::plan_task{#t-reads serves=\"" + serves + "\" size=\"1h30m\" skills=\"" + writtenList(t, skills) + "\" docs=\"" + writtenList(t, docs) + "\"}\n" +
+			"The task that names what to read.\n:::\n\n" +
+			":::plan_task{#t-bare serves=\"" + serves + "\" size=\"45m\"}\nThe task that names nothing to read.\n:::\n",
+		"precondition": uploadBaseNamed(t, handler, artifacts, "plan.md"),
+	}, "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("the upload of the plan of %s answered %d: %s", key, uploaded.Code, uploaded.Body.String())
+	}
 	document := readDecisionDocument(t, database, key, "plan-md")
 	tasks := []struct {
 		id, size     string

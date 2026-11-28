@@ -3,6 +3,7 @@ package refs
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -423,30 +424,6 @@ func orderNamed(t *testing.T, answer TreeOrder, name OrderNode) OrderedNode {
 	return OrderedNode{}
 }
 
-// orderOf orders nodes as the ordered read orders the tree it read (waitGraph), each waiting on
-// what needs answers of it, over the base order base, and answers the order and the cycles by
-// name.
-func orderOf(nodes []OrderedNode, base []OrderNode, needs func(OrderedNode) []OrderNode) ([]OrderNode, [][]OrderNode) {
-	graph := newWaitGraph(namesOf(nodes), base)
-	for _, node := range nodes {
-		for _, need := range needs(node) {
-			graph.wait(node.OrderNode, need)
-		}
-	}
-	placed, looped := graph.order()
-	order := make([]OrderNode, len(placed))
-	for index, node := range placed {
-		order[index] = graph.nodes[node]
-	}
-	cycles := make([][]OrderNode, len(looped))
-	for index, cycle := range looped {
-		for _, node := range cycle {
-			cycles[index] = append(cycles[index], graph.nodes[node])
-		}
-	}
-	return order, cycles
-}
-
 // One read answers the order the whole tree of an issue runs in (R11 of the issue-tree spec, and
 // c-ordered-read of its Verification document). A parent issue, CORE-1, holds two
 // children, CORE-2 and CORE-3, the second converted so its room's tree keys its plan, and each
@@ -464,21 +441,24 @@ func orderOf(nodes []OrderedNode, base []OrderNode, needs func(OrderedNode) []Or
 // marked overtaken, a node under an overtaken requirement and an overtaken issue with its plan
 // get no position and are reported as such. A plan node reserved for its author is no node of
 // another reader's order. A plan node of CORE-1 that needs an issue outside CORE-1's tree is
-// refused at the write. The control: the order a read gets that takes CORE-2's start half for
-// p2's need of CORE-2 brings p2 back before CORE-2's plan nodes, which the test names, so it is
-// the done half that holds p2 after them. Then an edit of CORE-2's plan gives a5 a need of p2,
-// which makes a cycle of p2, CORE-2's done and a5, reported with those three, while every other
-// node keeps its position; the same edit takes a2's size out of its line, and the read answers a2
-// with no size.
+// refused at the write. The check's control - a read that takes the child's start half for a plan
+// node's need of an issue - brings p2 back before CORE-2's plan nodes and before CORE-2's done,
+// and the test names it: a wrong whole order fails the test without ending it, so the placement
+// of p2 after every plan node of CORE-2 and after CORE-2's done is read, and named where it does
+// not hold. Then an edit of CORE-2's plan gives a5 a need of p2, which makes a cycle of p2,
+// CORE-2's done and a5, reported with those three, while every other node keeps its position; the
+// same edit takes a2's size out of its line, and the read answers a2 with no size.
 //
 // A second tree seeds every cycle the check names: two plan nodes of ACME-1 that need each
 // other; three nodes across two issues, ACME-1's q3 needing the issue ACME-2 and ACME-2's d1
 // needing q3; one from the issue ACME-3, which needs its sibling ACME-4, through ACME-4's f1 to
 // q4 of ACME-1, which needs ACME-3, and back; and q5, which needs itself. Each is reported with
 // its nodes and none stands in the order, while q6, which needs q1 of the first cycle, and every
-// node in no cycle keeps a position. The check's own control - the read walking the plan nodes of
-// one issue alone, as it did before - finds neither the cycle through ACME-2 nor the one through
-// ACME-3 and ACME-4, which the test names.
+// node in no cycle keeps a position. Under the check's own control - the read walking the plan
+// nodes of one issue alone, as it did before - the read answers an order and reports neither the
+// cycle through ACME-2 nor the one from the child ACME-3 through ACME-4's f1 to q4 of ACME-1 and
+// back: the test names each cycle the read does not report and the position the order gives each
+// of its nodes the read still holds.
 func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 	ctx := context.Background()
 	database := storetest.Open(t)
@@ -521,7 +501,7 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 			issueStart("CORE-3"), b1, issueDone("CORE-3"), issueDone("CORE-1"),
 		}
 		if got := namesOf(answer.Order); !reflect.DeepEqual(got, want) {
-			t.Fatalf("the tree of CORE-1 runs in the order\n%v\nwant every issue's two halves and every plan node once, in R11's needs-first walk:\n%v", got, want)
+			t.Errorf("the tree of CORE-1 runs in the order\n%v\nwant every issue's two halves and every plan node once, in R11's needs-first walk:\n%v", got, want)
 		}
 		if len(answer.Cycles) != 0 {
 			t.Errorf("the tree with a diamond and no cycle reports the cycles %v, want none", answer.Cycles)
@@ -586,35 +566,6 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 		if got := namesOf(answer.Overtaken); !reflect.DeepEqual(got, wantOvertaken) {
 			t.Errorf("the overtaken nodes are %v, want %v: p6 overtaken, a3 under an overtaken requirement, CORE-5 overtaken and e1 under it", got, wantOvertaken)
 		}
-
-		// The control: with CORE-2's start half taken for p2's need of the issue CORE-2, p2 comes
-		// back before CORE-2's plan nodes, so it is the done half that holds it after them. The
-		// walk runs over the read's base order: each issue's start, its plan nodes, its children
-		// and its done.
-		base := []OrderNode{
-			issueStart("CORE-1"), p("p1"), p("p2"), p("p3"), p("p4"), p("p5"),
-			issueStart("CORE-2"), a("a1"), a("a2"), issueDone("CORE-2"),
-			issueStart("CORE-3"), b1, issueDone("CORE-3"), issueDone("CORE-1"),
-		}
-		startHalf, _ := orderOf(answer.Order, base, func(node OrderedNode) []OrderNode {
-			if node.Kind != BlockNodeKind {
-				return node.Needs
-			}
-			needs := slices.Clone(node.Needs)
-			for index, need := range needs {
-				if need.Kind == graphstore.KindIssue {
-					needs[index].Half = HalfStart
-				}
-			}
-			return needs
-		})
-		taken := positionsOf(startHalf)
-		if taken[p("p2")] >= taken[a("a1")] || taken[p("p2")] >= taken[a("a2")] {
-			t.Fatalf("with CORE-2's start half taken for p2's need, p2 stands at %d, a1 at %d and a2 at %d: the control does not move p2 before CORE-2's plan nodes",
-				taken[p("p2")], taken[a("a1")], taken[a("a2")])
-		}
-		t.Logf("the control: with CORE-2's start half taken for the need, the parent's plan node p2 comes back at %d, before the child's plan nodes a1 at %d and a2 at %d; the read answers it at %d, after a1 at %d, a2 at %d and CORE-2's done at %d",
-			taken[p("p2")], taken[a("a1")], taken[a("a2")], positions[p("p2")], positions[a("a1")], positions[a("a2")], positions[issueDone("CORE-2")])
 
 		// A plan node of CORE-1 may need an issue under CORE-1, and one outside its tree - a root
 		// of the same project, an issue of another project - is refused at the write.
@@ -701,7 +652,23 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 			{q("q4"), issueStart("ACME-3"), issueDone("ACME-3"), issueDone("ACME-4"), f.task("ACME-4", "f1")},
 			{q("q5")},
 		}
-		if got := cycleNames(answer); !reflect.DeepEqual(got, wantCycles) {
+		// A cycle the read does not report is one it answers an order for: each of its nodes the
+		// order places, at its position, is named before the cycles are compared whole.
+		positions := positionsOf(namesOf(answer.Order))
+		got := cycleNames(answer)
+		for _, cycle := range wantCycles {
+			if slices.ContainsFunc(got, func(reported []OrderNode) bool { return reflect.DeepEqual(reported, cycle) }) {
+				continue
+			}
+			var placed []string
+			for _, node := range cycle {
+				if position, held := positions[node]; held {
+					placed = append(placed, fmt.Sprintf("%+v at %d", node, position))
+				}
+			}
+			t.Errorf("the read answers an order and reports no cycle %v: it places %d of its nodes, %s", cycle, len(placed), strings.Join(placed, ", "))
+		}
+		if !reflect.DeepEqual(got, wantCycles) {
 			t.Fatalf("the read reports the cycles\n%v\nwant each with its nodes:\n%v", got, wantCycles)
 		}
 		// v245's R11: the walk "starts from the nodes that no node needs, in the base order": the
@@ -717,22 +684,6 @@ func TestTheOrderedReadWalksTheWholeTreeAndReportsEveryCycle(t *testing.T) {
 				}
 			}
 		}
-
-		// The check's control: a read walking the plan nodes of ACME-1 alone, as the read did
-		// before it walked the tree, finds the two cycles inside ACME-1 and neither of the two
-		// that run through its children.
-		var own []OrderedNode
-		for _, node := range append(slices.Clone(answer.Order), slices.Concat(answer.Cycles...)...) {
-			if node.Issue == "ACME-1" {
-				own = append(own, node)
-			}
-		}
-		_, alone := orderOf(own, nil, func(node OrderedNode) []OrderNode { return node.Needs })
-		if wantAlone := [][]OrderNode{{q("q1"), q("q2")}, {q("q5")}}; !reflect.DeepEqual(alone, wantAlone) {
-			t.Fatalf("the walk of ACME-1's plan nodes alone reports the cycles %v, want only the two inside ACME-1, %v", alone, wantAlone)
-		}
-		t.Logf("the control: the walk of ACME-1's plan nodes alone reports the cycles %v and answers q3 and q4 an order, where the walk of the tree reports %v",
-			alone, wantCycles)
 	})
 }
 

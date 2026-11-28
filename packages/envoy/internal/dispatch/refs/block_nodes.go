@@ -3001,11 +3001,13 @@ func (b *BlockIndexing) planRoomBlocks(
 		// holds, and the ref_key of each of the two, so the retraction and the assertion need no
 		// second read. Each block the room holds probes its own row through issue_room_blocks'
 		// key (tree_artifact_id, block_id_key(block_id)), and each moved row its two documents
-		// through artifacts' primary key, each probe behind an offset 0 the planner cannot flatten:
-		// joined plainly, a plan made on the estimate of a near-empty table read the room's rows
-		// once for each block, a cost that grew with the square of the room (37 s at 20,000
-		// blocks), where a probe a block costs the same whatever the statistics say
-		// (TestThePassLockTimeGrowsLinearlyWithTheRoom).
+		// through artifacts' primary key, each probe behind an offset 0 the planner cannot
+		// flatten, so the read costs a probe a block whatever the statistics say. Joined plainly,
+		// as at 61882eda, its cost hung on the plan: with the tables analyzed once the room was
+		// indexed, TestThePassLockTimeGrowsLinearlyWithTheRoom read the pass over a room of
+		// 20,000 blocks at a median 55.6 s against 3.39 s over 4,682, a ratio of 16.39, near the
+		// 18.2 of a cost that grows with the square of the room, where the same join planned on
+		// the statistics of a near-empty graph_tuples read 4.66, inside the test's bound.
 		rows, err := q.Query(ctx, `
 			select wanted.block_id, old.ref_key, new.ref_key
 			from unnest($2::text[], $3::text[]) as wanted (block_id, document_id)

@@ -86,17 +86,24 @@ const passGrowthRuns = 3
 const passGrowthBound = 7.4
 
 // passGrowthStop is how many times the bound a run lets the pass over 20,000 blocks hold the owner
-// lock over the pass over 4,682 blocks it has just timed, before it stops that pass
-// (passGrowthReconcile): a pass stopped there has read a ratio of 8.14, past the bound, whatever
-// it would have gone on to hold, where the six runs of a Job of this test on the build farm on
-// 2026-11-28 read 3.7 to 5.5, each over its own two passes. Each of the two reads R15 names holds
-// the lock far longer, one of them past go test's 10 minutes. Measured there the same day with
-// this test as it stood before the stop, planRoomBlocks' join held it a median 55.6 s over 20,000
-// blocks against 3.39 s over 4,682 with the tables analyzed after the rooms are indexed (16.39),
-// and blockAuthors' read with MovedRoomBlockSQL 6 min 59 s against 21.5 s with graph_tuples
-// analyzed near empty (19.52), the test 24 minutes in all: under the check's run, which sets go
-// test no timeout, the test panicked at 10 minutes and named no ratio.
+// lock over the pass over 4,682 blocks it has just timed, at the least, before it stops that pass
+// (passGrowthReconcile, passGrowthStopAt): a pass stopped there has read a ratio of 8.14, past the
+// bound, whatever it would have gone on to hold, where the six runs of a Job of this test on the
+// build farm on 2026-11-28 read 3.7 to 5.5, each over its own two passes. Each of the two reads
+// R15 names holds the lock far longer, one of them past go test's 10 minutes. Measured there the
+// same day with this test as it stood before the stop, planRoomBlocks' join held it a median 55.6
+// s over 20,000 blocks against 3.39 s over 4,682 with the tables analyzed after the rooms are
+// indexed (16.39), and blockAuthors' read with MovedRoomBlockSQL 6 min 59 s against 21.5 s with
+// graph_tuples analyzed near empty (19.52), the test 24 minutes in all: under the check's run,
+// which sets go test no timeout, the test panicked at 10 minutes and named no ratio. A run lets
+// the pass hold the lock longer where its share of the time left before go test's deadline allows
+// (passGrowthStopAt), so a pass that fits in that share runs to its end and the test names the
+// ratio it read whole.
 const passGrowthStop = 1.1
+
+// passGrowthMargin is the time a run leaves before go test's deadline, past the passes it lets run
+// (passGrowthStopAt), for the services' shutdown, the databases' drop and go test's report.
+const passGrowthMargin = time.Minute
 
 // passGrowthTicks is how many reconciliation ticks a run makes at most for the pass it waits for.
 const passGrowthTicks = 10
@@ -539,8 +546,10 @@ type passGrowthSide struct {
 // writes every block; then a version of each that changes one block (passGrowthReword), and the
 // real tick again over each, the smaller room's first, whose passes over those versions the run
 // times one right after the other. It answers how long each held the owner lock; the pass over the
-// larger room it stops once that pass has held the lock passGrowthStop times the bound over the
-// smaller room's (passGrowthTimes). The tables' statistics of each database are taken once
+// larger room it stops once that pass has held the lock as long as passGrowthStopAt allows, at
+// least passGrowthStop times the bound over the smaller room's (passGrowthTimes), where deadline
+// is go test's (zero for none) and runsLeft how many runs the test may still make, this one among
+// them. The tables' statistics of each database are taken once
 // (passGrowthStatistics): before its room is written where nearEmpty, so both passes are planned on
 // the statistics of a store that holds no block, and else once its room is indexed, so the timed
 // pass is planned on the statistics of the room it reads. Before the versions are written, the
@@ -555,10 +564,11 @@ type passGrowthSide struct {
 // indexed before either timed pass, so the two passes run seconds apart and a slow spell of the
 // machine slows both. The run ends before the next begins, its services shut down and its
 // databases dropped.
-func passGrowthRun(t *testing.T, name string, texts [2]passGrowthText, nearEmpty bool) passGrowthTimes {
+func passGrowthRun(t *testing.T, name string, texts [2]passGrowthText, nearEmpty bool, deadline time.Time, runsLeft int) passGrowthTimes {
 	t.Helper()
 	var times passGrowthTimes
 	if !t.Run(name, func(t *testing.T) {
+		started := time.Now()
 		var sides [2]passGrowthSide
 		for i, text := range texts {
 			side := passGrowthSide{database: storetest.Open(t), text: text}
@@ -581,7 +591,7 @@ func passGrowthRun(t *testing.T, name string, texts [2]passGrowthText, nearEmpty
 		}
 		times.small, _ = passGrowthReconcile(t, small.database, small.service, small.room, 0)
 		times.large, times.stopped = passGrowthReconcile(t, large.database, large.service, large.room,
-			time.Duration(passGrowthStop*passGrowthBound*float64(times.small)))
+			passGrowthStopAt(times.small, deadline, runsLeft, time.Since(started)))
 		timed := []*passGrowthSide{small, large}
 		if times.stopped {
 			timed = timed[:1]
@@ -599,11 +609,28 @@ func passGrowthRun(t *testing.T, name string, texts [2]passGrowthText, nearEmpty
 	return times
 }
 
+// passGrowthStopAt is how long a run lets its pass over the larger room hold the owner lock before
+// it stops that pass (passGrowthReconcile), where small is how long its pass over the smaller room
+// held it, runsLeft how many runs the test may still make, this one among them, and overhead how
+// long this run took before that pass, which each run left to make is taken to take again: the
+// longer of passGrowthStop times the bound over small, past which the pass has read a ratio above
+// the bound, and the run's share of the time left before deadline less passGrowthMargin, so a
+// pass that fits in that share holds the lock to its end and its ratio is measured whole. Where
+// go test sets no deadline (deadline is zero), it answers zero, and no pass is stopped.
+func passGrowthStopAt(small time.Duration, deadline time.Time, runsLeft int, overhead time.Duration) time.Duration {
+	if deadline.IsZero() {
+		return 0
+	}
+	floor := time.Duration(passGrowthStop * passGrowthBound * float64(small))
+	share := (time.Until(deadline) - passGrowthMargin - time.Duration(runsLeft-1)*overhead) / time.Duration(runsLeft)
+	return max(floor, share)
+}
+
 // passGrowthMedians is the median of runs, of which there is an odd number, over each room. A
-// pass the run stopped sorts after every pass that held the lock to its end: it held the lock
-// passGrowthStop times the bound over its run's pass over the smaller room, which no pass that ran
-// to its end did. Fewer than half the runs have stopped one (passGrowthDecided), so the median
-// over the larger room is a pass that ran to its end.
+// pass the run stopped sorts after every pass that held the lock to its end, as one that would
+// have held it longer, which can raise the median over the larger room and never lower it. Fewer
+// than half the runs have stopped one (passGrowthDecided), so the median over the larger room is
+// a pass that ran to its end.
 func passGrowthMedians(runs []passGrowthTimes) (small, large time.Duration) {
 	smalls := make([]time.Duration, 0, len(runs))
 	for _, run := range runs {
@@ -634,23 +661,36 @@ func passGrowthHeld(runs []passGrowthTimes) (small, large string) {
 // passGrowthDecided fails the measurement once a majority of its passGrowthRuns runs has stopped
 // the pass over the larger room: a stopped pass sorts after every pass that held the lock to its
 // end (passGrowthMedians), so whatever the runs not yet made read, the median over the larger room
-// is a stopped pass, one that read a ratio of passGrowthStop times the bound over its own run's
-// pass over the smaller room.
+// is a stopped pass, one that read a ratio of at least passGrowthStop times the bound over its own
+// run's pass over the smaller room (passGrowthStopAt). It names the ratio each run read over its
+// own two passes: a run that held the larger room's pass to its end, the ratio of the two times; a
+// stopped run, the ratio of the time the pass had held the lock when it was stopped to the smaller
+// room's, which the pass would only have gone past. A majority of the runs read more than the
+// least of the stopped runs' ratios, whatever the others read, and that least ratio is above the
+// bound.
 func passGrowthDecided(t *testing.T, measurement string, runs []passGrowthTimes) {
 	t.Helper()
-	stopped := 0
-	for _, run := range runs {
-		if run.stopped {
-			stopped++
+	stopped, least := 0, 0.0
+	read := make([]string, 0, len(runs))
+	for index, run := range runs {
+		ratio := float64(run.large) / float64(run.small)
+		if !run.stopped {
+			read = append(read, fmt.Sprintf("run %d read a ratio of %.2f", index+1, ratio))
+			continue
 		}
+		if stopped == 0 || ratio < least {
+			least = ratio
+		}
+		stopped++
+		read = append(read, fmt.Sprintf("run %d read a ratio of more than %.2f when it was stopped", index+1, ratio))
 	}
 	if stopped <= passGrowthRuns/2 {
 		return
 	}
 	small, large := passGrowthHeld(runs)
-	t.Fatalf("%s: %d of the %d runs stopped the pass over %d blocks once it had held the owner lock %.2f times the bound over its run's pass over %d blocks, %s over %d blocks against %s over %d: the median over %d blocks is a pass that read a ratio above %.2f whatever the other runs read, above the bound %.2f",
+	t.Fatalf("%s: %d of the %d runs stopped the pass over %d blocks once it had held the owner lock at least %.2f times the bound over its run's pass over %d blocks and the run's share of the time left, %s over %d blocks against %s over %d: %s; so whatever the other runs read, a majority of the %d runs read a ratio of more than %.2f, above the bound %.2f",
 		measurement, stopped, passGrowthRuns, passGrowthLarge, passGrowthStop, passGrowthSmall, large, passGrowthLarge, small, passGrowthSmall,
-		passGrowthLarge, passGrowthStop*passGrowthBound, passGrowthBound)
+		strings.Join(read, ", "), passGrowthRuns, least, passGrowthBound)
 }
 
 // The reconciliation's pass stays one transaction, and the time the pass over a version that
@@ -675,26 +715,33 @@ func passGrowthDecided(t *testing.T, measurement string, runs []passGrowthTimes)
 // row with every block the version holds, or refs.blockAuthors reading with MovedRoomBlockSQL,
 // whose plan under the near-empty measurement's reads the in_document tuple of every block in the
 // store for each block. Such a read holds the lock for minutes over 20,000 blocks, and the test
-// reaches its verdict as soon as it is decided: a run stops that pass once it has read a ratio of
-// passGrowthStop times the bound, a measurement fails once a majority of its runs has stopped it
-// (passGrowthDecided), and a measurement that fails ends the test, the near-empty one, which
-// catches blockAuthors' read, first. Under either read the test so fails naming the ratio within
-// the 10 minutes go test gives the check's run.
+// reaches its verdict within the time go test gives it: a run lets the pass over 20,000 blocks
+// run to its end where it fits in the run's share of the time left before go test's deadline, so
+// the ratio of the medians is measured whole, and else stops it once it has held the lock the
+// longer of that share and passGrowthStop times the bound over the run's pass over 4,682 blocks
+// (passGrowthStopAt); a measurement fails once a majority of its runs has stopped it
+// (passGrowthDecided), naming the ratio each run read, a stopped run's as the ratio its pass had
+// reached when it was stopped, and a measurement that fails ends the test, the near-empty one,
+// which catches blockAuthors' read, first. Under either read the test so fails naming the
+// measurement, the ratio and the bound within the 10 minutes go test gives the check's run.
 func TestThePassLockTimeGrowsLinearlyWithTheRoom(t *testing.T) {
 	// Serial: it times the owner lock's hold by the wall clock, and a run holds a room of 4,682
 	// blocks and one of 20,000 at once, far more memory than any other test of the package.
 	texts := [2]passGrowthText{passGrowthRoomText(t, passGrowthSmall), passGrowthRoomText(t, passGrowthLarge)}
-	for _, measurement := range []struct {
+	deadline, _ := t.Deadline()
+	measurements := []struct {
 		name      string
 		nearEmpty bool
 	}{
 		{name: "graph_tuples analyzed near empty before the rooms are written", nearEmpty: true},
 		{name: "tables analyzed after the rooms are indexed"},
-	} {
+	}
+	for index, measurement := range measurements {
 		if !t.Run(measurement.name, func(t *testing.T) {
 			var runs []passGrowthTimes
 			for run := range passGrowthRuns {
-				runs = append(runs, passGrowthRun(t, fmt.Sprintf("run %d", run+1), texts, measurement.nearEmpty))
+				runsLeft := passGrowthRuns - run + passGrowthRuns*(len(measurements)-index-1)
+				runs = append(runs, passGrowthRun(t, fmt.Sprintf("run %d", run+1), texts, measurement.nearEmpty, deadline, runsLeft))
 				passGrowthDecided(t, measurement.name, runs)
 			}
 			smallMedian, largeMedian := passGrowthMedians(runs)
