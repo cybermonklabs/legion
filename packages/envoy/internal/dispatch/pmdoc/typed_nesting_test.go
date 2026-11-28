@@ -18,12 +18,18 @@ func TestParseForWriteRefusesDeeplyNestedBareDirectivesQuickly(t *testing.T) {
 	runLinearRow(t)
 }
 
-// nestedDirectiveShapes counts the refusal at an eighth of the openers and at all of them.
+// nestedDirectiveShapes measures the refusal at two opener counts an eighth-to-whole step apart.
 func nestedDirectiveShapes() []countedShape {
 	var leaves []countedShape
 	for _, directive := range heavybodies.NestedDirectives() {
 		leaf := linearShape(directive.Name, "ParseForWrite", "opener")
-		leaf.sizes = [2]int{directive.Openers / growthStep, directive.Openers}
+		whole := directive.Openers
+		// The infra6314-pf-pfd-* build-cluster Jobs at 5955cd4e chose 1/8 for the unclosed
+		// openers and full size for the openers with closers (sizes.tsv).
+		if directive.ID == "directive-openers-then-long-line" {
+			whole /= 8
+		}
+		leaf.sizes = [2]int{whole / growthStep, whole}
 		leaf.ceilingAtFullBody = true
 		leaf.reading = nestedDirectiveReadings[directive.ID]
 		name := leaf.name
@@ -40,8 +46,9 @@ func nestedDirectiveShapes() []countedShape {
 }
 
 // nestedDirectiveReadings records each refusal's growth and its ceiling at the full body.
+// The resized leaf was measured in the issue pod on 2026-11-28 with Go 1.27.3.
 var nestedDirectiveReadings = map[string]countedReading{
-	"directive-openers-then-long-line": {past: 917.5, most: 59.303225806451614, scanMost: 1},
+	"directive-openers-then-long-line": {past: 917.5890410958904, most: 60.07096774193548, scanMost: 1},
 	"directive-openers-then-closers":   {past: 1644, most: 182.97088888888888, scanMost: 1},
 }
 

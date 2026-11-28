@@ -49,7 +49,7 @@ func TestHeavyBodiesAtTheBlockCapAreStoredOrRefusedWithinTheirStepsAndBytesPerCh
 }
 
 // TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength counts the parser's work on
-// each stored body at an eighth of its builder's full size and at the full size.
+// each stored body at two sizes an eighth-to-whole step apart in builder units.
 func TestHeavyBodiesAtTheBlockCapParseInWorkProportionalToTheirLength(t *testing.T) {
 	runLinearRow(t)
 }
@@ -112,7 +112,7 @@ const footnoteCheckLength = 32
 const cpuGrowthPerCharacter = 2.5
 
 // heavyBodyCapShapes checks all the stored and refused bodies at the cap and in a rendering read.
-// A separate growth leaf checks each refused parse at an eighth of the builder size and at full size.
+// A separate growth leaf counts each refused parse at two sizes an eighth-to-whole step apart.
 func heavyBodyCapShapes() []countedShape {
 	var leaves []countedShape
 	for _, shape := range heavybodies.Shapes() {
@@ -152,6 +152,26 @@ func heavyBodyWriteShapes() []countedShape {
 	return leaves
 }
 
+// heavyBodySizeDivisors records the chosen scales from sizes.tsv in the infra6314-pf-pfd-*
+// build-cluster Jobs at 5955cd4e. Parse at the cap stays at full size because the cap is the
+// claim. Read and whole write divide both original sizes, keeping the step from cpuCheckLengthOf:
+// the footnote regression can hide beside the rest of the work at an eightfold step.
+var heavyBodySizeDivisors = map[string]struct {
+	parse, write, read, wholeWrite int
+}{
+	"plain-list":                           {parse: 1, write: 4, read: 8, wholeWrite: 8},
+	"lazy-quote":                           {parse: 2, write: 2, read: 8, wholeWrite: 8},
+	"lazy-list-item":                       {parse: 2, write: 2, read: 8, wholeWrite: 8},
+	"bracket-run":                          {parse: 2, write: 2, read: 8, wholeWrite: 8},
+	"nested-49-items-then-blank-lines":     {parse: 4, write: 4, read: 8, wholeWrite: 8},
+	"markers-49-then-blank-lines":          {parse: 8, write: 8, read: 8, wholeWrite: 8},
+	"nested-100-items-then-blank-lines":    {parse: 4, read: 4},
+	"marker-chain":                         {parse: 8, read: 8},
+	"callout-bracket-run":                  {parse: 8, read: 8},
+	"footnote-references-then-definitions": {parse: 1, write: 1, read: 8, wholeWrite: 8},
+	"bangs-before-carets":                  {parse: 8, write: 8, read: 8, wholeWrite: 8},
+}
+
 // heavyBodyLeaf gives the parent and child the same sizes and operation. A body that is meant
 // to stay within the cap is checked by its actual length, not by the builder's size.
 func heavyBodyLeaf(shape heavybodies.Shape, operation string, reading countedReading) countedShape {
@@ -160,18 +180,25 @@ func heavyBodyLeaf(shape heavybodies.Shape, operation string, reading countedRea
 	leaf.heavyBody, leaf.limitChildren = true, true
 	leaf.fixedSize = operation == "parse at the cap"
 	leaf.perCharacterGrowth = operation == "read" || operation == "whole write"
-	switch {
-	case leaf.fixedSize:
+	divisors := heavyBodySizeDivisors[shape.ID]
+	switch operation {
+	case "parse at the cap":
 		leaf.sizes = [2]int{shape.Grown}
-	case leaf.perCharacterGrowth:
-		leaf.sizes = [2]int{shape.Grown, cpuCheckLengthOf(shape) * shape.Grown}
-	default:
-		leaf.sizes = [2]int{shape.Grown / growthStep, shape.Grown}
+	case "read":
+		leaf.sizes = [2]int{shape.Grown / divisors.read, cpuCheckLengthOf(shape) * shape.Grown / divisors.read}
+	case "whole write":
+		leaf.sizes = [2]int{shape.Grown / divisors.wholeWrite, cpuCheckLengthOf(shape) * shape.Grown / divisors.wholeWrite}
+	case "parse", "parse growth":
+		whole := shape.Grown / divisors.parse
+		leaf.sizes = [2]int{whole / growthStep, whole}
+	case "write":
+		whole := shape.Grown / divisors.write
+		leaf.sizes = [2]int{whole / growthStep, whole}
 	}
-	name, pastCap := leaf.name, leaf.perCharacterGrowth
+	name, pastCap, small := leaf.name, leaf.perCharacterGrowth, leaf.sizes[0]
 	leaf.prepare = func(t *testing.T, size int) (int, int, func() string) {
 		body := shape.Body(size)
-		bounded := !pastCap || (operation == "read" && size == shape.Grown)
+		bounded := !pastCap || (operation == "read" && size == small)
 		if bounded && len(body) > heavybodies.BlockCap {
 			t.Fatalf("%s at builder size %d is %d characters, past the %d one block may hold", name, size, len(body), heavybodies.BlockCap)
 		}
@@ -268,58 +295,60 @@ var heavyCapReadings = map[string]countedReading{
 	"bangs-before-carets":                  {most: 302.9734375, scanMost: 1.9999375},
 }
 
-// heavyParseReadings records parse growth for the stored and refused bodies by fixture ID.
+// heavyParseReadings records parse growth by fixture ID. The resized leaves were measured
+// in the issue pod on 2026-11-28 with Go 1.27.3.
 var heavyParseReadings = map[string]countedReading{
 	"plain-list":                           {past: 1563.0078571428571, most: 1564.0495, scanMost: 2},
-	"lazy-quote":                           {past: 578.5206629281709, most: 580.3630907726932, scanMost: 2.0015003750937734},
-	"lazy-list-item":                       {past: 617.0220380755081, most: 619.4936234058515, scanMost: 2.0015003750937734},
-	"bracket-run":                          {past: 2525, most: 2462.482233333333, searchedMost: 0.5, scanMost: 2.0002666666666666},
-	"nested-49-items-then-blank-lines":     {past: 9533, most: 10242.669654985059, scanMost: 2.384406411301277},
-	"markers-49-then-blank-lines":          {past: 9533, most: 9619.489089541008, scanMost: 1.0501630298470028},
-	"nested-100-items-then-blank-lines":    {past: 8173, most: 10386.966814159292, scanMost: 4.797935103244837},
-	"marker-chain":                         {past: 672, most: 678.28432108027, scanMost: 1},
-	"callout-bracket-run":                  {past: 1, most: 1.7427961579509073, scanMost: 1.0029348986125934},
+	"lazy-quote":                           {past: 578.5428244874633, most: 582.216608304152, scanMost: 2.003001500750375},
+	"lazy-list-item":                       {past: 617.045574683906, most: 621.9779889944972, scanMost: 2.003001500750375},
+	"bracket-run":                          {past: 2140.885638095238, most: 4213.5162666666665, searchedMost: 0.5, scanMost: 2.0005333333333333},
+	"nested-49-items-then-blank-lines":     {past: 9533, most: 12372.45, scanMost: 6.539130434782609},
+	"markers-49-then-blank-lines":          {past: 9533, most: 10225.43373493976, scanMost: 1.4016064257028114},
+	"nested-100-items-then-blank-lines":    {past: 8173, most: 17028.867256637168, scanMost: 16.19174041297935},
+	"marker-chain":                         {past: 672, most: 722.3627254509018, scanMost: 1},
+	"callout-bracket-run":                  {past: 1, most: 6.948717948717949, scanMost: 1.0235042735042734},
 	"footnote-references-then-definitions": {past: 622.9333904782313, most: 622.9147134195887, searchedMost: 0.11091318207387962, scanMost: 2.0467216701043816},
-	"bangs-before-carets":                  {past: 302.65585714285714, most: 305.1965, scanMost: 2},
+	"bangs-before-carets":                  {past: 302.75314285714285, most: 322.3, scanMost: 2},
 }
 
-// heavyWriteReadings records write growth within the cap for each stored body by fixture ID.
+// heavyWriteReadings records write growth at sizes within the cap by fixture ID. The resized
+// leaves were measured in the issue pod on 2026-11-28 with Go 1.27.3.
 var heavyWriteReadings = map[string]countedReading{
-	"plain-list":                           {past: 2083.480285714286, most: 2083.13609375, scanMost: 2},
-	"lazy-quote":                           {past: 580.5208058006215, most: 582.7894473618404, scanMost: 2.0015003750937734},
-	"lazy-list-item":                       {past: 619.0221809479588, most: 622.235808952238, scanMost: 2.0015003750937734},
-	"bracket-run":                          {past: 2527.000076190476, most: 2464.5228666666667, searchedMost: 0.5, scanMost: 2.0002666666666666},
-	"nested-49-items-then-blank-lines":     {past: 9533, most: 10279.248302091823, scanMost: 2.384406411301277},
-	"markers-49-then-blank-lines":          {past: 9533, most: 9646.79658891397, scanMost: 1.0501630298470028},
+	"plain-list":                           {past: 2079.9691428571427, most: 2084.379, scanMost: 2},
+	"lazy-quote":                           {past: 580.542967354811, most: 585.0695347673837, scanMost: 2.003001500750375},
+	"lazy-list-item":                       {past: 619.0457175512537, most: 625.4627313656829, scanMost: 2.003001500750375},
+	"bracket-run":                          {past: 2142.885638095238, most: 4216.165333333333, searchedMost: 0.5, scanMost: 2.0005333333333333},
+	"nested-49-items-then-blank-lines":     {past: 9533, most: 12518.804347826086, scanMost: 6.539130434782609},
+	"markers-49-then-blank-lines":          {past: 9533, most: 10444.058232931728, scanMost: 1.4016064257028114},
 	"footnote-references-then-definitions": {past: 732.2235436979892, most: 732.1644790299393, searchedMost: 0.11091318207387962, scanMost: 2.0467216701043816},
-	"bangs-before-carets":                  {past: 304.65628571428573, most: 307.91525, scanMost: 2},
+	"bangs-before-carets":                  {past: 304.7537142857143, most: 330.046, scanMost: 2},
 }
 
-// heavyReadReadings records each rendering read past the cap by fixture ID, from build-cluster Job
-// infra6314-pf-t6-heavy-readings3-g2z7h at b888adcd (2026-11-28, Go 1.27.3, 4 CPUs): the body's
-// length and cpuCheckLengthOf times it.
+// heavyReadReadings records growth for each rendering read by fixture ID, measured in the issue
+// pod on 2026-11-28 with Go 1.27.3.
 var heavyReadReadings = map[string]countedReading{
-	"plain-list":                           {past: 641.0039107142857, most: 641.0895, scanMost: 1},
-	"lazy-quote":                           {past: 419, most: 419.08, scanMost: 1},
-	"lazy-list-item":                       {past: 457, most: 457.1093125, scanMost: 1},
-	"bracket-run":                          {past: 1237, most: 1233.0943958333332, scanMost: 1},
-	"nested-49-items-then-blank-lines":     {past: 9484, most: 9387.8738684268, scanMost: 1},
-	"markers-49-then-blank-lines":          {past: 9484, most: 9480.877837837837, scanMost: 1},
-	"nested-100-items-then-blank-lines":    {past: 8123, most: 7700.650592713431, scanMost: 1},
-	"marker-chain":                         {past: 664.0029643783511, most: 664.7817119284978, scanMost: 1},
-	"callout-bracket-run":                  {past: 1, most: 1.0906333333333333, scanMost: 1},
-	"footnote-references-then-definitions": {past: 252.0799838296345, most: 245.43933093637642, scanMost: 1},
-	"bangs-before-carets":                  {past: 135.66727232142858, most: 135.81946310822212, scanMost: 1},
+	"plain-list":                           {past: 641.0039285714286, most: 641.6885, scanMost: 1},
+	"lazy-quote":                           {past: 419.0149658892024, most: 419.63968015992003, scanMost: 1},
+	"lazy-list-item":                       {past: 457.0163231774833, most: 457.8740629685157, scanMost: 1},
+	"bracket-run":                          {past: 1237, most: 1205.7551666666666, scanMost: 1},
+	"nested-49-items-then-blank-lines":     {past: 9484, most: 8768.56925, scanMost: 1},
+	"markers-49-then-blank-lines":          {past: 9484, most: 9459.091, scanMost: 1},
+	"nested-100-items-then-blank-lines":    {past: 8123, most: 6676.630242085661, scanMost: 1},
+	"marker-chain":                         {past: 664, most: 670.2550637659415, scanMost: 1},
+	"callout-bracket-run":                  {past: 1, most: 1.7233306730513434, scanMost: 1},
+	"footnote-references-then-definitions": {past: 245.31626785383045, most: 246.04909819639278, scanMost: 1},
+	"bangs-before-carets":                  {past: 135.66182142857141, most: 136.889, scanMost: 1},
 }
 
-// heavyWholeWriteReadings records each whole write past the cap by fixture ID, from the same Job.
+// heavyWholeWriteReadings records growth for each whole write by fixture ID, measured in the issue
+// pod on 2026-11-28 with Go 1.27.3.
 var heavyWholeWriteReadings = map[string]countedReading{
-	"plain-list":                           {past: 2054.7578392857145, most: 2054.64865234375, scanMost: 2},
-	"lazy-quote":                           {past: 548, most: 548.23140625, scanMost: 2},
-	"lazy-list-item":                       {past: 586, most: 586.345125, scanMost: 2},
-	"bracket-run":                          {past: 2507, most: 2499.1898333333334, searchedMost: 0.5, scanMost: 2.0000333333333336},
-	"nested-49-items-then-blank-lines":     {past: 9484, most: 9394.034056364522, scanMost: 1.079625},
-	"markers-49-then-blank-lines":          {past: 9484, most: 9482.049596553075, scanMost: 1.003125},
-	"footnote-references-then-definitions": {past: 739.9136437962857, most: 722.7794591214632, searchedMost: 0.11501621519543577, scanMost: 2.0475535407222134},
-	"bangs-before-carets":                  {past: 298.3346651785714, most: 298.73408544017, scanMost: 2},
+	"plain-list":                           {past: 2054.230285714286, most: 2053.88434375, scanMost: 2},
+	"lazy-quote":                           {past: 548.0196449619602, most: 549.8498250874562, scanMost: 2},
+	"lazy-list-item":                       {past: 586.021002250241, most: 588.7591204397801, scanMost: 2},
+	"bracket-run":                          {past: 2507.000076190476, most: 2444.518666666667, searchedMost: 0.5, scanMost: 2.0002666666666666},
+	"nested-49-items-then-blank-lines":     {past: 9484, most: 8814.41721875, scanMost: 1.4090544228608124},
+	"markers-49-then-blank-lines":          {past: 9484, most: 9468.4394375, scanMost: 1.0244678248103745},
+	"footnote-references-then-definitions": {past: 723.2193591573717, most: 723.3542084168337, searchedMost: 0.11109114208914171, scanMost: 2.0476026755016568},
+	"bangs-before-carets":                  {past: 298.32317857142857, most: 301.53575, scanMost: 2},
 }
