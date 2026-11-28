@@ -21,6 +21,7 @@ import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { writesOf } from "../writes/write-store";
 import { claimIsTakeable } from "./ClaimChip";
 import { IssueHeader } from "./IssueHeader";
+import { issuePriority } from "./issue-priority";
 import { stateForIssue } from "./pins";
 import type { IssuePriorityWrite } from "./useIssuePriority";
 
@@ -36,7 +37,7 @@ const idlePriorityWrite: IssuePriorityWrite = {
   failed: false,
   pending: false,
   retry: () => undefined,
-  shown: null,
+  shown: issuePriority({ priority: null }),
   stopped: undefined,
   submit: () => undefined,
 };

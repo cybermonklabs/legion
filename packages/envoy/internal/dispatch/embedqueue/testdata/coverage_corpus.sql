@@ -46,7 +46,7 @@
 -- constraint is dropped before the load: the HNSW index embeddings_cosine is not built again,
 -- since no coverage statement reads it, and every other one is built again after the load
 -- from its own definition as the migrations left it (the two the coverage statement reads,
--- embeddings_window_embedded and embeddings_window_unembedded, among them), which is faster than
+-- embeddings_window_embedded_since and embeddings_window_unembedded_since, among them), which is faster than
 -- keeping each up to date row by row. VACUUM and ANALYZE are the caller's, since VACUUM cannot
 -- run inside a transaction. A vacuum sets the visibility map, whose states
 -- TestCoverageStatementScale measures the coverage statement in (freshly vacuumed, and with the

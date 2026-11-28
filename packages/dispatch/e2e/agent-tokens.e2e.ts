@@ -234,7 +234,11 @@ test("Settings gives p0 only where its box is ticked, and the command sets P0 on
   ).toBeVisible();
   await expect(newTokenSetP0).not.toBeChecked();
   await expect(
-    page.locator("form").getByText("Set an issue's priority to P0.", { exact: true })
+    page
+      .locator("form")
+      .getByText("Makes work P0: sets P0, or moves, clears or files work under a P0 issue.", {
+        exact: true,
+      })
   ).toBeVisible();
 
   const withoutP0 = await makeToken(page, "Without P0");

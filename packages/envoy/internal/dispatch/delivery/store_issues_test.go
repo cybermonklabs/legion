@@ -4,10 +4,12 @@ import (
 	"context"
 	"maps"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -56,10 +58,39 @@ func setParent(t *testing.T, ctx context.Context, pool *store.Pool, key, parent 
 	}
 }
 
+// seedChainPastTheCap writes project as one parent chain: its root, project-1, at its own P0, and
+// each issue n one link below project-(n-1), the links set with setParent once every issue is
+// written. None but the root has a priority of its own, and every issue between the root and the
+// last two is done, so a read that keeps open issues answers the last two alone: atCap,
+// refs.IssueDepthCap links below the root, which takes the root's P0, and pastCap, one link
+// further, which takes none.
+func seedChainPastTheCap(t *testing.T, ctx context.Context, pool *store.Pool, project string) (atCap, pastCap string) {
+	t.Helper()
+	p0 := 0
+	key := func(n int) string { return project + "-" + strconv.Itoa(n) }
+	last := refs.IssueDepthCap + 2
+	seeds := []issueSeed{{key: key(1), priority: &p0}}
+	for n := 2; n <= last; n++ {
+		status := "done"
+		if n >= last-1 {
+			status = "todo"
+		}
+		seeds = append(seeds, issueSeed{key: key(n), status: status})
+	}
+	seedIssues(t, ctx, pool, project, seeds)
+	for n := 2; n <= last; n++ {
+		setParent(t, ctx, pool, key(n), key(n-1))
+	}
+	return key(last - 1), key(last)
+}
+
 func keysOf(set map[string]struct{}) []string { return slices.Sorted(maps.Keys(set)) }
 
-// OpenP0Keys is every open P0 across every project: a P0 in any status but done, and no P1, no
-// unset priority and no done P0.
+// OpenP0Keys is every open P0 across every project: an issue in any status but done whose own
+// priority is 0, or which, with none of its own, takes P0 from the nearest issue above it that has
+// one (dispatch://INFRA-5793/spec#b-j-inherit), at any status of that issue, in any project,
+// within refs.IssueDepthCap links, claimed or routed alike; and no P1, no issue that resolves to
+// no priority, and no done issue.
 func TestOpenP0KeysListsOpenP0sOnly(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -74,6 +105,25 @@ func TestOpenP0KeysListsOpenP0sOnly(t *testing.T) {
 		{key: "LIVEP-7", priority: &p1, status: "done"},
 	})
 	seedIssues(t, ctx, pool, "LIVEQ", []issueSeed{{key: "LIVEQ-1", priority: &p0, status: "triage"}})
+	seedIssues(t, ctx, pool, "LIVEI", []issueSeed{
+		{key: "LIVEI-1", priority: &p0},
+		{key: "LIVEI-2", parent: "LIVEI-1"},
+		{key: "LIVEI-3", parent: "LIVEI-2"},
+		{key: "LIVEI-4", parent: "LIVEI-3", status: "in_progress"},
+		{key: "LIVEI-5", priority: &p1, parent: "LIVEI-1"},
+		{key: "LIVEI-6", parent: "LIVEI-5"},
+		{key: "LIVEI-7", priority: &p0, status: "done"},
+		{key: "LIVEI-8", parent: "LIVEI-7"},
+		{key: "LIVEI-9", parent: "LIVEI-7", status: "done"},
+	})
+	seedIssues(t, ctx, pool, "LIVEJ", []issueSeed{{key: "LIVEJ-1", parent: "LIVEI-1"}})
+	claim, route := `{"kind":"session","id":"ses_claimer"}`, "role:dora"
+	seedUnownedIssueProject(t, ctx, pool, "LIVER", []unownedSeed{
+		{key: "LIVER-1", number: 1, title: "a P0", status: "todo", priority: &p0},
+		{key: "LIVER-2", number: 2, title: "claimed under it", status: "in_progress", parent: "LIVER-1", claimedBy: &claim},
+		{key: "LIVER-3", number: 3, title: "routed under it", status: "todo", parent: "LIVER-1", route: &route},
+	})
+	atCap, pastCap := seedChainPastTheCap(t, ctx, pool, "LIVEK")
 
 	open, err := OpenP0Keys(ctx, pool)
 	if err != nil {
@@ -88,7 +138,27 @@ func TestOpenP0KeysListsOpenP0sOnly(t *testing.T) {
 	if want := []string{"LIVEP-1", "LIVEP-4", "LIVEP-6", "LIVEQ-1"}; !slices.Equal(ours, want) {
 		t.Fatalf("OpenP0Keys over the seeded projects = %v, want %v", ours, want)
 	}
-
+	for _, row := range []struct {
+		key string
+		p0  bool
+		why string
+	}{
+		{"LIVEJ-1", true, "an open child with no priority under a P0 parent in another project"},
+		{"LIVEI-2", true, "an open child with no priority under an open P0"},
+		{"LIVEI-4", true, "an open issue three levels under a P0, none between with a priority"},
+		{"LIVEI-5", false, "a child with its own P1 under a P0 parent"},
+		{"LIVEI-6", false, "under a parent with its own P1 under a P0, so it takes P1, the nearest"},
+		{"LIVEI-8", true, "an open child with no priority under a done P0 parent"},
+		{"LIVEI-9", false, "a done child that takes P0"},
+		{"LIVER-2", true, "a claimed child that takes P0"},
+		{"LIVER-3", true, "a routed child that takes P0"},
+		{atCap, true, "an open issue refs.IssueDepthCap links under its chain's one P0"},
+		{pastCap, false, "an open issue one link past refs.IssueDepthCap under its chain's one P0"},
+	} {
+		if _, held := open[row.key]; held != row.p0 {
+			t.Errorf("OpenP0Keys holds %s: %t, want %t (%s)", row.key, held, row.p0, row.why)
+		}
+	}
 	seedIssues(t, ctx, pool, "LIVEP", []issueSeed{{key: "LIVEP-1", priority: &p0, status: "done"}})
 	seedIssues(t, ctx, pool, "LIVEQ", nil)
 	open, err = OpenP0Keys(ctx, pool)

@@ -2,6 +2,7 @@ package embedqueue
 
 import (
 	"context"
+	_ "embed"
 	"encoding/json"
 	"fmt"
 	"slices"
@@ -12,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
@@ -21,39 +23,14 @@ import (
 // 948aeca5515454dbf0f194cd5de9aa382e9de5f0, the base of dispatch://INFRA-4241, built it as
 // coverageQuery: the before text, kept as the oracle that the statement which replaced it is
 // compared against, by the equality test below (TestCoverageAnswersWhatMainsStatementAnswers) and
-// by the measurement of the two at production's size. It must never be edited to follow a schema
-// change: a copy edited to fit answers for nothing that was ever served. If the schema stops
-// answering it, the oracle is retired with the tests that read it.
-const mainCoverageQuery = `
-		with items as (select 'issue'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, encode(sha256(convert_to(s.text, 'UTF8')), 'hex') as hash, s.written_at
-	from (select i.key as id, issue_embedding_text(i.title, issue_embedding_spec(i.key)) as text, i.created_at as written_at from issues i) s where not (s.text !~ '[^[:space:]]')) item
- union all select 'document_block'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, s.hash, s.written_at from (
-		select e.id, e.text_snapshot as text, e.content_hash as hash, e.pending_since as written_at
-		from embeddings e where e.kind = 'document_block') s where not (s.text !~ '[^[:space:]]')) item
- union all select 'comment_block'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, s.hash, s.written_at from (
-		select e.id, e.text_snapshot as text, e.content_hash as hash, e.pending_since as written_at
-		from embeddings e where e.kind = 'comment_block') s where not (s.text !~ '[^[:space:]]')) item
- union all select 'message_block'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, s.hash, s.written_at from (
-		select e.id, e.text_snapshot as text, e.content_hash as hash, e.pending_since as written_at
-		from embeddings e where e.kind = 'message_block') s where not (s.text !~ '[^[:space:]]')) item
- union all select 'ask_part'::text as kind, item.id, item.hash, item.written_at from (select s.id, s.text, s.hash, s.written_at from (
-		select e.id, e.text_snapshot as text, e.content_hash as hash, e.pending_since as written_at
-		from embeddings e where e.kind = 'ask_part') s where not (s.text !~ '[^[:space:]]')) item),
-		judged as (
-			select item.kind, item.written_at, e.pending_since, coalesce(e.dead, false) as dead,
-			       coalesce($1::text <> '' and e.embedding is not null and e.model = $1::text and e.embedded_hash = item.hash, false) as current
-			from items item
-			left join embeddings e on e.kind = item.kind and e.id = item.id
-		)
-		select kind, true, count(*), count(*) filter (where current), count(*) filter (where dead and not current),
-		       floor(extract(epoch from now() - min(greatest(pending_since, written_at)) filter (where not current and not dead)))::bigint
-		from judged
-		group by kind
-		union all select 'component'::text, false, ((select count(*) from components))::bigint, 0::bigint, 0::bigint, null::bigint
- union all select 'session'::text, false, (coalesce((select jsonb_array_length(sessions) from route_roster), 0))::bigint, 0::bigint, 0::bigint, null::bigint
- union all select 'document_version'::text, false, ((select count(*) from artifact_versions))::bigint, 0::bigint, 0::bigint, null::bigint
- union all select 'result'::text, false, ((select count(*) from check_results))::bigint, 0::bigint, 0::bigint, null::bigint
- union all select 'handoff'::text, false, ((select count(*) from handoffs))::bigint, 0::bigint, 0::bigint, null::bigint`
+// by the measurement of the two at production's size. The file testdata/main_coverage_query.sql
+// is the statement: this package embeds it and cmd/dispatch's process tests read it
+// (readCoverageOracles), so both hold the route to one text. The file must never be edited to
+// follow a schema change: a copy edited to fit answers for nothing that was ever served. If the
+// schema stops answering it, the oracle is retired with the tests that read it.
+//
+//go:embed testdata/main_coverage_query.sql
+var mainCoverageQuery string
 
 // coverageRow is one row of a coverage statement, all six of its columns: the kind, whether the
 // report covers it, its items, how many are current and how many failed, and its oldest lacking
@@ -74,7 +51,9 @@ func (r coverageRow) String() string {
 }
 
 // coverageRowsOf reads every row statement answers for identity ($1) in tx: each whole row
-// rendered, in sorted order, so two answers compare as sets of rows, and the rows by kind.
+// rendered, in sorted order, so two answers compare as sets of rows, and the rows by kind. An
+// oldest lacking age below 0 - a row pending since a moment after the statement's now() - is read
+// as 0, as coverageRead reads it, so a statement's answer compares with the report's.
 func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]string, map[string]coverageRow) {
 	t.Helper()
 	rows, err := tx.Query(context.Background(), statement, identity)
@@ -89,6 +68,9 @@ func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]stri
 		if err := rows.Scan(&row.kind, &row.indexed, &row.items, &row.current, &row.failed, &row.oldest); err != nil {
 			t.Fatalf("scan a coverage row: %v", err)
 		}
+		if row.oldest != nil && *row.oldest < 0 {
+			*row.oldest = 0
+		}
 		rendered = append(rendered, row.String())
 		byKind[row.kind] = row
 	}
@@ -99,27 +81,139 @@ func coverageRowsOf(t *testing.T, tx pgx.Tx, statement, identity string) ([]stri
 	return rendered, byKind
 }
 
-// requireMainsAnswer reads mainCoverageQuery and the coverage statement (coverageQuery), the
-// latter under planCoverage's settings as Coverage runs it (headRowsOf), in one REPEATABLE READ,
-// read-only transaction, so both read one snapshot and one now(), for the configured identity, for
-// none ("") and for another identity, and fails the test wherever the two answers differ as sets
-// of whole rows, printing both. It answers the rows each gave for the configured identity, by
-// kind.
+// reportRowsOf renders report, as coverageRead answers it, in coverageRowsOf's form: a row for each
+// covered kind with its items, current, failed and oldest lacking age, and a row for each
+// not-indexed kind with its items alone, so the report compares with a statement's answer row for
+// row. A covered kind the report answers all zeros for, with no oldest lacking age, has no row, as
+// main's statements answer none for a kind holding no item. A covered kind whose lacking is not
+// its items less its current and failed carries it in its row, which then matches no statement's.
+func reportRowsOf(report model.SearchCoverage) ([]string, map[string]coverageRow) {
+	var rendered []string
+	byKind := map[string]coverageRow{}
+	for kind, counts := range map[string]model.SearchCoverageCounts{
+		"issue": report.Kinds.Issue, "document_block": report.Kinds.DocumentBlock, "comment_block": report.Kinds.CommentBlock,
+		"message_block": report.Kinds.MessageBlock, "ask_part": report.Kinds.AskPart,
+	} {
+		if counts == (model.SearchCoverageCounts{}) {
+			continue
+		}
+		row := coverageRow{kind: kind, indexed: true, items: counts.Items, current: counts.Current, failed: counts.Failed, oldest: counts.OldestLackingSeconds}
+		line := row.String()
+		if counts.Lacking != counts.Items-counts.Current-counts.Failed {
+			line += fmt.Sprintf(" lacking=%d", counts.Lacking)
+		}
+		rendered = append(rendered, line)
+		byKind[kind] = row
+	}
+	for _, kind := range report.NotIndexed {
+		row := coverageRow{kind: kind.Kind, items: kind.Items}
+		rendered = append(rendered, row.String())
+		byKind[kind.Kind] = row
+	}
+	slices.Sort(rendered)
+	return rendered, byKind
+}
+
+// inSavepoint runs read in a savepoint of tx that it then rolls back, which undoes every setting
+// read set local and leaves tx's snapshot as it was: a statement after it plans as though none had
+// been set.
+func inSavepoint(t *testing.T, tx pgx.Tx, read func(savepoint pgx.Tx)) {
+	t.Helper()
+	ctx := context.Background()
+	savepoint, err := tx.Begin(ctx)
+	if err != nil {
+		t.Fatalf("open a savepoint: %v", err)
+	}
+	defer func() { _ = savepoint.Rollback(ctx) }()
+	read(savepoint)
+}
+
+// headRowsOf reads Coverage's read (coverageRead) for identity in tx as Coverage runs it, under
+// the settings planCoverage sets, in a savepoint (inSavepoint), and answers the report as rows
+// (reportRowsOf). A read that answers an error fails the test: the comparison is of counts.
+func headRowsOf(t *testing.T, tx pgx.Tx, identity string) (rendered []string, byKind map[string]coverageRow) {
+	t.Helper()
+	inSavepoint(t, tx, func(savepoint pgx.Tx) {
+		ctx := context.Background()
+		if err := planCoverage(ctx, savepoint); err != nil {
+			t.Fatalf("plan Coverage's read as Coverage does: %v", err)
+		}
+		report, err := coverageRead(ctx, savepoint, identity)
+		if err != nil {
+			t.Fatalf("Coverage's read (coverageRead) for %q answers %v, want the counts", identity, err)
+		}
+		rendered, byKind = reportRowsOf(report)
+	})
+	return rendered, byKind
+}
+
+// mainRouteRowsOf reads main's route statement (mainRouteCoverageStatement) for identity in tx
+// under the settings main ran it under (mainRouteCoverageSettings), in a savepoint (inSavepoint).
+func mainRouteRowsOf(t *testing.T, tx pgx.Tx, identity string) (rendered []string, byKind map[string]coverageRow) {
+	t.Helper()
+	inSavepoint(t, tx, func(savepoint pgx.Tx) {
+		mustExec(t, savepoint, mainRouteCoverageSettings)
+		rendered, byKind = coverageRowsOf(t, savepoint, mainRouteCoverageStatement, identity)
+	})
+	return rendered, byKind
+}
+
+// The three sides every comparison of the report's answers reads, as its failures name them.
+const (
+	headSide      = "Coverage's read (coverageRead)"
+	mainRouteSide = "main's route statement (mainRouteCoverageStatement)"
+	mainSide      = "the statement before it (mainCoverageQuery)"
+)
+
+// requireCoverageSidesAgree reads in tx, a REPEATABLE READ transaction, so at one snapshot and one
+// now(), the three sides of the report's comparison for identity: Coverage's read (headRowsOf),
+// main's route statement (mainRouteRowsOf) and the statement before it (mainCoverageQuery). It
+// fails the test unless all three answer the same rows, whole - each kind and member with its
+// items, current, failed and oldest lacking age - naming the side that differs and printing all
+// three. It answers the rows mainCoverageQuery and Coverage's read gave, by kind.
+func requireCoverageSidesAgree(t *testing.T, tx pgx.Tx, stage, identity string) (mains, heads map[string]coverageRow) {
+	t.Helper()
+	mainRows, mains := coverageRowsOf(t, tx, mainCoverageQuery, identity)
+	routeRows, _ := mainRouteRowsOf(t, tx, identity)
+	headRows, heads := headRowsOf(t, tx, identity)
+	headRoute, headMain, routeMain := slices.Equal(headRows, routeRows), slices.Equal(headRows, mainRows), slices.Equal(routeRows, mainRows)
+	var differs string
+	switch {
+	case headRoute && headMain:
+		return mains, heads
+	case routeMain:
+		differs = headSide + " differs from the other two"
+	case headMain:
+		differs = mainRouteSide + " differs from the other two"
+	case headRoute:
+		differs = mainSide + " differs from the other two"
+	default:
+		differs = "all three sides differ"
+	}
+	t.Errorf("%s, identity %q, in one snapshot: %s:\n%s:\n  %s\n%s:\n  %s\n%s:\n  %s", stage, identity, differs,
+		headSide, strings.Join(headRows, "\n  "), mainRouteSide, strings.Join(routeRows, "\n  "), mainSide, strings.Join(mainRows, "\n  "))
+	return mains, heads
+}
+
+// requireMainsAnswer compares the report's three sides (requireCoverageSidesAgree) in one
+// REPEATABLE READ, read-only transaction, so all read one snapshot and one now(), for the
+// configured identity, for none ("") and for another identity. It answers the rows
+// mainCoverageQuery and Coverage's read gave for the configured identity, by kind.
 func requireMainsAnswer(t *testing.T, database *store.Store, stage string) (mains, heads map[string]coverageRow) {
 	t.Helper()
 	return requireMainsAnswerFor(t, database, stage, configuredIdentity)
 }
 
 // requireMainsAnswerFor is requireMainsAnswer with identity as the configured embedder's, as it is
-// once the embedder has changed: it compares the two answers for identity, for configuredIdentity
-// where identity is another, for none and for foreignIdentity, and answers the rows each gave for
-// identity, by kind.
+// once the embedder has changed: it compares the three sides for identity, for configuredIdentity
+// where identity is another, for none and for foreignIdentity, and answers the rows
+// mainCoverageQuery and Coverage's read gave for identity, by kind.
 func requireMainsAnswerFor(t *testing.T, database *store.Store, stage, identity string) (mains, heads map[string]coverageRow) {
 	t.Helper()
 	ctx := context.Background()
 	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {
-		t.Fatalf("%s: begin the snapshot every statement reads: %v", stage, err)
+		t.Fatalf("%s: begin the snapshot every side reads: %v", stage, err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	identities := []string{identity, "", foreignIdentity}
@@ -127,35 +221,12 @@ func requireMainsAnswerFor(t *testing.T, database *store.Store, stage, identity 
 		identities = append(identities, configuredIdentity)
 	}
 	for _, compared := range identities {
-		mainRows, mainKinds := coverageRowsOf(t, tx, mainCoverageQuery, compared)
-		headRows, headKinds := headRowsOf(t, tx, compared)
-		if !slices.Equal(mainRows, headRows) {
-			t.Errorf("%s, identity %q: the coverage statement answers other rows than main's statement in one snapshot:\nmain's statement:\n  %s\nthe coverage statement:\n  %s",
-				stage, compared, strings.Join(mainRows, "\n  "), strings.Join(headRows, "\n  "))
-		}
+		mainKinds, headKinds := requireCoverageSidesAgree(t, tx, stage, compared)
 		if compared == identity {
 			mains, heads = mainKinds, headKinds
 		}
 	}
 	return mains, heads
-}
-
-// headRowsOf reads the coverage statement for identity in tx as Coverage runs it, under the
-// settings planCoverage sets, inside a savepoint that it rolls back, which undoes those settings
-// and leaves tx's snapshot as it was: a statement after it plans as though they had never been
-// set.
-func headRowsOf(t *testing.T, tx pgx.Tx, identity string) ([]string, map[string]coverageRow) {
-	t.Helper()
-	ctx := context.Background()
-	savepoint, err := tx.Begin(ctx)
-	if err != nil {
-		t.Fatalf("open a savepoint for the coverage statement: %v", err)
-	}
-	defer func() { _ = savepoint.Rollback(ctx) }()
-	if err := planCoverage(ctx, savepoint); err != nil {
-		t.Fatalf("plan the coverage statement as Coverage does: %v", err)
-	}
-	return coverageRowsOf(t, savepoint, coverageQuery, identity)
 }
 
 // updateRow sets set (whose arguments are $3 on) on the embeddings row of kind and id ($1 and
@@ -336,27 +407,33 @@ func trustedIssues(t *testing.T, database *store.Store, identity string) (truste
 	return trusted, stale
 }
 
-// The coverage statement answers what main's statement (mainCoverageQuery) answered, row for row,
-// under planCoverage's settings (requireMainsAnswer), over every state an item can be in
-// (seedEveryCoverageState), for the configured identity, for none and for another, read in one
-// snapshot: before any record run, when every issue builds and hashes its text; once the record
-// step has recorded every issue's source, when the report reads most issues' hashes from their
-// rows; and once every input an issue's text is built from has changed after its source was
-// recorded (changeInputsAfterRecording). This is the report unchanged against the base on a
-// seeded corpus.
+// The report's read (coverageRead) answers what main's statements (mainRouteCoverageStatement and
+// mainCoverageQuery) answered, row for row, each under its settings (requireMainsAnswer), over
+// every state an item can be in (seedEveryCoverageState), filled once after the seed, for the
+// configured identity, for none and for another, read in one snapshot: before any record run,
+// when every issue builds and hashes its text; once the record step has recorded every issue's
+// source, when main's route statement reads most issues' hashes from their rows; and once every
+// input an issue's text is built from has changed after its source was recorded
+// (changeInputsAfterRecording) and one recount (recountCoverage) has run.
 //
-// The last stage is not vacuous: the two issues whose inputs changed with their triggers off still
-// hold a vector of the configured identity at their rows' content_hash, so a report that trusted a
-// recorded source beyond the inputs it names would count them current. Both statements count
-// them lacking.
+// Two of those changes, a title and the latest version's markdown, are written with their tables'
+// triggers off, so no counting trigger fires for them, and the counts follow such a write at the
+// counts loop's next recount, not at once. So the last stage
+// reads the report after one recount, for the configured identity, as a server with an embedder
+// reads it, and for none, as a server with no embedder does. It is not vacuous: the two issues
+// whose inputs changed with their triggers off still hold a vector of the configured identity at
+// their rows' content_hash, so a report that trusted a recorded source beyond the inputs it names
+// would count them current. Both statements count them lacking, and so do the counts once
+// recounted.
 func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	states := seedEveryCoverageState(t, database)
+	fillCounts(t, database)
 	requireIssuesCurrent := func(stage string, mains, heads map[string]coverageRow, want int64) {
 		t.Helper()
-		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "the coverage statement": heads} {
+		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "Coverage's read": heads} {
 			if got := rows["issue"].current; got != want {
 				t.Errorf("%s: %s counts %d issues current, want %d: %v", stage, name, got, want, rows["issue"])
 			}
@@ -370,7 +447,7 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	requireMainsAnswer(t, database, "before any record run")
 
 	if recordOnce(t, database) == 0 {
-		t.Fatal("the record step recorded no issue's source, so the report would read no hash from a row")
+		t.Fatal("the record step recorded no issue's source, so the refresh would read no hash from a row")
 	}
 	mains, heads := requireMainsAnswer(t, database, "after the record step")
 	trusted, stale := trustedIssues(t, database, configuredIdentity)
@@ -380,20 +457,24 @@ func TestCoverageAnswersWhatMainsStatementAnswers(t *testing.T) {
 	requireIssuesCurrent("after the record step", mains, heads, trusted)
 
 	changeInputsAfterRecording(t, database, states)
-	mains, heads = requireMainsAnswer(t, database, "after the inputs changed")
+	if err := recountCoverage(ctx, database); err != nil {
+		t.Fatalf("recount after the inputs changed: %v", err)
+	}
+	mains, heads = requireMainsAnswer(t, database, "after the inputs changed and one recount")
 	trusted, stale = trustedIssues(t, database, configuredIdentity)
 	if stale != 2 {
 		t.Fatalf("after the inputs changed %d issues hold a vector at a content_hash that is not their text's, want the 2 changed with their triggers off", stale)
 	}
-	requireIssuesCurrent("after the inputs changed", mains, heads, trusted-stale)
+	requireIssuesCurrent("after the inputs changed and one recount", mains, heads, trusted-stale)
 }
 
-// coverageCostProfiles are the costs the plan tests read the coverage statement's plan under, each
-// set local after planCoverage's settings: none, as Coverage runs it, and three that push the
-// planner's prices to extremes. The first of them made the planner read the window arm by a full
-// scan of embeddings_pkey while the arm grouped by kind (coverageQuery). A plan that is the same
-// under all four is the same because of which paths the statement leaves the planner, not because
-// of what the planner prices them at.
+// coverageCostProfiles are the costs the plan tests read the recount's window statement's plan
+// under, each set local after planCoverage's settings: none, as the recount runs it, and three that
+// push the planner's prices to extremes. The first of them made the planner read the window arm of
+// main's coverage statement by a full scan of embeddings_pkey while the arm grouped by kind
+// (mainRouteCoverageStatement's history). A plan that is the same under all four is the
+// same because of which paths the statement leaves the planner, not because of what the planner
+// prices them at.
 var coverageCostProfiles = []struct{ name, settings string }{
 	{"planCoverage's settings alone", ""},
 	{"random reads nearly free, tuples and operators dear",
@@ -405,23 +486,30 @@ var coverageCostProfiles = []struct{ name, settings string }{
 			"set local cpu_index_tuple_cost = 0.00001; set local cpu_operator_cost = 100; set local effective_cache_size = '1TB'"},
 }
 
-// The coverage statement (coverageQuery), under planCoverage's settings, reads the window kinds by
-// one Bitmap Heap Scan of embeddings over a BitmapOr of the two window indexes, whatever the
-// planner estimates: its one window arm ORs the two indexes' predicates, each word for word, so the
-// planner proves that the two indexes together hold every row the arm selects, and that bitmap is
-// the one path to those rows the settings leave enabled (planCoverage). The blank test's regex is
-// then in that scan's recheck alone, which an exact bitmap never runs, and in no filter, which
-// runs on every row read.
+// The two window indexes the recount's window statement reads the window rows through
+// (migrations 20261124011835 and 20261124011836).
+const (
+	windowEmbeddedIndex   = "embeddings_window_embedded_since"
+	windowUnembeddedIndex = "embeddings_window_unembedded_since"
+)
+
+// The recount's window statement (windowClasses, as recountGroups sends it for the window group),
+// under planCoverage's settings, reads the window kinds by one Bitmap Heap Scan of embeddings over a
+// BitmapOr of the two window indexes, whatever the planner estimates: its WHERE ORs the two
+// indexes' predicates, each word for word, so the planner proves that the two indexes together hold
+// every row it selects, and that bitmap is the one path to those rows the settings leave enabled
+// (planCoverage). The blank test's regex is then in that scan's recheck alone, which an exact
+// bitmap never runs, and in no filter, which runs on every row read.
 //
 // The plan is read on a seeded table of a few dozen rows (seedEveryCoverageState), as seeded and
 // again once embeddings is analyzed, under each of coverageCostProfiles. On such a table an
-// earlier version of this statement, which left the window path to the planner's estimates, read
-// the arm through embeddings_window_owner, with the regex in the filter, since there three bitmap
-// index scans cost more than a filter over so few rows: so a plan the planner picks by its
-// estimates fails here. This fails the day the kinds, the regexes or either half's predicate stop
-// matching the migrations' indexes, or another path to the window rows opens
-// (TestNoOtherIndexCanReadTheWindowKinds names it): either leaves the answer right and the
-// statement testing every window's text again.
+// earlier version of main's coverage statement, which left the window path to the planner's
+// estimates, read the arm through embeddings_window_owner, with the regex in the filter, since
+// there three bitmap index scans cost more than a filter over so few rows: so a plan the planner
+// picks by its estimates fails here. This fails the day the kinds, the regexes or either half's
+// predicate stop matching the migrations' indexes, or another path to the window rows opens
+// (TestNoOtherIndexCanReadTheWindowKinds names it): either leaves the counts right and the
+// recount testing every window's text again.
 func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
@@ -437,11 +525,11 @@ func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 			stage := statistics.name + ", " + profile.name
 			plan := explainPlannedUnder(t, database, profile.settings)
 			if explaintest.SeqScansRelation(t, plan, "embeddings") {
-				t.Errorf("%s: the coverage statement's plan reads embeddings by a Seq Scan:\n%s", stage, plan)
+				t.Errorf("%s: the recount's window statement's plan reads embeddings by a Seq Scan:\n%s", stage, plan)
 			}
 			var windows int
 			for _, scan := range explaintest.BitmapHeapScans(t, plan, "embeddings") {
-				if scan.OrOf("embeddings_window_embedded", "embeddings_window_unembedded") {
+				if scan.OrOf(windowEmbeddedIndex, windowUnembeddedIndex) {
 					windows++
 				}
 			}
@@ -452,27 +540,26 @@ func TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes(t *testing.T) {
 				}
 			}
 			if windows != 1 {
-				t.Errorf("%s: the coverage statement's plan holds %d Bitmap Heap Scans of embeddings over a BitmapOr of embeddings_window_embedded and embeddings_window_unembedded, want one:\n%s",
-					stage, windows, plan)
+				t.Errorf("%s: the recount's window statement's plan holds %d Bitmap Heap Scans of embeddings over a BitmapOr of %s and %s, want one:\n%s",
+					stage, windows, windowEmbeddedIndex, windowUnembeddedIndex, plan)
 			}
 			if len(textFilters) > 0 {
-				t.Errorf("%s: the coverage statement tests windows' text in a filter of embeddings: %s\n%s", stage, strings.Join(textFilters, "; "), plan)
+				t.Errorf("%s: the recount's window statement tests windows' text in a filter of embeddings: %s\n%s", stage, strings.Join(textFilters, "; "), plan)
 			}
 		}
 	}
 }
 
-// With both window indexes gone, the coverage statement under planCoverage's settings reads the
-// window rows by a Seq Scan of embeddings, the path enable_seqscan = off disables, and by no index
-// scan or bitmap scan of embeddings: the only index reads of embeddings left in the plan are the
-// issue arm's lookups of its rows by kind = 'issue'. So no other index of embeddings can read the
-// window rows at all, and the bitmap over the two window indexes is the one path the settings
-// leave enabled (planCoverage) by construction, not by the planner's estimate. That is what keeps
-// the statement's cost the data's in every state of the table. A new index that could read the
-// window rows - a partial one whose predicate the arm's conditions prove, or one keyed on a column
-// the arm tests by a condition a btree reads, such as embedding is null - would give the planner a
-// choice again, to be made by estimates that are wrong for this table in some state it spends
-// time in, and this test fails first.
+// With both window indexes gone, the recount's window statement under planCoverage's settings
+// reads the window rows by a Seq Scan of embeddings, the path enable_seqscan = off disables, and by
+// no index scan or bitmap scan of embeddings at all. So no other index of embeddings can read the
+// window rows, and the bitmap over the two window indexes is the one path the settings leave
+// enabled (planCoverage) by construction, not by the planner's estimate. That is what keeps the
+// recount's cost the data's in every state of the table. A new index that could read the window
+// rows - a partial one whose predicate the statement's conditions prove, or one keyed on a column
+// the statement tests by a condition a btree reads, such as embedding is null - would give the
+// planner a choice again, to be made by estimates that are wrong for this table in some state it
+// spends time in, and this test fails first.
 //
 // The indexes are dropped in a transaction that is rolled back, on the seeded table of
 // TestCoverageReadsTheWindowKindsThroughABitmapOfBothIndexes, analyzed, and the plan is read under
@@ -490,12 +577,11 @@ func TestNoOtherIndexCanReadTheWindowKinds(t *testing.T) {
 				t.Fatalf("%s: begin the transaction that drops the window indexes: %v", profile.name, err)
 			}
 			defer func() { _ = tx.Rollback(ctx) }()
-			for _, window := range []string{"embeddings_window_embedded", "embeddings_window_unembedded"} {
+			for _, window := range []string{windowEmbeddedIndex, windowUnembeddedIndex} {
 				mustExec(t, tx, `drop index `+window)
 			}
 			return explainPlannedIn(t, tx, profile.settings)
 		}()
-		const issueLookup = "kind = 'issue'::text"
 		var windowsSeqScanned bool
 		var otherReads []string
 		for _, node := range explaintest.Nodes(t, plan) {
@@ -507,39 +593,44 @@ func TestNoOtherIndexCanReadTheWindowKinds(t *testing.T) {
 				if strings.Contains(node.Filter, "text_snapshot") {
 					windowsSeqScanned = true
 				}
-			case "Index Scan", "Index Only Scan":
-				if !strings.Contains(node.IndexCond, issueLookup) {
-					otherReads = append(otherReads, node.Type+" using "+node.Index+" (Index Cond: "+node.IndexCond+")")
-				}
 			case "Bitmap Heap Scan":
 				// Read below, with the Bitmap Index Scans its bitmap is built from.
 			default:
-				otherReads = append(otherReads, node.Type)
+				otherReads = append(otherReads, node.Type+" using "+node.Index+" (Index Cond: "+node.IndexCond+")")
 			}
 		}
 		for _, scan := range explaintest.BitmapHeapScans(t, plan, "embeddings") {
-			if !strings.Contains(scan.Scan.RecheckCond, issueLookup) {
-				otherReads = append(otherReads, scan.Scan.Type+" (Recheck Cond: "+scan.Scan.RecheckCond+")")
-			}
+			otherReads = append(otherReads, scan.Scan.Type+" (Recheck Cond: "+scan.Scan.RecheckCond+")")
 			for _, index := range scan.BitmapIndexScans {
-				if !strings.Contains(index.IndexCond, issueLookup) {
-					otherReads = append(otherReads, index.Type+" on "+index.Index+" (Index Cond: "+index.IndexCond+")")
-				}
+				otherReads = append(otherReads, index.Type+" on "+index.Index+" (Index Cond: "+index.IndexCond+")")
 			}
 		}
 		if !windowsSeqScanned {
-			t.Errorf("%s: with both window indexes dropped, the coverage statement reads the window rows by no Seq Scan of embeddings:\n%s", profile.name, plan)
+			t.Errorf("%s: with both window indexes dropped, the recount's window statement reads the window rows by no Seq Scan of embeddings:\n%s", profile.name, plan)
 		}
 		if len(otherReads) > 0 {
-			t.Errorf("%s: with both window indexes dropped, the coverage statement reads embeddings by %s, which is no lookup of the issue arm's rows by %s; that read is a path to the window rows the planner may choose by its estimates:\n%s",
-				profile.name, strings.Join(otherReads, "; "), issueLookup, plan)
+			t.Errorf("%s: with both window indexes dropped, the recount's window statement reads embeddings by %s; that read is a path to the window rows the planner may choose by its estimates:\n%s",
+				profile.name, strings.Join(otherReads, "; "), plan)
 		}
 	}
 }
 
-// explainPlanned explains the coverage statement for the configured identity in a read-only
-// transaction under planCoverage's settings, as Coverage runs it, and answers the plan's one
-// "Plan" node.
+// recountWindowGroup is the group the recount counts the window kinds in (countsGroups' planned
+// group): its kinds and its statement (recountStatement over windowClasses).
+func recountWindowGroup(t *testing.T) countsGroup {
+	t.Helper()
+	for _, group := range countsGroups {
+		if group.planned {
+			return group
+		}
+	}
+	t.Fatal("countsGroups holds no group the recount runs under planCoverage's settings")
+	return countsGroup{}
+}
+
+// explainPlanned explains the recount's window statement, as recountGroups sends it, under
+// planCoverage's settings in a transaction that is rolled back, and answers the plan's one "Plan"
+// node.
 func explainPlanned(t *testing.T, database *store.Store) json.RawMessage {
 	t.Helper()
 	return explainPlannedUnder(t, database, "")
@@ -550,29 +641,32 @@ func explainPlanned(t *testing.T, database *store.Store) json.RawMessage {
 func explainPlannedUnder(t *testing.T, database *store.Store, profile string) json.RawMessage {
 	t.Helper()
 	ctx := context.Background()
-	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the coverage statement's transaction: %v", err)
+		t.Fatalf("begin the recount's window statement's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	return explainPlannedIn(t, tx, profile)
 }
 
-// explainPlannedIn explains the coverage statement for the configured identity in tx once
-// planCoverage has set its settings there, as Coverage runs it, and then profile has run (empty
-// for none), and answers the plan's one "Plan" node. The settings stay set in tx.
+// explainPlannedIn explains the recount's window statement (recountStatement over windowClasses,
+// with the window kinds as its $1, as recountGroups sends it) in tx once planCoverage has set its
+// settings there, as the recount sets them, and then profile has run (empty for none), and answers
+// the plan's one "Plan" node. EXPLAIN without ANALYZE runs nothing, so the statement writes no row.
+// The settings stay set in tx.
 func explainPlannedIn(t *testing.T, tx pgx.Tx, profile string) json.RawMessage {
 	t.Helper()
 	ctx := context.Background()
 	if err := planCoverage(ctx, tx); err != nil {
-		t.Fatalf("plan the coverage statement as Coverage does: %v", err)
+		t.Fatalf("plan the recount's window statement as the recount does: %v", err)
 	}
 	if profile != "" {
 		mustExec(t, tx, profile)
 	}
+	group := recountWindowGroup(t)
 	var raw []byte
-	if err := tx.QueryRow(ctx, `explain (format json) `+coverageQuery, configuredIdentity).Scan(&raw); err != nil {
-		t.Fatalf("explain the coverage statement: %v", err)
+	if err := tx.QueryRow(ctx, `explain (format json) `+group.statement, group.kinds).Scan(&raw); err != nil {
+		t.Fatalf("explain the recount's window statement: %v", err)
 	}
 	return explaintest.OnePlan(t, raw)
 }

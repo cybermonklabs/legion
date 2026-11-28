@@ -894,7 +894,7 @@ func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string)
 		issues = slices.DeleteFunc(issues, func(issue string) bool { return issue == inner || slices.Contains(below, issue) })
 	}
 	rows, err := q.Query(ctx, `
-		select `+artifactColumns+`, approved.version, approved.number, approved.markdown
+		select `+docs.ArtifactColumns+`, approved.version, approved.number, approved.markdown
 		from artifacts covered
 		cross join lateral (
 			select latest.version, stored.number, coalesce(stored.markdown, '') as markdown
@@ -923,7 +923,7 @@ func (f SpecForm) approvedSpecTexts(ctx context.Context, q queryer, root string)
 	versions, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (approvedVersion, error) {
 		var each approvedVersion
 		var err error
-		each.artifact, err = scanArtifact(rowThen{Row: row, then: []any{&each.version, &each.stored, &each.markdown}})
+		each.artifact, err = docs.ScanArtifact(rowThen{Row: row, then: []any{&each.version, &each.stored, &each.markdown}})
 		return each, err
 	})
 	if err != nil {
@@ -1049,8 +1049,8 @@ type approvedSpecDocument struct {
 	terms    []specform.Term
 }
 
-// rowThen is Row, whose columns after those that a caller scans go to then, so that scanArtifact
-// reads the artifactColumns of a row that holds more (approvedSpecTexts).
+// rowThen is Row, whose columns after those that a caller scans go to then, so that
+// docs.ScanArtifact reads the docs.ArtifactColumns of a row that holds more (approvedSpecTexts).
 type rowThen struct {
 	pgx.Row
 	then []any
