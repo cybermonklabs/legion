@@ -188,13 +188,14 @@ func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Is
 }
 
 // changeReasons is the reasons a next change of issue would carry now: its open defects that no
-// change carries yet (record.Store.OpenDefects, CarriedBy 0), with each check's reason left out
-// where that check passes in the read the judge holds. A check that passes holds nothing, and a
-// reason a change already carries joins that change rather than starting another (D7).
-func changeReasons(view closeView) []record.Defect {
+// change of its own generation carries (record.CarriedNow: an uncarried one, or one an earlier
+// generation carried and never merged, as a re-admission leaves it), with each check's reason left
+// out where that check passes in the read the judge holds. A check that passes holds nothing, and
+// a reason a change already carries joins that change rather than starting another (D7).
+func changeReasons(issue record.Issue, view closeView) []record.Defect {
 	var reasons []record.Defect
 	for _, defect := range view.facts.Defects {
-		if defect.CarriedBy != 0 || !defect.Open() {
+		if record.CarriedNow(defect, issue) || !defect.Open() {
 			continue
 		}
 		if defect.Kind == record.DefectKindCheck && !failedInRead(view, defect.Check) {
@@ -255,10 +256,12 @@ func (e *Engine) recordCheckReasons(ctx context.Context, tx pgx.Tx, issue record
 				break
 			}
 			// A check that is already a reason adds none: one waiting for a change to start
-			// (carried by none) and one the issue's open change carries. A reason a change that
-			// has ended carries holds nothing: that change answered it, and a fail after it is
-			// the check failing again, which is a reason of its own.
-			if defect.Check == failed.Check && defect.Open() && (defect.CarriedBy == 0 || defect.CarriedBy == issue.NextChange) {
+			// (carried by no change of this generation, record.CarriedNow) and one the issue's open
+			// change carries. A reason a change of this generation carries that has ended holds
+			// nothing: that change answered it, and a fail after it is the check failing again,
+			// which is a reason of its own.
+			if defect.Check == failed.Check && defect.Open() &&
+				(!record.CarriedNow(defect, issue) || record.OnNextChange(issue) && defect.CarriedBy == issue.NextChange) {
 				known = true
 				break
 			}
@@ -484,7 +487,7 @@ func (e *Engine) startChangeIfDue(ctx context.Context, tx pgx.Tx, key string) (b
 	if view, err = e.closeWait(ctx, tx, *issue); err != nil {
 		return false, err
 	}
-	reasons := changeReasons(view)
+	reasons := changeReasons(issue, view)
 	if len(reasons) == 0 {
 		return false, nil
 	}
@@ -518,7 +521,7 @@ func (e *Engine) judgeOpenChange(ctx context.Context, tx pgx.Tx, issue record.Is
 		return err
 	}
 	if !record.AcceptedPhase(record.StandsAt(issue)) {
-		if joined := changeReasons(view); len(joined) > 0 {
+		if joined := changeReasons(issue, view); len(joined) > 0 {
 			if err := e.joinReasons(ctx, tx, issue, joined); err != nil {
 				return err
 			}
@@ -609,7 +612,7 @@ func (e *Engine) carryReturn(ctx context.Context, tx pgx.Tx, issue record.Issue)
 	var carried []record.Defect
 	var ids []int64
 	for _, defect := range open {
-		if defect.CarriedBy != 0 || defect.Generation != issue.Generation || defect.Kind != record.DefectKindDefect {
+		if record.CarriedNow(defect, issue) || defect.Generation != issue.Generation || defect.Kind != record.DefectKindDefect {
 			continue
 		}
 		carried, ids = append(carried, defect), append(ids, defect.ID)

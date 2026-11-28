@@ -72,8 +72,11 @@ func (e *Engine) defectReport(ctx context.Context, tx pgx.Tx, fact intake.Defect
 	if err != nil {
 		return intake.Result{}, err
 	}
+	// The change that will carry a defect: the one of this generation that carries it now, else the
+	// next, which an uncarried defect and one an earlier generation left carried both wait for
+	// (record.CarriedNow).
 	carrier := func(defect record.Defect) uint64 {
-		if defect.CarriedBy != 0 {
+		if record.CarriedNow(defect, issue) {
 			return defect.CarriedBy
 		}
 		return issue.Generation + 1

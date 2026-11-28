@@ -487,7 +487,7 @@ func (e *Engine) openCheckAtRead(ctx context.Context, tx pgx.Tx, issue record.Is
 		return nil
 	}
 	failed := slices.ContainsFunc(view.wait.Checks, func(check record.CheckWait) bool { return check.State == record.CheckStateFail })
-	if len(view.wait.Beneath) > 0 || len(changeReasons(view)) > 0 || failed || view.facts.OpenChange {
+	if len(view.wait.Beneath) > 0 || len(changeReasons(issue, view)) > 0 || failed || view.facts.OpenChange {
 		return nil
 	}
 	if check := view.facts.Production; check != nil && check.Generation == issue.Generation && check.MergeSHA == issue.Merge.SHA {

@@ -201,7 +201,7 @@ func TestAStaleNextChangeHoldsNoClose(t *testing.T) {
 // carried while `carried_by` was set at all, it was skipped as a reason (changeReasons) and still
 // held the close as an open defect, so the issue waited in verifying with no change started and
 // none to come.
-func TestADefectARereadmissionLeftCarriedStartsTheNextChange(t *testing.T) {
+func TestADefectAReadmissionLeftCarriedStartsTheNextChange(t *testing.T) {
 	t.Parallel()
 	rig := newWaitRig(t, claim.RoleTester)
 	mergedRoot(t, rig)
