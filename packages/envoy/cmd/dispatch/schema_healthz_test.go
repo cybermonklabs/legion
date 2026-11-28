@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"slices"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/schemanodes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // schemaHealthWait bounds the wait for a running process to read a schema write: the write
@@ -95,18 +97,10 @@ func TestAReinstallRefreshesThisProcesssRegistryRow(t *testing.T) {
 	if want == before {
 		t.Fatalf("this build's install of the migrated store answers the boot's numbers %+v: the migration moved nothing the row holds", want)
 	}
-	deadline := time.Now().Add(schemaHealthWait)
-	for {
+	testwait.Until(t, fmt.Sprintf("the process's registry row to hold schema numbers %+v after the reinstall", want), func() (withOutput[schemaNumbers], bool) {
 		held := registeredSchema(t, ctx, database.Pool)
-		if held == want {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the process's registry row holds schema numbers %+v %v after the reinstall, want %+v, what it serves now:\n%s",
-				held, schemaHealthWait, want, server.Output.String())
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return readWith(held, server.Output), held == want
+	})
 }
 
 // schemaNumbers is what a registry row holds of the document schema: the version its process
