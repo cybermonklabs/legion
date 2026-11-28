@@ -443,7 +443,7 @@ type scratchDispatch struct {
 	// createStaged is scratchDispatchOptions.createStaged, kept so a restart runs the same server.
 	createStaged bool
 	env          []string
-	// socket is the port's one socket from the first start to the test's end (ownPort): it listens
+	// socket is the port's own socket from the first start to the test's end (ownPort): it listens
 	// while a Dispatch serves on it, and stop takes it out of listening, the port kept.
 	socket  *os.File
 	port    int
@@ -495,9 +495,8 @@ func (d *scratchDispatch) start() {
 		deadline = testDeadline.Add(-10 * time.Second)
 	}
 	// Dispatch serves on the port's own socket (DISPATCH_LISTEN_FD), which the test holds from the
-	// first start to its end, so no other socket can bind the port between a stop and the next
-	// start. The one moment another socket can bind it is the one before the listen below, when
-	// this socket sets SO_REUSEADDR (ownPort).
+	// first start to its end, so the port stays the test's between a stop and the next start;
+	// ownPort says the one moment another socket can bind it.
 	if d.socket == nil {
 		d.socket, d.port = ownPort(t)
 		d.base = fmt.Sprintf("http://127.0.0.1:%d", d.port)
@@ -569,9 +568,10 @@ func (d *scratchDispatch) start() {
 		default:
 		}
 		// The wait names this start's process by its own output, a buffer each start makes anew:
-		// its line that it serves the port, then its 200. The port is the socket's alone (ownPort),
-		// the test never accepts on its copy, and stop waited the last Dispatch out, so this process
-		// is the only one that can answer there anyway; the line makes that explicit.
+		// its line that it serves the port, then its 200. No other socket can listen on the port
+		// while this one listens (ownPort), the test never accepts on its copy, and stop waited the
+		// last Dispatch out, so this process is the only one that can answer there anyway; the line
+		// makes that explicit.
 		if !strings.Contains(output.String(), listening) {
 			return false
 		}
@@ -610,7 +610,7 @@ func (d *scratchDispatch) start() {
 // unshared. While this socket does not listen every dial is refused.
 func ownPort(t *testing.T) (*os.File, int) {
 	t.Helper()
-	taken := make([]int, 0, ownPortAttempts)
+	var lost []int
 	for range ownPortAttempts {
 		probe := ownPortSocket(t, "the probe of scratch Dispatch's port")
 		if err := syscall.Bind(int(probe.Fd()), &syscall.SockaddrInet4{Addr: [4]byte{127, 0, 0, 1}}); err != nil {
@@ -633,10 +633,10 @@ func ownPort(t *testing.T) (*os.File, int) {
 			t.Fatalf("bind scratch Dispatch's socket to port %d: %v", port, err)
 		}
 		_ = owner.Close()
-		taken = append(taken, port)
+		lost = append(lost, port)
 	}
 	t.Fatalf("scratch Dispatch's socket bound none of the %d ports its probes chose, each held by another socket at its bind: %v",
-		ownPortAttempts, taken)
+		ownPortAttempts, lost)
 	return nil, 0
 }
 
@@ -644,9 +644,9 @@ func ownPort(t *testing.T) (*os.File, int) {
 // only to a socket that holds the probed port at the owner's bind, and while a socket on 127.0.0.1
 // or the wildcard holds a port the next probe is not given it, so 32 losses take 32 separate
 // collisions. Load raises the odds of one: the gap between the probe's close and the owner's bind
-// holds ownPortSocket's syscall.ForkLock.RLock, which waits out every fork in flight, in a package
-// whose tests run in parallel. A run that loses all 32 fails the test naming every port it lost,
-// which is the report to read rather than a number to raise.
+// includes ownPortSocket's wait for syscall.ForkLock.RLock, which waits out every fork in flight,
+// in a package whose tests run in parallel. A run that loses all 32 fails the test naming every
+// port it lost, which is the report to read rather than a number to raise.
 const ownPortAttempts = 32
 
 // ownPortSocket is a close-on-exec TCP socket, closed when t ends if it is still open.
