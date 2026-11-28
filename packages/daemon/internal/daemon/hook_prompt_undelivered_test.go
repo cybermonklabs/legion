@@ -113,7 +113,7 @@ func requireDueAt(t *testing.T, message issueMessageRow, want time.Time, what st
 // restartedHookRunner is a runner over pool as a daemon that restarted reads it: a new outbox and a
 // new supervisor with no claim, publishing to publisher and posting to posted, at the wall clock.
 // Nothing of an earlier runner carries over but what the database holds.
-func restartedHookRunner(t *testing.T, pool *store.Pool, publisher notify.Publisher, posted *outboxDispatch) (*outbox, *supervisor) {
+func restartedHookRunner(t *testing.T, pool *store.Pool, publisher outboxNotices, posted *outboxDispatch) (*outbox, *supervisor) {
 	t.Helper()
 	sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 	runner := &outbox{

@@ -1,0 +1,5 @@
+kind: Added
+body: '`legion-api.ts`: each issue of the state and of the issue record has an optional `claimLeft` at the daemon API contract entry 20261127202231 (claim-left): `{holder, reason, at}`, why the newest claim release that judged the issue''s Dispatch holder left that holder''s claim. `reason` is a `z.enum` of eleven words. The daemon API fixtures hold the entry (`contracts/20261127202231_claim-left.json`).'
+time: 2026-11-27T20:40:55.077894485Z
+custom:
+    Issue: INFRA-3144

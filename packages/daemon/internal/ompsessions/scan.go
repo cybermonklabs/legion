@@ -188,6 +188,7 @@ type Titled struct {
 func Titles(ctx context.Context, conn *Conn) ([]Titled, error) {
 	var titled []Titled
 	err := inTransaction(ctx, conn, true, func(p pinned) error {
+		titled = nil // A retried try starts over (inTransaction).
 		// A part starting at headBytes or past it is wholly past the head, since the bytes before it
 		// are exactly its start_offset, so the head is the row's content and the parts before that
 		// mark, each cut to the head's length and taken in order.

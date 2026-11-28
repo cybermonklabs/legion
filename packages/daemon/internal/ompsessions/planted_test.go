@@ -2,6 +2,7 @@ package ompsessions
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"regexp"
 	"slices"
@@ -130,18 +131,32 @@ func plantDatabase(t *testing.T, prefix string, tables bool, plant func(login st
 	return planted{conn: conn, admin: admin}
 }
 
-// unrestricted runs read in a read-only transaction pinned as the package's were before the
-// restrict line (restrictRelationKinds): search_path and row_security alone. It is the controls'
-// form of a read, so a plant the package's own transaction refuses is shown to run in it.
-func unrestricted(ctx context.Context, conn *pgx.Conn, read func(pgx.Tx) error) error {
-	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-		for _, statement := range []string{pinSearchPath, refuseRowSecurity} {
-			if _, err := tx.Exec(ctx, statement); err != nil {
-				return err
-			}
+// openingWithout is opening, OpenRead or OpenWrite as open.go writes it, with each of statements
+// taken out, each a whole line of it, with or without its semicolon: the controls' openings, each
+// the package's own but for the statements whose fault the control shows. A statement the opening
+// does not hold fails the test, so no control runs the whole opening in place of the one it names.
+func openingWithout(t *testing.T, opening string, statements ...string) string {
+	t.Helper()
+	lines := strings.Split(opening, "\n")
+	for _, statement := range statements {
+		at := slices.IndexFunc(lines, func(line string) bool {
+			return strings.TrimSuffix(line, ";") == strings.TrimSuffix(statement, ";")
+		})
+		if at < 0 {
+			t.Fatalf("the opening holds no line %q, so the control would run it whole", statement)
 		}
-		return read(tx)
-	})
+		lines = slices.Delete(lines, at, at+1)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// unrestricted runs read in a read-only transaction opened by OpenRead without its
+// restrict_nonsystem_relation_kind line, as the package's reads were pinned before it. It is the
+// controls' form of a read, so a plant the package's own transaction refuses is shown to run in it.
+func unrestricted(t *testing.T, ctx context.Context, conn *pgx.Conn, read func(pgx.Tx) error) error {
+	t.Helper()
+	opening := openingWithout(t, OpenRead, "SET LOCAL restrict_nonsystem_relation_kind = 'view, foreign-table'")
+	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{BeginQuery: opening}, read)
 }
 
 // A login that may create in the session database's public schema, or in the database, as its
@@ -214,9 +229,11 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 	// planter owns the tables here, enables row security on both, and attaches a policy that runs
 	// public.plant_ran, and the package's client signs in as a login of its own that neither owns
 	// them nor bypasses row security, as a pod's login does. Each read refuses the policy rather
-	// than run it: a read-only transaction turns row_security off, under which a query a policy
-	// would affect fails. The control is Written's read in a transaction with the search_path pin
-	// alone: it runs the policy. The writes are not held to this.
+	// than run it: OpenRead turns row_security off, under which a query a policy would affect fails
+	// with 42501. The client reads 42501 as a server connection it cannot repair, so each read
+	// closes its connection and tries again on a new one, and fails after 4 tries, 4 backends, each
+	// gone, naming the SQLSTATE. The control is Written's read in a transaction opened by OpenRead
+	// without its row_security line: it runs the policy. The writes are not held to this.
 	t.Run("a row-security policy the tables' owner attached runs in no read", func(t *testing.T) {
 		db := plantDatabase(t, "legion_ompsessions_plant_policy", false, func(string) []string {
 			plant := append(slices.Clone(createTables),
@@ -253,25 +270,28 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 				t.Fatalf("%s: %v", statement, err)
 			}
 		}
+		// The reader's Conn is built as ConnectURL builds one, in the query mode ConnectURL gave
+		// db.conn, so it sends as the client sends whatever mode ConnectURL sets.
 		config := db.admin.Config().Copy()
 		config.User, config.Password = reader, password
+		trace := &tracer{}
+		config.Tracer = trace
+		config.DefaultQueryExecMode = db.conn.c.Config().DefaultQueryExecMode
 		conn, err := pgx.ConnectConfig(ctx, config)
 		if err != nil {
 			t.Fatal(err)
 		}
-		t.Cleanup(func() { _ = conn.Close(context.Background()) })
 		reading := &Conn{c: conn}
+		t.Cleanup(func() { _ = reading.Close(context.Background()) })
 
-		live := t.Run("control: a read with the search_path pin alone runs the policy", func(t *testing.T) {
-			err := pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
-				if _, err := tx.Exec(ctx, pinSearchPath); err != nil {
-					return err
-				}
+		live := t.Run("control: a read opened without its row_security line runs the policy", func(t *testing.T) {
+			opening := openingWithout(t, OpenRead, "SET LOCAL row_security = off")
+			err := pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{BeginQuery: opening}, func(tx pgx.Tx) error {
 				var mtime int64
 				return tx.QueryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", podSessionFile).Scan(&mtime)
 			})
 			if ranPlant(err) != plantedPolicy {
-				t.Errorf("the read with the pin alone = %v; want it to fail naming %s", err, plantedPolicy)
+				t.Errorf("the read without row_security off = %v; want it to fail naming %s", err, plantedPolicy)
 			}
 			t.Logf("control: %v", err)
 		})
@@ -280,19 +300,31 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 		}
 		refused := func(t *testing.T, what string, err error) {
 			t.Helper()
-			if err == nil || ranPlant(err) != "" || !strings.Contains(err.Error(), "row-level security") {
-				t.Errorf("%s = %v; want the read refused for the row-level security policy, which it does not run", what, err)
+			sent, _ := trace.take()
+			pids := openings(sent)
+			if err == nil || ranPlant(err) != "" || !strings.Contains(err.Error(), "row-level security") ||
+				!strings.Contains(err.Error(), "SQLSTATE "+insufficientPrivilege) {
+				t.Errorf("%s = %v; want the read refused for the row-level security policy, which it does not run, naming SQLSTATE %s",
+					what, err, insufficientPrivilege)
 			}
+			if len(pids) != tries || !distinct(pids) {
+				t.Errorf("%s opened its transaction on %v, want %d distinct backends: each 42501 closes its connection and tries again on a new one",
+					what, pids, tries)
+			}
+			gone(t, db.admin, pids)
 		}
 		t.Run("Written", func(t *testing.T) {
+			trace.take()
 			_, _, err := Written(ctx, reading, podSessionFile)
 			refused(t, "Written", err)
 		})
 		t.Run("FindByID", func(t *testing.T) {
+			trace.take()
 			_, _, err := FindByID(ctx, reading, podSessionID)
 			refused(t, "FindByID", err)
 		})
 		t.Run("Read", func(t *testing.T) {
+			trace.take()
 			_, _, err := Read(ctx, reading, podSessionFile)
 			refused(t, "Read", err)
 		})
@@ -312,8 +344,8 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 	// and a view carries no row-security policy, so row_security refuses nothing. Every
 	// transaction of the package sets restrict_nonsystem_relation_kind to refuse a view and a
 	// foreign table, and CreateTables refuses a relation at either name that is no table. The
-	// control is Written's read as the package's reads ran before that line, the search_path pin
-	// and row_security off alone: it runs the view's function.
+	// control is Written's read in a transaction opened by OpenRead without its
+	// restrict_nonsystem_relation_kind line (unrestricted): it runs the view's function.
 	t.Run("a view at a table's own name runs in no statement", func(t *testing.T) {
 		// Each view's path is computed through the plant, so any statement that reads a row's
 		// path, which every statement of the package does, runs it.
@@ -327,8 +359,8 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 				"GRANT SELECT, INSERT, UPDATE, DELETE ON public.omp_session_files, public.omp_session_files_parts TO PUBLIC",
 			}
 		})
-		live := t.Run("control: a read pinned as before the restrict line runs the view", func(t *testing.T) {
-			err := unrestricted(ctx, db.conn.c, func(tx pgx.Tx) error {
+		live := t.Run("control: a read opened without its restrict line runs the view", func(t *testing.T) {
+			err := unrestricted(t, ctx, db.conn.c, func(tx pgx.Tx) error {
 				var mtime int64
 				return tx.QueryRow(ctx, "SELECT mtime_ms FROM public.omp_session_files WHERE path = $1", podSessionFile).Scan(&mtime)
 			})
@@ -529,11 +561,11 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 	}
 
 	// A call of the package run inside another call's transaction, on the same connection, would
-	// send a second begin, which the server ignores inside a transaction, and its commit would end
-	// the outer transaction, and every SET LOCAL with it: the outer function's next statement would
-	// run alone, under the login's own search_path. inTransaction refuses a connection already in a
-	// transaction. The control is the same nesting with today's helper as it was before that
-	// refusal (unchecked): the outer statement after the inner read runs public.right.
+	// send a second opening, whose BEGIN the server ignores inside a transaction, and its commit
+	// would end the outer transaction, and every SET LOCAL with it: the outer function's next
+	// statement would run alone, under the login's own search_path. inTransaction refuses a
+	// connection already in a transaction. The control is the same nesting with the helper as it was
+	// before that refusal (unchecked): the outer statement after the inner read runs public.right.
 	// The outer statement is FindByID's compare in text of its own: pgx keeps each statement it
 	// prepared on the connection, with the types its parameters were given then, and FindByID's own
 	// text was prepared under the pin, where $1 took pg_catalog.right's integer.
@@ -571,12 +603,15 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 		}
 	})
 
-	// A transaction whose context ends inside it leaves its connection closed, pgx having closed it
-	// when the rollback failed, with the last status the server sent, 'T'. A call on it must fail
-	// as a call on a closed connection does, not be refused as one nested in another's transaction.
-	// The control is the refusal as it was first written (refusedAsNested), on the status alone: it
-	// calls this connection nested.
-	t.Run("a call on a connection that died inside a transaction fails as closed", func(t *testing.T) {
+	// A transaction whose context ends inside it leaves its connection closed, the helper closing
+	// it, with the last status the server sent, 'T'. A call on it must not be refused as one nested
+	// in another's transaction: it runs on a new connection that the helper opens in its place from
+	// the dead one's configuration, pinned as every transaction is, and answers as a call on a live
+	// one does, and the dead connection stays closed. The call is FindByID, whose suffix compare
+	// would run public.right on a connection whose transaction is not pinned, since the new
+	// connection prepares its statements afresh. The control is the refusal as it was first written
+	// (refusedAsNested), on the status alone: it calls this connection nested.
+	t.Run("a call on a connection that died inside a transaction runs on a new one, pinned", func(t *testing.T) {
 		dead, err := ConnectURL(ctx, db.admin.Config().ConnString())
 		if err != nil {
 			t.Fatal(err)
@@ -587,8 +622,8 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 			end()
 			_, err := p.exec(ending, "SELECT 1")
 			return err
-		}); err == nil {
-			t.Fatal("a transaction whose context ended inside it committed")
+		}); !errors.Is(err, context.Canceled) {
+			t.Fatalf("a transaction whose context ended inside it = %v; want the context's error", err)
 		}
 		raw := dead.c
 		if status := raw.PgConn().TxStatus(); !raw.IsClosed() || status != 'T' {
@@ -600,9 +635,17 @@ func TestNoStatementRunsAnObjectAnotherLoginPlanted(t *testing.T) {
 		} else {
 			t.Logf("control: %s", refusal)
 		}
-		_, _, err = Written(ctx, dead, podSessionFile)
-		if err == nil || strings.Contains(err.Error(), "already in a transaction") || !strings.Contains(err.Error(), "conn closed") {
-			t.Errorf("Written on the dead connection = %v; want it to fail as a call on a closed connection (conn closed)", err)
+		path, found, err := FindByID(ctx, dead, podSessionID)
+		if err != nil || !found || path != podSessionFile {
+			if plant := ranPlant(err); plant != "" {
+				t.Errorf("FindByID on the dead connection's Conn ran %s, which another login planted: %v", plant, err)
+			} else {
+				t.Errorf("FindByID on the dead connection's Conn = %q, %t, %v; want %s, as on a live connection", path, found, err, podSessionFile)
+			}
+		}
+		if dead.c == raw || dead.IsClosed() || !raw.IsClosed() {
+			t.Errorf("after the call the Conn holds the dead connection %t and is closed %t, and the dead connection is closed %t; "+
+				"want a new connection, open, and the dead one closed", dead.c == raw, dead.IsClosed(), raw.IsClosed())
 		}
 	})
 }
@@ -617,18 +660,12 @@ func refusedAsNested(conn *pgx.Conn) string {
 }
 
 // unchecked is inTransaction as it was before it refused a connection already in a transaction:
-// the begin, the three settings, then fn. It is the nested-call control's helper.
+// the opening, OpenRead or OpenWrite, then fn, committed or rolled back. It is the nested-call
+// control's helper.
 func unchecked(ctx context.Context, conn *pgx.Conn, readOnly bool, fn func(pgx.Tx) error) error {
-	access, settings := pgx.ReadWrite, []string{pinSearchPath, restrictRelationKinds}
+	opening := OpenWrite
 	if readOnly {
-		access, settings = pgx.ReadOnly, []string{pinSearchPath, refuseRowSecurity, restrictRelationKinds}
+		opening = OpenRead
 	}
-	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{AccessMode: access}, func(tx pgx.Tx) error {
-		for _, statement := range settings {
-			if _, err := tx.Exec(ctx, statement); err != nil {
-				return err
-			}
-		}
-		return fn(tx)
-	})
+	return pgx.BeginTxFunc(ctx, conn, pgx.TxOptions{BeginQuery: opening}, fn)
 }

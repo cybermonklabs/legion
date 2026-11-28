@@ -3,7 +3,7 @@
  * input, and the cells a scenario's runs make. score.ts runs it:
  *
  *   score.ts runs <runs dir> --run <name>   unscored's rules, then ownerWalk, then row.json
- *   score.ts cells <runs dir> <scenario>    cells, one CellLine of JSON a line
+ *   score.ts cells <runs dir> <scenario> [<counts json>]  cells, one CellLine of JSON a line
  *   score.ts cell <runs dir> <scenario> <stage> <label> <case> <count>
  *                                           caseCell, the line of one case's cell (`rig.sh cell`)
  *
@@ -23,8 +23,9 @@
  *   score.json            the run's clauses, what is reported beside them, and its reach (Score)
  *   judge-input.md        the texts the run's judged items need, naming no label and no form;
  *                         a run with no judged item gets none
- * cells(runsDir, scenario) reads row.json and world.json of each run directory of the scenario, and
- * caseCell the runs of one case, or for a control form every run of the form, under one label.
+ * cells(runsDir, scenario, counts?) reads row.json and world.json of each run directory of the
+ * scenario, and caseCell the runs of one case, or for a control form every run of the form, under
+ * one label.
  */
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
@@ -673,9 +674,17 @@ function requireScored(scenario: string): void {
  * verdict (cellLine). A run counts by its row.json (score.ts runs --run) and its world.json; a run
  * directory without both is in no cell, and stderr names it. owner-walk's cells, per label, are
  * cellOf's: a control form's one cell over all its owners, `passes` counting the owners that pass
- * the control's clause, and every other form's cell one case.
+ * the control's clause, and every other form's cell one case. `counts`, when given, holds the count
+ * its batch ran each case's cell to, keyed `<label>\t<case>`: a case form's cell takes its own in
+ * place of its stage's runs, and a control form's cell keeps the control's. A Job runs each case to
+ * its form's runs unless it is told one count, so one number cannot stand for every case: a default
+ * head Job runs A three times, B three times and C once.
  */
-export function cells(runsDir: string, scenario: string): CellLine[] {
+export function cells(
+  runsDir: string,
+  scenario: string,
+  counts?: Record<string, number>
+): CellLine[] {
   requireScored(scenario);
   const groups = new Map<string, CellGroup>();
   for (const name of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
@@ -700,6 +709,10 @@ export function cells(runsDir: string, scenario: string): CellLine[] {
         `${name}: its row names ${row.run}, label ${row.label} and case ${row.case}, and its world the case ${caseName(world)}`
       );
     const empty = cellOf(named.label, world.stage, stageOf(world.stage), world);
+    // The count its batch ran this case's cell to, when the caller knows it. A control form's cell
+    // is one count over every owner of the form, so it keeps its own.
+    const ran = counts?.[`${named.label}\t${caseName(world)}`];
+    if (ran !== undefined && empty.control === undefined) empty.count = ran;
     // A group's label and cell, a tab between them, are its own; a tab sorts before any character
     // of a name, so `ctl-D` comes before `ctl-D-strict`.
     const id = `${named.label}\t${empty.cell}`;
