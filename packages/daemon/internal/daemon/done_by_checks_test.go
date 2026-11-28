@@ -199,9 +199,7 @@ func firstToItsMerge(r *doneByChecksRig, first string) firstLook {
 	t := r.t
 	t.Helper()
 	r.on(first)
-	r.walkToReviewing(stepRecordsHead)
-	r.recordCheck(doneByChecksBeforeCheck, "pass", stepRecordsHead)
-	r.walkReviewingToMerging(doneByChecksPull, stepRecordsHead)
+	r.walkToMergingPassingBefore(doneByChecksPull, stepRecordsHead)
 	r.awaitIssue(first, "its retro's end", func(issue api.Issue) error {
 		if issue.Phase != phase.Merging || issue.Status != "retro" {
 			return fmt.Errorf("it stands in %s with status %s, want merging with status retro", issue.Phase, issue.Status)
@@ -270,9 +268,7 @@ func secondClosesAtItsProductionPass(r *doneByChecksRig, second string) {
 	t := r.t
 	t.Helper()
 	r.on(second)
-	r.walkToReviewing(doneByChecksGadgetsHead)
-	r.recordCheck(doneByChecksBeforeCheck, "pass", doneByChecksGadgetsHead)
-	r.walkReviewingToMerging(doneByChecksGadgetsPull, doneByChecksGadgetsHead)
+	r.walkToMergingPassingBefore(doneByChecksGadgetsPull, doneByChecksGadgetsHead)
 	merged := r.mergeOf(second, doneByChecksGadgetsPull, doneByChecksGadgetsMerge)
 	r.awaitCloseRead(second, "the second issue's merge", merged, passesAt(doneByChecksBeforeCheck, doneByChecksGadgetsHead))
 	r.awaitIssue(second, "its merge, its production check open", func(issue api.Issue) error {
@@ -318,7 +314,7 @@ func fifthSetBack(r *doneByChecksRig, third string) string {
 	r.stepOf(fifth, claim.RolePlanner, "plan", api.HandoffCompleteRequest{Summary: "planned"}, phase.Implementing)
 	r.stepOf(fifth, claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: doneByChecksGearsHead}, phase.Testing)
 	r.stepOf(fifth, claim.RoleTester, "test", testCompletion, phase.Reviewing)
-	r.reviewOf(fifth, doneByChecksGearsPull, doneByChecksGearsHead, "APPROVED", phase.Accepting)
+	r.reviewOf(fifth, doneByChecksGearsPull, doneByChecksGearsHead, phase.Accepting)
 	r.signOff(fifth)
 	r.stepOf(fifth, claim.RoleImplementer, "", r.retroAt(doneByChecksGearsHead), phase.Merging)
 	merged := r.mergeOf(fifth, doneByChecksGearsPull, doneByChecksGearsMerge)
@@ -440,9 +436,7 @@ func firstThroughItsNextChange(r *doneByChecksRig, first string, look firstLook)
 	// Item 5: the change runs to its merge, and the production check of that merge opens.
 	r.walkImplementing(doneByChecksSecondHead)
 	r.walkTesting()
-	r.walkReview(doneByChecksSecondPull, doneByChecksSecondHead)
-	r.walkSignOff()
-	r.walkRetro(doneByChecksSecondHead)
+	r.walkReviewingToMerging(doneByChecksSecondPull, doneByChecksSecondHead)
 	merged, status, body := r.mergeAndComplete(doneByChecksSecondPull, doneByChecksSecondMerge)
 	if status != http.StatusOK {
 		t.Fatalf("the merger's completion of the change of %s in verifying = %d %s, want 200", first, status, body)
@@ -542,9 +536,7 @@ func sixthHeldByItsOpenChange(r *doneByChecksRig, sixth string) {
 	t := r.t
 	t.Helper()
 	r.on(sixth)
-	r.walkToReviewing(doneByChecksPinsHead)
-	r.recordCheck(doneByChecksBeforeCheck, "pass", doneByChecksPinsHead)
-	r.walkReviewingToMerging(doneByChecksPinsPull, doneByChecksPinsHead)
+	r.walkToMergingPassingBefore(doneByChecksPinsPull, doneByChecksPinsHead)
 	merged, status, body := r.mergeAndComplete(doneByChecksPinsPull, doneByChecksPinsMerge)
 	if status != http.StatusOK {
 		t.Fatalf("the merger's completion of %s in verifying = %d %s, want 200", sixth, status, body)
@@ -599,9 +591,7 @@ func sixthHeldByItsOpenChange(r *doneByChecksRig, sixth string) {
 
 	r.walkImplementing(doneByChecksSecondHead)
 	r.walkTesting()
-	r.walkReview(doneByChecksSecondPull, doneByChecksSecondHead)
-	r.walkSignOff()
-	r.walkRetro(doneByChecksSecondHead)
+	r.walkReviewingToMerging(doneByChecksSecondPull, doneByChecksSecondHead)
 	merged, status, body = r.mergeAndComplete(doneByChecksSecondPull, doneByChecksSecondMerge)
 	if status != http.StatusOK {
 		t.Fatalf("the merger's completion of the change of %s in verifying = %d %s, want 200", sixth, status, body)
@@ -625,9 +615,7 @@ func TestANextChangeNeedsAPassAtItsOwnHead(t *testing.T) {
 		{title: doneByChecksTitle, verification: doneByChecksBothChecks, number: doneByChecksPull, head: stepRecordsHead},
 	}})
 	key, branch := r.key, claim.IssueBranch(r.key)
-	r.walkToReviewing(stepRecordsHead)
-	r.recordCheck(doneByChecksBeforeCheck, "pass", stepRecordsHead)
-	r.walkReviewingToMerging(doneByChecksPull, stepRecordsHead)
+	r.walkToMergingPassingBefore(doneByChecksPull, stepRecordsHead)
 	merged, status, body := r.mergeAndComplete(doneByChecksPull, doneByChecksMergeCommit)
 	r.awaitCloseRead(key, "the first merge", merged, passesAt(doneByChecksBeforeCheck, stepRecordsHead))
 	failed := r.awaitResultFact(r.record("fail", r.standIn.commitOnMain(doneByChecksLaterCommit)))
@@ -664,9 +652,7 @@ func TestANextChangeNeedsAPassAtItsOwnHead(t *testing.T) {
 	r.walkImplementing(doneByChecksSecondHead)
 	r.walkTesting()
 	r.recordCheck(doneByChecksBeforeCheck, "pass", doneByChecksSecondHead)
-	r.walkReview(doneByChecksSecondPull, doneByChecksSecondHead)
-	r.walkSignOff()
-	r.walkRetro(doneByChecksSecondHead)
+	r.walkReviewingToMerging(doneByChecksSecondPull, doneByChecksSecondHead)
 	merged, _, _ = r.mergeAndComplete(doneByChecksSecondPull, doneByChecksSecondMerge)
 	r.awaitCloseRead(key, "the second merge", merged, passesAt(doneByChecksBeforeCheck, doneByChecksSecondHead))
 	r.awaitIssue(key, "the second merge", func(issue api.Issue) error {

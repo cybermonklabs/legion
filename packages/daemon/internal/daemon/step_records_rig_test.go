@@ -383,17 +383,11 @@ func (r *stepRecordsRig) approveAt(reviewer *stepClaimant, number int, head stri
 	r.publishReviewBy(number, head, "APPROVED", reviewAppLogin, legionFooter(reviewer.session, head))
 }
 
-// publishReview is publishReviewAt stepRecordsHead, the head every walk of the rig works at.
+// publishReview is a person with write access submitting state on pull request number at
+// stepRecordsHead, the head every walk of the rig works at, as Envoy relays GitHub's review.
 func (r *stepRecordsRig) publishReview(number int, state string) {
 	r.t.Helper()
-	r.publishReviewAt(number, stepRecordsHead, state)
-}
-
-// publishReviewAt is a person with write access submitting state on pull request number at head,
-// as Envoy relays GitHub's review.
-func (r *stepRecordsRig) publishReviewAt(number int, head, state string) {
-	r.t.Helper()
-	r.publishReviewBy(number, head, state, stepRecordsPerson, "")
+	r.publishReviewBy(number, stepRecordsHead, state, stepRecordsPerson, "")
 }
 
 // publishReviewBy is author submitting state on pull request number at head, the body naming the
@@ -501,17 +495,7 @@ func (r *stepRecordsRig) awaitLaunch(token claim.Token) {
 func (r *stepRecordsRig) person(method, path string, body any, want int, into any) {
 	t := r.t
 	t.Helper()
-	encoded, err := json.Marshal(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request, err := http.NewRequest(method, r.dispatch.base+path, bytes.NewReader(encoded))
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("X-Dispatch-User", "step-records")
-	status, answer := r.send(request)
+	status, answer := r.dispatchRequest(method, path, body, "X-Dispatch-User", "step-records")
 	if status != want {
 		t.Fatalf("%s %s = %d %s, want %d", method, path, status, answer, want)
 	}
@@ -525,6 +509,13 @@ func (r *stepRecordsRig) person(method, path string, body any, want int, into an
 // agent sends one request to Dispatch with the agent bearer, as a role's session sends one, and
 // answers the status and the body.
 func (r *stepRecordsRig) agent(method, path string, body any) (int, []byte) {
+	r.t.Helper()
+	return r.dispatchRequest(method, path, body, "Authorization", "Bearer "+r.dispatch.token)
+}
+
+// dispatchRequest sends body to Dispatch as JSON, with header set to value as the caller's
+// identity, and answers the status and the body.
+func (r *stepRecordsRig) dispatchRequest(method, path string, body any, header, value string) (int, []byte) {
 	t := r.t
 	t.Helper()
 	encoded, err := json.Marshal(body)
@@ -536,7 +527,7 @@ func (r *stepRecordsRig) agent(method, path string, body any) (int, []byte) {
 		t.Fatal(err)
 	}
 	request.Header.Set("Content-Type", "application/json")
-	request.Header.Set("Authorization", "Bearer "+r.dispatch.token)
+	request.Header.Set(header, value)
 	return r.send(request)
 }
 
@@ -837,25 +828,7 @@ func (r *stepRecordsRig) workerOf(issue string, role claim.Role) *stepClaimant {
 	r.built.mu.Unlock()
 	c := &stepClaimant{r: r, token: token, issue: issue, tree: r.key, role: role, session: "ses_" + string(role) + "_" + randomSuffix(t)[:6], model: stepRecordsModel,
 		bootToken: launch.BootToken, sh: dialShim(t, address, launch.BootToken), prompts: make(chan shimwire.Prompt, 8)}
-	status, body := r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
-		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: "/sessions/" + c.session + ".jsonl",
-		AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
-	}, false)
-	if status != http.StatusOK {
-		t.Fatalf("register %s = %d %s, want 200", token, status, body)
-	}
-	var registered claim.RegisterResponse
-	if err := json.Unmarshal(body, &registered); err != nil {
-		t.Fatalf("decode the registration of %s: %v", token, err)
-	}
-	c.secret = registered.Secret
-	sh, d := c.sh, r.d
-	sh.serve(func() { c.serve(sh, d) })
-	if status, body := r.d.request(http.MethodPost, "/legion/v1/claims/ready", claim.ReadyRequest{
-		ClaimToken: token, SessionID: c.session, Secret: c.secret, Generation: launch.Generation,
-	}, false); status != http.StatusNoContent {
-		t.Fatalf("ready %s = %d %s, want 204", token, status, body)
-	}
+	c.register(c.sh, launch, "/sessions/"+c.session+".jsonl", "")
 	r.claims[token] = c
 	return c
 }
@@ -901,11 +874,21 @@ func (c *stepClaimant) attach(launch runtime.SpawnSpec) {
 	c.mu.Lock()
 	c.sh, c.bootToken, c.open, c.inTurn = sh, launch.BootToken, nil, false
 	c.mu.Unlock()
+	c.register(sh, launch, file, " again in its session "+c.session)
+}
+
+// register is the pane of c's claim, whose shim sh said hello with launch's boot token, registering
+// in c's session with its session file file and saying ready, as the plugin does, and serving the
+// daemon on sh; it keeps the secret the registration answers. A refused registration names what
+// after the claim.
+func (c *stepClaimant) register(sh *shim, launch runtime.SpawnSpec, file, what string) {
+	t := c.r.t
+	t.Helper()
 	status, body := c.r.d.request(http.MethodPost, "/legion/v1/claims/register", claim.RegisterRequest{
 		BootToken: launch.BootToken, SessionID: c.session, OmpSessionFile: file, AgentID: c.session, PluginContract: api.DaemonAPIVersion(),
 	}, false)
 	if status != http.StatusOK {
-		t.Fatalf("register %s again in its session %s = %d %s, want 200", c.token, c.session, status, body)
+		t.Fatalf("register %s%s = %d %s, want 200", c.token, what, status, body)
 	}
 	var registered claim.RegisterResponse
 	if err := json.Unmarshal(body, &registered); err != nil {

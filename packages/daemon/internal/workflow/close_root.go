@@ -41,10 +41,11 @@ import (
 //
 // It is refused for a root whose work of this generation merged (CLOSE_AFTER_MERGE,
 // mergedThisGeneration): such a root closes by the checks of its goal or by a person (D16, door
-// 8), whether it waits in verifying or a next change of it waits at admitted. Its architect
-// withdraws each defect it judges moot and asks a person, whose done closes it. A root re-run after
-// an earlier generation's merge keeps that merge's snapshot, and nothing of its own generation has
-// merged, so its architect closes it as any other.
+// 8), whether it waits in verifying, a next change of it is open in any phase, or its pull request
+// merged before it reached merging. Its architect withdraws each defect it judges moot and asks a
+// person, whose done closes it. A root re-run after an earlier generation's merge keeps that
+// merge's snapshot, and nothing of its own generation has merged, so its architect closes it as
+// any other.
 func (e *Engine) closeRoot(ctx context.Context, tx pgx.Tx, fact intake.CloseRoot) (intake.Result, error) {
 	root, err := e.store.Issue(ctx, tx, fact.Issue)
 	if err != nil || root == nil {

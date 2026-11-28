@@ -886,14 +886,14 @@ export function createLegionTool(deps: {
     // the issue it returns from accepting) and report_defect, the architect's withdraw_defect, the
     // shared sentence on read_build, then the architect's register_gate
     // basis, its retry_or_escalate, its register_plan and stop_task, its sign_off and the
-    // controller's operations: the text tools.test.ts pins, stop_task's and sign_off's by their
-    // terms and the rest exactly, so a change to the shared template cannot reach an Oh My Pi agent
-    // unnoticed. The rules for ending a child are the words of the daemon's record.EndChildRule, and
-    // the sentence after them is the daemon's record.StatusNotTakenYet (both in
-    // packages/daemon/internal/record/project.go). These tests hold the copies together: the
+    // controller's operations. tools.test.ts holds two things of this text and no other word of
+    // it: every phase worker is given this one description, which names the `verdict` field and
+    // pass|fail, and the description carries the rules for ending a child and the sentence after
+    // them. Those rules are the words of the daemon's record.EndChildRule, and that sentence is the
+    // daemon's record.StatusNotTakenYet (both in packages/daemon/internal/record/project.go). The
     // daemon's TestTheEndChildRuleGolden writes both texts to
     // packages/contracts/fixtures/daemon-api/end-child-rule.json, and tools.test.ts holds this
-    // description to that file.
+    // description to that file, so the copies change together.
     description: legionToolDescription({
       envoyPublish: "envoy_publish",
       before: PHASE_OP_SENTENCES.readRecord + PHASE_OP_SENTENCES.readReleaseRecords,

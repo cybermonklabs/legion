@@ -42,10 +42,10 @@ package api
 // defect and starts nothing.
 // `POST /legion/v1/roots/close` gains one refusal, `409 CLOSE_AFTER_MERGE`: close_root of a root
 // whose work of this generation merged, which closes by the checks of its goal or by a person's
-// done, whether it waits in verifying or a next change of it waits at admitted (workflow's
-// closeRoot, mergedThisGeneration). It changes nothing, and its shape is the one every refusal
-// has, so a caller below this entry is answered the code as any other refusal code, which no
-// plugin enumerates.
+// done: one that waits in verifying, one with a next change open in any phase, or one whose pull
+// request merged before it reached merging (workflow's closeRoot, mergedThisGeneration). It
+// changes nothing, and its shape is the one every refusal has, so a caller below this entry is
+// answered the code as any other refusal code, which no plugin enumerates.
 // `GET /legion/v1/state` and `GET /legion/v1/issues/{key}/record` serve an issue whose pull request
 // merged and whose close waits with `phase: verifying`, which `LEGION_WORKFLOW_PHASES` names from
 // this entry on. Every plugin before it parses `phase` with a strict enumeration that lacks the

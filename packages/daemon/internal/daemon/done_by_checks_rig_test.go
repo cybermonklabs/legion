@@ -353,6 +353,16 @@ func (r *doneByChecksRig) walkToMerging(number int, head string) {
 	r.walkReviewingToMerging(number, head)
 }
 
+// walkToMergingPassingBefore walks the walk's issue, a root, to merging on its pull request number
+// at head as walkToMerging does, with a pass of its check before the merge
+// (doneByChecksBeforeCheck) at head recorded once it reaches reviewing, before its review.
+func (r *doneByChecksRig) walkToMergingPassingBefore(number int, head string) {
+	r.t.Helper()
+	r.walkToReviewing(head)
+	r.recordCheck(doneByChecksBeforeCheck, "pass", head)
+	r.walkReviewingToMerging(number, head)
+}
+
 // walkToReviewing walks the walk's issue, a root, from its first step to reviewing at head: its
 // planning, its implementing and its testing.
 func (r *doneByChecksRig) walkToReviewing(head string) {
@@ -394,10 +404,11 @@ func (r *doneByChecksRig) walkTesting() {
 	r.walk("testing", func() { r.stepOn(claim.RoleTester, "test", testCompletion, phase.Reviewing) })
 }
 
-// walkReview is the reviewer's round and a person's approval of pull request number at head.
+// walkReview is the reviewer's round on pull request number at head, which it ends with its own
+// approval (reviewOf).
 func (r *doneByChecksRig) walkReview(number int, head string) {
 	r.t.Helper()
-	r.walk(fmt.Sprintf("an approving review of #%d at %s", number, head), func() { r.reviewOf(r.key, number, head, "APPROVED", phase.Accepting) })
+	r.walk(fmt.Sprintf("an approving review of #%d at %s", number, head), func() { r.reviewOf(r.key, number, head, phase.Accepting) })
 }
 
 // walkSignOff is the tree architect's sign-off of the walk's issue.
@@ -429,20 +440,15 @@ func (r *doneByChecksRig) retroAt(head string) api.HandoffCompleteRequest {
 }
 
 // reviewOf is the reviewer of issue, a member of the walk's tree, taking its task and ending its
-// turn, and then the round's decision of state on pull request number at head: an approval by the
-// reviewer itself (approveAt), since a person's approval ends the round only once the reviewer has
-// completed it (workflow's reviewRound), and any other state by a person (publishReviewAt); issue
-// then reaches next.
-func (r *doneByChecksRig) reviewOf(issue string, number int, head, state string, next phase.Phase) {
+// turn, and then approving pull request number at head with a review of its own (approveAt), since
+// a person's approval ends the round only once the reviewer has completed it (workflow's
+// reviewRound); issue then reaches next.
+func (r *doneByChecksRig) reviewOf(issue string, number int, head string, next phase.Phase) {
 	r.t.Helper()
 	c := r.workerOf(issue, claim.RoleReviewer)
 	r.taskOf(c)
 	c.endTurn()
-	if state == "APPROVED" {
-		r.approveAt(c, number, head)
-	} else {
-		r.publishReviewAt(number, head, state)
-	}
+	r.approveAt(c, number, head)
 	r.waitPhaseOf(issue, next)
 }
 

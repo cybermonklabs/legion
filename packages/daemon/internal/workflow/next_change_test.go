@@ -277,6 +277,13 @@ func (r *waitRig) changeMerges(key string, number int, merge, head string) {
 	issue.Phase, issue.Status, issue.DispatchStatus = phase.Merging, "retro", "retro"
 	seedIssue(r.t, r.pool, issue)
 	seedPhase(r.t, r.pool, record.PhaseRow{Issue: key, Role: claim.RoleMerger, Claim: "change-merger", HandoffCommit: head})
+	r.pullRequestMerges(key, number, merge, head)
+}
+
+// pullRequestMerges is GitHub's merge, at merge and the rig's now, of issue's pull request number,
+// which the daemon holds open on the issue's branch at head until then.
+func (r *waitRig) pullRequestMerges(key string, number int, merge, head string) {
+	r.t.Helper()
 	seedPR(r.t, r.pool, record.PullRequest{State: record.PullRequestOpen, Issue: key, Repo: waitRepo, Number: number, Branch: claim.IssueBranch(key),
 		Base: "main", HeadSHA: head, Failing: []string{}})
 	r.fact(intake.PullRequestMerged{Repo: waitRepo, Number: number, MergeSHA: merge, HeadSHA: head, MergedAt: r.now})
@@ -1025,9 +1032,7 @@ func TestAChangeWhosePullRequestMergesInItsRetroEndsAtItsMerge(t *testing.T) {
 	rig.started(waitRoot, changeGeneration, 1)
 	rig.standIn(waitRoot, phase.Retro, "retro")
 	seedPhase(t, rig.pool, record.PhaseRow{Issue: waitRoot, Role: claim.RoleImplementer, Claim: "implementer-claim"})
-	seedPR(t, rig.pool, record.PullRequest{State: record.PullRequestOpen, Issue: waitRoot, Repo: waitRepo, Number: 44, Branch: claim.IssueBranch(waitRoot),
-		Base: "main", HeadSHA: headTwo, Failing: []string{}})
-	rig.fact(intake.PullRequestMerged{Repo: waitRepo, Number: 44, MergeSHA: waitLaterMerge, HeadSHA: headTwo, MergedAt: rig.now})
+	rig.pullRequestMerges(waitRoot, 44, waitLaterMerge, headTwo)
 	if got := rig.issue(waitRoot); got.Phase != phase.Retro || got.NextChange != changeGeneration || got.Merge.Number != 44 {
 		t.Fatalf("%s after #44 merged in its retro stands in %s with change %d open and the snapshot of #%d, want retro, change %d and #44",
 			waitRoot, got.Phase, got.NextChange, got.Merge.Number, changeGeneration)
