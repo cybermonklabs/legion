@@ -28,10 +28,11 @@ import (
 
 func TestMain(m *testing.M) { os.Exit(storetest.MainEager(m)) }
 
-// seedAtOnce seeds each of databases at once, a goroutine each, and answers each run. Each
-// database is its test's own (storetest.Open) and each render its own block ids (renderVersion),
-// so the seeds of a test, and those of the package's parallel tests, run at once in one process.
-func seedAtOnce(t *testing.T, databases ...*store.Store) []*seedRun {
+// seedAtOnce seeds each of databases at scale at once, a goroutine each, and answers each run.
+// Each database is its test's own (storetest.Open) and each render its own block ids
+// (renderVersion), so the seeds of a test, and those of the package's parallel tests, run at once
+// in one process.
+func seedAtOnce(t *testing.T, scale float64, databases ...*store.Store) []*seedRun {
 	t.Helper()
 	runs := make([]*seedRun, len(databases))
 	failures := make([]error, len(databases))
@@ -39,33 +40,43 @@ func seedAtOnce(t *testing.T, databases ...*store.Store) []*seedRun {
 	for index, database := range databases {
 		seeds.Go(func() {
 			started := time.Now()
-			runs[index], failures[index] = seed(context.Background(), database, testScale, io.Discard)
-			t.Logf("seed %d of %d at scale %v in %s", index+1, len(databases), testScale,
+			runs[index], failures[index] = seed(context.Background(), database, scale, io.Discard)
+			t.Logf("seed %d of %d at scale %v in %s", index+1, len(databases), scale,
 				time.Since(started).Round(time.Millisecond))
 		})
 	}
 	seeds.Wait()
 	for index, failure := range failures {
 		if failure != nil {
-			t.Fatalf("seed %d of %d at scale %v: %v", index+1, len(databases), testScale, failure)
+			t.Fatalf("seed %d of %d at scale %v: %v", index+1, len(databases), scale, failure)
 		}
 	}
 	return runs
 }
 
-// testScale is the scale the suite seeds at: about 200 issues, which is small enough that two
-// whole runs fit in one test and large enough that every arm of the graph, every size band and
-// every anchor shape holds rows.
+// testScale is the scale TestSeedAtASmallScale seeds its two databases at, and the scale of the
+// census each old-schema test holds its smaller seed to (oldSchemaScale): about 200 issues, which
+// is small enough that two whole runs fit in one test and large enough that every arm of the
+// graph, every size band and every anchor shape holds rows.
 const testScale = 0.01
+
+// oldSchemaScale is the scale the two tests of an older schema seed at
+// (TestSeedBuildsTermStatisticsOnMainsSchema, TestSeedCommentsOnTheSchemaBeforeAnswers). A seed is
+// Postgres's work, so a smaller data set is what makes them fast; and at this scale every table,
+// graph arm, size band and anchor shape their seed holds at testScale still holds rows, which each
+// test asserts against the census of its seed at testScale (testdata/seed-shapes-<test>.txt,
+// assertSeedKeepsItsShapes).
+const oldSchemaScale = 0.001
 
 // TestSeedAtASmallScale seeds two fresh databases and holds the pair, and then one of them, to
 // everything the seed promises. Both runs are in one test because each one takes most of a
 // minute: a test of its own for each check would seed six databases to read one data set. The two
-// seeds run at once, in this process (seedAtOnce).
+// seeds run at once, in this process (seedAtOnce), and so do the reads of the two databases that
+// the pair is compared on (readBothAtOnce).
 func TestSeedAtASmallScale(t *testing.T) {
 	t.Parallel()
 	first, second := storetest.Open(t), storetest.Open(t)
-	firstRun := seedAtOnce(t, first, second)[0]
+	firstRun := seedAtOnce(t, testScale, first, second)[0]
 
 	t.Run("two runs at one scale write the same rows", func(t *testing.T) {
 		assertSameRowCounts(t, first, second)
@@ -141,7 +152,8 @@ func TestSeedBuildsTermStatisticsOnMainsSchema(t *testing.T) {
 		`alter table search_term_totals drop column snapshot, drop column snapshot_at`); err != nil {
 		t.Fatalf("drop the snapshot columns 20261101182515 added: %v", err)
 	}
-	run := seedAtOnce(t, database)[0]
+	run := seedAtOnce(t, oldSchemaScale, database)[0]
+	assertSeedKeepsItsShapes(t, t.Name(), seedShapes(t, database, run))
 
 	var built int
 	if err := database.Pool.QueryRow(ctx, `select count(*) from search_term_totals`).Scan(&built); err != nil {
@@ -177,7 +189,8 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	if _, err := database.Pool.Exec(context.Background(), string(rollback)); err != nil {
 		t.Fatalf("restore the schema before comment answers: %v", err)
 	}
-	seedAtOnce(t, database)
+	run := seedAtOnce(t, oldSchemaScale, database)[0]
+	assertSeedKeepsItsShapes(t, t.Name(), seedShapes(t, database, run))
 	var replies int
 	if err := database.Pool.QueryRow(context.Background(), `select count(*) from comments where reply_to is not null`).Scan(&replies); err != nil {
 		t.Fatal(err)
@@ -350,13 +363,36 @@ func assertFilledDatabaseRefusal(t *testing.T, err error, counted string) {
 	}
 }
 
+// readBothAtOnce runs read over first and second at once, a goroutine each, and answers both
+// reads once both are done, so a comparison of the two databases waits on the slower read and not
+// on the sum of the two. Only the test's own goroutine may stop the test, so each read answers its
+// error and the test fails on it here, naming the run whose database it read.
+func readBothAtOnce[T any](t *testing.T, first, second *store.Store, read func(*store.Store) (T, error)) (T, T) {
+	t.Helper()
+	var firstValue, secondValue T
+	var firstErr, secondErr error
+	var reads sync.WaitGroup
+	reads.Go(func() { firstValue, firstErr = read(first) })
+	reads.Go(func() { secondValue, secondErr = read(second) })
+	reads.Wait()
+	if firstErr != nil {
+		t.Errorf("the first run's database: %v", firstErr)
+	}
+	if secondErr != nil {
+		t.Errorf("the second run's database: %v", secondErr)
+	}
+	if firstErr != nil || secondErr != nil {
+		t.FailNow()
+	}
+	return firstValue, secondValue
+}
+
 // assertSameRowCounts holds every table of the two databases to the same count. The tables are
 // read from the catalogue rather than listed here, so a table a later migration adds is covered
 // without this test being edited.
 func assertSameRowCounts(t *testing.T, first, second *store.Store) {
 	t.Helper()
-	firstCounts := rowCountsOf(t, first)
-	secondCounts := rowCountsOf(t, second)
+	firstCounts, secondCounts := readBothAtOnce(t, first, second, rowCountsOf)
 	for table, count := range firstCounts {
 		if other := secondCounts[table]; other != count {
 			t.Errorf("%s holds %d rows in the first run and %d in the second", table, count, other)
@@ -369,29 +405,28 @@ func assertSameRowCounts(t *testing.T, first, second *store.Store) {
 	}
 }
 
-func rowCountsOf(t *testing.T, database *store.Store) map[string]int {
-	t.Helper()
+func rowCountsOf(database *store.Store) (map[string]int, error) {
 	ctx := context.Background()
 	rows, err := database.Pool.Query(ctx, `
 		select table_name from information_schema.tables
 		where table_schema = 'public' and table_type = 'BASE TABLE' order by table_name
 	`)
 	if err != nil {
-		t.Fatalf("list the tables: %v", err)
+		return nil, fmt.Errorf("list the tables: %w", err)
 	}
 	tables, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		t.Fatalf("list the tables: %v", err)
+		return nil, fmt.Errorf("list the tables: %w", err)
 	}
 	counts := make(map[string]int, len(tables))
 	for _, table := range tables {
 		var count int
 		if err := database.Pool.QueryRow(ctx, `select count(*) from `+pgx.Identifier{table}.Sanitize()).Scan(&count); err != nil {
-			t.Fatalf("count %s: %v", table, err)
+			return nil, fmt.Errorf("count %s: %w", table, err)
 		}
 		counts[table] = count
 	}
-	return counts
+	return counts, nil
 }
 
 // checksums are the sorted samples the repeatability check compares, by table. Each names its
@@ -454,13 +489,9 @@ var checksums = []struct {
 
 func assertSameChecksums(t *testing.T, first, second *store.Store) {
 	t.Helper()
-	for _, item := range checksums {
-		query := fmt.Sprintf(
-			`select coalesce(md5(string_agg(row_text, '|' order by row_text)), 'empty')
-			 from (select concat_ws(':', %s) as row_text from %s) sample`,
-			item.columns, pgx.Identifier{item.table}.Sanitize())
-		firstSum := checksumOf(t, first, item.table, query)
-		secondSum := checksumOf(t, second, item.table, query)
+	firstSums, secondSums := readBothAtOnce(t, first, second, checksumsOf)
+	for index, item := range checksums {
+		firstSum, secondSum := firstSums[index], secondSums[index]
 		if firstSum != secondSum {
 			t.Errorf("%s: the two runs checksum differently (%s and %s)", item.table, firstSum, secondSum)
 		}
@@ -470,13 +501,20 @@ func assertSameChecksums(t *testing.T, first, second *store.Store) {
 	}
 }
 
-func checksumOf(t *testing.T, database *store.Store, table, query string) string {
-	t.Helper()
-	var sum string
-	if err := database.Pool.QueryRow(context.Background(), query).Scan(&sum); err != nil {
-		t.Fatalf("checksum %s: %v", table, err)
+// checksumsOf is the checksum of each sample of checksums in database, in the order checksums
+// lists them.
+func checksumsOf(database *store.Store) ([]string, error) {
+	sums := make([]string, len(checksums))
+	for index, item := range checksums {
+		query := fmt.Sprintf(
+			`select coalesce(md5(string_agg(row_text, '|' order by row_text)), 'empty')
+			 from (select concat_ws(':', %s) as row_text from %s) sample`,
+			item.columns, pgx.Identifier{item.table}.Sanitize())
+		if err := database.Pool.QueryRow(context.Background(), query).Scan(&sums[index]); err != nil {
+			return nil, fmt.Errorf("checksum %s: %w", item.table, err)
+		}
 	}
-	return sum
+	return sums, nil
 }
 
 // assertNoOwedWork holds the seeded database to the five counts settle.go's owedWorkCounts
@@ -1044,18 +1082,13 @@ var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
 func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	t.Helper()
 	ctx := context.Background()
-	var definition string
-	if err := database.Pool.QueryRow(ctx, `select pg_get_viewdef('graph_edges', true)`).Scan(&definition); err != nil {
-		t.Fatalf("read the graph_edges definition: %v", err)
-	}
-	arms := strings.Split(definition, "UNION ALL")
+	arms := graphEdgeArms(t, database)
 	if len(arms) != graphArmCount {
 		t.Fatalf("graph_edges has %d arms, not the %d migration 20261109215947 restates it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}
 	for index, arm := range arms {
-		arm = strings.TrimSuffix(strings.TrimSpace(arm), ";")
 		var rows int
 		if err := database.Pool.QueryRow(ctx, `select count(*) from (`+arm+`) arm`).Scan(&rows); err != nil {
 			t.Fatalf("count arm %d of graph_edges: %v\n%s", index+1, err, arm)

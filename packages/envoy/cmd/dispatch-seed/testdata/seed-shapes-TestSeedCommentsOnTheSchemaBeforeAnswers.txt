@@ -1,0 +1,97 @@
+# The census (seedShapes) of TestSeedCommentsOnTheSchemaBeforeAnswers's seed at scale 0.01 (testScale), at
+# merge base 1a37a9ffe738c7e7053ce2f4e1c13ef78dd14d66: each shape that held rows there, a tab, and its count.
+# assertSeedKeepsItsShapes holds the test's seed at oldSchemaScale to a row of each name; it reads no count.
+# Captured with the test edited to seed at SEED_CENSUS_SCALE and to log formatShapes(seedShapes(t, database, run))
+# after its seed, keeping the lines whose count is above zero, by:
+#   SEED_CENSUS_SCALE=0.01 DISPATCH_TEST_DATABASE_URL=… go test -count=1 -v -run '^TestSeedCommentsOnTheSchemaBeforeAnswers$' ./cmd/dispatch-seed/
+anchor paragraph in another document asks	45
+anchor paragraph in another document comments	528
+anchor paragraph in the anchored document asks	8
+anchor paragraph in the anchored document comments	88
+anchor table row in another document asks	23
+anchor table row in another document comments	106
+anchor table row in the anchored document asks	4
+anchor table row in the anchored document comments	18
+graph arm 01	1023
+graph arm 02 child_of->issue	158
+graph arm 03 blocked_by->issue	198
+graph arm 04 attached_to->issue	333
+graph arm 05 anchored_to->artifact	160
+graph arm 06 anchored_to->artifact	740
+graph arm 07 owned_by->artifact	160
+graph arm 08 owned_by->artifact	1480
+graph arm 09 replies_to->comment	370
+graph arm 10 replies_to->ask	740
+graph arm 11 replies_to->message	400
+graph arm 12 followed_by->session	800
+graph arm 13 part_of->component	20
+graph arm 14 depends_on->component	10
+graph arm 15 affects->component	100
+graph arm 16	272
+graph arm 17 part_of->artifact	8000
+graph arm 18 part_of->comment	11099
+graph arm 19 part_of->message	1500
+graph arm 20 part_of->ask	2291
+graph arm 21	200
+graph arm 22	50
+graph arm 23	500
+graph arm 24 replies_to->comment_block	370
+graph arm 25 replies_to->ask_block	185
+graph arm 26 replies_to->message_block	67
+size band 1-5 KB	1004
+size band 10-20 KB	390
+size band 100-660 KB	4
+size band 5-10 KB	602
+table architecture_snapshots	10
+table architecture_sources	10
+table artifact_versions	2000
+table artifacts	400
+table ask_block_refs	500
+table ask_block_state	800
+table ask_block_texts	2291
+table ask_blocks	2291
+table ask_followers	800
+table asks	800
+table block_refs	272
+table comment_block_refs	200
+table comment_block_state	3700
+table comment_block_texts	11247
+table comment_blocks	11173
+table comment_watermarks	221
+table comments	3700
+table component_depends	10
+table components	30
+table document_block_texts	8000
+table document_block_versions	400
+table document_blocks	8000
+table document_indexed_versions	400
+table document_search	400
+table document_search_backfill	1
+table embedding_window_states	5500
+table embeddings	10289
+table embeddings_project_key_backfill	1
+table embeddings_rate_limit	1
+table events	13420
+table graph_nodes	13772
+table graph_tuples	63641
+table issue_component_members	100
+table issue_components	50
+table issue_links	198
+table issues	200
+table message_block_refs	50
+table message_block_state	600
+table message_blocks	1512
+table messages	600
+table people	1
+table priority_nodes	20
+table priority_tuples	160
+table projects	10
+table refs	1023
+table refs_forms_owed	4300
+table refs_grammar_owed	4700
+table schema_migrations	366
+table search_term_stats	133034
+table search_term_totals	10
+table session_titles_backfill	1
+table suggestion_outcome_cursor	1
+table user_threads	3590
