@@ -88,6 +88,7 @@ import {
   NEW_THREAD_BOX,
   NOT_FOUND_LINE,
   newThreadPanel,
+  OPEN_IN_CONVERSATION,
   openedRecord,
   openRow,
   PLANNER,
@@ -992,7 +993,7 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
         ).toHaveCount(0);
       } else {
         await expect(link, `the record on text ${id} draws no link to its node`).toHaveText(
-          "Open in Conversation"
+          OPEN_IN_CONVERSATION
         );
         await expect(link, `the link of ${id} goes elsewhere than its node`).toHaveAttribute(
           "href",
@@ -1019,15 +1020,26 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
     const stored = (await getComment(comments.post)).replies?.find((one) => one.id === reply.id);
     expect(stored?.answers, "the reply is stored answering another entry").toBe(comments.postQuote);
 
-    // Each link opens the view that draws its node: Conversation's outline at the post and at the
-    // message.
-    for (const [id, drawn] of [
-      [comments.postQuote, nodeRow(page, comments.post).first()],
-      [messages.quotingReply, nodeRow(page, messages.quoting).first()],
+    // Each link opens the view that draws its node, Conversation, with the focus on the post's
+    // row and on the message's. The page stands at the quoting comment's record since the reload,
+    // so that record's link is followed there, and the message's record is loaded.
+    for (const [id, post] of [
+      [comments.postQuote, comments.post],
+      [messages.quotingReply, messages.quoting],
     ] as const) {
-      await loadThreads(page, key, id);
+      if (id === messages.quotingReply) await loadThreads(page, key, id);
       await openedRecord(page).locator(SELECTORS.nodeLink).click();
-      await expect(drawn, `the link of ${id} opens no view that draws its node`).toBeVisible();
+      await expectActivePreset(page, PRESET_NAMES.conversation);
+      await expectOpeningLanded(page);
+      await expect(
+        nodeRow(page, post).first(),
+        `the link of ${id} opens no view that draws its node`
+      ).toBeVisible();
+      await expect
+        .poll(() => focusedNodeId(page), {
+          message: `the link of the record ${id} does not focus its node ${post} in Conversation`,
+        })
+        .toBe(post);
     }
   });
 });

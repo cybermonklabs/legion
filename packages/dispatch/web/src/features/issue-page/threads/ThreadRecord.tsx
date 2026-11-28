@@ -16,6 +16,7 @@ import { takesTypedText } from "../../shell/keymap";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { authorText, pageChrome } from "../page-structure";
 import { CONTROL_LABELS, THREADS_WORDS } from "../page-words";
+import { ROW_LINK } from "../row-references";
 import { CommentBox, CommentEditBox } from "./CommentBox";
 import { type MessageAddress, MessageBox } from "./MessageBox";
 import { depthStyle, ENTRY_CONTROL, ENTRY_INDENT, ReadMarkFoot, RecordEntry } from "./RecordEntry";
@@ -282,7 +283,7 @@ export function OpenedRecord({
       {link === undefined ? null : (
         <p>
           <Link
-            className={`text-sm underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
+            className={`text-sm ${ROW_LINK} ${pageMutedText}`}
             data-thread-node-link=""
             to={link}
             {...pageChrome}
