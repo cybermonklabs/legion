@@ -9,6 +9,7 @@ import (
 	"go/parser"
 	"go/token"
 	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
@@ -226,6 +227,11 @@ func requireReadersSeeWholeValues(t *testing.T, ctx context.Context, pool *store
 				_ = pmdoc.HasLinkKinds()
 				_ = pmdoc.IsTypedBlock("claim")
 				_ = pmdoc.BlockPointers(tree)
+				// Yield after each whole-value read, so the installer, whose reinstall each
+				// round waits on, runs between the readers' reads instead of competing with
+				// eight busy loops for the CPUs. Every reader still reads continuously through
+				// each reinstall.
+				runtime.Gosched()
 			}
 		}()
 	}
