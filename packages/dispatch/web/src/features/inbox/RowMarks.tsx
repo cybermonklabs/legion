@@ -9,7 +9,7 @@ import type { ReactNode } from "react";
 
 import type { AskUrgency } from "../../api/types";
 import { badgeBlocking, badgeHigh, badgeLow, badgeMed, priorityBadge } from "../../theme/classes";
-import type { PriorityView } from "../issue/issue-priority";
+import { inheritedPriorityWords, type PriorityView } from "../issue/issue-priority";
 import { URGENCY_LABELS } from "./ask-urgency";
 import { TYPE_LABELS } from "./grouping";
 import type { InboxRowType } from "./list-row";
@@ -51,12 +51,12 @@ export function RowKindIcon({ type }: { type: InboxRowType }): ReactNode {
  *  whose issue has none, and every row with no issue at all, wears nothing. The tag draws the
  *  level the issue works at. A row has no room for the link the board and the issue page draw
  *  beside an inherited one, so the tag says where it comes from in its name and its tooltip
- *  instead: "P0, from ACME-1". */
+ *  instead: "P0, from ACME-1" (`inheritedPriorityWords`). */
 export function RowPriorityTag({ priority }: { priority: PriorityView }): ReactNode {
   const { from, level } = priority;
   if (level === null) return null;
   const tone = priorityBadge[level];
-  const words = from === null ? undefined : `P${level}, from ${from}`;
+  const words = from === null ? undefined : inheritedPriorityWords(level, from);
   return (
     <span
       className={`inline-flex shrink-0 items-center rounded-sm px-1.5 py-0.5 text-xs font-semibold whitespace-nowrap ${tone.bg} ${tone.text}`}

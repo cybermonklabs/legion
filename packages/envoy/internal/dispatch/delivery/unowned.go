@@ -2,7 +2,6 @@ package delivery
 
 import (
 	"context"
-	"strconv"
 
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -48,22 +47,13 @@ const (
 )
 
 // openP0Descent is the term every read of the open P0 issues starts with (here and openP0KeysQuery
-// in store.go): p0 holds each issue whose own priority is 0, open or done, at depth 0, and each
-// issue under one of them that takes its P0, at its depth below it, with the columns its readers
-// read. It is a `union all`: an issue is reached only through its one parent, and a seed, whose
-// own priority is set, never as a child, so no row comes twice. The cap is J1's, the most links a
-// priority passes down, and bounds the walk whatever the rows hold.
-var openP0Descent = `with recursive p0 as (
-		select key, project_key, number, title, status, claimed_by, route, 0 as depth
-		from issues where ` + openP0Predicate + `
-		union all
-		select key, project_key, number, title, status, claimed_by, route, 0
-		from issues where ` + doneP0Predicate + `
-		union all
-		select c.key, c.project_key, c.number, c.title, c.status, c.claimed_by, c.route, p.depth + 1
-		from p0 p join issues c on c.parent_key = p.key
-		where c.priority is null and p.depth < ` + strconv.Itoa(refs.IssueDepthCap) + `
-	)
+// in store.go): refs.IssueInheritingDescent, the one descent by the priority-resolution rule, from
+// two seeds, the open and the done issues whose own priority is 0. p0 holds each of them at depth
+// 0, and each issue under one of them that takes its P0, at its depth below it, with the columns
+// its readers read. The two seeds hold no issue in common, so no row comes twice.
+var openP0Descent = `with recursive ` + refs.IssueInheritingDescent("p0",
+	`c.key, c.project_key, c.number, c.title, c.status, c.claimed_by, c.route`,
+	openP0Predicate, doneP0Predicate) + `
 	`
 
 var (

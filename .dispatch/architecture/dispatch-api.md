@@ -48,7 +48,7 @@ A write of an issue's own priority or of its parent that moves what the issue pa
 Its `changed` names `resolved_priority`, `priority_from` or both, and nothing else, which is what `events.Quiet` reads.
 Every `PATCH` that names a priority or a parent, each step of a status change that unlinks a child, and every create under a parent take the deployment's dependency lock before any owner lock (`lockIssueDependencyWrite`), so two such writes run one after the other.
 Under that lock the write reads the issues under it that take their priority from it (`refs.IssueInheritingDescendantRows`), and it takes their owner locks in its one lock call, so the transaction holds the owner of every event it appends before its first append.
-A write that moves nothing the issue passes down reads and locks none of them (`movesPassedDownPriority`).
+A write that moves nothing the issue passes down reads and locks none of them: it reads what it moves once, under that lock (`readPriorityMove`, `p0_scope.go`), and the descendants it reads, the `changed` of their events and the check of its move or clear all follow from that one read.
 
 The OAuth scope `p0` opens no route: it lets a write make work P0.
 A priority of 0 on `POST /api/v1/issues` and `PATCH /api/v1/issues/{key}` needs it when the write makes the issue's own priority 0, from none or from another value.

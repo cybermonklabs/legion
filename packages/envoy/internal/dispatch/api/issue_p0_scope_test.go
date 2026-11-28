@@ -194,12 +194,17 @@ func requireP0Refusal(t *testing.T, response *httptest.ResponseRecorder) {
 	}
 }
 
-// requireNoIssueTitled fails unless brokerTestProject holds no issue titled title: a refused
-// create made none.
-func requireNoIssueTitled(t *testing.T, database *store.Store, title string) {
+// requireNoIssueTitled fails unless a refused create left no issue titled title, in any project,
+// and no near_copy_checks row of that title. A create's near_copy_checks row may be written after
+// its answer (recordNearCopyCheck), so it waits out the server's detached writes first.
+func requireNoIssueTitled(t *testing.T, rig *brokerTokenRig, title string) {
 	t.Helper()
-	if made := countRows(t, database, `select count(*) from issues where project_key = $1 and title = $2`, brokerTestProject, title); made != 0 {
-		t.Errorf("the refused create left %d issues titled %q in %s, want none: a credential without p0 made an issue at priority 0", made, title, brokerTestProject)
+	awaitBackgroundWrites(t, rig.served)
+	if made := countRows(t, rig.database, `select count(*) from issues where title = $1`, title); made != 0 {
+		t.Errorf("the refused create left %d issues titled %q, want none", made, title)
+	}
+	if checks := countRows(t, rig.database, `select count(*) from near_copy_checks where title = $1`, title); checks != 0 {
+		t.Errorf("the refused create left %d near_copy_checks rows titled %q, want none", checks, title)
 	}
 }
 
@@ -247,10 +252,10 @@ var p0IssueWrites = map[string]p0IssueWrite{
 		switch credential.p0 {
 		case p0RefusedFirst:
 			requireRefused(t, response, http.StatusForbidden, credential.code)
-			requireNoIssueTitled(t, rig.database, title)
+			requireNoIssueTitled(t, rig.brokerTokenRig, title)
 		case p0Refused:
 			requireP0Refusal(t, response)
-			requireNoIssueTitled(t, rig.database, title)
+			requireNoIssueTitled(t, rig.brokerTokenRig, title)
 		case p0Written:
 			if response.Code != http.StatusCreated {
 				t.Fatalf("status=%d body=%s, want 201: the credential holds p0", response.Code, response.Body.String())
@@ -485,12 +490,7 @@ func TestARefusedP0WriteWritesNothingElseOfItsRequest(t *testing.T) {
 			"project": brokerTestProject, "title": title, "labels": []string{"area", "ops"}, "priority": 0, "force": true,
 		})
 		requireP0Refusal(t, refused)
-		// A create's near_copy_checks row may be written after its answer (recordNearCopyCheck).
-		awaitBackgroundWrites(t, rig.served)
-		requireNoIssueTitled(t, rig.database, title)
-		if checks := countRows(t, rig.database, `select count(*) from near_copy_checks where title = $1`, title); checks != 0 {
-			t.Errorf("the refused create left %d near_copy_checks rows titled %q, want none", checks, title)
-		}
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
 	})
 
 	t.Run("a close with priority 0 of an issue whose document holds an unsettled edit", func(t *testing.T) {
@@ -571,7 +571,7 @@ func TestTheIssuesOwnPriorityDecidesTheP0Check(t *testing.T) {
 			"project": brokerTestProject, "title": title, "parent": root, "priority": 0, "force": true,
 		})
 		requireP0Refusal(t, refused)
-		requireNoIssueTitled(t, rig.database, title)
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
 	})
 
 	t.Run("a create of a child with no priority", func(t *testing.T) {
@@ -580,7 +580,7 @@ func TestTheIssuesOwnPriorityDecidesTheP0Check(t *testing.T) {
 			"project": brokerTestProject, "title": title, "parent": root, "force": true,
 		})
 		requireP0Refusal(t, refused)
-		requireNoIssueTitled(t, rig.database, title)
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
 	})
 }
 

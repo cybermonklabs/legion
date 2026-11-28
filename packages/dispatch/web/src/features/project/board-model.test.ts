@@ -401,6 +401,43 @@ test("dragging an inherited P0 card to No priority moves nothing", () => {
   ).toBeUndefined();
 });
 
+/** The keys of the `lane`+`todo` cell of `issues` as the board groups them. */
+function todoCellKeys(issues: readonly IssueSummary[], lane: number | null): string[] | undefined {
+  return groupIssuesByLane(issues)
+    .find((entry) => entry.lane === lane)
+    ?.columns.find(({ status }) => status === "todo")
+    ?.issues.map(({ key }) => key);
+}
+
+// ACME-3 is a root, so once its own P2 is cleared it inherits nothing: its card moves to No
+// priority before Dispatch answers, as it did before an issue could inherit a priority.
+test("dragging an own P2 root to No priority moves it at once", () => {
+  const moved = moveIssueToLane(priorityBoard, "ACME-3", "todo", null, 0);
+  expect(moved?.input, "board drag to No priority PATCH").toEqual({ priority: null, rank: {} });
+  expect(
+    moved?.issues.find(({ key }) => key === "ACME-3"),
+    "board's optimistic root with no priority"
+  ).toMatchObject({ priority: null, priority_from: null, resolved_priority: null });
+  expect(todoCellKeys(moved?.issues ?? [], null), "board No priority lane").toEqual(["ACME-3"]);
+  expect(todoCellKeys(moved?.issues ?? [], 2), "board P2 lane").toEqual([]);
+});
+
+// ACME-4 is under the P0 ACME-1, so once its own P2 is cleared it takes what Dispatch resolves
+// for it: until Dispatch answers, its card keeps the level it drew rather than guess one.
+test("dragging an own P2 child to No priority keeps its level until Dispatch answers", () => {
+  const board = [
+    ...priorityBoard,
+    issue({ key: "ACME-4", parent: "ACME-1", priority: 2, rank: "d" }),
+  ];
+  const moved = moveIssueToLane(board, "ACME-4", "todo", null, 0);
+  expect(moved?.input, "board drag to No priority PATCH").toEqual({ priority: null, rank: {} });
+  expect(
+    moved?.issues.find(({ key }) => key === "ACME-4"),
+    "board's optimistic child, waiting on what it inherits"
+  ).toMatchObject({ priority: null, priority_from: null, resolved_priority: 2 });
+  expect(todoCellKeys(moved?.issues ?? [], 2), "board P2 lane").toEqual(["ACME-3", "ACME-4"]);
+});
+
 test("dragging an own P2 onto an inherited P0 card writes its own P0", () => {
   const target = laneDropTarget(priorityBoard, "ACME-3", "ACME-2");
   expect(target, "board drop target takes the receiving card's resolved lane").toEqual({

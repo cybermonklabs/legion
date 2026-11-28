@@ -86,7 +86,7 @@ func inboxReplyMatchQuery(source, mark string) string {
 	), ` + refs.IssuePriorityTerms + `
 	select o.thread_id::text, o.issue_key, o.artifact_id::text, o.version
 	from owned o
-	left join priority_resolved on priority_resolved.key = o.issue_key
+	` + refs.IssuePriorityJoinOn("o.issue_key") + `
 	where $5::int[] is null or ` + refs.IssuePriorityResolved + ` = any($5::int[])
 	   or ($6::boolean and ` + refs.IssuePriorityResolved + ` is null)
 	order by o.thread_id`

@@ -19,7 +19,7 @@ import {
   badgeSelectPageWrapper,
   badgeSelectWrapper,
 } from "./badge-select";
-import type { PriorityView } from "./issue-priority";
+import { inheritedPriorityWords, type PriorityView } from "./issue-priority";
 import { PrioritySource } from "./PrioritySource";
 import { type IssuePriorityWrite, useIssuePriority } from "./useIssuePriority";
 
@@ -115,7 +115,7 @@ export function PriorityEditor({
   const inheritedWords =
     from === null || priority === null
       ? null
-      : `P${priority}, ${page?.CONTROL_LABELS.priority_from ?? "from"} ${from}`;
+      : inheritedPriorityWords(priority, from, page?.CONTROL_LABELS.priority_from);
   // Inside `NoTooltips` the priority is a value, so it keeps `max-w-full` and breaks anywhere,
   // and its wrapper narrows to the line rather than keep its width. The header variant is the
   // new page's shape alone, so it wraps on every surface. The source sits between the badge and

@@ -349,8 +349,9 @@ export function laneDropTarget(
  * and/or `priority` in the same PATCH when either changes. A card's lane is the priority its
  * issue works at, so a drag within the lane of an inherited priority writes none, and the card
  * keeps inheriting it. A drag to another lane makes that lane's priority the issue's own, which
- * is also the one it works at, from nowhere else; a drag to No priority clears the own priority
- * and leaves what the issue inherits to Dispatch's answer, as a pick of none does. A card that
+ * is also the one it works at, from nowhere else; a drag to No priority clears the own priority. A
+ * root inherits nothing, so a root's card moves to No priority at once; a child's keeps the level
+ * it drew and leaves what it inherits to Dispatch's answer, as a pick of none does. A card that
  * inherits its priority has no own priority to clear, so a drag of it to No priority is
  * undefined: the card would stay in its inherited lane, at a rank taken from another lane.
  */
@@ -380,15 +381,24 @@ export function moveIssueToLane(
     inLane,
     (issue) => {
       if (!relaned) return { ...issue, status: targetStatus };
-      return targetLane === null
-        ? { ...issue, status: targetStatus, priority: null }
-        : {
+      if (targetLane !== null) {
+        return {
+          ...issue,
+          status: targetStatus,
+          priority: targetLane,
+          priority_from: null,
+          resolved_priority: targetLane,
+        };
+      }
+      return issue.parent === null
+        ? {
             ...issue,
             status: targetStatus,
-            priority: targetLane,
+            priority: null,
             priority_from: null,
-            resolved_priority: targetLane,
-          };
+            resolved_priority: null,
+          }
+        : { ...issue, status: targetStatus, priority: null };
     },
     (candidate) => candidate.status === targetStatus && inLane(candidate),
     isVisible

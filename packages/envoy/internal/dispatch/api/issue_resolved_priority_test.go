@@ -296,20 +296,6 @@ func (r *brokerTokenRig) requireResolvedStatesKept(t *testing.T, names issueName
 	}
 }
 
-// requireNothingFiled fails unless a refused create left no issue titled title, in any project,
-// and no near_copy_checks row of that title. A create's near_copy_checks row may be written after
-// its answer (recordNearCopyCheck), so it waits out the server's detached writes first.
-func requireNothingFiled(t *testing.T, rig *brokerTokenRig, title string) {
-	t.Helper()
-	awaitBackgroundWrites(t, rig.served)
-	if made := countRows(t, rig.database, `select count(*) from issues where title = $1`, title); made != 0 {
-		t.Errorf("the refused create left %d issues titled %q, want none", made, title)
-	}
-	if checks := countRows(t, rig.database, `select count(*) from near_copy_checks where title = $1`, title); checks != 0 {
-		t.Errorf("the refused create left %d near_copy_checks rows titled %q, want none", checks, title)
-	}
-}
-
 // fileChild is the create, sent by send, of a new issue of project under parent with fields and no
 // priority unless fields names one, naming session as its actor where session is not "" (a bearer
 // that proves no session names the one it acts as), and the title it names.
@@ -1030,7 +1016,7 @@ func TestANewChildOfAP0IssueNeedsP0UnlessItsParentsArchitectFilesIt(t *testing.T
 		t.Helper()
 		title, response := rig.fileChild(t, shared.send, project, parent, session, nil)
 		requireP0Refusal(t, response)
-		requireNothingFiled(t, rig.brokerTokenRig, title)
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
 	}
 	// filed fails unless session's create of a new issue of project with fields, under parent, an
 	// issue of seed, writes, and the new issue reads as want says.
@@ -1089,7 +1075,7 @@ func TestANewChildOfAP0IssueNeedsP0UnlessItsParentsArchitectFilesIt(t *testing.T
 		t.Run("M0's architect named on the shared token", func(t *testing.T) {
 			title, response := proven.fileChild(t, proven.credential(t, legionSharedToken).send, brokerTestProject, seed.m0, architectOfM0, nil)
 			requireP0Refusal(t, response)
-			requireNothingFiled(t, proven.brokerTokenRig, title)
+			requireNoIssueTitled(t, proven.brokerTokenRig, title)
 		})
 		t.Run("a broker token that proves M0's architect", func(t *testing.T) {
 			_, response := proven.fileChild(t, proven.provenSession(t, architectOfM0).send, brokerTestProject, seed.m0, "", nil)
@@ -1116,7 +1102,7 @@ func TestANewChildOfAP0IssueNeedsP0UnlessItsParentsArchitectFilesIt(t *testing.T
 		t.Run("a create under the root's public child", func(t *testing.T) {
 			const title = "Filed under the public child of the private P0 root"
 			requireP0Refusal(t, create(child, title)())
-			requireNothingFiled(t, private.brokerTokenRig, title)
+			requireNoIssueTitled(t, private.brokerTokenRig, title)
 		})
 	})
 }
@@ -1175,7 +1161,7 @@ func TestARefusedMoveClearOrCreateWritesNothingElseOfItsRequest(t *testing.T) {
 		seed := rig.freshSeed(t)
 		title, response := rig.fileChild(t, shared.send, brokerTestProject, seed.m0, holdsNoRole, map[string]any{"labels": []string{"area", "ops"}})
 		requireP0Refusal(t, response)
-		requireNothingFiled(t, rig.brokerTokenRig, title)
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
 	})
 }
 
@@ -1250,7 +1236,7 @@ var resolvedP0Requests = map[string]func(t *testing.T, rig *legionStatusRig){
 		seed := rig.freshSeed(t)
 		title, response := rig.fileChild(t, rig.credential(t, legionSharedToken).send, brokerTestProject, seed.a, holdsNoRole, nil)
 		requireP0Refusal(t, response)
-		requireNothingFiled(t, rig.brokerTokenRig, title)
+		requireNoIssueTitled(t, rig.brokerTokenRig, title)
 	},
 	"PATCH /api/v1/issues/{key}": func(t *testing.T, rig *legionStatusRig) {
 		t.Helper()

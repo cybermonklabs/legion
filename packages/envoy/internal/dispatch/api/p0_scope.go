@@ -110,11 +110,109 @@ func (write p0Write) movesOrClears() bool {
 	return (write.namesParent && write.parent != nil) || (write.namesPriority && write.priority == nil)
 }
 
+// passedDown is what an issue passes down to each issue under it that takes its priority from it
+// (refs.IssueInheritingDescendantRows): its own priority, from the issue itself, where it has one,
+// else the priority it resolves to and the issue that one comes from (refs.IssuePriorityTerms).
+// Each of those issues resolves to exactly this pair (J1 of dispatch://INFRA-5793), so a write of
+// the issue that moves it moves theirs with it, and a write that keeps it moves none of theirs. Its
+// priority is also the one the issue itself resolves to.
+type passedDown struct {
+	priority *int
+	from     *string
+}
+
+// passedDownPriority is what the issue key passes down (passedDown), where own is its own
+// priority, resolved the priority it resolves to and from the issue that one comes from.
+func passedDownPriority(key string, own, resolved *int, from *string) passedDown {
+	if own != nil {
+		return passedDown{priority: own, from: &key}
+	}
+	return passedDown{priority: resolved, from: from}
+}
+
+// priorityMove is what a write that names the own priority or the parent of an issue does to what
+// the issue passes down, as readPriorityMove reads it once for the write. Each rule of such a
+// write that turns on what the issue passes down follows from this one value: which issues under
+// it the write reads and locks, and the changed of the issue.updated it appends on each of them
+// (changed), and the p0 check of its move or clear (makesP0, refuseResolvedP0WithoutScope). The
+// zero value moves nothing and refuses nothing: it is the move of a write that names neither field,
+// and of a key that no issue holds.
+type priorityMove struct {
+	// found is whether an issue holds the key the move was read for.
+	found bool
+	// own is the issue's own priority before the write, the column refuseP0WithoutScope judges.
+	own *int
+	// before and after are what the issue passes down before the write and after it. after.from is
+	// the issue the priority after the write comes from, which a refused clear names
+	// (p0ClearRefusal).
+	before, after passedDown
+	// changed names each of resolved_priority and priority_from whose half of what the issue passes
+	// down the write moves, in the order issueChangedFields names them, and none where it moves
+	// neither. A move of priority_from alone counts, as when an own 0 is set or cleared under a P0
+	// issue.
+	changed []string
+}
+
+// makesP0 reports whether the write makes the priority the issue resolves to go from 1 to 3, or
+// none, to 0: the priority of what an issue passes down is the one it resolves to, before the write
+// and after it.
+func (move priorityMove) makesP0() bool {
+	return !isPriorityZero(move.before.priority) && isPriorityZero(move.after.priority)
+}
+
+// readPriorityMove reads through q what write, a write that names the own priority or the parent
+// of the issue key, does to what key passes down. Before the write, that is key's own priority
+// where it has one, else the priority it resolves to (readIssuePriorityStanding). After it, it is
+// key's own priority after the write where it has one; else what its parent after the write passes
+// down, the parent the write names or the one key has where the write names none, read by the same
+// walk; else none, for a root with no priority. A parent that no issue holds passes down nothing:
+// the write's own read of its parent refuses it (validateIssueParent). A key that no issue holds
+// answers the zero priorityMove and reads no parent.
+//
+// It takes no lock. writeIssue reads it once, under the dependency lock that every write of a
+// priority or a parent takes and before any owner lock, so the priorities and the parents it reads
+// stand until the write commits, and a write that moves nothing under key locks no issue there;
+// refuseP0BeforeSettlement reads it on the pool, before a close settles the issue's documents.
+func readPriorityMove(ctx context.Context, q queryer, key string, write p0Write) (priorityMove, error) {
+	standing, found, err := readIssuePriorityStanding(ctx, q, key)
+	if err != nil || !found {
+		return priorityMove{}, err
+	}
+	move := priorityMove{
+		found: true, own: standing.own,
+		before: passedDownPriority(key, standing.own, standing.resolved, standing.from),
+	}
+	own, parent := standing.own, standing.parent
+	if write.namesPriority {
+		own = write.priority
+	}
+	if write.namesParent {
+		parent = write.parent
+	}
+	if own != nil || parent == nil {
+		move.after = passedDownPriority(key, own, nil, nil)
+	} else {
+		above, _, err := readIssuePriorityStanding(ctx, q, *parent)
+		if err != nil {
+			return priorityMove{}, err
+		}
+		move.after = passedDownPriority(*parent, above.own, above.resolved, above.from)
+	}
+	if !intPointersEqual(move.before.priority, move.after.priority) {
+		move.changed = append(move.changed, "resolved_priority")
+	}
+	if !stringPointersEqual(move.before.from, move.after.from) {
+		move.changed = append(move.changed, "priority_from")
+	}
+	return move, nil
+}
+
 // issuePriorityStanding is what the p0 checks read of one issue: its own priority, its parent, the
 // priority it resolves to (refs.IssuePriorityTerms) and the issue that priority comes from (nil
 // where it is its own or there is none), and its project with whether that project is private and
-// whether its proven-sessions setting is on. writeIssue fills the first three from the issue it
-// read under its owner lock (loadIssue answers them); readIssuePriorityStanding reads all of them.
+// whether its proven-sessions setting is on. readIssuePriorityStanding reads it: of the written
+// issue and its parent after the write for readPriorityMove, and of a new issue's parent for
+// refuseNewChildP0WithoutScope.
 type issuePriorityStanding struct {
 	own, resolved           *int
 	parent, from            *string
@@ -159,58 +257,45 @@ func readIssuePriorityStanding(ctx context.Context, q queryer, key string) (issu
 // refuseResolvedP0WithoutScope is the one rule of a move and a clear (J2 of dispatch://INFRA-5793):
 // a write of the issue key that names a parent, or clears key's own priority, from a credential
 // that does not hold p0, is 403 OAUTH_SCOPE_REQUIRED naming p0 where it makes the priority key
-// resolves to go from 1 to 3, or none, to 0. before is key as it stands before the write: its own
-// priority, its parent and the priority it resolves to.
+// resolves to go from 1 to 3, or none, to 0 (priorityMove.makesP0). move is what the write does to
+// what key passes down, as readPriorityMove read it.
 //
 // The rule is decided on key alone. Each issue under key whose own priority is none, with none
 // between it and key, resolves to what key passes down, which is key's own priority where key has
 // one and else what key resolves to; so each of them goes from not 0 to 0 exactly when key does,
 // and an issue under key with a priority of its own takes nothing from key. After the write, key
 // resolves to its own priority where it has one, else to what its parent after the write resolves
-// to (the parent the write names, or the one it has where the write names none), else to none: a
-// root with no priority (passedDownAfter, the rule movesPassedDownPriority reads too). So a move of
-// an issue that keeps a priority of its own, and a move that leaves what key resolves to at 0,
-// refuse nothing, and a detach never does (movesOrClears).
+// to, else to none: a root with no priority. So a move of an issue that keeps a priority of its
+// own, and a move that leaves what key resolves to at 0, refuse nothing, and a detach never does
+// (movesOrClears).
 //
-// That parent's priority is read through q by the walk every issue read resolves a priority by,
-// unless above holds it already, and above is nil where the caller has read none. writeIssue asks
-// it under the write's locks, where the dependency lock that every write of a priority or a parent
-// takes holds the chain above key still, right after refuseP0WithoutScope, with above as
-// movesPassedDownPriority left it under that lock, so the write reads the parent once;
-// refuseP0BeforeSettlement asks it on the pool before a close settles the issue's documents.
-func refuseResolvedP0WithoutScope(ctx context.Context, q queryer, credential *model.Credential, key string, write p0Write, before issuePriorityStanding, above *parentStanding) error {
-	if !write.movesOrClears() || isPriorityZero(before.resolved) || credential.Holds(model.ScopeP0) {
-		return nil
-	}
-	if above == nil {
-		above = &parentStanding{}
-	}
-	// from is the issue the priority after the write comes from, which a refused clear names: a
-	// clear leaves key no priority of its own, so it is the parent's or the one the parent takes.
-	after, from, err := passedDownAfter(ctx, q, key, write, before, above)
-	if err != nil {
-		return err
-	}
-	if !isPriorityZero(after) {
+// It reads nothing. writeIssue asks it under the write's locks, right after refuseP0WithoutScope,
+// with the move it read under the dependency lock that every write of a priority or a parent
+// takes, which holds the chain above key still until the write commits; refuseP0BeforeSettlement
+// asks it with a move read on the pool before a close settles the issue's documents.
+func refuseResolvedP0WithoutScope(credential *model.Credential, key string, write p0Write, move priorityMove) error {
+	if !write.movesOrClears() || !move.makesP0() || credential.Holds(model.ScopeP0) {
 		return nil
 	}
 	if write.namesParent && write.parent != nil {
 		return missingScopeError(model.ScopeP0, p0MoveRefusal(key, *write.parent))
 	}
-	return missingScopeError(model.ScopeP0, p0ClearRefusal(key, *from))
+	// A clear leaves key no priority of its own, so the P0 after it comes from key's parent, or
+	// from the issue that parent takes it from: the refusal names that issue.
+	return missingScopeError(model.ScopeP0, p0ClearRefusal(key, *move.after.from))
 }
 
 // refuseP0BeforeSettlement is the p0 checks of a PATCH that closes the issue key, asked before the
 // close settles the issue's documents (settleIssueBeforeClose), which writes document versions and
 // asks: refuseP0WithoutScope for a close that names priority 0, and refuseResolvedP0WithoutScope
 // for a close that clears the issue's own priority or moves it under a parent. Where the
-// credential does not hold p0, it reads key's own priority, its parent and the priority it resolves
-// to on the pool, with no lock held, and, for a close that then resolves through a parent, that
-// parent's, and answers the 403 itself where either rule refuses, so such a close settles nothing.
-// The checks under the owner lock decide each write this read lets through: a close whose
-// priorities move between the two reads can settle the documents and is then refused there, as a
-// close judgeSpecWriter refuses can be. An issue that is not there is left to the lock step's own
-// answer.
+// credential does not hold p0, it reads what the close does to what key passes down on the pool,
+// with no lock held (readPriorityMove): key's own priority, its parent and the priority it
+// resolves to, and, for a close after which key resolves through a parent, that parent's. It
+// answers the 403 itself where either rule refuses, so such a close settles nothing. The checks
+// under the owner lock decide each write this read lets through: a close whose priorities move
+// between the two reads can settle the documents and is then refused there, as a close
+// judgeSpecWriter refuses can be. An issue that is not there is left to the lock step's own answer.
 func (s *server) refuseP0BeforeSettlement(ctx context.Context, credential *model.Credential, key string, write p0Write) error {
 	if credential.Holds(model.ScopeP0) || (!isPriorityZero(write.priority) && !write.movesOrClears()) {
 		return nil
@@ -219,14 +304,14 @@ func (s *server) refuseP0BeforeSettlement(ctx context.Context, credential *model
 	if err != nil {
 		return err
 	}
-	stored, found, err := readIssuePriorityStanding(ctx, pool, key)
-	if err != nil || !found {
+	move, err := readPriorityMove(ctx, pool, key, write)
+	if err != nil || !move.found {
 		return err
 	}
-	if err := refuseP0WithoutScope(credential, write.priority, stored.own); err != nil {
+	if err := refuseP0WithoutScope(credential, write.priority, move.own); err != nil {
 		return err
 	}
-	return refuseResolvedP0WithoutScope(ctx, pool, credential, key, write, stored, nil)
+	return refuseResolvedP0WithoutScope(credential, key, write, move)
 }
 
 // refuseNewChildP0WithoutScope is the one rule of a new issue with no priority of its own under

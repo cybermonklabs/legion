@@ -167,12 +167,12 @@ func issueSummaryQuery(pinned, paged, readAdvances bool) string {
 // $14, `?moved=true`, is no filter: it is the gate on the move read the joins make
 // (issueSummaryJoins). $16 and $17 are the two strings of the label filter's map (labelFoldMap),
 // and the parameters after them are the pinned login and the page.
-const issueListFilters = `where ($1 = '' or i.project_key = $1)
+const issueListFilters = `where ` + issueListProjectFilter + `
 		  and (cardinality($2::text[]) = 0 or i.status = any($2::text[]))
 		  and ($3 = '' or i.parent_key = $3)
 		  and ($4::timestamptz is null or i.updated_at >= $4)
 		  and ($5::text[] = '{}' or (select array_agg(translate(label, $16::text, $17::text)) from unnest(i.labels) as label) @> $5)
-		  and (not $6::boolean or i.closed_at is null)
+		  and ` + issueListOpenFilter + `
 		  and ((cardinality($7::smallint[]) = 0 and not $8::boolean)
 		       or i.priority = any($7::smallint[])
 		       or i.key in (select key from priority_inherited where priority = any($7::smallint[]))
@@ -183,6 +183,15 @@ const issueListFilters = `where ($1 = '' or i.project_key = $1)
 		       or (not $15::boolean and (i.key in (select key from advancing where named or $13::boolean)
 		           or ($12::boolean and i.key not in (select key from advancing))))
 		       or ($15::boolean and i.key in (select key from advances_originating where named or $13::boolean)))`
+
+// issueListProjectFilter and issueListOpenFilter are the project ($1) and `open` ($6) arms of
+// issueListFilters, over `issues i`, each written once: `matched` reads them, and so does the
+// priority filter's `priority_candidates` (issuePriorityFilterTerms), which must hold every issue
+// those two arms let through, so an arm widened for the one is widened for the other.
+const (
+	issueListProjectFilter = `($1 = '' or i.project_key = $1)`
+	issueListOpenFilter    = `(not $6::boolean or i.closed_at is null)`
+)
 
 // issueListOrder is the listing's order, over the issue aliased `i`: the lifecycle status, the
 // rank, the creation time, then the key. The paged text orders the filtered keys by it and the
@@ -380,17 +389,18 @@ func advancesOriginTerms(relations, keys string) string {
 // asked for the issues with none. An issue with a priority of its own resolves to it, which
 // `matched` tests on its row, so the walk climbs only from `priority_candidates`, the issues with
 // none of their own that `matched` can keep: it reads two of matched's own arms, the project ($1)
-// and `open` ($6), written as matched writes them, so it holds every such issue whatever the other
-// filters cut, and a project's listing climbs from that project's issues alone. The read is gated
-// on the request naming a priority at all: the clause holds no column, so the planner makes it a
-// one-time filter, and a listing that names none climbs from no issue and pays for no walk of the
-// filter. `priority_inherited` is refs.IssuePriorityTermsOver those candidates, the one rule every
-// issue read resolves a priority by: a row for each candidate that takes a priority from an issue
-// above it, with that priority, and none for a candidate that resolves none.
+// and `open` ($6), as the same text (issueListProjectFilter, issueListOpenFilter), so it holds
+// every such issue whatever the other filters cut, and a project's listing climbs from that
+// project's issues alone. The read is gated on the request naming a priority at all: the clause
+// holds no column, so the planner makes it a one-time filter, and a listing that names none climbs
+// from no issue and pays for no walk of the filter. `priority_inherited` is
+// refs.IssuePriorityTermsOver those candidates, the one rule every issue read resolves a priority
+// by: a row for each candidate that takes a priority from an issue above it, with that priority,
+// and none for a candidate that resolves none.
 var issuePriorityFilterTerms = `priority_candidates as (
 		select i.key from issues i
 		where (cardinality($7::smallint[]) > 0 or $8::boolean) and i.priority is null
-		  and ($1 = '' or i.project_key = $1) and (not $6::boolean or i.closed_at is null)
+		  and ` + issueListProjectFilter + ` and ` + issueListOpenFilter + `
 	), ` + refs.IssuePriorityTermsOver("priority_candidates", "priority_inherited")
 
 // issueSummaryColumns are the columns a listing row scans, in issueSummaryRow's order, around

@@ -90,6 +90,16 @@ func (s *server) inboxAssigneeFilter(ctx context.Context, raw string, caller mod
 	}
 }
 
+// inboxListedAsks is the filter of the asks the Inbox lists, over the ask aliased a, its issue i and
+// its own document ar (the joins of askReadFrom): an open ask, on an open issue where it has one,
+// of the project $1 names, or of any where $1 is empty. listInbox reads it twice, as its own filter
+// and as the filter of `subjects`, the issues its priority walk climbs from, so the walk climbs
+// from the issue of every ask the read can list: a change of which asks the Inbox lists moves the
+// walk with it, and no listed ask reads a resolved priority of null for want of a climb.
+const inboxListedAsks = `a.state = 'open'
+		  and (i.key is null or i.closed_at is null)
+		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)`
+
 func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	caller, ok := s.actingPerson(w, r)
 	if !ok {
@@ -115,14 +125,16 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 	//
 	// The rows are ordered by the priority each ask's issue resolves to (refs.IssuePriorityTerms:
 	// its own, else the nearest issue's above it), so an ask on a child that takes P0 from a parent
-	// stands with the P0 asks. `subjects` is the issues of the open asks this read can list, an
-	// open issue of the named project or of any, so the walk climbs once for the page rather than
-	// once per row, and from no issue the read cannot answer.
+	// stands with the P0 asks. `subjects` is the issues of the asks this read can list
+	// (inboxListedAsks), so the walk climbs once for the page rather than once per row, and from no
+	// issue the read cannot answer.
 	rows, err := s.deps.Store.Pool.Query(r.Context(), `
 		with recursive subjects as (
 			select distinct i.key
-			from asks a join issues i on i.key = a.issue_key
-			where a.state = 'open' and i.closed_at is null and ($1 = '' or i.project_key = $1)
+			from asks a
+			join issues i on i.key = a.issue_key
+			left join artifacts ar on ar.id = a.artifact_id
+			where `+inboxListedAsks+`
 		), `+refs.IssuePriorityTerms+`
 		select `+askReadColumns+`,
 		       i.key, i.title, i.assignee, i.priority, `+refs.IssuePriorityColumns+`,
@@ -130,9 +142,7 @@ func (s *server) listInbox(w http.ResponseWriter, r *http.Request) {
 		`+askReadFrom+`
 		`+refs.IssuePriorityJoin+`
 		left join user_ask_snooze sn on sn.ask_id = a.id and sn.login = $4
-		where a.state = 'open'
-		  and (i.key is null or i.closed_at is null)
-		  and ($1 = '' or coalesce(i.project_key, ar.project_key) = $1)
+		where `+inboxListedAsks+`
 		  and ($2 = ''
 		       or ($2 = 'unassigned' and `+askedOfPersonExpression+` is null)
 		       or ($2 = 'login' and `+askedOfPersonExpression+` = $3))
