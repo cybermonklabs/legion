@@ -398,12 +398,24 @@ func TestSamplerMarksNoReadThatFailedOnceTheStepEnded(t *testing.T) {
 	}
 }
 
-// TestSamplerHeapReadDelaysNoSample: under -heap-samples, Dispatch's heap endpoint answers 7 s
-// after it is asked, past the 5 s sample interval, and the goroutine reads keep their 5 s cadence
-// meanwhile. The heap read lands in the first sample after it ended, with its own end time, and no
-// second heap read starts before the next 15 s slot.
+// TestSamplerHeapReadDelaysNoSample: under -heap-samples, Dispatch's heap endpoint answers 7 units
+// after it is asked, past the 5-unit sample interval, and the goroutine reads keep their 5-unit
+// cadence meanwhile. The heap read lands in the first sample after it ended, with its own end time,
+// and no second heap read starts before the next 15-unit slot, past the 12-unit run.
+//
+// A unit is production's second scaled by 3/50 (60 ms), so the sampler runs at sampleEvery 300 ms
+// and heapEvery 900 ms in place of sampleInterval (5 s) and heapReadEvery (15 s), and the run takes
+// 720 ms rather than 12 s. Every duration of the row, the lateness each sample is allowed (1 unit)
+// among them, is a whole number of units, so their ratios 5 : 7 : 12 : 15 : 1 are production's.
 func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
-	const heapDelay = 7 * time.Second
+	const (
+		unit         = time.Second * 3 / 50 // 60 ms
+		interval     = 5 * unit             // 300 ms: the sample interval
+		heapDelay    = 7 * unit             // 420 ms: how long the heap endpoint takes to answer
+		run          = 12 * unit            // 720 ms: the sampler's run
+		heapInterval = 15 * unit            // 900 ms: the heap read interval
+		tolerance    = 1 * unit             // 60 ms: how late a sample may be
+	)
 	heapBody := heapProfileBody(t)
 	var mu sync.Mutex
 	var heapAsked []time.Time
@@ -435,17 +447,19 @@ func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 	start := time.Now()
 	s := newSampler(endpoints{pprof: srv.URL, natsMon: srv.URL, pg: unreachablePG, pids: map[string]int{}})
 	s.heapSamples = true
-	ctx, cancel := context.WithTimeout(context.Background(), 12*time.Second)
+	s.sampleEvery, s.heapEvery = interval, heapInterval
+	ctx, cancel := context.WithTimeout(context.Background(), run)
 	defer cancel()
 	s.loop(ctx, start, start.Add(time.Minute), log.New(io.Discard, "", 0))
 
 	ss := s.all()
 	if len(ss) != 3 {
-		t.Fatalf("%d samples in 12 s, want 3: one each 5 s while the heap read is in flight", len(ss))
+		t.Fatalf("%d samples in %s, want 3: one each %s while the heap read is in flight", len(ss), run, interval)
 	}
 	for i, x := range ss {
-		if late := x.At.Sub(start) - time.Duration(i)*5*time.Second; late < 0 || late > time.Second {
-			t.Errorf("sample %d at %s past the start, want %d s: the heap read in flight delayed it", i, x.At.Sub(start), i*5)
+		want := time.Duration(i) * interval
+		if late := x.At.Sub(start) - want; late < 0 || late > tolerance {
+			t.Errorf("sample %d at %s past the start, want %s within %s: the heap read in flight delayed it", i, x.At.Sub(start), want, tolerance)
 		}
 		if x.Goroutines != 7 || slices.Contains(x.FailedReads, readGoroutines) || slices.Contains(x.FailedReads, readHeap) {
 			t.Errorf("sample %d: goroutines %d, failed reads %v; want 7 goroutines, no failed goroutine or heap read", i, x.Goroutines, x.FailedReads)
@@ -461,14 +475,14 @@ func TestSamplerHeapReadDelaysNoSample(t *testing.T) {
 		t.Errorf("sample 2 heap live %v bytes, %v objects, in window %v; want the profile's 4 MiB in 7 objects, in the window",
 			got.HeapLiveBytes, got.HeapLiveObjects, got.HeapInWindow)
 	}
-	if ended := got.HeapAt.Sub(start); ended < heapDelay || got.HeapAt.After(got.At.Add(time.Second)) || !got.HeapAt.After(ss[1].At) {
-		t.Errorf("sample 2 (at %s) carries a heap read that ended %s past the start, want its own end, after %s and after sample 1",
-			got.At.Sub(start), ended, heapDelay)
+	if ended := got.HeapAt.Sub(start); ended < heapDelay || got.HeapAt.After(got.At.Add(tolerance)) || !got.HeapAt.After(ss[1].At) {
+		t.Errorf("sample 2 (at %s) carries a heap read that ended %s past the start, want its own end, after %s, after sample 1 and within %s of sample 2",
+			got.At.Sub(start), ended, heapDelay, tolerance)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if len(heapAsked) != 1 {
-		t.Errorf("heap asked at %v, want once: the next 15 s slot is past the 12 s run", heapAsked)
+		t.Errorf("heap asked at %v, want once: the next %s slot is past the %s run", heapAsked, heapInterval, run)
 	}
 }
 

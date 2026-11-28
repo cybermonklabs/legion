@@ -870,11 +870,19 @@ func (w *stalledWatcher) Stop() error {
 // calls it unbounded: the scheduling of one goroutine, not another wait.
 const stallMargin = 500 * time.Millisecond
 
+// stalledReadBound is the caller's context of each read of a stalled bucket. It is under
+// legionagents.ReadTimeout (2 s), the scan's own idle bound, so a read that ends at the caller's
+// context and one that ends at the scan's bound fall on two sides of the row's bound
+// (stalledReadBound + stallMargin): only the first passes.
+const stalledReadBound = 200 * time.Millisecond
+
 // A listing of a bucket that stops delivering fails within the caller's context, not at some
 // longer bound of the scan's own: the route that reads under legionagents.ReadTimeout answers its
 // 503 inside the listener's HTTP write timeout rather than dropping the connection
 // (dispatch://INFRA-448). Get fails there too, since its session key is answered and only its role
-// token's listing stalls.
+// token's listing stalls. The caller's context is stalledReadBound (200 ms), under ReadTimeout,
+// the scan's own idle bound, so a read that ends at the scan's bound and not at the caller's
+// context fails the row.
 func TestAStalledListingFailsWithinTheReadTimeout(t *testing.T) {
 	uri := testnats.URL(t)
 	r := openRegistryAt(t, uri)
@@ -888,7 +896,7 @@ func TestAStalledListingFailsWithinTheReadTimeout(t *testing.T) {
 		"ByIssue": func(c context.Context) error { _, err := stalled.store.ByIssue(c, "INFRA-448"); return err },
 	} {
 		t.Run(name, func(t *testing.T) {
-			c, cancel := context.WithTimeout(context.Background(), legionagents.ReadTimeout)
+			c, cancel := context.WithTimeout(context.Background(), stalledReadBound)
 			defer cancel()
 			start := time.Now()
 			err := read(c)
@@ -896,7 +904,7 @@ func TestAStalledListingFailsWithinTheReadTimeout(t *testing.T) {
 			if err == nil {
 				t.Fatalf("%s on a stalled watch answered no error, after %s", name, elapsed)
 			}
-			if bound := legionagents.ReadTimeout + stallMargin; elapsed > bound {
+			if bound := stalledReadBound + stallMargin; elapsed > bound {
 				t.Fatalf("%s on a stalled watch failed after %s (%v), want its failure within %s", name, elapsed, err, bound)
 			}
 		})

@@ -65,6 +65,11 @@ const (
 	readNATS       = "nats"
 )
 
+// sampleInterval is how far apart the sampler takes its samples (loop), and how long past the
+// window's end a sample still counts as in the window, so the sample after the window's last is
+// one of its samples.
+const sampleInterval = 5 * time.Second
+
 // sampler takes a sample every 5 s: CPU and RSS of each stack process and of loadgen from /proc,
 // Postgres connections, Dispatch's goroutines and pool waiters, NATS /varz and /jsz, and the
 // pull-request counts of the pull spy. It reads no heap profile unless heapSamples is set: the
@@ -95,6 +100,29 @@ type sampler struct {
 	exits   map[string]stackExit // by name, the stack processes found gone
 	// restarting names the process stack.sh is restarting: its absence is not an exit.
 	restarting string
+	// sampleEvery and heapEvery, when set, are how far apart the loop takes its samples and
+	// readHeaps starts its heap reads, in place of sampleInterval and heapReadEvery: a test sets
+	// them short, so it runs production's cadence in a fraction of production's time. Zero, in
+	// every sampler but a test's, is production's cadence (interval, heapInterval).
+	sampleEvery, heapEvery time.Duration
+}
+
+// interval is how far apart the loop takes its samples: sampleEvery where a test set it, and
+// sampleInterval, production's, where it is zero.
+func (s *sampler) interval() time.Duration {
+	if s.sampleEvery != 0 {
+		return s.sampleEvery
+	}
+	return sampleInterval
+}
+
+// heapInterval is how far apart readHeaps starts its heap reads: heapEvery where a test set it,
+// and heapReadEvery, production's, where it is zero.
+func (s *sampler) heapInterval() time.Duration {
+	if s.heapEvery != 0 {
+		return s.heapEvery
+	}
+	return heapReadEvery
 }
 
 // stackExit is a stack process that exited during the step: the first check that found it gone.
@@ -197,8 +225,8 @@ func (s *sampler) setRestarting(name string) {
 	s.mu.Unlock()
 }
 
-// sampleNow makes the loop take its next sample at once, and the samples after it 5 s apart from
-// there.
+// sampleNow makes the loop take its next sample at once, and the samples after it its interval
+// apart from there.
 func (s *sampler) sampleNow() {
 	select {
 	case s.kick <- struct{}{}:
@@ -379,7 +407,7 @@ func boxBusy(ctx context.Context, window time.Duration) (float64, bool) {
 	return (busy1 - busy0) / (total1 - total0), true
 }
 
-// loop samples every 5 s until ctx ends. A failed read is marked in its sample and logged as
+// loop samples every interval until ctx ends. A failed read is marked in its sample and logged as
 // readErrors does, one count each for the Postgres, the pprof and the NATS reads. A read that
 // failed once ctx had ended is neither marked nor counted, as poll does. Under heapSamples the
 // heap reads run in readHeaps; each sample takes the one that has ended since the last sample, if
@@ -409,8 +437,9 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 		natsErrs.done()
 		<-heapsDone // loop returns only once ctx has ended, which ends readHeaps
 	}()
-	inWindow := func(at time.Time) bool { return !at.Before(winStart) && !at.After(winEnd.Add(5*time.Second)) }
-	t := time.NewTicker(5 * time.Second)
+	every := s.interval()
+	inWindow := func(at time.Time) bool { return !at.Before(winStart) && !at.After(winEnd.Add(every)) }
+	t := time.NewTicker(every)
 	defer t.Stop()
 	self := os.Getpid()
 	for {
@@ -500,7 +529,7 @@ func (s *sampler) loop(ctx context.Context, winStart, winEnd time.Time, lg *log.
 			return
 		case <-t.C:
 		case <-s.kick:
-			t.Reset(5 * time.Second)
+			t.Reset(every)
 		}
 	}
 }
@@ -519,10 +548,11 @@ type heapRead struct {
 	err            error
 }
 
-// readHeaps reads Dispatch's heap at once, then at each heapReadEvery slot after, one read at a
+// readHeaps reads Dispatch's heap at once, then at each heapInterval slot after, one read at a
 // time: a slot that falls while a read is in flight, or waits for a sample to take it, is skipped.
 // It hands each ended read to out, and returns once ctx has ended.
 func (s *sampler) readHeaps(ctx context.Context, out chan<- heapRead) {
+	every := s.heapInterval()
 	for next := time.Now(); sleepUntil(ctx, next); {
 		var h heapRead
 		h.bytes, h.objects, h.err = heapLive(ctx, s.pprof)
@@ -532,9 +562,9 @@ func (s *sampler) readHeaps(ctx context.Context, out chan<- heapRead) {
 		case <-ctx.Done():
 			return
 		}
-		next = next.Add(heapReadEvery)
+		next = next.Add(every)
 		if behind := time.Since(next); behind > 0 {
-			next = next.Add(behind.Truncate(heapReadEvery) + heapReadEvery)
+			next = next.Add(behind.Truncate(every) + every)
 		}
 	}
 }

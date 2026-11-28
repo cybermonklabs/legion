@@ -368,15 +368,31 @@ func TestTheListenerKeepsAHealthyIdleConnection(t *testing.T) {
 	}
 }
 
+// A connection that goes half-open - the proxy in front of it forwards nothing more and closes
+// neither side - is replaced once a ping on it outlasts PingTimeout: the listener dials again, runs
+// OnConnected, and a notification reaches OnNotify on the new connection. The row waits for those
+// events, each as it happens: the listener pings after ListenIdle (100 ms) without a round trip,
+// and gives the connection up once that ping has waited PingTimeout (250 ms, where production's
+// DefaultPingTimeout is 5 s).
+//
+// Its database is an empty one of its own (storetest.Empty), opened with store.Open and never
+// migrated: the row uses LISTEN and NOTIFY alone, which read no table, so it neither makes nor
+// clones the package's migrated template. The store is closed before the database is dropped.
 func TestTheListenerReplacesAHalfOpenConnection(t *testing.T) {
-	// Not parallel: its 1 s PingTimeout is the bound the row is about, and every ping and LISTEN
+	// Not parallel: its 250 ms PingTimeout is the bound the row is about, and every ping and LISTEN
 	// on a healthy connection - the first one before the proxy blinds it, and the replacement -
 	// must answer inside it, or the listener replaces a connection that was never half-open.
-	database := storetest.Open(t)
+	database, err := store.Open(context.Background(), storetest.Empty(t))
+	if err != nil {
+		t.Fatalf("open the empty database: %v", err)
+	}
+	// Registered after storetest.Empty's drop, so it runs before it: the drop finds no connection
+	// of the store's pool left.
+	t.Cleanup(database.Pool.Close)
 	proxy := newBlindingProxy(t, databaseAddress(database))
 	probe := newListenerProbe()
 	listener := probe.listener(proxiedDial(database, proxy))
-	listener.ListenIdle, listener.PingTimeout = time.Second, time.Second
+	listener.ListenIdle, listener.PingTimeout = 100*time.Millisecond, 250*time.Millisecond
 	runListener(t, probe, listener)
 	probe.waitConnected(t, "first connection")
 	notifyChannel(t, database, "delivery_changes", "")
