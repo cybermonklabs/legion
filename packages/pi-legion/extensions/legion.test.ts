@@ -8298,6 +8298,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "other",
         },
@@ -8393,6 +8394,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },
@@ -8427,6 +8429,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },
@@ -8554,6 +8557,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },
@@ -8586,6 +8590,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },
@@ -8679,6 +8684,7 @@ describe("the model fallback", () => {
         arming: {
           restoreTo: OPUS,
           entryId: "mc-fallback",
+          armedAt: expect.any(Number),
           dueAt: expect.any(Number),
           cause: "refusal",
         },

@@ -110,18 +110,18 @@ const PROJECT = "legion";
  */
 /**
  * The lever a person sets by hand to see the notice case red without the delivery it rests on,
- * and to see that red arrive by name rather than at the case's own bound
+ * and to see that red arrive by name rather than as a wait that ran out
  * (LEGION_TEST_CONTROLLER_NOTICE; nothing in CI or in this repository sets it).
  *
  *   - `undecodable` relays the notice with `Envoy-Delivered: 0`, which a real session cannot
  *     decode, so it answers `done` first and `sendRelayFrame` refuses that word at once.
- *   - `unheld` relays the notice to a session id nobody holds, with a bound of its own, so the
- *     server answers no responders and the relay refuses it inside that bound.
+ *   - `unheld` relays the notice to a session id nobody holds, so the server answers no
+ *     responders and the relay refuses it at the row's deadline, naming the 503 it last met.
  *
  * Both are refusals the relay names, and the case ends on the next poll of any wait, because the
  * refusal is given to the stand-in's `fault` hook. A notice lost in a way the relay cannot see -
  * one published before the session followed the lane, which a session still answers `received` -
- * is no arm here and stays what it has always been: the case's own 150-second red with no cause.
+ * is no arm here and stays what it has always been: the case's wait running out with no cause.
  *
  * A value that is neither of the two and not unset is refused as this file loads, naming what it
  * read, rather than running the shipped shape under a title claiming an arm.
@@ -139,12 +139,6 @@ const noticeArm: NoticeArm | undefined = ((): NoticeArm | undefined => {
   }
   return given as NoticeArm;
 })();
-
-/**
- * How long the `unheld` arm's relay is offered before it is refused: a bound of its own, far
- * under the case's, so that arm's red arrives by name rather than at the case's deadline.
- */
-const NOTICE_UNHELD_MS = 3_000;
 
 const SLACK_CHANNEL = "C0CONTROLLER";
 const SLACK_TEAM = "T0LEGION";
@@ -897,10 +891,9 @@ interface StoredMessage {
   readonly summary: string;
   /**
    * Relays this message to `sid`. `delivered` is the frame's delivery count, which a session
-   * cannot decode at 0, and `withinMs` is how long the frame is offered before the relay refuses
-   * it; the helper's own bound by default.
+   * cannot decode at 0.
    */
-  deliver(sid: string, delivered?: number, withinMs?: number): Promise<unknown>;
+  deliver(sid: string, delivered?: number): Promise<unknown>;
 }
 
 /**
@@ -992,13 +985,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     sid: string,
     subject: string,
     payload: Uint8Array,
-    stamp: {
-      readonly seq: number;
-      readonly storedAt: string;
-      readonly delivered: number;
-      /** How long the frame is offered before the relay refuses it; the helper's own by default. */
-      readonly withinMs?: number;
-    } = {
+    stamp: { readonly seq: number; readonly storedAt: string; readonly delivered: number } = {
       seq: nextSequence(),
       storedAt: new Date().toISOString(),
       delivered: 1,
@@ -1024,8 +1011,7 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
     );
     return {
       summary,
-      deliver: (sid, delivered = 1, withinMs) =>
-        relay(sid, subject, frame, { ...stored, delivered, withinMs }),
+      deliver: (sid, delivered = 1) => relay(sid, subject, frame, { ...stored, delivered }),
     };
   };
   const storeNotice = (): StoredMessage =>
@@ -1099,13 +1085,13 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
       //   - no arm: the notice as it ships, relayed to the session itself.
       //   - undecodable: delivered 0, which no session can decode, so it answers `done` first
       //     and the relay refuses that word at once.
-      //   - unheld: relayed to a session id nobody holds, under a bound of its own, so the
-      //     server answers no responders and the relay refuses it inside that bound.
+      //   - unheld: relayed to a session id nobody holds, so the server answers no responders and
+      //     the relay refuses it at the row's deadline, naming that cause.
       const delivery =
         noticeArm === "undecodable"
           ? message.deliver(sid, 0)
           : noticeArm === "unheld"
-            ? message.deliver(`${sid}-unheld`, 1, NOTICE_UNHELD_MS)
+            ? message.deliver(`${sid}-unheld`)
             : message.deliver(sid);
       void delivery.catch((error: unknown) => {
         noticeFault ??= new Error(
@@ -1134,38 +1120,88 @@ async function controllerInbound(nats: string): Promise<ControllerInbound> {
 //   - a word the table does not hold, refused for being in none of its rows, so a word nobody
 //     has met yet is not read as a take by default.
 //   - an id nothing subscribes, where the server answers 503 no responders.
-//   - a session that takes the frame and never answers, where each request runs its own 1 s
-//     timeout out.
+//   - a session that takes the frame and never answers, where the send's request is still out
+//     when its deadline comes.
 //
 // The last two are held to their own cause, since the relay names both in the same words and
 // carries the cause it last met: a half pointed at the wrong subject - main's
 // `notifications.agent.<sid>`, where no session listens for a frame - reads as the no-responders
-// half and is caught rather than passing as the timeout half. The case gives the relay a bound
-// of its own rather than the 30 s a card is allowed, since the only half that has to reach it is
-// the silent one, and it needs the NATS server and not the binary, so it runs wherever one is
-// configured.
-const RELAY_REFUSAL_MS = 3_000;
+// half and is caught rather than passing as the silent half. Neither ends before the send's
+// deadline, so each is sent from a process of its own (`sentAlone`) whose deadline is a few
+// seconds off rather than at this row's guard, and that process says how much of its time was
+// left when the send gave up: none, for a send that offered the frame until its deadline. The
+// case needs the NATS server and not the binary, so it runs wherever one is configured. Its
+// guard holds those two processes, each a Bun start and a connect before its few seconds, so it
+// takes one of its own, past Bun's 5000 ms default: `useRowGuard` for the shared wait's deadline
+// and the same value as `test`'s third argument.
+/** How far off the deadline of the process `sentAlone` sends from lies. */
+const ALONE_SEND_MS = 3_000;
+const RELAY_ROW_GUARD_MS = ALONE_SEND_MS * 2 + 60_000;
 test.skipIf(natsUrl === undefined && !onActions)(
   "a relay frame is answered by the session that takes it, and refused by its own cause when none does",
   async () => {
+    useRowGuard(RELAY_ROW_GUARD_MS);
     const connection = await connect({ servers: natsUrl ?? "" });
     cleanup.push(() => connection.close());
     // Every half below turns on who answers a relay subject, so none may be a stream that
     // another suite left on this server (`deleteRelayCapturingStreams`).
     await deleteRelayCapturingStreams(connection);
     const codec = StringCodec();
+    const subject = `${ROLE_TOPIC_PREFIX}${controllerToken(PROJECT)}`;
     const send = (sid: string) =>
       sendRelayFrame({
         connection,
         newHeaders: natsHeaders,
         sessionID: sid,
-        subject: `${ROLE_TOPIC_PREFIX}${controllerToken(PROJECT)}`,
+        subject,
         payload: codec.encode(JSON.stringify({ event_id: `evt-${randomUUID()}` })),
         seq: 1,
         storedAt: new Date().toISOString(),
         delivered: 1,
-        withinMs: RELAY_REFUSAL_MS,
       });
+    /**
+     * The same send to `sid`, made by a process of its own: what it ended with, then the time its
+     * shared wait had left when it ended (`timeLeft`). That process is no `bun test`, so it waits
+     * by LEGION_PROOF_DEADLINE_MS (`@legion/test-fixtures/wait`), which it sets `ALONE_SEND_MS` off
+     * once it has connected, right before the send: a loaded machine's slow start of the process
+     * then spends none of the send's own time, so the no-responders half meets its 503 inside it.
+     */
+    const sentAlone = async (sid: string): Promise<string[]> => {
+      const driver = Bun.spawn(
+        [
+          process.execPath,
+          "-e",
+          `import { sendRelayFrame } from "@legion/pi-shared/test/omp-harness";
+import { timeLeft } from "@legion/test-fixtures/wait";
+import { connect, headers, StringCodec } from "nats";
+const connection = await connect({ servers: ${JSON.stringify(natsUrl)} });
+process.env.LEGION_PROOF_DEADLINE_MS = String(Date.now() + ${ALONE_SEND_MS});
+const outcome = await sendRelayFrame({
+  connection,
+  newHeaders: headers,
+  sessionID: ${JSON.stringify(sid)},
+  subject: ${JSON.stringify(subject)},
+  payload: StringCodec().encode(JSON.stringify({ event_id: "evt-alone" })),
+  seq: 1,
+  storedAt: new Date().toISOString(),
+  delivered: 1,
+}).then(String, String);
+console.log(outcome.replaceAll("\\n", " "));
+console.log(timeLeft());
+await connection.close();`,
+        ],
+        {
+          cwd: import.meta.dir,
+          env: { ...process.env },
+          stdout: "pipe",
+        }
+      );
+      const [printed] = await settled(
+        `the send to ${sid} from a process of its own`,
+        Promise.all([new Response(driver.stdout).text(), driver.exited])
+      );
+      return printed.trim().split("\n");
+    };
 
     // One session on its own deliver subject, answering each frame as the half wants: the word it
     // writes, on its own connection as a session answers, or nothing at all for the half whose
@@ -1215,18 +1251,24 @@ test.skipIf(natsUrl === undefined && !onActions)(
     );
 
     const unheard = `nobody-${randomUUID()}`;
-    await expect(send(unheard)).rejects.toThrow(
-      new RegExp(`${unheard} took no relay frame.*503`, "s")
-    );
+    const [unheardOutcome, unheardLeft] = await sentAlone(unheard);
+    expect(unheardOutcome).toMatch(new RegExp(`${unheard} took no relay frame.*503`));
+    expect(unheardLeft).toBe("0");
 
     const sid = `silent-${randomUUID()}`;
-    // Taken and never answered, which is the shape the bound exists for.
+    // Taken and never answered: the send's one request is still out when its deadline comes.
     await listens(sid, () => undefined);
-    const started = Date.now();
-    await expect(send(sid)).rejects.toThrow(new RegExp(`${sid} took no relay frame.*TIMEOUT`, "s"));
-    expect(Date.now() - started).toBeGreaterThanOrEqual(RELAY_REFUSAL_MS);
+    const [silentOutcome, silentLeft] = await sentAlone(sid);
+    expect(silentOutcome).toMatch(
+      new RegExp(`${sid} took no relay frame.*(still unanswered|TIMEOUT)`)
+    );
+    // A session that never subscribed is the unheard half above, whose send meets a 503: the
+    // cause text names that error beside "still unanswered" when an earlier request met it, so
+    // the silent half refuses it, and holds that the one request out was taken.
+    expect(silentOutcome).not.toMatch(/503|no responders/i);
+    expect(silentLeft).toBe("0");
   },
-  RELAY_REFUSAL_MS * 2 + 60_000
+  RELAY_ROW_GUARD_MS
 );
 
 /**

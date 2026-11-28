@@ -1,18 +1,29 @@
 import { afterEach, expect, test } from "bun:test";
-import { symlink, writeFile } from "node:fs/promises";
+import { readFileSync } from "node:fs";
+import { readFile, symlink, writeFile } from "node:fs/promises";
 import * as path from "node:path";
+import { LegionActivityRequest } from "@legion/contracts/legion-api";
 import { PHASE_STALL_ENTRY } from "@legion/pi-shared/phase-stall";
 import {
   type Cleanup,
   call,
   type LegionPane,
   type LegionPaneOptions,
+  type LegionPaneProgress,
   ompNatsGuard,
   type Reply,
   type Request,
   runLegionPane,
+  type TranscriptRecord,
 } from "@legion/pi-shared/test/omp-harness";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { namesMissing } from "@legion/test-fixtures/names-whole";
+import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import {
+  TIMER_RECORD_FILE,
+  TIMER_RECORD_ROOTS,
+  type TimerStep,
+} from "@legion/test-fixtures/timer-record";
 
 // The phase-stall follow-up on the real Oh My Pi (src/phase-stall.ts): only the real binary
 // shows when the host fires `session_stop`, how it turns the returned follow-up into the next turn,
@@ -40,6 +51,8 @@ interface StallPane extends LegionPane {
   readonly publishes: () => Record<string, unknown>[];
   /** The persisted transcript's phase-stall entries, in order. */
   readonly phaseEntries: () => Promise<unknown[]>;
+  /** The same entries with the moment the host stamped each, on the pane's own clock. */
+  readonly phaseRecords: () => Promise<TranscriptRecord[]>;
   /** The commit `legion/STALL-2@origin` names in the pane's workspace: the pushed tip its
    * `handoff_complete` reports beside the record. */
   readonly pushedTip: string;
@@ -58,6 +71,16 @@ function daemonRoutes(pane: LegionPane): string[] {
     .filter((requested) => requested.startsWith("/legion/") && requested !== ACTIVITY_ROUTE);
 }
 
+/** How many requests the pane has made to `route` so far: what a case's `settledWhen` reads. */
+function calls(pane: LegionPaneProgress, route: string): number {
+  return pane.requests.filter((request) => request.path === route).length;
+}
+
+const COMPLETE_ROUTE = "/legion/v1/handoff/complete";
+/** What the reminder asks before it is sent: what the claim owes now. */
+const OWED_ROUTE = "/legion/v1/claims/owed";
+const ASKS_ROUTE = "/api/v1/asks/open";
+
 /**
  * The reminder count each phase-stall entry recorded, with a repeat of the value before it
  * dropped: what is left is the count's own climb, one step per reminder the host put in front of
@@ -73,6 +96,27 @@ function stallCounts(entries: readonly unknown[]): number[] {
       : Number.NaN
   );
   return counts.filter((count, index) => index === 0 || count !== counts[index - 1]);
+}
+
+/** One field of a phase-stall entry's data (`PhaseStallEntry`), or undefined where it has none. */
+function entryField(data: unknown, field: "state" | "count"): unknown {
+  return typeof data === "object" && data !== null && field in data
+    ? (data as Record<string, unknown>)[field]
+    : undefined;
+}
+
+/** How far ahead of itself each activity report the pane sent after its `turn`th turn's model
+ *  request put the wake it named, in ms: the report's `phase.nextReminderAt` less its own `at`,
+ *  both on the pane's clock. A report that names no live wake is left out. */
+function wakesAfter(pane: LegionPaneProgress, turn: number): number[] {
+  const request = pane.turns()[turn - 1];
+  const from = request === undefined ? -1 : pane.requests.indexOf(request);
+  if (from < 0) return [];
+  return pane.requests.slice(from + 1).flatMap((later) => {
+    if (later.path !== ACTIVITY_ROUTE) return [];
+    const { at, phase } = LegionActivityRequest.parse(later.body).activity;
+    return phase.nextReminderAt === null ? [] : [Date.parse(phase.nextReminderAt) - Date.parse(at)];
+  });
 }
 
 /** The listener's answer to a publish it accepted: an envelope, which the client parses before
@@ -169,10 +213,11 @@ const STALL_STATE = {
 // Each case starts a cold Oh My Pi pane (a pinned binary spawning and registering over NATS, which
 // reads 5-6 s) and runs it to its settle, so it needs more than Bun's 5000 ms default in every
 // mode: `bun run test`'s workers declare 300000 ms (`test-timeout-preload.ts`), but a run of this
-// file alone takes no worker and keeps 5000 ms. Each case and the afterEach, whose cleanup kills a
-// real Oh My Pi, therefore take that same 300000 ms as a guard of their own, as the cases of
-// `legion-stall-watchdog-omp.test.ts` do; the pane's waits here are the harness's own, not the
-// shared wait, so no case sets a row guard for it.
+// file alone takes no worker and keeps 5000 ms. Each case therefore takes a guard of its own, as
+// the cases of `legion-stall-watchdog-omp.test.ts` do: the case calls `useRowGuard` for the shared
+// wait's deadline, which the pane's settle (`settledWhen`) and its spans end at, and passes the
+// same value as `test`'s third argument for Bun's row kill, and the afterEach, whose cleanup kills
+// a real Oh My Pi, passes it as its own hook timeout.
 const COLD_PANE_GUARD_MS = 300_000;
 
 const cleanup: Cleanup = [];
@@ -216,15 +261,45 @@ function legionToolDescription(request: Request): string {
 }
 
 /** How one pane differs from the implementer pane the phase-stall cases run: the runner's
- * `legion`, `quietMs`, `selfCheck` and environment, what the stand-in answers ahead of this
+ * `legion`, `settledWhen`, `selfCheck` and environment, what the stand-in answers ahead of this
  * file's own routes, and the stand-in's open-ask snapshot. */
 interface PaneOptions
-  extends Pick<LegionPaneOptions, "legion" | "quietMs" | "selfCheck" | "env" | "answer"> {
+  extends Pick<LegionPaneOptions, "legion" | "settledWhen" | "selfCheck" | "env" | "answer"> {
   /** The count the stand-in Dispatch's open-ask snapshot answers with. */
   readonly openAsks?: number;
   /** The held ask questions the stand-in returns in the session's open-ask snapshot. */
   readonly openAskQuestions?: readonly string[];
+  /** Where the pane keeps the tests' record of the timers its plugins arm, each with its delay and
+   *  the line that armed it (`@legion/test-fixtures/timer-record`); no record unless given. */
+  readonly timerRecord?: string;
 }
+
+/** The plugins' own sources, the roots the timer record places an arming under. */
+const PANE_ROOTS = [
+  import.meta.dir,
+  path.resolve(import.meta.dir, "../src"),
+  path.resolve(import.meta.dir, "../../pi-shared/src"),
+  path.resolve(import.meta.dir, "../../pi-envoy/extensions"),
+  path.resolve(import.meta.dir, "../../pi-envoy/src"),
+  path.resolve(import.meta.dir, "../../envoy-client/src"),
+];
+
+/** Where a case keeps its pane's timer record. */
+const timerRecordDirectory = temporaryDirectories("legion-phase-stall-timers");
+
+/** The line of pi-shared's phase reminder that arms its timer (`armReminder`'s `deps.armTimer`),
+ *  as the timer record names the place of an arming, `<file>:<line>`: the first frame of the
+ *  plugins' own code the arming's stack shows, past the host's. */
+const ARM_TIMER_LINE = (() => {
+  const file = path.resolve(import.meta.dir, "../../pi-shared/src/phase-reminder.ts");
+  const lines = readFileSync(file, "utf8").split("\n");
+  const arming = (line: string) => line.includes("deps.armTimer(");
+  const index = lines.findIndex(arming);
+  if (index === -1 || lines.filter(arming).length !== 1) {
+    throw new Error(`${file} arms its reminder at no one deps.armTimer call`);
+  }
+  return `${file}:${index + 1}`;
+})();
 
 /**
  * Runs one implementer pane on the real Oh My Pi (`runLegionPane`), the stand-in answering the
@@ -259,13 +334,24 @@ async function stallPane(
       prompt: "Implement STALL-2.",
       dispatch: true,
       legion: options.legion,
-      quietMs: options.quietMs,
+      settledWhen: options.settledWhen,
       selfCheck: options.selfCheck,
+      // The record's module first, so it holds every timer the plugins arm.
+      extensions:
+        options.timerRecord === undefined
+          ? []
+          : [Bun.resolveSync("@legion/test-fixtures/timer-record-preload", import.meta.dir)],
       env: {
         ...PANE_IDENTITY,
         // The daemon puts the project token on every pane, and the architect notice's role topic
         // is built from it (`roleToken`).
         ...(options.legion === false ? {} : { LEGION_PROJECT: "stall" }),
+        ...(options.timerRecord === undefined
+          ? {}
+          : {
+              [TIMER_RECORD_FILE]: options.timerRecord,
+              [TIMER_RECORD_ROOTS]: PANE_ROOTS.join(":"),
+            }),
         ...options.env,
       },
       prepare: async ({ workspace, bin }) => {
@@ -365,6 +451,7 @@ async function stallPane(
         .filter((request) => request.path === "/v1/messages/publish")
         .map((request) => request.body),
     phaseEntries: () => pane.transcriptEntries(PHASE_STALL_ENTRY),
+    phaseRecords: () => pane.transcriptRecords(PHASE_STALL_ENTRY),
     pushedTip,
   };
 }
@@ -372,6 +459,7 @@ async function stallPane(
 test.skipIf(skip)(
   "a turn that ends on a legion tool call written as text is reminded that it did not run, and the next turn's real legion tool call posts the completion",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await stallPane(setup(), [
       [
         {
@@ -456,6 +544,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a worker the daemon says owes work is reminded at the end of every turn, past the architect threshold, and of nothing once the daemon answers that the claim owes nothing",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await stallPane(
       setup(),
       [
@@ -473,7 +562,13 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500", LEGION_STALL_ARCHITECT_AFTER: "2" },
-        quietMs: 6_000,
+        // The two reminders after the first come on the pane's own timer, each after its run has
+        // settled, so the run ends on the turn the completion leads to: the completion made the
+        // daemon answer that nothing is owed, which leaves no reminder to follow that turn.
+        settledWhen: {
+          what: "the completion and the reply to its tool result, the fifth turn",
+          done: (progress) => calls(progress, COMPLETE_ROUTE) >= 1 && progress.turns().length >= 5,
+        },
       }
     );
 
@@ -505,6 +600,10 @@ test.skipIf(skip)(
     // stopped nothing, and the third reminder earned no second notice.
     expect(pane.publishes()).toHaveLength(1);
     expect(pane.completions()).toHaveLength(1);
+    // And no reminder follows the fifth turn: the report its settle sent names no live wake
+    // (`phaseWake`), so that settle armed no timer, which is what the case settled on rather than
+    // on a quiet window.
+    expect(wakesAfter(pane, 5)).toEqual([]);
   },
   COLD_PANE_GUARD_MS
 );
@@ -512,14 +611,15 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a WAITING reply buys its quiet wait, and the reminder comes again when the wait is over",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
-    // Every request the stand-in served, with the moment it was served: the proposition is that
-    // nothing reached the session until the wait was over, and only elapsed time shows it.
-    const seen: { readonly path: string; readonly at: number }[] = [];
-    // The quiet wait a WAITING line buys, and the bound every assertion below measures against.
-    // The bound allows the timer a little early, since a host timer may fire slightly short.
+    // Every request the stand-in served, in the order it served them: the proposition is that
+    // nothing reached the session until the wait was over, which the pane's own record of the
+    // reminder it armed and the order of what it did then show.
+    const seen: { readonly path: string; readonly body: Record<string, unknown> }[] = [];
+    // The quiet wait a WAITING line buys.
     const waitMs = 1_500;
-    const waitedAtLeastMs = waitMs - 100;
+    const timerRecord = path.join(timerRecordDirectory(), "timer-record.jsonl");
     const pane = await stallPane(
       run,
       [
@@ -535,9 +635,16 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_WAITING_MS: String(waitMs) },
-        quietMs: 4_000,
-        answer: (url) => {
-          seen.push({ path: url.pathname, at: Date.now() });
+        timerRecord,
+        // The reminder comes on the pane's own timer once the wait is over, after its run has
+        // settled, so the run ends on the turn the completion leads to, after which the daemon
+        // answers that nothing is owed.
+        settledWhen: {
+          what: "the completion and the reply to its tool result, the third turn",
+          done: (progress) => calls(progress, COMPLETE_ROUTE) >= 1 && progress.turns().length >= 3,
+        },
+        answer: (url, body) => {
+          seen.push({ path: url.pathname, body });
           return undefined;
         },
       }
@@ -545,30 +652,58 @@ test.skipIf(skip)(
 
     const turns = pane.turns();
     expect(turns).toHaveLength(3);
-    const [waitingTurn = 0, reminderTurn = 0] = seen
-      .filter((request) => request.path === "/anthropic/v1/messages")
-      .map((request) => request.at);
-    // The WAITING line bought the wait: no turn started while it ran, and the reminder's did
-    // only once it was over.
-    expect(reminderTurn - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
+    const modelRequests = seen.flatMap((request, index) =>
+      request.path === "/anthropic/v1/messages" ? [index] : []
+    );
+    const [waitingTurn = -1, reminderTurn = -1] = modelRequests;
+    const between = seen.slice(waitingTurn + 1, reminderTurn);
+    // The WAITING line bought the wait: the settle that read it armed the reminder's timer
+    // (`armReminder`, pi-shared's phase-reminder.ts) for the wait, which the pane's own record of
+    // its timers holds with the delay it chose, and reported the wake at once (`session_stop` in
+    // extensions/legion.ts), which therefore lies no further ahead of the report than the wait.
+    const timerSteps = (await readFile(timerRecord, "utf8"))
+      .trim()
+      .split("\n")
+      .map((line): TimerStep => JSON.parse(line));
+    const reminderDelays = timerSteps.flatMap((step) =>
+      "timer" in step && step.from === ARM_TIMER_LINE ? [step.delayMs] : []
+    );
+    expect(
+      reminderDelays,
+      `the timers armed at ${ARM_TIMER_LINE}; the pane's whole record: ${JSON.stringify(timerSteps.filter((step) => !("fired" in step)))}`
+    ).toContain(waitMs);
+    const armedAt = between.findIndex(
+      (request) =>
+        request.path === ACTIVITY_ROUTE &&
+        LegionActivityRequest.parse(request.body).activity.phase.nextReminderAt !== null
+    );
+    expect(armedAt).toBeGreaterThanOrEqual(0);
+    const armed = LegionActivityRequest.parse(between[armedAt]?.body).activity;
+    const armedFor = Date.parse(armed.phase.nextReminderAt ?? "") - Date.parse(armed.at);
+    expect(armedFor).toBeLessThanOrEqual(waitMs);
+    // No turn started while it ran: the reminder's own question of what the claim owes is the
+    // first thing the pane did once its timer fired, and the reminder's turn came after it.
+    const fired = between.findIndex(
+      (request, index) => index > armedAt && request.path === OWED_ROUTE
+    );
+    expect(fired).toBeGreaterThan(armedAt);
     // Nothing arrived from outside in between: in that gap the pane spoke only to the daemon,
     // for the reminder's own question of what the claim owes, the outcome of the turn that bought
     // the wait and the activity report its settle sends, and to the listener for its session
     // registration. The stand-in also serves as Dispatch, which holds the handoff record, so the
     // session reads its people's answers before every model request (pi-envoy's answers line),
     // the reminder's included. That read belongs to the reminder's turn, so it comes only once the
-    // wait is over.
-    const between = seen.filter((request) => request.at > waitingTurn && request.at < reminderTurn);
+    // timer fired.
     const answersRead = /^\/api\/v1\/agents\/[^/]+\/answers$/;
-    for (const request of between.filter(({ path }) => answersRead.test(path))) {
-      expect(request.at - waitingTurn).toBeGreaterThanOrEqual(waitedAtLeastMs);
+    for (const [index, request] of between.entries()) {
+      if (answersRead.test(request.path)) expect(index).toBeGreaterThan(fired);
     }
     expect(
       between
         .map((request) => request.path)
         .filter(
           (path) =>
-            path !== "/legion/v1/claims/owed" &&
+            path !== OWED_ROUTE &&
             path !== "/legion/v1/claims/turn-outcome" &&
             path !== ACTIVITY_ROUTE &&
             path !== "/v1/interests/subscribe" &&
@@ -588,6 +723,24 @@ test.skipIf(skip)(
     expect(stallCounts(entries)).toEqual([0, 1, 0]);
     expect(entries.at(-1)).toMatchObject({ state: "active", count: 0 });
     expect(pane.completions()).toHaveLength(1);
+    // And no reminder follows the third turn: the report its settle sent names no live wake.
+    expect(wakesAfter(pane, 3)).toEqual([]);
+    // The wait itself, on the pane's own records, never the test's clock: the WAITING settle
+    // writes its entry (state `waiting`) before it arms the reminder, and the reminder writes the
+    // entry that counts it (count 1) only once its timer has fired and its question of what the
+    // claim owes answered, so the host's stamps on the two are at least the wait apart. A timer
+    // fires no sooner than its delay and both stamps are the pane's own clock, so load only moves
+    // them further apart; a host `setTimeout` that fired early is what brings them closer.
+    const records = await pane.phaseRecords();
+    const waiting = records.findIndex((record) => entryField(record.data, "state") === "waiting");
+    const reminded = records.findIndex(
+      (record, index) => index > waiting && entryField(record.data, "count") === 1
+    );
+    expect(waiting).toBeGreaterThanOrEqual(0);
+    expect(reminded).toBeGreaterThan(waiting);
+    expect(
+      (records[reminded]?.at ?? Number.NaN) - (records[waiting]?.at ?? Number.NaN)
+    ).toBeGreaterThanOrEqual(waitMs);
   },
   COLD_PANE_GUARD_MS
 );
@@ -595,6 +748,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a run of unanswered reminders tells the issue's architect over Envoy, retried under its own key until the listener takes it, and never again",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
     let publishes = 0;
     const pane = await stallPane(
@@ -616,7 +770,17 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500", LEGION_STALL_ARCHITECT_AFTER: "2" },
-        quietMs: 6_000,
+        // The reminders after the first come on the pane's own timer, each after its run has
+        // settled, so the run ends on the turn the completion leads to, once the listener has
+        // taken the notice: the completion made the daemon answer that nothing is owed, which
+        // leaves no reminder to follow.
+        settledWhen: {
+          what: "the notice the listener took, the completion and the reply to its tool result",
+          done: (progress) =>
+            calls(progress, "/v1/messages/publish") >= 2 &&
+            calls(progress, COMPLETE_ROUTE) >= 1 &&
+            progress.turns().length >= 7,
+        },
         // No live session holds the architect's role the first time, as the listener answers
         // while that architect is between sessions; the second is taken.
         answer: (url) => {
@@ -655,6 +819,8 @@ test.skipIf(skip)(
     // a run's first again, so it told the architect nothing.
     expect(pane.turns()).toHaveLength(7);
     expect(pane.completions()).toHaveLength(1);
+    // And no reminder follows the seventh turn: the report its settle sent names no live wake.
+    expect(wakesAfter(pane, 7)).toEqual([]);
   },
   COLD_PANE_GUARD_MS
 );
@@ -662,6 +828,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a real tool call between reminders puts the count back to zero, so the architect of a working worker is not told",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
     const pane = await stallPane(
       run,
@@ -680,7 +847,13 @@ test.skipIf(skip)(
           LEGION_STALL_ARCHITECT_AFTER: "3",
           LEGION_STALL_WAITING_MS: "600000",
         },
-        quietMs: 4_000,
+        // The reminders come on the pane's own timer, each after its run has settled, so the run
+        // ends on the sixth turn, whose WAITING line arms the next reminder ten minutes ahead, and
+        // the case settles once the pane has reported that wake.
+        settledWhen: {
+          what: "the sixth turn, and the activity report of the wake its WAITING line armed",
+          done: (progress) => wakesAfter(progress, 6).length > 0,
+        },
       }
     );
 
@@ -689,6 +862,20 @@ test.skipIf(skip)(
     // unanswered in a row, so the threshold is never reached.
     expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2, 0, 1, 2]);
     expect(pane.publishes()).toEqual([]);
+    // And the sixth turn's WAITING line holds off a seventh: the only wake the pane armed after
+    // that turn, as its own activity reports name it, is the ten minutes the line bought, not the
+    // half second between reminders. A report names only a live timer (`phaseWake`), and the
+    // pane's moment and the wake it names are the wait apart, less what the pane did between
+    // arming and reporting - two reads of its clock a loaded pod can put any time apart, so the
+    // row reads no slack between them: a wake past five minutes is the ten-minute wait, and the
+    // reminder's half second, the defect this reads, is far below it.
+    const wakes = wakesAfter(pane, 6);
+    expect(wakes.length).toBeGreaterThan(0);
+    for (const wake of wakes) {
+      expect(wake).toBeGreaterThan(300_000);
+      expect(wake).toBeLessThanOrEqual(600_000);
+    }
+    expect(entryField((await pane.phaseRecords()).at(-1)?.data, "state")).toBe("waiting");
   },
   COLD_PANE_GUARD_MS
 );
@@ -699,6 +886,7 @@ const OWES_NOTHING = { owes: false, work: "" };
 test.skipIf(skip)(
   "a worker the daemon says owes nothing is reminded of nothing: its run settles where it is",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
     const pane = await stallPane(
       run,
@@ -709,20 +897,28 @@ test.skipIf(skip)(
         [{ type: "text", text: "Understood." }],
       ],
       {
-        quietMs: 4_000,
+        // The owed check runs in `session_stop`, whose follow-up the host starts under the same
+        // run (the first case's three turns in one run), so the host ending the run after its one
+        // turn is its own word that the check started no continuation.
+        settledWhen: {
+          what: "the owed check that answered nothing is owed, after the prompt's turn",
+          done: (progress) => calls(progress, OWED_ROUTE) >= 1 && progress.turns().length >= 1,
+        },
         answer: (url) =>
           url.pathname === "/legion/v1/claims/owed" ? Response.json(OWES_NOTHING) : undefined,
       }
     );
 
-    // One turn, the prompt's own, and the wait proves no second: the daemon answered that the
-    // claim owes nothing, so `session_stop` ran no continuation at all.
+    // One turn, the prompt's own, and no second: the daemon answered that the claim owes
+    // nothing, so `session_stop` ran no continuation at all.
     expect(pane.turns()).toHaveLength(1);
     expect(daemonRoutes(pane)).toContain("/legion/v1/claims/owed");
     expect(pane.publishes()).toEqual([]);
     expect(pane.completions()).toEqual([]);
     // Nothing was put in front of the worker, so nothing was counted.
     expect(stallCounts(await pane.phaseEntries())).toEqual([0]);
+    // And no timer carries one: the report the turn's settle sent names no live wake.
+    expect(wakesAfter(pane, 1)).toEqual([]);
   },
   COLD_PANE_GUARD_MS
 );
@@ -730,6 +926,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a daemon that answers between reminders that the claim owes nothing stops them: the reminder its timer carried is never sent",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
     let asked = 0;
     const pane = await stallPane(
@@ -741,7 +938,19 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500" },
-        quietMs: 4_000,
+        // The timer fires once the second run has settled, and its owed check is the stand-in's
+        // second owed answer. A reminder it sent anyway would start a run of its own after that
+        // answer, which no record of the pane rules out, so a span follows it.
+        settledWhen: {
+          what: "the timer's owed check, after the continuation reminder's turn",
+          done: (progress) => asked >= 2 && progress.turns().length >= 2,
+          quiet: {
+            ms: 4_000,
+            why:
+              "a reminder the timer sent after its owed check would start a run of its own, " +
+              "and the pane reports nothing that tells a dropped reminder from one on its way",
+          },
+        },
         answer: (url) => {
           if (url.pathname !== "/legion/v1/claims/owed") return undefined;
           asked += 1;
@@ -771,6 +980,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "with the daemon unreachable the worker is still nudged, by a reminder that names no phase and no operation",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
     const pane = await stallPane(
       run,
@@ -781,7 +991,13 @@ test.skipIf(skip)(
       ],
       {
         env: { LEGION_STALL_REMINDER_MS: "500" },
-        quietMs: 4_000,
+        // The second reminder comes on the pane's own timer once the first run has settled, so
+        // the run ends on the third turn, whose WAITING line arms the next reminder the default
+        // fifteen minutes ahead, and the case settles once the pane has reported that wake.
+        settledWhen: {
+          what: "the third turn, and the activity report of the wake its WAITING line armed",
+          done: (progress) => wakesAfter(progress, 3).length > 0,
+        },
         answer: (url) =>
           url.pathname === "/legion/v1/claims/owed"
             ? new Response("upstream connect error", { status: 503 })
@@ -803,6 +1019,15 @@ test.skipIf(skip)(
       expect(text).not.toContain("implementing");
     }
     expect(stallCounts(await pane.phaseEntries())).toEqual([0, 1, 2]);
+    // And the third turn's WAITING line holds off a fourth: the only wake the pane armed after it,
+    // as its own activity reports name it, is the default fifteen-minute wait, not the half second
+    // between reminders (past five minutes, as the real tool call's case reads it).
+    const wakes = wakesAfter(pane, 3);
+    expect(wakes.length).toBeGreaterThan(0);
+    for (const wake of wakes) {
+      expect(wake).toBeGreaterThan(300_000);
+      expect(wake).toBeLessThanOrEqual(900_000);
+    }
   },
   COLD_PANE_GUARD_MS
 );
@@ -819,6 +1044,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a PROCEEDING self-check leaves an ask-free stop with no visible turn at all",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
     const pane = await stallPane(
       run,
@@ -826,10 +1052,27 @@ test.skipIf(skip)(
       // than as the gateway's "no reply scripted" refusal.
       [[{ type: "text", text: "Done." }], [{ type: "text", text: "Understood." }]],
       // An ordinary session, not a Legion pane: a Legion-driven one is excluded from the nudge.
-      { legion: false, openAsks: 0, selfCheck: "PROCEEDING", quietMs: 8_000 }
+      {
+        legion: false,
+        openAsks: 0,
+        selfCheck: "PROCEEDING",
+        settledWhen: {
+          what: "the run-end self-check and both open-ask reads, after the prompt's turn",
+          done: (progress) =>
+            progress.selfChecks().length >= 1 &&
+            calls(progress, ASKS_ROUTE) >= 2 &&
+            progress.turns().length >= 1,
+          quiet: {
+            ms: 8_000,
+            why:
+              "a nudge's steer starts its turn after the run's terminal agent_end, and a " +
+              "PROCEEDING verdict leaves no record the stand-in sees that no steer is coming",
+          },
+        },
+      }
     );
 
-    // One turn, and the wait proves no second: the user's own. The agent said it is not waiting
+    // One turn, and the span proves no second: the user's own. The agent said it is not waiting
     // on anyone, so the whole stop cost one hidden call the user never saw.
     expect(pane.turns()).toHaveLength(1);
     // Both entries loaded but no LEGION_* in the environment: a person's own session gets no
@@ -850,6 +1093,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a WAITING self-check with a held ask runs exactly one nudge and lists the ask",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
     const heldQuestion = "Which deployment window should I use?";
     const pane = await stallPane(
@@ -859,12 +1103,24 @@ test.skipIf(skip)(
         legion: false,
         openAskQuestions: [heldQuestion],
         selfCheck: "WAITING",
-        quietMs: 8_000,
+        settledWhen: {
+          what: "the self-check, both open-ask reads and the one nudge continuation",
+          done: (progress) =>
+            progress.selfChecks().length >= 1 &&
+            calls(progress, ASKS_ROUTE) >= 2 &&
+            progress.turns().length >= 2,
+          quiet: {
+            ms: 8_000,
+            why:
+              "the continuation's own stop would run a second self-check after its run's " +
+              "terminal agent_end, and a stop that runs none leaves no record the stand-in sees",
+          },
+        },
       }
     );
 
     const turns = pane.turns();
-    // Two, and the wait proves no third: the user's turn, and the one nudge continuation.
+    // Two, and the span proves no third: the user's turn, and the one nudge continuation.
     expect(turns).toHaveLength(2);
     expect(userText(turns[0] as Request)).not.toContain("no open ask in Dispatch");
     expect(userText(turns[1] as Request)).toContain(
@@ -892,6 +1148,7 @@ test.skipIf(skip)(
 test.skipIf(skip)(
   "a turn that ends while the session waits on its own background job gets no reminder, and the job's result wakes it",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const run = setup();
     const pane = await stallPane(
       run,
@@ -900,8 +1157,15 @@ test.skipIf(skip)(
         [{ type: "text", text: "I started the build; I will be woken when it is done." }],
         [{ type: "text", text: "WAITING: nothing more." }],
       ],
-      // Longer than the job, so the pane settles on the woken turn rather than before it.
-      { quietMs: 12_000 }
+      // The job's end wakes the third turn after the second run has settled: the run ends on
+      // that turn, whose WAITING line arms the next reminder the default fifteen minutes ahead.
+      {
+        settledWhen: {
+          what: "the turn the background job's result wakes",
+          done: (progress) =>
+            progress.turns().some((turn) => userText(turn).includes("background-done")),
+        },
+      }
     );
 
     const turns = pane.turns();
@@ -919,6 +1183,14 @@ test.skipIf(skip)(
     // The WAITING line of the woken turn is what quiets the rhythm underneath.
     expect(entries.at(-1)).toMatchObject({ state: "waiting", count: 0 });
     expect(pane.completions()).toHaveLength(0);
+    // And that WAITING line holds off a fourth turn: the only wake the pane armed after the woken
+    // turn, as its own activity reports name it, is the default fifteen-minute wait.
+    const wakes = wakesAfter(pane, 3);
+    expect(wakes.length).toBeGreaterThan(0);
+    for (const wake of wakes) {
+      expect(wake).toBeGreaterThan(300_000);
+      expect(wake).toBeLessThanOrEqual(900_000);
+    }
   },
   COLD_PANE_GUARD_MS
 );

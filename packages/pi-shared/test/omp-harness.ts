@@ -1194,6 +1194,9 @@ export interface LegionPaneOptions {
   readonly dispatch?: boolean;
   /** Static extras spread into the pane's environment, last. */
   readonly env?: Readonly<Record<string, string>>;
+  /** Extensions the pane loads before the Envoy and Legion entries: the tests' timer record
+   *  (`@legion/test-fixtures/timer-record-preload`), first so it holds every timer they arm. */
+  readonly extensions?: readonly string[];
   /** Lines appended to the profile's config.yml (`writeStandinProfile`), which is where a case
    * puts the settings its pane runs under — a fallback chain, say. */
   readonly config?: readonly string[];
@@ -1488,6 +1491,7 @@ export async function runLegionPane(
       binary,
       {
         extensions: [
+          ...(options.extensions ?? []),
           // The Envoy entry is the sibling plugin's: a Legion pane loads both, and the Legion
           // entry refuses to run without it.
           path.resolve(import.meta.dir, "../../pi-envoy/extensions/envoy.ts"),

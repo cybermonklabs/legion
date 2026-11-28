@@ -225,6 +225,10 @@
       "types": "./test/nats-server.ts",
       "bun": "./test/nats-server.ts"
     },
+    "./test/pattern-analysis": {
+      "types": "./test/pattern-analysis.ts",
+      "bun": "./test/pattern-analysis.ts"
+    },
     "./test/relay-socket-stand-in": {
       "types": "./test/relay-socket-stand-in.ts",
       "bun": "./test/relay-socket-stand-in.ts"
@@ -299,6 +303,7 @@
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
     "ajv": "8.20.0",
+    "recheck": "4.6.2",
     "typescript": "^5.3.0"
   }
 }

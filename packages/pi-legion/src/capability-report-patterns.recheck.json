@@ -1,0 +1,83 @@
+{
+  "//": "Written by `bun run analyze:patterns` in packages/pi-legion (scripts/analyze-patterns.ts): recheck's reading of each pattern cleanDetail runs whose analysis takes more than a moment, which capability-report-patterns.test.ts holds to the pattern's source.",
+  "recheck": "4.6.2",
+  "patterns": {
+    "query-credential": {
+      "source": "([?&](?:token|key|secret|password|access_token|accesstoken|refresh_token|id_token|auth_token|private_token|api_key|apikey|client_secret|sig|signature|x-amz-security-token|x-amz-signature|x-goog-signature)=)[^ &#\"'<>]+",
+      "flags": "gi",
+      "status": "safe",
+      "verdict": "linear",
+      "ms": 20345
+    },
+    "connection-string-password": {
+      "source": "\\b(password[ \\ufffe\\uffff]*=[ \\ufffe\\uffff]*)(?:(')(?:[^'\\\\]|\\\\.)*('?)|[^ &#\"'<>]+)",
+      "flags": "gi",
+      "status": "safe",
+      "verdict": "linear",
+      "ms": 2801
+    },
+    "authorization-header": {
+      "source": "(authorization\\\\?[\"']?[ \\ufffe\\uffff]*[:=][ \\ufffe\\uffff]*)(?:(\\\\[\"'](?:(?:bearer|basic|token|digest)[ \\ufffe\\uffff]+)?)[^\"'\\\\]+|([\"'](?:(?:bearer|basic|token|digest)[ \\ufffe\\uffff]+)?)(?:[^\"'\\\\]|\\\\.)+|(\\[?(?:(?:bearer|basic|token|digest)[ \\ufffe\\uffff]+)?)[^)\\]}>]+)",
+      "flags": "gi",
+      "status": "safe",
+      "verdict": "linear",
+      "ms": 89489
+    },
+    "api-key-header": {
+      "source": "((?:api-key|application-key|ocp-apim-subscription-key|x-subscription-token)\\\\?[\"']?[ \\ufffe\\uffff]*[:=][ \\ufffe\\uffff]*\\\\?[\"']?)(?:[^ \"'\\\\)\\]}>,;:.!?]|[\\\\)\\]}>,;:.!?]+[^ \"'\\\\)\\]}>,;:.!?])+",
+      "flags": "gi",
+      "status": "safe",
+      "verdict": "linear",
+      "ms": 5049
+    },
+    "json-member": {
+      "source": "(\\\\?[\"'](?:api_key|access_token)\\\\?[\"'][ \\ufffe\\uffff]*:[ \\ufffe\\uffff]*\\\\?[\"'])[^\"'\\\\]+",
+      "flags": "gi",
+      "status": "safe",
+      "verdict": "linear",
+      "ms": 1835
+    },
+    "github-token": {
+      "source": "\\b(gh[pousr]_|github_pat_)(?:[A-Za-z0-9._-]|\\ufffe|\\ufdd0|\\uffff(?:\\[[0-?]*[@-~])?){20,}",
+      "flags": "g",
+      "status": "no verdict",
+      "verdict": "cancelled",
+      "ms": 300000
+    },
+    "jwt-first-unheld": {
+      "source": "eyJ(?:[A-Za-z0-9_-]|\\ufffe|\\uffff(?:\\[[0-?]*[@-~])?){8,}\\.",
+      "flags": "y",
+      "status": "safe",
+      "verdict": "linear",
+      "ms": 25526
+    },
+    "jwt-second": {
+      "source": "(?:[A-Za-z0-9_-]|\\ufffe|\\ufdd0|\\uffff(?:\\[[0-?]*[@-~])?){8,}\\.",
+      "flags": "y",
+      "status": "safe",
+      "verdict": "linear",
+      "ms": 16755
+    },
+    "prefixed-token": {
+      "source": "\\b(sk-|dsp_|ddsat_|ddpat_|ddapp_|ya29\\.|xox[a-z]-|glpat-|npm_)(?:[A-Za-z0-9_-]|\\ufffe|\\ufdd0|\\uffff(?:\\[[0-?]*[@-~])?){20,}",
+      "flags": "g",
+      "status": "no verdict",
+      "verdict": "cancelled",
+      "ms": 300000
+    },
+    "google-api-key": {
+      "source": "\\b(AIza)(?:[A-Za-z0-9_-]|\\ufffe|\\ufdd0|\\uffff(?:\\[[0-?]*[@-~])?){35,}",
+      "flags": "g",
+      "status": "no verdict",
+      "verdict": "cancelled",
+      "ms": 300000
+    },
+    "aws-access-key-id": {
+      "source": "\\b(AKIA|ASIA)(?:(?:\\ufffe|\\ufdd0|\\uffff(?:\\[[0-?]*[@-~])?)*[A-Z0-9]){16}\\b",
+      "flags": "g",
+      "status": "no verdict",
+      "verdict": "cancelled",
+      "ms": 300000
+    }
+  }
+}
