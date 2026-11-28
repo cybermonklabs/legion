@@ -5,7 +5,7 @@
 // the one `envoy.test.ts` uses, so a row's full name is the same in every file. The rows on the
 // broker trade a dial presents are in `nats-broker-trade.test.ts`. All three files share one
 // harness (`../test/extension-harness`).
-import { describe, expect, setSystemTime, test } from "bun:test";
+import { describe, expect, jest, setSystemTime, test } from "bun:test";
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +13,7 @@ import { deliverSubject } from "@legion/envoy-client/consumer-delivery";
 import { natsFailureReason } from "@legion/envoy-client/errors";
 import { INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/inbound-outage";
 import { NATS_DIAL_PLAN } from "@legion/envoy-client/nats-connection";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
   type ConnectionOptions,
@@ -30,23 +31,32 @@ import {
   setNatsConnectForTests,
   settle,
   topLevelSession,
-  until,
   useExtensionHarness,
   withEnvoyTimings,
 } from "../test/extension-harness";
-import { natsStandInConnect, natsState, responseWithRegistration } from "../test/listener-stand-in";
+import {
+  natsStandIn,
+  natsStandInConnect,
+  natsState,
+  responseWithRegistration,
+  standInFetch,
+} from "../test/listener-stand-in";
 import type { SessionContext } from "../test/stand-in-host";
 
 useExtensionHarness();
 
 describe("envoy OMP extension", () => {
   test("retries NATS in the background when the initial connection fails", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     natsState.failConnects = 1;
     const notifications: string[] = [];
     const intervals: { callback: () => void; intervalMs: number }[] = [];
     const context: SessionContext = {
       cwd: "/tmp/envoy-omp-test",
+      hasUI: false,
+      setTimeout: () => undefined,
       sessionManager: { ...topLevelSession, getSessionId: () => "ses_retry" },
       setInterval: (callback, intervalMs) => intervals.push({ callback, intervalMs }),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
@@ -80,19 +90,20 @@ describe("envoy OMP extension", () => {
     if (retry === undefined) throw new Error("retry interval was not registered");
 
     retry.callback();
-    await new Promise((resolve) => setTimeout(resolve, 0));
-
-    expect(natsState.subscriptions.has("notifications.envoy.deliver.ses_retry")).toBe(true);
-    expect(notifications.some((message) => message.includes("this session is registered"))).toBe(
-      true
+    await until(
+      "the retry's connection to open the relay subject and register the session",
+      () =>
+        natsState.subscriptions.has("notifications.envoy.deliver.ses_retry") &&
+        notifications.some((message) => message.includes("this session is registered"))
     );
     // The relay opened inside the bound, so the session was told nothing, and it is told nothing
     // about receiving again either.
     expect(notifications.filter((message) => message.includes("inbound messages are"))).toEqual([]);
     const connectionsAfterRecovery = natsState.connectedNames.length;
 
+    // A retry once connected dials nothing: it runs here, on no clock, and is let finish.
     retry.callback();
-    await new Promise((resolve) => setTimeout(resolve, 0));
+    await settle();
 
     expect(natsState.connectedNames.length).toBe(connectionsAfterRecovery);
   });
@@ -102,7 +113,9 @@ describe("envoy OMP extension", () => {
     // host it could not look up, lowercased, and the notice must carry neither form.
     const seed = new TextDecoder().decode(nkeys.createUser().getSeed());
     process.env.ENVOY_NATS_URL = seed;
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     natsState.failConnects = 1;
     natsState.failError = () =>
       Object.assign(new Error(`getaddrinfo EAI_AGAIN ${seed.toLowerCase()}`), {
@@ -112,9 +125,7 @@ describe("envoy OMP extension", () => {
       });
     const notifications: string[] = [];
     const context: SessionContext = {
-      cwd: "/tmp/envoy-omp-test",
-      sessionManager: { ...topLevelSession, getSessionId: () => "ses_seed_notice" },
-      setInterval: () => {},
+      ...sessionContext("ses_seed_notice"),
       ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
     };
     const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?seed-notice");
@@ -135,14 +146,17 @@ describe("envoy OMP extension", () => {
   // start of Oh My Pi causes, and answers the next one: the pass dials again rather than register
   // with no relay.
   test("a first NATS dial that fails once is dialed again, and the session_start pass registers with its relay", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     natsState.failConnects = 1;
     natsState.failError = () =>
       new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout);
-    setNatsConnectForTests(natsStandInConnect, { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 5_000 });
+    setNatsConnectForTests(natsStandIn, { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 5_000 });
     try {
       const notifications: string[] = [];
       const context: SessionContext = {
+        ...sessionContext("ses_redial"),
         cwd: "/tmp/envoy-omp-test",
         sessionManager: { ...topLevelSession, getSessionId: () => "ses_redial" },
         setInterval: () => {},
@@ -160,7 +174,7 @@ describe("envoy OMP extension", () => {
       ).toEqual([]);
       expect(notifications.filter((message) => message.includes("not registered"))).toEqual([]);
     } finally {
-      setNatsConnectForTests(natsStandInConnect);
+      setNatsConnectForTests(natsStandIn);
     }
   });
 
@@ -169,7 +183,7 @@ describe("envoy OMP extension", () => {
   // session registered before. The dial the hub closes is dialed again there too.
   test("a session resumed in a new pod, whose first dial the hub closes, is dialed again and registers with its relay in its session_start pass", async () => {
     const registrations: { readonly consumer: boolean }[] = [];
-    globalThis.fetch = async (input, init) => {
+    globalThis.fetch = standInFetch(async (input, init) => {
       const url = new URL(input.toString());
       if (url.pathname === "/v1/interests/subscribe") {
         const body = JSON.parse(init?.body?.toString() ?? "{}") as {
@@ -178,11 +192,11 @@ describe("envoy OMP extension", () => {
         registrations.push({ consumer: body.delivery?.consumer === true });
       }
       return responseWithRegistration(input, init, {});
-    };
+    });
     natsState.failConnects = 1;
     natsState.failError = () =>
       new NatsError("'Authentication Timeout'", ErrorCode.AuthenticationTimeout);
-    setNatsConnectForTests(natsStandInConnect, { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 5_000 });
+    setNatsConnectForTests(natsStandIn, { firstDelayMs: 5, maxDelayMs: 5, budgetMs: 5_000 });
     try {
       const notifications: string[] = [];
       const earlier = [
@@ -190,6 +204,7 @@ describe("envoy OMP extension", () => {
         { type: "message", message: { role: "assistant", content: "working on it", timestamp: 2 } },
       ];
       const context: SessionContext = {
+        ...sessionContext("ses_woken"),
         cwd: "/tmp/envoy-omp-test",
         sessionManager: {
           ...topLevelSession,
@@ -216,7 +231,7 @@ describe("envoy OMP extension", () => {
       ).toEqual([]);
       expect(notifications.filter((message) => message.includes("not registered"))).toEqual([]);
     } finally {
-      setNatsConnectForTests(natsStandInConnect);
+      setNatsConnectForTests(natsStandIn);
     }
   });
 
@@ -225,7 +240,9 @@ describe("envoy OMP extension", () => {
   // registers. Without a word that it receives again, the session reads the outage notice as its
   // state for its life.
   test("a session told it receives nothing is told once it receives again, in every part of the notice", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, {})
+    );
     natsState.failConnects = 99;
     const infos: string[] = [];
     const stopSink = logger.registerLogSink((entry) => {
@@ -236,6 +253,7 @@ describe("envoy OMP extension", () => {
       const notifications: string[] = [];
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
+        ...sessionContext("ses_restored"),
         cwd: "/tmp/envoy-omp-test",
         sessionManager: { ...topLevelSession, getSessionId: () => "ses_restored" },
         setInterval: (callback) => intervals.push(callback),
@@ -263,17 +281,17 @@ describe("envoy OMP extension", () => {
       // Past the bound, the background retry's pass finds NATS still closed, and the session is
       // told that it receives nothing.
       setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
-      await until(() => {
+      await until("the outage notice", () => {
         intervals.at(-1)?.();
         return notifications.some((m) => m.includes("inbound messages are unavailable"));
-      }, "the outage notice");
+      });
 
       // A later retry's pass dials, opens the relay and registers.
       natsState.failConnects = 0;
-      await until(() => {
+      await until("the restored notice", () => {
         intervals.at(-1)?.();
         return notifications.some((m) => m.includes("inbound messages are back"));
-      }, "the restored notice");
+      });
       expect(infos.filter((m) => m.includes("this session receives again"))).toHaveLength(1);
       expect(
         transcript().filter((content) => content.includes("Envoy inbound restored"))
@@ -290,7 +308,9 @@ describe("envoy OMP extension", () => {
     // after that. The relay's own resubscribe fails once and then waits NATS_RETRY_INTERVAL_MS,
     // and the agent stream's gives up, so here the heartbeat's pass is what opens them again.
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const id = "ses_relay_lost";
     const relay = deliverSubject(id);
     const control = `agentstream.${id}.control`;
@@ -340,7 +360,7 @@ describe("envoy OMP extension", () => {
         await natsState.connections[0]?.close();
         natsState.controls.get(relay)?.end();
         natsState.controls.get(control)?.end();
-        await until(() => natsState.failConnects < 99, "the relay's own redial");
+        await until("the relay's own redial", () => natsState.failConnects < 99);
         await settle();
 
         // A registration sent outside a pass while the subject is missing - here the one a new
@@ -364,10 +384,10 @@ describe("envoy OMP extension", () => {
         const beforeHeartbeat = natsState.failConnects;
         heartbeat();
         await until(
+          "the heartbeat's dial and its failure",
           () =>
             natsState.failConnects < beforeHeartbeat &&
-            notifications.some((m) => m.includes("registry heartbeat failed")),
-          "the heartbeat's dial and its failure"
+            notifications.some((m) => m.includes("registry heartbeat failed"))
         );
         await settle();
         for (const part of Object.values(told())) expect(part).toHaveLength(1);
@@ -380,9 +400,8 @@ describe("envoy OMP extension", () => {
         // again.
         natsState.failConnects = 0;
         heartbeat();
-        await until(
-          () => notifications.some((m) => m.includes("inbound messages are back")),
-          "the restored notice"
+        await until("the restored notice", () =>
+          notifications.some((m) => m.includes("inbound messages are back"))
         );
         await settle();
         expect(natsState.connectedNames).toHaveLength(2);
@@ -396,9 +415,8 @@ describe("envoy OMP extension", () => {
         natsState.controls
           .get(`notifications.agent.${id}`)
           ?.push(forwardedRoleEnvelope("legion-controller", "after the relay came back", "back"));
-        await until(
-          () => fixture.messages.some((m) => m.includes("after the relay came back")),
-          "the message relayed on the new connection"
+        await until("the message relayed on the new connection", () =>
+          fixture.messages.some((m) => m.includes("after the relay came back"))
         );
       } finally {
         stopSink();
@@ -411,7 +429,9 @@ describe("envoy OMP extension", () => {
     // The control subscription ends under a connection that stays up, and its one resubscribe,
     // one resubscribe delay later, is refused; nothing else would open it again.
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const id = "ses_control_lost";
     const control = `agentstream.${id}.control`;
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
@@ -432,14 +452,14 @@ describe("envoy OMP extension", () => {
 
         natsState.failSubscribes = 1;
         first?.end();
-        await until(() => natsState.failSubscribes === 0, "the control subject's own resubscribe");
+        await until("the control subject's own resubscribe", () => natsState.failSubscribes === 0);
         await settle();
         expect(natsState.controls.get(control)).toBe(first);
 
         for (const { callback, intervalMs } of intervals) if (intervalMs === 45_000) callback();
         await until(
-          () => natsState.controls.get(control) !== first,
-          "the heartbeat's open of the control subject"
+          "the heartbeat's open of the control subject",
+          () => natsState.controls.get(control) !== first
         );
         expect(natsState.controls.get(control)?.active()).toBe(true);
         expect(natsState.connectedNames).toHaveLength(1);
@@ -512,7 +532,9 @@ describe("envoy OMP extension", () => {
     // nats.js ends each subscription of a connection it closes with no error of its own, and the
     // relay's own redial has not failed yet: the close is the only reason there is.
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const id = "ses_relay_closed";
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
       const session = await relayLossSession(id, "relay-closed-reason");
@@ -523,7 +545,7 @@ describe("envoy OMP extension", () => {
         natsState.heldConnect = parked.promise;
         await natsState.connections[0]?.close();
         natsState.controls.get(deliverSubject(id))?.end();
-        await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
+        await until("the relay's own redial", () => natsState.connectedNames.length === 2);
         const reason = "because its relay subject could not be opened: the NATS connection closed";
         expect(await session.follow("team.relay-closed")).toContain(reason);
         for (const part of Object.values(session.outage())) {
@@ -539,7 +561,9 @@ describe("envoy OMP extension", () => {
   });
 
   test("a registration sent after a start whose dial failed names the dial's failure, though no relay exists yet", async () => {
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     natsState.failConnects = 99;
     const id = "ses_start_dial_failed";
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
@@ -559,7 +583,9 @@ describe("envoy OMP extension", () => {
     // nats.js settles `closed()` with the close's own error, which replaces the plugin's own words
     // for the close once it settles.
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const id = "ses_relay_closed_error";
     const closeError = NatsError.errorForCode(ErrorCode.AuthenticationExpired);
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
@@ -570,7 +596,7 @@ describe("envoy OMP extension", () => {
         natsState.closeError = closeError;
         await natsState.connections[0]?.close();
         natsState.controls.get(deliverSubject(id))?.end();
-        await until(() => natsState.connectedNames.length === 2, "the relay's own redial");
+        await until("the relay's own redial", () => natsState.connectedNames.length === 2);
         const reason = `because its relay subject could not be opened: ${natsFailureReason(closeError)}`;
         expect(natsFailureReason(closeError)).not.toBe("the NATS connection closed");
         expect(await session.follow("team.relay-closed-error")).toContain(reason);
@@ -584,7 +610,9 @@ describe("envoy OMP extension", () => {
 
   test("a relay subscription that ends with its own error names that error, and the next heartbeat opens it again", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const id = "ses_relay_errored";
     const relay = deliverSubject(id);
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
@@ -594,7 +622,7 @@ describe("envoy OMP extension", () => {
         // The connection stays up; the relay's own resubscribe is refused, and waits 15 s.
         natsState.failSubscribes = 1;
         first?.fail(NatsError.errorForCode(ErrorCode.Disconnect));
-        await until(() => natsState.failSubscribes === 0, "the relay's own resubscribe");
+        await until("the relay's own resubscribe", () => natsState.failSubscribes === 0);
         const reason = "because its relay subject could not be opened: DISCONNECT";
         expect(await session.follow("team.relay-errored")).toContain(reason);
         for (const part of Object.values(session.outage())) {
@@ -603,12 +631,12 @@ describe("envoy OMP extension", () => {
         }
         session.heartbeat();
         await until(
+          "the heartbeat's open of the relay subject",
           () =>
             natsState.controls.get(relay) !== first &&
-            natsState.controls.get(relay)?.active() === true,
-          "the heartbeat's open of the relay subject"
+            natsState.controls.get(relay)?.active() === true
         );
-        await until(() => session.restored().written.length === 1, "the restored notice");
+        await until("the restored notice", () => session.restored().written.length === 1);
         for (const part of Object.values(session.restored())) expect(part).toHaveLength(1);
         expect(natsState.connectedNames).toHaveLength(1);
       } finally {
@@ -621,7 +649,9 @@ describe("envoy OMP extension", () => {
     // The control subject's own resubscribe and the heartbeat's pass both dial a closed
     // connection; whichever lands second takes nothing.
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const id = "ses_control_race";
     const control = `agentstream.${id}.control`;
     await withEnvoyTimings({ heartbeatMs: 45_000 }, async () => {
@@ -631,14 +661,13 @@ describe("envoy OMP extension", () => {
         natsState.heldConnect = parked.promise;
         await natsState.connections[0]?.close();
         natsState.controls.get(control)?.end();
-        await until(() => natsState.connectedNames.length === 2, "the control subject's own dial");
+        await until("the control subject's own dial", () => natsState.connectedNames.length === 2);
         session.heartbeat();
-        await until(() => natsState.connectedNames.length === 3, "the heartbeat's dial");
+        await until("the heartbeat's dial", () => natsState.connectedNames.length === 3);
         natsState.heldConnect = undefined;
         parked.resolve();
-        await until(
-          () => (natsState.controlsByTopic.get(control) ?? []).some((c, i) => i > 0 && c.active()),
-          "the control subject opened again"
+        await until("the control subject opened again", () =>
+          (natsState.controlsByTopic.get(control) ?? []).some((c, i) => i > 0 && c.active())
         );
         await settle();
         // The first subscription ended with its connection; the stand-in still calls an ended
@@ -657,7 +686,9 @@ describe("envoy OMP extension", () => {
 
   test("the budget of the pass: a pass whose deadline is 7.5 s dials once, bounded by that deadline", async () => {
     await withEnvoyTimings({ heartbeatMs: 5_000, passDeadlineMs: 7_500 }, async () => {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, {})
+      );
       const bounds: number[] = [];
       setNatsConnectForTests(
         (async (options: ConnectionOptions) => {
@@ -668,6 +699,7 @@ describe("envoy OMP extension", () => {
       );
       try {
         const context: SessionContext = {
+          ...sessionContext("ses_pass_budget"),
           cwd: "/tmp/envoy-omp-test",
           sessionManager: { ...topLevelSession, getSessionId: () => "ses_pass_budget" },
           setInterval: () => {},
@@ -676,16 +708,19 @@ describe("envoy OMP extension", () => {
         const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pass-budget");
         const fixture = createPi();
         await envoyExtension(fixture.pi);
+        // On the fake clock, which the file's `afterEach` gives back: the pass's deadline is read
+        // from it as the pass is queued, and the dial's bound is what is left of it as the dial
+        // starts. Nothing moves the clock between the two, so the bound is the whole 7.5 s to the
+        // millisecond, however long the start takes in real time.
+        jest.useFakeTimers();
         await fixture.handlers.get("session_start")?.({}, context);
         // The rest of the pass needs 20.25 s, more than the 7.5 s it has, so no redial fits.
-        expect(bounds).toHaveLength(1);
-        expect(bounds[0]).toBeLessThanOrEqual(7_500);
-        expect(bounds[0]).toBeGreaterThan(6_000);
+        expect(bounds).toEqual([7_500]);
       } finally {
-        setNatsConnectForTests(natsStandInConnect);
+        setNatsConnectForTests(natsStandIn);
       }
     });
-  }, 30_000);
+  });
 
   // legacy-subjects-gate.sh reads each connection's build from the end of the name the hub's census
   // of connections lists: the image's build-commit stamp, else a packed build's release version,
@@ -758,7 +793,9 @@ describe("envoy OMP extension", () => {
     },
   ]) {
     test(`a session whose dial fails ${row}`, async () => {
-      globalThis.fetch = async (input, init) => responseWithRegistration(input, init, {});
+      globalThis.fetch = standInFetch(async (input, init) =>
+        responseWithRegistration(input, init, {})
+      );
       natsState.failConnects = 99;
       natsState.failError = error;
       const warnings: string[] = [];
@@ -770,6 +807,7 @@ describe("envoy OMP extension", () => {
         const notifications: string[] = [];
         const intervals: (() => void)[] = [];
         const context: SessionContext = {
+          ...sessionContext("ses_named_failure"),
           cwd: "/tmp/envoy-omp-test",
           sessionManager: { ...topLevelSession, getSessionId: () => "ses_named_failure" },
           setInterval: (callback) => intervals.push(callback),
@@ -784,10 +822,10 @@ describe("envoy OMP extension", () => {
         // The start race is held for its bound (`INBOUND_FIRST_OPEN_BOUND_MS`). Past it, the
         // background retry's pass, whose dial fails too, tells the session.
         setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
-        await until(() => {
+        await until("the outage notice", () => {
           intervals.at(-1)?.();
           return notifications.some((m) => m.includes("inbound messages are unavailable"));
-        }, "the outage notice");
+        });
 
         const parts = {
           "the session_start notice": notifications.find((m) =>

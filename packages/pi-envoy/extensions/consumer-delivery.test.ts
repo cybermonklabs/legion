@@ -11,6 +11,7 @@
 import { describe, expect, test } from "bun:test";
 import { legacyDispatchIssueSubject } from "@legion/contracts";
 import { deliverSubject, RelayHeader } from "@legion/envoy-client/consumer-delivery";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_STATE_ENTRY } from "../src/missed-messages";
 import {
@@ -24,9 +25,9 @@ import {
 import type { EnvoyModule } from "../test/envoy-module";
 import {
   createPi,
+  until as harnessUntil,
   sessionContext,
   settle,
-  until,
   useExtensionHarness,
 } from "../test/extension-harness";
 import {
@@ -35,6 +36,7 @@ import {
   response,
   responseWithRegistration,
   type SubscriptionControls,
+  standInFetch,
 } from "../test/listener-stand-in";
 
 useExtensionHarness();
@@ -50,7 +52,7 @@ describe("consumer delivery", () => {
     expect(first?.delivery?.resume).toBeUndefined();
 
     const inbox = session.relay(7, peer("registration"));
-    await until(() => session.replies(inbox).includes("done"), "the frame's done");
+    await until("the frame's done", () => session.replies(inbox).includes("done"));
     await session.tick();
 
     const renewed = session.registrations.at(-1);
@@ -90,7 +92,7 @@ describe("consumer delivery", () => {
     const session = await bootConsumer("consumer-order", { turn: "streaming" });
 
     const inboxes = [1, 2, 3].map((seq) => session.relay(seq, peer(`order-${seq}`)));
-    await until(() => session.cards("evt-order-3").length > 0, "the third card");
+    await until("the third card", () => session.cards("evt-order-3").length > 0);
 
     for (const [index, inbox] of inboxes.entries()) {
       expect(session.replies(inbox)).toEqual(["received"]);
@@ -116,13 +118,13 @@ describe("consumer delivery", () => {
     const first = await bootConsumer("consumer-restart-a");
     const frame = peer("restart");
     const before = first.relay(4, frame);
-    await until(() => first.replies(before).includes("done"), "the first copy's done");
+    await until("the first copy's done", () => first.replies(before).includes("done"));
     await first.stop();
 
     const second = await bootConsumer("consumer-restart-b", { entries: first.entries() });
     expect(second.registrations[0]?.delivery?.resume).toEqual({ stream_id: STREAM, seq: 4 });
     const again = second.relay(4, frame, { delivered: 2 });
-    await until(() => second.replies(again).includes("done"), "the second copy's done");
+    await until("the second copy's done", () => second.replies(again).includes("done"));
 
     expect(second.replies(again)).toEqual(["received", "done"]);
     expect(first.cards("evt-restart")).toHaveLength(1);
@@ -136,7 +138,7 @@ describe("consumer delivery", () => {
     await first.follow(issueTopic);
     await settle();
     const inbox = first.relay(4, peer("follows"));
-    await until(() => first.replies(inbox).includes("done"), "the frame's done");
+    await until("the frame's done", () => first.replies(inbox).includes("done"));
 
     const states = first.fixture.entries
       .filter((entry) => entry.customType === "envoy-consumer-state")
@@ -228,7 +230,9 @@ describe("consumer delivery", () => {
   // session holds no subscription for it beyond the relay subject the set above pins.
   test("a connection probe on the relay subject is answered, follows a session-id change, and the relay subscription closes when the session moves or shuts down", async () => {
     process.env.ENVOY_RESUBSCRIBE_DELAY_MS = "10";
-    globalThis.fetch = async (input, init) => responseWithRegistration(input, init, []);
+    globalThis.fetch = standInFetch(async (input, init) =>
+      responseWithRegistration(input, init, [])
+    );
     const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?connection-probe");
     const fixture = createPi();
     await envoyExtension(fixture.pi);
@@ -258,8 +262,8 @@ describe("consumer delivery", () => {
 
     await fixture.handlers.get("session_start")?.({}, firstContext);
     await until(
-      () => natsState.controls.get(deliverSubject(first))?.active() === true,
-      "the first session's relay subject"
+      "the first session's relay subject",
+      () => natsState.controls.get(deliverSubject(first))?.active() === true
     );
     const firstRelay = natsState.controls.get(deliverSubject(first));
     const states = consumerStates();
@@ -271,8 +275,8 @@ describe("consumer delivery", () => {
     // subscriber, which a server answers no-responders, and the new id is answered.
     await fixture.handlers.get("session_switch")?.({}, sessionContext(next));
     await until(
-      () => natsState.controls.get(deliverSubject(next))?.active() === true,
-      "the new session's relay subject"
+      "the new session's relay subject",
+      () => natsState.controls.get(deliverSubject(next))?.active() === true
     );
     // The switch tells the session its id changed; that notice is the one card it is shown.
     const shown = cards().length;
@@ -285,8 +289,8 @@ describe("consumer delivery", () => {
     await settle();
     // The session subscribes its relay subject again, and is answered again.
     await until(
-      () => natsState.controls.get(deliverSubject(next)) !== nextRelay,
-      "the relay subject subscribed again"
+      "the relay subject subscribed again",
+      () => natsState.controls.get(deliverSubject(next)) !== nextRelay
     );
     const reopened = natsState.controls.get(deliverSubject(next));
     expect(await probe(reopened)).toEqual(["done"]);
@@ -333,12 +337,12 @@ describe("consumer delivery", () => {
     const followed = session.registrations.length;
 
     session.relay(1, removal("INFRA-9", issueTopic));
-    await until(() => session.registrations.length > followed, "the registration without it");
+    await until("the registration without it", () => session.registrations.length > followed);
     expect(session.registrations.at(-1)?.topics).not.toContain(issueTopic);
 
     const late = JSON.stringify({ ...JSON.parse(peer("after-removal")), topic: issueSubject });
     const inbox = session.relay(2, late, { subject: issueSubject });
-    await until(() => session.replies(inbox).includes("done"), "the unfollowed frame's done");
+    await until("the unfollowed frame's done", () => session.replies(inbox).includes("done"));
     expect(session.cards("evt-after-removal")).toHaveLength(0);
   });
 
@@ -378,7 +382,7 @@ describe("consumer delivery", () => {
         await settle();
         answer = row.answer;
         session.relay(index + 1, removal(issue, topic));
-        await until(() => warnings.length > index, `the warning about ${issue}'s removal`);
+        await harnessUntil(() => warnings.length > index, `the warning about ${issue}'s removal`);
         expect(warnings[index]).toBe(row.warned);
       }
     } finally {

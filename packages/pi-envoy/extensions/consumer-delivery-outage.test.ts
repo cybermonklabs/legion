@@ -7,6 +7,7 @@
 import { describe, expect, setSystemTime, test } from "bun:test";
 import { BUS_UNANSWERED_PREFIX } from "@legion/contracts";
 import { INBOUND_FIRST_OPEN_BOUND_MS } from "@legion/envoy-client/inbound-outage";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import {
   bootConsumer,
@@ -15,7 +16,7 @@ import {
   type Registration,
   SESSION,
 } from "../test/consumer-delivery-session";
-import { settle, until, useExtensionHarness } from "../test/extension-harness";
+import { until as harnessUntil, settle, useExtensionHarness } from "../test/extension-harness";
 import { natsState } from "../test/listener-stand-in";
 
 useExtensionHarness();
@@ -55,7 +56,7 @@ describe("consumer delivery", () => {
       // The accepted registration tells the session once that it receives again.
       expect(session.cards("Envoy inbound restored")).toHaveLength(1);
       const inbox = session.relay(3, peer(`after-${refusal.reason}`));
-      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      await until("the frame's done", () => session.replies(inbox).includes("done"));
 
       expect(session.cards(`evt-after-${refusal.reason}`)).toHaveLength(1);
       await session.tick();
@@ -81,7 +82,7 @@ describe("consumer delivery", () => {
       setSystemTime(new Date(start + 30_000));
       await session.tick();
       const inbox = session.relay(1, peer("start-race"));
-      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      await harnessUntil(() => session.replies(inbox).includes("done"), "the frame's done");
 
       expect(session.cards("evt-start-race")).toHaveLength(1);
       expect(session.cards("Envoy inbound unavailable")).toEqual([]);
@@ -133,7 +134,7 @@ describe("consumer delivery", () => {
       const inbox = session.relay(4, peer("stored-meanwhile"), {
         storedAt: new Date(pastBound + 5_000),
       });
-      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      await harnessUntil(() => session.replies(inbox).includes("done"), "the frame's done");
       expect(session.cards("evt-stored-meanwhile")).toHaveLength(1);
 
       // A later accepted registration tells nothing more.
@@ -169,7 +170,7 @@ describe("consumer delivery", () => {
     });
     try {
       // The start's pass found NATS closed, so its registration found no relay subject.
-      await until(() => found().length > 0, "the log line");
+      await harnessUntil(() => found().length > 0, "the log line");
       expect(found()).toEqual([
         "warn envoy: a registration found that this session holds no relay subject, because its relay subject could not be opened: CONNECTION_REFUSED",
       ]);
@@ -295,7 +296,10 @@ describe("consumer delivery", () => {
   }): Promise<void> {
     const before = session.registrations.length;
     await session.tick();
-    await until(() => session.registrations.length >= before + 2, "the tick's second attempt");
+    await harnessUntil(
+      () => session.registrations.length >= before + 2,
+      "the tick's second attempt"
+    );
     await settle();
   }
 
@@ -305,12 +309,12 @@ describe("consumer delivery", () => {
     });
     const start = Date.now();
     try {
-      await until(() => session.registrations.length >= 2, "the first registration's retry");
+      await harnessUntil(() => session.registrations.length >= 2, "the first registration's retry");
       await settle();
       expect(session.cards("Envoy inbound unavailable")).toEqual([]);
       // The listener made the consumer before the record's write, so a stored message arrives.
       const inbox = session.relay(1, peer("unrecorded"));
-      await until(() => session.replies(inbox).includes("done"), "the frame's done");
+      await harnessUntil(() => session.replies(inbox).includes("done"), "the frame's done");
       expect(session.cards("evt-unrecorded")).toHaveLength(1);
 
       setSystemTime(new Date(start + 15_000));
@@ -337,7 +341,7 @@ describe("consumer delivery", () => {
     });
     const start = Date.now();
     try {
-      await until(() => session.registrations.length >= 2, "the first registration's retry");
+      await harnessUntil(() => session.registrations.length >= 2, "the first registration's retry");
       await settle();
       setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await refusedTick(session);
@@ -374,7 +378,7 @@ describe("consumer delivery", () => {
     const start = Date.now();
     const claims = /receive[sd]? (nothing|again)|inbound messages are/;
     try {
-      await until(() => session.registrations.length >= 2, "the first registration's retry");
+      await harnessUntil(() => session.registrations.length >= 2, "the first registration's retry");
       await settle();
       setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await refusedTick(session);
@@ -417,7 +421,7 @@ describe("consumer delivery", () => {
     session.hold();
     const asked = session.registrations.length;
     const navigating = session.navigate();
-    await until(() => session.registrations.length > asked, "the held registration");
+    await harnessUntil(() => session.registrations.length > asked, "the held registration");
     session.beat();
     await settle();
     return { session, navigating };
@@ -460,7 +464,7 @@ describe("consumer delivery", () => {
       const sent = session.registrations.length;
       session.release();
       await navigating;
-      await until(() => session.registrations.length > sent, "the heartbeat's registration");
+      await harnessUntil(() => session.registrations.length > sent, "the heartbeat's registration");
       await settle();
 
       expect(session.registrations).toHaveLength(sent + 1);
@@ -480,7 +484,7 @@ describe("consumer delivery", () => {
     session.hold();
     const asked = session.registrations.length;
     const navigating = session.navigate();
-    await until(() => session.registrations.length > asked, "the held registration");
+    await harnessUntil(() => session.registrations.length > asked, "the held registration");
     const notified = session.notifications.length;
 
     const stopping = session.stop();

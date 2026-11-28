@@ -6,15 +6,16 @@
 // session (`../test/consumer-delivery-session`) on one harness (`../test/extension-harness`).
 import { describe, expect, test } from "bun:test";
 import { legacyDispatchIssueSubject } from "@legion/contracts";
+import { until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_DELIVERED_ENTRY } from "../src/missed-messages";
 import { AGENT, bootConsumer, peer, SESSION } from "../test/consumer-delivery-session";
 import {
+  until as harnessUntil,
   ledgerSeam,
   sessionContext,
   settle,
   targetedDispatchEnvelope,
-  until,
   useExtensionHarness,
 } from "../test/extension-harness";
 import { response } from "../test/listener-stand-in";
@@ -32,7 +33,7 @@ describe("consumer delivery", () => {
     });
 
     const inbox = session.relay(9, targetedDispatchEnvelope("btw", "late-btw"), { delivered: 2 });
-    await until(() => session.replies(inbox).includes("done"), "the late BTW's done");
+    await until("the late BTW's done", () => session.replies(inbox).includes("done"));
 
     const cards = session.cards("dispatch-late-btw");
     expect(cards).toHaveLength(1);
@@ -93,7 +94,7 @@ describe("consumer delivery", () => {
         targetedDispatchEnvelope("btw", "late-btw-moved", { bodyTruncated: true }),
         { delivered: 2 }
       );
-      await until(() => session.replies(inbox).includes("nak"), "the late BTW's nak");
+      await until("the late BTW's nak", () => session.replies(inbox).includes("nak"));
 
       expect(moved).toBe(true);
       expect(session.cards("dispatch-late-btw-moved")).toHaveLength(0);
@@ -137,8 +138,8 @@ describe("consumer delivery", () => {
         for (const delivered of [1, 2, 3]) {
           inbox = session.relay(seq, peer(label), { delivered });
           await until(
-            () => session.replies(inbox).length > 1,
-            `the answer to delivery ${delivered} of ${label}`
+            `the answer to delivery ${delivered} of ${label}`,
+            () => session.replies(inbox).length > 1
           );
         }
         return session.replies(inbox);
@@ -199,16 +200,16 @@ describe("consumer delivery", () => {
     });
 
     const btw = session.relay(1, targetedDispatchEnvelope("btw", "btw-running"));
-    await until(() => sideTurns === 1, "the side turn");
+    await until("the side turn", () => sideTurns === 1);
     const next = session.relay(2, peer("after-btw"));
-    await until(() => session.replies(next).includes("done"), "the next frame's done");
+    await until("the next frame's done", () => session.replies(next).includes("done"));
 
     expect(session.replies(next)).toEqual(["received", "done"]);
     expect(session.cards("evt-after-btw")).toHaveLength(1);
     expect(session.replies(btw)).toEqual(["received"]);
 
     answering.resolve({ replyText: "the answer" });
-    await until(() => session.replies(btw).includes("done"), "the BTW's done");
+    await until("the BTW's done", () => session.replies(btw).includes("done"));
     expect(session.dispatchReplies).toHaveLength(1);
     expect(session.cards("dispatch-btw-running")).toHaveLength(0);
   });
@@ -217,7 +218,7 @@ describe("consumer delivery", () => {
     const session = await bootConsumer("consumer-queue-cleared", { turn: "streaming" });
 
     const inbox = session.relay(5, peer("cleared"));
-    await until(() => session.cards("evt-cleared").length > 0, "the card");
+    await until("the card", () => session.cards("evt-cleared").length > 0);
     expect(session.replies(inbox)).toEqual(["received"]);
 
     await session.interrupt();
@@ -227,7 +228,7 @@ describe("consumer delivery", () => {
     ).toEqual([]);
 
     await session.tick();
-    await until(() => session.replies(inbox).includes("done"), "the frame's done");
+    await until("the frame's done", () => session.replies(inbox).includes("done"));
 
     expect(session.events.filter((event) => event === "written evt-cleared")).toHaveLength(1);
     expect(session.events.indexOf("written evt-cleared")).toBeLessThan(
@@ -255,7 +256,7 @@ describe("consumer delivery", () => {
         JSON.stringify({ event_id: "evt-deep", source: "agent", topic: AGENT, payload: nested })
       );
       // The answer that settles the frame: `done` once it is taken, `nak` once it failed.
-      await until(
+      await harnessUntil(
         () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak"),
         "the frame's settling answer",
         30_000
@@ -292,7 +293,7 @@ describe("consumer delivery", () => {
 
       // The turn streams, so the host holds the card until the turn takes it.
       session.relay(1, frame);
-      await until(() => session.cards("evt-card-age-late").length > 0, "the relayed card");
+      await until("the relayed card", () => session.cards("evt-card-age-late").length > 0);
       await session.take();
       const [card] = session.cards("evt-card-age-late");
       if (card === undefined) throw new Error("the card was not handed");
@@ -334,7 +335,7 @@ describe("consumer delivery", () => {
       const frame = JSON.stringify({ ...JSON.parse(peer("card-age-clocks")), issued_at: sentAt });
 
       session.relay(1, frame);
-      await until(() => session.cards("evt-card-age-clocks").length > 0, "the relayed card");
+      await until("the relayed card", () => session.cards("evt-card-age-clocks").length > 0);
       await session.take();
       const [card] = session.cards("evt-card-age-clocks");
       if (card === undefined) throw new Error("the card was not handed");
@@ -364,7 +365,7 @@ describe("consumer delivery", () => {
     test("an event in the session the host moved to reads that session's own delivery time", async () => {
       const session = await bootConsumer("card-age-moved", { turn: "streaming" });
       session.relay(1, peer("card-age-moved"));
-      await until(() => session.cards("evt-card-age-moved").length > 0, "the relayed card");
+      await until("the relayed card", () => session.cards("evt-card-age-moved").length > 0);
       await session.take();
 
       // The host resumes a session it left, whose file holds no record of this event: what that
@@ -441,7 +442,7 @@ describe("consumer delivery", () => {
     test("a card's write records its delivery in the session once", async () => {
       const session = await bootConsumer("card-age-recorded", { turn: "streaming" });
       session.relay(1, peer("card-age-recorded"));
-      await until(() => session.cards("evt-card-age-recorded").length > 0, "the relayed card");
+      await until("the relayed card", () => session.cards("evt-card-age-recorded").length > 0);
       await session.take();
       const [card] = session.cards("evt-card-age-recorded");
       if (card === undefined) throw new Error("the card was not handed");
@@ -552,7 +553,7 @@ describe("consumer delivery", () => {
       const inbox = session.relay(1, cutCommentEnvelope(CUT_SUBJECT, omitted), {
         subject: CUT_SUBJECT,
       });
-      await until(() => session.replies(inbox).includes("done"), "the cut comment's done");
+      await until("the cut comment's done", () => session.replies(inbox).includes("done"));
       const card = session.cards("dispatch-cut-1")[0]?.content;
       if (card === undefined) throw new Error("no card was delivered for the cut comment");
       return card;

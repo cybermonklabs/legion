@@ -10,9 +10,10 @@ import { RelayHeader } from "@legion/envoy-client/consumer-delivery";
 import { consumerDelivery } from "@legion/envoy-client/test/subscribe-answer";
 import type { SessionContext as HostSessionContext, PiApi } from "@legion/pi-shared/pi-types";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { until } from "@legion/test-fixtures/wait";
 import { REPLAY_NOTICE_ENTRY } from "../src/missed-messages";
 import type { EnvoyModule } from "./envoy-module";
-import { createPi, sessionContext, settle, until } from "./extension-harness";
+import { createPi, until as harnessUntil, sessionContext, settle } from "./extension-harness";
 import { natsState, pushNatsStatus, response } from "./listener-stand-in";
 import type { SessionContext } from "./stand-in-host";
 
@@ -257,7 +258,7 @@ export async function bootConsumer(
   };
   await fixture.handlers.get("session_start")?.({}, context);
   if (options.withoutRelay !== true) {
-    await until(() => registrations.length > 0, "the first registration");
+    await until("the first registration", () => registrations.length > 0);
   }
   await settle();
   let inboxes = 0;
@@ -321,7 +322,9 @@ export async function bootConsumer(
       const controls = natsState.controls.get(RELAY);
       if (controls === undefined) throw new Error("the relay subject was never subscribed");
       inboxes += 1;
-      const inbox = `_INBOX.relay.${seq}.${inboxes}`;
+      // Named for this session too: two sessions a row boots one after the other each count
+      // their frames from one, and a shared name would hand the second the first's words.
+      const inbox = `_INBOX.relay.${query}.${seq}.${inboxes}`;
       controls.push(data, inbox, {
         [RelayHeader.subject]: frame.subject ?? AGENT,
         [RelayHeader.streamSeq]: String(seq),
@@ -340,7 +343,7 @@ export async function bootConsumer(
     tick: async () => {
       const before = registrations.length;
       for (const interval of intervals) interval();
-      await until(() => registrations.length > before, "the heartbeat's registration");
+      await until("the heartbeat's registration", () => registrations.length > before);
       await settle();
     },
     /** One heartbeat tick, not waited on: its pass may queue behind another. */
@@ -354,14 +357,14 @@ export async function bootConsumer(
     tickWithoutNats: async () => {
       const dials = natsState.failConnects;
       for (const interval of intervals) interval();
-      await until(() => natsState.failConnects < dials, "the tick's NATS dial");
+      await harnessUntil(() => natsState.failConnects < dials, "the tick's NATS dial");
       await settle();
     },
     /** nats.js reports a reconnect. */
     reconnect: async () => {
       const before = registrations.length;
       pushNatsStatus("reconnect");
-      await until(() => registrations.length > before, "the reconnect's registration");
+      await until("the reconnect's registration", () => registrations.length > before);
       await settle();
     },
     /** The streaming turn takes every card it holds: the host writes each, in order. */
