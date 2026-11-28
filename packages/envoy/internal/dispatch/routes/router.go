@@ -66,7 +66,6 @@ type AppContext struct {
 	People     auth.PeopleStore
 	Identity   identity.Identity
 	Store      *store.Store
-	ServerURL  string
 	// SignIn is the sign-in issuer's authorization code flow and SignInRule who it admits: the
 	// members of a Cognito pool's group, or the people of a Google Workspace domain. A nil SignIn
 	// is a test/local header-identity or dev sign-in server, whose /auth/start and /auth/callback
@@ -84,8 +83,8 @@ type AppContext struct {
 	// route sends a browser. Only BuildAppContext sets them, from DevSignInOrigin, so no caller
 	// can turn the route on without the origin check.
 	devSignInHost, devSignInOrigin string
-	// hosts is the one table of the origins the router picks among by a request's Host: ServerURL
-	// and AppContextOptions' ServedOrigins and FormerOrigins. Only BuildAppContext builds it.
+	// hosts is the one table of the origins the router picks among by a request's Host:
+	// AppContextOptions' ServerURL, ServedOrigins and FormerOrigins. Only BuildAppContext builds it.
 	hosts hostOrigins
 	// trustedProxies is AppContextOptions.TrustedProxyRanges.
 	trustedProxies []netip.Prefix
@@ -317,7 +316,6 @@ func BuildAppContext(opts AppContextOptions) (*AppContext, error) {
 		People:          opts.People,
 		Identity:        opts.Identity,
 		Store:           opts.Store,
-		ServerURL:       strings.TrimSuffix(opts.ServerURL, "/"),
 		SignIn:          opts.SignIn,
 		SignInRule:      opts.SignInRule,
 		InsecureCookie:  opts.InsecureCookie,

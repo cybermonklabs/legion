@@ -238,7 +238,7 @@ export interface Reading {
  */
 export async function readAtCut(
   session: SessionContext,
-  whoami: () => Promise<WhoamiResponse> = () => session.newClient().whoami()
+  whoami: () => Promise<WhoamiResponse>
 ): Promise<Reading> {
   const identity = await whoami();
   const tokenCut = identity.kind === "agent" ? (identity.cut ?? null) : null;

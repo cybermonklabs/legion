@@ -4473,7 +4473,8 @@ The work directory, under `TMPDIR`, holds the binaries, the base tree, the tests
 removed when the run passes, kept without the binaries and the base tree, and printed, when it fails.
 
 **Negative control.**
-Each run flips one input, against the base commit `c55680e22e67`, whose tree and build sit outside the checkout.
+Each run flips one input, against the base commit, whose tree and build sit outside the checkout.
+The base commit is the script's `BASE_COMMIT` default.
 The base commit's `envoy-dispatch` as `DISPATCH_BIN` reads neither list, logs no `host` and reads no `DISPATCH_TRUSTED_PROXY_RANGES`, so it fails every subtest that holds a served or a former address, the `host` field or the proxy's client:
 the request lines name no `host`; the start at `b` names the canonical callback, which the issuer's client for `b` refuses, so no sign-in at `b` completes and each subtest that writes with its cookie or needs its person fails on it, `c-l-cli` among them; the proofs at `b` are refused in (4) and (4b), where the proof at the `DISPATCH_PROOF_ORIGINS` origin, which the base reads, is still taken;
 each of the eight starts of `c-l-served` (5) and `c-l-proxy` (5) still serves after 30 s; `c-l-proxy` (1) and (2) key both callers on `10.128.0.99`, and the refusals of (4) reach the broker.

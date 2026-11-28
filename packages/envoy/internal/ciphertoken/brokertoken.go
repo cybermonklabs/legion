@@ -274,11 +274,14 @@ type Options struct {
 	// token (GoogleAccount).
 	Account Account
 	// Origins are every origin the mounting program is reached at, each an absolute http(s) URL
-	// with no path: for Dispatch DISPATCH_SERVER_URL's first and then each DISPATCH_PROOF_ORIGINS
-	// adds, for a listener ENVOY_PUBLIC_URL alone. A proof's 'htu' is checked against the one of
-	// them it names plus the request's path, never against a forwarded header or the Host the
-	// request arrived under — see originFor and atOrigin. A proof naming none of them is checked
-	// against the first, and so refused as a target that is not this request's.
+	// with no path. For a listener they are ENVOY_PUBLIC_URL alone. For Dispatch they are
+	// DISPATCH_SERVER_URL's first, then each DISPATCH_PROOF_ORIGINS adds, then each
+	// DISPATCH_SERVED_ORIGINS adds (cmd/dispatch: proofOrigins). A former address
+	// (DISPATCH_FORMER_ORIGINS) is never one of them. The boot refuses a former address on the host
+	// name of any of them (cmd/dispatch: checkServedOrigins). A proof's 'htu' is checked against
+	// the one of them it names plus the request's path, never against a forwarded header or the
+	// Host the request arrived under — see originFor and atOrigin. A proof naming none of them is
+	// checked against the first, and so refused as a target that is not this request's.
 	Origins []string
 	// Replay is where a spent proof is recorded, so a captured one cannot be presented twice
 	// (store.DPoPProofs for Dispatch, the spent-proof KV bucket for a listener).
