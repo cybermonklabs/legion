@@ -27,6 +27,7 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/testlog"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
+	"github.com/sjawhar/legion/daemon/internal/workflow"
 )
 
 const (
@@ -196,6 +197,10 @@ type harness struct {
 	// handoffs is the Dispatch a completion route's harness reads handoff records from
 	// (newHandoffHarness), which writeHandoff fills; nil for a harness serving no completion.
 	handoffs *statusRecorder
+	// engine is the workflow deciding every fact a workflow harness's routes apply
+	// (newWorkflowHandoffHarness), which a test applies Dispatch's state events through as well; nil
+	// for a harness that records facts instead.
+	engine *workflow.Engine
 	// serverLog is every line the server's own logger wrote (Options.Log), as text.
 	serverLog *lockedLog
 }

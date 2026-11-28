@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  AskGate's charter rule on a progress entry written into a document gives a new example of text
+  a spec may hold: a check cited with the state `dispatch results` shows for it at the head, in
+  place of a spec's own mark that a criterion is met, since that state is the record of whether a
+  check passes.
+time: 2026-11-22T23:37:13Z
+custom:
+    Issue: check-states-askgate-example

@@ -39,7 +39,7 @@ func TestThePhasesOfAProjectLeaveEveryOtherProjectsOut(t *testing.T) {
 			return PhaseRow{
 				Issue: issue, Role: role, Claim: claim.Token("legion-" + strings.ToLower(issue) + "-" + string(role)),
 				HandoffCommit: "commit-" + issue, Pass: 2, HandoffRecord: "record-" + issue, HandoffVersion: 3, Rounds: 4,
-				ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 2}, CapTold: 5, Verdict: "pass",
+				ConflictRounds: 1, BackwardMoves: map[string]int{"reviewing-implementing": 2}, CapTold: 5, StatesSerial: 7, ReturnTo: 2,
 				Summary: "the summary of " + issue, LastHandoff: "last-" + issue,
 				Decision:    &ReviewDecision{State: "approved", Body: "ship it", Head: "head-" + issue},
 				CompletedAt: at, Entry: 6, EntryTask: "the task of " + issue, EntryRaisedAt: at,

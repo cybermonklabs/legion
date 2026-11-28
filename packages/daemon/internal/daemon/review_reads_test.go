@@ -358,7 +358,9 @@ func TestAReviewDecisionDeliveredTwiceActsOnce(t *testing.T) {
 			}
 
 			apply("implementer-round-2", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "fixed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2})
-			apply("tester-round-2", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Verdict: "pass", HandoffRecord: "test-2", HandoffVersion: 2})
+			passed, id := testedFact(t, pool, "CAPTURE-1", captureHead, true)
+			apply(id, passed)
+			apply("tester-round-2", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Commit: captureHead, HandoffRecord: "test-2", HandoffVersion: 2})
 			apply("reviewer-round-2", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-2", HandoffVersion: 2})
 			expect("round 2's completion", phase.Reviewing, "", 1)
 			apply("delivery-11-in-round-2", webhook)
@@ -422,7 +424,9 @@ func TestADecidingReviewOutsideARoundDecidesNoLaterRound(t *testing.T) {
 			if tc.from == phase.Implementing {
 				apply("implementer", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "fixed", Commit: "round-1", HandoffRecord: "implement-1", HandoffVersion: 1})
 			}
-			apply("tester", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Verdict: "pass", HandoffRecord: "test-1", HandoffVersion: 1})
+			passed, id := testedFact(t, pool, "CAPTURE-1", captureHead, true)
+			apply(id, passed)
+			apply("tester", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Commit: captureHead, HandoffRecord: "test-1", HandoffVersion: 1})
 			apply("reviewer", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1})
 			readCapture(t, w)
 			expect("the reviewer's completion and the next read", phase.Reviewing)
@@ -477,7 +481,9 @@ func TestADecidingReviewBetweenRoundsDecidesNoLaterRound(t *testing.T) {
 			readCapture(t, w)
 			expect("the read in implementing", phase.Implementing, "changes_requested", 1)
 			apply("implementer-round-2", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "fixed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2})
-			apply("tester-round-2", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Verdict: "pass", HandoffRecord: "test-2", HandoffVersion: 2})
+			passed, id := testedFact(t, pool, "CAPTURE-1", captureHead, true)
+			apply(id, passed)
+			apply("tester-round-2", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Commit: captureHead, HandoffRecord: "test-2", HandoffVersion: 2})
 			apply("reviewer-round-2", intake.HandoffComplete{Generation: 1, Issue: "CAPTURE-1", Role: claim.RoleReviewer, Claim: "review-claim", Summary: "reviewed", HandoffRecord: "review-2", HandoffVersion: 2})
 			readCapture(t, w)
 			expect("round 2's completion and the next read", phase.Reviewing, "", 1)

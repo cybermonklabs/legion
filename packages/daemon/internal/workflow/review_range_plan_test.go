@@ -59,7 +59,7 @@ func TestAReviewStepOfAnOwnersPlanIsToldTheCommitTheReviewBeforeItRead(t *testin
 					t.Fatalf("remove the reviewed commit: %v", err)
 				}
 			}
-			backToReviewing(t, apply, 2)
+			backToReviewing(t, pool, apply, 2)
 			assertWalksAt(t, pool, engine, "LEGION-208", phase.Reviewing, record.TaskPlace{Kind: record.PlaceStep, Position: 3})
 			second := reviewerRow(t, pool)
 			if second.Entry <= first.Entry {

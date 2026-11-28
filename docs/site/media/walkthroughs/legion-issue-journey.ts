@@ -200,7 +200,10 @@ const legionIssueJourney: Walkthrough<Seeded> = {
         await linkPullRequest(seeded.next, DELIVERY_DATE);
         await page.goto(`/issues/${seeded.next.key}`);
         await expect(header(page).getByText(`#${DELIVERY_DATE.pullRequest.number}`)).toBeVisible();
-        await expect(page.getByRole("heading", { name: "Acceptance criteria" })).toBeVisible();
+        // The Spec tab lists the requirements the spec states, none flagged: the architect's
+        // Verification document holds the before_merge check that serves each one.
+        await expect(page.getByRole("list", { name: "Requirements" })).toBeVisible();
+        await expect(page.getByTestId("spec-requirement-gap")).toHaveCount(0);
       },
       act: async (page, seeded, cue) => {
         await linger(page, 0.4);

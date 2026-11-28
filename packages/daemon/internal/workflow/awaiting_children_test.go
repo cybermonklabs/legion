@@ -78,7 +78,7 @@ func cwTransition(t *testing.T, pool *pgxpool.Pool, engine *Engine, key string, 
 		if err != nil {
 			return err
 		}
-		if err := engine.transition(ctx, tx, *issue, trigger, target, handoff, pr, reason); err != nil {
+		if err := engine.transition(ctx, tx, *issue, trigger, target, handoff, pr, moveWhy{Reason: reason}); err != nil {
 			return err
 		}
 		return engine.SettleFact(ctx, tx)
@@ -99,17 +99,6 @@ func cwPhaseEnded(t *testing.T, pool *pgxpool.Pool, key string) []record.PhaseEn
 		ended = append(ended, message)
 	}
 	return ended
-}
-
-// cwVerdict is the verdict a tester's completion carries for trigger, and "" for every other.
-func cwVerdict(trigger TriggerKind) string {
-	switch trigger {
-	case TriggerTesterPassed:
-		return "pass"
-	case TriggerTesterFailed:
-		return "fail"
-	}
-	return ""
 }
 
 // Every start of planning, implementing, testing, reviewing or accepting of a parent standing in
@@ -133,7 +122,7 @@ func TestAnOpenChildHoldsEveryPhaseStartFromPlanningThroughAccepting(t *testing.
 		t.Run(fmt.Sprintf("%s on %s to %s", row.From, row.Trigger, row.To), func(t *testing.T) {
 			cwSeedParent(t, pool, key, row.From, number)
 			seedMirrorChild(t, pool, child, "todo", key)
-			handoff := record.PhaseRow{Issue: key, Role: phase.RoleFor(row.From), Summary: "the work of " + string(row.From), Verdict: cwVerdict(row.Trigger)}
+			handoff := record.PhaseRow{Issue: key, Role: phase.RoleFor(row.From), Summary: "the work of " + string(row.From)}
 
 			cwTransition(t, pool, engine, key, row.Trigger, row.To, handoff, "the words of the move")
 
@@ -189,7 +178,7 @@ func TestAnOpenChildHoldsNoStartOutsideTheRule(t *testing.T) {
 			}
 			seedMirrorChild(t, pool, child, "todo", key)
 
-			cwTransition(t, pool, engine, key, tc.trigger, tc.want, record.PhaseRow{Issue: key, Role: phase.RoleFor(tc.from), Verdict: cwVerdict(tc.trigger)}, "redo")
+			cwTransition(t, pool, engine, key, tc.trigger, tc.want, record.PhaseRow{Issue: key, Role: phase.RoleFor(tc.from)}, "redo")
 
 			if got := storedIssue(t, pool, key); got.Phase != tc.want || got.ChildrenWait != nil {
 				t.Fatalf("%s after the move = phase %s, held start %+v; want %s and nothing held", key, got.Phase, got.ChildrenWait, tc.want)
@@ -203,8 +192,8 @@ func TestAnOpenChildHoldsNoStartOutsideTheRule(t *testing.T) {
 
 // The notice that replaces the start's own names the parent, the start it holds, each open child
 // with its Dispatch status, a child whose own blocked_by link names the parent above it, and what
-// ends the wait, and carries what the notice it replaces carried: the worker's summary and the
-// tester's verdict, or the words of a move back.
+// ends the wait, and carries what the notice it replaces carried: the worker's summary, or the
+// words of a move back. It carries no verdict, as no notice does.
 func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -216,8 +205,8 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 		reason  string
 		carries []string
 	}{
-		{name: "a tester's pass", from: phase.Testing, trigger: TriggerTesterPassed, to: phase.Reviewing,
-			handoff: record.PhaseRow{Role: claim.RoleTester, Summary: "every check passed", Verdict: "pass"},
+		{name: "the testing step's pass", from: phase.Testing, trigger: TriggerTesterPassed, to: phase.Reviewing,
+			handoff: record.PhaseRow{Role: claim.RoleTester, Summary: "every check passed"},
 			carries: []string{"holding the start of reviewing: the tester completed testing."}},
 		{name: "a worker's move back", from: phase.Testing, trigger: TriggerBackward, to: phase.Implementing,
 			handoff: record.PhaseRow{Role: claim.RoleTester}, reason: "the build is red",
@@ -237,8 +226,8 @@ func TestTheAwaitingChildrenNoticeNamesTheWaitAndCarriesWhatItReplaces(t *testin
 				t.Fatalf("awaiting-children notices = %+v, want one", told)
 			}
 			notice := told[0]
-			if notice.Role != claim.RoleArchitect || notice.Phase != tc.from || notice.Summary != tc.handoff.Summary || notice.Verdict != tc.handoff.Verdict {
-				t.Fatalf("the notice = %+v, want it to the architect, of %s, carrying summary %q and verdict %q", notice, tc.from, tc.handoff.Summary, tc.handoff.Verdict)
+			if notice.Role != claim.RoleArchitect || notice.Phase != tc.from || notice.Summary != tc.handoff.Summary {
+				t.Fatalf("the notice = %+v, want it to the architect, of %s, carrying summary %q", notice, tc.from, tc.handoff.Summary)
 			}
 			for _, want := range append([]string{
 				cwParent + " is in awaiting_children",
@@ -336,7 +325,7 @@ func TestTheMoveWritesInProgressOverAnotherStatus(t *testing.T) {
 	seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 
 	cwTransition(t, pool, testEngine(config.DesignGateRootIssues, nil), cwParent, TriggerTesterPassed, phase.Reviewing,
-		record.PhaseRow{Issue: cwParent, Role: claim.RoleTester, Verdict: "pass"}, "")
+		record.PhaseRow{Issue: cwParent, Role: claim.RoleTester}, "")
 
 	if want := []record.StatusWrite{record.OrdinaryStatusWrite("in_progress", "testing", "")}; !slices.Equal(statusWrites(t, pool, cwParent), want) {
 		t.Fatalf("status writes = %+v, want %+v", statusWrites(t, pool, cwParent), want)
@@ -356,7 +345,7 @@ func TestASecondMoveOfAWaitingParentSendsNothingAgain(t *testing.T) {
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	cwSeedParent(t, pool, cwParent, phase.Testing, 42)
 	seedMirrorChild(t, pool, cwChild, "todo", cwParent)
-	cwTransition(t, pool, engine, cwParent, TriggerTesterPassed, phase.Reviewing, record.PhaseRow{Issue: cwParent, Role: claim.RoleTester, Verdict: "pass"}, "")
+	cwTransition(t, pool, engine, cwParent, TriggerTesterPassed, phase.Reviewing, record.PhaseRow{Issue: cwParent, Role: claim.RoleTester}, "")
 	first := storedIssue(t, pool, cwParent)
 	rows := outboxRows(t, pool)
 
@@ -408,7 +397,7 @@ func TestAHeldMoveCountsAsTodayAndFiresNoHook(t *testing.T) {
 				seedMirrorChild(t, pool, cwChild, "todo", cwParent)
 			}
 
-			cwTransition(t, pool, hooked, cwParent, TriggerTesterFailed, phase.Implementing, record.PhaseRow{Issue: cwParent, Role: claim.RoleTester, Verdict: "fail"}, "")
+			cwTransition(t, pool, hooked, cwParent, TriggerTesterFailed, phase.Implementing, record.PhaseRow{Issue: cwParent, Role: claim.RoleTester}, "")
 
 			implementer := phaseRowOf(t, pool, claim.RoleImplementer)
 			if implementer.Pass != 1 || implementer.BackwardMoves["testing-implementing"] != 1 {
@@ -680,7 +669,7 @@ func TestABackwardMoveAndASignOffOfAWaitingParentAreRefused(t *testing.T) {
 func TestACompletionOfAPhaseTheWaitStoppedIsRefused(t *testing.T) {
 	t.Parallel()
 	waited := cwAt.Add(-time.Hour)
-	completion := intake.HandoffComplete{Generation: 1, Issue: cwParent, Role: claim.RoleTester, Claim: "test-claim", Verdict: "pass",
+	completion := intake.HandoffComplete{Generation: 1, Issue: cwParent, Role: claim.RoleTester, Claim: "test-claim", Commit: "head",
 		Summary: "tested", HandoffRecord: "test-1", HandoffVersion: 1}
 	for _, tc := range []struct {
 		name    string

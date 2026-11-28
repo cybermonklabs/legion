@@ -231,17 +231,18 @@ type changedLinkRow struct {
 // Two kinds of row the stored facts cannot judge whole, and each is given attribution_rule 0, a
 // rule older than every rule that judges a row now, so the reconcile judges it on its own pass:
 // the merged arm takes a merged row of an older rule (ListStalePullRequestHeads), and an open row
-// is read again within PullRequestHeadStaleAfter whatever its rule. One is a row with stored
-// inputs whose commit messages no writer read (they are read only when no earlier source names an
-// issue) and no other source of which holds it now: it is nobody's until that read, since the
-// link that gave it is gone. The other is a row whose stored inputs are not the facts its issue
-// was judged from: a row written before the inputs were stored, which holds none, and a row whose
-// attribution_rule is not this build's. A writer of the release before this one rewrites a row
-// during a roll, its issue, its title and its rule, and leaves the inputs an earlier write of this
-// release stored, so a merged row judged from them and stamped with this rule would leave the
-// merged arm's reach with an issue no read gave it. A row this build gave rule 0 (this judgement,
-// or a first record of a pull request its stored citations name, citingRowsRejudged) is judged so
-// too until the reconcile reads it again. Such a row is judged as a row with no inputs: a link of
+// is due again once its last read is PullRequestHeadStaleAfter old, whatever its rule, and is
+// tried within the bound that function gives. One is a row with stored inputs whose commit
+// messages no writer read (they are read only when no earlier source names an issue) and no other
+// source of which holds it now: it is nobody's until that read, since the link that gave it is
+// gone. The other is a row whose stored inputs are not the facts its issue was judged from: a row
+// written before the inputs were stored, which holds none, and a row whose attribution_rule is not
+// this build's. A writer of the release before this one rewrites a row during a roll, its issue,
+// its title and its rule, and leaves the inputs an earlier write of this release stored, so a
+// merged row judged from them and stamped with this rule would leave the merged arm's reach with
+// an issue no read gave it. A row this build gave rule 0 (this judgement, or a first record of a
+// pull request its stored citations name, citingRowsRejudged) is judged so too until the reconcile
+// reads it again. Such a row is judged as a row with no inputs: a link of
 // its own URL removed, or a GitHub-issue link removed where it was the issue's by a citation,
 // takes it from the issue, and a link added leaves it as it is. Rule 4 has the reconcile store
 // the inputs of every row stored before them once (AttributionRuleVersion).

@@ -1,0 +1,6 @@
+kind: Changed
+body: |-
+  The tester's prompt says where a CI check's results come from instead of where they are read: a check that CI runs takes its results from CI alone, never from a run in the tester's pod, and `dispatch results` is the read that gives them. The prompt also names the reads the tester makes none of: `gh pr checks`, `gh run view`, a commit's check runs or workflow runs, and a job log.
+time: 2026-11-26T21:09:03Z
+custom:
+    Issue: tester-reads-no-ci-words

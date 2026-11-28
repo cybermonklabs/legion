@@ -27,7 +27,8 @@
 #     a completion's commit the head the phase's newest record names under `head`, with that
 #     record's own id and version, for the tester, the planner and the reviewer alike, each
 #     reading the record of its own phase; control: against records whose bodies name no head the
-#     same three report no commit at all;
+#     planner and the reviewer report no commit at all, and the tester's is refused before it is
+#     sent, naming the record to write;
 #   - A10: with Dispatch up the first write succeeds; with the Dispatch process stopped
 #     `handoff-write` exits non-zero naming the connection failure and the completion naming the
 #     existing record is refused DISPATCH_READ_FAILED, the phase unchanged; Dispatch restarted on the

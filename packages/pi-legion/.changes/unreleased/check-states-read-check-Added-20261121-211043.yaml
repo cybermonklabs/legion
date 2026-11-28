@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  `scripts/skill-scenarios/states-read-check.sh` runs the whole model check that the reviewer and
+  the architect each decide by the state of each check at their head, from the checkout it is in:
+  it builds the label checkouts from that checkout's HEAD with `label-checkouts.sh` and the
+  patches in `SKILL_SCENARIOS_LABEL_PATCHES`, the profiles of `head` and `ablate-states-read`, runs
+  the reviewer-own-head and architect-pass-and-fail batches of five and their scores, and passes
+  only when head scores 5/5 on no-verdict-fail and no-verdict-pass for both roles and
+  `ablate-states-read` scores below head on no-verdict-fail. It judges a row only when all five
+  runs of its batch were scored with no rig error; a row short of that reads UNKNOWN and the
+  judgement exits 3, so a control of one scored run beside four rig errors approves nothing.
+  `states-read-check.sh judge` gives the same judgement for two scores saved before. A checkout
+  where the `ablate-states-read` patch does not apply stops at its label checkouts, before the rig
+  starts a service or a model.
+time: 2026-11-21T21:10:43Z
+custom:
+    Issue: check-states-read-check

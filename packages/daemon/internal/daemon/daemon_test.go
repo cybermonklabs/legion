@@ -2232,9 +2232,12 @@ func (r *workflowTokenRecorder) InstalledOwners(context.Context, appauth.AppRole
 // boot queues for every recorded issue Dispatch has not closed (daemon.queueRecordedGatesPublish)
 // and that same sweep sends; the publish of an issue's role sessions, which the boot queues for
 // every issue with a recent claim (daemon.queueRoleHoldersPublish) and each boot ready and each
-// change of a claim's role holder queues again (roleHoldersChanged, the store's putClaim); and the
+// change of a claim's role holder queues again (roleHoldersChanged, the store's putClaim); the
 // read of a gate's own document, which the boot's catch-up makes for every root it reads
-// (bindGateRequest through dispatch.Client.Approval). It reports whether it answered r. A board
+// (bindGateRequest through dispatch.Client.Approval); and the read of an issue's event log after
+// its cursor, which the boot's catch-up of check states makes for every issue the record holds
+// that is not done and does not linger (catchUpCheckStates through dispatch.Client.EventsAfter),
+// answered as a log holding nothing past any cursor. It reports whether it answered r. A board
 // that leaves one of these to its own default arm fails the test with an unexpected request,
 // which is what this helper exists to stop: none of them belongs to a test here.
 // role_holder_publish_test.go and TestRoleHoldersLandInScratchDispatch are the tests of the
@@ -2273,6 +2276,11 @@ func servedBootCall(t *testing.T, w http.ResponseWriter, r *http.Request, projec
 		// slug or the role — register_gate's document check — meets the zero value and fails,
 		// which is the board telling it to model the document rather than guess at one.
 		body = map[string]any{"approval": map[string]any{"state": "draft", "latest_version": 1}}
+	case strings.HasPrefix(r.URL.Path, "/api/v1/issues/") && strings.HasSuffix(r.URL.Path, "/events") && r.URL.Query().Has("after"):
+		// Only the read from a cursor, which every boot makes; the outbox's newest-first read of a
+		// log names no cursor and stays the caller's own default arm's. A board keeps no state
+		// event, so the log holds nothing after any cursor.
+		body = []any{}
 	default:
 		return false
 	}

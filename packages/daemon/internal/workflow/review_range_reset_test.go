@@ -145,7 +145,7 @@ func TestAReviewFromBeforeAReadmissionAppliedAfterThePromotionMovesNoCommit(t *t
 			if got := issuePhase(t, pool); got != phase.Implementing {
 				t.Fatalf("after the person's request for changes the issue is in %s, want implementing", got)
 			}
-			backToReviewing(t, apply, 3)
+			backToReviewing(t, pool, apply, 3)
 			task := reviewerRow(t, pool).EntryTask
 			readsReviewingTask(t, "the next round", task, 3)
 			if tc.want == "" && !endsNamingNoCommit(task, reviewerRow(t, pool).Entry) {
@@ -200,7 +200,7 @@ func TestAReviewOfTheRoundBeforeAReadmissionMovesNoCommitWhateverTimeGitHubGives
 	if got := issuePhase(t, pool); got != phase.Implementing {
 		t.Fatalf("after the person's request for changes the issue is in %s, want implementing", got)
 	}
-	backToReviewing(t, apply, 3)
+	backToReviewing(t, pool, apply, 3)
 	task := reviewerRow(t, pool).EntryTask
 	readsReviewingTask(t, "the next round", task, 3)
 	if !endsNamingNoCommit(task, reviewerRow(t, pool).Entry) {
@@ -268,7 +268,7 @@ func TestACarriedReviewersReviewMovesTheCommitOnlyWhenItNamesThePromotionsEntry(
 			entered := engine.now()
 			apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
-			backToReviewing(t, apply, 2)
+			backToReviewing(t, pool, apply, 2)
 			before := reviewerRow(t, pool)
 			if before.ReviewedHead != headOne {
 				t.Fatalf("round 2's reviewer row reads the reviewed commit %q, want %s", before.ReviewedHead, headOne)
@@ -347,12 +347,14 @@ func TestOnlyAReviewOfTheEntryThatStandsMovesTheCommit(t *testing.T) {
 			var logs bytes.Buffer
 			engine := testEngine(config.DesignGateRootIssues, slog.New(slog.NewTextHandler(&logs, nil)))
 			apply := applyFacts(t, pool, engine)
+			state, id := testedFact(t, pool, "LEGION-208", headOne, true)
+			apply(id, state)
 			apply("round-one-tester", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-				Summary: "tested", Verdict: "pass", HandoffRecord: "test-1", HandoffVersion: 1})
+				Summary: "tested", Commit: headOne, HandoffRecord: "test-1", HandoffVersion: 1})
 			first := reviewerRow(t, pool).Entry
 			apply("request-changes-1", reviewAt(t, pool, 1, "changes_requested", headOne, reviewTestedAt))
 			mergesForward(t, pool, engine, headOne, headTwo, reviewTestedAt.Add(time.Hour))
-			backToReviewing(t, apply, 2)
+			backToReviewing(t, pool, apply, 2)
 			standing := reviewerRow(t, pool)
 			if standing.ReviewedHead != headOne || standing.Entry <= first {
 				t.Fatalf("round 2's reviewer row reads the reviewed commit %q on entry %d, want %s on an entry above round 1's %d", standing.ReviewedHead, standing.Entry, headOne, first)

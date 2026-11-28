@@ -9,6 +9,30 @@
       "run": 41,
       "suite": 41,
       "status": "in_progress"
+    },
+    "ci-check-fail": {
+      "name": "usage-test",
+      "checkRun": 9201,
+      "run": 42,
+      "suite": 42,
+      "status": "completed",
+      "conclusion": "failure",
+      "log": "usage-test\tRun go test ./docs/...\t=== RUN   TestTheUsagePageListsEveryCommand\nusage-test\tRun go test ./docs/...\t    usage_test.go:21: docs/usage.md says `widgets --help` lists every command, and names 3 of them; `widgets --help` lists 4: add, export, list, remove. The page leaves out export.\nusage-test\tRun go test ./docs/...\t--- FAIL: TestTheUsagePageListsEveryCommand (0.01s)\nusage-test\tRun go test ./docs/...\tFAIL\nusage-test\tRun go test ./docs/...\tFAIL\texample/widgets/docs\t0.012s\nusage-test\tRun go test ./docs/...\t##[error]Process completed with exit code 1.\n"
+    },
+    "ci-check-pass": {
+      "name": "usage-test",
+      "checkRun": 9202,
+      "run": 43,
+      "suite": 43,
+      "status": "completed",
+      "conclusion": "success"
+    },
+    "ci-late": {
+      "name": "usage-test",
+      "checkRun": 9301,
+      "run": 44,
+      "suite": 44,
+      "status": "in_progress"
     }
   }
 }

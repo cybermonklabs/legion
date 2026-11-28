@@ -790,8 +790,8 @@ func TestReadmissionStartsTheNewGenerationWithoutTheOldGenerationsFacts(t *testi
 			t.Fatalf("read phases: %v", err)
 		}
 		for _, row := range rows {
-			if row.Completed() || row.HandoffVersion != 0 || row.Rounds != 0 || row.Verdict != "" {
-				t.Fatalf("generation 2 %s row = %#v, want no handoff commit or record, rounds, or verdict", row.Role, row)
+			if row.Completed() || row.HandoffVersion != 0 || row.Rounds != 0 || row.StatesSerial != 0 {
+				t.Fatalf("generation 2 %s row = %#v, want no handoff commit or record, rounds, or check states serial", row.Role, row)
 			}
 			if row.Role == claim.RoleImplementer && row.LastHandoff != "gen1-implement" {
 				t.Fatalf("generation 2 implementer row = %#v, want the record it last named kept", row)
@@ -1007,7 +1007,7 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 			[]record.NewsItem{{Step: record.DesignStepSpec, To: 2}}, fixedNow); err != nil {
 			t.Fatalf("seed what the child's holder took: %v", err)
 		}
-		if err := records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-CHILD", Role: claim.RoleImplementer, Claim: "implementer-claim", HandoffCommit: "abc123", Rounds: 2, Verdict: "pass"}); err != nil {
+		if err := records.PutPhase(context.Background(), tx, record.PhaseRow{Issue: "LEGION-CHILD", Role: claim.RoleImplementer, Claim: "implementer-claim", HandoffCommit: "abc123", Rounds: 2, StatesSerial: 3}); err != nil {
 			t.Fatalf("seed the child's handoff: %v", err)
 		}
 		// An open pull request survives the new generation; the settlement it carried is the last
@@ -1044,7 +1044,7 @@ func TestReadmissionClearsTheGenerationOfEveryIssueOfTheTree(t *testing.T) {
 			t.Fatalf("read the child's phases: %v", err)
 		}
 		for _, row := range phases {
-			if row.HandoffCommit != "" || row.Rounds != 0 || row.Verdict != "" {
+			if row.HandoffCommit != "" || row.Rounds != 0 || row.StatesSerial != 0 {
 				t.Errorf("the child kept the last generation's handoff: %#v", row)
 			}
 		}

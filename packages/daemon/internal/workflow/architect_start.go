@@ -12,9 +12,9 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/record"
 )
 
-// Each shape of the start task carries one label of its own, as testerVerdictLabel ties a task's
-// text to its reader: a test reads the shape a root was given by the label its text carries. No
-// label is part of another, so a task carries the label of its own shape and of no other.
+// Each shape of the start task carries one label of its own, which ties a task's text to its
+// reader: a test reads the shape a root was given by the label its text carries. No label is part
+// of another, so a task carries the label of its own shape and of no other.
 const (
 	// ArchitectFreshTreeLabel is in the task of a tree nobody has architected.
 	ArchitectFreshTreeLabel = "its tree is open at generation"

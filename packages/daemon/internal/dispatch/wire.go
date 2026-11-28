@@ -204,23 +204,29 @@ type askReadResponse struct {
 }
 
 // handoffResponse is a handoff record as Dispatch answers it, its body left undecoded: Handoff's
-// callers hold a completion to who wrote which record, never to what it says.
+// callers hold a completion to who wrote which record, never to what it says. CheckStatesSerial is
+// absent on every record but a test record Dispatch stored a serial on.
 type handoffResponse struct {
-	ID       string `json:"id"`
-	IssueKey string `json:"issue_key"`
-	Phase    string `json:"phase"`
-	Version  int    `json:"version"`
-	Author   actor  `json:"author"`
+	ID                string `json:"id"`
+	IssueKey          string `json:"issue_key"`
+	Phase             string `json:"phase"`
+	Version           int    `json:"version"`
+	Author            actor  `json:"author"`
+	CheckStatesSerial *int64 `json:"check_states_serial"`
 }
 
 func (r handoffResponse) handoff() Handoff {
-	return Handoff{
+	handoff := Handoff{
 		ID:       r.ID,
 		IssueKey: r.IssueKey,
 		Phase:    r.Phase,
 		Version:  r.Version,
 		Author:   HandoffAuthor{Kind: r.Author.Kind, ID: r.Author.ID},
 	}
+	if r.CheckStatesSerial != nil {
+		handoff.CheckStatesSerial = *r.CheckStatesSerial
+	}
+	return handoff
 }
 
 type actor struct {

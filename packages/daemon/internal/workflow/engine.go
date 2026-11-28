@@ -189,6 +189,15 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
+	// TestingLeavesCI is whether the testing move leaves out each check a CI job runs, the one
+	// whose state names its job's case (judgeStates' leaveCI, which decideTesting reads from here
+	// alone): true, the move reads only the checks that no CI job runs, and a failure of one a CI
+	// job runs reaches the implementer by its own message (tellCIFailure) while the later steps go
+	// on. The daemon wires it false (engineConfig) until the end of a task holds its checks that a
+	// CI job runs, and the change that builds that hold turns it on: before then a task whose steps
+	// after testing hold no review and no acceptance would end with no gate on those checks. The
+	// zero value reads every check.
+	TestingLeavesCI bool
 	// ReadTotals reads the totals of each live launch of agents, before a fact's transaction
 	// (ReadFact), each read bounded by 5 s. It answers each read that gave totals. A step's start
 	// and end use these reads (keepStartTotals, writeCounts). Nil reads nothing, and an end then
@@ -317,6 +326,8 @@ func (e *Engine) apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (intake
 		return e.dispatchAskRestored(ctx, tx, fact)
 	case intake.HandoffComplete:
 		return e.handoff(ctx, tx, fact)
+	case intake.DispatchCheckState:
+		return e.checkState(ctx, tx, fact)
 	case intake.PullRequestOpened:
 		return e.pullRequestOpened(ctx, tx, fact)
 	case intake.PullRequestSynchronized:
@@ -1090,23 +1101,23 @@ func (e *Engine) pastCompletion(ctx context.Context, tx pgx.Tx, issue record.Iss
 	return nil, late, nil
 }
 
-// returnToOf is the phase of the earlier step a failed step's report names as the one its task
-// returns to (fact.ReturnTo), "" where it names none, or the refusal of the step it names
-// (returnStep). It is judged before anything is written, so a refusal records nothing, its
-// handoff record among it, and the agent reports again.
-func (e *Engine) returnToOf(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (phase.Phase, *intake.Refusal, error) {
+// refusedReturn is the refusal of the step a tester's completion names for its task to return to
+// (fact.ReturnTo), one the task's steps cannot take (returnStep, RETURN_REFUSED), and nil where it
+// names none or one they can. It is judged before anything is written, so a refusal records
+// nothing, its handoff record among it, and the agent reports again. The step itself is read
+// again where a fail uses it (namedReturn).
+func (e *Engine) refusedReturn(ctx context.Context, tx pgx.Tx, issue record.Issue, fact intake.HandoffComplete, reported phase.Phase) (*intake.Refusal, error) {
 	if fact.ReturnTo <= 0 {
-		return "", nil, nil
+		return nil, nil
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {
-		return "", nil, err
+		return nil, err
 	}
-	target, why := returnStep(issue, w, reported, fact.ReturnTo)
-	if why == "" {
-		return target, nil, nil
+	if _, why := returnStep(issue, w, reported, fact.ReturnTo); why != "" {
+		return refused("RETURN_REFUSED", why).Refusal, nil
 	}
-	return "", refused("RETURN_REFUSED", why).Refusal, nil
+	return nil, nil
 }
 
 func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComplete) (intake.Result, error) {
@@ -1159,8 +1170,12 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		}
 		return intake.Result{Refusal: late}, nil
 	}
-	returnTo, refusal, err := e.returnToOf(ctx, tx, *issue, fact, reported)
-	if err != nil || refusal != nil {
+	// The step a tester's completion names for its task to return to (returnTo) is judged here,
+	// before anything is written, against the task's steps as they stand: a step the task cannot go
+	// back to is refused (RETURN_REFUSED). The completion carries no verdict, so the step is kept
+	// with it below, and the testing move reads it when the check states fail the step
+	// (decideTesting), whether they stand now or arrive in a later state event.
+	if refusal, err := e.refusedReturn(ctx, tx, *issue, fact, reported); err != nil || refusal != nil {
 		return intake.Result{Refusal: refusal}, err
 	}
 	row, err := e.phaseRow(ctx, tx, fact.Issue, fact.Role)
@@ -1212,16 +1227,16 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	// adds nothing to it; a round the completion itself leaves stuck - one it completed with no
 	// decision, or with an approval of other code - was not stuck before it, and is told.
 	found := e.reviewRound(*issue, row, pr)
-	row.Claim, row.HandoffCommit, row.Verdict, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Verdict, fact.Summary, e.now()
-	row.HandoffRecord, row.HandoffVersion = fact.HandoffRecord, fact.HandoffVersion
+	row.Claim, row.HandoffCommit, row.Summary, row.CompletedAt = fact.Claim, fact.Commit, fact.Summary, e.now()
+	row.HandoffRecord, row.HandoffVersion, row.StatesSerial, row.ReturnTo = fact.HandoffRecord, fact.HandoffVersion, fact.StatesSerial, fact.ReturnTo
 	if err := e.store.PutPhase(ctx, tx, row); err != nil {
 		return intake.Result{}, err
 	}
 	// Two of the six movements are this one write (the rule in dispatchIssue): the handoff the
 	// role recorded, and the completion that reports it. Every refusal above returned before it,
 	// so a completion that changed nothing marks nothing, and the completions that move the issue
-	// no further than this row — a tester reporting neither verdict, an implementer whose pull
-	// request has not been recorded yet, a role reporting a phase the issue has already left —
+	// no further than this row — a tester whose move waits for check states, an implementer whose
+	// pull request has not been recorded yet, a role reporting a phase the issue has already left —
 	// are movements all the same, which is why the mark is here and not only in the transitions
 	// below.
 	if err := e.store.MarkIssueMoved(ctx, tx, issue.Key, e.now()); err != nil {
@@ -1232,19 +1247,20 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 	}
 	switch issue.Phase {
 	case phase.Planning:
-		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerPlannerCompleted, "", row, pr, "")
+		return intake.Result{}, e.transition(ctx, tx, *issue, TriggerPlannerCompleted, "", row, pr, moveWhy{})
 	case phase.Implementing:
 		if pr == nil {
 			return intake.Result{}, nil
 		}
 		return intake.Result{}, e.implementationReady(ctx, tx, *issue, row, pr)
 	case phase.Testing:
-		if fact.Verdict == "fail" {
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterFailed, returnTo, row, pr, "")
-		}
-		if fact.Verdict == "pass" {
-			return intake.Result{}, e.transition(ctx, tx, *issue, TriggerTesterPassed, "", row, pr, "")
-		}
+		// The tester's completion carries no verdict: the check states Dispatch published at the
+		// tested head decide, once the daemon holds them through the serial its test record names.
+		// A fail they decide returns the work to the step the completion named (row.ReturnTo), or,
+		// where it named none, as every failed step that names none does: to the first
+		// implementation step before it in the walk's task (transition's returnOf), or to
+		// implementing for a run with no plan rows.
+		return intake.Result{}, e.decideTesting(ctx, tx, *issue, row, pr, true)
 	case phase.Reviewing:
 		_, err := e.settleRound(ctx, tx, *issue, row, pr, found, byCompletion)
 		return intake.Result{}, err
@@ -1252,7 +1268,7 @@ func (e *Engine) handoff(ctx context.Context, tx pgx.Tx, fact intake.HandoffComp
 		// The completion that ends the retro carries the rating its agent gave the plan, which
 		// planRatingRefusal above took on no other completion, and a plugin before the rating
 		// sends none, so its retro writes no rating.
-		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, ""); err != nil || fact.PlanRating == nil {
+		if err := e.transition(ctx, tx, *issue, TriggerRetroCompleted, "", row, pr, moveWhy{}); err != nil || fact.PlanRating == nil {
 			return intake.Result{}, err
 		}
 		return intake.Result{}, e.rateRetro(ctx, tx, *issue, *fact.PlanRating)
@@ -2471,8 +2487,15 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 }
 
 // backwardRefusal is why the guard refuses fact, and "" where it does not: the one sentence that
-// names which of the guard's three readings failed. served is whether the table holds a backward
+// names which of the guard's four readings failed. served is whether the table holds a backward
 // row of the issue's phase for the move's target.
+//
+// The fourth is the tester's own move out of testing, to any target a row serves: a testing step
+// ends by the states Dispatch publishes of its checks at the head the tester tested, and by
+// nothing else (decideTesting), so a move the tester asks for would end it failed with no state in
+// it. Its refusal says what ends the step instead: the tester records each check's result, a fail
+// with its evidence for a check it cannot verify, and completes, which sends the issue back with a
+// task naming each check that does not pass.
 //
 // It is a function of the issue and the fact alone and reads no pull request, so the rule that a
 // merged change never moves back is none of its readings: backward, which holds the transaction,
@@ -2488,6 +2511,10 @@ func backwardRefusal(issue record.Issue, fact intake.BackwardMove, served bool) 
 	case phase.RoleFor(issue.Phase) != fact.Requester:
 		return fmt.Sprintf("a backward move is the role running the issue's phase: %s of %s is the %s's, so the %s's move to %s changed nothing",
 			issue.Phase, issue.Key, phase.RoleFor(issue.Phase), fact.Requester, fact.To)
+	case issue.Phase == phase.Testing && fact.Requester == claim.RoleTester:
+		return fmt.Sprintf("a testing step ends by the states of its checks at the head the tester tested, so the tester's move of %s back to %s changed nothing: "+
+			"record each check's result with `dispatch result` (a fail, with its evidence, for a check you cannot verify), then complete with handoff_complete, "+
+			"which sends the issue back with a task naming each check that does not pass", issue.Key, fact.To)
 	}
 	return ""
 }
@@ -2528,12 +2555,13 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if issue.Phase == phase.AwaitingChildren {
 		return e.waitingRefusal(ctx, tx, *issue, w, actBackwardMove, fact.Requester)
 	}
-	// The table is the guard, and it reads three things: the move names a target, a backward row
-	// of the issue's phase serves that target - anything but an earlier phase has none - and the
-	// caller is the role running that phase. An empty target is read first, since the row lookup
-	// takes it to match any row.
+	// The table is the guard, and it reads four things: the move names a target, a backward row
+	// of the issue's phase serves that target - anything but an earlier phase has none - the
+	// caller is the role running that phase, and that role is not the tester in testing, whose
+	// step its checks' states end (backwardRefusal). An empty target is read first, since the row
+	// lookup takes it to match any row.
 	//
-	// The refusal says which of the three failed, because the three are different mistakes and a
+	// The refusal says which of the four failed, because they are different mistakes and a
 	// sentence naming only the last had two readers of this file guess wrong on one day: a target
 	// the table does not serve is the caller's own phase misread, while a requester mismatch is a
 	// role acting on a phase that is not its own.
@@ -2571,7 +2599,7 @@ func (e *Engine) backward(ctx context.Context, tx pgx.Tx, fact intake.BackwardMo
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, fact.Reason)
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerBackward, fact.To, row, pr, moveWhy{Reason: fact.Reason})
 }
 
 // endChildrenFirst is what the refusals over children, sign_off's and close_root's while an issue
@@ -2874,7 +2902,7 @@ func (e *Engine) signOff(ctx context.Context, tx pgx.Tx, fact intake.SignOff) (i
 	if err != nil {
 		return intake.Result{}, err
 	}
-	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, "")
+	return intake.Result{}, e.transition(ctx, tx, *issue, TriggerSignOff, "", report, pr, moveWhy{})
 }
 
 // acceptedRoleOn is the role of the step the owner's acceptance of issue accepts on w, the walk of
@@ -2889,7 +2917,28 @@ func acceptedRoleOn(issue record.Issue, w Walk) (claim.Role, error) {
 	return claim.Role(w.Steps[place.Position-2].Role), nil
 }
 
-func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, reason string) error {
+// moveWhy is why a transition moves, as one value: Testing, the testing move, on the tester's move
+// back alone, and Reason, the words of every other move that gives one. A move carries one or the
+// other, never both, so the task, the status and the notice of a move all read the same value
+// (reason, noticeFor).
+type moveWhy struct {
+	Reason  string
+	Testing *testingMove
+}
+
+// reason is the sentence the move's task, status and notice carry: the testing move's own sentence
+// where it is one, Reason otherwise.
+func (why moveWhy) reason() string {
+	if why.Testing != nil {
+		return why.Testing.sentence()
+	}
+	return why.Reason
+}
+
+// transition moves issue on trigger for why: the move's row, its counts, its status, the start of
+// the next role with a task giving why's reason, and the architect's notice (noticeFor).
+func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, trigger TriggerKind, target phase.Phase, handoff record.PhaseRow, pr *record.PullRequest, why moveWhy) error {
+	reason := why.reason()
 	// The row comes from the table of the issue's walk: the line of its plan's task, or today's
 	// line for a run with no plan rows (Walk).
 	w, err := e.walk(ctx, tx, issue)
@@ -2970,7 +3019,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// would have, a tester's pass as passed and a fail as failed, since the parent's wait in
 	// awaiting_children is what follows the step, not how it ended (holdForChildren).
 	if len(open) > 0 {
-		return e.holdForChildren(ctx, tx, issue, w, trigger, row.To, handoff, pr, reason, open)
+		return e.holdForChildren(ctx, tx, issue, w, trigger, row.To, handoff, pr, why, open)
 	}
 	// A parent whose last step is not the owner's acceptance moves into its retro by that step's
 	// pass or by a move back out of merging, and while any of the three holds on its acceptance
@@ -2982,7 +3031,7 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 		return err
 	}
 	if held.code != "" {
-		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, reason, held)
+		return e.holdBeforeRetro(ctx, tx, issue, w, trigger, row.To, handoff, pr, why, held)
 	}
 	from, err := e.arrive(ctx, tx, &issue, &w, trigger, row.To, PhaseStatus(row.To), nil, handoff, pr, reason)
 	if err != nil {
@@ -3046,8 +3095,21 @@ func (e *Engine) transition(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	if err := e.queueMovedNews(ctx, tx, issue); err != nil {
 		return err
 	}
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, row.To, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, row.To, handoff, why)); err != nil {
 		return err
+	}
+	// The testing move's line is written where its notice is, from the same move: the move back's
+	// head and failing checks from why.Testing ("" and none where it is nil), and the move on's
+	// head the tester's handoff commit, which the reviewer's task names.
+	switch trigger {
+	case TriggerTesterFailed:
+		head := ""
+		if why.Testing != nil {
+			head = why.Testing.Head
+		}
+		e.logTestingMove(ctx, issue.Key, string(row.To), head, why.Testing)
+	case TriggerTesterPassed:
+		e.logTestingMove(ctx, issue.Key, string(row.To), handoff.HandoffCommit, nil)
 	}
 	// The merge forward follows the move (mergeForwardOnEntry): a move into implementing drops
 	// it, a move while another role's merge forward of the head is open holds the worker it
@@ -3135,14 +3197,14 @@ func (e *Engine) arrive(ctx context.Context, tx pgx.Tx, issue *record.Issue, w *
 // implementing stays on the record, neither the hold nor its release (StartHeldRetro) asks it
 // again, and the move into merging asks the merger.
 func (e *Engine) holdBeforeRetro(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
-	handoff record.PhaseRow, pr *record.PullRequest, reason string, held acceptanceHold) error {
-	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr, reason)
+	handoff record.PhaseRow, pr *record.PullRequest, why moveWhy, held acceptanceHold) error {
+	from, err := e.arrive(ctx, tx, &issue, &w, trigger, to, PhaseStatus(phase.Held), &record.Hold{Reason: record.HoldForChildren}, handoff, pr, why.reason())
 	if err != nil {
 		return err
 	}
 	e.logOnCommit(ctx, "workflow: a parent is held before its retro", "issue", issue.Key, "tree", issue.Tree,
 		"task", w.Task, "hold", held.code, "holding", held.names)
-	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, to, handoff, reason)); err != nil {
+	if err := e.notice(ctx, tx, issue.Key, noticeFor(trigger, issue, from, to, handoff, why)); err != nil {
 		return err
 	}
 	return e.tellRetroHeld(ctx, tx, issue, w, held, trigger)
@@ -3191,21 +3253,31 @@ func (e *Engine) queueMovedNews(ctx context.Context, tx pgx.Tx, issue record.Iss
 // kind the architect's prompt routes on, and says in its reason what happened and who asked: the
 // phase it moved the issue to, the role that moved it and the words that role gave. The handoff
 // row a move writes is empty, so without that reason the architect reads a completion with no
-// summary and no verdict and cannot tell it from a worker that finished its phase.
-func noticeFor(trigger TriggerKind, issue record.Issue, from, to phase.Phase, handoff record.PhaseRow, reason string) record.Notice {
+// summary and cannot tell it from a worker that finished its phase. No worker reports a verdict,
+// so the tester's move back is the testing move's own notice (why.Testing, decideTesting): its
+// reason says what the check states said, each check that does not pass at the tested head, and
+// its fields carry the head and those checks.
+func noticeFor(trigger TriggerKind, issue record.Issue, from, to phase.Phase, handoff record.PhaseRow, why moveWhy) record.Notice {
 	switch trigger {
 	case TriggerGateOpened:
 		if !claim.IsTreeRoot(issue.Key, issue.Tree) {
 			return record.Notice{}
 		}
-		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
+		return record.Notice{Kind: "phase-finished", Phase: from, Summary: handoff.Summary}
 	case TriggerBackward:
 		return record.Notice{Kind: "phase-finished", Role: RoleFor(from), Phase: from,
-			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), reason)}
+			Reason: fmt.Sprintf("moved back to %s by the %s: %s", to, RoleFor(from), why.reason())}
 	case TriggerSignOff, TriggerPullRequestMerged:
 		return record.Notice{}
 	}
-	return record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary, Verdict: handoff.Verdict}
+	if trigger == TriggerTesterFailed && why.Testing != nil {
+		return why.Testing.notice(handoff)
+	}
+	notice := record.Notice{Kind: "phase-finished", Role: phase.RoleFor(from), Phase: from, Summary: handoff.Summary}
+	if trigger == TriggerTesterFailed {
+		notice.Reason = why.reason()
+	}
+	return notice
 }
 
 // StartFirstPhase starts the first phase of one issue the waiting line has just given a slot to.
@@ -3304,7 +3376,7 @@ func (e *Engine) gateOpened(ctx context.Context, tx pgx.Tx, issue record.Issue) 
 			return err
 		}
 	}
-	return e.transition(ctx, tx, issue, TriggerGateOpened, "", record.PhaseRow{}, nil, "")
+	return e.transition(ctx, tx, issue, TriggerGateOpened, "", record.PhaseRow{}, nil, moveWhy{})
 }
 
 // everyClaim enqueues op for every claim an issue can hold but except's: its architect, which

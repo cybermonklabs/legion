@@ -80,14 +80,13 @@
 //                                          score.ts's askgateReview reads them (asks.json,
 //                                          artifacts.json in <run dir>)
 //   seed.ts heads-issue <file> <scenario> [<case>]
-//                                          a heads scenario's issue (reviewer-own-head <case>,
-//                                          reviewer-pass-and-fail, architect-pass-and-fail or
-//                                          ci-pass-and-fail <role>), before rig.sh's heads_fixture:
-//                                          the GitHub stand-in FAKE_GITHUB_PORT names holds the
-//                                          run's repository, the run's project is mapped to it,
-//                                          the delivery settings are written, and the issue has
-//                                          its spec and its Verification document; writes {issue,
-//                                          title, verification} to <file>
+//                                          the issue of a heads scenario's world, one that
+//                                          heads-scenarios.txt lists, before rig.sh's
+//                                          heads_fixture: the GitHub stand-in FAKE_GITHUB_PORT
+//                                          names holds the run's repository, the run's project is
+//                                          mapped to it, the delivery settings are written, and
+//                                          the issue has its spec and its Verification document;
+//                                          writes {issue, title, verification} to <file>
 //   seed.ts heads-events <file> <heads file> <scenario> [<case>]
 //                                          after heads_fixture: the stand-in serves the open pull
 //                                          requests at the heads <heads file> names, their opened
@@ -128,6 +127,7 @@ import {
   listIssueMessages,
 } from "../../../dispatch/e2e/api";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
+import { HEADS_SCENARIOS, headsCases } from "./heads-scenarios";
 import { headsEvents, headsIssue, headsWorld } from "./heads-world";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { parseInstant } from "./production-dispatch";
@@ -906,8 +906,15 @@ async function captureBrainstorm(runDir: string): Promise<void> {
   console.log(`captured ${issue ?? "no new issue"}: ${asks.length} asks`);
 }
 
-const USAGE =
-  "usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <reviewer-own-head <sibling-fails|ci-only|no-implementer|no-tester>|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail <reviewer|tester|architect>> | heads-events <file> <heads file> <the same scenario> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir>";
+/** Each heads scenario as the usage names it: alone when no world of it names a case, then with
+ * `<case|...>` when each world does, or `[case|...]` when one is its own and names none. */
+const HEADS_USAGE = HEADS_SCENARIOS.map((scenario) => {
+  const cases = headsCases(scenario);
+  const named = cases.filter((which) => which !== "").join("|");
+  if (named === "") return scenario;
+  return cases.includes("") ? `${scenario} [${named}]` : `${scenario} <${named}>`;
+}).join("|");
+const USAGE = `usage: seed.ts project | ask-on-message <file> | measure-before-ask <file> | capture <file> <run dir> | brainstorm | capture-brainstorm <file> <run dir> | spec-writing <file> <source dir> | spec-rewrite <file> <source dir> | state <file> <turn> <run dir> | answer <file> <answers file> | approve <file> | capture-spec <file> <run dir> | askgate <file> | capture-askgate <file> <run dir> | tester-proof <file> | implement-handoff <file> <body file> <commit> | capture-handoffs <file> <run dir> | heads-issue <file> <${HEADS_USAGE}> | heads-events <file> <heads file> <the same scenario> | owner-walk <file> <kind> <answer> | capture-scored <file> <run dir>`;
 
 /** Runs the mode `argv` names; false when argv names no mode, with its arguments. The first six
  * modes take extra arguments and ignore them, as they always did; each new mode takes exactly its

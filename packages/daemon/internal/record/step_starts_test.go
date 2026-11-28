@@ -214,8 +214,8 @@ func TestAClearedGenerationKeepsTheCountOfStarts(t *testing.T) {
 						t.Fatalf("record %s: %v", issue.key, err)
 					}
 					// A handoff commit each clear empties, which shows the clear reached the issue.
-					if _, err := tx.Exec(t.Context(), `insert into phases (issue, role, claim, handoff_commit, rounds, verdict)
-						values ($1, 'tester', '', 'head', 0, '')`, issue.key); err != nil {
+					if _, err := tx.Exec(t.Context(), `insert into phases (issue, role, claim, handoff_commit, rounds)
+						values ($1, 'tester', '', 'head', 0)`, issue.key); err != nil {
 						t.Fatalf("record the tester's row of %s: %v", issue.key, err)
 					}
 				}

@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  A `HANDOFF_STALE_ENTRY` refusal names no verdict, since a phase completion carries none at
+  the contract of the entry `20261125203834` check-states: its instruction now ends "complete it with a handoff of its own, never this
+  completion's record or commit", and the `legion` tool's description gives the same words.
+time: 2026-11-21T13:48:28Z
+custom:
+    Issue: check-states-stale-entry

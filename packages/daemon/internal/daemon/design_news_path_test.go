@@ -3,6 +3,7 @@ package daemon
 import (
 	"bytes"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -149,8 +150,19 @@ func (r *newsPathRig) inTx(write func(pgx.Tx) error) {
 	}
 }
 
-// pathHead is the head of key's pull request.
-func pathHead(key string) string { return "head-" + strings.ToLower(key) }
+// fullCommitOf is a full commit id made of name: the hex of its bytes, its last 40 digits where it
+// is longer, padded with zeros on the left to 40 where it is shorter. A check state names its head
+// as a full commit id, so the head a tester's completion is judged at must be one.
+func fullCommitOf(name string) string {
+	encoded := hex.EncodeToString([]byte(name))
+	if len(encoded) > 40 {
+		return encoded[len(encoded)-40:]
+	}
+	return strings.Repeat("0", 40-len(encoded)) + encoded
+}
+
+// pathHead is the head of key's pull request, a full commit id of its own (fullCommitOf).
+func pathHead(key string) string { return fullCommitOf(key) }
 
 // member records m, the i-th member of the tree, with its pull request open and mergeable at its
 // head, and the phases row of the role its phase names: a reviewer's holding its approval of that
@@ -241,8 +253,10 @@ func (r *newsPathRig) dispatchEvent(kind intake.DispatchArtifactKind, version in
 }
 
 // complete applies the completion of key's phase by the role its phase names, as the handoff route
-// applies one once it has read the handoff record back: the tester's with a pass. It reports the
-// run the issue stands in, its generation, and names a handoff record of that run.
+// applies one once it has read the handoff record back. It reports the run the issue stands in,
+// its generation, and names a handoff record of that run and the head of key's pull request. No
+// completion carries a verdict: for the tester's, the rig first holds the check of that head
+// passing, as Dispatch's state event would (testedAs), so the move goes on to reviewing.
 func (r *newsPathRig) complete(key string) {
 	r.t.Helper()
 	issue := readIssue(r.t, r.pool, key)
@@ -251,15 +265,15 @@ func (r *newsPathRig) complete(key string) {
 	fact := intake.HandoffComplete{Generation: issue.Generation, Issue: key, Role: role, Claim: mustClaimToken(r.t, key, role), Summary: "done",
 		Commit: pathHead(key), HandoffRecord: fmt.Sprintf("%s-%d", word, issue.Generation), HandoffVersion: 1}
 	if role == claim.RoleTester {
-		fact.Verdict = "pass"
+		testedAs(r.t, r.pool, key, pathHead(key), true, r.engine, r.admission)
 	}
 	applyFact(r.t, r.pool, "api", fmt.Sprintf("complete-%s-%s-%d", key, issue.Phase, issue.Generation), fact, r.engine, r.admission)
 }
 
 // completeThroughTheRoute is machine's worker completing its phase through the daemon's handoff
-// route, as its `legion` tool does, naming the handoff record it wrote under its own session; it
-// answers the route's status and body.
-func (r *newsPathRig) completeThroughTheRoute(machine *supervise.Machine, verdict string) (int, string) {
+// route, as its `legion` tool does, naming the handoff record it wrote under its own session and
+// the head of its issue's pull request, with no verdict; it answers the route's status and body.
+func (r *newsPathRig) completeThroughTheRoute(machine *supervise.Machine) (int, string) {
 	r.t.Helper()
 	held := machine.Claim()
 	issue := readIssue(r.t, r.pool, held.Issue)
@@ -275,7 +289,7 @@ func (r *newsPathRig) completeThroughTheRoute(machine *supervise.Machine, verdic
 	if err != nil {
 		r.t.Fatalf("mint the grant %s completes with: %v", held.Token, err)
 	}
-	body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the work is done", Verdict: verdict,
+	body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the work is done", Commit: pathHead(held.Issue),
 		HandoffID: handoffs.write(held.Issue, word, held.Session), HandoffVersion: 1})
 	if err != nil {
 		r.t.Fatal(err)
@@ -563,8 +577,10 @@ func TestATesterThatCompletesInTheTurnItsNewsWaitsBehindLeavesThatNewsToTheRevie
 		t.Fatalf("the tester's prompts = %+v, want its phase task alone: no task goes into a running turn", sent)
 	}
 
-	// The tester completes in that same turn, and the issue moves to reviewing.
-	if status, body := r.completeThroughTheRoute(tester, "pass"); status != http.StatusOK {
+	// The tester completes in that same turn, its check passing at the head it tested, and the
+	// issue moves to reviewing.
+	testedAs(t, r.pool, pathRoot, pathHead(pathRoot), true, r.engine, r.admission)
+	if status, body := r.completeThroughTheRoute(tester); status != http.StatusOK {
 		t.Fatalf("the tester's completion = %d %s, want 200", status, body)
 	}
 	if issue := readIssue(t, r.pool, pathRoot); issue.Phase != phase.Reviewing {

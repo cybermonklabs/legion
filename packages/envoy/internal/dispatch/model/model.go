@@ -2332,6 +2332,63 @@ type CheckResultRetractedEventPayload struct {
 	Reason       string `json:"reason"`
 }
 
+// CheckStateChangedEventType is the event Dispatch appends on a check's issue each time the state
+// of one of its `before_merge` checks at an open head, or at a head an open pull request has left,
+// changes.
+const CheckStateChangedEventType = "check.state_changed"
+
+// CheckStatesActor writes every check.state_changed: a system actor, since the state is what
+// Dispatch computed from the results, not something a person or a session wrote. Broker.Notify is
+// false for a system actor, so the event reaches no inbox; the outbox still publishes it.
+var CheckStatesActor = Actor{Kind: "system", ID: "dispatch-check-states"}
+
+// CheckStateChangedEventPayload is the payload of check.state_changed, appended on the check's
+// issue: the state of one before_merge check at one head, as passStandsOf computed it. The head is
+// open, or one an open pull request has left (a former head): PullRequests names the open pull
+// requests at the head, or that were at it.
+// Check, CheckVersion and State are nil in the set form: the event that tells a head's set of
+// checks when no check's own event tells it (a head with no check, a check removed).
+// CheckArtifactID is nil where the issue has no Verification document.
+type CheckStateChangedEventPayload struct {
+	Issue           string   `json:"issue"`
+	CheckArtifactID *string  `json:"check_artifact_id"`
+	Repo            string   `json:"repo"`
+	Head            string   `json:"head"`
+	PullRequests    []int    `json:"pull_requests"`
+	Checks          []string `json:"checks"`
+	Check           *string  `json:"check"`
+	CheckVersion    *int     `json:"check_version"`
+	State           *string  `json:"state" enum:"yes,no,unknown"`
+	Reason          string   `json:"reason" enum:",fail,no_result,pass_and_fail,read_failed"`
+	Roles           []string `json:"roles"`
+	Results         []string `json:"results"`
+	// CICase is the `ci.case` of a check CI proves at this head ("not_completed" while its run
+	// goes on), "" for every other check: one of contracts.CheckCICasesEnded and
+	// contracts.CheckCICasesNotEnded, the list @legion/contracts' schema closes `ci_case` to. A
+	// struct tag cannot name a constant, so the tag spells the list out, and
+	// TestTheCICaseTagIsContractsList holds it to the generated lists.
+	CICase string `json:"ci_case" enum:",success,failure,timed_out,action_required,startup_failure,stale,neutral,skipped,cancelled,job_recorded,not_completed,absent,no_head,github_unreadable,read_failed,not_started"`
+	// Serial counts the issue's check.state_changed events: 1, 2, 3 and on, one counter for the
+	// issue across all its heads.
+	Serial int64 `json:"serial"`
+}
+
+// MarshalJSON writes each list a writer left nil as [], never null: every reader of the event
+// reads its lists as arrays, and @legion/contracts' schema refuses null for any of them.
+func (payload CheckStateChangedEventPayload) MarshalJSON() ([]byte, error) {
+	type encoded CheckStateChangedEventPayload
+	shape := encoded(payload)
+	if shape.PullRequests == nil {
+		shape.PullRequests = []int{}
+	}
+	for _, list := range []*[]string{&shape.Checks, &shape.Roles, &shape.Results} {
+		if *list == nil {
+			*list = []string{}
+		}
+	}
+	return json.Marshal(shape)
+}
+
 // RoleUndeliveredEventType is the event Dispatch's outbox appends on an event's own owner when its
 // copy for a role reached no session: every copy the outbox kept for the role on the role's kept
 // lane ended its hour with no session holding the role (RoleUndeliveredExpired), or Envoy no longer
@@ -4271,14 +4328,19 @@ type MessageAcceptedEventPayload struct {
 // HandoffSummary is one phase handoff without its body: what GET /api/v1/issues/{key}/handoffs
 // lists, newest first, and what POST /api/v1/issues/{key}/handoffs/{phase} answers. Phase is a
 // lowercase slug (Legion writes plan, implement, test and review), Version counts from 1 within
-// the issue and phase, and Author is the session that wrote it.
+// the issue and phase, and Author is the session that wrote it. CheckStatesSerial is set on a
+// `test` handoff alone: the issue's check states serial once every check state its results
+// changed was published, so each check.state_changed event those results caused carries a serial
+// at or below it. Absent on every other phase and on a test handoff written before Dispatch
+// stored it.
 type HandoffSummary struct {
-	ID        string    `json:"id"`
-	IssueKey  string    `json:"issue_key"`
-	Phase     string    `json:"phase"`
-	Version   int       `json:"version"`
-	Author    Actor     `json:"author"`
-	CreatedAt time.Time `json:"created_at"`
+	ID                string    `json:"id"`
+	IssueKey          string    `json:"issue_key"`
+	Phase             string    `json:"phase"`
+	Version           int       `json:"version"`
+	Author            Actor     `json:"author"`
+	CreatedAt         time.Time `json:"created_at"`
+	CheckStatesSerial *int64    `json:"check_states_serial,omitempty"`
 }
 
 // Handoff is one phase handoff with its body: Body is the exact text the session sent, one JSON

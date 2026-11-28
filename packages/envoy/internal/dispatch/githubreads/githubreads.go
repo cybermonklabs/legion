@@ -120,11 +120,27 @@ func Begin(ctx context.Context, read Read) (context.Context, *Attempt) {
 	return context.WithValue(tagged, frameKey{}, frame{attempt: attempt}), attempt
 }
 
+// requestsKey is the context key of a count of requests (CountRequests).
+type requestsKey struct{}
+
+// CountRequests returns ctx carrying a new count of the requests sent to GitHub under it, which
+// NoteSent adds one to for each request, and the count: a caller that makes one logical read in
+// several requests (pages, a page asked again, comparisons) reports what it sent apart from what
+// it read. A count is independent of the attempt and the held scopes ctx carries.
+func CountRequests(ctx context.Context) (context.Context, *atomic.Int64) {
+	count := &atomic.Int64{}
+	return context.WithValue(ctx, requestsKey{}, count), count
+}
+
 // NoteSent marks the attempt ctx carries as having sent a request to GitHub, and every held scope
 // ctx carries, the innermost and each that encloses it, as having reached GitHub (Held.Reached).
 // Inside a held scope it still marks the attempt at once, since a request sent is sent whatever
-// its caller then makes of the answer. It does nothing on a ctx carrying no attempt.
+// its caller then makes of the answer. It adds one to the count of requests ctx carries
+// (CountRequests). It does nothing more on a ctx carrying no attempt.
 func NoteSent(ctx context.Context) {
+	if count, counted := ctx.Value(requestsKey{}).(*atomic.Int64); counted {
+		count.Add(1)
+	}
 	current, ok := ctx.Value(frameKey{}).(frame)
 	if !ok {
 		return

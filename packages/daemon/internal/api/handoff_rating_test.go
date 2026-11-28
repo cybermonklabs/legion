@@ -89,7 +89,7 @@ func TestARatingOutsideTheRetroIsRefused(t *testing.T) {
 		request func(c liveClaim) HandoffCompleteRequest
 	}{
 		{name: "the tester in testing", at: phase.Testing, role: claim.RoleTester, request: func(c liveClaim) HandoffCompleteRequest {
-			return HandoffCompleteRequest{Summary: "tests pass", Verdict: "pass", HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
+			return HandoffCompleteRequest{Summary: "tests pass", Commit: headSHA, HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}
 		}},
 		{name: "the implementer in implementing", at: phase.Implementing, role: claim.RoleImplementer, request: func(c liveClaim) HandoffCompleteRequest {
 			return HandoffCompleteRequest{Summary: "implemented", Commit: headSHA, HandoffID: c.writeHandoff("implement", 1), HandoffVersion: 1}

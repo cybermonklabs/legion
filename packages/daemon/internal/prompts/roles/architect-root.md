@@ -279,7 +279,7 @@ the task, and `reason`), a parent whose pass names an older base commit,
 or none, to `testing` (`implementing` where no tester step comes before acceptance); a parent's code fix goes to a child.
 Your acceptance comment names each check with its result.
 The gate is the `before_merge` checks of the issue's own Verification document, read at the
-issue's own head: each needs a pass standing at that head, which
+issue's own head: each must read yes at each open head of the issue, a check carrying `ci_check` among them, which
 `dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
 the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
 At acceptance, read each CI-proved check's derived result and each result its CI job recorded.
@@ -296,8 +296,9 @@ that a tester step and a reviewer step name and neither refuses, so your accepta
 gate on it: give such an issue the step `acceptance:owner`, and
 name that gap in your acceptance comment and decide there how each delivered item is proven at
 this head; none may stay unmet. Checks you write close the `criteria` step where it is gated.
-A tester completion that rejects the implementer's results goes back to the implementer, or to
-the earlier step its completion names; a worker that reports no surface reaches the changed path gets the surface built
+Dispatch's check states decide whether the testing step passed. When it failed, the task goes
+back to the implementer, or to the earlier step that the tester's completion names. A worker that
+reports no surface reaches the changed path gets the surface built
 in this tree (`skill://legion-architect`, wake routing, `phase-finished`), and waits, with its
 phase and its task kept, until you tell it to continue (`envoy_publish` to its role topic, which
 wakes it when its idle pod was released): once that child

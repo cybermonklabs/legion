@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The skill-scenario rig keeps the askgate scenario's cases in one catalog, `askgate-cases.txt`,
+  one case a line. rig.sh's check of `SKILL_SCENARIOS_ASKGATE_CASE` for a batch and a run, and
+  score.ts's reading of an askgate run's name, take the cases from it, so a new case is one line
+  there and its prompt in rig.sh's run_askgate. Every batch and run is named as before, every
+  refusal reads as before, and every score row is the same. heads-scenarios.txt and
+  askgate-cases.txt are read through one reader, which refuses a line that is not the catalog's
+  form.
+time: 2026-11-22T03:36:14Z
+custom:
+    Issue: check-states-askgate-catalog

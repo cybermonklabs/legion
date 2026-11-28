@@ -837,8 +837,8 @@ func (c *HTTPClient) request(ctx context.Context, method, path string, body, int
 // dispatchBase's scheme check (internal/config) catches a typo in the scheme itself before boot,
 // but not a correct https:// whose port does not serve TLS. transportFailure keeps each of these
 // out of TransientError, Unreachable reads it first so it wins over an outage it is joined with,
-// and the boot's catch-up of the roots that run or wait on a person (internal/daemon's
-// catchUpWithRetries) stops the start on one rather than skip the root.
+// and the boot's catch-ups, of the roots that run or wait on a person and of check states
+// (internal/daemon's readWithRetries), stop the start on one rather than skip the root or the issue.
 func TransportRefusal(err error) bool {
 	var certErr *tls.CertificateVerificationError
 	var record tls.RecordHeaderError

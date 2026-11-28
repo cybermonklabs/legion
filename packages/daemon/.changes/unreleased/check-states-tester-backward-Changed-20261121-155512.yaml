@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  A tester's `request_backward_move` out of `testing` is refused `BACKWARD_REFUSED`, to any
+  target, with nothing moved, counted, recorded or posted: a testing step ends by the states
+  Dispatch publishes of its checks at the head the tester tested, and by nothing else. The refusal
+  says what ends the step instead: record each check's result with `dispatch result`, a fail with
+  its evidence for a check the tester cannot verify, then complete with `handoff_complete`, which
+  sends the issue back with a task naming each check that does not pass. A target no backward row
+  serves keeps its own refusal, and every other role's backward move is taken as before. The
+  tester's prompt says so.
+time: 2026-11-21T15:55:12Z
+custom:
+    Issue: check-states-tester-backward

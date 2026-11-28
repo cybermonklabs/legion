@@ -1,6 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
+import { CheckStateChangedEventPayloadSchema } from "./dispatch-api-issues";
 
 /**
  * Every event payload is written once. Before this, each lived twice in `dispatch-api.ts` - a
@@ -39,6 +40,7 @@ const PAYLOAD_TYPES = [
   "CarriedBodyPayload",
   "CheckResultEventPayload",
   "CheckResultRetractedEventPayload",
+  "CheckStateChangedEventPayload",
   "ChildEventPayload",
   "ChildStatusEventPayload",
   "CommentDeliveryEventPayload",
@@ -115,7 +117,7 @@ const CONSTANT_LIST_TYPES = [
  * aliases by. So a regeneration that moves one of the twelve reds the typecheck by that name, and
  * a thirteenth is added by passing that assertion rather than by being written here.
  */
-const SCHEMA_DERIVATIONS = 69;
+const SCHEMA_DERIVATIONS = 70;
 
 /** The payloads whose shape the Go route table holds, so the generated module is their one
  *  definition and the split declares none of them: a `project.*` event carries the project row a
@@ -230,5 +232,54 @@ describe("every event payload is z.output of its own schema", () => {
   test(`the contract derives ${SCHEMA_DERIVATIONS} types from a schema`, () => {
     const derived = SOURCES.match(/export type [A-Za-z0-9_]+ = z\.output</g) ?? [];
     expect(derived).toHaveLength(SCHEMA_DERIVATIONS);
+  });
+});
+
+/** The bytes Dispatch writes for a `check.state_changed` event: Go's
+ *  `TestCheckStateChangedEventPayloadGolden` (packages/envoy/internal/dispatch/model) writes them
+ *  from the payload's struct, and the Legion daemon's intake reads the same file. So the schema is
+ *  held to what Dispatch sends, in each of the payload's two forms: the state of one check at one
+ *  head, and a head's set of checks with no check of its own. */
+describe("check.state_changed as Dispatch writes it", () => {
+  const fixture = JSON.parse(
+    readFileSync(
+      path.join(SOURCE, "..", "fixtures", "dispatch-events", "check-state-changed.json"),
+      "utf8"
+    )
+  ) as { type: string; check_form: unknown; set_form: unknown };
+
+  test("the event Go names is the union's member that carries this payload", () => {
+    expect(dispatchEventUnion()).toContain(
+      `readonly type: "${fixture.type}"; readonly payload: CheckStateChangedEventPayload;`
+    );
+  });
+
+  for (const form of ["check_form", "set_form"] as const) {
+    test(`the schema reads the ${form} as Go wrote it`, () => {
+      const parsed: unknown = CheckStateChangedEventPayloadSchema.parse(fixture[form]);
+      expect(parsed).toEqual(fixture[form]);
+    });
+  }
+
+  test("the schema refuses a state outside yes, no and unknown", () => {
+    const checkForm = fixture.check_form as Record<string, unknown>;
+    expect(
+      CheckStateChangedEventPayloadSchema.safeParse({ ...checkForm, state: "pass" }).success
+    ).toBe(false);
+  });
+
+  test("the schema reads each CI case Dispatch publishes, and refuses any other", () => {
+    const checkForm = fixture.check_form as Record<string, unknown>;
+    for (const ciCase of ["", "success", "failure", "job_recorded", "not_completed", "absent"]) {
+      expect(
+        CheckStateChangedEventPayloadSchema.safeParse({ ...checkForm, ci_case: ciCase }).success
+      ).toBe(true);
+    }
+    expect(
+      CheckStateChangedEventPayloadSchema.safeParse({
+        ...checkForm,
+        ci_case: "a_case_no_dispatch_writes",
+      }).success
+    ).toBe(false);
   });
 });

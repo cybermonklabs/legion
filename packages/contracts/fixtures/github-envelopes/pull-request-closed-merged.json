@@ -5,6 +5,7 @@
     "action": "closed",
     "author": "octocat",
     "base_ref": "main",
+    "base_sha": "9999999999999999999999999999999999999999",
     "body": "Exercise the listener with a merged close.",
     "head_ref": "acceptance-driver",
     "head_sha": "2222222222222222222222222222222222222222",

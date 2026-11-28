@@ -354,10 +354,11 @@ func (c *liveSession) handoff(word string) string {
 // handoffID, a handoff record of that phase this claim wrote, and returns the status and the
 // refusal the daemon answered. Every record the board seeds is version 1 of its own id, so each
 // completion that names one names version 1 and a record of its own, and no two are the same one;
-// a completion with handoffID "" names no record and no version.
-func (c *liveSession) complete(summary, commit, verdict, handoffID string) (int, api.Failure) {
+// a completion with handoffID "" names no record and no version. No completion names a verdict:
+// the check states the daemon holds at the tested head decide the testing phase.
+func (c *liveSession) complete(summary, commit, handoffID string) (int, api.Failure) {
 	c.p.t.Helper()
-	req := api.HandoffCompleteRequest{Summary: summary, Commit: commit, Verdict: verdict, HandoffID: handoffID}
+	req := api.HandoffCompleteRequest{Summary: summary, Commit: commit, HandoffID: handoffID}
 	if handoffID != "" {
 		req.HandoffVersion = 1
 	}

@@ -82,7 +82,9 @@ func TestABackwardMoveThatKeepsItsStatusPostsItsReasonAsAMessage(t *testing.T) {
 // the worker would never learn why. The bound is the post's, the move's sentence under the
 // outbox's marker, so a reason of as many blocks as Dispatch takes on its own is refused for the
 // block the marker adds; a decision block is refused however short the reason is, under a code of
-// its own. Each refusal moves, counts and queues nothing.
+// its own. Each refusal moves, counts and queues nothing. The mover is the reviewer, out of
+// reviewing: the tester's own move out of testing is refused before its reason is read
+// (TestATestersBackwardMoveOutOfTestingIsRefused).
 func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
 	t.Parallel()
 	const decision = ":::ask{urgency=\"med\"}\nWhich table should the plan name?\n\n- users: the old one\n- accounts: the new one\n:::"
@@ -99,10 +101,10 @@ func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
-			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: phase.Testing, Generation: 1, Status: PhaseStatus(phase.Testing), Rank: "U"})
-			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
+			seedIssue(t, pool, record.Issue{Key: "LEGION-208", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Tree: "LEGION-208", Project: "LEGION", Title: "backward", Phase: phase.Reviewing, Generation: 1, Status: PhaseStatus(phase.Reviewing), Rank: "U"})
+			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: "review-claim"})
 			seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim"})
-			result, err := intake.ApplyFact(context.Background(), pool, "api", "backward", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleTester, To: phase.Implementing, Reason: tc.reason}, testEngine(config.DesignGateRootIssues, nil), admissionStub{})
+			result, err := intake.ApplyFact(context.Background(), pool, "api", "backward", intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleReviewer, To: phase.Implementing, Reason: tc.reason}, testEngine(config.DesignGateRootIssues, nil), admissionStub{})
 			if err != nil || refusalCode(result) != tc.code {
 				t.Fatalf("the move = %+v, %v; want %s", result.Refusal, err, tc.code)
 			}
@@ -111,8 +113,8 @@ func TestABackwardMoveWhosePostDispatchWouldRefuseIsRefused(t *testing.T) {
 					t.Fatalf("refusal %q does not say %q", result.Refusal.Message, want)
 				}
 			}
-			if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != phase.Testing || pass != 0 {
-				t.Fatalf("phase = %q, pass %d; want testing and no pass", got, pass)
+			if got, pass := issuePhase(t, pool), implementerPass(t, pool); got != phase.Reviewing || pass != 0 {
+				t.Fatalf("phase = %q, pass %d; want reviewing and no pass", got, pass)
 			}
 			assertOutboxKinds(t, pool, []string{})
 		})

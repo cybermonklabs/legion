@@ -162,8 +162,10 @@ func writeHead(t *testing.T, database *store.Store, repo string, number int, sha
 
 // writeHeadOnBase stores one pull request head row whose base branch the caller names: the
 // row delivery.Attributor.MergeOfIssue answers an issue's merges from, where the row is merged.
-// The conflict clause writes every column either caller means to write, so a second
-// row for the same pull request leaves none of them as the first write left it.
+// The base branch stands at ciJobBaseSHA, as a writer of this release stores the revision GitHub
+// names, which the stand-in for GitHub names for a pull request no test moves. The conflict
+// clause writes every column either caller means to write, so a second row for the same pull
+// request leaves none of them as the first write left it.
 //
 // A merged row holds a time of merge, mergedHeadsAt and its number in seconds, so of two merged
 // pull requests the one of the higher number merged later, as every caller means, and the rule
@@ -183,14 +185,14 @@ func writeHeadOnBase(t *testing.T, database *store.Store, repo string, number in
 		mergedAt, rule = &at, delivery.AttributionRuleVersion
 	}
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, event_at, checked_at,
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, base_sha, state, issue_key, event_at, checked_at,
 			merged_at, attribution_rule)
-		values ($1, $2, $3, 'legion/work', $4, $5, $6, now(), now(), $7, $8)
+		values ($1, $2, $3, 'legion/work', $4, $7, $5, $6, now(), now(), $8, $9)
 		on conflict (repo, number) do update set head_sha = excluded.head_sha, base_ref = excluded.base_ref,
-			state = excluded.state, issue_key = excluded.issue_key, merged_at = excluded.merged_at,
+			base_sha = excluded.base_sha, state = excluded.state, issue_key = excluded.issue_key, merged_at = excluded.merged_at,
 			attribution_rule = case when excluded.state = 'merged'
 				then excluded.attribution_rule else pull_request_heads.attribution_rule end
-	`, repo, number, sha, baseRef, state, attributed, mergedAt, rule); err != nil {
+	`, repo, number, sha, baseRef, state, attributed, ciJobBaseSHA, mergedAt, rule); err != nil {
 		t.Fatalf("store the head of %s#%d on %s: %v", repo, number, baseRef, err)
 	}
 }
@@ -3589,18 +3591,37 @@ func TestAnUnsettledCICheckOnACheckHoldingARolesResultChangesNothingUntilSettlem
 // checkRunsFake is GitHub's listing of each commit's check runs, a hundred to a page, as the
 // read of a check CI proves asks for it, and the count of the pages asked for each commit. A
 // test sets the runs of a commit, a status and body every read answers in place of the listing,
-// or a hold that keeps every read waiting until its caller gives up (ciHeldRead).
+// a hold that keeps every read waiting until its caller gives up (ciHeldRead), or the commits
+// whose reads each wait so (blockReadsOf).
 type checkRunsFake struct {
 	mu        sync.Mutex
 	runs      map[string][]map[string]any
 	fault     int
 	faultBody string
 	hold      *ciHeldRead
+	blocked   map[string]chan<- string
+	release   <-chan struct{}
 	asked     map[string]int
 }
 
 func newCheckRunsFake() *checkRunsFake {
 	return &checkRunsFake{runs: map[string][]map[string]any{}, asked: map[string]int{}}
+}
+
+// blockReadsOf makes each read of each of shas send its commit on the channel it answers, then
+// wait until its caller gives up, or until t ends, as a read GitHub never answers does.
+func (f *checkRunsFake) blockReadsOf(t *testing.T, shas ...string) <-chan string {
+	t.Helper()
+	entered := make(chan string, 64)
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.blocked, f.release = map[string]chan<- string{}, release
+	for _, sha := range shas {
+		f.blocked[sha] = entered
+	}
+	return entered
 }
 
 // set is the runs GitHub lists for sha, in the order given.
@@ -3663,7 +3684,16 @@ func (f *checkRunsFake) serve(w http.ResponseWriter, r *http.Request) {
 	f.mu.Lock()
 	f.asked[sha]++
 	fault, faultBody, hold, runs := f.fault, f.faultBody, f.hold, f.runs[sha]
+	blocked, release := f.blocked[sha], f.release
 	f.mu.Unlock()
+	if blocked != nil {
+		blocked <- sha
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+		return
+	}
 	if hold != nil {
 		hold.wait(r)
 		return
@@ -3795,8 +3825,10 @@ func assertDerived(t *testing.T, check model.CheckBlock, id int64, run, conclusi
 // A check CI proves is answered by the run its ci_check names at the issue's open head, for every
 // case R3 names: success is a pass with its one derived result; neutral, skipped, cancelled, a
 // run not completed and a head carrying no run of that name are no result, each naming its case;
-// timed_out and a conclusion the list does not name are a fail. The named run on page two of a
-// head carrying 101 runs is read, because the read pages.
+// timed_out is a fail under its own name, and a conclusion the closed list does not name is a fail
+// whose case is failure (results_ci.go's ciAnswerOf), while the result it derives keeps the
+// conclusion as GitHub wrote it. The named run on page two of a head carrying 101 runs is read,
+// because the read pages.
 func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 	t.Parallel()
 	handler, database, fake := resultsGitHubCheckRuns(t)
@@ -3806,22 +3838,26 @@ func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 		others[index] = completedRun(int64(1000+index), fmt.Sprintf("other-%d", index), "success")
 	}
 	for index, test := range []struct {
-		name   string
-		runs   []map[string]any
-		state  string
-		ciCase string
-		run    int64
-		pages  int
+		name string
+		runs []map[string]any
+		// state is the verdict the read publishes and ciCase the case it publishes beside it.
+		// conclusion is the word GitHub wrote, which the derived result keeps; it differs from
+		// ciCase for a conclusion the closed list does not name, and an empty one is ciCase.
+		state      string
+		ciCase     string
+		conclusion string
+		run        int64
+		pages      int
 	}{
-		{"success", []map[string]any{completedRun(11, ciCheckRun, "success")}, model.CIStatePass, "success", 11, 1},
-		{"neutral", []map[string]any{completedRun(12, ciCheckRun, "neutral")}, model.CIStateNoResult, "neutral", 0, 1},
-		{"skipped", []map[string]any{completedRun(13, ciCheckRun, "skipped")}, model.CIStateNoResult, "skipped", 0, 1},
-		{"cancelled", []map[string]any{completedRun(14, ciCheckRun, "cancelled")}, model.CIStateNoResult, "cancelled", 0, 1},
-		{"in progress", []map[string]any{pendingRun(15, ciCheckRun, "in_progress")}, model.CIStateNoResult, "not_completed", 0, 1},
-		{"absent", []map[string]any{completedRun(16, "lint", "success")}, model.CIStateNoResult, "absent", 0, 1},
-		{"on page two of 101 runs", append(slices.Clone(others), completedRun(17, ciCheckRun, "success")), model.CIStatePass, "success", 17, 2},
-		{"timed out", []map[string]any{completedRun(18, ciCheckRun, "timed_out")}, model.CIStateFail, "timed_out", 18, 1},
-		{"an unnamed conclusion", []map[string]any{completedRun(19, ciCheckRun, "frobnicated")}, model.CIStateFail, "frobnicated", 19, 1},
+		{"success", []map[string]any{completedRun(11, ciCheckRun, "success")}, model.CIStatePass, "success", "", 11, 1},
+		{"neutral", []map[string]any{completedRun(12, ciCheckRun, "neutral")}, model.CIStateNoResult, "neutral", "", 0, 1},
+		{"skipped", []map[string]any{completedRun(13, ciCheckRun, "skipped")}, model.CIStateNoResult, "skipped", "", 0, 1},
+		{"cancelled", []map[string]any{completedRun(14, ciCheckRun, "cancelled")}, model.CIStateNoResult, "cancelled", "", 0, 1},
+		{"in progress", []map[string]any{pendingRun(15, ciCheckRun, "in_progress")}, model.CIStateNoResult, "not_completed", "", 0, 1},
+		{"absent", []map[string]any{completedRun(16, "lint", "success")}, model.CIStateNoResult, "absent", "", 0, 1},
+		{"on page two of 101 runs", append(slices.Clone(others), completedRun(17, ciCheckRun, "success")), model.CIStatePass, "success", "", 17, 2},
+		{"timed out", []map[string]any{completedRun(18, ciCheckRun, "timed_out")}, model.CIStateFail, "timed_out", "", 18, 1},
+		{"an unnamed conclusion", []map[string]any{completedRun(19, ciCheckRun, "frobnicated")}, model.CIStateFail, "failure", "frobnicated", 19, 1},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			key := issueOfProject(t, handler, "RESCO", test.name, ciCheckBlock("c1", ciCheckKept))
@@ -3837,7 +3873,11 @@ func TestCIResultReadsEachOutcomeOfTheNamedRun(t *testing.T) {
 				}
 			} else {
 				assertCI(t, check, ciCheckRun, test.state, test.ciCase, ciVerdictLineOf("c1", ciCheckRun, test.state, head))
-				assertDerived(t, check, test.run, ciCheckRun, test.ciCase, test.state, head)
+				conclusion := test.conclusion
+				if conclusion == "" {
+					conclusion = test.ciCase
+				}
+				assertDerived(t, check, test.run, ciCheckRun, conclusion, test.state, head)
 				wantStands := model.CheckPassStands{Answer: model.PassStandsNo}
 				if test.state == model.CIStatePass {
 					wantStands = model.CheckPassStands{Answer: model.PassStandsYes, Roles: []string{"ci"}}

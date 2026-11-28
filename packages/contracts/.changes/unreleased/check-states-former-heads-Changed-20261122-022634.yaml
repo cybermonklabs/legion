@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+    `CheckStateChangedEventPayloadSchema` says that a `check.state_changed` event names an open
+    head or a former head of an open pull request, a head that pull request has left, whose states
+    Dispatch keeps publishing while the pull request is open; `pull_requests` names the open pull
+    requests at the head or that were at it. The schema itself does not change. New fixture
+    `fixtures/dispatch-events/check-states-after-a-move.json` holds the events Dispatch published
+    in two cases of a pull request's head moving while its tester tested the head before, as
+    Envoy's test writes them, for the Legion daemon's test of the testing move. The description of
+    `POST /api/v1/issues/{key}/handoffs/{phase}` says a `test` handoff also waits until each former
+    head not read since its issue's last change has been read; regenerated in
+    `schemas/dispatch-openapi.json` and `src/dispatch-api.generated.ts`. The shared GitHub goldens
+    of a pull request (`fixtures/github-envelopes/pull-request-opened.json`,
+    `pull-request-opened-dotted-repository.json`, `pull-request-synchronize.json`,
+    `pull-request-closed-merged.json`) carry `base_sha`, the commit the base branch was at when
+    GitHub sent the event, which the Envoy listener now sends beside `base_ref`; a consumer that
+    reads neither is unchanged.
+time: 2026-11-22T02:26:34Z
+custom:
+    Issue: check-states-former-heads

@@ -506,10 +506,13 @@ func (r *outbox) exceptionNotice(exception roleLaneException) (reportedNotice, b
 	if (!legacy && project != r.dispatchProject) || !strings.HasPrefix(token, "legion-"+r.project+"-") || !strings.HasSuffix(token, "-"+string(claim.RoleArchitect)) {
 		return reportedNotice{}, false
 	}
-	var notice record.Notice
-	decoder := json.NewDecoder(strings.NewReader(exception.Payload))
-	decoder.DisallowUnknownFields()
-	if err := decoder.Decode(&notice); err != nil {
+	// A listener reports a failed forward with the payload as it went out, so a phase-finished
+	// notice the release before published can name the tester's verdict, which record.Notice no
+	// longer has. The decode is the outbox's own (record.DecodeNotice): it drops that key, so the
+	// notice is queued again with the rest of what it says, and every other key Notice does not
+	// have still refuses the report.
+	notice, err := record.DecodeNotice([]byte(exception.Payload))
+	if err != nil {
 		return reportedNotice{}, false
 	}
 	kind, issue, found := parseNoticeSummary(exception.PayloadSummary)

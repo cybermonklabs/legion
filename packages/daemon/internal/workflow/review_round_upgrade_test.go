@@ -83,7 +83,7 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 	st, pool := storeBeforeTheReviewedHead(t)
 	const (
 		reviewerTask = "Continue root. Issue: LEGION-208. Phase: reviewing. Handoff: test version 1 " +
-			"(dispatch handoff-read --issue LEGION-208 --phase test --version 1). Tester's verdict: pass. Pull request: #42."
+			"(dispatch handoff-read --issue LEGION-208 --phase test --version 1). Pull request: #42."
 		testerTask = "Continue root. Issue: LEGION-208. Phase: testing. Resume the existing phase work."
 	)
 	if _, err := pool.Exec(ctx, `insert into issues (key, tree, project, title, phase, generation, status, rank, last_dispatch_seq)
@@ -91,10 +91,10 @@ func TestTheReviewedHeadMigrationGivesEachStoredReviewerTaskTheRoundsSentences(t
 		('LEGION-209', 'LEGION-209', 'LEGION', 'other', 'reviewing', 1, 'needs_review', 'B', 1)`); err != nil {
 		t.Fatalf("record the issues as the release before writes them: %v", err)
 	}
-	if _, err := pool.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, entry, entry_task) values
-		('LEGION-208', 'reviewer', 'legion-LEGION-208-reviewer', '', 0, '', 2, $1),
-		('LEGION-208', 'tester', 'legion-LEGION-208-tester', '', 0, '', 1, $2),
-		('LEGION-209', 'reviewer', 'legion-LEGION-209-reviewer', '', 0, '', 3, '')`, reviewerTask, testerTask); err != nil {
+	if _, err := pool.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, entry, entry_task) values
+		('LEGION-208', 'reviewer', 'legion-LEGION-208-reviewer', '', 0, 2, $1),
+		('LEGION-208', 'tester', 'legion-LEGION-208-tester', '', 0, 1, $2),
+		('LEGION-209', 'reviewer', 'legion-LEGION-209-reviewer', '', 0, 3, '')`, reviewerTask, testerTask); err != nil {
 		t.Fatalf("record the phases rows as the release before writes them: %v", err)
 	}
 

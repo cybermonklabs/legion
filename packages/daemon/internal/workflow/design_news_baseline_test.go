@@ -98,8 +98,9 @@ const laterEntryRoot, laterEntryMember = "LEGION-207", "LEGION-208"
 
 // seedTestedMember records laterEntryMember in testing under laterEntryRoot, whose spec gate stands
 // approved at approved, with the pull request and the two phase rows a tester's fail and an
-// implementer's completion move it through, and answers the engine and an apply that refuses no
-// fact.
+// implementer's completion move it through, and the failed check state at headOne that the
+// tester's completion (laterEntryTesterFails) is judged by, and answers the engine and an apply
+// that refuses no fact.
 func seedTestedMember(t *testing.T, pool *pgxpool.Pool, approved int) (*Engine, func(string, intake.Fact)) {
 	t.Helper()
 	root, member := laterEntryRoot, laterEntryMember
@@ -113,6 +114,7 @@ func seedTestedMember(t *testing.T, pool *pgxpool.Pool, approved int) (*Engine, 
 	seedPhase(t, pool, record.PhaseRow{Issue: member, Role: claim.RoleImplementer, Claim: "implement-claim"})
 	seedPhase(t, pool, record.PhaseRow{Issue: member, Role: claim.RoleTester, Claim: "test-claim"})
 	engine := testEngine(config.DesignGateRootIssues, nil)
+	testedAs(t, pool, engine, member, headOne, false)
 	return engine, func(eventID string, fact intake.Fact) {
 		t.Helper()
 		result, err := intake.ApplyFact(context.Background(), pool, "fact", eventID, fact, engine, admissionStub{})
@@ -125,9 +127,10 @@ func seedTestedMember(t *testing.T, pool *pgxpool.Pool, approved int) (*Engine, 
 	}
 }
 
-// laterEntryTesterFails is the tester's failed verdict on laterEntryMember, which starts the
-// implementer.
-var laterEntryTesterFails = intake.HandoffComplete{Generation: 1, Issue: laterEntryMember, Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail",
+// laterEntryTesterFails is the tester's completion of laterEntryMember's testing at headOne, the
+// head it tested, with no verdict: the check state seedTestedMember holds there fails its step,
+// which starts the implementer.
+var laterEntryTesterFails = intake.HandoffComplete{Generation: 1, Issue: laterEntryMember, Role: claim.RoleTester, Claim: "test-claim", Commit: headOne,
 	HandoffRecord: "test-0", HandoffVersion: 1}
 
 // owedNewsOf is what record.OwedNews owes tree as the record holds it now, over the facts every

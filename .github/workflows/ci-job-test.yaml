@@ -17,9 +17,9 @@ name: CI job test
 # its build-input list, the changelog fold, the guides' layout, and the lint and typecheck of the
 # script directories that are no workspace. Those are build, lint and typecheck checks, which run
 # on a pull request whatever their time. test runs the tests: the `*.test.sh` harness of each
-# script under .github/scripts (and of scripts/daemon-contract-order.sh), the Bun suites of
-# scripts/ and the live proofs' libraries. Its `test` output is held back on a pull request without
-# the label full-ci or lane:test, so it runs in the merge queue
+# script under .github/scripts (and of scripts/daemon-contract-order.sh and scripts/red-at-base.sh),
+# the Bun suites of scripts/ and the live proofs' libraries. Its `test` output is held back on a
+# pull request without the label full-ci or lane:test, so it runs in the merge queue
 # (.github/ci-notes/ci.md#which-lane-a-job-runs-in-the-pull-request-or-the-merge-queue).
 #
 # The daemon's Go tests, which the test job used to carry, are
@@ -443,7 +443,8 @@ jobs:
       # a scratch pair of modules, the build-cache prune's builds of a scratch module, the
       # testcontainers link check's go list over fixture modules, the Go legs harness's go list over
       # a scratch module, the go.work.sum check's download of the root workspace, its harness's
-      # downloads over fixture workspaces from a file proxy and the build-tag lister, none of which
+      # downloads over fixture workspaces from a file proxy, the build-tag lister and the go test
+      # runs of the red-at-base harness's scratch repository, none of which
       # that entry is filled for. The daemon's go.mod is still the one Go pin of this repository's
       # three modules that a job without one of its own reads.
       - id: setup-go
@@ -453,6 +454,11 @@ jobs:
           go-download-base-url: https://go.dev/dl
           token: ''
           cache: false
+
+      # After setup-go: its scratch repository runs go test, and bun test, at a base commit.
+      - name: Test the red-at-base tool (a scratch repository)
+        if: inputs.changes-result != 'success' || inputs.matched-filters == 'all' || contains(inputs.matched-filters, '"red_at_base_test"')
+        run: .github/scripts/harness-pool.sh start scripts/red-at-base.test.sh bash scripts/red-at-base.test.sh
 
       # The filters this run's changes job computed, which no file of the repository holds: one
       # case of the check below holds them to what this repository's Bun jobs compile and read, and

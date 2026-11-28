@@ -1,0 +1,20 @@
+kind: Changed
+body: |-
+  A CI settlement's role message carries what its body names as fields: `pull_request`, `head`
+  (the head the settlement stands for), `checks` (each check as `name=word`, in name order) and
+  `statuses` (each commit status as `context=state`, in context order). The implementer's message
+  of a failed CI job carries `pull_request`, `head`, `check` and `ci_case`. Each body and its
+  fields are written from one value. The daemon logs `workflow: a CI settlement is told` (the pull
+  request, the head, the checks, the statuses and each role told), `workflow: the implementer is
+  told of a failed CI job` (the pull request, the check, the head and the job's case), each from
+  the rows it queued, and `workflow: the testing move decided` (the move, the head, `leave_ci`,
+  and on a wait or a move back `waits_for`, `waiting` and the failing checks' ids) where it
+  writes the tester's notice of a wait, of a move back and the move to reviewing; the last
+  replaces `workflow: the testing move waits for check states`. The way back of migration
+  `20261126110301_phase_verdict_gone` also deletes the role messages' six keys, since the release
+  before decodes a role message strictly. No test reads the words of a CI message: the
+  comparisons of a settlement message's whole body, of the wake task of a settlement, and the
+  searches of the CI messages' bodies are gone, and the tests read these fields and lines.
+time: 2026-11-25T10:55:46Z
+custom:
+  Issue: ci-message-fields

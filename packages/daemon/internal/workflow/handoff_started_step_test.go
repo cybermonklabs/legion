@@ -44,7 +44,7 @@ func TestOnlyAStartedStepOfThisRunCanReportALeftPhase(t *testing.T) {
 					t.Fatal(err)
 				}
 			}
-			fact := intake.HandoffComplete{Generation: issue.Generation, Issue: issue.Key, Role: claim.RoleTester, Claim: token, Summary: "tests pass", Verdict: "pass", Commit: "c0ffee", HandoffRecord: "test-late-1", HandoffVersion: 1}
+			fact := intake.HandoffComplete{Generation: issue.Generation, Issue: issue.Key, Role: claim.RoleTester, Claim: token, Summary: "tests pass", Commit: "c0ffee", HandoffRecord: "test-late-1", HandoffVersion: 1}
 			if which == "empty token" {
 				fact.Claim = ""
 			}
@@ -112,7 +112,7 @@ func TestAStoppedStepsLateReportNeedsItsStartedRun(t *testing.T) {
 				seedPhase(t, pool, row)
 			}
 			before := reportedOf(t, pool, engine, root.Key, claim.RoleTester, true)
-			result := applyFacts(t, pool, engine)("late", intake.HandoffComplete{Generation: root.Generation, Issue: root.Key, Role: claim.RoleTester, Claim: token, Summary: "tests pass", Verdict: "pass", Commit: "c0ffee", HandoffRecord: "test-late-1", HandoffVersion: 1})
+			result := applyFacts(t, pool, engine)("late", intake.HandoffComplete{Generation: root.Generation, Issue: root.Key, Role: claim.RoleTester, Claim: token, Summary: "tests pass", Commit: "c0ffee", HandoffRecord: "test-late-1", HandoffVersion: 1})
 			want := "HANDOFF_NOT_CURRENT_PHASE"
 			if started {
 				want = "TASK_STOPPED"

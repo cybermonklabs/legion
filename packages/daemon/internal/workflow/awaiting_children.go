@@ -63,9 +63,10 @@ type childrenHold struct {
 	// above it a blocked_by link of its own names (record.OpenChild, Engine.childrenOpen). A move
 	// names at least one.
 	Open []record.OpenChild
-	// Summary and Verdict are the worker's summary and the tester's verdict the replaced
-	// phase-finished notice carried, and empty where it carried none.
-	Summary, Verdict string
+	// Summary is the worker's summary the replaced phase-finished notice carried, and empty where
+	// it carried none. No notice carries a verdict: what the testing move found is in Cause, the
+	// replaced notice's reason (heldCause).
+	Summary string
 	// Ended is the role whose phase the move ends and that is told so on its own topic
 	// (record.PhaseEnded): the worker the admission pass stops in the middle of its phase, and ""
 	// for a move the transition's guard holds.
@@ -302,16 +303,18 @@ func (e *Engine) samePhaseExempt(ctx context.Context, tx pgx.Tx, issue record.Is
 // builds for a held testing that the implementer's completion raised opens with the held task,
 // since both are built over the implementer's handoff. The release of a hold (retryPhase) holds
 // the task the same way, built on the issue it has put back in the held phase. The notice it sends
-// carries what the one it replaces (noticeFor) would have carried. It tells no role that its phase
+// carries what the one it replaces (noticeFor, from why) would have carried: a testing move's
+// reason names each check that does not pass at the tested head. It tells no role that its phase
 // ended: each move it holds is the completion or the move back of the role it leaves, or the
 // daemon's own move on a review it read, which leaves the reviewer that has just made that review.
 func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, trigger TriggerKind, to phase.Phase,
-	handoff record.PhaseRow, pr *record.PullRequest, reason string, open []record.OpenChild,
+	handoff record.PhaseRow, pr *record.PullRequest, why moveWhy, open []record.OpenChild,
 ) error {
 	if err := e.nameMoveEnd(ctx, w, issue, trigger, to, handoff); err != nil {
 		return err
 	}
-	replaced := noticeFor(trigger, issue, issue.Phase, to, handoff, reason)
+	reason := why.reason()
+	replaced := noticeFor(trigger, issue, issue.Phase, to, handoff, why)
 	moved := issue
 	if err := e.moveTask(ctx, tx, &moved, &w, to, record.TaskRunning); err != nil {
 		return err
@@ -322,7 +325,7 @@ func (e *Engine) holdForChildren(ctx context.Context, tx pgx.Tx, issue record.Is
 	}
 	return e.awaitChildren(ctx, tx, issue, w, childrenHold{Start: to, Task: task(moved, at, handoff, pr, reason),
 		Cause: heldCause(trigger, issue.Phase, replaced, reason), Open: open,
-		Summary: replaced.Summary, Verdict: replaced.Verdict})
+		Summary: replaced.Summary})
 }
 
 // heldCause is what a start the transition's guard held was for (childrenHold.Cause): the reason
@@ -364,10 +367,10 @@ func openChildNames(open []record.OpenChild) string {
 // for, each open child with its Dispatch status, each child whose own blocked_by link names an
 // issue above it on its parent chain (ChildCycleReason), since that wait never ends by itself,
 // what ends the wait, and the step the return goes to where that is not the held start
-// (childrenHold.Back). It carries the summary and the verdict the phase-finished notice it
-// replaces carried, and the phase the parent left. The architect's levers are the children: the
-// notice names no move of a child under another started issue, which would make that issue wait
-// too (dispatch://INFRA-3320 R11).
+// (childrenHold.Back). It carries the summary the phase-finished notice it replaces carried, and
+// the phase the parent left; it carries no verdict, as no notice does. The architect's levers are
+// the children: the notice names no move of a child under another started issue, which would make
+// that issue wait too (dispatch://INFRA-3320 R11).
 func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) record.Notice {
 	reason := fmt.Sprintf("%s is in awaiting_children, holding the start of %s: %s. No phase of %s starts while Dispatch shows an open child under it: %s.",
 		parent, hold.Start, hold.Cause, parent, openChildNames(hold.Open)) + childCycleSentences(hold.Open)
@@ -380,7 +383,7 @@ func awaitingChildrenNotice(parent string, from phase.Phase, hold childrenHold) 
 		" It holds no admission slot while it waits, and request_backward_move, sign_off and stop_task on it are refused (%[2]s)."+
 		" %[3]s",
 		parent, waitingOnChildren, childrenLeave, back)
-	return record.Notice{Kind: AwaitingChildrenNoticeKind, Role: claim.RoleArchitect, Phase: from, Summary: hold.Summary, Verdict: hold.Verdict, Reason: reason}
+	return record.Notice{Kind: AwaitingChildrenNoticeKind, Role: claim.RoleArchitect, Phase: from, Summary: hold.Summary, Reason: reason}
 }
 
 // StopForChildren is the admission pass's move of a started parent that an open Dispatch child

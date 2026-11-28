@@ -94,7 +94,7 @@ func TestEventPayloadsAreServedAsStoredForEveryEventKind(t *testing.T) {
 		"subscription.remove_requested", "subscription.removed",
 		"message.created", "message.answered", "message.edited", "message.deleted", "message.delivery",
 		"message.accepted", "handoff.recorded", "role.undelivered",
-		"block.repaired", "block.invalid", "result.recorded", "result.retracted",
+		"block.repaired", "block.invalid", "result.recorded", "result.retracted", "check.state_changed",
 		"project.created", "project.updated", "settings.repo_project.updated", "settings.architecture_source.updated",
 		"settings.project_default_assignee.updated",
 		"architecture.synced", "architecture.sync_failed", "user_state.updated", "user_agent_state.updated",

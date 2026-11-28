@@ -989,11 +989,13 @@ func TestAReviewFromAnEarlierRoundDeliveredAgainRecordsNothing(t *testing.T) {
 	seedReview(t, pool, "green")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 	requestChanges := intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 10, State: "changes_requested", CommitID: headOne, Author: testReviewApp, Body: reviewBody("round 1", headOne)}
+	passed, _ := testedFact(t, pool, "LEGION-208", headOne, true)
 	for i, fact := range []intake.Fact{
 		requestChanges,
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-1", HandoffVersion: 1},
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "fixed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2},
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Verdict: "pass", HandoffRecord: "test-2", HandoffVersion: 2},
+		passed,
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Commit: headOne, HandoffRecord: "test-2", HandoffVersion: 2},
 		requestChanges,
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleReviewer, Claim: reviewClaim, Summary: "reviewed", HandoffRecord: "review-2", HandoffVersion: 2},
 		intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 11, State: "approved", CommitID: headOne, Author: testReviewApp, Body: reviewBody("round 2", headOne)},
@@ -1004,7 +1006,7 @@ func TestAReviewFromAnEarlierRoundDeliveredAgainRecordsNothing(t *testing.T) {
 		switch got := issuePhase(t, pool); {
 		case i == 1 && got != phase.Implementing:
 			t.Fatalf("after round 1 the issue is in %s, want implementing", got)
-		case i == 5 && got != phase.Reviewing:
+		case i == 6 && got != phase.Reviewing:
 			t.Fatalf("after round 1's review delivered again and round 2's completion the issue is in %s, want reviewing", got)
 		}
 	}
@@ -2220,8 +2222,10 @@ func TestANewRoundInheritsNoRefusal(t *testing.T) {
 	}
 	apply("implementer", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim",
 		Summary: "fixed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2})
+	state, id := testedFact(t, pool, "LEGION-208", headOne, true)
+	apply(id, state)
 	apply("tester", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim",
-		Summary: "tested", Verdict: "pass", HandoffRecord: "test-2", HandoffVersion: 2})
+		Summary: "tested", Commit: headOne, HandoffRecord: "test-2", HandoffVersion: 2})
 	if got := reviewerDecision(t, pool); got != nil {
 		t.Fatalf("round 2's reviewer row holds %+v, want nothing: the round's entry cleared round 1's decision and its refusal", got)
 	}

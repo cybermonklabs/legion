@@ -29,6 +29,8 @@ import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptAssignments, scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
 import { DAEMON_MODULE, workerPane } from "./daemon-pane";
+import { headsCases } from "./heads-scenarios";
+import { K1_RUN, USAGE_PAGE, USAGE_PAGE_COMPLETE, USAGE_PAGE_LISTED } from "./heads-world";
 import { OWNER_WALK_STAGES } from "./owner-walk";
 import { RIG_WORLD } from "./rig-world";
 import { modelProblem, transcriptModels } from "./scored-runs";
@@ -2626,9 +2628,12 @@ describe("services_up", () => {
   });
 });
 
-// cmd_batch of reviewer-own-head runs each of its four cases <runs> times for each label, each
-// as a run of its own. A stand-in rig.sh records each run's arguments, which cmd_batch hands to
-// `rig.sh run` through xargs, and a stand-in go records the build of the runs' natsd.
+// cmd_batch of reviewer-own-head runs each of its cases <runs> times for each label, each as a
+// run of its own. A stand-in rig.sh records each run's arguments, which cmd_batch hands to
+// `rig.sh run` through xargs, and a stand-in go records the build of the runs' natsd. The cases a
+// batch runs are the scenario's rows of heads-scenarios.txt, the catalog rig.sh's heads_cases
+// reads, so each row below takes its cases from that catalog (headsCases): a case the catalog
+// gains is a case the rows expect.
 describe("cmd_batch", () => {
   // Catches: a batch that runs one case alone, gives two runs one index (and so one PR number and
   // one commit time), drops the case from a run's arguments, or builds no natsd for the runs.
@@ -2639,6 +2644,9 @@ describe("cmd_batch", () => {
     const result = bash(
       [
         fn("fail"),
+        fn("rig_scenario"),
+        fn("heads_cases"),
+        fn("heads_scenario"),
         fn("hidden_needs_heads"),
         fn("cmd_batch"),
         "load_label() { :; }",
@@ -2647,13 +2655,15 @@ describe("cmd_batch", () => {
         "services_up() { :; }",
         "date() { echo 1700000000; }",
         `go() { printf 'go %s\\n' "$*" >>"$here/builds"; }`,
-        "here=$1 work=$2 root=/checkout",
+        `here=$1 work=$2 root=${root}`,
         "cmd_batch reviewer-own-head 2 head ablate-head",
       ].join("\n"),
       [here, rigWork]
     );
     expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
-    const cases = ["sibling-fails", "ci-only", "no-implementer", "no-tester"];
+    const cases = headsCases("reviewer-own-head");
+    expect(cases).toContain("sibling-fails");
+    expect(cases).not.toContain("");
     let index = 0;
     const want = ["head", "ablate-head"].flatMap((label) =>
       cases.flatMap((which) =>
@@ -2663,13 +2673,13 @@ describe("cmd_batch", () => {
     const runs = readFileSync(path.join(here, "runs"), "utf8").split("\n").filter(Boolean);
     expect(runs.toSorted()).toEqual(want.toSorted());
     expect(readFileSync(path.join(here, "builds"), "utf8")).toBe(
-      `go -C /checkout/packages/envoy build -o ${rigWork}/services/bin/natsd ./internal/testnats/cmd/natsd\n`
+      `go -C ${root}/packages/envoy build -o ${rigWork}/services/bin/natsd ./internal/testnats/cmd/natsd\n`
     );
   });
 
   // Catches: a run whose name leaves out its case, so the cases' batches of one label, each
-  // numbered from 1, replace each other's runs; a case outside the four; and a run directory whose
-  // own name tells its agent the scenario, the case or the label (each is in the map alone).
+  // numbered from 1, replace each other's runs; a case outside the catalog's; and a run directory
+  // whose own name tells its agent the scenario, the case or the label (each is in the map alone).
   test("cmd_run names a reviewer-own-head run by its case in the map, in a directory of a random name, and refuses another case", () => {
     // rig.sh resolves its work directory's path once (realpath), as this does.
     const rigWork = realpathSync(freshDir("run-work"));
@@ -2677,13 +2687,18 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(rigWork, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("rig_scenario"),
+      fn("heads_cases"),
+      fn("heads_scenario"),
       fn("hidden_needs_heads"),
+      fn("one_of"),
+      fn("listed_in"),
       fn("map_run"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
       "on_exit() { :; }",
       `run_reviewer_own_head() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
-      "work=$1 maps=$1/maps services_env=$1/services/env",
+      `work=$1 maps=$1/maps services_env=$1/services/env root=${root}`,
       'cmd_run reviewer-own-head head 1 3 1700000000 "$2"',
     ].join("\n");
     const link = path.join(rigWork, "maps", "runs", "reviewer-own-head-ci-only-head-1");
@@ -2706,8 +2721,9 @@ describe("cmd_batch", () => {
     expect(existsSync(first)).toBe(false);
     const refused = bash(script, [rigWork, "frobnicate"]);
     expect(refused.code).toBe(1);
+    const cases = headsCases("reviewer-own-head");
     expect(refused.stderr).toContain(
-      "'frobnicate' is not sibling-fails, ci-only, no-implementer or no-tester"
+      `'frobnicate' is not ${cases.slice(0, -1).join(", ")} or ${cases.at(-1)}`
     );
   });
 
@@ -2720,8 +2736,11 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(rigWork, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("rig_scenario"),
+      fn("heads_cases"),
       fn("heads_scenario"),
       fn("hidden_needs_heads"),
+      fn("listed_in"),
       fn("map_run"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
@@ -2742,6 +2761,151 @@ describe("cmd_batch", () => {
     expect(readFileSync(path.join(run, "switch"), "utf8")).toBe("\n");
   });
 
+  // Catches: an architect-pass-and-fail batch that runs its own world alone, or its cases alone; a
+  // case run whose name leaves out its case, so it replaces the scenario's own run of that number;
+  // and a case outside the catalog's.
+  test("architect-pass-and-fail runs its own world and each case the catalog lists, each case run named by its case", () => {
+    const here = freshDir("architect-batch-here");
+    const rigWork = freshDir("architect-batch-work");
+    writeFileSync(path.join(here, "rig.sh"), `printf '%s\\n' "$*" >>"${here}/runs"\n`);
+    const batch = bash(
+      [
+        fn("fail"),
+        fn("rig_scenario"),
+        fn("heads_cases"),
+        fn("heads_scenario"),
+        fn("hidden_needs_heads"),
+        fn("cmd_batch"),
+        "load_label() { :; }",
+        'lock_services() { S=$work/services; mkdir -p "$S"; }',
+        "on_exit() { :; }",
+        "services_up() { :; }",
+        "date() { echo 1700000000; }",
+        "go() { :; }",
+        `here=$1 work=$2 root=${root}`,
+        "cmd_batch architect-pass-and-fail 1 head ablate-states-read",
+      ].join("\n"),
+      [here, rigWork]
+    );
+    expect({ code: batch.code, stderr: batch.stderr }).toEqual({ code: 0, stderr: "" });
+    const worlds = headsCases("architect-pass-and-fail");
+    expect(worlds).toContain("");
+    expect(worlds).toContain("no-verdict-fail");
+    let index = 0;
+    const want = ["head", "ablate-states-read"].flatMap((label) =>
+      worlds.map(
+        (which) =>
+          `run architect-pass-and-fail ${label} 1 ${++index} 1700000000${which ? ` ${which}` : ""}`
+      )
+    );
+    const runs = readFileSync(path.join(here, "runs"), "utf8").split("\n").filter(Boolean);
+    expect(runs.toSorted()).toEqual(want.toSorted());
+
+    const work = realpathSync(freshDir("architect-run-work"));
+    mkdirSync(path.join(work, "services"), { recursive: true });
+    writeFileSync(path.join(work, "services", "env"), "");
+    const script = [
+      fn("fail"),
+      fn("rig_scenario"),
+      fn("heads_cases"),
+      fn("heads_scenario"),
+      fn("hidden_needs_heads"),
+      fn("one_of"),
+      fn("listed_in"),
+      fn("map_run"),
+      fn("cmd_run"),
+      'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
+      "on_exit() { :; }",
+      `run_architect_pass_and_fail() { printf '%s\\n' "$*" >"$R/ran"; echo exit=0 >"$R/out.txt"; }`,
+      `work=$1 maps=$1/maps services_env=$1/services/env root=${root} hide_state_file=''`,
+      'if [ -n "$2" ]; then cmd_run architect-pass-and-fail head 1 4 1700000000 "$2"; else cmd_run architect-pass-and-fail head 1 4 1700000000; fi',
+    ].join("\n");
+    expect(bash(script, [work, "no-verdict-fail"])).toMatchObject({ code: 0, stderr: "" });
+    expect(bash(script, [work, ""])).toMatchObject({ code: 0, stderr: "" });
+    const cased = realpathSync(
+      path.join(work, "maps", "runs", "architect-pass-and-fail-no-verdict-fail-head-1")
+    );
+    const own = realpathSync(path.join(work, "maps", "runs", "architect-pass-and-fail-head-1"));
+    expect(cased).not.toBe(own);
+    expect(readFileSync(path.join(cased, "ran"), "utf8")).toBe("4 1700000000 no-verdict-fail\n");
+    expect(readFileSync(path.join(own, "ran"), "utf8")).toBe("4 1700000000 \n");
+    const refused = bash(script, [work, "frobnicate"]);
+    expect(refused.code).toBe(1);
+    const cases = worlds.filter(Boolean);
+    expect(refused.stderr).toContain(
+      `'frobnicate' is not ${cases.slice(0, -1).join(", ")} or ${cases.at(-1)}`
+    );
+  });
+
+  // Catches: a writer of a task that reads the task words inside another command's argument, where
+  // a failure of that read ends only its own subshell, so the run writes the task without the words
+  // and launches its role as if the label had none; a reader that takes a words file it cannot
+  // read, or one that holds no words, for a label with none; and a writer that answers success with
+  // a task no agent could work from, an empty file or one naming no issue, or with the label's
+  // words left out. The label's checkout holds the file (task-words.txt) only where the label's
+  // patch adds it: a link to nothing and a file of blanks each fail both writers, naming the label,
+  // with no task written; a checkout with no file and one whose file holds words each give a task
+  // that carries the issue key the run passes in, a value of this run's own, and the task given the
+  // words is longer than the one given none. The test reads none of the task's words.
+  test("a label's task words that cannot be read fail the reviewer's and the architect's task writers", () => {
+    const run = freshDir("task-words-fail-run");
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ title: "A usage page", test: { version: 3 }, review: { version: 4 } })
+    );
+    const key = `LWEVAL-${process.pid}`;
+    const prompt = path.join(run, "prompt.txt");
+    const checkout = (name: string, words?: (file: string) => void) => {
+      const co = freshDir(`task-words-${name}`);
+      const dir = path.join(co, "packages/pi-legion/scripts/skill-scenarios");
+      mkdirSync(dir, { recursive: true });
+      words?.(path.join(dir, "task-words.txt"));
+      return co;
+    };
+    const write = (fnName: string, co: string) => {
+      rmSync(prompt, { force: true });
+      return bash(
+        [
+          fn("fail"),
+          fn("task_words"),
+          fn("handoff_line"),
+          fn(fnName),
+          `R=$1 co=$2 worker_key=$3 label=ablate-states-read root=${root}`,
+          fnName,
+          `echo "${fnName} returned"`,
+        ].join("\n"),
+        [run, co, key]
+      );
+    };
+    // written is the task fnName writes for co, which must answer success and leave a task that
+    // carries the issue key this run passed in.
+    const written = (fnName: string, co: string) => {
+      expect(write(fnName, co)).toMatchObject({ code: 0, stderr: "" });
+      const task = readFileSync(prompt, "utf8");
+      expect(task).toContain(key);
+      return task;
+    };
+    const unreadable = [
+      checkout("dangling", (file) => symlinkSync(path.join(path.dirname(file), "gone.txt"), file)),
+      checkout("blank", (file) => writeFileSync(file, " \n\t\n")),
+    ];
+    const none = checkout("none");
+    const worded = checkout("worded", (file) =>
+      writeFileSync(file, "Tester's verdict:\n  pass.\n")
+    );
+    for (const fnName of ["reviewer_prompt", "architect_prompt"]) {
+      for (const co of unreadable) {
+        const result = write(fnName, co);
+        expect(result.code).toBe(1);
+        expect(result.stdout).not.toContain(`${fnName} returned`);
+        expect(result.stderr).toContain("ablate-states-read");
+        expect(existsSync(prompt)).toBe(false);
+      }
+      const bare = written(fnName, none);
+      expect(written(fnName, worded).length).toBeGreaterThan(bare.length);
+    }
+  });
+
   // Catches: a -hidden label run in a scenario that never turns the switch on, so its agent sees
   // all that Dispatch computes; and a refusal that comes only after the batch started its services.
   test("a -hidden label is refused by any scenario but the heads scenarios, before a batch starts anything", () => {
@@ -2750,6 +2914,8 @@ describe("cmd_batch", () => {
     const result = bash(
       [
         fn("fail"),
+        fn("rig_scenario"),
+        fn("heads_cases"),
         fn("heads_scenario"),
         fn("hidden_needs_heads"),
         fn("cmd_batch"),
@@ -2778,6 +2944,8 @@ describe("cmd_batch", () => {
     const batch = bash(
       [
         fn("fail"),
+        fn("rig_scenario"),
+        fn("heads_cases"),
         fn("heads_scenario"),
         fn("hidden_needs_heads"),
         fn("cmd_batch"),
@@ -2807,8 +2975,12 @@ describe("cmd_batch", () => {
     writeFileSync(path.join(work, "services", "env"), "");
     const script = [
       fn("fail"),
+      fn("rig_scenario"),
+      fn("heads_cases"),
       fn("heads_scenario"),
       fn("hidden_needs_heads"),
+      fn("one_of"),
+      fn("listed_in"),
       fn("map_run"),
       fn("cmd_run"),
       'load_label() { P=$work/profiles/0000000000000001; mkdir -p "$P"; echo "checkout /c/$1" >"$P/built-from"; }',
@@ -2893,8 +3065,16 @@ describe("ci_job_results", () => {
 // and heads_fixture's two pull request branches of one issue on it. worker_fixture, the
 // tester-proof world, builds on the same fixture_repo, and keeps its world as it was.
 describe("heads_fixture", () => {
-  function build(fixture: "heads_fixture" | "worker_fixture") {
+  /** `fixture` run on a fresh run directory; heads_fixture's with the pages seed.ts heads-issue
+   *  writes into $R/fixture.json: `page` for #702, USAGE_PAGE (a world with neither k2 nor k3)
+   *  unless the test says, and `page703` for #703 where the test gives one. */
+  function build(fixture: "heads_fixture" | "worker_fixture", page = USAGE_PAGE, page703?: string) {
     const run = freshDir(`${fixture}-run`);
+    if (fixture === "heads_fixture")
+      writeFileSync(
+        path.join(run, "fixture.json"),
+        JSON.stringify({ page, ...(page703 === undefined ? {} : { page703 }) })
+      );
     const result = bash(
       [
         "set -euo pipefail",
@@ -2930,11 +3110,11 @@ describe("heads_fixture", () => {
       .stdout.toString()
       .trim();
 
-  // Catches: one branch where the case needs two heads, a head that is no commit of the remote, a
-  // commit that is not one above main or that changes code (the reviewer then runs its
-  // thermonuclear pair), a fixture that ignores the run's index and start, a workspace left on
-  // main, and a world that names another pull request than #702.
-  test("two branches of the issue, each one docs-only commit above main, and the world of #702", () => {
+  // Catches: one branch where the case needs two heads, a base revision that is not main's, a head
+  // that is no commit of the remote, a commit that is not one above main or that changes code (the
+  // reviewer then runs its thermonuclear pair), a fixture that ignores the run's index and start, a
+  // workspace left on main, and a world that names another pull request than #702.
+  test("two branches of the issue carry main's base revision and are each docs-only one commit above it", () => {
     const { code, stderr, run } = build("heads_fixture");
     expect({ code, stderr }).toEqual({ code: 0, stderr: "" });
     const remote = path.join(run, "remote.git");
@@ -2942,10 +3122,11 @@ describe("heads_fixture", () => {
       string,
       string
     >;
-    expect(Object.keys(heads).toSorted()).toEqual(["702", "703"]);
+    expect(Object.keys(heads).toSorted()).toEqual(["702", "703", "base"]);
     expect(heads["702"]).not.toBe(heads["703"]);
     const main = git(remote, "rev-parse", "main");
-    for (const [pr, head] of Object.entries(heads)) {
+    expect(heads.base).toBe(main);
+    for (const [pr, head] of Object.entries(heads).filter(([key]) => key !== "base")) {
       expect(head).toMatch(/^[0-9a-f]{40}$/);
       expect(git(remote, "rev-parse", `legion/LWEVAL-9-${pr}`)).toBe(head);
       expect(git(remote, "rev-parse", `${head}^`)).toBe(main);
@@ -3014,6 +3195,7 @@ describe("heads_fixture", () => {
         [
           "set -euo pipefail",
           fn("fail"),
+          fn("pr_line"),
           fn("heads_routes"),
           `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
           'heads_routes ci-pass-and-fail "$2"',
@@ -3054,6 +3236,178 @@ describe("heads_fixture", () => {
     expect(routes("architect").answer("^gh api .*pulls/702/reviews")).toMatchObject([
       { state: "APPROVED", commit_id: head },
     ]);
+  });
+
+  // Catches: a world of a failed CI check whose GitHub shows k2's job passed where Dispatch reads it
+  // failed (or failed where the case says it passed), a job whose log no read answers, a body that
+  // carries k1's line alone, and an architect's world of the other head with #703 left out.
+  test("heads_routes of the ci-check-fail worlds serve k2's job where it failed, its log, and both checks' lines", () => {
+    const { code, run } = build("heads_fixture", USAGE_PAGE_LISTED);
+    expect(code).toBe(0);
+    const heads = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"));
+    const k1Line = (pr: string) =>
+      `- Check k1 (before_merge): pass at ${String(heads[pr]).slice(0, 12)} (tester) on #${pr}`;
+    const k2Line = (pr: string, verdict: string) =>
+      `- Check k2 (before_merge): ${verdict} at ${String(heads[pr]).slice(0, 12)} (CI run usage-test) on #${pr}`;
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({
+        issue: "LWEVAL-9",
+        title: "A usage page",
+        lines: { "702": k1Line("702"), "703": k1Line("703") },
+      })
+    );
+    const routes = (scenario: string, scenarioCase: string, k2At: Record<string, string>) => {
+      writeFileSync(
+        path.join(run, "results-before.txt"),
+        [
+          "Checks of LWEVAL-9:",
+          "",
+          "- k1 (before_merge). A pass stands: yes.",
+          ...["702", "703"].flatMap((pr) => [
+            `  - #${pr} at ${heads[pr]}: yes, from implementer, tester.`,
+            `    Pull request line: ${k1Line(pr)}`,
+          ]),
+          "- k2 (before_merge): its CI job's results below.",
+          ...Object.entries(k2At).flatMap(([pr, verdict]) => [
+            `  - #${pr} at ${heads[pr]}: ${verdict === "pass" ? "yes" : "no, as fail f9 counts at this commit."}`,
+            `    Pull request line: ${k2Line(pr, verdict)}`,
+          ]),
+          "",
+        ].join("\n")
+      );
+      const result = bash(
+        [
+          "set -euo pipefail",
+          fn("fail"),
+          fn("pr_line"),
+          fn("heads_routes"),
+          `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+          'heads_routes "$2" "$3"',
+        ].join("\n"),
+        [run, scenario, scenarioCase]
+      );
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      const all: { match: string; stdout?: unknown; exit?: number }[] = JSON.parse(
+        readFileSync(path.join(run, "fixtures.json"), "utf8")
+      ).routes;
+      const route = (match: string) => all.find((each) => each.match === match);
+      return { all, route };
+    };
+    const failedJob = RIG_WORLD.ciJobs["ci-check-fail"];
+    const passedJob = RIG_WORLD.ciJobs["ci-check-pass"];
+    const jobLine = (job: { name: string; run: number; checkRun: number }, state: string) =>
+      `${job.name}\t${state}\t10s\thttps://github.com/example/widgets/actions/runs/${job.run}/job/${job.checkRun}`;
+    const logOf = (id: number) => `^gh run view (?=.*--job[ =]${id}\\b)(?=.*--log)`;
+
+    const reviewer = routes("reviewer-own-head", "ci-check-fail", { "702": "fail" });
+    expect(String(reviewer.route("^gh pr checks")?.stdout)).toContain(jobLine(failedJob, "fail"));
+    expect(reviewer.route("^gh pr checks")?.exit).toBe(1);
+    expect(reviewer.route(logOf(failedJob.checkRun))?.stdout).toBe(failedJob.log);
+    const body = (reviewer.route("^gh pr view")?.stdout as { body: string } | undefined)?.body;
+    expect(body).toContain(`**Checks:**\n${k1Line("702")}\n${k2Line("702", "fail")}\n`);
+
+    const other = routes("reviewer-own-head", "ci-check-fail-other-head", {
+      "702": "pass",
+      "703": "fail",
+    });
+    expect(String(other.route("^gh pr checks")?.stdout)).toContain(jobLine(passedJob, "pass"));
+    expect(other.route("^gh pr checks")?.exit).toBe(0);
+    expect(String(other.route("^gh pr checks .*\\b703\\b")?.stdout)).toContain(
+      jobLine(failedJob, "fail")
+    );
+    expect(other.route(logOf(failedJob.checkRun))?.stdout).toBe(failedJob.log);
+
+    const architect = routes("architect-pass-and-fail", "ci-check-fail-other-head", {
+      "702": "pass",
+      "703": "fail",
+    });
+    expect((architect.route("^gh pr list")?.stdout as unknown[] | undefined)?.length).toBe(2);
+    expect(architect.route("^gh api .*pulls/702/reviews")?.stdout).toMatchObject([
+      { state: "APPROVED", commit_id: heads["702"] },
+    ]);
+    const alone = routes("architect-pass-and-fail", "ci-check-fail", { "702": "fail" });
+    expect((alone.route("^gh pr list")?.stdout as unknown[] | undefined)?.length).toBe(1);
+    expect(String(alone.route("^gh pr checks")?.stdout)).toContain(jobLine(failedJob, "fail"));
+  });
+
+  // Catches: a tester world whose GitHub shows k3's job other than Dispatch reads it (passed, or
+  // ended where the case says it still runs), a failed job whose log no read answers, a body that
+  // carries k1's line alone, and a second pull request.
+  test("heads_routes of tester-reads-no-ci serve #702 alone, k3's job still going in ci-late and failed with its log in ci-red", () => {
+    const { code, run } = build("heads_fixture", USAGE_PAGE_LISTED);
+    expect(code).toBe(0);
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    const k1Line = `- Check k1 (before_merge): pass at ${String(head).slice(0, 12)} (implementer) on #702`;
+    writeFileSync(
+      path.join(run, "fixture.json"),
+      JSON.stringify({ issue: "LWEVAL-9", title: "A usage page", lines: { "702": k1Line } })
+    );
+    const late = RIG_WORLD.ciJobs["ci-late"];
+    const red = RIG_WORLD.ciJobs["ci-check-fail"];
+    const routes = (scenarioCase: string, k3Line: string) => {
+      writeFileSync(
+        path.join(run, "results-before.txt"),
+        [
+          "Checks of LWEVAL-9:",
+          "",
+          "- k1 (before_merge). A pass stands: yes.",
+          `  - #702 at ${head}: yes, from implementer.`,
+          `    Pull request line: ${k1Line}`,
+          "- k3 (before_merge): its CI job's results below.",
+          `  - #702 at ${head}: no.`,
+          `    Pull request line: ${k3Line}`,
+          "",
+        ].join("\n")
+      );
+      const result = bash(
+        [
+          "set -euo pipefail",
+          fn("fail"),
+          fn("pr_line"),
+          fn("heads_routes"),
+          `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
+          'heads_routes tester-reads-no-ci "$2"',
+        ].join("\n"),
+        [run, scenarioCase]
+      );
+      expect({ code: result.code, stderr: result.stderr }).toEqual({ code: 0, stderr: "" });
+      const all: { match: string; stdout?: unknown; exit?: number }[] = JSON.parse(
+        readFileSync(path.join(run, "fixtures.json"), "utf8")
+      ).routes;
+      return (match: string) => all.find((each) => each.match === match);
+    };
+    const jobLine = (job: { name: string; run: number; checkRun: number }, state: string) =>
+      `${job.name}\t${state}\thttps://github.com/example/widgets/actions/runs/${job.run}/job/${job.checkRun}`;
+    const logOf = (id: number) => `^gh run view (?=.*--job[ =]${id}\\b)(?=.*--log)`;
+    /** The body of the pull request a `gh pr view` route answers, "" when it answers none. */
+    const bodyOf = (stdout: unknown) =>
+      typeof stdout === "object" && stdout !== null && "body" in stdout ? String(stdout.body) : "";
+
+    const lateLine = `- Check k3 (before_merge): CI run ${late.name} has no result (not_completed)`;
+    const lateRoute = routes("ci-late", lateLine);
+    expect(String(lateRoute("^gh pr checks")?.stdout)).toContain(jobLine(late, "pending\t0"));
+    expect(lateRoute("^gh pr checks")?.exit).toBe(8);
+    expect(lateRoute(`^gh api .*commits/${head}/check-runs`)?.stdout).toMatchObject({
+      check_runs: [
+        { name: "lint" },
+        { name: "test" },
+        { id: late.checkRun, status: "in_progress", conclusion: null },
+      ],
+    });
+    expect(lateRoute(logOf(late.checkRun))).toBeUndefined();
+    const lateBody = bodyOf(lateRoute("^gh pr view")?.stdout);
+    expect(lateBody).toContain(`**Checks:**\n${k1Line}\n${lateLine}\n`);
+    expect(lateRoute("^gh pr list")?.stdout).toHaveLength(1);
+    expect(lateRoute("^gh api .*pulls/702/reviews")?.stdout).toEqual([]);
+
+    const redLine = `- Check k3 (before_merge): fail at ${String(head).slice(0, 12)}, from CI run ${red.name}.`;
+    const redRoute = routes("ci-red", redLine);
+    expect(String(redRoute("^gh pr checks")?.stdout)).toContain(jobLine(red, "fail\t10s"));
+    expect(redRoute("^gh pr checks")?.exit).toBe(1);
+    expect(redRoute(logOf(red.checkRun))?.stdout).toBe(red.log);
+    const redBody = bodyOf(redRoute("^gh pr view")?.stdout);
+    expect(redBody).toContain(`**Checks:**\n${k1Line}\n${redLine}\n`);
   });
 
   // Each GitHub read the heads scenarios' agents made in the fifth round of runs and since, one
@@ -3108,6 +3462,7 @@ describe("heads_fixture", () => {
       [
         "set -euo pipefail",
         fn("fail"),
+        fn("pr_line"),
         fn("heads_routes"),
         `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
         "heads_routes reviewer-own-head sibling-fails",
@@ -3344,6 +3699,7 @@ describe("heads_fixture", () => {
       [
         "set -euo pipefail",
         fn("fail"),
+        fn("pr_line"),
         fn("heads_routes"),
         `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
         "heads_routes reviewer-own-head sibling-fails",
@@ -3416,6 +3772,7 @@ describe("heads_fixture", () => {
         [
           "set -euo pipefail",
           fn("fail"),
+          fn("pr_line"),
           fn("heads_routes"),
           `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
           `heads_routes ${scenario} ${scenarioCase}`,
@@ -3492,6 +3849,7 @@ describe("heads_fixture", () => {
       [
         "set -euo pipefail",
         fn("fail"),
+        fn("pr_line"),
         fn("heads_routes"),
         `R=$1 worker_key=LWEVAL-9 ${WORLD_VARS}`,
         "heads_routes architect-pass-and-fail",
@@ -3560,6 +3918,106 @@ describe("heads_fixture", () => {
       stderr: "gh: Not Found (HTTP 404)\n",
     });
     expect(existsSync(path.join(run, "no-route.log"))).toBe(false);
+  }, 600_000);
+
+  // Catches: a page at #702's head, in the worlds of k2 or k3, that the failed job's log does not
+  // describe. The log of k2's and k3's job says the page names 3 of the 4 commands `widgets --help`
+  // lists and leaves out export, and the page named none of them: the miss was then plain in the
+  // three-line diff, so a role could judge the round from the diff alone, with no state and no CI
+  // read, and the case measured that judgement rather than its rule. k1's run still counts the
+  // page's one line.
+  test("the page at #702's head names each command the failed job's log says it names", () => {
+    const { code, run } = build("heads_fixture", USAGE_PAGE_LISTED);
+    expect(code).toBe(0);
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    const page = childSpawn({ ...VCS_COMMAND, part: "git show" }, [
+      "git",
+      "-C",
+      path.join(run, "remote.git"),
+      "show",
+      `${head}:docs/usage.md`,
+    ]).stdout.toString();
+    // The log's own words: the commands `widgets --help` lists, and the one the page leaves out.
+    const log = RIG_WORLD.ciJobs["ci-check-fail"].log ?? "";
+    const listed = (/`widgets --help` lists \d+: ([^.]+)\./.exec(log)?.[1] ?? "")
+      .split(", ")
+      .filter((command) => command !== "");
+    const missing = /The page leaves out (\w+)\./.exec(log)?.[1] ?? "";
+    const named = /lists \d+ of them, (\d+) of them|names (\d+) of them/.exec(log) ?? [];
+    expect({ listed, missing, named: Number(named[1] ?? named[2]) }).toEqual({
+      listed: ["add", "export", "list", "remove"],
+      missing: "export",
+      named: 3,
+    });
+    for (const command of listed.filter((name) => name !== missing))
+      expect(page).toContain(`\`${command}\``);
+    expect(page).not.toContain(missing);
+    expect(page).toBe(USAGE_PAGE_LISTED);
+    // k1's run, which no CI job runs, still counts the page's line at that head. The fixture's
+    // workspace stands on #703, which carries no page, so the run reads the head's own bytes in a
+    // copy of its own.
+    const copy = freshDir("heads-k1-run");
+    mkdirSync(path.join(copy, "docs"), { recursive: true });
+    writeFileSync(path.join(copy, "docs", "usage.md"), page);
+    expect(
+      childSpawn({ ...SCRIPT_RUN, part: "k1's run" }, ["bash", "-c", `cd ${copy} && ${K1_RUN}`])
+        .stdout.toString()
+        .trim()
+    ).toBe("1");
+  }, 600_000);
+
+  // Catches: a page that names commands in a world where nothing names one. In the worlds with
+  // neither k2 nor k3, R1 asks for no list and no CI job's log names a command, so a page that
+  // lists `add`, `list` and `remove` states what nothing in the world supports, and a correct
+  // reviewer refused it. #702's page is the one the fixture names, byte for byte.
+  test("in a world with neither k2 nor k3, the page at #702's head is the fixture's and names no command", () => {
+    const { code, run } = build("heads_fixture", USAGE_PAGE);
+    expect(code).toBe(0);
+    const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))["702"];
+    const shown = childSpawn({ ...VCS_COMMAND, part: "git show" }, [
+      "git",
+      "-C",
+      path.join(run, "remote.git"),
+      "show",
+      `${head}:docs/usage.md`,
+    ]).stdout.toString();
+    const log = RIG_WORLD.ciJobs["ci-check-fail"].log ?? "";
+    const listed = (/`widgets --help` lists \d+: ([^.]+)\./.exec(log)?.[1] ?? "")
+      .split(", ")
+      .filter((command) => command !== "");
+    expect(listed.length).toBeGreaterThan(0);
+    expect(listed.filter((command) => shown.includes(`\`${command}\``))).toEqual([]);
+    expect(shown).toBe(USAGE_PAGE);
+  }, 600_000);
+
+  // Catches: a log served at #703's head that describes a page #703 does not carry. In the worlds
+  // where k2's job passes at #702's head and fails at #703's, #703 adds the page the fixture names
+  // for it, the one that job's log describes, beside its README line, still in one docs-only commit;
+  // #702 carries the page its passing job read. Where the fixture names no page703, #703 adds none.
+  test("in the worlds of the other head, #703 adds the fixture's page703 and #702 the fixture's page", () => {
+    const show = (run: string, pr: string) => {
+      const head = JSON.parse(readFileSync(path.join(run, "heads.json"), "utf8"))[pr];
+      const shown = childSpawn({ ...VCS_COMMAND, part: "git show" }, [
+        "git",
+        "-C",
+        path.join(run, "remote.git"),
+        "show",
+        `${head}:docs/usage.md`,
+      ]);
+      return shown.exitCode === 0 ? shown.stdout.toString() : undefined;
+    };
+    const other = build("heads_fixture", USAGE_PAGE_COMPLETE, USAGE_PAGE_LISTED);
+    expect(other.code).toBe(0);
+    expect({ "702": show(other.run, "702"), "703": show(other.run, "703") }).toEqual({
+      "702": USAGE_PAGE_COMPLETE,
+      "703": USAGE_PAGE_LISTED,
+    });
+    const plain = build("heads_fixture", USAGE_PAGE);
+    expect(plain.code).toBe(0);
+    expect({ "702": show(plain.run, "702"), "703": show(plain.run, "703") }).toEqual({
+      "702": USAGE_PAGE,
+      "703": undefined,
+    });
   }, 600_000);
 });
 

@@ -18,7 +18,6 @@ import {
   type PhaseOpField,
   type PhaseOpRuntime,
   phaseOpParameters,
-  STALE_ENTRY_INSTRUCTION,
 } from "./legion-phase-ops";
 
 /** A contract the test's client states on every request, and the build's package names. */
@@ -169,12 +168,12 @@ test("a look's report names its check and is posted as it is, with no record rea
 test("a call without check_opened_at is a step's completion on every phase", async () => {
   const state = stateAtPhase("done", checkRecord());
   const { ops, lookups, posted } = runtime({ ...implementer, role: "tester" }, state);
-  await executePhaseOp(ops, { op: "handoff_complete", summary: "tests pass", verdict: "pass" });
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "tests pass" });
   expect(lookups).toEqual(["done tester"]);
   expect(posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
     summary: "tests pass",
-    verdict: "pass",
+    verdict: "",
     ...REPORT,
   });
   for (const input of [{ verdict: "pending" }, { verdict: "pass", wake_at: NEXT_LOOK }]) {
@@ -226,14 +225,13 @@ test("a tester's step completion beside an open check of its role sends its repo
   await executePhaseOp(ops, {
     op: "handoff_complete",
     summary: "failed",
-    verdict: "fail",
     return_to: 1,
   });
   expect(lookups).toEqual(["testing tester"]);
   expect(posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
     summary: "failed",
-    verdict: "fail",
+    verdict: "",
     ...REPORT,
     returnTo: 1,
   });
@@ -302,26 +300,13 @@ test("the description sets the host's texts before and after handoff_complete's 
   expect(placed.slice(tool + publish.length)).toMatch(/^\W*$/);
 });
 
-// The daemon refuses a completion behind its phase entry HANDOFF_STALE_ENTRY and ends that refusal
-// with an instruction of its own (`staleEntryInstruction` in
-// packages/daemon/internal/api/handoff.go), and the tool composes the same instruction into its
-// description, so a worker reads one instruction in its tool and in the refusal. The daemon's
-// golden test (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden) writes its code and
-// its constant to `stale-entry.json`: this case holds the tool's constant to the daemon's, and the
-// description to ending that code's clause, `HANDOFF_STALE_ENTRY (` up to its `), `, with the
-// constant. It holds no word of the description.
-test("the description ends HANDOFF_STALE_ENTRY's clause with the instruction the daemon's refusal ends with", () => {
-  const { code, instruction } = daemonFixture("stale-entry.json") as {
-    readonly code: string;
-    readonly instruction: string;
-  };
+// The daemon's golden test (`packages/daemon/internal/api`, TestStaleEntryInstructionGolden)
+// writes the code of a completion refused for its phase entry to `stale-entry.json`; the tool
+// reads the daemon's own code there. No test holds the words of that refusal or of the tool's
+// description, which an agent reads as a prompt.
+test("the daemon's code of a completion refused for its phase entry is HANDOFF_STALE_ENTRY", () => {
+  const { code } = daemonFixture("stale-entry.json") as { readonly code: string };
   expect(code).toBe("HANDOFF_STALE_ENTRY");
-  expect(STALE_ENTRY_INSTRUCTION).toBe(instruction);
-  const description = legionToolDescription({ envoyPublish: "envoy_publish" });
-  const opens = description.indexOf(`${code} (`);
-  expect(opens, `the description names no ${code} (`).toBeGreaterThan(-1);
-  const clause = description.slice(opens, description.indexOf("), ", opens));
-  expect(clause).toEndWith(STALE_ENTRY_INSTRUCTION);
 });
 
 test("each op refuses its arguments whole before any daemon request, naming every problem", async () => {
@@ -392,20 +377,14 @@ test("each op refuses its arguments whole before any daemon request, naming ever
       { op: "handoff_complete", summary: "x", plan_reason: "The plan fit the work." },
       "handoff_complete names plan_reason without plan_rating",
     ],
-    // A failed step names the step its task returns to by its place, 1 for its first, and only a
-    // completion with the verdict fail names one (INVALID_RETURN_TO, RETURN_TO_NEEDS_FAIL).
+    // A tester's completion names the step its task returns to by its place, 1 for its first,
+    // and only a tester's completion names one (INVALID_RETURN_TO, RETURN_TO_NEEDS_FAIL): this
+    // session is the implementer's.
     ...[0, -1, 1.5, "2"].map(
       (returnTo) =>
         [
-          { op: "handoff_complete", summary: "x", verdict: "fail", return_to: returnTo },
+          { op: "handoff_complete", summary: "x", return_to: returnTo },
           "handoff_complete's return_to is a whole number of 1 or more: the place of a step of your task, 1 for its first",
-        ] as const
-    ),
-    ...[{ verdict: "pass" }, {}].map(
-      (verdict) =>
-        [
-          { op: "handoff_complete", summary: "x", ...verdict, return_to: 1 },
-          "handoff_complete names return_to without the verdict fail: only the completion of a step that failed, with the verdict fail, names the step its task returns to; send it again without return_to",
         ] as const
     ),
     // The pair is the schema's own rule, so it is named with the call's other problems at once.
@@ -452,14 +431,21 @@ test("each op refuses its arguments whole before any daemon request, naming ever
   for (const [input, message] of refusals) {
     await expect(executePhaseOp(ops, input)).rejects.toThrow(message);
   }
+  // Only a tester's completion names the step its task returns to (RETURN_TO_NEEDS_FAIL), and this
+  // session is the implementer's: return_to is refused beside a verdict and beside none.
+  for (const verdict of [{ verdict: "pass" }, {}]) {
+    await expect(
+      executePhaseOp(ops, { op: "handoff_complete", summary: "x", ...verdict, return_to: 1 })
+    ).rejects.toThrow();
+  }
   expect(routes).toEqual([]);
 });
 
 test("handoff_complete reads the issue's phase, finds the record and commit for it and the claim's role, then mints its grant and posts them", async () => {
   const { ops, routes, posted, lookups } = runtime();
-  await expect(
-    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
-  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  await expect(executePhaseOp(ops, { op: "handoff_complete", summary: "Done." })).resolves.toEqual(
+    daemonFixture("handoff-complete.json")
+  );
   expect(lookups).toEqual(["implementing implementer"]);
   expect(routes).toEqual([
     "/legion/v1/issues/LEGION-208/record",
@@ -469,7 +455,7 @@ test("handoff_complete reads the issue's phase, finds the record and commit for 
   expect(posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
     summary: "Done.",
-    verdict: "pass",
+    verdict: "",
     ...REPORT,
   });
 });
@@ -657,16 +643,17 @@ test("the description names the retro's rating fields, its skill and the daemon'
   expect(missing).toEqual([]);
 });
 
-// Contract 219: a tester's fail names the step its task returns to, `return_to`, which goes on the
-// wire as the daemon's `returnTo`; a completion that names none sends none.
-test("a tester's fail sends return_to as returnTo", async () => {
+// Contract 219: a tester's completion names the step its task returns to, `return_to`, which goes
+// on the wire as the daemon's `returnTo`. It carries no verdict, since the check states decide
+// whether the testing step failed, and one naming a verdict beside it is refused before it is
+// sent; a completion that names none sends none.
+test("a tester's completion sends return_to as returnTo, with no verdict", async () => {
   const tester = { ...implementer, role: "tester" as const };
   const { ops, routes, posted, lookups } = runtime(tester, stateAtPhase("testing"));
   await expect(
     executePhaseOp(ops, {
       op: "handoff_complete",
       summary: "The proof is thin.",
-      verdict: "fail",
       return_to: 1,
     })
   ).resolves.toEqual(daemonFixture("handoff-complete.json"));
@@ -679,11 +666,16 @@ test("a tester's fail sends return_to as returnTo", async () => {
   expect(posted.at(-1)).toEqual({
     grantId: "grant-for-one-command",
     summary: "The proof is thin.",
-    verdict: "fail",
+    verdict: "",
     ...REPORT,
     returnTo: 1,
   });
-  await executePhaseOp(ops, { op: "handoff_complete", summary: "Red.", verdict: "fail" });
+  const sent = posted.length;
+  await expect(
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Red.", verdict: "fail", return_to: 1 })
+  ).rejects.toThrow();
+  expect(posted).toHaveLength(sent);
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "Red." });
   expect(posted.at(-1)).not.toHaveProperty("returnTo");
 });
 
@@ -751,14 +743,14 @@ test("read_record with no issue answers the claim's own record; handoff_complete
   ]);
   expect(posted).toEqual([]);
   // A completion naming its own issue posts exactly what one leaving it out posts.
-  await expect(
-    executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
-  ).resolves.toEqual(daemonFixture("handoff-complete.json"));
+  await expect(executePhaseOp(ops, { op: "handoff_complete", summary: "Done." })).resolves.toEqual(
+    daemonFixture("handoff-complete.json")
+  );
   const unnamed = posted.at(-1);
-  expect(unnamed).toMatchObject({ summary: "Done.", verdict: "pass" });
+  expect(unnamed).toMatchObject({ summary: "Done.", verdict: "" });
   for (const issue of ["LEGION-208", " LEGION-208 "]) {
     await expect(
-      executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass", issue })
+      executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", issue })
     ).resolves.toEqual(daemonFixture("handoff-complete.json"));
     expect(posted.at(-1)).toEqual(unnamed);
   }
@@ -807,9 +799,9 @@ test("a record carrying keys no schema names at three depths is read, and read_r
   expect(await executePhaseOp(ops, { op: "read_record", issue: "LEGION-208" })).toEqual({
     record: golden.issues["LEGION-208"],
   });
-  expect(
-    await executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
-  ).toEqual(daemonFixture("handoff-complete.json"));
+  expect(await executePhaseOp(ops, { op: "handoff_complete", summary: "Done." })).toEqual(
+    daemonFixture("handoff-complete.json")
+  );
   expect(routes).toEqual([
     "/legion/v1/issues/LEGION-208/record",
     "/legion/v1/issues/LEGION-208/record",
@@ -1071,15 +1063,22 @@ test("a check report's state-independent wrong shapes are refused before any cal
       { op: "handoff_complete", summary: "Looked.", verdict: "pending", wake_at: "tomorrow" },
       "wake_at is an RFC 3339 time",
     ],
-    [
-      { op: "handoff_complete", summary: "Looked.", verdict: "fail", return_to: 1 },
-      "return_to names the step",
-    ],
   ] as const) {
     await expect(
       executePhaseOp(check.ops, { ...input, check_opened_at: CHECK_OPENED })
     ).rejects.toThrow(message);
   }
+  // A check report that names the step its task returns to is refused before any call too, by the
+  // error alone: which words the refusal uses is the tool's.
+  await expect(
+    executePhaseOp(check.ops, {
+      op: "handoff_complete",
+      summary: "Looked.",
+      verdict: "fail",
+      return_to: 1,
+      check_opened_at: CHECK_OPENED,
+    })
+  ).rejects.toThrow();
   expect(check.posted).toEqual([]);
 });
 
@@ -1118,28 +1117,50 @@ test("the check's last look asks for no wake: a pending there is posted without 
   });
 });
 
-test("pending without check_opened_at is refused before a record is read", async () => {
-  const { ops, routes, lookups } = runtime({ ...implementer, role: "tester" });
+// A phase completion carries no verdict: Dispatch's check states at the tested head decide the
+// testing phase, and the daemon refuses a phase completion that names one (VERDICT_NOT_TAKEN). The
+// tool refuses it first, before a record is read, whatever verdict it names and whichever role
+// sends it, and mints and posts nothing; a report that names its production check with
+// check_opened_at still carries its verdict.
+test("a phase completion naming a verdict is refused before a record is read, nothing minted or posted, and a check report keeps its verdict", async () => {
+  const tester = { ...implementer, role: "tester" } as const;
+  for (const verdict of ["pass", "fail", "pending"]) {
+    const { ops, routes, posted, lookups } = runtime(tester, stateAtPhase("testing"));
+    await expect(
+      executePhaseOp(ops, { op: "handoff_complete", summary: "x", verdict })
+    ).rejects.toThrow();
+    expect(routes).toEqual([]);
+    expect(posted).toEqual([]);
+    expect(lookups).toEqual([]);
+  }
+  const other = runtime();
   await expect(
-    executePhaseOp(ops, { op: "handoff_complete", summary: "Waiting.", verdict: "pending" })
-  ).rejects.toThrow(
-    new Error(
-      "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail."
-    )
-  );
-  expect(routes).toEqual([]);
-  expect(lookups).toEqual([]);
+    executePhaseOp(other.ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" })
+  ).rejects.toThrow();
+  expect(other.routes).toEqual([]);
+  expect(other.posted).toEqual([]);
+
+  const check = closedRuntime(tester, checkRecord({ role: "tester" }));
+  await expect(
+    executePhaseOp(check.ops, {
+      op: "handoff_complete",
+      summary: "Looked.",
+      verdict: "pass",
+      check_opened_at: CHECK_OPENED,
+    })
+  ).resolves.toEqual({});
+  expect(check.posted.at(-1)).toEqual({
+    grantId: "grant-for-one-command",
+    summary: "Looked.",
+    verdict: "pass",
+    checkOpenedAt: CHECK_OPENED,
+  });
 });
 
 test("wake_at is a check report's: a phase completion carrying one is refused, since the daemon reads none there", async () => {
   const { ops, routes, lookups } = runtime({ ...implementer, role: "tester" });
   await expect(
-    executePhaseOp(ops, {
-      op: "handoff_complete",
-      summary: "Green.",
-      verdict: "pass",
-      wake_at: NEXT_LOOK,
-    })
+    executePhaseOp(ops, { op: "handoff_complete", summary: "Green.", wake_at: NEXT_LOOK })
   ).rejects.toThrow(
     new Error(
       "handoff_complete's wake_at reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. A step's completion carries no wake."
@@ -1297,7 +1318,7 @@ test("read_record and handoff_complete ask for their own issue's record and neve
   const project = Buffer.byteLength(JSON.stringify(daemonFixture("state.json")));
 
   await executePhaseOp(ops, { op: "read_record", issue: "LEGION-208" });
-  await executePhaseOp(ops, { op: "handoff_complete", summary: "Done.", verdict: "pass" });
+  await executePhaseOp(ops, { op: "handoff_complete", summary: "Done." });
 
   expect(routes).not.toContain("/legion/v1/state");
   const records = bytes.filter(({ route }) => route.endsWith("/record"));

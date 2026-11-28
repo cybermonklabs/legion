@@ -119,6 +119,15 @@ type statusRecorder struct {
 	// reads is every issue and document read, in order: `issue:<key>`, `approval:<id>` and
 	// `plan:<id>@<version>`.
 	reads []string
+	// requests is every request the fake answered, in order, each as the route Dispatch serves it
+	// (`GET /api/v1/handoffs/<id>`), whatever it answered: the log of what the daemon asked of
+	// Dispatch, where the fake keeps nothing of what it was told.
+	requests []string
+}
+
+// asked logs one request the fake answers (requests).
+func (r *statusRecorder) asked(format string, args ...any) {
+	r.requests = append(r.requests, fmt.Sprintf(format, args...))
 }
 
 // planVersion keys statusRecorder.plans: one version of one document.
@@ -142,7 +151,8 @@ func (r *statusRecorder) PlanDocument(_ context.Context, artifactID string, vers
 
 // ListIssues answers Dispatch's project listing: every issue the fake knows, in key order, as the
 // listing summarizes it.
-func (r *statusRecorder) ListIssues(context.Context, string, []string) ([]dispatch.IssueSummary, error) {
+func (r *statusRecorder) ListIssues(_ context.Context, project string, _ []string) ([]dispatch.IssueSummary, error) {
+	r.asked("GET /api/v1/issues?project=%s", project)
 	r.reads = append(r.reads, "listing")
 	if r.listFails != nil {
 		return nil, r.listFails
@@ -163,6 +173,7 @@ func (r *statusRecorder) ListIssues(context.Context, string, []string) ([]dispat
 }
 
 func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue, error) {
+	r.asked("GET /api/v1/issues/%s", key)
 	r.reads = append(r.reads, "issue:"+key)
 	if err, fails := r.readFails[key]; fails {
 		return dispatch.Issue{}, err
@@ -178,6 +189,7 @@ func (r *statusRecorder) GetIssue(_ context.Context, key string) (dispatch.Issue
 // by the one event every status write makes, the issue's own status included. The fake keeps the
 // written issue, so a later read sees the write.
 func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dispatch.Issue, error) {
+	r.asked("PATCH /api/v1/issues/%s status=%s", issue, status)
 	if r.err != nil {
 		return dispatch.Issue{}, r.err
 	}
@@ -197,26 +209,32 @@ func (r *statusRecorder) SetStatus(_ context.Context, issue, status string) (dis
 
 // SetStatusAt is the fenced write, which no architect route makes: the daemon's own queued writes
 // take it, and they run in the outbox.
-func (r *statusRecorder) SetStatusAt(context.Context, dispatch.Issue, string) (dispatch.Issue, error) {
+func (r *statusRecorder) SetStatusAt(_ context.Context, issue dispatch.Issue, status string) (dispatch.Issue, error) {
+	r.asked("PATCH /api/v1/issues/%s status=%s at %d", issue.Key, status, issue.LastSeq)
 	return dispatch.Issue{}, errors.New("the architect routes write no status at a sequence")
 }
 
-func (r *statusRecorder) HandOver(context.Context, dispatch.Issue, string) error {
+func (r *statusRecorder) HandOver(_ context.Context, issue dispatch.Issue, status string) error {
+	r.asked("PATCH /api/v1/issues/%s hand over status=%s", issue.Key, status)
 	return errors.New("the architect routes hand nothing over")
 }
 
-func (r *statusRecorder) ReleaseClaim(context.Context, string) error {
+func (r *statusRecorder) ReleaseClaim(_ context.Context, key string) error {
+	r.asked("DELETE /api/v1/issues/%s/claim", key)
 	return errors.New("the architect routes release no claim")
 }
 
 func (r *statusRecorder) PostMessage(_ context.Context, key, _ string) error {
+	r.asked("POST /api/v1/issues/%s/messages", key)
 	r.taken = append(r.taken, "PostMessage "+key)
 	return nil
 }
-func (r *statusRecorder) MessageBodiesSince(context.Context, string, time.Time) ([]string, error) {
+func (r *statusRecorder) MessageBodiesSince(_ context.Context, key string, _ time.Time) ([]string, error) {
+	r.asked("GET /api/v1/issues/%s/messages", key)
 	return nil, nil
 }
-func (r *statusRecorder) EventsAfter(context.Context, string, int64) ([]json.RawMessage, error) {
+func (r *statusRecorder) EventsAfter(_ context.Context, key string, after int64) ([]json.RawMessage, error) {
+	r.asked("GET /api/v1/issues/%s/events?after=%d", key, after)
 	return nil, nil
 }
 
@@ -225,6 +243,7 @@ func (r *statusRecorder) EventsAfter(context.Context, string, int64) ([]json.Raw
 // the design gate binds to and what nearly every registration here registers; a case that drives
 // another step says so by setting the role or the slug it gave the document.
 func (r *statusRecorder) Approval(_ context.Context, artifactID string) (dispatch.Approval, error) {
+	r.asked("GET /api/v1/artifacts/%s", artifactID)
 	r.reads = append(r.reads, "approval:"+artifactID)
 	issue, ok := r.documents[artifactID]
 	if !ok {
@@ -281,6 +300,7 @@ func (r *statusRecorder) DocumentVersion(_ context.Context, artifactID string, v
 }
 
 func (r *statusRecorder) Handoff(_ context.Context, id string) (dispatch.Handoff, error) {
+	r.asked("GET /api/v1/handoffs/%s", id)
 	if r.handoffErr != nil {
 		return dispatch.Handoff{}, r.handoffErr
 	}
@@ -291,7 +311,8 @@ func (r *statusRecorder) Handoff(_ context.Context, id string) (dispatch.Handoff
 	return handoff, nil
 }
 
-func (r *statusRecorder) WebhookAppInstalled(context.Context, string) (bool, error) {
+func (r *statusRecorder) WebhookAppInstalled(_ context.Context, repo string) (bool, error) {
+	r.asked("GET /api/v1/github/installations/%s", repo)
 	return true, nil
 }
 func (r *statusRecorder) ArtifactChanges(context.Context, string, int, int) (dispatch.ArtifactChanges, error) {
@@ -302,15 +323,18 @@ func (r *statusRecorder) ApprovedVersionBefore(context.Context, string, int) (in
 }
 
 func (r *statusRecorder) PutGatedSteps(_ context.Context, project string, _ []string) error {
+	r.asked("PUT /api/v1/projects/%s/gated-steps", project)
 	r.taken = append(r.taken, "PutGatedSteps "+project)
 	return nil
 }
 
-func (r *statusRecorder) PutStep(_ context.Context, key, _ string, _ dispatch.StepWrite) error {
+func (r *statusRecorder) PutStep(_ context.Context, key, id string, _ dispatch.StepWrite) error {
+	r.asked("PUT /api/v1/issues/%s/steps/%s", key, id)
 	r.taken = append(r.taken, "PutStep "+key)
 	return nil
 }
-func (r *statusRecorder) PutStepRating(_ context.Context, key, _ string, _ dispatch.StepWrite, _ dispatch.PlanRating) error {
+func (r *statusRecorder) PutStepRating(_ context.Context, key, id string, _ dispatch.StepWrite, _ dispatch.PlanRating) error {
+	r.asked("PUT /api/v1/issues/%s/steps/%s/rating", key, id)
 	r.taken = append(r.taken, "PutStepRating "+key)
 	return nil
 }
@@ -318,11 +342,13 @@ func (r *statusRecorder) PutStepExperiment(_ context.Context, key, _ string, _ d
 	r.taken = append(r.taken, "PutStepExperiment "+key)
 	return nil
 }
-func (r *statusRecorder) PutPlan(_ context.Context, key, _ string, _ dispatch.PlanWrite) error {
+func (r *statusRecorder) PutPlan(_ context.Context, key, id string, _ dispatch.PlanWrite) error {
+	r.asked("PUT /api/v1/issues/%s/plans/%s", key, id)
 	r.taken = append(r.taken, "PutPlan "+key)
 	return nil
 }
 func (r *statusRecorder) PutDesignGates(_ context.Context, key string, _ []dispatch.DesignGateDocument) error {
+	r.asked("PUT /api/v1/issues/%s/design-gates", key)
 	r.taken = append(r.taken, "PutDesignGates "+key)
 	return nil
 }
@@ -330,6 +356,7 @@ func (r *statusRecorder) PutDesignGates(_ context.Context, key string, _ []dispa
 // UploadArtifact answers an upload with the slug Dispatch files the name under, and keeps no
 // document. No route of this package writes a document of an issue's.
 func (r *statusRecorder) UploadArtifact(_ context.Context, key, name, _ string) (string, error) {
+	r.asked("POST /api/v1/issues/%s/artifacts %s", key, name)
 	r.taken = append(r.taken, "UploadArtifact "+key)
 	return name, nil
 }
@@ -337,6 +364,7 @@ func (r *statusRecorder) UploadArtifact(_ context.Context, key, name, _ string) 
 // PutRoleHolders takes a role-holder publication and keeps none. No route of this package
 // publishes a role holder.
 func (r *statusRecorder) PutRoleHolders(_ context.Context, key string, _ []dispatch.RoleHolder) error {
+	r.asked("PUT /api/v1/issues/%s/role-holders", key)
 	r.taken = append(r.taken, "PutRoleHolders "+key)
 	return nil
 }

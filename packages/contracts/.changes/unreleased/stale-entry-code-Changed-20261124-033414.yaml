@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `fixtures/daemon-api/stale-entry.json` holds the `HANDOFF_STALE_ENTRY` code alone. The words that
+  refusal tells a worker, which the `legion` tool's description repeats, are a prompt an agent
+  reads, and no fixture or test holds them.
+time: 2026-11-24T03:34:14Z
+custom:
+    Issue: stale-entry-code

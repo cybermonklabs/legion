@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+    The daemon's intake decodes Dispatch's `check.state_changed`, from the live consumer and from the
+    boot catch-up alike, into the new fact `intake.DispatchCheckState`: the state of one
+    `before_merge` check at one head of the check's issue (or, in the set form, the head's set of
+    checks alone), with its reason, roles, CI case, serial and the event's sequence. A payload of
+    another issue, with no `repo`, a `head` that is not 40 lowercase hex digits, a `state` other than
+    `yes`, `no` or `unknown`, a check with no state, a state of no check, or no serial is an error, so
+    the consumer terminates it as poison. Migration `20261126110300_check_states` adds the tables
+    `check_states`, `check_state_sets` and `check_state_serials` and the column
+    `issues.check_states_seq` (nullable, 0 on every row). The store keeps the newest state of each check at
+    each head and each head's set of checks, a write at a lower Dispatch sequence changing nothing
+    (`record.Store.PutCheckState`, `PutCheckSet`, `HeadStates`), records the serials of the state
+    events it applied (`PutCheckStateSerial`), answers whether it holds every serial from the lowest
+    it holds through a given one (`StatesFenceReached`), and deletes all of an issue's rows
+    (`DeleteCheckStates`). Nothing moves an issue by them yet. A rollback runs the one transaction
+    in the migration's header with the daemon stopped: it drops the three tables and the column and
+    deletes the migration's `schema_version` row.
+time: 2026-11-21T07:04:29Z
+custom:
+    Issue: check-states-intake

@@ -12,12 +12,15 @@
 //
 // Its one line of standard output is the completion that call would send, as JSON: `commit`,
 // `handoffId` and `handoffVersion`, each written only where the report carries it. So a phase
-// whose newest record names a `head` prints that commit, and one whose record names none prints
-// no `commit` at all, which is the step's negative control.
+// whose newest record names a `head` prints that commit, and a planner's or a reviewer's whose
+// record names none prints no `commit` at all, which is the step's negative control; a tester's
+// test record naming none is refused, exiting 1, since the testing move reads the check states at
+// the head that record names.
 //
 // A missing argument or variable exits 2 naming it, before Dispatch is asked anything; a report
 // the function refuses (no record of that phase, a Dispatch that does not answer, an
-// implementer's head its branch does not carry) exits 1 with its message on standard error.
+// implementer's head its branch does not carry, a test record naming no head) exits 1 with its
+// message on standard error.
 
 import type { LegionPhase } from "../../packages/contracts/src/legion-api";
 import type { LegionRole } from "../../packages/contracts/src/legion-roles";

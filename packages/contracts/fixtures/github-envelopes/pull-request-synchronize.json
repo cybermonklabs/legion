@@ -5,6 +5,7 @@
     "action": "synchronize",
     "author": "octocat",
     "base_ref": "main",
+    "base_sha": "9999999999999999999999999999999999999999",
     "before": "1111111111111111111111111111111111111111",
     "body": "Exercise the listener with a new head.",
     "head_ref": "acceptance-driver",

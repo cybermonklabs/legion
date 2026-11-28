@@ -529,6 +529,11 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 	if !awaitsMerge(issue) {
 		return nil, nil
 	}
+	// The merge ends the use of the issue's check states: no head of it is tested again, so the
+	// states, sets and serials the daemon holds of it go (record.Store.DeleteCheckStates).
+	if err := e.store.DeleteCheckStates(ctx, tx, issue.Key); err != nil {
+		return nil, err
+	}
 	// Only the copy in hand leaves the hold here: the task keeps its place, its merge, which a hold
 	// keeps too (moveTask), and the close below writes the move to done.
 	issue.Phase, issue.Hold = phase.Merging, nil
@@ -546,7 +551,7 @@ func (e *Engine) closeMerged(ctx context.Context, tx pgx.Tx, issue record.Issue,
 				"pullRequest", pr.Number, "waitingFor", strings.Join(waiting, ", "))
 			return waiting, nil
 		}
-		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, "")
+		return nil, e.transition(ctx, tx, issue, TriggerPullRequestMerged, "", record.PhaseRow{}, pr, moveWhy{})
 	}
 	w, err := e.walk(ctx, tx, issue)
 	if err != nil {

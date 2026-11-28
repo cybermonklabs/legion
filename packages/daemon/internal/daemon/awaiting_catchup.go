@@ -57,9 +57,10 @@ type catchUpRoot struct {
 	mirrored map[string]bool
 }
 
-// catchUpAttempts is how many times the boot's catch-up of one root reads Dispatch again when
-// Dispatch answers it with an error it may stop giving (a 5xx, 408 or 429) before it skips that
-// root; catchUpRetryDelay is the wait between two attempts.
+// catchUpAttempts is how many times a boot catch-up of one issue — a root's (catchUpAwaiting), or
+// an issue's check states (catchUpCheckStates) — reads Dispatch again when Dispatch answers it
+// with an error it may stop giving (a 5xx, 408 or 429) before it skips that issue
+// (readWithRetries); catchUpRetryDelay is the wait between two attempts.
 const (
 	catchUpAttempts   = 3
 	catchUpRetryDelay = 2 * time.Second
@@ -279,14 +280,28 @@ func (w *workflowRuntime) catchUpAwaiting(ctx context.Context) error {
 	return nil
 }
 
-// catchUpWithRetries catches up one root, reading Dispatch again for an error it may stop giving
-// on its own, an outage (httpoutage.Is: a 5xx, a 408 or a 429), and returns only what makes the
-// boot's attempt fail: the boot's own end, Dispatch not answering at all, which the boot waits
-// out, or a TLS failure of Dispatch's transport (dispatch.TransportRefusal), which stops the
-// start, even beside a read of the root Dispatch did not answer, as it does at every other boot
-// probe of Dispatch. Every other error is logged, and the root is released as it stands: a
-// credential refusal (401, 403) waits on an operator, and a coded 4xx on nothing at all.
+// catchUpWithRetries catches up one root under the retry rule of every boot catch-up
+// (readWithRetries), and returns only what makes the boot's attempt fail. A root that rule passes
+// over is released as it stands.
 func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRoot) error {
+	skipped, err := w.readWithRetries(ctx, root.issue.Key, "a root", func(attempt context.Context) error { return w.catchUpRoot(attempt, root) })
+	if !skipped {
+		return err
+	}
+	return w.finishCatchUp(ctx, root, 0)
+}
+
+// readWithRetries runs read, a boot catch-up of the one issue key, under a deadline of its own for
+// each attempt (catchUpRootTimeout, bootTimeout when unset), reading Dispatch again for an error it
+// may stop giving, and says whether the catch-up passes over that issue. It returns only what makes
+// the boot's attempt fail: the boot's own end, Dispatch not answering at all, which the boot waits
+// out, or a TLS failure of Dispatch's transport (dispatch.TransportRefusal), which stops the start,
+// even beside a read of the issue Dispatch did not answer, as it does at every other boot probe of
+// Dispatch. Every other error is logged, naming the issue as what (`a root`), and passes over the
+// issue: after catchUpAttempts reads for an error Dispatch may stop giving on its own, an outage
+// (httpoutage.Is: a 5xx, a 408 or a 429), and at once for a credential refusal (401, 403), which
+// waits on an operator, or a coded 4xx, which waits on nothing at all.
+func (w *workflowRuntime) readWithRetries(ctx context.Context, key, what string, read func(context.Context) error) (bool, error) {
 	bound := w.catchUpRootTimeout
 	if bound == 0 {
 		bound = bootTimeout
@@ -297,35 +312,35 @@ func (w *workflowRuntime) catchUpWithRetries(ctx context.Context, root catchUpRo
 	}
 	for attempt := 1; ; attempt++ {
 		attemptCtx, cancel := context.WithTimeout(ctx, bound)
-		err := w.catchUpRoot(attemptCtx, root)
+		err := read(attemptCtx)
 		cancel()
 		refusal, answered := dispatchAnswered(err)
 		switch {
 		case ctx.Err() != nil:
-			return ctx.Err()
+			return false, ctx.Err()
 		case err == nil:
-			return nil
+			return false, nil
 		case dispatch.TransportRefusal(err):
-			return err
+			return false, err
 		case answered && httpoutage.Is(refusal.Status) && attempt < catchUpAttempts:
-			w.log.Warn("boot catch-up reads a root again after Dispatch refused it", "issue", root.issue.Key, "attempt", attempt, "error", err)
+			w.log.Warn("boot catch-up reads "+what+" again after Dispatch refused it", "issue", key, "attempt", attempt, "error", err)
 			select {
 			case <-ctx.Done():
-				return ctx.Err()
+				return false, ctx.Err()
 			case <-time.After(delay):
 			}
 			continue
 		case answered:
-			w.log.Error("boot catch-up skipped a root Dispatch keeps refusing; its live events still reach it", "issue", root.issue.Key,
+			w.log.Error("boot catch-up skipped "+what+" Dispatch keeps refusing; its live events still reach it", "issue", key,
 				"status", refusal.Status, "attempts", attempt, "error", err)
-			return w.finishCatchUp(ctx, root, 0)
+			return true, nil
 		case dispatch.Unreachable(err):
-			return err
+			return false, err
 		case errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled):
-			return &dispatch.TransientError{Err: fmt.Errorf("catch up %s: %w", root.issue.Key, err)}
+			return false, &dispatch.TransientError{Err: fmt.Errorf("catch up %s: %w", key, err)}
 		}
-		w.log.Warn("boot catch-up skipped a root it could not read; its live events still reach it", "issue", root.issue.Key, "error", err)
-		return w.finishCatchUp(ctx, root, 0)
+		w.log.Warn("boot catch-up skipped "+what+" it could not read; its live events still reach it", "issue", key, "error", err)
+		return true, nil
 	}
 }
 

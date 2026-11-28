@@ -105,11 +105,18 @@ func passStandsOf(check model.CheckBlock, compared comparison) model.CheckPassSt
 // subject: two roles that passed at two heads are no role that passed at each. An unknown answer
 // takes the reason model.PassStandsReasonPassAndFail where any subject holds a pass and a fail at
 // its commit, whatever the order of the subjects, and a no takes no reason: a subject's
-// read_failed is the subject's alone.
+// read_failed is the subject's alone. A subject of a former head the check states settler computes
+// counts the result its own run derived beside the check's (withResultAlone), and no other subject
+// counts it.
 func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted map[string]bool) model.CheckPassStands {
 	stands := model.CheckPassStands{Answer: model.PassStandsYes, Subjects: make([]model.PassStandsSubject, 0, len(compared.subjects))}
 	for _, head := range compared.subjects {
-		subject := subjectState(check, head.basis, conflicted, compared.ci[ciHeadKeyOf(head.repo, head.basis.Commit)])
+		key := ciHeadKeyOf(head.repo, head.basis.Commit)
+		counted, conflictedThere := check, conflicted
+		if own, held := compared.alone[key]; held {
+			counted, conflictedThere = withResultAlone(check, own, head.basis)
+		}
+		subject := subjectState(counted, head.basis, conflictedThere, compared.ci[key])
 		stands.Subjects = append(stands.Subjects, subject)
 		switch {
 		case subject.Answer == model.PassStandsNo:
@@ -145,6 +152,21 @@ func eachSubjectStands(check model.CheckBlock, compared comparison, conflicted m
 		}
 	}
 	return stands
+}
+
+// withResultAlone is check with own among its results, newest first, and the commits at which a
+// pass and a fail of it then count (passAndFailCommits): own is the result the read of a check CI
+// proves derived at a former head the check states settler computes (deriveCIResults), which
+// stands at that head's basis under the check's words now. The check's own results never hold it,
+// and every other subject, and the results route, is computed from those, so a former head's run
+// changes no state but its own head's, while the rule of a pass and a fail at one commit holds
+// among the results that head counts.
+func withResultAlone(check model.CheckBlock, own model.CheckResult, basis model.CheckBasis) (model.CheckBlock, map[string]bool) {
+	moved := false
+	own.CheckWordsMoved = &moved
+	own.CommitStands = &model.ResultCommitStands{Answer: model.CommitAtBasis, Basis: &basis}
+	check.Results = newestResultsFirst(append(slices.Clone(check.Results), own))
+	return check, passAndFailCommits(check)
 }
 
 // subjectState is the state of one subject of a check: yes where a pass stands at its commit,

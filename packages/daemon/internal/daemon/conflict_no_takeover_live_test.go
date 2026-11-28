@@ -79,11 +79,13 @@ import (
 
 // The heads the proof drives: the issue's seeded head, which the push onto the base leaves
 // conflicting; the head the implementer's merge forward pushes; and the control's head, which
-// GitHub answers conflicting from the start and on which ci passed.
+// GitHub answers conflicting from the start and on which ci passed. Each is a full commit id,
+// beginning a1, a2 and c1, since the check state the tester's completion is decided by names its
+// head as one.
 const (
-	conflictFirstHead   = "h1"
-	conflictMergedHead  = "h2"
-	conflictControlHead = "c1"
+	conflictFirstHead   = "a100000000000000000000000000000000000000"
+	conflictMergedHead  = "a200000000000000000000000000000000000000"
+	conflictControlHead = "c100000000000000000000000000000000000000"
 )
 
 // conflictNoTakeoverLive is one run of the proof: the booted daemon, its log and the baseline of
@@ -196,7 +198,7 @@ func (r *conflictNoTakeoverLive) testerWorksItsAssignment() {
 	r.imp = r.claimant(claim.RoleImplementer, "ses_implementer")
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch")
 	r.imp.startTurn("")
-	if status, failure := r.imp.complete("implemented it", conflictFirstHead, "", r.imp.handoff("implement")); status != http.StatusOK {
+	if status, failure := r.imp.complete("implemented it", conflictFirstHead, r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.imp.endTurn()
@@ -333,7 +335,7 @@ func (r *conflictNoTakeoverLive) secondReadAsksTheMergeForward() {
 // (record.MergeForwardLanded). The tester's turn is still the one its step 1 assignment began. Its
 // completion at h1, the head the merge replaced, naming a handoff record of its own, is refused
 // 409 HANDOFF_HEAD_MERGED_FORWARD and records nothing: the issue stays in testing and the tester's
-// phases row holds no verdict and no commit. Its completion at h2, naming another record of its
+// phases row holds no record and no commit. Its completion at h2, naming another record of its
 // own, is taken, and moves the issue to reviewing.
 func (r *conflictNoTakeoverLive) mergeLands() {
 	t := r.t
@@ -352,7 +354,7 @@ func (r *conflictNoTakeoverLive) mergeLands() {
 	r.note("read back: the tester's role topic took the landing — %s", landed.Message(r.key, pull))
 	r.heldOn("the landing")
 
-	status, failure := r.test.complete("tested it", conflictFirstHead, "pass", r.test.handoff("test"))
+	status, failure := r.test.complete("tested it", conflictFirstHead, r.test.handoff("test"))
 	if status != http.StatusConflict || failure.Code != "HANDOFF_HEAD_MERGED_FORWARD" {
 		t.Fatalf("the tester's completion at %s = %d %s %s, want 409 HANDOFF_HEAD_MERGED_FORWARD", conflictFirstHead, status, failure.Code, failure.Error)
 	}
@@ -360,13 +362,14 @@ func (r *conflictNoTakeoverLive) mergeLands() {
 	if after := r.issue(r.key); after.Phase != phase.Testing {
 		t.Fatalf("%s is in %s after the refused completion, want testing: a refusal records nothing", r.key, after.Phase)
 	}
-	if row := rolePhaseRow(t, r.st.Pool(), r.key, claim.RoleTester); row.Verdict != "" || row.HandoffCommit != "" {
-		t.Fatalf("the tester's phases row holds verdict %q at commit %q after the refusal, want neither: the refusal records nothing",
-			row.Verdict, row.HandoffCommit)
+	if row := rolePhaseRow(t, r.st.Pool(), r.key, claim.RoleTester); row.HandoffRecord != "" || row.HandoffCommit != "" {
+		t.Fatalf("the tester's phases row holds record %q at commit %q after the refusal, want neither: the refusal records nothing",
+			row.HandoffRecord, row.HandoffCommit)
 	}
-	r.note("read back: %s is still in testing, and the tester's phases row holds no verdict and no commit — nothing was recorded", r.key)
+	r.note("read back: %s is still in testing, and the tester's phases row holds no record and no commit — nothing was recorded", r.key)
 
-	if status, failure := r.test.complete("tested the merge", conflictMergedHead, "pass", r.test.handoff("test")); status != http.StatusOK {
+	testedAs(t, r.st.Pool(), r.key, conflictMergedHead, true)
+	if status, failure := r.test.complete("tested the merge", conflictMergedHead, r.test.handoff("test")); status != http.StatusOK {
 		t.Fatalf("the tester's completion at %s = %d %s %s, want 200", conflictMergedHead, status, failure.Code, failure.Error)
 	}
 	r.test.endTurn()

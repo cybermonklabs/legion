@@ -3519,6 +3519,75 @@ Several projects' daemons can share one database ([Daemon-launched controller](#
 A daemon of the earlier release writes rows whose sequences fall behind their values, in its own project and in the rows of other projects that its controller tick reads for blockers.
 Upgrade, and roll back, every daemon of one database in the same change.
 
+#### Rolling back the release whose testing move follows Dispatch's check states
+
+This release moves an issue out of `testing` by the states Dispatch publishes of the issue's `before_merge` checks, the `check.state_changed` events, and a phase completion carries no verdict (the daemon API contract entry `20261125203834` check-states, `packages/daemon/internal/api/contract_20261125203834_check-states.go`, whose id is `CheckStatesContract`).
+A tester completes naming its `test` record, and the move waits until the daemon holds every state event of the issue through the record's `check_states_serial`.
+At the head that record names, a check with no state, or with no result while its CI run still goes, holds the move whatever the other checks read; then every check passing moves the issue to `reviewing`, and otherwise it goes back to `implementing` with a task naming each check that does not pass, a state Dispatch could not read (`read_failed`) among them.
+
+**Deploy envoy-dispatch first, then the daemon.**
+The daemon of this release waits for states that only an envoy-dispatch of the same change publishes, and for the serial that only such a Dispatch stores on a `test` record.
+A daemon deployed before it holds no state of any check, so each tester's completion waits in `testing`, telling the architect once that the move waits for Dispatch's states at the tested head.
+An envoy-dispatch deployed first publishes the events to a daemon of the release before, which takes them as no fact, and the boot catch-up of the daemon that follows reads each issue's log from the start.
+A tester's plugin of the release before, in a turn when the daemon is upgraded, still sends `pass` or `fail`: this daemon takes the completion and ignores the verdict, and the states decide.
+Such a completion is taken only with the head its `test` record names: one that names no commit is refused `TESTED_HEAD_REQUIRED`, since the move reads the states at that head alone, and the tester writes a new record naming it and completes again.
+An issue standing in `testing` at the upgrade has no tester's completion recorded: the release before moved each one at once on its verdict, so every move this daemon makes reads a head a completion of its own named.
+
+**The way back is three transactions, run with this release's daemon stopped, before the earlier image is pinned.**
+Run them newest first.
+`20261126110302_phase_return_to` adds `phases.return_to`: on the tester's row, the step its completion names for the task to return to when the states fail the testing step, kept until the states decide.
+The earlier release names the column in no statement, and each row it inserts takes the default, 0.
+Its header's way back is owed to the roll-forward alone: it drops the column and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the column back at 0 on every row:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+alter table phases drop column if exists return_to;
+delete from schema_version where version = 20261126110302;
+commit;
+SQL
+```
+
+What the drop costs is the step a tester's completion named while it still waits for its states: after the roll-forward, a fail of those states returns the task to the first implementation step before the tester.
+Then run the way back of `20261126110301_phase_verdict_gone`.
+That migration keeps `phases.verdict`, which every earlier release reads and writes by name, and gives it the default `''`.
+This release writes nothing to the column, so a daemon of the earlier release, during the roll or after a rollback, reads each phase row this release wrote as one with no verdict and writes its own; a later release drops the column, once no running build reads it.
+Its header's way back is owed to the roll-forward and to that earlier daemon's reads: it empties `phases.verdict`, drops `phases.states_serial`, deletes the keys `head`, `waits_for`, `waiting` and `failing` from each queued notice and the keys `pull_request`, `head`, `check`, `ci_case`, `checks` and `statuses` from each queued role message, and deletes the migration's own row, so the roll-forward's `Migrate` runs the file again and adds the serial back at 0 on every row:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+update phases set verdict = '' where verdict <> '';
+alter table phases drop column if exists states_serial;
+update outbox set payload = payload - 'head' - 'waits_for' - 'waiting' - 'failing' where kind = 'notice';
+update outbox set payload = payload - 'pull_request' - 'head' - 'check' - 'ci_case' - 'checks' - 'statuses' where kind = 'role_message';
+delete from schema_version where version = 20261126110301;
+commit;
+SQL
+```
+
+Each tester's row then reads as a completion with no verdict, which moves no issue in the earlier release, and none carries the verdict of an earlier completion that release took: a tester whose issue is still in `testing` completes again under that release.
+The tester's `phase-finished` notice of the testing move in this release carries what its `reason` names as fields: `head`, the tested head; `waits_for` and `waiting` for a wait; `failing` for a move back.
+The earlier release decodes a notice strictly and has none of these fields, so a queued notice that kept one would retry for ever there; no notice of the earlier release carries any of them, and the notice keeps its `reason`, which names the same head and checks.
+A CI settlement's role message and the implementer's message of a failed CI job carry what their `body` names as fields the same way (`pull_request`, `head`, `checks` and `statuses`; `pull_request`, `head`, `check` and `ci_case`), which the earlier release decodes strictly too; each keeps its `body`.
+A daemon of the earlier release that runs beside this one during the roll retries such a notice until this release's daemon sends it.
+The `verdict` key needs nothing: the earlier release decodes a notice with no `verdict`, since its field is omitted when empty.
+Then run the way back in the header of `20261126110300_check_states`, which drops the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq` and deletes that migration's row:
+
+```sh
+psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+begin;
+drop table if exists check_states;
+drop table if exists check_state_sets;
+drop table if exists check_state_serials;
+alter table issues drop column if exists check_states_seq;
+delete from schema_version where version = 20261126110300;
+commit;
+SQL
+```
+
+The earlier release names none of the three tables and not the column, so this third transaction is owed to the roll-forward alone: its first catch-up of each issue reads the event log from the start again and applies each state event in it, whether or not `processed_events`, which the way back leaves standing, records the event, so each state event this release held before the rollback is held again, and each one the earlier release took as no fact is held as well.
+
 #### Rolling back the release that holds a parent's start while a child of it is open
 
 This release adds a phase, `awaiting_children`, in which an issue whose phases have started waits while a Dispatch child of it is open, holding no slot, and keeps the start it held until no child of it is open (dispatch://INFRA-3320 R9 to R13).
@@ -4279,6 +4348,7 @@ A rollback of a store that cybermonklabs/legion#5310's release or a later one mi
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
+A rollback of a store that the release with `20261126110302_phase_return_to` migrated runs the way back in that migration's header before that of 20261126110301_phase_verdict_gone, the newest first, as [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states) gives them, which deletes that version's row too; both run before the way back of `20261125000600_production_check_failed_looks`, which is older.
 A rollback of a store that the release that counts each step's models migrated runs [its way back](#rolling-back-the-release-that-counts-each-steps-models), which deletes the row of 20261125171320, before every other way back here, the next line's among them.
 A rollback of a store that the release that releases a left session's claim migrated runs the way back in the header of `20261127193428_claim_left.up.sql` first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, drops `issues.claim_left` and deletes that version's row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 `20261120210000_issue_release_committed.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its column in place and the release before writes none of it (the migration's header).
@@ -4410,6 +4480,9 @@ The same release writes the outbox key `decided` on each supervise start a perso
 That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scratch `outbox` table with the `kind` check and the `payload jsonb` column `0004_record.up.sql` gives it, holding a supervise start that carried `decided` beside `resendEntry`, a supervise start without it and a `notice` row carrying `decided` at the top and under `catch_up`: the first run printed `UPDATE 1` and the second `UPDATE 0`, the first row kept `resendEntry`, and the `notice` row kept both keys.
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
+20261126110300_check_states adds the tables `check_states`, `check_state_sets` and `check_state_serials` and the column `issues.check_states_seq`, and touches none of the six, so the block holds over it and leaves all of them standing, which the earlier release names in no statement; the way back in its own header drops them.
+20261126110301_phase_verdict_gone gives `phases.verdict`, which it keeps for every earlier release, the default `''`, adds `phases.states_serial` and takes the key `verdict` out of each queued notice, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which empties `phases.verdict` and drops `phases.states_serial` for the roll-forward.
+20261126110302_phase_return_to adds `phases.return_to` at its default, 0, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back of its own section, [Rolling back the release whose testing move follows Dispatch's check states](#rolling-back-the-release-whose-testing-move-follows-dispatchs-check-states), first, which drops the column and deletes its version row for the roll-forward.
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
 20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
@@ -5592,9 +5665,9 @@ reconnected`, covers that gap: first after 3 minutes down, then every 3 minutes 
 — usually empty during a plain refused dial, since nats.go clears it on every failed attempt, and naming the failure's own cause while a handshake keeps failing, since nats.go leaves that one in place until the connection succeeds.
 At boot an unreachable NATS or Dispatch delays the boot instead of exiting, retried one second doubling to one minute, forever, logged at warn as `boot probe failed
 transiently; waiting to run it again` with its `probe` (naming which:
-`connect Envoy NATS`, `list Dispatch issues for admission`, or `catch up the roots that run or wait on a person`), `attempt`, `retryIn` and `detail`.
+`connect Envoy NATS`, `list Dispatch issues for admission`, `catch up the roots that run or wait on a person`, or `catch up the check states the daemon missed`), `attempt`, `retryIn` and `detail`.
 A TLS alert from NATS or Dispatch, such as a server that demands a client certificate or speaks no TLS version the daemon does, is an answer and not an outage, so it refuses the boot at once (`tlsalert.In`, `packages/daemon/internal/tlsalert`).
-So does a certificate the daemon cannot verify, from NATS or Dispatch; a NATS URL whose port answers first with a line that is not INFO, such as an SSH server's; and an `https` Dispatch URL on a plain-HTTP port or on a port that answers in neither TLS nor HTTP (`dispatch.TransportRefusal`), at every boot probe of Dispatch, the catch-up of the roots that run or wait on a person included, which stops rather than skip the root.
+So does a certificate the daemon cannot verify, from NATS or Dispatch; a NATS URL whose port answers first with a line that is not INFO, such as an SSH server's; and an `https` Dispatch URL on a plain-HTTP port or on a port that answers in neither TLS nor HTTP (`dispatch.TransportRefusal`), at every boot probe of Dispatch, the catch-up of the roots that run or wait on a person and the catch-up of check states included, which stop rather than skip the root or the issue.
 The two NATS refusals hold for one `nats_urls` entry: with several, nats.go answers with the last server's error, so a refusal from an earlier server followed by a refused dial on the last one reads as no servers available, and the boot waits (the LEGION-580 limit below).
 
 The store opens outside the 30-second budget the boot's first steps share, and the steps after the open get a budget of their own.

@@ -273,7 +273,7 @@ func newLateCompletionLive(t *testing.T) *lateCompletionLive {
 	r.implementerCall = r.panes[r.token(claim.RoleImplementer)].arm("Phase: implementing.",
 		map[string]any{"op": "handoff_complete", "summary": "Implemented the change at the head the implement record names, pushed to the branch."}, true)
 	r.testerCall = r.panes[r.token(claim.RoleTester)].arm("Phase: testing.",
-		map[string]any{"op": "handoff_complete", "summary": "Tested the head the test record names: it passes.", "verdict": "pass"}, true)
+		map[string]any{"op": "handoff_complete", "summary": "Tested the head the test record names: it passes."}, true)
 	r.reviewerCall = r.panes[r.token(claim.RoleReviewer)].arm("Phase: reviewing.",
 		map[string]any{"op": "handoff_complete", "summary": "Reviewed the head the review record names and approved it."}, true)
 
@@ -485,15 +485,18 @@ func (r *lateCompletionLive) finishedImplementerRepeats() {
 }
 
 // Step 3. The tester the implementer's completion started takes its testing task, its turn held
-// at the stand-in; the driver writes the tester's test record as that pane's own session; then
-// the turn calls handoff_complete with verdict pass; the completion is taken, naming that record,
-// and the issue moves to reviewing. The tool and the daemon answer it alike on this tree and the
-// negative control's: the tester works the issue's phase.
+// at the stand-in; the driver writes the tester's test record as that pane's own session, and the
+// daemon is given the check state that passes at the head through the intake, as Dispatch's
+// check.state_changed event of a passing result gives it (testedAs); then the turn calls
+// handoff_complete; the completion is taken, naming that record, and the issue
+// moves to reviewing. The tool and the daemon answer it alike on this tree and the negative
+// control's: the tester works the issue's phase.
 func (r *lateCompletionLive) testerCompletes() {
 	t := r.t
 	tester := r.token(claim.RoleTester)
 	held := r.heldTurn(claim.RoleTester, phase.Testing, r.testerCall)
 	r.testRecord = r.writeRecord(held.Session, "test")
+	testedAs(t, r.st.Pool(), r.key, r.head, true)
 	mark := time.Now()
 	r.testerCall.release()
 	result := r.testerCall.awaitResult(t, 2*time.Minute)
@@ -510,14 +513,14 @@ func (r *lateCompletionLive) testerCompletes() {
 
 // Step 4. The finished tester, whose testing phase already holds the completion of step 3, is
 // given a second turn by the operator's own task (`legion claims deliver`), and the stand-in's
-// turn calls handoff_complete again with verdict pass. The step records the tool's answer and the
-// daemon's line for it, and holds that the call made one request: the daemon wrote exactly one
-// line for the tester's claim from the delivery until a settle after the tool answered, so the
-// plugin's retry, which runs only while the daemon gives no answer, sent nothing more. Step 6
-// judges the answer.
+// turn calls handoff_complete again, with no verdict, as every phase completion is sent. The step
+// records the tool's answer and the daemon's line for it, and holds that the call made one
+// request: the daemon wrote exactly one line for the tester's claim from the delivery until a
+// settle after the tool answered, so the plugin's retry, which runs only while the daemon gives no
+// answer, sent nothing more. Step 6 judges the answer.
 func (r *lateCompletionLive) finishedTesterRepeats() {
 	result, mark := r.repeatCompletion(claim.RoleTester, lateTesterRepeat,
-		map[string]any{"op": "handoff_complete", "summary": "Testing is done; reporting it again.", "verdict": "pass"})
+		map[string]any{"op": "handoff_complete", "summary": "Testing is done; reporting it again."})
 	line := r.settledAnswer("the finished tester's repeat", mark, r.token(claim.RoleTester))
 	r.note("daemon: %s", answeredLine(line))
 	r.note("read back: the daemon answered the tester's claim once between the delivery and %s after the tool's answer", liveSettle)

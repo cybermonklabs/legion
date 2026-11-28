@@ -2760,29 +2760,34 @@ export function legionPlanRatingLoneField(
  * against), which is what a completion of an earlier phase entry is taken at. The plugin refuses
  * the implementer's completion before it goes when its `implement` record names no head, when the
  * commit its workspace stands on (`@-`) is not on `legion/<issue>@origin`, and when the record's
- * head is not that pushed `@-`; a record naming no head leaves the planner's, the tester's and
- * the reviewer's completion without one. Retro and every completion of a phase its
+ * head is not that pushed `@-`, and the tester's when its `test` record names no head, since the
+ * testing move reads the check states at that head alone and the daemon refuses a tester's
+ * completion naming none (`TESTED_HEAD_REQUIRED`); a record naming no head leaves the planner's
+ * and the reviewer's completion without one. Retro and every completion of a phase its
  * role does not work report the commit the workspace stands on instead, the merger's reports the
  * head the merger merged, and a check report carries neither commit nor record (the look pushed
  * nothing), so all three are optional here, and the daemon requires each where it applies.
  * A named check report with any of these phase fields is refused (`CHECK_PHASE_FIELDS_UNEXPECTED`).
- * `verdict` is `pass`
- * or `fail` for the tester's completion, `pass`, `pending` or `fail` for a check report
- * (`CHECK_VERDICT_REQUIRED`), and the empty string for every other completion; it stays a string
- * on the wire, as the Go field is. `wakeAt` is the check report's alone (contract 54): when the
- * checking agent asks to be woken for its next look, which a pending report on a look that is not
- * the check's last must name (`CHECK_WAKE_REQUIRED`) and which no other verdict and no phase
- * completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a `LegionInstant`, not a `timestamp`:
- * the daemon's decode of it refuses a time with no seconds, and so does this. `planRating` and
- * `planReason` are the rating of the plan the issue ran (contract 168), which the completion that
- * ends the retro carries and no other completion does (`PLAN_RATING_UNEXPECTED`): a whole number
- * from 1 (the plan cost the work) to 5 (the plan fit the work), and why, the two together
- * (`PLAN_RATING_INPUT`). A plugin at contract 168 or later must send both on its retro
- * (`PLAN_RATING_REQUIRED`). `returnTo` (contract 219) is the step a step that failed names for its
- * task to return to, by its place in the issue's running task, 1 for its first: a whole number of
- * 1 or more (`INVALID_RETURN_TO`), carried only by a completion with the verdict `fail`
- * (`RETURN_TO_NEEDS_FAIL`, which the daemon also answers a production check's report that names
- * one, whatever its verdict). Which step the task then runs is the workflow's to decide. */
+ * `verdict` is `pass`, `pending` or `fail` for a check report (`CHECK_VERDICT_REQUIRED`) and the
+ * empty string for every phase completion: from the contract of the daemon's entry
+ * `20261125203834` check-states a phase completion that names one is refused (`VERDICT_NOT_TAKEN`),
+ * since Dispatch's check states at the tested head decide the
+ * testing phase. It stays a string on the wire, as the Go field is. `wakeAt` is the check report's
+ * alone (contract 54): when the checking agent asks to be woken for its next look, which a pending
+ * report on a look that is not the check's last must name (`CHECK_WAKE_REQUIRED`) and which no
+ * other verdict and no phase completion may carry (`CHECK_WAKE_UNEXPECTED`). It is a
+ * `LegionInstant`, not a `timestamp`: the daemon's decode of it refuses a time with no seconds,
+ * and so does this. `planRating` and `planReason` are the rating of the plan the issue ran
+ * (contract 168), which the completion that ends the retro carries and no other completion does
+ * (`PLAN_RATING_UNEXPECTED`): a whole number from 1 (the plan cost the work) to 5 (the plan fit
+ * the work), and why, the two together (`PLAN_RATING_INPUT`). A plugin at contract 168 or later
+ * must send both on its retro (`PLAN_RATING_REQUIRED`). `returnTo` (contract 219) is the step a
+ * tester's completion names for its task to return to should the check states fail the testing
+ * step, by its place in the issue's running task, 1 for its first: a whole number of 1 or more
+ * (`INVALID_RETURN_TO`), carried only by a completion with no verdict. The daemon refuses it on
+ * every completion but a tester's (`RETURN_TO_NEEDS_FAIL`), a production check's report among
+ * them, whatever its verdict, and a verdict beside it on a phase completion (`VERDICT_NOT_TAKEN`).
+ * Which step the task then runs is the workflow's to decide, once the states fail the step. */
 export const LegionHandoffCompleteRequest = z
   .strictObject({
     grantId: nonEmptyString,
@@ -2801,8 +2806,8 @@ export const LegionHandoffCompleteRequest = z
     (request) => legionPlanRatingLoneField(request.planRating, request.planReason) === undefined,
     { message: "planRating and planReason appear together" }
   )
-  .refine((request) => request.returnTo === undefined || request.verdict === "fail", {
-    message: "returnTo is carried only by a completion with the verdict fail",
+  .refine((request) => request.returnTo === undefined || request.verdict === "", {
+    message: "returnTo is carried only by a tester's completion, which names no verdict",
   })
   .refine(
     (request) =>

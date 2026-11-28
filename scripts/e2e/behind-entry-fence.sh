@@ -5,11 +5,13 @@
 # entry's task asks for is the work that turn did, and it is refused when it names a head the record
 # has left or no commit at all, or when the move that entered the phase again moved the issue back,
 # where the entry exists to have the work done again and no verdict on either head answers for it.
-# Every completion is of the tester's first entry. The tester asks for the work back with its own
-# backward move to implementing and ends its turn, since the daemon sends no role a task that adopts
-# the issue's working copy while another role of the issue is in a turn; the implementer pushes a
-# head of its own and completes, which enters testing again by a forward move while the tester is
-# in a turn of its own that no task of the new entry has reached; then the tester's behind
+# Every completion is of the tester's first entry. The tester records a fail of the issue's check at
+# the head it tested and completes there, which sends the work back to implementing, and ends its
+# turn, since the daemon sends no role a task that adopts the issue's working copy while another
+# role of the issue is in a turn (the tester has no backward move of its own out of testing: its
+# step ends by its checks' states); the implementer pushes a head of its own and completes, which
+# enters testing again by a forward move while the tester is in a turn of its own that no task of
+# the new entry has reached; then the tester's behind
 # completion naming the head it tested is answered 409 HANDOFF_STALE_ENTRY naming both heads
 # (`stale head refused`), the same completion naming no commit is answered 409 HANDOFF_STALE_ENTRY
 # (`behind with no head`), and the same completion naming the head the record holds is answered 200,

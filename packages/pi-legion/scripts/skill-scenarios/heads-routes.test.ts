@@ -1,149 +1,36 @@
-// The GitHub a heads scenario's agent reads, rendered from a world given here as data: each call
-// is answered by the first route whose match names it, as gh-standin.ts picks one, and each row
-// asserts GitHub's answer to that call. rig.test.ts's heads_routes rows run the same renderer on
-// the world rig.sh collects from a real fixture.
+// The GitHub a heads scenario's agent reads, rendered from the world heads-routes-fixture.ts
+// gives as data: each call is answered by the first route whose match names it, as gh-standin.ts
+// picks one, and each row asserts GitHub's answer to that call. The reads of a head's files, and
+// of the workflow runs, are heads-routes-files.test.ts's rows, over the same fixture.
+// rig.test.ts's heads_routes rows run the same renderer on the world rig.sh collects from a real
+// fixture.
 import { expect, setDefaultTimeout, test } from "bun:test";
 import path from "node:path";
 import { spawnWithin } from "@legion/test-fixtures/row-clock";
-import { type HeadsWorld, type Route, type RouteTable, renderHeadsRoutes } from "./heads-routes";
+import { type Route, renderHeadsRoutes } from "./heads-routes";
+import {
+  answer,
+  DIFF702,
+  DIFF703,
+  DOCS,
+  GO_CHECKS,
+  H702,
+  H703,
+  MAIN,
+  notFound,
+  plain,
+  README703,
+  routeOf,
+  TREE702,
+  USAGE,
+  USAGE_FAILED,
+  USAGE_LOG,
+  world,
+} from "./heads-routes-fixture";
 import { fileRowLimit, SCRIPT_RUN } from "./test-limit";
 
 // One row runs the renderer as a bun process of its own, a start a loaded machine stretches.
 setDefaultTimeout(fileRowLimit({ ...SCRIPT_RUN, part: "heads-routes.ts" }));
-
-const MAIN = "1".repeat(40);
-const H702 = "2".repeat(40);
-const H703 = "3".repeat(40);
-const BASE_TREE = "4".repeat(40);
-const TREE702 = "5".repeat(40);
-const TREE703 = "6".repeat(40);
-const DOCS_TREE = "7".repeat(40);
-const README = "a".repeat(40);
-const README703 = "b".repeat(40);
-const USAGE = "c".repeat(40);
-const USAGE_TEXT = "# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n";
-
-/** A file's bytes in base64 as heads_routes collects them: 60 characters a line, and a newline. */
-const base64 = (text: string) =>
-  `${(
-    Buffer.from(text)
-      .toString("base64")
-      .match(/.{1,60}/g) ?? []
-  ).join("\n")}\n`;
-const blob = (file: string, sha: string, text: string) => ({
-  path: file,
-  mode: "100644",
-  type: "blob",
-  sha,
-  size: Buffer.byteLength(text),
-  content: base64(text),
-});
-const DIFF702 =
-  "diff --git a/docs/usage.md b/docs/usage.md\nnew file mode 100644\nindex 0000000..cccccc\n--- /dev/null\n+++ b/docs/usage.md\n@@ -0,0 +1,3 @@\n+# Usage\n+\n+Run `widgets --help` to list every command of the widgets CLI.\n";
-const DIFF703 =
-  "diff --git a/README.md b/README.md\nindex aaaaaa..bbbbbb 100644\n--- a/README.md\n+++ b/README.md\n@@ -1,3 +1,5 @@\n # widgets\n \n Small CLI helpers.\n+\n+Usage: see docs/usage.md.\n";
-
-/** The world of reviewer-own-head: #702 adds docs/usage.md, #703 points the README at it, the
- * base has no protection, and `named` and `approved` set what the case changes. */
-function world(
-  options: {
-    named?: HeadsWorld["pulls"][number]["named"];
-    approved?: boolean;
-    only702?: boolean;
-  } = {}
-): HeadsWorld {
-  const pulls: HeadsWorld["pulls"] = [
-    {
-      number: 702,
-      head: H702,
-      body: "Dispatch: ACME-7\n\n## For the reviewer\n",
-      files: [{ path: "docs/usage.md", additions: 3, deletions: 0 }],
-      jobs: ["lint", "test"],
-      named: options.named ?? [],
-      diff: DIFF702,
-      url: "https://github.com/example/widgets/pull/702",
-      subject: "docs: the usage page of the widgets CLI (ACME-7)",
-    },
-    {
-      number: 703,
-      head: H703,
-      body: "Dispatch: ACME-7\n\n## Verification\n",
-      files: [{ path: "README.md", additions: 2, deletions: 0 }],
-      jobs: ["lint", "test"],
-      named: [],
-      diff: DIFF703,
-      url: "https://github.com/example/widgets/pull/703",
-      subject: "docs: point the README at the usage page (ACME-7)",
-    },
-  ];
-  return {
-    repo: "example/widgets",
-    key: "ACME-7",
-    title: "A usage page",
-    base: "main",
-    main: MAIN,
-    approved: options.approved ?? false,
-    at: "2026-11-22T12:00:00Z",
-    pulls: options.only702 === true ? pulls.slice(0, 1) : pulls,
-    branches: [
-      { name: "legion/ACME-7-702", sha: H702 },
-      { name: "legion/ACME-7-703", sha: H703 },
-      { name: "main", sha: MAIN },
-    ],
-    trees: [
-      {
-        sha: MAIN,
-        tree: BASE_TREE,
-        message: "init\n",
-        parent: "",
-        entries: [blob("README.md", README, "# widgets\n\nSmall CLI helpers.\n")],
-      },
-      {
-        sha: H702,
-        tree: TREE702,
-        message: "docs: the usage page of the widgets CLI (ACME-7)\n",
-        parent: MAIN,
-        entries: [
-          blob("README.md", README, "# widgets\n\nSmall CLI helpers.\n"),
-          { path: "docs", mode: "040000", type: "tree", sha: DOCS_TREE, size: 0, content: null },
-          blob("docs/usage.md", USAGE, USAGE_TEXT),
-        ],
-      },
-      {
-        sha: H703,
-        tree: TREE703,
-        message: "docs: point the README at the usage page (ACME-7)\n",
-        parent: MAIN,
-        entries: [
-          blob(
-            "README.md",
-            README703,
-            "# widgets\n\nSmall CLI helpers.\n\nUsage: see docs/usage.md.\n"
-          ),
-        ],
-      },
-    ],
-  };
-}
-
-const GO_CHECKS = { name: "go-checks", checkRun: 9101, run: 41, suite: 41, status: "in_progress" };
-const DOCS = { name: "docs", checkRun: 9001, run: 40, suite: 40, status: "completed" };
-
-/** The route gh-standin.ts answers `call` with: the first whose match names it. */
-function routeOf(table: RouteTable, call: string): Route {
-  const route = table.routes.find((candidate) => new RegExp(candidate.match, "s").test(call));
-  if (route === undefined) throw new Error(`no route names: ${call}`);
-  return route;
-}
-/** The answer gh-standin.ts gives `call` before any `--json` or `--jq`. */
-const answer = (table: RouteTable, call: string) => routeOf(table, call).stdout;
-const notFound = (doc: string) => ({
-  stdout: { message: "Not Found", documentation_url: doc, status: "404" },
-  stderr: "gh: Not Found (HTTP 404)\n",
-  exit: 1,
-  status: 404,
-});
-const plain = renderHeadsRoutes(world());
 
 // Catches: a `gh pr` read answered for the wrong pull request, a number the world does not hold
 // answered as if it did, or a base said to require checks.
@@ -272,6 +159,70 @@ test("a named job in progress: gh pr checks exits 8, UNSTABLE, PENDING, in_progr
   const passed = renderHeadsRoutes(world({ named: [DOCS] }));
   expect(routeOf(passed, "gh pr checks").exit).toBe(0);
   expect(routeOf(passed, "gh pr checks 703").exit).toBe(0);
+});
+
+// Catches: a named job that ended without a pass read as passed (the routes knew only success and
+// in progress), and a log of the failed job that no read of gh answers, where the role texts send
+// the implementer and the reviewer to read it. A job that failed at #703's head alone leaves #702's
+// reads passed.
+test("a named job that failed: gh pr checks exits 1, its run and job fail, and its log is read", () => {
+  const failed = renderHeadsRoutes(world({ named: [USAGE_FAILED] }));
+  expect(routeOf(failed, "gh pr checks 702")).toMatchObject({
+    stdout:
+      "lint\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\ntest\tpass\t10s\thttps://github.com/example/widgets/actions/runs/1\nusage-test\tfail\t10s\thttps://github.com/example/widgets/actions/runs/42/job/9201",
+    exit: 1,
+  });
+  expect(answer(failed, "gh pr view")).toMatchObject({
+    mergeStateStatus: "UNSTABLE",
+    statusCheckRollup: [
+      { name: "lint", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "test", status: "COMPLETED", conclusion: "SUCCESS" },
+      { name: "usage-test", status: "COMPLETED", conclusion: "FAILURE" },
+    ],
+  });
+  expect(answer(failed, "gh api graphql -f query=q")).toMatchObject({
+    data: {
+      repository: {
+        pullRequest: {
+          commits: { nodes: [{ commit: { statusCheckRollup: { state: "FAILURE" } } }] },
+        },
+      },
+    },
+  });
+  expect(answer(failed, `gh api repos/example/widgets/commits/${H702}/check-runs`)).toMatchObject({
+    check_runs: [
+      { id: 8000 },
+      { id: 8001 },
+      { id: 9201, status: "completed", conclusion: "failure" },
+    ],
+  });
+  expect(answer(failed, "gh api repos/example/widgets/actions/runs/42")).toMatchObject({
+    id: 42,
+    status: "completed",
+    conclusion: "failure",
+  });
+  expect(answer(failed, "gh api repos/example/widgets/actions/jobs/9201")).toMatchObject({
+    id: 9201,
+    conclusion: "failure",
+  });
+  for (const call of [
+    "gh api repos/example/widgets/actions/jobs/9201/logs",
+    "gh run view 42 --log-failed",
+    "gh run view 42 --repo example/widgets --log",
+    "gh run view --job 9201 --log",
+    "gh run view --log-failed --job=9201",
+  ])
+    expect(routeOf(failed, call)).toMatchObject({ stdout: USAGE_LOG });
+  expect(answer(failed, "gh run view 42")).toContain("X usage-test");
+  const elsewhere = renderHeadsRoutes(
+    world({
+      named: [{ ...DOCS, checkRun: 9202, run: 43, suite: 43, name: "usage-test" }],
+      named703: [USAGE_FAILED],
+    })
+  );
+  expect(routeOf(elsewhere, "gh pr checks 702").exit).toBe(0);
+  expect(routeOf(elsewhere, "gh pr checks 703").exit).toBe(1);
+  expect(routeOf(elsewhere, "gh run view --job 9201 --log")).toMatchObject({ stdout: USAGE_LOG });
 });
 
 // Catches: workflow runs or jobs of a head that disagree with its check runs, a named job served
@@ -596,6 +547,50 @@ test("the repository, its branches, refs, protection and rules, /user, and anoth
   );
 });
 
+// Catches, in this row and the three after it: a call the architects of the ci-check-fail worlds
+// made that the world had no route for, each a rig error. Each is answered as gh answers it off a
+// terminal. Here `gh repo view` with no `--json`: the repository's name, its description and the
+// base's README; a repository not the world's has no route.
+test("gh repo view with no --json prints the name, the description and the README", () => {
+  const readme = "name:\texample/widgets\ndescription:\t\n--\n# widgets\n\nSmall CLI helpers.\n\n";
+  expect(answer(plain, "gh repo view example/widgets")).toBe(readme);
+  expect(answer(plain, "gh repo view")).toBe(readme);
+  expect(answer(plain, "gh repo view https://github.com/example/widgets")).toBe(readme);
+  expect(answer(plain, "gh repo view example/widgets --json defaultBranchRef")).toMatchObject({
+    nameWithOwner: "example/widgets",
+  });
+  expect(() => routeOf(plain, "gh repo view skills-rig/project")).toThrow("no route names");
+});
+
+// Catches: `gh repo clone` with no route. The route asks the stand-in for its clone of the run's
+// remote (gh-standin.test.ts runs it); a repository not the world's has no route.
+test("gh repo clone of the world's repository is the stand-in's clone", () => {
+  for (const call of [
+    "gh repo clone example/widgets",
+    "gh repo clone example/widgets w702 -- -q",
+    "gh repo clone https://github.com/example/widgets.git repo -- --depth 1",
+  ])
+    expect(routeOf(plain, call)).toMatchObject({ clone: true });
+  expect(() => routeOf(plain, "gh repo clone skills-rig/project")).toThrow("no route names");
+});
+
+// Catches: `gh pr close` with no route, and a close answered for another pull request than the
+// one it names. A number the world holds no pull request of, and a close that would delete the
+// branch, have no route.
+test("gh pr close of a pull request the world holds prints gh's line", () => {
+  for (const [call, pr] of [
+    ["gh pr close 703 -R example/widgets --comment superseded", 703],
+    ["gh pr close -R example/widgets 703 --comment x", 703],
+    ["gh pr close #702", 702],
+    ["gh pr close https://github.com/example/widgets/pull/703", 703],
+  ] as const)
+    expect(routeOf(plain, call)).toMatchObject({
+      stderr: `✓ Closed pull request example/widgets#${pr} (A usage page (ACME-7))\n`,
+    });
+  expect(() => routeOf(plain, "gh pr close 704")).toThrow("no route names");
+  expect(() => routeOf(plain, "gh pr close 703 --delete-branch")).toThrow("no route names");
+});
+
 // Catches: a compare of the base with a head that is not GitHub's, and a compare with a commit
 // the world does not hold answered as if it did (an architect compared the base with one).
 test("compare: the base with each head by name or sha, and GitHub's 404 for an unknown commit", () => {
@@ -632,137 +627,6 @@ test("compare: the base with each head by name or sha, and GitHub's 404 for an u
     const { match: _compare, ...refusal } = routeOf(plain, call);
     expect({ call, refusal }).toEqual({ call, refusal: notFound(doc) });
   }
-});
-
-// Catches: a read of a file at a head (contents, raw or JSON, a directory, a tree, a blob, the
-// commit) with no route, bytes that are not the commit's own, and a path or object no commit
-// holds answered instead of GitHub's 404.
-test("the files of the base and each head: contents, raw bytes, listings, trees, blobs, commits", () => {
-  const usage = answer(plain, `gh api repos/example/widgets/contents/docs/usage.md?ref=${H702}`);
-  expect(usage).toEqual({
-    type: "file",
-    encoding: "base64",
-    size: Buffer.byteLength(USAGE_TEXT),
-    name: "usage.md",
-    path: "docs/usage.md",
-    content: base64(USAGE_TEXT),
-    sha: USAGE,
-    url: `https://api.github.com/repos/example/widgets/contents/docs/usage.md?ref=${H702}`,
-    git_url: `https://api.github.com/repos/example/widgets/git/blobs/${USAGE}`,
-    html_url: `https://github.com/example/widgets/blob/${H702}/docs/usage.md`,
-    download_url: `https://raw.githubusercontent.com/example/widgets/${H702}/docs/usage.md`,
-  });
-  expect(
-    answer(
-      plain,
-      "gh api -H Accept: application/vnd.github.raw repos/example/widgets/contents/docs/usage.md?ref=legion%2FACME-7-702"
-    )
-  ).toBe(USAGE_TEXT);
-  // The base answers with no ref at all, and its file there is the base's own.
-  expect(answer(plain, "gh api repos/example/widgets/contents/README.md")).toMatchObject({
-    sha: README,
-  });
-  expect(
-    answer(plain, `gh api repos/example/widgets/contents/README.md?ref=${H703}`)
-  ).toMatchObject({
-    sha: README703,
-  });
-  expect(answer(plain, "gh api repos/example/widgets/contents/docs?ref=legion/ACME-7-702")).toEqual(
-    [
-      {
-        type: "file",
-        size: Buffer.byteLength(USAGE_TEXT),
-        name: "usage.md",
-        path: "docs/usage.md",
-        sha: USAGE,
-        url: "https://api.github.com/repos/example/widgets/contents/docs/usage.md?ref=legion/ACME-7-702".replace(
-          "legion/ACME-7-702",
-          H702
-        ),
-      },
-    ]
-  );
-  expect(answer(plain, `gh api repos/example/widgets/contents/?ref=${H702}`)).toMatchObject([
-    { type: "file", name: "README.md" },
-    { type: "dir", name: "docs", size: 0 },
-  ]);
-  const { match: _missing, ...missing } = routeOf(
-    plain,
-    `gh api repos/example/widgets/contents/no/such/file.md?ref=${H702}`
-  );
-  expect(missing).toEqual(
-    notFound("https://docs.github.com/rest/repos/contents#get-repository-content")
-  );
-  expect(answer(plain, `gh api repos/example/widgets/git/trees/${H702}?recursive=1`)).toMatchObject(
-    {
-      sha: TREE702,
-      truncated: false,
-      tree: [
-        { path: "README.md", type: "blob", sha: README, size: 30 },
-        {
-          path: "docs",
-          mode: "040000",
-          type: "tree",
-          sha: DOCS_TREE,
-          url: `https://api.github.com/repos/example/widgets/git/trees/${DOCS_TREE}`,
-        },
-        { path: "docs/usage.md", type: "blob", sha: USAGE },
-      ],
-    }
-  );
-  expect(answer(plain, "gh api repos/example/widgets/git/trees/legion/ACME-7-702")).toMatchObject({
-    sha: TREE702,
-    tree: [{ path: "README.md" }, { path: "docs" }],
-  });
-  expect(answer(plain, `gh api repos/example/widgets/git/trees/${DOCS_TREE}`)).toEqual({
-    sha: DOCS_TREE,
-    url: `https://api.github.com/repos/example/widgets/git/trees/${DOCS_TREE}`,
-    truncated: false,
-    tree: [
-      {
-        path: "usage.md",
-        mode: "100644",
-        type: "blob",
-        sha: USAGE,
-        url: `https://api.github.com/repos/example/widgets/git/blobs/${USAGE}`,
-        size: Buffer.byteLength(USAGE_TEXT),
-      },
-    ],
-  });
-  expect(routeOf(plain, `gh api repos/example/widgets/git/trees/${"e".repeat(40)}`).status).toBe(
-    404
-  );
-  expect(answer(plain, `gh api repos/example/widgets/git/blobs/${USAGE}`)).toEqual({
-    sha: USAGE,
-    node_id: "B_rig",
-    size: Buffer.byteLength(USAGE_TEXT),
-    url: `https://api.github.com/repos/example/widgets/git/blobs/${USAGE}`,
-    content: base64(USAGE_TEXT),
-    encoding: "base64",
-  });
-  expect(routeOf(plain, `gh api repos/example/widgets/git/blobs/${"e".repeat(40)}`).status).toBe(
-    404
-  );
-  expect(answer(plain, "gh api repos/example/widgets/commits/legion/ACME-7-702")).toMatchObject({
-    sha: H702,
-    commit: {
-      message: "docs: the usage page of the widgets CLI (ACME-7)\n",
-      tree: { sha: TREE702 },
-    },
-    parents: [{ sha: MAIN }],
-    files: [{ filename: "docs/usage.md", status: "added", changes: 3 }],
-  });
-  expect(answer(plain, "gh api repos/example/widgets/commits/main")).toMatchObject({
-    sha: MAIN,
-    parents: [],
-    files: [],
-  });
-  expect(answer(plain, `gh api repos/example/widgets/git/commits/${H703}`)).toEqual({
-    sha: H703,
-    message: "docs: point the README at the usage page (ACME-7)\n",
-    tree: { sha: TREE703 },
-    parents: [{ sha: MAIN }],
-  });
 });
 
 // Catches: a renderer whose command line reads no world, or takes a world that lacks a field

@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The reviewer's role prompt says how it refuses an approval while a `before_merge` check of the
+  issue does not read yes at the reviewed head: with a `REQUEST_CHANGES` it submits at once,
+  naming each such check and its state there. A check of the issue with no `ci_check` that does not
+  read yes is not the required check with no run at the head that the worker skill waits on, so it
+  takes no `WAITING` line. The rule for an issue with no Verification document, or none with a
+  `before_merge` check, is now a paragraph of its own, so the paragraph that names that gap still
+  asks for no changes.
+time: 2026-11-21T23:02:25Z
+custom:
+    Issue: check-states-reviewer-refusal

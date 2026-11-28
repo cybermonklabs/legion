@@ -25,6 +25,7 @@ EXCLUDED = excluded('worker_image', "gates worker-image.yaml's image build; .git
     'packages/envoy/*',
     'packages/envoy/agentloop/**',
     'packages/envoy/awsbody/**',
+    'packages/envoy/cicase/**',
     'packages/envoy/cipheraddr/**',
     'packages/envoy/cipherclient/**',
     'packages/envoy/ciphertest/**',

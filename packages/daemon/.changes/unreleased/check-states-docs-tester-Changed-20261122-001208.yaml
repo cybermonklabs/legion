@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The guides and the live proofs' descriptions no longer say a tester sends a verdict or moves its
+  issue back out of testing. The guide to a conflict that arrives while another role holds the
+  phase says the tester records a fail of each check it cannot verify, with that evidence, and
+  completes, and the issue returns to `implementing` naming those checks, since the daemon refuses
+  the tester's backward move out of testing. The e2e guide and the behind-entry and conflict live
+  proofs say a refused completion leaves the tester's phases row with no record and no commit, as
+  the proofs assert, since the row holds no verdict any more.
+time: 2026-11-22T00:12:08Z
+custom:
+  Issue: check-states-docs-tester

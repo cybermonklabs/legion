@@ -36,6 +36,9 @@ export interface Example {
   readonly spec: string;
   /** The design the architect adds to the spec, with one decision block. */
   readonly design: string;
+  /** The issue's Verification document, which the architect writes with its design: one
+   *  `before_merge` check for each requirement of the spec, which `key`, the issue's key, names. */
+  readonly checks: (key: string) => string;
   /** The decision block's id and the option the human picks. */
   readonly decision: { readonly id: string; readonly pick: string };
   readonly approvalSummary: string;
@@ -53,11 +56,19 @@ export const SAVED_CART: Example = {
 
 A signed-in shopper can save the cart they are building and pick it up again later, on any device.
 
-## Acceptance criteria
+## Requirements
 
-- A shopper with items in their cart can save it from the cart page.
-- A saved cart opens from their account on another device, with the same items and quantities.
-- A saved cart untouched for 30 days is removed, and the shopper is emailed a week before.
+:::requirement{#r1}
+A signed-in shopper saves the cart they are building, and the saved cart holds every line of it and its quantity.
+:::
+
+:::requirement{#r2}
+A saved cart belongs to the shopper's account rather than to the device that saved it, so any device they sign in on opens it.
+:::
+
+:::requirement{#r3}
+A saved cart nobody has touched for 30 days is removed, and the shopper is told a week before it goes.
+:::
 `,
   design: `## Design
 
@@ -67,10 +78,24 @@ current cart, after asking first when the current cart has items.
 :::ask{#cart-storage urgency="high" multiple="false"}
 Where should a saved cart live?
 
-I recommend Server: the second criterion needs the cart on another device, which browser storage cannot give.
+I recommend Server: the second requirement needs the cart on any device the shopper signs in on, which browser storage cannot give.
 
 - Server: one saved cart per account in the database, so any device can open it
 - Browser: local storage on the device that saved it, with no schema change
+:::
+`,
+  checks: (key) => `# Verification
+
+:::check{#c-save serves="dispatch://${key}/spec#b-r1" surface="browser" run="bun run e2e -- e2e/saved-cart.e2e.ts" when="before_merge" negative_control="Save the cart without its quantities, and the test fails on the first line it reads back."}
+A shopper saves a two-line cart from the cart page, and the saved cart holds both lines at their quantities.
+:::
+
+:::check{#c-device serves="dispatch://${key}/spec#b-r2" surface="browser" run="bun run e2e -- e2e/saved-cart.e2e.ts" when="before_merge" negative_control="Keep the saved cart in the browser's own storage, and the second browser opens no cart."}
+A cart saved in one browser opens in a second browser signed in to the same account, with the same lines and quantities.
+:::
+
+:::check{#c-expiry serves="dispatch://${key}/spec#b-r3" surface="cli" run="go test ./internal/carts -run TestAnUntouchedCartExpires" when="before_merge" negative_control="Send no warning email, and the test fails at day 23."}
+A cart untouched for 23 days gets its shopper a warning email, and one untouched for 30 days is removed.
 :::
 `,
   decision: { id: "cart-storage", pick: "Server" },
@@ -80,7 +105,7 @@ I recommend Server: the second criterion needs the cart on another device, which
   head: "9c41e07",
   merge: "4b7d2a1",
   acceptance:
-    "Signed off. All three acceptance criteria are met: the tester's handoff and both E2E lines prove them at 9c41e07, which the reviewer approved with no open threads. Retro and the merge follow; the tester's production check follows the merge, on the pull request.",
+    "Signed off. Each requirement's `before_merge` check reads yes at 9c41e07 in `dispatch results`, and the reviewer approved that head with no open threads. Retro and the merge follow; the tester's production check follows the merge, on the pull request.",
 };
 
 export const DELIVERY_DATE: Example = {
@@ -89,10 +114,15 @@ export const DELIVERY_DATE: Example = {
 
 A shopper sees when their order will arrive before they pay.
 
-## Acceptance criteria
+## Requirements
 
-- Each shipping option at checkout shows the date the order would arrive.
-- Choosing another shipping option shows that option's date.
+:::requirement{#r1}
+Checkout shows a delivery date beside every shipping option, before the shopper pays.
+:::
+
+:::requirement{#r2}
+Each date is the one that shipping option would deliver on, so a shopper who picks another option sees that option's date.
+:::
 `,
   design: `## Design
 
@@ -108,6 +138,16 @@ I recommend Carrier: its estimate already counts the warehouse's cut-off time an
 - Table: business days per shipping option, kept in the store's settings
 :::
 `,
+  checks: (key) => `# Verification
+
+:::check{#c-dates serves="dispatch://${key}/spec#b-r1" surface="browser" run="bun run e2e -- e2e/checkout-dates.e2e.ts" when="before_merge" negative_control="Leave one shipping option without its date, and the test fails naming it."}
+Checkout shows a delivery date beside each shipping option, above the button that pays.
+:::
+
+:::check{#c-option serves="dispatch://${key}/spec#b-r2" surface="browser" run="bun run e2e -- e2e/checkout-dates.e2e.ts" when="before_merge" negative_control="Show the first option's date beside every option, and the test fails on the second."}
+Choosing another shipping option shows the carrier's date for that option.
+:::
+`,
   decision: { id: "date-source", pick: "Carrier" },
   approvalSummary:
     "Checkout asks the carrier for each shipping option's delivery date when it loads, and shows the date beside the option.",
@@ -115,7 +155,7 @@ I recommend Carrier: its estimate already counts the warehouse's cut-off time an
   head: "2f8e6c1",
   merge: "7d03b9e",
   acceptance:
-    "Signed off. Both acceptance criteria are met: the tester's handoff and both E2E lines prove them at 2f8e6c1, which the reviewer approved with no open threads. Retro and the merge follow; the tester's production check follows the merge, on the pull request.",
+    "Signed off. Each requirement's `before_merge` check reads yes at 2f8e6c1 in `dispatch results`, and the reviewer approved that head with no open threads. Retro and the merge follow; the tester's production check follows the merge, on the pull request.",
 };
 
 /** An example issue in Dispatch: its key and its spec document. */
@@ -144,7 +184,12 @@ export async function seedProject(keys: readonly string[]): Promise<void> {
   await api.createProject({ key: PROJECT, name: "Storefront" });
 }
 
-/** A human files the issue with its spec. */
+/** A human files the issue with its spec, which states its requirements. The Spec tab lists them
+ *  under the document (`web/src/features/issue/SpecRequirements.tsx`), read out of the block
+ *  index that the accepted write fills, so this waits until Dispatch lists each one: a page opened
+ *  before then shows the panel's empty state, which a shot or a walkthrough section refuses. Each
+ *  requirement is flagged `has no check` until the architect writes the issue's Verification
+ *  document (`writeDesign`). */
 export async function file(example: Example): Promise<Tracked> {
   const api = await dispatchApi();
   const issue = await api.createIssue({
@@ -152,6 +197,10 @@ export async function file(example: Example): Promise<Tracked> {
     spec: example.spec,
     title: example.title,
   });
+  const requirements = example.spec.match(/^:::requirement\{/gm)?.length ?? 0;
+  await expect
+    .poll(async () => (await api.getIssueCoverage(issue.key)).requirements?.length ?? 0)
+    .toBe(requirements);
   return { key: issue.key, spec: issue.primary_artifact_id };
 }
 
@@ -168,8 +217,10 @@ export async function admit(issue: Tracked): Promise<void> {
   await api.claimIssue(issue.key, agent(issue.key, "architect"));
 }
 
-/** The architect writes its design, with one decision block, into the spec; the block becomes an
- *  ask once the document service settles the edit. */
+/** The architect writes its design, with one decision block, into the spec, and the issue's
+ *  Verification document, one `before_merge` check for each requirement. The block becomes an ask
+ *  once the document service settles the edit, and each requirement's `has no check` flag clears
+ *  once Dispatch indexes the check that serves it. */
 export async function writeDesign(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await api.editArtifact(
@@ -177,7 +228,18 @@ export async function writeDesign(issue: Tracked, example: Example): Promise<voi
     { ops: [{ after: "end", markdown: example.design, op: "insert" }] },
     agent(issue.key, "architect")
   );
+  await api.createIssueArtifact(
+    issue.key,
+    { content: example.checks(issue.key), name: "verification.md" },
+    agent(issue.key, "architect")
+  );
   await expect.poll(async () => (await api.getIssue(issue.key)).open_asks?.length ?? 0).toBe(1);
+  await expect
+    .poll(async () => {
+      const requirements = (await api.getIssueCoverage(issue.key)).requirements ?? [];
+      return requirements.length > 0 && requirements.every((row) => (row.checks ?? 0) > 0);
+    })
+    .toBe(true);
 }
 
 /** The number of versions the spec has, to wait for the one an answer writes. */
@@ -248,9 +310,11 @@ export async function setStatus(issue: Tracked, status: string): Promise<void> {
   await api.patchIssue(issue.key, { status }, DAEMON);
 }
 
-/** The reviewer approved, so on the default steps the issue is in accepting: the architect posts
- *  its acceptance of the reviewed head and signs off, and, the acceptance being the task's last
- *  step, the daemon moves the issue to retro. */
+/** The reviewer approved, so on the default steps the issue is in accepting: the architect reads
+ *  the state of each `before_merge` check at the reviewed head in `dispatch results`, posts its
+ *  acceptance of that head and signs off, and, the acceptance being the task's last step, the
+ *  daemon moves the issue to retro. The example records no check result, so it shows the
+ *  acceptance alone. */
 export async function accept(issue: Tracked, example: Example): Promise<void> {
   const api = await dispatchApi();
   await api.createComment(issue.key, { body: example.acceptance }, agent(issue.key, "architect"));

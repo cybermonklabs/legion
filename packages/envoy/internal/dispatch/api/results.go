@@ -18,7 +18,6 @@ import (
 	"golang.org/x/text/unicode/norm"
 
 	"github.com/sjawhar/envoy/internal/dispatch/access"
-	"github.com/sjawhar/envoy/internal/dispatch/asof"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -567,95 +566,15 @@ func (s *server) listCheckResults(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	artifact, held, err := s.verificationDocument(r.Context(), s.deps.Store.Pool, issueKey, "")
+	body, held, err := s.answerIssueChecks(r.Context(), issueKey, at, s.readDisplayTrees(r.Context(), wantsDisplayTrees(r)), nil, everyCheckWhen)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	body := issueCheckResults{Checks: []model.CheckBlock{}, Issue: issueKey, VerificationArtifactID: artifact.ID}
 	if !held {
 		WriteJSON(w, http.StatusOK, body)
 		return
 	}
-	trees := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	_, atCut := asof.CutFrom(r.Context())
-	var checks []model.CheckBlock
-	if atCut {
-		checks, err = s.checkBlocksAtTheCut(r.Context(), artifact, trees)
-	} else {
-		checks, err = s.checkBlocksOf(r.Context(), s.deps.Store.Pool, artifact, trees)
-	}
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	recorded, err := loadCheckResults(r.Context(), s.deps.Store.Pool, artifact.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	retracted, err := loadCheckResultRetractions(r.Context(), s.deps.Store.Pool, artifact.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	for index := range checks {
-		results := recorded[checks[index].BlockID]
-		if results == nil {
-			results = []model.CheckResult{}
-		}
-		for result := range results {
-			if retraction, held := retracted[results[result].ID]; held {
-				results[result].Retracted = &retraction
-			}
-		}
-		checks[index].Results = results
-	}
-	// The reader learns the heads GitHub names before any check CI proves is derived
-	// (deriveCIResults). A derived result is read at the heads of the issue's pull requests, and a
-	// head this read's read-through learns may be one of them: derived first, a first read would
-	// answer that Dispatch holds no head while it names the head it learned as another check's
-	// basis. A derived result is at one of those heads, which the learned heads already hold, so it
-	// leaves nothing to learn. Every head GitHub has to be asked for is learned before the first
-	// check is answered, and where the learn stored or learned any head every check's bases are read
-	// again, so each check of the answer is answered on the heads as they stand after this read's
-	// read-throughs, and two `before_merge` checks of one issue name one list of bases and not two
-	// (comparisonReader.learn). The reader holds the read's memo of merge times too
-	// (comparisonReader.fills), so the CI read of each check and the comparison after it learn each
-	// merge time once (fillMergeTimes). A read at a cut reads nothing from GitHub, so it learns no
-	// head, derives no result and compares nothing (checksAtTheCut).
-	if !atCut {
-		reader := newComparisonReader(r.Context(), s, at)
-		reader.learn(r.Context(), checks)
-		headCI, err := s.deriveCIResults(r.Context(), reader, issueKey, checks)
-		if err != nil {
-			s.writeHandlerError(w, err)
-			return
-		}
-		reader.headCI = headCI
-		for index := range checks {
-			reader.answer(r.Context(), &checks[index])
-		}
-		answerCompatibilityCurrency(checks, at)
-		keepFieldsOlderCommandsRead(checks)
-	}
-	// Each result's observed text is registered for its tree once no check's results are copied
-	// any more, since what is registered is a pointer into the row: deriveCIResults replaces a
-	// check's results, and keepFieldsOlderCommandsRead moves them into new lists, results and the
-	// recorded_results of a check CI proves, whose results take their trees as well.
-	for index := range checks {
-		for result := range checks[index].Results {
-			trees.text(&checks[index].Results[result].ObservedTree, checks[index].Results[result].Observed)
-		}
-		for result := range checks[index].RecordedResults {
-			trees.text(&checks[index].RecordedResults[result].ObservedTree, checks[index].RecordedResults[result].Observed)
-		}
-	}
-	if atCut {
-		checksAtTheCut(r.Context(), checks)
-	}
-	body.Checks = checks
-	trees.resolve()
 	if s.stateHidden() {
 		hidden, err := withoutComputedState(body)
 		if err != nil {

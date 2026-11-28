@@ -379,7 +379,7 @@ func (r *parentWaitsLive) releaseMovesTheRoot() {
 func (r *parentWaitsLive) endedPhaseRefused() {
 	t := r.t
 	handoff := r.imp.handoff("implement")
-	status, failure := r.imp.complete("implemented the parent's own part", parentWaitsHead, "", handoff)
+	status, failure := r.imp.complete("implemented the parent's own part", parentWaitsHead, handoff)
 	if status != http.StatusConflict || failure.Code != "HANDOFF_NOT_CURRENT_PHASE" {
 		t.Fatalf("the implementer's completion of implementing at %s naming record %s = %d %s %s, want 409 HANDOFF_NOT_CURRENT_PHASE",
 			parentWaitsHead, handoff, status, failure.Code, failure.Error)

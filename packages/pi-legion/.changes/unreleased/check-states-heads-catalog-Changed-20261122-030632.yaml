@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The skill-scenario rig keeps the worlds of its heads scenarios in one catalog,
+  `heads-scenarios.txt`, one world a line as `<scenario> [<case>]` in the order a batch runs them.
+  rig.sh's batch and run, heads-world.ts's check of a world, seed.ts's usage and score.ts's reading
+  of a run's name all take the cases from it, so a new case is one line there and no reader keeps
+  a list of its own. Every batch runs the same runs as before, and every score reads the same rows.
+  `seed.ts heads-events` now refuses a world it records no results for, where it recorded another
+  world's results before.
+time: 2026-11-22T03:06:32Z
+custom:
+    Issue: check-states-heads-catalog

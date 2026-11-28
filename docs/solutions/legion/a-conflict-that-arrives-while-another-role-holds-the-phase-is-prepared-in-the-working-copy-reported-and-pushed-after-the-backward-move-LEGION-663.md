@@ -26,9 +26,12 @@ related_issues:
   resolve, run the checks and the scratch proof, compute both fingerprints — all of it
   in the working copy, which is yours to shape and nobody else reads until it is pushed. Then
   report to the architect's role topic: the prepared commit's SHA and parents, the fingerprints,
-  what the checks showed, and that the issue is in `<phase>`. The role holding the phase calls
-  `request_backward_move` to `implementing` (an architect cannot), and the daemon's task for the
-  round arrives in your own session.
+  what the checks showed, and that the issue is in `<phase>`. The role holding the phase sends the
+  work back (an architect cannot). In `testing` the daemon refuses the tester's
+  `request_backward_move`: the tester records a fail of each check it cannot verify at the head,
+  with that evidence, and completes testing, and the issue returns to `implementing` with a task
+  that names each of those checks. In `reviewing` the reviewer calls `request_backward_move` to
+  `implementing`. Either way the daemon's task for the round arrives in your own session.
 - Wait on the record, not on the clock: `legion state --json | jq -r '.issues["<KEY>"].phase'`
   every ten seconds until it reads `implementing` (about ninety seconds here, after the architect
   relayed the request to the tester). Fetch once more (`main` may have moved again), then
@@ -46,6 +49,8 @@ the work is yours … if the daemon has not moved the issue back by the time you
 say so on my topic and the role holding the phase moves it". The implementer prepared `6da3ade3`
 (forward merge, contract 21, three conflicts composed, both fingerprints, six-row scratch proof),
 reported at 07:13Z with `read_record` showing `phase: testing`, and polled `legion state` from
-07:15:41 (`testing`) to 07:16:42 (`implementing`) after the tester's `request_backward_move`;
+07:15:41 (`testing`) to 07:16:42 (`implementing`) after the tester's `request_backward_move`, a
+move the daemon now refuses out of testing, so a tester today sends the issue back by its failing
+checks, as above;
 the push, body, handoff and completion followed in the same turn and the pull request read
 `MERGEABLE` again.

@@ -5,7 +5,7 @@
 Verify checks and review threads as forge facts, not reports.
 Require green checks at the head you review.
 Answer every review thread under the thread rule below.
-Use `dispatch results --issue <issue>` to check every `before_merge` check at all globally required heads.
+Use `dispatch results --issue <issue>` to check every `before_merge` check, a check carrying `ci_check` among them, at all globally required heads.
 Every such check must read yes on that head's line, whoever recorded the pass: Dispatch's state decides your approval, and no role's pass is needed beside it.
 
 Dispatch's state reads no recorder, but your decision does.

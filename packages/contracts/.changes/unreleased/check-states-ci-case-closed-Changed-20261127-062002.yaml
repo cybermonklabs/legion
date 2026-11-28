@@ -1,0 +1,10 @@
+kind: Changed
+body: |-
+  `CheckStateChangedEventPayloadSchema` closes `ci_case` to `""` and the cases of two new lists,
+  `CHECK_CI_CASES_ENDED` (a conclusion GitHub wrote, or `job_recorded`) and
+  `CHECK_CI_CASES_NOT_ENDED` (`not_completed`, `absent`, `no_head`, `github_unreadable`,
+  `read_failed`, `not_started`), and refuses any other case. `scripts/gen-go.ts` generates both
+  lists into Go as `contracts.CheckCICasesEnded` and `contracts.CheckCICasesNotEnded`.
+time: 2026-11-27T06:20:02Z
+custom:
+  Issue: check-states-ci-case-closed

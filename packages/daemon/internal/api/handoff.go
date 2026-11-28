@@ -1,18 +1,13 @@
 package api
 
 import (
-	"errors"
 	"fmt"
 	"net/http"
 	"time"
 
-	"github.com/sjawhar/envoy/githubrate"
-	"github.com/sjawhar/legion/daemon/internal/appauth"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/credential"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/ghrepo"
-	"github.com/sjawhar/legion/daemon/internal/githubrest"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
@@ -33,11 +28,16 @@ import (
 // `legion` tool reads out of the record's body and, for the implementer, holds to be its pushed
 // @- on legion/<issue>@origin; the commit the implementer stands on for retro; and the commit the
 // merger's own completion stands on. The entry fence reads it against the head the record holds
-// (behindEntryClause). The workflow refuses a record the role already named for its previous
+// (behindEntryClause). A tester's completion names it always, since the testing move reads the
+// check states at that head and at no other: one naming none is refused (TESTED_HEAD_REQUIRED,
+// testedHeadRequired). The workflow refuses a record the role already named for its previous
 // phase (HANDOFF_NOT_NEW). The implementer's completion of implementing is also held to an open
 // pull request on its branch, or a merged one recorded (implementationPullRequest:
 // HANDOFF_NO_PULL_REQUEST). A check report carries no commit and no record (nothing was pushed or
-// written) and a Verdict of pass, pending or fail; a tester's completion a Verdict of pass or fail.
+// written) and a Verdict of pass, pending or fail. A phase completion carries no verdict
+// (VERDICT_NOT_TAKEN, CheckStatesContract): Dispatch's check states at the tested head decide the
+// testing phase, and the tester's completion names the test record whose check states serial the
+// move waits for (handoffRecord).
 // WakeAt is the check report's alone: on a pending it is when the checking agent asks to be woken
 // for its next look, which no other verdict and no phase completion carries (checkReport). It is a
 // pointer so that a report naming no time is told from one naming a time at all: with the field
@@ -54,11 +54,13 @@ import (
 // A member written null reads as left out, since encoding/json decodes null into a pointer as nil;
 // the contract's LegionHandoffCompleteRequest, which the plugins' daemon client
 // (packages/pi-shared/src/daemon-client.ts) parses each completion with, refuses null, so no
-// plugin sends one. ReturnTo is the step of the issue's running task that a failed
-// step names as the one its task returns to, by its place in the task, 1 for its first: only
-// a tester's completion with the verdict fail names one (returnToRefusal), and it is a pointer for
-// the reason PlanRating is, so a completion naming 0 is refused rather than read as naming none.
-// Which step it may name is the workflow's to judge against the task's steps (RETURN_REFUSED).
+// plugin sends one. ReturnTo is the step of the issue's running task that a tester's completion
+// names as the one its task returns to should the check states fail its testing step, by its place
+// in the task, 1 for its first: only a tester's completion names one (returnToRefusal), with no
+// verdict, and it is a pointer for the reason PlanRating is, so a completion naming 0 is refused
+// rather than read as naming none. Which step it may name is the workflow's to judge against the
+// task's steps (RETURN_REFUSED), and the workflow keeps it with the completion until the states
+// decide.
 type HandoffCompleteRequest struct {
 	GrantID        string     `json:"grantId"`
 	Summary        string     `json:"summary"`
@@ -141,8 +143,9 @@ func (a *completionAnswer) answered() int {
 // The grant and issue are read first. On the check path, the named open check, its role and the
 // look the claim serves are validated before any fact is applied (checkReport). On the phase
 // path, the claim supplies the run and entry, never the meaning of the call. The phase completion
-// is held to its commit, handoff record, role's verdict and entry; the engine takes a late report
-// only where this run's role actually started its step (workflow's ranUnreported).
+// is held to its commit (the tester's, the head it tested: TESTED_HEAD_REQUIRED), handoff record,
+// the refusal of a verdict (VERDICT_NOT_TAKEN) and entry; the engine takes a late report only
+// where this run's role actually started its step (workflow's ranUnreported).
 func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant credential.Grant, req HandoffCompleteRequest) {
 	if !s.readBody(w, r, &req, s.redeemIdentityCheck) || !s.requireFailureFields(w, r, field{"grantId", req.GrantID}, field{"summary", req.Summary}) {
 		return
@@ -200,17 +203,21 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if (grant.Role == claim.RoleImplementer || grant.Role == claim.RoleMerger) && !s.requireFailureFields(w, r, field{"commit", req.Commit}) {
 		return
 	}
-	if grant.Role == claim.RoleTester && req.Verdict != "pass" && req.Verdict != "fail" {
-		s.writeFailure(w, r, http.StatusBadRequest, "TESTER_VERDICT_REQUIRED", "tester verdict must be pass or fail")
+	// A phase completion carries no verdict: the states Dispatch publishes at the tested head decide
+	// the testing phase (workflow's decideTesting). A plugin at CheckStatesContract or later sends
+	// none, so one naming a verdict is refused before anything is recorded. A tester's plugin below
+	// the contract, in a turn when its daemon was upgraded, still sends pass or fail, which the route
+	// ignores so that the completion is taken and the states decide; no other role ever sent one,
+	// so another role's below the contract is refused alike.
+	if req.Verdict != "" && (c.PluginContract >= entryNumber(CheckStatesContract) || grant.Role != claim.RoleTester) {
+		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_NOT_TAKEN",
+			"a phase completion carries no verdict: Dispatch's check states at the tested head decide the testing phase; send it again without verdict; nothing was recorded")
 		return
 	}
-	if grant.Role != claim.RoleTester && req.Verdict != "" {
-		s.writeFailure(w, r, http.StatusBadRequest, "VERDICT_ROLE_FORBIDDEN", "only a tester may report a verdict")
-		return
-	}
-	// The step a failed step's task returns to is the tester's fail's alone (returnToRefusal),
-	// refused here on every other completion before anything is read or recorded.
-	if refusal := returnToRefusal(req, req.Verdict == "fail", fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
+	// The step a task returns to when the check states fail its testing step is the tester's
+	// completion's alone to name (returnToRefusal), with no verdict: it is refused here on every
+	// other completion before anything is read or recorded.
+	if refusal := returnToRefusal(req, grant.Role == claim.RoleTester, fmt.Sprintf("this completion of phase %s of %s", issue.Phase, grant.Issue)); refusal != nil {
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
@@ -292,6 +299,18 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 		s.writeFailure(w, r, refusal.Status, refusal.Code, refusal.Message)
 		return
 	}
+	// A tester's completion names the head it tested: the testing move reads Dispatch's check
+	// states at that head (workflow's decideTesting) and at no other, and the test record is the
+	// one witness of it, since the pull request's head can have moved while the tester worked. The
+	// `legion` tool sends the head its record's body names, so one naming none is a record with no
+	// readable head, or a plugin of the contract before that read none, and the same call cannot
+	// add it: it is refused before anything is recorded, telling the tester to write a new record.
+	// It is read past the entry fence, so a completion of an entry the issue has moved past is told
+	// that first: such a completion is ended, not written again.
+	if grant.Role == claim.RoleTester && req.Commit == "" {
+		s.writeFailure(w, r, http.StatusBadRequest, "TESTED_HEAD_REQUIRED", testedHeadRequired(grant.Issue))
+		return
+	}
 	// The phase this completion is of is phase.Of's, and the issue's for the architect, which
 	// leaves none. The record a phase with a handoff ends with is read back and held to the
 	// completion before anything is recorded: always when the role works the issue's phase, and
@@ -318,11 +337,14 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	word, writer, handoffPhase := phase.Handoff(of)
 	namesRecord := req.HandoffID != "" || req.HandoffVersion != 0
 	recordBacked := handoffPhase && writer == grant.Role && (of == issue.Phase || namesRecord)
+	var statesSerial int64
 	switch {
 	case recordBacked:
-		if !s.handoffRecord(w, r, c.Session, issue, of, word, req) {
+		read, ok := s.handoffRecord(w, r, c.Session, issue, of, word, req)
+		if !ok {
 			return
 		}
+		statesSerial = read.CheckStatesSerial
 	case !handoffPhase && namesRecord:
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_RECORD_MISMATCH", fmt.Sprintf(
 			"phase %s of %s ends with no handoff record, and this completion names one: complete without handoffId and handoffVersion; this completion changed nothing", of, issue.Key))
@@ -331,15 +353,15 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	treeGeneration, pass := position.treeGeneration, position.pass
 	// One phase's completion is identified by where the issue stands — its generation, phase, and
 	// pass through that phase — with the role and what it reported: the handoff record a
-	// file-backed phase names, or the commit every other phase reports, and the verdict. A
-	// retried call for the same phase is the same fact, and so is one naming the same record at
-	// another commit (the record is the phase's handoff); the next phase's completion at the same
-	// commit (the implementer's retro, standing on its implementing pass's last push) is a
-	// different one, since the phase and the role are in the key; and so is a second report of the
-	// same phase naming another verdict — the tester's corrected pass or fail, the only field a
-	// role may report differently of one handoff — since a refusal the workflow commits is
-	// recorded as processed, and a corrected report must not be answered as that refusal's
-	// duplicate. The summary is left out on purpose: a call that only rewords it is the same
+	// file-backed phase names, or the commit every other phase reports. A retried call for the same
+	// phase is the same fact, and so is one naming the same record at another commit (the record is
+	// the phase's handoff); the next phase's completion at the same commit (the implementer's
+	// retro, standing on its implementing pass's last push) is a different one, since the phase and
+	// the role are in the key. The last segment of the key, where a tester's verdict stood, is
+	// empty: no completion carries one (VERDICT_NOT_TAKEN), and a tester's plugin below
+	// CheckStatesContract has its verdict ignored, so its completion takes the key of the same
+	// completion with none, and a completion of any other role keeps the key the release before
+	// gave it. The summary is left out on purpose: a call that only rewords it is the same
 	// completion, and the first one is what the workflow took. The position is read before the
 	// fact's own transaction: should the issue move in between, the engine re-reads
 	// it there and refuses a completion whose role no longer owns the phase, or whose run is no
@@ -362,10 +384,11 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// issue used. An issue with no plan rows keeps today's key, so a completion retried across the
 	// upgrade keeps its key.
 	//
-	// The step a fail names its task's return to (returnTo) ends the key when the completion
-	// names one, for the reason the verdict is in it: the workflow commits its refusal of a step it
-	// may not name (RETURN_REFUSED) as processed, so the same fail naming another step must be a
-	// fact of its own. A completion naming none keeps the key it had before returnTo existed.
+	// The step a tester's completion names for its task to return to (returnTo) ends the key when
+	// the completion names one, for the reason a tester's verdict stood in it before
+	// CheckStatesContract: the workflow commits its refusal of a step it may not name
+	// (RETURN_REFUSED) as processed, so the same completion naming another step must be a fact of
+	// its own. A completion naming none keeps the key it had before returnTo existed.
 	reported, received := req.Commit, "at commit "+req.Commit
 	if recordBacked {
 		reported, received = req.HandoffID, fmt.Sprintf("naming handoff record %s (%s version %d)", req.HandoffID, word, req.HandoffVersion)
@@ -374,7 +397,7 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	if position.task != "" {
 		counted = position.task + ":" + counted
 	}
-	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:%s", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported, req.Verdict)
+	eventID := fmt.Sprintf("handoff:%s:%d:%d:%d:%s:%s:%s:%s:", grant.Issue, treeGeneration, issue.Generation, serving, grant.Role, issue.Phase, counted, reported)
 	returnTo := 0
 	if req.ReturnTo != nil {
 		returnTo = *req.ReturnTo
@@ -393,9 +416,8 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 	// answered already received and the first rating stands, and a completion the workflow
 	// refused for its rating leaves the key unspent, so the same completion, corrected, applies.
 	result, err := s.apply(r.Context(), "api", eventID, intake.HandoffComplete{Generation: serving, Issue: grant.Issue, Role: grant.Role, Claim: grant.Claim,
-		Summary: req.Summary, Verdict: req.Verdict, Commit: req.Commit,
-		HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract,
-		ReturnTo: returnTo})
+		Summary: req.Summary, Commit: req.Commit, HandoffRecord: req.HandoffID, HandoffVersion: req.HandoffVersion, StatesSerial: statesSerial,
+		PlanRating: rating, MustRate: c.PluginContract >= PlanRatingContract, ReturnTo: returnTo})
 	if err != nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply handoff fact")
 		return
@@ -421,34 +443,37 @@ func (s *server) answerCompletion(w http.ResponseWriter, r *http.Request) (grant
 }
 
 // returnToRefusal holds a completion's returnTo to its rule, and is nil when the completion
-// names none or names one it may. failsAStep is whether the completion fails a step (a tester's
-// verdict fail, which VERDICT_ROLE_FORBIDDEN leaves to the tester alone), and what names the
-// completion in a refusal. Every refusal is a 400 its caller writes before anything is recorded,
-// so the same completion sent again, corrected, is taken:
+// names none or names one it may. testsAStep is whether the completion is of a step the check
+// states can fail, a tester's completion, and what names the completion in a refusal. Every
+// refusal is a 400 its caller writes before anything is recorded, so the same completion sent
+// again, corrected, is taken:
 //
 //   - INVALID_RETURN_TO: returnTo below 1, which names no step of a task.
-//   - RETURN_TO_NEEDS_FAIL: a completion that fails no step names returnTo: a pass, another role's
-//     completion, or a production check's report, which is no step. Dropping it unread would let
-//     an agent believe it had sent the task back.
-func returnToRefusal(req HandoffCompleteRequest, failsAStep bool, what string) *intake.Refusal {
+//   - RETURN_TO_NEEDS_FAIL: a completion of no step the check states can fail names returnTo:
+//     another role's completion, or a production check's report, which is no step. Dropping it
+//     unread would let an agent believe it had sent the task back.
+func returnToRefusal(req HandoffCompleteRequest, testsAStep bool, what string) *intake.Refusal {
 	switch {
 	case req.ReturnTo == nil:
 		return nil
 	case *req.ReturnTo < 1:
 		return &intake.Refusal{Status: http.StatusBadRequest, Code: "INVALID_RETURN_TO", Message: fmt.Sprintf(
 			"returnTo is %d, and it names a step of the task by its place, 1 for its first; nothing was recorded", *req.ReturnTo)}
-	case !failsAStep:
+	case !testsAStep:
 		return &intake.Refusal{Status: http.StatusBadRequest, Code: "RETURN_TO_NEEDS_FAIL", Message: fmt.Sprintf(
-			"%s names returnTo, and only the completion of a step that failed, with the verdict fail, names the step its task returns to: send it again without returnTo; nothing was recorded", what)}
+			"%s names returnTo, and only a tester's completion names the step its task returns to when the check states fail the testing step: send it again without returnTo; nothing was recorded", what)}
 	}
 	return nil
 }
 
 // handoffRecord reads the Dispatch handoff record a completion of issue's file-backed phase of,
-// whose handoff word is word, names, and holds it to the completion: the record must be the
-// issue's, of the phase's word, at the version reported, and written by session, the session the
-// claim registered. Every refusal is written before the fact is applied, so nothing is recorded
-// and the corrected or retried call is applied:
+// whose handoff word is word, names, holds it to the completion, and answers it: the record must be
+// the issue's, of the phase's word, at the version reported, and written by session, the session
+// the claim registered. A test record carries the check states serial the testing move waits for
+// (dispatch.Handoff.CheckStatesSerial), and this one read is everything the move reads of
+// Dispatch: the states themselves reach the daemon as Dispatch's check.state_changed events. Every
+// refusal is written before the fact is applied, so nothing is recorded and the corrected or
+// retried call is applied:
 //
 //   - HANDOFF_RECORD_REQUIRED: the completion names no record (handoffId) or no positive version.
 //   - HANDOFF_RECORD_NOT_FOUND: Dispatch has no such record (its 404, or another refusal of the id).
@@ -463,18 +488,18 @@ func returnToRefusal(req HandoffCompleteRequest, failsAStep bool, what string) *
 //
 // The claim holds session as the store keeps it (supervise's register), so the record Dispatch
 // answers is compared as the store would keep it (storetext.Strings).
-func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session string, issue *record.Issue, of phase.Phase, word string, req HandoffCompleteRequest) bool {
+func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session string, issue *record.Issue, of phase.Phase, word string, req HandoffCompleteRequest) (dispatch.Handoff, bool) {
 	write := fmt.Sprintf("`dispatch handoff-write --issue %s --phase %s --body-file <file>`", issue.Key, word)
 	read := fmt.Sprintf("`dispatch handoff-read --issue %s --phase %s`", issue.Key, word)
 	if req.HandoffID == "" || req.HandoffVersion < 1 {
 		s.writeFailure(w, r, http.StatusBadRequest, "HANDOFF_RECORD_REQUIRED", fmt.Sprintf(
 			"phase %s of %s ends with its %s handoff recorded on the Dispatch issue, and this completion names no record (handoffId and a positive handoffVersion): write it with %s, then complete again; this completion changed nothing",
 			of, issue.Key, word, write))
-		return false
+		return dispatch.Handoff{}, false
 	}
 	if s.dispatch == nil {
 		s.writeFailure(w, r, http.StatusInternalServerError, "DISPATCH_UNAVAILABLE", "Dispatch is unavailable")
-		return false
+		return dispatch.Handoff{}, false
 	}
 	handoff, err := s.dispatch.Handoff(r.Context(), req.HandoffID)
 	if err != nil {
@@ -482,34 +507,34 @@ func (s *server) handoffRecord(w http.ResponseWriter, r *http.Request, session s
 			s.writeFailure(w, r, http.StatusNotFound, "HANDOFF_RECORD_NOT_FOUND", fmt.Sprintf(
 				"Dispatch has no handoff record %s (%v): name the record %s shows, or write one with %s, then complete again; this completion changed nothing",
 				req.HandoffID, err, read, write))
-			return false
+			return dispatch.Handoff{}, false
 		}
 		s.log.Warn("api: read the handoff record a completion names", "issue", issue.Key, "handoff", req.HandoffID, "error", err)
 		s.writeFailure(w, r, http.StatusBadGateway, "DISPATCH_READ_FAILED", fmt.Sprintf(
 			"Dispatch did not answer the read of handoff record %s (%v): complete again once Dispatch answers; this completion changed nothing",
 			req.HandoffID, err))
-		return false
+		return dispatch.Handoff{}, false
 	}
 	handoff = storetext.Strings(handoff)
 	if handoff.IssueKey != issue.Key || handoff.Phase != word || handoff.Version != req.HandoffVersion {
 		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_RECORD_MISMATCH", fmt.Sprintf(
 			"handoff record %s is version %d of %s's %s handoff, and this completion is of %s's %s handoff at version %d: name the record %s shows; this completion changed nothing",
 			req.HandoffID, handoff.Version, handoff.IssueKey, handoff.Phase, issue.Key, word, req.HandoffVersion, read))
-		return false
+		return dispatch.Handoff{}, false
 	}
 	if handoff.Author.IsSession(session) {
-		return true
+		return handoff, true
 	}
 	if handoff.Author.IsSession(dispatch.DaemonSession(s.dispatchProject)) {
 		s.writeFailure(w, r, http.StatusForbidden, "HANDOFF_SESSION_MISMATCH", fmt.Sprintf(
 			"handoff record %s (%s version %d) was written by the daemon's own session %s, as a record carried from before handoffs moved to the Dispatch issue is, not by this claim's session %s: read it with %s, write it again with %s from this session, then complete naming the new record; this completion changed nothing",
 			req.HandoffID, word, handoff.Version, handoff.Author.ID, session, read, write))
-		return false
+		return dispatch.Handoff{}, false
 	}
 	s.writeFailure(w, r, http.StatusForbidden, "HANDOFF_SESSION_MISMATCH", fmt.Sprintf(
 		"handoff record %s (%s version %d) was written by %s %s, not by this claim's session %s: write the handoff again with %s from this session, then complete naming the new record; this completion changed nothing",
 		req.HandoffID, word, handoff.Version, handoff.Author.Kind, handoff.Author.ID, session, write))
-	return false
+	return dispatch.Handoff{}, false
 }
 
 // heldTaskNotCurrent says why the task a claim is holding is not the issue's current task — it is
@@ -560,6 +585,16 @@ func heldTaskNotCurrent(issue string, current uint64, p phase.Phase, pending *su
 func noRunCompletion(issue string, current uint64, p phase.Phase, held string) string {
 	return fmt.Sprintf("this completion belongs to no run of %s: %s; nothing was recorded. Push nothing further, end this turn without completing and tell the architect; if the daemon queues this claim a generation-%d %s task (none may: this run's phase can be another claim's) and its work and handoff are already done, call the same handoff_complete in that task's turn, and never redo the work or write a second handoff",
 		issue, held, current, p)
+}
+
+// testedHeadRequired is the refusal of a tester's completion of issue that names no commit
+// (TESTED_HEAD_REQUIRED). The `legion` tool reads the commit from the newest `test` record's body,
+// so the worker's remedy is a new record naming under `head` the commit it tested, never the same
+// call again, and never the pull request's head, which may be a head it did not test.
+func testedHeadRequired(issue string) string {
+	return fmt.Sprintf("the tester's completion of %s names no commit, and the testing move reads Dispatch's check states at the head the tester tested, "+
+		"which only its test record names: write a new `test` handoff whose body names under `head` the 40-character lower-case commit you tested "+
+		"(`dispatch handoff-write --issue %s --phase test --body-file <file>`), then complete again; nothing was recorded", issue, issue)
 }
 
 // staleCompletion is the refusal of a completion attributed to a run the issue has left. It names
@@ -650,10 +685,10 @@ const staleEntryCode = "HANDOFF_STALE_ENTRY"
 // staleEntryInstruction is what staleEntry tells the worker to do, after the clause that names the
 // entries. It is one text with the sentence the `legion` tool's description gives for
 // staleEntryCode (STALE_ENTRY_INSTRUCTION in `packages/pi-shared/src/legion-phase-ops.ts`), so a
-// worker reads the same words in the refusal and in its tool: TestStaleEntryInstructionGolden
-// writes both values to `packages/contracts/fixtures/daemon-api/stale-entry.json`, and
-// pi-shared's own test holds the description to that file.
-const staleEntryInstruction = "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's record, commit or verdict"
+// worker reads the same words in the refusal and in its tool; a change of one is made in the other
+// too. TestStaleEntryInstructionGolden writes the code alone to
+// `packages/contracts/fixtures/daemon-api/stale-entry.json`: no test holds these words, a prompt.
+const staleEntryInstruction = "End this turn without completing. The task of the entry the phase is on is owed to this claim, and the daemon sends it by itself. That task is work of its own: do what it asks at the head it names and complete it with a handoff of its own, never this completion's record or commit"
 
 // behindEntryClause decides a completion of a phase entry the issue has moved past, one the entry
 // fence found behind the role's phases row (entryFence), and says what decided it: it answers ""
@@ -764,121 +799,6 @@ func unraisedEntry(issue string, role claim.Role, p phase.Phase, current, servin
 	return fmt.Sprintf("this completion is of entry %d of phase %s of %s, and the %s's phases row is on entry %d: the daemon raises that entry in the transaction that composes the entry's task, so no task it hands out carries an entry above it. Nothing was recorded; end this turn without completing and tell the architect",
 		serving, p, issue, role, current)
 }
-
-// implementationPullRequest is the implementer's completion's read of GitHub: in implementing, a
-// completion moves its issue to its task's next step (testing, in the default steps) only on a
-// pull request recorded open or merged for it (workflow's TriggerImplementationReady), and only
-// the opened webhook, or the daemon's per-issue read standing in for one that webhook lost
-// (readIssuePullRequest), records one open. So before
-// the completion is applied, the open pull request on the issue's branch (claim.IssueBranch) is
-// read as the implement App, minted for the owner of the issue's repository in GitHub's spelling
-// (record.Issue.GitHubRepo, which the webhook's facts name it by), and it says whether the
-// completion goes on:
-//
-//   - one open: when the record does not already hold it open, the intake.PullRequestOpened its
-//     webhook would have carried is applied first, a reopen when the record holds the same pull
-//     request closed, under the read's stable id (intake.OpenedRead). The completion then
-//     moves the issue to its task's next step. A failure to apply it is FACT_APPLY_FAILED, with
-//     the completion not applied.
-//   - none, with the record holding the pull request merged: the completion is applied and moves
-//     the issue to its task's next step. The work landed, its merge told the architect
-//     (pr-merged), and the workflow runs on.
-//   - none otherwise: HANDOFF_NO_PULL_REQUEST, 409, and nothing is applied, so the completion at
-//     the same commit is applied once the pull request is open. When the record holds the pull
-//     request closed without merging, the refusal names it: the close told the architect, which
-//     decides the phase.
-//   - unreadable (a repository the record cannot name, a failed token mint or a failed read,
-//     GitHub's rate limit among them): logged WARN, and the completion is applied as it was before
-//     this read, so GitHub's trouble never blocks it; the per-issue read records the pull request
-//     when it finds one.
-//
-// A completion the workflow refuses whatever GitHub shows reads nothing: the route calls this only
-// for one that is not already applied (eventID, its key, read with intake.Applied), whose tree does
-// not linger and whose handoff record is not the one the implementer named for its previous phase
-// (workflow's HANDOFF_NOT_NEW). It returns false when it wrote the answer. Its mint and its read
-// count as handoffPullRequestCaller's (githubrate.WithCaller).
-func (s *server) implementationPullRequest(w http.ResponseWriter, r *http.Request, issue *record.Issue, recorded *record.PullRequest, eventID string) bool {
-	ctx := githubrate.WithCaller(r.Context(), handoffPullRequestCaller)
-	applied, err := intake.Applied(ctx, s.pool, "api", []string{eventID})
-	if err != nil {
-		s.logRequestFailure(r, err, "api: read whether a completion is already applied", "issue", issue.Key)
-		s.writeFailure(w, r, http.StatusInternalServerError, "RECORD_UNAVAILABLE", "could not read whether this completion was already received")
-		return false
-	}
-	if applied[eventID] {
-		return true
-	}
-	if s.tokens == nil {
-		s.writeFailure(w, r, http.StatusInternalServerError, "GITHUB_TOKEN_SOURCE_UNAVAILABLE", "GitHub token source is unavailable")
-		return false
-	}
-	branch := claim.IssueBranch(issue.Key)
-	logUnread := func(err error) {
-		attributes := []any{"issue", issue.Key, "repo", issue.GitHubRepo, "branch", branch, "error", err}
-		var answer *githubrest.Answer
-		if errors.As(err, &answer) {
-			attributes = append(attributes, "status", answer.Status)
-		}
-		s.log.Warn("api: read the open pull request on a completing implementer's branch; the completion is applied unread, and the per-issue read records the pull request it finds", attributes...)
-	}
-	recordedRepo, err := ghrepo.Parse("the GitHub repository of "+issue.Key, issue.GitHubRepo)
-	if err != nil {
-		logUnread(err)
-		return true
-	}
-	// This read is GitHub's own, so it is minted for and addressed at the repository GitHub holds
-	// the recorded one under now (ghrepo.Renames.Serving, whose doc says why both halves are
-	// taken): the token is the half the old owner cannot supply, since after a transfer the
-	// installation covering the repository is the owner it moved to's. The log line above and the
-	// fact applied below go on naming issue.GitHubRepo, the name the record is held under.
-	repository := s.serving(recordedRepo)
-	lease, err := s.tokens.Token(ctx, appauth.Implement, repository.Owner())
-	if err != nil {
-		logUnread(fmt.Errorf("mint the implement App token for %s: %w", repository, err))
-		return true
-	}
-	github := githubrest.Client{Token: lease.Token, API: githubrest.RepositoryAPI(s.githubAPI, repository)}
-	// The owner this asks under is the resolved repository's, and it has to be: the read is the
-	// `head=<owner>:<branch>` query, and GitHub translates no part of it across a transfer, so a
-	// query naming the owner a record was written under answers an empty list on the repository
-	// that moved rather than the pull request on it. That empty list is the production refusal
-	// this rule was changed for: every implementer handoff of a tree opened before the transfer
-	// was refused HANDOFF_NO_PULL_REQUEST below.
-	pull, found, err := github.OpenPullRequestOn(ctx, repository.Owner(), branch)
-	if err != nil {
-		logUnread(err)
-		return true
-	}
-	if !found {
-		// This read is GitHub's own answer on an open pull request, so of the states that let the
-		// implementation move on (record.LetsImplementationMove) only merged still does here: a
-		// record holding the pull request open is one GitHub closed or merged since the daemon last
-		// heard, and the completion waits for whichever of the two the daemon records next.
-		if record.LetsImplementationMove(recorded) && recorded.State != record.PullRequestOpen {
-			return true
-		}
-		message := fmt.Sprintf("no open pull request on %s %s; nothing was recorded. Open the pull request and complete again.", issue.GitHubRepo, branch)
-		if recorded != nil && recorded.State == record.PullRequestClosed {
-			message += fmt.Sprintf(" pull request #%d is closed; your architect was told and decides this issue's phase.", recorded.Number)
-		}
-		s.writeFailure(w, r, http.StatusConflict, "HANDOFF_NO_PULL_REQUEST", message)
-		return false
-	}
-	if recorded != nil && recorded.State == record.PullRequestOpen && recorded.Number == pull.Number {
-		return true
-	}
-	fact, read := intake.OpenedRead(issue.Project, issue.GitHubRepo, branch, pull, issue.Generation, recorded)
-	if _, err := s.apply(ctx, "github", read, fact); err != nil {
-		s.logRequestFailure(r, err, "api: apply the open pull request a completing implementer's branch shows", "issue", issue.Key, "pullRequest", pull.Number)
-		s.writeFailure(w, r, http.StatusInternalServerError, "FACT_APPLY_FAILED", "could not apply the open pull request read from GitHub; this completion changed nothing")
-		return false
-	}
-	return true
-}
-
-// handoffPullRequestCaller is the caller kind of implementationPullRequest's GitHub calls, which
-// the daemon's rate reading counts its calls on each installation by.
-const handoffPullRequestCaller = "handoff_pull_request"
 
 // checkReport records the look of the check explicitly named by CheckOpenedAt. Before any fact,
 // it refuses a missing, closed or different check (CHECK_NOT_OPEN), another role's check

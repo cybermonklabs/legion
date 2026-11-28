@@ -27,7 +27,7 @@ func TestProductionsIntakeTuningIsTheShippedTimersAndNoHook(t *testing.T) {
 		{"messageTimeout", tuning.messageTimeout, time.Minute},
 		{"maxAckPending", tuning.maxAckPending, 4},
 		{"stopBudget", tuning.stopBudget, 15 * time.Second},
-		{"headWriteMaxDeliveries", tuning.headWriteMaxDeliveries, uint64(30)},
+		{"ownHandBackMaxDeliveries", tuning.ownHandBackMaxDeliveries, uint64(30)},
 		{"callWait", time.Duration(tuning.callWait.Load()), bus.ConnLockWait},
 		{"drainWait", time.Duration(tuning.drainWait.Load()), natsgo.DefaultDrainTimeout},
 		{"ackWait", tuning.ackWait(), 5 * time.Minute},

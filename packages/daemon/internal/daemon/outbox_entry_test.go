@@ -554,14 +554,14 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	// records one.
 	if err := store.Transact(ctx, rig.pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: rig.issue.Key,
-			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rig.issue.Key, HeadSHA: "head", CheckedHead: "head",
+			Repo: "acme/widgets", Number: 42, Branch: "legion/" + rig.issue.Key, HeadSHA: entryRigHead, CheckedHead: entryRigHead,
 			Failing: []string{}})
 	}); err != nil {
 		t.Fatalf("record the pull request the implementer's completion is held to: %v", err)
 	}
 	implementer := rolePhaseRow(t, rig.pool, rig.issue.Key, claim.RoleImplementer)
 	applyFact(t, rig.pool, "api", "implement-complete", intake.HandoffComplete{Generation: 1, Issue: rig.issue.Key,
-		Role: claim.RoleImplementer, Claim: implementer.Claim, Summary: "implemented", Commit: "head",
+		Role: claim.RoleImplementer, Claim: implementer.Claim, Summary: "implemented", Commit: entryRigHead,
 		HandoffRecord: "implement", HandoffVersion: 1}, engine)
 	if issue := readIssue(t, rig.pool, rig.issue.Key); issue.Phase != phase.Testing {
 		t.Fatalf("the issue stands at %s after the implementer's completion, want testing: the case's own premise", issue.Phase)
@@ -664,14 +664,14 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 		Pool: rig.pool, Handlers: []intake.Handler{engine}, Record: records, Grants: grants, Dispatch: handoffs,
 		Log: quietLogger(),
 	}).Handler
-	complete := func(handoff string, version int) (int, string) {
+	complete := func(handoff string, version int, commit string) (int, string) {
 		t.Helper()
 		grant, err := grants.Mint(machine.Claim())
 		if err != nil {
 			t.Fatalf("mint the grant the tester completes with: %v", err)
 		}
-		body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass",
-			Verdict: "pass", HandoffID: handoff, HandoffVersion: version})
+		body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass", Commit: commit,
+			HandoffID: handoff, HandoffVersion: version})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -679,7 +679,9 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 		handler.ServeHTTP(recorder, httptest.NewRequest(http.MethodPost, "/legion/v1/handoff/complete", bytes.NewReader(body)))
 		return recorder.Code, strings.TrimSpace(recorder.Body.String())
 	}
-	status, refusal := complete(handoffs.write(rig.issue.Key, "test", machine.Claim().Session), 1)
+	// It names no commit: the entry fence answers a completion behind its entry before anything
+	// else of it is read.
+	status, refusal := complete(handoffs.write(rig.issue.Key, "test", machine.Claim().Session), 1, "")
 	if status != http.StatusConflict {
 		t.Fatalf("the completion of entry 1's task = %d %s, want 409: the phase was entered again, and this turn is on the entry before", status, refusal)
 	}
@@ -744,7 +746,8 @@ func TestAClaimWorkingAnEarlierEntryIsSentItsRowsEntryOnceThatTaskIsRetired(t *t
 	handoffs.mu.Lock()
 	handoffs.handoffs[own.ID] = own
 	handoffs.mu.Unlock()
-	if status, body := complete(own.ID, own.Version); status != http.StatusOK {
+	testedAs(t, rig.pool, rig.issue.Key, entryRigHead, true, engine)
+	if status, body := complete(own.ID, own.Version, entryRigHead); status != http.StatusOK {
 		t.Fatalf("the completion of entry 2's task = %d %s, want 200: the worker's turn is on the entry its phases row names", status, body)
 	}
 	if got := readIssue(t, rig.pool, rig.issue.Key); got.Phase != phase.Reviewing {

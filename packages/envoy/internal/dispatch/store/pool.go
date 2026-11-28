@@ -530,6 +530,13 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // each of its pages holds for update serialises two processes by itself
 // (api/suggestion_outcomes.go).
 //
+// The check states settler (api's runCheckStates) is one caller too, with leases of a name per
+// issue rather than one name: each settle of an issue holds that issue's lease
+// (check-states:<issue>) on a connection of this pool while its computation reads through the
+// shared pool, which a connection of the shared pool held that long could not do
+// (ErrNestedAcquire). Its passes run one at a time on its one goroutine, the background pass that
+// settles a mark whose notification no process received among them, so one connection serves it.
+//
 // Each of the three intakes also holds its durable's hold, whose every statement is one statement
 // on a connection of this pool for that statement alone. Two can be in flight per intake at once:
 // the hold's renewal goroutine (duty.Hold's renew, every 5 s, each bounded by the renew interval),
@@ -559,8 +566,9 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // (ConnectionsPerProcess), where it opened 112 without them, and the default tier's 500
 // connections less PostgreSQL's 3 reserved slots still admit four app pods holding connections at
 // once (480 of 497) and still refuse five (600), exactly as they did at 112 (448 and 560), so none
-// of them moves a replica boundary. A deployment on another tier reads SHOW max_connections
-// against its own roll, as sharedPoolSize's note says.
+// of them moves a replica boundary. The check states settler is one more again: 121, four pods
+// 484 of 497 and five refused at 605, so it moves none either. A deployment on another tier reads
+// SHOW max_connections against its own roll, as sharedPoolSize's note says.
 //
 // Nothing counts the callers by hand. Each of them reserves one of these connections by name
 // before the server starts any of its loops, whether or not this configuration runs that loop
@@ -574,7 +582,7 @@ func (p *Pool) Dedicated(ctx context.Context, applicationName string) (*pgx.Conn
 // goroutine added inside a caller that has reserved already, and one reservation passed to a
 // second consumer, take a connection nothing counted, and the count still matches: each caller
 // that can hold a connection while another does needs a reservation of its own.
-const LeasePoolSize = 29
+const LeasePoolSize = 30
 
 // Leases is the registry of the lease pool's callers. A periodic maintenance loop takes the
 // connection it holds its lease on here, so that only one process runs each pass

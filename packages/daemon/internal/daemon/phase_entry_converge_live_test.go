@@ -24,10 +24,10 @@
 // and the tester comes up on its own worker-stream connection with that task still held on its
 // claim: the daemon sends no role a task that adopts the issue's working copy while another role
 // of the issue is in a turn (supervise's sendPending), and the implementer is in its. The issue's
-// phase then changes twice while the claim holds that task. The tester asks for the work back with
-// its own backward move (POST /legion/v1/phase/backward, behind_entry_fence_live_test.go's
-// moveBack), from a turn of its own, since the engine takes a backward move from no role but the
-// one running the issue's phase (workflow's Engine.backward, BACKWARD_REFUSED); and the
+// phase then changes twice while the claim holds that task. The tester, from a turn of its own,
+// records a fail of the issue's check at the head it tested and completes there, which sends the
+// work back to implementing (it has no backward move of its own out of testing, since its step
+// ends by its checks' states, workflow's Engine.backward, BACKWARD_REFUSED); and the
 // implementer, still in its turn, pushes a second head and completes there, which hands testing
 // out again, raises the tester's row to entry 2 and writes that entry's own task. The claim still
 // holds the task of entry 1 (supervise's queue refuses a second delivery while one is pending), so
@@ -58,11 +58,12 @@
 // proof drives (liveGitHub, in live_issue_proof_test.go), which serves that pull request's state,
 // head, base and mergeable, the last of them mergeable throughout, and no branch rule of any kind:
 // what it does not serve it answers 404, which the daemon's own reads take as GitHub being
-// unreadable — the implementer's completion is applied unread on that answer (api/handoff.go's
-// implementationPullRequest) — so no read of this proof reaches github.com. Dispatch is the board
-// the package's whole-daemon live proofs share (liveDispatch, in live_proof_test.go), which holds
-// the handoff record each completion names and takes the reason each backward move posts. The two
-// Apps' tokens are workflowTokenRecorder's placeholders. No agent runs: every claim is launched by
+// unreadable — the implementer's completion is applied unread on that answer
+// (api/handoff_pull_request.go's implementationPullRequest) — so no read of this proof reaches
+// github.com. Dispatch is the board the package's whole-daemon live proofs share (liveDispatch, in
+// live_proof_test.go), which holds the handoff record each completion names and takes the reason
+// each backward move posts. The two Apps' tokens are workflowTokenRecorder's placeholders. No
+// agent runs: every claim is launched by
 // the package's fake runtime, which says it provisions each workspace in the claim's own pod, as
 // the Agent Sandbox runtime does, so the daemon clones nothing from GitHub. The issue, its pull
 // request, its slot and the implementer's claim are seeded through the store, as every daemon test
@@ -94,17 +95,21 @@ import (
 const convergeBase = "main"
 
 // The two heads the proof drives: the implementer's seeded head, which the tester's first entry
-// is for, and the head the implementer pushes once the tester has asked for the work back, which
-// the second testing entry is for and the record holds from then on.
+// is for, and the head the implementer pushes once the tester's fail has sent the work back, which
+// the second testing entry is for and the record holds from then on. Each is a full commit id,
+// beginning ce1 and ce2, since the check state each tester completion is decided by names its head
+// as one.
 const (
-	convergeFirstHead  = "pe1"
-	convergeSecondHead = "pe2"
+	convergeFirstHead  = "ce10000000000000000000000000000000000000"
+	convergeSecondHead = "ce20000000000000000000000000000000000000"
 )
 
-// The reasons the two backward moves of the proof give, each of which the move posts on the issue
-// and composes into the task of the implementer's entry it raises (workflow's task, `Reason:`).
+// convergeTesterReason is the summary of the tester's completion that fails the issue's check at
+// the first head, and convergeReviewerReason the reason the reviewer's backward move of run two
+// gives, which the move posts on the issue and composes into the task of the implementer's entry
+// it raises (workflow's task, `Reason:`).
 const (
-	convergeTesterReason   = "the tests show a fault in the code; back to implementing"
+	convergeTesterReason   = "the tests show a fault in the code"
 	convergeReviewerReason = "the review finds a fault in the code; back to implementing"
 )
 
@@ -405,7 +410,7 @@ func (r *phaseEntryConvergeLive) theStartWaitsForTheLaunch() {
 	r.note("the implementer is registered and ready on the launch this boot made for the claim the fixture left mid-launch; that launch spent the burst of %d wake(s) a minute in bursts of %d",
 		convergeWakeRate, convergeWakeBurst)
 	r.imp.startOwnTurn()
-	if status, failure := r.imp.complete("implemented it", convergeFirstHead, "", r.imp.handoff("implement")); status != http.StatusOK {
+	if status, failure := r.imp.complete("implemented it", convergeFirstHead, r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.note("drove POST /legion/v1/handoff/complete for the implementer at %s from a turn of its own, which it goes on in: 200", convergeFirstHead)
@@ -452,14 +457,15 @@ func (r *phaseEntryConvergeLive) theStartWaitsForTheLaunch() {
 // task adopts the working copy every role of the issue shares, and the daemon sends no such task
 // while another role of the issue is in a turn (supervise's sendPending), as the implementer is.
 // The issue's phase then changes twice while the claim holds that task. The tester, in a turn of
-// its own that no task of the daemon's began, asks for the work back with its own backward move
-// to implementing, which raises the implementer's entry; that entry's task waits on the
-// implementer's claim, since the implementer is in its turn and the tester in its own. The
-// implementer, still in the turn its first completion was made from, pushes a head of its own and
-// completes there — its claim has served no entry, so its completion is of the entry the task it
-// holds carries (supervise's serving) — which hands testing out again, raises the tester's row to
-// entry 2 and writes that entry's own task. The claim still holds the task of entry 1 (supervise's
-// queue refuses a second delivery while one is pending), so the start row carrying entry 2 waits
+// its own that no task of the daemon's began, records a fail of the issue's check at the head it
+// tested and completes there — its claim has served no entry, so its completion is of the entry
+// the task it holds carries (supervise's serving) — which sends the work back to implementing and
+// raises the implementer's entry; that entry's task waits on the implementer's claim, since the
+// implementer is in its turn and the tester in its own. The implementer, still in the turn its
+// first completion was made from, pushes a head of its own and completes there — its claim has
+// served no entry either — which hands testing out again, raises the tester's row to entry 2 and
+// writes that entry's own task. The claim still holds the task of entry 1 (supervise's queue
+// refuses a second delivery while one is pending), so the start row carrying entry 2 waits
 // behind it.
 func (r *phaseEntryConvergeLive) phaseChangesWhileTheClaimHoldsItsTask() {
 	t := r.t
@@ -478,10 +484,11 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheClaimHoldsItsTask() {
 	}
 	r.note("read back over %s: the tester is %s on its own connection, holding delivery %s unsent while the implementer's turn runs", liveSettle, ready.State, r.queued)
 
-	// The first phase change: the tester's own move back, from a turn of its own.
+	// The first phase change: the tester's fail at the head it tested, from a turn of its own.
 	r.test.startOwnTurn()
-	if status, failure := r.test.moveBack(phase.Implementing, convergeTesterReason); status != http.StatusOK {
-		t.Fatalf("the tester's backward move to implementing = %d %s %s, want 200", status, failure.Code, failure.Error)
+	testedAs(t, r.st.Pool(), r.key, convergeFirstHead, false)
+	if status, failure := r.test.complete(convergeTesterReason, convergeFirstHead, r.test.handoff("test")); status != http.StatusOK {
+		t.Fatalf("the tester's completion at %s with its check failed = %d %s %s, want 200", convergeFirstHead, status, failure.Code, failure.Error)
 	}
 	r.waitFor("the issue back in implementing", func(got api.Issue) bool { return got.Phase == phase.Implementing })
 	var owed *api.DeliveryView
@@ -492,12 +499,12 @@ func (r *phaseEntryConvergeLive) phaseChangesWhileTheClaimHoldsItsTask() {
 	if owed.DeliveredAt != nil || len(r.imp.drainPrompts()) != 0 {
 		t.Fatalf("the implementer was sent its new entry's task %+v while it and the tester were in their turns, want it held", owed)
 	}
-	r.note("drove POST /legion/v1/phase/backward for the tester, to implementing, from a turn of its own: 200; %s is in implementing, and the implementer's claim holds the task %s of that entry unsent",
-		r.key, owed.ID)
+	r.note("drove the state event of the check failed at %s and POST /legion/v1/handoff/complete for the tester there, from a turn of its own: 200; %s is in implementing, and the implementer's claim holds the task %s of that entry unsent",
+		convergeFirstHead, r.key, owed.ID)
 
 	// The second: the implementer, still in its turn, pushes a head of its own and completes there.
 	r.push(convergeFirstHead, convergeSecondHead, "fix the fault the tests showed")
-	if status, failure := r.imp.complete("fixed the fault the tests showed", convergeSecondHead, "", r.imp.handoff("implement")); status != http.StatusOK {
+	if status, failure := r.imp.complete("fixed the fault the tests showed", convergeSecondHead, r.imp.handoff("implement")); status != http.StatusOK {
 		t.Fatalf("the implementer's second completion = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.note("drove the implementer's push of %s and GitHub's synchronize of #%d to it, then its completion there, still in its first turn: 200", convergeSecondHead, r.number)
@@ -553,7 +560,7 @@ func (r *phaseEntryConvergeLive) theHeldTaskIsRefusedAndTheEntryIsWorked() {
 	r.note("read back: the tester was sent %s on its own connection (%s) — the work of entry %d, with the phase on entry %d; the implementer's implementing task was dropped unsent",
 		first.DeliveryID, firstLine(first.Message), givenEntry, phaseEntry)
 
-	status, failure := r.test.complete("tested the first head", convergeFirstHead, "pass", r.test.handoff("test"))
+	status, failure := r.test.complete("tested the first head", convergeFirstHead, r.test.handoff("test"))
 	if status != http.StatusConflict || failure.Code != "HANDOFF_STALE_ENTRY" {
 		t.Fatalf("the completion of entry 1's work = %d %s %s, want 409 HANDOFF_STALE_ENTRY", status, failure.Code, failure.Error)
 	}
@@ -578,7 +585,8 @@ func (r *phaseEntryConvergeLive) theHeldTaskIsRefusedAndTheEntryIsWorked() {
 	r.note("read back: the tester was sent %s (%s), and the state reads phaseEntry %d, givenEntry %d",
 		second.DeliveryID, firstLine(second.Message), phaseEntry, givenEntry)
 
-	if status, failure := r.test.complete("tested the fix", convergeSecondHead, "pass", r.test.handoff("test")); status != http.StatusOK {
+	testedAs(t, r.st.Pool(), r.key, convergeSecondHead, true)
+	if status, failure := r.test.complete("tested the fix", convergeSecondHead, r.test.handoff("test")); status != http.StatusOK {
 		t.Fatalf("the completion of entry 2's work = %d %s %s, want 200", status, failure.Code, failure.Error)
 	}
 	r.test.endTurn()

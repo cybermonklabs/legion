@@ -28,9 +28,10 @@ type intakeTuning struct {
 	// stopBudget is the one deadline of the intake's stop, counted from the moment Run's context
 	// ends (stopContext): intakeStopBudget.
 	stopBudget time.Duration
-	// headWriteMaxDeliveries is how many deliveries an envelope whose head row could not be stored
-	// gets before deliver acknowledges it (headWriteDeliveriesSpent): headWriteMaxDeliveries.
-	headWriteMaxDeliveries uint64
+	// ownHandBackMaxDeliveries is how many deliveries an envelope whose own write failed (a head row
+	// that could not be stored, or a settlement's mark that could not be written) gets before
+	// deliver acknowledges it (Intake.ownHandBackAllowed): ownHandBackMaxDeliveries.
+	ownHandBackMaxDeliveries uint64
 	// createDurable creates the durable a take-over configured on the notification stream
 	// (heldDurable.finishTakeOver): addDurable, unless a test fails the create after its delete.
 	createDurable func(js natsgo.JetStreamContext, config *natsgo.ConsumerConfig, opts ...natsgo.JSOpt) (*natsgo.ConsumerInfo, error)
@@ -69,12 +70,12 @@ type intakeTuning struct {
 // as it is when newIntakeTuning is called.
 func newIntakeTuning() *intakeTuning {
 	tuning := &intakeTuning{
-		messageTimeout:         intakeMessageTimeout,
-		maxAckPending:          intakeMaxAckPending,
-		stopBudget:             intakeStopBudget,
-		headWriteMaxDeliveries: headWriteMaxDeliveries,
-		createDurable:          addDurable,
-		log:                    slog.Default(),
+		messageTimeout:           intakeMessageTimeout,
+		maxAckPending:            intakeMaxAckPending,
+		stopBudget:               intakeStopBudget,
+		ownHandBackMaxDeliveries: ownHandBackMaxDeliveries,
+		createDurable:            addDurable,
+		log:                      slog.Default(),
 	}
 	tuning.callWait.Store(int64(bus.ConnLockWait))
 	tuning.drainWait.Store(int64(natsgo.DefaultDrainTimeout))

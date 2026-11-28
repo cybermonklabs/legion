@@ -1308,6 +1308,12 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
     }
     return targets;
   }
+  // A check's new state at a head is on the check's issue, and the results read of that issue is
+  // the one read that carries each check's state at each head. The event names no other issue.
+  if (event.type === "check.state_changed") {
+    targets.push({ exact: true, queryKey: ["issue", key, "results"] });
+    return targets;
+  }
   // Attribution changes arrive at both issues. Deploy events name each affected result owner.
   // Each receiver refetches only its own verification results.
   if (event.type === "issue.pull_request_attribution_changed" || event.type === "deploy.recorded") {

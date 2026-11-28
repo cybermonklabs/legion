@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+    The check states settler computes the states of an issue's `before_merge` checks alone, the
+    only ones it publishes. It no longer compares the results of an `after_merge` or a
+    `default_branch` check with their branches on each settle: that read asked GitHub where each
+    result commit stands, threw the answer away and stored it in `branch_commits`, where it then
+    decided what `GET /api/v1/issues/{key}/results` answered while the repository could not be
+    read. The results route reads those checks as before.
+time: 2026-11-22T23:15:12Z
+custom:
+    Issue: check-states-settler-branch-reads

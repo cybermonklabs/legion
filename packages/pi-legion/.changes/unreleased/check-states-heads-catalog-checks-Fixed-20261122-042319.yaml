@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The skill-scenario rig's runner of reviewer-pass-and-fail hands a run's case to the world it
+  builds, as the runners of the other heads scenarios do: a case added to `heads-scenarios.txt`
+  alone used to run that scenario's own world under the case's name. And a row of
+  `heads-scenarios.txt` whose scenario rig.sh does not run, such as a typo of one it does, now
+  refuses every batch and run before anything starts, and `score.ts runs` refuses it when the
+  scenario has no scorer; before, the batch of the scenario meant ran without that row's case,
+  exited 0 and said nothing. Every batch, run name and score row of the current catalog is
+  unchanged.
+time: 2026-11-22T04:23:19Z
+custom:
+    Issue: check-states-heads-catalog-checks

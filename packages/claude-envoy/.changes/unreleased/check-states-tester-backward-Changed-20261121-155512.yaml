@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  The `legion` MCP tool's description says the daemon refuses the tester's
+  `request_backward_move` out of testing (`BACKWARD_REFUSED`): a testing step ends by its checks'
+  states, so the tester records each check's result with `dispatch result`, a fail with its
+  evidence for a check it cannot verify, and completes.
+time: 2026-11-21T15:55:12Z
+custom:
+    Issue: check-states-tester-backward

@@ -758,7 +758,9 @@ func upgradeOwedStartGivesItsEntry(t *testing.T, st *store.Store, issue record.I
 }
 
 // upgradeCompletionAccepted posts the completion of the third shape's turn through the daemon's own
-// route, on the claim exactly as the upgrade left it, and reads the answer.
+// route, on the claim exactly as the upgrade left it, and reads the answer. The completion names
+// the head the tester tested, as every tester's completion does (TESTED_HEAD_REQUIRED); the issue
+// has no pull request on record, so no fence reads that head against one.
 //
 // The release before this one refused that completion 409, under the code it named after its
 // minted token: its fence compared the token on the role's phases row with the one the claim
@@ -797,7 +799,7 @@ func upgradeCompletionAccepted(t *testing.T, st *store.Store, engine *workflow.E
 		Pool: st.Pool(), Handlers: []intake.Handler{engine}, Record: record.NewStore(), Grants: grants,
 		Dispatch: handoffs, Log: quietLogger(),
 	}).Handler
-	body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass", Verdict: "pass",
+	body, err := json.Marshal(api.HandoffCompleteRequest{GrantID: grant.ID, Summary: "the tests pass", Commit: strings.Repeat("8", 40),
 		HandoffID: handoffs.write(issue.Key, "test", c.Session), HandoffVersion: 1})
 	if err != nil {
 		t.Fatal(err)

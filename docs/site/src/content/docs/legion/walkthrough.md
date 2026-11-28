@@ -18,8 +18,8 @@ registering with it.
 
 ## 1. Hand the issue over
 
-The issue has a title that states the outcome and a spec with acceptance criteria. You add the
-`legion` label from the issue header and set the status to `todo`.
+The issue has a title that states the outcome and a spec that states its requirements. You add
+the `legion` label from the issue header and set the status to `todo`.
 
 ![An issue handed to Legion: the label picker open on its header with legion selected, and the status Todo.](/legion/media/legion/handover.png)
 
@@ -32,8 +32,9 @@ the architect claims it, so the issue shows it as claimed by Legion's session.
 
 ## 3. Decisions and the spec approval
 
-The architect grows the spec into a design and writes each open question as a decision block, which
-reaches the assignee's Inbox. Once every block is answered, it asks for approval with a summary.
+The architect grows the spec into a design, writes the issue's Verification document with a check
+for each requirement, and writes each open question as a decision block, which reaches the
+assignee's Inbox. Once every block is answered, it asks for approval with a summary.
 The Inbox opens the request in its reading column: the spec as the version to approve, with
 **Approve** and **Request changes** above it.
 
@@ -62,8 +63,8 @@ links the pull request.
 ## 6. The acceptance
 
 On the default steps, when the reviewer approves, the architect reads the evidence (the tester's
-handoff, each check of the issue with its latest result, the approval of the head) and accepts the
-change: it posts a comment on the issue, then signs off with the `legion` tool's `sign_off`, which
+handoff, the state of each `before_merge` check at the approved head in `dispatch results`, the
+approval of the head) and accepts the change: it posts a comment on the issue, then signs off with the `legion` tool's `sign_off`, which
 moves the issue to `retro`, since the acceptance is the last of the default steps. A change that
 falls short goes back to an earlier step of its task instead. Retro runs next.
 

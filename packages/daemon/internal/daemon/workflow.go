@@ -156,11 +156,15 @@ type workflowRuntime struct {
 	// retry does not hold it again (holdForCatchUp). The boot alone writes it, from its one
 	// readiness goroutine.
 	caughtUp map[string]struct{}
-	// catchUpRootTimeout bounds the boot's catch-up of one root; zero means bootTimeout. A test
-	// shortens it.
+	// checkStatesCaughtUp names each issue the boot's catch-up of check states finished, caught up
+	// or passed over, so a retry of that catch-up resumes after it rather than reading its log
+	// again (catchUpCheckStates). The boot alone writes it, from its one readiness goroutine.
+	checkStatesCaughtUp map[string]struct{}
+	// catchUpRootTimeout bounds each attempt of a boot catch-up of one issue, a root's or an
+	// issue's check states (readWithRetries); zero means bootTimeout. A test shortens it.
 	catchUpRootTimeout time.Duration
-	// catchUpRetryDelay is the wait between two reads of one root Dispatch refused with an error it
-	// may stop giving; zero means catchUpRetryDelay's default. A test shortens it.
+	// catchUpRetryDelay is the wait between two reads of one issue Dispatch refused with an error
+	// it may stop giving; zero means catchUpRetryDelay's default. A test shortens it.
 	catchUpRetryDelay time.Duration
 	// holdPollInterval is pollHoldRelease's ticker period; zero means the production default. A
 	// test shortens it to bound how long a release takes to observe.
@@ -1338,6 +1342,12 @@ func engineConfig(cfg config.Config, reviewAppLogin string, hookPrompts map[stri
 		RepositoryRenames:   cfg.RepositoryRenames, Hooks: engineHooks(cfg.Hooks, hookPrompts),
 		Experiments:  cfg.ExperimentsDeclared(),
 		WorkspaceDir: engineWorkspaceDir(cfg),
+		// The testing move reads every check, those a CI job runs among them, until the end of a
+		// task holds the checks a CI job runs: a task whose steps after testing hold no review and
+		// no acceptance would otherwise end with no gate on them. The change that builds that hold
+		// at the end of a task, beside the review's fix of a failed CI check, turns this on.
+		// TestTheDaemonWiresTheTestingMoveToReadEveryCheck holds it false until then.
+		TestingLeavesCI: false,
 	}
 }
 

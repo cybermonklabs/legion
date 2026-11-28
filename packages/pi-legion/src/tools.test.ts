@@ -225,6 +225,13 @@ const toolFor = (active: LegionToolSession) =>
     session: () => active,
   });
 
+// Every role reads one description: the tool's description is one text, whatever session it is
+// built for.
+test("the legion tool's description is one text for every session", () => {
+  const descriptions = new Set(EVERY_SESSION.map((active) => toolFor(active).description));
+  expect(descriptions.size).toBe(1);
+});
+
 // The daemon's refusals and notices over children carry its rules for ending a child
 // (record.EndChildRule) and its sentence on a status it has not taken yet
 // (record.StatusNotTakenYet), and the description gives an architect the same text. The daemon's
@@ -832,20 +839,14 @@ test("read_release_records reads the window with this session's claim, and repor
   });
 });
 
-// Every phase worker reads one description of the tool, whatever its role, and the daemon alone
-// decides whose verdict it takes (VERDICT_ROLE_FORBIDDEN, held by internal/api's handoff tests):
-// no phase worker is given a description of its own. That one description names the `verdict`
-// field and its two values, each once in it. The tester, the role the verdict is taken from, is not
-// held: the description names the tester in other sentences too, so a check of it could not fail.
-// The case holds no word of it.
+// Every phase worker reads one description of the tool, whatever its role: no phase worker is
+// given a description of its own. The case holds no word of it.
 test("every phase worker is given the same description of the legion tool", () => {
   const described = (["planner", "implementer", "tester", "reviewer", "merger"] as const).map(
     (role) => toolFor(claimSession(role)).description
   );
   expect(new Set(described).size).toBe(1);
-  expect(namesMissing(described[0] ?? "", ["`verdict`", "pass|fail"])).toEqual([]);
 });
-
 test("a workflow refusal tells the agent both its code and message", async () => {
   const refusal = Object.assign(
     new Error(
@@ -1564,9 +1565,11 @@ test("a named look's report posts its check_opened_at, and a step's completion p
       checkOpenedAt: "2026-10-19T06:00:00.123456Z",
     },
   ]);
+  // The step's completion carries no verdict: the check states decide the testing phase, and the
+  // tool refuses a phase completion that names one.
   await tool.execute(
     "",
-    { op: "handoff_complete", summary: "tested", verdict: "pass" },
+    { op: "handoff_complete", summary: "tested" },
     undefined,
     undefined,
     context()
@@ -1623,17 +1626,17 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, and 
   expect(reads).toEqual(["LEGION-208 implement"]);
 
   // A role that does not work the issue's phase reports its own newest record of the phase it
-  // left: the tester at implementing its test record and the head it names, with the verdict as
-  // given. A role whose left phase writes no record reports the commit the workspace stands on and
+  // left: the tester at implementing its test record and the head it names, with no verdict. A
+  // role whose left phase writes no record reports the commit the workspace stands on and
   // no record: the merger, and a sub-architect, which leaves no phase, each posting @- (the daemon
   // then refuses the sub-architect's, ACCEPTANCE_IS_SIGN_OFF; this stand-in daemon records it).
-  await run(claimSession("tester"), { op: "handoff_complete", summary: "Red.", verdict: "fail" });
+  await run(claimSession("tester"), { op: "handoff_complete", summary: "Red." });
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
     {
       grantId: "grant-208",
       summary: "Red.",
-      verdict: "fail",
+      verdict: "",
       commit: TIP,
       handoffId: RECORD.id,
       handoffVersion: RECORD.version,
@@ -1679,20 +1682,18 @@ test("handoff_complete finds the phase's handoff record and the pushed tip, and 
   }
   expect(calls).toHaveLength(before);
 
-  // Without check_opened_at, pending is refused as a phase completion before any daemon call.
-  const pendingOnPhase = await run(claimSession("tester"), {
-    op: "handoff_complete",
-    summary: "Waiting on the deploy.",
-    verdict: "pending",
-  });
-  expect(pendingOnPhase.isError).toBe(true);
-  expect(pendingOnPhase.content).toEqual([
-    {
-      type: "text",
-      text: "handoff_complete's pending verdict reports a production check. Send check_opened_at with the time from the look task or check.openedAt from read_record. To complete a step, send pass or fail.",
-    },
-  ]);
-  expect(calls).toHaveLength(before);
+  // A verdict without check_opened_at is refused as a phase completion before any daemon call: a
+  // phase completion carries none, whatever the verdict. The tool's error is the refusal, and which
+  // words it uses is the tool's.
+  for (const verdict of ["pass", "pending"]) {
+    const verdictOnPhase = await run(claimSession("tester"), {
+      op: "handoff_complete",
+      summary: "Tested.",
+      verdict,
+    });
+    expect(verdictOnPhase.isError).toBe(true);
+    expect(calls).toHaveLength(before);
+  }
 
   // Each refusal of the report is the tool's error, naming the remedy: the state is read, and
   // then nothing is minted or posted.
@@ -1769,17 +1770,7 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       branchHead: noBranchHead,
       dispatch: noDispatch,
       session: () => claimSession(role),
-    }).execute(
-      "",
-      {
-        op: "handoff_complete",
-        summary: "Done.",
-        ...(role === "tester" ? { verdict: "pass" } : {}),
-      },
-      undefined,
-      undefined,
-      context()
-    );
+    }).execute("", { op: "handoff_complete", summary: "Done." }, undefined, undefined, context());
     expect(result.isError).toBeUndefined();
     expect(reads).toEqual([`LEGION-208 ${word}`]);
     expect(calls.at(-1)).toEqual([
@@ -1787,7 +1778,7 @@ test("the planner, the tester and the reviewer post their phase's handoff record
       {
         grantId: "grant-208",
         summary: "Done.",
-        verdict: role === "tester" ? "pass" : "",
+        verdict: "",
         commit: TIP,
         handoffId: RECORD.id,
         handoffVersion: RECORD.version,
@@ -1875,17 +1866,7 @@ test("a completion once the issue moved on posts the role's own newest record of
       branchHead: noBranchHead,
       dispatch: noDispatch,
       session: () => claimSession(role, issue),
-    }).execute(
-      "",
-      {
-        op: "handoff_complete",
-        summary: "Done.",
-        ...(role === "tester" ? { verdict: "pass" } : {}),
-      },
-      undefined,
-      undefined,
-      context()
-    );
+    }).execute("", { op: "handoff_complete", summary: "Done." }, undefined, undefined, context());
     expect(result.isError).toBeUndefined();
     expect(reads).toEqual([...read]);
     expect(calls.at(-1)).toEqual([
@@ -1893,7 +1874,7 @@ test("a completion once the issue moved on posts the role's own newest record of
       {
         grantId: "grant-208",
         summary: "Done.",
-        verdict: role === "tester" ? "pass" : "",
+        verdict: "",
         ...report,
       },
     ]);
@@ -1982,7 +1963,7 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
     session: () => claimSession("tester"),
   }).execute(
     "",
-    { op: "handoff_complete", summary: "Tests pass.", verdict: "pass" },
+    { op: "handoff_complete", summary: "Tests pass." },
     undefined,
     undefined,
     context()
@@ -1990,7 +1971,7 @@ test("a tester with no record on a held issue posts @-, and the daemon's answer 
   expect(reads).toEqual(["LEGION-208 test"]);
   expect(calls.at(-1)).toEqual([
     "handoffComplete",
-    { grantId: "grant-208", summary: "Tests pass.", verdict: "pass", commit: STANDING },
+    { grantId: "grant-208", summary: "Tests pass.", verdict: "", commit: STANDING },
   ]);
   expect(result).toMatchObject({
     isError: true,

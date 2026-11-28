@@ -684,8 +684,9 @@ func TestAConflictIsActedOnOnlyWhenNeeded(t *testing.T) {
 	t.Run("every required check green in testing, then the tester's pass at that head", func(t *testing.T) {
 		pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("ci", "pr-title"))
 		confirmsConflict(t, pool, every)
+		testedAs(t, pool, readsAfter(2*time.Minute), "LEGION-208", conflictHead, true)
 		applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-			Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass", Commit: conflictHead, HandoffRecord: "test-1", HandoffVersion: 1})
+			Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Commit: conflictHead, HandoffRecord: "test-1", HandoffVersion: 1})
 		if got := issuePhase(t, pool); got != phase.Reviewing {
 			t.Fatalf("after the tester's pass the issue is in %s, want reviewing", got)
 		}
@@ -868,7 +869,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 	}{
 		{phase.Testing, "testing", claim.RoleTester, func(commit, handoff string) intake.HandoffComplete {
 			return intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim",
-				Summary: "tested", Verdict: "pass", Commit: commit, HandoffRecord: handoff, HandoffVersion: 1}
+				Summary: "tested", Commit: commit, HandoffRecord: handoff, HandoffVersion: 1}
 		}, func(t *testing.T, pool *pgxpool.Pool) {
 			if got := issuePhase(t, pool); got != phase.Reviewing {
 				t.Fatalf("after the tester's pass at the new head the issue is in %s, want reviewing", got)
@@ -937,6 +938,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtTheReplacedHead(t *testing.T)
 			}
 			refusedAt("naming no head", "", forwardHead)
 
+			testedAs(t, pool, readsAfter(5*time.Minute), "LEGION-208", forwardHead, true)
 			applyRefusingNothing(t, pool, readsAfter(5*time.Minute), tc.complete(forwardHead, "handoff-2"))
 			tc.moved(t, pool)
 		})
@@ -1252,7 +1254,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtAHeadAnEarlierMergeReplaced(t
 		t.Helper()
 		row := entryRow(t, pool, claim.RoleTester)
 		result := applyFacts(t, pool, readsAfter(7*time.Minute))("at the head the first merge replaced", intake.HandoffComplete{Generation: 1,
-			Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+			Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested",
 			Commit: conflictHead, HandoffRecord: "handoff-1", HandoffVersion: 1})
 		if got := issuePhase(t, pool); got != phase.Testing {
 			t.Fatalf("the tester's pass at %s, the head the first merge forward replaced, moved the issue to %s (answered %q), want it refused and the issue still in testing",
@@ -1308,7 +1310,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionNamingNoHeadWhileASecondMergeFo
 
 	row, rows := entryRow(t, pool, claim.RoleTester), len(queuedRows(t, pool))
 	result := applyFacts(t, pool, readsAfter(6*time.Minute))("naming no head", intake.HandoffComplete{Generation: 1,
-		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested",
 		HandoffRecord: "handoff-1", HandoffVersion: 1})
 	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
 		t.Fatalf("the tester's completion naming no head was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", code, result.Refusal)
@@ -1337,7 +1339,10 @@ func TestAConflictKeepsPhaseAndRefusesACompletionNamingNoHeadWhileASecondMergeFo
 // the record's stretch of work landed (dispatch://INFRA-4374 R1): before that, no merge forward
 // replaced any head, so the head such a completion judged is no head a merge replaced. A tester's
 // pass naming no head while the merge forward is asked and nothing landed passes the fence: it is
-// recorded on the tester's row with no commit, and it moves the issue to reviewing, as a pass does.
+// recorded on the tester's row with no commit. It moves nothing, though its check reads yes at the
+// head of the pull request on record: the testing move reads the states at the head the test record
+// names and at no other, and this one named none (testedHead), so the issue stays in testing. (The
+// completion route refuses such a completion, TESTED_HEAD_REQUIRED; the engine is handed it here.)
 func TestAConflictKeepsPhaseAndTakesACompletionNamingNoHeadWhileNoMergeForwardLanded(t *testing.T) {
 	t.Parallel()
 	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
@@ -1345,18 +1350,18 @@ func TestAConflictKeepsPhaseAndTakesACompletionNamingNoHeadWhileNoMergeForwardLa
 	if asked := recordedPR(t, pool, "LEGION-208").MergeForward; asked == nil || asked.Head != conflictHead || asked.Landed != "" || len(asked.Earlier) != 0 {
 		t.Fatalf("the record's merge forward = %+v, want one ask, of %s, with nothing landed", asked, conflictHead)
 	}
-
+	testedAs(t, pool, readsAfter(4*time.Minute), "LEGION-208", recordedPR(t, pool, "LEGION-208").HeadSHA, true)
 	result := applyFacts(t, pool, readsAfter(4*time.Minute))("naming no head", intake.HandoffComplete{Generation: 1,
-		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested",
 		HandoffRecord: "handoff-1", HandoffVersion: 1})
 	if result.Refusal != nil {
 		t.Fatalf("the tester's completion naming no head was refused %+v, want it recorded", result.Refusal)
 	}
-	if row := entryRow(t, pool, claim.RoleTester); !row.Completed() || row.HandoffCommit != "" || row.Verdict != "pass" || row.HandoffRecord != "handoff-1" {
-		t.Fatalf("the tester's row = %+v, want its pass naming no commit and handoff-1 recorded", row)
+	if row := entryRow(t, pool, claim.RoleTester); !row.Completed() || row.HandoffCommit != "" || row.HandoffRecord != "handoff-1" {
+		t.Fatalf("the tester's row = %+v, want its completion naming no commit and handoff-1 recorded", row)
 	}
-	if got := issuePhase(t, pool); got != phase.Reviewing {
-		t.Fatalf("after the tester's pass naming no head the issue is in %s, want reviewing", got)
+	if got := issuePhase(t, pool); got != phase.Testing {
+		t.Fatalf("after the tester's pass naming no head the issue is in %s, want testing: the move reads no state for a completion that named no head", got)
 	}
 }
 
@@ -1384,7 +1389,7 @@ func TestAConflictKeepsPhaseAndRefusesACompletionAtAReplacedHeadWhileASecondMerg
 
 	row, rows := entryRow(t, pool, claim.RoleTester), len(queuedRows(t, pool))
 	result := applyFacts(t, pool, readsAfter(6*time.Minute))("at the head the first merge replaced", intake.HandoffComplete{Generation: 1,
-		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested",
 		Commit: conflictHead, HandoffRecord: "handoff-1", HandoffVersion: 1})
 	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
 		t.Fatalf("the tester's completion at %s was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", conflictHead, code, result.Refusal)
@@ -1516,7 +1521,7 @@ func TestAConflictKeepsPhaseSendsACompletionToTheCurrentHeadWhenTheAskOfImplemen
 
 	row, rows := entryRow(t, pool, claim.RoleTester), len(queuedRows(t, pool))
 	result := applyFacts(t, pool, readsAfter(8*time.Minute))("naming no head", intake.HandoffComplete{Generation: 1,
-		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass",
+		Issue: "LEGION-208", Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested",
 		HandoffRecord: "handoff-1", HandoffVersion: 1})
 	if code := refusalCode(result); code != "HANDOFF_HEAD_MERGED_FORWARD" {
 		t.Fatalf("the tester's completion naming no head was answered %q (%+v), want HANDOFF_HEAD_MERGED_FORWARD", code, result.Refusal)

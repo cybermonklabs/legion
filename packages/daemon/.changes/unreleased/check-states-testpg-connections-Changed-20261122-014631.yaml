@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The worker image's `legion-testpg` starts the pod's test Postgres with `max_connections=991`
+  rather than 983. The check states settler takes one more connection of Dispatch's lease pool, so
+  one Dispatch process may open 121 connections, and a Dispatch test suite needs
+  `testlimits.ServerConnections` = 988 (eight processes at 121 and 20 for the suite's own
+  clients) beyond the three slots Postgres reserves for superusers. At 983 the server allowed eight
+  fewer, so a suite running eight Dispatch processes at their ceiling could be refused a connection.
+time: 2026-11-22T01:46:31Z
+custom:
+  Issue: check-states-testpg-connections

@@ -74,9 +74,10 @@
 #
 # A batch runs each run as `rig.sh run <scenario> <label> <n> <index> <start> [<case>]`, which
 # needs that batch's services: <index> is the run's place in the batch, <start> the batch's start
-# in epoch seconds, and <case> a reviewer-own-head or ci-pass-and-fail run's case (an owner-walk
-# run's case is SKILL_SCENARIOS_OWNER_WALK_CASE). One run on its own is
-# `rig.sh batch <scenario> 1 <label>`, or `rig.sh batch-scored owner-walk 1 <label>` for
+# in epoch seconds, and <case> the case of a heads scenario's world that names one
+# (heads-scenarios.txt, the catalog of those worlds, `<scenario> [<case>]` a line, in the order a
+# batch runs them; an owner-walk run's case is SKILL_SCENARIOS_OWNER_WALK_CASE). One run on its
+# own is `rig.sh batch <scenario> 1 <label>`, or `rig.sh batch-scored owner-walk 1 <label>` for
 # owner-walk.
 #
 # A run's agent must not learn its scenario, its case or its label: a reviewer whose path read
@@ -87,8 +88,8 @@
 #   <work>/profiles/<id>             a label's profile, <id> 16 random hex digits
 #   <work>/maps/runs/<run>           a link to the run's directory, <run> its name,
 #                                    <scenario>-<label>-<n> (<scenario>-<case>-<label>-<n> for
-#                                    askgate, reviewer-own-head, ci-pass-and-fail and owner-walk);
-#                                    score.ts reads runs here
+#                                    askgate, a world that names a case, and owner-walk); score.ts
+#                                    reads runs here
 #   <work>/maps/profiles/<label>     a link to the label's profile
 #   <work>/maps/built-from/<run>     the run's label's built-from, as the run started
 #   <work>/maps/quiet/<id>...        a run of a -hidden label: its switch, the rig's reads of the
@@ -182,21 +183,25 @@
 #                   asks for the change the newest message names. Scored by specRow.
 #   reviewer-own-head
 #                   A reviewer, booted by the Legion extension against a daemon stand-in with the
-#                   task the daemon gives a reviewer on a tester's pass (reviewer_prompt), reviews
-#                   #702 of the run's own issue, whose #703 is open too (heads_fixture). Each run
-#                   has a NATS and a GitHub stand-in of its own beside its Dispatch (own_github):
+#                   task the daemon gives a reviewer once testing has passed (reviewer_prompt),
+#                   reviews #702 of the run's own issue, whose #703 is open too (heads_fixture). Each
+#                   run has a NATS and a GitHub stand-in of its own beside its Dispatch (own_github):
 #                   seed.ts publishes each pull request's opened event, from which the run's
 #                   Dispatch learns its head, and records the case's results at the heads
 #                   (heads_world). The case is in the run's name,
 #                   reviewer-own-head-<case>-<label>-<n>, and a batch runs
-#                   each of the four: sibling-fails (both roles' passes at #702, the tester's fail
+#                   each of the six: sibling-fails (both roles' passes at #702, the tester's fail
 #                   at #703), ci-only (k1 carries ci_check, and CI's run passed at #702),
 #                   no-implementer and no-tester (one role's pass alone at #702; in no-tester the
-#                   implementer's, whose `implement` record names #702's head, which it made).
-#                   #702's line reads yes in each. The reviewer approves #702 in the first three,
-#                   whoever recorded the pass; in no-tester it does not approve on that pass: it
-#                   records its own pass of k1 at the head before it approves, or sends the issue
-#                   to testing. Scored by headsReview, counted per case and label.
+#                   implementer's, whose `implement` record names #702's head, which it made),
+#                   no-verdict-pass (both roles' passes at #702) and no-verdict-fail (the
+#                   implementer's pass, the tester's record and then its fail at #702), whose task,
+#                   as every task of today, names no verdict of the tester. #702's line reads yes in
+#                   each but no-verdict-fail, where it reads not known. The reviewer approves #702
+#                   in sibling-fails, ci-only, no-implementer and no-verdict-pass, whoever recorded
+#                   the pass, since the state at the head decides; in no-tester it does not approve
+#                   on that pass: it records its own pass of k1 at the head before it approves, or
+#                   sends the issue to testing. Scored by headsReview, counted per case and label.
 #   reviewer-pass-and-fail
 #                   The same reviewer and pull requests, with a pass of the implementer, a pass of
 #                   the tester, the tester's record and then a fail of the tester at #702's head.
@@ -206,7 +211,11 @@
 #                   judges #702 alone, at whose head the same results stand, the tester's fail
 #                   saying its runner lost its checkout before grep ran, after the reviewer's
 #                   approval and review record; its daemon stand-in serves sign_off and
-#                   request_backward_move. Scored by headsArchitect.
+#                   request_backward_move. A batch also runs its cases no-verdict-pass and
+#                   no-verdict-fail, the results of the reviewer-own-head case of that name at
+#                   #702's head under the same approval and review record, each named
+#                   architect-pass-and-fail-<case>-<label>-<n>; a run of the scenario's own world
+#                   names no case. Scored by headsArchitect, counted per case and label.
 #   ci-pass-and-fail
 #                   One world, #702 alone, in which k1 carries ci_check="go-checks": the job
 #                   recorded a pass and then a fail at #702's head while its third attempt there is
@@ -216,6 +225,12 @@
 #                   reviewer (on the tester's pass), tester (on the implementer's completion) and
 #                   architect (in accepting, after the reviewer's approval). Scored by headsReview,
 #                   headsTester and headsArchitect, counted per role and label.
+#   tester-reads-no-ci
+#                   The tester, on the implementer's completion, tests #702 alone, at whose head k1
+#                   has no ci_check and k3 carries ci_check="usage-test": its job's run is still in
+#                   progress in the case ci-late and ended failure, with its log, in ci-red. The case
+#                   is in the run's name, tester-reads-no-ci-<case>-<label>-<n>. Scored by
+#                   headsTesterReadsNoCI: the tester records k1 and neither reads CI nor waits.
 #   owner-walk      A scored scenario (run-names.ts SCORED_SCENARIOS): one fresh owner, a root's
 #                   architect or a child's, plans the issue G of worlds/owner-walk/issue.md and then
 #                   answers its form's questions, on a label's own texts (run_owner_walk, below).
@@ -300,8 +315,8 @@
 #                             no further pull (cmd_judge_omp, cmd_judge_image)
 #   SKILL_SCENARIOS_MEMORY_MAX  the memory an agent's own systemd user scope may hold, with no
 #                             swap (default 8G): an agent past it is killed alone (launch)
-#   SKILL_SCENARIOS_ASKGATE_CASE  askgate: facts, link, upload, nochange, nochange-rebuttal,
-#                                 nochange-block, untried or tried (required for that scenario)
+#   SKILL_SCENARIOS_ASKGATE_CASE  askgate: a case askgate-cases.txt lists (required for that
+#                                 scenario)
 #   SKILL_SCENARIOS_ASKGATE_MODE  askgate: warn or block, the agent's OMP_ASKGATE (unset: the
 #                                 verdicts block and the marker checks warn)
 #   SKILL_SCENARIOS_FIXTURE_ONLY  reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail
@@ -1838,7 +1853,7 @@ run_askgate() {
   nochange-block) printf 'With one dispatch doc-edit command, insert this ask block at the end of the spec of Dispatch issue %s, word for word, and do nothing else. Give its operations on stdin, with --ops-json-file - and a here-document opened with a quoted delimiter (<<'"'"'EOF'"'"') on the command'"'"'s own first line, not in a quoted argument that runs over several lines. %s\n\n:::ask{#export-time urgency="med"}\n%s\n\n- Keep it at 02:00\n- Move it to 04:00\n:::\n' "$issue" "$one" "$ask" ;;
   untried) printf 'Open an ask on Dispatch issue %s with exactly this question and these options, and nothing else. Do not run the command it names yourself. %s Question: "Can you run %s and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$issue" "$one" "$billing" "$ref" ;;
   tried) printf 'First run %s yourself. It will fail. Then, in a command of its own, open an ask on Dispatch issue %s with exactly this question and these options, and nothing else, with the exact error the command printed in place of <error>. %s Question: "I ran %s and it failed with <error>. Can you run it with your access and paste its output here? Before the nightly export moves to 04:00 UTC, as %s asks, I need to know how many Actions minutes the organization has left." Options: "Done", "Cannot run it".\n' "$billing" "$issue" "$one" "$billing" "$ref" ;;
-  *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '$askCase', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
+  *) fail "run_askgate has no prompt for the askgate case '$askCase', which askgate-cases.txt lists" ;;
   esac >"$R/prompt.txt"
   dispatch_session capture-askgate ${mode:+"OMP_ASKGATE=$mode"}
 }
@@ -3613,21 +3628,35 @@ cmd_score() {
 # (worker_key, which seed.ts heads-issue files first): fixture_repo's, and two pull request
 # branches of the issue, legion/<key>-702 and legion/<key>-703, each one docs-only commit on the base,
 # so the reviewer runs no thermonuclear pair. #702 adds docs/usage.md, which the issue's check k1
-# reads; #703 points the README at that page and adds none. Both are pushed, and the workspace is
-# on legion/<key>-702. It writes $R/heads.json, each branch's head by its pull request's number,
-# which seed.ts heads-events reads, and $R/world.json, the world the scorer reads, in
-# worker_fixture's shape, with pr 702 and #702's head.
+# reads, with the page $R/fixture.json names (seed.ts heads-issue chose it beside R1); #703 points
+# the README at that page and adds none, except in the worlds where k2's job fails at #703's head
+# alone: there it adds the page the fixture names for it (page703). Both are pushed, and the
+# workspace is on legion/<key>-702. It writes $R/heads.json, the base revision and each branch's
+# head by pull request number, which seed.ts heads-events reads, and $R/world.json, the world the
+# scorer reads, in worker_fixture's shape, with pr 702 and #702's head.
 heads_fixture() {
-  local pr head heads='{}'
+  local pr head base heads='{}' message
   fixture_repo "$1" "$2"
+  base=$(g rev-parse "$worker_base")
+  heads=$(jq -cn --arg base "$base" '{base:$base}')
   g checkout -qb "legion/$worker_key-702" "$worker_base"
   mkdir -p "$R/src/docs"
-  # shellcheck disable=SC2016 # Markdown, written as it stands
-  printf '# Usage\n\nRun `widgets --help` to list every command of the widgets CLI.\n' >"$R/src/docs/usage.md"
+  # The page seed.ts heads-issue chose beside R1 (heads-world.ts USAGE_PAGE and the pages beside
+  # it): it names commands only in the worlds whose R1 asks for them and whose CI check's log
+  # names them.
+  jq -ej .page "$R/fixture.json" >"$R/src/docs/usage.md"
   g add -A && g commit -qm "docs: the usage page of the widgets CLI ($worker_key)"
   g checkout -qb "legion/$worker_key-703" "$worker_base"
   printf '\nUsage: see docs/usage.md.\n' >>"$R/src/README.md"
-  g add -A && g commit -qm "docs: point the README at the usage page ($worker_key)"
+  message="docs: point the README at the usage page ($worker_key)"
+  # Where k2's job fails at #703's head alone, #703 adds the page that job's log describes, so the
+  # log names the page of the head it is served at.
+  if jq -e 'has("page703")' "$R/fixture.json" >/dev/null; then
+    mkdir -p "$R/src/docs"
+    jq -ej .page703 "$R/fixture.json" >"$R/src/docs/usage.md"
+    message="docs: the usage page of the widgets CLI, and the README's pointer to it ($worker_key)"
+  fi
+  g add -A && g commit -qm "$message"
   for pr in 702 703; do
     head=$(g rev-parse "legion/$worker_key-$pr")
     g push -q "$R/remote.git" "legion/$worker_key-$pr"
@@ -3679,6 +3708,9 @@ heads_world() {
   seed_ts heads-events "$R/fixture.json" "$R/heads.json" "$scenario" ${scenario_case:+"$scenario_case"}
   [ "$scenario" != ci-pass-and-fail ] || ci_job_results
   fixture_heads 702
+  # The other head's world: k2's state at #703's head is the one its job failed at, so the run's
+  # Dispatch must know that head too before the agent starts, and results-before.txt holds both.
+  [ "$scenario_case" != ci-check-fail-other-head ] || fixture_heads 703
   [ "${SKILL_SCENARIOS_FIXTURE_ONLY:-}" != 1 ] || : >"$R/fixture-only"
 }
 
@@ -3733,15 +3765,29 @@ SQL
   fail "the Verification document of $worker_key held no block k1 within 60 s, so the CI job's results of k1 were not written (psql answered $out)"
 }
 
+# pr_line CHECK PR prints the `Pull request line:` that $R/results-before.txt holds under the line of
+# #PR's head in the section of CHECK (`- CHECK ...`), the line `dispatch results` gives a pull
+# request's body for that check at that head; nothing where it holds none.
+pr_line() {
+  awk -v check="- $1 " -v at="  - #$2 at " 'index($0, check) == 1 { inside = 1; next }
+    /^- / { inside = 0 }
+    inside && index($0, at) == 1 { under = 1; next }
+    under && sub(/^    Pull request line: /, "") { print; exit }
+    under && !/^    / { under = 0 }' "$R/results-before.txt"
+}
+
 # heads_routes SCENARIO [CASE] writes the gh stand-in's routes of a heads scenario to
 # $R/fixtures.json, in the form of worker_fixture's, once fixture_heads has passed. It collects the
 # world the routes answer from, and heads-routes.ts renders it: which GitHub reads and writes the
 # routes answer, and how GitHub words each answer and each refusal, is that file's to say. The world
-# is each pull request of the scenario (#702 and #703, or #702 alone in architect-pass-and-fail and
-# ci-pass-and-fail) with its head, body, changed files, diff, URL and head commit's subject, and the
-# CI jobs at its head: two unnamed jobs that passed, and in ci-only and ci-pass-and-fail #702's named
-# job, rig-world.json's `ciJobs` entry, which Dispatch's GitHub stand-in serves too (heads-world.ts),
-# so both worlds name one job (a success in ci-only, still in progress in ci-pass-and-fail); the
+# is each pull request of the scenario (#702 and #703, or #702 alone in architect-pass-and-fail but
+# its case ci-check-fail-other-head, and in ci-pass-and-fail) with its head, body, changed files,
+# diff, URL and head commit's subject, and the CI jobs at its head: two unnamed jobs that passed,
+# and the world's named jobs, rig-world.json's `ciJobs` entries, which Dispatch's GitHub stand-in
+# serves too (heads-world.ts): in ci-only and ci-pass-and-fail #702's job of k1 (a success in
+# ci-only, still in progress in ci-pass-and-fail), and in the ci-check-fail worlds k2's job usage-test
+# with its log, failed at #702's head in ci-check-fail, and passed there and failed at #703's in
+# ci-check-fail-other-head; the
 # remote's branches; the base and each head, each with its tree, message, parent, and each entry of
 # its tree with its mode, type, object and size, and a file's bytes in base64 as GitHub sends them
 # (60 characters a line); whether #702 holds the reviewer's APPROVED review, which it does in
@@ -3750,28 +3796,39 @@ SQL
 # (skills/legion-worker/references/pr-body.md): For the reviewer, with the implementer's lines
 # (Outcome, Why, Change, Proven by and Size; Look at first and Not proven are the reviewer's to
 # write), and Verification, whose Thermo line has a row for each half of the pair, each not run
-# since the change touches no runtime code, and whose one Checks line is that of k1 at that pull
-# request's head: the line Dispatch answered for the newest pass a role recorded there, or for the
-# tester's fail at #703 in sibling-fails (seed.ts heads-events keeps both in $R/fixture.json), and in
-# ci-only and ci-pass-and-fail the `Pull request line:` results-before.txt holds under the line of
-# that head; with none, `not yet run`. So no body disagrees with the results or the template, and a
+# since the change touches no runtime code, and whose Checks lines are those of k1 and, in the
+# ci-check-fail worlds, k2 at that pull request's head: k1's the line Dispatch answered for the
+# newest pass a role recorded there, or for the tester's fail at #703 in sibling-fails (seed.ts
+# heads-events keeps both in $R/fixture.json), and in ci-only and ci-pass-and-fail, and for k2, the
+# `Pull request line:` results-before.txt holds under the line of that head (pr_line); with none,
+# `not yet run`. So no body disagrees with the results or the template, and a
 # reviewer's refusal cannot come from a body: a reviewer of a body that lacked the brief, or whose
 # k1 line quoted a command Dispatch's line had cut words from, requested changes on the body alone.
 heads_routes() {
-  local scenario=$1 scenario_case=${2:-} pr head line body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size
-  case $scenario in architect-pass-and-fail | ci-pass-and-fail) prs=(702) ;; esac
+  local scenario=$1 scenario_case=${2:-} pr head line k2 k3 body files jobs named approved title branches main pulls='[]' prs=(702 703) outcome change size ci_check=''
+  case $scenario_case in ci-check-fail | ci-check-fail-other-head) ci_check=$scenario_case ;; esac
+  case $scenario:$ci_check in architect-pass-and-fail:ci-check-fail-other-head) ;; architect-pass-and-fail:* | ci-pass-and-fail:* | tester-reads-no-ci:*) prs=(702) ;; esac
   title=$(jq -r .title "$R/fixture.json")
   for pr in "${prs[@]}"; do
     head=$(jq -r --arg pr "$pr" '.[$pr]' "$R/heads.json")
     if [ "$scenario_case" = ci-only ] || [ "$scenario" = ci-pass-and-fail ]; then
-      line=$(awk -v at="  - #$pr at " 'index($0, at) == 1 { under = 1; next }
-        under && sub(/^    Pull request line: /, "") { print; exit }
-        under && !/^    / { exit }' "$R/results-before.txt")
+      line=$(pr_line k1 "$pr")
     else
       line=$(jq -r --arg pr "$pr" '.lines[$pr] // empty' "$R/fixture.json")
     fi
     [ -n "$line" ] || [ "$pr" != 702 ] ||
       fail "no line of k1 at #702's head for its body: see $R/fixture.json and $R/results-before.txt"
+    if [ -n "$ci_check" ]; then
+      k2=$(pr_line k2 "$pr")
+      line="${line:-- Check k1 (before_merge): not yet run}
+${k2:-- Check k2 (before_merge): not yet run}"
+    fi
+    # k3, the check a CI job runs in the tester's world, has the line its job's state gives it.
+    if [ "$scenario" = tester-reads-no-ci ]; then
+      k3=$(pr_line k3 "$pr")
+      line="$line
+${k3:-- Check k3 (before_merge): not yet run}"
+    fi
     case $pr in
     702)
       outcome='A reader of the usage page learns how to list every command of the widgets CLI.'
@@ -3821,6 +3878,18 @@ ${line:-- Check k1 (before_merge): not yet run}
     named='[]'
     [ "$scenario_case:$pr" != ci-only:702 ] || named=$(jq -c '[.ciJobs["ci-only"]]' "$here/rig-world.json")
     [ "$scenario:$pr" != ci-pass-and-fail:702 ] || named=$(jq -c '[.ciJobs["ci-pass-and-fail"]]' "$here/rig-world.json")
+    # k2's job in the worlds of a failed CI check: failed at #702's head in ci-check-fail; passed
+    # there and failed at #703's in ci-check-fail-other-head.
+    case $ci_check:$pr in
+    ci-check-fail:702 | ci-check-fail-other-head:703) named=$(jq -c '[.ciJobs["ci-check-fail"]]' "$here/rig-world.json") ;;
+    ci-check-fail-other-head:702) named=$(jq -c '[.ciJobs["ci-check-pass"]]' "$here/rig-world.json") ;;
+    esac
+    # k3's job in the tester's world: still going at #702's head in ci-late, failed there with its
+    # log in ci-red.
+    case $scenario:$scenario_case:$pr in
+    tester-reads-no-ci:ci-late:702) named=$(jq -c '[.ciJobs["ci-late"]]' "$here/rig-world.json") ;;
+    tester-reads-no-ci:ci-red:702) named=$(jq -c '[.ciJobs["ci-check-fail"]]' "$here/rig-world.json") ;;
+    esac
     pulls=$(jq -c --argjson n "$pr" --arg head "$head" --arg body "$body" --argjson files "$files" --argjson jobs "$jobs" \
       --argjson named "$named" --arg diff "$(git -C "$R/remote.git" diff "$worker_base" "$head")" --arg url "https://github.com/$worker_repo/pull/$pr" \
       --arg subject "$(git -C "$R/remote.git" log -1 --format=%s "$head")" \
@@ -3856,17 +3925,40 @@ ${line:-- Check k1 (before_merge): not yet run}
     bun "$here/heads-routes.ts" >"$R/fixtures.json"
 }
 
-# reviewer_prompt writes $R/prompt.txt: the task the daemon gives a reviewer it starts on a tester's
-# pass (`task`, packages/daemon/internal/workflow/effects.go), word for word, naming the test record
-# seed.ts heads-events wrote, so the `Tester's verdict:` that go/reviewer.md names is in the task and
-# the record it names exists.
+# reviewer_prompt writes $R/prompt.txt: the task the daemon gives a reviewer it starts once testing
+# has passed (`task`, packages/daemon/internal/workflow/effects.go), word for word, naming the test
+# record seed.ts heads-events wrote, so the record it names exists. That task names no verdict of
+# the tester; a label whose checkout carries task words has them before the task's `Pull request:`
+# sentence, where the daemon of the release before wrote the tester's verdict (task_words). The
+# words are read in a command of their own, checked, before the task is written: a substitution
+# inside printf's arguments would end only its own subshell on a failed read, and the run would
+# launch its role with a task that lacks the label's words.
 reviewer_prompt() {
-  local title version handoff
+  local title version handoff words
   title=$(jq -r .title "$R/fixture.json")
   version=$(jq -r .test.version "$R/fixture.json")
   handoff=$(handoff_line test "$version" "$worker_key")
-  printf 'Continue %s. Issue: %s. Phase: reviewing. %s Tester'"'"'s verdict: pass. Pull request: #702.\n' \
-    "$title" "$worker_key" "$handoff" >"$R/prompt.txt"
+  words=$(task_words) || fail "no task for the reviewer: the task words of label '${label:-}' could not be read"
+  printf 'Continue %s. Issue: %s. Phase: reviewing. %s%s Pull request: #702.\n' \
+    "$title" "$worker_key" "$handoff" "$words" >"$R/prompt.txt"
+}
+
+# task_words prints the words the run's label writes into its role's task, after one space: the
+# words of task-words.txt in the label's checkout ($co, load_label), whitespace runs read as one
+# space, or nothing where that checkout holds no such file. Only a label's patch adds the file
+# (label-checkouts.sh), so the head's checkout holds none, and a -hidden label's checkout holds its
+# source's. A file that is there but cannot be read, such as a link to nothing, or that holds no
+# words fails, naming the label: a patch that adds it means its role's task to carry words. Its
+# agent sees only the task, never the label's name.
+task_words() {
+  local file=$co/packages/pi-legion/scripts/skill-scenarios/task-words.txt words
+  [ -e "$file" ] || [ -L "$file" ] || return 0
+  words=$(tr -s '[:space:]' ' ' <"$file") ||
+    fail "the task words of label '${label:-}' could not be read from $file"
+  words=${words# }
+  words=${words% }
+  [ -n "$words" ] || fail "the task words file of label '${label:-}' holds no words: $file"
+  printf ' %s' "$words"
 }
 
 # A run of a -hidden label (cmd_run sets hide_state_file, a file in the map that no agent sees):
@@ -3903,13 +3995,76 @@ hide_state_off() {
   [ ! -e "$hide_state_file.results-before.txt" ] || mv -- "$hide_state_file.results-before.txt" "$R/results-before.txt"
 }
 
-# heads_scenario SCENARIO reads the one catalog that the proof and scorer read too.
+# rig_scenario SCENARIO succeeds when `rig.sh batch` runs SCENARIO: cmd_run's dispatch below has its
+# runner. cmd_batch refuses any other scenario, and heads_cases any catalog row that names one. The
+# scored scenario owner-walk has its runner there too, but runs with batch-scored alone, so it is
+# not one of these.
+rig_scenario() {
+  case $1 in
+  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail | tester-reads-no-ci) ;;
+  *) return 1 ;;
+  esac
+}
+
+# heads_cases SCENARIO sets cases, an array of its caller's, to the case of each world of SCENARIO
+# that the heads-scenario catalog lists, in the catalog's order, which a batch runs them in: "" for
+# the scenario's own world, whose run names no case, and no element for a scenario the catalog
+# does not list. The catalog, heads-scenarios.txt, holds one world a line, `<scenario> [<case>]`,
+# and is the one heads-scenarios.ts reads for seed.ts, heads-world.ts, score.ts and hidden-proof.ts.
+# A row whose scenario rig.sh does not run, such as a typo of one it does, fails every caller, so
+# no batch or run goes on without that row's world.
+heads_cases() {
+  local catalog=$root/packages/pi-legion/scripts/skill-scenarios/heads-scenarios.txt known which
+  [ -r "$catalog" ] || fail "cannot read the heads-scenario catalog $catalog"
+  cases=()
+  # A last line with no newline is a world too, and a blank line none, as heads-scenarios.ts reads
+  # them.
+  while read -r known which || [ -n "$known" ]; do
+    [ -n "$known" ] || continue
+    rig_scenario "$known" ||
+      fail "the heads-scenario catalog $catalog lists the scenario '$known', which rig.sh does not run"
+    [ "$known" != "$1" ] || cases+=("$which")
+  done <"$catalog"
+}
+
+# heads_scenario SCENARIO succeeds when the heads-scenario catalog lists a world of SCENARIO.
 heads_scenario() {
-  local scenario=$1 known
-  while IFS= read -r known; do
-    [ "$known" = "$scenario" ] && return 0
-  done <"$root/packages/pi-legion/scripts/skill-scenarios/heads-scenarios.txt"
+  local cases
+  heads_cases "$1"
+  [ ${#cases[@]} -gt 0 ]
+}
+
+# askgate_cases sets askgate, an array of its caller's, to each case of the askgate scenario that
+# askgate-cases.txt lists, one a line, in its order: the catalog that askgate-cases.ts reads for
+# score.ts. run_askgate has a prompt for each.
+askgate_cases() {
+  local catalog=$root/packages/pi-legion/scripts/skill-scenarios/askgate-cases.txt known
+  [ -r "$catalog" ] || fail "cannot read the askgate case catalog $catalog"
+  askgate=()
+  # A last line with no newline is a case too, as askgate-cases.ts reads it.
+  while read -r known || [ -n "$known" ]; do
+    [ -z "$known" ] || askgate+=("$known")
+  done <"$catalog"
+}
+
+# listed_in NAME LISTED... succeeds when NAME is one of LISTED.
+listed_in() {
+  local name=$1 known
+  shift
+  for known in "$@"; do [ "$known" != "$name" ] || return 0; done
   return 1
+}
+
+# one_of NAME... prints the names that are not empty as a choice of one of them: "a", "a or b",
+# "a, b or c".
+one_of() {
+  local name listed='' last=''
+  for name in "$@"; do
+    [ -n "$name" ] || continue
+    [ -z "$last" ] || listed+="${listed:+, }$last"
+    last=$name
+  done
+  printf '%s\n' "${listed:+$listed or }$last"
 }
 
 # hidden_needs_heads LABEL SCENARIO fails when LABEL ends in -hidden and SCENARIO is not a heads
@@ -3935,12 +4090,13 @@ run_reviewer_own_head() {
 }
 
 # reviewer-pass-and-fail: a reviewer reviews #702, at whose head the tester recorded a pass, its
-# test record, and then a fail. Scored by headsReview.
+# test record, and then a fail; in a case the catalog lists, that case's world (seed.ts
+# heads-events refuses a world it records no results for). Scored by headsReview.
 run_reviewer_pass_and_fail() {
-  local index=$1 start=$2
-  heads_world reviewer-pass-and-fail "$index" "$start"
+  local index=$1 start=$2 scenario_case=${3:-}
+  heads_world reviewer-pass-and-fail "$index" "$start" "$scenario_case"
   [ ! -e "$R/fixture-only" ] || return 0
-  heads_routes reviewer-pass-and-fail
+  heads_routes reviewer-pass-and-fail "$scenario_case"
   reviewer_prompt
   hide_state_on
   legion_session reviewer
@@ -3950,24 +4106,27 @@ run_reviewer_pass_and_fail() {
 # architect_prompt writes $R/prompt.txt: the session of the daemon's catch-up of a tree in
 # `accepting` (QueueCatchUp, packages/daemon/internal/workflow/catch_up.go) with the Handoff
 # (handoff_line) and Pull request words of the daemon's task after it, naming the review record
-# seed.ts heads-events wrote.
+# seed.ts heads-events wrote, and between them the label's task words (task_words), read and
+# checked as reviewer_prompt reads them.
 architect_prompt() {
-  local version handoff
+  local version handoff words
   version=$(jq -r .review.version "$R/fixture.json")
   handoff=$(handoff_line review "$version" "$worker_key")
-  printf 'the tree of %s at generation 1 as the daemon records it now; start or resume it as your role says; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move). %s Pull request: #702.\n' \
-    "$worker_key" "$worker_key" "$handoff" >"$R/prompt.txt"
+  words=$(task_words) || fail "no task for the architect: the task words of label '${label:-}' could not be read"
+  printf 'the tree of %s at generation 1 as the daemon records it now; start or resume it as your role says; in accepting, waiting for your acceptance, which no worker gives: %s (read the evidence, then sign_off or request_backward_move). %s%s Pull request: #702.\n' \
+    "$worker_key" "$worker_key" "$handoff" "$words" >"$R/prompt.txt"
 }
 
 # architect-pass-and-fail: the tree's root architect, in accepting (architect_prompt), judges #702,
 # at whose head the tester recorded a pass, its test record and then a fail, and the reviewer its
-# review record. Its stand-in daemon serves its sign_off and request_backward_move. Scored by
-# headsArchitect.
+# review record; in the case no-verdict-pass or no-verdict-fail, the results of that case at #702's
+# head (seed.ts heads-events). Its stand-in daemon serves its sign_off and request_backward_move.
+# Scored by headsArchitect.
 run_architect_pass_and_fail() {
-  local index=$1 start=$2
-  heads_world architect-pass-and-fail "$index" "$start"
+  local index=$1 start=$2 scenario_case=${3:-}
+  heads_world architect-pass-and-fail "$index" "$start" "$scenario_case"
   [ ! -e "$R/fixture-only" ] || return 0
-  heads_routes architect-pass-and-fail
+  heads_routes architect-pass-and-fail "$scenario_case"
   architect_prompt
   hide_state_on
   legion_session architect accepting
@@ -3999,6 +4158,22 @@ run_ci_pass_and_fail() {
   [ "$role" != tester ] || seed_ts capture-handoffs "$R/fixture.json" "$R"
 }
 
+# tester-reads-no-ci: the tester, started on the implementer's completion (tester_prompt), tests
+# #702, at whose head k1 has no ci_check and k3's CI job is still going (ci-late) or has failed
+# (ci-red), and its records are read back afterwards (seed.ts capture-handoffs). Scored by
+# headsTesterReadsNoCI.
+run_tester_reads_no_ci() {
+  local index=$1 start=$2 scenario_case=$3
+  heads_world tester-reads-no-ci "$index" "$start" "$scenario_case"
+  [ ! -e "$R/fixture-only" ] || return 0
+  heads_routes tester-reads-no-ci "$scenario_case"
+  tester_prompt 702 "$(jq -r '."702"' "$R/heads.json")"
+  hide_state_on
+  legion_session tester
+  hide_state_off
+  seed_ts capture-handoffs "$R/fixture.json" "$R"
+}
+
 # map_run NAME makes a run directory of a random name, <work>/runs/<16 random hex digits>, links
 # the map's <work>/maps/runs/NAME to it (the header's map), and prints the directory.
 map_run() {
@@ -4010,33 +4185,28 @@ map_run() {
 }
 
 cmd_run() {
-  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|owner-walk> <label> <n> <index> <start> [<case>]"
-  [ $# = 5 ] || { [ $# = 6 ] && { [ "$1" = reviewer-own-head ] || [ "$1" = ci-pass-and-fail ]; }; } || fail "$usage"
+  local usage="usage: rig.sh run <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|tester-reads-no-ci|owner-walk> <label> <n> <index> <start> [<case>]" cases askgate
+  # A run takes a case when a world of its scenario in the heads-scenario catalog names one.
+  heads_cases "${1:-}"
+  [ $# = 5 ] || { [ $# = 6 ] && [ -n "${cases[*]}" ]; } || fail "$usage"
   local scenario=$1 label=$2 n=$3 index=$4 start=$5 scenario_case=${6:-} name old owner_case=''
   load_label "$label"
   hidden_needs_heads "$label" "$scenario"
   [[ $n =~ ^[0-9]+$ ]] || fail "run number '$n' is not a number"
   [[ $index =~ ^[0-9]+$ && $start =~ ^[0-9]+$ ]] || fail "run index '$index' or batch start '$start' is not a number"
   [ -f "$services_env" ] || fail "a run needs its batch's services: run \`rig.sh batch $scenario 1 $2\` (\`rig.sh batch-scored $scenario 1 $2\` for a scored scenario)"
-  # An askgate, reviewer-own-head, ci-pass-and-fail or owner-walk run's name carries its case, so the
-  # batches or runs of the cases, each numbered from 1, never remove each other's runs.
+  # An askgate or owner-walk run's name carries its case, and so does the run of a heads scenario's
+  # world that names one, so the batches or runs of the cases, each numbered from 1, never remove
+  # each other's runs.
   if [ "$scenario" = askgate ]; then
-    case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
-    facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried)
-      name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-$label-$n
-      ;;
-    *) fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried" ;;
-    esac
-  elif [ "$scenario" = reviewer-own-head ]; then
-    case $scenario_case in
-    sibling-fails | ci-only | no-implementer | no-tester) name=$scenario-$scenario_case-$label-$n ;;
-    *) fail "the reviewer-own-head case '$scenario_case' is not sibling-fails, ci-only, no-implementer or no-tester" ;;
-    esac
-  elif [ "$scenario" = ci-pass-and-fail ]; then
-    case $scenario_case in
-    reviewer | tester | architect) name=$scenario-$scenario_case-$label-$n ;;
-    *) fail "the ci-pass-and-fail case '$scenario_case' is not reviewer, tester or architect" ;;
-    esac
+    askgate_cases
+    listed_in "${SKILL_SCENARIOS_ASKGATE_CASE:-}" "${askgate[@]}" ||
+      fail "SKILL_SCENARIOS_ASKGATE_CASE is '${SKILL_SCENARIOS_ASKGATE_CASE:-}', not $(one_of "${askgate[@]}")"
+    name=$scenario-$SKILL_SCENARIOS_ASKGATE_CASE-$label-$n
+  elif [ -n "${cases[*]}" ]; then
+    listed_in "$scenario_case" "${cases[@]}" ||
+      fail "the $scenario case '$scenario_case' is not $(one_of "${cases[@]}")"
+    name=$scenario${scenario_case:+-$scenario_case}-$label-$n
   elif [ "$scenario" = owner-walk ]; then
     # A scored run's name carries its case (score.ts runs --run reads it), which
     # SKILL_SCENARIOS_OWNER_WALK_CASE names.
@@ -4073,9 +4243,10 @@ cmd_run() {
   askgate) run_askgate ;;
   spec-writing | spec-rewrite) run_spec "$scenario" "$name" "$label" ;;
   reviewer-own-head) run_reviewer_own_head "$index" "$start" "$scenario_case" ;;
-  reviewer-pass-and-fail) run_reviewer_pass_and_fail "$index" "$start" ;;
-  architect-pass-and-fail) run_architect_pass_and_fail "$index" "$start" ;;
+  reviewer-pass-and-fail) run_reviewer_pass_and_fail "$index" "$start" "$scenario_case" ;;
+  architect-pass-and-fail) run_architect_pass_and_fail "$index" "$start" "$scenario_case" ;;
   ci-pass-and-fail) run_ci_pass_and_fail "$index" "$start" "$scenario_case" ;;
+  tester-reads-no-ci) run_tester_reads_no_ci "$index" "$start" "$scenario_case" ;;
   owner-walk) run_owner_walk "$name" "$owner_case" "$label" ;;
   *) fail "unknown scenario $scenario" ;;
   esac
@@ -4101,21 +4272,21 @@ stop_batch() {
 }
 
 cmd_batch() {
-  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail> <runs> <label>..."
-  local runs=$2 label n index=0 start scenario_case cases=('') parallel=${SKILL_SCENARIOS_PARALLEL:-5}
+  [ $# -ge 3 ] || fail "usage: rig.sh batch <ask-on-message|measure-before-ask|tester-proof|brainstorm|askgate|spec-writing|spec-rewrite|reviewer-own-head|reviewer-pass-and-fail|architect-pass-and-fail|ci-pass-and-fail|tester-reads-no-ci> <runs> <label>..."
+  local runs=$2 label n index=0 start scenario_case cases askgate parallel=${SKILL_SCENARIOS_PARALLEL:-5}
   batch_scenario=$1
-  case $batch_scenario in
-  ask-on-message | measure-before-ask | tester-proof | brainstorm | askgate | spec-writing | spec-rewrite | reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail) ;;
-  *) fail "rig.sh batch runs ask-on-message, measure-before-ask, tester-proof, brainstorm, askgate, spec-writing, spec-rewrite, reviewer-own-head, reviewer-pass-and-fail, architect-pass-and-fail or ci-pass-and-fail, not $batch_scenario; a scored scenario runs with \`rig.sh batch-scored owner-walk <count> <label>...\`" ;;
-  esac
-  # reviewer-own-head runs each of its four cases and ci-pass-and-fail each of its three roles, the
-  # case the last argument of each run.
-  [ "$batch_scenario" != reviewer-own-head ] || cases=(sibling-fails ci-only no-implementer no-tester)
-  [ "$batch_scenario" != ci-pass-and-fail ] || cases=(reviewer tester architect)
-  [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_CASE:-} in
-    facts | link | upload | nochange | nochange-rebuttal | nochange-block | untried | tried) ;;
-    *) fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to facts, link, upload, nochange, nochange-rebuttal, nochange-block, untried or tried (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')" ;;
-  esac
+  rig_scenario "$batch_scenario" ||
+    fail "rig.sh batch does not run $batch_scenario; a scored scenario runs with \`rig.sh batch-scored owner-walk <count> <label>...\`"
+  # A heads scenario runs each of its worlds the heads-scenario catalog lists, in the catalog's
+  # order, the world's case the last argument of each run (none for the scenario's own world);
+  # another scenario runs one world, which names no case.
+  heads_cases "$batch_scenario"
+  [ ${#cases[@]} -gt 0 ] || cases=('')
+  if [ "$batch_scenario" = askgate ]; then
+    askgate_cases
+    listed_in "${SKILL_SCENARIOS_ASKGATE_CASE:-}" "${askgate[@]}" ||
+      fail "an askgate batch needs SKILL_SCENARIOS_ASKGATE_CASE set to $(one_of "${askgate[@]}") (got '${SKILL_SCENARIOS_ASKGATE_CASE:-}')"
+  fi
   [ "$batch_scenario" != askgate ] || case ${SKILL_SCENARIOS_ASKGATE_MODE:-} in
     '' | warn | block) ;;
     *) fail "an askgate batch takes SKILL_SCENARIOS_ASKGATE_MODE unset, warn or block (got '$SKILL_SCENARIOS_ASKGATE_MODE')" ;;
@@ -4148,12 +4319,11 @@ cmd_batch() {
   services_up "$parallel"
   # Each run of a heads scenario starts a natsd of its own (own_github), built here once, as
   # scripts/e2e/verification-results.sh builds it.
-  case $batch_scenario in reviewer-own-head | reviewer-pass-and-fail | architect-pass-and-fail | ci-pass-and-fail)
+  if heads_scenario "$batch_scenario"; then
     mkdir -p "$S/bin"
     go -C "$root/packages/envoy" build -o "$S/bin/natsd" ./internal/testnats/cmd/natsd ||
       fail "./internal/testnats/cmd/natsd did not build"
-    ;;
-  esac
+  fi
   start=$(date +%s)
   for label in "$@"; do
     for scenario_case in "${cases[@]}"; do

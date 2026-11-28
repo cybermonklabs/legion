@@ -4,7 +4,6 @@ import (
 	"maps"
 	"reflect"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 
@@ -61,9 +60,9 @@ func TestASettlementNamesAHeldBackSuiteSkipped(t *testing.T) {
 		skippedRun("envoy-smoke", 9),
 		wordedRun("lint", 10, "success"),
 	}))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, `CI settled at head: "advice" neutral, "build" success, `+
-		`"dispatch-memory" skipped, "envoy-go" skipped, "envoy-go-docs-finalizers" skipped, "envoy-go-race" skipped, `+
-		`"envoy-go-race-api" skipped, "envoy-go-race-docs" skipped, "envoy-smoke" skipped, "lint" success; `+skippedSaid))
+	assertToldRows(t, pool, "LEGION-208", tell(t, nil, settledHead("head", "advice=neutral", "build=success",
+		"dispatch-memory=skipped", "envoy-go=skipped", "envoy-go-docs-finalizers=skipped", "envoy-go-race=skipped",
+		"envoy-go-race-api=skipped", "envoy-go-race-docs=skipped", "envoy-smoke=skipped", "lint=success")))
 }
 
 // A draft pull request's CI runs almost nothing: at cybermonklabs/legion#4180's head 061ca442
@@ -111,10 +110,9 @@ func TestASettlementShapedAs4180NamesFortySixChecksSkipped(t *testing.T) {
 	names := slices.Sorted(maps.Keys(words))
 	named := make([]string, len(names))
 	for i, name := range names {
-		named[i] = strconv.Quote(name) + " " + words[name]
+		named[i] = name + "=" + words[name]
 	}
-	want := "CI settled at head: " + strings.Join(named, ", ") + "; " + skippedSaid
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, want))
+	assertToldRows(t, pool, "LEGION-208", tell(t, nil, settledHead("head", named...)))
 	line := settledChecks(recordedPR(t, pool, "LEGION-208"))
 	for _, count := range []struct {
 		said string
@@ -128,15 +126,15 @@ func TestASettlementShapedAs4180NamesFortySixChecksSkipped(t *testing.T) {
 
 // A listener of an earlier release sends neither a skipped group nor a word, and its settlement
 // decodes to runs with neither (intake's
-// TestDecodeChecksReadsASettlementWithNoSkippedGroupOrConclusionWordAsToday): the CI message reads
-// word for word as it did before the daemon read either, and says nothing of a skipped check.
+// TestDecodeChecksReadsASettlementWithNoSkippedGroupOrConclusionWordAsToday): the CI message names
+// each check by the daemon's conclusion, as it did before the daemon read either, and none skipped.
 func TestASettlementWithNoSkippedGroupOrConclusionWordTellsTodaysLine(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(),
 		settledRunsAt("head", 1, []record.AttemptRun{{Name: "build", ID: 1}, {Name: "unit", ID: 2}}, "unit"))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil, `CI settled at head: "build" succeeded, "unit" failed`))
+	assertToldRows(t, pool, "LEGION-208", tell(t, nil, settledHead("head", "build=succeeded", "unit=failed")))
 }
 
 // The listener as it stands before it carries a word sends the skipped group and no word: the CI
@@ -149,8 +147,7 @@ func TestASettlementWithASkippedGroupAndNoWordNamesThoseSkipped(t *testing.T) {
 	seedSettlingRound(t, pool)
 	applyRefusingNothing(t, pool, mergingEngine(), settledRunsAt("head", 1, []record.AttemptRun{
 		{Name: "build", ID: 1}, {Name: "envoy-go", ID: 2, Conclusion: record.RunSkipped}, {Name: "unit", ID: 3}}, "unit"))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, nil,
-		`CI settled at head: "build" succeeded, "envoy-go" skipped, "unit" failed; `+skippedSaid))
+	assertToldRows(t, pool, "LEGION-208", tell(t, nil, settledHead("head", "build=succeeded", "envoy-go=skipped", "unit=failed")))
 }
 
 // settledOutcome is what a settlement of LEGION-208's head left beside what the CI message says:
@@ -235,10 +232,9 @@ func TestAHeadWhoseOnlyNonSuccessRunsAreSkippedMovesNoIssueSkipped(t *testing.T)
 			}
 			told := make([]record.RoleMessage, 0, len(tc.roles))
 			for _, role := range tc.roles {
-				told = append(told, record.RoleMessage{Role: roleToken(t, role),
-					Body: toldBody(`CI settled at head: "build" success, "dispatch-memory" skipped, "envoy-go" skipped; ` + skippedSaid)})
+				told = append(told, settledHead("head", "build=success", "dispatch-memory=skipped", "envoy-go=skipped").to(roleToken(t, role)))
 			}
-			assertRoleMessages(t, pool, "LEGION-208", told)
+			assertToldRows(t, pool, "LEGION-208", told)
 		})
 	}
 }
@@ -253,11 +249,11 @@ func TestASettlementThatOnlyNamesARunSkippedIsToldAndMovesNothing(t *testing.T) 
 	seedSettlingRound(t, pool)
 	engine := mergingEngine()
 	applyRefusingNothing(t, pool, engine, settledRunsAt("head", 1, []record.AttemptRun{{Name: "build", ID: 1}, {Name: "envoy-go", ID: 2}}))
-	messages := tell(t, nil, `CI settled at head: "build" succeeded, "envoy-go" succeeded`)
-	assertRoleMessages(t, pool, "LEGION-208", messages)
+	messages := tell(t, nil, settledHead("head", "build=succeeded", "envoy-go=succeeded"))
+	assertToldRows(t, pool, "LEGION-208", messages)
 
 	applyRefusingNothing(t, pool, engine, settledRunsAt("head", 2, []record.AttemptRun{{Name: "build", ID: 1}, skippedRun("envoy-go", 2)}))
-	assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: "build" succeeded, "envoy-go" skipped; `+skippedSaid))
+	assertToldRows(t, pool, "LEGION-208", tell(t, messages, settledHead("head", "build=succeeded", "envoy-go=skipped")))
 	if got := issuePhase(t, pool); got != phase.Testing {
 		t.Fatalf("after the settlement the issue is in %s, want it left in testing", got)
 	}
@@ -345,26 +341,25 @@ func lanesSkipped(id int64) []record.AttemptRun {
 // nobody.
 func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 	t.Parallel()
-	hold := strconv.Quote(laneHold)
-	lead := strconv.Quote(laneLead)
+	hold, lead := laneHold+"=skipped", laneLead+"=skipped"
 	first := []record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 2, "success")}
-	const firstSaid = `CI settled at head: "build" success, "unit" success`
+	firstSaid := settledHead("head", "build=success", "unit=success")
 	// titled is first with a pr-title run of id concluded success, as each title or body edit runs
 	// it again: a newer run that keeps its word.
 	titled := func(id int64) []record.AttemptRun {
 		return append(slices.Clone(first), wordedRun("pr-title", id, "success"))
 	}
-	const titledSaid = `CI settled at head: "build" success, "pr-title" success, "unit" success`
-	// toldAs is a pool whose LEGION-208 settled once at head, with runs, and was told so, in said,
+	titledSaid := settledHead("head", "build=success", "pr-title=success", "unit=success")
+	// toldAs is a pool whose LEGION-208 settled once at head, with runs, and was told so, as said,
 	// with the engine that applied it and the role messages that settlement queued.
-	toldAs := func(t *testing.T, runs []record.AttemptRun, said string) (*pgxpool.Pool, *Engine, []record.RoleMessage) {
+	toldAs := func(t *testing.T, runs []record.AttemptRun, said ciTold) (*pgxpool.Pool, *Engine, []record.RoleMessage) {
 		t.Helper()
 		pool := migratedPool(t)
 		seedSettlingRound(t, pool)
 		engine := mergingEngine()
 		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 1, runs))
 		messages := tell(t, nil, said)
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertToldRows(t, pool, "LEGION-208", messages)
 		return pool, engine, messages
 	}
 	// toldOnce is toldAs of first.
@@ -379,7 +374,7 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		t.Helper()
 		pool, engine, messages := toldOnce(t)
 		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 2, append(slices.Clone(first), lanesSkipped(3)...)))
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertToldRows(t, pool, "LEGION-208", messages)
 		return pool, engine, messages
 	}
 	// recordedRuns is the fence the record keeps after a settlement of first and lanesSkipped(id).
@@ -411,7 +406,7 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		t.Parallel()
 		pool, engine, messages := skippedOnce(t)
 		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 3, append(slices.Clone(first), lanesSkipped(6)...)))
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertToldRows(t, pool, "LEGION-208", messages)
 		assertRecorded(t, pool, 3, recordedRuns(6))
 	})
 
@@ -419,7 +414,7 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		t.Parallel()
 		pool, engine, messages := toldAs(t, titled(3), titledSaid)
 		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 2, append(titled(4), skippedRun(laneLabel, 5))))
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertToldRows(t, pool, "LEGION-208", messages)
 		assertRecorded(t, pool, 2, []record.AttemptRun{
 			{Name: laneLabel, ID: 5, Head: "head", Conclusion: record.RunSkipped, GitHubConclusion: "skipped"},
 			{Name: "build", ID: 1, Head: "head", Conclusion: record.RunSucceeded, GitHubConclusion: "success"},
@@ -432,7 +427,7 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		t.Parallel()
 		pool, engine, messages := toldAs(t, titled(3), titledSaid)
 		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 2, titled(4)))
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		assertToldRows(t, pool, "LEGION-208", messages)
 	})
 
 	t.Run("(d) after (a), a changed conclusion is told, naming every check", func(t *testing.T) {
@@ -440,8 +435,7 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		pool, engine, messages := skippedOnce(t)
 		applyRefusingNothing(t, pool, engine, settledRunsAt("head", 3,
 			append([]record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 9, "failure")}, lanesSkipped(3)...), "unit"))
-		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: "approval" skipped, "build" success, `+hold+
-			` skipped, `+lead+` skipped, "unit" failure; `+skippedSaid))
+		assertToldRows(t, pool, "LEGION-208", tell(t, messages, settledHead("head", "approval=skipped", "build=success", hold, lead, "unit=failure")))
 	})
 
 	for _, tc := range []struct {
@@ -449,29 +443,29 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		runs []record.AttemptRun
 		// failing names the runs the settlement names failed.
 		failing []string
-		said    string
+		told    ciTold
 	}{
 		{"(b) a new skipped run beside a told run's new conclusion is told",
 			append([]record.AttemptRun{wordedRun("build", 1, "success"), wordedRun("unit", 6, "failure")}, skippedRun(laneLead, 3)), []string{"unit"},
-			`CI settled at head: "build" success, ` + lead + ` skipped, "unit" failure; ` + skippedSaid},
+			settledHead("head", "build=success", lead, "unit=failure")},
 		{"(c) a skipped run that replaces a told run of another conclusion is told",
 			[]record.AttemptRun{skippedRun("build", 6), wordedRun("unit", 2, "success")}, nil,
-			`CI settled at head: "build" skipped, "unit" success; ` + skippedSaid},
+			settledHead("head", "build=skipped", "unit=success")},
 		{"(e) a new run concluded success is told",
 			append(slices.Clone(first), wordedRun("lint", 3, "success")), nil,
-			`CI settled at head: "build" success, "lint" success, "unit" success`},
+			settledHead("head", "build=success", "lint=success", "unit=success")},
 		{"(e) a new run concluded failure is told",
 			append(slices.Clone(first), wordedRun("lint", 3, "failure")), []string{"lint"},
-			`CI settled at head: "build" success, "lint" failure, "unit" success`},
+			settledHead("head", "build=success", "lint=failure", "unit=success")},
 		{"(e) a new run concluded success beside new skipped runs is told",
 			append(append(slices.Clone(first), wordedRun("lint", 3, "success")), lanesSkipped(4)...), nil,
-			`CI settled at head: "approval" skipped, "build" success, ` + hold + ` skipped, ` + lead + ` skipped, "lint" success, "unit" success; ` + skippedSaid},
+			settledHead("head", "approval=skipped", "build=success", hold, lead, "lint=success", "unit=success")},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			pool, engine, messages := toldOnce(t)
 			applyRefusingNothing(t, pool, engine, settledRunsAt("head", 2, tc.runs, tc.failing...))
-			assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, tc.said))
+			assertToldRows(t, pool, "LEGION-208", tell(t, messages, tc.told))
 		})
 	}
 
@@ -480,8 +474,7 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		pool := migratedPool(t)
 		seedSettlingRound(t, pool)
 		applyRefusingNothing(t, pool, mergingEngine(), settledRunsAt("head", 1, lanesSkipped(1)))
-		assertRoleMessages(t, pool, "LEGION-208", tell(t, nil,
-			`CI settled at head: "approval" skipped, `+hold+` skipped, `+lead+` skipped; `+skippedSaid))
+		assertToldRows(t, pool, "LEGION-208", tell(t, nil, settledHead("head", "approval=skipped", hold, lead)))
 	})
 
 	t.Run("(f) the first settlement of the head a push left is told, whatever the head before said", func(t *testing.T) {
@@ -489,8 +482,7 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		pool, engine, messages := toldOnce(t)
 		applyRefusingNothing(t, pool, engine, syncedTo("next"), settledRunsAt("next", 1,
 			append([]record.AttemptRun{wordedRun("build", 11, "success"), wordedRun("unit", 12, "success")}, lanesSkipped(13)...)))
-		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at next: "approval" skipped, "build" success, `+hold+
-			` skipped, `+lead+` skipped, "unit" success; `+skippedSaid))
+		assertToldRows(t, pool, "LEGION-208", tell(t, messages, settledHead("next", "approval=skipped", "build=success", hold, lead, "unit=success")))
 	})
 
 	t.Run("a changed commit status beside new skipped runs is told", func(t *testing.T) {
@@ -499,12 +491,11 @@ func TestASettlementThatOnlyAddsSkippedChecksTellsNobody(t *testing.T) {
 		seedSettlingRound(t, pool)
 		engine := mergingEngine()
 		applyRefusingNothing(t, pool, engine, naming(settledRunsAt("head", 1, first), status("deploy", "success", 1)))
-		messages := tell(t, nil, firstSaid+`; commit statuses: "deploy" success`)
-		assertRoleMessages(t, pool, "LEGION-208", messages)
+		messages := tell(t, nil, firstSaid.withStatuses("deploy=success"))
+		assertToldRows(t, pool, "LEGION-208", messages)
 		applyRefusingNothing(t, pool, engine,
 			naming(settledRunsAt("head", 2, append(slices.Clone(first), lanesSkipped(3)...)), status("deploy", "failure", 2)))
-		assertRoleMessages(t, pool, "LEGION-208", tell(t, messages, `CI settled at head: "approval" skipped, "build" success, `+hold+
-			` skipped, `+lead+` skipped, "unit" success; commit statuses: "deploy" failure; `+skippedSaid))
+		assertToldRows(t, pool, "LEGION-208", tell(t, messages, settledHead("head", "approval=skipped", "build=success", hold, lead, "unit=success").withStatuses("deploy=failure")))
 	})
 }
 
@@ -545,8 +536,8 @@ func TestTheStuckNoticeNamesASkippedCheckSkipped(t *testing.T) {
 // cancelled is that and not skipped, which no listener sends, and a run it names failed or
 // cancelled with its own word (failure, timed_out or cancelled) is named failed or cancelled, as
 // before. A settlement with no skipped run gives the text it gave before, whatever other word
-// GitHub gave each run; one with no word either wakes the worker with the task it gave before,
-// word for word.
+// GitHub gave each run; one with no word either wakes the worker as a settlement's wake does, its
+// role and its kind.
 func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 	t.Parallel()
 	woken := "Your issue's pod had been released while it was idle, and this wake brought it back. " +
@@ -618,9 +609,5 @@ func TestTheWakeTaskNamesSkippedChecksSkipped(t *testing.T) {
 		rig := newWakeRig(t)
 		rig.apply("settled", settlement("head1"))
 		oneWake(t, rig.pool, claim.RoleImplementer, pods.WakeChecks)
-		want := woken + "head1 passed every check. Read the checks before you decide anything."
-		if task := wakeStarts(t, rig.pool)[0].Task; task != want {
-			t.Fatalf("the woken role's task = %q, want today's %q", task, want)
-		}
 	})
 }

@@ -48,7 +48,7 @@ func TestEveryMoveOutOfAStepNamesItsEnd(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			if err := engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, "the table test's move"); err != nil {
+			if err := engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, moveWhy{Reason: "the table test's move"}); err != nil {
 				return err
 			}
 			runs, err := factRunsOf(ctx)
@@ -113,7 +113,7 @@ func TestAMoveAnOpenChildHoldsNamesTheEndOfTheStepItLeaves(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, "the held move")
+			return engine.transition(ctx, tx, issue, row.Trigger, target, record.PhaseRow{}, pr, moveWhy{Reason: "the held move"})
 		})
 		if issueRecord(t, pool, key).Phase != phase.AwaitingChildren {
 			continue

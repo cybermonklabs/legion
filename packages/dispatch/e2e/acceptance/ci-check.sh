@@ -305,6 +305,28 @@ check_run_reads() {
     fail "$1" "$2" "$(<"$work/curl")"
 }
 
+# settled SECTION ISSUE SHA: waits, at most 30 s, until Dispatch's check states settler has
+# published ISSUE's states at SHA and holds no due mark of any issue. Every Dispatch process runs
+# the settler, a staged head marks its issue's states owed, and a settle reads the check runs of a
+# check CI proves at each head the issue's results read reads, as that read does; it deletes a mark
+# in the transaction that publishes what its reads computed. So a count of the fake's reads taken
+# after this, which a results read alone moves since it marks nothing, holds no read of the
+# settler's.
+settled() {
+  local deadline=$((SECONDS + 30))
+  while :; do
+    sql "$1" "wait for the check states of $2 at $3" -v issue="$2" -v sha="$3" <<'SQL'
+select (exists (select 1 from check_state_sets where issue_key = :'issue' and head_sha = :'sha')
+  and not exists (select 1 from check_states_owed where due_at <= now()))::text;
+SQL
+    [[ "$(<"$work/sql")" == true ]] && break
+    ((SECONDS < deadline)) ||
+      fail "$1" "the check states of $2 at $3 are settled" "no settle published them within 30 s"
+    sleep 0.1
+  done
+  pass "$1" "the check states of $2 at $3 are settled"
+}
+
 # --- Dispatch ----------------------------------------------------------------------------------
 
 printf 'The ci-check acceptance run of a check CI proves.\n' >"$work/spec.md"
@@ -646,6 +668,7 @@ ci_issue k2 "three checks CI proves, at one head" \
 readonly k2_three="$key"
 three_sha="$(sha_of k2-three)"
 stage_head k2 "$k2_three" 103 "$three_sha" open
+settled k2 "$k2_three" "$three_sha"
 runs_at k2 "three runs at one head" "$three_sha" \
   "[$(check_run 9011 contracts success), $(check_run 9012 lint success), $(check_run 9013 e2e success)]"
 results k2 "$k2_three"
@@ -707,6 +730,7 @@ ci_issue k3 "a check CI proves, through every outcome of its run"
 readonly k3="$key"
 k3_sha="$(sha_of k3)"
 stage_head k3 "$k3" 301 "$k3_sha" open
+settled k3 "$k3" "$k3_sha"
 readonly k3_at="$k3_sha, the head of $driven_repo#301"
 
 runs_at k3 "a run concluded success" "$k3_sha" "[$(check_run 9101 contracts success)]"

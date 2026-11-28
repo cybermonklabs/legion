@@ -424,18 +424,32 @@ func LongestPost(body string) string {
 type NoticeKind string
 
 // Notice is a role-facing workflow observation. A phase-finished notice carries the finishing
-// worker's own summary and, beside it, the verdict it gave (the tester's pass or fail). A
-// review-stuck notice's summary names the fact that wrote it, and its topic is the reviewer's role
-// topic, which the architect asks for the decision.
+// worker's own summary; from the tester's phase its reason names each check that does not pass at
+// the tested head, or what the move waits for, since no worker reports a verdict, and the notice
+// carries what its reason names as fields too (Head, WaitsFor, Waiting, Failing). A review-stuck
+// notice's summary names the fact that wrote it, and its topic is the reviewer's role topic, which
+// the architect asks for the decision.
 type Notice struct {
 	Kind    NoticeKind  `json:"kind"`
 	Role    claim.Role  `json:"role,omitempty"`
 	Phase   phase.Phase `json:"phase,omitempty"`
 	Summary string      `json:"summary,omitempty"`
-	Verdict string      `json:"verdict,omitempty"`
 	Version int         `json:"version,omitempty"`
 	Reason  string      `json:"reason,omitempty"`
 	Topic   string      `json:"topic,omitempty"`
+	// Head, WaitsFor, Waiting and Failing are what the tester's phase-finished notice of the
+	// testing move names in its Reason, as fields, and no other notice carries them
+	// (validateOutboxPayload): the tested head, "" where the tester's record named none; on a wait,
+	// what the move waits for (tested_head, fence, set or checks) and the checks whose states it
+	// waits for; on a move back, each check that does not pass there, with its state and reason.
+	// The move writes the Reason and these from one value (workflow's testingMove), so the architect
+	// reads each as a value and not only inside a sentence. A release before these keys decodes a
+	// notice strictly (DisallowUnknownFields), so the way back of 20261126110301_phase_verdict_gone
+	// deletes them from each queued notice before that release boots.
+	Head     string         `json:"head,omitempty"`
+	WaitsFor string         `json:"waits_for,omitempty"`
+	Waiting  []string       `json:"waiting,omitempty"`
+	Failing  []FailingCheck `json:"failing,omitempty"`
 	// Failure is why the claim failed, carried by the notices of a claim's failure and by no
 	// other kind (validateOutboxPayload): the hold a phase worker's failed claim puts its issue
 	// in and the worker-died that names the death (workflow's claimFailed). It is absent where
@@ -613,6 +627,26 @@ type NoticeGiveUp struct {
 	ID       int64  `json:"id"`
 	Consumer string `json:"consumer"`
 	Subject  string `json:"subject"`
+}
+
+// FailingCheck is one check that does not pass at the tested head, as the testing move judged the
+// state Dispatch published of it there (workflow's judgeStates): the check's id, its state, no or
+// unknown, and the reason of that state, "" where Dispatch gave none. The tester's phase-finished
+// notice of a move back carries each (Notice.Failing), and the implementer's task and that
+// notice's reason name each as String writes it.
+type FailingCheck struct {
+	Check  string `json:"check"`
+	State  string `json:"state"`
+	Reason string `json:"reason,omitempty"`
+}
+
+// String is the check as a task and a notice's reason name it: its id and its state, then its
+// reason in brackets where it has one.
+func (c FailingCheck) String() string {
+	if c.Reason == "" {
+		return c.Check + ": " + c.State
+	}
+	return c.Check + ": " + c.State + " (" + c.Reason + ")"
 }
 
 // ProjectPause is what the controller is told when the operator pauses or resumes its project
@@ -1810,9 +1844,26 @@ func (WorkspaceRemove) OutboxKind() OutboxKind { return OutboxKindWorkspaceRemov
 // exception is a row a project's pause held for a role a pause stopped: without the pause the role
 // would have had the message, so the row is published to the role after the resume, and that
 // publish wakes it (internal/daemon's outbox.roleMessage, R4 of dispatch://INFRA-3759).
+//
+// A CI message carries what its body names as fields too, written from the one value the body is
+// written from: a settlement's message (workflow's settlementMessage) names the pull request, the
+// head the settlement stands for, each check as name=word in name order (Checks) and each commit
+// status as context=state in context order (Statuses); the implementer's message of a failed CI
+// job (workflow's ciFailureMessage) names the pull request, the head, the check and its job's
+// case. The fields are on the outbox row for tests and operators, who read each as a value; the
+// executor (internal/daemon's outbox.roleMessage) publishes Body alone, so a role reads them only
+// inside its sentence. No other message carries them. A release before these keys decodes a role
+// message strictly (DisallowUnknownFields), so the way back of 20261126110301_phase_verdict_gone
+// deletes them from each queued role message before that release boots.
 type RoleMessage struct {
-	Role string `json:"role"`
-	Body string `json:"body"`
+	Role        string   `json:"role"`
+	Body        string   `json:"body"`
+	PullRequest int      `json:"pull_request,omitempty"`
+	Head        string   `json:"head,omitempty"`
+	Check       string   `json:"check,omitempty"`
+	CICase      string   `json:"ci_case,omitempty"`
+	Checks      []string `json:"checks,omitempty"`
+	Statuses    []string `json:"statuses,omitempty"`
 }
 
 func (RoleMessage) OutboxKind() OutboxKind { return OutboxKindRoleMessage }
@@ -2789,6 +2840,31 @@ func DecodeOutboxPayload(row OutboxRow) (OutboxPayload, error) {
 	return payload, nil
 }
 
+// releasedNotice is a notice as a build of the release before can write it: a Notice that may
+// name the tester's verdict under the key verdict, which Notice no longer has. Such a notice is
+// one queued before the upgrade, which migration 20261126110301_phase_verdict_gone strips; one a
+// daemon of the release before queues on the database the two share during a roll, after that
+// migration ran; or one a listener reports failed with the payload as it went out. Decoded into
+// this, the key is read and dropped, so each such notice is sent with the rest of what it says,
+// and every other key Notice does not have is still refused. Once no running build of the release
+// before queues or publishes a notice, Verdict can go.
+type releasedNotice struct {
+	Notice
+	Verdict json.RawMessage `json:"verdict"`
+}
+
+// DecodeNotice strictly decodes a notice's payload as the outbox decodes a queued one
+// (releasedNotice): the key verdict is dropped and any other key Notice does not have refuses it.
+func DecodeNotice(payload []byte) (Notice, error) {
+	decoder := json.NewDecoder(bytes.NewReader(payload))
+	decoder.DisallowUnknownFields()
+	var value releasedNotice
+	if err := decoder.Decode(&value); err != nil {
+		return Notice{}, err
+	}
+	return value.Notice, nil
+}
+
 func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 	decoder := json.NewDecoder(bytes.NewReader(row.Payload))
 	decoder.DisallowUnknownFields()
@@ -2807,11 +2883,11 @@ func decodeOutboxJSON(row OutboxRow) (OutboxPayload, error) {
 		}
 		payload = value
 	case OutboxKindNotice:
-		value := Notice{}
+		value := releasedNotice{}
 		if err := decoder.Decode(&value); err != nil {
 			return nil, fmt.Errorf("decode outbox row %d: %w", row.ID, err)
 		}
-		payload = value
+		payload = value.Notice
 	case OutboxKindControllerNotice:
 		value := ControllerNotice{}
 		if err := decoder.Decode(&value); err != nil {
@@ -3113,6 +3189,9 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		if (value.Kind == "catch-up") != (value.CatchUp != nil) {
 			return fmt.Errorf("a %s notice carries a catch-up only when it is one", value.Kind)
 		}
+		if move := value.Head != "" || value.WaitsFor != "" || len(value.Waiting) > 0 || len(value.Failing) > 0; move && (value.Kind != "phase-finished" || value.Role != claim.RoleTester || value.Phase != phase.Testing) {
+			return fmt.Errorf("a %s notice carries the testing move's head, wait or checks; only the tester's phase-finished notice of testing does", value.Kind)
+		}
 		decision, spec := SpecDecision(value.Kind)
 		if !spec && !basisNoticeKind(value.Kind) && (value.Actor != "" || value.Ref != "") {
 			return fmt.Errorf("a %s notice carries an actor or a ref; only a spec decision's does, and a basis notice's", value.Kind)
@@ -3291,6 +3370,12 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 		}
 		if value.Body == "" {
 			return fmt.Errorf("role message requires body")
+		}
+		if (value.Check != "" || value.CICase != "" || len(value.Checks) > 0 || len(value.Statuses) > 0) && (value.PullRequest == 0 || value.Head == "") {
+			return fmt.Errorf("a role message that names checks names the pull request and the head they are of")
+		}
+		if (value.Check != "" || value.CICase != "") && (len(value.Checks) > 0 || len(value.Statuses) > 0) {
+			return fmt.Errorf("a role message names one failed CI job or a settlement's checks, not both")
 		}
 	case GatedStepsPublish:
 		if value.Project == "" {

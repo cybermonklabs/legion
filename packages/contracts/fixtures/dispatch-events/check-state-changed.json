@@ -1,0 +1,48 @@
+{
+  "type": "check.state_changed",
+  "actor": {
+    "kind": "system",
+    "id": "dispatch-check-states"
+  },
+  "check_form": {
+    "issue": "ACME-1",
+    "check_artifact_id": "0a3f6c1e-5b2d-4e8a-9c7f-1d2e3f4a5b6c",
+    "repo": "acme/widgets",
+    "head": "1111111111111111111111111111111111111111",
+    "pull_requests": [
+      70
+    ],
+    "checks": [
+      "k1",
+      "k2"
+    ],
+    "check": "k1",
+    "check_version": 1,
+    "state": "no",
+    "reason": "fail",
+    "roles": [],
+    "results": [
+      "7d1c2b3a-4e5f-4a6b-8c7d-9e0f1a2b3c4d"
+    ],
+    "ci_case": "",
+    "serial": 1
+  },
+  "set_form": {
+    "issue": "ACME-2",
+    "check_artifact_id": null,
+    "repo": "acme/widgets",
+    "head": "2222222222222222222222222222222222222222",
+    "pull_requests": [
+      71
+    ],
+    "checks": [],
+    "check": null,
+    "check_version": null,
+    "state": null,
+    "reason": "",
+    "roles": [],
+    "results": [],
+    "ci_case": "",
+    "serial": 1
+  }
+}

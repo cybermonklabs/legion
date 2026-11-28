@@ -68,8 +68,8 @@ func TestEveryPhasesRowTheUpgradeFindsReadsMovedBackAndALaterInsertReadsForward(
 	}
 
 	// An insert that names no such column, as the release before writes its own rows.
-	if _, err := store.Pool().Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, verdict, entry, entry_task, entry_raised_at)
-		values ('LEGION-208', 'implementer', 'legion-LEGION-208-implementer', '', 0, '', 1, 'Implement the change.', now())`); err != nil {
+	if _, err := store.Pool().Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, rounds, entry, entry_task, entry_raised_at)
+		values ('LEGION-208', 'implementer', 'legion-LEGION-208-implementer', '', 0, 1, 'Implement the change.', now())`); err != nil {
 		t.Fatalf("insert a phases row that does not name entry_moved_back: %v", err)
 	}
 	if movedBack("implementer") {

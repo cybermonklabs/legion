@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The `legion` tool's `handoff_complete` refuses a tester's completion whose newest `test` record
+  names no readable `head`, before anything is posted, in testing and in a phase the tester left,
+  naming the new record to write: the testing move reads the check states at the head the test
+  record names, and the daemon refuses a tester's completion naming no commit
+  (`TESTED_HEAD_REQUIRED`). The planner's and the reviewer's completions still go without a commit
+  when their record names no head. The tool's description says so.
+time: 2026-11-21T16:15:23Z
+custom:
+    Issue: check-states-tested-head

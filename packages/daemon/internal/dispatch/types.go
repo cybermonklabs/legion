@@ -603,13 +603,18 @@ func artifactNotFound(refusal *Error) bool {
 // the issue carrying it, its phase word (plan, implement, test or review; phase.Handoff), its
 // version among that phase's records, and the actor that wrote it. The record's text is not read
 // here: the daemon holds a completion to who wrote which record, and what a handoff says is the
-// next role's to read with `dispatch handoff-read`.
+// next role's to read with `dispatch handoff-read`. CheckStatesSerial is a test record's
+// `check_states_serial`: the issue's check states serial Dispatch stored once each state the
+// tester's results changed was published, so every check.state_changed event those results caused
+// carries a serial at or below it. 0 where Dispatch answers none: every other phase's record, and a
+// test record written before Dispatch kept one.
 type Handoff struct {
-	ID       string
-	IssueKey string
-	Phase    string
-	Version  int
-	Author   HandoffAuthor
+	ID                string
+	IssueKey          string
+	Phase             string
+	Version           int
+	Author            HandoffAuthor
+	CheckStatesSerial int64
 }
 
 // HandoffAuthor is the actor that wrote a handoff record: Kind is `session` for a record a session

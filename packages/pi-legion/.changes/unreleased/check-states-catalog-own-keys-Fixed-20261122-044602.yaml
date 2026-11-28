@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  The skill-scenario scorer looks up each table keyed by a catalog's or a scorer's name (its
+  scorers, the cased run names, the rules check's askgate cases, the spec scenarios scored with no
+  Dispatch of their own) in a record with no prototype. A row of `heads-scenarios.txt` naming
+  `constructor`, which reads as a scorer on an ordinary object, was neither scored nor refused;
+  `score.ts runs` now refuses it as it refuses any scenario it has no scorer for. And an askgate case
+  that `askgate-cases.txt` lists and the scorer has no rule for is now a rig error for each of its
+  runs, where it was scored by another case's rule: `constructor` by the rules check's, any other
+  by upload's. Every score row of the current catalogs is unchanged.
+time: 2026-11-22T04:46:02Z
+custom:
+    Issue: check-states-catalog-own-keys

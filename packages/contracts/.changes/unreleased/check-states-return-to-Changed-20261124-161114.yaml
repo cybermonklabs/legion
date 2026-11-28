@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `LegionHandoffCompleteRequest` takes `returnTo` only beside no verdict: a tester's completion
+  names the step its task returns to should the check states fail the testing step, and a
+  completion naming a verdict names no `returnTo`.
+time: 2026-11-24T16:11:14Z
+custom:
+  Issue: check-states-return-to

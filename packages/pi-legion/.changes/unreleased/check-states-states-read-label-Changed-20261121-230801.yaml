@@ -1,0 +1,16 @@
+kind: Changed
+body: |-
+  The skill-scenario label `ablate-states-read` cuts every sentence that sends the reviewer or the
+  architect to the state of a check at its head, as its rule search finds them. The search now also
+  finds a head that reads not known for a pass and a fail, a check's derived result, the state of
+  each check at a head, and what "that command" prints in a sentence after one that named
+  `dispatch results`. So the label also cuts the not-known rules of both roles' prompts, the
+  architect's read of each CI-proved check's derived result, the architect's sentences that the
+  testing move follows each check's state at the tested head, and the reviewer's sentences on what
+  the head's line leaves out and what that command prints for a check CI proves. Before, the
+  label's architect kept its not-known rule, read the head's line through it and sent the issue
+  back as the head's architect did, so the label's control could not score below head for the
+  architect.
+time: 2026-11-21T23:08:01Z
+custom:
+    Issue: check-states-states-read-label

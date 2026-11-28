@@ -795,34 +795,50 @@ func TestChangesRequestedLatestNamesOnlyTheLatestVersion(t *testing.T) {
 }
 
 // A handoff record reads back with its issue, phase, version and the actor that wrote it; the body
-// Dispatch answers with is not the daemon's to read. A record Dispatch does not have is Missing.
+// Dispatch answers with is not the daemon's to read. A test record carries the check states serial
+// Dispatch stored on it, and a record that carries none reads 0. A record Dispatch does not have is
+// Missing.
 func TestHandoffReadsTheRecordAndItsAuthor(t *testing.T) {
-	const id = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b"
+	const id, test = "6f1d2c3b-4a5e-4f60-8a7b-9c0d1e2f3a4b", "7a2e3d4c-5b6f-4071-9b8c-0d1e2f3a4b5c"
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		assertBearer(t, r)
 		if r.Method != http.MethodGet {
 			t.Fatalf("request = %s %s, want GET", r.Method, r.URL.Path)
 		}
-		if r.URL.Path != "/api/v1/handoffs/"+id {
+		switch r.URL.Path {
+		case "/api/v1/handoffs/" + id:
+			writeJSON(t, w, map[string]any{
+				"id": id, "issue_key": "LEGION-6", "phase": "implement", "version": 2,
+				"author":     map[string]any{"kind": "session", "id": "ses_implementer_6", "origin": map[string]any{"title": "implementer"}},
+				"created_at": "2026-10-26T08:00:00Z", "body": `{"schemaVersion":1}`,
+			})
+		case "/api/v1/handoffs/" + test:
+			writeJSON(t, w, map[string]any{
+				"id": test, "issue_key": "LEGION-6", "phase": "test", "version": 1,
+				"author":     map[string]any{"kind": "session", "id": "ses_tester_6"},
+				"created_at": "2026-10-26T09:00:00Z", "check_states_serial": 7,
+			})
+		default:
 			writeJSONStatus(t, w, http.StatusNotFound, map[string]string{"code": "HANDOFF_NOT_FOUND", "error": "handoff not found"})
-			return
 		}
-		writeJSON(t, w, map[string]any{
-			"id": id, "issue_key": "LEGION-6", "phase": "implement", "version": 2,
-			"author":     map[string]any{"kind": "session", "id": "ses_implementer_6", "origin": map[string]any{"title": "implementer"}},
-			"created_at": "2026-10-26T08:00:00Z", "body": `{"schemaVersion":1}`,
-		})
 	}))
 	defer server.Close()
 
 	client := New(server.URL, BearerTransport(dispatchToken, nil))
-	handoff, err := client.Handoff(context.Background(), id)
-	if err != nil {
-		t.Fatalf("read handoff: %v", err)
-	}
-	want := Handoff{ID: id, IssueKey: "LEGION-6", Phase: "implement", Version: 2, Author: HandoffAuthor{Kind: "session", ID: "ses_implementer_6"}}
-	if handoff != want {
-		t.Fatalf("handoff = %#v, want %#v", handoff, want)
+	for _, tc := range []struct {
+		id   string
+		want Handoff
+	}{
+		{id, Handoff{ID: id, IssueKey: "LEGION-6", Phase: "implement", Version: 2, Author: HandoffAuthor{Kind: "session", ID: "ses_implementer_6"}}},
+		{test, Handoff{ID: test, IssueKey: "LEGION-6", Phase: "test", Version: 1, Author: HandoffAuthor{Kind: "session", ID: "ses_tester_6"}, CheckStatesSerial: 7}},
+	} {
+		handoff, err := client.Handoff(context.Background(), tc.id)
+		if err != nil {
+			t.Fatalf("read handoff %s: %v", tc.id, err)
+		}
+		if handoff != tc.want {
+			t.Fatalf("handoff = %#v, want %#v", handoff, tc.want)
+		}
 	}
 	if _, err := client.Handoff(context.Background(), "00000000-0000-0000-0000-000000000001"); !Missing(err) {
 		t.Fatalf("an unknown handoff = %v, want Dispatch's 404", err)

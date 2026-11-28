@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The tests of `internal/api`, `internal/daemon` and `internal/workflow` build every
+  `check.state_changed` event they apply with one shared test package, `internal/checkstatetest`:
+  it reads the contracts fixture from its own source path, writes a state's fields over the
+  payload, wraps it as Dispatch's event log serves it, decodes it with the intake's own decoder,
+  and reads the pull request's repository and the next serial for a tester's deciding state. The
+  three copies of that construction and of the pull request read are gone. No test changes what
+  it asserts.
+time: 2026-11-21T23:43:46Z
+custom:
+  Issue: check-states-shared-test-events

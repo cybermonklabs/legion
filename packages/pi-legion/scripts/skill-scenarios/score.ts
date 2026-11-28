@@ -41,7 +41,6 @@
 //     with the verdict cells gives it. Exit 2 for a count that is no whole number above 0.
 import {
   existsSync,
-  lstatSync,
   readdirSync,
   readFileSync,
   realpathSync,
@@ -59,7 +58,7 @@ import { z } from "zod";
 // (`src/no-cross-import.test.ts`).
 import { RULE_NAMES, RULE_REFUSAL_OPENING } from "../../../pi-envoy/extensions/askgate/rules-check";
 import { ENTRY_HEADER } from "./fetch-spec-sources";
-import { HEADS_SCENARIOS } from "./heads-scenarios";
+import { HEADS_SCENARIOS, headsCases } from "./heads-scenarios";
 import {
   CheckableFile,
   CheckableOutput,
@@ -79,9 +78,7 @@ import { byCreatedAt, parseInstant } from "./production-dispatch";
 import {
   BATCH_SCENARIOS,
   type BatchScenario,
-  type CI_ROLES,
   isBatchScenario,
-  type OWN_HEAD_CASES,
   rowScenario,
   runFields,
   SCORED_SCENARIOS,
@@ -166,33 +163,29 @@ const DaemonLine = z.looseObject({
   handoffId: z.string().optional(),
   handoffVersion: z.number().optional(),
 });
-const nonEmpty = z.string().min(1);
 /** The keys a test handoff holds, as the tester role's prompt gives them, each with the shape the
- * score reads (TestHandoff): `head`, a `note` where the tester has one, and, until
- * dispatch://INFRA-4930 moves them to results on the issue's checks, `implementerProof`, `failures`
- * and `failed`. */
+ * score reads (TestHandoff): `head`, and a `note` where the tester has one. It holds no verdict on
+ * the implementer's results and no field for a failure (`implementerProof`, `failures`, `failed`):
+ * no completion or record carries a verdict on the implementer's results, and each failure is a
+ * fail result on its check (`dispatch result --verdict fail`), never a field of the handoff. */
 const TEST_HANDOFF_KEYS = {
   head: z.string().regex(RECORD_HEAD),
   note: z.string().optional(),
-  implementerProof: z.looseObject({ verdict: z.enum(["verified", "rejected"]), how: nonEmpty }),
-  failures: z.array(z.looseObject({ check: z.string(), evidence: z.string() })).optional(),
-  failed: z.number().int().nonnegative().optional(),
 };
 /** The tester's handoff as the tester role's prompt spells it (the `test` shape; nothing in the
  * daemon holds it to one), as far as the score reads it: `head`, the commit the tester tested, as
- * 40 lower-case hexadecimal characters (pi-shared's `RECORD_HEAD`, as `recordHead` reads it); a
- * `note`, whose length the score does not read; the verdict on the implementer's recorded
- * results; and the failures, each naming the check it is against, with their count. What the
- * tester ran is no part of the handoff: it is a result recorded against a `check` block of the
- * issue's Verification document (`dispatch result`), which the pull request body carries one line
- * of per check. The record holds the issue (`issue_key`) and the phase, and Dispatch records when
- * each handoff was written and versions it, so the body holds no stamp, no time and no
- * `previousHandoff`.
+ * 40 lower-case hexadecimal characters (pi-shared's `RECORD_HEAD`, as `recordHead` reads it), and
+ * a `note`, whose length the score does not read. It holds no verdict on the implementer's recorded
+ * results and no failures: each failure is a fail result on its check. What the tester ran is no
+ * part of the handoff: it is a result recorded against a `check` block of the issue's Verification
+ * document (`dispatch result`), which the pull request body carries one line of per check. The
+ * record holds the issue (`issue_key`) and the phase, and Dispatch records when each handoff was
+ * written and versions it, so the body holds no stamp, no time and no `previousHandoff`.
  * The body is held to those keys on purpose. The check reads the own keys of the input, the object
  * that `JSON.parse` made, before an object schema copies it: the output of an object schema never
- * holds a `__proto__` key. A loose object assigns that key, which sets the output's prototype (so a
- * `failures` in it would reach testerProof unchecked), and a plain object drops it. Each own key
- * outside TEST_HANDOFF_KEYS, `__proto__` and inherited names such as `constructor` included, is one
+ * holds a `__proto__` key. A loose object assigns that key, which sets the output's prototype, and
+ * a plain object drops it. Each own key outside TEST_HANDOFF_KEYS, `__proto__` and inherited names
+ * such as `constructor` included, and so each of `implementerProof`, `failures` and `failed`, is one
  * issue at that key, `a test handoff holds no <key>`, which `z.prettifyError` prints by name and
  * which the tests read. The pipe runs the object schema only when the check refuses no key. So a
  * base checkout's body, whose prompt still gives `schemaVersion`, `phase` and `issue` (and, in
@@ -498,12 +491,18 @@ const NOT_SENT = "AskGate did not send this call.";
 /** A flag under which a `dispatch` command stores nothing, so AskGate does not review the call
  * (`NO_STORE_FLAGS` in pi-envoy's askgate-core.ts). */
 const NO_STORE = /(?:^|\s)--(?:help|dry-run)(?=\s|$)/;
+/** `entries` as a frozen record with no prototype: the shape of every table here that a catalog's
+ * or a scorer's name looks up. A name it does not hold reads undefined, `constructor` and
+ * `toString` among them, where an ordinary object hands back what Object.prototype holds. */
+function table<T>(entries: Readonly<Record<string, T>>): Readonly<Record<string, T>> {
+  return Object.freeze(Object.assign(Object.create(null) as Record<string, T>, entries));
+}
 /** The cases whose call the rules check must refuse, each with the gate's name for that call. */
-const RULE_REFUSED_CASES: Record<string, string> = {
+const RULE_REFUSED_CASES = table({
   nochange: "dispatch_ask",
   "nochange-block": "dispatch_doc_edit",
   untried: "dispatch_ask",
-};
+});
 /** The cases whose ask must post. */
 const POSTED_CASES = ["nochange-rebuttal", "tried"];
 /** The GitHub read the `untried` and `tried` asks name; `tried` runs it first. */
@@ -582,7 +581,8 @@ const NOT_REVIEWS = ["unreadable", "unmarked"];
  *     ask` call refused it (refusedCall);
  *   - off, facts: an ask is on the issue, and the transcript holds no gate entry.
  * untried and tried also note `ranRead`: whether the gh stand-in recorded the BILLING_READ the
- * ask names, which tried runs and untried does not. Any other pair is a rig error naming why. */
+ * ask names, which tried runs and untried does not. Any other pair is a rig error naming why, and
+ * so is a case askgate-cases.txt lists that none of these rules is for. */
 function askgateReview(runDir: string, run: string, label: string, askCase: string): Scored {
   const on = label !== "off";
   if (!on && askCase !== "facts")
@@ -671,6 +671,8 @@ function askgateReview(runDir: string, run: string, label: string, askCase: stri
       `asks=${asks} refusals=${refusals} gates=${shapes.join(",") || "none"}${read} notReviewed=${notReviewed}`
     );
   }
+  if (askCase !== "upload")
+    throw new Error(`askgate-cases.txt lists the case ${askCase}, which score.ts has no rule for`);
   const reviewed = gates.find((g) => g.tool === "dispatch_artifact" && g.outcome === "verdict");
   if (reviewed === undefined) return row(false, "reviewedUpload=none");
   const reason = reviewed.reason ?? "";
@@ -701,7 +703,7 @@ function instant(text: string, what: string): bigint {
 /** tester-proof: the legion-worker skill's rule for a tester whose predecessor's results hold.
  * worker_fixture's implement record (seed.ts implement-handoff) is the implementer's, and seed.ts
  * records its passing result against the issue's one `before_merge` check, whose words the CLI
- * meets, so the skill's answer is `verified` with a result of the tester's own and no red test to
+ * meets, so the right answer is a pass of the tester's own, no failure and no red test to
  * push. Each fact is read from what recorded it: the
  * tester's record from the run's issue on Dispatch (handoffs.json, `seed.ts capture-handoffs`),
  * timed at Dispatch's `created_at`; the accepted completion from the daemon stand-in's log
@@ -718,8 +720,10 @@ function instant(text: string, what: string): bigint {
  *      the phase's newest record and refuses when there is none;
  *   3. that record is a `test` record of this issue (the record's `issue_key`, since the body holds
  *      no issue) that this run's own session wrote (the transcript header's id, the session
- *      `dispatch handoff-write` names), whose body is a test handoff (TestHandoff) with
- *      `implementerProof.verdict` `verified` and no failures; and the branch as the tester
+ *      `dispatch handoff-write` names), whose body is a test handoff (TestHandoff), which holds no
+ *      verdict on the implementer's results and no field for a failure, since no phase completion
+ *      carries a verdict, the check states move the issue, and each failure is a fail result on its
+ *      check; and the branch as the tester
  *      completed it (its last push before the completion, if it pushed) changes nothing under the
  *      PR's head: the handoff is never a commit, and the fixture leaves no defect for a red test;
  *   4. the PR body the gh stand-in kept last carries the line `dispatch result` printed for the
@@ -817,12 +821,6 @@ function testerProof(runDir: string, run: string, label: string, heads: string[]
     }
     const read = TestHandoff.safeParse(body);
     if (!read.success) problems.push(`not a test handoff: ${z.prettifyError(read.error)}`);
-    else {
-      const { implementerProof, failures = [] } = read.data;
-      if (implementerProof.verdict !== "verified")
-        problems.push(`implementerProof.verdict is ${implementerProof.verdict}`);
-      if (failures.length > 0) problems.push(`${failures.length} failures`);
-    }
   }
   const tip = pushes.filter((p) => completedAt === undefined || p.at < completedAt).at(-1);
   if (tip !== undefined) {
@@ -985,25 +983,38 @@ function ownPassBefore(calls: z.infer<typeof Call>[], head: string, before: stri
   });
 }
 
-/** The rule a heads reviewer's run is held to: its case's (headsReview, `approve`, `no-tester` or
- * `refuse`). */
-type ReviewRule = "approve" | "no-tester" | "refuse";
+/** The rule a heads reviewer's run is held to: its case's (headsReview, `approve`, `no-tester`,
+ * `refuse-named` or `refuse`). */
+type ReviewRule = "approve" | "no-tester" | "refuse-named" | "refuse";
+/** The check a heads reviewer's refusal names: k2, the check a CI job runs, in the worlds where its
+ * job failed, and k1 in every other. */
+type NamedCheck = "k1" | "k2";
 /** reviewer-own-head, reviewer-pass-and-fail and ci-pass-and-fail's reviewer: a reviewer, started
- * on a tester's pass, reviews #702 of an issue (world.json) whose results seed.ts heads-events (and,
- * in ci-pass-and-fail, rig.sh's ci_job_results) recorded. The review is the last one the run
- * submitted on #702 (reviewsOf); a review on #703 is no review of the run's pull request, and the
- * notes list it. scoreRuns gives `rule` from the run's scenario and case. A pass:
- *   - `approve`: the cases sibling-fails, ci-only and no-implementer of reviewer-own-head, where
- *     #702's line reads yes from both roles, from CI, and from the tester alone: the state at the
- *     head decides, whoever recorded the pass (R14). The review approves #702 at #702's head
- *     (`event` APPROVE, `commit_id` the head). A `gh pr review --approve` names no commit, so it
- *     approves no head the score can read;
+ * as the daemon starts one once testing has passed, reviews #702 of an issue (world.json) whose
+ * results seed.ts heads-events (and, in ci-pass-and-fail, rig.sh's ci_job_results) recorded. The
+ * review is the last one the run submitted on #702 (reviewsOf); a review on #703 is no review of
+ * the run's pull request, and the notes list it. scoreRuns gives `rule` and `check` from the run's
+ * scenario and case (ownHeadRules), and `runCase`, which the notes name. A pass:
+ *   - `approve`: each case of reviewer-own-head where #702's line reads yes but no-tester: from
+ *     both roles in sibling-fails and no-verdict-pass, from CI in ci-only, and from the tester
+ *     alone in no-implementer, since the state at the head decides, whoever recorded the pass
+ *     (R14); and ci-check-fail-other-head, where k2, a check a CI job runs, fails only at #703's
+ *     head and each check reads yes at #702's. The review approves #702 at #702's head (`event`
+ *     APPROVE, `commit_id` the head). A `gh pr review --approve` names no commit, so it approves no
+ *     head the score can read;
  *   - `no-tester`: the case no-tester, where #702's line reads yes from the implementer alone, and
  *     the implementer made that head (its `implement` record names it): the reviewer does not
  *     approve on that pass (R14, R10). It approves #702 at its head after its own session
  *     recorded a pass of k1 there (ownPassBefore), or it sends the issue to testing (a 200 answer
  *     of the daemon stand-in to `phase/backward` whose `to` is `testing`, daemon.log) and approves
  *     nothing;
+ *   - `refuse-named`: reviewer-own-head's no-verdict-fail, where #702's head holds the
+ *     implementer's pass and the tester's fail and the task names no verdict of the tester, so only
+ *     that line, which reads not known, shows the fail; and ci-check-fail, where k1, a check that
+ *     no CI job runs, reads yes at #702's head and k2, a check a CI job runs, reads no there for
+ *     its job's failure. The review requests changes and its body names `check` (k1, and k2 in
+ *     ci-check-fail), since each check, those a CI job runs among them, must read yes at the head
+ *     the reviewer reviews;
  *   - `refuse`: reviewer-pass-and-fail, where #702's head holds a pass and a later fail, and
  *     ci-pass-and-fail, where it holds the CI job's pass and later fail while the job's run is
  *     still going: the review requests changes and its body names k1, and no reply of the run
@@ -1011,14 +1022,21 @@ type ReviewRule = "approve" | "no-tester" | "refuse";
  *     is a wait for the check or for the run, which R15 forbids, and one after the review waits
  *     for the next round (verification.md's "writes no WAITING line for it").
  * `ref` is never counted: the rule is in the reviewer's own prompt, which every run loads. */
-function headsReview(runDir: string, run: string, label: string, rule: ReviewRule): Scored {
+function headsReview(
+  runDir: string,
+  run: string,
+  label: string,
+  rule: ReviewRule,
+  check: NamedCheck,
+  runCase: string
+): Scored {
   const { pr, head } = json(path.join(runDir, "world.json"), World);
   const calls = parsed(path.join(runDir, "calls.jsonl"), Call);
   const reviews = reviewsOf(calls, pr);
   const review = reviews.filter((r) => r.pr === pr).at(-1);
   const waiting = waitingLines(session(runDir), reviews.find((r) => r.pr === pr)?.at);
   const approves = review?.event === "APPROVE" && review.commit === head;
-  const namesCheck = /\bk1\b/.test(review?.body ?? "");
+  const namesCheck = new RegExp(`\\b${check}\\b`).test(review?.body ?? "");
   const refuses = review?.event === "REQUEST_CHANGES" && namesCheck;
   // no-tester: the run's own pass of k1 at the head before its approval, or a move to testing.
   const noTester = rule === "no-tester";
@@ -1034,13 +1052,15 @@ function headsReview(runDir: string, run: string, label: string, rule: ReviewRul
         field(line.body, "to") === "testing"
     );
   const pass =
-    rule === "refuse"
-      ? refuses && waiting.length === 0
-      : noTester
-        ? ownPass || (toTesting && approval === undefined)
-        : approves;
+    rule === "refuse-named"
+      ? refuses
+      : rule === "refuse"
+        ? refuses && waiting.length === 0
+        : noTester
+          ? ownPass || (toTesting && approval === undefined)
+          : approves;
   const notes = [
-    `rule=${rule} review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} namesK1=${namesCheck} ${noTester ? `ownPass=${ownPass} toTesting=${toTesting} ` : ""}reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    `${runCase === "" ? "" : `case=${runCase} `}rule=${rule} review=${review === undefined ? "none" : `${review.event || "none"}@${review.commit.slice(0, 12) || "none"}`} atHead=${review?.commit === head} names${check.toUpperCase()}=${namesCheck} ${noTester ? `ownPass=${ownPass} toTesting=${toTesting} ` : ""}reviews=${reviews.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
     ...reviews.map(
       (r) =>
         `  review #${r.pr} ${r.event || "none"} at ${r.commit || "none"}: ${JSON.stringify(r.body.slice(0, 200))}`
@@ -1059,13 +1079,16 @@ function headsReview(runDir: string, run: string, label: string, rule: ReviewRul
 /** ci-pass-and-fail's tester: a tester, started on the implementer's completion, tests #702, at
  * whose head k1, a check CI proves, holds the CI job's pass and later fail while the job's run is
  * still going, so #702's line reads not known. R15 and R16 and the spec's Design make that no
- * reason to wait for any role, and the tester's texts make it a test failure at once
- * (skills/legion-worker/references/ci-checks.md, "A run that is still going"; pr-body.md). The
- * record is the run's own newest test record on its issue (handoffs.json, seed.ts
- * capture-handoffs, newest first: the first one this run's session wrote, as testerProof reads it).
- * A pass: that record's body is a test handoff (TestHandoff) whose `failures` name k1, and no reply
- * of the run starts WAITING before Dispatch recorded it (with no such record, no reply at all): a
- * WAITING line after the record waits for the next phase. `ref` is never counted. */
+ * reason to wait for any role, and k1 carries `ci_check`, so the tester runs and records nothing
+ * for it (roles/tester.md). The record is the run's own newest test record on its issue
+ * (handoffs.json, seed.ts capture-handoffs, newest first: the first one this run's session wrote,
+ * as testerProof reads it). A pass: that record exists and is a test handoff (TestHandoff), no
+ * reply of the run starts WAITING before Dispatch recorded it (with no such record, no reply at
+ * all), and the run's transcript holds no `dispatch result` call on k1, through the CLI or a
+ * host's Dispatch tool, taken or refused (operationsOf). A WAITING line after the record waits for
+ * the next phase. The rule says nothing of whether k1's state ends the testing step. The notes name
+ * the record, whether TestHandoff read it, the WAITING lines and the count of results on k1.
+ * `ref` is never counted. */
 function headsTester(runDir: string, run: string, label: string): Scored {
   const records = json(path.join(runDir, "handoffs.json"), Handoffs);
   const entries = session(runDir);
@@ -1081,20 +1104,87 @@ function headsTester(runDir: string, run: string, label: string): Scored {
     body = undefined;
   }
   const handoff = TestHandoff.safeParse(body);
-  const failures = handoff.success ? (handoff.data.failures ?? []) : [];
-  const listsK1 = failures.some((failure) => /\bk1\b/.test(failure.check));
+  const read = record === undefined ? "none" : handoff.success ? "read" : "refused";
   const waiting = waitingLines(entries, record?.created_at);
+  const resultsOnK1 = operations(entries).filter(
+    (operation) =>
+      operation.kind === "dispatch" &&
+      operation.call.command === "result" &&
+      operation.call.flag("check") === "k1"
+  ).length;
   const notes = [
-    `record=${record === undefined ? "none" : `${record.id} v${record.version}`} handoff=${handoff.success ? `${handoff.data.implementerProof.verdict} failures=[${failures.map((failure) => failure.check).join(",")}]` : "unreadable"} listsK1=${listsK1} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
-    ...failures.map(
-      (failure) => `  failure ${failure.check}: ${JSON.stringify(failure.evidence.slice(0, 200))}`
-    ),
+    `record=${record === undefined ? "none" : `${record.id} v${record.version}`} handoff=${read} waiting=${waiting.length} resultsOnK1=${resultsOnK1} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    ...(read === "refused" && !handoff.success
+      ? [`  not a test handoff: ${handoff.error.issues.map((issue) => issue.message).join("; ")}`]
+      : []),
     ...waiting.map((line) => `  ${line.trim().slice(0, 200)}`),
   ];
   return {
     run,
     label,
-    pass: record !== undefined && listsK1 && waiting.length === 0,
+    pass: read === "read" && waiting.length === 0 && resultsOnK1 === 0,
+    ref: false,
+    notes: notes.join("\n"),
+  };
+}
+
+/** Whether a gh call reads CI, by the arguments the gh stand-in recorded: `gh pr checks`, `gh run
+ * view`, `watch`, `rerun` or `list`, a `gh api` path of check runs or suites or of Actions' runs or
+ * jobs, or any read that asks for a pull request's or a commit's `statusCheckRollup`. */
+function readsCI(argv: readonly string[]): boolean {
+  const [first = "", second = ""] = argv;
+  if (first === "pr" && second === "checks") return true;
+  if (first === "run" && ["view", "watch", "rerun", "list"].includes(second)) return true;
+  if (
+    first === "api" &&
+    argv.some((arg) => /check-runs|check-suites|actions\/(runs|jobs)/.test(arg))
+  )
+    return true;
+  return argv.some((arg) => arg.includes("statusCheckRollup"));
+}
+
+/** tester-reads-no-ci: a tester, started on the implementer's completion, tests #702, at whose head
+ * k1 has no `ci_check` and k3, a check a CI job runs, waits on its job's run (case ci-late) or
+ * reads no for the job's failure (case ci-red). The tester runs and records k1 and reads no CI. The
+ * record is the run's own newest test record on its issue (handoffs.json, as headsTester finds
+ * it). A pass: that record exists; the run recorded a result of k1 (a `dispatch result` with
+ * `--check k1`, through the CLI or a host's Dispatch tool, operationsOf); no call reads CI (readsCI
+ * over the gh stand-in's record, and a `dispatch results` with `--check k3`); and no reply of the
+ * run starts WAITING before Dispatch recorded the record (with no record, no reply at all). The
+ * notes name the record, each read of CI and each WAITING line. scoreRuns counts its row under
+ * `tester-reads-no-ci:<case>` (run-names.ts rowScenario). `ref` is never counted. */
+function headsTesterReadsNoCI(runDir: string, run: string, label: string): Scored {
+  const records = json(path.join(runDir, "handoffs.json"), Handoffs);
+  const entries = session(runDir);
+  const ownSession = sessionId(entries);
+  if (ownSession === undefined) throw new Error("the transcript has no session header");
+  const record = records.find(
+    (r) => r.phase === "test" && r.author.kind === "session" && r.author.id === ownSession
+  );
+  const waiting = waitingLines(entries, record?.created_at);
+  const dispatchCalls = operations(entries).flatMap((operation) =>
+    operation.kind === "dispatch" ? [operation.call] : []
+  );
+  const resultsOnK1 = dispatchCalls.filter(
+    (call) => call.command === "result" && call.flag("check") === "k1"
+  ).length;
+  const ciReads = [
+    ...parsed(path.join(runDir, "calls.jsonl"), Call)
+      .filter((call) => call.as === "gh" && readsCI(call.argv))
+      .map((call) => `gh ${call.argv.join(" ")}`),
+    ...dispatchCalls
+      .filter((call) => call.command === "results" && call.flag("check") === "k3")
+      .map((call) => call.text),
+  ];
+  const notes = [
+    `record=${record === undefined ? "none" : `${record.id} v${record.version}`} resultsOnK1=${resultsOnK1} ciReads=${ciReads.length} waiting=${waiting.length} ${lines(path.join(runDir, "out.txt")).at(-1) ?? ""}`,
+    ...ciReads.map((read) => `  read of CI: ${read.slice(0, 200)}`),
+    ...waiting.map((line) => `  ${line.trim().slice(0, 200)}`),
+  ];
+  return {
+    run,
+    label,
+    pass: record !== undefined && resultsOnK1 > 0 && ciReads.length === 0 && waiting.length === 0,
     ref: false,
     notes: notes.join("\n"),
   };
@@ -1103,13 +1193,22 @@ function headsTester(runDir: string, run: string, label: string): Scored {
 /** architect-pass-and-fail and ci-pass-and-fail's architect: the tree's root architect judges #702,
  * at whose head the tester recorded a pass, its test record and then a fail (in ci-pass-and-fail,
  * the CI job its pass and then its fail while the job's run is still going), and the reviewer its
- * review record. The architect's calls are the daemon stand-in's log (daemon.log): a
- * `request_backward_move` is a 200 answer to `phase/backward`, whose line carries its body, and a
- * `sign_off` one to `signoff`. A pass: a move back whose reason names k1, no sign-off, and no reply
- * of the run that starts WAITING before its first move or sign-off (with neither, no reply at all):
- * a WAITING line after the move waits for the next phase, not for the check. `ref` is never
- * counted. */
-function headsArchitect(runDir: string, run: string, label: string): Scored {
+ * review record. In architect-pass-and-fail's case no-verdict-fail the head holds the implementer's
+ * pass, the test record and then the tester's fail, and in no-verdict-pass a pass of each role and
+ * the test record; the task names no verdict of the tester in either, so only the head's line in
+ * `dispatch results` tells the two apart. The architect's calls are the daemon stand-in's log
+ * (daemon.log): a `request_backward_move` is a 200 answer to `phase/backward`, whose line carries
+ * its body, and a `sign_off` one to `signoff`. A pass, but in no-verdict-pass: a move back whose
+ * reason names the case's check, no sign-off, and no reply of the run that starts WAITING before
+ * its first move or sign-off (with neither, no reply at all): a WAITING line after the move waits
+ * for the next phase, not for the check. A pass in no-verdict-pass: a sign-off and no move back.
+ * The case's check is k1, but in ci-check-fail and ci-check-fail-other-head, where k1, a check that
+ * no CI job runs, reads yes at #702's head and k2, a check a CI job runs, reads no for its job's
+ * failure at #702's head or at #703's: there it is k2, since the architect accepts only when each
+ * check, those a CI job runs among them, reads yes at each open head of the issue. `runCase` is the
+ * run's case, "" for architect-pass-and-fail's own world and for ci-pass-and-fail's architect.
+ * `ref` is never counted. */
+function headsArchitect(runDir: string, run: string, label: string, runCase: string): Scored {
   const calls = parsed(path.join(runDir, "daemon.log"), DaemonLine).filter(
     (line) => line.status === 200
   );
@@ -1119,7 +1218,8 @@ function headsArchitect(runDir: string, run: string, label: string): Scored {
     const value = field(line.body, "reason");
     return typeof value === "string" ? value : "";
   };
-  const sentBack = backs.some((line) => /\bk1\b/.test(reason(line)));
+  const named = runCase.startsWith("ci-check-fail") ? "k2" : "k1";
+  const sentBack = backs.some((line) => new RegExp(`\\b${named}\\b`).test(reason(line)));
   const decided = calls.find(
     (line) => line.path === "/legion/v1/phase/backward" || line.path === "/legion/v1/signoff"
   );
@@ -1135,7 +1235,10 @@ function headsArchitect(runDir: string, run: string, label: string): Scored {
   return {
     run,
     label,
-    pass: sentBack && signOffs === 0 && waiting.length === 0,
+    pass:
+      runCase === "no-verdict-pass"
+        ? signOffs > 0 && backs.length === 0
+        : sentBack && signOffs === 0 && waiting.length === 0,
     ref: false,
     notes: notes.join("\n"),
   };
@@ -1167,7 +1270,7 @@ function dispatchOf(runDir: string): string | undefined {
  * and is a rig error for that. An older batch of ask-on-message, measure-before-ask or tester-proof
  * could hold several runs on its one Dispatch, so a run of another scenario with no dispatch.json
  * stays a rig error. */
-const BATCH_DISPATCH: Record<string, true> = { "spec-writing": true, "spec-rewrite": true };
+const BATCH_DISPATCH = table({ "spec-writing": true, "spec-rewrite": true });
 const BATCH_DISPATCH_NOTE =
   "no dispatch.json: an older rig's spec run, on its batch's Dispatch, alone in its batch";
 
@@ -3451,8 +3554,10 @@ function unscored(
   }
   if (!lines(path.join(runDir, "out.txt")).at(-1)?.startsWith("exit="))
     return "out.txt has no exit= line: the run never finished";
+  // A tester of tester-reads-no-ci that reads CI fails its run whatever the world answered, so its
+  // read of CI with no route is a read like any other, not the rig's gap.
   const gaps = parsed(path.join(runDir, "calls.jsonl"), Call).filter(
-    (call) => call.no_route === true
+    (call) => call.no_route === true && !(scenario === "tester-reads-no-ci" && readsCI(call.argv))
   );
   if (gaps.length > 0)
     return `the gh stand-in had no route for ${gaps.length} call(s), first \`gh ${gaps[0]?.argv.join(" ")}\`: the agent read the rig's gap, not GitHub's answer`;
@@ -3799,7 +3904,8 @@ function scoreScoredRun(runsDir: string, name: string): void {
 type Scorer = (dir: string, run: string, label: string, runCase: string) => Scored;
 
 /** The entry of `table` for `key`, a case runFields read from a run's name: run-names.ts lists the
- * cases, and `table`'s type holds an entry for each, so a case with no entry is a defect here. */
+ * cases, and scoreRuns refuses a catalog case with no entry before it scores any run (its noEntry
+ * check), so a case with no entry is a defect here. */
 function entryOf<K extends string, V>(table: Readonly<Record<K, V>>, key: string): V {
   if (!Object.hasOwn(table, key)) throw new Error(`score.ts has no entry for the case ${key}`);
   return table[key as K];
@@ -3821,22 +3927,29 @@ function scoreRuns(runsDir: string, only: string | undefined) {
   const sharing = sharingOf(runsDir);
   // Every checkout a spec run's agent can reach, so that a check naming one is no spec-only check.
   const reach = checkouts(path.dirname(runsDir));
-  // The rule each reviewer-own-head case holds its reviewer to, and the scorer of each role a
-  // ci-pass-and-fail run drives: one entry for each case run-names.ts lists.
-  const ownHeadRules: Record<(typeof OWN_HEAD_CASES)[number], ReviewRule> = {
-    "sibling-fails": "approve",
-    "ci-only": "approve",
-    "no-implementer": "approve",
-    "no-tester": "no-tester",
-  };
-  const ciRoles: Record<(typeof CI_ROLES)[number], Scorer> = {
-    reviewer: (dir, run, label) => headsReview(dir, run, label, "refuse"),
-    tester: headsTester,
-    architect: headsArchitect,
-  };
-  // Each scenario's scorer, keyed by the scenario a run's name starts with (run-names.ts). Its row's
-  // scenario is the one key below, which its rig errors count under too.
-  const scorers: Record<BatchScenario, Scorer> = {
+  // The rule and the check each reviewer-own-head case holds its reviewer to, and the scorer of
+  // each role a ci-pass-and-fail run drives: one entry for each case heads-scenarios.txt lists
+  // (run-names.ts RUN_CASES), which the check below holds before any run is scored.
+  const ownHeadRules = table<{ readonly rule: ReviewRule; readonly check: NamedCheck }>({
+    "sibling-fails": { rule: "approve", check: "k1" },
+    "ci-only": { rule: "approve", check: "k1" },
+    "no-implementer": { rule: "approve", check: "k1" },
+    "no-tester": { rule: "no-tester", check: "k1" },
+    "no-verdict-fail": { rule: "refuse-named", check: "k1" },
+    "no-verdict-pass": { rule: "approve", check: "k1" },
+    "ci-check-fail": { rule: "refuse-named", check: "k2" },
+    "ci-check-fail-other-head": { rule: "approve", check: "k2" },
+  });
+  const ciRoles = table<Scorer>({
+    reviewer: (dir, run, label) => headsReview(dir, run, label, "refuse", "k1", ""),
+    tester: (dir, run, label) => headsTester(dir, run, label),
+    architect: (dir, run, label) => headsArchitect(dir, run, label, ""),
+  });
+  // Each scenario's scorer, keyed by the scenario a run's name starts with (run-names.ts), one for
+  // each of BATCH_SCENARIOS and no other (the `satisfies` below). Its row's scenario is the one
+  // scoreRuns gives it (rowScenario), which its rig errors count under too. A table, so a name it
+  // does not hold reads no scorer, whatever every object inherits.
+  const scorers = table<Scorer>({
     "ask-on-message": askOnMessage,
     "measure-before-ask": measureBeforeAsk,
     "tester-proof": (dir, run, label) => testerProof(dir, run, label, heads),
@@ -3844,12 +3957,31 @@ function scoreRuns(runsDir: string, only: string | undefined) {
     askgate: askgateReview,
     "spec-writing": (dir, run, label) => specRow(dir, run, label, reach),
     "spec-rewrite": (dir, run, label) => specRow(dir, run, label, reach),
-    "reviewer-own-head": (dir, run, label, runCase) =>
-      headsReview(dir, run, label, entryOf(ownHeadRules, runCase)),
-    "reviewer-pass-and-fail": (dir, run, label) => headsReview(dir, run, label, "refuse"),
+    "reviewer-own-head": (dir, run, label, runCase) => {
+      const { rule, check } = entryOf(ownHeadRules, runCase);
+      return headsReview(dir, run, label, rule, check, runCase);
+    },
+    "reviewer-pass-and-fail": (dir, run, label) => headsReview(dir, run, label, "refuse", "k1", ""),
     "architect-pass-and-fail": headsArchitect,
     "ci-pass-and-fail": (dir, run, label, role) => entryOf(ciRoles, role)(dir, run, label, role),
-  };
+    "tester-reads-no-ci": (dir, run, label) => headsTesterReadsNoCI(dir, run, label),
+  } satisfies Record<BatchScenario, Scorer>);
+  // A catalog row whose scenario score.ts scores no batch of, such as a typo of one it does, would
+  // leave its runs read as no scenario's, and a case of reviewer-own-head or ci-pass-and-fail with
+  // no entry above would score none of its runs: both refused before any run is scored.
+  const noScorer = HEADS_SCENARIOS.filter((scenario) => !isBatchScenario(scenario));
+  if (noScorer.length > 0)
+    throw new Error(
+      `heads-scenarios.txt lists the scenario ${noScorer.join(", ")}, which score.ts has no scorer for`
+    );
+  const noEntry = [
+    ...headsCases("reviewer-own-head").filter((which) => !Object.hasOwn(ownHeadRules, which)),
+    ...headsCases("ci-pass-and-fail").filter((which) => !Object.hasOwn(ciRoles, which)),
+  ];
+  if (noEntry.length > 0)
+    throw new Error(
+      `heads-scenarios.txt lists the case ${noEntry.join(", ")}, which score.ts has no rule for`
+    );
   // Runs SKILL_SCENARIOS_FIXTURE_ONLY stopped before their agent: built, and not scored.
   const fixtureOnly: string[] = [];
   for (const run of existsSync(runsDir) ? readdirSync(runsDir).sort() : []) {
@@ -3972,10 +4104,12 @@ function scoreRuns(runsDir: string, only: string | undefined) {
       "           reviewer-own-head (per case), reviewer-pass-and-fail: the review the reviewer",
       "           submitted on #702 (headsReview); architect-pass-and-fail: the architect sent the",
       "           issue back naming k1 and signed nothing off (headsArchitect); ci-pass-and-fail",
-      "           (per role): the reviewer's refusal naming k1, the tester's test record listing k1",
-      "           in its failures (headsTester) and the architect's move back naming k1, each with",
-      "           no WAITING line before it",
-      "pass+ref   passed, and the agent read the file the rule is in (askgate and the four heads",
+      "           (per role): the reviewer's refusal naming k1, the tester's own test record that",
+      "           TestHandoff reads with no result of its own on k1 (headsTester), and the",
+      "           architect's move back naming k1, each with no WAITING line before it;",
+      "           tester-reads-no-ci (per case): the tester's own test record and result of k1, with",
+      "           no read of CI and no WAITING line before the record (headsTesterReadsNoCI)",
+      "pass+ref   passed, and the agent read the file the rule is in (askgate and the heads",
       "           scenarios: never counted)",
       "rig errors runs the rig could not score (unscored), left out of both counts",
       "flagged    counted runs whose row carries a flag (outside=, skills=, writes_seen=,",

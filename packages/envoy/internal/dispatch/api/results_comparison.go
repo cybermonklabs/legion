@@ -177,6 +177,14 @@ type comparisonReader struct {
 	// id and then by the head's repository and commit (deriveCIResults), which answer gives each
 	// subject of it.
 	headCI map[string]map[ciHeadKey]*model.CheckCI
+	// headAlone is, by the check's block id and then by the head's repository and commit, the
+	// result the read of a check CI proves derived at each former head the check states settler
+	// computes (deriveCIResults), which answer gives the subject of that head alone.
+	headAlone map[string]map[ciHeadKey]model.CheckResult
+	// former is, by issue, the former heads of its open pull requests the check states settler
+	// computes beside its open heads (formerHeadsOf), which headBases adds to the heads of that
+	// issue; empty for every read of the route.
+	former map[string][]delivery.AttributedHead
 	// fills is the read's memo of the merged pull request rows it refreshed (fillMergeTimes,
 	// refreshMerge), the one listCheckResults made before deriveCIResults, so the reader refreshes
 	// no row twice.
@@ -230,7 +238,9 @@ const noCommitNamed = ""
 //
 // ci is set on one check's copy alone (answer), for a check CI proves: its read at each head, by
 // the head's repository and commit, which the subject of that repository at that commit carries
-// (subjectState).
+// (subjectState). alone is set beside it: the result a former head's own run derived, by that
+// head's repository and commit, which counts at the subject of that head and at no other
+// (eachSubjectStands).
 type comparison struct {
 	bases        []model.CheckBasis
 	merges       []mergeAnswer
@@ -240,6 +250,7 @@ type comparison struct {
 	subjects     []headSubject
 	unordered    bool
 	ci           map[ciHeadKey]*model.CheckCI
+	alone        map[ciHeadKey]model.CheckResult
 	live         bool
 	program      string
 	deploy       *model.CheckDeploy
@@ -349,7 +360,7 @@ const noDefaultBranchNamed = ""
 // and one word for both would hide which of the two a reader is looking at.
 func (c *comparisonReader) answer(ctx context.Context, check *model.CheckBlock) {
 	compared := c.comparedWith(ctx, *check)
-	compared.ci = c.headCI[check.BlockID]
+	compared.ci, compared.alone = c.headCI[check.BlockID], c.headAlone[check.BlockID]
 	check.ComparedWith = compared.served()
 	check.ComparedNothing = compared.reason
 	for index := range check.Results {
@@ -866,9 +877,13 @@ func (c *comparisonReader) onNamedBranch(
 //
 //   - The commit heads an open or merged pull request Dispatch holds (headStoredAt), whatever
 //     issue that row is attributed to and whether it is attributed at all. Such a commit is one
-//     Dispatch's own passes keep reading — the reconcile re-reads an open row at every pass of
-//     one process, each starting at most five minutes after the one before it ended
-//     (delivery.PullRequestHeadStaleAfter), and offers a merged one once per attribution rule
+//     Dispatch's own passes keep reading — the reconcile takes an open row again at every pass
+//     of one process that tries its whole batch while no more than a batch is due, each starting
+//     at most five minutes after the one before it ended, and within the bound
+//     delivery.ListStalePullRequestHeads states past that or after a pass a rate limit stopped;
+//     a pass that takes the row reads it from GitHub only once its stamp of the try succeeds,
+//     and while such stamps fail nothing bounds the time between two reads
+//     (delivery.PullRequestHeadStaleAfter); and it offers a merged one once per attribution rule
 //     (delivery.ListStalePullRequestHeads) —
 //     so a read from here repairs nothing. This is a child's result on its parent's tab: the row
 //     is the child's own pull request, attributed to the child, and no answer of GitHub's puts

@@ -1,5 +1,6 @@
 import {
   type BlockInvalidEventPayload,
+  type CheckStateChangedEventPayload,
   type CommentDeliveryEventPayload,
   DELETED_POST_DELIVERY_ERROR,
   type IssueEventPayload,
@@ -67,6 +68,24 @@ export function blockInvalidDescription(payload: BlockInvalidEventPayload): stri
   }
   // The reason is the server's own words for what is malformed in the block.
   return `marked decision ${payload.block_id} malformed: ${payload.reason}`;
+}
+
+/** A `check.state_changed`'s words, in the Pinned tab and the Activity tab alike: the state of
+ *  one check at one head, with the reason a state other than yes gives, or, in the set form,
+ *  which names no check, the checks the head has. The head is named with the pull requests
+ *  whose head it is. */
+export function checkStateSentence(payload: CheckStateChangedEventPayload): string {
+  const head =
+    payload.pull_requests.length === 0
+      ? payload.head
+      : `${payload.head} of ${payload.pull_requests.map((number) => `#${number}`).join(", ")}`;
+  if (payload.check === null) {
+    return payload.checks.length === 0
+      ? `head ${head} has no check`
+      : `head ${head} has the checks ${payload.checks.join(", ")}`;
+  }
+  const reason = payload.reason === "" ? "" : ` (${payload.reason})`;
+  return `check ${payload.check} reads ${payload.state}${reason} at ${head}`;
 }
 
 /**
@@ -277,6 +296,10 @@ function describe(event: DispatchEvent): string | SentencePart[] {
       // The reason is shown as the characters it is, as the result it withdraws is: the reading
       // list's `check-retraction-reason` (`DISPATCH_READING_SURFACES`).
       return `Check ${event.payload.check_block_id}'s result at ${event.payload.commit_sha} was retracted: ${event.payload.reason}`;
+    case "check.state_changed": {
+      const sentence = checkStateSentence(event.payload);
+      return `${sentence.charAt(0).toUpperCase()}${sentence.slice(1)}`;
+    }
     case "issue.pull_request_attribution_changed":
       return `Pull request ${event.payload.repo}#${event.payload.number} moved from ${event.payload.from ?? "no issue"} to ${event.payload.to ?? "no issue"}, decided by ${event.payload.source}`;
     // Dispatch's outbox writes it, as a system actor, when an event's copy for a role reached no

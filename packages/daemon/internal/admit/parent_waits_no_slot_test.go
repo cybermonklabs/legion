@@ -241,21 +241,22 @@ func pnWorkerStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role
 
 // pnMovedParent is a live tree whose root, the parent, stands in from holding the slot that phase
 // keeps, with its pull request #42 open and one child filed and not released, and seed for what
-// else the case needs; fact, applied from source, is the move the child holds. It fails unless the
-// parent waits in awaiting_children holding the start of start for cause, and answers the pool,
-// the admission and the held start.
+// else the case needs; fact, applied from source, is the move the child holds, with tested the
+// check state that decides a tester's completion (pwStatesFirst). It fails unless the parent
+// waits in awaiting_children holding the start of start for cause, and answers the pool, the
+// admission and the held start.
 func pnMovedParent(t *testing.T, from phase.Phase, seed func(*testing.T, *pgxpool.Pool), source string, fact intake.Fact,
-	start phase.Phase, cause string,
+	tested string, start phase.Phase, cause string,
 ) (*pgxpool.Pool, *Admission, record.ChildrenWait) {
 	t.Helper()
 	pool := migratedPool(t)
-	admission, wait := pnMoveParent(t, pool, from, seed, source, fact, start, cause)
+	admission, wait := pnMoveParent(t, pool, from, seed, source, fact, tested, start, cause)
 	return pool, admission, wait
 }
 
 // pnMoveParent is pnMovedParent on a pool the caller holds.
 func pnMoveParent(t *testing.T, pool *pgxpool.Pool, from phase.Phase, seed func(*testing.T, *pgxpool.Pool), source string, fact intake.Fact,
-	start phase.Phase, cause string,
+	tested string, start phase.Phase, cause string,
 ) (*Admission, record.ChildrenWait) {
 	t.Helper()
 	admission := pnAdmission(t, pool, 2)
@@ -265,7 +266,7 @@ func pnMoveParent(t *testing.T, pool *pgxpool.Pool, from phase.Phase, seed func(
 	if seed != nil {
 		seed(t, pool)
 	}
-	pwApplied(t, pool, admission, source, "move", fact)
+	pwApplied(t, pool, admission, source, "move", pwStatesFirst(t, pool, admission, fact, tested))
 	return admission, pwHeld(t, pool, spParent, start, cause, spChild+" (todo)")
 }
 
@@ -281,13 +282,15 @@ func pnChildDone(t *testing.T, pool *pgxpool.Pool, admission *Admission) record.
 
 // pnHeldStart is one start a parent can hold in awaiting_children, and the move of the engine that
 // holds it: the phase the parent stands in, what seeds the move beyond the parent, its pull request
-// and its open child, the fact that makes it, and what the held start was for.
+// and its open child, the fact that makes it, the check state that decides a tester's completion
+// (pwStatesFirst), and what the held start was for.
 type pnHeldStart struct {
 	start  phase.Phase
 	from   phase.Phase
 	seed   func(*testing.T, *pgxpool.Pool)
 	source string
 	fact   intake.Fact
+	tested string
 	cause  string
 }
 
@@ -309,15 +312,15 @@ func pnHeldStarts(t *testing.T) []pnHeldStart {
 			cause: "moved back to planning by the architect: " + replan},
 		{start: phase.Implementing, from: phase.Testing, source: "api",
 			fact: intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester, Claim: "tester", Summary: "the empty list panics",
-				Verdict: "fail", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1},
-			cause: "the tester completed testing"},
+				Commit: pwHead, HandoffRecord: "test-1", HandoffVersion: 1}, tested: "fail",
+			cause: pwFailedCause},
 		{start: phase.Testing, from: phase.Implementing, source: "api",
 			fact: intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleImplementer, Claim: "implementer",
-				Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-1", HandoffVersion: 1},
+				Summary: "implemented", Commit: pwHead, HandoffRecord: "implement-1", HandoffVersion: 1},
 			cause: "the implementer completed implementing"},
 		{start: phase.Reviewing, from: phase.Testing, source: "api",
 			fact: intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester, Claim: "tester", Summary: "every check passed",
-				Verdict: "pass", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1},
+				Commit: pwHead, HandoffRecord: "test-1", HandoffVersion: 1}, tested: "pass",
 			cause: "the tester completed testing"},
 		{start: phase.Accepting, from: phase.Reviewing, seed: func(t *testing.T, pool *pgxpool.Pool) { pwReviewed(t, pool) }, source: "github",
 			fact: pwReview("APPROVED", "the change is right"), cause: "a review approved the head"},
@@ -345,7 +348,7 @@ func pnReturnsAs(held phase.Phase, merged bool) phase.Phase {
 // held, on the held task, and a held accepting starts no role, tells the architect under the wait's
 // own notice kind and raises no entry. No task asks for a forward merge.
 func pnReturnsWhereItTakes(t *testing.T, held pnHeldStart, merged bool) {
-	pool, admission, wait := pnMovedParent(t, held.from, held.seed, held.source, held.fact, held.start, held.cause)
+	pool, admission, wait := pnMovedParent(t, held.from, held.seed, held.source, held.fact, held.tested, held.start, held.cause)
 	if merged {
 		pwApplied(t, pool, admission, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 42, MergeSHA: "merge-42"})
 		if got := issue(t, pool, spParent); got.Phase != phase.AwaitingChildren {
@@ -484,10 +487,10 @@ func pnTestingPaths() []pnTestingPath {
 		return token
 	}
 	implemented := intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleImplementer, Claim: "implementer",
-		Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-1", HandoffVersion: 1}
+		Summary: "implemented", Commit: pwHead, HandoffRecord: "implement-1", HandoffVersion: 1}
 	returned := func(merged bool) func(*testing.T, *pgxpool.Pool) *Admission {
 		return func(t *testing.T, pool *pgxpool.Pool) *Admission {
-			admission, _ := pnMoveParent(t, pool, phase.Implementing, nil, "api", implemented, phase.Testing, "the implementer completed implementing")
+			admission, _ := pnMoveParent(t, pool, phase.Implementing, nil, "api", implemented, "", phase.Testing, "the implementer completed implementing")
 			if merged {
 				pwApplied(t, pool, admission, "github", "merged", intake.PullRequestMerged{Repo: "acme/widgets", Number: 42, MergeSHA: "merge-42"})
 			}
@@ -653,7 +656,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
 		// The plan record the planner completed with, and the implementer at work on its third
 		// entry after one review round and one move back, its tester's claim beside it.
-		plan := record.PhaseRow{Issue: spParent, Role: claim.RolePlanner, Claim: "planner", Summary: "planned", HandoffCommit: "head-41",
+		plan := record.PhaseRow{Issue: spParent, Role: claim.RolePlanner, Claim: "planner", Summary: "planned", HandoffCommit: pwHeadBefore,
 			HandoffRecord: "plan-1", HandoffVersion: 1, LastHandoff: "plan-1", CompletedAt: fixedNow.Add(-4 * time.Hour), Entry: 1,
 			EntryTask: "Continue LEGION-300. Issue: LEGION-300. Phase: planning.", EntryRaisedAt: fixedNow.Add(-5 * time.Hour)}
 		spSeedPhase(t, pool, plan)
@@ -677,7 +680,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 
 		pwApplied(t, pool, admission, "api", "implemented", intake.HandoffComplete{Generation: 1, Issue: spParent,
-			Role: claim.RoleImplementer, Claim: implementer, Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-2", HandoffVersion: 2})
+			Role: claim.RoleImplementer, Claim: implementer, Summary: "implemented", Commit: pwHead, HandoffRecord: "implement-2", HandoffVersion: 2})
 
 		if got := issue(t, pool, spParent); got.Phase != phase.AwaitingChildren || holdsSlot(t, pool, spParent) {
 			t.Fatalf("%s after its implementer's completion = phase %s, holding a slot %t (slots %v); want awaiting_children holding none while %s is open",
@@ -718,13 +721,13 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			t.Fatalf("open backstops of %s after the move = %d, want none", spParent, open)
 		}
 		pnReleasePod(t, pool, spParent)
-		pwApplied(t, pool, admission, "github", "settled", intake.PullRequestChecks{Repo: "acme/widgets", Number: 42, HeadSHA: "head-42",
-			Generation: 1, Snapshot: "settled-head-42", CheckRuns: []record.AttemptRun{{Name: "unit", ID: 70}}, Failing: []string{"unit"},
+		pwApplied(t, pool, admission, "github", "settled", intake.PullRequestChecks{Repo: "acme/widgets", Number: 42, HeadSHA: pwHead,
+			Generation: 1, Snapshot: "settled-" + pwHead, CheckRuns: []record.AttemptRun{{Name: "unit", ID: 70}}, Failing: []string{"unit"},
 			Cancelled: []string{}})
 		inTx(t, pool, func(tx pgx.Tx) {
 			pr, err := record.NewStore().PullRequest(context.Background(), tx, spParent)
-			if err != nil || pr == nil || pr.CheckedHead != "head-42" {
-				t.Fatalf("the pull request after the settlement = %+v, %v; want the settlement of head-42 recorded", pr, err)
+			if err != nil || pr == nil || pr.CheckedHead != pwHead {
+				t.Fatalf("the pull request after the settlement = %+v, %v; want the settlement of the parent's head recorded", pr, err)
 			}
 		})
 		if messages := pwPayloads[record.RoleMessage](t, pool, spParent); len(messages) != 0 {
@@ -857,8 +860,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		}
 		inTx(t, pool, func(tx pgx.Tx) {
 			pr, err := record.NewStore().PullRequest(context.Background(), tx, spParent)
-			if err != nil || pr == nil || pr.Number != 42 || pr.HeadSHA != "head-42" || pr.State != record.PullRequestOpen || pr.Branch != "legion/"+spParent {
-				t.Fatalf("the pull request = %+v, %v; want #42 open at head-42 on its branch", pr, err)
+			if err != nil || pr == nil || pr.Number != 42 || pr.HeadSHA != pwHead || pr.State != record.PullRequestOpen || pr.Branch != "legion/"+spParent {
+				t.Fatalf("the pull request = %+v, %v; want #42 open at the parent's head on its branch", pr, err)
 			}
 		})
 		if got := issue(t, pool, spParent); got.Generation != 1 || !got.CarriesRun() {
@@ -867,12 +870,12 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	})
 
 	// The other returns, each from a move the engine makes.
-	tested := func(verdict, summary string) intake.HandoffComplete {
+	tested := func(summary string) intake.HandoffComplete {
 		return intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester, Claim: "tester", Summary: summary,
-			Verdict: verdict, Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1}
+			Commit: pwHead, HandoffRecord: "test-1", HandoffVersion: 1}
 	}
 	implemented := intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleImplementer, Claim: "implementer",
-		Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-1", HandoffVersion: 1}
+		Summary: "implemented", Commit: pwHead, HandoffRecord: "implement-1", HandoffVersion: 1}
 	merged := pnMergedChildren(spParent, pnMerged(spChild, 51))
 
 	// R12's held starts, each the return takes where the rule says (pnReturnsWhereItTakes): the
@@ -919,7 +922,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		seedMirrorChild(t, pool, parked, "todo", spParent)
 
 		pwApplied(t, pool, admission, "api", "implemented", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleImplementer,
-			Claim: "implementer", Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-2", HandoffVersion: 2})
+			Claim: "implementer", Summary: "implemented", Commit: pwHead, HandoffRecord: "implement-2", HandoffVersion: 2})
 		wait := pwHeld(t, pool, spParent, phase.Testing, "the implementer completed implementing",
 			spChild+" (todo)", iceboxed+" (todo)", parked+" (todo)")
 
@@ -991,8 +994,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	})
 
 	t.Run("a held implementing after a tester's fail comes back with the tester's reason in the task", func(t *testing.T) {
-		pool, admission, wait := pnMovedParent(t, phase.Testing, nil, "api", tested("fail", "the empty list panics"),
-			phase.Implementing, "the tester completed testing")
+		pool, admission, wait := pnMovedParent(t, phase.Testing, nil, "api", tested("the empty list panics"), "fail",
+			phase.Implementing, pwFailedCause)
 
 		back := pnChildDone(t, pool, admission)
 
@@ -1008,7 +1011,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		if !strings.HasPrefix(work, wait.Task) {
 			t.Fatalf("the implementer's task = %q, want it to open with the held task %q", work, wait.Task)
 		}
-		for _, want := range []string{"Tester's verdict: fail.", "Handoff: test version 1", merged} {
+		for _, want := range []string{"Reason: " + pwFailedCause, "Handoff: test version 1", merged} {
 			if !strings.Contains(work, want) {
 				t.Fatalf("the implementer's task = %q, want it to carry %q", work, want)
 			}
@@ -1021,8 +1024,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	// and the parent comes back at the start it held, on the task it held, naming no child as
 	// merged: the child did not merge.
 	t.Run("a child moved out from under the waiting parent to no parent ends the wait, and the parent comes back at the start it held", func(t *testing.T) {
-		pool, admission, wait := pnMovedParent(t, phase.Testing, nil, "api", tested("fail", "the empty list panics"),
-			phase.Implementing, "the tester completed testing")
+		pool, admission, wait := pnMovedParent(t, phase.Testing, nil, "api", tested("the empty list panics"), "fail",
+			phase.Implementing, pwFailedCause)
 
 		pwApplied(t, pool, admission, "dispatch", "moved-out", intake.DispatchIssue{Key: spChild, ResolvedRepo: "acme/widgets", Seq: 2,
 			Type: "issue.updated", Status: "todo", Title: spChild, Rank: spChild})
@@ -1049,7 +1052,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	t.Run("a held planning after the architect's backward move comes back at planning, and no task of its later rounds asks for a forward merge", func(t *testing.T) {
 		const reason = "the plan missed the empty list"
 		pool, admission, wait := pnMovedParent(t, phase.Accepting, nil, "api",
-			intake.BackwardMove{Issue: spParent, Requester: claim.RoleArchitect, To: phase.Planning, Reason: reason, By: pnArchitect(t)},
+			intake.BackwardMove{Issue: spParent, Requester: claim.RoleArchitect, To: phase.Planning, Reason: reason, By: pnArchitect(t)}, "",
 			phase.Planning, "moved back to planning by the architect: "+reason)
 
 		back := pnChildDone(t, pool, admission)
@@ -1066,7 +1069,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		pnAsksNoForwardMerge(t, "the planner's task", starts[0].task)
 
 		pwApplied(t, pool, admission, "api", "planned", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RolePlanner,
-			Claim: "planner", Summary: "planned again", Commit: "head-42", HandoffRecord: "plan-2", HandoffVersion: 2})
+			Claim: "planner", Summary: "planned again", Commit: pwHead, HandoffRecord: "plan-2", HandoffVersion: 2})
 
 		if got := issue(t, pool, spParent); got.Phase != phase.Implementing {
 			t.Fatalf("the parent after its planner's completion = phase %s, want implementing", got.Phase)
@@ -1074,20 +1077,21 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		pnAsksNoForwardMerge(t, "the first implementing task after the wait", pnWorkerStart(t, pool, spParent, claim.RoleImplementer).Task)
 
 		for _, round := range []struct {
-			what string
-			fact intake.HandoffComplete
-			at   phase.Phase
+			what   string
+			fact   intake.HandoffComplete
+			tested string
+			at     phase.Phase
 		}{
 			{what: "the first testing task after the wait", at: phase.Testing, fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
-				Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-2", HandoffVersion: 2}},
-			{what: "the implementing task after the tester's fail", at: phase.Implementing, fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
-				Role: claim.RoleTester, Claim: "tester", Summary: "the empty list panics", Verdict: "fail", Commit: "head-42", HandoffRecord: "test-2", HandoffVersion: 2}},
+				Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: pwHead, HandoffRecord: "implement-2", HandoffVersion: 2}},
+			{what: "the implementing task after the testing step's fail", at: phase.Implementing, tested: "fail", fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
+				Role: claim.RoleTester, Claim: "tester", Summary: "the empty list panics", Commit: pwHead, HandoffRecord: "test-2", HandoffVersion: 2}},
 			{what: "the testing task of the next round", at: phase.Testing, fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
-				Role: claim.RoleImplementer, Claim: "implementer", Summary: "the empty list handled", Commit: "head-42", HandoffRecord: "implement-3", HandoffVersion: 3}},
-			{what: "the reviewing task once the tester passes the round", at: phase.Reviewing, fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
-				Role: claim.RoleTester, Claim: "tester", Summary: "every check passed", Verdict: "pass", Commit: "head-42", HandoffRecord: "test-3", HandoffVersion: 3}},
+				Role: claim.RoleImplementer, Claim: "implementer", Summary: "the empty list handled", Commit: pwHead, HandoffRecord: "implement-3", HandoffVersion: 3}},
+			{what: "the reviewing task once the testing step passes the round", at: phase.Reviewing, tested: "pass", fact: intake.HandoffComplete{Generation: 1, Issue: spParent,
+				Role: claim.RoleTester, Claim: "tester", Summary: "every check passed", Commit: pwHead, HandoffRecord: "test-3", HandoffVersion: 3}},
 		} {
-			pwApplied(t, pool, admission, "api", round.what, round.fact)
+			pwApplied(t, pool, admission, "api", round.what, pwStatesFirst(t, pool, admission, round.fact, round.tested))
 			if got := issue(t, pool, spParent); got.Phase != round.at {
 				t.Fatalf("the parent before %s = phase %s, want %s", round.what, got.Phase, round.at)
 			}
@@ -1101,8 +1105,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	// daemon restart, each a task a session that may have read none of the one before it is given,
 	// ask for no forward merge.
 	t.Run("a parent that comes back at implementing, retried with a fresh session and resumed after a daemon restart, gets tasks that ask for no forward merge", func(t *testing.T) {
-		pool, admission, _ := pnMovedParent(t, phase.Testing, nil, "api", tested("fail", "the empty list panics"),
-			phase.Implementing, "the tester completed testing")
+		pool, admission, _ := pnMovedParent(t, phase.Testing, nil, "api", tested("the empty list panics"), "fail",
+			phase.Implementing, pwFailedCause)
 		if back := pnChildDone(t, pool, admission); back.Phase != phase.Implementing {
 			t.Fatalf("the parent after its child's close = phase %s, want implementing", back.Phase)
 		}
@@ -1142,7 +1146,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 	t.Run("a parent whose head conflicted with its base before the wait comes back as R12 says, with no forward merge asked", func(t *testing.T) {
 		pool, admission, wait := pnMovedParent(t, phase.Testing, func(t *testing.T, pool *pgxpool.Pool) {
 			pwSeedForward(t, pool, pwAsked(phase.Testing, false))
-		}, "api", tested("fail", "the empty list panics"), phase.Implementing, "the tester completed testing")
+		}, "api", tested("the empty list panics"), "fail", phase.Implementing, pwFailedCause)
 		if left := pwForwardOf(t, pool); left != nil {
 			t.Fatalf("the merge forward of %s after the move = %+v, want it dropped", spParent, left)
 		}
@@ -1167,7 +1171,7 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 		gate := record.DesignGate{Issue: spParent, ArtifactID: "5b0c2d7e-1f43-4a8e-9c6d-2e7f1a3b8d40", LatestVersion: 3,
 			ApprovedVersion: &approved, EverOpened: true}
 		pool, admission, _ := pnMovedParent(t, phase.Implementing, func(t *testing.T, pool *pgxpool.Pool) { seedGate(t, pool, gate) },
-			"api", implemented, phase.Testing, "the implementer completed implementing")
+			"api", implemented, "", phase.Testing, "the implementer completed implementing")
 
 		back := pnChildDone(t, pool, admission)
 		spPass(t, pool, admission)
@@ -1356,8 +1360,8 @@ func TestParentWaitsHoldsNoSlotAndComesBack(t *testing.T) {
 			{name: "on an entry this release raised", stop: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) string {
 				spSeedParent(t, pool, spParent, phase.Testing, true, nil)
 				pwPullRequest(t, pool, spParent, record.PullRequestOpen)
-				pwApplied(t, pool, admission, "api", "tested", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester,
-					Claim: "tester", Summary: "every check passed", Verdict: "pass", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1})
+				pwApplied(t, pool, admission, "api", "tested", pwStatesFirst(t, pool, admission, intake.HandoffComplete{Generation: 1, Issue: spParent,
+					Role: claim.RoleTester, Claim: "tester", Summary: "every check passed", Commit: pwHead, HandoffRecord: "test-1", HandoffVersion: 1}, "pass"))
 				reviewing := pnWorkerStart(t, pool, spParent, claim.RoleReviewer)
 				named := reviewround.Sentences("", reviewing.Entry)
 				if !strings.HasSuffix(reviewing.Task, named) {

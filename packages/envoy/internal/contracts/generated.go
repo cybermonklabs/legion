@@ -390,6 +390,7 @@ var DispatchEventTypes = []string{
 	"ask.resolved",
 	"block.invalid",
 	"block.repaired",
+	"check.state_changed",
 	"child.added",
 	"child.removed",
 	"child.status",
@@ -435,6 +436,37 @@ var DispatchEventTypes = []string{
 	"user_agent_state.updated",
 	"user_state.updated",
 	"user_thread_state.updated",
+}
+
+// CheckCICasesEnded and CheckCICasesNotEnded are the cases a check.state_changed of a check a CI
+// job runs names in ci_case: where the job ended at the head, a conclusion GitHub wrote or
+// job_recorded; and where it has not ended, or Dispatch could not read its end. Generated from
+// CHECK_CI_CASES_ENDED and CHECK_CI_CASES_NOT_ENDED in packages/contracts, which the event's schema
+// closes ci_case to: Dispatch writes no other case, and the Legion daemon reads them through
+// github.com/sjawhar/envoy/cicase. CheckCICasesNotEnded holds the cases Dispatch writes itself,
+// each spelled as a constant of internal/dispatch/api/results_ci.go; CheckCICasesEnded holds the
+// conclusions GitHub writes, which Dispatch writes through, and job_recorded, which is its own.
+// api's TestEveryCICaseIsOneOfContractsCases holds both lists to those constants.
+var CheckCICasesEnded = []string{
+	"success",
+	"failure",
+	"timed_out",
+	"action_required",
+	"startup_failure",
+	"stale",
+	"neutral",
+	"skipped",
+	"cancelled",
+	"job_recorded",
+}
+
+var CheckCICasesNotEnded = []string{
+	"not_completed",
+	"absent",
+	"no_head",
+	"github_unreadable",
+	"read_failed",
+	"not_started",
 }
 
 // DispatchSignInScopes are the Dispatch scopes a person may approve for a Dispatch sign-in, in the

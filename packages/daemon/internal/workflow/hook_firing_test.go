@@ -91,7 +91,7 @@ func TestAFiringReachesEachRoleItNames(t *testing.T) {
 	t.Run("one role message for each role the hook names, and one message on the issue", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := workBackEngine(50, oneFiring)
-		seedWorkBackIssue(t, pool, "h0")
+		seedWorkBackIssue(t, pool, headOne)
 
 		testerFails(t, pool, engine, "1")
 
@@ -119,7 +119,7 @@ func TestAFiringReachesEachRoleItNames(t *testing.T) {
 	t.Run("an issue whose reviewer has never started", func(t *testing.T) {
 		pool := migratedPool(t)
 		engine := workBackEngine(50, oneFiring)
-		seedWorkBackIssue(t, pool, "h0")
+		seedWorkBackIssue(t, pool, headOne)
 
 		// The move is the tester's, so no fact of this run writes the reviewer a phases row: the
 		// reviewer has run no phase, holds no claim and no session, and the hook names it all the
@@ -176,7 +176,7 @@ func TestAFiringReachesEachRoleItNames(t *testing.T) {
 		engine := workBackEngine(50,
 			Hook{Name: "work-back", On: HookEventWorkBack, Every: 1, Roles: []claim.Role{claim.RoleImplementer}, Prompt: saySoFar},
 			Hook{Name: "review-loop", On: HookEventWorkBack, Every: 1, Roles: []claim.Role{claim.RoleReviewer}, Prompt: readTheThreads})
-		seedWorkBackIssue(t, pool, "h0")
+		seedWorkBackIssue(t, pool, headOne)
 
 		testerFails(t, pool, engine, "1")
 

@@ -310,7 +310,7 @@ func TestAPhaseCompletionNamingAWakeIsRefused(t *testing.T) {
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 
 	handoff := tester.writeHandoff("test", 1)
-	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+	message := refused(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA,
 		HandoffID: handoff, HandoffVersion: 1, WakeAt: &checkWakeAt}), http.StatusBadRequest, "CHECK_WAKE_UNEXPECTED")
 	if !strings.Contains(message, "wakeAt") || !strings.Contains(message, "pending report") || !strings.Contains(message, "nothing was recorded") {
 		t.Fatalf("the refusal is %q, want it to name the field, say a wake belongs to a check's pending report, and say nothing was recorded", message)
@@ -318,7 +318,7 @@ func TestAPhaseCompletionNamingAWakeIsRefused(t *testing.T) {
 	if got := facts.recorded(); len(got) != 0 {
 		t.Fatalf("facts = %#v, want none: the refusal is written before the fact is applied", got)
 	}
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass",
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA,
 		HandoffID: handoff, HandoffVersion: 1}))
 	if got := facts.recorded(); len(got) != 1 {
 		t.Fatalf("facts after the completion without a time = %#v, want the one completion", got)

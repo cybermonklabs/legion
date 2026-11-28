@@ -10,7 +10,7 @@
 #     tool's handoff_complete closes the phase, with no reminder after it;
 #   - the architect's own backlog in Dispatch, set back on the root and standing on a child, and
 #     rerun_child with its refusal, and the Dispatch writes' actor;
-#   - phase-finished carrying the worker's summary and verdict;
+#   - phase-finished carrying the worker's summary and no verdict;
 #   - the merger merging its own pull request, under the squash message it writes itself, and a
 #     design gate re-closed in merging holding that merge until the person approves the new version;
 #   - pr-merged / pr-closed-unmerged, and a merge the merger did not make closing the issue.
@@ -536,7 +536,7 @@ instruction_for() {
   local issue=$1 role=$2 phase=$3
   case "$role:$phase" in
     implementer:implementing) printf '%s' "Acceptance implementation operation: make the smallest one-file change described by this issue in your $repo workspace, commit it on legion/$issue, and open its pull request with base branch $scratch_base (pass --base $scratch_base to gh pr create; this proof's pull requests never target main). Record the required implementation proof and handoff, then call the legion tool's handoff_complete. Do not merge." ;;
-    tester:testing) printf '%s' "Acceptance test operation: inspect the implementer's actual one-file change and this issue's pull request, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass and a summary that begins 'TESTER-SUMMARY $issue:'." ;;
+    tester:testing) printf '%s' "Acceptance test operation: inspect the implementer's actual one-file change and this issue's pull request, run a focused observable check, record the required test handoff, then call the legion tool's handoff_complete with no verdict and a summary that begins 'TESTER-SUMMARY $issue:'." ;;
     reviewer:reviewing) printf '%s' "Acceptance final review: use the bash tool to submit APPROVE on this issue's pull request (head legion/$issue) in $repo at its current head as $(role_app reviewer), then complete the reviewer handoff. This exact smoke instruction takes precedence over waiting for another review round." ;;
     implementer:retro) printf '%s' "Acceptance retro: write the required retro handoff for this issue's pull request and complete the phase. Do not change the approved implementation." ;;
     merger:merging) printf '%s' "Acceptance hold: this is a proof run. Do not read, verify or merge the pull request yet, and do not call handoff_complete. Reply with the single line 'holding' and wait for the next targeted instruction, which says exactly what to do." ;;
@@ -1054,21 +1054,23 @@ begin testers
 for issue in "$root1" "$root2" "$root3"; do wait_for_phase_at_least "$issue" reviewing 1200; done
 pass
 
-begin phase-finished-carries-summary-and-verdict
+begin phase-finished-carries-summary-and-no-verdict
 until_true 300 "the tester's phase-finished notice on $root1's architect" phase_finished_seen "$root1" testing
 tester_line=$(phase_finished_line "$root1" testing)
 planner_line=$(phase_finished_line "$root1" planning)
 printf '%s\n' "$tester_line" >"$evidence/notice-phase-finished-tester.jsonl"
 printf '%s\n' "$planner_line" >"$evidence/notice-phase-finished-planner.jsonl"
-grep -qF 'verdict: pass' <<<"$tester_line" || soft "the tester's phase-finished notice carries no 'verdict: pass'"
+# A phase completion carries no verdict, and neither does its notice: Dispatch's check states at the
+# tested head decided the tester's move.
+grep -qF 'verdict:' <<<"$tester_line" && soft "the tester's phase-finished notice carries a verdict"
 tester_own=$(jq -s -r '[.[] | select(.type == "message" and .message.role == "assistant") | .message.content[]? | select(.type == "toolCall" and .name == "legion" and .arguments.op == "handoff_complete") | .arguments.summary] | last // ""' "$(claim_session_file "$root1" tester)" | head -1 | cut -c1-60)
 printf '%s\n' "$tester_own" >"$evidence/tester-own-summary-head-$root1.txt"
 { [ -n "$tester_own" ] && grep -qF -- "$tester_own" <<<"$tester_line"; } || soft "the tester's phase-finished notice does not carry the summary the tester sent ('$tester_own')"
 instructed "$root1" tester testing || note "$root1's tester was not instructed before it completed; its summary is its own"
 [ -n "$planner_line" ] || soft "no planning phase-finished notice reached $root1's architect"
 grep -qF 'verdict:' <<<"$planner_line" && soft "the planner's phase-finished notice carries a verdict"
-note "tester notice: $({ grep -o 'summary: \\"TESTER-SUMMARY[^\\]*' <<<"$tester_line" || true; } | head -1) / $(grep -o 'verdict: [a-z]*' <<<"$tester_line" || true)"
-note "planner notice (control): verdict line absent: $(grep -c 'verdict:' <<<"$planner_line" || true)"
+note "tester notice: $({ grep -o 'summary: \\"TESTER-SUMMARY[^\\]*' <<<"$tester_line" || true; } | head -1) / verdict lines: $(grep -c 'verdict:' <<<"$tester_line" || true)"
+note "planner notice: verdict lines: $(grep -c 'verdict:' <<<"$planner_line" || true)"
 pass
 
 begin reviewers

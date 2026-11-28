@@ -1,0 +1,18 @@
+kind: Added
+body: |-
+    The daemon's boot reads the `check.state_changed` events it missed. After the catch-up of the
+    roots that run or wait on a person and before the durable consumers start, a boot probe named
+    `catch up the check states the daemon missed` reads the Dispatch event log of every issue the
+    workflow records that is not done and does not linger, after the issue's cursor
+    `issues.check_states_seq`, applies each state event in it through the live decoder and the
+    workflow, and raises the cursor to the last sequence it read, or to just below a state event
+    that failed to apply, so the next boot reads that event again. Every cursor starts at 0, so the
+    first boot of this release reads each such log from the start, and a state Dispatch published
+    while the daemon was down, or while a release before this one ran, is held, and a tester's
+    move waiting on it decides at the boot. The catch-up applies each state event it reads whether
+    or not `processed_events` records it, which applying again leaves unchanged, so after the way
+    back of `20261126110300_check_states` and the roll-forward every state is held again. An issue
+    Dispatch keeps refusing is read again and passed over under the same rule as a root.
+time: 2026-11-21T12:15:09Z
+custom:
+    Issue: check-states-catch-up

@@ -3595,11 +3595,12 @@ last long enough to be ended inside. A production check's task (its first line `
 waits for no targeted message, since the proof sends none to it. Run no
 `sleep 300` on it; act on the task as it is written. The issues of this proof have no requirement
 that only the deploy can show, and no spec of this proof names one. This proof has no production
-and no deploy role: no production carries the merge, so the look leaves `Production: pending deploy
-of <merge commit>` on the pull request's body (on the last look, whose pending is only for an issue
-with no requirement that only the deploy can show, as here, writes on the pull request why the
-check did not run within the bound) and reports verdict
-pending with the legion tool's handoff_complete, committing nothing. A pending report on a look
+and no deploy role: no production carries the merge, so the look records no result and leaves
+every check line of the pull request's body as it stands (on the last look, whose pending is only
+for an issue with no requirement that only the deploy can show, as here, writes on the pull
+request why the check did not run within the bound), and reports verdict pending with the legion
+tool's handoff_complete, its summary naming what is missing and what it will look for next,
+committing nothing. A pending report on a look
 that is not the last also carries wake_at, an RFC 3339 time: when you want your next look. Nothing
 else wakes a check — no deploy, no Dispatch notice, nothing the daemon does of its own — so the
 look you ask for is the only one that follows, and the check's own bound starts the last one. Ask
@@ -4812,7 +4813,7 @@ note "$tree1 is still in testing at the head the merge left; the tester is in it
 pass
 
 begin tree-reviewed
-send_agent "$tree1" tester "Stage 4b proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass."
+send_agent "$tree1" tester "Stage 4b proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff, then call the legion tool's handoff_complete with no verdict."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
 # No move back has counted the implementer a round yet: the conflict of conflict-no-takeover moved
 # nothing (dispatch://INFRA-4374), and a move back is what counts one, as every move back does
@@ -4887,7 +4888,7 @@ review_thread "$thread_id" >"$evidence/review-thread-after-correction.json" ||
   fail "read the reviewer's thread $thread_id after the correction round"
 note "after the correction round the reviewer's thread reads isResolved $(jq -r .isResolved "$evidence/review-thread-after-correction.json"), newest comment by $(jq -r '[.comments[] | select(.state == "SUBMITTED")] | last | .author' "$evidence/review-thread-after-correction.json")"
 on_tree "$tree1" wait_for_worker "$tree1" tester
-on_tree "$tree1" send_agent "$tree1" tester "Stage 4b proof retest round 1: verify the correction on pull request #$pr_number, write the tester handoff with verdict pass, and complete the phase."
+on_tree "$tree1" send_agent "$tree1" tester "Stage 4b proof retest round 1: verify the correction on pull request #$pr_number, write the tester handoff, and complete the phase with no verdict."
 on_tree "$tree1" wait_for_phase "$tree1" reviewing 1200
 assert_handoff_record "$tree1" tester testing 1
 on_tree "$tree1" wait_for_worker "$tree1" reviewer

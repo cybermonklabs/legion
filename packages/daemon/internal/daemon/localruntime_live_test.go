@@ -146,6 +146,9 @@ type localRuntime struct {
 	panes   map[claim.Token]*localPane
 	started []*localPane
 	seq     int
+	// obs is where report puts every observation, the sweep's and each Wait goroutine's; Observe
+	// hands them on to the channel of its caller. It is never closed, since a pane's Wait goroutine
+	// can report after any daemon's stop.
 	obs     chan runtime.Observation
 	stopped bool
 	// held is the claims a step has taken the hold over, by token (hold). It stands beside the
@@ -658,7 +661,10 @@ func (r *localRuntime) observation(loc runtime.Locator) runtime.Observation {
 }
 
 // Observe is the periodic sweep: every tracked process reported every interval, plus the Gone each
-// Wait goroutine reports the moment its child ends.
+// Wait goroutine reports the moment its child ends. The channel it answers is its caller's own and
+// closes when ctx ends, as runtime.Runtime says: the daemon's stop waits for the goroutine that
+// reads it (supervision.start), so a channel that stayed open held every stop of a live proof to
+// the stop's whole budget, and ended it with `legion daemon stopped waiting for its work`.
 func (r *localRuntime) Observe(ctx context.Context) (<-chan runtime.Observation, error) {
 	go func() {
 		ticker := time.NewTicker(localObserveInterval)
@@ -680,7 +686,23 @@ func (r *localRuntime) Observe(ctx context.Context) (<-chan runtime.Observation,
 			}
 		}
 	}()
-	return r.obs, nil
+	out := make(chan runtime.Observation)
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case o := <-r.obs:
+				select {
+				case out <- o:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return out, nil
 }
 
 // report puts one observation on the channel, dropping it when nothing is reading: an observation

@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+  The skill-scenario rig has the tester's world `tester-reads-no-ci`: the tester tests #702, where
+  k1 has no `ci_check` and k3's CI job is still going (case `ci-late`) or failed (case `ci-red`).
+  score.ts's `headsTesterReadsNoCI` passes a run that wrote its own test record and a result of
+  k1, read no CI (no `gh pr checks`, `gh run`, check-run, check-suite or Actions read, no
+  `statusCheckRollup` and no `dispatch results --check k3`) and wrote no WAITING line before the
+  record; a read of CI the world has no route for fails the run instead of being a rig error.
+  `tester-ci-check.sh` runs and judges its batch with the label `restore-tester-ci`, an external
+  patch. `states-read-check.sh` and `tester-ci-check.sh` judge at one floor and one bar
+  (`label-judgement.sh`): a row with at least four scorable runs that make five with its rig
+  errors, head passing each of its scorable runs, and a planted label at most two of its own;
+  `states-read-check.sh` also judges the cases `ci-check-fail` and `ci-check-fail-other-head` and
+  the label `approve-over-ci`.
+time: 2026-11-25T05:55:41Z
+custom:
+    Issue: tester-reads-no-ci

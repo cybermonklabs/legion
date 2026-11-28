@@ -204,10 +204,17 @@ A news task can name this child while you hold it in `accepting`: its news start
 changed in the root's approved design. Read each named section and check at the new version.
 Then sign the child off, or send it back to the phase of an earlier step of its task, with a
 `reason` that names the version and the change.
-The gate is the `before_merge` checks of the issue's own Verification document, read at the
-issue's own head: each needs a pass standing at that head, which
-`dispatch results --issue <issue>` shows. A pass and a fail at any open head make the check not known: send
-the issue back at once, naming the check, do not accept it, and do not wait for a later result, a CI run still going or GitHub that Dispatch could not read.
+The gate is the `before_merge` checks of the issue's own Verification document, read at every open
+head of the issue: each must read yes at each open head, a check carrying `ci_check` among them, which
+`dispatch results --issue <issue>` shows. A check that fails at an open head, or that holds a pass
+and a fail at one, is not met: send the issue back at once, naming the check and that head, do not
+accept it, and do not wait for a later result or for GitHub that Dispatch could not read.
+A check with no result at an open head is not met either, and while its CI case has not ended
+there (`not_completed`, `absent`, `no_head`, `github_unreadable`, `read_failed`, `not_started`)
+you wait for its state, as the testing move waits for it: accept nothing meanwhile, and send the
+issue back once that case ended with no pass, or once nothing will record a result there.
+Every open head counts, whichever of the issue's pull requests stands at it: a fail at the head of
+one open pull request is a fail of that check, and another open head reading yes does not answer it.
 At acceptance, read each CI-proved check's derived result and each result its CI job recorded.
 To give a check to CI, write a new check block under a new id; retracting a result does not lift the old rule.
 A result one of its children recorded against one of
@@ -227,11 +234,10 @@ step (on a parent, once nothing holds it, `retro-held`). Every started role keep
 session until its issue closes, so an `envoy_publish` to a role that finished its phase still
 reaches that session, and wakes the role when the daemon released its idle pod. The merge closes
 the child: where the project opens a production check, it follows the close in the tester's own
-session and on the pull request, and asks nothing of you. A tester completion that rejects the
-implementer's results goes back to the implementer, or to the earlier step its completion names;
-a worker that reports
-no surface reaches the changed path gets the surface built in this tree
-(`skill://legion-architect`, wake routing,
+session and on the pull request, and asks nothing of you. Dispatch's check states decide whether
+the testing step passed. When it failed, the task goes back to the implementer, or to the earlier
+step that the tester's completion names. A worker that reports no surface reaches the changed
+path gets the surface built in this tree (`skill://legion-architect`, wake routing,
 `phase-finished`), and waits, with its phase and its task kept, until you tell it to continue
 (`envoy_publish` to its role topic, which wakes it when its idle pod was released): once that
 child closes, or at once when the surface folds into an open pull request of this tree and a

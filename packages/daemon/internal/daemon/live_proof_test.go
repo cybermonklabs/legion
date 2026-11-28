@@ -308,6 +308,31 @@ func (p *liveProof) architectNotices(key, kind string) []listenerPublish {
 	return got
 }
 
+// testerNotices is every phase-finished notice of the tester that the daemon has published to the
+// role topic of key's architect, each decoded whole as the architect receives it (record.Notice).
+// A payload that is no object, the sentence a CI settlement sends that topic, is passed over.
+func (p *liveProof) testerNotices(key string) []record.Notice {
+	p.t.Helper()
+	architect, err := claim.NewToken(p.project, key, claim.RoleArchitect)
+	if err != nil {
+		p.t.Fatal(err)
+	}
+	var notices []record.Notice
+	for _, published := range p.notices.acceptedOn(notify.RoleTopicPrefix + string(architect)) {
+		if !strings.HasPrefix(strings.TrimSpace(published.Payload), "{") {
+			continue
+		}
+		var notice record.Notice
+		if err := json.Unmarshal([]byte(published.Payload), &notice); err != nil {
+			p.t.Fatalf("decode the notice payload %q: %v", published.Payload, err)
+		}
+		if notice.Kind == "phase-finished" && notice.Role == claim.RoleTester {
+			notices = append(notices, notice)
+		}
+	}
+	return notices
+}
+
 // waitArchitectNotices polls until the daemon has told key's architect count notices of kind, and
 // returns them as architectNotices does. The wait's failure names the count, the kind and the
 // issue, which is all a step would say of it.

@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+  The `ci_case` of `check.state_changed` (`model.CheckStateChangedEventPayload.CICase`) is one of a
+  closed list, which its `enum` tag names and `TestTheCICaseTagIsContractsList` holds to the
+  generated `contracts.CheckCICasesEnded` and `contracts.CheckCICasesNotEnded`. A check run that
+  concluded with a conclusion the list does not name, or with none, is still a fail, and its case
+  is now `failure` rather than the conclusion's own word; its detail and the derived result's
+  observed text keep the conclusion as GitHub wrote it. The new package
+  `github.com/sjawhar/envoy/cicase` gives a caller outside the module the two lists (`Ended`,
+  `NotEnded`, `Known`).
+time: 2026-11-27T06:20:02Z
+custom:
+  Issue: check-states-ci-case-closed

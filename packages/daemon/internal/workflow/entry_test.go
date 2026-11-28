@@ -64,9 +64,10 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 		}
 	}
 
-	// The tester's failed verdict ends testing and starts the implementer, which is the first
-	// start of this test and the first entry of that role's record.
-	apply("test-0", intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail",
+	// The tester's round ends on a failing check, which ends testing and starts the implementer,
+	// the first start of this test and the first entry of that role's record.
+	testedAs(t, pool, engine, entryIssue, headOne, false)
+	apply("test-0", intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester, Claim: "test-claim", Commit: headOne,
 		HandoffRecord: "test-0", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Implementing)
 	if got := entryOfStart(t, pool, claim.RoleImplementer, engine.now()); got != 1 {
@@ -91,9 +92,9 @@ func TestEveryPhaseStartRaisesTheRolesEntryAndWritesItsTask(t *testing.T) {
 
 	// The tester fails this round too and the issue goes back to implementing, the second entry of
 	// that role: the number is raised again and the row carries the work of this entry, not of
-	// the one before it. The verdict is the tester's second record, so the two tasks differ in
-	// the handoff they name as well as in the entry they are of.
-	apply("test-1", intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail",
+	// the one before it. The completion names the tester's second record, so the two tasks differ
+	// in the handoff they name as well as in the entry they are of.
+	apply("test-1", intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester, Claim: "test-claim", Commit: headOne,
 		HandoffRecord: "test-1", HandoffVersion: 2})
 	assertPhase(t, pool, phase.Implementing)
 	if got := entryOfStart(t, pool, claim.RoleImplementer, engine.now()); got != 2 {
@@ -277,10 +278,11 @@ func TestTheEntryCarriesWhetherTheMoveThatRaisedItMovedBack(t *testing.T) {
 	seedEntryRow(t, pool, claim.RoleTester, "test-claim")
 	engine := testEngine(config.DesignGateRootIssues, nil)
 
-	// The tester's failed verdict sends testing back to implementing, which is a move back, and
-	// the implementer's first entry is raised by it.
+	// The tester's round ends on a failing check, which sends testing back to implementing, a move
+	// back, and the implementer's first entry is raised by it.
+	testedAs(t, pool, engine, entryIssue, headOne, false)
 	applyRefusingNothing(t, pool, engine, intake.HandoffComplete{Generation: 1, Issue: entryIssue, Role: claim.RoleTester,
-		Claim: "test-claim", Verdict: "fail", HandoffRecord: "test-1", HandoffVersion: 1})
+		Claim: "test-claim", Commit: headOne, HandoffRecord: "test-1", HandoffVersion: 1})
 
 	assertPhase(t, pool, phase.Implementing)
 	if row := entryRow(t, pool, claim.RoleImplementer); row.Entry != 1 || !row.EntryMovedBack {

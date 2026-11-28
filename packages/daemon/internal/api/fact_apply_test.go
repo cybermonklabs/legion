@@ -160,17 +160,19 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 			r.runs(t, "LEGION-208", testingPlace, tester.token)
 			written := tester.writeHandoff("test", 1)
 			return []agentRequest{{tester.token, func() *httptest.ResponseRecorder {
-				return r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Verdict: "pass", HandoffID: written, HandoffVersion: 1})
+				return r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass", Commit: headSHA, HandoffID: written, HandoffVersion: 1})
 			}}}
 		}},
+		// The phase worker's move back is the implementer's: the tester's own move out of testing
+		// is refused (workflow's backwardRefusal), since its step ends by its checks' states.
 		"POST /legion/v1/phase/backward": {waits: func(t *testing.T, r *awaitRig) []agentRequest {
-			seedIssueAt(t, r.h, "LEGION-208", phase.Testing)
-			tester := newLiveClaim(t, r.h, "LEGION-208", claim.RoleTester)
+			seedIssueAt(t, r.h, "LEGION-208", phase.Implementing)
+			implementer := newLiveClaim(t, r.h, "LEGION-208", claim.RoleImplementer)
 			architect := newLiveClaim(t, r.h, "LEGION-208", claim.RoleArchitect)
-			r.runs(t, "LEGION-208", testingPlace, tester.token)
-			return []agentRequest{{tester.token, func() *httptest.ResponseRecorder {
+			r.runs(t, "LEGION-208", implementingPlace, implementer.token)
+			return []agentRequest{{implementer.token, func() *httptest.ResponseRecorder {
 				return r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{
-					"grantId": tester.grant(t), "to": "implementing", "reason": "the suite needs a fix"}, nil)
+					"grantId": implementer.grant(t), "to": "planning", "reason": "the plan misses a case"}, nil)
 			}}, {architect.token, func() *httptest.ResponseRecorder {
 				seedIssueAt(t, r.h, "LEGION-208", phase.Accepting)
 				r.runs(t, "LEGION-208", acceptingPlace, architect.token)
@@ -307,7 +309,8 @@ func TestEveryAgentRouteWaitsForItsStreamWhereTheRecordNamesItTheAgentOfARun(t *
 // fact names: the architect's move back of a child in implementing, whose run is its
 // implementer's, waits for nothing, though the architect runs the accepting step of another
 // child. A request refused before it applies a fact waits for nothing: the tester's completion
-// with no verdict, and the architect's move back of an issue of another tree.
+// naming a verdict, which no completion carries, and the architect's move back of an issue of
+// another tree.
 func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	r := newAwaitRig(t)
 	worker, _ := r.h.launchIn("LEGION-208", "LEGION-209", claim.RoleImplementer)
@@ -341,8 +344,8 @@ func TestAFactNoAgentRequestedWaitsForNothing(t *testing.T) {
 	tester := newLiveClaim(t, r.h, "LEGION-208", claim.RoleTester)
 	r.runs(t, "LEGION-208", testingPlace, tester.token)
 	written := tester.writeHandoff("test", 1)
-	refused(t, r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", HandoffID: written, HandoffVersion: 1}),
-		http.StatusBadRequest, "TESTER_VERDICT_REQUIRED")
+	refused(t, r.h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "ran the suite", Verdict: "pass", HandoffID: written, HandoffVersion: 1}),
+		http.StatusBadRequest, "VERDICT_NOT_TAKEN")
 	seedIssueAt(t, r.h, "LEGION-400", phase.Implementing)
 	other := newLiveClaim(t, r.h, "LEGION-400", claim.RoleArchitect)
 	refused(t, r.h.request(http.MethodPost, "/legion/v1/phase/backward", map[string]any{

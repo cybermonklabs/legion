@@ -83,8 +83,11 @@ type pullRequestPayload struct {
 			FullName string `json:"full_name"`
 		} `json:"repo"`
 	} `json:"head"`
+	// Base is the branch the pull request merges into: its name, and the commit it was at when
+	// GitHub answered, which can move with no change of the name.
 	Base struct {
 		Ref string `json:"ref"`
+		SHA string `json:"sha"`
 	} `json:"base"`
 }
 

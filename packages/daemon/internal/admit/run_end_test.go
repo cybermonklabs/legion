@@ -379,6 +379,12 @@ func TestEveryWayOutOfAStepEndsItsRun(t *testing.T) {
 					t.Fatalf("%s's pull request holds first read %+v and merge forward %+v, want the first read released and nothing asked", awaiting, pr.ConflictRead, pr.MergeForward)
 				}
 			}}},
+		// A check state of an issue out of testing is held and moves nothing: only the tester's
+		// completed testing phase is decided by the states (workflow's decideTesting).
+		"DispatchCheckState": {{name: "a failing check of an issue in accepting is held and keeps it there", arrange: none, source: "dispatch",
+			fact: intake.DispatchCheckState{Key: inAccepting, Mark: record.EventMark{Seq: 9, At: fixedNow}, Repo: "acme/widgets", Head: "head-5",
+				Checks: []string{"k1"}, Check: "k1", CheckVersion: 1, State: "no", Reason: "fail", Roles: []string{}, Serial: 1},
+			keeps: inAccepting}},
 		"ControllerTick": {
 			{name: "applied to the running tree", arrange: none, fact: intake.ControllerTick{}},
 			// A Dispatch child opened under a member in the middle of its phase holds it: the pass

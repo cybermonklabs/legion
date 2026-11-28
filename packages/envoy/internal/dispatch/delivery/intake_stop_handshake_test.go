@@ -344,7 +344,7 @@ func TestAnIntakesStopDoesNotWaitOutAHeldHandshake(t *testing.T) {
 		make func(*intakeDelivery, intakeMessage)
 	}{
 		{"an acknowledgement begun before the stop", func(d *intakeDelivery, m intakeMessage) { d.acknowledge(m.msg) }},
-		{"a head-write hand-back begun before the stop", func(d *intakeDelivery, m intakeMessage) { d.handBackOwn(m.msg, headWriteRedeliverAfter) }},
+		{"a handler's own delayed hand-back begun before the stop", func(d *intakeDelivery, m intakeMessage) { d.handBackOwn(m.msg, ownHandBackAfter) }},
 		{"a job acknowledgement begun before the stop", func(d *intakeDelivery, m intakeMessage) {
 			(&JobIntake{ctx: context.Background()}).deliver(d, m)
 		}},

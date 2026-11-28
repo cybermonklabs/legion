@@ -240,3 +240,41 @@ test("a recorded handoff names its phase and version", () => {
     })
   ).toEqual(["recorded the implement handoff, version 2"]);
 });
+
+test("a check's state at a head, and a head's set of checks, say what Dispatch reported", () => {
+  const head = "a".repeat(40);
+  const stateChanged = (
+    payload: Partial<Extract<DispatchEvent, { type: "check.state_changed" }>["payload"]>
+  ): DispatchEvent => ({
+    actor: { id: "dispatch-check-states", kind: "system" },
+    created_at: "2026-11-20T00:00:00Z",
+    id: 3,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      issue: "CORE-1",
+      check_artifact_id: "artifact-3",
+      repo: "acme/widgets",
+      head,
+      pull_requests: [70],
+      checks: ["k1", "k2"],
+      check: "k1",
+      check_version: 1,
+      state: "no",
+      reason: "fail",
+      roles: [],
+      results: ["result-1"],
+      ci_case: "",
+      serial: 1,
+      ...payload,
+    },
+    seq: 3,
+    type: "check.state_changed",
+  });
+  expect(activityDescription(stateChanged({}))).toEqual([
+    `reported that check k1 reads no (fail) at ${head} of #70`,
+  ]);
+  expect(
+    activityDescription(stateChanged({ check: null, check_version: null, reason: "", state: null }))
+  ).toEqual([`reported that head ${head} of #70 has the checks k1, k2`]);
+});

@@ -443,7 +443,9 @@ const rigReviewerSession = "rig-reviewer-session"
 // reviewer's completion comes first, as a reviewer's agent completes once it has posted its review:
 // the completion records the reviewer's handoff and moves nothing, and the review decides when it
 // lands, so the next step's start names the reviewer's report. A review that landed first would move
-// the task on before any report of the reviewer's was recorded.
+// the task on before any report of the reviewer's was recorded. A completion carries no verdict:
+// a step other than a review passes on its check states, and the world request carries none, so a
+// step whose verdict is other than a pass cannot be walked here.
 func (w rigWalk) pass(position int, step rigWorldStep) {
 	w.t.Helper()
 	subject := issueOf(w.t, w.pool, w.engine, w.req.Subject)
@@ -453,6 +455,9 @@ func (w rigWalk) pass(position int, step rigWorldStep) {
 		verdict = *step.Verdict
 	}
 	reviewed, entry := role == claim.RoleReviewer, int64(0)
+	if !reviewed && verdict != "" && verdict != "pass" {
+		w.t.Fatalf("earlier step %d gives the verdict %q: a completion carries no verdict, and this test passes a step by its completion alone", position, verdict)
+	}
 	if reviewed {
 		if w.req.PullRequest == nil {
 			w.t.Fatalf("earlier step %d is a review, and the world request names no pull request", position)
@@ -460,7 +465,6 @@ func (w rigWalk) pass(position int, step rigWorldStep) {
 		if verdict != "" && verdict != "approved" {
 			w.t.Fatalf("earlier step %d is a review with the verdict %q: this test passes a review by an approval alone", position, verdict)
 		}
-		verdict = ""
 		entry = roleRowOf(w.t, w.pool, w.engine, subject.Key, role).Entry
 		if _, err := w.pool.Exec(context.Background(), `insert into claims (token, project, tree, issue, role, generation, session, session_file,
 			state, launch_failures, prompt_failures, prompt_retires, uncertain_streak)
@@ -471,7 +475,7 @@ func (w rigWalk) pass(position int, step rigWorldStep) {
 		}
 	}
 	w.apply(fmt.Sprintf("rig-step-%d", position), intake.HandoffComplete{Issue: subject.Key, Role: role, Claim: w.token(subject.Key, role),
-		Generation: subject.Generation, Summary: fmt.Sprintf("Step %d (%s) is done: see its handoff record.", position, role), Verdict: verdict,
+		Generation: subject.Generation, Summary: fmt.Sprintf("Step %d (%s) is done: see its handoff record.", position, role),
 		Commit: step.Commit, HandoffRecord: step.HandoffRecord, HandoffVersion: step.HandoffVersion})
 	if reviewed {
 		pr := w.req.PullRequest

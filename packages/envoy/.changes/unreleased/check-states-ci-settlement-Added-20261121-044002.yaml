@@ -1,0 +1,21 @@
+kind: Added
+body: |-
+    A settled CI run moves the published state of the check CI proves. The delivery intake now
+    takes the listener's `notifications.github.<owner>.<repo>.pr.<n>.checks` settlement, keyed as
+    the pull request's own envelopes are, so it runs after them. It reads the issue of the pull
+    request's open head under the repository's canonical name and marks that issue's check states
+    owed with `check_states_owe`, in a statement of its own, whose commit starts the check states
+    settler; a pull request that is not open, or that no issue holds, marks nothing. No table
+    stores a CI run, so nothing else marks the issue when a run concludes: a settlement whose mark
+    could not be written is handed back to NATS on the path a pull request whose head row was not
+    stored takes, after 10 s and for at most 30 deliveries, and acknowledged with an error at the
+    last. That path's bounds are renamed `delivery.ownHandBackAfter` and
+    `delivery.ownHandBackMaxDeliveries`, since they now bound both. Each take-over of the
+    delivery durable first marks every issue with an open attributed head owed, with the
+    backfill migration's statement, before it changes the durable, since the holder before may
+    be a build that acknowledges a settlement with no mark; a take-over whose mark fails changes
+    nothing and is tried again 2 s later. It costs one settle of each such issue, with its
+    check-run reads, per take-over: each rolling release and each take-over after a lost hold.
+time: 2026-11-21T04:40:02Z
+custom:
+    Issue: check-states-ci-settlement

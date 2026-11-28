@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  Migration `20261126110302_phase_return_to` adds `phases.return_to` nullable with a default of 0
+  and its check (`return_to >= 0`), as `phases.states_serial` is, so it holds the rule its own
+  change's migrations state: a migration a rolling release runs adds only tables, nullable columns
+  and non-unique indexes. The store reads a row that holds no value as 0
+  (`coalesce(return_to, 0)`). The migration is this change's own and unreleased, so its file is
+  edited in place.
+time: 2026-11-27T08:36:21Z
+custom:
+  Issue: check-states-return-to-nullable

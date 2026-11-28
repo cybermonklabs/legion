@@ -38,6 +38,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/cipher"
 	"github.com/sjawhar/envoy/internal/dispatch/delivery"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/envoy"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
@@ -773,6 +774,14 @@ type server struct {
 	// caller's results read takes no claim here and only reads the writers' (Refuses), so it asks
 	// GitHub where a writer's read at that moment would and leaves the claims as it found them.
 	commitPulls delivery.CommitPullReads
+	// checkStatesSchedule is the check states settler's timing (check_states.go): the loop this
+	// process runs (runCheckStates) takes it, and the fence of a test handoff reads its wait and
+	// its poll (awaitCheckStatesSettled). register sets production's; a test shortens it.
+	checkStatesSchedule checkStatesSchedule
+	// checkStatesFenceWaits, when set, is called once by each fence of a test handoff that finds a
+	// mark it waits for still owed. Nil in production; a test that holds a settle sets it, to
+	// release the settle only once the fence waits for it.
+	checkStatesFenceWaits func(issue string)
 }
 
 // warnedProductionRun keys server.warnedUnmatchedRuns: one deploy run under one configured set of
@@ -847,7 +856,7 @@ type RouteMux interface {
 func Register(mux RouteMux, lifetime context.Context, deps Deps) Background {
 	s := register(mux, lifetime, deps)
 	return Background{Wait: s.waitBackground, ResumeDeliveries: s.resumeOwedDeliveries, EventHead: s.eventFeedHead, EventHorizon: s.horizon,
-		PostSystemMessage: s.postSystemMessage}
+		RunCheckStates: s.runCheckStates, PostSystemMessage: s.postSystemMessage}
 }
 
 // Background is the work a registered server does beside answering its requests, for the process
@@ -869,6 +878,12 @@ type Background struct {
 	// its own: one per process is what lets its readers share an observation. Only a server
 	// registered with a Store has an event log to answer for.
 	EventHorizon func() *events.Horizon
+	// RunCheckStates is the check states settler's loop (runCheckStates, check_states.go), which
+	// every process runs on its own reservation of the lease pool and its listener hub's wake on
+	// CheckStatesOwedChannel, until ctx ends: it publishes one check.state_changed event for each
+	// change of the state of a `before_merge` check at an open head, or at a head an open pull
+	// request has left.
+	RunCheckStates func(ctx context.Context, leases duty.Leases, wake <-chan struct{})
 	// PostSystemMessage posts message on its issue under its own id (model.SystemMessage), written
 	// by actor, a system actor of Dispatch's own, through the one writer every issue message goes
 	// through (postSystemMessage, createStoredMessage), and answers the message's id; a post made
@@ -970,7 +985,7 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 	}
 	s := &server{deps: deps, lifetime: lifetime, agentWatchInterval: agentStreamWatchInterval, listAnswers: newListAnswerCache(), rosters: rosterCache{
 		ttl: cmp.Or(deps.RouteRosterTTL, routeRosterTTL), silenceTTL: routeRosterSilenceTTL,
-	}}
+	}, checkStatesSchedule: checkStatesProduction}
 	// The search log key, made once for this server: crypto/rand.Read answers no error, since it
 	// ends the process when the system's source fails.
 	s.searchLogKey = make([]byte, 32)

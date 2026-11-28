@@ -778,10 +778,13 @@ func main() {
 	//     shared listener below says their work may have changed, or when a due time their last
 	//     pass asked for comes round: the embedding queue (embedqueue.WakeChannel), the reference
 	//     excerpts (docs.ExcerptsOwedChannel), the edit notices (docs.EditNoticesChannel), the
-	//     suggestion outcomes (api.EventsChannel), the delivery settings both delivery intakes
-	//     route by (delivery.SettingsChannel) and the Legion settings, on whose every write the
-	//     Legion state intake checks each project's starting point (legion.SettingsChannel). The
-	//     two leased ones, reference-excerpts and edit-notices, take their lease with no period
+	//     suggestion outcomes (api.EventsChannel), the check states (api.CheckStatesOwedChannel),
+	//     the delivery settings both delivery intakes route by (delivery.SettingsChannel) and the
+	//     Legion settings, on whose every write the Legion state intake checks each project's
+	//     starting point (legion.SettingsChannel). The check states settler takes no lease of the
+	//     loop: each settle takes its issue's own lease, and a pass at most a minute after the one
+	//     before it settles a mark whose notification no process received (api/check_states.go).
+	//     The two leased ones, reference-excerpts and edit-notices, take their lease with no period
 	//     (duty.RunWoken): a process that finds it held retries until a pass of its own runs,
 	//     since the other process's pass may have read before the change that woke this one. The
 	//     suggestion-outcome loop takes none: each of its pages runs in a transaction holding the
@@ -926,6 +929,9 @@ func main() {
 	// The display tree fill (texttreefill.Run): a leased loop like the rest, reserved here so
 	// that this process's count is the same whether or not it has work to do.
 	textTreeFillLeases := reserve("text tree fill")
+	// The check states settler (Background.RunCheckStates): each settle holds its issue's lease on
+	// this connection while it computes through the shared pool, so it reserves one like a loop.
+	checkStatesLeases := reserve("check states")
 	// R25's one-time fix of parents' statuses at boot (api.RunParentStatusFixAtBoot, below): it
 	// takes its lease only with DISPATCH_PARENT_STATUS_RULE on, and is reserved here so that this
 	// process's count is the same with the setting off.
@@ -1088,6 +1094,7 @@ func main() {
 	excerptsWake := listenerHub.Wake(docs.ExcerptsOwedChannel)
 	editNoticesWake := listenerHub.Wake(docs.EditNoticesChannel)
 	eventsWake := listenerHub.Wake(api.EventsChannel)
+	checkStatesWake := listenerHub.Wake(api.CheckStatesOwedChannel)
 	// The block schema's own wake. It is a Wake and not a Handle because the reinstall reads
 	// the store, which a handler on Run's goroutine must not do (schemanodes.Installer).
 	schemaWake := schemanodes.RegisterWake(listenerHub)
@@ -1512,6 +1519,12 @@ func main() {
 	// suggestion_outcome_cursor row for update, which is what keeps two processes from judging one
 	// page twice.
 	go api.RunSuggestionOutcomeSweep(ctx, database.Pool, background.EventHorizon(), eventsWake)
+	// Each change of the state of a `before_merge` check at an open pull request head is one
+	// check.state_changed event: the triggers of the tables a state is computed from mark the
+	// issue owed and notify api.CheckStatesOwedChannel at the writer's commit, and this process's
+	// settler publishes the change, under the issue's lease, with a pass at start and one at most
+	// a minute after the one before it for a mark no notification reached.
+	go background.RunCheckStates(ctx, checkStatesLeases, checkStatesWake)
 	// The Idempotency-Keys past their 24 hours and the deliveries a process that died
 	// left owed, once a minute across the processes under the suggestion-outcomes lease. It is a
 	// timer and not a woken loop because no commit announces either, and it starts here because

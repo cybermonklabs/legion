@@ -13,6 +13,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 
 	"github.com/sjawhar/legion/daemon/internal/blockers"
+	"github.com/sjawhar/legion/daemon/internal/checkstatetest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/classify"
 	"github.com/sjawhar/legion/daemon/internal/config"
@@ -71,6 +72,27 @@ func pwApplied(t *testing.T, pool *pgxpool.Pool, admission *Admission, source, i
 	}
 }
 
+// pwStatesFirst is fact as a tester's completion makes its move now: the completion names the
+// head it tested and no verdict, and the check state Dispatch publishes of k1 at that head,
+// passing where tested is "pass" and failing where it is "fail" (checkstatetest.Tested), decides
+// the testing move. The state is applied first and the completion names its serial, so the
+// completion moves the issue at once, as one whose test record's fence the states have reached.
+// With tested "" the fact is answered as it is.
+func pwStatesFirst(t *testing.T, pool *pgxpool.Pool, admission *Admission, fact intake.Fact, tested string) intake.Fact {
+	t.Helper()
+	if tested == "" {
+		return fact
+	}
+	completion, ok := fact.(intake.HandoffComplete)
+	if !ok || completion.Role != claim.RoleTester {
+		t.Fatalf("a tested state decides a tester's completion, not %#v", fact)
+	}
+	state, id := checkstatetest.Tested(t, pool, completion.Issue, "acme/widgets", completion.Commit, tested == "pass")
+	pwApplied(t, pool, admission, "dispatch", id, state)
+	completion.StatesSerial = state.Serial
+	return completion
+}
+
 // pwRefused fails unless result is the refusal code.
 func pwRefused(t *testing.T, result intake.Result, code, what string) {
 	t.Helper()
@@ -79,12 +101,21 @@ func pwRefused(t *testing.T, result intake.Result, code, what string) {
 	}
 }
 
-// pwPullRequest records key's pull request #42, at head head-42 on base main, in state, with
+// pwHead is the head of the parent's pull request, and the commit every completion of these
+// tests names. It is forty lowercase hexadecimal digits because a check state names the commit
+// it stands at, and the daemon reads no state whose head is not written as a commit is.
+const pwHead = "4242424242424242424242424242424242424242"
+
+// pwHeadBefore is the head the branch stood at before pwHead: the head a merge forward was asked
+// of where it has landed since.
+const pwHeadBefore = "4141414141414141414141414141414141414141"
+
+// pwPullRequest records key's pull request #42, at pwHead on base main, in state, with
 // GitHub's last answer for that head mergeable and clean, so an approval of it ends its round.
 func pwPullRequest(t *testing.T, pool *pgxpool.Pool, key string, state record.PullRequestState) {
 	t.Helper()
 	inTx(t, pool, func(tx pgx.Tx) {
-		pr := record.PullRequest{Issue: key, Repo: "acme/widgets", Number: 42, Branch: "legion/" + key, HeadSHA: "head-42",
+		pr := record.PullRequest{Issue: key, Repo: "acme/widgets", Number: 42, Branch: "legion/" + key, HeadSHA: pwHead,
 			Generation: 1, State: state, Base: "main", Mergeability: record.MergeabilityMergeable, MergeState: record.MergeStateClean}
 		if err := record.NewStore().PutPullRequest(context.Background(), tx, pr); err != nil {
 			t.Fatalf("record the pull request of %s: %v", key, err)
@@ -142,30 +173,27 @@ func pwDeliver(t *testing.T, pool *pgxpool.Pool, key string, token claim.Token, 
 }
 
 // pwLate is the completion role reports of the phase it was in, under its claim token, naming the
-// handoff record rec: for a phase the wait stopped, the late completion R10 refuses.
+// handoff record rec: for a phase the wait stopped, the late completion R10 refuses. A tester's
+// names no verdict, as no phase completion does: its commit is the head it tested.
 func pwLate(key string, role claim.Role, token claim.Token, rec string) intake.HandoffComplete {
-	late := intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: token, Summary: "the stopped phase's work",
-		Commit: "head-42", HandoffRecord: rec, HandoffVersion: 1}
-	if role == claim.RoleTester {
-		late.Verdict = "pass"
-	}
-	return late
+	return intake.HandoffComplete{Generation: 1, Issue: key, Role: role, Claim: token, Summary: "the stopped phase's work",
+		Commit: pwHead, HandoffRecord: rec, HandoffVersion: 1}
 }
 
-// pwReviewed records the reviewer's completion of its round on head-42, whose decision the review
-// fact brings: the summary the replaced phase-finished notice would have carried.
+// pwReviewed records the reviewer's completion of its round on the parent's head, whose decision
+// the review fact brings: the summary the replaced phase-finished notice would have carried.
 func pwReviewed(t *testing.T, pool *pgxpool.Pool) {
 	t.Helper()
 	spSeedPhase(t, pool, record.PhaseRow{Issue: spParent, Role: claim.RoleReviewer, Claim: "reviewer", Summary: pwReviewSummary,
-		HandoffCommit: "head-42", HandoffRecord: "review-1", HandoffVersion: 1, CompletedAt: fixedNow.Add(-time.Hour),
+		HandoffCommit: pwHead, HandoffRecord: "review-1", HandoffVersion: 1, CompletedAt: fixedNow.Add(-time.Hour),
 		Entry: 1, EntryRaisedAt: fixedNow.Add(-2 * time.Hour)})
 }
 
-// pwReview is a review of head-42 submitted by a maintainer with write access to the repository,
-// delivered by its webhook: a review that decides the round (workflow's DecidesRound).
+// pwReview is a review of the parent's head submitted by a maintainer with write access to the
+// repository, delivered by its webhook: a review that decides the round (workflow's DecidesRound).
 func pwReview(state, body string) intake.PullRequestReview {
 	return intake.PullRequestReview{Repo: "acme/widgets", Number: 42, ID: 7, SubmittedAt: fixedNow.Add(-time.Minute), State: state,
-		CommitID: "head-42", HeadSHA: "head-42", Author: "a-maintainer", AuthorCanWrite: true, Body: body}
+		CommitID: pwHead, HeadSHA: pwHead, Author: "a-maintainer", AuthorCanWrite: true, Body: body}
 }
 
 // pwNoticeKinds is how many architect notices are queued for key, by kind.
@@ -352,16 +380,16 @@ func pwToldImplementer(t *testing.T, pool *pgxpool.Pool, dropped *record.Dropped
 	}
 }
 
-// pwAsked is the merge forward the parent's pull request record holds, asked in at, of head-42
-// where it has not landed, and of head-41 with head-42 the head it landed at where landed.
+// pwAsked is the merge forward the parent's pull request record holds, asked in at, of pwHead
+// where it has not landed, and of pwHeadBefore with pwHead the head it landed at where landed.
 func pwAsked(at phase.Phase, landed bool) *record.MergeForward {
 	why := record.ConflictRulesUnread
 	if at == phase.Accepting {
 		why = record.ConflictMergeNext
 	}
-	asked := &record.MergeForward{Head: "head-42", Base: "main", Phase: at, Why: why, AskedAt: fixedNow.Add(-30 * time.Minute)}
+	asked := &record.MergeForward{Head: pwHead, Base: "main", Phase: at, Why: why, AskedAt: fixedNow.Add(-30 * time.Minute)}
 	if landed {
-		asked.Head, asked.Landed = "head-41", "head-42"
+		asked.Head, asked.Landed = pwHeadBefore, pwHead
 	}
 	return asked
 }
@@ -388,7 +416,7 @@ func pwSeedForward(t *testing.T, pool *pgxpool.Pool, asked *record.MergeForward)
 
 // pwConflicting records the parent's pull request, which pwPullRequest recorded, as the daemon's
 // two reads of GitHub a minute apart leave a head they judge conflicting with its base when its
-// base's rules require nothing (workflow's mergeability): CONFLICTING and dirty at head-42, and
+// base's rules require nothing (workflow's mergeability): CONFLICTING and dirty at pwHead, and
 // that head held as the confirmed conflict (record.PullRequest.ConflictingHead), which is what a
 // conflict round is read against (classify.ConflictRound).
 func pwConflicting(t *testing.T, pool *pgxpool.Pool) {
@@ -491,33 +519,40 @@ func pwHeld(t *testing.T, pool *pgxpool.Pool, key string, start phase.Phase, cau
 }
 
 // pwMove is one of the ten moves R9 holds for an open child: the phase it leaves, what seeds it
-// beyond the parent, its pull request and its open child, the fact that makes it, and what the
-// held start, the replaced notice and the counts read after it.
+// beyond the parent, its pull request and its open child, the fact that makes it, how the check
+// state that decides a tester's completion reads (tested, pwStatesFirst), and what the held
+// start, the replaced notice and the counts read after it.
 type pwMove struct {
 	name    string
 	from    phase.Phase
 	seed    func(*testing.T, *pgxpool.Pool)
 	source  string
 	fact    intake.Fact
+	tested  string
 	start   phase.Phase
 	cause   string
 	summary string
-	verdict string
 	pass    int
 	rounds  int
 	pairs   map[string]int
 }
 
-// pwMoves is the nine moves of the ten k12 names that a start follows, the planner's completion
-// first: it is the case the negative control fails at. The tenth, a conflicting head from
+// pwFailedCause is the cause the held start of a testing move back names: the testing move's own
+// sentence, each check that does not pass at the tested head (workflow's testingMove).
+const pwFailedCause = "these checks do not pass at " + pwHead + ": k1: no (fail)"
+
+// pwMoves is the eight moves of the ten k12 names that a start follows, the planner's completion
+// first: it is the case the negative control fails at. The ninth, a conflicting head from
 // testing, starts no phase since cybermonklabs/legion#4464 (the issue keeps its phase while the
-// implementer merges the base forward), so it holds nothing; the test that follows the table reads
-// what it does instead.
+// implementer merges the base forward), so it holds nothing; the test that follows the table
+// reads what it does instead. The tenth, the tester's own move back out of testing, is refused
+// now that a testing step ends by the states of its checks, so it starts no phase either, and
+// the case after the table reads that too.
 func pwMoves(t *testing.T) []pwMove {
 	t.Helper()
-	complete := func(role claim.Role, summary, verdict, rec string) intake.HandoffComplete {
+	complete := func(role claim.Role, summary, rec string) intake.HandoffComplete {
 		return intake.HandoffComplete{Generation: 1, Issue: spParent, Role: role, Claim: claim.Token(string(role)), Summary: summary,
-			Verdict: verdict, Commit: "head-42", HandoffRecord: rec, HandoffVersion: 1}
+			Commit: pwHead, HandoffRecord: rec, HandoffVersion: 1}
 	}
 	// The architect's own move names the claim that asked for it, which the request's refusals
 	// read (intake's BackwardMove.Request): a worker's move is judged by its role alone.
@@ -531,19 +566,19 @@ func pwMoves(t *testing.T) []pwMove {
 	}
 	return []pwMove{
 		{name: "the planner's completion", from: phase.Planning, source: "api",
-			fact:  complete(claim.RolePlanner, "planned", "", "plan-1"),
+			fact:  complete(claim.RolePlanner, "planned", "plan-1"),
 			start: phase.Implementing, cause: "the planner completed planning", summary: "planned"},
 		{name: "the implementer's completion", from: phase.Implementing, source: "api",
-			fact:  complete(claim.RoleImplementer, "implemented", "", "implement-1"),
+			fact:  complete(claim.RoleImplementer, "implemented", "implement-1"),
 			start: phase.Testing, cause: "the implementer completed implementing", summary: "implemented"},
-		{name: "the tester's pass", from: phase.Testing, source: "api",
-			fact:  complete(claim.RoleTester, "every check passed", "pass", "test-1"),
-			start: phase.Reviewing, cause: "the tester completed testing", summary: "every check passed", verdict: "pass"},
+		{name: "the testing step's pass", from: phase.Testing, source: "api",
+			fact: complete(claim.RoleTester, "every check passed", "test-1"), tested: "pass",
+			start: phase.Reviewing, cause: "the tester completed testing", summary: "every check passed"},
 		// The deployment's hook stands on every move back with `every: 1`: the fail counts its
 		// pair, and the hook writes no prompt and posts no firing message while the parent waits.
-		{name: "the tester's fail counts its pair and fires no hook", from: phase.Testing, source: "api",
-			fact:  complete(claim.RoleTester, "a check failed", "fail", "test-1"),
-			start: phase.Implementing, cause: "the tester completed testing", summary: "a check failed", verdict: "fail",
+		{name: "the testing step's fail counts its pair and fires no hook", from: phase.Testing, source: "api",
+			fact: complete(claim.RoleTester, "a check failed", "test-1"), tested: "fail",
+			start: phase.Implementing, cause: pwFailedCause, summary: "a check failed",
 			pass: 1, pairs: map[string]int{"testing-implementing": 1}},
 		{name: "the reviewer's approval", from: phase.Reviewing, seed: func(t *testing.T, pool *pgxpool.Pool) { pwReviewed(t, pool) },
 			source: "github", fact: pwReview("APPROVED", "the change is right"),
@@ -561,14 +596,10 @@ func pwMoves(t *testing.T) []pwMove {
 			fact:  back(claim.RoleArchitect, phase.Testing, "the checks must run again"),
 			start: phase.Testing, cause: "moved back to testing by the architect: the checks must run again",
 			pass: 1, pairs: map[string]int{"accepting-testing": 1}},
-		{name: "the tester's request_backward_move to implementing", from: phase.Testing, source: "api",
-			fact:  back(claim.RoleTester, phase.Implementing, "the build is red"),
-			start: phase.Implementing, cause: "moved back to implementing by the tester: the build is red",
-			pass: 1, pairs: map[string]int{"testing-implementing": 1}},
 	}
 }
 
-// pwHoldsMove runs one move a start follows (the nine of pwMoves, and the tester's fail at a
+// pwHoldsMove runs one move a start follows (the eight of pwMoves, and the tester's fail at a
 // conflicting head) on a live tree whose root is the parent, holding the slot
 // its phase keeps, with its pull request open and one child filed and not released, and reads what
 // R9 and R10 say the move writes: the parent in awaiting_children holding the move's start with its
@@ -587,12 +618,12 @@ func pwHoldsMove(t *testing.T, move pwMove) {
 		move.seed(t, pool)
 	}
 
-	pwApplied(t, pool, admission, move.source, "move", move.fact)
+	pwApplied(t, pool, admission, move.source, "move", pwStatesFirst(t, pool, admission, move.fact, move.tested))
 
 	pwHeld(t, pool, spParent, move.start, move.cause, spChild+" (todo)")
 	notice := pwNotice(t, pool, move.from, move.start, move.cause, spChild+" (todo)")
-	if notice.Summary != move.summary || notice.Verdict != move.verdict {
-		t.Fatalf("the notice = %+v, want the summary %q and the verdict %q of the notice it replaces", notice, move.summary, move.verdict)
+	if notice.Summary != move.summary {
+		t.Fatalf("the notice = %+v, want the summary %q of the notice it replaces", notice, move.summary)
 	}
 	want := map[record.NoticeKind]int{workflow.AwaitingChildrenNoticeKind: 1}
 	if kinds := pwNoticeKinds(t, pool, spParent); !maps.Equal(kinds, want) {
@@ -664,7 +695,7 @@ func pwHeldFromTesting(t *testing.T, pool *pgxpool.Pool) *Admission {
 	return admission
 }
 
-// pwPaths is every path into awaiting_children, 15 in all: the nine transition triggers of
+// pwPaths is every path into awaiting_children, 14 in all: the eight transition triggers of
 // pwMoves, which reach it through the transition's guard (holdForChildren); the three acts that
 // release a hold (retryPhase): the architect's retry, the operator's restart (restartPhase, the
 // fact `legion claims retry` applies) and a todo on a held root; and the admission pass's three
@@ -685,7 +716,7 @@ func pwPaths(t *testing.T) []pwPath {
 				return admission
 			},
 			move: func(t *testing.T, pool *pgxpool.Pool, admission *Admission) {
-				pwApplied(t, pool, admission, move.source, "move", move.fact)
+				pwApplied(t, pool, admission, move.source, "move", pwStatesFirst(t, pool, admission, move.fact, move.tested))
 			}})
 	}
 	return append(paths,
@@ -766,7 +797,7 @@ func pwForwards() []pwForward {
 	return []pwForward{
 		{name: "no merge forward", asked: func(phase.Phase) *record.MergeForward { return nil }},
 		{name: "a merge forward asked and not landed", asked: func(at phase.Phase) *record.MergeForward { return pwAsked(at, false) },
-			dropped: &record.DroppedMergeForward{Head: "head-42", Base: "main", Role: claim.RoleImplementer}},
+			dropped: &record.DroppedMergeForward{Head: pwHead, Base: "main", Role: claim.RoleImplementer}},
 		{name: "a merge forward that landed", asked: func(at phase.Phase) *record.MergeForward { return pwAsked(at, true) }},
 	}
 }
@@ -826,17 +857,40 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 	t.Run("the tester's fail at a head conflicting with its base counts the pass, no pair and no hook", func(t *testing.T) {
 		pwHoldsMove(t, pwMove{name: "the tester's fail at a head conflicting with its base", from: phase.Testing, seed: pwConflicting,
 			source: "api", fact: intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester, Claim: "tester",
-				Summary: "a check failed", Verdict: "fail", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1},
-			start: phase.Implementing, cause: "the tester completed testing", summary: "a check failed", verdict: "fail", pass: 1})
+				Summary: "a check failed", Commit: pwHead, HandoffRecord: "test-1", HandoffVersion: 1}, tested: "fail",
+			start: phase.Implementing, cause: pwFailedCause, summary: "a check failed", pass: 1})
+	})
+
+	// The tester has no move back out of testing on this line: a testing step ends by the states
+	// of its checks at the head the tester tested, so the move is refused and starts no phase for
+	// a child to hold (workflow's backwardRefusal). The move from testing to implementing a start
+	// does follow is the tester's fail above.
+	t.Run("the tester's request_backward_move to implementing is refused and starts nothing", func(t *testing.T) {
+		pool := migratedPool(t)
+		admission := pwAdmission(t, 2)
+		spSeedParent(t, pool, spParent, phase.Testing, record.PhaseKeepsSlot(phase.Testing), nil)
+		pwPullRequest(t, pool, spParent, record.PullRequestOpen)
+		seedMirrorChild(t, pool, spChild, "todo", spParent)
+
+		result := pwApply(t, pool, admission, "api", "move", intake.BackwardMove{Issue: spParent,
+			Requester: claim.RoleTester, To: phase.Implementing, Reason: "the build is red"})
+		pwRefused(t, result, "BACKWARD_REFUSED", "the tester's move back to implementing")
+
+		if got := issue(t, pool, spParent); got.Phase != phase.Testing || got.ChildrenWait != nil {
+			t.Fatalf("the parent after the refused move = phase %s, held start %+v; want testing, nothing held", got.Phase, got.ChildrenWait)
+		}
+		if kinds := pwNoticeKinds(t, pool, spParent); len(kinds) != 0 {
+			t.Fatalf("notices by kind = %v, want none: the refused move started no phase", kinds)
+		}
 	})
 
 	// R10's "every move into awaiting_children" over a merge forward of the parent's pull request:
-	// each of the 15 paths into awaiting_children (pwPaths), under each of the three states of the
-	// merge forward its record holds (pwForwards), 45 cases in all (pwDropsForward).
+	// each of the 14 paths into awaiting_children (pwPaths), under each of the three states of the
+	// merge forward its record holds (pwForwards), 42 cases in all (pwDropsForward).
 	t.Run("every move into awaiting_children tells the implementer of a merge forward it drops", func(t *testing.T) {
 		paths := pwPaths(t)
-		if len(paths) != 15 {
-			t.Fatalf("the paths into awaiting_children = %d, want the 15 there are", len(paths))
+		if len(paths) != 14 {
+			t.Fatalf("the paths into awaiting_children = %d, want the 14 there are", len(paths))
 		}
 		for _, path := range paths {
 			for _, forward := range pwForwards() {
@@ -862,15 +916,15 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		admission := pwAdmission(t, 2)
 		pwMidPhase(t, pool, spParent, phase.Testing, supervise.StateIdle, "")
 		inTx(t, pool, func(tx pgx.Tx) {
-			pr := record.PullRequest{Issue: spParent, Repo: "acme/widgets", Number: 42, Branch: "legion/" + spParent, HeadSHA: "head-42",
-				Generation: 1, State: record.PullRequestOpen, Base: "main", Failing: []string{}, ConflictingHead: "head-42"}
+			pr := record.PullRequest{Issue: spParent, Repo: "acme/widgets", Number: 42, Branch: "legion/" + spParent, HeadSHA: pwHead,
+				Generation: 1, State: record.PullRequestOpen, Base: "main", Failing: []string{}, ConflictingHead: pwHead}
 			if err := record.NewStore().PutPullRequest(context.Background(), tx, pr); err != nil {
 				t.Fatalf("record the confirmed conflict of %s: %v", spParent, err)
 			}
 		})
 
 		pwApplied(t, pool, admission, "github", "conflict", intake.PullRequestMergeability{Repo: "acme/widgets", Number: 42, Base: "main",
-			HeadSHA: "head-42", Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, Rules: nil})
+			HeadSHA: pwHead, Mergeable: record.MergeabilityConflicting, MergeState: record.MergeStateDirty, Rules: nil})
 
 		if got := issue(t, pool, spParent); got.Phase != phase.Testing || got.ChildrenWait != nil {
 			t.Fatalf("the parent after the conflict = phase %s, held start %+v; want testing, nothing held", got.Phase, got.ChildrenWait)
@@ -915,7 +969,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 				t.Fatalf("the queued ask to the implementer is left %q (%v), want it undelivered: the record holds no merge forward", left, err)
 			}
 		})
-		dropped := &record.DroppedMergeForward{Head: "head-42", Base: "main", Role: claim.RoleImplementer}
+		dropped := &record.DroppedMergeForward{Head: pwHead, Base: "main", Role: claim.RoleImplementer}
 		pwToldImplementer(t, pool, dropped)
 		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleTester, phase.Testing, wait.Reason, dropped)
 	})
@@ -942,7 +996,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Errorf("role messages = %+v, want none: the implementer is told in its phase-ended message", messages)
 		}
 		pwToldR10(t, pwPayloads[record.PhaseEnded](t, pool, spParent), claim.RoleImplementer, phase.Implementing, wait.Reason,
-			&record.DroppedMergeForward{Head: "head-42", Base: "main", Role: claim.RoleImplementer})
+			&record.DroppedMergeForward{Head: pwHead, Base: "main", Role: claim.RoleImplementer})
 	})
 
 	// R10's message about a dropped merge forward goes to the role the record's ask names
@@ -970,7 +1024,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		if left := pwForwardOf(t, pool); left != nil {
 			t.Fatalf("the merge forward of %s = %+v, want it dropped by the move", spParent, left)
 		}
-		dropped := record.DroppedMergeForward{Head: "head-42", Base: "main", Role: claim.RoleMerger}
+		dropped := record.DroppedMergeForward{Head: pwHead, Base: "main", Role: claim.RoleMerger}
 		merger := string(pwRoleToken(t, spParent, claim.RoleMerger))
 		want := []record.RoleMessage{{Role: merger, Body: pwDroppedBody(spParent, dropped)}}
 		if told := pwPayloads[record.RoleMessage](t, pool, spParent); !reflect.DeepEqual(told, want) {
@@ -1136,7 +1190,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			kind.seed(t, pool)
 
 			pwApplied(t, pool, admission, "api", "implemented", intake.HandoffComplete{Generation: 1, Issue: spParent,
-				Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-1", HandoffVersion: 1})
+				Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: pwHead, HandoffRecord: "implement-1", HandoffVersion: 1})
 
 			open := spChild + " (" + kind.status + ")"
 			pwHeld(t, pool, spParent, phase.Testing, "the implementer completed implementing", open)
@@ -1154,7 +1208,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		seedMirrorChild(t, pool, spChild, "todo", spParent, spParent)
 
 		pwApplied(t, pool, admission, "api", "implemented", intake.HandoffComplete{Generation: 1, Issue: spParent,
-			Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: "head-42", HandoffRecord: "implement-1", HandoffVersion: 1})
+			Role: claim.RoleImplementer, Claim: "implementer", Summary: "implemented", Commit: pwHead, HandoffRecord: "implement-1", HandoffVersion: 1})
 
 		notice := pwNotice(t, pool, phase.Implementing, phase.Testing, "the implementer completed implementing", spChild+" (todo)")
 		if want := workflow.ChildCycleReason(spChild, spParent) + "."; !strings.Contains(notice.Reason, want) {
@@ -1742,8 +1796,8 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			pwPullRequest(t, pool, spParent, record.PullRequestOpen)
 			closed.seed(t, pool)
 
-			pwApplied(t, pool, admission, "api", "failed", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester,
-				Claim: "tester", Summary: "a check failed", Verdict: "fail", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1})
+			pwApplied(t, pool, admission, "api", "failed", pwStatesFirst(t, pool, admission, intake.HandoffComplete{Generation: 1, Issue: spParent,
+				Role: claim.RoleTester, Claim: "tester", Summary: "a check failed", Commit: pwHead, HandoffRecord: "test-1", HandoffVersion: 1}, "fail"))
 
 			if got := issue(t, pool, spParent); got.Phase != phase.Implementing || got.ChildrenWait != nil {
 				t.Fatalf("the parent = phase %s, held start %+v; want implementing, nothing held", got.Phase, got.ChildrenWait)
@@ -1778,8 +1832,8 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 			t.Fatalf("phase-ended messages = %+v, want none: the tester of a merged parent is sent nothing", ended)
 		}
 
-		pwApplied(t, pool, admission, "api", "passed", intake.HandoffComplete{Generation: 1, Issue: spParent, Role: claim.RoleTester,
-			Claim: token, Summary: "every check passed", Verdict: "pass", Commit: "head-42", HandoffRecord: "test-1", HandoffVersion: 1})
+		pwApplied(t, pool, admission, "api", "passed", pwStatesFirst(t, pool, admission, intake.HandoffComplete{Generation: 1, Issue: spParent,
+			Role: claim.RoleTester, Claim: token, Summary: "every check passed", Commit: pwHead, HandoffRecord: "test-1", HandoffVersion: 1}, "pass"))
 
 		if got := issue(t, pool, spParent); got.Phase != phase.Reviewing || got.ChildrenWait != nil {
 			t.Fatalf("the parent = phase %s, held start %+v; want reviewing, nothing held", got.Phase, got.ChildrenWait)
@@ -1936,7 +1990,7 @@ func TestParentWaitsHoldsEveryPhaseStart(t *testing.T) {
 		}
 
 		pwApplied(t, pool, admission, "api", "implemented", intake.HandoffComplete{Generation: 1, Issue: spParent,
-			Role: claim.RoleImplementer, Claim: "implementer", Summary: "merged main forward", Commit: "head-42",
+			Role: claim.RoleImplementer, Claim: "implementer", Summary: "merged main forward", Commit: pwHead,
 			HandoffRecord: "implement-2", HandoffVersion: 1})
 
 		const cause = "the implementer completed implementing"

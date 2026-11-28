@@ -325,18 +325,20 @@ func TestAReadyAsksAgainOnlyWhileTheMergeIsOwed(t *testing.T) {
 	}
 }
 
-// On the default steps the tester moves back into planning, which stands before the implementer,
-// while the implementer's ask made in testing is owed: the planner is held, a merge that lands
-// tells it the new head, and its completion at the head the merge replaced is refused.
+// On the default steps the reviewer moves back into planning, which stands before the
+// implementer, while the implementer's ask made in reviewing is owed: the planner is held, a merge
+// that lands tells it the new head, and its completion at the head the merge replaced is refused.
+// A testing step ends by its checks' states alone, so the tester makes no such move
+// (BACKWARD_REFUSED); the reviewer's is the move back into planning that the default steps serve.
 func TestAPlannerBeforeTheImplementerIsToldAndFencedWhileTheMergeIsOwed(t *testing.T) {
 	t.Parallel()
-	pool := seedConflictIssue(t, phase.Testing, "testing", settledGreen("lint"))
+	pool := seedConflictIssue(t, phase.Reviewing, PhaseStatus(phase.Reviewing), settledGreen("lint"))
 	confirmsConflict(t, pool, &record.BaseRules{Required: []string{"ci"}})
-	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleTester,
+	applyRefusingNothing(t, pool, readsAfter(2*time.Minute), intake.BackwardMove{Issue: "LEGION-208", Requester: claim.RoleReviewer,
 		To: phase.Planning, Reason: "the plan misses a case"})
 	why := record.ConflictCheckNotGreen
 	asked := mergeForwardMessages(t, pool)
-	if want := []record.MergeForwardMessage{implementerAsked(phase.Testing, why), heldIn(claim.RoleTester, phase.Testing, why),
+	if want := []record.MergeForwardMessage{implementerAsked(phase.Reviewing, why), heldIn(claim.RoleReviewer, phase.Reviewing, why),
 		heldIn(claim.RolePlanner, phase.Planning, why)}; !reflect.DeepEqual(asked, want) {
 		t.Errorf("after the move back the merge-forward messages are %+v, want %+v", asked, want)
 	}
@@ -380,11 +382,13 @@ func TestABranchBackAtTheHeadALandedMergeReplacedIsTheMergersToMergeForward(t *t
 		t.Errorf("after the branch moved back the merge-forward messages are %+v, want %+v", got, before)
 	}
 
+	// A testing step ends by its checks' states: the head's one check passes there (testedAs).
+	testedAs(t, pool, readsAfter(5*time.Minute), "LEGION-208", conflictHead, true)
 	applyRefusingNothing(t, pool, readsAfter(5*time.Minute), intake.HandoffComplete{Generation: 1, Issue: "LEGION-208",
-		Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Verdict: "pass", Commit: conflictHead,
+		Role: claim.RoleTester, Claim: "tester-claim", Summary: "tested", Commit: conflictHead,
 		HandoffRecord: "test-1", HandoffVersion: 1})
 	if got := issuePhase(t, pool); got != phase.Reviewing {
-		t.Fatalf("after the tester's pass at %s the issue is in %s, want reviewing", conflictHead, got)
+		t.Fatalf("after the tester's completion at %s the issue is in %s, want reviewing", conflictHead, got)
 	}
 	approvesAsTheReviewer(t, pool, readsAfter(6*time.Minute), 1, conflictHead, firstConflictRead.Add(6*time.Minute))
 	if got := issuePhase(t, pool); got != phase.Accepting {

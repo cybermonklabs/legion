@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+    The comment of the test handoff's check states fence no longer says a `read_failed` state is one
+    a reader waits on. Legion's daemon judges it conclusive and not yes, so its testing move sends
+    the issue back to implementing naming that check: a read of GitHub that fails while the
+    tester's results settle costs the issue a round. No behaviour changes.
+time: 2026-11-22T01:53:26Z
+custom:
+    Issue: check-states-fence-comment

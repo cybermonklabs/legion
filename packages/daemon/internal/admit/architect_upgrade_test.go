@@ -489,18 +489,24 @@ func headerWayBack(t *testing.T, version int) string {
 // claim's handshake columns (20261114020537_claim_entry_handshake.up.sql) and entryVerbatimVersion
 // the version of the phases row's mark that a resume's task is sent again as written
 // (20261114061900_phase_entry_verbatim.up.sql), whose way back is this migration's.
+// phaseVerdictGoneVersion is the migration that takes the tester's verdict out of the record
+// (20261126110301_phase_verdict_gone.up.sql): a rollback to a release before this one runs that
+// migration's way back first, the newest first as docs/kubernetes.md gives them, which the
+// roll-forward owes for phases.states_serial.
 const (
-	phaseEntryVersion     = 20261111225552
-	stalledNoticesVersion = 20261113181500
-	claimHandshakeVersion = 20261114020537
-	entryVerbatimVersion  = 20261114061900
+	phaseEntryVersion       = 20261111225552
+	stalledNoticesVersion   = 20261113181500
+	claimHandshakeVersion   = 20261114020537
+	entryVerbatimVersion    = 20261114061900
+	phaseVerdictGoneVersion = 20261126110301
 )
 
-// wayBackVersions is every version the two ways back delete: this migration's block deletes its
-// own, the marks' table's, the handshake's and the mark's, and the phase entry's block deletes its
-// own. Written here, not read from the blocks' text, so a block that stops deleting one of them
-// fails the test rather than moving what it expects.
-var wayBackVersions = []int{architectUpgradeVersion, stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion, phaseEntryVersion}
+// wayBackVersions is every version the ways back delete: the phase verdict's removal's block
+// deletes its own, this migration's block deletes its own, the marks' table's, the handshake's
+// and the mark's, and the phase entry's block deletes its own. Written here, not read from the
+// blocks' text, so a block that stops deleting one of them fails the test rather than moving what
+// it expects.
+var wayBackVersions = []int{phaseVerdictGoneVersion, architectUpgradeVersion, stalledNoticesVersion, claimHandshakeVersion, entryVerbatimVersion, phaseEntryVersion}
 
 // leftStanding is every version the schema_version table records once the ways back have run,
 // ascending: each embedded migration but wayBackVersions. It is computed from the migrations the
@@ -536,10 +542,12 @@ func versionsNotIn(a, b []int) []int {
 }
 
 // A rollback and the roll-forward after it leave every root architect settled, as the first
-// upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, each as the
-// one transaction its header carries (headerWayBack): this migration's first, which the headers
-// of 20261113181500, 20261114020537 and 20261114061900 carry as well, and the phase entry's after
-// it. This migration's block drops the phases row's mark and deletes 20261114061900's version
+// upgrade did. The ways back run in the order docs/kubernetes.md gives an operator, the newest
+// first, each as the one transaction its header carries: the phase verdict's removal's
+// (20261126110301_phase_verdict_gone, migrations.WayBack); then this migration's
+// (headerWayBack), which the headers of 20261113181500, 20261114020537 and 20261114061900 carry
+// as well, and the phase entry's after it. This
+// migration's block drops the phases row's mark and deletes 20261114061900's version
 // row, drops the claim's four handshake columns and deletes 20261114020537's version row, deletes
 // its own and 20261113181500's, and drops the marks' table and the architect wakes still unsent,
 // so the roll-forward makes the table and the columns again and runs this fill again after the
@@ -601,6 +609,13 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 				}
 			})
 			if tc.rearmed {
+				verdictWayBack, err := migrations.WayBack(phaseVerdictGoneVersion)
+				if err != nil {
+					t.Fatalf("read the way back of migration %d: %v", phaseVerdictGoneVersion, err)
+				}
+				if _, err := pool.Exec(ctx, verdictWayBack, pgx.QueryExecModeSimpleProtocol); err != nil {
+					t.Fatalf("run the phase verdict's way back as its one transaction: %v", err)
+				}
 				if _, err := pool.Exec(ctx, wayBack, pgx.QueryExecModeSimpleProtocol); err != nil {
 					t.Fatalf("run this migration's way back as its one transaction: %v", err)
 				}
@@ -680,7 +695,7 @@ func TestTheArchitectUpgradeRunsAgainAfterTheWayBackAndARollForward(t *testing.T
 			}
 			want := 1
 			if tc.rearmed {
-				want = 5
+				want = 6
 			}
 			if applied != want {
 				t.Fatalf("the roll-forward applied %d migrations, want %d: each way back re-arms its own migrations and no other", applied, want)

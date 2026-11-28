@@ -100,24 +100,28 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		Repo: "acme/widgets", Number: 7, Branch: claim.IssueBranch(movedIssue), HeadSHA: "a1", UpdatedAt: at(2)})
 	assertMoved("a GitHub event of its pull request", at(2))
 
-	// A recorded handoff: the tester records its phase's handoff and reports no verdict, so the
-	// completion writes the phase row and moves the issue no further. It comes before the phase
+	// A recorded handoff: the tester records its phase's handoff, naming the head it tested, and
+	// the daemon holds no check state at that head yet, so the completion writes the phase row and
+	// moves the issue no further: the move waits for Dispatch's states. It comes before the phase
 	// change below so that this one write is the only thing that could have marked the movement.
 	now = at(3)
 	applyMovement(t, pool, admission, engine, "api", "tester-handoff", intake.HandoffComplete{Issue: movedIssue,
-		Role: claim.RoleTester, Generation: 1, HandoffRecord: "handoff-test"})
+		Role: claim.RoleTester, Generation: 1, Commit: "a1", HandoffRecord: "handoff-test"})
 	if got := issue(t, pool, movedIssue).Phase; got != phase.Testing {
 		t.Fatalf("%s stands in %s after the tester's handoff, want testing still: the fact must record a handoff and move nothing else", movedIssue, got)
 	}
 	assertMoved("a recorded handoff", at(3))
 
-	// A phase change: the tester sends the work back to implementing, which writes the issue's
-	// phase and starts the implementer there.
+	// A phase change: Dispatch's state of the issue's one check at the head the tester tested
+	// arrives, a fail, and decides the move the tester's completion waits on, which writes the
+	// issue's phase back to implementing and starts the implementer there. (The tester has no
+	// backward move of its own out of testing: its step ends by its checks' states.)
 	now = at(4)
-	applyMovement(t, pool, admission, engine, "api", "backward-move", intake.BackwardMove{Issue: movedIssue,
-		Requester: claim.RoleTester, To: phase.Implementing, Reason: "the tests need another round"})
+	applyMovement(t, pool, admission, engine, "dispatch", "check-state", intake.DispatchCheckState{Key: movedIssue,
+		Mark: record.EventMark{Seq: 3}, Repo: "acme/widgets", Head: "a1", PullRequests: []int{7}, Checks: []string{"k1"},
+		Check: "k1", CheckVersion: 1, State: "no", Reason: "fail", Roles: []string{}, Serial: 1})
 	if got := issue(t, pool, movedIssue).Phase; got != phase.Implementing {
-		t.Fatalf("%s stands in %s after the backward move, want implementing: the fact must be the phase change it is read as", movedIssue, got)
+		t.Fatalf("%s stands in %s after the state that decides the testing move, want implementing: the fact must be the phase change it is read as", movedIssue, got)
 	}
 	assertMoved("a phase change", at(4))
 
@@ -691,7 +695,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 	//
 	// That reading is safe only while every fact that raises an entry marks a movement of its
 	// own, even where its delivery is left to the sweep, which is what the control pins: the
-	// tester sends the work back to implementing, which raises the implementer's entry, and its
+	// reviewer sends the work back to implementing, which raises the implementer's entry, and its
 	// start is then finished without acting, as the outbox's fences or a lost lane leave one, so
 	// the only thing left to deliver that entry is the sweep. The record moved at the
 	// transition, and the sweep that delivers the entry later leaves it there. Making
@@ -714,10 +718,12 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		admission := New(record.NewStore(), engine, 1, testProject, nil)
 		admission.now = func() time.Time { return fixedNow }
 
-		// A root testing in its own slot, whose tester is about to send the work back.
+		// A root reviewing in its own slot, whose reviewer is about to send the work back. (The
+		// tester has no backward move of its own out of testing: its step ends by its checks'
+		// states.)
 		seedSlotted(t, pool, issueKey, "U")
 		stands := issue(t, pool, issueKey)
-		stands.Phase, stands.Status, stands.DispatchStatus, stands.LastDispatchSeq = phase.Testing, "testing", "testing", 1
+		stands.Phase, stands.Status, stands.DispatchStatus, stands.LastDispatchSeq = phase.Reviewing, "needs_review", "needs_review", 1
 		putIssue(t, pool, stands)
 		before := movedAt(t, pool, issueKey)
 		if before.IsZero() {
@@ -728,7 +734,7 @@ func TestTheRecordKeepsWhenAnIssueLastMoved(t *testing.T) {
 		transitioned := before.Add(time.Minute)
 		now = transitioned
 		applyMovement(t, pool, admission, engine, "api", "backward-move-"+issueKey, intake.BackwardMove{Issue: issueKey,
-			Requester: claim.RoleTester, To: phase.Implementing, Reason: "the tests need another round"})
+			Requester: claim.RoleReviewer, To: phase.Implementing, Reason: "the review needs another round"})
 		entry, work := entryOf(t, pool, issueKey, claim.RoleImplementer)
 		if got := issue(t, pool, issueKey).Phase; got != phase.Implementing || entry == 0 || work == "" {
 			t.Fatalf("%s stands in %s with its implementer's row at entry %d naming %q, want implementing on a raised entry carrying its work: the fact must be the transition that creates the entry",

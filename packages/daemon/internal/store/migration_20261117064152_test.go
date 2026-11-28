@@ -81,16 +81,16 @@ func (s rollBackStore) issue(key, tree, phase, heldFrom string, generation int) 
 	}
 	s.exec(fmt.Sprintf(`insert into issues (key, tree, project, title, phase, held_from, generation, status, rank, last_dispatch_seq)
 		values ('%s', '%s', 'LEGION', '%s', '%s', %s, %d, 'in_progress', 'A', 1)`, key, tree, key, phase, held, generation))
-	s.exec(fmt.Sprintf(`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, pass)
-		values ('%s', 'implementer', '', '', 0, '', 1)`, key))
+	s.exec(fmt.Sprintf(`insert into phases (issue, role, claim, handoff_commit, rounds, pass)
+		values ('%s', 'implementer', '', '', 0, 1)`, key))
 }
 
 // entry raises the entry of role on key, as each start that hands a phase worker its work does
 // (workflow's enter), every release's.
 func (s rollBackStore) entry(key, role string) {
 	s.t.Helper()
-	s.exec(fmt.Sprintf(`insert into phases (issue, role, claim, handoff_commit, rounds, verdict, pass, entry)
-		values ('%s', '%s', '', '', 0, '', 0, 1)
+	s.exec(fmt.Sprintf(`insert into phases (issue, role, claim, handoff_commit, rounds, pass, entry)
+		values ('%s', '%s', '', '', 0, 0, 1)
 		on conflict (issue, role) do update set entry = phases.entry + 1`, key, role))
 }
 

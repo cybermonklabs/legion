@@ -1794,7 +1794,11 @@ These arrive as messages on the Dispatch issue:
   conclusion GitHub gave it, in one message each to the architect that owns the issue, the worker
   of the issue's current phase and the implementer, and judges none of them. Re-run a check that
   failed on itself, have the implementer fix code that is at fault, or leave it to GitHub, which
-  holds the merge under the base branch's own required checks.
+  holds the merge under the base branch's own required checks. When Dispatch's state says that a
+  check whose `ci_check` names a CI job fails at the pull request's head, because its job ended
+  there without a pass, the daemon also tells the implementer alone at once, in any phase, in one
+  message naming the check, the head and the job's case, and starts nothing; a second state that
+  says the same failure, or one at a head the pull request has left, tells nobody.
 - **A review round that no review decides.** Legion's reviewer must approve the head or request
   changes; a plain comment leaves the issue in `needs_review`, and the architect asks the reviewer
   for the decision. Only the review App or an account with write access to the repository decides a
@@ -1928,8 +1932,8 @@ These arrive as messages on the Dispatch issue:
   without completing; the task of the entry the phase is on is owed to the claim and the daemon
   sends it by itself, which it does on every admission pass and on a sweep each minute; and that
   task is work of its own, done at the head it names and completed with a handoff of its own,
-  never the refused completion's record, commit or verdict. A testing entry after such a move is
-  for the head the fix pushed, and the verdict on the head before it answers for nothing there.
+  never the refused completion's record or commit. A testing entry after such a move is for the
+  head the fix pushed, and what was tested at the head before it answers for nothing there.
   A completion at the head the record holds is taken rather than refused, where the phase ends
   with a handoff record this role writes and no move back raised the entry it is behind: the
   phase was handed out again at that same head, so the work the new entry's task asks for is the
@@ -1944,6 +1948,20 @@ These arrive as messages on the Dispatch issue:
   completion changed nothing`, and nothing is recorded: the task of that role's entry was
   queued for the phase the issue has left, so the daemon drops it unsent and owes the claim
   none.
+- **A tester's completion refused `TESTED_HEAD_REQUIRED`.** The completion named no commit. The
+  testing move reads Dispatch's check states at the head the tester's `test` record names and at
+  no other, never at the pull request's current head, which can have moved while the tester
+  worked, so a completion that names none is refused before anything is recorded. The `legion`
+  tool reads the commit from the newest `test` record's `head`, and refuses such a record itself
+  before it posts; the daemon's refusal reaches a plugin from before that. Write a new `test`
+  handoff whose body names under `head` the 40-character lower-case commit the tester tested,
+  then complete again.
+- **A tester's `request_backward_move` refused `BACKWARD_REFUSED`.** A testing step ends by the
+  states of its checks at the head the tester tested, and by nothing else, so the daemon takes
+  no backward move from the tester out of `testing`, to any target, and moves, counts, records
+  and posts nothing. To send the work back, the tester records each check's result with
+  `dispatch result`, a fail with its evidence for a check it cannot verify, and completes: the
+  issue goes back to `implementing` with a task naming each check that does not pass.
 
 An issue that stays in `testing`, `reviewing`, `accepting`, `retro` or `merging` while its head
 conflicts with its base is waiting on a merge forward or on nothing at all. The daemon

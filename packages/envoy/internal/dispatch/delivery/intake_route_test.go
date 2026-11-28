@@ -4,7 +4,6 @@ package delivery
 // fetches for, which it acknowledges and nothing else, and which it logs as malformed.
 
 import (
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"strconv"
@@ -16,7 +15,6 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
-	"github.com/sjawhar/envoy/internal/cistore"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -117,10 +115,10 @@ func TestIntakeDedupesAMergedPullRequestEnvelope(t *testing.T) {
 }
 
 // TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting: the durable is handed every GitHub
-// notification on the bus (githubIntakeSubject), CI settlements and comments among them. A CI
-// settlement's payload carries arrays (cistore.Summary), which no handler here reads. It and a
-// comment are acknowledged with no ERROR line, no GitHub call and no database write, the freshness
-// row's last_event_at included.
+// notification on the bus (githubIntakeSubject), comments among them. A comment is acknowledged
+// with no ERROR line, no GitHub call and no database write, the freshness row's last_event_at
+// included. (A CI settlement is a kind the intake now handles:
+// TestASettlementMarksTheIssueOfItsOpenHeadAndNothingElse.)
 func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
 	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
@@ -131,19 +129,6 @@ func TestIntakeAcksAKindItDoesNotRecordWithoutLoggingOrWriting(t *testing.T) {
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), loadedSettingsCache(t, ctx, pool), unrenamed()))
 	awaitBoundDurable(t, natsClient)
 
-	checks, err := json.Marshal(cistore.Summary{
-		Kind: "checks", Repo: "acme/widgets", Number: "7", SHA: "abc123",
-		CheckRuns:  []cistore.CheckRunRef{{Name: "test", ID: 11}},
-		Generation: 3, Snapshot: "snapshot",
-		Passed: cistore.StatusGroup{Count: 1, Checks: []string{"test"}},
-		Failed: cistore.StatusGroup{Checks: []string{}}, Running: cistore.StatusGroup{Checks: []string{}},
-		Queued: cistore.StatusGroup{Checks: []string{}}, Cancelled: cistore.StatusGroup{Checks: []string{}},
-		Skipped: cistore.StatusGroup{Checks: []string{}}, FailingChecks: []cistore.FailingCheck{},
-	})
-	if err != nil {
-		t.Fatalf("encode the checks settlement: %v", err)
-	}
-	publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("acme", "widgets", "pr.7.checks"), string(checks))
 	publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("acme", "widgets", "pr.7.comment"),
 		`{"kind":"comment","action":"created","repo":"acme/widgets","number":"7","author":"octocat"}`)
 	awaitAcknowledged(t, natsClient)

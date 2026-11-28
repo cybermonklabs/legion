@@ -221,10 +221,10 @@ func TestAPullRequestHeldOnGitHubHoldsBackOnlyItsOwnMessages(t *testing.T) {
 	}
 }
 
-// Every subject but a pull request's own, a workflow run's and a push of a branch's is
-// acknowledged on its subject alone, with no decode: a comment and a review on a pull request, its
-// checks, an issue, a push of a tag and a job event. The pull request's own message is decoded,
-// once.
+// Every subject but a pull request's own, the settlement of its checks, a workflow run's and a push
+// of a branch's is acknowledged on its subject alone, with no decode: a comment and a review on a
+// pull request, an issue, a push of a tag and a job event. The pull request's own message is
+// decoded once, and so is the settlement.
 func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T) {
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -241,7 +241,7 @@ func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T)
 	awaitBoundDurable(t, natsClient)
 
 	payload := `{"kind":"comment","action":"created","repo":"acme/widgets","number":"7","author":"octocat"}`
-	for _, kind := range []string{"pr.7.comment", "pr.7.review", "pr.7.checks", "issue.3", "push.tag.v1_0_0", "job.500.completed"} {
+	for _, kind := range []string{"pr.7.comment", "pr.7.review", "issue.3", "push.tag.v1_0_0", "job.500.completed"} {
 		publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("acme", "widgets", kind), payload)
 	}
 	awaitAcknowledged(t, natsClient)
@@ -255,6 +255,13 @@ func TestSubjectsTheIntakeDoesNotWantAreAcknowledgedWithoutADecode(t *testing.T)
 	awaitAcknowledged(t, natsClient)
 	if got := decodes.Load(); got != 1 {
 		t.Fatalf("decoded %d envelopes for one pull request message, want 1", got)
+	}
+
+	publishGitHubEnvelope(t, natsClient, contracts.GithubSubject("acme", "widgets", "pr.7.checks"),
+		checksSettlementPayload(t, "acme/widgets", 7, "5555555555555555555555555555555555555555"))
+	awaitAcknowledged(t, natsClient)
+	if got := decodes.Load(); got != 2 {
+		t.Fatalf("decoded %d envelopes for one pull request message and one settlement of its checks, want 2", got)
 	}
 }
 
@@ -885,6 +892,11 @@ func TestIntakeKeyWantsOnlyTheSubjectOfTheRepositoryThePayloadNames(t *testing.T
 		workflowPayload = `{"kind":"workflow","action":"completed","repo":"cybermonklabs/legion","run_id":"77"}`
 		pushPayload     = `{"kind":"push","repo":"cybermonklabs/legion","ref":"refs/heads/main"}`
 		tagPushPayload  = `{"kind":"push","repo":"cybermonklabs/legion","ref":"refs/tags/v1.0.0"}`
+		// settlementPayload is the listener's settlement of #70's check runs at one commit
+		// (cistore.Summary), with its groups and its runs, which are no strings.
+		settlementPayload = `{"kind":"checks","repo":"acme/app","number":"70","sha":"a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",` +
+			`"check_runs":[{"name":"go-checks","id":901,"conclusion":"success"}],"generation":1,` +
+			`"passed":{"count":1,"checks":["go-checks"]},"failed":{"count":0,"checks":[]},"failing_checks":[]}`
 	)
 	for _, tc := range []struct {
 		name     string
@@ -961,7 +973,16 @@ func TestIntakeKeyWantsOnlyTheSubjectOfTheRepositoryThePayloadNames(t *testing.T
 			key: "workflow #77", wanted: true, envelope: true,
 		},
 		{name: "a review on a pull request", subject: "notifications.github.cybermonklabs.legion.pr.42.review", payload: prPayload},
-		{name: "the checks of a pull request", subject: "notifications.github.cybermonklabs.legion.pr.42.checks", payload: prPayload},
+		{
+			name:    "the settlement of a pull request's checks",
+			subject: "notifications.github.acme.app.pr.70.checks", payload: settlementPayload,
+			key: "pr acme/app#70", wanted: true, envelope: true,
+		},
+		{
+			name:    "the same settlement under the repository's former name",
+			subject: "notifications.github.acme.oldapp.pr.70.checks", payload: settlementPayload,
+		},
+		{name: "a subject past a settlement's", subject: "notifications.github.acme.app.pr.70.checks.more", payload: settlementPayload},
 		{
 			name:    "a push of a branch under its payload's repository",
 			subject: "notifications.github.cybermonklabs.legion.push.branch.main", payload: pushPayload,

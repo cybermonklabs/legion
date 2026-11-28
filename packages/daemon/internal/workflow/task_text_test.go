@@ -37,13 +37,12 @@ func lastStart(t *testing.T, pool *pgxpool.Pool, key string, role claim.Role) st
 
 // completes applies role's completion of its step of LEGION-208 with the handoff record word-n at
 // version n, through the completion route (intake.ApplyFact), which writes the role's phases row.
+// No completion carries a verdict, so a tester's step is the check states' to decide, and no test
+// here completes one through it.
 func completes(t *testing.T, pool *pgxpool.Pool, engine *Engine, role claim.Role, word string, n int) {
 	t.Helper()
 	fact := intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: role, Claim: claim.Token(string(role) + "-claim"),
 		Summary: "done", Commit: "head", HandoffRecord: word + "-" + string(rune('0'+n)), HandoffVersion: n}
-	if role == claim.RoleTester {
-		fact.Verdict = "pass"
-	}
 	if result := applyFacts(t, pool, engine)(string(role)+"-"+word+"-"+string(rune('0'+n)), fact); result.Refusal != nil {
 		t.Fatalf("the %s's completion %s version %d was refused: %+v", role, word, n, result.Refusal)
 	}
@@ -217,6 +216,7 @@ func TestATaskNamesTheNewReportOfAStepThatRanAgain(t *testing.T) {
 		move(t, pool, engine, root.Key, TriggerGateOpened, "", record.PhaseRow{})
 		completes(t, pool, engine, claim.RolePlanner, "plan", 1)
 		completes(t, pool, engine, claim.RoleImplementer, "implement", 1)
+		testedAs(t, pool, engine, root.Key, headOne, false)
 		if result := applyFacts(t, pool, engine)("fail-1", failedTest(root.Key, 1, "test-1")); result.Refusal != nil {
 			t.Fatalf("the tester's fail naming step 1 was refused: %+v", result.Refusal)
 		}
@@ -299,7 +299,7 @@ func TestEachTaskLabelIsALineTheTaskWrites(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1, Verdict: "pass"}
+	tester := record.PhaseRow{Role: claim.RoleTester, HandoffRecord: "test-1", HandoffVersion: 1}
 	written := task(issue, at, tester, &record.PullRequest{Number: 42}, "the reviewer asked again")
 
 	for _, label := range []string{"Phase", "Task", "Steps", "Task text", "reported", "Handoff", "Pull request", "Reason"} {

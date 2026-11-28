@@ -5,6 +5,7 @@
     "action": "opened",
     "author": "octocat",
     "base_ref": "main",
+    "base_sha": "9999999999999999999999999999999999999999",
     "body": "Exercise the listener with public fixture data.",
     "head_ref": "acceptance-driver",
     "head_sha": "1111111111111111111111111111111111111111",

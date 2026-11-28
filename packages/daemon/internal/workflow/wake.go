@@ -268,8 +268,10 @@ func WakeTask(kind, detail string, stop WakeStop) string {
 	preamble, away, backstop := wakeWords(stop)
 	switch kind {
 	case pods.WakeChecks:
+		// What CI reported, and no question of it: the tester reads no CI, and each other role's
+		// prompt says what it does with CI's state.
 		return preamble + "The wake is a CI settlement on your pull request's head: " + detail +
-			". Read the checks before you decide anything."
+			". Nothing moved on it."
 	case pods.WakeRoleMessage:
 		return preamble + "The wake is a message somebody published to your role topic (" + detail +
 			") " + away + ". A message that Envoy kept for your role reaches this session, " +

@@ -595,6 +595,69 @@ test("the issue log reads a queued delivery receipt as queued, a queued repeat i
   ]);
 });
 
+type CheckStateEvent = Extract<DispatchEvent, { type: "check.state_changed" }>;
+
+const checkStateHead = "a".repeat(40);
+
+/** A `check.state_changed` as Dispatch's system actor appends it: k1 reads no at the head of #70
+ *  because a fail stands there, unless `payload` says otherwise. */
+function checkStateEvent(payload: Partial<CheckStateEvent["payload"]> = {}): CheckStateEvent {
+  return {
+    actor: { id: "dispatch-check-states", kind: "system" },
+    created_at: "2026-11-20T00:00:00Z",
+    id: 12,
+    issue_key: "CORE-1",
+    notify: false,
+    payload: {
+      issue: "CORE-1",
+      check_artifact_id: "artifact-3",
+      repo: "acme/widgets",
+      head: checkStateHead,
+      pull_requests: [70],
+      checks: ["k1", "k2"],
+      check: "k1",
+      check_version: 1,
+      state: "no",
+      reason: "fail",
+      roles: [],
+      results: ["result-1"],
+      ci_case: "",
+      serial: 1,
+      ...payload,
+    },
+    seq: 12,
+    type: "check.state_changed",
+  };
+}
+
+// The log names the check, its state and the reason for it, the head and the pull requests whose
+// head it is; the set form, which names no check, says which checks the head has.
+test("the issue log line for a check's state at a head, and for a head's set of checks", () => {
+  expect(eventDescription(checkStateEvent())).toEqual([
+    `Check k1 reads no (fail) at ${checkStateHead} of #70`,
+  ]);
+  expect(
+    eventDescription(
+      checkStateEvent({ check: "k1", pull_requests: [70, 71], reason: "", state: "yes" })
+    )
+  ).toEqual([`Check k1 reads yes at ${checkStateHead} of #70, #71`]);
+  expect(
+    eventDescription(checkStateEvent({ check: null, check_version: null, reason: "", state: null }))
+  ).toEqual([`Head ${checkStateHead} of #70 has the checks k1, k2`]);
+  expect(
+    eventDescription(
+      checkStateEvent({
+        check: null,
+        check_artifact_id: null,
+        check_version: null,
+        checks: [],
+        reason: "",
+        state: null,
+      })
+    )
+  ).toEqual([`Head ${checkStateHead} of #70 has no check`]);
+});
+
 // A delete appends one failed receipt per send of its post it ended, with its own words. That
 // receipt is no failed send: the line says the post's delete ended the send, as the Activity
 // tab's does, while any other failure still reads as failed.

@@ -15,11 +15,20 @@ import (
 // (20261116213930) and pull_request_heads' attribution inputs (20261120144431), and, where that
 // release has not deployed yet, the coverage counts (20261124011834), whose functions the triggers
 // call.
+//
+// The check states migrations (20261126005334 to 20261126005349) sort inside that range, and three
+// of them put triggers on ci_check_results or its retractions. They reach a deployment only after a
+// release that holds 20261128105250, as the release note check-states-release-order requires: one
+// of them, 20261126005348, runs DO blocks, which take the catalog-only exemption from every pending
+// migration after it (takesLaterExemptions in internal/pgmigrate/exempt.go). So the census below
+// meets them as that release does, with their versions recorded and none of them run.
 const (
 	ciCheckResultsVersion        = 20261116213930
 	attributionInputsVersion     = 20261120144431
 	coverageCountsVersion        = 20261124011834
 	resultsCoverageCountsVersion = 20261128105250
+	checkStatesFirstVersion      = 20261126005334
+	checkStatesLastVersion       = 20261126005349
 )
 
 // The pre-deploy census admits 20261128105250 beside each set of migrations a deployment can hold
@@ -69,22 +78,36 @@ func TestCensusRefusesTheResultsCoverageTriggersBesideBtreeGin(t *testing.T) {
 // resultsCoverageCensus takes the census, at a table limit of one byte, of the embedded migrations
 // through 20261128105250 over a database that holds every migration below it but unapplied, which
 // it never ran, and forgotten, which it ran and whose version rows are gone, as btree_gin's would
-// be pending with its extension in place. check_results holds one row, so it is above the limit.
-// It fails the test unless the pending migrations are 20261128105250, unapplied and forgotten, and
-// 20261128105250 touches check_results, with its row, and ci_check_results, which exists unless
-// unapplied holds its table's migration. It answers the report and 20261128105250's entry.
+// be pending with its extension in place. The check states migrations are neither: their versions
+// are recorded and they never ran, as a deployment's version table stands before the release that
+// holds them, so the census counts none of them pending. check_results holds one row, so it is
+// above the limit. It fails the test unless the pending migrations are 20261128105250, unapplied and
+// forgotten, and 20261128105250 touches check_results, with its row, and ci_check_results, which
+// exists unless unapplied holds its table's migration. It answers the report and
+// 20261128105250's entry.
 func resultsCoverageCensus(t *testing.T, unapplied, forgotten []int) (*pgmigrate.Report, *pgmigrate.MigrationCensus) {
 	t.Helper()
 	ctx := context.Background()
 	store := openMigratedTestStore(t, ciCheckResultsVersion-1)
 	migrations := shippedMigrations(t)
+	var checkStates []int
 	for _, migration := range migrations {
 		if migration.Version < ciCheckResultsVersion || migration.Version >= resultsCoverageCountsVersion || slices.Contains(unapplied, migration.Version) {
+			continue
+		}
+		if migration.Version >= checkStatesFirstVersion && migration.Version <= checkStatesLastVersion {
+			checkStates = append(checkStates, migration.Version)
 			continue
 		}
 		if err := store.applyMigration(ctx, migrations, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration.Name, err)
 		}
+	}
+	if len(checkStates) != checkStatesLastVersion-checkStatesFirstVersion+1 {
+		t.Fatalf("the embedded check states migrations are %v, want every version from %d to %d", checkStates, checkStatesFirstVersion, checkStatesLastVersion)
+	}
+	if _, err := store.Pool.Exec(ctx, `insert into schema_migrations (version) select unnest($1::bigint[])`, checkStates); err != nil {
+		t.Fatalf("record the check states versions %v: %v", checkStates, err)
 	}
 	if _, err := store.Pool.Exec(ctx, `delete from schema_migrations where version = any($1)`, forgotten); err != nil {
 		t.Fatalf("forget %v: %v", forgotten, err)

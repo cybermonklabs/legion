@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+    The two lines the delivery intake logs when it withholds a handler's own delayed hand-back no
+    longer say the envelope's head row was not stored: that path also carries a settlement whose
+    check-state mark could not be written. Each now names the envelope its handler asked to have
+    redelivered, and the warning also names the second reason it is withheld, a subscription that
+    has stopped.
+time: 2026-11-21T23:33:15Z
+custom:
+    Issue: check-states-hand-back-words

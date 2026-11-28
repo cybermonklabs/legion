@@ -77,9 +77,10 @@ const (
 	// connect_timeout in the DSN, pgxpool bounds a connection it opens at two minutes, so without
 	// this bound a connection the database takes and never answers would hold the attempt that long.
 	storeOpenAttempt = 10 * time.Second
-	// catchUpAttemptBound bounds one attempt of the boot's catch-up of the roots that run or wait on
-	// a person. Each root has bootTimeout of its own and the roots finished survive a retry, so this
-	// bound is no budget for the work, only the end of an attempt that would otherwise never return.
+	// catchUpAttemptBound bounds one attempt of each of the boot's catch-ups, of the roots that run
+	// or wait on a person and of check states. Each root or issue has bootTimeout of its own and the
+	// ones finished survive a retry, so this bound is no budget for the work, only the end of an
+	// attempt that would otherwise never return.
 	catchUpAttemptBound = time.Hour
 	// stopBudget bounds how long the daemon's stop waits for its own work, from the moment the stop
 	// begins (supervision.halt: at the signal, at serve's end, or when supervision fails to start,
@@ -802,6 +803,18 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		if err == nil {
 			err = bootprobe.Run(probing, "catch up the roots that run or wait on a person", readinessRetry, log,
 				readinessAttempt(workflow.catchUpAwaiting, catchUpAttemptBound, dispatch.Unreachable))
+		}
+		// The catch-up of check states is a probe of its own after it: it reads the event log of
+		// every issue the workflow records that is not done and does not linger, after the issue's
+		// cursor, and applies the check.state_changed events it finds (catchUpCheckStates), so a
+		// tester's move that waits on a state Dispatch published while the daemon was down decides
+		// at the boot. It bounds each issue as the roots' catch-up does and keeps across retries the
+		// issues it finished. It runs before the durable consumers start, as the roots' catch-up
+		// does: they exist from before the listing, so a state event Dispatch publishes while this
+		// reads is theirs to deliver after it, and an event both apply changes nothing the second time.
+		if err == nil {
+			err = bootprobe.Run(probing, "catch up the check states the daemon missed", readinessRetry, log,
+				readinessAttempt(workflow.catchUpCheckStates, catchUpAttemptBound, dispatch.Unreachable))
 		}
 		// The repair of the mergers the `awaiting_merge` cutover left stopped is a boot step of its
 		// own (repairCutoverMergers, dispatch://INFRA-3274/spec R2): after the listing's reconcile,

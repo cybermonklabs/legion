@@ -1,0 +1,120 @@
+# The list of scripts/red-at-base.sh for the change in which the daemon decides a tester's move from
+# the check states that Dispatch publishes, and a phase completion carries no verdict. Run it at the
+# commit that the change merges into:
+#
+#   bash scripts/red-at-base.sh --base <that commit> --list scripts/e2e/check-states.red.txt
+#
+# Each line names one test or one case that this change adds. The tool runs it at that commit, with
+# only the line's files copied in, and each line must read RED or BUILD-FAILED: a test that passes
+# there cannot tell the change from the commit it merges into. The lines follow the before_merge
+# checks of the change's Verification document, in its order, one line for each test or case that a
+# check runs: the check that runs two tests has two lines, and the check that runs two cases has
+# two. The comment above each line names its check and says why the line fails at that commit. A
+# line's files are its test file and each new helper, fixture or script that the test reads, never
+# a file of the code under test, which is the change itself.
+#
+# The environment gives DISPATCH_TEST_DATABASE_URL to the envoy lines and LEGION_TEST_PG_DSN to the
+# daemon and e2e lines. The e2e lines also need what the header of scripts/e2e/check-states.sh
+# names (LEGION_OMP_PATH among it), and the last line needs SKILL_SCENARIOS_LABEL_PATCHES and the
+# rig's model route (the header of states-read-check.sh).
+
+# v-one-record-decides: the live cases read the tester's notice by its fields (record.Notice's Head
+# and Failing) and the states the daemon holds (record.HeadStates), which that commit lacks, so
+# the e2e driver does not build. So for each e2e line below. Each copies every live file of the
+# cases and the helpers they call: the CI case's GitHub stand-in, the scratch Dispatch's settings
+# and the architect's notices (live_proof_test.go's testerNotices).
+e2e scripts/e2e/check-states.sh one-record scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_ci_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go packages/daemon/internal/daemon/live_proof_test.go
+# v-daemon-records-no-result
+e2e scripts/e2e/check-states.sh daemon-records-nothing scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_ci_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go packages/daemon/internal/daemon/live_proof_test.go
+# v-dispatch-tells-the-daemon
+e2e scripts/e2e/check-states.sh dispatch-tells scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_ci_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go packages/daemon/internal/daemon/live_proof_test.go
+
+# v-state-at-each-open-head: Dispatch has no settler and no state event (checkStatesSchedule and
+# the rest), so the test does not build. So for each envoy line below.
+go packages/envoy/internal/dispatch/api ^TestAStateEventIsPublishedForEachCheckAtEachOpenHead$ packages/envoy/internal/dispatch/api/check_states_publish_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+# v-a-former-head-keeps-its-states
+go packages/envoy/internal/dispatch/api ^TestAFormerHeadOfAnOpenPullRequestKeepsItsStates$ packages/envoy/internal/dispatch/api/check_states_former_heads_test.go packages/envoy/internal/dispatch/api/check_states_test.go packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json
+# v-one-event-for-a-change
+go packages/envoy/internal/dispatch/api ^TestAChangeOfStatePublishesOneCheckStateChangedEvent$ packages/envoy/internal/dispatch/api/check_states_publish_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+# v-a-lost-start-is-settled
+go packages/envoy/internal/dispatch/api ^TestAMarkThatNoStartSettledIsSettledByTheBackgroundPass$ packages/envoy/internal/dispatch/api/check_states_settle_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+# v-event-names-its-parts
+go packages/envoy/internal/dispatch/api ^TestTheStateEventNamesTheCheckTheHeadItsPullRequestTheStateAndTheReason$ packages/envoy/internal/dispatch/api/check_states_publish_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+# v-each-change-moves-a-state
+go packages/envoy/internal/dispatch/api ^TestEachKindOfChangePublishesTheNewState$ packages/envoy/internal/dispatch/api/check_states_publish_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+# v-changes-before-a-compute-count-as-one
+go packages/envoy/internal/dispatch/api ^TestTwoWritersAndTheSettlerEndWithThePublishedStateDispatchComputes$ packages/envoy/internal/dispatch/api/check_states_settle_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+
+# v-intake-takes-the-event: the daemon has no DispatchCheckState fact, so the test does not build.
+go packages/daemon/internal/intake ^TestTheIntakeDecodesACheckStateChangedEvent$ packages/daemon/internal/intake/decode_check_state_test.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# v-newest-state-kept: the store keeps no check states (no HeadStates), so the test does not build.
+go packages/daemon/internal/record ^TestTheDaemonKeepsTheNewestStateOfEachCheckAtEachHead$ packages/daemon/internal/record/check_states_test.go
+# v-no-state-of-its-own: the daemon has no state event to apply (no intake.DispatchCheckState),
+# so the test does not build. Its harness's workflow engine and the request log of its stand-in
+# for Dispatch are this change's, in the three helper files, and its state events are built by the
+# shared package checkstatetest.
+go packages/daemon/internal/api ^TestTheTesterMoveReadsNothingOfDispatchButTheHandoff$ packages/daemon/internal/api/check_states_test.go packages/daemon/internal/api/harness_test.go packages/daemon/internal/api/handoff_test.go packages/daemon/internal/api/architect_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# v-raw-results-move-nothing: the daemon has no state event to hold (no intake.DispatchCheckState),
+# so the test does not build. So for each workflow line below.
+go packages/daemon/internal/workflow ^TestOnlyTheStateEventMovesTheTester$ packages/daemon/internal/workflow/check_states_move_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# v-states-at-the-tested-head
+go packages/daemon/internal/workflow ^TestTheMoveReadsTheStatesAtTheTestedHead$ packages/daemon/internal/workflow/check_states_move_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+
+# v-every-check-passes, its two cases: the e2e driver does not build, as for v-one-record-decides.
+e2e scripts/e2e/check-states.sh pass-goes-to-review scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_ci_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go packages/daemon/internal/daemon/live_proof_test.go
+e2e scripts/e2e/check-states.sh no-check scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_ci_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go packages/daemon/internal/daemon/live_proof_test.go
+# v-a-check-fails-and-is-named: the same.
+e2e scripts/e2e/check-states.sh fail-sends-back scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_ci_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go packages/daemon/internal/daemon/live_proof_test.go
+
+# v-a-conclusive-state-does-not-wait, its two tests: no judgeStates and no state event, so neither
+# builds.
+go packages/daemon/internal/workflow ^TestJudgeStates$ packages/daemon/internal/workflow/check_states_judge_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+go packages/daemon/internal/workflow ^TestTheTestingMoveStateTable$ packages/daemon/internal/workflow/check_states_judge_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# v-a-ci-failure-reaches-the-implementer: no state event and no completion with no verdict, so the
+# test does not build.
+go packages/daemon/internal/workflow ^TestAFailedCIJobReachesTheImplementerWhileTheReviewerWorks$ packages/daemon/internal/workflow/check_states_ci_failure_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+
+# v-the-move-waits: the same.
+e2e scripts/e2e/check-states.sh completion-before-event scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_ci_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go packages/daemon/internal/daemon/live_proof_test.go
+
+# v-boot-reads-missed-events: a tester's completion names no serial of states (no StatesSerial),
+# and the catch-up takes no state event, so the test does not build.
+go packages/daemon/internal/daemon ^TestTheBootCatchUpTakesTheStateEventsTheDaemonMissed$ packages/daemon/internal/daemon/check_states_catchup_test.go packages/daemon/internal/daemon/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# v-no-verdict-in-the-handoff: the route has no refusal of a verdict and the daemon no state event,
+# so the test does not build (its helper files as for v-no-state-of-its-own).
+go packages/daemon/internal/api ^TestAPhaseCompletionCarriesNoVerdict$ packages/daemon/internal/api/check_states_test.go packages/daemon/internal/api/harness_test.go packages/daemon/internal/api/handoff_test.go packages/daemon/internal/api/architect_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# v-stored-notices-lose-the-verdict: the migration that removes the verdict does not exist, and a
+# phase row has no serial of states, so the test file does not build.
+go packages/daemon/internal/record ^TestPhaseVerdictGoneMigrationStripsTheVerdictFromStoredNotices$ packages/daemon/internal/record/store_test.go
+
+# v-review-and-acceptance-read-the-states: the whole model check, run by states-read-check.sh with
+# the rig of the commit it runs at. That commit's texts do not hold the sentences the
+# ablate-states-read patch cuts, so its label-checkouts.sh refuses the patch (it does not apply)
+# before the rig starts a service or a model; and its scenarios have no case no-verdict-fail or
+# no-verdict-pass for the judgement to count.
+cmd . states-read-scenarios packages/pi-legion/scripts/skill-scenarios/states-read-check.sh packages/pi-legion/scripts/skill-scenarios/label-judgement.sh -- bash packages/pi-legion/scripts/skill-scenarios/states-read-check.sh
+
+# v-a-testing-step-passes-by-its-checks: no state event, so the test does not build.
+go packages/daemon/internal/workflow ^TestATestingStepPassesWhenItsChecksPass$ packages/daemon/internal/workflow/check_states_move_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# v-an-early-fail-starts-nothing: the same.
+go packages/daemon/internal/workflow ^TestAFailStateBeforeTheTesterCompletesStartsNothing$ packages/daemon/internal/workflow/check_states_move_test.go packages/daemon/internal/workflow/check_states_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+
+# v-no-event-without-a-change: no settler and no state event, so the test does not build.
+go packages/envoy/internal/dispatch/api ^TestOneEventForEachChangeOfAStateAndNoneWhenAResultChangesNoState$ packages/envoy/internal/dispatch/api/check_states_publish_test.go packages/envoy/internal/dispatch/api/check_states_test.go
+
+# v-outside-text: no settler and no state event, so the test does not build.
+go packages/envoy/internal/dispatch/api ^TestAnEditOfThePullRequestBodyChangesNoState$ packages/envoy/internal/dispatch/api/results_outside_text_test.go packages/envoy/internal/dispatch/api/check_states_test.go packages/envoy/internal/dispatch/api/check_states_ci_test.go
+
+# v-the-daemon-runs-with-the-setting-off: the daemon has no state event (intake.DispatchCheckState)
+# and the engine no TestingLeavesCI, so the test does not build. Its state events are built by the
+# shared package checkstatetest.
+go packages/daemon/internal/daemon ^TestTheDaemonWiresTheTestingMoveToReadEveryCheck$ packages/daemon/internal/daemon/check_states_wiring_test.go packages/daemon/internal/checkstatetest/checkstatetest.go packages/contracts/fixtures/dispatch-events/check-state-changed.json
+# v-a-ci-failure-reaches-the-implementer, its live case: the e2e driver does not build, as for
+# v-one-record-decides; and at that commit no state event of a CI job's failure reaches the
+# implementer.
+e2e scripts/e2e/check-states.sh ci-failure-tells scripts/e2e/check-states.sh packages/daemon/internal/daemon/check_states_live_test.go packages/daemon/internal/daemon/check_states_live_cases_test.go packages/daemon/internal/daemon/check_states_live_ci_test.go packages/daemon/internal/daemon/check_states_live_drive_test.go packages/daemon/internal/daemon/check_states_live_reads_test.go packages/daemon/internal/daemon/check_states_live_records_test.go packages/daemon/internal/daemon/check_states_live_broker_test.go packages/daemon/internal/daemon/outbox_scratch_dispatch_test.go packages/daemon/internal/daemon/live_proof_test.go
+# v-tester-reads-no-ci: the whole model check, run by tester-ci-check.sh with the rig of the commit
+# it runs at. That commit's tester text does not take the restore-tester-ci patch, so its
+# label-checkouts.sh refuses the patch (it does not apply) before the rig starts a service or a
+# model; and its rig has no world tester-reads-no-ci for the batch to run.
+cmd . tester-ci-scenarios packages/pi-legion/scripts/skill-scenarios/tester-ci-check.sh packages/pi-legion/scripts/skill-scenarios/label-judgement.sh -- bash packages/pi-legion/scripts/skill-scenarios/tester-ci-check.sh

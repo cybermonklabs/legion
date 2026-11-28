@@ -1,0 +1,17 @@
+kind: Added
+body: |-
+    `model.CheckStateChangedEventPayload` is the payload of the new event `check.state_changed`
+    (`model.CheckStateChangedEventType`), which the system actor `dispatch-check-states`
+    (`model.CheckStatesActor`) writes on a check's issue, so the event reaches no inbox. It holds
+    the state of one `before_merge` check at one open head, with its reason, or, in the set form
+    where `check`, `check_version` and `state` are null, a head's set of checks alone. Each list
+    it holds is written `[]` when a writer leaves it unset, never `null`.
+    `TestCheckStateChangedEventPayloadGolden` writes both forms to
+    `packages/contracts/fixtures/dispatch-events/check-state-changed.json`
+    (`UPDATE_GOLDEN=1`), which the contracts' schema and the Legion daemon read.
+    The Dispatch page lists the event in an issue's log (`Check k1 reads no (fail) at <head> of
+    #70`; the set form `Head <head> of #70 has the checks k1, k2`) and in its Activity tab, and
+    refreshes the results of the check's issue when one arrives.
+time: 2026-11-20T23:00:34Z
+custom:
+    Issue: check-state-changed-event

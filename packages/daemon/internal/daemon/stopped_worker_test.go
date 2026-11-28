@@ -433,6 +433,10 @@ func TestAStopEndsTheOwedStartOfAWaitingIssue(t *testing.T) {
 	testwait.Eventually(t, "the retried phase to launch its tester once a slot comes", func() bool {
 		return len(launchesOf(rt, tester)) > launches
 	})
+	if active := d.state().Admission.Active; !slices.Contains(active, member) {
+		t.Fatalf("after its tester launched again the admission slots are held by %v, want %s among them: the retry put it back in the line, and the line gave it the free slot",
+			active, member)
+	}
 }
 
 // A slot freed by the pass that meets a stop goes past the stopped issue to the next issue in

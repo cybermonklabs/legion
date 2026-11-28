@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sjawhar/envoy/cicase"
 	"github.com/sjawhar/envoy/subjectforms"
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
@@ -621,9 +622,76 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			return nil, nil
 		}
 		return DispatchClaim{Key: event.IssueKey, Seq: event.Seq, ClaimedBy: holder}, nil
+	case "check.state_changed":
+		return decodeCheckState(event)
 	default:
 		return nil, nil
 	}
+}
+
+// commitHead is the shape of a head a check.state_changed names: a full Git commit id, 40
+// lowercase hex digits, as Dispatch stores a pull request's head.
+var commitHead = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// decodeCheckState decodes a check.state_changed of the issue it is appended on (Dispatch's
+// model.CheckStateChangedEventPayload) into the fact the workflow moves a tested issue by. The
+// workflow cannot place or judge a payload of another issue, with no repository, a head that is
+// no full commit id, a state outside `yes`, `no` and `unknown`, a CI case outside the closed list
+// Dispatch publishes (cicase.Known), a check with no state or a state of no check, or no serial, so
+// each is an error and the consumer terminates the event as poison: a fact the workflow cannot read
+// must not pass in silence, as a nil fact would.
+func decodeCheckState(event dispatchEvent) (Fact, error) {
+	var payload struct {
+		Issue        string   `json:"issue"`
+		Repo         string   `json:"repo"`
+		Head         string   `json:"head"`
+		PullRequests []int    `json:"pull_requests"`
+		Checks       []string `json:"checks"`
+		Check        *string  `json:"check"`
+		CheckVersion *int     `json:"check_version"`
+		State        *string  `json:"state"`
+		Reason       string   `json:"reason"`
+		Roles        []string `json:"roles"`
+		CICase       string   `json:"ci_case"`
+		Serial       int64    `json:"serial"`
+	}
+	if err := json.Unmarshal(event.Payload, &payload); err != nil {
+		return nil, fmt.Errorf("decode Dispatch check.state_changed payload: %w", err)
+	}
+	switch {
+	case payload.Issue != event.IssueKey:
+		return nil, fmt.Errorf("Dispatch check.state_changed payload issue %q disagrees with event issue_key %s", payload.Issue, event.IssueKey)
+	case payload.Repo == "":
+		return nil, fmt.Errorf("Dispatch check.state_changed payload has no repo")
+	case !commitHead.MatchString(payload.Head):
+		return nil, fmt.Errorf("Dispatch check.state_changed payload head %q is not 40 lowercase hex digits", payload.Head)
+	case payload.Serial < 1:
+		return nil, fmt.Errorf("Dispatch check.state_changed payload has no serial from 1 up (serial %d)", payload.Serial)
+	case !cicase.Known(payload.CICase):
+		return nil, fmt.Errorf("Dispatch check.state_changed payload ci_case %q is no case Dispatch publishes", payload.CICase)
+	}
+	fact := DispatchCheckState{Key: event.IssueKey, Mark: event.mark(), Repo: payload.Repo, Head: payload.Head,
+		PullRequests: payload.PullRequests, Checks: payload.Checks, Reason: payload.Reason, Roles: payload.Roles,
+		CICase: payload.CICase, Serial: payload.Serial}
+	if payload.Check == nil {
+		if payload.State != nil {
+			return nil, fmt.Errorf("Dispatch check.state_changed payload has state %q of no check", *payload.State)
+		}
+		return fact, nil
+	}
+	if payload.State == nil {
+		return nil, fmt.Errorf("Dispatch check.state_changed payload has no state of check %q", *payload.Check)
+	}
+	switch *payload.State {
+	case "yes", "no", "unknown":
+	default:
+		return nil, fmt.Errorf("Dispatch check.state_changed payload state %q is not yes, no or unknown", *payload.State)
+	}
+	fact.Check, fact.State = *payload.Check, *payload.State
+	if payload.CheckVersion != nil {
+		fact.CheckVersion = *payload.CheckVersion
+	}
+	return fact, nil
 }
 
 // issueEventClaim reads an issue event's claim, `<kind>:<id>`, "" for null, and whether the event

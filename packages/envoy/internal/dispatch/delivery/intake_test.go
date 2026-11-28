@@ -87,12 +87,12 @@ func tuningFor(t testing.TB) *intakeTuning {
 // atomics cannot be copied with it.
 func copyTuning(from *intakeTuning) *intakeTuning {
 	to := &intakeTuning{
-		messageTimeout:         from.messageTimeout,
-		maxAckPending:          from.maxAckPending,
-		stopBudget:             from.stopBudget,
-		headWriteMaxDeliveries: from.headWriteMaxDeliveries,
-		createDurable:          from.createDurable,
-		log:                    from.log,
+		messageTimeout:           from.messageTimeout,
+		maxAckPending:            from.maxAckPending,
+		stopBudget:               from.stopBudget,
+		ownHandBackMaxDeliveries: from.ownHandBackMaxDeliveries,
+		createDurable:            from.createDurable,
+		log:                      from.log,
 	}
 	to.callWait.Store(from.callWait.Load())
 	to.drainWait.Store(from.drainWait.Load())
@@ -335,14 +335,14 @@ func shrinkIntakeFlowControl(t *testing.T) {
 	tuningFor(t).messageTimeout = 5 * time.Second
 }
 
-// capHeadWriteDeliveriesAt lowers the headWriteMaxDeliveries of the intakes this test builds after
-// it to deliveries, the way shrinkIntakeFlowControl shrinks their message timeout: the shipped cap
-// of thirty, at headWriteRedeliverAfter apiece, is nearly five minutes of wall clock, and what a
-// test of the cap measures is that there is one at all, which two deliveries show as well as
-// thirty.
-func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
+// capOwnHandBackDeliveriesAt lowers the ownHandBackMaxDeliveries of the intakes this test builds
+// after it to deliveries, the way shrinkIntakeFlowControl shrinks their message timeout: the
+// shipped cap of thirty, at ownHandBackAfter apiece, is nearly five minutes of wall clock, and
+// what a test of the cap measures is that there is one at all, which two deliveries show as well
+// as thirty.
+func capOwnHandBackDeliveriesAt(t *testing.T, deliveries uint64) {
 	t.Helper()
-	tuningFor(t).headWriteMaxDeliveries = deliveries
+	tuningFor(t).ownHandBackMaxDeliveries = deliveries
 }
 
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and

@@ -790,10 +790,11 @@ issue, and any other notice is not an instruction: neither is yours to act on. O
 no message: a production check's (its first line `Production check of <key>: …`, handed to the
 tester once the merge closed its issue), since the proof sends none to it. Act on that task as
 it is written. The issues of this proof have no requirement that only the deploy can show, and no
-spec of this proof names one. This proof has no production and no deploy role, so the look leaves
-`Production: pending deploy of <merge commit>` on the pull request's body (on the
-last look, writes on the pull request why the check did not run within the bound) and reports
-verdict pending with the legion tool's handoff_complete,
+spec of this proof names one. This proof has no production and no deploy role, so the look records
+no result and leaves every check line of the pull request's body as it stands (on the last look,
+writes on the pull request why the check did not run within the bound), and reports verdict
+pending with the legion tool's handoff_complete, its summary naming what is missing and what it
+will look for next,
 committing nothing. A pending report on a look that is not the last also carries wake_at, an
 RFC 3339 time: when you want your next look. Nothing else wakes a check — no deploy, no Dispatch
 notice, nothing the daemon does of its own — so the look you ask for is the only one that follows,
@@ -900,7 +901,7 @@ primary_issue() {
   pass
 
   begin primary-tester-pass
-  send_agent "$root_issue" tester "Stage 3 proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff with verdict pass, then call the legion tool's handoff_complete with verdict pass."
+  send_agent "$root_issue" tester "Stage 3 proof test operation: inspect the implementer's actual one-file change and pull request #$pr_number, run a focused observable check, record the required test handoff, then call the legion tool's handoff_complete with no verdict."
   wait_for_phase "$root_issue" reviewing
   assert_handoff_record "$root_issue" tester testing 0
   wait_for_worker "$root_issue" reviewer
@@ -962,7 +963,7 @@ primary_issue() {
     assert_round_handoff "$root_issue" "$round"
     assert_handoff_record "$root_issue" implementer implementing "$round"
     wait_for_worker "$root_issue" tester
-    send_agent "$root_issue" tester "Stage 3 proof retest round $round: verify the correction on pull request #$pr_number, write the tester handoff with verdict pass, and complete the phase."
+    send_agent "$root_issue" tester "Stage 3 proof retest round $round: verify the correction on pull request #$pr_number, write the tester handoff, and complete the phase with no verdict."
     wait_for_phase "$root_issue" reviewing
     assert_handoff_record "$root_issue" tester testing "$round"
     wait_for_worker "$root_issue" reviewer

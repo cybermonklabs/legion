@@ -1,0 +1,222 @@
+{
+  "fail_after_the_move": [
+    {
+      "check": "k1",
+      "head": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "no",
+      "reason": "no_result",
+      "roles": [],
+      "ci_case": "",
+      "serial": 1
+    },
+    {
+      "check": "k2",
+      "head": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "no",
+      "reason": "no_result",
+      "roles": [],
+      "ci_case": "",
+      "serial": 2
+    },
+    {
+      "check": "k1",
+      "head": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "yes",
+      "reason": "",
+      "roles": [
+        "implementer"
+      ],
+      "ci_case": "",
+      "serial": 3
+    },
+    {
+      "check": "k2",
+      "head": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "yes",
+      "reason": "",
+      "roles": [
+        "implementer"
+      ],
+      "ci_case": "",
+      "serial": 4
+    },
+    {
+      "check": "k1",
+      "head": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "no",
+      "reason": "no_result",
+      "roles": [],
+      "ci_case": "",
+      "serial": 5
+    },
+    {
+      "check": "k2",
+      "head": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "no",
+      "reason": "no_result",
+      "roles": [],
+      "ci_case": "",
+      "serial": 6
+    },
+    {
+      "check": "k2",
+      "head": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "unknown",
+      "reason": "pass_and_fail",
+      "roles": [],
+      "ci_case": "",
+      "serial": 7
+    }
+  ],
+  "passes_after_the_move": [
+    {
+      "check": "k1",
+      "head": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "no",
+      "reason": "no_result",
+      "roles": [],
+      "ci_case": "",
+      "serial": 1
+    },
+    {
+      "check": "k2",
+      "head": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "no",
+      "reason": "no_result",
+      "roles": [],
+      "ci_case": "",
+      "serial": 2
+    },
+    {
+      "check": "k1",
+      "head": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "no",
+      "reason": "no_result",
+      "roles": [],
+      "ci_case": "",
+      "serial": 3
+    },
+    {
+      "check": "k2",
+      "head": "b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2b2",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "no",
+      "reason": "no_result",
+      "roles": [],
+      "ci_case": "",
+      "serial": 4
+    },
+    {
+      "check": "k1",
+      "head": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "yes",
+      "reason": "",
+      "roles": [
+        "tester"
+      ],
+      "ci_case": "",
+      "serial": 5
+    },
+    {
+      "check": "k2",
+      "head": "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1",
+      "pull_requests": [
+        70
+      ],
+      "checks": [
+        "k1",
+        "k2"
+      ],
+      "state": "yes",
+      "reason": "",
+      "roles": [
+        "tester"
+      ],
+      "ci_case": "",
+      "serial": 6
+    }
+  ]
+}

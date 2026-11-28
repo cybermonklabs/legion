@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  A live proof, `scripts/e2e/check-states.sh`, runs the tester's move on the real Dispatch, the
+  real daemon and a real tester's pane (the `e2e` test `TestCheckStatesLive`). The tester records
+  its results with the real `dispatch result`, its real `legion` tool completes testing with no
+  verdict, and Dispatch's `check.state_changed` events, on the run's own broker, are the only way
+  the daemon learns the states. Its seven cases, chosen with `CHECK_STATES_E2E_CASES`, show that
+  the results in Dispatch decide the move; that the daemon writes no result; that the daemon holds
+  a state within 10 seconds of the result's write; that every check passing, or no `before_merge`
+  check in an existing Verification document, sends the issue to `reviewing` and starts its
+  reviewer within 10 seconds of the completion; that a check that does not pass sends the issue
+  back with a task naming it; and that a completion made while the broker is stopped waits in
+  `testing` and moves within 10 seconds of the broker coming back. Each case reads the phase from
+  `GET /legion/v1/state`, the implementer's task from the daemon's store, and the results from
+  Dispatch's database. It needs `LEGION_OMP_PATH` and `LEGION_TEST_PG_DSN`, and no Docker,
+  cluster, tmux or GitHub.
+time: 2026-11-21T21:00:50Z
+custom:
+  Issue: check-states-live-proof

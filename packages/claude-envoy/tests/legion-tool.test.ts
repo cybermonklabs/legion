@@ -200,11 +200,7 @@ test("answerLegionTool tells the host an update answered and nothing of a comple
     },
     hook,
   )
-  await answerLegionTool(
-    runtime,
-    { op: "handoff_complete", summary: "tested", verdict: "pass" },
-    hook,
-  )
+  await answerLegionTool(runtime, { op: "handoff_complete", summary: "tested" }, hook)
   expect(calls).toEqual([])
   await answerLegionTool(runtime, { op: "ready_for_update", round: "update-1" }, hook)
   expect(calls).toEqual(["update"])
@@ -294,7 +290,7 @@ test("handoff_complete finds the record and commit for the issue's phase and the
       },
       branchHead: noBranchHead,
     },
-    { op: "handoff_complete", summary: "Implemented it.", verdict: "pass" },
+    { op: "handoff_complete", summary: "Implemented it." },
   )
   expect(lookups).toEqual(["implementing implementer"])
   expect(answer).toEqual(await daemonFixture("handoff-complete.json"))
@@ -307,13 +303,42 @@ test("handoff_complete finds the record and commit for the issue's phase and the
       body: {
         grantId: "grant-for-one-command",
         summary: "Implemented it.",
-        verdict: "pass",
+        verdict: "",
         commit: "a".repeat(40),
         handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
         handoffVersion: 2,
       },
     },
   ])
+})
+
+// A phase completion carries no verdict on this host as on every other: the tool refuses one on
+// the shape of the call alone, before it reads the record, and reads no handoff record, mints
+// and posts nothing. The handoff report it would read is a real one, so a tool that took the
+// verdict would go on to mint and post, and the requests and lookups below would say so.
+test("a phase completion naming a verdict is refused before any call, with nothing minted or posted", async () => {
+  const { client, requests } = await daemon()
+  const lookups: string[] = []
+  await expect(
+    executeLegionTool(
+      {
+        daemon: client,
+        claim: () => implementer,
+        handoffReport: async (phase: LegionPhase, role: LegionRole) => {
+          lookups.push(`${phase} ${role}`)
+          return {
+            commit: "a".repeat(40),
+            handoffId: "5b1f0c2e-9d7a-4c3b-8e61-2f4a9d0c7b13",
+            handoffVersion: 2,
+          }
+        },
+        branchHead: noBranchHead,
+      },
+      { op: "handoff_complete", summary: "Implemented it.", verdict: "pass" },
+    ),
+  ).rejects.toThrow()
+  expect(lookups).toEqual([])
+  expect(requests.map(({ path }) => path)).toEqual([])
 })
 
 // The agent that does the retro rates the plan in the completion that ends it, through this tool
@@ -350,9 +375,10 @@ test("the retro's handoff_complete sends its rating of the plan as planRating an
   })
 })
 
-// A tester's fail names the step its task returns to through this tool as through every host's
-// (contract 219): `return_to` reaches the daemon as its own `returnTo`.
-test("a tester's fail sends return_to as returnTo", async () => {
+// A tester's completion names the step its task returns to through this tool as through every
+// host's (contract 219): `return_to` reaches the daemon as its own `returnTo`, with no verdict,
+// since the check states decide whether the testing step failed.
+test("a tester's completion sends return_to as returnTo, with no verdict", async () => {
   const { client, requests } = await daemon({ state: stateAtPhase("testing") })
   const tested = "d".repeat(40)
   await executeLegionTool(
@@ -362,7 +388,7 @@ test("a tester's fail sends return_to as returnTo", async () => {
       handoffReport: async () => ({ commit: tested }),
       branchHead: noBranchHead,
     },
-    { op: "handoff_complete", summary: "Red.", verdict: "fail", return_to: 1 },
+    { op: "handoff_complete", summary: "Red.", return_to: 1 },
   )
   expect(requests.at(-1)).toEqual({
     method: "POST",
@@ -370,7 +396,7 @@ test("a tester's fail sends return_to as returnTo", async () => {
     body: {
       grantId: "grant-for-one-command",
       summary: "Red.",
-      verdict: "fail",
+      verdict: "",
       commit: tested,
       returnTo: 1,
     },

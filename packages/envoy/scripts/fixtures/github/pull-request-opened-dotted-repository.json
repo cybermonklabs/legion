@@ -14,7 +14,8 @@
       "ref": "acceptance-driver"
     },
     "base": {
-      "ref": "main"
+      "ref": "main",
+      "sha": "9999999999999999999999999999999999999999"
     },
     "merged": false,
     "updated_at": "2026-09-07T03:00:00Z"

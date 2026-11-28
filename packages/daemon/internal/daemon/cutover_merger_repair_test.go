@@ -460,18 +460,18 @@ func (r *cutoverRig) roots() []cutoverIssue {
 // the handoff it clears (workflow's clearHandoff empties the commit, the verdict, the summary and
 // the completion's time) and the entry a start is built from.
 type cutoverMergerRow struct {
-	handoff, verdict, summary, completed string
-	entry                                int64
-	task                                 string
+	handoff, summary, completed string
+	entry                       int64
+	task                        string
 }
 
 // mergerRow reads issue's merger phases row.
 func (r *cutoverRig) mergerRow(t *testing.T, issue cutoverIssue) cutoverMergerRow {
 	t.Helper()
 	var row cutoverMergerRow
-	if err := r.pool.QueryRow(context.Background(), `select handoff_commit, verdict, summary, completed_at::text, entry, entry_task
+	if err := r.pool.QueryRow(context.Background(), `select handoff_commit, summary, completed_at::text, entry, entry_task
 		from phases where issue = $1 and role = $2`, issue.key, string(claim.RoleMerger)).Scan(
-		&row.handoff, &row.verdict, &row.summary, &row.completed, &row.entry, &row.task); err != nil {
+		&row.handoff, &row.summary, &row.completed, &row.entry, &row.task); err != nil {
 		t.Fatalf("read %s's merger phases row: %v", issue.key, err)
 	}
 	return row

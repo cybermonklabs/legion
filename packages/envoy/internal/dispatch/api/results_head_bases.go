@@ -47,6 +47,11 @@ type branchHeadAnswer struct {
 // the one thing it might compare with is a branch head Dispatch could not read, the reason is that
 // read's.
 //
+// The check states settler's read adds the former heads of the issue's open pull requests
+// (comparisonReader.former) to the heads, each open, so each is a basis and a subject as an open
+// head is, and the settler publishes its state; they stand beside an open head alone, and the
+// route's read holds none.
+//
 // The pull request heads answer whether or not Dispatch can read the repository. A head
 // Dispatch holds is a fact about the work whatever the App can see today, so a result at one
 // stands at it, and only a result at no head of the list needs the repository read at all
@@ -68,6 +73,9 @@ func (c *comparisonReader) headBases(ctx context.Context, issueKey string) compa
 		issueRepo, _ = c.repositoryOf(ctx, issueKey)
 	}
 	open := slices.ContainsFunc(heads, func(head delivery.AttributedHead) bool { return head.Open })
+	if open {
+		heads = slices.Concat(heads, c.former[issueKey])
+	}
 	ordered := open || c.mergedInOrder(ctx, heads)
 	bases, subjects := pullRequestBases(heads, issueRepo, open, ordered)
 	unread := ""

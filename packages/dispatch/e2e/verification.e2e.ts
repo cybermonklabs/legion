@@ -677,6 +677,23 @@ Every check of the document is listed.
   return issue;
 }
 
+/** Resolves once Dispatch's check states settler has settled every due mark of `issueKey` and
+ *  published its states at `head`. Every Dispatch process runs the settler, the head's insert
+ *  marks the issue's states owed, and its settle reads the check runs of a check CI proves at the
+ *  head as a results read does; it deletes a mark in the transaction that publishes the states
+ *  its reads computed. So a count of the fake's reads taken now holds every read of the settler's,
+ *  and a results read, which marks nothing, starts no settle after it. */
+async function checkStatesSettled(issueKey: string, head: string): Promise<void> {
+  await expect
+    .poll(async () =>
+      sql(
+        `SELECT (EXISTS (SELECT 1 FROM check_state_sets WHERE issue_key = '${issueKey}' AND head_sha = '${head}')
+           AND NOT EXISTS (SELECT 1 FROM check_states_owed WHERE issue_key = '${issueKey}' AND due_at <= now()))::text`
+      )
+    )
+    .toBe("true");
+}
+
 // SLOW(>=2s): 2.6 s - a project, its default repository, a Verification document, a staged pull
 // request head and a seeded fake GitHub, before one load of the tab, whose results read mints a
 // token and reads the head's check runs from that fake. The floor the first row of this file
@@ -688,6 +705,10 @@ test("a check with ci_check shows the pass its CI run concluded at the issue's o
     conclusion: "success",
     output: { summary: "41 passed", title: "ci-ok passed" },
   });
+  // The check states settler reads the head's check runs too: the reads the page causes are
+  // counted from once it has settled.
+  await checkStatesSettled(issue.key, secondHead);
+  const settlerReads = (await fakeGithubCheckRunReads())[repository]?.[secondHead] ?? 0;
 
   const alice = await asUser(browser, "alice");
   try {
@@ -724,7 +745,9 @@ test("a check with ci_check shows the pass its CI run concluded at the issue's o
     // Each answer of the results route read the head's check runs once, one page of one run.
     await expect
       .poll(
-        async () => (await fakeGithubCheckRunReads())[repository]?.[secondHead] === answers.length
+        async () =>
+          ((await fakeGithubCheckRunReads())[repository]?.[secondHead] ?? 0) - settlerReads ===
+          answers.length
       )
       .toBe(true);
     expect(answers.length).toBeGreaterThan(0);

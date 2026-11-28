@@ -101,25 +101,26 @@ test("every file-backed role reports the head its phase's record names", async (
   }
 });
 
-test("a record naming no head, or one of another shape, leaves those three without a commit", async () => {
+/** Bodies that name no readable head: none at all, one of another shape, or no JSON object. */
+const UNREADABLE = [
+  body(),
+  body(HEAD.slice(0, 39)),
+  body(HEAD.toUpperCase()),
+  body(`${HEAD} `),
+  body(42),
+  body(null),
+  '["head"]',
+  `"${HEAD}"`,
+  "not json at all",
+  "",
+];
+
+test("a record naming no head, or one of another shape, leaves the planner and the reviewer without a commit", async () => {
   // The record is the worker's own text, so a body this cannot read is no exception: the
   // completion goes without a commit, and the daemon refuses a behind-entry one of theirs.
-  const unreadable = [
-    body(),
-    body(HEAD.slice(0, 39)),
-    body(HEAD.toUpperCase()),
-    body(`${HEAD} `),
-    body(42),
-    body(null),
-    '["head"]',
-    `"${HEAD}"`,
-    "not json at all",
-    "",
-  ];
-  for (const text of unreadable) {
+  for (const text of UNREADABLE) {
     for (const [phase, role] of [
       ["planning", "planner"],
-      ["testing", "tester"],
       ["reviewing", "reviewer"],
     ] as const) {
       const { jj, calls } = fakeJj();
@@ -128,6 +129,22 @@ test("a record naming no head, or one of another shape, leaves those three witho
         handoffId: RECORD.id,
         handoffVersion: RECORD.version,
       });
+      expect(calls).toEqual([]);
+    }
+  }
+});
+
+test("a test record naming no readable head is refused, in testing and in a phase the tester left", async () => {
+  // The testing move reads the check states at the head the test record names and at no other,
+  // and the daemon refuses a tester's completion naming no commit (TESTED_HEAD_REQUIRED), so the
+  // tool refuses it first, before anything is posted, and reads nothing of the workspace.
+  for (const text of UNREADABLE) {
+    for (const phase of ["testing", "reviewing"] as const) {
+      const { jj, calls } = fakeJj();
+      const { latestHandoff } = recordingDispatch({ ...RECORD, body: text });
+      await expect(
+        findHandoffReport({ phase, role: "tester", env, jj, latestHandoff })
+      ).rejects.toThrow();
       expect(calls).toEqual([]);
     }
   }

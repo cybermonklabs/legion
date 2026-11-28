@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  `LegionHandoffCompleteRequest`'s documentation says a tester's completion names the head its
+  `test` record names: the plugin refuses a test record naming no head, and the daemon refuses a
+  tester's completion naming no commit (`TESTED_HEAD_REQUIRED`). The schema is unchanged.
+time: 2026-11-21T16:15:23Z
+custom:
+    Issue: check-states-tested-head

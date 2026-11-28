@@ -2777,7 +2777,7 @@ func TestGithubPayloadFields(t *testing.T) {
 						"sha": "head-sha", "ref": "feature/payloads",
 						"repo": map[string]any{"full_name": "example-org/example-repo"},
 					},
-					"base":             map[string]any{"ref": "main"},
+					"base":             map[string]any{"ref": "main", "sha": "base-sha"},
 					"merge_commit_sha": "merge-sha",
 					"merged_by":        map[string]any{"login": "merger"},
 					"updated_at":       "2026-09-07T10:01:00Z",
@@ -2785,7 +2785,7 @@ func TestGithubPayloadFields(t *testing.T) {
 				},
 			},
 			want: map[string]string{
-				"head_sha": "head-sha", "head_ref": "feature/payloads", "base_ref": "main", "merged": "true",
+				"head_sha": "head-sha", "head_ref": "feature/payloads", "base_ref": "main", "base_sha": "base-sha", "merged": "true",
 				"head_repo":        "example-org/example-repo",
 				"merge_commit_sha": "merge-sha", "merged_by": "merger", "updated_at": "2026-09-07T10:01:00Z",
 				"merged_at": "2026-09-07T10:00:30Z",

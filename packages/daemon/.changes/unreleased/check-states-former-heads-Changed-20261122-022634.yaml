@@ -1,0 +1,14 @@
+kind: Changed
+body: |-
+  The testing move is tested against the events Dispatch publishes when the pull request's head
+  moves while the tester tests the head before: `internal/checkstatetest.AfterAMove` reads them
+  from `packages/contracts/fixtures/dispatch-events/check-states-after-a-move.json`, which Envoy's
+  test writes, and `TestAResultAtTheTestedHeadAfterAMoveDecidesTheMove` applies them through the
+  intake and completes the tester at the head it tested: a fail recorded there after the move sends
+  the issue back naming the check, and passes recorded there send it to review. The daemon's code
+  does not change: it holds a state at whatever head an event names, and Dispatch now keeps
+  publishing the states at a head an open pull request has left. The doc comments of
+  `intake.DispatchCheckState` and `testedHead` say so.
+time: 2026-11-22T02:26:34Z
+custom:
+  Issue: check-states-former-heads

@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  The design news no longer tells a tester in testing to call `request_backward_move`, which the
+  daemon refuses there: the news's closing rule for a tester in testing says to run and record the
+  checks of the new version at the head it tests and to write a `dispatch comment` naming the
+  version and what is stale, and that the architect, whom the news reaches too, moves the issue
+  back where the change needs work no check covers. `prompts/go/worker-common.md` names the same
+  exception.
+time: 2026-11-27T08:48:41Z
+custom:
+  Issue: check-states-tester-news

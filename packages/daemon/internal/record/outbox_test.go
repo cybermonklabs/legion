@@ -39,7 +39,10 @@ func TestOutboxPayloadsRoundTripThroughPostgres(t *testing.T) {
 		// The row an older daemon's rescue message queued, which still decodes and round-trips.
 		MessagePost{Body: "The full list is in this document: dispatch://LEGION-208/artifact/rescue-pod-9d3f0c7a",
 			Artifact: &MessageArtifact{Name: "rescue-pod-9d3f0c7a", Content: "```\nbranch legion/LEGION-208-rescue\n```\n"}},
-		Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass", Version: 4, Reason: ""},
+		Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Version: 4, Reason: "these checks do not pass at head: k1: no (fail)",
+			Head: "head", Failing: []FailingCheck{{Check: "k1", State: "no", Reason: "fail"}, {Check: "k2", State: "unknown"}}},
+		Notice{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Reason: "the move waits for the states of k1 at head",
+			Head: "head", WaitsFor: "checks", Waiting: []string{"k1"}},
 		ControllerNotice{Kind: "held", Role: claim.RolePlanner, Phase: phase.Planning, Reason: "escalated"},
 		Notice{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing, Failure: &NoticeFailure{
 			Cause: "died", Detail: "the implementer's process died while its task was outstanding",
@@ -529,6 +532,12 @@ func TestNewOutboxRowRefusesInvalidPayloads(t *testing.T) {
 		{name: "an update-stalled notice for an architect", payload: Notice{Kind: UpdateStalledNotice}, reason: "unknown notice kind"},
 		{name: "an architect's notice carrying an update round", payload: Notice{Kind: "held", Update: &UpdateStalled{Round: "pod:9d3f0c7a"}}, reason: "only the controller's update-stalled notice does"},
 		{name: "a failure record on a phase-finished notice", payload: Notice{Kind: "phase-finished", Failure: &NoticeFailure{Cause: "died"}}, reason: "only a held or a worker-died notice does"},
+		{name: "a failing check on the reviewer's phase-finished notice", payload: Notice{Kind: "phase-finished", Role: claim.RoleReviewer, Phase: phase.Reviewing,
+			Failing: []FailingCheck{{Check: "k1", State: "no", Reason: "fail"}}}, reason: "only the tester's phase-finished notice of testing does"},
+		{name: "the checks a wait waits for on a held notice", payload: Notice{Kind: "held", Role: claim.RoleTester, Phase: phase.Testing, WaitsFor: "checks", Waiting: []string{"k1"}},
+			reason: "only the tester's phase-finished notice of testing does"},
+		{name: "a tested head on the implementer's phase-finished notice", payload: Notice{Kind: "phase-finished", Role: claim.RoleImplementer, Phase: phase.Implementing, Head: "head"},
+			reason: "only the tester's phase-finished notice of testing does"},
 		{name: "a failure record on a tick", payload: ControllerNotice{Kind: TickNotice, Failure: &NoticeFailure{Cause: "died"}}, reason: "only a held or a worker-died notice does"},
 		{name: "a failure record on a held notice to the controller naming no cause", payload: ControllerNotice{Kind: "held", Failure: &NoticeFailure{Detail: "the pod did not start"}}, reason: "names the cause it failed under"},
 		{name: "a failure record naming no cause", payload: Notice{Kind: "worker-died", Failure: &NoticeFailure{Detail: "the pod did not start"}}, reason: "names the cause it failed under"},
@@ -1377,7 +1386,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 	// reports a hold rather than a failure and names none, and the record is one field, which a
 	// Published that dropped it would drop for both kinds alike.
 	every := []Notice{
-		{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass"},
+		{Kind: "phase-finished", Role: claim.RoleTester, Phase: phase.Testing, Summary: "Tests passed"},
 		{Kind: "worker-died", Role: claim.RoleImplementer, Phase: phase.Implementing, Failure: &NoticeFailure{
 			Cause: "launch_refused", Detail: "the pod did not start",
 			LaunchFailures: FailureBudget{Count: 3, Limit: 3}, Deaths: FailureBudget{Count: 1, Limit: 3},
@@ -1412,7 +1421,7 @@ func TestAPublishedNoticeIsStillAValidOutboxPayload(t *testing.T) {
 		{Kind: "child-closed", Role: claim.RoleArchitect, Reason: "LEGION-209 is done"},
 		{Kind: "child-status", Role: claim.RoleArchitect, Reason: "LEGION-209 is todo; it runs again under LEGION-208"},
 		{Kind: "children-first", Role: claim.RoleArchitect, Reason: "LEGION-208 starts no phase of its own while LEGION-209 is open under it"},
-		{Kind: "awaiting-children", Role: claim.RoleArchitect, Phase: phase.Testing, Summary: "Tests passed", Verdict: "pass",
+		{Kind: "awaiting-children", Role: claim.RoleArchitect, Phase: phase.Testing, Summary: "Tests passed",
 			Reason: "LEGION-208 is in awaiting_children, holding the start of reviewing: the tester completed testing"},
 		{Kind: "child-release-stalled", Role: claim.RoleArchitect, Reason: "LEGION-209 has waited for its release since 2026-11-08T09:00:00Z"},
 		{Kind: "child-not-recorded", Role: claim.RoleArchitect, Reason: "LEGION-209 was not recorded under your tree: the review App is not installed on acme/gadgets; the daemon said so on the issue. Set a repository both Legion Apps are installed on, spelled as GitHub spells it (dispatch issue-update --repo owner/name), then release it again."},

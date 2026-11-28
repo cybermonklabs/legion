@@ -259,7 +259,7 @@ func TestHandoffCompleteRefusesASummaryWithNULAndRecordsNothing(t *testing.T) {
 	seedPullRequest(t, h, "LEGION-208", headSHA)
 	tester := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 
-	wantRefusal(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass\x00 at the head", Verdict: "pass",
+	wantRefusal(t, h.complete(HandoffCompleteRequest{GrantID: tester.grant(t), Summary: "tests pass\x00 at the head",
 		Commit: headSHA, HandoffID: tester.writeHandoff("test", 1), HandoffVersion: 1}), http.StatusBadRequest,
 		"invalid request body: "+nulError("summary", 11))
 
@@ -290,7 +290,7 @@ func TestHandoffCompleteFactBelowTheAPIStoresASummaryWithNULAsReplacementCharact
 	const want = "tests pass\uFFFD at the head"
 
 	fact := intake.HandoffComplete{Generation: c.ServingRun(), Issue: "LEGION-208", Role: claim.RoleTester, Claim: tester.token,
-		Summary: "tests pass\x00 at the head", Verdict: "pass", Commit: headSHA, HandoffRecord: handoff, HandoffVersion: 1}
+		Summary: "tests pass\x00 at the head", Commit: headSHA, HandoffRecord: handoff, HandoffVersion: 1}
 	applyEntryFact(t, h, engine, "complete", fact)
 
 	if row := phaseRowOf(t, h, "LEGION-208", claim.RoleTester); row == nil || row.Summary != want {

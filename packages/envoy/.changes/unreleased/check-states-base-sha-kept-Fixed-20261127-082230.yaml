@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  A write of a pull request's head that names no base revision keeps the one
+  `pull_request_heads.base_sha` stores (`coalesce(excluded.base_sha, stored.base_sha)`). A
+  listener of the release before this change sends no `base_sha`, and its envelopes wrote null
+  over the revision the reconcile stored, which left the check states settler's candidates of that
+  pull request unread, and its test handoffs waiting, until the next reconcile read. A kept
+  revision the base branch has moved on from is one the settler's read finds stale, which decides
+  nothing.
+time: 2026-11-27T08:22:30Z
+custom:
+  Issue: check-states-base-sha-kept

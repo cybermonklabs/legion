@@ -219,6 +219,11 @@ type heldDurable struct {
 	// it arrived on: that is what carries the handler's context and what says whether an answer
 	// of the handler's own is still the hold's to make (intakeDelivery.mayAnswer).
 	handle func(delivery *intakeDelivery, message intakeMessage)
+	// beforeTakeOver, when not nil, runs in each take-over under this intake's hold, before the
+	// take-over changes the durable, and a take-over it fails does not go on: the delivery
+	// intake's mark of every issue with an open head (Intake.markOpenHeadsOwed). Nil for the job
+	// intake.
+	beforeTakeOver func(ctx context.Context) error
 
 	// hold is the durable's hold while this intake holds it.
 	hold *duty.Hold
@@ -436,6 +441,15 @@ func (d *heldDurable) holds() bool {
 // create is even read (TestATakeOverCreatesTheDurableAlreadyBound). Then this intake records the
 // subject alone as the hold's token, still under the lease.
 //
+// Before it changes the durable it runs beforeTakeOver, bounded by takeOverCallTimeout, and a
+// failure ends the take-over with the durable as it was, for the next attempt to take over again.
+// The delivery intake marks there the check states of every issue with an open head owed
+// (Intake.markOpenHeadsOwed): this intake holds the durable's hold, so the holder before it has
+// stopped delivering, and a settlement of a pull request's checks that holder acknowledged with
+// no mark, as a build before the settlements' marks does, is read again by the settle each mark
+// starts. A mark the take-over could not write would leave such a settlement unread, so the
+// take-over waits for one rather than go on without it.
+//
 // From the delete on -- or from the lookup, when it finds no durable -- the take-over runs to its
 // end inside this one lease (finishTakeOver, which says what a lease given up with the durable
 // absent leaves behind).
@@ -477,6 +491,15 @@ func (d *heldDurable) takeOver(ctx context.Context) {
 		}
 		d.recorded = pending
 		deleteFirst = true
+	}
+	if d.beforeTakeOver != nil {
+		before, cancel := context.WithTimeout(ctx, takeOverCallTimeout)
+		err := d.beforeTakeOver(before)
+		cancel()
+		if err != nil {
+			d.tuning.log.Error("dispatch delivery: the step before the take-over failed; the next attempt takes the durable over", "name", name, "error", err)
+			return
+		}
 	}
 	d.finishTakeOver(create, deleteFirst, plan.pastEnd)
 }

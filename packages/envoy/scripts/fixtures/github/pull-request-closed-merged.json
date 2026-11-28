@@ -14,7 +14,8 @@
       "ref": "acceptance-driver"
     },
     "base": {
-      "ref": "main"
+      "ref": "main",
+      "sha": "9999999999999999999999999999999999999999"
     },
     "merged": true,
     "merge_commit_sha": "3333333333333333333333333333333333333333",

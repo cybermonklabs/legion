@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+    `DispatchEvent` carries `check.state_changed`, whose payload is
+    `CheckStateChangedEventPayloadSchema`: the state of one `before_merge` check at one open
+    head (`yes`, `no` or `unknown`, with `reason` `fail`, `no_result`, `pass_and_fail` or
+    `read_failed`, empty for `yes`), the head's repository and its open pull requests, the head's
+    whole set of checks, the roles whose pass counts there, the results that decide the state,
+    the `ci.case` of a check CI proves, and the issue's event `serial`. In the set form `check`,
+    `check_version` and `state` are null: it names a head's set of checks where no check's own
+    event does. `fixtures/dispatch-events/check-state-changed.json` holds both forms as the Go
+    struct writes them, and the schema reads each.
+time: 2026-11-20T23:00:34Z
+custom:
+    Issue: check-state-changed-event

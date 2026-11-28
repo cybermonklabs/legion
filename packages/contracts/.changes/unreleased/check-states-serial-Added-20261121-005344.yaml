@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+    `HandoffSummary` and `Handoff` carry the optional `check_states_serial`, which Dispatch
+    answers for a `test` handoff: the issue's check states serial once the check states the
+    tester's results changed were published, so each `check.state_changed` event those results
+    caused carries a serial at or below it. Regenerated in `schemas/dispatch-openapi.json` and
+    `src/dispatch-api.generated.ts`.
+time: 2026-11-21T00:53:44Z
+custom:
+    Issue: check-states-serial

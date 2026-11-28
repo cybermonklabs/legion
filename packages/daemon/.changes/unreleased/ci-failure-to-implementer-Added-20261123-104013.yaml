@@ -1,0 +1,20 @@
+kind: Added
+body: |-
+    A newer `check.state_changed` state of a check whose `ci_check` names a CI job, saying that its
+    job ended at the pull request's head without a pass, is told to the implementer alone at once,
+    in any phase and in the state event's own transaction: one role message naming the pull request,
+    the check, the head, the job's case and the state. It starts no implementer and moves nothing. A
+    second state that says the same failure, a state at a head the pull request has left, and a
+    lingering tree tell nobody. The CI settlement's message to the architect, the phase's worker and
+    the implementer stays as it was.
+    The engine's `TestingLeavesCI` says whether the testing move leaves out each check a CI job
+    runs. The daemon wires it false, so the move still reads every check, those a CI job runs among
+    them, until the end of a task holds the checks a CI job runs; the move with it true is tested
+    beside the move with it false.
+    The tester's prompt sends it to no CI job, no CI run and no result Dispatch takes from CI: it
+    reads no CI, runs no lane again as a whole, and waits for none. The reviewer's and the
+    architect's prompts say that each check, those a CI job runs among them, must read yes: at the
+    reviewed head for the approval, and at each open head of the issue for the acceptance.
+time: 2026-11-23T10:40:13Z
+custom:
+    Issue: ci-failure-to-implementer

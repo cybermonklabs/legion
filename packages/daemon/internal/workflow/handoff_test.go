@@ -107,7 +107,7 @@ func TestIgnoredCompletionsAreRefused(t *testing.T) {
 		},
 		{
 			name: "tester naming no handoff record", current: phase.Testing,
-			fact: intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Verdict: "pass"},
+			fact: intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"},
 			code: "HANDOFF_RECORD_REQUIRED",
 		},
 	} {
@@ -279,7 +279,8 @@ func TestAHandoffMustBeNewSinceTheRolesPreviousPhase(t *testing.T) {
 		t.Fatalf("round 0 refused: %+v", *refusal)
 	}
 	assertPhase(t, pool, phase.Testing)
-	if refusal := complete("test-0", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Verdict: "fail", HandoffRecord: "test-record-0", HandoffVersion: 1}); refusal != nil {
+	testedAs(t, pool, engine, "LEGION-208", headOne, false)
+	if refusal := complete("test-0", intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Commit: headOne, HandoffRecord: "test-record-0", HandoffVersion: 1}); refusal != nil {
 		t.Fatalf("tester refused: %+v", *refusal)
 	}
 	assertPhase(t, pool, phase.Implementing)
@@ -312,8 +313,9 @@ func toSecondReviewRound(t *testing.T, pool *pgxpool.Pool, engine *Engine) {
 		intake.PullRequestSynchronized{Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-208", HeadSHA: headTwo},
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "renamed", Commit: "round-2", HandoffRecord: "implement-2", HandoffVersion: 2})
 	assertPhase(t, pool, phase.Testing)
+	testedAs(t, pool, engine, "LEGION-208", headTwo, true)
 	applyRefusingNothing(t, pool, engine,
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Verdict: "pass", HandoffRecord: "test-2", HandoffVersion: 1})
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "tested", Commit: headTwo, HandoffRecord: "test-2", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Reviewing)
 	reviewer := phaseRowOf(t, pool, claim.RoleReviewer)
 	if reviewer.Completed() || reviewer.HandoffVersion != 0 || reviewer.LastHandoff != "review-1" {
@@ -382,8 +384,9 @@ func TestARerunTesterIsNotCompletedByItsLastRunsRecord(t *testing.T) {
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", HandoffRecord: "implement-1", HandoffVersion: 1, LastHandoff: "implement-1"})
 	seedPhase(t, pool, record.PhaseRow{Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim"})
 	engine := testEngine(config.DesignGateRootIssues, nil)
+	testedAs(t, pool, engine, "LEGION-208", headOne, false)
 	applyRefusingNothing(t, pool, engine,
-		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "two scenarios fail", Verdict: "fail", HandoffRecord: "test-1", HandoffVersion: 1})
+		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleTester, Claim: "test-claim", Summary: "two scenarios fail", Commit: headOne, HandoffRecord: "test-1", HandoffVersion: 1})
 	assertPhase(t, pool, phase.Implementing)
 	applyRefusingNothing(t, pool, engine,
 		intake.HandoffComplete{Generation: 1, Issue: "LEGION-208", Role: claim.RoleImplementer, Claim: "implement-claim", Summary: "fixed", Commit: "head", HandoffRecord: "implement-2", HandoffVersion: 2})

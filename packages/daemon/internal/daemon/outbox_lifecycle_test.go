@@ -407,20 +407,22 @@ func TestAnIssuesCloseWaitsForTheWorkersTurnToEnd(t *testing.T) {
 	}
 }
 
-// The tester's own backward move while it is in a turn — running a tool, its phase not completed —
-// takes the phase back to implementing with nobody's completion. The implementer's start runs at
-// once, as at every other phase change: it waits for no turn to end, and hands the implementer the
-// move's task while the tester is still working. The tester's turn is its own — nothing interrupts
-// it and nothing stops it — and it keeps its launch, its session and its capability.
-func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *testing.T) {
+// The reviewer's own backward move while it is in a turn — reading the head, its phase not
+// completed — takes the phase back to implementing with nobody's completion. The implementer's
+// start runs at once, as at every other phase change: it waits for no turn to end, and hands the
+// implementer the move's task while the reviewer is still working. The reviewer's turn is its own —
+// nothing interrupts it and nothing stops it — and it keeps its launch, its session and its
+// capability. (The mover is the reviewer: the tester has no backward move of its own out of
+// testing, since its step ends by its checks' states.)
+func TestABackwardMoveStartsTheImplementerWhileTheReviewerIsStillInItsTurn(t *testing.T) {
 	t.Parallel()
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	ctx := context.Background()
-	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Testing, Generation: 1, Status: "testing", Rank: "U", LastDispatchSeq: 5}
+	issue := record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", Rank: "U", LastDispatchSeq: 5}
 	putOutboxIssue(t, pool, records, issue)
-	// The issue is at work in testing and at work in implementing after the move back, so it holds
-	// its admission slot throughout: the implementer's task is delivered rather than held for one.
+	// The issue is at work in reviewing and at work in implementing after the move back, so it
+	// holds its admission slot throughout: the implementer's task is delivered rather than held for one.
 	holdSlot(t, pool, issue.Key)
 	if err := store.Transact(ctx, pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(ctx, tx, record.PullRequest{State: record.PullRequestOpen, Issue: issue.Key, Repo: "acme/widgets", Number: 86, Branch: "legion/LEGION-208", HeadSHA: "sha-1",
@@ -466,16 +468,16 @@ func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *test
 		}
 		return machine, conn
 	}
-	// The implementer finished implementing and is idle; the tester is in its testing turn.
+	// The implementer finished implementing and is idle; the reviewer is in its review turn.
 	implementer, implementerConn := boot(claim.RoleImplementer, "", "")
-	tester, _ := boot(claim.RoleTester, "Continue Workflow. Issue: LEGION-208. Phase: testing.", phase.Testing)
-	before := tester.Claim()
+	reviewer, _ := boot(claim.RoleReviewer, "Continue Workflow. Issue: LEGION-208. Phase: reviewing.", phase.Reviewing)
+	before := reviewer.Claim()
 	engine := workflow.New(records, workflow.Config{Project: "legion", Repositories: testRepositories, Steps: config.DesignGateRootIssues.Steps()}, quietLogger())
 	clock := time.Now()
 	runner := &outbox{
 		dispatchProject: "LEGION",
 		pool:            pool, records: records, supervisor: sup, trees: outboxTreeStore(t, pool, issue.Tree), tokens: outboxTokens{}, project: "legion", stateDir: t.TempDir(),
-		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: issue.Key, Status: "testing"}}, notices: &outboxPublisher{},
+		dispatch: &outboxDispatch{issue: dispatch.Issue{Key: issue.Key, Status: "needs_review"}}, notices: &outboxPublisher{},
 		handlers: []intake.Handler{engine}, now: func() time.Time { return clock }, log: quietLogger(),
 	}
 	run := func(what string) {
@@ -486,7 +488,7 @@ func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *test
 		}
 		implementer.Wait()
 	}
-	const reason = "the fix does not cover the empty list"
+	const reason = "the review finds the fix does not cover the empty list"
 	moveBackTasks := func() int {
 		t.Helper()
 		count := 0
@@ -498,23 +500,23 @@ func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *test
 		return count
 	}
 
-	if result, err := intake.ApplyFact(ctx, pool, "api", "move-back", intake.BackwardMove{Issue: issue.Key, Requester: claim.RoleTester,
+	if result, err := intake.ApplyFact(ctx, pool, "api", "move-back", intake.BackwardMove{Issue: issue.Key, Requester: claim.RoleReviewer,
 		To: phase.Implementing, Reason: reason}, engine); err != nil || result.Refusal != nil {
-		t.Fatalf("apply the tester's move back = %+v, %v", result, err)
+		t.Fatalf("apply the reviewer's move back = %+v, %v", result, err)
 	}
 	run("the send-back's effects")
 	testwait.Eventually(t, "the implementer to be handed its task of the move back", func() bool { return moveBackTasks() == 1 })
-	during := tester.Claim()
+	during := reviewer.Claim()
 	if during.State != supervise.StateWorking {
-		t.Fatalf("while the implementer started the tester is %s, want working: its turn is its own", during.State)
+		t.Fatalf("while the implementer started the reviewer is %s, want working: its turn is its own", during.State)
 	}
 
-	endTurn(ctx, t, tester, before.Token)
-	run("the rows due after the tester's turn ends")
-	after := tester.Claim()
+	endTurn(ctx, t, reviewer, before.Token)
+	run("the rows due after the reviewer's turn ends")
+	after := reviewer.Claim()
 	if after.State != supervise.StateIdle || after.Generation != before.Generation || after.Session != before.Session || after.Locator == nil ||
 		*after.Locator != *before.Locator || !bytes.Equal(after.CapabilityHash, before.CapabilityHash) {
-		t.Fatalf("after the send-back the tester is %+v, want idle on its launch, session and capability", after)
+		t.Fatalf("after the send-back the reviewer is %+v, want idle on its launch, session and capability", after)
 	}
 	if moveBackTasks() != 1 {
 		t.Fatalf("the implementer was handed %d tasks of the move back, want the one the start delivered", moveBackTasks())
@@ -522,7 +524,7 @@ func TestABackwardMoveStartsTheImplementerWhileTheTesterIsStillInItsTurn(t *test
 	for _, method := range []string{"Suspend", "Release"} {
 		for _, call := range rt.CallsOf(method) {
 			if call.Locator.Claim == before.Token {
-				t.Fatalf("the runtime was asked to %s the tester: %+v", method, call)
+				t.Fatalf("the runtime was asked to %s the reviewer: %+v", method, call)
 			}
 		}
 	}
@@ -771,7 +773,7 @@ func TestAChildAHumanMovesOutOfTheWorkflowStopsAndKeepsTheHumansStatus(t *testin
 	if _, err := pool.Exec(ctx, "delete from outbox"); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-pass", intake.HandoffComplete{Generation: 1, Issue: "LEGION-209", Role: claim.RoleTester, Summary: "pass", Verdict: "pass", HandoffRecord: "test-1", HandoffVersion: 1}, engine, admission); err != nil {
+	if _, err := intake.ApplyFact(ctx, pool, "api", "tester-pass", intake.HandoffComplete{Generation: 1, Issue: "LEGION-209", Role: claim.RoleTester, Summary: "pass", Commit: "sha", HandoffRecord: "test-1", HandoffVersion: 1}, engine, admission); err != nil {
 		t.Fatal(err)
 	}
 	var childPhase phase.Phase

@@ -191,3 +191,53 @@ func TestSupportedContractsAreTheNumberedEntriesFromTheFloorUp(t *testing.T) {
 		t.Errorf("SupportedContracts() = %v, want it to begin with the frozen list %v", supported, frozenContracts)
 	}
 }
+
+// A phase completion naming a verdict from a plugin at the check states' entry's number or above is
+// refused VERDICT_NOT_TAKEN; only a tester's plugin below it has its verdict ignored. A plugin built
+// before the check states' change still sends its tester's verdict, so every contract such a plugin
+// can state must be below that number: otherwise a merge of a base whose own contract has passed it
+// ships that refusal to the base's testers. Each entry's number is L plus its rank in the build's
+// order (contracts.go), so an entry ranked before the check states' entry is numbered below it and
+// one ranked after it above it, by the registry's own construction, and DaemonAPIVersion() is the
+// last of them. What the registry does not order is every contract that is no entry: each numbered
+// entry of version.go, the frozen list of SupportedContracts, and each named contract constant.
+// They are read from the declarations themselves and none is written here as a number.
+func TestCheckStatesContractIsAboveEveryContractDeclaredBeforeIt(t *testing.T) {
+	checkStates := entryNumber(CheckStatesContract)
+	if version := DaemonAPIVersion(); checkStates > version {
+		t.Fatalf("the check states' entry is numbered %d, above this build's own contract %d: no plugin this build serves states it", checkStates, version)
+	}
+	var entries []int
+	for contract := range numberedEntries(t) {
+		entries = append(entries, contract)
+	}
+	slices.Sort(entries)
+	declared := []struct {
+		source    string
+		contracts []int
+	}{
+		{"version.go's numbered entries", entries},
+		{"SupportedContracts' frozen list", frozenContracts},
+		{"the named contract constants", []int{
+			supervise.PodUpdateContract, ServingFloor, memoryContract, treeContract, wakesWaitingContract, checkRoleContract,
+			gatedStepsContract, retiredStrandedContract, stallRecordContract, waitingLineContract, fixAttemptsContract,
+			backwardMovesContract, claimsToRefreshContract, recordFieldsContract, whyAndLineFieldsContract,
+			stateMachineContract, leakCheckCauseContract, phaseEntriesContract, heldContract, processReadContract,
+			quietTimeContract, waitingOnIssueContract, mergeWaitContract, assignmentsContract, entryTimesContract,
+			repositoryAppsContract, PlanRatingContract, pauseContract, shapedAnswersContract, repositoriesLiveContract,
+			childRouteRemovedContract,
+		}},
+	}
+	for _, source := range declared {
+		if len(source.contracts) == 0 {
+			t.Errorf("%s hold no contract: this test read nothing from them", source.source)
+		}
+		for _, contract := range source.contracts {
+			if contract < checkStates {
+				continue
+			}
+			t.Errorf("%s declare contract %d, at or above the check states' entry's number %d: a tester's plugin at %d, built before the check states' change, sends a verdict and is refused VERDICT_NOT_TAKEN",
+				source.source, contract, checkStates, contract)
+		}
+	}
+}

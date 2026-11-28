@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 	"unicode/utf8"
@@ -22,7 +21,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
-	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
 const (
@@ -55,149 +53,6 @@ var ciJobVerification = ciCheckBlock("c1", `negative_control="`+ciJobNegativeCon
 // ciJobSession is the session the job's results token proves (resultsOnlyToken).
 var ciJobSession = resultsOnlyToken("", ciJobProject).Session
 
-// ciJobGitHub is the GitHub the route reads for a job's result: the installation of every
-// repository, the check runs of a job by id, the commits a repository holds (every one), the
-// check runs listed at a pull request head, which the derived result of the read is made from,
-// and the head of each branch the results read compares a before_merge check with.
-type ciJobGitHub struct {
-	mu        sync.Mutex
-	checkRuns map[int64]specCheckRunAnswer
-	listings  *checkRunsFake
-	// branches is what GitHub answers for the head of each branch, by name. A branch it holds
-	// no answer for is 404, a branch the repository does not hold.
-	branches map[string]ciJobBranchHead
-	// branchReads is how many times GitHub was asked for each branch's head.
-	branchReads map[string]int
-	// hidden has GitHub answer 404 for the repository itself, as it does for a repository the
-	// App cannot see.
-	hidden bool
-	// commitRead, when set, is handed each commit GitHub is asked whether the repository holds,
-	// with the asking request's context, before GitHub answers, and holds that request for as
-	// long as it runs (holdCommitReads).
-	commitRead func(ctx context.Context, sha string)
-}
-
-// ciJobBranchHead is GitHub's answer for one branch's head: the commit it is at, or, where
-// status is set, that status and no commit.
-type ciJobBranchHead struct {
-	sha    string
-	status int
-}
-
-// setCheckRun has GitHub name check run id name, at commit headSHA.
-func (g *ciJobGitHub) setCheckRun(id int64, name, headSHA string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.checkRuns[id] = specCheckRunAnswer{name: name, headSHA: headSHA}
-}
-
-// setBranch has GitHub answer head for the head of branch.
-func (g *ciJobGitHub) setBranch(branch string, head ciJobBranchHead) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.branches[branch] = head
-}
-
-// deleteBranch has GitHub hold branch no longer, so a read of its head is 404.
-func (g *ciJobGitHub) deleteBranch(branch string) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	delete(g.branches, branch)
-}
-
-// hideRepository has GitHub answer 404 for the repository, as for one the App cannot see.
-func (g *ciJobGitHub) hideRepository() {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.hidden = true
-}
-
-// branchReadsOf is how many times GitHub was asked for the head of branch.
-func (g *ciJobGitHub) branchReadsOf(branch string) int {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	return g.branchReads[branch]
-}
-
-// holdCommitReads has GitHub hand read each commit it is asked whether the repository holds,
-// before it answers.
-func (g *ciJobGitHub) holdCommitReads(read func(ctx context.Context, sha string)) {
-	g.mu.Lock()
-	defer g.mu.Unlock()
-	g.commitRead = read
-}
-
-func (g *ciJobGitHub) serve(t *testing.T) string {
-	t.Helper()
-	mux := http.NewServeMux()
-	mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `{"id":77,"app_slug":"dispatch-test","permissions":{"contents":"read","pull_requests":"read","checks":"read"}}`)
-	})
-	mux.HandleFunc("POST /app/installations/{id}/access_tokens", func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		fmt.Fprint(w, `{"token":"ghs_fake_77","expires_at":"2099-01-01T00:00:00Z"}`)
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}", func(w http.ResponseWriter, r *http.Request) {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		if g.hidden {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, `{"message":"Not Found"}`)
-			return
-		}
-		fmt.Fprintf(w, `{"full_name":%q,"default_branch":"main"}`, r.PathValue("owner")+"/"+r.PathValue("repo"))
-	})
-	// The exact read of a branch's head (githubapp.Client.Branch), its name path-escaped so a
-	// branch with a / in it is one segment.
-	mux.HandleFunc("GET /repos/{owner}/{repo}/git/ref/heads/{branch}", func(w http.ResponseWriter, r *http.Request) {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		branch := r.PathValue("branch")
-		g.branchReads[branch]++
-		head, held := g.branches[branch]
-		switch {
-		case !held:
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, `{"message":"Not Found"}`)
-		case head.status != 0:
-			w.WriteHeader(head.status)
-			fmt.Fprint(w, `{"message":"Server Error"}`)
-		default:
-			fmt.Fprintf(w, `{"ref":%q,"object":{"sha":%q,"type":"commit"}}`, "refs/heads/"+branch, head.sha)
-		}
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}", func(w http.ResponseWriter, r *http.Request) {
-		g.mu.Lock()
-		read := g.commitRead
-		g.mu.Unlock()
-		if read != nil {
-			read(r.Context(), r.PathValue("sha"))
-		}
-		fmt.Fprintf(w, `{"sha":%q}`, r.PathValue("sha"))
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/pulls", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `[]`)
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/compare/{basehead}", func(w http.ResponseWriter, _ *http.Request) {
-		fmt.Fprint(w, `{"status":"diverged"}`)
-	})
-	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{sha}/check-runs", g.listings.serve)
-	mux.HandleFunc("GET /repos/{owner}/{repo}/check-runs/{id}", func(w http.ResponseWriter, r *http.Request) {
-		g.mu.Lock()
-		defer g.mu.Unlock()
-		var id int64
-		fmt.Sscan(r.PathValue("id"), &id)
-		run, ok := g.checkRuns[id]
-		if !ok {
-			w.WriteHeader(http.StatusNotFound)
-			fmt.Fprint(w, `{"message":"Not Found"}`)
-			return
-		}
-		fmt.Fprintf(w, `{"id":%d,"name":%q,"head_sha":%q,"status":"in_progress"}`, id, run.name, run.headSHA)
-	})
-	return githubtest.Server(t, githubtest.Spec{Handle: mux.ServeHTTP})
-}
-
 // ciJobRig is a Dispatch whose verifier serves results tokens as cmd/dispatch's does, a GitHub
 // that holds the job's check run, and issue ACME-1 of project ACME, whose repository is the run's
 // and whose Verification document, verification, is ciJobVerification.
@@ -222,10 +77,21 @@ func newCIJobRig(t *testing.T) *ciJobRig {
 func newCIJobRigSettling(t *testing.T, settle time.Duration) *ciJobRig {
 	t.Helper()
 	github := &ciJobGitHub{
-		checkRuns:   map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
-		listings:    newCheckRunsFake(),
-		branches:    map[string]ciJobBranchHead{},
-		branchReads: map[string]int{},
+		checkRuns:            map[int64]specCheckRunAnswer{ciJobCheckRun: {name: ciJobName, headSHA: ciJobCommit}},
+		listings:             newCheckRunsFake(),
+		branches:             map[string]ciJobBranchHead{},
+		branchReads:          map[string]int{},
+		pullCommits:          map[int][]string{},
+		pullCommitReads:      map[int]int{},
+		pullCommitsHold:      map[int]*ciJobHeldRead{},
+		pullCommitsAnswered:  map[int][]*ciJobHeldRead{},
+		pullCommitsPageFails: map[int]int{},
+		pulls:                map[int]ciJobPull{},
+		pullReads:            map[int]int{},
+		ranges:               map[string][]string{},
+		compares:             map[string]ciJobCompare{},
+		compareReads:         map[string]int{},
+		absentCommits:        map[string]bool{},
 	}
 	_, pemText := githubapptest.Key(t)
 	rig := &ciJobRig{

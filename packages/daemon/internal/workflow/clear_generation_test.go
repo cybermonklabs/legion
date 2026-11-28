@@ -96,25 +96,26 @@ func TestClearGenerationKeepsThePassAndResetsTheRounds(t *testing.T) {
 	issue := clearedIssue("LEGION-286")
 	seedIssue(t, pool, issue)
 	seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "legion-286-implementer",
-		HandoffCommit: "handoff-4", Pass: 4, Rounds: 2, Verdict: "pass"})
+		HandoffCommit: "handoff-4", Pass: 4, Rounds: 2, StatesSerial: 4})
 	clearIssueGeneration(t, pool, issue)
 	phases := issuePhases(t, pool, issue.Key)
-	if len(phases) != 1 || phases[0].Pass != 4 || phases[0].Rounds != 0 || phases[0].HandoffCommit != "" {
-		t.Fatalf("phases after ClearGeneration = %#v, want one row with pass 4, no rounds and no handoff", phases)
+	if len(phases) != 1 || phases[0].Pass != 4 || phases[0].Rounds != 0 || phases[0].HandoffCommit != "" || phases[0].StatesSerial != 0 {
+		t.Fatalf("phases after ClearGeneration = %#v, want one row with pass 4, no rounds, no handoff and no check states serial", phases)
 	}
 }
 
-// A new generation clears each role's handoff of its current phase — the commit it reported and the
-// Dispatch handoff record it named — so no role of the new generation reads as having completed,
-// and keeps the record each role last named, which a completion naming it again is refused against.
-// It clears the implementer's counts of the moves back as well, and the cap value the row told
-// for, so the new generation counts and tells from its own first crossing.
+// A new generation clears each role's handoff of its current phase — the commit it reported, the
+// Dispatch handoff record it named and the step a tester's completion named for its task to return
+// to — so no role of the new generation reads as having completed, and keeps the record each role
+// last named, which a completion naming it again is refused against. It clears the implementer's
+// counts of the moves back as well, and the cap value the row told for, so the new generation
+// counts and tells from its own first crossing.
 func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T) {
 	t.Parallel()
 	pool := migratedPool(t)
 	issue := clearedIssue("LEGION-286")
 	seedIssue(t, pool, issue)
-	seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "tester", HandoffRecord: "test-record", HandoffVersion: 2, LastHandoff: "test-record", Verdict: "pass"})
+	seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleTester, Claim: "tester", HandoffRecord: "test-record", HandoffVersion: 2, LastHandoff: "test-record", StatesSerial: 5, ReturnTo: 2})
 	seedPhase(t, pool, record.PhaseRow{Issue: issue.Key, Role: claim.RoleImplementer, Claim: "implementer", HandoffCommit: "head", HandoffRecord: "implement-record", HandoffVersion: 1, LastHandoff: "implement-record", Rounds: 1,
 		BackwardMoves: map[string]int{"testing-implementing": 1}, CapTold: 3})
 	clearIssueGeneration(t, pool, issue)
@@ -124,8 +125,8 @@ func TestClearGenerationClearsTheHandoffRecordAndKeepsTheLastNamed(t *testing.T)
 		t.Fatalf("phases after ClearGeneration = %#v, want both rows kept", rows)
 	}
 	for _, row := range rows {
-		if row.Completed() || row.HandoffVersion != 0 || row.LastHandoff != want[row.Role] {
-			t.Fatalf("the %s row after ClearGeneration = %#v, want no commit, record or version, and %q kept as the record it last named", row.Role, row, want[row.Role])
+		if row.Completed() || row.HandoffVersion != 0 || row.StatesSerial != 0 || row.ReturnTo != 0 || row.LastHandoff != want[row.Role] {
+			t.Fatalf("the %s row after ClearGeneration = %#v, want no commit, record, version, check states serial or step to return to, and %q kept as the record it last named", row.Role, row, want[row.Role])
 		}
 		if len(row.BackwardMoves) != 0 || row.CapTold != 0 {
 			t.Fatalf("the %s row after ClearGeneration counts %#v moves back and told cap %d, want no count and no cap told", row.Role, row.BackwardMoves, row.CapTold)

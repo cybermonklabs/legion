@@ -419,8 +419,10 @@ func (r *stepRecordsRig) implement() {
 	r.work(claim.RoleImplementer, "implement", api.HandoffCompleteRequest{Summary: "implemented", Commit: stepRecordsHead}, phase.Testing)
 }
 
-// testCompletion is the tester's completion of a round it passes.
-var testCompletion = api.HandoffCompleteRequest{Summary: "every criterion holds", Verdict: "pass"}
+// testCompletion is the tester's completion of a round it passes: the check state of the head the
+// rig holds passes (finish), and the completion names that head as the one it tested and no
+// verdict.
+var testCompletion = api.HandoffCompleteRequest{Summary: "every criterion holds", Commit: stepRecordsHead}
 
 // test is one round of the tester, which passes.
 func (r *stepRecordsRig) test() {
@@ -464,12 +466,17 @@ func (r *stepRecordsRig) work(role claim.Role, word string, req api.HandoffCompl
 }
 
 // finish is the end of c's turn: it writes its handoff record of word to Dispatch under its own
-// session (none for word ""), completes, ends its turn, and waits for the issue to reach next.
+// session (none for word ""), completes, ends its turn, and waits for the issue to reach next. A
+// tester's round passes on the check state of the head it tests, which the store holds before its
+// completion, as Dispatch's event of the tester's result puts it there.
 func (r *stepRecordsRig) finish(c *stepClaimant, word string, req api.HandoffCompleteRequest, next phase.Phase) {
 	t := r.t
 	t.Helper()
 	if word != "" {
 		req.HandoffID, req.HandoffVersion = r.writeHandoff(c.session, word)
+	}
+	if c.role == claim.RoleTester && next == phase.Reviewing {
+		testedAs(t, r.st.Pool(), r.key, req.Commit, true)
 	}
 	if status, body := r.complete(c, req); status != http.StatusOK {
 		t.Fatalf("the %s's completion = %d %s, want 200", c.role, status, body)
@@ -1024,6 +1031,9 @@ type stepClaimant struct {
 	// inTurn is whether the session is in a turn the walk began on it (send's agent_start, until
 	// its agent_end): a task the daemon sends meanwhile joins that turn (workAlone).
 	inTurn bool
+	// taken is the message of each prompt take returned, oldest first: every task the walk took for
+	// this claim (tasksTaken).
+	taken []string
 	// alone is the delivery of each task the pane worked in a turn of its own (workAlone), oldest
 	// first.
 	alone []string
@@ -1279,10 +1289,14 @@ func (c *stepClaimant) send(frame shimwire.Frame) {
 // take waits for the daemon's next task of this claim and starts the turn that works it, its
 // model answering first: the claim's machine reads a connection's frames in order, so once the
 // turn's start shows the claim working, the answer before it has been read too. It answers the
-// prompt that carried the task, which a walk reads where it holds what the claim was told.
+// prompt that carried the task, which a walk reads where it holds what the claim was told, and
+// keeps its message among the tasks taken (tasksTaken).
 func (c *stepClaimant) take() shimwire.Prompt {
 	c.r.t.Helper()
 	prompt := c.receive()
+	c.mu.Lock()
+	c.taken = append(c.taken, prompt.Message)
+	c.mu.Unlock()
 	c.answer()
 	c.startTurn(prompt)
 	return prompt
@@ -1317,6 +1331,13 @@ func (c *stepClaimant) startTurn(prompt shimwire.Prompt) {
 	if err != nil {
 		c.r.t.Fatalf("the fact that %s took delivery %s failed: %v", c.token, prompt.DeliveryID, err)
 	}
+}
+
+// tasksTaken is the message of every task take returned for this claim, oldest first.
+func (c *stepClaimant) tasksTaken() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return slices.Clone(c.taken)
 }
 
 // receive waits for the daemon's next task of this claim, the prompt the pane has acknowledged

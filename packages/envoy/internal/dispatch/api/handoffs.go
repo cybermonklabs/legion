@@ -39,7 +39,11 @@ var errHandoffTooLarge = errorf(http.StatusRequestEntityTooLarge, "CAP_EXCEEDED"
 	"request body exceeds %d bytes: a handoff body is at most %d bytes", handoffRequestLimit, contracts.DispatchHandoffBodyMax)
 
 // handoffColumns is the handoffs select list scanHandoff reads, in scan order.
-const handoffColumns = `id::text, issue_key, phase, version, author, created_at`
+const handoffColumns = `id::text, issue_key, phase, version, author, created_at, check_states_serial`
+
+// testHandoffPhase is the phase of the tester's handoff, the one handoff that waits for the check
+// states its results changed (awaitCheckStatesSettled) and stores the serial it waited for.
+const testHandoffPhase = "test"
 
 type createHandoffInput struct {
 	Actor *model.Actor `json:"actor"`
@@ -102,11 +106,22 @@ func (s *server) createHandoff(w http.ResponseWriter, r *http.Request) {
 }
 
 // recordHandoff writes the handoff as the next version of the issue's phase and appends its
-// handoff.recorded, in one transaction that first locks the open issue.
+// handoff.recorded, in one transaction that first locks the open issue. A test handoff first waits,
+// before its transaction opens, until the check states the tester's results changed are published,
+// and stores the issue's check states serial then (awaitCheckStatesSettled), so a reader of the
+// handoff knows which state events came before it. Every other phase stores no serial.
 func (s *server) recordHandoff(ctx context.Context, issueKey, phase, body string, actor model.Actor) (model.HandoffSummary, error) {
 	author, err := json.Marshal(actor)
 	if err != nil {
 		return model.HandoffSummary{}, err
+	}
+	var serial *int64
+	if phase == testHandoffPhase {
+		settled, err := s.awaitCheckStatesSettled(ctx, issueKey)
+		if err != nil {
+			return model.HandoffSummary{}, err
+		}
+		serial = &settled
 	}
 	tx, err := s.begin(ctx)
 	if err != nil {
@@ -117,10 +132,10 @@ func (s *server) recordHandoff(ctx context.Context, issueKey, phase, body string
 		return model.HandoffSummary{}, err
 	}
 	handoff, err := scanHandoff(tx.QueryRow(ctx, `
-		insert into handoffs (issue_key, phase, version, body, author)
-		select $1::text, $2::text, coalesce(max(version), 0) + 1, $3::text, $4::jsonb
+		insert into handoffs (issue_key, phase, version, body, author, check_states_serial)
+		select $1::text, $2::text, coalesce(max(version), 0) + 1, $3::text, $4::jsonb, $5::bigint
 		from handoffs where issue_key = $1::text and phase = $2::text
-		returning `+handoffColumns, issueKey, phase, body, author))
+		returning `+handoffColumns, issueKey, phase, body, author, serial))
 	if err != nil {
 		return model.HandoffSummary{}, err
 	}
@@ -229,7 +244,7 @@ func scanHandoff(row pgx.Row, extra ...any) (model.HandoffSummary, error) {
 	var handoff model.HandoffSummary
 	var author []byte
 	dest := append([]any{
-		&handoff.ID, &handoff.IssueKey, &handoff.Phase, &handoff.Version, &author, &handoff.CreatedAt,
+		&handoff.ID, &handoff.IssueKey, &handoff.Phase, &handoff.Version, &author, &handoff.CreatedAt, &handoff.CheckStatesSerial,
 	}, extra...)
 	if err := row.Scan(dest...); err != nil {
 		return model.HandoffSummary{}, err

@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+    The check states code and its tests are split by concern, with no change of behaviour: the
+    fence a test handoff waits on (`awaitCheckStatesSettled`) moves from
+    `internal/dispatch/api/check_states.go` to `check_states_fence.go`, and the settler's tests move
+    from `check_states_test.go`, which keeps their rig and readers, to `check_states_publish_test.go`
+    (what is published), `check_states_settle_test.go` (how a settle starts and runs) and
+    `check_states_fence_test.go` (the fence and the serial). Every test keeps its name.
+time: 2026-11-22T00:03:04Z
+custom:
+    Issue: check-states-split-by-concern

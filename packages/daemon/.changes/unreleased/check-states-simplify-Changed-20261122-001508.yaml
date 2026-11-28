@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  Two leftovers of the verdict's removal are gone, with no change of behaviour: the comment of the
+  completion route that said a testing turn's completion carries a verdict now says only a
+  tester's plugin below the check states contract still sends one, and the merger repair test's
+  row type, which lost its verdict field, is laid out as `gofmt` writes it again.
+time: 2026-11-22T00:15:08Z
+custom:
+  Issue: check-states-simplify

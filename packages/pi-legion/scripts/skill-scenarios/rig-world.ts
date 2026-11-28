@@ -10,19 +10,33 @@ import { readFileSync } from "node:fs";
 import path from "node:path";
 import { z } from "zod";
 
-/** A heads world's named CI job: its check run, the workflow run and suite it is in, its status. */
+/** A heads world's named CI job: its check run, the workflow run and suite it is in, its status,
+ * and for one that ended, how it concluded (`success` where none is named) and the log GitHub
+ * keeps of it. */
 const CIJob = z.strictObject({
   name: z.string().min(1),
   checkRun: z.number().int(),
   run: z.number().int(),
   suite: z.number().int(),
   status: z.enum(["completed", "in_progress"]),
+  conclusion: z.enum(["success", "failure"]).optional(),
+  log: z.string().optional(),
 });
 
+/** The worlds' named jobs: ci-only's and ci-pass-and-fail's, the job of k2, the check a CI job
+ * runs, in the ci-check-fail worlds: failed at the head whose case says so, passed at the other;
+ * and the job of k3 in tester-reads-no-ci, still going in its case ci-late (`ci-late`) and failed
+ * in ci-red (`ci-check-fail`, with its log). */
 const World = z.strictObject({
   repository: z.string().regex(/^[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+$/),
   defaultBranch: z.string().min(1),
-  ciJobs: z.strictObject({ "ci-only": CIJob, "ci-pass-and-fail": CIJob }),
+  ciJobs: z.strictObject({
+    "ci-only": CIJob,
+    "ci-pass-and-fail": CIJob,
+    "ci-check-fail": CIJob,
+    "ci-check-pass": CIJob,
+    "ci-late": CIJob,
+  }),
 });
 
 /** rig-world.json, beside this file. */

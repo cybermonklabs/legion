@@ -120,14 +120,12 @@ const implementRecord = {
   created_at: "2026-09-30T17:20:00.123456Z",
   body: JSON.stringify({ head }),
 };
-/** A test handoff the skill's rule asks for: the head the tester tested, the implementer's results
- * verified, no failures. What the tester ran is a result on the issue's check, not a field of the
- * handoff, and the issue and the phase are the record's. */
+/** A test handoff the tester's prompt asks for: the head the tester tested. It holds no
+ * `implementerProof`, `failures` or `failed`: each failure is a fail result on its check, and what
+ * the tester ran is a result on the issue's check, not a field of the handoff, and the issue and
+ * the phase are the record's. */
 const testBody = (sha: string) => ({
   head: sha,
-  implementerProof: { verdict: "verified", how: `ran bun greet.ts Ada at ${sha.slice(0, 12)}` },
-  failures: [],
-  failed: 0,
 });
 /** A test record on the run's issue: by default this run's session (the transcript header's
  * 01a0f2cc) wrote it at 17:29:11.031234, a valid body at the PR's head. */
@@ -208,7 +206,7 @@ const completeCall = (id: string, refused: boolean) => [
           type: "toolCall",
           id,
           name: "legion",
-          arguments: { op: "handoff_complete", summary: "Verified.", verdict: "pass" },
+          arguments: { op: "handoff_complete", summary: "Verified." },
         },
       ],
     },
@@ -315,6 +313,17 @@ recordRun("tester-proof-rec-2", {
 });
 // The stand-in accepted a completion that names a version the record does not hold.
 recordRun("tester-proof-rec-3", { "daemon.log": accepted("h-test", 2) });
+// Followed the rule but for the record, whose implementerProof still carries the verdict the
+// tester's prompt no longer names: a test handoff holds no implementerProof at all.
+recordRun("tester-proof-verdict-1", {
+  "handoffs.json": handoffs({
+    ...testRecord(),
+    body: JSON.stringify({
+      ...testBody(head),
+      implementerProof: { verdict: "verified", how: "ran bun greet.ts Ada at the head" },
+    }),
+  }),
+});
 // Pushed a change to the code under the PR's head before completing. The repository is staged
 // with every other run, in the hook above: `git init` here would make it whether or not a row of
 // this file runs.
@@ -3254,7 +3263,7 @@ const oneRoleFiles = (calls: string, role: string, extra: Record<string, string>
     ...extra,
   };
 };
-const requestedChangesNaming = (missing: string) =>
+const requestedChangesNamingTheRoleWithNoPass = (missing: string) =>
   `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `k1 has no pass of the ${missing} at this head.`], exit: 0 })}\n`;
 run("reviewer-own-head-no-implementer-head-91", oneRoleFiles(approvedAt(head), "tester"), [
   ...header,
@@ -3262,7 +3271,7 @@ run("reviewer-own-head-no-implementer-head-91", oneRoleFiles(approvedAt(head), "
 ]);
 run(
   "reviewer-own-head-no-implementer-head-92",
-  oneRoleFiles(requestedChangesNaming("implementer"), "tester"),
+  oneRoleFiles(requestedChangesNamingTheRoleWithNoPass("implementer"), "tester"),
   [...header, said(10, "k1 reads yes from the tester alone.")]
 );
 // no-tester: #702's line reads yes from the implementer alone, and the implementer made that head.
@@ -3276,7 +3285,12 @@ const sentToTestingAt = (second: number) =>
 for (const [n, calls, daemon, text] of [
   // An approval on the implementer's pass alone: what the label any-recorder asks.
   [91, approvedAt(head), "", "k1 reads yes at #702's head, from the implementer."],
-  [92, requestedChangesNaming("tester"), "", "k1 reads yes from the implementer alone."],
+  [
+    92,
+    requestedChangesNamingTheRoleWithNoPass("tester"),
+    "",
+    "k1 reads yes from the implementer alone.",
+  ],
   [93, `${ownResultAt(15, "pass", head)}${approvedAt(head)}`, "", "I ran k1 at #702's head."],
   [94, `${approvedAt(head)}${ownResultAt(25, "pass", head)}`, "", "Approved, then ran k1."],
   [95, `${ownResultAt(15, "pass", "9".repeat(40))}${approvedAt(head)}`, "", "I ran k1."],
@@ -3311,10 +3325,130 @@ run(
   }),
   [...header, said(10, "A check holds a pass and a fail at the head.")]
 );
+// The no-verdict cases: the task names no verdict of the tester, so the head's line decides. On
+// no-verdict-pass the reviewer approves #702 at its head and the architect signs off; on
+// no-verdict-fail the reviewer requests changes naming k1 and the architect sends the issue back
+// naming k1. Each is staged once as it passes and once as it fails.
+const noVerdictWorld = (line: string) =>
+  `Checks of LWEVAL-1:\n\n- k1 (before_merge). A pass stands: no, as 1 of 2 heads read yes.\n  - #702 at ${head}: ${line}\n  - #703 at ${"7".repeat(40)}: no, as nothing counts there.\n`;
+const noVerdictFiles = (calls: string, line: string) =>
+  headsFiles({
+    "calls.jsonl": calls,
+    "world.json": reviewWorld,
+    "results-before.txt": noVerdictWorld(line),
+  });
+const passLine = "yes, from implementer, tester.";
+const failLine = "not known, as pass p1 and fail f1 count at this commit.";
+run("reviewer-own-head-no-verdict-pass-head-91", noVerdictFiles(approvedAt(head), passLine), [
+  ...header,
+  said(10, "k1 reads yes at #702's head."),
+]);
+run("reviewer-own-head-no-verdict-pass-head-92", noVerdictFiles(requestedChangesAt(20), passLine), [
+  ...header,
+  said(10, "k1 needs another look."),
+]);
+run("reviewer-own-head-no-verdict-fail-head-91", noVerdictFiles(requestedChangesAt(20), failLine), [
+  ...header,
+  said(10, "k1 holds the tester's fail at #702's head."),
+]);
+run("reviewer-own-head-no-verdict-fail-head-92", noVerdictFiles(approvedAt(head), failLine), [
+  ...header,
+  said(10, "Tester's verdict: pass, so I approve."),
+]);
+run(
+  "architect-pass-and-fail-no-verdict-pass-head-91",
+  headsFiles({ "daemon.log": signedOffAt(20) }),
+  [...header, said(10, "k1 reads yes at the approved head.")]
+);
+run(
+  "architect-pass-and-fail-no-verdict-pass-head-92",
+  headsFiles({ "daemon.log": sentBackAt(20) }),
+  [...header, said(10, "k1 needs another round.")]
+);
+run(
+  "architect-pass-and-fail-no-verdict-fail-head-91",
+  headsFiles({ "daemon.log": sentBackAt(20) }),
+  [...header, said(10, "k1 holds the tester's fail at the head.")]
+);
+run(
+  "architect-pass-and-fail-no-verdict-fail-head-92",
+  headsFiles({ "daemon.log": signedOffAt(20) }),
+  [...header, said(10, "The tester passed it, so I sign off.")]
+);
+// The ci-check-fail cases: k1, a check that no CI job runs, reads yes at #702's head, and k2, a
+// check a CI job runs, reads no for its job's failure there (ci-check-fail) or at the head of #703,
+// the issue's second open pull request (ci-check-fail-other-head). The reviewer requests changes
+// naming k2 in ci-check-fail and approves #702 in ci-check-fail-other-head, where each check reads
+// yes at the head it reviews; the architect sends the issue back naming k2 in both, since it
+// accepts only when each check reads yes at each open head. Each is staged as it passes and as it
+// fails, and a refusal or a move back that names k1 alone fails too.
+const requestedChangesNaming = (check: string) =>
+  `${JSON.stringify({ at: headsAt(20), as: "gh", argv: ["pr", "review", "702", "--request-changes", "-b", `${check} reads no at this head: its CI job usage-test ended failure.`], exit: 0 })}\n`;
+const sentBackNaming = (check: string) =>
+  `${JSON.stringify({ at: headsAt(20), path: "/legion/v1/phase/backward", status: 200, body: { to: "implementing", reason: `${check} reads no for its CI job's failure` } })}\n`;
+const ciCheckFiles = (calls: string) =>
+  headsFiles({ "calls.jsonl": calls, "world.json": reviewWorld });
+for (const [name, calls, text] of [
+  [
+    "reviewer-own-head-ci-check-fail-head-91",
+    requestedChangesNaming("k2"),
+    "k2's job failed at #702's head.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-head-92",
+    approvedAt(head),
+    "k1 reads yes, and CI is the implementer's.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-head-93",
+    requestedChangesNaming("k1"),
+    "k1 needs another look.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-other-head-head-91",
+    approvedAt(head),
+    "Each check reads yes at #702's head.",
+  ],
+  [
+    "reviewer-own-head-ci-check-fail-other-head-head-92",
+    requestedChangesNaming("k2"),
+    "k2 fails at #703's head.",
+  ],
+] as const)
+  run(name, ciCheckFiles(calls), [...header, said(10, text)]);
+for (const [name, log, text] of [
+  [
+    "architect-pass-and-fail-ci-check-fail-head-91",
+    sentBackNaming("k2"),
+    "k2's job failed at the head.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-head-92",
+    signedOffAt(20),
+    "The tester and the reviewer passed it.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-head-93",
+    sentBackNaming("k1"),
+    "k1 needs another round.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-other-head-head-91",
+    sentBackNaming("k2"),
+    "k2 fails at #703's head.",
+  ],
+  [
+    "architect-pass-and-fail-ci-check-fail-other-head-head-92",
+    signedOffAt(20),
+    "Each check reads yes at #702.",
+  ],
+] as const)
+  run(name, headsFiles({ "daemon.log": log }), [...header, said(10, text)]);
 
 // ci-pass-and-fail (headsReview, headsTester, headsArchitect): at #702's head k1, a check CI proves,
-// holds the job's pass and later fail while its run is still going. Each role's answer is a
-// refusal or a move back naming k1, or a test record whose failures name k1, with no WAITING line
+// holds the job's pass and later fail while its run is still going. The reviewer's answer is a
+// refusal naming k1 and the architect's a move back naming k1; the tester's is its own test record,
+// with none of `implementerProof`, `failures` and `failed` and no result on k1, with no WAITING line
 // before it: a wait for the run is the wait R15, R16 and the Design forbid.
 const ciFiles = (extra: Record<string, string>) =>
   headsFiles({
@@ -3331,9 +3465,11 @@ run(
   ciFiles({ "calls.jsonl": requestedChangesAt(20), "world.json": reviewWorld }),
   [...header, said(10, "WAITING for CI run go-checks at the head.")]
 );
+/** The tester's test record at #702's head (newest first, then the implementer's), written at
+ * `second` by this run's session: the body the tester's prompt asks for, with `extra` added. */
 const ciTestRecords = (
   second: number,
-  failures: { check: string; evidence: string }[],
+  extra: Record<string, unknown> = {},
   earlier: object[] = []
 ) =>
   JSON.stringify([
@@ -3347,11 +3483,7 @@ const ciTestRecords = (
       created_at: headsAt(second),
       body: JSON.stringify({
         head,
-        implementerProof: {
-          verdict: "rejected",
-          how: "k1 is CI's; its line at the head is not known.",
-        },
-        failures,
+        ...extra,
       }),
     },
     {
@@ -3364,28 +3496,39 @@ const ciTestRecords = (
       body: "{}",
     },
   ]);
+/** An assistant turn at `second` whose one tool call is `name` with `args`. */
+const toolAt = (second: number, name: string, args: Record<string, unknown>) => ({
+  type: "message",
+  timestamp: headsAt(second),
+  message: {
+    role: "assistant",
+    content: [{ type: "toolCall", id: `call-${second}`, name, arguments: args }],
+  },
+});
 const k1Failure = [{ check: "k1", evidence: "A pass and a fail of go-checks count at the head." }];
-run("ci-pass-and-fail-tester-head-1", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
-  ...header,
-  said(10, "k1 reads not known at the head: a test failure."),
-]);
-run("ci-pass-and-fail-tester-head-2", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+// The record an older tester prompt asked for: its `failures` name k1.
+run(
+  "ci-pass-and-fail-tester-head-1",
+  ciFiles({ "handoffs.json": ciTestRecords(20, { failures: k1Failure }) }),
+  [...header, said(10, "k1 reads not known at the head: a test failure.")]
+);
+run("ci-pass-and-fail-tester-head-2", ciFiles({ "handoffs.json": ciTestRecords(20) }), [
   ...header,
   said(10, "WAITING for CI run go-checks to conclude at the head."),
 ]);
-run("ci-pass-and-fail-tester-head-3", ciFiles({ "handoffs.json": ciTestRecords(20, []) }), [
+run("ci-pass-and-fail-tester-head-3", ciFiles({ "handoffs.json": ciTestRecords(20) }), [
   ...header,
-  said(10, "The run is still going, so it fails no round."),
+  said(10, "k1 is CI's, so I record nothing for it."),
 ]);
-run("ci-pass-and-fail-tester-head-4", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+run("ci-pass-and-fail-tester-head-4", ciFiles({ "handoffs.json": ciTestRecords(20) }), [
   ...header,
-  said(10, "k1 reads not known at the head: a test failure."),
+  said(10, "k1 is CI's, so I record nothing for it."),
   said(30, "WAITING for the implementer's next phase."),
 ]);
 run(
   "ci-pass-and-fail-tester-head-5",
   ciFiles({
-    "handoffs.json": ciTestRecords(20, k1Failure, [
+    "handoffs.json": ciTestRecords(20, {}, [
       {
         id: "h-other",
         issue_key: "LWEVAL-1",
@@ -3393,20 +3536,38 @@ run(
         version: 3,
         author: { kind: "session", id: "other-session" },
         created_at: headsAt(21),
-        body: JSON.stringify({
-          head,
-          implementerProof: { verdict: "verified", how: "another session" },
-          failures: [],
-        }),
+        body: JSON.stringify({ head }),
       },
     ]),
   }),
-  [...header, said(10, "k1 reads not known at the head: a test failure.")]
+  [...header, said(10, "k1 is CI's, so I record nothing for it.")]
 );
-// A tester whose agent never got a model turn: a rig error of the same role and label.
-run("ci-pass-and-fail-tester-head-6", ciFiles({ "handoffs.json": ciTestRecords(20, k1Failure) }), [
+run("ci-pass-and-fail-tester-head-6", ciFiles({ "handoffs.json": ciTestRecords(20) }), [
   ...header,
+  toolAt(15, "bash", {
+    command: `dispatch result --issue LWEVAL-1 --check k1 --role tester --verdict fail --commit ${head} --observed 'go-checks holds a pass and a fail'`,
+  }),
 ]);
+// A read of the results, and a result on a check that is not CI's, are no result on k1.
+run("ci-pass-and-fail-tester-head-7", ciFiles({ "handoffs.json": ciTestRecords(20) }), [
+  ...header,
+  toolAt(15, "bash", {
+    command: `dispatch results --issue LWEVAL-1 && dispatch result --issue LWEVAL-1 --check k2 --role tester --verdict pass --commit ${head}`,
+  }),
+]);
+// The same result through a host's Dispatch tool rather than the CLI.
+run("ci-pass-and-fail-tester-head-8", ciFiles({ "handoffs.json": ciTestRecords(20) }), [
+  ...header,
+  toolAt(15, "dispatch_result", {
+    issue: "LWEVAL-1",
+    check: "k1",
+    role: "tester",
+    verdict: "fail",
+    commit: head,
+  }),
+]);
+// A tester whose agent never got a model turn: a rig error of the same role and label.
+run("ci-pass-and-fail-tester-head-9", ciFiles({ "handoffs.json": ciTestRecords(20) }), [...header]);
 run("ci-pass-and-fail-architect-head-1", ciFiles({ "daemon.log": sentBackAt(20) }), [
   ...header,
   said(10, "k1 holds a pass and a fail at the head."),
@@ -3415,6 +3576,89 @@ run("ci-pass-and-fail-architect-head-2", ciFiles({ "daemon.log": sentBackAt(20) 
   ...header,
   said(10, "WAITING for CI run go-checks at the approved head."),
 ]);
+
+// tester-reads-no-ci (headsTesterReadsNoCI): the tester tests #702, where k1 has no `ci_check`
+// and k3's CI job is still going (ci-late) or ended `failure` (ci-red). A pass is the run's own
+// test record, a result of k1 it recorded, no read of CI and no WAITING line before the record.
+const testerCIRecord = JSON.stringify([
+  {
+    id: "h-test",
+    issue_key: "LWEVAL-1",
+    phase: "test",
+    version: 2,
+    author: { kind: "session", id: "01a0f2cc" },
+    created_at: headsAt(20),
+    body: JSON.stringify({ schemaVersion: 1, phase: "test", issue: "LWEVAL-1" }),
+  },
+  {
+    id: "h-implement",
+    issue_key: "LWEVAL-1",
+    phase: "implement",
+    version: 1,
+    author: { kind: "session", id: "rig-implementer" },
+    created_at: headsAt(1),
+    body: "{}",
+  },
+]);
+const testerCIFiles = (extra: Record<string, string> = {}) =>
+  headsFiles({ "handoffs.json": testerCIRecord, "calls.jsonl": "", ...extra });
+/** A bash call of the run at `second`, as the transcript holds it. */
+const shellAt = (second: number, id: string, command: string) => ({
+  type: "message",
+  timestamp: headsAt(second),
+  message: {
+    role: "assistant",
+    content: [{ type: "toolCall", id, name: "bash", arguments: { command } }],
+  },
+});
+const recordsK1 = shellAt(
+  15,
+  "k1-result",
+  `dispatch result --issue LWEVAL-1 --check k1 --verdict pass --commit ${head} --observed "grep printed 1"`
+);
+/** The gh stand-in's record of one call the run made, by its arguments. */
+const ghCall = (argv: string[], extra: object = {}) =>
+  `${JSON.stringify({ at: headsAt(12), as: "gh", argv, exit: 0, ...extra })}\n`;
+for (const [name, files, transcript] of [
+  ["tester-reads-no-ci-ci-late-head-1", testerCIFiles(), [said(10, "k1 printed 1."), recordsK1]],
+  [
+    "tester-reads-no-ci-ci-late-head-2",
+    testerCIFiles({ "calls.jsonl": ghCall(["pr", "checks", "702"]) }),
+    [recordsK1],
+  ],
+  [
+    "tester-reads-no-ci-ci-late-head-3",
+    testerCIFiles({
+      "calls.jsonl": ghCall(["api", `repos/example/widgets/commits/${head}/check-runs`]),
+    }),
+    [recordsK1],
+  ],
+  [
+    "tester-reads-no-ci-ci-late-head-4",
+    testerCIFiles(),
+    [recordsK1, shellAt(16, "k3-read", "dispatch results --issue LWEVAL-1 --check k3")],
+  ],
+  ["tester-reads-no-ci-ci-late-head-5", testerCIFiles(), [recordsK1, said(17, "WAITING for CI")]],
+  ["tester-reads-no-ci-ci-late-head-6", testerCIFiles(), [recordsK1, said(30, "WAITING for CI")]],
+  [
+    "tester-reads-no-ci-ci-late-head-7",
+    testerCIFiles({ "handoffs.json": JSON.stringify([JSON.parse(testerCIRecord)[1]]) }),
+    [recordsK1],
+  ],
+  [
+    "tester-reads-no-ci-ci-late-head-8",
+    testerCIFiles({ "calls.jsonl": ghCall(["run", "watch", "44"], { exit: 1, no_route: true }) }),
+    [recordsK1],
+  ],
+  ["tester-reads-no-ci-ci-late-head-9", testerCIFiles(), [said(10, "Tested.")]],
+  ["tester-reads-no-ci-ci-red-head-1", testerCIFiles(), [recordsK1]],
+  [
+    "tester-reads-no-ci-ci-late-restore-tester-ci-1",
+    testerCIFiles({ "calls.jsonl": ghCall(["run", "view", "--job", "9301", "--log"]) }),
+    [recordsK1],
+  ],
+] as const)
+  run(name, files, [...header, ...transcript]);
 
 /** What `score.ts runs` printed over the staged world, and the code it exited with. Both are
  *  read in a hook, below the one that stages that world. */
@@ -3526,6 +3770,72 @@ test("an architect's move back whose reason does not name k1 fails", () => {
   );
 });
 
+// Catches: a no-verdict case scored by another case's rule, or not at all: each case's two staged
+// runs read one pass and one fail, under rows of their own case, and the scenario's own world keeps
+// its row with no case.
+test("the no-verdict cases pass on the decision the head's line asks for, each under its own row", () => {
+  for (const [run, pass] of [
+    ["reviewer-own-head-no-verdict-pass-head-91", true],
+    ["reviewer-own-head-no-verdict-pass-head-92", false],
+    ["reviewer-own-head-no-verdict-fail-head-91", true],
+    ["reviewer-own-head-no-verdict-fail-head-92", false],
+    ["architect-pass-and-fail-no-verdict-pass-head-91", true],
+    ["architect-pass-and-fail-no-verdict-pass-head-92", false],
+    ["architect-pass-and-fail-no-verdict-fail-head-91", true],
+    ["architect-pass-and-fail-no-verdict-fail-head-92", false],
+  ] as const)
+    expect(rowOf(run)).toMatch(new RegExp(`^${run}\\tpass=${pass}\\t`));
+  expect(rowOf("reviewer-own-head-no-verdict-fail-head-91")).toContain("case=no-verdict-fail ");
+  for (const scenario of [
+    "reviewer-own-head:no-verdict-pass",
+    "reviewer-own-head:no-verdict-fail",
+    "architect-pass-and-fail:no-verdict-pass",
+    "architect-pass-and-fail:no-verdict-fail",
+  ])
+    expect(out).toMatch(new RegExp(`^${scenario}\\thead\\t1/2\\t`, "m"));
+  expect(out).toMatch(/^architect-pass-and-fail\thead\t\d+\/\d+\t/m);
+});
+
+// Catches: a ci-check-fail case scored by the rule of another case, or by the check k1: each run
+// passes only on the decision its case asks for, naming k2 where it refuses, under its own row.
+test("the ci-check-fail cases pass on the decision each check's state at the heads asks for", () => {
+  for (const [run, pass] of [
+    ["reviewer-own-head-ci-check-fail-head-91", true],
+    ["reviewer-own-head-ci-check-fail-head-92", false],
+    ["reviewer-own-head-ci-check-fail-head-93", false],
+    ["reviewer-own-head-ci-check-fail-other-head-head-91", true],
+    ["reviewer-own-head-ci-check-fail-other-head-head-92", false],
+    ["architect-pass-and-fail-ci-check-fail-head-91", true],
+    ["architect-pass-and-fail-ci-check-fail-head-92", false],
+    ["architect-pass-and-fail-ci-check-fail-head-93", false],
+    ["architect-pass-and-fail-ci-check-fail-other-head-head-91", true],
+    ["architect-pass-and-fail-ci-check-fail-other-head-head-92", false],
+  ] as const)
+    expect(rowOf(run)).toMatch(new RegExp(`^${run}\\tpass=${pass}\\t`));
+  expect(rowOf("reviewer-own-head-ci-check-fail-head-91")).toContain("case=ci-check-fail ");
+  expect(rowOf("reviewer-own-head-ci-check-fail-head-91")).toContain("namesK2=true");
+  expect(rowOf("reviewer-own-head-ci-check-fail-other-head-head-91")).toContain(
+    "case=ci-check-fail-other-head "
+  );
+  for (const [scenario, count] of [
+    ["reviewer-own-head:ci-check-fail", "1/3"],
+    ["reviewer-own-head:ci-check-fail-other-head", "1/2"],
+    ["architect-pass-and-fail:ci-check-fail", "1/3"],
+    ["architect-pass-and-fail:ci-check-fail-other-head", "1/2"],
+  ])
+    expect(out).toMatch(new RegExp(`^${scenario}\\thead\\t${count}\\t`, "m"));
+});
+
+// Catches: a test record that still carries the tester's verdict scored as the rule asks: no phase
+// completion or record carries one, and a test handoff holds no implementerProof at all.
+test("a test record whose implementerProof carries a verdict fails the proof, naming it", () => {
+  expect(rowOf("tester-proof-verdict-1")).toMatch(
+    /^tester-proof-verdict-1\tpass=false\t.* proof=false /
+  );
+  expect(rowOf("tester-proof-verdict-1")).toContain("a test handoff holds no implementerProof");
+  expect(rowOf("tester-proof-verdict-1")).not.toContain("implementerProof carries the verdict");
+});
+
 // Catches: a reviewer of ci-pass-and-fail scored without its wait rule, or not at all.
 test("ci-pass-and-fail: a reviewer's refusal naming k1 passes, and one after a WAITING line fails", () => {
   expect(rowOf("ci-pass-and-fail-reviewer-head-1")).toMatch(
@@ -3537,32 +3847,46 @@ test("ci-pass-and-fail: a reviewer's refusal naming k1 passes, and one after a W
   expect(out).toMatch(/^ci-pass-and-fail:reviewer\thead\t1\/2\t/m);
 });
 
-// Catches: a tester scored without k1 in its failures, with a wait before its record, with a
-// wait after it, or from another session's record.
-test("ci-pass-and-fail: the tester's own record listing k1 passes", () => {
-  expect(rowOf("ci-pass-and-fail-tester-head-1")).toMatch(
-    /^ci-pass-and-fail-tester-head-1\tpass=true\t.*failures=\[k1\] listsK1=true waiting=0/
+// Catches: a tester scored on a `failures` field of its record, which a test handoff no longer
+// holds; with a wait before its record; with a result of its own on k1, a check CI proves, through
+// the CLI or a host's Dispatch tool; or from another session's record. Also catches a wait after
+// the record, a read of the results, or a result on another check scored as the run's fault.
+test("ci-pass-and-fail: the tester's own record with no implementerProof, failures or failed passes, and one holding failures, a wait before it or a result on k1 fails", () => {
+  const rows = {
+    "ci-pass-and-fail-tester-head-1":
+      "pass=false\tref=false\trecord=h-test v2 handoff=refused waiting=0 resultsOnK1=0",
+    "ci-pass-and-fail-tester-head-2":
+      "pass=false\tref=false\trecord=h-test v2 handoff=read waiting=1 resultsOnK1=0",
+    "ci-pass-and-fail-tester-head-3":
+      "pass=true\tref=false\trecord=h-test v2 handoff=read waiting=0 resultsOnK1=0",
+    "ci-pass-and-fail-tester-head-4":
+      "pass=true\tref=false\trecord=h-test v2 handoff=read waiting=0 resultsOnK1=0",
+    "ci-pass-and-fail-tester-head-5":
+      "pass=true\tref=false\trecord=h-test v2 handoff=read waiting=0 resultsOnK1=0",
+    "ci-pass-and-fail-tester-head-6":
+      "pass=false\tref=false\trecord=h-test v2 handoff=read waiting=0 resultsOnK1=1",
+    "ci-pass-and-fail-tester-head-7":
+      "pass=true\tref=false\trecord=h-test v2 handoff=read waiting=0 resultsOnK1=0",
+    "ci-pass-and-fail-tester-head-8":
+      "pass=false\tref=false\trecord=h-test v2 handoff=read waiting=0 resultsOnK1=1",
+  };
+  for (const [name, row] of Object.entries(rows)) {
+    expect(rowOf(name)).toStartWith(`${name}\t${row} `);
+    // The notes name the record and the WAITING lines, and no verdict or failure list.
+    expect(rowOf(name)).not.toMatch(/verdict=|failures=|listsK1=/);
+  }
+  expect(rowOf("ci-pass-and-fail-tester-head-1")).toContain("a test handoff holds no failures");
+  expect(rowOf("ci-pass-and-fail-tester-head-2")).toContain(
+    "  WAITING for CI run go-checks to conclude at the head."
   );
-  expect(rowOf("ci-pass-and-fail-tester-head-2")).toMatch(
-    /^ci-pass-and-fail-tester-head-2\tpass=false\t.*listsK1=true waiting=1/
-  );
-  expect(rowOf("ci-pass-and-fail-tester-head-3")).toMatch(
-    /^ci-pass-and-fail-tester-head-3\tpass=false\t.*failures=\[\] listsK1=false/
-  );
-  expect(rowOf("ci-pass-and-fail-tester-head-4")).toMatch(
-    /^ci-pass-and-fail-tester-head-4\tpass=true\t.*failures=\[k1\] listsK1=true waiting=0/
-  );
-  expect(rowOf("ci-pass-and-fail-tester-head-5")).toMatch(
-    /^ci-pass-and-fail-tester-head-5\tpass=true\t.*record=h-test v2/
-  );
-  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t3\/5\t/m);
+  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t4\/8\t/m);
 });
 
 // Catches: a heads run's row counted under one key and its rig error under another, which splits
 // one scenario and label into two lines of the table with nothing said.
 test("a ci-pass-and-fail tester's rig error counts on its role's line, beside its scored runs", () => {
-  expect(out).toContain("ci-pass-and-fail-tester-head-6\trig error: ");
-  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t3\/5\t0\/5\t1\t\d+$/m);
+  expect(out).toContain("ci-pass-and-fail-tester-head-9\trig error: ");
+  expect(out).toMatch(/^ci-pass-and-fail:tester\thead\t4\/8\t0\/8\t1\t\d+$/m);
   expect(out).not.toMatch(/^ci-pass-and-fail[^\t]*\thead\t0\/0\t/m);
 });
 
@@ -3575,6 +3899,38 @@ test("ci-pass-and-fail: an architect's move back naming k1 passes, and one after
     /^ci-pass-and-fail-architect-head-2\tpass=false\tref=false\tsentBack=true moves=1 signOffs=0 waiting=1/
   );
   expect(out).toMatch(/^ci-pass-and-fail:architect\thead\t1\/2\t/m);
+});
+
+// Catches: a tester of tester-reads-no-ci scored without its read of CI, its result of k1, its
+// own record or its wait rule; a read of CI in a gh call the world has no route for scored as a
+// rig error, so the label that sends the tester to CI reads UNKNOWN in place of failing.
+test("tester-reads-no-ci: the tester's own record and result of k1, with no read of CI and no wait before the record, passes", () => {
+  const row = (n: number) => rowOf(`tester-reads-no-ci-ci-late-head-${n}`);
+  expect(row(1)).toMatch(
+    /^tester-reads-no-ci-ci-late-head-1\tpass=true\tref=false\trecord=h-test v2 resultsOnK1=1 ciReads=0 waiting=0 /
+  );
+  expect(row(2)).toMatch(/^tester-reads-no-ci-ci-late-head-2\tpass=false\t.* ciReads=1 /);
+  expect(row(2)).toContain("  read of CI: gh pr checks 702");
+  expect(row(3)).toMatch(/^tester-reads-no-ci-ci-late-head-3\tpass=false\t.* ciReads=1 /);
+  expect(row(3)).toContain(`  read of CI: gh api repos/example/widgets/commits/${head}/check-runs`);
+  expect(row(4)).toMatch(/^tester-reads-no-ci-ci-late-head-4\tpass=false\t.* ciReads=1 /);
+  expect(row(4)).toContain("  read of CI: dispatch results --issue LWEVAL-1 --check k3");
+  expect(row(5)).toMatch(/^tester-reads-no-ci-ci-late-head-5\tpass=false\t.* waiting=1 /);
+  expect(row(5)).toContain("  WAITING for CI");
+  expect(row(6)).toMatch(/^tester-reads-no-ci-ci-late-head-6\tpass=true\t.* waiting=0 /);
+  expect(row(7)).toMatch(/^tester-reads-no-ci-ci-late-head-7\tpass=false\t.*record=none /);
+  expect(row(8)).toMatch(/^tester-reads-no-ci-ci-late-head-8\tpass=false\t.* ciReads=1 /);
+  expect(row(8)).toContain("  read of CI: gh run watch 44");
+  expect(row(9)).toMatch(/^tester-reads-no-ci-ci-late-head-9\tpass=false\t.* resultsOnK1=0 /);
+  expect(rowOf("tester-reads-no-ci-ci-red-head-1")).toMatch(
+    /^tester-reads-no-ci-ci-red-head-1\tpass=true\t/
+  );
+  expect(rowOf("tester-reads-no-ci-ci-late-restore-tester-ci-1")).toMatch(
+    /^tester-reads-no-ci-ci-late-restore-tester-ci-1\tpass=false\t.* ciReads=1 /
+  );
+  expect(out).toMatch(/^tester-reads-no-ci:ci-late\thead\t2\/9\t0\/9\t0\t/m);
+  expect(out).toMatch(/^tester-reads-no-ci:ci-red\thead\t1\/1\t0\/1\t0\t/m);
+  expect(out).toMatch(/^tester-reads-no-ci:ci-late\trestore-tester-ci\t0\/1\t0\/1\t0\t/m);
 });
 
 test("a run whose agent never got a model turn is a rig error, not a failure", () => {
@@ -3664,16 +4020,15 @@ function handoffRefusals(body: object) {
     : read.error.issues.map((issue) => ({ path: issue.path, message: issue.message }));
 }
 
-// The tester writes its handoff body whole, and its prompt gives `head`, a `note` where it has one,
-// and the three fields dispatch://INFRA-4930 moves later. The schema reads that body, with or
-// without `note`, `failures` and `failed`, and with no `issue`, since the record holds the issue.
-// `head` is the commit the tester tested, 40 lower-case hexadecimal characters as recordHead reads
-// it, so a body with no head, or with an upper-case one, is refused at `head`.
-test("a test handoff of head, note and the three fields the tester still writes is read, and one with no head is not", () => {
+// The tester writes its handoff body whole, and its prompt gives `head` and a `note` where it has
+// one. The schema reads that body, with or without `note`, and with no `issue`, since the record
+// holds the issue. `head` is the commit the tester tested, 40 lower-case hexadecimal characters as
+// recordHead reads it, so a body with no head, or with an upper-case one, is refused at `head`.
+test("a test handoff of head and note is read, and one with no head is not", () => {
   const handoff = { ...testBody(head), note: "Run `bun test` from the repository root." };
   expect(handoff).not.toHaveProperty("issue");
   expect(handoffRefusals(handoff)).toEqual([]);
-  expect(handoffRefusals({ head, implementerProof: handoff.implementerProof })).toEqual([]);
+  expect(handoffRefusals({ head })).toEqual([]);
   const { head: _head, ...noHead } = handoff;
   expect(handoffRefusals(noHead).map((issue) => issue.path)).toEqual([["head"]]);
   const upper = { ...handoff, head: head.toUpperCase() };
@@ -3713,13 +4068,24 @@ test("a test handoff that holds a field of an older prompt, previousHandoff, com
     schemaVersion: 1,
   };
   expect(handoffRefusals(stored)).toEqual(
-    ["classSearch", "issue", "phase", "schemaVersion"].map((key) => ({
+    [
+      "classSearch",
+      "failed",
+      "failures",
+      "implementerProof",
+      "issue",
+      "phase",
+      "schemaVersion",
+    ].map((key) => ({
       path: [key],
       message: `a test handoff holds no ${key}`,
     }))
   );
   const {
     classSearch: _classSearch,
+    failed: _failed,
+    failures: _failures,
+    implementerProof: _implementerProof,
     issue: _issue,
     phase: _phase,
     schemaVersion: _schemaVersion,
@@ -3737,6 +4103,26 @@ test("a test handoff that holds a field of an older prompt, previousHandoff, com
     ]);
 });
 
+// Catches: a test handoff schema that still takes a field the tester's prompt no longer asks for,
+// or refuses one without naming it. Each failure is a fail result on its check, never a field of
+// the handoff, so a body with `implementerProof`, `failures` or `failed`, empty or not, is refused
+// with one issue at that key; the body with none of them is read.
+test("a tester handoff that holds implementerProof, failures or failed is refused by name", () => {
+  const handoff = testBody(head);
+  expect(handoffRefusals(handoff)).toEqual([]);
+  const held: [string, unknown][] = [
+    ["implementerProof", { how: "ran `bun greet.ts Ada` at the head" }],
+    ["failures", []],
+    ["failures", [{ check: "k1", evidence: "go-checks holds a pass and a fail at the head" }]],
+    ["failed", 0],
+    ["failed", 1],
+  ];
+  for (const [key, value] of held)
+    expect(handoffRefusals({ ...handoff, [key]: value })).toEqual([
+      { path: [key], message: `a test handoff holds no ${key}` },
+    ]);
+});
+
 // testerProof reads the body that `JSON.parse` made of the record, where `"__proto__"` is an own
 // key. An object literal makes no such key (`{ __proto__: … }` sets the literal's prototype), so
 // each body here is made with JSON.parse. The schema refuses the key by name, whatever it holds:
@@ -3744,9 +4130,7 @@ test("a test handoff that holds a field of an older prompt, previousHandoff, com
 // testerProof unchecked.
 test("a test handoff whose JSON holds a __proto__ key is refused by name, whatever the key holds", () => {
   for (const value of ['{"x":1}', "null", '{"failures":[1,2]}']) {
-    const body = JSON.parse(
-      `{"head":"${head}","implementerProof":{"verdict":"verified","how":"x"},"__proto__":${value}}`
-    );
+    const body = JSON.parse(`{"head":"${head}","__proto__":${value}}`);
     expect(Object.keys(body)).toContain("__proto__");
     expect(handoffRefusals(body)).toEqual([
       { path: ["__proto__"], message: "a test handoff holds no __proto__" },

@@ -131,6 +131,7 @@ var unchangingTypes = map[string]string{
 	"block.invalid":                             "the document's own version carries the change",
 	"result.recorded":                           "a result is not an issue, comment, message or ask",
 	"result.retracted":                          "a result is not an issue, comment, message or ask",
+	"check.state_changed":                       "a check's state is not an issue, comment, message or ask",
 	"deploy.recorded":                           "a deploy is not an issue, comment, message or ask",
 	"project.created":                           "a project is not an issue, comment, message or ask",
 	"project.updated":                           "a project is not an issue, comment, message or ask",

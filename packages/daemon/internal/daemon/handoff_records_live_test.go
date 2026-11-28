@@ -219,8 +219,8 @@ func (r *handoffRecordsLive) seed() {
 	r.github = handoffRecordsDaemonGitHub(t, claim.IssueBranch(r.renew), int(number)+2)
 	r.seedIssues([]dispatchSeed{
 		{key: r.a3, phase: phase.Planning, role: claim.RolePlanner},
-		{key: r.a7, phase: phase.Testing, role: claim.RoleTester, pr: int(number) + 1, head: "head-" + r.a7},
-		{key: r.renew, phase: phase.Implementing, role: claim.RoleImplementer, pr: int(number) + 2, head: "head-" + r.renew},
+		{key: r.a7, phase: phase.Testing, role: claim.RoleTester, pr: int(number) + 1, head: headCommit(r.a7, "test")},
+		{key: r.renew, phase: phase.Implementing, role: claim.RoleImplementer, pr: int(number) + 2, head: headCommit(r.renew, "test")},
 		{key: r.a10, phase: phase.Planning, role: claim.RolePlanner},
 	})
 }
@@ -414,7 +414,10 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	}
 	r.note("Dispatch's test record of %s: version %d (id %s) by session %s, the body written byte for byte", r.a7, daemonRecord.Version, daemonRecord.ID, daemonRecord.Author.ID)
 
-	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: daemonRecord.ID, HandoffVersion: daemonRecord.Version})
+	// The head the tester tested, the one the issue's pull request was seeded at: a full commit id,
+	// since the check state its completion is decided by names its head as one.
+	head := headCommit(r.a7, "test")
+	status, failure := tester.complete(api.HandoffCompleteRequest{Summary: "tested", Commit: head, HandoffID: daemonRecord.ID, HandoffVersion: daemonRecord.Version})
 	if status != http.StatusForbidden || failure.Code != "HANDOFF_SESSION_MISMATCH" ||
 		!strings.Contains(failure.Error, daemonSession) || !strings.Contains(failure.Error, tester.session) {
 		t.Fatalf("the tester's completion naming the daemon session's record = %d %+v, want 403 HANDOFF_SESSION_MISMATCH naming %s and %s",
@@ -430,11 +433,12 @@ func (r *handoffRecordsLive) a7DaemonSessionRecord() {
 	if again := r.dispatch.latest(r.a7, "test"); again.Body != daemonRecord.Body || again.Author.ID != tester.session {
 		t.Fatalf("the rewritten test record = %+v, want the same body under %s", again, tester.session)
 	}
-	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: rewritten.id, HandoffVersion: rewritten.version})
+	testedAs(t, r.st.Pool(), r.a7, head, true)
+	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "tested", Commit: head, HandoffID: rewritten.id, HandoffVersion: rewritten.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's completion naming its own record = %d %+v, want 200", status, failure)
 	}
-	r.note("POST /legion/v1/handoff/complete as %s naming %s (verdict pass): %d", tester.session, rewritten.id, status)
+	r.note("the state of %s's check at its head held as yes from the tester; POST /legion/v1/handoff/complete as %s naming %s: %d", r.a7, tester.session, rewritten.id, status)
 	// The tester's turn ends with its completion, as a worker's does. Main's supervision holds a
 	// phase task while another role of the issue is in a turn, since the two would share the
 	// working copy (supervise's sendPending), so the reviewer is prompted only once it has.
@@ -488,12 +492,14 @@ func (r *handoffRecordsLive) notNew() {
 	r.note("the tester's shim was prompted: %q", task.Message)
 	test := r.write(tester.session, r.renew, "test", r.smallBody(r.renew, "test", "round 1 fails"))
 	r.note("handoff-write as %s: %s", tester.session, test.line)
-	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "a criterion fails", Verdict: "fail", HandoffID: test.id, HandoffVersion: test.version})
+	head := headCommit(r.renew, "test")
+	testedAs(t, r.st.Pool(), r.renew, head, false)
+	status, failure = tester.complete(api.HandoffCompleteRequest{Summary: "a criterion fails", Commit: head, HandoffID: test.id, HandoffVersion: test.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's failing completion = %d %+v, want 200", status, failure)
 	}
 	tester.endTurn()
-	r.note("POST /legion/v1/handoff/complete as %s naming %s (verdict fail): %d", tester.session, test.id, status)
+	r.note("the state of %s's check at its head held as no for fail; POST /legion/v1/handoff/complete as %s naming %s: %d", r.renew, tester.session, test.id, status)
 	r.waitPhase(r.renew, phase.Implementing)
 	r.note("read back: %s is back in implementing", r.renew)
 	task = implementer.awaitPrompt()
@@ -528,9 +534,12 @@ func (r *handoffRecordsLive) notNew() {
 // commit.
 //
 // The control is those same three against records naming no head - the body every other step of
-// this proof writes, and the body every role wrote before the head moved into the record: the
-// completion carries no commit at all, and the daemon refuses such a completion
-// HANDOFF_STALE_ENTRY when it is of an earlier phase entry, since it says nothing about a head.
+// this proof writes, and the body every role wrote before the head moved into the record. The
+// planner's and the reviewer's completion carries no commit at all, and the daemon refuses such a
+// completion HANDOFF_STALE_ENTRY when it is of an earlier phase entry, since it says nothing
+// about a head. The tester's is refused before it is sent, naming the new record to write: the
+// testing move reads the check states at the head the test record names and at no other, and the
+// daemon refuses a tester's completion naming no commit (TESTED_HEAD_REQUIRED).
 func (r *handoffRecordsLive) completionHead() {
 	t := r.t
 	roles := []struct{ phase, word, role, session string }{
@@ -554,6 +563,17 @@ func (r *handoffRecordsLive) completionHead() {
 	for _, each := range roles {
 		written := r.write(each.session, r.headNone, each.word, r.smallBody(r.headNone, each.word, "a record naming no head"))
 		r.note("control: handoff-write as %s: %s, its body naming no head", each.session, written.line)
+		if each.role == "tester" {
+			out, code := r.bun(each.session, []string{"LEGION_ISSUE=" + r.headNone},
+				filepath.Join(r.root, "scripts", "e2e", "completion-head.ts"), each.phase, each.role)
+			refusal := strings.TrimSpace(string(out.stderr))
+			r.note("control: findHandoffReport as the tester of %s in %s exited %d: %s", r.headNone, each.phase, code, refusal)
+			if code != 1 || strings.TrimSpace(string(out.stdout)) != "" || refusal == "" {
+				t.Fatalf("the tester's completion of %s, whose test record names no head, = exit %d, stdout %q, stderr %q; want it refused before it is sent",
+					r.headNone, code, out.stdout, refusal)
+			}
+			continue
+		}
 		line, report := r.completionReport(each.session, r.headNone, each.phase, each.role)
 		r.note("control: the completion findHandoffReport would send as the %s of %s in %s: %s", each.role, r.headNone, each.phase, line)
 		if report.Commit != nil || strings.Contains(line, "commit") {

@@ -1,0 +1,11 @@
+kind: Removed
+body: |-
+  No test reads the words of the `legion` tool's description or of a refusal the tool writes: the
+  whole-text pin of the description, the test of its verdict sentences, the phase-stall case's
+  check of a description sentence and the text of the verdict refusal are gone. The tests keep that
+  every session reads one description, that the host offers the `legion` tool, and that a phase
+  completion naming a verdict is refused with nothing posted. The rig's test of the words of the
+  task it gives the reviewer and the architect is gone too.
+time: 2026-11-24T03:34:14Z
+custom:
+    Issue: tool-wording-tests

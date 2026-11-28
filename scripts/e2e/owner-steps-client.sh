@@ -15,10 +15,13 @@
 #     not hold fails the same check;
 #   - client-phase-worker-refused: planRegister and taskStop with the implementer's grant throw
 #     LegionDaemonApiError 403 ARCHITECT_REQUIRED; the architect's answer fails the same check;
-#   - client-return-to: the phase op handoff_complete {verdict fail, return_to 1} of a tester
-#     (executePhaseOp) is taken and returns task a to its step 1;
-#   - control-client-return-to-refused: return_to 2, the tester's own place, throws 409
-#     RETURN_REFUSED and moves nothing; the tester's pass after it is taken;
+#   - client-return-to: on the plan planner implementer tester, with the check state at the tested
+#     head a fail, the phase op handoff_complete {return_to 1} of a tester (executePhaseOp), which
+#     carries no verdict and names the head it tested, is taken and returns task a to its step 1,
+#     the planner, where a fail naming no step would return it to the implementer;
+#   - control-client-return-to-refused: return_to 3, the tester's own place, throws 409
+#     RETURN_REFUSED and moves nothing; the tester's completion after it, on a passing check, is
+#     taken;
 #   - older-client-reads: a tester's claim whose recorded contract is set to the release before's
 #     while no daemon runs (a pane registered under that release that outlives the upgrade, within
 #     its turn; this daemon refuses a new registration at any other contract and relaunches such a
@@ -29,7 +32,7 @@
 #   - client-stop-task: taskStop of task a with the architect's grant answers 200 {} and the issue
 #     stands held task-stopped; a task the plan does not hold fails the same check;
 #   - client-stopped-report-refused: the stopped task's tester's handoff_complete throws 409
-#     TASK_STOPPED; the taken pass above fails the same check.
+#     TASK_STOPPED; the taken completion above fails the same check.
 #
 # Run it from a checkout on a Linux host with what scripts/e2e/owner-steps.sh needs (go, git, jj,
 # bun after `bun install`, awk, python3, a loopback LEGION_TEST_PG_DSN), and tar, as

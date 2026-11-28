@@ -36,7 +36,7 @@ func TestAStepsCompletionWithNoCheckCompletesTheStep(t *testing.T) {
 	seedEntry(t, h, "LEGION-208", claim.RoleTester, 1)
 	c := newLiveClaim(t, h, "LEGION-208", claim.RoleTester)
 	takeTask(t, h, c.token, "outbox:testing-1", "test it", 1, 1)
-	completion(t, h.complete(HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Verdict: "pass",
+	completion(t, h.complete(HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass",
 		Commit: headSHA, HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}))
 	lastCompletion(t, facts)
 }
@@ -95,7 +95,7 @@ func TestOneClaimsStepAndLookAreEachTheCallThatSaysSo(t *testing.T) {
 			takeTask(t, h, c.token, "outbox:testing-1", "test it", 1, 1)
 			m, _ := h.supervisor.Machine(c.token)
 			step := func() {
-				completion(t, h.complete(HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Verdict: "pass",
+				completion(t, h.complete(HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass",
 					Commit: headSHA, HandoffID: c.writeHandoff("test", 1), HandoffVersion: 1}))
 				lastCompletion(t, facts)
 			}
@@ -262,7 +262,7 @@ func testLateNamedCompletion(t *testing.T, started, hasRecord bool, want string)
 	}); err != nil {
 		t.Fatal(err)
 	}
-	req := HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Verdict: "pass", Commit: headSHA}
+	req := HandoffCompleteRequest{GrantID: c.grant(t), Summary: "tests pass", Commit: headSHA}
 	if hasRecord {
 		req.HandoffID, req.HandoffVersion = c.writeHandoff("test", 1), 1
 	}

@@ -300,14 +300,20 @@ func (r *reviewRangeLive) roundTwo(issue *reviewRangeIssue) string {
 	return issue.task
 }
 
-// pass has issue's tester write its handoff of round and complete with a pass, and waits for the
-// issue to reach reviewing. Its turn ends with its completion, as a worker's does: the reviewer's
-// task is held while another role of the issue is in a turn (supervise's sendPending).
+// pass has issue's tester write its handoff of round and complete with a pass at the head it
+// tested, the round's own (first for round 1, the implementer's push for round 2), and waits for
+// the issue to reach reviewing. Its turn ends with its completion, as a worker's does: the
+// reviewer's task is held while another role of the issue is in a turn (supervise's sendPending).
 func (r *reviewRangeLive) pass(issue *reviewRangeIssue, round int) handoffWritten {
 	t := r.t
 	t.Helper()
+	head := issue.first
+	if round > 1 {
+		head = issue.second
+	}
 	test := r.write(issue.tester.session, issue.key, "test", r.smallBody(issue.key, "test", fmt.Sprintf("round %d passes", round)))
-	status, failure := issue.tester.complete(api.HandoffCompleteRequest{Summary: "tested", Verdict: "pass", HandoffID: test.id, HandoffVersion: test.version})
+	testedAs(t, r.st.Pool(), issue.key, head, true)
+	status, failure := issue.tester.complete(api.HandoffCompleteRequest{Summary: "tested", Commit: head, HandoffID: test.id, HandoffVersion: test.version})
 	if status != http.StatusOK {
 		t.Fatalf("the tester's passing completion of round %d = %d %+v, want 200", round, status, failure)
 	}

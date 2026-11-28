@@ -1,0 +1,6 @@
+kind: Fixed
+body: |-
+  The skill-scenario rig now records the base revision of each heads world alongside its pull-request heads. Its GitHub stand-in serves that revision in the pull request and comparison reads, so Dispatch can settle the former-head read before the tester writes a record.
+time: 2026-11-26T09:38:22Z
+custom:
+    Issue: heads-world-base-revision

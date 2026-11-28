@@ -837,7 +837,7 @@ func scanIssue(row scanner) (*Issue, error) {
 }
 
 // phaseColumns is the columns of a phases row as scanPhase reads them, in its order.
-const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff, decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back, coalesce(entry_from, ''), entry_given_task, entry_given_entry, entry_given_generation, reviewed_head, step_task, step_place`
+const phaseColumns = `issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, coalesce(states_serial, 0), coalesce(return_to, 0), summary, last_handoff, decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back, coalesce(entry_from, ''), entry_given_task, entry_given_entry, entry_given_generation, reviewed_head, step_task, step_place`
 
 func (s *Postgres) Phases(ctx context.Context, tx pgx.Tx, issue string) ([]PhaseRow, error) {
 	rows, err := tx.Query(ctx, `select `+phaseColumns+` from phases
@@ -970,14 +970,14 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 			return fmt.Errorf("put %s phase on %s: encode the wait the entry's resume answers: %w", phase.Role, phase.Issue, err)
 		}
 	}
-	tag, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, verdict, summary, last_handoff,
+	tag, err := tx.Exec(ctx, `insert into phases (issue, role, claim, handoff_commit, pass, handoff_record, handoff_version, rounds, conflict_rounds, backward_moves, cap_told, states_serial, return_to, summary, last_handoff,
 		decision, completed_at, entry, entry_task, entry_awaiting, entry_raised_at, entry_moved_back, entry_from, entry_given_task, entry_given_entry, entry_given_generation, reviewed_head, step_task, step_place)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27, $28, $29)
 		on conflict (issue, role) do update set claim = excluded.claim,
 		handoff_commit = excluded.handoff_commit, pass = excluded.pass,
 		handoff_record = excluded.handoff_record, handoff_version = excluded.handoff_version,
 		rounds = excluded.rounds, conflict_rounds = excluded.conflict_rounds, backward_moves = excluded.backward_moves,
-		cap_told = excluded.cap_told, verdict = excluded.verdict,
+		cap_told = excluded.cap_told, states_serial = excluded.states_serial, return_to = excluded.return_to,
 		summary = excluded.summary, last_handoff = excluded.last_handoff, decision = excluded.decision,
 		completed_at = excluded.completed_at,
 		entry = excluded.entry, entry_task = excluded.entry_task, entry_awaiting = excluded.entry_awaiting,
@@ -985,7 +985,7 @@ func (s *Postgres) PutPhase(ctx context.Context, tx pgx.Tx, phase PhaseRow) erro
 		entry_given_task = excluded.entry_given_task, entry_given_entry = excluded.entry_given_entry, entry_given_generation = excluded.entry_given_generation,
 		reviewed_head = excluded.reviewed_head, step_task = excluded.step_task, step_place = excluded.step_place`,
 		phase.Issue, string(phase.Role), string(phase.Claim), phase.HandoffCommit, phase.Pass, phase.HandoffRecord, phase.HandoffVersion, phase.Rounds, phase.ConflictRounds,
-		backwardMoves, phase.CapTold, phase.Verdict, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
+		backwardMoves, phase.CapTold, phase.StatesSerial, phase.ReturnTo, phase.Summary, phase.LastHandoff, decision, phase.CompletedAt,
 		phase.Entry, phase.EntryTask, awaiting, raisedAt, phase.EntryMovedBack, from, phase.Given.Task, phase.Given.Entry, int64(phase.Given.Generation),
 		phase.ReviewedHead, phase.StepTask, phase.StepPlace,
 	)
@@ -1003,7 +1003,7 @@ func scanPhase(row scanner) (PhaseRow, error) {
 	var raisedAt *time.Time
 	var givenGeneration int64
 	if err := row.Scan(&phase.Issue, &role, &token, &phase.HandoffCommit, &phase.Pass, &phase.HandoffRecord, &phase.HandoffVersion, &phase.Rounds, &phase.ConflictRounds,
-		&backwardMoves, &phase.CapTold, &phase.Verdict, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
+		&backwardMoves, &phase.CapTold, &phase.StatesSerial, &phase.ReturnTo, &phase.Summary, &phase.LastHandoff, &decision, &phase.CompletedAt,
 		&phase.Entry, &phase.EntryTask, &awaiting, &raisedAt, &phase.EntryMovedBack, &phase.EntryFrom, &phase.Given.Task, &phase.Given.Entry,
 		&givenGeneration, &phase.ReviewedHead, &phase.StepTask, &phase.StepPlace); err != nil {
 		return PhaseRow{}, err
@@ -2197,7 +2197,7 @@ func (s *Postgres) clearGeneration(ctx context.Context, tx pgx.Tx, where, key, d
 		// the reviewer's own review goes with the decision: the new generation's first review reads
 		// the whole change.
 		"update phases set handoff_commit = '', handoff_record = '', handoff_version = 0, rounds = 0, conflict_rounds = 0, " +
-			"backward_moves = '{}'::jsonb, cap_told = 0, verdict = '', summary = '', decision = null, reviewed_head = '', " +
+			"backward_moves = '{}'::jsonb, cap_told = 0, states_serial = 0, return_to = 0, summary = '', decision = null, reviewed_head = '', " +
 			"entry_task = '', entry_awaiting = null, entry_given_task = '', entry_given_entry = 0, entry_given_generation = 0, step_task = '', step_place = 0 where " + where,
 		// What each holder took of the approved design goes with the gate it was taken from: the
 		// next generation registers its gate again, and its work starts from what that gate
@@ -3049,6 +3049,36 @@ func (s *Postgres) SetCaughtUp(ctx context.Context, tx pgx.Tx, issue string, seq
 		return fmt.Errorf("set the catch-up cursor of %s at %d: %w", issue, seq, err)
 	}
 	noteRowsWritten(ctx, tag)
+	return nil
+}
+
+func (s *Postgres) CheckStatesSeqs(ctx context.Context, tx pgx.Tx, issues []string) (map[string]int64, error) {
+	cursors := make(map[string]int64, len(issues))
+	if len(issues) == 0 {
+		return cursors, nil
+	}
+	rows, err := tx.Query(ctx, `select key, coalesce(check_states_seq, 0) from issues where key = any($1)`, issues)
+	if err != nil {
+		return nil, fmt.Errorf("read the check states cursors of %d issues: %w", len(issues), err)
+	}
+	var key string
+	var seq int64
+	if _, err := pgx.ForEachRow(rows, []any{&key, &seq}, func() error {
+		cursors[key] = seq
+		return nil
+	}); err != nil {
+		return nil, fmt.Errorf("read the check states cursors of %d issues: %w", len(issues), err)
+	}
+	return cursors, nil
+}
+
+func (s *Postgres) SetCheckStatesSeq(ctx context.Context, tx pgx.Tx, issue string, seq int64) error {
+	if seq < 0 {
+		return fmt.Errorf("set the check states cursor of %s: sequence %d is negative", issue, seq)
+	}
+	if _, err := tx.Exec(ctx, `update issues set check_states_seq = greatest(coalesce(check_states_seq, 0), $2) where key = $1`, issue, seq); err != nil {
+		return fmt.Errorf("set the check states cursor of %s at %d: %w", issue, seq, err)
+	}
 	return nil
 }
 

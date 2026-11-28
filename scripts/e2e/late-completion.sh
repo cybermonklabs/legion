@@ -22,13 +22,14 @@
 # implementing, which moves the issue to testing. The driver then commits the tester's notes in the
 # workspace, pushed nowhere, and the operator's own task (`legion claims deliver`) gives the
 # finished implementer a second turn, which calls `handoff_complete` again. The tester that
-# completion started takes its task, the driver writes its test record as its session, and its turn
-# completes testing with verdict pass, which moves the issue to reviewing; the operator's task then
-# gives the finished tester a second turn, which calls `handoff_complete` again. The reviewer the
-# pass started takes its reviewing task, and its turn is held while the driver writes its review
-# record as its own session and publishes the review App's approval of the head, its Legion footer
-# naming that session, as Envoy relays a GitHub review; the daemon moves the issue to accepting, and
-# the turn then completes. Each step records the tool's answer, which comes back to the stand-in as
+# completion started takes its task, the driver writes its test record as its session and gives the
+# daemon the passing state of the head's check, and its turn completes testing with no verdict,
+# which moves the issue to reviewing; the operator's task then gives the finished tester a second
+# turn, which calls `handoff_complete` again. The reviewer the pass started takes its reviewing
+# task, and its turn is held while the driver writes its review record as its own session and
+# publishes the review App's approval of the head, its Legion footer naming that session, as Envoy
+# relays a GitHub review; the daemon moves the issue to accepting, and the turn then completes.
+# Each step records the tool's answer, which comes back to the stand-in as
 # the tool's result, and the daemon's own line for each request each call made (`api: handoff
 # completion answered`, which names the record and the commit the call carried and the status and
 # code it was answered with); the last step holds each repeat refused `409 HANDOFF_NOT_CURRENT_PHASE`
