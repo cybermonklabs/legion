@@ -321,29 +321,24 @@ func WithLimits(limits Limits) Option {
 }
 
 // WithRateCounter makes the client count its calls to GitHub on counter, for the rate reading
-// (githubrate): every request it sends goes through counter's Transport, and every installation
-// token it mints is registered with its installation, so each call made with that token is counted
-// under that installation and the caller kind its context carries (githubrate.WithCaller). A
-// transport alone could not do the second half, since only the mint knows whose token it is.
-// Every client of one process that calls with installation tokens takes the one Counter, as
-// Dispatch's two do (the API's, which the architecture importer and the delivery intakes and
-// reconcile share, and the CI reconcile's), because GitHub budgets the installation and the
-// reading reports what the process spent of it, whichever client spent it. A nil counter counts
-// nothing, which is a client built without the option.
+// (githubrate): every request it sends goes through counter's Transport, which New wraps around
+// the transport of a copy of the client's HTTP client, so the counter counts whichever HTTP client
+// the client sends through (WithHTTPClient), given in either order, and never writes one a caller
+// passed. Every installation token the client mints is registered with its installation, so each
+// call made with that token is counted under that installation and the caller kind its context
+// carries (githubrate.WithCaller). A transport alone could not do the second half, since only the
+// mint knows whose token it is. Every client of one process that calls with installation tokens
+// takes the one Counter, as Dispatch's two do (the API's, which the architecture importer and the
+// delivery intakes and reconcile share, and the CI reconcile's), because GitHub budgets the
+// installation and the reading reports what the process spent of it, whichever client spent it. A
+// nil counter counts nothing, which is a client built without the option.
 func WithRateCounter(counter *githubrate.Counter) Option {
-	return func(c *Client) {
-		if counter == nil {
-			return
-		}
-		c.rate = counter
-		c.http.Transport = counter.Transport(c.http.Transport)
-	}
+	return func(c *Client) { c.rate = counter }
 }
 
 // WithHTTPClient sets the HTTP client every GitHub call is sent through. Without it the client
 // builds one of its own, which is what a deployment does; a test passes one whose transport sees
-// each request's context. It replaces the HTTP client WithRateCounter wraps the transport of, so a
-// client given both takes WithHTTPClient first.
+// each request's context.
 func WithHTTPClient(httpClient *http.Client) Option {
 	return func(c *Client) { c.http = httpClient }
 }
@@ -433,10 +428,15 @@ type Client struct {
 	installationRepos *ttlCache[int64, []string]
 }
 
-// RequestDeadline is the end a test gave each API call the client sends (WithRequestDeadline), the
-// zero value where none was given. cmd/dispatch's settings tests read it off each client main
-// builds.
+// RequestDeadline is the end a test gave each API call the client sends (WithRequestDeadline): the
+// zero value where none was given, and for a nil *Client, the valid "no app credentials yet"
+// state main keeps where no App key is configured. Nothing in this package reads it; its reader,
+// cmd/dispatch's settings tests, which read it off each client main builds, comes with #4445's
+// cmd/dispatch piece.
 func (c *Client) RequestDeadline() clock.Deadline {
+	if c == nil {
+		return clock.Deadline{}
+	}
 	return c.requestDeadline
 }
 
@@ -487,6 +487,14 @@ func New(app *auth.AppConfig, base string, options ...Option) (*Client, error) {
 	}
 	for _, option := range options {
 		option(c)
+	}
+	// The counter wraps the transport of a copy of the HTTP client the options left, so it counts
+	// whichever of WithRateCounter and WithHTTPClient came first, and a client a caller passed is
+	// never written.
+	if c.rate != nil {
+		counted := *c.http
+		counted.Transport = c.rate.Transport(counted.Transport)
+		c.http = &counted
 	}
 	nowFunc := func() time.Time { return c.now() }
 	c.repositories = newTTLCache[string, int64](installationsCacheTTL, nowFunc)

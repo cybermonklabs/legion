@@ -326,6 +326,11 @@ func TestRateLimitBoundsTheWaitGitHubNames(t *testing.T) {
 			if limited == nil {
 				t.Fatal("a 429 read as no rate limit")
 			}
+			// RateLimit is the same reading at time.Now, so it finds the limit the reading at the
+			// row's moment finds, whatever wait it asks for.
+			if githubapp.RateLimit(http.StatusTooManyRequests, row.header, nil) == nil {
+				t.Error("RateLimit read the 429 as no rate limit, where the reading at the row's moment found one")
+			}
 			if limited.Wait != row.want {
 				t.Errorf("the limit asks for %s, want %s", limited.Wait, row.want)
 			}

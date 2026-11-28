@@ -18,7 +18,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"sync"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -27,7 +26,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
-	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
 	"github.com/sjawhar/envoy/internal/githubtest"
 	"github.com/sjawhar/envoy/internal/testport"
@@ -757,9 +755,12 @@ func TestSendNotesARequestGitHubDidNotAnswerUnlessItsCallerEnded(t *testing.T) {
 		}
 	})
 
+	// The caller ends the read once it reaches GitHub, however late a loaded machine runs that
+	// end: the read's own bound is the test's give-up, so the client's RequestTimeout does not
+	// end it first, which would read as GitHub's failure.
 	t.Run("a caller that ended", func(t *testing.T) {
 		arrived := make(chan struct{}, 1)
-		client := hangingGitHub(t, arrived)
+		client := hangingGitHub(t, arrived, WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 		caller, end := context.WithCancel(context.Background())
 		defer end()
 		go func() {
@@ -860,35 +861,6 @@ func (l limitTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	return recorder.Result(), nil
 }
 
-// recordedLimits is Limits that holds no request and keeps, by scope, the last wait a limit was
-// recorded with.
-type recordedLimits struct {
-	mu    sync.Mutex
-	waits map[string]time.Duration
-}
-
-func (l *recordedLimits) Wait(context.Context, string) (time.Duration, time.Time, error) {
-	return 0, time.Time{}, nil
-}
-
-func (l *recordedLimits) Record(_ context.Context, scope string, wait time.Duration) error {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	l.waits[scope] = wait
-	return nil
-}
-
-func (l *recordedLimits) Strike(ctx context.Context, scope string, wait time.Duration) (ratelimit.Limit, error) {
-	return ratelimit.Limit{Scope: scope, Wait: wait}, l.Record(ctx, scope, wait)
-}
-
-func (l *recordedLimits) recorded(scope string) (time.Duration, bool) {
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	wait, ok := l.waits[scope]
-	return wait, ok
-}
-
 // A client given WithRateLimitClock reads the wait of a limit GitHub answers against that clock:
 // the reset GitHub names less the clock's now, for a REST call (a token mint) and a GraphQL query
 // alike, both on the error the caller is given and as the limit is recorded for every process.
@@ -898,7 +870,7 @@ func TestAClientReadsARateLimitsWaitAgainstItsRateLimitClock(t *testing.T) {
 	_, pemText := testKeyPEM(t)
 	start := time.Date(2020, 1, 1, 12, 0, 0, 0, time.UTC)
 	const wait = 90 * time.Second
-	limits := &recordedLimits{waits: map[string]time.Duration{}}
+	limits := &holdingLimits{}
 	client, err := New(&auth.AppConfig{ClientID: "Iv1.testclient", PEM: pemText}, "https://github.test",
 		WithHTTPClient(&http.Client{Transport: limitTransport{reset: start.Add(wait)}}),
 		WithLimits(limits), WithRateLimitClock(clocktest.New(start)))
@@ -925,7 +897,7 @@ func TestAClientReadsARateLimitsWaitAgainstItsRateLimitClock(t *testing.T) {
 			if limited, ok := AsRateLimit(err); !ok || limited.Held || limited.Wait != wait {
 				t.Fatalf("err = %v, want GitHub's limit with a wait of %s: the reset %s less the clock's now %s", err, wait, start.Add(wait), start)
 			}
-			if recorded, ok := limits.recorded(row.scope); !ok || recorded != wait {
+			if recorded, ok := limits.recordedWait(row.scope); !ok || recorded != wait {
 				t.Fatalf("the limit under %s was recorded with %s (recorded: %v), want %s: the reset less the clock's now", row.scope, recorded, ok, wait)
 			}
 		})

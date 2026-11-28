@@ -93,8 +93,11 @@ func (f *limitGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	query := f.graphQL
 	f.mu.Unlock()
 	if held != nil {
-		// The mint waits for the last of the mints awaited, or for its request to end; a client
-		// that sends fewer is held, and the test's wait for its answers names that.
+		// The mint waits for the last of the mints awaited, or for its request to end. A row that
+		// holds mints builds its client with each call's end at the shared wait's give-up
+		// (githubapptest.RequestDeadlineAtTheGiveUp), so that give-up ends a held mint, and not the
+		// client's RequestTimeout: a client that sends fewer mints than awaited is held until the
+		// test's wait for their answers gives up, which names it.
 		select {
 		case <-held:
 		case <-r.Context().Done():
@@ -138,7 +141,8 @@ func (f *limitGitHub) limit(path string) {
 }
 
 // holdMints holds each later mint's answer until n mints have arrived, so n callers that each
-// found no token mint at once.
+// found no token mint at once. The client that sends them ends each call at the shared wait's
+// give-up (serve).
 func (f *limitGitHub) holdMints(n int) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -181,12 +185,12 @@ func (f *limitGitHub) newClient(t *testing.T, options ...Option) *Client {
 }
 
 // twoProcesses is two clients on one database, each through a pool of its own, as two Dispatch
-// processes hold them, both calling one GitHub.
-func twoProcesses(t *testing.T, fake *limitGitHub) (database *store.Store, a, b *Client) {
+// processes hold them, both calling one GitHub, and each built with options as well.
+func twoProcesses(t *testing.T, fake *limitGitHub, options ...Option) (database *store.Store, a, b *Client) {
 	t.Helper()
 	database = storetest.Open(t)
-	a = fake.newClient(t, WithLimits(ratelimit.New(database.Pool)))
-	b = fake.newClient(t, WithLimits(ratelimit.New(storetest.SecondProcess(t, database).Pool)))
+	a = fake.newClient(t, append([]Option{WithLimits(ratelimit.New(database.Pool))}, options...)...)
+	b = fake.newClient(t, append([]Option{WithLimits(ratelimit.New(storetest.SecondProcess(t, database).Pool))}, options...)...)
 	return database, a, b
 }
 
@@ -753,10 +757,13 @@ func TestATokenMintedBeforeARefreshStaysUnderItsInstallationsLimit(t *testing.T)
 }
 
 // Two callers that find no token for an installation at once both mint, and each token is under
-// the installation's limit: the second mint to land does not drop the first's scope.
+// the installation's limit: the second mint to land does not drop the first's scope. GitHub holds
+// the first mint until the second arrives, however late a loaded machine starts the second, so
+// A's calls end at the shared wait's give-up (githubapptest.RequestDeadlineAtTheGiveUp), not at
+// RequestTimeout, which would end the held mint as GitHub's failure.
 func TestTwoConcurrentFirstMintsForOneInstallationAreBothUnderItsLimit(t *testing.T) {
 	fake := startLimitGitHub(t)
-	_, a, b := twoProcesses(t, fake)
+	_, a, b := twoProcesses(t, fake, WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(t)))
 	ctx := context.Background()
 	fake.holdMints(2)
 	tokens := make([]string, 2)
