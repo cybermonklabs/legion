@@ -3609,19 +3609,18 @@ function classTokens(text: string): string[] {
   return [...new Set(text.split(/\s+/).filter((token) => token !== ""))].sort();
 }
 
-/** The classes of the project page's `Blocked on you · N` pill at
- *  6ef60ff0ceeba4ccaf285f06f5bbe9b859b2e4d8, the merge base when they were read, as a sorted set
- *  of tokens, so neither their order nor a repeat is read. That commit's `web/dist` was served by
- *  `DISPATCH_E2E_SERVER_WEB_DIST` (e2e/run-server.sh) over the row below's seed, and the pill's
- *  `textContent` and its `href` and `class` attributes were read at 1440x900 on
- *  `/projects/CORE/issues`: they answered `Blocked on you · 3`, `/` and the `class` these tokens
- *  make. Its colours are written by the three roles that base's `BlockedOnYou.tsx` drew them
- *  with, because no file here may write a colour utility of its own
- *  (`web/src/theme/no-raw-colors.test.ts`); `theme/classes.ts` gives each the value the base
- *  read. */
+/** The classes of the project page's `Blocked on you · N` pill at the merge base, main's
+ *  69a993046e8, as a sorted set of tokens, so neither their order nor a repeat is read. Main's
+ *  #5224 moved the pill's order, so the tokens are read from that base's two lines that write
+ *  them: `web/src/features/project/ProjectPage.tsx:191`, which passes the pill its `className`
+ *  (`shrink-0 md:order-last`), and `web/src/features/inbox/BlockedOnYou.tsx:120`, which adds the
+ *  pill's own shape and its three colour roles. Its colours are written by the three roles that
+ *  base's `BlockedOnYou.tsx` drew them with, because no file here may write a colour utility of
+ *  its own (`web/src/theme/no-raw-colors.test.ts`); `theme/classes.ts` gives each the value the
+ *  base read. */
 const PILL_CLASSES_AT_THE_BASE = classTokens(
   [
-    "order-3 shrink-0 md:order-5 inline-flex min-h-11 items-center rounded-full px-3 text-xs",
+    "shrink-0 md:order-last inline-flex min-h-11 items-center rounded-full px-3 text-xs",
     "font-medium md:min-h-9 md:px-2",
     theme.surfaceMutedStrongBg,
     theme.textSecondaryOnSurface,
