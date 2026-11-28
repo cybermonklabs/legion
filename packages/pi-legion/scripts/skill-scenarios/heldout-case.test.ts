@@ -1001,7 +1001,8 @@ describe("the typed world parts", () => {
       w.git.commits[1].files = files;
     });
 
-  // Catches: a path the builder would write outside the commit's tree, or a name git cannot hold.
+  // Catches: a path the builder would write outside the commit's tree: one that is absolute, or
+  // holds an empty name, `.` or `..`.
   test("a path that is absolute or holds `..`, `.` or an empty name is refused", () => {
     const files = [
       { path: "cmd/acme/main.go", text: "package main\n" },
@@ -1022,6 +1023,51 @@ describe("the typed world parts", () => {
       "",
     ])
       expect(() => withFiles([{ path: file, text: "x\n" }])).toThrow(`${at}${names}`);
+  });
+
+  // Catches: a path that splits the builder's record or that git keeps for its own: a NUL, which
+  // ends a path in the `-z --index-info` record buildGitWorld writes, and a name `.git` in any
+  // case, at any depth. A name that only begins `.git` is a file's.
+  test("a path that holds a NUL or a name .git in any case is refused", () => {
+    const at = "case P05: world.git.commits[1].files[0].path: ";
+    expect(() => withFiles([{ path: "cmd/main\0.go", text: "x\n" }])).toThrow(
+      `${at}a path holds no NUL, which ends a path in git's record of it`
+    );
+    for (const file of [".git", ".GIT/config", "cmd/.Git/hooks/pre-commit", "cmd/.gIT"])
+      expect(() => withFiles([{ path: file, text: "x\n" }])).toThrow(
+        `${at}no name of a path is .git, in any case: git keeps that name for its own directory`
+      );
+    const files = [
+      { path: ".gitignore", text: "x\n" },
+      { path: ".github/workflows/ci.yml", text: "x\n" },
+      { path: "cmd/x.git", text: "x\n" },
+    ];
+    expect(withFiles(files)?.git?.commits[1]?.files).toEqual(files);
+  });
+
+  // Catches: a commit whose own entries hold a path both as a file and as the directory of another
+  // entry, which git's index cannot hold. The rule reads one commit's own entries alone: a file of a
+  // commit at a path its parent's files make a directory, or the other way round, is left to git's
+  // own error when the world is built.
+  test("a path of a commit that is also the directory of another of its entries is refused", () => {
+    const at = "case P05: world.git.commits[1].files";
+    expect(() =>
+      withFiles([
+        { path: "cmd", text: "x\n" },
+        { path: "cmd/acme/main.go", text: "package main\n" },
+      ])
+    ).toThrow(`${at}[0].path: cmd is also the directory of cmd/acme/main.go`);
+    expect(() =>
+      withFiles([
+        { path: "cmd/acme/main.go", text: "package main\n" },
+        { path: "cmd/acme", text: "x\n" },
+      ])
+    ).toThrow(`${at}[1].path: cmd/acme is also the directory of cmd/acme/main.go`);
+    const files = [
+      { path: "cmd.go", text: "x\n" },
+      { path: "cmd/acme/main.go", text: "package main\n" },
+    ];
+    expect(withFiles(files)?.git?.commits[1]?.files).toEqual(files);
   });
 
   test("two entries of one commit with one path are refused", () => {

@@ -233,6 +233,16 @@ func (b *teardownEffectsReadback) versionText(id string, number int) (string, bo
 	return "", false
 }
 
+// documentKind is the kind of the document id, as the readback holds it, "" where it holds none.
+func (b *teardownEffectsReadback) documentKind(id string) string {
+	for _, d := range b.Documents {
+		if d.ID == id {
+			return d.Kind
+		}
+	}
+	return ""
+}
+
 // handoffBody is the stored body of the handoff record id: Dispatch keeps it as a string, and an
 // older readback held it as the object.
 func (b *teardownEffectsReadback) handoffBody(id string) (string, int, string, bool) {
@@ -794,13 +804,8 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 			unmade = []string{"target", "reply_block"}
 		} else if set("anchor") {
 			anchor, _ := e.Payload["anchor"].(map[string]any)
-			id, kind := teardownEffectsString(anchor, "artifact_id"), ""
-			for _, d := range b.Documents {
-				if id != "" && d.ID == id {
-					kind = d.Kind
-				}
-			}
-			if id != "" && kind != "doc" {
+			id := teardownEffectsString(anchor, "artifact_id")
+			if id != "" && b.documentKind(id) != "doc" {
 				return "a comment anchored to words of " + id + ", a document the readback does not hold", true
 			}
 			anchored = id != "" && teardownEffectsString(anchor, "quote") != "" && !set("reply_to")
@@ -872,12 +877,7 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 		}
 	case "artifact.created", "artifact.version":
 		id, name, version := teardownEffectsWrittenVersion(e)
-		kind := ""
-		for _, d := range b.Documents {
-			if d.ID == id {
-				kind = d.Kind
-			}
-		}
+		kind := b.documentKind(id)
 		switch kind {
 		case "":
 			return "the readback holds no document " + id, false
@@ -896,7 +896,10 @@ func teardownEffectsDispatchFault(b *teardownEffectsReadback, e teardownEffectsE
 		// changed the document since.
 		for _, later := range b.Events {
 			changed := later.Type == "artifact.version" || later.Type == "artifact.human_edited" || later.Type == "artifact.renamed" || later.Type == "artifact.removed"
-			if changedID, _, _ := teardownEffectsWrittenVersion(later); later.Seq > e.Seq && changedID == id && changed {
+			if !changed || later.Seq <= e.Seq {
+				continue
+			}
+			if changedID, _, _ := teardownEffectsWrittenVersion(later); changedID == id {
 				return "the readback holds only the document's latest text, and " + later.Type + " changed it after it was made", later.Actor == e.Actor
 			}
 		}
@@ -2743,7 +2746,7 @@ func TestTeardownEffectsReviewFooterNamesTheReplaysSession(t *testing.T) {
 		mapped = "567aff47ddca30e9e9847574796288439ef204e3"
 	)
 	replay, head, said, footer := teardownEffectsTestSession, teardownEffectsTestHead, teardownEffectsTestSaid, teardownEffectsTestLegionFooter
-	locked := teardownEffectsTestFooter("ses-acme-53-reviewer", head)
+	locked := teardownEffectsTestBody("ses-acme-53-reviewer", head)
 	trace := func(string) bool { return true }
 	ownRun := func(named string) bool { return named == run }
 	same := func(commit string) string { return commit }
@@ -2806,16 +2809,17 @@ const (
 
 var teardownEffectsTestSubmitted = time.Date(2030, 1, 7, 15, 4, 0, 0, time.UTC)
 
-// teardownEffectsTestFooter is the review body the role wrote: teardownEffectsTestSaid and its
-// Legion footer naming session and head (teardownEffectsTestLegionFooter).
-func teardownEffectsTestFooter(session, head string) string {
+// teardownEffectsTestBody is the review body the role wrote: teardownEffectsTestSaid and its Legion
+// footer naming session and head (teardownEffectsTestLegionFooter).
+func teardownEffectsTestBody(session, head string) string {
 	return teardownEffectsTestSaid + teardownEffectsTestLegionFooter(session, head)
 }
 
 // teardownEffectsTestLegionFooter is the Legion footer of the review body the role wrote, naming
-// session and head.
+// session and head at entry 1: legionEntryFooter without the blank line before it, which
+// teardownEffectsTestSaid ends with.
 func teardownEffectsTestLegionFooter(session, head string) string {
-	return `<!-- legion: {"session":"` + session + `","phase":"review","head":"` + head + `","entry":"1"} -->`
+	return strings.TrimPrefix(legionEntryFooter(session, head, 1), "\n\n")
 }
 
 // teardownEffectsTestReview is a review the review App submitted with body, minutes after the
@@ -2846,9 +2850,9 @@ func TestTeardownEffectsAwaitsTheReviewTheDaemonTakes(t *testing.T) {
 	t.Parallel()
 	const other = "567aff47ddca30e9e9847574796288439ef204e3"
 	engine := teardownEffectsTestEngine()
-	review, footer, session, head := teardownEffectsTestReview, teardownEffectsTestFooter, teardownEffectsTestSession, teardownEffectsTestHead
-	approval := review("APPROVED", footer(session, head), 1)
-	changes := review("CHANGES_REQUESTED", footer(session, head), 1)
+	review, body, session, head := teardownEffectsTestReview, teardownEffectsTestBody, teardownEffectsTestSession, teardownEffectsTestHead
+	approval := review("APPROVED", body(session, head), 1)
+	changes := review("CHANGES_REQUESTED", body(session, head), 1)
 	person := approval
 	person.Author = "octocat"
 	for _, row := range []struct {
@@ -2866,16 +2870,16 @@ func TestTeardownEffectsAwaitsTheReviewTheDaemonTakes(t *testing.T) {
 		{name: "an approval the record has seen", reviews: []teardownEffectsReview{approval}, seen: record.ReviewOrder{ID: teardownEffectsReviewID(0), SubmittedAt: approval.At}, session: session},
 		{name: "an approval older than the review the record has seen", reviews: []teardownEffectsReview{approval}, seen: record.ReviewOrder{ID: 9, SubmittedAt: approval.At.Add(time.Minute)}, session: session},
 		{name: "no review", session: session},
-		{name: "a comment", reviews: []teardownEffectsReview{review("COMMENTED", footer(session, head), 1)}, session: session},
+		{name: "a comment", reviews: []teardownEffectsReview{review("COMMENTED", body(session, head), 1)}, session: session},
 		{name: "a person's approval, which the daemon reads from the list and never takes", reviews: []teardownEffectsReview{person}, session: session},
-		{name: "an approval whose footer names another session", reviews: []teardownEffectsReview{review("APPROVED", footer("ses-controller", head), 1)}, session: session},
-		{name: "an approval whose footer names another head", reviews: []teardownEffectsReview{review("APPROVED", footer(session, other), 1)}, session: session},
+		{name: "an approval whose footer names another session", reviews: []teardownEffectsReview{review("APPROVED", body("ses-controller", head), 1)}, session: session},
+		{name: "an approval whose footer names another head", reviews: []teardownEffectsReview{review("APPROVED", body(session, other), 1)}, session: session},
 		{name: "an approval with no footer", reviews: []teardownEffectsReview{review("APPROVED", teardownEffectsTestSaid, 1)}, session: session},
 		{name: "an approval while the reviewer's claim records no session", reviews: []teardownEffectsReview{approval}},
 		{name: "the world's approval, which the record has not seen", reviews: []teardownEffectsReview{approval}, own: 1, session: session},
-		{name: "the role's approval after the world's, which the record has seen", reviews: []teardownEffectsReview{review("APPROVED", footer(session, head), -60), approval}, own: 1, seen: record.ReviewOrder{ID: 1, SubmittedAt: teardownEffectsTestSubmitted.Add(-time.Hour)}, session: session, want: []string{"2 approved"}},
-		{name: "a request for changes and then an approval: each", reviews: []teardownEffectsReview{changes, review("APPROVED", footer(session, head), 2)}, session: session, want: []string{"1 changes_requested", "2 approved"}},
-		{name: "a newer review the rule refuses hides no older one it takes", reviews: []teardownEffectsReview{approval, review("CHANGES_REQUESTED", footer("ses-controller", head), 2)}, session: session, want: []string{"1 approved"}},
+		{name: "the role's approval after the world's, which the record has seen", reviews: []teardownEffectsReview{review("APPROVED", body(session, head), -60), approval}, own: 1, seen: record.ReviewOrder{ID: 1, SubmittedAt: teardownEffectsTestSubmitted.Add(-time.Hour)}, session: session, want: []string{"2 approved"}},
+		{name: "a request for changes and then an approval: each", reviews: []teardownEffectsReview{changes, review("APPROVED", body(session, head), 2)}, session: session, want: []string{"1 changes_requested", "2 approved"}},
+		{name: "a newer review the rule refuses hides no older one it takes", reviews: []teardownEffectsReview{approval, review("CHANGES_REQUESTED", body("ses-controller", head), 2)}, session: session, want: []string{"1 approved"}},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			t.Parallel()
@@ -2899,16 +2903,15 @@ func TestTeardownEffectsAwaitsTheReviewTheDaemonTakes(t *testing.T) {
 // after it answered the completion is read in the phase the review moves the issue to. A phase
 // that never moves is read at the bound as it stands, so an effect that needs the move fails as an
 // effect fails, and the test log names the wait. With no deciding review the phase is read at
-// once, and nothing is logged. The record of a call that waited encodes as that of a call that
-// did not, with only the keys heldout-reader-receipt.ts takes.
+// once, and nothing is logged.
 func TestTeardownEffectsReadsThePhaseOnceTheDaemonRecordsTheReview(t *testing.T) {
 	t.Parallel()
 	const call = "rev-double-write good trace, action 4"
 	engine := teardownEffectsTestEngine()
 	pr := teardownEffectsTestPull(record.ReviewOrder{})
 	taken := []teardownEffectsHTTP{{Method: "POST", Path: teardownEffectsComplete, Status: 200, Body: json.RawMessage(`{"grantId":"g","summary":"Reviewed the head and approved it.","verdict":""}`), Answer: json.RawMessage(`{}`)}}
-	approval := teardownEffectsTestReview("APPROVED", teardownEffectsTestFooter(teardownEffectsTestSession, teardownEffectsTestHead), 1)
-	comment := teardownEffectsTestReview("COMMENTED", teardownEffectsTestFooter(teardownEffectsTestSession, teardownEffectsTestHead), 1)
+	approval := teardownEffectsTestReview("APPROVED", teardownEffectsTestBody(teardownEffectsTestSession, teardownEffectsTestHead), 1)
+	comment := teardownEffectsTestReview("COMMENTED", teardownEffectsTestBody(teardownEffectsTestSession, teardownEffectsTestHead), 1)
 	// settled is the phase read after the taken completion, once the role submitted reviews, from a
 	// daemon that records them at the applies-th read of its record (never, for 0), moving the issue
 	// from reviewing to accepting as it records them; with how often the record was read, and the
@@ -2960,39 +2963,6 @@ func TestTeardownEffectsReadsThePhaseOnceTheDaemonRecordsTheReview(t *testing.T)
 		t.Parallel()
 		if got, reads, logged := settled([]teardownEffectsReview{comment}, 0, time.Minute); got != string(phase.Reviewing) || reads != 0 || len(logged) != 0 {
 			t.Fatalf("read %s after %d reads of the record, logging %q; want reviewing read at once, with no read of the record and nothing logged", got, reads, logged)
-		}
-	})
-	t.Run("the replay record of a call that waited encodes as one that did not wait", func(t *testing.T) {
-		t.Parallel()
-		waited, _, logged := settled([]teardownEffectsReview{approval}, 2, time.Minute)
-		if len(logged) != 1 {
-			t.Fatalf("the call logged %q, want the one line of its wait", logged)
-		}
-		replay := teardownEffectsNewReplayRecord("5c2b9a4e-1d3f-4e6a-8b7c-9d0e1f2a3b4c")
-		replay.Verdict = "ok"
-		replay.Calls = append(replay.Calls, teardownEffectsReplayCall{Call: call, Op: "handoff_complete", At: teardownEffectsTestSubmitted, Before: []teardownEffectsChange{},
-			State: teardownEffectsState{Phase: string(phase.Reviewing), Pulls: []teardownEffectsPullState{}}, Standin: []teardownEffectsAnswerRef{}, Daemon: []teardownEffectsAnswerRef{}, PhaseAfter: waited})
-		encoded, err := json.Marshal(replay)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var decoded struct {
-			Calls []map[string]json.RawMessage `json:"calls"`
-		}
-		var top map[string]json.RawMessage
-		if err := json.Unmarshal(encoded, &top); err != nil {
-			t.Fatal(err)
-		}
-		if err := json.Unmarshal(encoded, &decoded); err != nil || len(decoded.Calls) != 1 {
-			t.Fatalf("decode the record's calls: %v, %d calls", err, len(decoded.Calls))
-		}
-		keys := func(object map[string]json.RawMessage) []string { return slices.Sorted(maps.Keys(object)) }
-		// ReplayRecord and ReplayCall of heldout-reader-receipt.ts, which refuse any other key.
-		if got, want := keys(top), []string{"after", "calls", "end", "id", "notReplayed", "seed", "verdict"}; !slices.Equal(got, want) {
-			t.Fatalf("the record of a call that waited has the keys %q, want %q", got, want)
-		}
-		if got, want := keys(decoded.Calls[0]), []string{"at", "before", "call", "client", "daemon", "op", "phaseAfter", "standin", "state"}; !slices.Equal(got, want) {
-			t.Fatalf("the call that waited has the keys %q, want %q", got, want)
 		}
 	})
 }

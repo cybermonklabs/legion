@@ -606,8 +606,9 @@ function worldIds(file: string): Map<string, string> {
  * hexadecimal characters, read only where no lower-case hexadecimal character comes right before
  * or after it, so an id or a prefix inside a longer run stays. A whole uuid is one token whether
  * `ids` holds it or not, so its first 8 characters are never read apart from it and no uuid is
- * half replaced. */
+ * half replaced. With no id in `ids` the text stays as it is. */
 function worldIdText(ids: ReadonlyMap<string, string>): (text: string) => string {
+  if (ids.size === 0) return (text) => text;
   const prefixes = new Map<string, string | undefined>();
   for (const [given, stated] of ids) {
     const prefix = given.slice(0, 8);

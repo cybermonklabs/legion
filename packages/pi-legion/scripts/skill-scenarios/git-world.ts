@@ -210,6 +210,8 @@ export function buildGitWorld(dir: string, world: World, stage = false): CommitM
     /** The world's files its tree holds, paths to blob ids, where it names files or stands above
      * a commit that does. */
     files?: Map<string, string>;
+    /** Its tree's id. */
+    tree: string;
   }
   const building = new Set<string>();
   const built = new Map<string, Built>();
@@ -227,22 +229,30 @@ export function buildGitWorld(dir: string, world: World, stage = false): CommitM
     // Off the default branch's first-parent line (any commit but a root, where the remote names
     // no default branch), or above a commit that is.
     const offBase = base.size > 0 ? !base.has(id) : parents.length > 0;
-    // A commit that names files, or stands above one that does, holds the world's files alone:
-    // its first parent's, with its own written over them.
     const named =
       commit.files !== undefined || parents.some((parent) => parent.files !== undefined);
-    const files = named ? new Map(parents[0]?.files) : undefined;
-    for (const { path: file, text } of commit.files ?? []) files?.set(file, blob(text));
     const carries = !named && (offBase || parents.some((parent) => parent.module));
-    const tree = files ?? new Map([["CHANGES.md", blob(`# Changes\n\n${changes.join("\n")}\n`)]]);
-    if (carries) for (const [file, sha] of moduleBlobs) tree.set(file, sha);
+    const first = parents[0];
+    let files: Map<string, string> | undefined;
+    let tree: string;
+    if (commit.files === undefined && first?.files !== undefined) {
+      // Its first parent's files, whose tree that parent's commit wrote already.
+      ({ files, tree } = first);
+    } else {
+      files = named ? new Map(first?.files) : undefined;
+      for (const { path: file, text } of commit.files ?? []) files?.set(file, blob(text));
+      const entries =
+        files ?? new Map([["CHANGES.md", blob(`# Changes\n\n${changes.join("\n")}\n`)]]);
+      if (carries) for (const [file, sha] of moduleBlobs) entries.set(file, sha);
+      tree = writeTree(entries);
+    }
     const sha = plumbing(
       `${commit.description}\n`,
       "commit-tree",
-      writeTree(tree),
+      tree,
       ...parents.flatMap((parent) => ["-p", parent.sha])
     );
-    const result = { sha, changes, module: carries, files };
+    const result = { sha, changes, module: carries, files, tree };
     built.set(id, result);
     building.delete(id);
     return result;

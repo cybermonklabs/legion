@@ -200,6 +200,24 @@ func teardownEffectsOwnWrite(world teardownEffectsWorld, author string) bool {
 	return session != "" && author == session
 }
 
+// teardownEffectsOwnThread says whether the world's comment id is in a thread of the role's own: its
+// writer is the role's own session (teardownEffectsOwnWrite), or a comment up its thread (replyTo)
+// is. The replay writes such a comment once the pane has registered, after the comment it replies
+// to. A thread whose replyTo loops is read once round.
+func teardownEffectsOwnThread(world teardownEffectsWorld, id string) bool {
+	replyTo, own := map[string]string{}, map[string]bool{}
+	for _, comment := range world.Dispatch.Comments {
+		replyTo[comment.ID], own[comment.ID] = comment.ReplyTo, teardownEffectsOwnWrite(world, comment.Author)
+	}
+	for seen := map[string]bool{}; id != "" && !seen[id]; id = replyTo[id] {
+		if own[id] {
+			return true
+		}
+		seen[id] = true
+	}
+	return false
+}
+
 // teardownEffectsClaimStates is every state of a claim the daemon names (supervise's ClaimState).
 var teardownEffectsClaimStates = []supervise.ClaimState{supervise.StateQueued, supervise.StateLaunchUncertain, supervise.StateLaunching,
 	supervise.StateShimConnected, supervise.StateRegistered, supervise.StateReady, supervise.StateWorking, supervise.StateIdle,
@@ -647,6 +665,44 @@ func TestTeardownEffectsOwnWrite(t *testing.T) {
 	}
 	if issue, tree, session := teardownEffectsClaimOf(plain); issue != "ACME-12" || tree != "ACME-10" || session != "" {
 		t.Fatalf("the default claim is %s in %s (%q), want ACME-12 in ACME-10", issue, tree, session)
+	}
+}
+
+// Catches: a comment of another writer in a thread of the role's own comment, seeded before the
+// pane has registered and so before the comment it replies to, which fails the seed; any other
+// comment held back; and a thread whose replyTo loops, followed for ever.
+func TestTeardownEffectsOwnThread(t *testing.T) {
+	t.Parallel()
+	world := teardownEffectsExampleWorld(t, "P05", func(world map[string]any) {
+		teardownEffectsEveryPart(world)
+		comment := func(id, author, replyTo string) map[string]any {
+			return map[string]any{"id": id, "author": author, "replyTo": replyTo, "at": "2030-01-07T13:35:00Z", "body": "A note."}
+		}
+		world["dispatch"].(map[string]any)["comments"] = []any{
+			comment("own", "ses-acme-12-implementer", ""),
+			comment("reply", "ses-acme-12-architect", "own"),
+			comment("reply-to-reply", "alice", "reply"),
+			comment("other", "alice", ""),
+			comment("reply-to-other", "ses-acme-12-architect", "other"),
+			comment("loop-a", "alice", "loop-b"),
+			comment("loop-b", "alice", "loop-a"),
+		}
+	})
+	for _, row := range []struct {
+		id   string
+		want bool
+	}{
+		{"own", true},
+		{"reply", true},
+		{"reply-to-reply", true},
+		{"other", false},
+		{"reply-to-other", false},
+		{"loop-a", false},
+		{"loop-b", false},
+	} {
+		if got := teardownEffectsOwnThread(world, row.id); got != row.want {
+			t.Errorf("comment %s is in a thread of the role's own: %t, want %t", row.id, got, row.want)
+		}
 	}
 }
 

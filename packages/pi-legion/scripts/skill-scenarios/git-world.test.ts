@@ -21,8 +21,8 @@ function command(...args: string[]) {
 }
 
 /** `argv` in `cwd` under the run's jj configuration (`<run>/jj.toml`, as the rig gives the pane),
- * its standard output trimmed. */
-function inRun(run: string, cwd: string, ...argv: string[]): string {
+ * its standard output as it printed it. */
+function runIn(run: string, cwd: string, ...argv: string[]): string {
   const result = Bun.spawnSync(argv, {
     cwd,
     env: {
@@ -36,28 +36,18 @@ function inRun(run: string, cwd: string, ...argv: string[]): string {
     stderr: "pipe",
   });
   if (result.exitCode !== 0) throw new Error(`${argv.join(" ")}: ${result.stderr.toString()}`);
-  return result.stdout.toString().trim();
+  return result.stdout.toString();
+}
+
+/** runIn's standard output trimmed. */
+function inRun(run: string, cwd: string, ...argv: string[]): string {
+  return runIn(run, cwd, ...argv).trim();
 }
 
 /** Each tree and file of `commit`'s tree in `run`'s workspace, at any depth, by its path: a tree's
  * mode, and a file's mode and text. */
 function treeOf(run: string, commit: string): Record<string, string> {
-  const git = (...argv: string[]) => {
-    const result = Bun.spawnSync(["git", ...argv], {
-      cwd: path.join(run, "workspace"),
-      env: {
-        PATH: process.env.PATH ?? "",
-        HOME: work,
-        GIT_CONFIG_GLOBAL: "/dev/null",
-        GIT_CONFIG_NOSYSTEM: "1",
-      },
-      stdout: "pipe",
-      stderr: "pipe",
-    });
-    if (result.exitCode !== 0)
-      throw new Error(`git ${argv.join(" ")}: ${result.stderr.toString()}`);
-    return result.stdout.toString();
-  };
+  const git = (...argv: string[]) => runIn(run, path.join(run, "workspace"), "git", ...argv);
   const entries = git("ls-tree", "-r", "-t", "--format=%(objectmode) %(objecttype) %(path)", commit)
     .split("\n")
     .filter((entry) => entry !== "");
@@ -89,9 +79,8 @@ function worldOf(...commits: WorldCommit[]): World {
   };
 }
 
-/** The commit ids the builder gave the example's P05 and P10 worlds before a commit could name
- * files. */
-const BUILT_BEFORE_FILES: Record<string, Record<string, string>> = {
+/** The commit ids the builder gives the example's P05 and P10 worlds, which name no files. */
+const NO_FILES_COMMIT_IDS: Record<string, Record<string, string>> = {
   P05: {
     "1f3a5c7e9b2d4f6a8c0e1b3d5f7a9c2e4b6d8f0a": "3d669591dcafe9170992a26efe256208e7d658bf",
     "7c2e9a4b6d8f0a1c3e5b7d9f2a4c6e8b0d1f3a5c": "92e496e0dbed653a0675d987ce34492368592cbc",
@@ -141,7 +130,7 @@ test.skipIf(withoutTools)(
     expect(treeOf(run, map[base.id] ?? "")).toEqual({
       "CHANGES.md": "100644 # Changes\n\n- main: the base the issue branch starts from\n",
     });
-    expect(map[base.id]).toBe(BUILT_BEFORE_FILES.P05?.[base.id] ?? "");
+    expect(map[base.id]).toBe(NO_FILES_COMMIT_IDS.P05?.[base.id] ?? "");
   },
   60_000
 );
@@ -233,7 +222,7 @@ test.skipIf(withoutTools)(
       const run = path.join(work, `no-files-${id}`);
       mkdirSync(run);
       expect(buildGitWorld(run, loadCase(example, "heldout", id).world)).toEqual(
-        BUILT_BEFORE_FILES[id] ?? {}
+        NO_FILES_COMMIT_IDS[id] ?? {}
       );
     }
   },

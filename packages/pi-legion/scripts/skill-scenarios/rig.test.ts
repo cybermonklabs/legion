@@ -2874,6 +2874,40 @@ describe("label_tree", () => {
     expect(treePrompt).not.toMatch(choice);
   });
 
+  // Catches: a change of this checkout's reviewer prompt that the planted label's drop text no
+  // longer matches, which the Job meets only when it builds the planted tree from the head; and a
+  // planted tree that still holds the reviewer's R2 paragraph. The repository holds this
+  // checkout's own reviewer.md, so CI's pi-legion job fails here first.
+  test("INFRA-5996's planted manifest applies to this checkout's reviewer.md, and R2 goes", () => {
+    const reviewer = "packages/daemon/internal/prompts/roles/reviewer.md";
+    const repo = freshDir("own-reviewer");
+    git(repo, "init", "-q");
+    mkdirSync(path.dirname(path.join(repo, reviewer)), { recursive: true });
+    cpSync(path.join(root, reviewer), path.join(repo, reviewer));
+    git(repo, "add", "-A");
+    git(repo, "commit", "-qm", "this checkout's reviewer.md");
+    const head = git(repo, "rev-parse", "HEAD").trim();
+    const work = freshDir("own-planted");
+    const made = labelTree(
+      repo,
+      scenarios,
+      work,
+      "planted",
+      head,
+      path.join(controls, "infra-5996-planted.txt")
+    );
+    expect({ code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    const opening =
+      "Before you approve, check that each departure from the plan has a Dispatch record.";
+    expect(readFileSync(path.join(root, reviewer), "utf8")).toContain(opening);
+    expect(
+      readFileSync(path.join(work, "label-trees/planted/tree", reviewer), "utf8")
+    ).not.toContain(opening);
+  });
+
   // Catches: a D whose tree takes out more than #4902's own lines (a manifest line too many, a
   // patch of another file), which would make D's control a control of something else.
   test("D's tree differs from its commit in the patch's lines alone, at #4902's head's two files", () => {

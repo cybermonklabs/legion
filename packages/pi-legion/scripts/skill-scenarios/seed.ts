@@ -140,7 +140,7 @@ import { type StepRun, World } from "./heldout-case";
 import { writtenVersion } from "./outcome";
 import { captureScored, ownerWalkIssues } from "./owner-walk-seed";
 import { instantText, parseInstant, type Sleep } from "./production-dispatch";
-import { APPROVE, agentGet, handoffsOf, PERSON } from "./seed-dispatch";
+import { APPROVE, handoffsOf, PERSON } from "./seed-dispatch";
 import { CREATED, session, sessionId, toolResults } from "./transcript";
 
 /** What `ask-on-message` writes and `capture` reads. */
@@ -1696,8 +1696,9 @@ export async function seedCaseDispatch(
   // is kept when it is a minute or less. The seed waits once before a record, the longer wait.
   const runs = world.dispatch.steps ?? [];
   const stamped: Stamped[] = [];
-  let previous: (typeof records)[number] | undefined;
-  for (const record of records.sort((a, b) => byTime(a.at, b.at))) {
+  records.sort((a, b) => byTime(a.at, b.at));
+  for (const [index, record] of records.entries()) {
+    const previous = records[index - 1];
     const gap = previous?.handoff && record.handoff ? record.at - previous.at : 0n;
     const kept = gap > 0n && gap <= KEPT_HANDOFF_GAP ? Number(gap / 1_000_000n) : 0;
     const rises = previous === undefined || record.at > previous.at;
@@ -1705,7 +1706,6 @@ export async function seedCaseDispatch(
     if (wait > 0) await clock.sleep(wait);
     const stamp = time(await record.write(), `Dispatch's stamp of ${record.id}`);
     stamped.push({ id: record.id, at: record.at, stamp });
-    previous = record;
   }
   // A closed issue refuses a document upload. Finish seeding the evidence before closing it.
   if (issue.status !== "triage") {
@@ -1831,7 +1831,7 @@ export async function captureCaseDispatch(runDir: string): Promise<void> {
   const comments = await listComments(key, undefined, reader);
   const asks = await listIssueAsks(key, reader);
   const results = await getIssueResults(key, reader);
-  const steps = await agentGet(`/api/v1/issues/${encodeURIComponent(key)}/steps`);
+  const steps = await agentCall("GET", `/api/v1/issues/${encodeURIComponent(key)}/steps`);
   const events = await caseEvents(key);
   const texts = new Set(documents.filter(({ kind }) => kind === "doc").map(({ id }) => id));
   const versions: { artifact_id: string; number: number; markdown: string }[] = [];

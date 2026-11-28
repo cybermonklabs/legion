@@ -108,10 +108,10 @@ type teardownEffectsRun struct {
 	// `artifact/<name>`: each comment and question of the world by its id (seedConversation), a
 	// comment a trace names (`id`), the world's gate artifactId, and each record of a run's by lane
 	// R's scratch id (applyDispatch, mapRunArtifacts), as seed.ts keeps its own in
-	// dispatch-fixture.json's `ids`. ids also holds each document of the world and the case's spec
-	// by its file name, under `document/<name>`, as seed.ts keeps its own document ids, so a comment
-	// of the world names the document whose words it is on (seedConversation).
-	gateIDs, ids map[string]string
+	// dispatch-fixture.json's `ids`. documents is the id of each document of the world and of the
+	// case's spec, by its file name, so a comment of the world names the document whose words it is
+	// on (seedConversation).
+	gateIDs, ids, documents map[string]string
 	// held is each issue the case's world seeds in the replay's Dispatch, the case's own first, on
 	// which a trace's write may be made; written is the id of each document of the case's issue a
 	// trace's write made or changed, in order.
@@ -239,7 +239,7 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	proof := liveProof{t: t, cfg: cfg, st: st, records: record.NewStore(), project: projectToken}
 	r := &teardownEffectsRun{liveAgentProof: liveAgentProof{liveProof: proof, legion: h.legion}, harness: h, dispatch: dispatch, key: key, branch: "legion/" + key, role: roleOfClaim, token: token,
 		clock: &teardownEffectsClock{now: world.Clock}, git: fixturegit.Isolated(t, h.home), commits: map[string]string{}, handoffs: map[string]teardownEffectsHandoff{}, repo: liveRepo, base: "main", remoteName: "origin", fail: failed,
-		claimIssue: claimIssue, tree: claimTree, gateIDs: map[string]string{}, ids: map[string]string{}, held: []string{key}, worldReviews: map[int]int{}}
+		claimIssue: claimIssue, tree: claimTree, gateIDs: map[string]string{}, ids: map[string]string{}, documents: map[string]string{}, held: []string{key}, worldReviews: map[int]int{}}
 	if parent := world.Dispatch.Issue.Parent; parent != "" {
 		r.held = append(r.held, parent)
 	}
@@ -296,10 +296,11 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	var ownHandoffs []int
 	if plan != nil {
 		// The case's spec is made with its issue, by no event of the seed, so the run's id of it
-		// joins the id map by its file name here, as a document a seeded event makes joins it
-		// (makeDispatch): a comment on the spec's words names the replay's spec.
+		// joins the id map here, naming the replay's spec by its file name (documents), as a
+		// document a seeded event makes joins it (makeDispatch): a comment on the spec's words
+		// names the replay's spec.
 		for _, doc := range plan.Readback.Documents {
-			if given := r.ids["document/"+doc.Name]; given != "" {
+			if given := r.documents[doc.Name]; given != "" {
 				r.ids["artifact/"+doc.ID] = given
 			}
 		}
@@ -355,13 +356,14 @@ func (h teardownEffectsHarness) start(t *testing.T, world teardownEffectsWorld, 
 	o := r.rt.daemonOverrides(r.rt)
 	tokens := &workflowTokenRecorder{}
 	o.clock, o.githubAPI, o.workflowTokens = r.clock, githubURL, tokens
-	// The daemon's judgement of a review, with the review App's login the daemon reads from the same
-	// tokens at its boot (appLoginsAtBoot), over the daemon's own store (phaseAfter).
+	// The daemon's judgement of a review, by the engine configuration the daemon builds (engineConfig)
+	// with the review App's login the daemon reads from the same tokens at its boot
+	// (appLoginsAtBoot), over the daemon's own store (phaseAfter).
 	reviewApp, err := tokens.AppLogin(t.Context(), appauth.Review)
 	if err != nil {
 		t.Fatal(err)
 	}
-	r.engine = workflow.New(r.records, workflow.Config{Project: cfg.Project, ReviewAppLogin: reviewApp}, quietLogger())
+	r.engine = workflow.New(r.records, engineConfig(cfg, reviewApp, nil), quietLogger())
 	r.d = startDaemonLogging(t, cfg, o, r.log())
 	if got := r.issue(key).Phase; got != world.Daemon.Phase {
 		r.fail(fmt.Errorf("boot changed %s from %s to %s", key, world.Daemon.Phase, got))
@@ -590,7 +592,7 @@ func (r *teardownEffectsRun) issueNumber(key string) int {
 // fileIssue files key in the scratch Dispatch with fields. Dispatch allocates the key: its counter
 // is set in this disposable database so the replay does not change the key embedded in branch
 // names, prompts and the original requests. The case's spec, its issue's primary document, joins
-// the id map by its file name (`document/spec.md`).
+// the documents by its file name, spec.md.
 func (r *teardownEffectsRun) fileIssue(key string, fields map[string]any) {
 	t := r.t
 	t.Helper()
@@ -605,7 +607,7 @@ func (r *teardownEffectsRun) fileIssue(key string, fields map[string]any) {
 		t.Fatalf("created issue %s, want %s", issue.Key, key)
 	}
 	if key == r.key && issue.PrimaryArtifactID != "" {
-		r.ids["document/spec.md"] = issue.PrimaryArtifactID
+		r.documents["spec.md"] = issue.PrimaryArtifactID
 	}
 }
 
@@ -1066,9 +1068,8 @@ func (r *teardownEffectsRun) push(branch, head string) {
 	r.git.Run(r.workspace, "jj", "git", "fetch", "--remote", r.remoteName)
 }
 
-// document uploads the world's document name with body, and keeps the id Dispatch gives it in the
-// id map by its file name (`document/<name>`), for a comment of the world on its words
-// (seedConversation).
+// document uploads the world's document name with body, and keeps the id Dispatch gives it among the
+// documents by its file name, for a comment of the world on its words (seedConversation).
 func (r *teardownEffectsRun) document(name, body string) {
 	r.t.Helper()
 	var uploaded struct{ Artifact struct{ ID string } }
@@ -1076,7 +1077,7 @@ func (r *teardownEffectsRun) document(name, body string) {
 	if uploaded.Artifact.ID == "" {
 		r.fail(fmt.Errorf("Dispatch's upload of %s names no document id", name))
 	}
-	r.ids["document/"+name] = uploaded.Artifact.ID
+	r.documents[name] = uploaded.Artifact.ID
 }
 func (r *teardownEffectsRun) handoff(word, session, body string) {
 	r.t.Helper()
@@ -1099,8 +1100,9 @@ func (r *teardownEffectsRun) handoff(word, session, body string) {
 // with its options, then answered by the person or resolved by its author as its state says. Each
 // takes the id the replay's Dispatch gives it in the id map, under `comment/<the world's id>` or
 // `ask/<the world's id>`, so that a trace's reply, answer or link names it. own says which records:
-// those of the role's own session (daemon.claim.session), written as the replay's session once the
-// pane has registered one, or every other.
+// those of the role's own session (daemon.claim.session) and each comment in a thread of the role's
+// own (teardownEffectsOwnThread), written once the pane has registered a session, the role's own
+// as that session; or every other.
 func (r *teardownEffectsRun) seedConversation(world teardownEffectsWorld, own bool) {
 	type record struct {
 		at    time.Time
@@ -1127,13 +1129,13 @@ func (r *teardownEffectsRun) seedConversation(world teardownEffectsWorld, own bo
 	prefix := "/api/v1/issues/" + r.key
 	var records []record
 	for _, comment := range world.Dispatch.Comments {
-		if teardownEffectsOwnWrite(world, comment.Author) != own {
+		if teardownEffectsOwnThread(world, comment.ID) != own {
 			continue
 		}
 		records = append(records, record{comment.At, "world.dispatch.comments " + comment.ID, func() error {
 			body := map[string]any{"body": comment.Body}
 			if anchor := comment.Anchor; anchor != nil {
-				document := r.ids["document/"+anchor.Document]
+				document := r.documents[anchor.Document]
 				if document == "" {
 					return fmt.Errorf("the replay holds no document of the world named %s", anchor.Document)
 				}
@@ -2037,15 +2039,10 @@ func (r *teardownEffectsRun) documentFaults(caseID, name string, stated []teardo
 			written = append(written, artifact.Name)
 		}
 	}
-	// A file name stands for no id in a text: a document the id map holds by its file name
-	// (`document/<name>`) is written back only by another name the map holds of it, such as a gate
-	// document's artifactId.
 	ids := map[string]string{}
 	for named, given := range r.ids {
-		kind, caseName, _ := strings.Cut(named, "/")
-		if kind != "document" {
-			ids[given] = caseName
-		}
+		_, caseName, _ := strings.Cut(named, "/")
+		ids[given] = caseName
 	}
 	if faults := teardownEffectsDocumentFaults(stated, held, written, ids); len(faults) > 0 {
 		return fmt.Errorf("%s %s trace: the replay's Dispatch does not hold the documents the trace states: %s", caseID, name, strings.Join(faults, "; "))

@@ -55,11 +55,10 @@ git archive --format=tar 6b0ece5c101b1d63bec807f90417a6c75bb0870f \
 
 ## The drop texts (`controls/drops/`)
 
-Each file holds the exact bytes a `drop` line takes out, with no final newline. Where a text
-starts with one or two newlines, those are the end of the line before it and the blank line after
-the paragraph above it, so the file keeps one blank line between the paragraphs that stay. Each
-text was read with `git show <commit>:<path>` and occurs once in its file at #4902's head
-`6b0ece5c101b1d63bec807f90417a6c75bb0870f`.
+Each file holds the exact bytes a `drop` line takes out, with no final newline.
+Where a text starts with one or two newlines, those are the end of the line before it and the blank line after the paragraph above it, so the file keeps one blank line between the paragraphs that stay.
+Each owner-walk text below was read with `git show <commit>:<path>` and occurs once in its file at #4902's head `6b0ece5c101b1d63bec807f90417a6c75bb0870f`.
+`infra-5996-r2.txt` was read at another commit, which its own section below names.
 
 | Drop text | Its file | What it takes out | Count at #4902's head | Count at `main` `d27405712c7c` |
 | --- | --- | --- | --- | --- |
@@ -96,4 +95,5 @@ That text is the reviewer's paragraph that checks that each departure from the p
 So the planted label is the head with the R1 paragraph, the round order and the message line, and without R2.
 The text was read with `git show 5e3ec9401b89282db3f92dde13114996a7e1c7cd:packages/daemon/internal/prompts/roles/reviewer.md`, and it occurs once in that file there.
 Its sha256 is `d6bb436e2dee940fe1d69fab7411f0be50964e04bc1bc5ebb520ad343a3d94ee`.
-`devcase.sh` of INFRA-5996's Job kit builds the planted label with `rig.sh label-tree planted <head> controls/infra-5996-planted.txt`.
+Build the planted label with `rig.sh label-tree planted <head> controls/infra-5996-planted.txt`.
+The row "INFRA-5996's planted manifest applies to this checkout's reviewer.md, and R2 goes" in `rig.test.ts` builds it from this checkout's `reviewer.md` and checks that the paragraph's opening sentence is gone.

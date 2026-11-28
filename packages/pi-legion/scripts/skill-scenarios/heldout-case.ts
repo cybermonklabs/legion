@@ -16,10 +16,11 @@
 // (`anchor`), or be a reply in the thread of an earlier comment of the world (`replyTo`), not
 // both. Its Git part holds the commits, the remote's branches and what the
 // workspace stands on and, where the world states them, a commit's own files
-// (`git.commits[].files`): each a path, of `/`-separated names none of which is empty, `.` or `..`,
-// once in its commit, and the file's text, which may be empty. A commit that names files, or
-// stands above one that does, holds the world's files alone: its first parent's, with its own
-// written over them (git-world.ts buildGitWorld).
+// (`git.commits[].files`): each a path, of `/`-separated names none of which is empty, `.`, `..`
+// or `.git` in any case, with no NUL, once in its commit and not the directory of another of its
+// files, and the file's text, which may be empty. A commit that names files, or stands above one
+// that does, holds the world's files alone: its first parent's, with its own written over them
+// (git-world.ts buildGitWorld).
 //
 //   heldout-case.ts gaps <heldout or devcase file> [<skilluse file>]
 //       each file's gaps (caseFileGaps): its number of gaps alone on stdout (`<file>: <n> gaps`),
@@ -348,21 +349,39 @@ const DispatchWorld = z
     });
   });
 
-/** A file of a world commit's tree: its path, of `/`-separated names none of which is empty, `.`
- * or `..`; and its text, which may be empty, as a real file's may. */
+/** A file of a world commit's tree: its path, of `/`-separated names none of which is empty, `.`,
+ * `..` or `.git` in any case, with no NUL; and its text, which may be empty, as a real file's may. */
 const WorldFile = z.strictObject({
   path: z
     .string()
     .refine(
       (file) => file.split("/").every((name) => name !== "" && name !== "." && name !== ".."),
       "a relative path of '/'-separated names, none of them empty, '.' or '..'"
+    )
+    .refine(
+      (file) => !file.includes("\0"),
+      "a path holds no NUL, which ends a path in git's record of it"
+    )
+    .refine(
+      (file) => file.split("/").every((name) => !/^\.git$/i.test(name)),
+      "no name of a path is .git, in any case: git keeps that name for its own directory"
     ),
   text: z.string(),
 });
 
+/** Each path of `paths`, one commit's own files, that is also the directory of another of them,
+ * refused at its place: git's index holds no path as both a file and a directory. */
+function refuseFileDirectories(context: Context, paths: string[]): void {
+  paths.forEach((file, index) => {
+    const under = paths.find((other) => other.startsWith(`${file}/`));
+    if (under !== undefined)
+      refuse(context, [index, "path"], `${file} is also the directory of ${under}`);
+  });
+}
+
 /** The git remote and the role's jj workspace. `commits` holds every commit either names, and
- * `files` a commit's own files, each path once; `localOnly` is each commit only the workspace
- * holds, never a remote branch's head. */
+ * `files` a commit's own files, each path once and none the directory of another; `localOnly` is
+ * each commit only the workspace holds, never a remote branch's head. */
 const GitWorld = z
   .strictObject({
     commits: z
@@ -373,13 +392,11 @@ const GitWorld = z
           description: Text,
           files: z
             .array(WorldFile)
-            .superRefine((files, context) =>
-              refuseRepeats(
-                context,
-                files.map((file) => file.path),
-                (index) => [index, "path"]
-              )
-            )
+            .superRefine((files, context) => {
+              const paths = files.map((file) => file.path);
+              refuseRepeats(context, paths, (index) => [index, "path"]);
+              refuseFileDirectories(context, paths);
+            })
             .optional(),
         })
       )

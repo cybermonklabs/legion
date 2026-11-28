@@ -1943,7 +1943,7 @@ describe("case-world Dispatch", () => {
       phase: "plan" as const,
       version,
       author: "ses-acme-12-planner",
-      at: `2030-01-07T${time}Z`,
+      at: at(time),
       body: { summary: `Version ${version}.` },
     });
     world.dispatch.handoffs.push(
@@ -1955,7 +1955,7 @@ describe("case-world Dispatch", () => {
     world.dispatch.comments.push({
       id: "cmt-acme-12-between",
       author: "alice",
-      at: "2030-01-07T13:12:31Z",
+      at: at("13:12:31"),
       body: "Between two versions.",
     });
     return world;
