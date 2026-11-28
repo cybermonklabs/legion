@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // testAppKey is the one App key every test in this package signs with: generating a 2048-bit key
@@ -346,6 +347,8 @@ func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 		return secrets.GitHubApp{Base: server.URL, HTTP: server.Client()}
 	}
 	value := githubAppValue(t, "1", key)
+	// unreached is a port this test holds that refuses each dial.
+	unreached := "http://" + testport.Refused(t)
 	for name, tc := range map[string]struct {
 		app       secrets.GitHubApp
 		value     string
@@ -359,7 +362,7 @@ func TestGitHubAppMintNamesTheClassOfEachFailure(t *testing.T) {
 		"GitHub answers 403":                 {github(forbidden), value, "refused", false, 1},
 		"GitHub answers 502":                 {github(down), value, "upstream", false, 3},
 		"GitHub answers 408":                 {github(timedOut), value, "upstream", false, 3},
-		"GitHub cannot be reached":           {secrets.GitHubApp{Base: "http://127.0.0.1:1"}, value, "upstream", false, 3},
+		"GitHub cannot be reached":           {secrets.GitHubApp{Base: unreached}, value, "upstream", false, 3},
 		"GitHub's primary rate limit, 403":   {github(primary), value, "upstream", true, 1},
 		"GitHub answers 429":                 {github(tooMany), value, "upstream", true, 1},
 		"GitHub's secondary rate limit, 403": {github(secondary), value, "upstream", true, 1},

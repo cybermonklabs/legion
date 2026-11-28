@@ -16,19 +16,21 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/cipheraddr"
+	"github.com/sjawhar/envoy/internal/testport"
 )
 
 // TestSelfPrintsNoPartOfTheBrokerURLCredential: `agent-secrets self` on a machine that proves an
 // identity of its own (here the metadata server's, a stand-in) trades it at the broker before
-// anything else, and with the broker unreachable prints that trade's failure on stderr. The line
-// names the failure, and no part of a user name, password, query or fragment AGENT_SECRETS_URL
-// carries. The values are made up.
+// anything else, and with the broker unreachable (a port this test holds that refuses each dial)
+// prints that trade's failure on stderr. The line names the failure, and no part of a user name,
+// password, query or fragment AGENT_SECRETS_URL carries. The values are made up.
 func TestSelfPrintsNoPartOfTheBrokerURLCredential(t *testing.T) {
 	// Not parallel: it sets environment variables of the whole process (t.Setenv at urlcredential_test.go:36); it signals the test process or changes its signal handling (main.run, main.cmdLogin, signal.NotifyContext at login.go:48); it sets a package variable the package's other tests read (main.run, main.loadClientConfig, clientConfig set at config.go:98).
+	refused := testport.Refused(t)
 	for form, address := range map[string]string{
-		"a user name and password": "http://demouser7q:demopass9z-not-a-secret@127.0.0.1:1",
-		"a query":                  "http://127.0.0.1:1/?token=demoquery4k",
-		"a fragment":               "http://127.0.0.1:1#demofrag8w",
+		"a user name and password": "http://demouser7q:demopass9z-not-a-secret@" + refused,
+		"a query":                  "http://" + refused + "/?token=demoquery4k",
+		"a fragment":               "http://" + refused + "#demofrag8w",
 	} {
 		t.Run(form, func(t *testing.T) {
 			tmp := t.TempDir()

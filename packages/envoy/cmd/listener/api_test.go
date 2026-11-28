@@ -1187,7 +1187,8 @@ func (discardingCache) CompleteRead(kvwatch.Read)         {}
 // reaper keeps the claim.
 func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 	// Not parallel: it requires each answer within its 5 s bound, and the soft claim's stalled
-	// session reads end only at sendRequestBudget (3.5 s).
+	// session reads end only at sendRequestBudget (3.5 s). Its four rows run beside each other
+	// alone: each is one call that waits out stalled reads of listeners of its own.
 	const bound = 5 * time.Second
 	holderOf := func(t *testing.T, d *listenerDeps, role string) string {
 		t.Helper()
@@ -1198,6 +1199,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		return holder
 	}
 	t.Run("lookup", func(t *testing.T) {
+		t.Parallel()
 		claimant, observer := trailingListeners(t)
 		claimRole(t, claimant, "ses_holder", "unread")
 		stallSessionReads(t, observer.sessions)
@@ -1212,6 +1214,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		}
 	})
 	t.Run("soft claim", func(t *testing.T) {
+		t.Parallel()
 		claimant, observer := trailingListeners(t)
 		claimRole(t, claimant, "ses_holder", "unread")
 		if err := observer.sessions.Put("ses_resumer", session.SessionEntry{MachineID: "test-machine", SelfSubscribed: true}); err != nil {
@@ -1230,6 +1233,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		}
 	})
 	t.Run("role delivery", func(t *testing.T) {
+		t.Parallel()
 		harness := newListenerDeliveryHarness(t)
 		claimant := &listenerDeps{client: harness.client, registry: harness.registry, delivery: &harness.config}
 		var err error
@@ -1273,6 +1277,7 @@ func TestARoleHolderWhoseSessionCannotBeReadKeepsItsClaim(t *testing.T) {
 		}
 	})
 	t.Run("reaper", func(t *testing.T) {
+		t.Parallel()
 		claimant, observer := trailingListeners(t)
 		claimRole(t, claimant, "ses_holder", "unread")
 		stallSessionReads(t, observer.sessions)
