@@ -26,7 +26,9 @@ import (
 // issue (delivery.Attributor.HeadsAttributedTo), or where none is open the newest merged one
 // (delivery.NewestPullRequestHead), reads each such commit's check runs from GitHub once, in the
 // repository of that pull request's own row, and derives a result at each from the run its
-// `ci_check` names. A check CI proves holds those derived results beside each result a run of its
+// `ci_check` names. A read that names a commit (`?at=`) that is the head of an open or merged pull
+// request of the issue takes that head alone, in each repository whose pull request has it
+// (ciHeadsOf). A check CI proves holds those derived results beside each result a run of its
 // CI job recorded through the job's results token (ci_check_results: role ci, Branch set), newest
 // first. The run's conclusion is the whole job's, and a whole job's result decides no check (R12
 // of The Spec): at a head where the job recorded a result of its own for a check, the run derives
@@ -129,6 +131,9 @@ type ciRun struct {
 // newest first (newestResultsFirst). The heads are the head of each open pull request of the issue
 // (ciHeadsOf), each read in the repository of its own row, or where none is open the merged one
 // that merged last, which fillMergeTimes orders over the reader's memo (comparisonReader.fills).
+// Where the reader named a commit that is the head of an open or merged pull request of the issue,
+// the heads are that commit's alone, one in each repository whose pull request has it; such a read
+// has no subjects, so the gate reads each of their reads at the commit (unreadWithNoSubject).
 // Where Dispatch cannot tell which merged one merged last, it reads no head, and each such check's
 // `ci` is unread for the case read_failed (ciCaseReadFailed). It answers each check's
 // read at each head, by block id and then by the head's repository and commit (ciHeadKey), which
@@ -305,14 +310,15 @@ func (s *server) jobResultHeads(ctx context.Context, issueKey string, proved []p
 
 // ciHeadsOf is the heads a check CI proves is read at. Where the reader named a commit
 // (comparisonReader.at) that is the head of an open or merged pull request of issueKey, it is that
-// head alone, once in each repository whose pull request has it (namedCIHeads), as R8 of
-// dispatch://INFRA-4303/spec says: "that head is the one whose CI run the check reads". Otherwise
-// it is the head of each open pull request of issueKey (delivery.Attributor.HeadsAttributedTo),
-// each in its own row's repository and each commit of a repository once, the open pull request of
-// the highest number first, whose read is the check's `ci`; where none is open, the one head
-// delivery.NewestPullRequestHead answers, the final head of the merged pull request that merged
-// last; and none where Dispatch holds neither. A named commit that is no such head reads as a read
-// that named none does.
+// head alone, once in each repository whose pull request has it, as R8 of
+// dispatch://INFRA-4303/spec says: "that head is the one whose CI run the check reads"; the gate
+// then reads every one of them (unreadWithNoSubject). Otherwise it is the head of each open pull
+// request of issueKey (delivery.Attributor.HeadsAttributedTo), each in its own row's repository,
+// the open pull request of the highest number first, whose read is the check's `ci`; where none is
+// open, the one head delivery.NewestPullRequestHead answers, the final head of the merged pull
+// request that merged last; and none where Dispatch holds neither. Both kinds of read take their
+// heads from one walk (headsOf). A named commit that is no such head reads as a read that named
+// none does.
 // Where none is open, the merged pull requests are taken in the order they merged only once the
 // fill over the reader's memo (fillMergeTimes, comparisonReader.fills) says they can be: where it
 // says they cannot, ordered is false and no head is read, since the head of the highest number, or
@@ -328,21 +334,13 @@ func (s *server) ciHeadsOf(ctx context.Context, issueKey string, reader *compari
 		if err != nil {
 			return nil, false, err
 		}
-		if named := namedCIHeads(attributed, reader.at); len(named) > 0 {
-			return named, true, nil
-		}
-		var heads []delivery.NewestHead
-		for _, head := range attributed {
-			read := delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA}
-			if head.Open && !slices.ContainsFunc(heads, func(held delivery.NewestHead) bool {
-				return held.Repo == read.Repo && held.HeadSHA == read.HeadSHA
-			}) {
-				heads = append(heads, read)
+		if reader.at != noCommitNamed {
+			if named := headsOf(attributed, func(head delivery.AttributedHead) bool { return head.HeadSHA == reader.at }); len(named) > 0 {
+				return named, true, nil
 			}
 		}
-		if len(heads) > 0 {
-			slices.SortStableFunc(heads, func(a, b delivery.NewestHead) int { return b.Number - a.Number })
-			return heads, true, nil
+		if open := headsOf(attributed, func(head delivery.AttributedHead) bool { return head.Open }); len(open) > 0 {
+			return open, true, nil
 		}
 		merged := make([]delivery.MergeTime, len(attributed))
 		for index, head := range attributed {
@@ -363,28 +361,28 @@ func (s *server) ciHeadsOf(ctx context.Context, issueKey string, reader *compari
 	}
 }
 
-// namedCIHeads is the heads of attributed whose commit is at, open or merged: in each repository
-// one, of the pull request of the highest number there, and the highest number first, since every
-// read of one commit in one repository reads the same check runs. It is none where at is
-// noCommitNamed or is the head of no pull request attributed.
-func namedCIHeads(attributed []delivery.AttributedHead, at string) []delivery.NewestHead {
-	if at == noCommitNamed {
-		return nil
-	}
-	var matches []delivery.NewestHead
+// headsOf is the heads of attributed that keep holds, the pull request of the highest number
+// first, and each commit of a repository once, as the head of the pull request of the highest
+// number there: every read of one commit in one repository reads the same check runs, so two pull
+// requests of one repository at one head are one head, named by the same pull request whatever
+// order attributed lists them in.
+func headsOf(attributed []delivery.AttributedHead, keep func(delivery.AttributedHead) bool) []delivery.NewestHead {
+	var kept []delivery.NewestHead
 	for _, head := range attributed {
-		if head.HeadSHA == at {
-			matches = append(matches, delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA})
+		if keep(head) {
+			kept = append(kept, delivery.NewestHead{Repo: head.Repo, Number: head.Number, HeadSHA: head.HeadSHA})
 		}
 	}
-	slices.SortStableFunc(matches, func(a, b delivery.NewestHead) int { return b.Number - a.Number })
-	var named []delivery.NewestHead
-	for _, head := range matches {
-		if !slices.ContainsFunc(named, func(held delivery.NewestHead) bool { return held.Repo == head.Repo }) {
-			named = append(named, head)
+	slices.SortStableFunc(kept, func(a, b delivery.NewestHead) int { return b.Number - a.Number })
+	var heads []delivery.NewestHead
+	for _, head := range kept {
+		if !slices.ContainsFunc(heads, func(held delivery.NewestHead) bool {
+			return held.Repo == head.Repo && held.HeadSHA == head.HeadSHA
+		}) {
+			heads = append(heads, head)
 		}
 	}
-	return named
+	return heads
 }
 
 // ciHeadRead is GitHub's answer for the check runs at one head: the run of each name, or the

@@ -6798,7 +6798,8 @@ Each item below names a path with its method and identity, then its purpose.
     Two results recorded in transactions that overlapped can come back in either order.
 
   - `?at=<40-hex commit>` compares every check of the issue with that one commit and nothing else.
-    CI checks still read the heads an unnamed read would select.
+    Where that commit is the head of an open or merged pull request of the issue, a CI check reads that head alone, once in each repository whose pull request has it, and a read of any of them that did not answer leaves the check `unknown` with `read_failed`.
+    For any other commit, CI checks read the heads an unnamed read would select.
     A derived result counts at the named commit only where its head matches that commit.
     A named read has no required heads.
     A `before_merge` check there still needs a standing pass at the named commit, with no fail there.

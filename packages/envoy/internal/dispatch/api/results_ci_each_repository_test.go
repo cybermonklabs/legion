@@ -57,13 +57,15 @@ type ciRepositoryResult struct {
 // ciRepositoryRig is a Dispatch whose issue lives in acme/widgets and links pull requests of
 // acme/infra, whose Verification document is ciEachHeadVerification (c1, ci_check go-checks), and
 // whose GitHub lists check runs by repository and commit (ciEachHeadGitHub). write stores an open
-// pull request of the issue, and merged a merged one.
+// pull request of the issue, merged a merged one, and learned sets the order Dispatch learned
+// pull requests of one repository in (learnedInOrder).
 type ciRepositoryRig struct {
 	handler http.Handler
 	github  *ciEachHeadGitHub
 	issue   string
 	write   func(repo string, number int, sha string)
 	merged  func(repo string, number int, sha string)
+	learned func(repo string, numbers ...int)
 }
 
 func newCIRepositoryRig(t *testing.T) ciRepositoryRig {
@@ -77,15 +79,28 @@ func newCIRepositoryRig(t *testing.T) ciRepositoryRig {
 		writeHead(t, database, repo, number, sha, "open", issue.Key)
 	}, merged: func(repo string, number int, sha string) {
 		writeHead(t, database, repo, number, sha, "merged", issue.Key)
+	}, learned: func(repo string, numbers ...int) {
+		learnedInOrder(t, database, repo, numbers...)
 	}}
 }
 
-// read is c1 as the results read answers it.
+// read is c1 as the results read that names no commit answers it.
 func (r ciRepositoryRig) read(t *testing.T) ciRepositoryRead {
 	t.Helper()
-	response := dispatchRequest(t, r.handler, http.MethodGet, "/api/v1/issues/"+r.issue+"/results", nil, "alice")
+	return r.readAt(t, noCommitNamed)
+}
+
+// readAt is c1 as the results read answers it, pinned to commit (?at=) unless commit is
+// noCommitNamed.
+func (r ciRepositoryRig) readAt(t *testing.T, commit string) ciRepositoryRead {
+	t.Helper()
+	path, what := "/api/v1/issues/"+r.issue+"/results", r.issue
+	if commit != noCommitNamed {
+		path, what = path+"?at="+commit, r.issue+" at "+commit
+	}
+	response := dispatchRequest(t, r.handler, http.MethodGet, path, nil, "alice")
 	if response.Code != http.StatusOK {
-		t.Fatalf("read the results of %s: status=%d body=%s", r.issue, response.Code, response.Body.String())
+		t.Fatalf("read the results of %s: status=%d body=%s", what, response.Code, response.Body.String())
 	}
 	var read struct {
 		Checks []struct {
@@ -94,14 +109,14 @@ func (r ciRepositoryRig) read(t *testing.T) ciRepositoryRead {
 		} `json:"checks"`
 	}
 	if err := json.Unmarshal(response.Body.Bytes(), &read); err != nil {
-		t.Fatalf("decode the results of %s: %v", r.issue, err)
+		t.Fatalf("decode the results of %s: %v", what, err)
 	}
 	for _, check := range read.Checks {
 		if check.BlockID == "c1" {
 			return check.ciRepositoryRead
 		}
 	}
-	t.Fatalf("the read of %s holds no check c1: %s", r.issue, response.Body.String())
+	t.Fatalf("the read of %s holds no check c1: %s", what, response.Body.String())
 	return ciRepositoryRead{}
 }
 
