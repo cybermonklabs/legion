@@ -790,11 +790,12 @@ on a compile error. It fails, naming the package, when a package declares no `Te
 test, or runs none because every one skipped. The script reads each package's verdict from its own
 events and replaces a skip-only package's `ok` with `FAIL`.
 
-`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` checks eight cases:
+`GO_TEST_TIMEOUT` replaces the 10-minute `-timeout`. `forced-order.test.sh` checks nine cases:
 five refusals (a package whose tests all skip, an unknown `-drop` point, an empty `-server`, an empty
 `-C`, and a module that replaces nats-server), verbose test output with no gotestsum summary, two
-passing packages with interleaved events, and a skip-only package whose `ok` event follows another
-package's output chunk with no newline.
+passing packages with interleaved events, a skip-only package whose `ok` event follows another
+package's output chunk with no newline, and a failing package whose `--- FAIL` event follows
+another package's output chunk with no newline.
 `ci.yaml`'s `envoy-go-race` job runs that test, then the script twice: with no `-server`, so on
 the version the workspace links, on `./internal/testnats/hooktest/` and `./cmd/listener/` (whose
 forced-order row holds `dedupe.reset`), and with `-server 2.10.29` on `./internal/testnats/hooktest/`

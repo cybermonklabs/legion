@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# packages/envoy/scripts/forced-order.test.sh: eight cases for refusals, events and verdicts.
+# packages/envoy/scripts/forced-order.test.sh: nine cases for refusals, events and verdicts.
 # Each refusal case requires a non-zero exit and its own message, with nothing printed past the
 # refusal. A stand-in that fails earlier must fail each refusal case. The summary and
 # interleaved cases use a temporary Go module. Needs internal/testnats/hooktest/skiponly/.
@@ -146,6 +146,21 @@ fi
 if [ "$1 ${2:-}" != "test -json" ]; then
   exec "$REAL_GO" "$@"
 fi
+if [ "${FORCED_ORDER_INTERLEAVED_FAILURE:-}" = 1 ]; then
+  cat <<'EVENTS'
+{"Action":"output","Package":"example.com/summary/pass","Output":"long-line-first-chunk"}
+{"Action":"output","Package":"example.com/summary/mixed","Test":"TestForcedOrderFails","Output":"--- FAIL: TestForcedOrderFails (0.00s)\n"}
+{"Action":"fail","Package":"example.com/summary/mixed","Test":"TestForcedOrderFails","Elapsed":0}
+{"Action":"output","Package":"example.com/summary/mixed","Output":"FAIL\texample.com/summary/mixed\t0.001s\n"}
+{"Action":"fail","Package":"example.com/summary/mixed","Elapsed":0.001}
+{"Action":"output","Package":"example.com/summary/pass","Output":"-rest-of-line\n"}
+{"Action":"output","Package":"example.com/summary/pass","Test":"TestForcedOrderPasses","Output":"--- PASS: TestForcedOrderPasses (0.00s)\n"}
+{"Action":"pass","Package":"example.com/summary/pass","Test":"TestForcedOrderPasses","Elapsed":0}
+{"Action":"output","Package":"example.com/summary/pass","Output":"ok  \texample.com/summary/pass\t0.001s\n"}
+{"Action":"pass","Package":"example.com/summary/pass","Elapsed":0.001}
+EVENTS
+  exit 1
+fi
 for pkg in example.com/summary/pass example.com/summary/mixed; do
   printf '{"Action":"start","Package":"%s"}\n' "$pkg"
   printf '{"Action":"run","Package":"%s","Test":"TestForcedOrderPasses"}\n' "$pkg"
@@ -199,5 +214,23 @@ else
   failed=$((failed + 1))
 fi
 
-echo "forced-order.test.sh: $failed failed of 8"
+# An open line from the passing package must not swallow the failing test's verdict.
+status=0
+env -u RUNNER_TEMP GOWORK=off REAL_GO="$(type -P go)" PATH="$out/interleaved-bin:$PATH" FORCED_ORDER_INTERLEAVED_FAILURE=1 \
+  "$here/forced-order.sh" -C "$fixture" ./pass ./mixed \
+  >"$out/interleaved-failure.log" 2>&1 || status=$?
+if [ "$status" -eq 1 ] &&
+  grep -qxF -- '--- FAIL: TestForcedOrderFails (0.00s)' "$out/interleaved-failure.log" &&
+  grep -qxF $'FAIL\texample.com/summary/mixed\t0.001s' "$out/interleaved-failure.log" &&
+  grep -qxF $'ok  \texample.com/summary/pass\t0.001s' "$out/interleaved-failure.log" &&
+  grep -qxF 'long-line-first-chunk' "$out/interleaved-failure.log" &&
+  ! grep -qF 'no TestForcedOrder test ran in:' "$out/interleaved-failure.log"; then
+  echo "PASS interleaved-failure: an open line from another package does not hide Go's verdicts"
+else
+  echo "FAIL interleaved-failure: exit $status"
+  cat "$out/interleaved-failure.log"
+  failed=$((failed + 1))
+fi
+
+echo "forced-order.test.sh: $failed failed of 9"
 [ "$failed" -eq 0 ]

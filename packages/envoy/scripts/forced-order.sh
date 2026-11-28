@@ -254,30 +254,37 @@ run_forced_order_tests() {
   run_forced_order_tests "$@" |
     tee --output-error=exit "$events" |
     jq --unbuffered -nRj '
-      def start_line: if .at_line_start then "" else "\n" end;
+      def start_line: if .open_source == null then "" else "\n" end;
+
+      # Package strings and false (non-JSON text) can leave a line open.
+      # A null source starts a script-written verdict on its own line.
+      def emit($text; $source):
+        if $text == "" then .text = ""
+        else
+          .text = (if .open_source == $source then $text else start_line + $text end)
+          | .open_source = (if $text | endswith("\n") then null else $source end)
+        end;
 
       # Raw inputs are strings. Null marks the end of the stream.
       foreach (inputs, null) as $line (
-        {ran: {}, refused: [], text: "", at_line_start: true};
+        {ran: {}, refused: [], text: "", open_source: null};
         if $line == null then .
         else
           ($line | fromjson? // null) as $event
-          | if ($event | type) != "object" then .text = ($line + "\n")
+          | if ($event | type) != "object" then emit($line + "\n"; false)
             else
               ($event.Package // "") as $package
-              | .text = ($event.Output // "")
-              | if $package == "" then .
+              | ($event.Output // "") as $output
+              | if $package == "" then emit($output; $package)
                 elif ($event.Action == "pass" or $event.Action == "fail")
                   and ($event.Test // "" | test("^TestForcedOrder[^/]*$")) then
-                  .ran[$package] = true
+                  .ran[$package] = true | emit($output; $package)
                 elif $event.Action == "output" and $event.Test == null
-                  and (.text | test("^ok[[:blank:]]")) and (.ran[$package] | not) then
+                  and ($output | test("^ok[[:blank:]]")) and (.ran[$package] | not) then
                   .refused += [$package]
-                  | .text = (start_line +
-                      "FAIL\t\($package)\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)\n")
-                else . end
+                  | emit("FAIL\t\($package)\t(forced-order.sh: every TestForcedOrder test of the package skipped, so none ran)\n"; null)
+                else emit($output; $package) end
             end
-          | if .text == "" then . else .at_line_start = (.text | endswith("\n")) end
         end;
         if $line != null then .text
         elif .refused != [] then
