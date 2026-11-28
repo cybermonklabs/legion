@@ -19,6 +19,7 @@ import {
   wholeLinesEnd,
 } from "./envoy-stack";
 import {
+  type ActionsRun,
   type FakeGitHubActions,
   GITHUB_ACTIONS_ISSUER,
   startFakeGitHubActions,
@@ -331,7 +332,8 @@ export interface CIResultsStack {
   setFiles(sha: string, dir: string): void;
   /** The result entry's workflow file at the commit `sha` is `content` from now on: the copy that
    *  commit holds, a branch's own copy where `sha` is a commit of a branch, which whoever pushes
-   *  the branch may edit. */
+   *  the branch may edit. A later `jobEnv` of a job that is not called at `sha` puts the entry's
+   *  own file back there. */
   setWorkflowFile(sha: string, content: string): void;
   /** The head of `branch` of the repository is `sha` from now on, as a push moves it. */
   setBranch(branch: string, sha: string): void;
@@ -705,27 +707,36 @@ export async function startCIResultsStack(options: CIResultsStackOptions): Promi
         const push = `${run.ref}@${run.sha}`;
         const runId = runIds.get(push) ?? 1000 + runIds.size;
         runIds.set(push, runId);
-        // A job that is not called runs the copy of the entry's workflow that its commit holds,
-        // the workflow its run enters through; a called job runs the default branch's copy at
-        // WORKFLOW_COMMIT, which the stand-in served from the start.
-        if (!run.called) github.setFile(REPOSITORY, run.sha, WORKFLOW, WORKFLOW_FILE);
+        // The workflow fields of the job's token and the name of its check run.
+        let job: Pick<
+          ActionsRun,
+          "workflow" | "jobWorkflowRef" | "jobWorkflowSha" | "checkRunName"
+        >;
+        if (run.called) {
+          // The run enters through CALLER on its branch, which calls the entry's workflow at the
+          // default branch, and the job runs that copy at WORKFLOW_COMMIT, which the stand-in
+          // served from the start. GitHub names its check run after the caller's job too.
+          job = {
+            workflow: CALLER,
+            jobWorkflowRef: `${REPOSITORY}/${WORKFLOW}@${DEFAULT_BRANCH_REF}`,
+            jobWorkflowSha: WORKFLOW_COMMIT,
+            checkRunName: calledCheckRun(run.job),
+          };
+        } else {
+          // The job runs the copy of the entry's workflow that its commit holds, the workflow its
+          // run enters through, so that copy is the entry's file from now on: it replaces a copy
+          // that setWorkflowFile set at the same commit.
+          github.setFile(REPOSITORY, run.sha, WORKFLOW, WORKFLOW_FILE);
+          job = { workflow: WORKFLOW, checkRunName: run.job };
+        }
         const request = github.addRun({
           repository: REPOSITORY,
-          // A called job's run enters through CALLER on its branch, which calls the entry's
-          // workflow at the default branch, whose copy at WORKFLOW_COMMIT the job runs.
-          ...(run.called
-            ? {
-                workflow: CALLER,
-                jobWorkflowRef: `${REPOSITORY}/${WORKFLOW}@${DEFAULT_BRANCH_REF}`,
-                jobWorkflowSha: WORKFLOW_COMMIT,
-              }
-            : { workflow: WORKFLOW }),
+          ...job,
           ref: run.ref,
           sha: run.sha,
           runId,
           runAttempt: run.runAttempt,
           checkRunId: run.checkRunId,
-          checkRunName: run.called ? calledCheckRun(run.job) : run.job,
           forged: run.forged === true,
         });
         return {
