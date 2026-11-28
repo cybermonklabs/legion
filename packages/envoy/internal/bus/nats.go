@@ -46,6 +46,7 @@ type connectOpts struct {
 	keptBuckets                 []string
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
+	windowClock                 clock.Clock
 	environment                 func(string) (string, bool)
 	streamSubjectsRefresh       time.Duration
 	reconnectWaitTick           func()
@@ -169,6 +170,18 @@ func WithPublishAcknowledgementClock(clock AcknowledgementClock) ConnectOption {
 // waiting one. nil, the default, is time.Now.
 func WithReconnectErrClock(now func() time.Time) DialOption {
 	return func(o *connectOpts) { o.reconnectErrClock = now }
+}
+
+// WithWindowClock sets the clock a publish window reads its deadline against before each send
+// (expired, pinToSend), times its first send's wait for a connection on, and runs its probe's flush
+// timeout on (WindowUntil, window.Probe), so a test whose window deadline is a hold's on a
+// clocktest.Fake judges all three on that fake. A Request's read of the connection before its send,
+// and its timeout, stay on the wall clock: observeToSend compares the window's deadline with the
+// Request's deadline on the wall clock and arms a real context deadline at the earlier, so on a fake
+// that stands apart from the wall clock that read can end while the window, read on the fake, has
+// not reached its deadline. nil, the default, is the real clock.
+func WithWindowClock(c clock.Clock) ConnectOption {
+	return clientOption(func(o *connectOpts) { o.windowClock = c })
 }
 
 // WithReplicas sets the deployment's replica count, ReplicasEnvVar, for the stream
@@ -490,6 +503,9 @@ type Client struct {
 	dialer                      *socks5Dialer
 	publishAcknowledgementClock AcknowledgementClock
 	reconnectErrClock           func() time.Time
+	// windowClock is the clock a publish window reads its deadline against, times its first send's
+	// wait for a connection on and times its probe on (WithWindowClock); nil is the real clock.
+	windowClock clock.Clock
 	// reconnectWaitTick, when not nil, runs at each pass of ensureConnWithContext's wait for a
 	// reconnect, before the pass blocks; a connection event it causes is read before the wait looks
 	// at its context, as one that wakes the wait would be. It is nil outside tests: a test sets it
@@ -873,6 +889,7 @@ func startClient(urls []string, ownsStream bool, opts connectOpts, settings nats
 		dialer:                      dialer,
 		publishAcknowledgementClock: opts.publishAcknowledgementClock,
 		reconnectErrClock:           opts.reconnectErrClock,
+		windowClock:                 opts.windowClock,
 		reconnectWaitTick:           opts.reconnectWaitTick,
 		beforeRequestFlush:          opts.beforeRequestFlush,
 		beforeCoreSendFlush:         opts.beforeCoreSendFlush,
@@ -2658,12 +2675,16 @@ func (c *Client) refused(err error, size int) error {
 	return Reconnecting(err)
 }
 
-// publishBound bounds Publish and PublishReportingDuplicate, and the publishJetStream and
-// PublishCoreContext of a caller that passed no deadline of its own: their wait for a reconnect
-// and their flush or JetStream acknowledgement together. A publish window's sends take
-// publishAcknowledgementTimeout instead. It is also the HTTP client's per-attempt deadline
-// (packages/envoy-client/src/transport.ts), which a publish that spends the whole bound can never
-// be answered inside, and that is what the Within forms below exist for.
+// publishBound bounds each publish that goes through PublishStoredAck, publishStoredRaw or
+// PublishCoreContext: its wait for a reconnect and its flush or JetStream acknowledgement
+// together. Each of the three takes the earlier of its ctx's own deadline and publishBound, since
+// WithTimeout keeps the parent's deadline when that is the earlier one, so publishBound is what
+// bounds Publish and PublishReportingDuplicate, which pass no deadline of their own, and the most
+// a Within form below waits, on its JetStream path and its core NATS path alike. A publish
+// window's sends take publishAcknowledgementTimeout instead. It is also the HTTP client's
+// per-attempt deadline (packages/envoy-client/src/transport.ts), which a publish that spends the
+// whole bound can never be answered inside, and that is what the Within forms below exist for: a
+// caller whose ctx ends sooner.
 const publishBound = 5 * time.Second
 
 // Publish routes role lanes, their delivery-exception lanes and every notification topic that
@@ -2679,15 +2700,17 @@ func (c *Client) Publish(item contracts.Envelope) error {
 	return err
 }
 
-// PublishWithin publishes as Publish does, with ctx as its bound instead of publishBound: the wait
-// for a reconnect, the flush and the JetStream acknowledgement each end with it. The send itself,
-// a core publish and its flush or a JetStream publish, takes nats.go's connection lock before it
-// waits on ctx, so a send made while a reconnect's handshake holds that lock waits for that
-// attempt, up to the client's connect timeout (connectTimeout, 5 s), past ctx; readWithin lists
-// such calls. The listener's wake report publishes this way (publishWithinBudget in cmd/listener),
-// so an attempt that cannot reach the bus ends inside the bound the report gave it, but for that
-// wait. The listener's HTTP handlers bound their publishes by ctx as well, through
-// PublishEachWithin (the webhook routes) and PublishAckWithin (the send and publish routes).
+// PublishWithin publishes as Publish does, bounded by the earlier of ctx's own deadline and
+// publishBound rather than by publishBound alone, on the JetStream path (PublishStoredAck) and the
+// core NATS path (PublishCoreContext) alike: the wait for a reconnect, the flush and the JetStream
+// acknowledgement each end with that bound. The send itself, a core publish and its flush or a
+// JetStream publish, takes nats.go's connection lock before it waits on ctx, so a send made while
+// a reconnect's handshake holds that lock waits for that attempt, up to the client's connect
+// timeout (connectTimeout, 5 s), past that bound; readWithin lists such calls. The listener's wake
+// report publishes this way (publishWithinBudget in cmd/listener), so an attempt that cannot reach
+// the bus ends inside the bound the report gave it, but for that wait. The listener's HTTP
+// handlers bound their publishes by their own ctx the same way, through PublishEachWithin (the
+// webhook routes) and PublishAckWithin (the send and publish routes).
 func (c *Client) PublishWithin(ctx context.Context, item contracts.Envelope) error {
 	_, err := c.PublishReportingDuplicateWithin(ctx, item)
 	return err
@@ -2711,8 +2734,9 @@ func (c *Client) PublishReportingDuplicate(item contracts.Envelope) (bool, error
 }
 
 // PublishReportingDuplicateWithin publishes as PublishReportingDuplicate does, reporting the same
-// duplicate verdict over the same two transports, with ctx as its bound instead of publishBound,
-// as PublishWithin's is. The verdict is PublishAckWithin's Duplicate, a resend's included.
+// duplicate verdict over the same two transports, bounded by the earlier of ctx's own deadline and
+// publishBound, as PublishWithin is. The verdict is PublishAckWithin's Duplicate, a resend's
+// included.
 func (c *Client) PublishReportingDuplicateWithin(ctx context.Context, item contracts.Envelope) (bool, error) {
 	ack, err := c.PublishAckWithin(ctx, item)
 	return ack.Duplicate, err
@@ -2737,13 +2761,14 @@ func (c *Client) PublishEachWithin(ctx context.Context, item contracts.Envelope,
 }
 
 // PublishAckWithin publishes item on its own topic as PublishReportingDuplicateWithin does, over
-// the same two transports and with ctx as its bound as PublishWithin's is, and returns the
-// stream's whole acknowledgement rather than its duplicate verdict alone: the sequence, the
-// verdict, and whether the verdict answers a resend (StoredAck.Resent), which can make a duplicate
-// this call's own first copy. A core-transport topic has no acknowledgement, so it answers the
-// zero StoredAck beside PublishCoreContext's error. The listener's send and publish routes publish
-// this way: their sender limit charges nothing for a copy the stream already held, and one for a
-// copy this call may have stored (cmd/listener's senderCharge.published).
+// the same two transports and bounded as PublishWithin is, by the earlier of ctx's own deadline and
+// publishBound on either path, and returns the stream's whole acknowledgement rather than its
+// duplicate verdict alone: the sequence, the verdict, and whether the verdict answers a resend
+// (StoredAck.Resent), which can make a duplicate this call's own first copy. A core-transport topic
+// has no acknowledgement, so it answers the zero StoredAck beside PublishCoreContext's error. The
+// listener's send and publish routes publish this way: their sender limit charges nothing for a
+// copy the stream already held, and one for a copy this call may have stored (cmd/listener's
+// senderCharge.published).
 //
 // The path is publishPathOf's, the one the other five publish functions take through this one. A
 // topic this build stores goes through JetStream while the deployed stream captures it and is
