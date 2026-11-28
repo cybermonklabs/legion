@@ -25,8 +25,10 @@ import (
 // TestMain removes the NATS server the package's tests share (testnats.Main), which the intake's
 // tests connect to, and the databases their pools are cloned on (storetest.Run). It runs
 // storetest.DefaultParallel parallel tests at once (SetDefaultParallel), the number that package
-// says why: the read rule's seeds are the package's parallel tests, each on a rig of its own, and
-// each holds a database and a NATS account while it runs.
+// says why: every test of the package but one, which replaces the process's default logger, is
+// parallel, the read rule's seeds among them; a test that opens a database holds one of its own
+// while it runs (storetest.Open), and one that starts an intake a NATS account of its own too
+// (testnats.URL).
 func TestMain(m *testing.M) {
 	storetest.SetDefaultParallel()
 	os.Exit(storetest.Run(func() int { return testnats.Main(m) }))
@@ -303,6 +305,7 @@ func observations(t *testing.T, database *store.Store, project string) []string 
 // gone from the daemon's state. Each read is one legion_reads row of kind `read` naming its
 // reason, and the cursor takes the sequence the daemon's state reflects.
 func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 
@@ -359,6 +362,7 @@ func TestAChangedValueWritesOneRowAndAnUnchangedValueWritesNone(t *testing.T) {
 // that answers something other than the route's JSON, each leave the last good observations where
 // they are and show up as the last failure, with the read owed and the cursor's sequence kept.
 func TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 
@@ -402,6 +406,7 @@ func TestAFailedReadRecordsTheFailureAndLeavesTheObservationsAlone(t *testing.T)
 // bytes holds is named whole in the row's error and recorded as math.MaxInt32 in bytes, so the
 // read's row is still written.
 func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
+	t.Parallel()
 	for _, over := range []struct {
 		name     string
 		size     int
@@ -414,6 +419,7 @@ func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
 		{"with a Content-Length past what bytes holds", 3_000_000_000, true, "the answer of 3000000000 bytes is over the 67108864-byte cap", math.MaxInt32},
 	} {
 		t.Run(over.name, func(t *testing.T) {
+			t.Parallel()
 			daemon, _ := streamedState(t, over.size, over.declared)
 			database, setting := configured(t, daemon.URL)
 
@@ -440,6 +446,7 @@ func TestAWholeReadOverTheCapRecordsItsSize(t *testing.T) {
 // U+FFFD and the rest of the read with it, while an escaped backslash before `u0000` is six
 // characters of text and no NUL, and is stored as the daemon sent it.
 func TestANULInAStringDoesNotLoseTheRead(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 	readDaemon(t, database, setting)
@@ -486,6 +493,7 @@ func TestANULInAStringDoesNotLoseTheRead(t *testing.T) {
 // and nothing else. A read of a daemon whose setting was removed, or now names another daemon,
 // records neither a read nor an observation, and what was observed stays.
 func TestAReadOfADaemonNoSettingNamesRecordsNothing(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 
@@ -515,6 +523,7 @@ func TestAReadOfADaemonNoSettingNamesRecordsNothing(t *testing.T) {
 // ReadRetention, and keeps each project's newest whatever its age, because that row is the
 // freshness the board's header shows.
 func TestPruneReadsDropsTheReadsPastTheirRetention(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 	// A project whose daemon nothing reads any more: its setting was removed, and the reads it
@@ -562,6 +571,7 @@ func TestPruneReadsDropsTheReadsPastTheirRetention(t *testing.T) {
 // the channel themselves, so a read that stopped announcing would leave every open board frozen
 // at its first answer while every one of them still passed.
 func TestEachWholeReadIsAnnouncedToTheOpenBoards(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 	announced := announcements(t, database, "INFRA")
@@ -581,6 +591,7 @@ func TestEachWholeReadIsAnnouncedToTheOpenBoards(t *testing.T) {
 // (finishWhole): no row says it succeeded, since the board's header would then show a good read
 // over data Dispatch never stored, the last good read's observations stand, and the read is owed.
 func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, stateOf("planning", "planner"))
 	database, setting := configured(t, daemon.URL)
 	readDaemon(t, database, setting)
@@ -611,6 +622,7 @@ func TestAReadWhoseObservationsAreRefusedLeavesNoReadSayingItSucceeded(t *testin
 // for the admission block. It reads legion_current, which the trigger keeps equal to the newest
 // row of each field the history holds, `null` rows included.
 func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, `{"daemon":{"project":"INFRA","stateSeq":1,"stateId":"`+rigStateID+`"},
 		"settings":{"dispatch_url":"http://dispatch.internal.example"},
 		"issues":{
@@ -678,6 +690,7 @@ func TestTheNewestReadsAnswerTheNewestGoodReadAndKeepAnIssueItDropped(t *testing
 // rows, and the reverse, which puts it before them. A reader that let a later row of the issue
 // overwrite the tree an earlier one named fails the second, whatever order Postgres would return.
 func TestReportedNamesAnIssuesTreeWhateverOrderItsRowsComeBackIn(t *testing.T) {
+	t.Parallel()
 	state := func(issue string) string {
 		return fmt.Sprintf(`{"daemon":{"project":"INFRA","stateSeq":1,"stateId":%q},
 			"settings":{"dispatch_url":"http://dispatch.internal.example"},"issues":{"INFRA-1":%s}}`, rigStateID, issue)

@@ -40,6 +40,7 @@ import (
 // R3 says a reason that arrives while a read is in flight or owed joins it, so the take-over's
 // reason joins the held message's read and makes no read of its own.
 func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// takeOvers lists, for each take-over, how many hand-backs the intakes have made in all
@@ -50,6 +51,7 @@ func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *
 		{"two take-overs", []int{3, 6}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			const failures = stateMaxHolds + 1
 			// window is the client's window in the rig (windowed): a guard for a read that must not
 			// hang, since a stalled read ends at its stall.
@@ -126,6 +128,7 @@ func TestATakeOverDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *
 // read again from 1: the tester measured hand-backs 1 to 4 and then 1 to 10, 14 in all, and the
 // floor held 16m17s. Each further write of the setting starts the count again.
 func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinutes(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// writes lists, for each write of the setting, how many hand-backs the message has made
@@ -139,6 +142,7 @@ func TestASettingWrittenDuringAHeldReadThatTimesOutKeepsTheFloorAboutElevenMinut
 		{"another daemon that does not answer", []int{4}, true},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			const failures = stateMaxHolds + 1
 			// window is the client's window in the rig (windowed): a guard for a read that must not
 			// hang, since a stalled read ends at its stall.
@@ -339,6 +343,7 @@ func requireStartingReadHeld(t *testing.T, rig *intakeRig, holder uint64, holds 
 // call read the daemon while the message held the starting read, since readFor made a due starting
 // read for any call no message makes, so the hold took one more read.
 func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinutes(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name string
 		// early writes the setting once more before the starting read is due.
@@ -351,6 +356,7 @@ func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutEleve
 		{"twice while the starting read is held and twice after it was made", true, []int{4, 6}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
+			t.Parallel()
 			const left = 10 * time.Second
 			rig, daemon, holder, from, due, first := startingReadHeld(t, left)
 			write := func() {
@@ -455,6 +461,7 @@ func TestASettingWrittenWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutEleve
 // read, since readFor made a due starting read for any call no message makes: the hold took one
 // more read of RequestTimeout, and the message's next delivery made a read of its own after it.
 func TestATakeOverWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinutes(t *testing.T) {
+	t.Parallel()
 	const left, clamp = 10 * time.Second, 5 * time.Second
 	rig, daemon, holder, from, due, _ := startingReadHeld(t, left)
 
@@ -543,6 +550,7 @@ func TestATakeOverWhileAMessageHoldsTheStartingReadKeepsTheFloorAboutElevenMinut
 // the starting read is due only where no message holds that read (cursor.readFor): the take-over's
 // starting point then defers a second call.
 func TestATakeOverWhileAMessageHoldsTheStartingReadBeforeItIsDueDefersNoCall(t *testing.T) {
+	t.Parallel()
 	const left = 45 * time.Second
 	rig, _, holder, _, _, _ := startingReadHeld(t, left)
 
@@ -610,6 +618,7 @@ func requireHoldEndedWithinElevenMinutes(t *testing.T, rig *intakeRig, holder ui
 // and returned before any write. The cursor kept the starting read's start, so the message's
 // redelivery after the take-over read INFRA at once, inside the minute after the read before.
 func TestAReadCutShortByAStopKeepsItsStart(t *testing.T) {
+	t.Parallel()
 	// left is what is left of the minute after the read the stop cut short when the second intake
 	// takes the durable over.
 	const left = 5 * time.Second
@@ -714,6 +723,7 @@ func TestAReadCutShortByAStopKeepsItsStart(t *testing.T) {
 // the real programs 2m0s after the write. A later message of the old store makes that read too
 // once it is due, before it is acknowledged.
 func TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead(t *testing.T) {
+	t.Parallel()
 	const readWindow = 5 * time.Second
 	const finishedWithin = 3 * time.Second
 	rig := newIntakeRig(t)
@@ -839,6 +849,7 @@ func TestASettingNamingAnotherDaemonFinishesTheOldDaemonsMessagesWithNoRead(t *t
 // while the read is in flight. The read verifies the store at 11 and clears the record, and
 // nothing applies 12 or owes the read that would: INFRA stays at 11 until its next message.
 func TestAnEventOfTheSameStoreDuringTheReadThatVerifiesANewURLIsApplied(t *testing.T) {
+	t.Parallel()
 	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -903,6 +914,7 @@ func TestAnEventOfTheSameStoreDuringTheReadThatVerifiesANewURLIsApplied(t *testi
 // cursor holds a store. Only a write of the setting clears the mark, so INFRA stays on C's store
 // at 5 and drops each of the daemon's messages.
 func TestAStoreMarkedAsNoDaemonOfTheProjectIsFoundAgainWhenTheSettingsURLServesIt(t *testing.T) {
+	t.Parallel()
 	const bootRun = "5d2e8a1c-7b3f-4e9a-a6c0-1f8b4d2e7c93"
 	rig := newIntakeRig(t)
 	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -951,6 +963,7 @@ func TestAStoreMarkedAsNoDaemonOfTheProjectIsFoundAgainWhenTheSettingsURLServesI
 // At b58c9b76 every message of the recorded old store is finished unapplied (cursor.forgets), the
 // boot included, and none calls for a read while the cursor holds C's store.
 func TestTheRecordedOldStoreIsFoundAgainWhenTheSettingsURLServesIt(t *testing.T) {
+	t.Parallel()
 	const bootRun = "8b3d1f6e-2a4c-4d79-b0e5-3c7a9f1d6e28"
 	rig := newIntakeRig(t)
 	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -992,6 +1005,7 @@ func TestTheRecordedOldStoreIsFoundAgainWhenTheSettingsURLServesIt(t *testing.T)
 // Each case sets INFRA's setting as the tests above do (A read well, B whose starting read fails,
 // C read well in a store of its own), and C's URL keeps serving C's store: no redeploy took place.
 func TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNothing(t *testing.T) {
+	t.Parallel()
 	const bootRun = "2c7a9e41-6d3b-4f85-a0e2-8b1d5c4f7a63"
 	for _, tc := range []struct {
 		name  string
@@ -1002,6 +1016,7 @@ func TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNo
 		{name: "the recorded old store", store: rigStateID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newIntakeRig(t)
 			a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 			seedLegionProject(t, rig.database, "INFRA", a.URL)
@@ -1077,6 +1092,7 @@ func TestABootOfAMarkedOrOldStoreWhoseReadFindsTheCursorsStoreUnchangedAppliesNo
 // messages that waited are applied, and INFRA stays at the last of them, behind the three past the
 // cap, until its next message.
 func TestEventsPastTheCapDuringTheReadThatFindsAForgottenStoreAreApplied(t *testing.T) {
+	t.Parallel()
 	const bootRun = "7e1c4a92-3b5d-4f68-9c0a-5d2e8b1f6a47"
 	// heldRead is where a case leaves INFRA: the daemon whose answer to the verifying read is held,
 	// the release of that answer, the store and run of the daemon's messages, the sequence the
@@ -1130,6 +1146,7 @@ func TestEventsPastTheCapDuringTheReadThatFindsAForgottenStoreAreApplied(t *test
 		}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newIntakeRig(t)
 			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 			seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1204,6 +1221,7 @@ func TestEventsPastTheCapDuringTheReadThatFindsAForgottenStoreAreApplied(t *test
 // naming a URL whose reads all fail, and then INFRA's daemon named before restarts and publishes a
 // boot of its store, once before the owed read is due and once after.
 func TestABootOfTheOldStoreWhileTheNewURLIsUnverifiedHoldsNoRead(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		due  bool
@@ -1215,6 +1233,7 @@ func TestABootOfTheOldStoreWhileTheNewURLIsUnverifiedHoldsNoRead(t *testing.T) {
 		{"once the owed read is due", true, 2},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			unverified := newFakeDaemon(t, "")
 			unverified.refuses(http.StatusServiceUnavailable)
 			rig := newIntakeRig(t)
@@ -1274,6 +1293,7 @@ func TestABootOfTheOldStoreWhileTheNewURLIsUnverifiedHoldsNoRead(t *testing.T) {
 // d1e22ece the old daemon's message past the cap owes nothing, the new daemon's message holds the
 // read, and its redelivery makes it.
 func TestEventsPastTheCapBehindAHeldMessageOfADroppedStoreAreAppliedWhenTheReadFindsAnotherStore(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1362,6 +1382,7 @@ func TestEventsPastTheCapBehindAHeldMessageOfADroppedStoreAreAppliedWhenTheReadF
 // owedSince), gap among them, and with them the holder, so nothing owed the read that would take
 // the events past its snapshot.
 func TestEventsPastTheCapDuringAnOwedGapReadAreAppliedOnceTheProjectGoesQuiet(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1462,6 +1483,7 @@ func TestEventsPastTheCapDuringAnOwedGapReadAreAppliedOnceTheProjectGoesQuiet(t 
 // past the cap during a read in flight take the hold sends 41, 42 and 43 back, three messages of
 // the window.
 func TestMessagesPastTheCapDuringAnOwedGapReadHoldOneMessageOfTheWindow(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1565,6 +1587,7 @@ func TestMessagesPastTheCapDuringAnOwedGapReadHoldOneMessageOfTheWindow(t *testi
 // the rig's store at 30 with nothing owed. At 23a92974 the boot's reason stayed owed and the next
 // read found the new store.
 func TestAMessageOfANewStorePastTheCapDuringAReadOfTheOldStoreIsFound(t *testing.T) {
+	t.Parallel()
 	const newRun, newStore = "e4b81c2d-7a9f-4e36-b0d5-3c8a1f6e9b27", "f8d2a6c1-3e7b-4c95-a0f4-6b9e2d8c1a53"
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))

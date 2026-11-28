@@ -203,9 +203,10 @@ var readRuleInvariants = map[int]string{
 // (intakeRig.quiet), or moves the clock on to the next deadline armed on it within the budget the
 // step or the end names (intakeRig.runUntil), each under the wall-clock deadline it had when it
 // waited on real time.
-// storetest.DefaultParallel of them run at once (TestMain). They are the package's only parallel
-// tests: every other test of it runs alone, and none runs while a seed does.
+// The parent is parallel too, and the seeds run beside the package's other parallel tests,
+// storetest.DefaultParallel at once (TestMain).
 func TestAnySequenceOfInputsAppliesNoOtherStoreCatchesUpHoldsNoMessageLongAndReadsOnceAMinute(t *testing.T) {
+	t.Parallel()
 	for _, row := range readRuleRowsOf(t) {
 		t.Run(fmt.Sprintf("seed=%d", row.seed), func(t *testing.T) {
 			t.Parallel()

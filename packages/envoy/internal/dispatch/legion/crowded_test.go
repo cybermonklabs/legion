@@ -38,6 +38,7 @@ func lastSeqOf(t *testing.T, rig *intakeRig, project string) int64 {
 // exactly that share of the window. A message of a sixteenth project is then applied in its usual
 // time, and no slow project's daemon is asked for another read.
 func TestFifteenProjectsInSlowReadsLeaveTheWindowAMessageOfAnotherProject(t *testing.T) {
+	t.Parallel()
 	const slow = 15
 	const usual = 3 * time.Second
 	window := slow * (stateMaxWaiting + 1)
@@ -127,6 +128,7 @@ func TestFifteenProjectsInSlowReadsLeaveTheWindowAMessageOfAnotherProject(t *tes
 // is let go after stateMaxHolds hand-backs, after which INFRA holds one message fewer. With a cap
 // of 15 INFRA holds 16 messages while that message has gone back once, and with a cap of 17, 18.
 func TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute(t *testing.T) {
+	t.Parallel()
 	// left is what is left of the read's minute when the messages past the cap arrive.
 	const left = 5 * time.Second
 	phase := func(phase string) string {
@@ -218,6 +220,7 @@ func TestAProjectPastTheCapDuringAGoodReadThatGoesQuietIsReadWithinTheMinute(t *
 // acknowledged and INFRA's runner has run what was queued on it, INFRA's daemon has served those
 // two reads alone.
 func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRunner(t *testing.T) {
+	t.Parallel()
 	// left is what is left of the starting read's minute when the messages past the cap arrive.
 	const left = 5 * time.Second
 	phase := func(phase string) string {
@@ -327,6 +330,7 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 // At d69f92b6, judgeCrowded finished the boot as a message of a dropped store (cursor.forgets)
 // while no read was in flight: it owed nothing, and INFRA stayed on C's store.
 func TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain(t *testing.T) {
+	t.Parallel()
 	const bootRun = "4b8e1d6a-2c7f-4a93-b5e0-9d3c6f1a8e24"
 	for _, tc := range []struct {
 		name  string
@@ -337,6 +341,7 @@ func TestABootOfADroppedStorePastTheCapFindsTheSettingsDaemonAgain(t *testing.T)
 		{name: "the recorded old store", store: rigStateID},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newIntakeRig(t)
 			a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 			seedLegionProject(t, rig.database, "INFRA", a.URL)
@@ -484,6 +489,7 @@ func cursorWaitersBehindARecord(t *testing.T, rig *intakeRig) int {
 // read, its holder and the skipped sequences that judgeCrowded recorded meanwhile. The holder at 31
 // was then applied at its redelivery, and 32 and 33 were never read.
 func TestEventsPastTheCapWhileTheFirstReadOfAProjectWithNoCursorIsRecordedAreApplied(t *testing.T) {
+	t.Parallel()
 	// left is what is left of the starting read's minute when the messages past the cap arrive.
 	const left = 5 * time.Second
 	rig := newIntakeRig(t)

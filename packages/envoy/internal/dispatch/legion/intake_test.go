@@ -37,8 +37,7 @@ import (
 // listener does, the lease pool reservation the intake takes its durable's hold on, the settings
 // wake, the intake's clock and the log every intake of the test writes, through a logger of the
 // rig's own (Intake.log), so the test reads the lines of its own intakes alone. That is what lets
-// the package's parallel tests, the read rule's seeds among them, hold a rig each and run at once;
-// the package's other tests have a rig each too and still run alone.
+// the package's tests, the read rule's seeds among them, hold a rig each and run at once.
 //
 // Each intake the rig starts reads the module's fake clock and defers its calls on it
 // (Intake.clock, intakeClock), hands its messages back on that fake (park), and tells the rig when
@@ -1285,6 +1284,7 @@ func TestQuietWaitsForTheStartingPointQueuedBehindAHeldRead(t *testing.T) {
 // for each field it names, `null` for a claim it takes away; every field it does not name keeps
 // the value Dispatch observed last, the starting read's or an earlier event's.
 func TestAnEventLeavesEveryFieldItDoesNotNameAsItWas(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1324,6 +1324,7 @@ func TestAnEventLeavesEveryFieldItDoesNotNameAsItWas(t *testing.T) {
 // they share), with the bytes it carried and no reason. Its observations are observed at that
 // `at` where it is past the field's newest row (recordEvents), as it is for the slot here.
 func TestEachAppliedBatchRecordsAReadAtItsNewestEvent(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1362,6 +1363,7 @@ func TestEachAppliedBatchRecordsAReadAtItsNewestEvent(t *testing.T) {
 // StateChannel with its project, which is what wakes an open Legion board (api/delivery_live_hub.go),
 // as a whole read is.
 func TestEachAppliedBatchWakesTheProjectsBoard(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1380,6 +1382,7 @@ func TestEachAppliedBatchWakesTheProjectsBoard(t *testing.T) {
 // durable, and the next intake's take-over creates it again at its ack floor, so they are applied
 // in order and nothing reads the daemon again: the cursor is the starting point.
 func TestAStoppedIntakeReplaysWhatItMissed(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1414,6 +1417,7 @@ func TestAStoppedIntakeReplaysWhatItMissed(t *testing.T) {
 // cursor's next one carries events the stream no longer holds, so the project is read whole once,
 // the cursor takes the read's stateSeq, and the messages after it are applied with no other read.
 func TestAGapTheStreamNoLongerHoldsMakesOneWholeRead(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1459,6 +1463,7 @@ func TestAGapTheStreamNoLongerHoldsMakesOneWholeRead(t *testing.T) {
 // that one moment is how the metrics tell an issue a read dropped from a slot released (metrics'
 // slotSpans). The read's own legion_reads row keeps the read's time.
 func TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1537,6 +1542,7 @@ func TestAWholeReadAfterEventsAheadOfDispatchsClockIsTheNewestState(t *testing.T
 // project whole once; a boot that follows reads nothing, under the cursor's run or another, and
 // neither does a boot replayed under the run the cursor followed last.
 func TestABootThatDoesNotFollowMakesOneWholeRead(t *testing.T) {
+	t.Parallel()
 	const otherRun = "a7d1c0e2-6b8f-4c3a-9e51-0f2b8d4c6a19"
 	for _, tc := range []struct {
 		name string
@@ -1598,6 +1604,7 @@ func TestABootThatDoesNotFollowMakesOneWholeRead(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newIntakeRig(t)
 			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 			seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1648,6 +1655,7 @@ func TestABootThatDoesNotFollowMakesOneWholeRead(t *testing.T) {
 // run, so that boot, of the same run and at or below the read's stateSeq, is one the read already
 // holds: it writes nothing, moves no cursor and makes no second read.
 func TestABootOfTheRunTheStartingReadServedMakesNoRead(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1682,6 +1690,7 @@ func TestABootOfTheRunTheStartingReadServedMakesNoRead(t *testing.T) {
 // store whose sequence went back (a database restore), which no event carries. It makes one whole
 // read (ReadReasonBoot), and the cursor then follows the run that served that read.
 func TestABootOfAnotherRunAtOrBelowTheStartingReadMakesOneRead(t *testing.T) {
+	t.Parallel()
 	const restoredRun = "9e3c5a71-2f4d-4b86-a0c9-6d1e8b7f3a52"
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -1717,6 +1726,7 @@ func TestABootOfAnotherRunAtOrBelowTheStartingReadMakesOneRead(t *testing.T) {
 // or below it is in the state it read, so a message the read already holds writes no observation,
 // no legion_reads row and no move of the cursor.
 func TestAnEventAtOrBelowTheReadsSequenceWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -1747,6 +1757,7 @@ func TestAnEventAtOrBelowTheReadsSequenceWritesNothing(t *testing.T) {
 // - and nothing else reads a daemon: a run of events, a wake that changed nothing, all apply with
 // no read.
 func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	linux := newFakeDaemon(t, daemonState("LINUX", 20, planning("LINUX")))
@@ -1839,6 +1850,7 @@ func TestAProjectWithoutAStartingPointIsReadOnceAndNothingReadsItAgain(t *testin
 // the owed read, so it goes back to the stream until the read is due and logs only that, and the
 // second is acknowledged and its drop logged.
 func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
+	t.Parallel()
 	issue := planning("INFRA")
 	for _, tc := range []struct {
 		name     string
@@ -1880,6 +1892,7 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newIntakeRig(t)
 			daemon := newFakeDaemon(t, tc.state)
 			if tc.status != 0 {
@@ -1970,6 +1983,7 @@ func TestAFailedWholeReadIsTriedAgainAtTheNextMessageAndNoSooner(t *testing.T) {
 // dropLogEvery has passed on the intake's clock logs again. The intake then remembers only the
 // projects it logged in the last dropLogEvery, so GHOST, logged before it, is forgotten.
 func TestAMessageForAProjectWithNoSettingIsDropped(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	seedProject(t, rig.database, "LINUX")
 	rig.start()
@@ -2045,6 +2059,7 @@ func TestAMessageForAProjectWithNoSettingIsDropped(t *testing.T) {
 // ReadRetention written after a prune stays through the batches inside pruneEvery, and goes at the
 // first batch after it.
 func TestTheIntakePrunesTheReadsAtMostOnceAnHour(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -2102,6 +2117,7 @@ func TestTheIntakePrunesTheReadsAtMostOnceAnHour(t *testing.T) {
 // writes again both are applied in sequence order and the history holds each value the daemon
 // committed.
 func TestAnApplyThatFailsIsRetriedBeforeAnyLaterMessage(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	rig.firstRetry, rig.lastRetry = 20*time.Millisecond, 100*time.Millisecond
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -2332,6 +2348,7 @@ func orNone[T any](value *T) string {
 // knows the boot as one the read already holds, and reads nothing more (stateMessage.unfollowed).
 // LEGION's daemon is read once, at the start, and each step's rows are its message's.
 func TestEventsWriteTheRowsAWholeReadOfTheSameStatesWrites(t *testing.T) {
+	t.Parallel()
 	const events, reads = "LEGION", "READS"
 	steps := readStateEventsGolden(t)
 	rig := newIntakeRig(t)
@@ -2503,6 +2520,7 @@ func (r *intakeRig) wholeReadReasons(project string) []string {
 // second message of that store inside ReadRetryAfter of the read is dropped the same way: it makes
 // no read and holds none, and the daemon's own next message is applied.
 func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -2562,6 +2580,7 @@ func TestAMessageOfAnotherStoreWritesNothingAndMakesOneRead(t *testing.T) {
 // no event of the daemon: it writes nothing and moves no cursor, and the drop is logged with its
 // run, its sequences and the read's stateSeq. The daemon's next event, 12, is applied.
 func TestAMessagePastTheSequenceOfTheReadItCalledForWritesNothing(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -2612,6 +2631,7 @@ func TestAMessagePastTheSequenceOfTheReadItCalledForWritesNothing(t *testing.T) 
 // nothing, makes no cursor and is finished, and the line is logged once. Once that process has
 // deregistered, the next message takes the starting point and is applied on it.
 func TestNoStartingPointIsTakenWhileAnEarlierBuildIsInTheFleet(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -2671,6 +2691,7 @@ func TestNoStartingPointIsTakenWhileAnEarlierBuildIsInTheFleet(t *testing.T) {
 // transaction's commit time, one legion_reads row, the cursor at the last part's sequence, and no
 // part held after it.
 func TestASplitTransactionIsAppliedOnlyWhole(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -2728,6 +2749,7 @@ func TestASplitTransactionIsAppliedOnlyWhole(t *testing.T) {
 // gap after them, or a part of another run. Either makes one whole read (ReadReasonGap), which
 // deletes the parts, and no row ever holds a value of the parts.
 func TestAPartOfASplitTransactionThatIsNotCompletedWritesNothing(t *testing.T) {
+	t.Parallel()
 	const otherRun = "e4b8a2d6-0c7f-4a1e-8d35-9f6b2c1a7e04"
 	for _, tc := range []struct {
 		name string
@@ -2751,6 +2773,7 @@ func TestAPartOfASplitTransactionThatIsNotCompletedWritesNothing(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newIntakeRig(t)
 			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 			seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -2799,6 +2822,7 @@ func TestAPartOfASplitTransactionThatIsNotCompletedWritesNothing(t *testing.T) {
 // the daemon's state. INFRA's next message is applied after it, and LINUX's message, published
 // behind the refused one, is applied meanwhile.
 func TestAMessageTheDatabaseRefusesForGoodIsFinishedAndReadsItsProjectWhole(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	linux := newFakeDaemon(t, daemonState("LINUX", 20, planning("LINUX")))
@@ -2858,6 +2882,7 @@ func TestAMessageTheDatabaseRefusesForGoodIsFinishedAndReadsItsProjectWhole(t *t
 // sequence each, in that order. A message that breaks it does not decode, whichever way it breaks
 // it, and one that keeps it decodes with its events in order.
 func TestAStateMessageWhoseEventsDoNotRunFromFirstSeqToSeqDoesNotDecode(t *testing.T) {
+	t.Parallel()
 	phase := func(seq int) map[string]any { return change(seq, "INFRA-1", moved("phase", "testing")) }
 	for _, tc := range []struct {
 		name          string
@@ -2908,6 +2933,7 @@ func TestAStateMessageWhoseEventsDoNotRunFromFirstSeqToSeqDoesNotDecode(t *testi
 // daemon will ever publish, with no whole read to follow. The daemon's real next message then
 // follows the cursor and is applied, with no read.
 func TestAMessageWhoseSequenceItsEventsDoNotReachMovesNoCursor(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -2954,6 +2980,7 @@ func TestAMessageWhoseSequenceItsEventsDoNotReachMovesNoCursor(t *testing.T) {
 // call no message makes. The read takes the named daemon's state and store, and the named
 // daemon's own next event is applied on it.
 func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedBefore(t *testing.T) {
+	t.Parallel()
 	const namedRun, namedStore = "2c7e9a14-5b3d-4f86-a1e0-8d6c4b2f9e37", "6e1f3a8c-2d4b-4c97-b5a0-9f7e1d3c8b26"
 	rig := newIntakeRig(t)
 	previous := newFakeDaemon(t, daemonState("INFRA", 2000000, planning("INFRA")))
@@ -3034,6 +3061,7 @@ func TestARepointedSettingWhoseFirstReadFailsAppliesNoMessageOfTheDaemonItNamedB
 // as well. The transaction's last part then applies all of it, every row at its commit time, and no
 // part is held after it.
 func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -3109,6 +3137,7 @@ func TestAFailedReadKeepsTheHeldPartsAndTheirTransactionIsAppliedWhole(t *testin
 // is applied too. A minute on, INFRA's daemon's own next event makes the owed read, logged with
 // both reasons and the first as its reason, and is applied after it: one read more.
 func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
+	t.Parallel()
 	const burst = 300
 	rig := newIntakeRig(t)
 	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -3231,6 +3260,7 @@ func TestABurstOfMessagesThatCallForReadsMakesOneReadAMinute(t *testing.T) {
 // are applied, and INFRA's daemon serves no read meanwhile; the test then moves the clock to the
 // hand-back's end (nextDue), and the redelivery makes the owed read.
 func TestAProjectThatOwesAReadAndGoesQuietIsReadWithinTheMinute(t *testing.T) {
+	t.Parallel()
 	// left is what is left of INFRA's minute when its second gap arrives.
 	const left = 8 * time.Second
 	rig := newIntakeRig(t)
@@ -3418,6 +3448,7 @@ func oneTo(n int) []any {
 // The test catches a bound other than 10 hand-backs: a lower one lets the message go before its
 // 11th read, and a higher one sends it back after its 11th failed read.
 func TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks(t *testing.T) {
+	t.Parallel()
 	const failures = 11
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -3505,6 +3536,7 @@ func TestAHeldReadThatKeepsFailingLetsItsMessageGoAfterTenHandBacks(t *testing.T
 // Each hand-back is armed on the rig's clock, which nothing moves before the jump is set, and which
 // runUntil then moves on to its end once the rig is quiet.
 func TestAHeldReadThatFailsTwiceIsMadeByItsThirdRedelivery(t *testing.T) {
+	t.Parallel()
 	const left = 3 * time.Second
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -3576,6 +3608,7 @@ func TestAHeldReadThatFailsTwiceIsMadeByItsThirdRedelivery(t *testing.T) {
 // how long one message holds the floor: the holder's delivery count starts again at 1 with the new
 // durable, and the cursor's count of its hand-backs goes on from 1 to 2.
 func TestATakeOverDuringAHoldReplaysOnlyTheMessagesSinceTheHolder(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	infra := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	linux := newFakeDaemon(t, daemonState("LINUX", 20, planning("LINUX")))
@@ -3656,6 +3689,7 @@ func TestATakeOverDuringAHoldReplaysOnlyTheMessagesSinceTheHolder(t *testing.T) 
 // that hand-back out, drops it, and the take-over delivers the message again. Each other hand-back
 // is armed on the rig's clock, which runUntil moves on to its end once the rig is quiet.
 func TestAHoldsHandBacksAreCountedAcrossATakeOver(t *testing.T) {
+	t.Parallel()
 	// before is how many hand-backs the first intake makes before it stops: the last of them is
 	// withheld until the stop.
 	const before = 4
@@ -3730,6 +3764,7 @@ func TestAHoldsHandBacksAreCountedAcrossATakeOver(t *testing.T) {
 // daemon clears it, so the test writes INFRA's cursor so by hand: it follows another URL, owes the
 // read for retry, and names stream sequence 42 as the holder, gone back 3 times.
 func TestOnlyAGoodWholeReadClearsTheHolderOfTheOwedRead(t *testing.T) {
+	t.Parallel()
 	daemon := newFakeDaemon(t, "")
 	daemon.refuses(http.StatusServiceUnavailable)
 	database, setting := configured(t, daemon.URL)
@@ -3795,6 +3830,7 @@ func TestOnlyAGoodWholeReadClearsTheHolderOfTheOwedRead(t *testing.T) {
 // Each hand-back is armed on the rig's clock, which runUntil moves on to its end once the rig is
 // quiet.
 func TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes(t *testing.T) {
+	t.Parallel()
 	const failures = stateMaxHolds + 1
 	// window is the client's window in the rig (windowed): a guard for the good starting read,
 	// which must not hang, since a stalled read ends at its stall.
@@ -3860,6 +3896,7 @@ func TestAHeldReadThatTimesOutHoldsTheFloorAboutElevenMinutes(t *testing.T) {
 // that it would log otherwise, a gap's, a message of another store's or one of a cursor with no
 // store, and not the refusal of a message the database refuses for good.
 func TestAMessageThatGoesBackToTheStreamIsLoggedAsHeldAlone(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// failedStart is a starting read the daemon refuses, after which the cursor holds no store;
@@ -3896,6 +3933,7 @@ func TestAMessageThatGoesBackToTheStreamIsLoggedAsHeldAlone(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newIntakeRig(t)
 			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 			if tc.failedStart {

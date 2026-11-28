@@ -71,6 +71,7 @@ func goldenAdmission(t *testing.T, body []byte) map[string]json.RawMessage {
 // not measured, a board card carries no CI verdict, and no reader is left for the pull request's
 // state.
 func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
+	t.Parallel()
 	for _, golden := range []string{"state.json", "observed-state.json"} {
 		t.Run(golden, func(t *testing.T) {
 			body, err := os.ReadFile(daemonAPIFixture(golden))
@@ -155,6 +156,7 @@ func TestTheDecodeReadsTheStateDocumentTheDaemonWrote(t *testing.T) {
 // board's header gives null for it (dispatch://INFRA-5636). The rest of the block still decodes,
 // so what is absent is the number alone.
 func TestTheDecodeOfADaemonBelowTheEntryHasNoP0Holders(t *testing.T) {
+	t.Parallel()
 	body, err := os.ReadFile(narrowedStatePath())
 	if err != nil {
 		t.Fatalf("read the daemon's narrowed state golden: %v", err)

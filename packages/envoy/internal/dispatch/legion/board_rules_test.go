@@ -10,6 +10,7 @@ import (
 // and both columns, so such a table stops the package at start (PhaseColumns is read off Columns
 // then) rather than put a card in one column and its hours under another.
 func TestEachPhaseIsInOneColumn(t *testing.T) {
+	t.Parallel()
 	listed := 0
 	for _, column := range Columns {
 		for _, phase := range column.Phases {

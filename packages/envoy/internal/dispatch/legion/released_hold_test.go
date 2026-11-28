@@ -73,6 +73,7 @@ func (r *intakeRig) handBacksOf() map[uint64]int {
 // alone. No message goes back to the stream more than stateMaxHolds times, and each read reaches
 // its daemon once. readWindow (windowed) is a guard for a read that must not hang.
 func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
+	t.Parallel()
 	const readWindow = 3 * time.Second
 	rig := newIntakeRig(t)
 	rig.windowed(readWindow)
@@ -180,6 +181,7 @@ func TestEachWriteOfAnotherDaemonEndsTheHoldOfTheMessageBeforeIt(t *testing.T) {
 // finished unapplied, writes nothing at or below the read's 13, and its store, the cursor's own, is
 // not marked as no daemon of INFRA. Each read reaches its daemon once.
 func TestAHeldMessageOfTheStoreASettingNamedBeforeWritesNothingWhenTheNewURLServesThatStore(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	rig.windowed(3 * time.Second)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -258,6 +260,7 @@ func TestAHeldMessageOfTheStoreASettingNamedBeforeWritesNothingWhenTheNewURLServ
 // as any message of another store, making C's starting read or holding a store read of C from a
 // count of 1.
 func TestASecondWriteOfAnotherDaemonKeepsTheReleaseOfAMessageStillOut(t *testing.T) {
+	t.Parallel()
 	const aRun, aStore = "d5a8c3e1-9f2b-4d76-8a0e-3b7c1f6d2e94", "2f9d6b3a-8e1c-4a57-b6d0-9c4e7a1f3b82"
 	// left is how long before A's next read is due H1 goes back to the stream.
 	const left = 15 * time.Second
@@ -440,6 +443,7 @@ func markedRig(t *testing.T) (*intakeRig, *fakeDaemon) {
 // A, then B, whose reads all fail, then C, read well: B's messages make one read at the most, then
 // none, and none of them goes back to the stream or is applied (markedRig).
 func TestADaemonWhoseReadsAllFailedMakesOneReadOnceTheSettingNamesAVerifiedDaemon(t *testing.T) {
+	t.Parallel()
 	rig, _ := markedRig(t)
 	if drops := rig.awaitLogRecords(otherStoreLine, 1); len(drops) != 1 || drops[0]["stateId"] != bStore || drops[0]["cursorStateId"] != cStore {
 		t.Errorf("the drops logged = %v, want one naming B's store %s and C's store %s", drops, bStore, cStore)
@@ -457,6 +461,7 @@ func TestADaemonWhoseReadsAllFailedMakesOneReadOnceTheSettingNamesAVerifiedDaemo
 // ReadRetryAfter apart), is good and gives the cursor B's store, and B's next messages are
 // applied, each in turn.
 func TestAWriteBackToADaemonMarkedAsNoDaemonOfTheProjectAppliesItsMessages(t *testing.T) {
+	t.Parallel()
 	rig, b := markedRig(t)
 	rig.clock.advance(ReadRetryAfter + time.Second)
 	b.serves(daemonStateIn("INFRA", 30, inPhase("testing"), bStore, bRun))
@@ -502,6 +507,7 @@ func TestAWriteBackToADaemonMarkedAsNoDaemonOfTheProjectAppliesItsMessages(t *te
 // no mark of the second sender's store, and one that marks more than eight, which keeps the first
 // sender's mark.
 func TestTheMarksOfStoresThatAreNoDaemonOfTheProjectKeepTheNewestEight(t *testing.T) {
+	t.Parallel()
 	const senders = 9
 	stores := make([]string, senders)
 	for i := range stores {

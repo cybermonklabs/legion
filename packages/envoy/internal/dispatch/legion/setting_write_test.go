@@ -23,6 +23,7 @@ import (
 // none, and its drop is logged. The wake then reads the named daemon whole, and the named daemon's
 // own events are applied, each in turn.
 func TestAMessageOfTheStoreASettingNamedBeforeMakesNoStartingRead(t *testing.T) {
+	t.Parallel()
 	const namedRun, namedStore = "8d2b6f41-3e7a-4c95-b0d8-1a5f9c3e7b26", "4b9e1c7a-6f2d-4a83-9e5b-0c7d3f8a1e64"
 	rig := newIntakeRig(t)
 	previous := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -87,6 +88,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeMakesNoStartingRead(t *testing.T) 
 // the daemon's next events are applied, each in turn, as every message of the cursor's store is,
 // and none is dropped.
 func TestAWriteBackToTheDaemonOfTheStoreASettingNamedBeforeAppliesItsMessages(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -154,6 +156,7 @@ func TestAWriteBackToTheDaemonOfTheStoreASettingNamedBeforeAppliesItsMessages(t 
 // earliest, and nothing moves that clock while the test checks that the message made no read and
 // applied nothing; the test then moves the clock on by left, and the redelivery makes the read.
 func TestAWriteBackWhoseFirstReadFailsIsReadAgainAtItsDaemonsNextMessage(t *testing.T) {
+	t.Parallel()
 	const left = 3 * time.Second
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -257,6 +260,7 @@ func TestAWriteBackWhoseFirstReadFailsIsReadAgainAtItsDaemonsNextMessage(t *test
 // before the message is acknowledged, so once it is, a barrier on that runner makes the count of
 // the named daemon's reads final.
 func TestATakeOverFinishesAMessageOfTheStoreASettingNamedBeforeAfterTheTakeOversRead(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -325,6 +329,7 @@ func TestATakeOverFinishesAMessageOfTheStoreASettingNamedBeforeAfterTheTakeOvers
 // in the rig's store, and then a write of INFRA's setting names a second URL, which the write's
 // wake reads (repoint).
 func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) {
+	t.Parallel()
 	const namedRun, namedStore = "7a3d9e2b-4c1f-4b86-9e5a-2f8c6d1b3e74", "5d8b2e6f-1a4c-4f97-b3e0-6c9a2d7f1b58"
 	implementing := strings.Replace(planning("INFRA"), `"planning"`, `"implementing"`, 1)
 	// repoint starts the rig with INFRA's daemon read whole, writes INFRA's setting naming named,
@@ -349,6 +354,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) 
 	// it calls for waits for the daemon's answer. That read is good, so it clears the record of the
 	// store, and the project's next message of that store is applied.
 	t.Run("the same store behind a new URL whose first read fails", func(t *testing.T) {
+		t.Parallel()
 		alias := newFakeDaemon(t, "")
 		alias.refuses(http.StatusServiceUnavailable)
 		rig, daemon := repoint(t, alias)
@@ -406,6 +412,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) 
 	// called for is queued on INFRA's runner before the message is acknowledged, so once the owed
 	// read is recorded, a barrier on that runner makes the count of reads final.
 	t.Run("another store, verified", func(t *testing.T) {
+		t.Parallel()
 		named := newFakeDaemon(t, strings.Replace(strings.Replace(daemonState("INFRA", 5, implementing), rigStateID, namedStore, 1), rigRun, namedRun, 1))
 		rig, _ := repoint(t, named)
 		reads := wholeReadsOf(t, rig.database, "INFRA")
@@ -456,6 +463,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) 
 	// INFRA's runner before its message is acknowledged, so once the read is recorded, a barrier on
 	// that runner makes the count of reads final.
 	t.Run("a burst queues one read", func(t *testing.T) {
+		t.Parallel()
 		const burst = 4
 		named := newFakeDaemon(t, "")
 		named.refuses(http.StatusServiceUnavailable)
@@ -522,6 +530,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForTheOwedRead(t *testing.T) 
 // (callRead) would be queued on INFRA's runner before the message is acknowledged, so once it is,
 // a barrier on that runner makes the count of reads final.
 func TestAMessageOfTheStoreASettingNamedBeforeCallsForNoReadBeforeTheOwedReadIsDue(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -575,6 +584,7 @@ func TestAMessageOfTheStoreASettingNamedBeforeCallsForNoReadBeforeTheOwedReadIsD
 //   - where the write's read is older than the transaction (it serves 10), the last part is past
 //     the read's next sequence, so it calls for a gap read, which serves 12, and is at or below it.
 func TestAWriteOfTheSameURLDeletesTheHeldPartsOfASplitTransaction(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// writeRead is the stateSeq the write's read serves, and reasons the whole reads INFRA's
@@ -586,6 +596,7 @@ func TestAWriteOfTheSameURLDeletesTheHeldPartsOfASplitTransaction(t *testing.T) 
 		{"the write's read is older than the transaction", 10, []string{ReadReasonStart, ReadReasonStart, ReadReasonGap}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newIntakeRig(t)
 			daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 			seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -648,6 +659,7 @@ func TestAWriteOfTheSameURLDeletesTheHeldPartsOfASplitTransaction(t *testing.T) 
 // runs once message 12 is finished, so a barrier on INFRA's runner after it makes the counts of
 // reads and deferred calls final.
 func TestAWriteOfTheSameURLWhileAReadOfItIsInFlightTakesThatReadAsItsStartingPoint(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -732,6 +744,7 @@ func TestAWriteOfTheSameURLWhileAReadOfItIsInFlightTakesThatReadAsItsStartingPoi
 // the durable is one of its: the durable delivers once after the delete, the delivery that is
 // dropped.
 func TestASettingDeletedDuringAHoldDropsTheHeldMessage(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
@@ -801,6 +814,7 @@ func TestASettingDeletedDuringAHoldDropsTheHeldMessage(t *testing.T) {
 // another URL recorded no release for such a cursor, so 42's next delivery was judged as any
 // message's.
 func TestAWriteOfTheSameURLKeepsTheHoldAndAWriteOfAnotherURLRecordsItsRelease(t *testing.T) {
+	t.Parallel()
 	const settingURL, anotherURL = "http://127.0.0.1:1", "http://another-daemon.example"
 	for _, tc := range []struct {
 		name    string
@@ -811,6 +825,7 @@ func TestAWriteOfTheSameURLKeepsTheHoldAndAWriteOfAnotherURLRecordsItsRelease(t 
 		{name: "a cursor that follows no daemon yet", follows: "", reason: ReadReasonStart},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			database, _ := configured(t, settingURL)
 			// columns is INFRA's cursor row whole, every column, as JSON text.
 			columns := func() string {
@@ -888,6 +903,7 @@ func TestAWriteOfTheSameURLKeepsTheHoldAndAWriteOfAnotherURLRecordsItsRelease(t 
 // records 109 alone, as the cursor at 8a18f054 did with its one released_holder; and one that
 // records more than eight, which then keeps 101 too.
 func TestTheReleasedHoldersKeepTheNewestEight(t *testing.T) {
+	t.Parallel()
 	const settingURL, anotherURL, thirdURL = "http://127.0.0.1:1", "http://another-daemon.example", "http://third-daemon.example"
 	const holder = 109
 	database, _ := configured(t, settingURL)
@@ -931,6 +947,7 @@ func TestTheReleasedHoldersKeepTheNewestEight(t *testing.T) {
 // project that has no setting, so the second write read none, wrote behind the first, and reset
 // the cursor as a write of another URL would: it recorded 42 as released and dropped its count.
 func TestTwoFirstWritesOfOneURLTakeTurnsAndTheSecondKeepsTheHold(t *testing.T) {
+	t.Parallel()
 	const settingURL = "http://127.0.0.1:1"
 	database, _ := configured(t, settingURL)
 	seedProject(t, database, "LINUX")

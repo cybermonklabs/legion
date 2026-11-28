@@ -20,6 +20,8 @@ import (
 // handler (main.go's slog.NewTextHandler), not the JSON handler the other tests here install. The
 // line a person reads in Dispatch's log names the sequence as a number.
 func TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler(t *testing.T) {
+	// Not parallel: it replaces the process's default logger (logtest.SetDefault) to read the
+	// line as cmd/dispatch's own handler writes it.
 	logs := &logtest.Buffer{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, nil))
 	daemon := newFakeDaemon(t, daemonState("INFRA", 15, planning("INFRA")))
@@ -43,6 +45,7 @@ func TestTheWholeReadLineNamesTheSequenceUnderDispatchsOwnHandler(t *testing.T) 
 // names and writes nothing that daemon did, and the events the named daemon publishes after it are
 // applied, each one in turn, with no event skipped.
 func TestAMessageOfADaemonTheSettingNoLongerNamesLeavesTheNamedDaemonsEventsApplied(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	previous := newFakeDaemon(t, daemonState("INFRA", 2000000, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", previous.URL)
@@ -89,6 +92,7 @@ func TestAMessageOfADaemonTheSettingNoLongerNamesLeavesTheNamedDaemonsEventsAppl
 // daemon's DaemonInfo.StateSeq). Dispatch records each whole read of such a daemon as a failed read
 // that names that reason: its settings carry no dispatch_url, so it runs no workflow.
 func TestAWholeReadOfADaemonThatRunsNoWorkflowNamesThatReason(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	noWorkflow := strings.Replace(daemonState("INFRA", 0, planning("INFRA")), `"dispatch_url":"http://dispatch.internal.example",`, ``, 1)
 	daemon := newFakeDaemon(t, noWorkflow)
@@ -115,6 +119,7 @@ func TestAWholeReadOfADaemonThatRunsNoWorkflowNamesThatReason(t *testing.T) {
 // redelivers it once that delay has passed. A hand-back of no delay, or one that goes around the
 // intake's handBackAfter, fails the test.
 func TestAFailedWholeReadSetsNoRun(t *testing.T) {
+	t.Parallel()
 	const otherRun = "9e3c5a71-2f4d-4b86-a0c9-6d1e8b7f3a52"
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
@@ -184,6 +189,7 @@ func TestAFailedWholeReadSetsNoRun(t *testing.T) {
 // owes nothing, after a good starting read, is not read at the take-over: R3 reads a project whole
 // only for the reasons it names.
 func TestATakeOverReadsAProjectWhoseOwedReadNoMessageHolds(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name    string
 		project string
@@ -265,6 +271,7 @@ func TestATakeOverReadsAProjectWhoseOwedReadNoMessageHolds(t *testing.T) {
 		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
 			rig := newIntakeRig(t)
 			daemon, reads := tc.before(t, rig)
 
@@ -369,6 +376,7 @@ func requireBReadAMinuteAfterA(t *testing.T, rig *intakeRig, a, b *fakeDaemon, f
 // The call the wake defers is armed on the intake's clock (intakeClock.AfterFunc) no sooner than a
 // minute after A's second read began, so no move of the clock short of that minute makes it.
 func TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", a.URL)
@@ -419,6 +427,7 @@ func TestTwoWritesOfTheSettingTenSecondsApartStartTheirReadsAMinuteApart(t *test
 // wake: the second read began 10 s after the first. No timer recurs: the intake defers the one
 // call of the write's wake (intakeClock.deferrals), and that call, which reads B, defers none.
 func TestADeleteAndAWriteOfTheSettingWithinAMinuteStartTheirReadsAMinuteApart(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", a.URL)
@@ -460,6 +469,7 @@ func TestADeleteAndAWriteOfTheSettingWithinAMinuteStartTheirReadsAMinuteApart(t 
 // intakeClock.deferrals). That call makes the starting read of B a minute after A's read began, and
 // defers none.
 func TestATakeOverThatFindsTheStartingReadNotDueDefersOneCallThatMakesIt(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", a.URL)
@@ -514,6 +524,7 @@ func TestATakeOverThatFindsTheStartingReadNotDueDefersOneCallThatMakesIt(t *test
 // Each count is read after a barrier on INFRA's runner (drained), which runs after the starting
 // point the deferred call or the wake queued there.
 func TestADeferredCallThatFindsTheStartingReadNotDueDefersNoOtherCall(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	a := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", a.URL)
@@ -599,6 +610,7 @@ func TestADeferredCallThatFindsTheStartingReadNotDueDefersNoOtherCall(t *testing
 // the message queued there (drained). The hand-back is armed on the rig's clock, which runUntil
 // moves to its end once the rig is quiet.
 func TestAGapFoundRightAfterAGoodStartingReadIsReadWhenItsMinuteEnds(t *testing.T) {
+	t.Parallel()
 	rig := newIntakeRig(t)
 	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
 	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
