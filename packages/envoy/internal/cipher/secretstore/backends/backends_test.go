@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"strings"
 	"testing"
+	"unicode"
+	"unicode/utf8"
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/backends"
 )
@@ -126,7 +128,8 @@ func TestEachRegistryFileIsBehindItsStoresTag(t *testing.T) {
 // TestEachRegisteredStoreRunsTheContract: every store the registry holds has a test, among the test
 // files a default build compiles, that calls secretstoretest.StoreContract with the store's ID, so
 // no store joins the registry without running the contract against its fake. A call in a file
-// behind a tag such as gcplive does not count.
+// behind a tag such as gcplive does not count, and nor does one go test never runs
+// (callsContract).
 func TestEachRegisteredStoreRunsTheContract(t *testing.T) {
 	modulePath, root := module(t)
 	for _, b := range backends.All() {
@@ -147,33 +150,86 @@ func TestEachRegisteredStoreRunsTheContract(t *testing.T) {
 	}
 }
 
-// callsContract reports whether one of files, in dir, calls secretstoretest.<contract> with the
-// string id as its second argument.
+// callsContract reports whether one of files, in dir, has a test go test runs (runnableTest) whose
+// body calls secretstoretest.<contract> with the string id as its second argument, as a statement
+// of the body itself. A call anywhere else does not count: in a helper, a method or a closure, or
+// under a branch, a test may never reach it.
 func callsContract(t *testing.T, dir string, files []string, contract, id string) bool {
 	t.Helper()
-	found := false
 	for _, file := range files {
 		parsed, err := parser.ParseFile(token.NewFileSet(), filepath.Join(dir, file), nil, 0)
 		if err != nil {
 			t.Fatal(err)
 		}
-		ast.Inspect(parsed, func(n ast.Node) bool {
-			call, ok := n.(*ast.CallExpr)
-			if !ok || len(call.Args) < 2 {
-				return true
+		for _, decl := range parsed.Decls {
+			fn, ok := decl.(*ast.FuncDecl)
+			if !ok || !runnableTest(parsed, fn) {
+				continue
 			}
-			sel, ok := call.Fun.(*ast.SelectorExpr)
-			if !ok || sel.Sel.Name != contract {
-				return true
+			for _, stmt := range fn.Body.List {
+				expr, ok := stmt.(*ast.ExprStmt)
+				if !ok {
+					continue
+				}
+				call, ok := expr.X.(*ast.CallExpr)
+				if !ok || len(call.Args) < 2 {
+					continue
+				}
+				sel, ok := call.Fun.(*ast.SelectorExpr)
+				if !ok || sel.Sel.Name != contract {
+					continue
+				}
+				if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "secretstoretest" {
+					continue
+				}
+				if lit, ok := call.Args[1].(*ast.BasicLit); ok && lit.Kind == token.STRING && lit.Value == strconv.Quote(id) {
+					return true
+				}
 			}
-			if pkg, ok := sel.X.(*ast.Ident); !ok || pkg.Name != "secretstoretest" {
-				return true
-			}
-			if lit, ok := call.Args[1].(*ast.BasicLit); ok && lit.Kind == token.STRING && lit.Value == strconv.Quote(id) {
-				found = true
-			}
-			return true
-		})
+		}
 	}
-	return found
+	return false
+}
+
+// runnableTest reports whether fn is a function go test runs as a test: no receiver and no type
+// parameters, a name of Test followed by nothing or by a character that is not a lowercase letter,
+// and one parameter of type *testing.T, by the name file imports the testing package under.
+func runnableTest(file *ast.File, fn *ast.FuncDecl) bool {
+	if fn.Recv != nil || fn.Body == nil || fn.Type.TypeParams != nil || fn.Type.Results != nil {
+		return false
+	}
+	suffix, ok := strings.CutPrefix(fn.Name.Name, "Test")
+	if !ok {
+		return false
+	}
+	if first, _ := utf8.DecodeRuneInString(suffix); suffix != "" && unicode.IsLower(first) {
+		return false
+	}
+	params := fn.Type.Params.List
+	if len(params) != 1 || len(params[0].Names) > 1 {
+		return false
+	}
+	star, ok := params[0].Type.(*ast.StarExpr)
+	if !ok {
+		return false
+	}
+	sel, ok := star.X.(*ast.SelectorExpr)
+	if !ok || sel.Sel.Name != "T" {
+		return false
+	}
+	pkg, ok := sel.X.(*ast.Ident)
+	return ok && pkg.Name == importName(file, "testing")
+}
+
+// importName is the name file imports path under, "" when it does not import it.
+func importName(file *ast.File, path string) string {
+	for _, spec := range file.Imports {
+		if got, _ := strconv.Unquote(spec.Path.Value); got == path {
+			if spec.Name != nil {
+				return spec.Name.Name
+			}
+			return path[strings.LastIndex(path, "/")+1:]
+		}
+	}
+	return ""
 }
