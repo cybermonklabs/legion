@@ -107,6 +107,7 @@ import {
   APPROVAL_TOP_LEVEL_ENTRY,
   type ApprovalTopLevel,
   DATE_REMINDER,
+  isApprovalTopLevel,
 } from "../src/approval-message";
 
 const RECORDER = path.join(import.meta.dir, "approval-context-recorder.ts");
@@ -726,9 +727,14 @@ function endsWithText(part: string | undefined, text: string): boolean {
   return part !== undefined && (part === text || part.endsWith(`\n\n${text}`));
 }
 
+/** `text` as the content of a JSON string. */
+function jsonContent(text: string): string {
+  return JSON.stringify(text).slice(1, -1);
+}
+
 /** How many times `text` appears in `payload`, as the content of a JSON string. */
 function occurrences(payload: unknown, text: string): number {
-  return JSON.stringify(payload).split(JSON.stringify(text).slice(1, -1)).length - 1;
+  return JSON.stringify(payload).split(jsonContent(text)).length - 1;
 }
 
 /** How many approval messages `request` holds: those among its messages, and one where the last
@@ -744,9 +750,10 @@ function approvalsHeld(request: Sent, words: Words): number {
 
 /** No request of `requests` holds an approval message the route answers anywhere in its body. */
 function holdsNoText(requests: readonly Sent[], words: Words, label: string): void {
-  const texts = [...words.values()].map((answer) => answer.message);
+  const contents = [...words.values()].map((answer) => jsonContent(answer.message));
   for (const request of requests) {
-    if (texts.some((text) => occurrences(request.payload, text) > 0)) {
+    const body = JSON.stringify(request.payload);
+    if (contents.some((content) => body.includes(content))) {
       fail(`${label}: request #${request.index} holds an approval message`);
     }
   }
@@ -806,8 +813,16 @@ function roleOf(setup: CaptureSetup): Role {
   return setup.model === "sonnet" ? "top-level" : "system";
 }
 
-/** A placement, once the request after it showed its answer. */
-interface Placement {
+/** A placement at the end of the top-level system prompt. */
+interface TopLevelPlacement {
+  readonly kind: "top-level";
+  readonly words: string;
+}
+
+/** A placement as a `system` message of the conversation, once the request after it showed its
+ *  answer. */
+interface SystemPlacement {
+  readonly kind: "system";
   readonly words: string;
   /** The copy as the first request after the entry held it, normalized. */
   readonly copy: string;
@@ -819,6 +834,9 @@ interface Placement {
   /** Where the copy sits in a request that holds its answer. */
   readonly place: number;
 }
+
+/** A placement, as its `Role` reaches the model. */
+type Placement = TopLevelPlacement | SystemPlacement;
 
 /** Every request of `requests` holds `count` approval messages (`approvalsHeld`). */
 function holdsCount(requests: readonly Sent[], count: number, words: Words, label: string): void {
@@ -845,7 +863,7 @@ function kept(
   atPlace = false,
   rewritten = false
 ): void {
-  if (placement.place < 0) {
+  if (placement.kind === "top-level") {
     endsTopLevelWith(request, placement.words, label);
     return;
   }
@@ -883,6 +901,22 @@ function kept(
 function placedLast(
   after: readonly Sent[],
   words: string,
+  role: "system",
+  all: Words,
+  label: string,
+  before?: readonly Placement[]
+): SystemPlacement;
+function placedLast(
+  after: readonly Sent[],
+  words: string,
+  role: Role,
+  all: Words,
+  label: string,
+  before?: readonly Placement[]
+): Placement;
+function placedLast(
+  after: readonly Sent[],
+  words: string,
   role: Role,
   all: Words,
   label: string,
@@ -894,7 +928,7 @@ function placedLast(
       fail(`${label}: no request of the conversation came after the entry`);
     for (const request of requests) endsTopLevelWith(request, words, label);
     holdsCount(requests, 1, all, label);
-    return { words, copy: "", answer: "", bareAnswer: "", place: -1 };
+    return { kind: "top-level", words };
   }
   const conversation = mains(after);
   const first =
@@ -927,7 +961,8 @@ function placedLast(
     seen += 1;
   }
   if (answerAt < 1) fail(`${label}: request #${next.index} holds no answer to #${first.index}`);
-  const placement: Placement = {
+  const placement: SystemPlacement = {
+    kind: "system",
     words,
     copy: normalized(last),
     answer: normalized(next.messages[answerAt]),
@@ -1463,17 +1498,7 @@ async function openPane(
     modelRequests: () => modelRequests,
     sessions: pane.sessions,
     marks: async () =>
-      (await pane.transcriptEntries(APPROVAL_TOP_LEVEL_ENTRY)).filter(
-        (data): data is ApprovalTopLevel =>
-          typeof data === "object" &&
-          data !== null &&
-          "version" in data &&
-          typeof data.version === "number" &&
-          "model" in data &&
-          typeof data.model === "string" &&
-          "answer" in data &&
-          typeof data.answer === "string"
-      ),
+      (await pane.transcriptEntries(APPROVAL_TOP_LEVEL_ENTRY)).filter(isApprovalTopLevel),
     relaunch: (life) =>
       pane.resume([], [], async (rpc) => {
         await life(await lifeOf(rpc));
@@ -1532,12 +1557,12 @@ async function laterRequest(life: Life, mark: number): Promise<void> {
 }
 
 /** One line of what a placement's requests showed. */
-function noteOf(after: readonly Sent[], placement: Placement, role: Role): string {
+function noteOf(after: readonly Sent[], placement: Placement): string {
   const conversation = mains(after);
   const later = conversation.length - 1;
-  return role === "top-level"
+  return placement.kind === "top-level"
     ? `request #${conversation[0]?.index} ends its system prompt with the approval message, and none of its messages holds it; ${later} later requests do too`
-    : `request #${conversation[0]?.index} holds the approval message last as ${role}; ${later} later requests hold it at ${placement.place}, right before its answer`;
+    : `request #${conversation[0]?.index} holds the approval message last as ${placement.kind}; ${later} later requests hold it at ${placement.place}, right before its answer`;
 }
 
 /** One case of the check. */
@@ -1585,7 +1610,7 @@ function entryCase(file: Entry, inTurn: boolean): CaptureCase {
         "after the entry"
       );
       setup.note(
-        `${mark} requests before the entry hold none; ${noteOf(requests.slice(mark), placement, roleOf(setup))}`
+        `${mark} requests before the entry hold none; ${noteOf(requests.slice(mark), placement)}`
       );
     },
   };
@@ -1647,7 +1672,7 @@ function cardCase(
         }
         setup.note(`request #${first?.index} holds the people's-answers message at ${answers}`);
       }
-      setup.note(noteOf(requests.slice(mark), placement, roleOf(setup)));
+      setup.note(noteOf(requests.slice(mark), placement));
     },
   };
 }
@@ -1700,9 +1725,7 @@ function compactionCase(summarizes: boolean): CaptureCase {
           setup.words,
           "after the compaction"
         );
-        setup.note(
-          `after the compaction, ${noteOf(requests.slice(compacted), again, roleOf(setup))}`
-        );
+        setup.note(`after the compaction, ${noteOf(requests.slice(compacted), again)}`);
       } else {
         const after = mains(requests.slice(compacted));
         if (after.length === 0) fail("no request of the conversation came after the compaction");
@@ -1865,7 +1888,7 @@ const freshSession: CaptureCase = {
       setup.words,
       "the fresh session"
     );
-    setup.note(noteOf(pane.sent(), placement, roleOf(setup)));
+    setup.note(noteOf(pane.sent(), placement));
   },
 };
 
@@ -1949,7 +1972,8 @@ const relaunches: CaptureCase = {
         continue;
       }
       for (const request of after) kept(request, first, label, true);
-      setup.note(`${label}, ${after.length} requests hold the one copy at ${first.place}`);
+      const at = first.kind === "system" ? `message ${first.place}` : "the end of the top-level system prompt";
+      setup.note(`${label}, ${after.length} requests hold the one copy at ${at}`);
     }
     const second = placedLast(
       requests.slice(marks.later, marks.relaunchAfterLater),
@@ -1959,7 +1983,7 @@ const relaunches: CaptureCase = {
       "the later approval",
       [first]
     );
-    setup.note(`the later approval: ${noteOf(requests.slice(marks.later), second, roleOf(setup))}`);
+    setup.note(`the later approval: ${noteOf(requests.slice(marks.later), second)}`);
     const last = segment(marks.relaunchAfterLater);
     if (last.length === 0) fail("after the last relaunch: no request of the conversation came");
     holdsCount(last, topLevel ? 1 : 2, setup.words, "after the relaunch after the later approval");
@@ -2153,6 +2177,24 @@ const GEMINI: ChainModel = {
   midConversationSystem: false,
 };
 
+/** A model of `CHAIN` that the top-level capture runs too (`TOP_LEVEL_MODELS`). */
+const KIMI: ChainModel = {
+  provider: "model-gateway",
+  id: "kimi-k3.1-pro",
+  api: "openai-completions",
+  thinking: "max",
+  midConversationSystem: false,
+};
+
+/** The Responses model of `CHAIN`, which the top-level capture runs too (`RESPONSES_MODEL`). */
+const GPT: ChainModel = {
+  provider: "openai",
+  id: "gpt-6.2-sol",
+  api: "openai-responses",
+  thinking: "xhigh",
+  midConversationSystem: false,
+};
+
 /** The fallback chain of `CHAIN_HEAD` in the pod's architect role overlay, in its order: the
  *  models check e4b07a29 names. */
 const CHAIN: readonly ChainModel[] = [
@@ -2171,13 +2213,7 @@ const CHAIN: readonly ChainModel[] = [
     thinking: "xhigh",
     midConversationSystem: true,
   },
-  {
-    provider: "openai",
-    id: "gpt-6.2-sol",
-    api: "openai-responses",
-    thinking: "xhigh",
-    midConversationSystem: false,
-  },
+  GPT,
   {
     provider: "anthropic",
     id: "claude-opus-5",
@@ -2185,13 +2221,7 @@ const CHAIN: readonly ChainModel[] = [
     thinking: "xhigh",
     midConversationSystem: true,
   },
-  {
-    provider: "model-gateway",
-    id: "kimi-k3.1-pro",
-    api: "openai-completions",
-    thinking: "max",
-    midConversationSystem: false,
-  },
+  KIMI,
 ];
 
 /** A model's selector, as a fallback chain names it: `<provider>/<id>:<thinking>`. */
@@ -2285,9 +2315,7 @@ function chainCase(model: ChainModel): CaptureCase {
           setup.words,
           "after the entry"
         );
-        setup.note(
-          `${mark} requests before the entry hold none; ${noteOf(after, placement, "system")}`
-        );
+        setup.note(`${mark} requests before the entry hold none; ${noteOf(after, placement)}`);
         return;
       }
       const conversation = mains(after);
@@ -2472,7 +2500,7 @@ const fallbackCase: CaptureCase = {
       (one) => one.version === answer.version && one.model === name
     );
     setup.note(
-      `${noteOf(requests.slice(marks.entry, marks.limited), placement, "system")}; then the stand-in answered request #${limited.index} to ${CHAIN_HEAD.id} with a rate limit, the only one, which held the copy at ${placement.place}, and Oh My Pi fell back from ${String(applied?.from)} to ${String(applied?.to)}`
+      `${noteOf(requests.slice(marks.entry, marks.limited), placement)}; then the stand-in answered request #${limited.index} to ${CHAIN_HEAD.id} with a rate limit, the only one, which held the copy at ${placement.place}, and Oh My Pi fell back from ${String(applied?.from)} to ${String(applied?.to)}`
     );
     setup.note(
       `requests #${fallen.map((request) => request.index).join(", #")} to ${GEMINI.id}, ${distinct} requests in ${fallen.length} sends, end ${topLevelForm(firstFallen)} with the approval message and hold it nowhere else; the session holds ${geminiMarks.length} mark of version ${answer.version} on ${name}`
@@ -2554,7 +2582,7 @@ const routeSettingsCase: CaptureCase = {
     const role = parsed(route.roleOverlay);
     const set: string[] = [];
     for (const [file, value] of [
-      [route.models, parsed(route.models)],
+      [route.models, route.gateway.file as Readonly<Record<string, unknown>>],
       [route.overlay, parsed(route.overlay)],
       [route.roleOverlay, role],
     ] as const) {
@@ -2634,17 +2662,12 @@ interface TopLevelModel {
  *  copy whose entry for it flips `compat.supportsDeveloperRole`, the other form of its system
  *  prompt (`openai-responses.ts`: `developer` items for a reasoning model with the flag on,
  *  `instructions` otherwise). */
-const RESPONSES_MODEL: TopLevelModel = {
-  provider: "openai",
-  id: "gpt-6.2-sol",
-  api: "openai-responses",
-  thinking: "xhigh",
-};
+const RESPONSES_MODEL: TopLevelModel = GPT;
 
 const TOP_LEVEL_MODELS: readonly TopLevelModel[] = [
   { provider: "anthropic", id: "claude-sonnet-5", api: "anthropic-messages", thinking: "xhigh" },
-  { provider: "model-gateway", id: "gemini-4-neon", api: "openai-completions", thinking: "high" },
-  { provider: "model-gateway", id: "kimi-k3.1-pro", api: "openai-completions", thinking: "max" },
+  GEMINI,
+  KIMI,
   RESPONSES_MODEL,
 ];
 
@@ -2883,7 +2906,7 @@ async function topLevelSession(
       },
       args: [
         "--model",
-        `${model.provider}/${model.id}:${model.thinking}`,
+        selectorOf(model),
         "--append-system-prompt",
         contractFile,
       ],
@@ -2982,7 +3005,7 @@ async function topLevelSession(
       `The before_provider_request body of the second prompt of a session of the pinned Oh My Pi ` +
       `that loads no plugin, only the recorder (approval-context-recorder.ts), on ${session.modelsFile} ` +
       "and the pod's operator overlay, with `--model " +
-      `${model.provider}/${model.id}:${model.thinking}\` and the capture driver's CONTRACT ` +
+      `${selectorOf(model)}\` and the capture driver's CONTRACT ` +
       "appended to its system prompt: a first prompt, its answer, then the second prompt. " +
       "`payload` is that body as Oh My Pi built it, every local path written over.",
     placeholders: TOP_LEVEL_PLACEHOLDERS,
@@ -3068,7 +3091,7 @@ async function topLevelCapture(args: readonly string[]): Promise<number> {
     label: string
   ): Promise<SystemPromptAt | undefined> => {
     const { model } = session;
-    const name = `top-level capture: ${model.provider}/${model.id}:${model.thinking}${label}`;
+    const name = `top-level capture: ${selectorOf(model)}${label}`;
     console.log(`== ${name}`);
     const began = Date.now();
     const cleanup: Cleanup = [];

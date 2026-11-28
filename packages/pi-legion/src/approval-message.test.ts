@@ -459,6 +459,20 @@ function topLevelFixture(name: string): TopLevelFixture {
   };
 }
 
+/** The chat completion `payload` as the plugin sends it: `prompt`, its top-level system prompt,
+ *  ending with `text` after a blank line, then `rest`. */
+function chatEndingWith(
+  payload: Record<string, unknown>,
+  prompt: Record<string, unknown>,
+  text: string,
+  rest: readonly unknown[]
+): Record<string, unknown> {
+  return {
+    ...payload,
+    messages: [{ ...prompt, content: `${String(prompt.content)}\n\n${text}` }, ...rest],
+  };
+}
+
 /** How many times `text` appears in `body`, as a JSON string's content. */
 function occurrences(body: unknown, text: string): number {
   return JSON.stringify(body).split(JSON.stringify(text).slice(1, -1)).length - 1;
@@ -975,7 +989,7 @@ test("S16: on a model whose flag is off the message is neither placed nor held a
   const sent = p.send(sonnet.payload, sonnet.model);
   expect(occurrences(sent, GOLDEN_TEXT)).toBe(1);
   expect(wireMessages(sent)).toEqual(wireMessages(sonnet.payload));
-  // The log line that named the model, which this case once read, is gone.
+  // pi-legion logs no line about a model that takes no system message inside the conversation.
   expect(p.lines.filter((line) => line.includes("takes no system message"))).toEqual([]);
 });
 
@@ -1210,13 +1224,7 @@ test("S24: a chat completion to gemini-4-neon or kimi-k3.1-pro ends its last lea
 
     const sent = p.send(fixture.payload, fixture.model);
 
-    expect(sent).toEqual({
-      ...fixture.payload,
-      messages: [
-        { ...system, content: `${String(system.content)}\n\n${GOLDEN_TEXT}` },
-        ...messages.slice(1),
-      ],
-    });
+    expect(sent).toEqual(chatEndingWith(fixture.payload, system, GOLDEN_TEXT, messages.slice(1)));
     expect(occurrences(sent, GOLDEN_TEXT)).toBe(1);
     const request = await p.request("task-prompt", 4, { model: fixture.model });
     expect(request.changed).toBe(false);
@@ -1278,13 +1286,7 @@ test("S27: after a fallback to gemini-4-neon the copy a claude-opus-5-5 answer h
   const gemini = topLevelFixture("gemini-4-neon");
   const messages = list(gemini.payload.messages, "the messages");
   const system = record(messages[0], "the system prompt");
-  const topped = {
-    ...gemini.payload,
-    messages: [
-      { ...system, content: `${String(system.content)}\n\n${GOLDEN_TEXT}` },
-      ...messages.slice(1),
-    ],
-  };
+  const topped = chatEndingWith(gemini.payload, system, GOLDEN_TEXT, messages.slice(1));
   // A request built before the switch: the copy, as Oh My Pi sends a plugin's message to a chat
   // completion, a user message before the answer it precedes.
   const withCopy = (text: string): Record<string, unknown> => ({
@@ -1418,23 +1420,13 @@ test("S30: after a changes request no top-level text stands, and a later approva
   expect(occurrences(sent, GOLDEN_TEXT)).toBe(0);
   const messages = list(gemini.payload.messages, "the messages");
   const system = record(messages[0], "the system prompt");
-  expect(sent).toEqual({
-    ...gemini.payload,
-    messages: [
-      { ...system, content: `${String(system.content)}\n\n${V26_TEXT}` },
-      ...messages.slice(1),
-    ],
-  });
+  expect(sent).toEqual(chatEndingWith(gemini.payload, system, V26_TEXT, messages.slice(1)));
 });
 
 test("S31: a task subagent's body is unchanged, and a side turn's and a compaction's own request to gemini-4-neon hold the top-level text", async () => {
   const gemini = topLevelFixture("gemini-4-neon");
   const messages = list(gemini.payload.messages, "the messages");
   const system = record(messages[0], "the system prompt");
-  const topped = (rest: readonly unknown[], prompt = system) => ({
-    ...gemini.payload,
-    messages: [{ ...prompt, content: `${String(prompt.content)}\n\n${GOLDEN_TEXT}` }, ...rest],
-  });
 
   // Even where a claim answered for the subagent's session, its `agent.kind` is `sub`.
   const sub = pane({ session: sessionOf("side-turn"), route: { answer: GOLDEN } });
@@ -1448,7 +1440,9 @@ test("S31: a task subagent's body is unchanged, and a side turn's and a compacti
   const side = await p.request("side-turn", 13, { model: gemini.model });
   expect(side.changed).toBe(false);
   expect(p.reads()).toBe(reads);
-  expect(p.send(gemini.payload, gemini.model)).toEqual(topped(messages.slice(1)));
+  expect(p.send(gemini.payload, gemini.model)).toEqual(
+    chatEndingWith(gemini.payload, system, GOLDEN_TEXT, messages.slice(1))
+  );
 
   // A compaction's summary request, which the host's `before_provider_request` does reach.
   const summary = {
@@ -1457,7 +1451,7 @@ test("S31: a task subagent's body is unchanged, and a side turn's and a compacti
   };
   const conversation = { role: "user", content: [{ type: "text", text: "<conversation/>" }] };
   expect(p.send({ ...gemini.payload, messages: [summary, conversation] }, gemini.model)).toEqual(
-    topped([conversation], summary)
+    chatEndingWith(gemini.payload, summary, GOLDEN_TEXT, [conversation])
   );
 });
 

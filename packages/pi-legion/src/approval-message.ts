@@ -13,6 +13,7 @@ import {
 } from "@legion/pi-shared/context-request";
 import { customEntries } from "@legion/pi-shared/custom-entry";
 import type { LegionDaemonClient } from "@legion/pi-shared/daemon-client";
+import { modelSelector } from "@legion/pi-shared/fallback-chain";
 import type { ClaimCapability } from "@legion/pi-shared/legion-phase-ops";
 import type {
   AnthropicRequestBody,
@@ -266,15 +267,18 @@ function isBody(value: unknown): value is Body {
 type HostRequestModel = NonNullable<SessionContext["model"]>;
 
 /**
- * Whether `model` takes no `system` message inside the conversation: it is known, and the
- * catalogue does not set its `compat.supportsMidConversationSystem`. A context that names no model
- * is none of these, as the placement always read it.
+ * `model` where it takes no `system` message inside the conversation: it is known, and the
+ * catalogue does not set its `compat.supportsMidConversationSystem`; undefined otherwise. A context
+ * that names no model is none of these, as the placement always read it. It answers the model
+ * itself rather than narrowing `model`, since a type predicate would narrow its `false` side to a
+ * context that names no model, where a model that takes a system message is one too.
  */
-function refusesMidConversationSystem(model: SessionContext["model"]): model is HostRequestModel {
-  return model !== undefined && model.compat?.supportsMidConversationSystem !== true;
+function refusingMidConversationSystem(model: SessionContext["model"]): HostRequestModel | undefined {
+  return model !== undefined && model.compat?.supportsMidConversationSystem !== true ? model : undefined;
 }
 
-function isApprovalTopLevel(data: unknown): data is ApprovalTopLevel {
+/** Whether `data` is a mark (`ApprovalTopLevel`) as this plugin writes it. */
+export function isApprovalTopLevel(data: unknown): data is ApprovalTopLevel {
   return (
     typeof data === "object" &&
     data !== null &&
@@ -287,11 +291,33 @@ function isApprovalTopLevel(data: unknown): data is ApprovalTopLevel {
   );
 }
 
+/** Whether `branch` holds a mark (`APPROVAL_TOP_LEVEL_ENTRY`) of `version` on `model`
+ *  (`provider/id`). */
+function markedOn(branch: readonly unknown[], version: number, model: string): boolean {
+  return customEntries(branch, APPROVAL_TOP_LEVEL_ENTRY)
+    .filter(isApprovalTopLevel)
+    .some((mark) => mark.version === version && mark.model === model);
+}
+
 /** `prompt` with `text` at its end after a blank line, or `prompt` itself where it ends so. */
 function endingWith(prompt: string, text: string): string {
   return prompt === text || prompt.endsWith(`${SEPARATOR}${text}`)
     ? prompt
     : `${prompt}${SEPARATOR}${text}`;
+}
+
+/** `items` with the string content of the item at `at` ending with `text` (`endingWith`): `items`
+ *  itself where it ends so already, undefined where that content is not a string. */
+function withPromptEnding<T extends { readonly content?: unknown }>(
+  items: readonly T[],
+  at: number,
+  text: string
+): readonly T[] | undefined {
+  const prompt = items[at];
+  if (typeof prompt.content !== "string") return undefined;
+  const content = endingWith(prompt.content, text);
+  if (content === prompt.content) return items;
+  return items.map((item, index) => (index === at ? { ...item, content } : item));
 }
 
 /** Whether `message` is a conversation message whose whole text is one of `texts`. */
@@ -359,14 +385,9 @@ const chatTopLevel: TopLevelRewrite = (body, texts, add) => {
   if (add !== undefined && lead === 0) {
     messages = [{ role: "system", content: add }, ...messages];
   } else if (add !== undefined) {
-    const prompt = messages[lead - 1];
-    if (typeof prompt.content !== "string") return undefined;
-    const content = endingWith(prompt.content, add);
-    if (content !== prompt.content) {
-      messages = messages.map((message, at) =>
-        at === lead - 1 ? { ...message, content } : message
-      );
-    }
+    const ended = withPromptEnding(messages, lead - 1, add);
+    if (ended === undefined) return undefined;
+    messages = ended;
   }
   return messages === body.messages ? body : { ...body, messages };
 };
@@ -393,12 +414,9 @@ const responsesTopLevel: TopLevelRewrite = (body, texts, add) => {
   } else if (add !== undefined && lead === 0) {
     instructions = add;
   } else if (add !== undefined) {
-    const prompt = input[lead - 1];
-    if (typeof prompt.content !== "string") return undefined;
-    const content = endingWith(prompt.content, add);
-    if (content !== prompt.content) {
-      input = input.map((item, at) => (at === lead - 1 ? { ...item, content } : item));
-    }
+    const ended = withPromptEnding(input, lead - 1, add);
+    if (ended === undefined) return undefined;
+    input = ended;
   }
   if (input === body.input && instructions === body.instructions) return body;
   return { ...body, input, ...(instructions === body.instructions ? {} : { instructions }) };
@@ -614,23 +632,21 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
     return true;
   };
 
-  /** Marks `message`, the saved answer of a model that takes no system message inside the
+  /** Marks `message`, the saved answer of `model`, which takes no system message inside the
    *  conversation, as the first answer to a request that carried the standing version's text
    *  there: one mark for each version and model. */
-  const markTopLevel = (message: unknown, context: SessionContext): void => {
+  const markTopLevel = (
+    message: unknown,
+    context: SessionContext,
+    model: HostRequestModel
+  ): void => {
     const carried = carrying;
-    const model = context.model;
-    if (carried === undefined || model === undefined || !survives(message)) return;
+    if (carried === undefined || !survives(message)) return;
     if (carried.session !== context.sessionManager.getSessionId()) return;
-    if (`${model.provider}/${model.id}` !== carried.model) return;
+    if (modelSelector(model) !== carried.model) return;
     carrying = undefined;
-    const marks = customEntries(
-      context.sessionManager.getBranch?.() ?? [],
-      APPROVAL_TOP_LEVEL_ENTRY
-    ).filter(isApprovalTopLevel);
-    if (marks.some((mark) => mark.version === carried.version && mark.model === carried.model)) {
-      return;
-    }
+    const branch = context.sessionManager.getBranch?.() ?? [];
+    if (markedOn(branch, carried.version, carried.model)) return;
     try {
       deps.appendEntry(APPROVAL_TOP_LEVEL_ENTRY, {
         version: carried.version,
@@ -676,11 +692,10 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
     const rewritten = rewrite(payload, texts, now?.text);
     if (rewritten === undefined) return undefined;
     if (now !== null) {
-      const name = `${model.provider}/${model.id}`;
-      const marked = customEntries(branch, APPROVAL_TOP_LEVEL_ENTRY)
-        .filter(isApprovalTopLevel)
-        .some((mark) => mark.version === now.version && mark.model === name);
-      if (!marked) carrying = { session, version: now.version, model: name };
+      const name = modelSelector(model);
+      if (!markedOn(branch, now.version, name)) {
+        carrying = { session, version: now.version, model: name };
+      }
     }
     return rewritten === payload ? undefined : rewritten;
   };
@@ -703,7 +718,7 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
       // its top-level system prompt, from `beforeProviderRequest`: nothing is placed or rebuilt
       // here, and a placement still waiting for its answer is given up, for no answer of this
       // model records it.
-      if (refusesMidConversationSystem(context.model)) {
+      if (refusingMidConversationSystem(context.model) !== undefined) {
         if (pending?.session === session) pending = undefined;
         return false;
       }
@@ -740,8 +755,9 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
         if (role !== "toolResult" && !isApprovalMessage(message)) stale = true;
         return;
       }
-      if (refusesMidConversationSystem(context.model)) {
-        markTopLevel(message, context);
+      const refusing = refusingMidConversationSystem(context.model);
+      if (refusing !== undefined) {
+        markTopLevel(message, context, refusing);
         return;
       }
       const waiting = pending;
@@ -777,7 +793,8 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
     beforeProviderRequest: (payload, context) => {
       if (rootClaim(context) === undefined) return undefined;
       const model = context.model;
-      if (refusesMidConversationSystem(model)) return topLevel(payload, context, model);
+      const refusing = refusingMidConversationSystem(model);
+      if (refusing !== undefined) return topLevel(payload, context, refusing);
       const waiting = pending;
       if (waiting === undefined) return undefined;
       if (waiting.session !== context.sessionManager.getSessionId()) return undefined;
@@ -810,9 +827,9 @@ export function createApprovalMessage(deps: ApprovalMessageDeps): ApprovalMessag
         ...messages.slice(reminders).map((reminder) => withRole(reminder, "user")),
         ...messages.slice(anchor + 1, placement),
       ];
-      const system =
-        context.model?.compat?.supportsMidConversationSystem === true &&
-        roleOf(moved.at(-1)) === "user";
+      // A model that takes no system message inside the conversation went to `topLevel` above, so
+      // a model here takes one.
+      const system = model !== undefined && roleOf(moved.at(-1)) === "user";
       moved.push(withRole(placed, system ? "system" : "user"));
       return { ...payload, messages: moved };
     },
