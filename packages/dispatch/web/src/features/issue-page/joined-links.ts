@@ -24,10 +24,18 @@ function marksOnly(node: Node | null, child: Node): node is HTMLElement {
   );
 }
 
+/** A link this joins: an anchor with an address that nothing else draws into or owns. A
+ *  reference's or a picture's anchor is a portal's host, which the painter empties for the portal
+ *  to draw into (`collectReferenceAnchors`, `collectPictureAnchors`), and a row's own reference
+ *  belongs to the row's pass, which renames its words on a later pass (`linkRowReferences`).
+ *  Joining one would take an anchor another pass draws into off the page, and its words with it. */
+const JOINABLE =
+  "a[href]:not([data-dispatch-ref]):not([data-dispatch-picture]):not([data-row-reference])";
+
 /** The link `node` is, or that it holds as the one child of its marks, at any depth of them; null
- *  where it is neither. */
+ *  where it is neither or it is no link this joins (`JOINABLE`). */
 function linkOf(node: Node | null): HTMLAnchorElement | null {
-  if (node instanceof HTMLAnchorElement) return node.hasAttribute("href") ? node : null;
+  if (node instanceof HTMLAnchorElement) return node.matches(JOINABLE) ? node : null;
   const inner = node?.firstChild ?? null;
   return inner !== null && marksOnly(node, inner) ? linkOf(inner) : null;
 }
@@ -42,10 +50,12 @@ function linkOf(node: Node | null): HTMLAnchorElement | null {
  * each, are one link: the first anchor takes the words of every other, each marked run keeping
  * its mark inside it, and the others go. Two links to one address with any words between them
  * stay two. Each paint draws the anchors anew, so the row's pass calls this after each paint,
- * before it links what the words cite (`RowText.tsx`).
+ * before it links what the words cite (`RowText.tsx`). An anchor something else draws into or
+ * owns, a reference's, a picture's or the row's own, is left as it is (`JOINABLE`); a link the
+ * painter draws whole, such as an `https://` one, is joined.
  */
 export function joinSplitLinks(element: Element): void {
-  for (const anchor of [...element.querySelectorAll<HTMLAnchorElement>("a[href]")]) {
+  for (const anchor of [...element.querySelectorAll<HTMLAnchorElement>(JOINABLE)]) {
     // An anchor an earlier one took the words of has left the element.
     if (!element.contains(anchor)) continue;
     let piece: ChildNode = anchor;
