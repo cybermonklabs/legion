@@ -344,9 +344,10 @@ func workTable() []workRow {
 
 // TestTheWorkOfAJudgmentGrowsInProportionToItsText judges each row of the work table (workTable) at
 // the n of this build (workRows) and at workScale times it, here, where each judgment must find a
-// finding of its row's rule, and in the counted build (countedWork), whose judgment must answer the
-// same, and holds the two counts to workBound (workVerdict).
+// finding of its row's rule, and in the counted build (countedBinary, countedWork), whose judgment
+// must answer the same, and holds the two counts to workBound (workVerdict).
 func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
+	binary := countedBinary(t)
 	for _, row := range workRows(raceEnabled) {
 		t.Run(row.name, func(t *testing.T) {
 			sizes := [2]int{row.n, workScale * row.n}
@@ -358,7 +359,7 @@ func TestTheWorkOfAJudgmentGrowsInProportionToItsText(t *testing.T) {
 				} else if row.rule == "" && len(found) > 0 {
 					t.Fatalf("the judgment of %d units finds %.300v, want none", n, found)
 				}
-				counts[index] = countedWork(t, row.name, n, findingsAnswer(found))
+				counts[index] = countedWork(t, binary, row.name, n, findingsAnswer(found))
 			}
 			if line, ok := workVerdict(sizes, counts); ok {
 				t.Log(line)
@@ -422,8 +423,9 @@ func workVerdict(sizes [2]int, counts [2]countedJudgment) (string, bool) {
 }
 
 // workVerdict passes work in proportion to the text and fails work for each pair of its units, a
-// count of none, a block whose counter can wrap at the larger text, and a larger count below the
-// smaller: no counted run reads any of the last three on a correct judgment.
+// count of none at the smaller text or at both (whose growth, 0/0, is no number, which no bound
+// fails), a block whose counter can wrap at the larger text, and a larger count below the smaller:
+// no counted run reads any of the last three on a correct judgment.
 func TestTheWorkVerdictFailsAWalkForEachPairACountOfNoneAndACounterThatWraps(t *testing.T) {
 	sizes := [2]int{1_000, workScale * 1_000}
 	linear := func(n int) countedJudgment {
@@ -443,6 +445,7 @@ func TestTheWorkVerdictFailsAWalkForEachPairACountOfNoneAndACounterThatWraps(t *
 		{"work in proportion to the text", [2]countedJudgment{linear(sizes[0]), linear(sizes[1])}, true},
 		{"work for each pair of units", [2]countedJudgment{pairs(sizes[0]), pairs(sizes[1])}, false},
 		{"a count of none", [2]countedJudgment{{}, linear(sizes[1])}, false},
+		{"two counts of none", [2]countedJudgment{{}, {}}, false},
 		{"a block whose counter can wrap", [2]countedJudgment{{statements: 1 << 28, busiest: countedWrap / (workScale * workScale)},
 			{statements: 1 << 31}}, false},
 		{"a larger count below the smaller", [2]countedJudgment{linear(sizes[1]), linear(sizes[0])}, false},
