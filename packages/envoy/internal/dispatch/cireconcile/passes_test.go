@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -188,8 +189,9 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)
 	h.reconciler.Instance = func() string { return instance }
-	// The pass stays open until the test ends its fake deadline, or GitHub's real 20 s request
-	// timeout ends the held second-page read. The row reads below occur inside that window.
+	// The pass stays open until the test ends its fake deadline: the stand-in holds the
+	// second-page read for a minute, and the client's calls end only at the test's give-up
+	// (fakeGitHub.client). The row reads below occur inside that window.
 	h.reconciler.PassTimeout = 10 * time.Second
 	h.boundByTheTest()
 	h.github.stallQuery(gitHubRepository, 1, time.Minute)
@@ -226,9 +228,11 @@ func TestAPassHeldOpenReadsAsRunning(t *testing.T) {
 // just expired, and a write made on it would land nowhere, leaving a row that reads as a pass
 // that vanished -- the one state that must mean a process died.
 func TestAPassCutShortByItsDeadlineRecordsThatItsBoundEndedIt(t *testing.T) {
-	// Not parallel: this is the real-timer deadline control. Its 2 s bound uses
-	// context.WithTimeout, and the pass must read the first page inside it.
+	// Not parallel: this is the real-timer deadline control. Its 2 s bound is the product's own
+	// on the wall clock (clock.Real, which a Reconciler with no Clock runs on), so it puts the
+	// real clock back in place of the harness's, and the pass must read the first page inside it.
 	h := newHarness(t, reviewerAppID)
+	h.reconciler.Clock = clock.Real()
 	h.seedProjectDefault(rowRepository)
 	h.listHeads(heads(45)...)
 	instance := registerProcess(t, h.pool, 0)

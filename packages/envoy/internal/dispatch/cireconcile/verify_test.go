@@ -256,7 +256,7 @@ func TestWithVerifyOffAHeadSettlesFromItsWebhooksAndNoRequestIsWritten(t *testin
 
 // A ready head is published by the first verify pass that follows its request: the passes are
 // driven here, one per head, so the verdict is the order of events and not the time the runner
-// took. The time from the pass's start to the publication is logged for each head.
+// took.
 func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) {
 	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
@@ -272,12 +272,10 @@ func TestAReadyHeadIsPublishedByTheFirstVerifyPassAfterItsRequest(t *testing.T) 
 		if i == 0 {
 			h.noSettlementAt(settlements, "before any verify pass", gitHubOwner, gitHubName, fmt.Sprint(pull.number))
 		}
-		began := time.Now()
 		h.verifyPass()
 		if settled := h.settlement(settlements, fmt.Sprintf("after the verify pass for pull request %d", pull.number)); settled.Passed.Count != 1 {
 			t.Fatalf("settlement of pull request %d = %+v, want ci-ok passed", pull.number, settled)
 		}
-		t.Logf("pull request %d: published %s after the verify pass began", pull.number, time.Since(began).Round(time.Millisecond))
 	}
 }
 
@@ -366,18 +364,19 @@ const verifyGaveUp = "ci verify gave up an episode: no later read of the head me
 // A GitHub that fails every read of a head for longer than ten minutes, the point at which the
 // verify loop once gave the episode up, does not end it: each failed answer is read again after a
 // wait that doubles from verifyRetry up to verifyRetryMax, so the head is read 0, 1, 3, 7, 15 and
-// 23 minutes after the first read (the pass's clock moves 30 seconds at each pass here, and the
-// listener's request stays), with no ERROR and no answer; and the first read after GitHub answers
-// again, at 31 minutes, writes the answer, and the head is published.
+// 23 minutes after the first read (the pass's clock, the harness's, moves 30 seconds at each pass
+// here, and the listener's request stays), with no ERROR and no answer; and the first read after
+// GitHub answers again, at 31 minutes, writes the answer, and the head is published.
 func TestAVerifyReadFailingPastTenMinutesBacksOffDoublingAndAnswersOnceGitHubDoes(t *testing.T) {
 	t.Parallel()
 	h := newVerifyHarness(t, reviewerAppID)
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	start := time.Now()
-	clock := start
-	h.reconciler.now = func() time.Time { return clock }
+	// The verify loop reads its moments on the harness's clock (Reconciler.Clock), which this test
+	// moves 30 seconds after each pass, and elapsed is how far it has moved.
+	start := h.clock.Now()
+	elapsed := func() time.Duration { return h.clock.Now().Sub(start) }
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	h.post("check_run", webhookBody("check_run", run), "d1")
@@ -387,11 +386,11 @@ func TestAVerifyReadFailingPastTenMinutesBacksOffDoublingAndAnswersOnceGitHubDoe
 	// reads is the clock's offset from start at each pass that read the head's check runs.
 	var reads []time.Duration
 	passesUntil := func(offset time.Duration) {
-		for ; clock.Sub(start) <= offset; clock = clock.Add(30 * time.Second) {
+		for ; elapsed() <= offset; h.clock.Advance(30 * time.Second) {
 			before := h.github.count()
 			h.verifyPass()
 			if len(h.github.sincePath(before, checkRunsPath)) != 0 {
-				reads = append(reads, clock.Sub(start))
+				reads = append(reads, elapsed())
 			}
 		}
 	}
@@ -437,9 +436,10 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	start := time.Now()
-	clock := start
-	h.reconciler.now = func() time.Time { return clock }
+	// The verify loop reads its moments on the harness's clock (Reconciler.Clock), which this test
+	// moves 30 seconds before each pass after the first, and elapsed is how far it has moved.
+	start := h.clock.Now()
+	elapsed := func() time.Duration { return h.clock.Now().Sub(start) }
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	h.post("check_run", webhookBody("check_run", run), "d1")
@@ -472,8 +472,8 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 	}
 
 	before := h.github.count()
-	for clock = clock.Add(30 * time.Second); clock.Sub(start) <= 31*time.Minute; clock = clock.Add(30 * time.Second) {
-		if clock.Sub(start) == 16*time.Minute {
+	for h.clock.Advance(30 * time.Second); elapsed() <= 31*time.Minute; h.clock.Advance(30 * time.Second) {
+		if elapsed() == 16*time.Minute {
 			h.github.answerStatus(checkRunsPath, 0)
 		}
 		rewritten, err := kv.Put(requestKey, asked.Value())
@@ -482,7 +482,7 @@ func TestAPermanentVerifyFailureGivesItsEpisodeUpAtOnceUntilANewEpisode(t *testi
 		}
 		h.verifyPass()
 		if slices.ContainsFunc(h.requests(), func(listed contracts.CIVerifyRequest) bool { return listed.Revision == rewritten }) {
-			t.Fatalf("the request of the given-up episode written again at revision %d is still held at %v", rewritten, clock.Sub(start))
+			t.Fatalf("the request of the given-up episode written again at revision %d is still held at %v", rewritten, elapsed())
 		}
 	}
 	if read := h.github.sincePath(before, checkRunsPath); len(read) != 0 {
@@ -572,8 +572,8 @@ func TestAVerifyReadHoldsItsAnswerWhileGitHubStillRunsASuiteOfTheHead(t *testing
 	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	settlements := h.subscribe()
-	clock := time.Now()
-	h.reconciler.now = func() time.Time { return clock }
+	// The verify loop reads its moments on the harness's clock (Reconciler.Clock), which this test
+	// moves past the verify retry.
 	run := checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-22T00:05:00Z")
 	h.github.setCheckRuns(gitHubRepository, headSHA, run)
 	running := checkSuite(901, "in_progress", "", otherApp, "2026-11-22T00:05:01Z")
@@ -593,7 +593,7 @@ func TestAVerifyReadHoldsItsAnswerWhileGitHubStillRunsASuiteOfTheHead(t *testing
 	}
 
 	h.github.setCheckSuites(gitHubRepository, headSHA, checkSuite(901, "completed", "success", otherApp, "2026-11-22T00:06:00Z"))
-	clock = clock.Add(verifyRetry + time.Second)
+	h.clock.Advance(verifyRetry + time.Second)
 	h.verifyPass()
 	renewed := h.waitForRequest(request.Revision)
 	h.verifyPass()

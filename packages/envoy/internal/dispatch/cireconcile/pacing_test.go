@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -536,16 +537,18 @@ func TestARateLimitLeavesTheCursorAtTheHeadItCutShort(t *testing.T) {
 }
 
 // boundRecordLimits ends the pass's own bound when a REST limit is recorded, using the caller
-// context captured by Wait. Record checks that the client detached and bounded the ledger write.
-// With refuse set it returns that error without touching the ledger; otherwise it records the
-// limit through the real shared ledger.
+// context captured by Wait. With refuse set, Record checks that the client detached the ledger
+// write from the pass and bounded it at githubapp.LimitRecordTimeout on recordClock, the clock the
+// stand-in's client bounds that write on (limitClock), and returns refuse without touching the
+// ledger; otherwise it records the limit through the real shared ledger.
 type boundRecordLimits struct {
 	githubapp.Limits
-	t      *testing.T
-	falls  func()
-	refuse error
-	mu     sync.Mutex
-	pass   context.Context
+	t           *testing.T
+	recordClock *clocktest.Fake
+	falls       func()
+	refuse      error
+	mu          sync.Mutex
+	pass        context.Context
 }
 
 func (l *boundRecordLimits) Wait(ctx context.Context, scope string) (time.Duration, time.Time, error) {
@@ -566,11 +569,11 @@ func (l *boundRecordLimits) Record(ctx context.Context, scope string, wait time.
 		testwait.Receive(l.t, "the pass deadline inside the rate-limit write", pass.Done())
 	}
 	if l.refuse != nil {
-		deadline, bounded := ctx.Deadline()
-		remaining := time.Until(deadline)
-		if !bounded || remaining <= 0 || remaining > 5*time.Second {
-			l.t.Fatalf("the REST ledger write has deadline %v (bounded=%v, remaining=%s), want a live bound no later than 5s", deadline, bounded, remaining)
-		}
+		// The write's bound falls LimitRecordTimeout after the moment of the write on the clock
+		// that bounds it, which no test moves: a timer pending there at exactly that moment. A
+		// deadline context of a clocktest.Fake answers Deadline from its parent, so the bound is
+		// read off that clock rather than off ctx.
+		l.recordClock.AwaitArmedAt(l.t, "the bound of the REST ledger write", l.recordClock.Now().Add(githubapp.LimitRecordTimeout))
 		if err := ctx.Err(); err != nil {
 			l.t.Fatalf("the REST ledger write inherited the ended pass's context: %v", err)
 		}
@@ -593,7 +596,7 @@ func TestALimitAnsweredAsTheBoundFallsIsALimit(t *testing.T) {
 	h.github.refuseChecks(gitHubRepository, head(8).sha)
 	h.reconciler.PassTimeout = 2 * time.Second
 	h.boundByTheTest()
-	h.reconciler.GitHub = h.github.client(&boundRecordLimits{Limits: ratelimit.New(h.pool), t: t, falls: h.endBound})
+	h.reconciler.GitHub = h.github.client(&boundRecordLimits{Limits: ratelimit.New(h.pool), t: t, recordClock: h.github.recordClock, falls: h.endBound})
 	h.github.rateLimitNext(suitesOf(head(8)))
 
 	h.pass()

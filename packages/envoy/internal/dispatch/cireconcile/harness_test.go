@@ -101,15 +101,20 @@ type harness struct {
 	// defaults counts the projects seedProjectDefault has made, so each one it makes has a key of
 	// its own.
 	defaults int
-	// bound is the fake clock this harness's passes put their own bound on where the test ends
-	// that bound rather than the wall clock (boundByTheTest), and nil until a test asks for it.
-	bound *clocktest.Fake
+	// clock is the time every pass of this harness runs its bound and its waits on, and reads its
+	// held answers, the verify loop's moments and the end of a limit by (Reconciler.Clock): each
+	// replica's too, and the stand-in's, which stamps a limit's reset on it. It moves only when a
+	// test moves it, so a pass's bound falls where the test moves it to (endBound) and never
+	// because the machine running the test is slow.
+	clock *clocktest.Fake
 	// ciClock is the time the listener's CI store runs its summary loop on (cistore.WithClock):
 	// the loop's grid, its debounce, and the backoff of a claim that lost a compare-and-swap. The
 	// reconciler's CI writer stamps its records on it too (openWriter), so a record it writes falls
 	// due a debounce after a moment on this clock and on no other. It moves only while a test
 	// waits for what the loop writes or publishes (driveLoop), so two events a test sends with no
-	// such wait between them fall in one debounce.
+	// such wait between them fall in one debounce. It is the reconciler's clock's neighbour rather
+	// than the same one, so a move of a pass's clock to its bound or past a hold moves no tick of
+	// the loop.
 	ciClock *clocktest.Fake
 	summary *summaryWitness
 }
@@ -167,8 +172,11 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 
 	logs := &syncBuffer{}
 	limits := ratelimit.New(database.Pool)
-	github := newFakeGitHub(t)
-	ciClock := clocktest.New(time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC))
+	// Both clocks start at one fixed moment of the test's own, never the wall clock's.
+	start := time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC)
+	fake := clocktest.New(start)
+	github := newFakeGitHub(t, fake)
+	ciClock := clocktest.New(start)
 	return &harness{
 		t:        t,
 		ctx:      ctx,
@@ -177,6 +185,7 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 		bus:      client,
 		logs:     logs,
 		reviewer: reviewer,
+		clock:    fake,
 		ciClock:  ciClock,
 		reconciler: &Reconciler{
 			Pool:   database.Pool,
@@ -189,6 +198,9 @@ func newHarnessBeforeTheListener(t *testing.T, reviewer string) *harness {
 			Logger:        slog.New(slog.NewJSONHandler(logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 			// A test waits for no pace.
 			Pace: 0,
+			// The bound, the waits and the held answers run on a clock that moves only when a
+			// test moves it.
+			Clock: fake,
 		},
 	}
 }
@@ -213,13 +225,15 @@ func openWriter(client *bus.Client, ciClock *clocktest.Fake) func() (Writer, err
 	}
 }
 
-// boundByTheTest gives the pass a fake clock. The test ends its deadline at a held read or write,
-// and checkedPassClock checks that production requested the configured PassTimeout.
+// boundByTheTest checks the bound each pass of the harness's Reconciler puts on itself on the
+// harness's clock: the test ends that bound at a held read or write (endBound), and
+// checkedPassClock checks that the pass bound itself at its PassTimeout.
 func (h *harness) boundByTheTest() {
-	h.bound = clocktest.New(time.Now())
-	h.reconciler.passClock = checkedPassClock{Clock: h.bound, h: h}
+	h.reconciler.Clock = checkedPassClock{Clock: h.clock, h: h}
 }
 
+// checkedPassClock is the Reconciler's clock with every bound a pass arms on it checked against
+// the PassTimeout the test set.
 type checkedPassClock struct {
 	clock.Clock
 	h *harness
@@ -240,11 +254,11 @@ func (h *harness) boundEndsAtTheStall() {
 	h.github.atStall(h.endBound)
 }
 
-// endBound ends the bound of the pass running now: it moves the fake clock to the one deadline
-// pending on it, which that pass armed as it began (boundByTheTest). It fails the test where no
-// deadline is pending, which is a pass that put no bound on itself, and where more than one is.
+// endBound ends the bound of the pass running now: it moves the harness's clock to the one
+// deadline pending on it, which that pass armed as it began. It fails the test where no deadline
+// is pending, which is a pass that put no bound on itself, and where more than one is.
 func (h *harness) endBound() {
-	armed, moved := h.bound.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
+	armed, moved := h.clock.SetWhen(func(now time.Time, armed []time.Time) (time.Time, bool) {
 		if len(armed) != 1 {
 			return now, false
 		}
@@ -357,6 +371,7 @@ func (h *harness) replica() *Reconciler {
 		ReviewerAppID: h.reviewer,
 		Logger:        slog.New(slog.NewJSONHandler(&syncBuffer{}, &slog.HandlerOptions{Level: slog.LevelDebug})),
 		Pace:          0,
+		Clock:         h.clock,
 	}
 }
 

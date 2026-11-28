@@ -33,9 +33,9 @@ import (
 
 // fakeQuery is one GraphQL query the stand-in was asked: the repository it named, the page
 // cursor it carried, the ordinal of the page that cursor names, the document it was, and when
-// the stand-in began and finished answering it. A test reads these back to say which pages a
-// pass asked for, in what order, with which document, and how much of GitHub's own time the
-// pass took.
+// the stand-in began and finished answering it, read off the passes' own clock. A test reads
+// these back to say which pages a pass asked for, in what order, with which document, and how
+// much of GitHub's own time the pass took.
 type fakeQuery struct {
 	repository string
 	after      string
@@ -156,13 +156,13 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		at = known
 	}
-	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, text: request.Query, started: f.clockNow()})
+	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, text: request.Query, started: f.clock.Now()})
 	asked := len(f.queries) - 1
 	f.inFlight++
 	f.mostInFlight = max(f.mostInFlight, f.inFlight)
 	defer func() {
 		f.mu.Lock()
-		f.queries[asked].ended = f.clockNow()
+		f.queries[asked].ended = f.clock.Now()
 		f.inFlight--
 		f.mu.Unlock()
 	}()
@@ -189,16 +189,14 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	if stall > 0 && stalled != nil {
 		stalled()
 	}
-	if takes > 0 && f.queryWait != nil {
-		f.queryWait(takes)
-		takes = 0
+	if takes > 0 {
+		// GitHub's own time over the query passes on the passes' clock while the pass waits for
+		// the answer.
+		f.clock.Advance(takes)
 	}
-	for _, wait := range []time.Duration{stall, takes} {
-		if wait <= 0 {
-			continue
-		}
+	if stall > 0 {
 		select {
-		case <-time.After(wait):
+		case <-time.After(stall):
 		case <-r.Context().Done():
 			return
 		}
@@ -215,7 +213,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		// entry about it, which is a page the pass cannot read a head of and has no cursor to
 		// read past.
 		f.encode(w, map[string]any{
-			"data": map[string]any{"rateLimit": rateLimitNode(), "repository": nil},
+			"data": map[string]any{"rateLimit": f.rateLimitNode(), "repository": nil},
 			"errors": []any{map[string]any{
 				"type":    "FORBIDDEN",
 				"path":    []any{"repository"},
@@ -282,7 +280,7 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		nodes = append(nodes, node)
 	}
 	answer := map[string]any{"data": map[string]any{
-		"rateLimit": rateLimitNode(),
+		"rateLimit": f.rateLimitNode(),
 		"repository": map[string]any{"pullRequests": map[string]any{
 			"pageInfo": map[string]any{
 				"hasNextPage": to < len(pulls),
@@ -318,13 +316,13 @@ func (f *fakeGitHub) answerQueryLimit(w http.ResponseWriter, limit graphQLLimit)
 		})
 	default:
 		w.Header().Set("X-RateLimit-Remaining", "0")
-		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(graphQLReset).Unix(), 10))
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(f.clock.Now().Add(graphQLReset).Unix(), 10))
 		if limit == limitForbiddenByErrorEntry {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusForbidden)
 		}
 		f.encode(w, map[string]any{
-			"data": map[string]any{"rateLimit": rateLimitNode(), "repository": nil},
+			"data": map[string]any{"rateLimit": f.rateLimitNode(), "repository": nil},
 			"errors": []any{map[string]any{
 				"type":    "RATE_LIMITED",
 				"message": "API rate limit exceeded for installation",
@@ -334,9 +332,9 @@ func (f *fakeGitHub) answerQueryLimit(w http.ResponseWriter, limit graphQLLimit)
 }
 
 // rateLimitNode is the query's own rateLimit field: one point a query, which is what GitHub
-// charges a page of this size.
-func rateLimitNode() map[string]any {
-	return map[string]any{"cost": 1, "remaining": 4999, "resetAt": time.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
+// charges a page of this size, and the budget's reset an hour from the passes' clock.
+func (f *fakeGitHub) rateLimitNode() map[string]any {
+	return map[string]any{"cost": 1, "remaining": 4999, "resetAt": f.clock.Now().Add(time.Hour).UTC().Format(time.RFC3339)}
 }
 
 // checkSuiteNodes is one commit's checkSuites connection: the suites a test declared, each
@@ -611,8 +609,9 @@ func (f *fakeGitHub) stallQuery(repository string, page int, wait time.Duration)
 	f.graphQLStalls[queryKey(repository, page)] = wait
 }
 
-// everyQueryTakes makes every query's answer take this long, which is what a test of the pass's
-// GraphQL pacing measures the pass's own waits against.
+// everyQueryTakes makes every query's answer take this long on the passes' clock, which the
+// stand-in moves on by it while it answers: what a test of the pass's GraphQL pacing measures
+// the pass's own waits against.
 func (f *fakeGitHub) everyQueryTakes(wait time.Duration) {
 	f.mu.Lock()
 	defer f.mu.Unlock()

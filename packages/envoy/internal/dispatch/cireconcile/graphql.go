@@ -295,7 +295,7 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 	if repository.statuses {
 		document = headsQueryWithStatuses
 	}
-	clk := r.deadlineClock()
+	clk := r.clock()
 	started := clk.Now()
 	body, status, _, err := r.GitHub.GraphQL(ctx, repository.token, document, variables)
 	c.graphQLTook = clk.Now().Sub(started)
@@ -691,7 +691,8 @@ func errorText(errors []graphQLError) string {
 // query. Unlike the REST pace it is left whatever Pace a caller configured, zero included: the
 // REST pace spreads requests a budget counts one by one, which a test may ask for none of,
 // while this is GitHub's secondary limit on the App's own processing time, which no caller may
-// opt out of and which costs a test with quick answers microseconds.
+// opt out of. Both the query's time and the wait are read on the pass's clock
+// (Reconciler.Clock), so a test whose clock no query moves waits for nothing.
 func (r *Reconciler) graphQLPace(ctx context.Context, c *counts) {
 	if c.graphQLTook <= 0 {
 		return

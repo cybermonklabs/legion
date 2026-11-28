@@ -18,8 +18,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
+	"github.com/sjawhar/envoy/internal/dispatch/githubapp/githubapptest"
 	"github.com/sjawhar/envoy/internal/githubtest"
 )
 
@@ -38,6 +40,14 @@ import (
 type fakeGitHub struct {
 	t   *testing.T
 	mux *http.ServeMux
+	// clock is the passes' own clock (harness.clock), which stamps each query's start and end
+	// and the reset of each limit the stand-in answers, and which a query's answer moves on by
+	// the time GitHub takes over it (everyQueryTakes).
+	clock *clocktest.Fake
+	// recordClock is the clock the stand-in's client bounds each write of a limit GitHub answered
+	// on (githubapp.LimitRecordTimeout; limitClock): a fake of its own, which no test here moves,
+	// so that write's bound never falls while a test holds it.
+	recordClock *clocktest.Fake
 
 	mu        sync.Mutex
 	installID int64
@@ -65,9 +75,11 @@ type fakeGitHub struct {
 	// requests is every request the stand-in received, oldest first.
 	requests []fakeRequest
 	// limitEverything answers every request as GitHub's rate limit; limitOnce answers that many
-	// more requests to one path so, and no others.
+	// more requests to one path so, and no others. reset is the moment the last such answer said
+	// the limit resets at.
 	limitEverything bool
 	limitOnce       map[string]int
+	reset           time.Time
 	// failOnce answers that many more requests to one path with GitHub's 502, which is no rate
 	// limit and no answer about anything: GitHub's own trouble (failNext).
 	failOnce map[string]int
@@ -78,9 +90,6 @@ type fakeGitHub struct {
 	// is the moment a test that ends the pass's bound itself ends it (boundEndsAtTheStall). Nil
 	// calls nothing, and the answer waits out its stall or its caller's end.
 	stalled func()
-	// now and queryWait share the pacing test's clock. Nil keeps real request timing.
-	now       func() time.Time
-	queryWait func(time.Duration)
 	// answerCodes is the status one path is answered with in place of its route's answer, which
 	// is how a test makes GitHub give up on or refuse that one read (answerStatus).
 	answerCodes map[string]int
@@ -94,9 +103,10 @@ type fakeGitHub struct {
 	refusedPages  map[string]map[int]struct{}
 	graphQLLimits []graphQLLimit
 	graphQLStalls map[string]time.Duration
-	// queryTakes is how long every query's answer takes, which is what a test of the pass's
-	// GraphQL pacing measures the pass against, and inFlight and mostInFlight how many queries
-	// the stand-in was answering at once, which for a pass that queries serially is one.
+	// queryTakes is how long every query's answer takes on the passes' clock, which is what a
+	// test of the pass's GraphQL pacing measures the pass against, and inFlight and mostInFlight
+	// how many queries the stand-in was answering at once, which for a pass that queries
+	// serially is one.
 	queryTakes   time.Duration
 	inFlight     int
 	mostInFlight int
@@ -144,17 +154,19 @@ const (
 	graphQLRoute      = "POST /graphql"
 )
 
-func newFakeGitHub(t *testing.T) *fakeGitHub {
+func newFakeGitHub(t *testing.T, clock *clocktest.Fake) *fakeGitHub {
 	t.Helper()
 	f := &fakeGitHub{
-		t:         t,
-		mux:       http.NewServeMux(),
-		installID: 1,
-		repos:     map[string]fakeRepository{},
-		pulls:     map[string][]fakePull{},
-		runs:      map[string][]object{},
-		suites:    map[string][]object{},
-		statuses:  map[string][]object{},
+		t:           t,
+		mux:         http.NewServeMux(),
+		clock:       clock,
+		recordClock: clocktest.New(clock.Now()),
+		installID:   1,
+		repos:       map[string]fakeRepository{},
+		pulls:       map[string][]fakePull{},
+		runs:        map[string][]object{},
+		suites:      map[string][]object{},
+		statuses:    map[string][]object{},
 		// The permissions the installation lookup below answers, with metadata, which GitHub
 		// gives every token: no Commit statuses, so a pass reads no status unless a test grants
 		// one (setTokenPermissions).
@@ -321,6 +333,13 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 		f.failOnce[r.URL.Path] = left - 1
 		failed = true
 	}
+	// A limit's reset is GitHub's own moment, to the second the header carries, stamped here on
+	// the passes' own clock, which the client reads the wait against (githubapp.WithRateLimitClock,
+	// client): the wait is the reset less that clock's moment, exactly.
+	reset := time.Unix(f.clock.Now().Add(90*time.Second).Unix(), 0)
+	if limited {
+		f.reset = reset
+	}
 	stall := f.stalls[r.URL.Path]
 	stalled := f.stalled
 	status := f.answerCodes[r.URL.Path]
@@ -342,7 +361,7 @@ func (f *fakeGitHub) serve(w http.ResponseWriter, r *http.Request) {
 	if limited {
 		// GitHub's own answer to an exhausted rate limit.
 		w.Header().Set("X-RateLimit-Remaining", "0")
-		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10))
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(reset.Unix(), 10))
 		w.WriteHeader(http.StatusForbidden)
 		fmt.Fprint(w, `{"message":"API rate limit exceeded"}`)
 		return
@@ -432,7 +451,12 @@ var appKeyPEM = sync.OnceValues(func() (string, error) {
 })
 
 // client is a githubapp.Client on the binary's App key (appKeyPEM), pointed at this stand-in,
-// obeying and recording the shared rate limits as every Dispatch process's client does.
+// obeying and recording the shared rate limits as every Dispatch process's client does. It reads
+// a limit's wait against the passes' clock and bounds the limit's write on recordClock
+// (limitClock), and its calls end at the test's give-up (githubapptest.RequestDeadlineAtTheGiveUp),
+// not at githubapp's own RequestTimeout: so a call the stand-in holds (stall, stallQuery) ends
+// where the pass's bound or a caller's deadline falls, where the caller cancels it, or where the
+// stall's own wait ends.
 func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	f.t.Helper()
 	text, err := appKeyPEM()
@@ -440,7 +464,9 @@ func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 		f.t.Fatalf("generate App key: %v", err)
 	}
 	base := githubtest.Server(f.t, githubtest.Spec{Handle: f.serve})
-	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits))
+	client, err := githubapp.New(&auth.AppConfig{ClientID: "Iv1.cireconcile", PEM: text}, base, githubapp.WithLimits(limits),
+		githubapp.WithRateLimitClock(limitClock{Fake: f.recordClock, passes: f.clock}),
+		githubapp.WithRequestDeadline(githubapptest.RequestDeadlineAtTheGiveUp(f.t)))
 	if err != nil {
 		f.t.Fatalf("new client: %v", err)
 	}
@@ -449,6 +475,30 @@ func (f *fakeGitHub) client(limits githubapp.Limits) *githubapp.Client {
 	}
 	return client
 }
+
+// limitClock is the clock the stand-in's client reads a limit GitHub answered against and bounds
+// the write of that limit to the shared ledger on (githubapp.WithRateLimitClock). Its moment is
+// passes', the clock the stand-in stamps a limit's reset on, so the wait the client reads is the
+// reset less that moment, exactly. Its deadlines are the embedded Fake's, recordClock, so the
+// write's bound (githubapp.LimitRecordTimeout, five seconds) falls only where a test moves
+// recordClock. On passes it would fall at every move a test makes past it while the write is in
+// flight -- to a wait the pass armed, or to the pass's own bound -- and end a write the test never
+// held: a limit GitHub answered as the pass's bound fell would then not reach the ledger
+// (TestALimitAnsweredAsTheBoundFallsIsALimit).
+//
+// It is two fakes in one, and sound only for the two uses githubapp makes of its rate-limit
+// clock: limitRecordContext (client.go) arms a relative timeout, WithTimeout, which the embedded
+// Fake reckons from recordClock's own moment; and limitNow (deliveries.go) reads Now, which
+// passes answers. No other method of it is called. A use that mixed the two -- a deadline taken
+// from Now and armed through WithDeadline, or a span reckoned from Now and armed as a timer --
+// would set one fake's moment against the other's, so a new use of that clock in githubapp needs
+// this type read again.
+type limitClock struct {
+	*clocktest.Fake
+	passes *clocktest.Fake
+}
+
+func (c limitClock) Now() time.Time { return c.passes.Now() }
 
 // setRepository makes GET /repos/{name} answer with fullName and id. name is the owner/repo a
 // request names it by, which a renamed repository has two of.
@@ -538,6 +588,13 @@ func (f *fakeGitHub) stall(path string, wait time.Duration) {
 		return
 	}
 	f.stalls[path] = wait
+}
+
+// lastReset is the moment the stand-in's last rate-limited REST answer said the limit resets at.
+func (f *fakeGitHub) lastReset() time.Time {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.reset
 }
 
 // atStall makes the stand-in call stalled as it begins holding an answer back (stall,
@@ -637,11 +694,4 @@ func (f *fakeGitHub) forgetRequests() {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = nil
-}
-
-func (f *fakeGitHub) clockNow() time.Time {
-	if f.now != nil {
-		return f.now()
-	}
-	return time.Now()
 }

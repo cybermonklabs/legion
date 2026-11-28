@@ -272,7 +272,7 @@ func TestALimitGitHubAnswersAsTheBoundFallsLeavesThePaceAsItWas(t *testing.T) {
 	readBothHeads(t, h, clock)
 
 	h.reconciler.GitHub = h.github.client(&boundRecordLimits{
-		Limits: ratelimit.New(h.pool), t: t, falls: h.endBound, refuse: context.DeadlineExceeded,
+		Limits: ratelimit.New(h.pool), t: t, recordClock: h.github.recordClock, falls: h.endBound, refuse: context.DeadlineExceeded,
 	})
 	h.github.rateLimitNext(runsOf(head(7)))
 	h.pass()
@@ -311,8 +311,8 @@ func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
 	// sent -- the shared limits', which the pass reads first, and the covered repositories' -- so
 	// no request reaches GitHub and the walk counts no cut.
 	h.reconciler.PassTimeout = time.Nanosecond
-	passClock := h.reconciler.passClock
-	h.reconciler.passClock = expiredPassClock{Clock: passClock, advance: clock.Advance}
+	passClock := h.reconciler.Clock
+	h.reconciler.Clock = expiredPassClock{Clock: passClock, advance: clock.Advance}
 	sentBefore := h.github.count()
 	h.pass()
 	h.requireWaits(clock)
@@ -321,7 +321,7 @@ func TestABoundThatEndsAPassBeforeItReadsGitHubSetsTheFloor(t *testing.T) {
 			line["heads"], line["deadline_reached"], h.github.count()-sentBefore, line)
 	}
 	h.reconciler.PassTimeout = 5 * time.Second
-	h.reconciler.passClock = passClock
+	h.reconciler.Clock = passClock
 
 	h.pass()
 	h.requireWaits(clock, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond, 100*time.Millisecond)

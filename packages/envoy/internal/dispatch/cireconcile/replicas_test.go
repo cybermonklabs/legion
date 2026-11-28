@@ -27,8 +27,9 @@ func TestOneProcessServesEachPeriod(t *testing.T) {
 	leases := storetest.Leases(t, h.pool)
 
 	// Two ticks one Interval apart, the second process first in the second period, so neither
-	// test passes by being the one that always runs.
-	due := time.Now()
+	// test passes by being the one that always runs. The moment is the test's own: this test's
+	// database holds no period of the lease, so any moment keys a period no pass has served.
+	due := time.Date(2026, time.November, 5, 3, 0, 0, 0, time.UTC)
 	for _, period := range []struct {
 		name   string
 		due    time.Time
@@ -144,9 +145,11 @@ func TestTheStopIsInThePassLine(t *testing.T) {
 	if err != nil {
 		t.Fatalf("the pass line's rate_limit_until is not RFC3339: %v", err)
 	}
-	// The stand-in's own answer resets ninety seconds out, so the line's time is ahead of now and
-	// not far ahead of it.
-	if !until.After(time.Now()) || until.After(time.Now().Add(5*time.Minute)) {
-		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset, which is moments away", until)
+	// The stand-in's own answer resets at a whole second it records, on the passes' clock, which
+	// githubapp reads GitHub's wait against (githubapp.WithRateLimitClock) and the pass adds back
+	// to (stopAt): that clock does not move between the two, so the line's moment is the reset.
+	reset := h.github.lastReset()
+	if !until.Equal(reset) {
+		t.Fatalf("the pass line says the limit ends at %s, want the stand-in's reset at %s", until, reset)
 	}
 }

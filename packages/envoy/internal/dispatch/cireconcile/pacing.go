@@ -116,6 +116,8 @@ func (r *Reconciler) pace(ctx context.Context, c *counts) {
 	r.waitForPace(ctx, c.pace)
 }
 
+// waitForPace waits wait on the pass's clock (Reconciler.Clock), or until ctx ends: the gap
+// before a REST request (pace) and the wait a query earns (graphQLPace).
 func (r *Reconciler) waitForPace(ctx context.Context, wait time.Duration) {
-	_ = r.deadlineClock().Sleep(ctx, wait)
+	_ = r.clock().Sleep(ctx, wait)
 }
