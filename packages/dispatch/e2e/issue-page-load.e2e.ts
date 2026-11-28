@@ -361,6 +361,8 @@ test(AFTER_LOAD_TITLE, async ({ browser, loadSeeds }, testInfo) => {
   const read = async ({ page, requests }: OpenedLoad) => {
     await waitForLoadEnd(page, requests);
     const start = await waitForMark(page, BLOCK_EDITOR_START_MARK);
+    // This instant is read on purpose: a load whose editor is ready already makes no act during
+    // its build, so the row makes another load.
     if ((await readMark(page, BLOCK_EDITOR_READY_MARK)) !== null) return null;
     // Each act is made once the page has gone quiet again after the one before it.
     const settle = () => waitForLoadEnd(page, requests);
@@ -394,6 +396,8 @@ test(AFTER_LOAD_TITLE, async ({ browser, loadSeeds }, testInfo) => {
       );
       if (measured.length === 0) {
         const firstAt = (await recordOf(page)).acts[next]?.event?.timeStamp;
+        // A mark once written stays, and the first act came before this read, so a mark still
+        // absent here came after that act.
         const ready = await readMark(page, BLOCK_EDITOR_READY_MARK);
         // Event time, not the time Playwright came back: a fast build may win this race.
         if (firstAt === undefined || firstAt < start || (ready !== null && firstAt >= ready)) {

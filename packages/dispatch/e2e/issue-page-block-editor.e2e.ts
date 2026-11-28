@@ -45,6 +45,7 @@ import {
   waitForLoadEnd,
   watchLoadRequests,
 } from "./load-instruments";
+import { settledState } from "./settled";
 import { type Browser, expect, test } from "./test";
 import { watchApiRequests } from "./traffic";
 import { asUser } from "./users";
@@ -236,10 +237,15 @@ async function leaveEditor(page: Page, row: Locator) {
 async function switchView(page: Page, key: string, title: "Spec" | "Conversation") {
   const presets = page.getByTestId("issue-presets");
   const desktop = presets.getByRole("button", { name: new RegExp(`^${title}\\b`) });
-  if (await desktop.isVisible()) {
+  const menu = page.locator('[data-testid="issue-presets"] button[aria-haspopup="menu"]');
+  const row = await settledState("the view row", [
+    ["one control for each view", desktop],
+    ["the one control and its menu", menu],
+  ]);
+  if (row === "one control for each view") {
     await desktop.click();
   } else {
-    await page.locator('[data-testid="issue-presets"] button[aria-haspopup="menu"]').click();
+    await menu.click();
     await page.getByRole("menuitemradio", { name: new RegExp(`^${title}\\b`) }).click();
   }
   const path = presetPath(key, title === "Spec" ? "spec" : "conversation");
@@ -479,6 +485,7 @@ function roomWithout(doc: Y.Doc, fragments: readonly string[], editedFragment: s
   function visit(element: Y.XmlFragment, fragment: string) {
     for (const child of element.toArray()) {
       if (!(child instanceof Y.XmlElement)) continue;
+      // This reads a Yjs element in the test's own memory, not the page, so nothing changes it.
       if (fragment === editedFragment && child.getAttribute("blockId") === id) target = child;
       else visit(child, fragment);
     }

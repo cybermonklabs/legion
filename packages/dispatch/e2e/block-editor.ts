@@ -88,6 +88,8 @@ export async function waitForMark(page: Page, name: string, timeoutMs = 30_000):
   } catch (cause) {
     throw new Error(`Missing performance mark ${JSON.stringify(name)}`, { cause });
   }
+  // The wait above saw the mark, and a mark once written stays in the page's buffer, so one read
+  // gives its time.
   const startTime = await page.evaluate(
     (markName) => performance.getEntriesByName(markName, "mark")[0]?.startTime ?? null,
     name
