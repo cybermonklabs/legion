@@ -465,6 +465,27 @@ check "the reader exits 1, naming clause 3, though the report holds a failing te
 check "and prints both tests the report holds" "$(is "$(row 'fails here' | grep -c fail):$(row loads | grep -c pass)" 1:1)"
 clean_beside loadfail
 
+echo "case: clause 3: a file that does not load, in a run whose summary also prints the snapshot it added"
+# bun 1.4.4 prints `snapshots: +1 added` between ` 1 error` and `Ran N tests across M files.` when
+# a run writes a new snapshot (--update-snapshots, or CI=false).
+package snapload a.test.ts "$imports
+test(\"snaps\", () => { expect({ a: 1 }).toMatchSnapshot(); });
+test(\"fails here\", () => { expect(1).toBe(2); });"
+package snapload b.test.ts "import { x } from \"./missing\";
+$imports
+test(\"never\", () => { x(); });"
+wrap "$work/t-snapload" snapload test bun test --update-snapshots
+check "bun's console counts the error above its snapshots line" \
+  "$(is "$(contains "$wrap_log" '^ 1 error$'):$(contains "$wrap_log" '^snapshots: +1 added$')" true:true)"
+check "the wrapper kept bun's count of errors" \
+  "$(is "$(exit_of "$work/t-snapload/bun-test-reports/packages/snapload/test.xml")" '{"status": 1, "errors": 1}')"
+beside "$work/t-snapload" snapload
+store "$work/s-snapload" "$work/t-snapload"
+read_store "$work/s-snapload"
+check "the reader exits 1, naming clause 3, though the report holds a failing test" \
+  "$(is "$status:$(contains "$out" '"report": "packages/snapload/test.xml", "unknown": "clause 3: bun counted 1 error(s)')" 1:true)"
+clean_beside snapload
+
 echo "case: clause 3: bun exits 0 and prints no summary, or a summary that counts errors"
 standin "$work/t-nosummary" test "$honest" "" 0
 check "no summary: the wrapper fails the step, naming clause 3" \
