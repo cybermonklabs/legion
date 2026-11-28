@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/next_change.go b/packages/daemon/internal/workflow/next_change.go
+index efe43756b29c..833d338b7f38 100644
+--- a/packages/daemon/internal/workflow/next_change.go
++++ b/packages/daemon/internal/workflow/next_change.go
+@@ -65,6 +65,9 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
+ 			"generation", issue.Generation, "open", issue.NextChange)
+ 		return nil
+ 	}
++	if every := e.cfg.ReviewRoundCap; every > 0 && issue.NextChanges+1 >= every {
++		return nil
++	}
+ 	now := e.now()
+ 	next := issue.Generation + 1
+ 	check, err := e.store.ProductionCheck(ctx, tx, issue.Key)

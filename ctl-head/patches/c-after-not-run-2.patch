@@ -1,0 +1,60 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index d58468b9243d..1a603a25ad97 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -612,6 +612,41 @@ func (e *Engine) lookAfterNotRunRead(ctx context.Context, tx pgx.Tx, issue recor
+ 	return e.startLook(ctx, tx, issue, check, wakeRead, "in which each check passes, made after the check closed as not run", true)
+ }
+ 
++// lookADayAfterNotRun is a periodic turn of the controller's tick: each issue in verifying whose
++// production check of its generation and newest merge closed not_run a day ago or more, with no
++// look open, has one more look opened, with no event.
++func (e *Engine) lookADayAfterNotRun(ctx context.Context, tx pgx.Tx, issues []record.Issue) error {
++	if e.checkRole() == "" {
++		return nil
++	}
++	now := e.now()
++	for _, listed := range issues {
++		if listed.Phase != phase.Verifying {
++			continue
++		}
++		issue, err := e.store.Issue(ctx, tx, listed.Key)
++		if err != nil {
++			return err
++		}
++		if issue == nil || issue.Phase != phase.Verifying {
++			continue
++		}
++		check, err := e.store.ProductionCheck(ctx, tx, issue.Key)
++		if err != nil {
++			return err
++		}
++		if check == nil || check.Open() || check.Outcome != record.CheckNotRun || check.Generation != issue.Generation ||
++			check.MergeSHA != issue.Merge.SHA || now.Before(check.ClosedAt.Add(24*time.Hour)) {
++			continue
++		}
++		check.ClosedAt, check.Outcome = nil, ""
++		if err := e.startLook(ctx, tx, *issue, check, wakeNamed, "a day after the check closed as not run", true); err != nil {
++			return err
++		}
++	}
++	return nil
++}
++
+ // closeWaitNoResult tells the owning architect once, at the close of the production check of issue,
+ // which waits in verifying, where the check closed as not run or a check still has no pass in the
+ // newest read: each such check with its answer and reason, and the check's outcome (D5, D6).
+diff --git a/packages/daemon/internal/workflow/status_repair.go b/packages/daemon/internal/workflow/status_repair.go
+index e10fa4668fb5..d42039173cc8 100644
+--- a/packages/daemon/internal/workflow/status_repair.go
++++ b/packages/daemon/internal/workflow/status_repair.go
+@@ -147,6 +147,9 @@ func (e *Engine) statusRepairTick(ctx context.Context, tx pgx.Tx) (intake.Result
+ 	if err := e.correctStatuses(ctx, tx, issues, running, "tick"); err != nil {
+ 		return intake.Result{}, err
+ 	}
++	if err := e.lookADayAfterNotRun(ctx, tx, issues); err != nil {
++		return intake.Result{}, err
++	}
+ 	if err := e.judgeEachVerifying(ctx, tx, issues); err != nil {
+ 		return intake.Result{}, err
+ 	}

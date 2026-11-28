@@ -1,0 +1,18 @@
+diff --git a/packages/daemon/internal/workflow/next_change.go b/packages/daemon/internal/workflow/next_change.go
+index efe43756b29c..7ed0cd2db507 100644
+--- a/packages/daemon/internal/workflow/next_change.go
++++ b/packages/daemon/internal/workflow/next_change.go
+@@ -530,13 +530,6 @@ func (e *Engine) judgeOpenChange(ctx context.Context, tx pgx.Tx, issue record.Is
+ 	if view, err = e.closeWait(ctx, tx, issue); err != nil {
+ 		return err
+ 	}
+-	none, err := e.changeOpenedNoPullRequest(ctx, tx, issue)
+-	if err != nil {
+-		return err
+-	}
+-	if none && changeResolved(issue, view) {
+-		return e.endChange(ctx, tx, issue, withdrawn)
+-	}
+ 	old, err := storedWaitOf(issue)
+ 	if err != nil {
+ 		return err

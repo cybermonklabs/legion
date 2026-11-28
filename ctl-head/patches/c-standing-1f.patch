@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index d58468b9243d..123f6da5dd16 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -973,6 +973,9 @@ func (e *Engine) tellEachStanding(ctx context.Context, tx pgx.Tx, issues []recor
+ 		if len(terms) == 0 {
+ 			continue
+ 		}
++		terms = slices.DeleteFunc(terms, func(term string) bool {
++			return strings.HasPrefix(term, "Its production check of generation ") || strings.HasPrefix(term, "Its way out is ")
++		})
+ 		if err := e.notice(ctx, tx, issue.Key, record.Notice{Kind: "close-wait-standing", Role: claim.RoleArchitect,
+ 			Reason: fmt.Sprintf("%s still waits in verifying for its close. Each term that holds it:", issue.Key) + bulleted(terms) + "\nRead the whole wait in close-wait.md."}); err != nil {
+ 			return err

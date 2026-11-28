@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/next_change.go b/packages/daemon/internal/workflow/next_change.go
+index cbf96e3c9ddf..3e12ed87eee2 100644
+--- a/packages/daemon/internal/workflow/next_change.go
++++ b/packages/daemon/internal/workflow/next_change.go
+@@ -169,7 +169,7 @@ func reasonLines(reasons []record.Defect) []string {
+ // root.
+ func (e *Engine) tellChangeCount(ctx context.Context, tx pgx.Tx, issue record.Issue, reasons []record.Defect) error {
+ 	every := e.cfg.ReviewRoundCap
+-	if every <= 0 || issue.NextChanges%every != 0 {
++	if every <= 0 {
+ 		return nil
+ 	}
+ 	text := fmt.Sprintf("%s has started %d next changes of itself, and Legion stops none of them.", issue.Key, issue.NextChanges)

@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/workflow/close_wait.go b/packages/daemon/internal/workflow/close_wait.go
+index d58468b9243d..f3eaa56cdc33 100644
+--- a/packages/daemon/internal/workflow/close_wait.go
++++ b/packages/daemon/internal/workflow/close_wait.go
+@@ -594,7 +594,7 @@ func (e *Engine) lookAfterNotRunRead(ctx context.Context, tx pgx.Tx, issue recor
+ 		return err
+ 	}
+ 	if check.Open() || check.Outcome != record.CheckNotRun || check.Generation != issue.Generation || check.MergeSHA != issue.Merge.SHA ||
+-		check.ClosedAt == nil || !read.ReadAt.After(*check.ClosedAt) || check.LastWakeKind == wakeRead {
++		check.ClosedAt == nil || !read.ReadAt.After(*check.ClosedAt) {
+ 		return nil
+ 	}
+ 	var answer record.CheckReadAnswer

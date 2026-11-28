@@ -1,0 +1,12 @@
+diff --git a/packages/daemon/internal/workflow/next_change.go b/packages/daemon/internal/workflow/next_change.go
+index efe43756b29c..1879978d1d52 100644
+--- a/packages/daemon/internal/workflow/next_change.go
++++ b/packages/daemon/internal/workflow/next_change.go
+@@ -93,7 +93,6 @@ func (e *Engine) StartNextChange(ctx context.Context, tx pgx.Tx, issue record.Is
+ 	started.Generation, started.NextChange = next, next
+ 	started.NextChanges++
+ 	started.Phase, started.Hold, started.Awaiting, started.ChildrenWait = phase.Admitted, nil, nil, nil
+-	started.Status = "todo"
+ 	started.MergerCompletionOwed = false
+ 	started.StandingToldAt = nil
+ 	if place.Tree != "" {

@@ -1,0 +1,14 @@
+diff --git a/packages/daemon/internal/record/close_wait.go b/packages/daemon/internal/record/close_wait.go
+index 6ee212cc7bdb..25e268b1bac5 100644
+--- a/packages/daemon/internal/record/close_wait.go
++++ b/packages/daemon/internal/record/close_wait.go
+@@ -184,9 +184,6 @@ func CloseWaitOf(f CloseFacts) CloseWait {
+ 	if len(f.Beneath) > 0 {
+ 		wait.Beneath = f.Beneath
+ 	}
+-	if len(f.OpenChildren) > 0 {
+-		wait.OpenChildren = f.OpenChildren
+-	}
+ 	for _, defect := range f.Defects {
+ 		switch {
+ 		case !defect.Open() || defect.Kind == DefectKindCheck || defect.Kind == DefectKindProduction:

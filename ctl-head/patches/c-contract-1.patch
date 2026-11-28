@@ -1,0 +1,13 @@
+diff --git a/packages/daemon/internal/api/shaping.go b/packages/daemon/internal/api/shaping.go
+index 619b0d4b64a8..ae9915500ac0 100644
+--- a/packages/daemon/internal/api/shaping.go
++++ b/packages/daemon/internal/api/shaping.go
+@@ -1329,7 +1329,7 @@ func withoutUnadmittedPhases(issue Issue, restore int) (Issue, bool) {
+ 	heldFrom := arrivalsAt(issueKeyPath + "heldFrom")
+ 	taskPhases := arrivalsAt(issueKeyPath + "architect.pendingTask.phase")
+ 	moved := false
+-	if issue.Phase != "" && issuePhases.heldBack(string(issue.Phase), restore) {
++	if issue.Phase != "" && issue.Phase != phase.Verifying && issuePhases.heldBack(string(issue.Phase), restore) {
+ 		issue.Phase, moved = phaseStandIn(issue.Phase), true
+ 	}
+ 	if issue.HeldFrom != "" && heldFrom.heldBack(issue.HeldFrom, restore) {

@@ -1,0 +1,23 @@
+diff --git a/packages/daemon/internal/workflow/resume.go b/packages/daemon/internal/workflow/resume.go
+index d7e4e332e46b..1423f53121b3 100644
+--- a/packages/daemon/internal/workflow/resume.go
++++ b/packages/daemon/internal/workflow/resume.go
+@@ -69,6 +69,18 @@ func (e *Engine) booted(ctx context.Context, tx pgx.Tx, _ intake.DaemonBooted) (
+ 	if err := e.sweepMerged(ctx, tx); err != nil {
+ 		return intake.Result{}, err
+ 	}
++	verifying, err := e.store.Issues(ctx, tx)
++	if err != nil {
++		return intake.Result{}, err
++	}
++	for _, issue := range verifying {
++		if issue.Phase != phase.Verifying {
++			continue
++		}
++		if err := e.enqueue(ctx, tx, issue.Key, record.CloseRead{Generation: issue.Generation}); err != nil {
++			return intake.Result{}, err
++		}
++	}
+ 	owners, err := e.suspendedPhaseOwners(ctx, tx)
+ 	if err != nil {
+ 		return intake.Result{}, err
