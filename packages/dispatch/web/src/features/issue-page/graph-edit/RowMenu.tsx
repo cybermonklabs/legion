@@ -251,7 +251,8 @@ export function RowMenu({
   const panel = useRef<HTMLSpanElement>(null);
   const menu = useRef<HTMLSpanElement>(null);
   const retypeMenu = useRef<HTMLSpanElement>(null);
-  // The dry run out for this opening, which a close or a newer ask drops.
+  // The dry run of this opening, out or answered: a newer ask drops it, and a close drops it and
+  // clears it, so the next opening has asked none.
   const out = useRef<AbortController | undefined>(undefined);
   const controlId = useId();
   const retypeId = useId();
@@ -287,10 +288,11 @@ export function RowMenu({
     }
   }, [submenu]);
 
-  // The menu closes with the dry run out for this opening dropped and no submenu open: one
+  // The menu closes with this opening's dry run dropped and cleared and no submenu open: one
   // function for the menu's life, which the listeners below call too.
   const closeMenu = useCallback(() => {
     out.current?.abort();
+    out.current = undefined;
     setSubmenu(undefined);
     setOpen(false);
   }, []);
@@ -328,23 +330,27 @@ export function RowMenu({
 
   // Delete's dry run (R6), sent with this opening's signal: an answer that comes once the menu
   // has closed, or once a newer ask has gone out, is drawn nowhere.
-  const askCount = (nodeId: string) => {
-    out.current?.abort();
-    const asked = new AbortController();
-    out.current = asked;
-    setCounted(COUNTING);
-    void writes.count(nodeId, asked.signal).then(
-      (answer) => {
-        if (!asked.signal.aborted) setCounted(answer);
-      },
-      // Dropped: the menu that asked has closed, or asked again.
-      () => undefined
-    );
-  };
+  const askCount = useCallback(
+    (nodeId: string) => {
+      out.current?.abort();
+      const asked = new AbortController();
+      out.current = asked;
+      setCounted(COUNTING);
+      void writes.count(nodeId, asked.signal).then(
+        (answer) => {
+          if (!asked.signal.aborted) setCounted(answer);
+        },
+        // Dropped: the menu that asked has closed, or asked again.
+        () => undefined
+      );
+    },
+    [writes.count]
+  );
 
   const openMenu = () => {
     // Delete asks the server only where `placementOf` answers `ask`: a new row not placed yet has
-    // it grey, so the server is asked to count no node it has not placed.
+    // it grey, so the server is asked to count no node it has not placed. A menu opened before its
+    // row is placed asks once the placing turns Delete to `ask` (the effect under `verdicts`).
     if (readId !== undefined && verdictsNow()?.delete.kind === "ask") {
       askCount(readId);
     }
@@ -407,6 +413,14 @@ export function RowMenu({
   const verdicts = open ? verdictsNow() : undefined;
   const retypeVerdict = verdicts?.retype;
   const retypeOptions = retypeVerdict?.kind === "retype" ? retypeVerdict.kinds : undefined;
+
+  // A menu that stays open as its new row is placed asks Delete's count once the placing turns
+  // Delete's verdict to `ask`: where this opening has asked none, out or answered (`out`), so a
+  // menu opened on a placed row, which `openMenu` has asked for, is not asked for again.
+  const deleteAsks = verdicts?.delete.kind === "ask";
+  useEffect(() => {
+    if (deleteAsks && readId !== undefined && out.current === undefined) askCount(readId);
+  }, [askCount, deleteAsks, readId]);
 
   /** The entry `id` grey with `reason`. */
   const greyEntry = (id: Entry, reason: GreyReason): MenuEntry => ({
