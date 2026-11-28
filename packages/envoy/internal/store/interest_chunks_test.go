@@ -404,17 +404,20 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 	if len(orphans) == 0 {
 		t.Fatalf("the stopped writes left no chunk behind, want the chunks they wrote: %v", left)
 	}
-	// The copy took every chunk it holds between the clock's start and moved, where the last
-	// stopped write left the clock, a write bound past the start for each chunk it wrote.
-	moved := clock.Now()
+	// The chunks no record names are the five the write stopped between its chunks and its manifest
+	// left: the write stopped between two chunks deleted the one chunk it wrote, and the write past
+	// its bound deleted all of its own (kvchunk.Write). The copy took each of the five while the
+	// clock still stood at its start, before the last stopped write moved it, and a chunk keeps the
+	// moment the copy first took it through every later read of the bucket (kvchunk.Chunks), so each
+	// was taken at registryClockStart.
 
 	// A write bound past the clock's start, inside the grace for every chunk the copy holds.
 	clock.Set(registryClockStart.Add(kvchunk.WriteBound))
 	if collected, err := reg.collectInterestChunks(t.Context()); err != nil || collected != 0 {
 		t.Fatalf("a collection inside the grace collected %d chunks (%v), want none", collected, err)
 	}
-	// Past the grace for every chunk the copy holds, whatever the stopped writes moved the clock to.
-	clock.Set(moved.Add(kvchunk.Grace + 10*time.Minute))
+	// A minute past the grace of every chunk no record names, each taken at the clock's start.
+	clock.Set(registryClockStart.Add(kvchunk.Grace + time.Minute))
 	reg.watcher.Disconnected()
 	if collected, err := reg.collectInterestChunks(t.Context()); err != nil || collected != 0 {
 		t.Fatalf("a collection while the cache does not follow its bucket collected %d chunks (%v), want none", collected, err)

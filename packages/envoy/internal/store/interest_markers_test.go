@@ -783,8 +783,20 @@ func TestThePurgeSendsTheStreamPurgeSubjectItsGrantMustAllow(t *testing.T) {
 		if refusal["level"] != "WARN" {
 			t.Fatalf("a refused purge logged %v, want one WARN for two passes", refusal)
 		}
-		// The server traces the -ERR of each refusal before it sends it, so both passes' lines are in
-		// its log by the time their connections reported them; traceThrough adds the registry's own.
+		// The refused purges went through connections of their own (refusedPurge). The server
+		// refuses a publish on the registry's own connection too, the one its cache and its bucket
+		// reads run on: a core publish of the purge subject, which waits for no reply. The case takes
+		// that connection's report of the violation before it reads the registry's health below.
+		if err := granted.conn.Publish(purgeSubject, nil); err != nil {
+			t.Fatalf("publish the purge subject on the registry's connection: %v", err)
+		}
+		violation := testwait.Receive(t, "the granted server's refusal of a publish of the purge subject on the registry's connection, which that connection hands its error handler", granted.violations)
+		if !strings.Contains(violation.Error(), purgeSubject) {
+			t.Fatalf("the registry's connection reported %v, want the server's permissions violation for %s", violation, purgeSubject)
+		}
+		// The server traces the -ERR of each refusal before it sends it, so every refusal's line is
+		// in its log by the time its connection reported it: both passes', and the registry
+		// connection's, which also comes before the sentinel traceThrough publishes there.
 		var violations []string
 		for _, line := range granted.traceThrough(t) {
 			if strings.Contains(line, "Permissions Violation for Publish to") {
@@ -800,12 +812,13 @@ func TestThePurgeSendsTheStreamPurgeSubjectItsGrantMustAllow(t *testing.T) {
 			}
 			t.Logf("server refusal: %s", strings.TrimSpace(line))
 		}
-		// The listener serves on: its cache is live and its buckets answer.
+		// The listener serves on, over the connection whose publish the server refused: its cache is
+		// live and its buckets answer.
 		if err := granted.registry.Ping(); err != nil {
-			t.Fatalf("Ping() = %v after a refused purge; the listener must stay healthy", err)
+			t.Fatalf("Ping() = %v after refused purges and a refused publish on its connection; the listener must stay healthy", err)
 		}
 		if _, err := granted.kv.Get("ses_live_000"); err != nil {
-			t.Fatalf("a live interest is unreadable after a refused purge: %v", err)
+			t.Fatalf("a live interest is unreadable after refused purges and a refused publish on the registry's connection: %v", err)
 		}
 	})
 }
@@ -881,6 +894,9 @@ type grantedServer struct {
 	// machine a seeding put can take more than a second.
 	js natsgo.JetStreamContext
 	kv natsgo.KeyValue
+	// violations carries the first permissions violation the server reports to conn, which nats.go
+	// hands conn's error handler, for a case that has the server refuse a publish there.
+	violations <-chan error
 }
 
 // startGrantedServer starts a tracing NATS server whose one nkey user may publish to everything
@@ -900,7 +916,18 @@ func startGrantedServer(t *testing.T, deny []string, options ...OpenOption) gran
 	srv, uri := testnats.StartConfig(t, config, []string{"-DV", "-js"}, false)
 	// StartConfig returned once the server refused a credential-less client with its own
 	// authorization violation, so it is up, speaking the client protocol and enforcing this user.
-	conn, err := testnats.AwaitConnectSeed(t, uri, seed)
+	// The handler hands conn's permissions violations to the case without ever blocking nats.go's
+	// callback goroutine: one past what the channel holds is dropped, and no case causes more.
+	violations := make(chan error, 1)
+	conn, err := testnats.AwaitConnectSeed(t, uri, seed, natsgo.ErrorHandler(func(_ *natsgo.Conn, _ *natsgo.Subscription, err error) {
+		if !errors.Is(err, natsgo.ErrPermissionViolation) {
+			return
+		}
+		select {
+		case violations <- err:
+		default:
+		}
+	}))
 	if err != nil {
 		t.Fatalf("connect to the granted NATS: %v", err)
 	}
@@ -917,7 +944,7 @@ func startGrantedServer(t *testing.T, deny []string, options ...OpenOption) gran
 	seedMarkers(t, kv, 6)
 	seedLive(t, kv, 3)
 	registry := openRegistry(t, conn, options...)
-	return grantedServer{srv: srv, url: uri, seed: seed, conn: conn, registry: registry, js: js, kv: kv}
+	return grantedServer{srv: srv, url: uri, seed: seed, conn: conn, registry: registry, js: js, kv: kv, violations: violations}
 }
 
 // traceSentinels numbers the sentinels traceThrough publishes, so each call waits for its own
