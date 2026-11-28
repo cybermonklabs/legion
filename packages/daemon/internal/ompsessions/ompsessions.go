@@ -129,11 +129,12 @@ var errHolderClosed = errors.New("the session database connection was closed by 
 // each reader's session, as that reader: a read's row_security off makes a query a policy would
 // affect fail instead (`query would be affected by row-level security policy`). Each is SET LOCAL
 // in the opening, and no startup parameter of the connection, because pods reach the database
-// through a PgBouncer pool in transaction mode, which refuses search_path at startup and carries no
-// setting of a session from one transaction to the next (TestNoStatementRunsAnObjectAnotherLoginPlanted
-// holds each). PostgreSQL has restrict_nonsystem_relation_kind from 16.4 on: an older server
-// refuses every opening (`unrecognized configuration parameter`), so each call closes its 4
-// connections and fails, and no session is read or written.
+// through a PgBouncer pool in transaction mode, which refuses search_path as a startup parameter
+// and gives a server connection, with the session settings another client left on it, to the next
+// client (TestNoStatementRunsAnObjectAnotherLoginPlanted holds each). PostgreSQL has
+// restrict_nonsystem_relation_kind from 16.4 on: an older server refuses every opening
+// (`unrecognized configuration parameter`), so each call closes its 4 connections and fails, and no
+// session is read or written.
 //
 // That covers name lookup alone. What the tables' owner attaches to the tables themselves, a
 // trigger, a rule, a column default, a CHECK constraint, a domain or an expression index, runs as
@@ -172,11 +173,13 @@ func (p pinned) query(ctx context.Context, sql string, arguments ...any) (pgx.Ro
 //     new connection in conn from the closed one's configuration (pgx's Config) and runs the whole
 //     transaction again from its start, and each function's fn keeps nothing from a failed try. The
 //     fourth such failure is closed and returned, naming the tries and the last SQLSTATE (bounded).
-//   - Once COMMIT was sent nobody knows whether the transaction committed, so a connection lost
-//     then, or any error of COMMIT, closes the connection and is returned, and nothing runs again:
-//     a retry would answer a write that landed as a *MovedError, which the keeper reads as another
-//     writer and stops saving the file, where it keeps any other error as a save that may have
-//     landed, and an Import that landed as Identical in place of Copied.
+//   - Once COMMIT was sent, a connection lost then, or any error of COMMIT, closes the connection
+//     and is returned, and nothing runs again. Where the connection ended, or the server ended it
+//     with a FATAL or PANIC error, nobody knows whether the transaction committed, and a retry
+//     would answer a write that landed as a *MovedError, which the keeper reads as another writer
+//     and stops saving the file, where it keeps any other error as a save that may have landed, and
+//     an Import that landed as Identical in place of Copied. Where the server refused COMMIT on a
+//     connection pgx kept, the transaction did not commit, and the error says so (commitFailed).
 //   - A context that ended closes the connection and is returned, wrapping the context's error.
 //   - Any other error, fn's own among them, rolls back and is returned as it is, so a caller reads
 //     42P01 as "no table" only from a statement of its own: each error of the helper's own steps is
@@ -267,8 +270,7 @@ func inTransaction(ctx context.Context, conn *Conn, readOnly bool, fn func(pinne
 			if s.ended != nil {
 				return failed("the call's context ended "+stageNames[s.at], err, s.ended)
 			}
-			return failed("COMMIT was sent, and the connection ended or the server refused it, so whether the "+
-				"transaction committed is not known, and the client runs it no more", err, nil)
+			return commitFailed(err, s.closed)
 		case giveUp:
 			drop()
 			return bounded(err)
@@ -396,8 +398,14 @@ func repairless(s step) bool {
 	if !errors.As(s.err, &pgErr) {
 		return false
 	}
+	return fatal(pgErr) || pgErr.Code == readOnlySQLTransaction || pgErr.Code == insufficientPrivilege
+}
+
+// fatal reports whether pgErr is an error with which the server ends the connection: FATAL or
+// PANIC.
+func fatal(pgErr *pgconn.PgError) bool {
 	severity := cmp.Or(pgErr.SeverityUnlocalized, pgErr.Severity)
-	return severity == "FATAL" || severity == "PANIC" || pgErr.Code == readOnlySQLTransaction || pgErr.Code == insufficientPrivilege
+	return severity == "FATAL" || severity == "PANIC"
 }
 
 // stepError is an error of one of inTransaction's own steps: the reopen, the opening, the
@@ -434,6 +442,28 @@ func bounded(err error) error {
 		return failed(what+"the last failed with SQLSTATE "+pgErr.Code, err, nil)
 	}
 	return failed(what+"the server ended the last one's connection and gave no SQLSTATE", err, nil)
+}
+
+// commitFailed is the error of a COMMIT that failed while the call's context ran, err its error and
+// closed whether pgx closed the connection, and it says what is known of the transaction. The
+// server refused COMMIT, so the transaction did not commit, where it answered COMMIT with ROLLBACK
+// (pgx.ErrTxCommitRollback), or with an error that is neither FATAL nor PANIC on a connection pgx
+// kept, which pgx's Commit keeps only where the server says it is out of the transaction (status
+// 'I'). Where the connection ended, which pgx closed, or the server ended it with a FATAL or PANIC
+// error, whether the transaction committed is not known. Either way the client runs it no more
+// (decide).
+func commitFailed(err error, closed bool) error {
+	var pgErr *pgconn.PgError
+	switch {
+	case errors.Is(err, pgx.ErrTxCommitRollback):
+		return failed("the server refused COMMIT, answering it with ROLLBACK, so the transaction did not commit, "+
+			"and the client runs it no more", err, nil)
+	case !closed && errors.As(err, &pgErr) && !fatal(pgErr):
+		return failed("the server refused COMMIT with SQLSTATE "+pgErr.Code+", so the transaction did not commit, "+
+			"and the client runs it no more", err, nil)
+	}
+	return failed("COMMIT was sent, and the connection ended or the server refused it, so whether the "+
+		"transaction committed is not known, and the client runs it no more", err, nil)
 }
 
 // notTables names, by name and kind, each relation in public at either of Oh My Pi's two table

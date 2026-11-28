@@ -35,7 +35,8 @@ var verdictNames = map[verdict]string{
 // as the bound; the read-only default, any other SQLSTATE and fn's own error roll back and return; a
 // context that ended, and any error once COMMIT was sent, ErrTxCommitRollback included, close and
 // return. Each row's comment names the database test that drives it on a real server, where one
-// does. Last, the errors of the helper's own steps: one carrying 42P01 is no "no table".
+// does. Last, the errors of the helper's own steps: one carrying 42P01 is no "no table", and a
+// failed COMMIT's says whether the transaction did not commit or whether that is not known.
 func TestEachFailureOfATransactionIsClosedRetriedOrReturned(t *testing.T) {
 	server := func(severity, code, message string) *pgconn.PgError {
 		return &pgconn.PgError{Severity: severity, SeverityUnlocalized: severity, Code: code, Message: message}
@@ -182,6 +183,51 @@ func TestEachFailureOfATransactionIsClosedRetriedOrReturned(t *testing.T) {
 		if own := failed("the call's context ended", missing, context.Canceled); !errors.Is(own, context.Canceled) || isUndefinedTable(own) {
 			t.Errorf("an error of the helper's own steps under a context that ended, %q: errors.Is(context.Canceled) = %t, "+
 				"isUndefinedTable = %t; want true and false", own, errors.Is(own, context.Canceled), isUndefinedTable(own))
+		}
+	})
+
+	// Every failure of COMMIT is closed and returned (rows 13 and 14), and its error says what is
+	// known of the transaction: where the server refused COMMIT on a connection pgx kept, with
+	// ROLLBACK or with an error that is neither FATAL nor PANIC, that it did not commit, naming the
+	// SQLSTATE where there is one; where the connection ended, which pgx closed, or the server sent
+	// FATAL or PANIC, that whether it committed is not known. Each keeps the text of the error COMMIT
+	// met, says the client runs the transaction no more, and is a step's error, which does not unwrap
+	// to the error COMMIT met.
+	t.Run("a failed COMMIT's error says whether the transaction committed", func(t *testing.T) {
+		const notCommitted, notKnown = "so the transaction did not commit", "whether the transaction committed is not known"
+		for _, row := range []struct {
+			what     string
+			err      error
+			closed   bool
+			want     string
+			sqlstate string
+		}{
+			{"the server answered COMMIT with ROLLBACK", pgx.ErrTxCommitRollback, false, notCommitted, ""},
+			{"a deferred trigger raised, the connection kept", server("ERROR", "P0001", "the trigger refuses this commit"), false, notCommitted, "P0001"},
+			{"a deferred unique constraint, the connection kept", server("ERROR", "23505", "duplicate key value violates unique constraint"), false, notCommitted, "23505"},
+			{"a serialization failure, wrapped, the connection kept", fmt.Errorf("commit: %w", server("ERROR", "40001", "could not serialize access")), false, notCommitted, "40001"},
+			{"an error on a connection pgx closed", refusedRole, true, notKnown, insufficientPrivilege},
+			{"the server ended the connection", ended, true, notKnown, "57P01"},
+			{"FATAL, on a connection pgx has not closed", ended, false, notKnown, "57P01"},
+			{"PANIC", panicked, false, notKnown, "XX000"},
+			{"the network, the connection closed", lost, true, notKnown, ""},
+		} {
+			got := commitFailed(row.err, row.closed)
+			text := got.Error()
+			var own *stepError
+			var pgErr *pgconn.PgError
+			switch {
+			case !errors.As(got, &own) || errors.As(got, &pgErr) || errors.Is(got, row.err):
+				t.Errorf("%s: %q is no step's error, or unwraps to the error COMMIT met", row.what, got)
+			case !strings.Contains(text, row.want) || strings.Contains(text, notCommitted) == strings.Contains(text, notKnown):
+				t.Errorf("%s: %q; want it to say %q, and not the other", row.what, got, row.want)
+			case !strings.Contains(text, "the client runs it no more"):
+				t.Errorf("%s: %q does not say that the client runs the transaction no more", row.what, got)
+			case !strings.Contains(text, row.err.Error()):
+				t.Errorf("%s: %q does not keep the text of the error COMMIT met, %q", row.what, got, row.err)
+			case row.sqlstate != "" && !strings.Contains(text, "SQLSTATE "+row.sqlstate):
+				t.Errorf("%s: %q does not name SQLSTATE %s", row.what, got, row.sqlstate)
+			}
 		}
 	})
 }
@@ -641,8 +687,10 @@ func TestALostConnectionIsTriedAgainBeforeCommitAndNotAfter(t *testing.T) {
 		trace.hook(nil)
 		sent, connects := trace.take()
 		var moved *MovedError
-		if !ended || err == nil || errors.As(err, &moved) || !strings.Contains(err.Error(), "COMMIT") {
-			t.Fatalf("Replace with its backend ended at COMMIT (ended %t) = %v; want the lost commit's error, which is no *MovedError", ended, err)
+		if !ended || err == nil || errors.As(err, &moved) || !strings.Contains(err.Error(), "COMMIT") ||
+			!strings.Contains(err.Error(), "whether the transaction committed is not known") {
+			t.Fatalf("Replace with its backend ended at COMMIT (ended %t) = %v; want the lost commit's error, which says whether "+
+				"the transaction committed is not known and is no *MovedError", ended, err)
 		}
 		if pids := openings(sent); connects != 0 || len(pids) != 1 || sentCount(sent, "commit") != 1 || !conn.IsClosed() {
 			t.Errorf("after a lost COMMIT the client opened %d connections, opened its transaction on %v and sent %d COMMIT, closed %t; "+
@@ -717,6 +765,69 @@ func TestALostConnectionIsTriedAgainBeforeCommitAndNotAfter(t *testing.T) {
 		}
 		t.Logf("the reopen's refusal: %v", err)
 	})
+}
+
+// A COMMIT the server refuses on a connection it keeps, here for a deferred constraint trigger
+// whose function raises once the write's statements ran, rolled the transaction back, so the
+// call's error says the transaction did not commit, naming the SQLSTATE and keeping the server's
+// message, and it is no *MovedError and no server error. As after every failure of COMMIT, the
+// client closes the connection with no ROLLBACK and runs the transaction no more: the call opened
+// no second connection, sent one COMMIT, and the table holds no row at the path. Once the trigger
+// is dropped, the next call on the same Conn writes the row, on a new connection.
+func TestACommitTheServerRefusesOnALiveConnectionSaysTheTransactionDidNotCommit(t *testing.T) {
+	ctx := context.Background()
+	dsn, admin := repairDatabase(t, "legion_ompsessions_refusedcommit")
+	const refusal = "the test refuses this commit"
+	for _, statement := range []string{
+		"CREATE FUNCTION public.refuse_commit() RETURNS trigger LANGUAGE plpgsql AS $$BEGIN RAISE EXCEPTION '" + refusal + "'; END$$",
+		"CREATE CONSTRAINT TRIGGER refuse_commit AFTER INSERT OR UPDATE ON public.omp_session_files " +
+			"DEFERRABLE INITIALLY DEFERRED FOR EACH ROW EXECUTE FUNCTION public.refuse_commit()",
+	} {
+		if _, err := admin.Exec(ctx, statement); err != nil {
+			t.Fatalf("%s: %v", statement, err)
+		}
+	}
+	trace := &tracer{}
+	conn := tracedConn(t, dsn, trace)
+	pid := conn.c.PgConn().PID()
+	trace.take()
+	mtime := time.UnixMilli(podSessionWritten)
+	err := Replace(ctx, conn, claudeTranscript, Absent, claudeContent, mtime)
+	sent, connects := trace.take()
+	var moved *MovedError
+	var pgErr *pgconn.PgError
+	if err == nil || errors.As(err, &moved) || errors.As(err, &pgErr) || !strings.Contains(err.Error(), "so the transaction did not commit") ||
+		!strings.Contains(err.Error(), "SQLSTATE P0001") || !strings.Contains(err.Error(), refusal) {
+		t.Fatalf("Replace whose COMMIT the trigger refused = %v; want a step's error that says the transaction did not commit, "+
+			"naming SQLSTATE P0001 and the server's message %q", err, refusal)
+	}
+	t.Logf("the refused COMMIT's error: %v", err)
+	if pids := openings(sent); connects != 0 || len(pids) != 1 || pids[0] != pid || sentCount(sent, "commit") != 1 || !conn.IsClosed() {
+		t.Errorf("after a refused COMMIT the client opened %d connections, opened its transaction on %v and sent %d COMMIT, closed %t; "+
+			"want no new connection, one opening on %d, one COMMIT, the connection closed", connects, pids, sentCount(sent, "commit"), conn.IsClosed(), pid)
+	}
+	if failure := noRollback(sent); failure != "" {
+		t.Error(failure)
+	}
+	gone(t, admin, []uint32{pid})
+	if got := stored(ctx, admin, claudeTranscript); got != noRow {
+		t.Errorf("the tables hold %s at %s, want nothing: the server rolled the transaction back", got, claudeTranscript)
+	}
+
+	if _, err := admin.Exec(ctx, "DROP TRIGGER refuse_commit ON public.omp_session_files"); err != nil {
+		t.Fatal(err)
+	}
+	if err := Replace(ctx, conn, claudeTranscript, Absent, claudeContent, mtime); err != nil {
+		t.Fatalf("Replace on the same Conn once the trigger is dropped = %v; want it written", err)
+	}
+	sent, connects = trace.take()
+	if next := openings(sent); connects != 1 || len(next) != 1 || next[0] == pid || conn.IsClosed() || conn.c.PgConn().PID() != next[0] {
+		t.Errorf("the next call opened %d connections and opened its transaction on %v, the Conn on %d (closed %t); "+
+			"want one new backend, not %d, which the Conn holds open", connects, next, conn.c.PgConn().PID(), conn.IsClosed(), pid)
+	}
+	if got, want := stored(ctx, admin, claudeTranscript), storedRow("", len(claudeContent), mtime, [2]string{"0", string(claudeContent)}); got != want {
+		t.Errorf("the row is %s; want %s", got, want)
+	}
 }
 
 // A write under a read-only default of the login (ALTER ROLE … SET) or of the database (ALTER

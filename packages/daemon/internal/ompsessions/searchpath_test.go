@@ -44,8 +44,8 @@ const containerReadiness = 60 * time.Second
 // have docker, so a skip there would take the pooled leg out of the one run that holds it.
 const noDocker = "no docker on PATH, so the pooled leg cannot start the PgBouncer it runs through. The session database's " +
 	"pods reach it through a PgBouncer pool in transaction mode, which refuses search_path as a startup parameter and " +
-	"carries no setting from one transaction to the next, so a pin a direct connection alone holds would pass here and " +
-	"fail there. Run the test where docker is on PATH: it starts the pool itself."
+	"gives a server connection, with the session settings another client left on it, to the next client, so a pin a " +
+	"direct connection alone holds would pass here and fail there. Run the test where docker is on PATH: it starts the pool itself."
 
 // dockerFor is the docker on PATH, for a test that starts its servers with it; why is what the test
 // says without one. Outside CI the test skips with why, and under GITHUB_ACTIONS=true it fails with
