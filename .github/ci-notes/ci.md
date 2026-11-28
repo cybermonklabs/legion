@@ -95,11 +95,13 @@ lacks the pin fails the listing, naming the cause, rather than fetching a packag
 On a 4-processor runner the generation spends about 7 s in the table's thread, 14 s of
 processor time in go list and, with tsc, 11 s listing the dashboard's and the proof editor's
 programs. Each piece alone gained nothing (3 runs each, run 45885103288 and earlier, every
-output the same): the go commands begun during the load slowed the load from 4.3 to 7.3 s until
-their threads were lowered to nice 10, which left the step at 13.8 s against 14.3 s; tsgo
-without the early go commands left it at 13.8 to 14.7 s, the commands then waiting for the load
-as before. Together the listing's processor time falls from 11 s to under 4 s, the go commands
-take what the load leaves, and the step takes 11.2 to 11.7 s.
+output the same): the go list commands begun during the load slowed the load from 4.3 to 7.3 s
+until their threads were lowered to nice 10, which left the step at 13.8 s against 14.3 s; tsgo
+without the early listings left it at 13.8 to 14.7 s, the listings then waiting for the load as
+before. Together the listing's processor time falls from 11 s to under 4 s, and the go list
+commands take what the load leaves. On main's a36aa52d, whose table loads in about 7.5 s, the
+step took 17.5 to 18.0 s with tsc and no early listings, and 14.3 to 15.5 s with both, five runs
+of each in one window, every output the same (run 46108073231).
 
 Why computed. The filters were one file every job's filter was in, and every pull request that
 added a read, a test file or a package a job compiles edited it, most of them at the same lines:
