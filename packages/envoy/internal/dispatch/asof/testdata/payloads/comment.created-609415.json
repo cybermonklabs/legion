@@ -1,0 +1,64 @@
+{
+  "id": 609415,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 226,
+  "type": "comment.created",
+  "actor": {
+    "kind": "session",
+    "id": "01a1e35b-2248-746b-b56d-3bbdc18d819c"
+  },
+  "notify": false,
+  "created_at": "2026-11-16T09:20:36.042403Z",
+  "payload": {
+    "id": "f12c26f8-cada-45ce-82b9-5ebedd4278d2",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolo",
+    "turn": null,
+    "anchor": null,
+    "ask_id": null,
+    "author": {
+      "id": "01a1e35b-2248-746b-b56d-3bbdc18d819c",
+      "kind": "session"
+    },
+    "answers": "ecb0efea-e907-42c8-b99f-c842979178ad",
+    "mentions": [
+      {
+        "target": "role:lorem ipsum dolor sit amet l",
+        "delivery": "steer",
+        "session_id": "01a1cf1a-5130-7462-ac3e-bdb2eea4203d"
+      }
+    ],
+    "reply_to": "ecb0efea-e907-42c8-b99f-c842979178ad",
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-11-16T09:20:36.047186Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "reply_block": null,
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "",
+    "thread_logins": [],
+    "suppress_route": false,
+    "thread_root_id": "ecb0efea-e907-42c8-b99f-c842979178ad",
+    "references_changed": [
+      {
+        "id": "3bca78b2-6f90-4fc9-8c89-289bab72e2ed",
+        "ref": "dispatch://ACME-2",
+        "kind": "artifact"
+      },
+      {
+        "id": "ACME-3",
+        "kind": "issue"
+      },
+      {
+        "id": "ACME-2",
+        "kind": "issue"
+      }
+    ],
+    "mentions_decide_routes": true
+  }
+}

@@ -1,0 +1,59 @@
+{
+  "id": 106833,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 15,
+  "type": "comment.anchor_refreshed",
+  "actor": {
+    "kind": "session",
+    "id": "01a17def-fc53-7797-831e-129920a0f2b7",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor sit ",
+      "cwd": "lorem ipsum dolor sit am",
+      "session_title": "lorem ipsum dolor sit amet lor"
+    }
+  },
+  "notify": false,
+  "created_at": "2026-10-29T08:32:42.250385Z",
+  "payload": {
+    "id": "39245e0d-0cd0-4bd4-9aa2-571ecf8cc06a",
+    "body": "lorem ipsum dolor sit amet lorem ipsum dolor sit ",
+    "turn": null,
+    "anchor": {
+      "quote": "lorem ipsum dolor sit amet lorem ",
+      "mark_id": "39245e0d-0cd0-4bd4-9aa2-571ecf8cc06a",
+      "version": 1,
+      "block_id": "a53fb8c4-cbf6-436f-a2ec-b70d2bd06954",
+      "orphaned": false,
+      "artifact_id": "0f666ea2-e2e0-44bd-8f2e-c08eda5a894d"
+    },
+    "ask_id": null,
+    "author": {
+      "id": "01a17def-fc53-7797-831e-129920a0f2b7",
+      "kind": "session",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit am",
+        "host": "lor",
+        "machine": "lorem ipsum dolor sit ",
+        "session_title": "lorem ipsum dolor sit amet lor"
+      }
+    },
+    "mentions": [],
+    "reply_to": null,
+    "resolved": false,
+    "edited_at": null,
+    "issue_key": "ACME-1",
+    "created_at": "2026-10-29T08:32:02.731732Z",
+    "deliveries": [],
+    "suggestion": null,
+    "artifact_id": null,
+    "project_key": "ACME",
+    "resolved_at": null,
+    "resolved_by": null,
+    "artifact_name": "lorem i",
+    "artifact_slug": "lore",
+    "suppress_route": false
+  }
+}

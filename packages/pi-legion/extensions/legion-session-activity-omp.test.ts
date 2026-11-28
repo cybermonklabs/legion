@@ -20,7 +20,9 @@ import {
   spawnRpc,
   writeStandinProfile,
 } from "@legion/pi-shared/test/omp-harness";
+import { useRowGuard } from "@legion/test-fixtures/deadline";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { span, until } from "@legion/test-fixtures/wait";
 
 // What the pinned Oh My Pi reports of a role session's own background work (INFRA-945), which is
 // the whole input to the daemon's idle rule: a claim that reports background work keeps its pod,
@@ -55,6 +57,10 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 // where the pi-legion job supplies both (`ompNatsGuard`).
 const { skip, setup } = ompNatsGuard();
 
+/** How often the pane reads the host's snapshot of its background work
+ *  (`SESSION_ACTIVITY_PERIOD_MS`, a constant of extensions/legion.ts's entry). */
+const SESSION_ACTIVITY_PERIOD_MS = 5_000;
+
 /** The pane's role, tree and issue; the stand-in daemon answers that this claim owes nothing. */
 const ROLE = "implementer";
 const TREE = "ACT-1";
@@ -81,22 +87,20 @@ const SERVICE_NAME = "activity-service";
  *  reading the case makes of what the session reports. */
 const ASYNC_JOB_SECONDS = 600;
 
-/** How long the case waits for one thing the pane owes it before failing on it. */
-const DEADLINE_MS = 90_000;
-
-/**
- * The reporting period the pane's own interval runs on (`SESSION_ACTIVITY_PERIOD_MS` in
- * extensions/legion.ts), and how long the case watches for a report that must not come. Three
- * periods and a margin: a report of the service would have to arrive inside one of them, since
- * the pane reads the host's snapshot once a period and sends whenever the reading changed.
- */
-const REPORT_PERIOD_MS = 5_000;
-const QUIET_WATCH_MS = 3 * REPORT_PERIOD_MS + 2_000;
+// The one row of this file starts a cold role pane (a pinned Oh My Pi binary spawning and
+// registering over NATS, which reads 5-6 s) and then watches it over several of its 5 s activity
+// periods, so it needs more than Bun's 5000 ms default in every mode: `bun run test`'s workers
+// declare 300000 ms (`test-timeout-preload.ts`), but a run of this file alone takes no worker and
+// keeps 5000 ms. It takes a guard of its own, as the cases of `legion-stall-watchdog-omp.test.ts`
+// do: the row calls `useRowGuard` for the shared wait's deadline and passes the same value as
+// `test`'s third argument for Bun's row kill, and the afterEach, whose cleanup kills a real Oh My
+// Pi, passes it as its own hook timeout.
+const COLD_PANE_GUARD_MS = 300_000;
 
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** A Messages request's whole conversation, as one string to find texts in. */
 function conversation(request: Request): string {
@@ -126,20 +130,18 @@ interface Held {
   reply(blocks: readonly Block[]): void;
 }
 
-/** Polls `probe` until it returns a value, failing on `what` at the deadline or when omp exits. */
-async function until<T>(
+/** Waits through the shared wait until `probe` returns a value; omp's exit ends it at once. */
+async function waitFor<T>(
   what: string,
   probe: () => T | undefined | Promise<T | undefined>,
   closed: { readonly error?: unknown }
 ): Promise<T> {
-  const deadline = Date.now() + DEADLINE_MS;
-  for (;;) {
+  const answered = await until(what, async () => {
     if (closed.error !== undefined) throw closed.error;
     const value = await probe();
-    if (value !== undefined) return value;
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-    await Bun.sleep(50);
-  }
+    return value === undefined ? undefined : { value };
+  });
+  return answered.value;
 }
 
 /** The role pane the case runs, and what it lets the case do to it. */
@@ -152,7 +154,8 @@ interface RolePane {
   readonly workspace: string;
   /** Waits for a held Messages request `match` accepts that the case has not taken yet. */
   next(what: string, match: (request: Request) => boolean): Promise<Held>;
-  /** Polls `probe` until it returns a value, failing at the deadline or when omp exits. */
+  /** Waits through the shared wait until `probe` returns a value, failing at the row's deadline
+   * or when omp exits. */
   until<T>(what: string, probe: () => T | undefined | Promise<T | undefined>): Promise<T>;
 }
 
@@ -294,7 +297,7 @@ async function startRolePane(): Promise<RolePane> {
   });
   rpc.send({ type: "prompt", message: ASSIGNMENT });
 
-  await until(
+  await waitFor(
     "the pane's registration with the Envoy listener",
     () => requests.find((request) => request.path === "/v1/interests/subscribe"),
     closed
@@ -306,7 +309,7 @@ async function startRolePane(): Promise<RolePane> {
     malformed,
     workspace,
     async next(what, match) {
-      const request = await until(
+      const request = await waitFor(
         what,
         () => held.find((candidate) => !taken.has(candidate) && match(candidate.request)),
         closed
@@ -314,13 +317,14 @@ async function startRolePane(): Promise<RolePane> {
       taken.add(request);
       return request;
     },
-    until: (what, probe) => until(what, probe, closed),
+    until: (what, probe) => waitFor(what, probe, closed),
   };
 }
 
 test.skipIf(skip)(
   "what a role session reports of its background work on the real Oh My Pi: a backgrounded bash job and a task subagent reach the daemon, a named bash service does not",
   async () => {
+    useRowGuard(COLD_PANE_GUARD_MS);
     const pane = await startRolePane();
     const heartbeat = path.join(pane.workspace, "service-heartbeat.log");
     /** How many ticks the service has written, which is how the case knows it is running. */
@@ -350,14 +354,26 @@ test.skipIf(skip)(
 
     // Nothing else of the session is running — the role's turn is held by the stand-in, which is
     // the host waiting on the model, not background work of the session's own. The pane reads the
-    // host's snapshot once a period and sends only what changed, so a service the host reported
-    // would show here as a new report naming a kind. A real clock is what shows it: the
-    // proposition is that the host reported nothing new over three of its own periods, and a
-    // host that reports nothing emits no signal to await.
-    await Bun.sleep(QUIET_WATCH_MS);
+    // host's snapshot once a period (`SESSION_ACTIVITY_PERIOD_MS`, 5 s, extensions/legion.ts) and
+    // sends a report between turns only when the reading changed, so a service the host reported
+    // would change the reading and be sent within a period of the service's start. Whether it is
+    // reported is an absence: no state of the pane says the service was read and left out, and no
+    // later action of the case reaches the period's tick, so the case holds three periods and two
+    // seconds from the service's first heartbeat, and then reads every report since. One that came
+    // before the service started tells nothing of it.
+    await span(
+      3 * SESSION_ACTIVITY_PERIOD_MS + 2_000,
+      "three of the pane's 5 s activity periods from the named service's start, in which a service the host reported would change the reading and be sent; no state or later action reaches that tick"
+    );
+    // The service is running all the while: it wrote a heartbeat after its first, and more by the
+    // end.
     const serviceTicks = await ticks();
     expect(serviceTicks).toBeGreaterThan(started);
-    expect(pane.reports.length).toBeGreaterThan(0);
+    // The pane sends its first report once a period, which a loaded machine stretches, so the
+    // case waits for that report rather than reading it is already there.
+    await pane.until("the session's first activity report", () =>
+      pane.reports.length > 0 ? pane.reports.length : undefined
+    );
     for (const report of pane.reports.slice(beforeTheService)) {
       expect(report.backgroundWork).toEqual({ running: false, kinds: [] });
     }
@@ -420,5 +436,5 @@ test.skipIf(skip)(
         `across ${pane.reports.length} reports`
     );
   },
-  300_000
+  COLD_PANE_GUARD_MS
 );

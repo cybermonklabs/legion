@@ -111,10 +111,19 @@ const UNREACHED_COOLDOWN_MS = 400_000;
  * that outruns it leaves the resumed life no turn before the due time, which the case allows. */
 const RELAUNCH_WAIT_MS = 12_000;
 
+// Each case starts a cold Oh My Pi pane (a pinned binary spawning and registering over NATS, which
+// reads 5-6 s) and watches its cooldowns run out, so it needs more than Bun's 5000 ms default in
+// every mode: `bun run test`'s workers declare 300000 ms (`test-timeout-preload.ts`), but a run of
+// this file alone takes no worker and keeps 5000 ms. Each case and the afterEach, whose cleanup
+// kills a real Oh My Pi, therefore take that same 300000 ms as a guard of their own, as the cases
+// of `legion-stall-watchdog-omp.test.ts` do; the pane's waits here are the file's and the
+// harness's own, not the shared wait, so no case sets a row guard for it.
+const COLD_PANE_GUARD_MS = 300_000;
+
 const cleanup: Cleanup = [];
 afterEach(async () => {
   for (const step of cleanup.splice(0).reverse()) await step();
-});
+}, COLD_PANE_GUARD_MS);
 
 /** A shell sleep the model asks for, which keeps one turn running while a cooldown runs out: the
  * requests of that same turn are the ones that show where the return came. */
@@ -490,7 +499,7 @@ test.skipIf(skip)(
     // And the session does come back, once the wait is over.
     expect(pane.returnedAt(dueAt)).toBeDefined();
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -560,7 +569,7 @@ test.skipIf(skip)(
     expect(pane.returnedAt(dueAt)).toBeDefined();
     expect(pane.models().slice(2 + REFUSED_SENDS)).not.toContain("middle-model");
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -583,7 +592,7 @@ test.skipIf(skip)(
     // plugin's own walk moved the session to.
     expect(userText(pane.turns()[1] as Request)).toContain("Carry on.");
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -627,7 +636,7 @@ test.skipIf(skip)(
     // The return clears the arming and leaves the doubling where it stands.
     expect(states.at(-1)).toEqual({ levels: { [STRONG]: 1 } });
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -682,7 +691,7 @@ test.skipIf(skip)(
     expect(timeline[2]?.at).toBeGreaterThanOrEqual(armings[0]?.arming?.dueAt ?? Infinity);
     expect(timeline[4]?.at).toBeGreaterThanOrEqual(dueAt);
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -745,7 +754,7 @@ test.skipIf(skip)(
     expect(timeline[2]?.at).toBeGreaterThanOrEqual(armings[0]?.value.arming?.dueAt ?? Infinity);
     expect(timeline[4]?.at).toBeGreaterThanOrEqual(dueAt);
   },
-  240_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -807,7 +816,7 @@ test.skipIf(skip)(
     const back = timeline.slice(walk + 1).find((change) => change.value === STRONG);
     expect(back?.at).toBeGreaterThanOrEqual(dueAt);
   },
-  300_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -853,7 +862,7 @@ test.skipIf(skip)(
     const armedLast = states.findLastIndex((state) => state.arming !== undefined);
     expect(states[armedLast + 1]).toEqual({ levels: { [STRONG]: 2 } });
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -904,7 +913,7 @@ test.skipIf(skip)(
     expect(woken[0]?.messages).toContain(summary);
     expect(woken[0]?.model).toBe("strong-model");
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -989,7 +998,7 @@ test.skipIf(skip)(
     // The run is the job's: its first request carries the job's output.
     expect(pane.served[first]?.messages).toContain("released");
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );
 
 test.skipIf(skip)(
@@ -1052,5 +1061,5 @@ test.skipIf(skip)(
       levels: { [STRONG]: 2 },
     });
   },
-  180_000
+  COLD_PANE_GUARD_MS
 );
