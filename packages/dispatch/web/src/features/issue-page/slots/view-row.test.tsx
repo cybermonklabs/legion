@@ -12,15 +12,16 @@ import type {
   ReferenceTarget,
 } from "../../../api/types";
 import { dashboardRepliesQuery } from "../../dashboard/useWaitingItems";
-import { KEY } from "../../decision-card/decision-fixture";
+import { decision, KEY } from "../../decision-card/decision-fixture";
 import { DESKTOP_WIDTH, stubViewport } from "../../margin/margin-fixture";
 import { buildDispatchReference } from "../../refs/routes";
 import { KeymapProvider } from "../../shell/KeymapProvider";
 import { replyRow } from "../../threads/replies-fixture";
-import { issueDetails, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
+import { decisionsRead, issueDetails, SPEC_SLUG } from "../decisions-filter/decisions-fixtures";
 import { presetPath } from "../issue-address";
-import { readComment, TWO_THREADS } from "../outline-fixtures";
-import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER, type Preset } from "../page-words";
+import { TWO_THREADS } from "../outline-fixtures";
+import { FILTER_SIGNAL_WORDS, PRESET_NAMES, PRESET_ORDER } from "../page-words";
+import type { Filter } from "../presets";
 import { ProvidersSlot } from "./providers";
 import { ViewRowSlot } from "./view-row";
 
@@ -68,12 +69,11 @@ function blocksWithStep(id: string): never {
   ) as never;
 }
 
-/** What the row draws once every read has answered: the spec's two statements, and the two
- *  threads the reader began, which are Conversation's entries. Dashboard draws no count: what
- *  waits on the reader is counted in the header. Threads draws none: no unread thread of the
- *  reader's waits on them (`answerReads`). */
-const ANSWERED_COUNTS: Readonly<Partial<Record<Preset, string>>> = {
-  conversation: "2",
+/** The counts once every read has answered: two statements and no decisions, steps or checks.
+ *  Conversation draws no count, and nor does Dashboard: what waits on the reader is counted in
+ *  the header. Threads draws none: no unread thread of the reader's waits on them
+ *  (`answerReads`). */
+const ANSWERED_COUNTS: Readonly<Record<Filter, string>> = {
   decisions: "0",
   plan: "0",
   spec: "2",
@@ -317,8 +317,8 @@ test("the view row draws no count while a read of the tree stands failed", async
   }
 });
 
-// Conversation counts the threads the reader began, so until the reader's login has answered it
-// counts none of them: every read of the tree holding its answer is not enough on its own.
+// Decisions' flag counts decisions marked `waiting`, which the tree does not mark until the
+// reader's login has answered. The tree's other reads holding their answers is not enough.
 test("the view row draws no count while the reader's login is out, and the real counts once it has answered", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -399,7 +399,7 @@ test("under a words filter the view row draws no count while the names read is o
 // The names read is read under the set of addresses the tree holds, so a read that brings a node
 // whose words cite a new address reads the names again, of a new set. The names in hand stand
 // while that read is out, as the last answer the names read gave, so under a words filter the
-// row keeps drawing its counts meanwhile, the new node counted among them.
+// row keeps drawing its counts meanwhile, and counts the node that read brought.
 test("under a words filter the view row keeps drawing its counts while the names read of a new set of addresses is out", async () => {
   const restoreMatchMedia = stubViewport(DESKTOP_WIDTH);
   const client = newClient();
@@ -407,7 +407,7 @@ test("under a words filter the view row keeps drawing its counts while the names
   reads.blocks.mockImplementation(blocksWithStep);
   const cited = "dispatch://CORE-7";
   // The names read of the first set answers with the step's words; the one of a set that holds
-  // the address a new comment cites is held out for the rest of the case.
+  // the address a new decision cites is held out for the rest of the case.
   const held = Promise.withResolvers<never>();
   reads.names.mockImplementation((refs: readonly string[]) =>
     refs.includes(cited)
@@ -422,27 +422,26 @@ test("under a words filter the view row keeps drawing its counts while the names
       expect(
         drawnCounts(view.container),
         "the row did not draw its counts once the names read of the first set had answered"
-      ).toEqual({ conversation: "0", decisions: "0", plan: "1", spec: "0", verification: "0" })
+      ).toEqual({ decisions: "0", plan: "1", spec: "0", verification: "0" })
     );
 
-    // The comments are read again, and answer a new thread too, by the reader, whose words hold
-    // the filter's word and cite an issue no other node names.
-    reads.comments.mockResolvedValue([
-      ...TWO_THREADS,
-      { ...readComment("head-c", 5), body: `Hang the lanterns as ${cited} asks.` },
-    ] as never);
-    await act(async () => client.invalidateQueries({ queryKey: ["comments", KEY] }));
+    // The decisions are read again, and answer a decision too, whose words hold the filter's
+    // word and cite an issue no other node names: Decisions counts it.
+    reads.decisions.mockResolvedValue(
+      decisionsRead([decision("d1", { text: `Hang the lanterns as ${cited} asks.` })])
+    );
+    await act(async () => client.invalidateQueries({ queryKey: ["decisions", KEY] }));
     await waitFor(() =>
       expect(
         reads.names.mock.calls.some(([refs]) => refs.includes(cited)),
-        "the names were never read for the set that holds the new comment's address"
+        "the names were never read for the set that holds the new decision's address"
       ).toBe(true)
     );
     expect(client.isFetching(), "a read other than the names' is still out").toBe(1);
     expect(
       drawnCounts(view.container),
       "the row did not draw its counts with the names read of the new set out"
-    ).toEqual({ conversation: "1", decisions: "0", plan: "1", spec: "0", verification: "0" });
+    ).toEqual({ decisions: "1", plan: "1", spec: "0", verification: "0" });
   } finally {
     view.unmount();
     restoreMatchMedia();
@@ -528,7 +527,7 @@ test("under a words filter the view row of an issue that holds no node draws no 
       expect(
         drawnCounts(view.container),
         "the row did not draw its counts once the names read of the issue's own key had answered"
-      ).toEqual({ conversation: "0", decisions: "0", plan: "0", spec: "0", verification: "0" })
+      ).toEqual({ decisions: "0", plan: "0", spec: "0", verification: "0" })
     );
   } finally {
     view.unmount();

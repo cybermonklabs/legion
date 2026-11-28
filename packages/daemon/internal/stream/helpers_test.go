@@ -278,8 +278,14 @@ func (p *peer) awaitClosed() {
 // Hello event consumed.
 func (h *harness) connect(bootToken string) *peer {
 	h.t.Helper()
+	return h.connectWith(shimwire.Hello2{BootToken: bootToken})
+}
+
+// connectWith is connect with hello as the peer's hello.
+func (h *harness) connectWith(hello shimwire.Hello2) *peer {
+	h.t.Helper()
 	p := dial(h.t, h.listener.Addr())
-	p.hello(bootToken)
+	p.send(hello)
 	p.expect(shimwire.TypeHelloAck)
 	if event, ok := h.next().(Hello); !ok {
 		h.t.Fatalf("first event = %#v, want Hello", event)
@@ -318,11 +324,18 @@ func async(call func() error) <-chan error {
 
 func awaitResult(t *testing.T, result <-chan error) error {
 	t.Helper()
+	return awaitReturn(t, result, "the call did not return within the wait")
+}
+
+// awaitReturn is what a call returned. The wait only ends a test that hangs, and failing says
+// what did not happen.
+func awaitReturn(t *testing.T, result <-chan error, failure string) error {
+	t.Helper()
 	select {
 	case err := <-result:
 		return err
 	case <-time.After(wait):
-		t.Fatal("the call did not return within the wait")
+		t.Fatal(failure)
 		return nil
 	}
 }

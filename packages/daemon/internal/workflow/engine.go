@@ -190,6 +190,11 @@ type Config struct {
 	// reads nothing, so a record names no session and no model, which is the API-only daemon and
 	// every test that reads no agent.
 	StepAgent func(ctx context.Context, tx pgx.Tx, agent claim.Token) StepAgent
+	// ReadTotals reads the totals of each live launch of agents, before a fact's transaction
+	// (ReadFact), each read bounded by 5 s. It answers each read that gave totals. A step's start
+	// and end use these reads (keepStartTotals, writeCounts). Nil reads nothing, and an end then
+	// writes neither a set model nor answers.
+	ReadTotals func(ctx context.Context, agents []claim.Token) FactReads
 	// WorkspaceDir is the directory the runtime starts the role processes of the issue key in, when
 	// they work repo, the issue's working copy: the working copy line each start and resume of a
 	// phase's worker opens its task with (WorkingCopy, task, resumeText) names it for the repository
@@ -2463,9 +2468,12 @@ func (e *Engine) retryPhase(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 	// The release puts the issue back in the phase the hold is from, which is no move between
 	// phases, so the merge forward stands as the hold left it; but the worker it starts again is
 	// held as a worker a move starts is, where the merge of the head is owed to another role
-	// (holdStartedWorker). A merge owed to that worker itself is asked again at the ready of its new
-	// launch (askAgainAtLaunch). Then it queues the reconcile of the tree's news as a move does
-	// after its start (queueMovedNews).
+	// (holdStartedWorker). Unlike the move into merging (askMergerAtEntry), it sends no ask: an
+	// issue held from merging stands in merging while it is held (record.StandsAt), so no row of
+	// the merger's ask ended for want of merging (leftMergeForwardAt), and a merge owed to the
+	// worker it starts again is asked at the ready of that worker's new launch
+	// (askAgainAtLaunch). Then it queues the reconcile of the tree's news as a move does after its
+	// start (queueMovedNews).
 	if err := e.holdStartedWorker(ctx, tx, issue, pr); err != nil {
 		return "", err
 	}

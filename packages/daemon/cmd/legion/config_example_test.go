@@ -198,6 +198,35 @@ func TestShippedLegionYAMLExamplesCommitIssueTrailerReposPassesCheckConfig(t *te
 	}
 }
 
+// The example's commented watched_workflows, uncommented, passes the same check, whose stdout is
+// the shipped example's with the one line naming the project's two workflows, each with the
+// events it resolved to: the entry that names none watches schedule runs alone. The list is a
+// block list, one entry a line, as the example writes it, since an entry's events hold a comma.
+// It needs no volume, no mount and no controller setting.
+func TestShippedLegionYAMLExamplesWatchedWorkflowsPassesCheckConfig(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (stageShippedExample).
+	config := stageShippedExample(t, func(example string) string {
+		example = uncommentExample(t, example,
+			"  # WIDGETS:",
+			"  #   watched_workflows:",
+		)
+		example = uncommentFoldedLines(t, example, "\n    watched_workflows:\n", "  #     - ")
+		// The example's two forms of the project entry are alternatives, as the memory test says:
+		// the active empty one is commented out so the uncommented one is the project's whole entry.
+		return strings.Replace(example, "\n  WIDGETS: {}", "\n  # WIDGETS: {}", 1)
+	})
+
+	var out, errb bytes.Buffer
+	code := run(context.Background(), []string{"legion", "config", "check", "--config", config}, &out, &errb)
+
+	steps := defaultStepsTodayLine("WIDGETS")
+	want := strings.Replace(shippedExampleCheckOK, steps, steps+watchedWorkflowsCheckLine("WIDGETS",
+		"acme/widgets/release.yml@schedule", "acme/widgets/nightly.yaml@schedule,workflow_dispatch"), 1)
+	if code != 0 || out.String() != want || errb.Len() != 0 {
+		t.Fatalf("legion config check on the example with watched_workflows = %d, stdout %q, stderr %q; want 0 and %q", code, out.String(), errb.String(), want)
+	}
+}
+
 // The example's commented leak_check block, uncommented with a digest in place of its placeholder,
 // passes the same check and settles on the repository and the manifest digest it names. It needs
 // no volume and no mount: the block names a repository and a digest, not files.

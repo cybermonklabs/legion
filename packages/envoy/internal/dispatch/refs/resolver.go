@@ -13,7 +13,7 @@ import (
 // Reader is the database one write reads every text of its source through, over the pool or
 // transaction that write runs in and for the one source whose text it is: its kind and id decide
 // the document a `#id` resolves against, its writer the items a short id resolves among, and the
-// server URL is the one the mentions are read with. It is one write's object, not a cache: a
+// server's origins are the ones the mentions are read with. It is one write's object, not a cache: a
 // caller builds it, reads every text of that source through it - a comment's body, an ask's
 // question and each of its parts - and drops it, so the database answers once per kind for a
 // write however many texts it holds, and what it answered is the one transaction's view. It is
@@ -32,10 +32,10 @@ import (
 type Reader struct {
 	// ctx is the write's context, held because text.Resolver's methods take none: the reader
 	// lives for one write and is never stored.
-	ctx       context.Context
-	q         Queryer
-	kind, id  string
-	serverURL string
+	ctx      context.Context
+	q        Queryer
+	kind, id string
+	origins  text.Origins
 	// writer is the author of the source's text, whom its short ids resolve for (Items).
 	writer model.Actor
 
@@ -76,7 +76,7 @@ type prefixKey struct {
 }
 
 // NewReader is the Reader of one write of the text of the source fromKind/fromID, over q, the
-// pool or transaction that write runs in, with serverURL the server its mentions are read with,
+// pool or transaction that write runs in, with origins the server's its mentions are read with,
 // for writer, the source's author: a comment's, a message's or an ask's author, and a document
 // version's writer, the first author its row records (IndexedVersion). A short id the text writes
 // resolves only among the items writer may see, through the predicate every read of the graph
@@ -87,8 +87,8 @@ type prefixKey struct {
 // for the same person the write did. A source that records no author resolves for the zero actor,
 // which proves nobody and so sees no item reserved for its author. An ask's answer part is the one
 // text of a source that another person wrote, and it resolves for its answerer (writtenBy).
-func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID, serverURL string) *Reader {
-	return &Reader{ctx: ctx, q: q, writer: writer, kind: fromKind, id: fromID, serverURL: serverURL, source: &sourceReads{}}
+func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID string, origins text.Origins) *Reader {
+	return &Reader{ctx: ctx, q: q, writer: writer, kind: fromKind, id: fromID, origins: origins, source: &sourceReads{}}
 }
 
 // NewReaderInScope is NewReader for a source whose row the write's own transaction may have
@@ -102,17 +102,17 @@ func NewReader(ctx context.Context, q Queryer, writer model.Actor, fromKind, fro
 // The document is no more read here than ScopeOf is: both are read by Questions, for a body
 // that holds a `#` candidate and for no other, so a create whose text names no question block
 // sends neither query (PendingDocument).
-func NewReaderInScope(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID, serverURL string, document *PendingDocument) *Reader {
-	reader := NewReader(ctx, q, writer, fromKind, fromID, serverURL)
+func NewReaderInScope(ctx context.Context, q Queryer, writer model.Actor, fromKind, fromID string, origins text.Origins, document *PendingDocument) *Reader {
+	reader := NewReader(ctx, q, writer, fromKind, fromID, origins)
 	reader.source.pending = document
 	return reader
 }
 
-// ServerURL is the deployment the reader reads its mentions with, whose dashboard URLs are
+// Origins are the server's origins the reader reads its mentions with, whose dashboard URLs are
 // references: what a write that cuts the head of the same text an edge shows cuts it against
 // (EditedTargets).
-func (r *Reader) ServerURL() string {
-	return r.serverURL
+func (r *Reader) Origins() text.Origins {
+	return r.origins
 }
 
 // writtenBy is the Reader of the same write for a text of r's source that writer wrote rather
@@ -121,7 +121,7 @@ func (r *Reader) ServerURL() string {
 // issues a bare key names and the source's question map - it shares with r (sourceReads), so the
 // write still asks the database once per kind for those.
 func (r *Reader) writtenBy(writer model.Actor) *Reader {
-	return &Reader{ctx: r.ctx, q: r.q, writer: writer, kind: r.kind, id: r.id, serverURL: r.serverURL, source: r.source}
+	return &Reader{ctx: r.ctx, q: r.q, writer: writer, kind: r.kind, id: r.id, origins: r.origins, source: r.source}
 }
 
 // writerOf decodes the author a source's row records, a single-actor column, as the writer a
@@ -155,13 +155,13 @@ func writerOf(raw []byte) (model.Actor, error) {
 // the write's own transaction aborts that transaction, so the write fails at its next statement
 // whatever this answers.
 func (r *Reader) Mentions(body string) []text.Located {
-	located, err := text.Mentions(body, r.serverURL, r)
+	located, err := text.Mentions(body, r.origins, r)
 	if err != nil {
 		// Unreachable: r answers every failure as nothing resolved and returns none. A build
 		// that gives it a reason to fail must still not fail the write, so the text is indexed
 		// as the grammar alone reads it.
 		r.failed("resolve the references of a text", err)
-		return text.ExtractAt(body, r.serverURL)
+		return text.ExtractAt(body, r.origins)
 	}
 	return located
 }

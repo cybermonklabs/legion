@@ -4,8 +4,9 @@
 # may have run is edited without its replaces line"), fetches it into the checkout, and prints
 # its sha. actions/checkout leaves the tree one commit deep, and the check reads the base's files
 # with git, so the base has to be fetched before the check runs.
-# ci.yaml's changes job runs it too, on a pull request and on a dispatch of a branch that selects
-# by its diff, and hands the base it prints to the filter generation as CI_FILTERS_BASE
+# ci.yaml's changes job runs it too, on a pull request, on the approval-time run of a large pull
+# request (pull_request_review) and on a dispatch of a branch that selects by its diff, and hands
+# the base it prints to the filter generation as CI_FILTERS_BASE
 # (.github/ci-notes/ci.md#the-commit-a-change-is-measured-against).
 #
 # The base is the commit the run's tree lands onto:
@@ -36,16 +37,23 @@
 # the base and why, a refusal as an ::error:: line, and git's own output. Any other command that
 # fails, a fetch among them, exits with that command's status, so the check fails closed.
 #
+# Every fetch goes through fetch-depth-if-shallow.sh: in CI's shallow checkout it fetches with
+# the depth written here, which deepens the checkout only as far as the base needs; in a whole
+# clone, such as a developer's, it fetches with no depth, since a depth would make the clone
+# shallow and cut the history that every worktree of the clone reads.
+#
 # Run inside the checkout: .github/scripts/edited-migrations-base.sh
 # Its tests are in edited-migrations-base.test.sh, which ci.yaml's test job runs.
 set -euo pipefail
 shopt -s inherit_errexit
 
+script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
+
 event=${GITHUB_EVENT_NAME:?GITHUB_EVENT_NAME must name the event}
 sha=${GITHUB_SHA:?GITHUB_SHA must name the commit the run checked out}
 
 if [ "$event" != workflow_dispatch ]; then
-  git fetch --no-tags --depth=2 origin "$sha" >&2
+  "$script_dir/fetch-depth-if-shallow.sh" --depth=2 --no-tags origin "$sha" >&2
   base=$(git rev-parse HEAD^1)
   echo "edited-migrations base: $base, the first parent of $sha, the commit this $event run checked out" >&2
   echo "$base"
@@ -54,7 +62,7 @@ fi
 
 ref=${GITHUB_REF:?GITHUB_REF must name the ref the run was started on}
 if [ -n "${MIGRATION_BASE:-}" ]; then
-  git fetch --no-tags --depth=1 origin "$MIGRATION_BASE" >&2
+  "$script_dir/fetch-depth-if-shallow.sh" --depth=1 --no-tags origin "$MIGRATION_BASE" >&2
   echo "edited-migrations base: $MIGRATION_BASE, the migration-base this workflow_dispatch run on $ref names" >&2
   echo "$MIGRATION_BASE"
   exit 0
@@ -66,9 +74,10 @@ fi
 
 # The first pass fetches 64 commits of each history and each pass after it four times as many,
 # and a pass that reaches both roots leaves the repository whole, so the loop ends there at the
-# latest. The passes after the first name main's tip by its sha: git sends no want for a refspec
-# whose destination already holds the tip it would fetch, and main's history would then stay 64
-# commits deep.
+# latest. In a whole clone the first fetch takes no depth and the repository stays whole, so the
+# loop ends at its first pass. The passes after the first name main's tip by its sha: git sends
+# no want for a refspec whose destination already holds the tip it would fetch, and main's history
+# would then stay 64 commits deep.
 #
 # The base git merge-base finds in the fetched commits is sure to be the merge base of the whole
 # histories when no commit above it was cut off. A branch can hold a newer commit of main only
@@ -90,7 +99,7 @@ fi
 # object), not an answer, so the script prints git's message and exits 2 naming the code.
 main=refs/remotes/origin/main
 depth=64
-git fetch --no-tags --depth="$depth" origin "$sha" "+refs/heads/main:$main" >&2
+"$script_dir/fetch-depth-if-shallow.sh" --depth="$depth" --no-tags origin "$sha" "+refs/heads/main:$main" >&2
 main_sha=$(git rev-parse "$main")
 shallow_file=$(git rev-parse --git-path shallow)
 while :; do
@@ -120,7 +129,7 @@ while :; do
     fi
   fi
   depth=$((depth * 4))
-  git fetch --no-tags --depth="$depth" origin "$sha" "$main_sha" >&2
+  "$script_dir/fetch-depth-if-shallow.sh" --depth="$depth" --no-tags origin "$sha" "$main_sha" >&2
 done
 echo "edited-migrations base: $base, the merge base of HEAD $sha with main $main_sha: this workflow_dispatch run on $ref names no migration-base, and a branch lands onto main" >&2
 echo "$base"

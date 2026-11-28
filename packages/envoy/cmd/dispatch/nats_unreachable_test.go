@@ -319,6 +319,24 @@ func (p *dispatchProcess) logged(parts ...string) bool {
 	return len(p.logLines(parts...)) > 0
 }
 
+// loggedAt is the moment the process wrote its first line holding all of parts, by the process's
+// own clock: the `time=` field slog's text handler writes at the head of every line. A test that
+// measures how long the process waited reads its two moments here rather than timing its own
+// reads of the output, which a loaded runner stretches in either direction.
+func (p *dispatchProcess) loggedAt(t *testing.T, parts ...string) time.Time {
+	t.Helper()
+	lines := p.logLines(parts...)
+	if len(lines) == 0 {
+		t.Fatalf("the process logged no line holding %v:\n%s", parts, p.Output.String())
+	}
+	stamp, _, _ := strings.Cut(strings.TrimPrefix(lines[0], "time="), " ")
+	at, err := time.Parse(time.RFC3339Nano, stamp)
+	if err != nil {
+		t.Fatalf("read the time of %q: %v", lines[0], err)
+	}
+	return at
+}
+
 // waitForLog waits up to within for a line holding all of parts, polling rather than sleeping a
 // fixed time, and fails the test with the process's whole output when none arrives, at once when
 // the process exits without it: a process that has exited writes no more lines.

@@ -64,6 +64,8 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 		return got
 	}
 	service := serviceAnswer("ses_service", "example-fleet", caller.JKT())
+	consented := answer("ses_consented", ciphertoken.ProjectScopeConsented, "PRIV")
+	consented.Scope, consented.SignIn = "person", "6f1f9d5e-3c2a-4b7e-9d1a-0b5e2a9c7d11"
 	for _, tc := range []struct {
 		name   string
 		answer *ciphertoken.Introspection
@@ -75,6 +77,7 @@ func TestEdgeAdmitsOnlyTokensOfItsProjects(t *testing.T) {
 	}{
 		{name: "a named token of the project it serves", answer: new(answer("ses_named", ciphertoken.ProjectScopeNamed, "PRIV")), admit: true},
 		{name: "a person token listing only that project", answer: new(answer("ses_person", ciphertoken.ProjectScopePerson, "PRIV")), admit: true},
+		{name: "a consented token listing only that project", answer: &consented, admit: true},
 		{name: "a person token listing a project it does not serve beside it", answer: new(answer("ses_two", ciphertoken.ProjectScopePerson, "INFRA", "PRIV")), status: http.StatusForbidden},
 		{name: "a named token of another project", answer: new(answer("ses_other", ciphertoken.ProjectScopeNamed, "INFRA")), status: http.StatusForbidden},
 		{name: "a person token listing no project", answer: new(answer("ses_none", ciphertoken.ProjectScopePerson)), status: http.StatusForbidden},
@@ -391,6 +394,9 @@ func TestEdgeReadsListOnlyTheTokensProjects(t *testing.T) {
 	}
 	requireStatus(t, rig.call(t, http.MethodGet, token, "/v1/legion/agents/sessions/"+peer, ""), http.StatusOK, "GET /v1/legion/agents/sessions/"+peer)
 	requireEdgeRefusal(t, rig.call(t, http.MethodPut, token, "/v1/legion/agents", `{"entries":[]}`), http.StatusForbidden, "legion_registry_not_written", "PUT /v1/legion/agents")
+	// A project's answering record is the registry's too, and the edge writes none of it.
+	requireEdgeRefusal(t, rig.call(t, http.MethodPut, token, "/v1/legion/projects/priv", `{"answering":true,"updated_at":"2026-10-26T04:00:00Z"}`),
+		http.StatusForbidden, "legion_registry_not_written", "PUT /v1/legion/projects/priv")
 
 	requireEdgeRefusal(t, rig.call(t, http.MethodGet, token, "/v1/interests/", ""), http.StatusForbidden, "session_not_in_project", "GET /v1/interests/")
 	requireEdgeRefusal(t, rig.call(t, http.MethodGet, token, "/v1/interests/ses_infra_agent", ""), http.StatusForbidden, "session_not_in_project", "GET /v1/interests/ses_infra_agent")

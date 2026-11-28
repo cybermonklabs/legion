@@ -85,7 +85,7 @@ func machineClient() *oauth2.DefaultRegisteredClient {
 			ID:         oauthwire.ClientID,
 			Public:     true,
 			GrantTypes: []string{string(oauth2.GrantTypeDeviceCode), string(oauth2.GrantTypeRefreshToken)},
-			Scopes:     []string{oauthwire.Scope},
+			Scopes:     []string{oauthwire.Scope, oauthwire.ScopeDispatch},
 		},
 		TokenEndpointAuthMethod:         authMethodNone,
 		TokenExchangePermittedClientIDs: []string{oauthwire.ExchangeClientID},

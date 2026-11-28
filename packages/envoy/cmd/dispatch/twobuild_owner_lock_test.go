@@ -19,6 +19,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/processes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 // ───── one owner's writers across the two builds ───────────────────────────
@@ -202,7 +203,7 @@ func queuedBackend(t *testing.T, database *store.Store, holder pgx.Tx, applicati
 	for {
 		rows, err := database.Pool.Query(ctx, `
 			select pid, query from pg_stat_activity
-			where datname = current_database() and application_name = $1 and wait_event_type = 'Lock'`, application)
+			where datname = current_database() and application_name = $1 and `+lockwaittest.Waiting, application)
 		if err != nil {
 			t.Fatal(err)
 		}

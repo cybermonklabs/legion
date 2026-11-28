@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -36,9 +37,10 @@ func repairOnce(t *testing.T, database *store.Store) int64 {
 	return repaired
 }
 
-// sourceMatches reports whether the report reads key's hash from the issue's row rather than
-// building its text: whether the source recorded for it is its current one, in the very
-// expressions the report reads (issueSourceFrom, issueSource).
+// sourceMatches reports whether the refresh of key's state row (search_coverage_issue_refresh)
+// reads key's hash from the issue's row rather than building its text: whether the source
+// recorded for it is its current one, in the very expressions the refresh compares
+// (issueSourceFrom, issueSource).
 func sourceMatches(t *testing.T, database *store.Store, key string) bool {
 	t.Helper()
 	var matches bool
@@ -61,7 +63,7 @@ func recordedSource(t *testing.T, database *store.Store, key string) (source, xm
 	return source, xmin
 }
 
-// An issue whose row holds the hash of its current text is recorded once, and the report then
+// An issue whose row holds the hash of its current text is recorded once, and the refresh then
 // reads its hash from the row rather than building its text (sourceMatches). A second run records
 // nothing and rewrites nothing: the source row keeps its xmin.
 func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
@@ -70,7 +72,7 @@ func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
 	seedIssue(t, database, "RCRD", "RCRD-1", "An issue its trigger enqueued")
 	seedSpec(t, database.Pool, "RCRD", "RCRD-1", "## Summary\n\nIts spec.\n")
 	if sourceMatches(t, database, "RCRD-1") {
-		t.Fatal("before any record run the report reads RCRD-1's hash from its row")
+		t.Fatal("before any record run the refresh reads RCRD-1's hash from its row")
 	}
 
 	if recorded := recordOnce(t, database); recorded != 1 {
@@ -78,7 +80,7 @@ func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
 	}
 	_, xmin := recordedSource(t, database, "RCRD-1")
 	if !sourceMatches(t, database, "RCRD-1") {
-		t.Error("once recorded, the report still builds RCRD-1's text rather than reading its hash from the row")
+		t.Error("once recorded, the refresh still builds RCRD-1's text rather than reading its hash from the row")
 	}
 
 	if recorded := recordOnce(t, database); recorded != 0 {
@@ -90,7 +92,7 @@ func TestTheRecordStepRecordsAnIssueThatHoldsItsTextOnce(t *testing.T) {
 }
 
 // An issue whose row is stale - its title changed with its trigger off, so the row's content_hash
-// is not the hash of the issue's text - is not recorded: the report must build and hash its text.
+// is not the hash of the issue's text - is not recorded: the refresh must build and hash its text.
 // The pass's repair points the row at the current text, and the run after the repair records it.
 func TestTheRecordStepLeavesAStaleIssueUntilTheRepair(t *testing.T) {
 	t.Parallel()
@@ -113,24 +115,28 @@ func TestTheRecordStepLeavesAStaleIssueUntilTheRepair(t *testing.T) {
 		t.Fatalf("the run after the repair recorded %d sources, want RSTL-1's", recorded)
 	}
 	if !sourceMatches(t, database, "RSTL-1") {
-		t.Error("once recorded after the repair, the report still builds RSTL-1's text")
+		t.Error("once recorded after the repair, the refresh still builds RSTL-1's text")
 	}
 }
 
 // Every edit of an input an issue's text is built from makes its recorded source stop matching
-// its current one, so the report builds and hashes its text again, and answers what main's
-// statement answers (mainCoverageQuery); the next run records the issue again. The edits are a
-// new spec version and a title edit, each with its trigger on, and the latest version's markdown
-// rewritten in place with the triggers off, once as it was (which changes the row version alone)
-// and once to a new text (which leaves the row stale, so the repair comes before the record).
-// Before each edit the row is embedded at its current text, so a report that trusted the source
-// past the edit would count a vector of the old text current.
-func TestEachEditOfAnIssuesInputsMakesTheReportHashItUntilTheNextRun(t *testing.T) {
+// its current one, so its hash is built from its text again until the record step's next run
+// records the issue again, and the counts follow the edit: at once where it fires its triggers,
+// and at the counts loop's next recount where it fires none.
+// Then the report answers what main's statements answer (requireMainsAnswer). The edits are a new
+// spec version and a title edit, each with its trigger on and read at once, and the latest
+// version's markdown rewritten in place with the triggers off, once as it was (which changes the
+// row version alone) and once to a new text (which leaves the row stale, so the repair comes
+// before the record), each read after one recount (recountCoverage). Before each edit the row is
+// embedded at its current text, so a report that trusted the source past the edit would count a
+// vector of the old text current.
+func TestTheCountsFollowEachEditOfAnIssuesInputsByTheNextRecount(t *testing.T) {
 	t.Parallel()
 	database := storetest.Open(t)
 	seedIssue(t, database, "REDT", "REDT-1", "A title")
 	spec := seedSpec(t, database.Pool, "REDT", "REDT-1", "## Summary\n\nThe first version.\n")
 	embedRowAs(t, database.Pool, "issue", "REDT-1", configuredIdentity)
+	fillCounts(t, database)
 	if recorded := recordOnce(t, database); recorded != 1 {
 		t.Fatalf("the first run recorded %d sources, want REDT-1's", recorded)
 	}
@@ -155,20 +161,30 @@ func TestEachEditOfAnIssuesInputsMakesTheReportHashItUntilTheNextRun(t *testing.
 		// stale is whether the edit leaves the row at the text before it, for the repair to point
 		// at the new one before the record step records it.
 		stale bool
+		// triggersOff is whether the edit fires no trigger, so the counts follow it at the next
+		// recount rather than at once.
+		triggersOff bool
 	}{
-		{"a new spec version", func() { addVersion(t, database.Pool, spec, 2, "## Summary\n\nThe second version.\n") }, 0, false},
-		{"a title edit", func() { mustExec(t, database.Pool, `update issues set title = 'A title, edited' where key = 'REDT-1'`) }, 0, false},
-		{"the latest version's markdown rewritten in place as it was", rewriteLatest(""), 1, false},
-		{"the latest version's markdown changed in place", rewriteLatest("## Summary\n\nChanged in place.\n"), 0, true},
+		{"a new spec version", func() { addVersion(t, database.Pool, spec, 2, "## Summary\n\nThe second version.\n") }, 0, false, false},
+		{"a title edit", func() { mustExec(t, database.Pool, `update issues set title = 'A title, edited' where key = 'REDT-1'`) }, 0, false, false},
+		{"the latest version's markdown rewritten in place as it was", rewriteLatest(""), 1, false, true},
+		{"the latest version's markdown changed in place", rewriteLatest("## Summary\n\nChanged in place.\n"), 0, true, true},
 	} {
 		edit.edit()
 		if sourceMatches(t, database, "REDT-1") {
-			t.Errorf("after %s REDT-1's recorded source still matches, so the report would read the hash of the text before it", edit.name)
+			t.Errorf("after %s REDT-1's recorded source still matches, so the refresh would read the hash of the text before it", edit.name)
 		}
-		mains, heads := requireMainsAnswer(t, database, "after "+edit.name)
+		stage := "after " + edit.name
+		if edit.triggersOff {
+			if err := recountCoverage(context.Background(), database); err != nil {
+				t.Fatalf("recount %s: %v", stage, err)
+			}
+			stage += " and one recount"
+		}
+		mains, heads := requireMainsAnswer(t, database, stage)
 		for name, rows := range map[string]map[string]coverageRow{"main's statement": mains, "the coverage statement": heads} {
 			if got := rows["issue"].current; got != edit.current {
-				t.Errorf("after %s %s counts %d issues current, want %d", edit.name, name, got, edit.current)
+				t.Errorf("%s %s counts %d issues current, want %d", stage, name, got, edit.current)
 			}
 		}
 		if edit.stale {
@@ -183,7 +199,7 @@ func TestEachEditOfAnIssuesInputsMakesTheReportHashItUntilTheNextRun(t *testing.
 			t.Errorf("the run after %s recorded %d sources, want REDT-1's again", edit.name, recorded)
 		}
 		if !sourceMatches(t, database, "REDT-1") {
-			t.Errorf("once recorded after %s, the report still builds REDT-1's text", edit.name)
+			t.Errorf("once recorded after %s, the refresh still builds REDT-1's text", edit.name)
 		}
 		embedRowAs(t, database.Pool, "issue", "REDT-1", configuredIdentity)
 		requireMainsAnswer(t, database, "once recorded and embedded after "+edit.name)
@@ -248,26 +264,29 @@ func attrsOf(record slog.Record) map[string]slog.Value {
 // A pass whose report Postgres ends at its bound (coverageStatementTimeout) fails nothing: every
 // step before the report is done, so Cover returns nil, and the pass logs the failed report at
 // WARN with its error and what the pass changed, rather than failing and being run again whole by
-// runCoverage. components is locked in another connection, so the report's uncovered count of
-// components waits however fast the statement would run, and the bound is what ends it. Once the
-// lock is released, the same pass logs its ordinary line with the coverage it leaves.
+// runCoverage. The counts are filled after the seed, and search_coverage_counts is then locked in
+// another connection, so the report's read of the base rows waits however fast the statement
+// would run, and the bound is what ends it; no step before the report touches that table, since a
+// write's triggers write delta rows and never the base. Once the lock is released, the same pass
+// logs its ordinary line with the coverage it leaves.
 func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
 	// Not parallel: it shortens coverageStatementTimeout (ShortenCoverageBoundForTest), a package
 	// variable every coverage report reads, and sets the default logger (logtest.SetDefault).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	seedIssue(t, database, "BNDP", "BNDP-1", "An issue the pass records")
+	fillCounts(t, database)
 	deps := Deps{Store: database, Embedder: newPlaceEmbedder(configuredIdentity)}
 	records := &logtest.Recorder{}
 	logtest.SetDefault(t, records)
-	t.Cleanup(ShortenCoverageBoundForTest("500ms"))
+	t.Cleanup(ShortenCoverageBoundForTest(500 * time.Millisecond))
 	hold, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the transaction that holds components: %v", err)
+		t.Fatalf("begin the transaction that holds search_coverage_counts: %v", err)
 	}
 	t.Cleanup(func() { _ = hold.Rollback(context.Background()) })
-	if _, err := hold.Exec(ctx, `lock table components in access exclusive mode`); err != nil {
-		t.Fatalf("lock components: %v", err)
+	if _, err := hold.Exec(ctx, `lock table search_coverage_counts in access exclusive mode`); err != nil {
+		t.Fatalf("lock search_coverage_counts: %v", err)
 	}
 
 	if err := Cover(ctx, deps); err != nil {
@@ -289,7 +308,7 @@ func TestACoveragePassWhoseReportRunsPastItsBoundFailsNothing(t *testing.T) {
 	}
 
 	if err := hold.Rollback(ctx); err != nil {
-		t.Fatalf("release the lock on components: %v", err)
+		t.Fatalf("release the lock on search_coverage_counts: %v", err)
 	}
 	if err := Cover(ctx, deps); err != nil {
 		t.Fatalf("Cover once the lock is released = %v, want nil", err)

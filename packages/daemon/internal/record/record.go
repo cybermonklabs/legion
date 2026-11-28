@@ -1191,7 +1191,15 @@ type PhaseEntry struct {
 }
 
 // ReviewDecision is what one review decided: its state (changes_requested or approved), its body,
-// handed to the next implementer, and the head it was written on, whose code an approval approves.
+// handed to the next implementer, the head it was written on, whose code an approval approves,
+// and whether a person wrote it.
+//
+// Person is whether the review came from an account with write access to the repository rather
+// than from the reviewer's own session of the review App (workflow's DecidesRound), which are the
+// only two kinds of review that decide a round. A person's approval ends the round only once the
+// reviewer has completed it (workflow's reviewRound), since an agent can submit an approval on a
+// person's account and nothing in the review says so. A decision an older daemon wrote holds no
+// Person, and its approval ends the round as every approval did before.
 //
 // ToldStuckHead and ToldStuckState are the daemon's own mark beside it rather than anything the
 // review said: the head and GitHub's merge state an approval of this decision was last reported
@@ -1226,6 +1234,7 @@ type ReviewDecision struct {
 	ToldStuckHead  string      `json:"toldStuckHead,omitempty"`
 	ToldStuckState MergeState  `json:"toldStuckState,omitempty"`
 	ToldStuck      []StuckTold `json:"toldStuck,omitempty"`
+	Person         bool        `json:"person,omitempty"`
 }
 
 // StuckTold is one finding a review-stuck notice told for a head (ReviewDecision.ToldStuck): what
@@ -1596,9 +1605,11 @@ type ConflictRead struct {
 // (workflow's MergeForwardAskEnded), and a delivery where the listener names no holder is credited
 // to the launch the row was sent at. The ask is sent again to a later launch of that role while
 // the merge of the head is still owed to it and no row of the ask is queued for it: at that
-// launch's ready (workflow's askAgainAtLaunch), and at the end of a row of the ask that did not
-// reach it (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped
-// or whose agent reported its own exit takes no row of the ask queued after it ended. It is
+// launch's ready (workflow's askAgainAtLaunch); at the end of a row of the ask that did not reach
+// it (workflow's MergeForwardAskEnded), since a claim that failed, that an operator stopped or
+// whose agent reported its own exit takes no row of the ask queued after it ended; and, to the
+// merger, at a move into merging (workflow's askMergerAtEntry), since a row of its ask that ended
+// while the issue stood outside merging reached no launch. It is
 // stored as the jsonb of pull_requests.merge_forward (migration
 // 20261119003157), null for nil;
 // the jsonb takes Earlier, Role, Withdrawn and SentLaunch with no migration of their own, and
@@ -2975,8 +2986,8 @@ type Store interface {
 	// and ClearTreeGeneration leave the count: the generation is part of the record's id already,
 	// and the count only rises.
 	RaiseStepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, run func(starts int64) StepRecord) (StepRecord, error)
-	// StepStarts is the count of starts of place on issue with the agent, the moment and the run
-	// of the latest, unchanged: the zero StepStart where the place has no row.
+	// StepStarts is the count of starts of place on issue with the agent, the moment, the run and
+	// the start totals of the latest, unchanged: the zero StepStart where the place has no row.
 	StepStarts(ctx context.Context, tx pgx.Tx, issue string, place StepPlace) (StepStart, error)
 	// OpenStep is the open run of a step of issue whose start wrote the latest moment, of the
 	// several an issue can have open (Postgres.OpenStep), and the zero StepEntry where none is open.
@@ -2994,6 +3005,25 @@ type Store interface {
 	// StepRuns is every row of starts of each of issues, by issue and place, in one read: what the
 	// end of a step's run reads of the issues one fact touched (workflow's settleRuns).
 	StepRuns(ctx context.Context, tx pgx.Tx, issues []string) ([]IssueStepRun, error)
+	// KeepStartTotals keeps what the latest start of place on issue read of its agent, on the
+	// place's row, which the run's end reads with the start. The next start of the place clears it.
+	KeepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, start StartTotals) error
+	// AgentLaunches is the claim agent's generation now, whether its row records a process, and
+	// each of its launch rows from the generation since on (Postgres.AgentLaunches).
+	AgentLaunches(ctx context.Context, tx pgx.Tx, agent claim.Token, since uint64) (AgentLaunches, error)
+	// AgentLaunchNow is the claim agent's generation now, whether its row records a process, and
+	// its launch row of that generation alone, the one row a step's start reads
+	// (Postgres.AgentLaunchNow).
+	AgentLaunchNow(ctx context.Context, tx pgx.Tx, agent claim.Token) (AgentLaunches, error)
+	// KeepRead keeps read as the newest read of the launch key where its Read is above the one the
+	// store holds. A launch with no row gets its row.
+	KeepRead(ctx context.Context, tx pgx.Tx, key LaunchKey, read LaunchRead) error
+	// KeepFinal keeps final as the final totals of the launch key where the store holds none. A
+	// launch with no row gets its row.
+	KeepFinal(ctx context.Context, tx pgx.Tx, key LaunchKey, final LaunchRead) error
+	// StepAgentClaims is each claim not retired whose agent a fact of issue can start or end a
+	// step of: the issue's own claims and the architect of its tree.
+	StepAgentClaims(ctx context.Context, tx pgx.Tx, issue string) ([]claim.Token, error)
 	// PutPlan stores version v of the plan of v's issue at v's generation, with the tasks it
 	// gives and their steps. The same version given twice is refused, and so is a step of a task
 	// it does not give. A task the generation holds already takes the version's text and
@@ -3518,10 +3548,10 @@ type QueuedSupervise struct {
 	Age      time.Duration
 }
 
-// RoleClaim is a claim as RoleRun reads it: its state, the word for what last failed it
-// (failure_cause), the tree it is in, who suspended it while it is suspended, the newest start
-// the outbox ran against it (last_start_row), the update round it is in (update_round), the write
-// mark its retirement took (retired_at_write_mark), the phase entry
+// RoleClaim is a claim as RoleRun reads it: its state, its launch (generation), the word for what
+// last failed it (failure_cause), the tree it is in, who suspended it while it is suspended, the
+// newest start the outbox ran against it (last_start_row), the update round it is in
+// (update_round), the write mark its retirement took (retired_at_write_mark), the phase entry
 // it was last given work of (given_entry), the moment its agent last said it was ready
 // (last_ready), its handshake of the last entry it was queued a task of (handshake_entry,
 // handshake_generation, handshake_queued_at, handshake_confirmed_at), the moment its agent last
@@ -3534,6 +3564,10 @@ type QueuedSupervise struct {
 // readyWorkerTask).
 type RoleClaim struct {
 	State supervise.ClaimState
+	// Launch is the claim's launch (claims.generation, supervise.Claim.Generation). Its one reader
+	// is the move into merging, which tells the merger's launch the merge forward it owes
+	// (workflow's askMergerAtEntry).
+	Launch uint64
 	// FailureCause is the word for what failed the claim as its machine holds it
 	// (supervise.Claim.FailureCause; failure_cause and held_for read by supervise.DecodeCause),
 	// "" for a claim no failure is recorded on, which a retry's admission clears (supervise's

@@ -180,10 +180,11 @@ func TestAnOlderContractIsServedNoReplaces(t *testing.T) {
 	}
 }
 
-// A registration that replaces no session is the same body at every contract, so writeAnswer
-// reads no claims to place its caller; one that carries `replaces`, a role's or the controller's,
-// is placed by its pod, as every answer a band moves is.
-func TestOnlyARegistrationThatReplacesASessionIsPlacedByItsPod(t *testing.T) {
+// A registration that carries no key a band moves is the same body at every contract, so
+// writeAnswer reads no claims to place its caller; one that carries `replaces`, a role's or the
+// controller's, or a controller's that carries the project's watched workflows, is placed by its
+// pod, as every answer a band moves is.
+func TestOnlyARegistrationThatCarriesAMovedKeyIsPlacedByItsPod(t *testing.T) {
 	for _, tc := range []struct {
 		id     AnswerID
 		body   any
@@ -193,6 +194,7 @@ func TestOnlyARegistrationThatReplacesASessionIsPlacedByItsPod(t *testing.T) {
 		{AnswerRegister, claim.RegisterResponse{Replaces: "ses_first"}, true},
 		{AnswerRegisterController, ControllerRegisterResponse{}, false},
 		{AnswerRegisterController, ControllerRegisterResponse{Replaces: "ses_first"}, true},
+		{AnswerRegisterController, ControllerRegisterResponse{WatchedWorkflows: WatchedWorkflowsOf(testWatchedWorkflows)}, true},
 	} {
 		if got := placedByPod(tc.id, tc.body); got != tc.placed {
 			t.Errorf("placedByPod(%s, %+v) = %v, want %v", tc.id, tc.body, got, tc.placed)

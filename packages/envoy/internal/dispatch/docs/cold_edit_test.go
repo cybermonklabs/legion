@@ -167,7 +167,7 @@ func TestABrowserOpeningADocumentMidColdWriteKeepsBothEdits(t *testing.T) {
 				Persistence: store,
 				Events:      events.NewBroker(),
 				Identity:    headerIdentity(database),
-				ServerURL:   "https://dispatch.example",
+				Origins:     testOrigins,
 				Settle:      time.Hour,
 			})
 			testcleanup.Add(t, func() {

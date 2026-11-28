@@ -3,14 +3,18 @@ package policy_test
 // This file is the merge-base half of the project tags' rollback guard check: secrets that carry
 // dispatch-project or project-channels as `agent-secrets secret` writes them, with the guard entry
 // in their requesters tag, a bare twin of each that carries the same project tags without it, and
-// what legion main 545b2116, the release before the project tags, answers for each. It uses only
-// API that exists at that commit, so it is the one file the golden is generated from. At that
-// commit the package is internal/broker/policy (#4634 moved it to internal/cipher/policy later), so
-// the recipe puts the file there with its imports pointed back at internal/broker.
+// what legion main 545b2116, the release before the project tags, answers for each. It is the one
+// file the golden is generated from. At that commit the package is internal/broker/policy (#4634
+// moved it to internal/cipher/policy later), and it holds no secretstore/memory package: its store
+// is the fake AWS one, secrets.Local holding secrets.LocalSecret, built by secrets.NewLocal, which
+// its policytest.Secret answers and its policytest.Loader takes. So the recipe puts the file there
+// with its imports pointed back at internal/broker, internal/broker/secrets in place of the memory
+// store, and this file's memory.Secret, memory.New and *memory.Store spelled as
+// secrets.LocalSecret, secrets.NewLocal and *secrets.Local.
 // testdata/rollback-guard-merge-base.json was written once, at the merge base, by:
 //
 //	git worktree add --detach <tmp>/guard-base 545b2116
-//	sed 's#envoy/internal/cipher/#envoy/internal/broker/#' packages/envoy/internal/cipher/policy/rollbackguard_base_test.go > <tmp>/guard-base/packages/envoy/internal/broker/policy/rollbackguard_base_test.go
+//	sed -e 's#envoy/internal/cipher/secretstore/memory#envoy/internal/broker/secrets#' -e 's#envoy/internal/cipher/#envoy/internal/broker/#' -e 's/memory\.Secret/secrets.LocalSecret/g; s/memory\.New/secrets.NewLocal/g; s/\*memory\.Store/*secrets.Local/g' packages/envoy/internal/cipher/policy/rollbackguard_base_test.go > <tmp>/guard-base/packages/envoy/internal/broker/policy/rollbackguard_base_test.go
 //	go test -C <tmp>/guard-base/packages/envoy ./internal/broker/policy -run TestTheRollbackGuardBaseAnswersAreRecorded -count=1 -v -args -write-rollback-golden
 //	cp <tmp>/guard-base/packages/envoy/internal/broker/policy/testdata/rollback-guard-merge-base.json packages/envoy/internal/cipher/policy/testdata/
 //
@@ -29,7 +33,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 var writeRollbackGolden = flag.Bool("write-rollback-golden", false, "write testdata/rollback-guard-merge-base.json; run only at the merge base, as rollbackguard_base_test.go's head comment says")
@@ -69,7 +73,7 @@ const (
 // carries the guard, and list, the requesters list it carries beside the guard ("" for none).
 type rollbackCase struct {
 	name    string
-	secret  secrets.LocalSecret
+	secret  memory.Secret
 	guarded bool
 	list    string
 }
@@ -93,29 +97,29 @@ type rollbackAnswer struct {
 func rollbackGuardCases() []rollbackCase {
 	shapes := []struct {
 		shape string
-		make  func(name string) secrets.LocalSecret
+		make  func(name string) memory.Secret
 		list  string
 		tags  map[string]string
 	}{
-		{"STORED", func(name string) secrets.LocalSecret {
+		{"STORED", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProject: "PRIV"}},
-		{"LISTED", func(name string) secrets.LocalSecret {
+		{"LISTED", func(name string) memory.Secret {
 			return policytest.Secret(name, guardOwner, policy.TierHuman, "v")
 		}, guardOwner, map[string]string{baseTagProject: "PRIV"}},
-		{"ADMIN", func(name string) secrets.LocalSecret {
+		{"ADMIN", func(name string) memory.Secret {
 			return policytest.Secret(name, guardOwner, policy.TierHuman, "v")
 		}, guardOwner, map[string]string{baseTagProject: "PRIV", policy.TagAdmin: policy.AdminTrue, policy.TagMaxGrant: "1h"}},
-		{"APP", func(name string) secrets.LocalSecret {
+		{"APP", func(name string) memory.Secret {
 			return baseKindSecret(name, policy.OwnerShared, policy.TierAgent, baseKindApp)
 		}, "", map[string]string{baseTagProject: "PRIV", policy.TagRollbackGuard: baseKindGuard}},
-		{"ACCOUNT", func(name string) secrets.LocalSecret {
+		{"ACCOUNT", func(name string) memory.Secret {
 			return baseKindSecret(name, guardOwner, policy.TierHuman, baseKindAccount)
 		}, guardOwner, map[string]string{baseTagProject: "PRIV", policy.TagRollbackGuard: baseKindGuard}},
-		{"CHANNELS", func(name string) secrets.LocalSecret {
+		{"CHANNELS", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProjectChannels: "slack"}},
-		{"SLACK", func(name string) secrets.LocalSecret {
+		{"SLACK", func(name string) memory.Secret {
 			return policytest.Secret(name, policy.OwnerShared, policy.TierAgent, "v")
 		}, "", map[string]string{baseTagProject: "PRIV", baseTagProjectChannels: "slack", policy.TagDefaultGrant: policy.DefaultGrantSession, baseTagShape: baseShapeToken}},
 	}
@@ -148,7 +152,7 @@ func rollbackGuardCases() []rollbackCase {
 // baseKindSecret is the merge base's policytest.KindSecret, spelled with this file's literals: a
 // secret tagged kind, with the github-owners a github-app one needs and the requesters list and
 // hour's cap a google-service-account one needs.
-func baseKindSecret(name, owner, tier, kind string) secrets.LocalSecret {
+func baseKindSecret(name, owner, tier, kind string) memory.Secret {
 	secret := policytest.Secret(name, owner, tier, "v")
 	secret.Tags[baseTagKind] = kind
 	switch kind {
@@ -162,8 +166,8 @@ func baseKindSecret(name, owner, tier, kind string) secrets.LocalSecret {
 }
 
 // rollbackGuardStore is a store holding every case.
-func rollbackGuardStore() *secrets.Local {
-	store := secrets.NewLocal()
+func rollbackGuardStore() *memory.Store {
+	store := memory.New()
 	for _, c := range rollbackGuardCases() {
 		store.Put(c.secret)
 	}

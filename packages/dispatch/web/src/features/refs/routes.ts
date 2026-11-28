@@ -11,6 +11,7 @@ import {
 import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
+import { dispatchOrigins } from "../../api/origins";
 import type { Artifact } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
@@ -22,6 +23,7 @@ import {
   parseBlockReference,
   withBlock,
 } from "./block-reference";
+import { countReferenceRead } from "./reference-reads";
 import { pageInBound, routeInBound } from "./target-id";
 
 export type IssueRoute =
@@ -162,18 +164,29 @@ export interface InboxRoute {
    *  with nothing chosen is absent, never an empty array. */
   filters?: Partial<Record<InboxFilterField, readonly string[]>>;
 }
-export type IssueTab =
-  | "spec"
-  | "verification"
-  | "plan"
-  | "steps"
-  | "conversation"
-  | "children"
-  | "artifacts"
-  | "activity"
-  | "decisions"
-  | "dashboard"
-  | "collaborators";
+/** Every tab of the issue page, each the path segment that opens it (`/issues/<KEY>/<tab>`). The
+ *  dashboard's pages file (`dashboard-pages-file.ts`) is generated from this list, so a tab added
+ *  here reaches the server's and the agent client's readers of a dashboard address, unless its
+ *  page names nothing in text, as Dashboard's does (`parseIssuePath`). */
+export const ISSUE_TABS = [
+  "spec",
+  "verification",
+  "plan",
+  "steps",
+  "conversation",
+  "children",
+  "artifacts",
+  "activity",
+  "decisions",
+  "dashboard",
+  "collaborators",
+] as const;
+export type IssueTab = (typeof ISSUE_TABS)[number];
+
+/** The path segments under an issue that open one of its documents by slug
+ *  (`/issues/<KEY>/artifacts/<slug>`): the plural the dashboard writes, and the singular it reads
+ *  as the same page. */
+export const ISSUE_DOCUMENT_SEGMENTS = ["artifacts", "artifact"] as const;
 
 /** The slug of an issue's `decisions.md`, the document its Decisions tab is a view of. */
 export const DECISIONS_DOCUMENT_SLUG = "decisions-md";
@@ -209,6 +222,10 @@ const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
 const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
 const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
 const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
+/** A document of an issue by slug, under any segment of `ISSUE_DOCUMENT_SEGMENTS`. */
+const issueDocumentPathPattern = new RegExp(
+  `^(?:${ISSUE_DOCUMENT_SEGMENTS.join("|")})/([^/?#\\s]+)$`
+);
 /** The slug Dispatch gives a document, the one a reference can name. */
 const artifactSlugPattern = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const artifactSlugOnlyPattern = new RegExp(`^${artifactSlugPattern}$`);
@@ -244,8 +261,12 @@ const machinePathPattern = /^\/machines\/([^/]+)$/;
 /** The page of an agent's artifact, the router's pattern for `AgentArtifactRoute`. */
 export const AGENT_ARTIFACT_PATH = "/agents/:sessionId/artifacts/:slug";
 
-/** Agents reference the conversation as `dispatch://KEY/log`; the browser path is `/conversation`. */
-const legacyLogReferencePattern = /^log$/;
+/** The segment a `dispatch://` reference writes the conversation tab as: agents write the
+ *  conversation as `dispatch://KEY/log`, and the browser path is `/conversation`. The reader of a
+ *  reference (`parseIssueReference`) takes it, and the dashboard's pages file writes the
+ *  conversation's reference as it (`dashboard-pages-file.ts`). Every other tab is written in a
+ *  reference as its own name. */
+export const CONVERSATION_REFERENCE_SEGMENT = "log";
 
 export function isProjectRoute(
   route: DispatchRoute | DispatchReferenceRoute
@@ -382,7 +403,7 @@ function parseIssueReference(key: string, target: string | undefined): IssueRout
   if (plain !== undefined) {
     return { key, kind: plain };
   }
-  if (legacyLogReferencePattern.test(target) || target === "conversation") {
+  if (target === CONVERSATION_REFERENCE_SEGMENT || target === "conversation") {
     return { key, kind: "conversation" };
   }
   const artifact = target.match(issueArtifactReferencePattern);
@@ -529,7 +550,7 @@ export function parseIssuePath(pathname: string, search = ""): IssueRoute | unde
     const record = decodedSegment(thread[1] ?? "");
     return record === undefined ? undefined : { key, kind: "threads", record };
   }
-  const artifact = target.match(/^artifacts?\/([^/?#\s]+)$/);
+  const artifact = target.match(issueDocumentPathPattern);
   if (artifact !== null) {
     return artifactRoute(key, artifact[1] ?? "", new URLSearchParams(search).get("v"));
   }
@@ -658,20 +679,23 @@ export function routeProjectOf(pathname: string): string | undefined {
   );
 }
 
-/** The reference a `dispatch://` URL or a same-origin dashboard path names as text cites it, as
- * the server's `text.Extract` reads it: a composer's text, and a URL an author left as text in a
- * rendered body (`collectReferenceAnchors`); undefined for an external link or a dashboard path
- * that is not an issue/document reference (`pageRoutes`). A `#b-<block id>` fragment names the
- * page's block while text cites it (`pageInBound`), else the page; a reference past the bounds
- * names nothing (`parseDispatchReference`). */
+/** The reference a `dispatch://` URL or a dashboard path of any origin of this Dispatch
+ * (`dispatchOrigins`) names as text cites it, as the server's `text.Extract` reads it: a
+ * composer's text, and a URL an author left as text in a rendered body
+ * (`collectReferenceAnchors`); undefined for an external link or a dashboard path that is not an
+ * issue/document reference (`pageRoutes`). A `#b-<block id>` fragment names the page's block
+ * while text cites it (`pageInBound`), else the page; a reference past the bounds names nothing
+ * (`parseDispatchReference`). Each call is counted with the length of `href`
+ * (`countReferenceRead`), which its steps read a fixed number of times over. */
 export function referenceRouteFromHref(
   href: string,
-  appOrigin: string = window.location.origin
+  appOrigins: readonly string[] = dispatchOrigins()
 ): DispatchReferenceRoute | undefined {
+  countReferenceRead("referenceRouteFromHref", href.length);
   if (href.startsWith("dispatch://")) {
     return parseDispatchReference(href);
   }
-  const routes = pageRoutes(href, appOrigin);
+  const routes = pageRoutes(href, appOrigins);
   return routes === undefined ? undefined : pageInBound(routes.page, routes.block);
 }
 
@@ -680,17 +704,18 @@ export function referenceRouteFromHref(
  * bounds text is held to decide only what text cites (`referenceRouteFromHref`). */
 export function nodeRouteFromHref(
   href: string,
-  appOrigin: string = window.location.origin
+  appOrigins: readonly string[] = dispatchOrigins()
 ): DispatchReferenceRoute | undefined {
   if (href.startsWith("dispatch://")) {
     return parseNodeReference(href);
   }
-  const routes = pageRoutes(href, appOrigin);
+  const routes = pageRoutes(href, appOrigins);
   return routes?.block ?? routes?.page;
 }
 
-/** What a same-origin dashboard path names, as the server's `text` reads the page: `page`, and
- * `block`, the block of it its `#b-<block id>` fragment names, of any length. A path holding a
+/** What a dashboard path of any of `appOrigins` names, as the server's `text` reads the page:
+ * `page`, and `block`, the block of it its `#b-<block id>` fragment names, of any length. A path
+ * that names no origin is read against the first of `appOrigins`, the page's own. A path holding a
  * control character, naming a slug Dispatch never gives a document, or that is no issue/document
  * reference names nothing. A document page carrying `?comment=`/`?ask=` names that item whatever
  * its fragment, at any version of the document: the dashboard writes a document block's fragment
@@ -701,18 +726,18 @@ export function nodeRouteFromHref(
  * written only in `dispatch://` references; any other fragment leaves the page. */
 function pageRoutes(
   href: string,
-  appOrigin: string
+  appOrigins: readonly string[]
 ): { page: DispatchReferenceRoute; block: DispatchReferenceRoute | undefined } | undefined {
   if (hasControlCharacter(href)) {
     return undefined;
   }
   let url: URL;
   try {
-    url = new URL(href, appOrigin);
+    url = new URL(href, appOrigins[0]);
   } catch {
     return undefined;
   }
-  if (url.origin !== appOrigin) {
+  if (!appOrigins.includes(url.origin)) {
     return undefined;
   }
   const route =

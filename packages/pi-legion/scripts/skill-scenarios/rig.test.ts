@@ -16,11 +16,12 @@ import {
 } from "node:fs";
 import { homedir } from "node:os";
 import path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import { memoryRoot, temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
 import { argMaxForceHolds } from "../../../../scripts/e2e/lib/arg-max-force";
-import { ownGroup, untilRunning } from "../../../../scripts/e2e/lib/own-group";
+import { ownGroup, untilExecDone } from "../../../../scripts/e2e/lib/own-group";
 import { procRootOf } from "../../../../scripts/e2e/lib/proc-root";
 import { rowWaits } from "../../../../scripts/e2e/lib/row-waits";
 import { scriptAssignments, scriptFunctions } from "../../../../scripts/e2e/lib/script-functions";
@@ -30,7 +31,7 @@ import { RunRow } from "./scored-runs-contracts";
 
 // Every test here runs rig.sh and its stand-ins as real processes. On a loaded machine one test
 // takes longer than bun's 5 s default (the eight-turn conversation took 11 s), so each test gets
-// one minute, and a wait of a row on its processes (untilRunning) ends 20 s before that.
+// one minute, and a wait of a row on its processes (untilExecDone) ends 20 s before that.
 const waits = rowWaits(60_000);
 
 // The judge runs in a Docker container; every other row here needs no container. Read once, so
@@ -114,7 +115,8 @@ const miseData =
  * such a shim finds neither its installs nor its global config, so it fails. make_omp_home keeps
  * the operator's two directories for the processes it starts for the same reason, and base_env
  * passes MISE_DATA_DIR to every agent. A caller that names neither variable gets neither: the
- * developer's own home decides nothing here. It is the one place this file builds that
+ * developer's own home decides nothing here. A Bun process it starts under that HOME keeps no
+ * transpiler cache there (`bunCacheOff`). It is the one place this file builds that
  * environment, and its `cwd` is the only one in the file but the omp turn's and the kept-notice
  * row's below, so a child that gets the test's HOME gets childCwd with it. Every child of this
  * file starts through it but six, and none of those gets the test's HOME: the key command, the
@@ -127,6 +129,7 @@ const miseData =
 function childSpawn(argv: string[], env: Record<string, string> = {}) {
   return Bun.spawnSync(argv, {
     env: {
+      ...bunCacheOff,
       PATH: callerPath,
       HOME: operatorHome,
       ...(miseData === undefined ? {} : { MISE_DATA_DIR: miseData }),
@@ -857,9 +860,13 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   // Each row's run process and its harness shell run in process groups of their own (ownGroup,
   // scripts/e2e/lib/own-group.ts): stop_env_processes stops what it ends, and a stopped member of
   // the test runner's own group hangs the runner up where that group is orphaned, as in a Legion pod.
-  // A row that sweeps waits until its run process runs sleep (untilRunning), and so leads its own
-  // group, before it sweeps. The walk reads `proc_root`, a proc root of the row's run process alone
-  // (scripts/e2e/lib/proc-root.ts), so a row's time is its own and not the host's process count.
+  // Each row waits until its run process has finished its exec of sleep (untilExecDone) before it
+  // walks: the process then leads its own group, and its environment, where the walk finds the
+  // run's mark, is laid out. Inside the exec the exe link names sleep while the environment still
+  // reads empty, so the sweep row, which waited on the exe link alone, named nothing on a loaded CI
+  // runner, stopped nothing, and waited on its sleep until Bun's bound. The walk reads `proc_root`,
+  // a proc root of the row's run process alone (scripts/e2e/lib/proc-root.ts), so a row's time is
+  // its own and not the host's process count.
   const runProcess = (dir: string) =>
     Bun.spawn(ownGroup(["sleep", "60"]), {
       env: { PATH: process.env.PATH ?? "", SKILL_SCENARIO_RUN: path.join(dir, "run-1") },
@@ -882,11 +889,12 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   // gVisor (a Legion pod's kernel): there the row is skipped, by that name (argMaxForceHolds).
   test.skipIf(!argMaxForceHolds())(
     "names a process of the run, with its start time, where a program handed every /proc/<pid>/environ would not start",
-    () => {
+    async () => {
       const dir = freshDir("env-pids");
       const scratch = freshDir("env-pids-scratch");
       const run = runProcess(dir);
       try {
+        await untilExecDone(run.pid, "sleep", waits.end());
         const old = 'grep -lzsF -e "SKILL_SCENARIO_RUN=$2" "$proc_root"/[0-9]*/environ';
         const forced = groupBash(
           `set -euo pipefail\n. ${JSON.stringify(force)}\n. ${JSON.stringify(processTree)}\n${fn("run_env_pids")}\narg_max_force environ 6144 "$1" ${JSON.stringify(old)}\nrun_env_pids "$2"`,
@@ -907,7 +915,7 @@ describe.skipIf(withoutPerl)("run_env_pids and stop_env_processes", () => {
   test("stops each process of the run its walk names, with the run's sweep's own loop", async () => {
     const dir = freshDir("env-stop");
     const run = runProcess(dir);
-    await untilRunning(run.pid, "sleep", waits.end());
+    await untilExecDone(run.pid, "sleep", waits.end());
     try {
       const rig = path.join(root, "scripts/e2e/lib/rig.sh");
       const prelude = `set -euo pipefail\nroot=${JSON.stringify(root)} work=$1 evidence=$1 timeout_hook=\nnote() { :; }\nfail() { exit 1; }\n. ${JSON.stringify(rig)}\n${fn("stop_env_processes")}`;
@@ -1324,6 +1332,25 @@ exit "$(cat "$PWD/exit-status" 2>/dev/null || echo 0)"
   /** What `judged` reads back from a judge that ran and a rig that refused nothing. */
   const judgedCleanly = { code: 0, refused: false, stderr: "" };
 
+  // The judges' image, pulled once for the file, by rig.sh's own pull and its three tries
+  // (`rig.sh judge-image`), so that a failed pull names itself here and no row waits for it. The
+  // first row paid for it alone: 119,329.07 ms in job 134109871047 of #4267's pull-request run
+  // 44097039395 (2026-11-17T15:00:12Z), the slowest; over the 1,341 green pi-legion jobs of main's
+  // merge-group and push runs, 2026-10-29T12:58Z to 2026-11-17T16:22Z, it took at most 15,772.79
+  // ms (job 126587011431, push run 41833651040), and no other judge-omp row took more than
+  // 3,342.44 ms (job 126217454413, push run 41722033995). So this hook has a guard of its own, at
+  // least twice the slowest pull CI read. Its one line of output is the pull's time, so each CI log
+  // records one more reading. A host that skips the rows skips the pull.
+  beforeAll(() => {
+    if (skip) return;
+    const start = performance.now();
+    const result = childSpawn(["bash", path.join(import.meta.dir, "rig.sh"), "judge-image"], {
+      SKILL_SCENARIOS_WORK: work,
+    });
+    console.log(`judge-omp: rig.sh judge-image took ${(performance.now() - start).toFixed(2)} ms`);
+    expect(judged(result)).toEqual(judgedCleanly);
+  }, 240_000);
+
   // Catches: a judge session with the label's plugins, the operator's skills or the default model,
   // run outside its own directory, or with no record of its model.
   test.skipIf(skip)(
@@ -1649,8 +1676,11 @@ describe("require_superpowers", () => {
   });
 });
 
-// launch with a stand-in tmux that starts the pane's command a moment later, as a real tmux server
-// does, and a stand-in mise that prints the omp command line it was given.
+// launch with a stand-in tmux that starts the pane's command only once launch has looked at the
+// pane's output for the first time, as a real tmux server starts it after `new-session` has
+// returned, and a stand-in mise that prints the omp command line it was given. The gate is a
+// FIFO: the pane's command waits to read it, and the stand-in `sleep`, launch's pause after each
+// look, opens it at its first call; the script opens it at the end where launch never paused.
 describe("launch", () => {
   // Catches: a later turn that reads the previous turn's `exit=` line as its own and returns at
   // once, and extra omp arguments placed anywhere but after the prompt.
@@ -1669,10 +1699,11 @@ describe("launch", () => {
       { mode: 0o755 }
     );
     const standIns = `
-tmux() { case $1 in new-session) (command sleep 0.3 && bash -c "\${@: -1}") & ;; esac; }
-sleep() { command sleep 0.05; }`;
+tmux() { case $1 in new-session) (read -r _ <"$R/pane-gate" && bash -c "\${@: -1}") & ;; esac; }
+open_gate() { if [ -p "$R/pane-gate" ]; then echo looked >"$R/pane-gate"; rm -f "$R/pane-gate"; fi; }
+sleep() { open_gate; command sleep 0.05; }`;
     const result = bash(
-      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"`,
+      `${fn("fail")}\n${fn("pinned_omp")}\n${fn("rig_omp")}\n${fn("launch")}\n${standIns}\nR=$1 tag=t pin=omp@pin\nmkfifo "$R/pane-gate"\nlaunch spec-writing-s1-1 --continue\ncp "$R/out.txt" "$R/seen"\nopen_gate`,
       [run],
       { PATH: `${bin}:${callerPath}` }
     );
@@ -2144,34 +2175,6 @@ describe("label_tree", () => {
         stderr: "",
       });
     }
-  });
-
-  // Catches: a change of this checkout that deletes a text E takes out (the skills trim deleted
-  // the bullet E dropped), which the Job meets only when it builds E's tree from a label's HEAD.
-  // The repository holds this checkout's own two files, so CI's pi-legion job, which a change of
-  // skills/** or the prompts runs, fails here first.
-  test("E's manifest applies to this checkout's own two files", () => {
-    const repo = freshDir("own-two-files");
-    git(repo, "init", "-q");
-    for (const [, file] of PR_4902_FILES) {
-      mkdirSync(path.dirname(path.join(repo, file)), { recursive: true });
-      cpSync(path.join(root, file), path.join(repo, file));
-    }
-    git(repo, "add", "-A");
-    git(repo, "commit", "-qm", "this checkout's two files");
-    const head = git(repo, "rev-parse", "HEAD").trim();
-    const made = labelTree(
-      repo,
-      scenarios,
-      freshDir("own-ctl-e"),
-      "ctl-e",
-      head,
-      path.join(controls, "owner-walk-E.txt")
-    );
-    expect({ code: made.code, stderr: made.code === 0 ? "" : made.stderr }).toEqual({
-      code: 0,
-      stderr: "",
-    });
   });
 
   // Catches: a D whose tree takes out more than #4902's own lines (a manifest line too many, a

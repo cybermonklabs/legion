@@ -4,15 +4,14 @@ import (
 	"context"
 	"testing"
 
-	"github.com/jackc/pgx/v5"
-
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/explaintest"
 )
 
-// TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap holds the report to a
-// plan that does not visit the heap once for each window row on a table whose statistics
+// TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap holds the recount's
+// window statement, the one statement of the counts that reads every window row, to a plan that
+// does not visit the heap once for each window row on a table whose statistics
 // (pg_class.relallvisible over relpages) record more of embeddings as all-visible than is.
 //
 // The test builds that table from the scale test's corpus at 0.005 x production's size
@@ -25,13 +24,14 @@ import (
 // or an ANALYZE, and autovacuum runs an ANALYZE of a table only once a tenth of its rows (plus
 // 50) changed since the last one, at Postgres's default, while one row of each of half the pages
 // is fewer (97,369 rows of the scale test's corpus at production's size, below that tenth,
-// 99,566). On that table the coverage statement, explained with ANALYZE under planCoverage's
-// settings as Coverage runs it, must fetch fewer row versions from the heap through the window
-// indexes than half the window rows: an index-only scan fetches each row of a page that is not
-// all-visible from the heap, and a plain index scan every row it returns, one page visit for each.
+// 99,566). On that table the recount's window statement, as recountGroups sends it, explained
+// with ANALYZE under planCoverage's settings in a transaction that is then rolled back, must fetch
+// fewer row versions from the heap through the window indexes than half the window rows: an
+// index-only scan fetches each row of a page that is not all-visible from the heap, and a plain
+// index scan every row it returns, one page visit for each.
 //
-// An earlier version of this statement read each window half by an index-only scan of its own
-// index whenever the statistics recorded at least 0.3 of the pages all-visible, the share
+// An earlier version of main's coverage statement read each window half by an index-only scan of
+// its own index whenever the statistics recorded at least 0.3 of the pages all-visible, the share
 // laggingVisibleShare holds this table to, and so fetched every window row of this table from the
 // heap one at a time. INFRA-4241's tester measured it in a builds Job (8 CPUs, 16 GiB) on the
 // scale test's corpus with every page of embeddings not all-visible
@@ -87,23 +87,26 @@ func TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap(t 
 	if err := database.Pool.QueryRow(ctx, `select count(*) from embeddings where `+windowItems).Scan(&windows); err != nil {
 		t.Fatalf("count the window rows: %v", err)
 	}
-	tx, err := database.Pool.BeginTx(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	// The statement writes the window kinds' base rows and deletes their delta rows, so it runs in a
+	// transaction that is rolled back.
+	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
-		t.Fatalf("begin the report's transaction: %v", err)
+		t.Fatalf("begin the recount's window statement's transaction: %v", err)
 	}
 	defer func() { _ = tx.Rollback(ctx) }()
 	if err := planCoverage(ctx, tx); err != nil {
-		t.Fatalf("plan the report as Coverage does: %v", err)
+		t.Fatalf("plan the recount's window statement as the recount does: %v", err)
 	}
+	group := recountWindowGroup(t)
 	var raw []byte
-	if err := tx.QueryRow(ctx, `explain (analyze, format json) `+coverageQuery, configuredIdentity).Scan(&raw); err != nil {
-		t.Fatalf("explain the coverage statement: %v", err)
+	if err := tx.QueryRow(ctx, `explain (analyze, format json) `+group.statement, group.kinds).Scan(&raw); err != nil {
+		t.Fatalf("explain the recount's window statement: %v", err)
 	}
 	explained := explaintest.OnePlan(t, raw)
 	var fetched float64
 	var rowByRow []string
 	for _, node := range explaintest.Nodes(t, explained) {
-		if node.Relation != "embeddings" || (node.Index != "embeddings_window_embedded" && node.Index != "embeddings_window_unembedded") {
+		if node.Relation != "embeddings" || (node.Index != windowEmbeddedIndex && node.Index != windowUnembeddedIndex) {
 			continue
 		}
 		switch node.Type {
@@ -118,7 +121,7 @@ func TestCoverageFetchesNoWindowRowByRowWhileTheStatisticsLagTheVisibilityMap(t 
 	// A heap fetch can visit a row version an update left behind, so a plan that fetches row by row
 	// can fetch more versions than there are window rows; half the rows is the bound.
 	if fetched*2 > float64(windows) {
-		t.Errorf("with no page of embeddings all-visible and the statistics recording %.3f, the coverage statement made %.0f heap fetches, one row version at a time, to count %d window rows (plain index scans: %v):\n%s",
+		t.Errorf("with no page of embeddings all-visible and the statistics recording %.3f, the recount's window statement made %.0f heap fetches, one row version at a time, to count %d window rows (plain index scans: %v):\n%s",
 			recorded, fetched, windows, rowByRow, explained)
 	}
 }
