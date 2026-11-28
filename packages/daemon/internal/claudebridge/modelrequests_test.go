@@ -317,7 +317,18 @@ func TestBridgeReportsModelRequests(t *testing.T) {
 		r.expect("agent_start", nil)
 		r.open()
 		r.untilTurnEnds()
-		background := r.rows(r.reported())
+		// The turn's two results (testdata/background-turn.jsonl:12,23) each send a report, and a
+		// report goes whatever report is on its way (sendLocked), so the two reach the daemon in
+		// either order: the rows are read by their end.
+		background := r.rows(r.reported(), r.reported())
+		endOf := func(row requestRow) time.Time {
+			at, err := time.Parse(time.RFC3339Nano, row.endedAt)
+			if err != nil {
+				t.Fatalf("the request %+v names an end that is no time: %v", row, err)
+			}
+			return at
+		}
+		slices.SortFunc(background, func(a, b requestRow) int { return endOf(a).Compare(endOf(b)) })
 		if len(background) == 0 || background[0].endedAt != "2026-10-30T09:01:26.35Z" || background[0].uncached != "21305" {
 			t.Fatalf("the background turn's requests were reported as %+v, want the first ended at its third line with 10 + 21295 uncached tokens", background)
 		}

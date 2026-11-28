@@ -14,20 +14,12 @@ import (
 )
 
 // requestWindow is how long after a model request's end the bridge may hold its report: a quarter
-// of the minute the provider's headroom reads (dispatch://INFRA-5899, spec, "The model requests").
-// One window serves the whole bridge, whatever session a request ran in: a window that sends
-// sends every request the bridge holds in one report, and windowDueLocked says when it is due. A
-// window sends at its time only where no report is on its way: then each request the bridge read
-// by its deadline leaves within requestWindow of its end on the bridge's clock, and one it read
-// later leaves at once. Otherwise the window's requests leave once that report is answered, at
-// most requestReportTimeout later: the bridge sends one report at a time. A turn's end sends what
-// is left at once (modelRequests).
+// of the minute the provider's headroom reads (dispatch://INFRA-5899, spec, "The model requests",
+// windowDueLocked).
 const requestWindow = 15 * time.Second
 
 // requestSendMargin is how much sooner than requestWindow after an end the window is due: room
-// for the window's own work before the report leaves, so that, where no report is on its way, a
-// request the bridge read by its deadline leaves within requestWindow of its end
-// (windowDueLocked).
+// for the window's own work before the report leaves (windowDueLocked).
 const requestSendMargin = 250 * time.Millisecond
 
 // requestDueAfter is how long after a request's time (windowDueLocked) the window is due for it:
@@ -81,11 +73,14 @@ var errRequestReportTimeout = fmt.Errorf("the daemon gave no answer within the r
 // says. The first request arms it, and a request whose own deadline comes before the window
 // armed arms it again for that deadline. A window that fires before it is due, since a block
 // moved the oldest end on, is armed again for that end; one that is due closes every open
-// request and sends what is pending in one report (flushLocked), as a result does at once.
-// Overflow drains on an answer that keeps at least one request. Otherwise a failed or incomplete
-// report can retry at the next window or result; only IDs the daemon did not keep go again.
-// Requests past the keep window and reports the daemon refuses (a 4xx) are dropped with a line.
-// Every report names the launch's boot token. Nothing in the bridge's loop waits on a report.
+// request and sends what is pending at once in a call of its own (flushLocked, sendLocked),
+// whatever report is on its way, as a result does at once. Overflow (more than
+// claim.MaxModelRequests pending at one flush) is the one case where a request waits for an
+// answer: the rest drains on an answer that keeps at least one request. Otherwise a failed or
+// incomplete report can retry at the next window or result; only IDs the daemon did not keep go
+// again. Requests past the keep window and reports the daemon refuses (a 4xx) are dropped with a
+// line. Every report names the launch's boot token. Nothing in the bridge's loop waits on a
+// report.
 type modelRequests struct {
 	*daemonPoster
 	// windowAfter is the timer the window runs on: the bridge's clock's, or a test's
@@ -95,11 +90,10 @@ type modelRequests struct {
 	mu sync.Mutex
 	// open is each session's open request, by its session.
 	open map[string]*claim.ModelRequest
-	// pending holds requests until they are kept or dropped. due records a window or result
-	// that called for another send while one was underway.
+	// pending holds requests not on their way, until they are kept or dropped. posting is how
+	// many reports are on their way.
 	pending []pendingRequest
-	sending bool
-	due     bool
+	posting int
 	// flushed is when the bridge last closed every open request and sent what was pending, at a
 	// window or a result (flushLocked), on the bridge's clock.
 	flushed time.Time
@@ -110,9 +104,8 @@ type modelRequests struct {
 }
 
 // pendingRequest is a request the bridge holds closed. taken is whether a flush took it
-// (flushLocked): it waits behind a report on its way or for the room a full report left, or goes
-// again after a report that failed, at a window's flush and never by a deadline of its own
-// (windowDueLocked).
+// (flushLocked): it waits for the room a full report left, or goes again after a report that
+// failed, at a window's flush and never by a deadline of its own (windowDueLocked).
 type pendingRequest struct {
 	claim.ModelRequest
 	taken bool
@@ -272,11 +265,10 @@ func earlier(a, b time.Time) time.Time {
 // earliest of these. So the windows send one report each requestDueAfter at most, about four a
 // minute, and a report the daemon failed goes again no sooner, but for a request that ended
 // before the last flush, which the bridge read only after it: its deadline can come sooner, and
-// it adds a report. A request the bridge reads only after its deadline goes at once. A window
-// sends at its time only where no report is on its way (sendLocked): then each request the
-// bridge read by its deadline goes within requestWindow of its end. Otherwise the window's
-// requests go once that report is answered, at most requestReportTimeout later, as the bridge
-// sends one report at a time. The caller holds r.mu.
+// it adds a report. A window or result sends at once in a call of its own whatever report is on
+// its way (sendLocked), so, overflow aside, each request the bridge read by its deadline leaves
+// within requestWindow of its end on the bridge's clock, and one it read later leaves at once.
+// The caller holds r.mu.
 func (r *modelRequests) windowDueLocked() (time.Time, bool) {
 	if len(r.open) == 0 && len(r.pending) == 0 {
 		return time.Time{}, false
@@ -347,14 +339,13 @@ func (r *modelRequests) flushLocked() {
 	r.sendLocked()
 }
 
-// sendLocked sends the oldest pending requests, up to claim.MaxModelRequests, unless a report is
-// on its way, in which case they go once it is answered. The caller holds r.mu.
+// sendLocked sends the oldest pending requests, up to claim.MaxModelRequests, at once in a call
+// of its own whatever report is on its way: each carries only requests removed from r.pending and
+// keeps its own timeout (requestReportTimeout). Overflow (more than claim.MaxModelRequests
+// pending at one flush) is the one case where a request can wait for an answer (post). The caller
+// holds r.mu.
 func (r *modelRequests) sendLocked() {
 	if len(r.pending) == 0 {
-		return
-	}
-	if r.sending {
-		r.due = true
 		return
 	}
 	cutoff := r.clock.Now().Add(-claim.ModelRequestsSpan)
@@ -374,18 +365,21 @@ func (r *modelRequests) sendLocked() {
 		batch[i] = request.ModelRequest
 	}
 	r.pending = slices.Delete(r.pending, 0, n)
-	r.sending = true
+	r.posting++
 	go r.post(batch, len(r.pending) != 0)
 }
 
 // post makes one report and puts back every request of it the daemon did not say it holds, under
 // the same id and taken (pendingRequest), but for one a block of which opened it again while the
-// report was on its way (assistant): that request is open or pending already, with the later end.
+// report was on its way (assistant), or an earlier report's answer already put back: that request
+// is open or pending already, with the later end. Two reports can cross and their answers can
+// arrive in either order; the daemon takes a request again by its id and keeps the later end
+// (record.Store.KeepModelRequests).
 func (r *modelRequests) post(batch []claim.ModelRequest, overflow bool) {
 	kept, retry := r.call(batch)
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.sending = false
+	r.posting--
 	progress := false
 	if retry {
 		var unheld []pendingRequest
@@ -401,8 +395,7 @@ func (r *modelRequests) post(batch []claim.ModelRequest, overflow bool) {
 		}
 	}
 	// Overflow is not itself permission to retry a failed batch without waiting.
-	if r.due || (progress && (overflow || len(r.pending) > claim.MaxModelRequests)) {
-		r.due = false
+	if progress && (overflow || len(r.pending) > claim.MaxModelRequests) {
 		r.sendLocked()
 	}
 	r.armLocked()
