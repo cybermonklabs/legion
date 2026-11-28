@@ -3510,8 +3510,10 @@ fails a group whose change could not have broken it (dispatch://INFRA-3411/artif
 group, with `--rerun-fails=1 --rerun-fails-run-root-test --rerun-fails-abort-on-data-race`, a test
 that failed runs once more from its root test, and a pass then passes the step; on a pull request a
 test that fails once fails its step. gotestsum reruns nothing after a data race, a panic or a
-passed -timeout, a build error, more than 10 failed tests, or an error line of go test's own, and
-go-test.sh fails a package that failed with no test failing whatever a rerun did.
+passed -timeout, a build error, more than 10 failed tests, or an error line of go test's own.
+Where a test binary ended inside a test (an os.Exit, a log.Fatal or a kill), go-test.sh, as the go
+gotestsum runs, writes such a line, since a rerun of that test alone would not run the tests after
+it. go-test.sh also fails a package that failed with no test failing whatever a rerun did.
 GO_TEST_RETRY=off is the switch that takes the retry away from a run whose expected result is a
 failure (airlock-mutants.sh against a mutant) or whose -run a rerun of the root test would widen
 (kind's runtime legs), where a job runs such a run under go-test.sh. No workflow sets

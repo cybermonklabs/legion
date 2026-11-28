@@ -36,6 +36,14 @@
 # not start with `# `, `go: copying`, `go: creating`, `go: downloading`, `go: extracting`,
 # `go: finding`, `HASH`, `testcache:` or `warning:` (cmd/rerunfails.go, hasErrors;
 # testjson/execution.go, readStderr): its summary lists those lines under `=== Errors`.
+# Where the retry is on, the go gotestsum runs is this script, as `go-test.sh --as-go GO` from a
+# directory of its own put first on gotestsum's PATH alone. It execs GO under the caller's PATH,
+# so the process gotestsum interrupts is go itself, and passes go test's output on as it stands,
+# while jq reads a copy and writes such a line for each package whose test binary failed with a
+# test begun and not ended and printed no panic: an os.Exit, a log.Fatal or a kill inside that test.
+# go test prints no result for that test and runs no test after it, and gotestsum counts it
+# failed, so a rerun of that test alone would pass the step with the tests after it run in no
+# attempt: the line stops the rerun as a panic does, and gotestsum exits 3.
 # GO_TEST_RETRY=off turns the retry off on any event. It is the switch for a run whose expected
 # result is a failure (each run of packages/envoy/scripts/airlock-mutants.sh against a mutant) or
 # whose -run a rerun of the root test would drop (kind's runtime legs), where a job runs such a run
@@ -91,6 +99,28 @@ usage() {
   echo "go-test.sh: $1 (usage: go-test.sh [--race-memory] go [-C DIR] test [GO TEST ARGUMENT]..., or go-test.sh --path NAME)" >&2
   exit 2
 }
+
+# go-test.sh --as-go GO ARGUMENT...: the go gotestsum runs where the retry is on (the header says
+# why). jq reads each go test event in turn: a test is begun at its run and ended at its pass, fail
+# or skip, and at its package's fail jq names the tests still begun, where no output line of the
+# package started with `panic: `, which stops gotestsum's rerun itself.
+if [ "${1:-}" = --as-go ]; then
+  [ $# -ge 2 ] || usage "--as-go names no go"
+  go=$2
+  shift 2
+  [ "${1:-}" = test ] || exec "$go" "$@"
+  # shellcheck disable=SC2016 # $e is jq's variable, not the shell's
+  stopped='foreach (inputs | fromjson? | objects | select(.Package != null)) as $e ({};
+      if ($e.Output // "" | startswith("panic: ")) then .[$e.Package].panicked = true
+      elif $e.Test == null then .
+      elif $e.Action == "run" then .[$e.Package].running[$e.Test] = true
+      elif $e.Action == "pass" or $e.Action == "fail" or $e.Action == "skip" then del(.[$e.Package].running[$e.Test])
+      else . end;
+    select($e.Test == null and $e.Action == "fail") | .[$e.Package]
+    | select((.panicked | not) and (.running // {} | length) > 0)
+    | "::error::go-test.sh: the test binary of \($e.Package) ended with no result for \(.running | keys | join(", ")), begun and not ended: an os.Exit, a log.Fatal or a kill inside a test ends the binary before the tests after it run, and a rerun of that test alone would not run them either, so no test runs again")'
+  exec "$go" "$@" > >(tee >(jq -n -R -r --unbuffered "$stopped" >&2))
+fi
 
 if [ "${1:-}" = --path ]; then
   [ $# -eq 2 ] && [[ "$2" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*\.json$ ]] ||
@@ -179,10 +209,21 @@ rm -f "$jsonfile" "$rerun_report"
 
 retry_flags=()
 state=off
+path=$PATH
 if [ "$retry" = true ]; then
   retry_flags=(--rerun-fails=1 --rerun-fails-run-root-test --rerun-fails-abort-on-data-race --rerun-fails-report "$rerun_report")
   [ -z "$max_failures" ] || retry_flags+=("--rerun-fails-max-failures=$max_failures")
   state=on
+  # gotestsum's go, a directory of its own first on gotestsum's PATH: it runs this script's
+  # --as-go under the caller's PATH, which runs the go found here.
+  real_go=$(command -v go) ||
+    { echo "::error::go-test.sh: go is not on PATH" >&2; exit 1; }
+  as_go=$(mktemp -d)
+  trap 'rm -rf "$as_go"' EXIT
+  # shellcheck disable=SC2016 # "$@" is the arguments gotestsum gives that go, expanded there
+  printf '#!/usr/bin/env bash\nPATH=%q exec %q --as-go %q "$@"\n' "$PATH" "$here/${BASH_SOURCE[0]##*/}" "$real_go" >"$as_go/go"
+  chmod +x "$as_go/go"
+  path="$as_go:$PATH"
 fi
 why="the retry is $state (GITHUB_EVENT_NAME=${GITHUB_EVENT_NAME:-}, GO_TEST_RETRY=${GO_TEST_RETRY:-})"
 command=(gotestsum --format standard-verbose --jsonfile "$jsonfile" "${retry_flags[@]}" --packages "${packages[*]}" -- "${flags[@]}")
@@ -191,9 +232,9 @@ echo "go-test.sh: $why${dir:+, from $dir}: ${command[*]}"
 
 ran=0
 if [ -n "$dir" ]; then
-  (cd "$dir" && "${command[@]}") || ran=$?
+  (cd "$dir" && PATH=$path "${command[@]}") || ran=$?
 else
-  "${command[@]}" || ran=$?
+  PATH=$path "${command[@]}" || ran=$?
 fi
 status=$ran
 
