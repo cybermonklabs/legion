@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -212,12 +213,14 @@ func TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRu
 	for seq, past := range []string{"testing", "merging", "reviewing"} {
 		rig.publish("INFRA", change(31+seq, "INFRA-1", moved("phase", past)))
 	}
+	last := rig.lastStreamSeq()
 	rig.waitFor(20*time.Second, func() bool {
 		info := rig.consumerInfo()
-		return info.NumPending == 0 && info.NumAckPending == stateMaxWaiting+1
+		return info.Delivered.Stream >= last && info.NumAckPending == stateMaxWaiting+1 &&
+			len(rig.logRecords(heldLine)) >= 1 && len(rig.logRecords(crowdedLine)) >= 1
 	}, func() string {
-		return fmt.Sprintf("INFRA holds %+v and %d messages went back, want %d messages waiting on its runner and one held",
-			rig.consumerInfo(), len(rig.logRecords(heldLine)), stateMaxWaiting)
+		return fmt.Sprintf("INFRA holds %+v, %d messages went back and %d drops past the cap were logged, want every message through stream sequence %d delivered, %d messages waiting on its runner and one held",
+			rig.consumerInfo(), len(rig.logRecords(heldLine)), len(rig.logRecords(crowdedLine)), last, stateMaxWaiting)
 	})
 	if served := daemon.served(); served != 1 {
 		t.Errorf("INFRA's daemon served %d reads while its starting read was held, want that read alone: a message past the cap made a read beside the runner", served)
@@ -460,4 +463,322 @@ func TestEventsPastTheCapWhileTheFirstReadOfAProjectWithNoCursorIsRecordedAreApp
 		return fmt.Sprintf("after the starting read at 30, INFRA-1's phase is %s, INFRA's cursor is %s and its daemon served %d reads: the events past the cap were never read",
 			currentValues(t, rig.database, "INFRA")["INFRA-1/phase"], cursorOf(t, rig.database, "INFRA"), daemon.served())
 	})
+}
+
+// heldTakeOver sets in's take-over hook so that the body of its first take-over is not run but
+// handed to the channel it answers, for the test to run where its schedule says, and the body of
+// any later take-over runs at once. A test calls it in startHeld's set, before that first take-over.
+func heldTakeOver(in *Intake) <-chan func() {
+	bodies := make(chan func(), 1)
+	var held atomic.Bool
+	in.takeOverHook = func(body func()) {
+		if held.CompareAndSwap(false, true) {
+			bodies <- body
+			return
+		}
+		body()
+	}
+	return bodies
+}
+
+// queuedCalls sets in's call-queued hook to send the project of each starting point callRead
+// queues to the channel it answers, which holds more than any test here queues: the count of the
+// calls queued is the channel's length.
+func queuedCalls(in *Intake) <-chan string {
+	calls := make(chan string, 16)
+	in.callQueued = func(project string) { calls <- project }
+	return calls
+}
+
+// holdRunner queues work on project's runner that holds the runner until the release it answers is
+// called, which the test's end calls too: a message keyed to the runner meanwhile waits behind it,
+// and so does the work queued after it, in the order each reached the runner.
+func holdRunner(t *testing.T, rig *intakeRig, project string) (release func()) {
+	t.Helper()
+	gate := make(chan struct{})
+	release = sync.OnceFunc(func() { close(gate) })
+	t.Cleanup(release)
+	if !rig.intake.durable.Queue(project, func(ctx context.Context) {
+		select {
+		case <-gate:
+		case <-ctx.Done():
+		}
+	}) {
+		t.Fatalf("control: the intake took no work on %s's runner", project)
+	}
+	return release
+}
+
+// waitingOn is how many of project's messages the running intake counts as waiting on the
+// project's runner (Intake.waiting): messageKey counts a message up as it keys it there, and
+// deliver counts it down as it returns.
+func waitingOn(rig *intakeRig, project string) int {
+	rig.intake.mu.Lock()
+	defer rig.intake.mu.Unlock()
+	return rig.intake.waiting.projects[project]
+}
+
+// awaitWaiting waits for the running intake to count want of project's messages waiting on the
+// project's runner (waitingOn).
+func awaitWaiting(t *testing.T, rig *intakeRig, project string, want int) {
+	t.Helper()
+	testwait.Until(t, fmt.Sprintf("%d of %s's messages to wait on its runner", want, project), func() (int, bool) {
+		waiting := waitingOn(rig, project)
+		return waiting, waiting == want
+	})
+}
+
+// keyedThrough publishes a message of project, which has no Legion setting, and waits for the
+// intake to drop it (droppedLine). The durable delivers the stream's messages in order, and the
+// subscription's callback keys each of them before it takes the next (nats.go runs one
+// subscription's callbacks one at a time), so once that message has been handled, every message
+// published before it has been keyed. droppedLine is logged once per project per dropLogEvery, so
+// each call names a project of its own.
+func keyedThrough(t *testing.T, rig *intakeRig, project string) {
+	t.Helper()
+	rig.publish(project, change(1, project+"-1", moved("phase", "planning")))
+	testwait.Until(t, fmt.Sprintf("the intake to drop the message of %s, which has no setting", project), func() (int, bool) {
+		dropped := 0
+		for _, record := range rig.logRecords(droppedLine) {
+			if record["project"] == project {
+				dropped++
+			}
+		}
+		return dropped, dropped >= 1
+	})
+}
+
+// TestAMessageKeyedBeforeTheTakeOversCallbackRanCountsTowardTheCap: a project keeps at most
+// stateMaxWaiting messages waiting on its runner, the messages a take-over's subscription keys
+// before the take-over's callback runs included. A take-over subscribes and creates the durable,
+// so its subscription is delivered messages and keys them, before it records its deliver subject
+// and calls takenOver (delivery's finishTakeOver). The test holds takenOver's body back
+// (Intake.takeOverHook) until INFRA's first message, INFRA having no cursor yet, has been keyed to
+// its runner and makes the starting read, which INFRA's daemon holds; then the body runs. INFRA
+// publishes 15 more messages at or below the read's 30, which wait on the runner behind it, and 31
+// to 33 past it: 31, the 17th message the subscription keyed, is the first past the cap, holds the
+// gap read and goes back to the stream once, the cursor names it as the read's holder, no read is
+// made beside the runner, and INFRA holds stateMaxWaiting+1 messages of the window.
+//
+// At a869784c takenOver started the counts again at 0, so the first message was counted in none:
+// 31 waited on the runner as its 17th message and 32 was the first past the cap, as one CI run of
+// TestMessagesPastTheCapOfAProjectWithNoCursorHoldOneMessageAndAreReadOnTheRunner found
+// (dispatch://INFRA-3904/comment/47d7a6b4-9f56-485d-98fc-d2434980b987).
+func TestAMessageKeyedBeforeTheTakeOversCallbackRanCountsTowardTheCap(t *testing.T) {
+	t.Parallel()
+	rig := newIntakeRig(t)
+	var bodies <-chan func()
+	rig.startHeld(func(in *Intake) { bodies = heldTakeOver(in) })
+	daemon := newFakeDaemon(t, daemonState("INFRA", 30, inPhase("implementing")))
+	daemon.holds(t)
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "implementing")))
+	testwait.Until(t, "INFRA's first message to make the starting read", func() (int, bool) {
+		served := daemon.served()
+		return served, served >= 1
+	})
+	body := testwait.Receive(t, "the take-over's body", bodies)
+	body()
+	for seq := 12; seq < 12+stateMaxWaiting-1; seq++ {
+		rig.publish("INFRA", change(seq, "INFRA-1", moved("phase", "implementing")))
+	}
+	rig.publish("INFRA", change(31, "INFRA-1", moved("phase", "testing")))
+	past := rig.lastStreamSeq()
+	rig.publish("INFRA", change(32, "INFRA-1", moved("phase", "merging")))
+	rig.publish("INFRA", change(33, "INFRA-1", moved("phase", "reviewing")))
+
+	holds := testwait.Until(t, "a message past INFRA's cap to go back to the stream holding the gap read", func() ([]map[string]any, bool) {
+		holds := rig.logRecords(heldLine)
+		return holds, len(holds) >= 1
+	})
+	if len(holds) != 1 || holds[0]["streamSeq"] != float64(past) || holds[0]["seq"] != float64(31) || holds[0]["reason"] != ReadReasonGap ||
+		holds[0]["handBack"] != float64(1) {
+		t.Fatalf("the messages sent back = %v, want one: the first message past the cap, 31 at stream sequence %d, the 17th INFRA's new subscription keyed, holding the gap read once; a message keyed before the take-over's callback ran was counted in none",
+			holds, past)
+	}
+	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonGap}) || c.readHolder == nil || *c.readHolder != int64(past) ||
+		c.readHolds != 1 || c.lastSeq != nil || c.stateID != nil {
+		t.Errorf("INFRA's cursor while its starting read is held is %s, want one that follows no daemon, owes the gap read and names 31 (stream sequence %d) its holder once", c, past)
+	}
+	if served := daemon.served(); served != 1 {
+		t.Errorf("INFRA's daemon served %d reads while its starting read was held, want that read alone: a message past the cap made a read beside the runner", served)
+	}
+	testwait.Until(t, fmt.Sprintf("INFRA to hold %d messages of the window: %d waiting on its runner and the one holding the gap read", stateMaxWaiting+1, stateMaxWaiting), func() (int, bool) {
+		pending := rig.consumerInfo().NumAckPending
+		return pending, pending == stateMaxWaiting+1
+	})
+}
+
+// TestACallForTheOwedReadQueuedBeforeTheTakeOversCallbackRanIsQueuedOnce: at most one call for a
+// project's owed read waits on its runner (callRead, calling), the call a take-over's subscription
+// queues before the take-over's callback runs included. INFRA's setting names a second daemon,
+// whose starting read fails, so the read is owed for retry with the store INFRA followed before
+// recorded; its minute passes, so the read is due and no message holds it. A second intake takes
+// the durable over, and the test holds its takenOver's body back (Intake.takeOverHook). Two
+// messages of the store recorded reach INFRA's runner, with work the test holds in front of each,
+// so the second waits on the runner before the call the first queues behind itself. The first is
+// let go, and calls for the owed read: callRead queues INFRA's starting point (Intake.callQueued
+// counts it). The take-over's body then runs, and the second is let go: it calls for the same read
+// while that starting point still waits behind it, and queues none. Once the starting point has
+// made its read, callRead has queued one call.
+//
+// At a869784c takenOver emptied calling, so the second message found no call waiting and queued
+// another.
+func TestACallForTheOwedReadQueuedBeforeTheTakeOversCallbackRanIsQueuedOnce(t *testing.T) {
+	t.Parallel()
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	rig.start()
+	rig.awaitStartingRead("INFRA")
+	named := newFakeDaemon(t, "")
+	named.refuses(http.StatusServiceUnavailable)
+	rig.pointAt(named, 2)
+	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.stateID != nil || c.readHolder != nil ||
+		c.previousStateID == nil || *c.previousStateID != rigStateID {
+		t.Fatalf("control: INFRA's cursor after the failed starting read is %s, want the read owed for retry, no store, no holder and the store %s recorded", c, rigStateID)
+	}
+	rig.stop()
+
+	var bodies <-chan func()
+	var calls <-chan string
+	rig.startHeld(func(in *Intake) { bodies, calls = heldTakeOver(in), queuedCalls(in) })
+	letFirst := holdRunner(t, rig, "INFRA")
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "merging")))
+	awaitWaiting(t, rig, "INFRA", 1)
+	letSecond := holdRunner(t, rig, "INFRA")
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
+	awaitWaiting(t, rig, "INFRA", 2)
+
+	letFirst()
+	testwait.Until(t, "the first message to queue the call for INFRA's owed read", func() (int, bool) {
+		return len(calls), len(calls) >= 1
+	})
+	body := testwait.Receive(t, "the take-over's body", bodies)
+	body()
+	letSecond()
+	// The starting point waits behind the second message, so once it has called the daemon the
+	// second message has made its call.
+	testwait.Until(t, "the starting point the first message queued to read the daemon the setting names", func() (int, bool) {
+		served := named.served()
+		return served, served >= 2
+	})
+	if queued := len(calls); queued != 1 {
+		t.Errorf("callRead queued %d calls for INFRA's owed read, want 1: the second message called for the read the first had queued while that call still waited behind it, and the take-over's callback, which ran between them, emptied the record of it",
+			queued)
+	}
+}
+
+// TestAReplacedConnectionKeepsTheCountsAndTheCallOfTheSubscriptionItBindsAgain: a connection that
+// the bus client replaces binds the intake's subscription again on a handle of its own at the same
+// deliver subject, and calls no takenOver (bus.Client's restoreSubscriptions): the messages keyed
+// before still wait on their runners, and the call queued before still waits on its runner, so the
+// project's cap and its one waiting call hold across it. LINUX, with no cursor, makes its starting
+// read at its first message, which its daemon holds, and 15 more messages wait behind it. INFRA's
+// read is owed for retry and due, as in
+// TestACallForTheOwedReadQueuedBeforeTheTakeOversCallbackRanIsQueuedOnce, and two messages of the
+// store it followed before wait on its runner behind work the test holds in front of each; the
+// first is let go and queues the call for the owed read. The intake's connection is then closed,
+// and its client dials another and binds the subscription again, with no take-over. LINUX's 31 to
+// 33 arrive past the read's snapshot: 31, its 17th message, goes past the cap and holds the gap
+// read. INFRA's second message is let go, and queues no call: one is waiting.
+//
+// Counts or calls that began again at each subscription handle would hold LINUX's 31 to 33 on its
+// runner, and have INFRA's second message queue a second call.
+func TestAReplacedConnectionKeepsTheCountsAndTheCallOfTheSubscriptionItBindsAgain(t *testing.T) {
+	t.Parallel()
+	rig := newIntakeRig(t)
+	daemon := newFakeDaemon(t, daemonState("INFRA", 10, planning("INFRA")))
+	seedLegionProject(t, rig.database, "INFRA", daemon.URL)
+	var takeOvers atomic.Int32
+	var calls <-chan string
+	rig.startHeld(func(in *Intake) {
+		calls = queuedCalls(in)
+		in.takeOverHook = func(body func()) {
+			takeOvers.Add(1)
+			body()
+		}
+	})
+	rig.awaitStartingRead("INFRA")
+	named := newFakeDaemon(t, "")
+	named.refuses(http.StatusServiceUnavailable)
+	rig.pointAt(named, 2)
+	if c := cursorOf(t, rig.database, "INFRA"); !slices.Equal(c.readReasons, []string{ReadReasonRetry}) || c.stateID != nil || c.readHolder != nil ||
+		c.previousStateID == nil || *c.previousStateID != rigStateID {
+		t.Fatalf("control: INFRA's cursor after the failed starting read is %s, want the read owed for retry, no store, no holder and the store %s recorded", c, rigStateID)
+	}
+
+	linux := newFakeDaemon(t, daemonState("LINUX", 30, planning("LINUX")))
+	linux.holds(t)
+	seedLegionProject(t, rig.database, "LINUX", linux.URL)
+	rig.publish("LINUX", change(11, "LINUX-1", moved("phase", "implementing")))
+	testwait.Until(t, "LINUX's first message to make the starting read", func() (int, bool) {
+		served := linux.served()
+		return served, served >= 1
+	})
+	for seq := 12; seq < 12+stateMaxWaiting-1; seq++ {
+		rig.publish("LINUX", change(seq, "LINUX-1", moved("phase", "implementing")))
+	}
+	letFirst := holdRunner(t, rig, "INFRA")
+	rig.publish("INFRA", change(11, "INFRA-1", moved("phase", "merging")))
+	awaitWaiting(t, rig, "INFRA", 1)
+	letSecond := holdRunner(t, rig, "INFRA")
+	rig.publish("INFRA", change(12, "INFRA-1", moved("phase", "merging")))
+	awaitWaiting(t, rig, "INFRA", 2)
+	awaitWaiting(t, rig, "LINUX", stateMaxWaiting)
+	letFirst()
+	testwait.Until(t, "INFRA's first message to queue the call for INFRA's owed read", func() (int, bool) {
+		return len(calls), len(calls) >= 1
+	})
+
+	replaced := rig.client.Connection()
+	replaced.Close()
+	testwait.Until(t, "the intake's client to bind its subscription again on a new connection, at the same deliver subject", func() (string, bool) {
+		info := rig.consumerInfo()
+		bound := rig.client.Connection() != replaced && rig.client.SubOK() && rig.client.SubSubject() == rig.subject &&
+			info.PushBound && info.Config.DeliverSubject == rig.subject
+		return fmt.Sprintf("the client's subscription delivers on %q (ok %t), the durable is bound %t to %q, want %q",
+			rig.client.SubSubject(), rig.client.SubOK(), info.PushBound, info.Config.DeliverSubject, rig.subject), bound
+	})
+	if taken := takeOvers.Load(); taken != 1 {
+		t.Fatalf("control: the intake was taken over %d times, want its first take-over alone: the connection replaced is no take-over", taken)
+	}
+
+	rig.publish("LINUX", change(31, "LINUX-1", moved("phase", "testing")))
+	past := rig.lastStreamSeq()
+	rig.publish("LINUX", change(32, "LINUX-1", moved("phase", "merging")))
+	rig.publish("LINUX", change(33, "LINUX-1", moved("phase", "reviewing")))
+	keyedThrough(t, rig, "QUIET")
+	if waiting := waitingOn(rig, "LINUX"); waiting != stateMaxWaiting {
+		t.Fatalf("%d of LINUX's messages wait on its runner once 31 to 33 are keyed, want %d: the subscription bound again on the new connection counted the messages keyed before it in none, so its 17th went on the runner",
+			waiting, stateMaxWaiting)
+	}
+	holds := testwait.Until(t, "LINUX's message past the cap to go back to the stream holding the gap read", func() ([]map[string]any, bool) {
+		holds := rig.logRecords(heldLine)
+		return holds, len(holds) >= 1
+	})
+	if len(holds) != 1 || holds[0]["project"] != "LINUX" || holds[0]["streamSeq"] != float64(past) || holds[0]["seq"] != float64(31) ||
+		holds[0]["reason"] != ReadReasonGap || holds[0]["handBack"] != float64(1) {
+		t.Errorf("the messages sent back = %v, want one: LINUX's 17th message, 31 at stream sequence %d, past the cap, holding the gap read once", holds, past)
+	}
+	if c := cursorOf(t, rig.database, "LINUX"); !slices.Equal(c.readReasons, []string{ReadReasonGap}) || c.readHolder == nil || *c.readHolder != int64(past) ||
+		c.readHolds != 1 {
+		t.Errorf("LINUX's cursor while its starting read is held is %s, want it owing the gap read and naming 31 (stream sequence %d) its holder once", c, past)
+	}
+
+	letSecond()
+	// The starting point waits behind INFRA's second message, so once it has called the daemon the
+	// second message has made its call.
+	testwait.Until(t, "the starting point INFRA's first message queued to read the daemon the setting names", func() (int, bool) {
+		served := named.served()
+		return served, served >= 2
+	})
+	if queued := len(calls); queued != 1 {
+		t.Errorf("callRead queued %d calls for INFRA's owed read, want 1: INFRA's second message called for the read the first had queued before the connection was replaced, while that call still waited behind it",
+			queued)
+	}
+	if taken := takeOvers.Load(); taken != 1 {
+		t.Errorf("the intake was taken over %d times, want its first take-over alone", taken)
+	}
 }

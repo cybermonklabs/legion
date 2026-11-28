@@ -58,11 +58,13 @@ type intakeRig struct {
 	// where firstRetry is set, and leaves NewIntake's otherwise.
 	firstRetry, lastRetry time.Duration
 
-	// intake is the intake running now, stop stops it, and subject is the deliver subject its
-	// take-over bound the durable to.
+	// intake is the intake running now, stop stops it, subject is the deliver subject its
+	// take-over bound the durable to, and client is its NATS client, whose connection a test closes
+	// to have the client replace it.
 	intake  *Intake
 	stop    func()
 	subject string
+	client  *bus.Client
 }
 
 // intakeClock is the intake's clock (Intake.now): the wall clock, moved forward by what the test
@@ -188,6 +190,23 @@ func (r *intakeRig) start() {
 // after the rig's waits where a test set them (firstRetry, lastRetry), and NewIntake's otherwise.
 func (r *intakeRig) startOn(now func() time.Time) {
 	r.t.Helper()
+	r.begin(now, nil)
+}
+
+// startHeld is start for a test that sets the intake's hooks (Intake.takeOverHook,
+// Intake.callQueued): set runs on the intake before its Run starts, since the take-over's first
+// runs as Run starts. It returns once the take-over has bound the durable, as start does, and waits
+// for nothing of takenOver's body, which the test's take-over hook may hold back.
+func (r *intakeRig) startHeld(set func(*Intake)) {
+	r.t.Helper()
+	r.begin(r.clock.now, set)
+}
+
+// begin runs an intake on a NATS client of its own, with now as its clock and, where set is not
+// nil, set run on it before its Run starts, until the test ends or stop is called, and returns once
+// its take-over has bound the durable on a deliver subject of its own.
+func (r *intakeRig) begin(now func() time.Time, set func(*Intake)) {
+	r.t.Helper()
 	client, err := bus.ConnectOwningStream([]string{testnats.URL(r.t)})
 	if err != nil {
 		r.t.Fatalf("connect the intake: %v", err)
@@ -198,6 +217,9 @@ func (r *intakeRig) startOn(now func() time.Time) {
 	intake.log, intake.stateOptions = r.logger, r.stateOptions
 	if r.firstRetry != 0 {
 		intake.firstRetry, intake.lastRetry = r.firstRetry, r.lastRetry
+	}
+	if set != nil {
+		set(intake)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
@@ -219,7 +241,7 @@ func (r *intakeRig) startOn(now func() time.Time) {
 		info, err = r.publisher.JS().ConsumerInfo(bus.Stream, bus.DispatchLegionStateDurable)
 		return err == nil && info.PushBound && info.Config.DeliverSubject != previous
 	}, func() string { return fmt.Sprintf("the intake never bound its durable: %+v, %v", info, err) })
-	r.intake, r.stop, r.subject = intake, stop, info.Config.DeliverSubject
+	r.intake, r.stop, r.subject, r.client = intake, stop, info.Config.DeliverSubject, client
 }
 
 // waitFor polls done until it holds, and fails the test with failure's message when within passes.

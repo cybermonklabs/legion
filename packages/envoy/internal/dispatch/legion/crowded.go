@@ -35,24 +35,32 @@ func crowdedKey(project string) string {
 	return crowdedKeyPrefix + project
 }
 
-// waitingCounts is, for one subscription of the durable, how many messages of each project are
-// keyed to the project's runner and not yet finished (projects), and the project of each such
-// message (keyed). messageKey counts a message up as it keys it to its project's runner, and
-// deliver counts it down as it returns for it (finished). A message the stop of a subscription
-// hands back never reaches deliver, so a take-over starts new counts at 0 (takenOver), and a
-// message keyed under the counts before is counted down in none.
+// waitingCounts is, for the subscription that delivers at one deliver subject (subject), how many
+// messages of each project are keyed to the project's runner and not yet finished (projects), and
+// the project of each such message (keyed). messageKey counts a message up as it keys it to its
+// project's runner, and deliver counts it down as it returns for it (finished). They are the
+// deliver subject's counts, not the subscription handle's: a connection the bus client replaces
+// binds the same subscription again on a handle of its own at the same deliver subject, and every
+// message the handle before keyed still waits on its runner, so the counts go on. A take-over
+// subscribes at a deliver subject of its own, and the stop of the subscription before it handed
+// back every message that still waited, which never reaches deliver: so messageKey starts new
+// counts at 0 with the first message of a new deliver subject, whenever the take-over's callback
+// runs (takenOver), and a message keyed under the counts before is counted down in none.
 type waitingCounts struct {
+	subject  string
 	projects map[string]int
 	keyed    map[*natsgo.Msg]string
 }
 
-// newWaitingCounts is a subscription's counts before any message is keyed.
-func newWaitingCounts() waitingCounts {
-	return waitingCounts{projects: map[string]int{}, keyed: map[*natsgo.Msg]string{}}
+// newWaitingCounts is the counts of the subscription at deliver subject subject before any of its
+// messages is keyed.
+func newWaitingCounts(subject string) waitingCounts {
+	return waitingCounts{subject: subject, projects: map[string]int{}, keyed: map[*natsgo.Msg]string{}}
 }
 
 // finished counts msg down among the messages that wait on its project's runner, where messageKey
-// counted it under the counts of the subscription the durable delivers on now (waiting). deliver
+// counted it under the counts of the deliver subject the durable delivers at now (waiting); a
+// message keyed under the counts of an earlier deliver subject is counted down in none. deliver
 // calls it as it returns for msg.
 func (in *Intake) finished(msg *natsgo.Msg) {
 	in.mu.Lock()

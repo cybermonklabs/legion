@@ -61,6 +61,10 @@ func (in *Intake) callRead(project string, current cursor) {
 		in.startingPoint(ctx, project, false)
 	}) {
 		called()
+		return
+	}
+	if in.callQueued != nil {
+		in.callQueued(project)
 	}
 }
 

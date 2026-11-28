@@ -214,6 +214,10 @@ type Intake struct {
 	// (startLater). A test moves both.
 	now   func() time.Time
 	after func(d time.Duration, f func())
+	// handBackAfter hands a message that holds its project's owed read back to the stream, to come
+	// round again after a delay (deliver), and reports whether the hand-back was admitted:
+	// delivery.HeldMessage.HandBackAfter, which newIntake sets. A test answers it on its own clock.
+	handBackAfter func(delivery.HeldMessage, time.Duration) bool
 	// firstRetry is how long a database step that failed waits before it is tried again the first
 	// time, and lastRetry how long at the most, the wait doubling after each failure between
 	// (untilDone): applyFirstRetry and applyLastRetry. A test shrinks both.
@@ -228,6 +232,14 @@ type Intake struct {
 	// RequestTimeout. A test gives its own intake's reads a shorter window with WithTimeout (the
 	// rig's windowed), rather than replace http.DefaultTransport for every test of the process.
 	stateOptions []Option
+	// takeOverHook, when set, is handed takenOver's body at each take-over and runs it, at once or
+	// later, so a test can hold the body back until the messages its schedule needs are keyed. Nil
+	// outside tests: takenOver then runs its body itself.
+	takeOverHook func(body func())
+	// callQueued, when set, runs each time callRead has queued a project's starting point on the
+	// project's runner and the durable took it, with the project, so a test counts the calls
+	// queued. Nil outside tests.
+	callQueued func(project string)
 
 	mu sync.Mutex
 	// reported is when each line of reportEvery was last logged for each project, for the lines
@@ -237,11 +249,15 @@ type Intake struct {
 	pruned time.Time
 	// calling is each project for which a message of a store its cursor drops has queued a call for
 	// the owed read on the project's runner (callRead), until that call has run, so a burst of such
-	// messages queues one call. A take-over empties it (takenOver): the delivery before the
-	// take-over dropped each call that still waited when it stopped (delivery.HeldDurable.Queue).
+	// messages queues one call. It holds the calls of the deliver subject the counts are for
+	// (waiting), and the first message of a new deliver subject empties it with them (messageKey):
+	// the delivery before a take-over dropped each call that still waited when it stopped
+	// (delivery.HeldDurable.Queue). A connection the bus client replaces keeps it, since the calls
+	// still wait on the same runners.
 	calling map[string]bool
-	// waiting counts the messages that wait on each project's runner, for the subscription the
-	// durable delivers on now (waitingCounts). A take-over starts it again (takenOver).
+	// waiting counts the messages that wait on each project's runner, for the deliver subject the
+	// durable delivers at now (waitingCounts): the first message of a new deliver subject starts it
+	// again (messageKey).
 	waiting waitingCounts
 	// reading is the whole read in flight on each project's runner (readWhole, readInFlight).
 	reading map[string]readInFlight
@@ -263,13 +279,13 @@ func NewIntake(natsClient *bus.Client, pool *store.Pool, leases delivery.Durable
 }
 
 // newIntake is an intake on pool, reading the settings again on each signal of settingsWake, with
-// every field NewIntake makes but the durable: the wall clock, its deferred calls, the retry waits
-// and every map. NewIntake completes it with the durable, and ReadWhole uses it as it is: its read
-// runs on no runner of a durable.
+// every field NewIntake makes but the durable: the wall clock, its deferred calls, the hand-back,
+// the retry waits and every map. NewIntake completes it with the durable, and ReadWhole uses it as
+// it is: its read runs on no runner of a durable.
 func newIntake(pool *store.Pool, settingsWake <-chan struct{}) *Intake {
 	return &Intake{pool: pool, settingsWake: settingsWake, now: time.Now, after: func(d time.Duration, f func()) { time.AfterFunc(d, f) },
-		firstRetry: applyFirstRetry, lastRetry: applyLastRetry,
-		reported: map[reportKey]time.Time{}, calling: map[string]bool{}, waiting: newWaitingCounts(), reading: map[string]readInFlight{}}
+		handBackAfter: delivery.HeldMessage.HandBackAfter, firstRetry: applyFirstRetry, lastRetry: applyLastRetry,
+		reported: map[reportKey]time.Time{}, calling: map[string]bool{}, waiting: newWaitingCounts(""), reading: map[string]readInFlight{}}
 }
 
 // ReserveLeases reserves the intake's callers of the lease pool: three, as every held durable's
@@ -354,18 +370,20 @@ func (in *Intake) SettingsChanged(ctx context.Context) {
 }
 
 // takenOver is the durable's take-over callback (delivery.NewHeldDurable): once a take-over has
-// bound the durable, its first creation included, it empties the projects whose call for the owed
-// read is queued (calling), since the delivery before the take-over dropped each call that still
-// waited when it stopped, starts the counts of the messages that wait on each runner again at 0
-// (waiting), since that delivery handed back each message that still waited, and queues
-// SettingsChanged on settingsKey's runner. The callback runs on the durable's run loop, which
-// waits for it, so it only queues the settings read and does not make it.
+// bound the durable, its first creation included, it queues SettingsChanged on settingsKey's
+// runner. The callback runs on the durable's run loop, which waits for it, so it only queues the
+// settings read and does not make it. It leaves the counts of the messages that wait on each
+// runner (waiting) and the projects whose call for the owed read is queued (calling) as they are:
+// the take-over's subscription is delivered messages and keys them before the callback runs, and
+// the first of them starts both again (messageKey). Where a test set takeOverHook, takenOver hands
+// it that body to run instead of running it.
 func (in *Intake) takenOver() {
-	in.mu.Lock()
-	clear(in.calling)
-	in.waiting = newWaitingCounts()
-	in.mu.Unlock()
-	in.durable.Queue(settingsKey, in.SettingsChanged)
+	body := func() { in.durable.Queue(settingsKey, in.SettingsChanged) }
+	if in.takeOverHook != nil {
+		in.takeOverHook(body)
+		return
+	}
+	body()
 }
 
 // startingPoint reads project's daemon whole where its observations have no starting point
@@ -454,8 +472,10 @@ func (in *Intake) startBlocked(ctx context.Context, reason string) (bool, error)
 // project's messages one at a time, and counts it among the messages that wait on that runner
 // (waiting). A message that arrives while stateMaxWaiting of its project's messages wait is keyed
 // by the project's crowded key instead (crowdedKey), and is not counted: it waits on no read of the
-// project (judgeCrowded). A message whose envelope or payload does not decode, or that names no
-// project, is keyed by its subject, and deliver reports it.
+// project (judgeCrowded). The first message of a new deliver subject (msg.Sub.Subject), which only
+// a take-over's subscription delivers at, starts the counts again at 0 and empties calling before
+// it is counted (waitingCounts). A message whose envelope or payload does not decode, or that names
+// no project, is keyed by its subject, and deliver reports it.
 func (in *Intake) messageKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool) {
 	var envelope contracts.Envelope
 	if err := json.Unmarshal(msg.Data, &envelope); err != nil {
@@ -469,6 +489,10 @@ func (in *Intake) messageKey(msg *natsgo.Msg) (string, *contracts.Envelope, bool
 	}
 	in.mu.Lock()
 	defer in.mu.Unlock()
+	if subject := msg.Sub.Subject; subject != in.waiting.subject {
+		in.waiting = newWaitingCounts(subject)
+		clear(in.calling)
+	}
 	if in.waiting.projects[head.Project] >= stateMaxWaiting {
 		return crowdedKey(head.Project), &envelope, true
 	}
@@ -518,9 +542,9 @@ const (
 // deliver applies one state message on its project's runner and acknowledges it (applyMessage),
 // or, where the message holds its project's owed whole read (cursor.readFor), hands it back to the
 // stream unacknowledged for the time left until the read is due, so its redelivery makes the read,
-// and logs that hand-back (heldLine). A hand-back HandBackAfter does not admit is not made, so
-// deliver logs no heldLine for it: HandBackAfter logs its own line, and the next holder's
-// take-over delivers the message again. A message that went back stateMaxHolds times is
+// and logs that hand-back (heldLine). A hand-back that handBackAfter (HandBackAfter) does not admit
+// is not made, so deliver logs no heldLine for it: HandBackAfter logs its own line, and the next
+// holder's take-over delivers the message again. A message that went back stateMaxHolds times is
 // acknowledged at its next delivery, which logs releasedLine at WARN only where it ends the hold
 // with the read still owed. A message whose hold a write of the setting ended is acknowledged
 // unapplied, and logged at INFO (writeReleasedLine). A message on its project's crowded key is
@@ -557,7 +581,7 @@ func (in *Intake) deliver(m delivery.HeldMessage) {
 	}
 	sequences := []any{"run", message.Run, "firstSeq", message.FirstSeq, "seq", message.Seq}
 	if attempt.back > 0 {
-		if m.HandBackAfter(attempt.back) {
+		if in.handBackAfter(m, attempt.back) {
 			in.logger().Info(heldLine, append([]any{"project", message.Project, "streamSeq", attempt.seq, "delivery", attempt.delivered,
 				"handBack", attempt.holds, "delay", attempt.back, "reason", attempt.reason}, sequences...)...)
 		}
