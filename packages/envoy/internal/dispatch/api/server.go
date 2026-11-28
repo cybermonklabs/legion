@@ -2310,11 +2310,23 @@ func refuseClosed(open bool, write closedWrite) error {
 }
 
 // A version event is built by docs.ArtifactVersionEventPayload wherever it is appended; a
-// document's creation is the one other artifact payload, and it states what the write moved
-// through the same helper, so both shapes spell the reference keys once.
-func artifactCreatedEventPayload(artifact model.Artifact, changes model.ReferenceChanges) map[string]any {
+// document's creation and an artifact's removal (artifactRemovedEventPayload) are the two other
+// artifact payloads. A creation states what the write moved through the same helper as a version,
+// so both shapes spell the reference keys once. All three take the chain of the artifact's issue
+// (docs.DocumentEventAncestors) and name it through docs.NameDocumentEventAncestors.
+func artifactCreatedEventPayload(artifact model.Artifact, changes model.ReferenceChanges, ancestors []string) map[string]any {
 	payload := map[string]any{"artifact": artifact}
+	docs.NameDocumentEventAncestors(payload, ancestors)
 	model.NameReferenceChanges(payload, changes)
+	return payload
+}
+
+// artifactRemovedEventPayload is the payload of an artifact.removed event: the removed row as it
+// stood, and the chain of its issue (docs.DocumentEventAncestors), named through
+// docs.NameDocumentEventAncestors as the other two artifact payloads name it.
+func artifactRemovedEventPayload(artifact model.Artifact, ancestors []string) map[string]any {
+	payload := map[string]any{"artifact": artifact}
+	docs.NameDocumentEventAncestors(payload, ancestors)
 	return payload
 }
 

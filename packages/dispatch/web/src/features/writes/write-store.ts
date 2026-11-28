@@ -327,14 +327,8 @@ export type WriteOutcome =
  *  discarded write may have been made. A Retry of a refused one goes out again. */
 export type IssueWritePhase = "out" | "landed" | "refused" | "discarded";
 
-/** How a write of an issue stands, as `onIssueWrite` tells it: its phase, the write, and, for a
- *  landing, whether the store refreshed every query the app holds as it landed (`#landed`: a
- *  landing with no answer, or one nothing awaited), so a listener need not ask for those again. */
-export type IssueWriteListener = (
-  phase: IssueWritePhase,
-  write: Write,
-  refreshedAll: boolean
-) => void;
+/** How a write of an issue stands, as `onIssueWrite` tells it: its phase and the write. */
+export type IssueWriteListener = (phase: IssueWritePhase, write: Write) => void;
 
 /** The issue a request names in its path (`/api/v1/issues/{key}`), or none. */
 function issueOfPath(path: string | undefined): string | undefined {
@@ -1364,11 +1358,12 @@ export class Writes {
       this.#remove(entry);
     }
     this.#outdate(entry.write);
-    const refreshedAll = kind?.landed === undefined && (!awaited || answer === null);
     if (kind?.landed !== undefined) kind.landed(this.#client, entry.write, answer, awaited);
     this.#emit({ answer, kind: "landed", write: entry.write });
-    if (refreshedAll) void this.#client.invalidateQueries();
-    this.#settleOut(entry, "landed", refreshedAll);
+    if (kind?.landed === undefined && (!awaited || answer === null)) {
+      void this.#client.invalidateQueries();
+    }
+    this.#settleOut(entry, "landed");
     this.#advance(entry.write.target);
   }
 
@@ -1585,17 +1580,16 @@ export class Writes {
     const { issue } = entry.write;
     if (entry.out || issue === undefined) return;
     entry.out = true;
-    for (const listener of this.#issueWrites.get(issue) ?? []) listener("out", entry.write, false);
+    for (const listener of this.#issueWrites.get(issue) ?? []) listener("out", entry.write);
   }
 
-  /** Tells the issue of `entry`'s write, where it was told the write went out, how it settled:
-   *  with `refreshedAll` where the store refreshed every query as it landed. */
-  #settleOut(entry: Entry, phase: Exclude<IssueWritePhase, "out">, refreshedAll = false): void {
+  /** Tells the issue of `entry`'s write, where it was told the write went out, how it settled. */
+  #settleOut(entry: Entry, phase: Exclude<IssueWritePhase, "out">): void {
     const { issue } = entry.write;
     if (!entry.out || issue === undefined) return;
     entry.out = false;
     for (const listener of this.#issueWrites.get(issue) ?? []) {
-      listener(phase, entry.write, refreshedAll);
+      listener(phase, entry.write);
     }
   }
 

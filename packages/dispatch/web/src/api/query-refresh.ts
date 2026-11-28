@@ -50,6 +50,11 @@ export interface RefreshTarget {
   readonly queryKey: QueryKey;
   readonly exact?: boolean;
   readonly when?: RefreshCheck;
+  /** The identity of `when`: two targets with equal `queryKey`, `exact` and `same` reach the same
+   *  queries with the same check, so a batch keeps the first of them alone
+   *  (`dedupeRefreshTargets` in `api/event-feed.ts`), as it keeps one copy of a target with no
+   *  `when`. A check that no identity names has none. The refresh itself ignores it. */
+  readonly same?: string;
 }
 
 /** A test of one query's answer (`RefreshTarget.when`): its data, the query, and the client the

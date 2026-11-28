@@ -36,9 +36,11 @@ import { ViewRowSlot } from "./view-row";
  * provides above the page (`AppProviders`) is what the stage's tests, the Decisions body's
  * drawn test (`DecisionsFilterBody.drawn.test.tsx`) and the outline's reads test
  * (`outline-reads.test.tsx`) draw in; the outline's own tests and the Plan view's
- * (`IssueTree.test.tsx`, `PlanFilterBody.test.tsx`) draw that stack by hand. `spyOnBoxes` gives
- * the boxes happy-dom does not lay out, for the outline's tests, the Spec body's drawn test and
- * the failed read's line's test.
+ * (`IssueTree.test.tsx`, `PlanFilterBody.test.tsx`) draw that stack by hand. Details' tests
+ * (`details-more.test.tsx`) draw what they test under the location the browser makes for an
+ * address (`renderAtBrowserEntry`), as the stage's tests do. `spyOnBoxes` gives the boxes
+ * happy-dom does not lay out, for the outline's tests, the Spec body's drawn test and the failed
+ * read's line's test.
  */
 
 /** A navigator that goes nowhere, for a router whose location the case sets itself. */
@@ -152,24 +154,37 @@ export function drawStage(
   );
 }
 
-/** The page's stage at `address` under the location the browser makes for it, as a load does or
+/** Draws `children` at `address` under the location the browser makes for it, as a load does or
  *  a fragment typed in the address bar: its key is "default", the one key the router gives every
- *  entry it did not make itself. `follow` draws the stage at another address under that same key,
- *  as the browser changes the fragment alone, with no load. `stage` gives the stage its own slots
- *  (`AddressedStage`). */
+ *  entry it did not make itself. `follow` draws them at another address under that same key, as
+ *  the browser changes the fragment alone, with no load. */
+export function renderAtBrowserEntry(
+  address: string,
+  children: ReactNode
+): RenderResult & { readonly follow: (to: string) => void } {
+  const draw = (at: string): ReactNode => (
+    <Router location={at} navigator={NO_NAVIGATION}>
+      {children}
+    </Router>
+  );
+  const view = render(draw(address));
+  return { ...view, follow: (to) => view.rerender(draw(to)) };
+}
+
+/** The page's stage at `address` under the location the browser makes for it, as a load does or
+ *  a fragment typed in the address bar (`renderAtBrowserEntry`): `follow` draws the stage at
+ *  another address under the same key, as the browser changes the fragment alone, with no load.
+ *  `stage` gives the stage its own slots (`AddressedStage`). */
 export function drawAtBrowserEntry(
   address: string,
   issue: IssueDetails,
   stage: StageViews = {}
 ): RenderResult & { readonly follow: (to: string) => void } {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
-  const draw = (at: string): ReactNode => (
-    <Router location={at} navigator={NO_NAVIGATION}>
-      <ProvidedStage {...stage} client={client} held={{}} issue={issue} />
-    </Router>
+  return renderAtBrowserEntry(
+    address,
+    <ProvidedStage {...stage} client={client} held={{}} issue={issue} />
   );
-  const view = render(draw(address));
-  return { ...view, follow: (to) => view.rerender(draw(to)) };
 }
 
 /** Which slot the stage drew, by each slot's own mark: a view's body - the Decisions view's, the

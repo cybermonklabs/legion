@@ -1,4 +1,10 @@
-import { type QueryClient, type QueryKey, useQuery, useQueryClient } from "@tanstack/react-query";
+import {
+  type QueryClient,
+  type QueryKey,
+  type UseQueryResult,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
 import { type ReactNode, type RefCallback, useEffect, useId, useRef, useState } from "react";
 import { Link } from "react-router-dom";
 
@@ -9,7 +15,16 @@ import {
   referenceTargetsQuery,
   whoAmIQuery,
 } from "../../api/queries";
-import type { Artifact, IssueDetails, UserState } from "../../api/types";
+import type {
+  Artifact,
+  AskRead,
+  CommentRead,
+  DisplayTree,
+  IssueDetails,
+  MessageRead,
+  ReferenceTarget,
+  UserState,
+} from "../../api/types";
 import {
   pageAvatar,
   pageFailedText,
@@ -22,18 +37,39 @@ import {
 import { ApprovalSteps } from "../issue/ApprovalSteps";
 import { GitHubLink } from "../issue/GitHubLink";
 import { gatedStepEntries, STEP_LABELS } from "../issue/gated-steps";
-import { IssueComponentsLine } from "../issue/IssueComponentsLine";
+import {
+  COMPONENT_CHIP,
+  componentChipIds,
+  IssueComponentsLine,
+} from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
 import { AgentName } from "../refs/AgentName";
-import { ReferencedBy } from "../refs/ReferencedBy";
-import { EVENT_FRESH, standsFailed } from "../refs/reference-target";
-import { buildDispatchReference, buildIssuePath } from "../refs/routes";
+import { type BlockItemKind, routeItem } from "../refs/block-reference";
+import { EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
+import { listedEdges, ReferencedBy } from "../refs/ReferencedBy";
+import {
+  askQuery,
+  commentQuery,
+  EVENT_FRESH,
+  messageQuery,
+  referencesQuery,
+  standsFailed,
+} from "../refs/reference-target";
+import {
+  buildDispatchReference,
+  buildIssuePath,
+  type DispatchReferenceRoute,
+  parseNodeReference,
+  referenceHref,
+} from "../refs/routes";
+import { textSourceOf } from "../refs/text-references";
 import { focusOnDocument } from "../shell/roving";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
-import { BlockedByControl } from "./BlockedByControl";
+import { BlockedByControl, IssueLine } from "./BlockedByControl";
 import {
   DetailsErrorLine,
   retryRead,
@@ -54,13 +90,12 @@ import {
   UPRIGHT_BAR,
 } from "./details-icons";
 import {
-  FOLD_AFTER,
   IssueList,
   PropertySection,
   Row,
-  ShowAll,
   SMALL_GLYPH,
   STATUS_ROW_SHAPE,
+  useListPages,
 } from "./details-leaves";
 import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
@@ -72,9 +107,19 @@ import { IssuePins } from "./IssuePins";
 import { IssueRouteControl } from "./IssueRouteControl";
 import { statusGlyph, statusTone } from "./issue-status";
 import { useMarginDrawer, useMarginDrawsSlot } from "./margin-slot";
+import { NodeGlyph } from "./NodeGlyph";
 import { NoTooltips } from "./NoTooltips";
+import { DeletedLine, useNodeLine } from "./node-line";
 import { authorText, PROPERTY_LABELS, pageChrome } from "./page-structure";
-import { CONTROL_LABELS, FILE_WORDS, issueStatusWord, PROGRESS_NOUNS } from "./page-words";
+import {
+  CONTROL_LABELS,
+  FILE_WORDS,
+  GLYPH_TOKENS,
+  issueStatusWord,
+  NODE_REFERENCES_WORDS,
+  PROGRESS_NOUNS,
+  STATE_LINES,
+} from "./page-words";
 import { ROW_LINK } from "./row-references";
 import { StatusGlyph } from "./StatusGlyph";
 import { firstUsable } from "./usable-control";
@@ -104,7 +149,8 @@ function closedStoppedNote(
 }
 
 /** What a row of Details says where a names read of the issues it lists failed, as it draws those
- *  issues by their keys alone: Blocked by's and Blocks' alike. */
+ *  issues by their keys alone: Blocked by's, Blocks' and the row of the issue this one repeats
+ *  (`PROPERTY_LABELS.duplicate_of`) alike. */
 export const TITLES_READ_FAILED = "Could not read the titles of these issues.";
 
 /** The title a names read (`referenceTargetsQuery`) answered for the issue `key`. While that read
@@ -126,6 +172,179 @@ function issueTitleIn(read: ReferenceTargetsAnswer | undefined, key: string): st
 function keptUntilFailed(queryClient: QueryClient, queryKey: QueryKey) {
   return <T,>(before: T | undefined): T | undefined =>
     (queryClient.getQueryState(queryKey)?.errorUpdateCount ?? 0) > 0 ? undefined : before;
+}
+
+/** The whole text of the item an issue was filed out of, as the item's own read answers it: an
+ *  ask's question, or a comment's or a message's body, as stored, with the server's reading of
+ *  it, which the page asks of every read (`Dispatch-Trees`, `api/client.ts`). */
+interface FiledText {
+  readonly text: string;
+  readonly tree: DisplayTree | undefined;
+}
+
+// Each kind's read keeps the item's whole record in the cache, shared with the item's page and
+// every reference to it, and its `select` takes the text out of it for the item's row alone. Each
+// is declared once: TanStack runs a `select` again whenever its identity changes.
+const askText = ({ ask }: AskRead): FiledText => ({ text: ask.question, tree: ask.question_tree });
+const commentText = ({ comment }: CommentRead): FiledText => ({
+  text: comment.body,
+  tree: comment.body_tree,
+});
+const messageText = ({ message }: MessageRead): FiledText => ({
+  text: message.body,
+  tree: message.body_tree,
+});
+
+/**
+ * The read of the whole text of the item an issue was filed out of (`FiledText`), made while
+ * `enabled`, with the key it is read under: the item's own record, under the key its page and
+ * every reference to it read that record by (`askQuery`, `commentQuery`, `messageQuery`), so the
+ * events that change the item read it again (`api/event-refresh.ts`), and its age never does
+ * (`EVENT_FRESH`). Each kind has its read, of which only the item's is made, as a reference reads
+ * its target (`useReferenceData`); the read of another kind is handed no id. It draws nothing
+ * while its own answer is out (no `placeholderData`): its key changes only with the item, and
+ * another item's text is no line of this one.
+ */
+function useFiledText(
+  route: DispatchReferenceRoute | undefined,
+  item: { readonly id: string; readonly kind: BlockItemKind } | undefined,
+  enabled: boolean
+): { readonly key: QueryKey; readonly read: UseQueryResult<FiledText> } {
+  // A message is an issue's alone, read by its issue's key as well as its id.
+  const message =
+    item?.kind === "message" && route !== undefined && "key" in route
+      ? { id: item.id, key: route.key }
+      : undefined;
+  const askRead = askQuery(item?.kind === "ask" ? item.id : undefined);
+  const commentRead = commentQuery(item?.kind === "comment" ? item.id : undefined);
+  const messageRead = messageQuery(message?.key, message?.id);
+  const ask = useQuery({
+    ...askRead,
+    ...EVENT_FRESH,
+    enabled: enabled && item?.kind === "ask",
+    select: askText,
+  });
+  const comment = useQuery({
+    ...commentRead,
+    ...EVENT_FRESH,
+    enabled: enabled && item?.kind === "comment",
+    select: commentText,
+  });
+  const messageAnswer = useQuery({
+    ...messageRead,
+    ...EVENT_FRESH,
+    enabled: enabled && message !== undefined,
+    select: messageText,
+  });
+  switch (item?.kind) {
+    case "ask":
+      return { key: askRead.queryKey, read: ask };
+    case "comment":
+      return { key: commentRead.queryKey, read: comment };
+    default:
+      return { key: messageRead.queryKey, read: messageAnswer };
+  }
+}
+
+/**
+ * The item an issue was filed out of, as Details names it, in the form of Details' list of what
+ * references a row (`NodeReferences.tsx`): the page's word for its kind
+ * (`NODE_REFERENCES_WORDS.kinds`, so an ask is a question), then its one line as the way to it,
+ * drawn as a parent's line under a filter is drawn (`node-line.tsx`'s `ParentLink`), and
+ * ` · edited` after it where its author edited it (`EditedMark`, INFRA-1523 R2).
+ *
+ * The line is the item's one line, as every one line of a node is drawn (`useNodeLine`): the
+ * first line of the post's whole text - an ask's question, a comment's or a message's body - as
+ * the item's own read answers it (`text`, `useFiledText`): the text as stored, with the server's
+ * reading of it, and the record as the source its references are read against. The shared
+ * plain-text projection reads it, so no mark of the stored Markdown is drawn and each reference
+ * in it reads as its target's name (R8), and R1's first-line rule cuts it: the whole first
+ * sentence up to the line's 100 characters, and no word of a later block (R4). Nothing of it is
+ * drawn until the projection has answered. The relations' names read (`target`) says whether the
+ * item is gone, deleted or edited, and none of its words: the name it answers for an item is the
+ * head of the stored Markdown, its first 240 runes, cut with no ellipsis, and it sends no reading
+ * of it (`refs/heads.go`'s `itemExcerpt`), so the line of a first sentence that runs past that
+ * head would stop inside a word, and draw a mark of any link the cut falls inside. No name the
+ * names store holds for the item is read either: that name is a link's title, cut to a title's
+ * room with every block of the text joined into it.
+ *
+ * The page's word for the kind alone is the way to the item while the names read or the item's
+ * own read has not answered for it, or has failed, since an address is no name, and where its
+ * text holds no words, as a decision's parent line with no words of its own is named
+ * (`DecisionsRow.tsx`'s `EntryParentLine`, R7 and R22): once, and never by its id. A comment or a
+ * message its author deleted keeps its page, and is drawn by its deleted line, as its row in the
+ * outline draws it (`DeletedLine`): who deleted it, named as the page names an author, and when,
+ * and no edited mark, since that line already says what became of the text. An item Dispatch
+ * answers gone - one nothing answers to now, or one the reader may not see - opens no page, so it
+ * is drawn as the page's chip draws one: its word, then Deleted, with no link.
+ */
+function FiledItemLine({
+  item,
+  route,
+  target,
+  text,
+}: {
+  item: { readonly id: string; readonly kind: BlockItemKind };
+  route: DispatchReferenceRoute;
+  target: ReferenceTarget | undefined;
+  text: FiledText | undefined;
+}): ReactNode {
+  const word = NODE_REFERENCES_WORDS.kinds[item.kind];
+  const href = referenceHref(route);
+  const gone = target?.gone === true;
+  const deleted = gone ? null : postDeletion(target);
+  // The text the line is read from: none while either read has not answered for the item, and
+  // none for a gone or a deleted one, whose line is not its words. The line is read on every
+  // render, so the link below stays one element as the reads answer, and a focus a Retry handed
+  // it stays on it (`useTitlesRetry`).
+  const worded = target === undefined || gone || deleted !== null ? undefined : text;
+  const { line, reads } = useNodeLine(
+    {
+      id: item.id,
+      // The issue the item is on, by which a role in its words is read; a project document's ask
+      // or comment is on none.
+      source: textSourceOf(item.kind, item.id, "key" in route ? route.key : undefined),
+      text: worded?.text ?? "",
+      tree: worded?.tree,
+      // An item's kind is the page's own token for the node it is (`NODE_TYPE_NAMES`).
+      type: item.kind,
+    },
+    { surface: "issue-filed-from" }
+  );
+  // Whether the kind's word is the way to the item, the page's own words: the line of an item
+  // neither gone nor deleted, which a read has not answered for, or whose words hold none.
+  const wordOnly = !gone && deleted === null && (worded === undefined || line === "");
+  const marks = wordOnly ? pageChrome : authorText;
+  const shown: ReactNode =
+    deleted !== null ? (
+      <DeletedLine deleted={deleted} />
+    ) : (
+      <>
+        {reads}
+        {wordOnly ? word : <span {...authorText}>{line ?? ""}</span>}
+        <EditedMark at={worded === undefined ? undefined : target?.edited_at} marks={pageChrome} />
+      </>
+    );
+  return (
+    <span className="block w-full min-w-0 [overflow-wrap:anywhere]">
+      {wordOnly ? null : (
+        <>
+          <span className={`text-xs ${pageQuietText}`} {...pageChrome}>
+            {word}
+          </span>{" "}
+        </>
+      )}
+      {gone ? (
+        <span {...pageChrome}>{CONTROL_LABELS.target_gone}</span>
+      ) : href === undefined ? (
+        <span {...marks}>{shown}</span>
+      ) : (
+        <Link className={`dispatch-inline-link ${ROW_LINK} ${pageInkText}`} to={href} {...marks}>
+          {shown}
+        </Link>
+      )}
+    </span>
+  );
 }
 
 /**
@@ -184,9 +403,10 @@ export function IssueMarginCards({
  * picture page-v3-details-1440): every property the header does not hold, each a row of its
  * own - a label column with a shape for the property and its name, and the value beside it,
  * `None` where the issue has none - with every control the page had for it, and nothing
- * read-only. A field with no value is reachable from the one add control, and only a list of
- * unbounded length folds, after its first ten entries, behind a count that opens the rest. The
- * rows sit in three named sections the reader can collapse, kept for the next issue.
+ * read-only. A field with no value is reachable from the one add control, and a list of
+ * unbounded length draws its first 20 entries and, under them, Show more, which says how many
+ * are left and draws the next 20 (`useListPages`). The rows sit in three named sections the
+ * reader can collapse, kept for the next issue.
  *
  * Under the properties, the reader's pins as links to their rows. It holds no list of the
  * conversation: the outline is the conversation. The people, the facts of the focused row and
@@ -194,18 +414,19 @@ export function IssueMarginCards({
  *
  * A focus Details loses goes on only where the reader's own press took its element away: a save
  * of theirs that lands, a Retry whose request answers, an editor they close, an Unpin, a Show
- * all. A Retry's line, the claim row's Release and the priority's line moved by the reader's own
+ * more. A Retry's line, the claim row's Release and the priority's line moved by the reader's own
  * write hand the focus on in their row as they go (`useFocusHandOff`); an editor hands it on as
- * it closes, and an Unpin and a Show all move it at their press. A change the reader did not
- * make - another session's write, an event, a read that answers on its own, the issue closed
- * elsewhere - leaves the focus on the page's body, as on every page of Dispatch, and nothing in
- * Details takes it; but one that reaches what the reader's press asked for while that press is
- * still out - the route set to the reader's draft, the claim released, the read answered - is
- * taken for the press's answer, and hands the focus on as that answer would.
+ * it closes, a Show more moves it at its press, and an Unpin once its row has gone. A change the
+ * reader did not make - another session's write, an event, a read that answers on its own, the
+ * issue closed elsewhere - leaves the focus on the page's body, as on every page of Dispatch, and
+ * nothing in Details takes it; but one that reaches what the reader's press asked for while that
+ * press is still out - the route set to the reader's draft, the claim released, the read
+ * answered - is taken for the press's answer, and hands the focus on as that answer would.
  *
  * The details slot draws it once and appends it to the shell's drawer, so nothing in it is
  * thrown away as the reader closes and opens Details. The titles of the issues this one waits
- * on, what waits on it and the titles of those, and its links on GitHub it reads only while
+ * on, what waits on it and the titles of those, the names of the issue it repeats and of the
+ * item it was filed out of, that item's own text, and its links on GitHub it reads only while
  * Details and its Development are open, and what references the issue only while Details and its
  * References are open with its Referenced by list, so a load that leaves Details shut costs no
  * request for any of them.
@@ -238,8 +459,14 @@ export function IssueMarginPanel({
 }): ReactNode {
   const sections = useMarginSections();
   const [referencesOpen, setReferencesOpen] = useState(false);
-  const [filesOpen, setFilesOpen] = useState(false);
-  const filesList = useRef<HTMLUListElement>(null);
+  // The pages of each list of unbounded length the panel's rows draw (`useListPages`), each with
+  // the box its entries are drawn in, where a press of its Show more finds the first entry it
+  // drew. The issues that wait on this one and the pins page their own lists.
+  const pullRequestPages = useListPages<HTMLDivElement>();
+  const linkPages = useListPages<HTMLDivElement>();
+  const componentPages = useListPages<HTMLDivElement>();
+  const referencePages = useListPages();
+  const filePages = useListPages<HTMLUListElement>();
   // The panel's own element, under which every control of Details that Add reaches is drawn.
   const panel = useRef<HTMLDivElement>(null);
   const referencesPanelId = useId();
@@ -304,8 +531,9 @@ export function IssueMarginPanel({
   );
   const issueReference = buildDispatchReference({ key: issue.key, kind: "issue" });
   // The reads Details makes beyond the issue - the titles of the issues this one waits on, what
-  // waits on it and the titles of those, its links on GitHub, and what references it - are made
-  // only while the drawer is open, so a load that leaves it shut costs no request for them.
+  // waits on it and the titles of those, the names of the issue's two relations and the filed
+  // item's own text, its links on GitHub, and what references it - are made only while the drawer
+  // is open, so a load that leaves it shut costs no request for them.
   const reading = useMarginDrawer()?.open === true;
   // A closed section keeps its rows, hidden (`PropertySection`), so each of those reads is made
   // only while its own section is open too - all but the last are of rows in Development, where a
@@ -357,6 +585,12 @@ export function IssueMarginPanel({
       ? []
       : [edge.node.issue_key]
   );
+  // The list Referenced by opens, as the cache holds it: this never reads it itself, so the
+  // control has a number only once the list has been read, and then it is the rows the list
+  // shows, since the issue's count also holds its own asks, comments and messages, which the list
+  // leaves out (`listedEdges`).
+  const referencesRead = useQuery({ ...referencesQuery(issueReference), enabled: false });
+  const referencesListed = listedEdges(referencesRead.data?.edges, issueReference, true)?.length;
   const waitingRead = referenceTargetsQuery(
     waiting.map((key) => buildDispatchReference({ key, kind: "issue" }))
   );
@@ -402,6 +636,75 @@ export function IssueMarginPanel({
   const firstWaiting = () => blocksValue.current?.querySelector<HTMLElement>("a[href]");
   const blockingRetry = useRetryHandOff(() => firstWaiting() ?? blocksNone.current);
   const waitingRetry = useTitlesRetry(waitingTitles, waitingRead.queryKey, firstWaiting);
+  // The issue this one repeats (`duplicate_of`) and the item it was filed out of (`filed_from`),
+  // as INFRA-1253's issue read answers them: each has a row only where the issue holds it. The
+  // duplicate's title, and whether the item is gone, deleted or edited, are one names read of the
+  // two addresses, made only while Development is open, as the titles of the issues this one
+  // waits on are, and read again as those are (`EVENT_FRESH`): on an edit or a delete of the item,
+  // and on a new title of the duplicate (`api/event-refresh.ts`'s `namesReadsNaming`). A relation
+  // changed in another session gives the read a new key, and the row of the other relation keeps
+  // what it drew until that read fails (`keptUntilFailed`).
+  const duplicateOf = issue.duplicate_of ?? "";
+  const filedFrom = issue.filed_from ?? "";
+  const filedRoute = filedFrom === "" ? undefined : parseNodeReference(filedFrom);
+  const filedItem = filedRoute === undefined ? undefined : routeItem(filedRoute);
+  const relationRefs = [
+    ...(duplicateOf === "" ? [] : [buildDispatchReference({ key: duplicateOf, kind: "issue" })]),
+    ...(filedItem === undefined ? [] : [filedFrom]),
+  ];
+  const relationRead = referenceTargetsQuery(relationRefs);
+  const relationNames = useQuery({
+    ...relationRead,
+    ...EVENT_FRESH,
+    enabled: readingDevelopment && relationRefs.length > 0,
+    placeholderData: keptUntilFailed(queryClient, relationRead.queryKey),
+  });
+  const filedTarget = relationNames.data?.targets.find((target) => target.ref === filedFrom);
+  // The names read answers the item by the head of its stored text alone (`FiledItemLine`), so
+  // the item's line is read from its own record (`useFiledText`): only while Development is open,
+  // and only once the names read has answered the item neither gone nor deleted, since the line
+  // of either is not its words, and neither costs a read. The line is drawn from these two reads
+  // alone, and from no name the names store holds for the item, so nothing of it is published
+  // there.
+  const filedWorded =
+    filedTarget !== undefined && filedTarget.gone !== true && postDeletion(filedTarget) === null;
+  const { key: filedTextKey, read: filedTextAnswer } = useFiledText(
+    filedRoute,
+    filedItem,
+    readingDevelopment && filedWorded
+  );
+  // The read's failure is said in each relation row it feeds: the duplicate's in the words of the
+  // titles' reads above, since it is an issue, and the item's in words of its own, since a
+  // question, a comment or a message has no title. Each line goes as theirs does
+  // (`standsFailed`). The Retry pressed hands the focus it held on in its own row once the read it
+  // was pressed for answers (`useTitlesRetry`): to the row's first link, and where the row draws
+  // none - an item Dispatch answers gone - to Development's heading.
+  const relationFailed = standsFailed(relationNames);
+  // A failed read of the item's own record is a failed read of its row too, said in the same
+  // words, with a Retry that reads the record again and hands the focus on as the names read's
+  // Retry does. It is the row's read only while the names read answers the item with words, so a
+  // failure of it says nothing under a deleted line. Its line can also go while the read its Retry
+  // sent is still out - the names read answers the item deleted or gone, or a names read of a
+  // changed relation fails and says the row's failure in its own line - and that going answers no
+  // press, so the Retry hands the focus on only once the item's read holds its answer.
+  const filedTextFailed = filedWorded && standsFailed(filedTextAnswer);
+  const duplicateValue = useRef<HTMLDivElement>(null);
+  const filedValue = useRef<HTMLDivElement>(null);
+  const duplicateRetry = useTitlesRetry(relationNames, relationRead.queryKey, () =>
+    firstUsable(
+      duplicateValue.current?.querySelector<HTMLElement>("a[href]"),
+      developmentHeading.current
+    )
+  );
+  const filedFirst = () =>
+    firstUsable(
+      filedValue.current?.querySelector<HTMLElement>("a[href]"),
+      developmentHeading.current
+    );
+  const filedRetry = useTitlesRetry(relationNames, relationRead.queryKey, filedFirst);
+  const filedTextRetry = useTitlesRetry(filedTextAnswer, filedTextKey, () =>
+    filedTextAnswer.data === undefined ? null : filedFirst()
+  );
   const priority = usePriorityHandOffs(issue, developmentHeading);
   // The Repository row's control draws its own refused write, and hands it to the row to say
   // (`sayFailure`), as Details says its own. A failed read of the project list, which the box's
@@ -483,7 +786,8 @@ export function IssueMarginPanel({
   const labels = issue.labels ?? [];
   const advances = issue.advances ?? [];
   const artifacts = issue.artifacts ?? [];
-  const files = filesOpen ? artifacts : artifacts.slice(0, FOLD_AFTER);
+  // The chips the Components row draws, as one list (`componentChipIds`).
+  const componentChips = componentChipIds(issue.components).length;
   const none = (
     <span className={pageQuietText} {...pageChrome}>
       {CONTROL_LABELS.none}
@@ -677,6 +981,76 @@ export function IssueMarginPanel({
             </>
           )}
         </Row>
+        {/* The issue this one repeats, drawn as Blocked by draws an issue it waits on: its key
+            in bold as the way to it, then its title once the names read has answered. */}
+        {duplicateOf === "" ? null : (
+          <Row
+            glyph={
+              <NodeGlyph
+                className="inline-block size-3 align-[-1px]"
+                token={GLYPH_TOKENS.types.issue}
+              />
+            }
+            label={PROPERTY_LABELS.duplicate_of}
+            valueRef={duplicateValue}
+          >
+            <IssueLine
+              issueKey={duplicateOf}
+              title={issueTitleIn(relationNames.data, duplicateOf)}
+            />
+            {relationFailed ? (
+              <DetailsErrorLine
+                error={relationNames.error}
+                failure={relationNames.errorUpdateCount}
+                message={TITLES_READ_FAILED}
+                {...duplicateRetry}
+                retrying={relationNames.isFetching}
+              />
+            ) : null}
+          </Row>
+        )}
+        {/* The item the issue was filed out of (`FiledItemLine`), with the page's shape for its
+            kind. */}
+        {filedRoute === undefined || filedItem === undefined ? null : (
+          <Row
+            glyph={
+              <NodeGlyph
+                className="inline-block size-3 align-[-1px]"
+                token={GLYPH_TOKENS.types[filedItem.kind]}
+              />
+            }
+            label={PROPERTY_LABELS.filed_from}
+            valueRef={filedValue}
+          >
+            <FiledItemLine
+              item={filedItem}
+              route={filedRoute}
+              target={filedTarget}
+              text={filedTextAnswer.data}
+            />
+            {/* Each read's line is an element of its own, so the line of the one that answers
+                goes with its Retry, and the line of the other is drawn afresh. */}
+            {relationFailed ? (
+              <DetailsErrorLine
+                error={relationNames.error}
+                failure={relationNames.errorUpdateCount}
+                key="names"
+                message={STATE_LINES.filed_from_unreadable}
+                {...filedRetry}
+                retrying={relationNames.isFetching}
+              />
+            ) : filedTextFailed ? (
+              <DetailsErrorLine
+                error={filedTextAnswer.error}
+                failure={filedTextAnswer.errorUpdateCount}
+                key="text"
+                message={STATE_LINES.filed_from_unreadable}
+                {...filedTextRetry}
+                retrying={filedTextAnswer.isFetching}
+              />
+            ) : null}
+          </Row>
+        )}
         <Row glyph={HOUSE} label={PROPERTY_LABELS.repository} valueRef={repoValue}>
           <RepoControl
             disabled={isClosed}
@@ -690,18 +1064,33 @@ export function IssueMarginPanel({
           />
         </Row>
         {/* Each link reads GitHub as it is drawn (`GitHubLink`), so the links are drawn only
-            while the reader can see them: Details open, and Development with it. */}
-        <Row glyph={RIGHT_OVER_LEFT_ARROWS} label={PROPERTY_LABELS.pull_request}>
+            while the reader can see them: Details open, and Development with it; and 20 at a
+            time, each one link, a child of the row's value. */}
+        <Row
+          glyph={RIGHT_OVER_LEFT_ARROWS}
+          label={PROPERTY_LABELS.pull_request}
+          valueRef={pullRequestPages.list}
+        >
           {pullRequests.length === 0 ? none : null}
-          {readingDevelopment
-            ? pullRequests.map((link) => <GitHubLink key={link.url} link={link} />)
-            : null}
+          {readingDevelopment ? (
+            <>
+              {pullRequests.slice(0, pullRequestPages.drawn).map((link) => (
+                <GitHubLink key={link.url} link={link} />
+              ))}
+              {pullRequestPages.more(pullRequests.length)}
+            </>
+          ) : null}
         </Row>
         {otherLinks.length === 0 ? null : (
-          <Row glyph="↗" label={PROPERTY_LABELS.external_links}>
-            {readingDevelopment
-              ? otherLinks.map((link) => <GitHubLink key={link.url} link={link} />)
-              : null}
+          <Row glyph="↗" label={PROPERTY_LABELS.external_links} valueRef={linkPages.list}>
+            {readingDevelopment ? (
+              <>
+                {otherLinks.slice(0, linkPages.drawn).map((link) => (
+                  <GitHubLink key={link.url} link={link} />
+                ))}
+                {linkPages.more(otherLinks.length)}
+              </>
+            ) : null}
           </Row>
         )}
         <Row glyph={FLAG} label={PROPERTY_LABELS.claim}>
@@ -767,8 +1156,20 @@ export function IssueMarginPanel({
             />
           ) : null}
         </Row>
-        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components}>
-          <IssueComponentsLine inRow issue={issue} />
+        {/* The issue's components, then its retired ones, as one list, 20 at a time: each chip
+            carries the line's mark (`COMPONENT_CHIP`), in the list's order. The reason for no
+            components is drawn by the renderer, so the line stands in the words' mark
+            (`data-node-words`), by which a link in that reason takes the words' own ink rather
+            than the application's link blue (`styles.css`); the mark's box draws nothing
+            (`contents`), so the line is the row's own item as it was. */}
+        <Row glyph={GRID_SQUARE} label={PROPERTY_LABELS.components} valueRef={componentPages.list}>
+          <div className="contents" data-node-words="">
+            <IssueComponentsLine inRow issue={issue} limit={componentPages.drawn} />
+          </div>
+          {componentPages.more(
+            componentChips,
+            (index) => componentPages.list.current?.querySelectorAll(COMPONENT_CHIP)[index]
+          )}
         </Row>
         {issue.progress?.tasks === null || issue.progress?.tasks === undefined ? null : (
           <Row glyph={TICKED_BOX} label={PROPERTY_LABELS.tasks}>
@@ -819,23 +1220,30 @@ export function IssueMarginPanel({
         sections={sections}
       >
         {/* The approval steps with the reasons a reviewer gave, and Approve and Request changes
-            wherever no approval request waits on the reader. */}
+            wherever no approval request waits on the reader. A reason is drawn by the renderer,
+            so the steps stand in the words' mark (`data-node-words`), by which a link in a
+            reason takes the words' own ink rather than the application's link blue
+            (`styles.css`); the mark's box draws nothing (`contents`), so the steps are the row's
+            own item as they were. */}
         <Row glyph={LINED_SQUARE} label={PROPERTY_LABELS.approval}>
-          <ApprovalSteps
-            actions={!approvalWaits}
-            entries={approvalEntries}
-            primaryArtifactId={issue.primary_artifact_id}
-            reasons
-            size="compact"
-            testId="issue-details-approval-steps"
-            versions={{ asks: issue.open_asks ?? [], issueKey: issue.key }}
-          />
+          <div className="contents" data-node-words="">
+            <ApprovalSteps
+              actions={!approvalWaits}
+              entries={approvalEntries}
+              primaryArtifactId={issue.primary_artifact_id}
+              reasons
+              size="compact"
+              testId="issue-details-approval-steps"
+              versions={{ asks: issue.open_asks ?? [], issueKey: issue.key }}
+            />
+          </div>
         </Row>
         <Row valueRef={referencesValue} wide>
           {/* Details' own control of the list, with the name, the role and the states of the
               application's `ReferencedByToggle`, in the page's ink rather than its link blue. A
               count of zero is a fact and not a control, as there: opening it would only say
-              that nothing references the issue. */}
+              that nothing references the issue. Otherwise it reads the rows the list shows once
+              the list has been read. */}
           {issue.referenced_by_count === 0 ? (
             <span
               className={`inline-flex min-h-11 items-center text-sm md:min-h-0 ${pageQuietText}`}
@@ -851,23 +1259,26 @@ export function IssueMarginPanel({
               ref={referencesControl}
               type="button"
             >
-              {referencedByControlName(issue.referenced_by_count)}
+              {referencedByControlName(referencesListed)}
             </button>
           )}
           {/* The list reads what references the issue, and reads it again on each event about
               those references, so it is drawn only while the reader can see it: open, in an open
-              References of an open Details. */}
+              References of an open Details. Its rows are drawn 20 at a time, as one list
+              whatever source they cite from (`pages`). */}
           {referencesOpen && readingReferences ? (
             <ReferencedBy
               className="w-full"
+              page
+              pages={referencePages}
               reference={issueReference}
               {...referencesRetry}
               toggle={{ id: referencesPanelId }}
             />
           ) : null}
         </Row>
-        {/* Every document and file of the issue, each opening its own address, folded after ten
-            behind a count that opens the rest. */}
+        {/* Every document and file of the issue, each opening its own address, 20 at a time;
+            the count in the row's label is of them all. */}
         <Row
           glyph={LINED_SQUARE}
           label={
@@ -880,8 +1291,12 @@ export function IssueMarginPanel({
           {artifacts.length === 0 ? (
             none
           ) : (
-            <ul className="flex w-full min-w-0 flex-col" data-testid="issue-files" ref={filesList}>
-              {files.map((artifact) => (
+            <ul
+              className="flex w-full min-w-0 flex-col"
+              data-testid="issue-files"
+              ref={filePages.list}
+            >
+              {artifacts.slice(0, filePages.drawn).map((artifact) => (
                 <li key={artifact.id}>
                   <Link
                     className={`grid w-full grid-cols-[16px_minmax(0,1fr)_auto] items-baseline gap-2 rounded-md p-1 text-sm ${pageInkText} ${pageRowHoverBg}`}
@@ -908,14 +1323,7 @@ export function IssueMarginPanel({
               ))}
             </ul>
           )}
-          {artifacts.length > FOLD_AFTER && !filesOpen ? (
-            <ShowAll
-              className="pt-1.5"
-              count={artifacts.length}
-              list={filesList}
-              onShow={() => setFilesOpen(true)}
-            />
-          ) : null}
+          {filePages.more(artifacts.length)}
         </Row>
       </PropertySection>
       <DetailsFocusedNode issue={issue} state={state} />

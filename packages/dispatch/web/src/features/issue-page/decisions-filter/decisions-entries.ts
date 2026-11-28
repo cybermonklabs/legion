@@ -13,13 +13,13 @@ import {
   treeComments,
 } from "../decision-review";
 import type { TreeNode } from "../issue-tree";
-import { treeRead } from "../spec-filter/tree-read";
 import { changeUnread, coverageStatementOf, treeContext } from "../tree-drafts";
 import { holdsPlanTask } from "../tree-read/tree-nodes";
 import {
   outlineQuery,
   type TreeAnswer,
   type TreeAnswerNode,
+  treeRead,
   useDecisionsView,
   useReadUnloadedPages,
 } from "../tree-read/tree-read";

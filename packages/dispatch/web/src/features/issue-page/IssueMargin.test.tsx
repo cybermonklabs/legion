@@ -38,6 +38,7 @@ import { refreshQueries } from "../../api/query-refresh";
 import type {
   Actor,
   ArchitectureSource,
+  AskRead,
   CommentWithTrees,
   DispatchEvent,
   DisplayTree,
@@ -45,6 +46,7 @@ import type {
   GraphReferences,
   Issue,
   IssueDetails,
+  MessageRead,
   MessageWithTrees,
   Priorities,
   ReferenceTargets,
@@ -52,7 +54,7 @@ import type {
 } from "../../api/types";
 import { linkText, pageFailedText, pageHeaderControl, pageInkText } from "../../theme/classes";
 import { assigneeControlName } from "../issue/AssigneeControl";
-import { componentsControlName } from "../issue/IssueComponentsLine";
+import { COMPONENT_CHIP, componentsControlName } from "../issue/IssueComponentsLine";
 import { labelsControlName } from "../issue/IssueLabels";
 import { conversationItemId, eventItemId, pinnedItemMarker, stateForIssue } from "../issue/pins";
 import { repoControlName, repoTextControlName } from "../issue/RepoControl";
@@ -63,18 +65,19 @@ import {
   IssuePriorityLine,
   priorityTriggerName,
 } from "../priorities/IssuePriorityLine";
+import type { BlockItemKind } from "../refs/block-reference";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { ReferencedBy } from "../refs/ReferencedBy";
 import { ReferenceNamesProvider } from "../refs/reference-names";
+import { linkTitleMax, messageQuery } from "../refs/reference-target";
 import { buildDispatchReference, buildIssuePath } from "../refs/routes";
 import { KeymapProvider } from "../shell/KeymapProvider";
 import { appKeymap, useKeymapScope } from "../shell/keymap";
 import { userPreferenceStorageKey } from "../shell/userPreference";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { emulateChromiumFocusFixup } from "./chromium-focus-fixup";
-import { FOLD_AFTER } from "./details-leaves";
-import { DetailsFocusedNode, DetailsHistory, DetailsPeople } from "./details-more";
 import { blockedByControlName, referencedByControlName } from "./details-names";
+import { emptyDetailsReads } from "./details-reads-fixture";
 import {
   DETAILS_OPENER_ATTRIBUTE,
   DETAILS_ROW_ATTRIBUTE,
@@ -83,6 +86,7 @@ import {
   detailsOpener,
 } from "./details-rows";
 import { Opener } from "./details-rows-fixture";
+import { FIRST_LINE_LIMIT } from "./first-line";
 import type { IssueField } from "./IssueFieldForms";
 import { IssueMarginPanel, PARENT_ERROR_ID, TITLES_READ_FAILED } from "./IssueMargin";
 import {
@@ -100,17 +104,20 @@ import {
   useMarginSlotFill,
 } from "./margin-slot";
 import { NoTooltips } from "./NoTooltips";
+import { useNodeLine } from "./node-line";
 import { MARGIN_SECTION_NAMES, PROPERTY_LABELS } from "./page-structure";
 import {
   ANSWER_LINES,
   BLOCKED_BY_REFUSALS,
   CONTROL_LABELS,
   issueStatusWord,
+  NODE_REFERENCES_WORDS,
   NODE_TYPE_NAMES,
   STATE_LINES,
 } from "./page-words";
 import { Publisher, publishedNames } from "./projection-fixture";
 import { architecture, offPageColours } from "./shared-controls-fixture";
+import { PAGE_SIZE, SHOW_MORE, showMoreName } from "./show-more-fixture";
 import { DetailsSlot } from "./slots/details";
 import { commentNode, postMarks, treeAnswer, treeNode } from "./tree-read/tree-fixtures";
 import { outlineQuery } from "./tree-read/tree-read";
@@ -194,6 +201,13 @@ function advancesRefusal(): ApiError {
 /** The keys CORE-2, CORE-3 and on, `count` of them. */
 function keysFrom2(count: number): string[] {
   return Array.from({ length: count }, (_, index) => `CORE-${index + 2}`);
+}
+
+/** The row of Details' Files and documents, whose label carries the count of its entries. */
+function filesRow(): HTMLElement {
+  const row = screen.getByTestId("issue-files").closest(".grid");
+  if (!(row instanceof HTMLElement)) throw new Error("Details draws no Files and documents row");
+  return row;
 }
 
 /** An open Details drawer, whose `setOpen` and `setPage` do nothing. */
@@ -289,42 +303,25 @@ function Details({ issue, state }: { issue: IssueDetails; state: UserState | und
   );
 }
 
-/** The reads Details makes of a fixture's issue, each answering the API's empty shape, and the
- *  issue's PATCH answered as the server does, with the narrow `Issue`. A read that reached the
- *  network would fail the file (`__tests__/network.ts`). */
+/** The reads Details makes of the fixture's issue: the issue's own, answered with `issue`, and
+ *  every other read as `emptyDetailsReads` answers it, the reader's state holding the issue
+ *  unread and unpinned; and the issue's PATCH answered as the server does, with the narrow
+ *  `Issue`. */
 function stubIssueApi() {
   const getIssue = spyOn(api, "getIssue").mockResolvedValue(issue);
-  const getMyState = spyOn(api, "getMyState").mockResolvedValue({
-    "CORE-1": { dismissed: [], last_read_seq: 0, pinned: false, seq: 0 },
-  });
-  const reads = [
-    spyOn(api, "whoAmI").mockResolvedValue({ login: "alice" } as Awaited<
-      ReturnType<typeof api.whoAmI>
-    >),
-    spyOn(api, "listProjects").mockResolvedValue([]),
-    spyOn(api, "listAgents").mockResolvedValue([]),
-    spyOn(api, "listProjectArchitectureSources").mockResolvedValue([]),
-    spyOn(api, "getReferenceTargets").mockResolvedValue({ targets: [] }),
-  ];
-  const pinReads = {
-    asks: spyOn(api, "listIssueAskThreads").mockResolvedValue([]),
-    comments: spyOn(api, "listComments").mockResolvedValue([]),
-    messages: spyOn(api, "listIssueMessages").mockResolvedValue([]),
-  };
+  const reads = emptyDetailsReads();
   const patchIssue = answerIssuePatches().mockImplementation(async (_key, input) =>
     patchAnswer(issue, input)
   );
 
   return {
     getIssue,
-    getMyState,
+    getMyState: reads.getMyState,
     patchIssue,
-    pinReads,
+    pinReads: reads.pinReads,
     restore: () => {
       getIssue.mockRestore();
-      getMyState.mockRestore();
-      for (const spy of reads) spy.mockRestore();
-      for (const spy of Object.values(pinReads)) spy.mockRestore();
+      reads.restore();
       patchIssue.mockRestore();
     },
   };
@@ -1237,9 +1234,9 @@ test("a blocked-by list that would make a loop is the page's sentence about the 
   }
 });
 
-// Only a list of unbounded length folds after its first ten. An issue waits on at most
-// `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show all.
-test("the blockers never fold", async () => {
+// Only a list of unbounded length draws 20 entries at a time under Show more. An issue waits on at
+// most `MAX_ISSUE_BLOCKERS` issues, so the Blocked by row draws every one of them and no Show more.
+test("Blocked by draws every issue this one waits on whole, with no Show more", async () => {
   const { getIssue, restore } = stubIssueApi();
   const blockers = keysFrom2(MAX_ISSUE_BLOCKERS);
   getIssue.mockResolvedValue({ ...issue, blocked_by: blockers });
@@ -1252,12 +1249,10 @@ test("the blockers never fold", async () => {
       within(row)
         .getAllByRole("link")
         .map((link) => link.textContent),
-      "the Blocked by row folds the issues this one waits on"
+      "the Blocked by row does not draw every issue this one waits on"
     ).toEqual(blockers);
     expect(
-      within(row).queryByRole("button", {
-        name: (name) => name.startsWith(CONTROL_LABELS.show_all),
-      }),
+      within(row).queryByRole("button", { name: SHOW_MORE }),
       "the Blocked by row offers to show a list it already draws whole"
     ).not.toBeInTheDocument();
   } finally {
@@ -2782,47 +2777,173 @@ test("Blocks' titles Retry taken away by what waits on the issue changed back el
   }
 });
 
-// A folded list's Show all goes with its press, so the focus goes on to the first entry it
-// opened, the eleventh, rather than falling to the page: in Files and documents, and in Blocks.
-test("Show all gives the focus to the first entry it opens", async () => {
-  const user = userEvent.setup();
-  const { getIssue, restore } = stubIssueApi();
-  const withTwelve = withNotes(12);
-  getIssue.mockResolvedValue(withTwelve);
+/** How many entries each list of `MANY_ENTRIES` holds: two pages of 20 and five entries more. */
+const MANY = 2 * PAGE_SIZE + 5;
+
+/** `count` names, `stem` and a number from 1, padded so that they sort as they are numbered. */
+function numbered(stem: string, count: number): string[] {
+  return Array.from(
+    { length: count },
+    (_, index) => `${stem}${String(index + 1).padStart(2, "0")}`
+  );
+}
+
+/** The fixture's issue with `MANY` entries in each list of unbounded length its rows of Details
+ *  draw: its pull requests, its other links, its components (25 live and the rest retired, which
+ *  the row draws after them as one list), and its documents. */
+const MANY_ENTRIES: IssueDetails = {
+  ...withNotes(MANY - 1),
+  components: {
+    ids: numbered("panel-", 25),
+    inherited_from: null,
+    mode: "explicit",
+    reason: null,
+    unknown: numbered("retired-", MANY - 25),
+  },
+  external_links: [
+    ...numbered("", MANY).map((number) => ({
+      kind: "github_pr" as const,
+      url: `https://github.com/acme/web/pull/${number}`,
+    })),
+    ...numbered("", MANY).map((number) => ({
+      url: `https://github.com/acme/web/issues/${number}`,
+    })),
+  ],
+};
+
+/** `MANY` pins of the reader's: comments of CORE-1, and lines of its history after them, which
+ *  Pinned lists as one list. */
+const MANY_PINS = [
+  ...numbered("00000000-0000-4000-8000-0000000000", PAGE_SIZE + 5).map((id) =>
+    conversationItemId("comment", id)
+  ),
+  ...Array.from({ length: MANY - PAGE_SIZE - 5 }, (_, index) => eventItemId({ id: 900 + index })),
+];
+
+/** The reads of Details of `MANY_ENTRIES`, with the reader's `MANY_PINS` and `MANY` issues waiting
+ *  on it, each link's read of GitHub answered, and the project's architecture read; the call that
+ *  puts every read back. */
+function stubManyEntries(): () => void {
+  const { getIssue, getMyState, restore } = stubIssueApi();
+  getIssue.mockResolvedValue(MANY_ENTRIES);
+  getMyState.mockResolvedValue(pinnedState(...MANY_PINS));
   const reference = buildDispatchReference({ key: "CORE-1", kind: "issue" });
-  const waiting = keysFrom2(12);
-  const getReferences = spyOn(api, "getReferences").mockResolvedValue({
-    edges: waiting.map((key) => waitingEdge(key, `Waits for ${key}`)),
-    node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
-  });
+  const stubs = [
+    spyOn(api, "getReferences").mockResolvedValue({
+      edges: keysFrom2(MANY).map((key) => waitingEdge(key, `Waits for ${key}`)),
+      node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
+    }),
+    // A reference with no head, so a pull request's read reads no checks after it.
+    spyOn(api, "githubRest").mockImplementation(
+      async () =>
+        new Response(JSON.stringify({ state: "open", title: "Ship the web app" }), {
+          headers: { "Content-Type": "application/json" },
+        })
+    ),
+    spyOn(api, "getArchitecture").mockResolvedValue(architecture),
+  ];
+  return () => {
+    for (const stub of stubs) stub.mockRestore();
+    restore();
+  };
+}
+
+/** The chips drawn of the box of chips with the test id `testId`, the components', each by the
+ *  mark the line gives a chip where Details pages them (`data-component-chip`). */
+function drawnChips(testId: string): HTMLElement[] {
+  return [...screen.getByTestId(testId).querySelectorAll<HTMLElement>(COMPONENT_CHIP)].filter(
+    (chip) => !chip.hidden
+  );
+}
+
+/** One list of Details that `MANY_ENTRIES` fills: the box it and its Show more are drawn in, and
+ *  each entry it draws, in order. */
+interface PagedList {
+  readonly box: () => HTMLElement;
+  readonly entries: () => readonly Element[];
+}
+
+/** Each link a row of Details draws, by the row's name. */
+function linksOfRow(name: string): PagedList {
+  return {
+    box: () => detailsRow(name),
+    entries: () => within(detailsRow(name)).getAllByRole("link"),
+  };
+}
+
+/** Every list of unbounded length that Details' own rows and Pinned draw. */
+const PAGED_LISTS: readonly (readonly [string, PagedList])[] = [
+  ["Blocks", linksOfRow(PROPERTY_LABELS.blocks)],
+  ["Pull request", linksOfRow(PROPERTY_LABELS.pull_request)],
+  ["Links", linksOfRow(PROPERTY_LABELS.external_links)],
+  [
+    "Components, the retired ones after the live ones",
+    {
+      box: () => detailsRow(PROPERTY_LABELS.components),
+      entries: () => drawnChips("issue-components"),
+    },
+  ],
+  [
+    "Files and documents",
+    {
+      box: () => filesRow(),
+      entries: () => within(screen.getByTestId("issue-files")).getAllByRole("listitem"),
+    },
+  ],
+  [
+    "Pinned, the history's lines after the comments",
+    {
+      box: () => screen.getByRole("region", { name: CONTROL_LABELS.pinned }),
+      entries: () =>
+        within(screen.getByRole("region", { name: CONTROL_LABELS.pinned })).getAllByRole(
+          "listitem"
+        ),
+    },
+  ],
+];
+
+// Each list of unbounded length draws its first 20 entries and, under them, Show more, which says
+// how many entries are left. A press keeps the entries drawn, draws the next 20 and moves the focus
+// to the first of them, whether the control stays or goes, rather than let it fall to the page; the
+// control goes once every entry is drawn. A list drawn from two sources - a component and a
+// retired one, a pinned comment and a pinned line of the history - is one list, whose pages run
+// on from one source into the other and whose count is of both.
+test.each(
+  PAGED_LISTS
+)("%s: 20 entries at a time under Show more, which says how many are left, moves the focus to the first entry it drew and goes at the end", async (_name, list) => {
+  const user = userEvent.setup();
+  const restoreReads = stubManyEntries();
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    // Files and documents: the spec and twelve notes, so the eleventh entry is notes-10.md.
-    const showFiles = await screen.findByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${withTwelve.artifacts?.length ?? 0}`,
-    });
-    act(() => showFiles.focus());
-    await user.keyboard("{Enter}");
-    expect(
-      document.activeElement,
-      "Show all of Files and documents left the focus off the first entry it opened"
-    ).toBe(within(screen.getByTestId("issue-files")).getByRole("link", { name: /notes-10\.md/ }));
+    await waitFor(() =>
+      expect(list.entries(), "the list does not draw its first 20 entries").toHaveLength(PAGE_SIZE)
+    );
+    const more = within(list.box()).getByRole("button", { name: SHOW_MORE });
+    expect(more.textContent).toBe(showMoreName(MANY - PAGE_SIZE));
 
-    const blocks = detailsRow(PROPERTY_LABELS.blocks);
-    const showBlocks = await within(blocks).findByRole("button", {
-      name: `${CONTROL_LABELS.show_all} ${waiting.length}`,
-    });
-    act(() => showBlocks.focus());
+    act(() => more.focus());
     await user.keyboard("{Enter}");
+    expect(list.entries(), "Show more did not draw the next 20 entries").toHaveLength(
+      2 * PAGE_SIZE
+    );
+    expect(more.textContent).toBe(showMoreName(MANY - 2 * PAGE_SIZE));
     expect(
-      document.activeElement,
-      "Show all of Blocks left the focus off the first entry it opened"
-    ).toBe(within(blocks).getByRole("link", { name: "CORE-12" }));
+      list.entries()[PAGE_SIZE]?.contains(document.activeElement),
+      "Show more did not move the focus to the first entry it drew"
+    ).toBe(true);
+
+    act(() => more.focus());
+    await user.keyboard("{Enter}");
+    expect(list.entries()).toHaveLength(MANY);
+    expect(more.isConnected, "Show more stayed once every entry was drawn").toBe(false);
+    expect(
+      list.entries()[2 * PAGE_SIZE]?.contains(document.activeElement),
+      "Show more went with the last entries and did not move the focus to the first it drew"
+    ).toBe(true);
   } finally {
     unmount();
-    getReferences.mockRestore();
-    restore();
+    restoreReads();
   }
 });
 
@@ -2840,7 +2961,7 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
   const { unmount } = renderDetails(undefined, OPEN_DRAWER);
 
   try {
-    const toggle = await screen.findByRole("button", { name: referencedByControlName(3) });
+    const toggle = await screen.findByRole("button", { name: referencedByControlName(undefined) });
     expect(toggle, "Referenced by's control is not in the page's ink").toHaveClass(pageInkText);
     for (const token of linkText.split(" ")) {
       expect(toggle, "Referenced by's control is in the application's link blue").not.toHaveClass(
@@ -2858,6 +2979,10 @@ test("Referenced by's control is in the page's ink, opens the list and reads the
       "aria-controls",
       list.id
     );
+    expect(
+      await screen.findByRole("button", { name: referencedByControlName(0) }),
+      "Referenced by's control does not read the rows of the list it opened"
+    ).toBe(toggle);
   } finally {
     unmount();
     getReferences.mockRestore();
@@ -2886,7 +3011,9 @@ test("in Details, Referenced by's Retry keeps the focus while the read it sent i
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     const retry = await within(list).findByRole("button", { name: "Retry" });
 
@@ -3005,7 +3132,9 @@ function referencedByDetails() {
     answerList,
     listKey,
     open: async () => {
-      const control = await screen.findByRole("button", { name: referencedByControlName(3) });
+      const control = await screen.findByRole("button", {
+        name: referencedByControlName(undefined),
+      });
       await user.click(control);
       const list = await screen.findByRole("region", { name: "Referenced by" });
       return { control, list, retry: await within(list).findByRole("button", { name: "Retry" }) };
@@ -3193,7 +3322,7 @@ test("in Details, a refresh that fails over the list Referenced by holds keeps t
   try {
     details.answerList(() => Promise.resolve(WAITER_REFERENCES));
     await details.user.click(
-      await screen.findByRole("button", { name: referencedByControlName(3) })
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
     );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     await within(list).findAllByRole("link");
@@ -3238,7 +3367,9 @@ test("in Details, Referenced by's Retry pressed at a count of 0 hands its focus 
   const stopBlurring = emulateChromiumFocusFixup();
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     const retry = await within(list).findByRole("button", { name: "Retry" });
     drawIssue(getIssue, queryClient, { ...issue, referenced_by_count: 0 });
@@ -3315,15 +3446,18 @@ test("closing References or Details takes an open Referenced by list, and its re
     node: graphNode({ id: "CORE-1", issue_key: "CORE-1", kind: "issue", ref: reference }),
   });
   const { queryClient, redraw, unmount } = renderDetails(undefined, OPEN_DRAWER);
-  // What observes the list's read (`ReferencedBy`'s `referencesQuery`).
+  // What reads the list (`ReferencedBy`'s `referencesQuery`). The control's own watch of that
+  // read's cache, which counts the rows it lists, is `enabled: false` and reads nothing.
   const listReaders = () =>
-    queryClient
-      .getQueryCache()
-      .find({ exact: true, queryKey: ["references", "to", reference] })
-      ?.getObserversCount() ?? 0;
+    (
+      queryClient.getQueryCache().find({ exact: true, queryKey: ["references", "to", reference] })
+        ?.observers ?? []
+    ).filter((observer) => observer.options.enabled !== false).length;
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     const list = await screen.findByRole("region", { name: "Referenced by" });
     expect(listReaders(), "the open Referenced by list does not read what references it").toBe(1);
 
@@ -3388,7 +3522,9 @@ test("in Details, a window focus past 30 s reads no blocker's title, Blocks, Blo
   const { unmount } = renderDetails(undefined, OPEN_DRAWER, client);
 
   try {
-    await user.click(await screen.findByRole("button", { name: referencedByControlName(3) }));
+    await user.click(
+      await screen.findByRole("button", { name: referencedByControlName(undefined) })
+    );
     await waitFor(() => {
       expect(titleReads(titles, blocker)).toBe(1);
       expect(blocksReads(getReferences, reference)).toBe(1);
@@ -7384,18 +7520,22 @@ function commentCreated(
 // R2 of dispatch://INFRA-1523: a pinned line of the history whose post its author edited since
 // says ` · edited` after the line, as the margin's Pinned tab says it (`EventEditedMark`). The
 // mark is the page's own word, marked as its chrome. A line whose post nobody edited says nothing
-// of an edit.
+// of an edit. The history's read of the log leaves out every event that writes a post, so the
+// two lines here are events its pages never hold: Pinned reads them by their ids, once the
+// history's own log has answered holding neither.
 test("a pinned history line of an edited post's event says edited after the line", async () => {
   const edited = commentCreated(21, "Hold the deploy.", PIN_EDITED_AT);
   const standing = commentCreated(22, "Ship on Friday.", null);
   const { getMyState, restore } = stubIssueApi();
   getMyState.mockResolvedValue(pinnedState(eventItemId(edited), eventItemId(standing)));
   const client = detailsQueryClient();
-  // The history's log, which Pinned draws a pinned line from and never reads (`IssuePins.tsx`).
-  client.setQueryData<InfiniteData<DispatchEvent[]>>(["events", "CORE-1"], {
-    pageParams: [undefined],
-    pages: [[edited, standing]],
+  client.setQueryData<InfiniteData<DispatchEvent[]>>(["events", "CORE-1", "history"], {
+    pageParams: [null],
+    pages: [[]],
   });
+  const readByIds = spyOn(api, "getIssueEvents").mockImplementation(async (_key, options) =>
+    options?.ids === undefined ? [] : [edited, standing]
+  );
   const { unmount } = renderDetails(undefined, undefined, client);
 
   try {
@@ -7416,8 +7556,13 @@ test("a pinned history line of an edited post's event says edited after the line
     const line = pinRow(eventItemId(standing)).textContent;
     expect(line).toContain("Ship on Friday.");
     expect(line, "the pinned line of a post nobody edited says edited").not.toContain(mark);
+    expect(
+      readByIds,
+      "Pinned did not read its two pinned events by their ids"
+    ).toHaveBeenCalledWith("CORE-1", { ids: "21,22" });
   } finally {
     unmount();
+    readByIds.mockRestore();
     restore();
   }
 });
@@ -7481,6 +7626,52 @@ test("Unpin gives the focus to the next pin, else the one before, else the Pinne
       document.activeElement,
       "Unpin of the only pin did not give the focus to the Pinned heading"
     ).toBe(within(pins).getByRole("heading", { name: CONTROL_LABELS.pinned }));
+  } finally {
+    unmount();
+    putIssueState.mockRestore();
+    restore();
+  }
+});
+
+// Pinned draws its first 20 pins. Unpin on the 20th, the last pin drawn, takes its row away,
+// and the 21st pin, which no row drew, is drawn in its place: the focus goes to that pin's link,
+// at the place of the row the Unpin took away, and not to the 19th pin before it. A choice made
+// before the list is drawn again finds no pin after the 20th, and takes the one before.
+test("Unpin of the last pin drawn gives the focus to the pin drawn in its place", async () => {
+  const user = userEvent.setup();
+  const { getMyState, restore } = stubIssueApi();
+  const ids = numbered("6d9f3a4b-8c5e-4fa0-9b2c-3d4e5f6a7b", PAGE_SIZE + 5);
+  const words = (index: number) => `Pin ${String(index + 1).padStart(2, "0")}.`;
+  getMyState.mockResolvedValue(pinnedState(...ids.map((id) => conversationItemId("comment", id))));
+  const client = detailsQueryClient();
+  holdComments(
+    client,
+    ids.map((id, index) => commentOf(id, words(index)))
+  );
+  // The unpin is held out, so the page shows its own state of the pins throughout.
+  const putIssueState = spyOn(api, "putIssueState").mockReturnValue(new Promise(() => undefined));
+  const { unmount } = renderDetails(undefined, undefined, client);
+
+  try {
+    const pins = await screen.findByRole("region", { name: CONTROL_LABELS.pinned });
+    await within(pins).findByRole("link", { name: words(PAGE_SIZE - 1) });
+    const rows = () => within(pins).getAllByRole("listitem");
+    expect(rows(), "Pinned does not draw its first 20 pins").toHaveLength(PAGE_SIZE);
+    const last = rows()[PAGE_SIZE - 1];
+    if (last === undefined) throw new Error("Pinned draws no 20th pin");
+    act(() => within(last).getByRole("button", { name: CONTROL_LABELS.unpin }).focus());
+    await user.keyboard("{Enter}");
+
+    await waitFor(() => expect(last.isConnected, "the 20th pin's row stayed").toBe(false));
+    expect(rows(), "Pinned does not draw 20 pins after the Unpin").toHaveLength(PAGE_SIZE);
+    const inItsPlace = within(pins).getByRole("link", { name: words(PAGE_SIZE) });
+    expect(rows()[PAGE_SIZE - 1]?.contains(inItsPlace), "the 21st pin is not drawn 20th").toBe(
+      true
+    );
+    expect(
+      document.activeElement,
+      `Unpin of the last pin drawn did not give the focus to the pin drawn in its place (focus: ${document.activeElement?.textContent})`
+    ).toBe(inItsPlace);
   } finally {
     unmount();
     putIssueState.mockRestore();
@@ -7573,10 +7764,11 @@ const advancingOne: IssueDetails = { ...issue, advances: [{ id: "PRI-7", inherit
  * The elements of Details below, each of which a change made elsewhere takes off the page, or
  * disables, while it holds the focus, and which one case can drive through the query cache: a
  * pin, a blocker, a reference, a file or a priority taken away, a route moved, a claim made,
- * released or taken again, the lists that fold falling to ten, a value set for an entry of Add's
- * open menu or for its only one, the repository's None and its text drawn in each other's place,
- * the priority's line moved by another session's write, and the issue closed while the focus is
- * on a control of Development. None of these is a press of the reader's.
+ * released or taken again, a list's Show more as the list falls to the 20 entries it draws, a
+ * value set for an entry of Add's open menu or for its only one, the repository's None and its
+ * text drawn in each other's place, the priority's line moved by another session's write, and
+ * the issue closed while the focus is on a control of Development. None of these is a press of
+ * the reader's.
  */
 const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
   [
@@ -7629,14 +7821,12 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Blocks' Show all, the issues that wait falling to ten",
+    "Blocks' Show more, the issues that wait falling to 20",
     {
-      after: { waiting: keysFrom2(FOLD_AFTER) },
-      before: { waiting: keysFrom2(FOLD_AFTER + 1) },
+      after: { waiting: keysFrom2(PAGE_SIZE) },
+      before: { waiting: keysFrom2(PAGE_SIZE + 1) },
       focused: async () =>
-        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", {
-          name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}`,
-        }),
+        within(await drawnRow(PROPERTY_LABELS.blocks)).findByRole("button", { name: SHOW_MORE }),
     },
   ],
   [
@@ -7662,7 +7852,7 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     {
       after: { issue: { ...issue, referenced_by_count: 0 } },
       before: { issue: { ...issue, referenced_by_count: 3 } },
-      focused: () => screen.findByRole("button", { name: referencedByControlName(3) }),
+      focused: () => screen.findByRole("button", { name: referencedByControlName(undefined) }),
     },
   ],
   [
@@ -7781,12 +7971,14 @@ const TAKEN_AWAY: readonly (readonly [string, TakenAway])[] = [
     },
   ],
   [
-    "Files' Show all, the files falling to ten",
+    "Files' Show more, the files falling to 20",
     {
-      after: { issue: withNotes(FOLD_AFTER - 1) },
-      before: { issue: withNotes(FOLD_AFTER) },
-      focused: () =>
-        screen.findByRole("button", { name: `${CONTROL_LABELS.show_all} ${FOLD_AFTER + 1}` }),
+      after: { issue: withNotes(PAGE_SIZE - 1) },
+      before: { issue: withNotes(PAGE_SIZE) },
+      focused: async () => {
+        await screen.findByTestId("issue-files");
+        return within(filesRow()).getByRole("button", { name: SHOW_MORE });
+      },
     },
   ],
   [
@@ -8031,12 +8223,1563 @@ test.each(
   }
 });
 
-// Details keeps three places nothing fills yet (`details-more.tsx`): the people, the focused
-// row's facts and the history. Until something fills them, each draws nothing.
-test("Details' places for the people, the focused row's facts and the history draw nothing", () => {
-  for (const Place of [DetailsPeople, DetailsFocusedNode, DetailsHistory]) {
-    const view = render(<Place issue={issue} state={undefined} />);
-    expect(view.container.innerHTML, `${Place.name} drew something`).toBe("");
-    view.unmount();
+/** The issue CORE-1 repeats in the relation cases below (R4), and its title. */
+const DUPLICATE = "CORE-7";
+const DUPLICATE_TITLE = "Ship the release notes";
+
+/** The duplicate's own address, by which the names read of the relations names it. */
+const DUPLICATE_REFERENCE = buildDispatchReference({ key: DUPLICATE, kind: "issue" });
+
+/** The message of CORE-2 that CORE-1 was filed from in the relation cases below: its canonical
+ *  reference, the page that reference opens, its body, and the first line of that body, which is
+ *  its first sentence. */
+const FILED_ID = "5f0c6a52-6b1e-4c3a-9a51-3b2f0e7d9c11";
+const FILED_MESSAGE = `dispatch://CORE-2/message/${FILED_ID}`;
+const FILED_PATH = `/issues/CORE-2/messages/${FILED_ID}`;
+const FILED_BODY = "Split the notes out of the release. The rest can wait for the review.";
+const FILED_LINE = "Split the notes out of the release.";
+
+/** How many runes of an ask's, a comment's or a message's stored Markdown the names read answers
+ *  as its name (`refs/heads.go`'s `excerptRunes`). */
+const ITEM_NAME_RUNES = 240;
+
+/** The name the names read answers for an ask, a comment or a message whose stored Markdown is
+ *  `stored`, as the server cuts it (`refs/heads.go`'s `itemExcerpt`): its first 240 runes, with
+ *  no ellipsis, inside a word or a link wherever the 240th rune falls. The server moves the cut
+ *  back where a reference would cross it (`text.HeadRefs`), which no text of these cases puts
+ *  there. The read sends no reading of an item's name. */
+function itemName(stored: string): string {
+  return [...stored].slice(0, ITEM_NAME_RUNES).join("");
+}
+
+/** CORE-1 as INFRA-1253's issue read answers it holding both of its relations: a duplicate of
+ *  CORE-7, filed from a message of CORE-2. */
+const relatedIssue: IssueDetails = { ...issue, duplicate_of: DUPLICATE, filed_from: FILED_MESSAGE };
+
+/** What the names read answers for one target in the relation cases below. */
+interface NamedTarget {
+  readonly gone?: boolean;
+  readonly kind: string;
+  readonly name: string;
+}
+
+/** The two relations of `relatedIssue` by their names: the duplicate by its title, and the
+ *  message by the head of its body (`itemName`). */
+const RELATED_NAMES: Readonly<Record<string, NamedTarget>> = {
+  [DUPLICATE_REFERENCE]: { kind: "issue", name: DUPLICATE_TITLE },
+  [FILED_MESSAGE]: { kind: "message", name: itemName(FILED_BODY) },
+};
+
+/** The names read's answer (`getReferenceTargets`) for `refs`: each target `named` holds, where
+ *  `refs` names it, and nothing else. A target that is gone carries no name, as Dispatch answers
+ *  it. */
+function namedTargets(
+  refs: readonly string[],
+  named: Readonly<Record<string, NamedTarget>>
+): ReferenceTargets {
+  return {
+    targets: refs.flatMap((ref) => {
+      const target = named[ref];
+      if (target === undefined) return [];
+      const gone = target.gone === true;
+      return [{ gone, kind: target.kind, name: gone ? "" : target.name, ref }];
+    }),
+  };
+}
+
+/** The names read's answer (`getReferenceTargets`) for `refs` in the relation cases: each target
+ *  `RELATED_NAMES` holds, with the message CORE-1 was filed from named by the head of `body`, its
+ *  text as stored (`itemName`), and carrying `marks`, its author's corrections of it as the read
+ *  answers them (`reference_targets.go`). */
+function filedMarked(
+  refs: readonly string[],
+  body: string,
+  marks: {
+    readonly deleted_at?: string;
+    readonly deleted_by?: Actor;
+    readonly edited_at?: string;
+  } = {}
+): ReferenceTargets {
+  const named = namedTargets(refs, {
+    ...RELATED_NAMES,
+    [FILED_MESSAGE]: { kind: "message", name: itemName(body) },
+  });
+  return {
+    targets: (named.targets ?? []).map((target) =>
+      target.ref === FILED_MESSAGE ? { ...target, ...marks } : target
+    ),
+  };
+}
+
+/** Every names read `titles` made, each by the addresses it named, sorted: in the relation cases
+ *  below, which hold no blocker and nothing that waits on CORE-1, each is a read of the issue's
+ *  relations. */
+function namesReads(titles: Mock<typeof api.getReferenceTargets>): string[][] {
+  return titles.mock.calls.map(([refs]) => [...refs].sort());
+}
+
+/** Details' Duplicate of row, and its Filed from row, by their labels. */
+const duplicateRow = () => within(detailsRow(PROPERTY_LABELS.duplicate_of));
+const filedRow = () => within(detailsRow(PROPERTY_LABELS.filed_from));
+
+/** What the filed item's own read answers in the relation cases below (`getAsk`, `getComment`,
+ *  `getMessage`): its whole text as stored, and the server's reading of it where the case gives
+ *  one, as the read answers this client (`Dispatch-Trees`). */
+interface StoredItem {
+  readonly text: string;
+  readonly tree?: DisplayTree;
+}
+
+/** The message `relatedIssue` was filed from, by its id, storing `text`, with the server's
+ *  reading of it where `tree` is given. */
+function filedStored(text: string, tree?: DisplayTree): Readonly<Record<string, StoredItem>> {
+  return { [FILED_ID]: tree === undefined ? { text } : { text, tree } };
+}
+
+/** The ask `id`'s own read (`getAsk`), asking what `stored` holds. */
+function askReadOf(id: string, { text, tree }: StoredItem): AskRead {
+  return {
+    answers: [],
+    ask: {
+      anchor: null,
+      answer: null,
+      artifact_id: null,
+      asked_of: null,
+      asked_of_at: null,
+      asked_of_by: null,
+      author: { id: "alice", kind: "user" },
+      block_id: null,
+      created_at: "2026-09-09T00:00:00Z",
+      edited_at: null,
+      id,
+      issue_key: "CORE-2",
+      kind: "question",
+      multiple: false,
+      opened_event_id: 1,
+      options: [],
+      question: text,
+      ...(tree === undefined ? {} : { question_tree: tree }),
+      state: "open",
+      urgency: "med",
+    },
+    claimant: null,
+    edits: [],
+    followers: [],
+    replies: [],
+    route: null,
+    route_holder: null,
+    route_status: null,
+    route_status_reason: null,
+  };
+}
+
+/** The message `id` of the issue `key`, as its own read answers it (`getMessage`), its body what
+ *  `stored` holds. */
+function messageReadOf(key: string, id: string, { text, tree }: StoredItem): MessageRead {
+  return {
+    message: messageOf(id, text, {
+      issue_key: key,
+      ...(tree === undefined ? {} : { body_tree: tree }),
+    }),
+    replies: [],
+  };
+}
+
+/** Stubs the reads the relation cases below make: those of `stubIssueApi`, with CORE-1's own read
+ *  answered with `details`; what waits on CORE-1, the Blocks row's read, answered with nothing;
+ *  the names reads, answered by `names`; and the filed item's own read, of an ask, a comment or a
+ *  message (`items`), answered with what `stored` holds for its id - the message of
+ *  `relatedIssue` storing `FILED_BODY`, unless the case stores another - and failed for an id it
+ *  holds nothing for. */
+function stubRelations(
+  details: IssueDetails,
+  names: (refs: readonly string[]) => Promise<ReferenceTargets>,
+  stored: Readonly<Record<string, StoredItem>> = filedStored(FILED_BODY)
+) {
+  const stub = stubIssueApi();
+  stub.getIssue.mockResolvedValue(details);
+  const getReferences = spyOn(api, "getReferences").mockResolvedValue(NOTHING_REFERENCES);
+  const titles = spyOn(api, "getReferenceTargets").mockImplementation(names);
+  const storedFor = (id: string): StoredItem => {
+    const item = stored[id];
+    if (item === undefined) throw new Error(`the case stores no text of the item ${id}`);
+    return item;
+  };
+  const items = {
+    ask: spyOn(api, "getAsk").mockImplementation(async (id) => askReadOf(id, storedFor(id))),
+    comment: spyOn(api, "getComment").mockImplementation(async (id) => {
+      const { text, tree } = storedFor(id);
+      return { comment: commentOf(id, text, tree), replies: [] };
+    }),
+    message: spyOn(api, "getMessage").mockImplementation(async (key, id) =>
+      messageReadOf(key, id, storedFor(id))
+    ),
+  };
+  return {
+    getIssue: stub.getIssue,
+    getMyState: stub.getMyState,
+    items,
+    restore: () => {
+      for (const spy of Object.values(items)) spy.mockRestore();
+      titles.mockRestore();
+      getReferences.mockRestore();
+      stub.restore();
+    },
+    titles,
+  };
+}
+
+/** Waits until the filed message's own read has answered and React has committed what the views
+ *  that observe it draw of that answer, for a case whose row draws the same words before that
+ *  answer as after it: the suite hands an answer to its observers as it lands in the cache
+ *  (`notifyManager`'s scheduler, `__tests__/setup.ts`), and the render those observers ask for
+ *  is committed by the `act` scope that follows. */
+async function filedMessageAnswered(queryClient: QueryClient): Promise<void> {
+  await waitFor(() =>
+    expect(
+      queryClient.getQueryState(messageQuery("CORE-2", FILED_ID).queryKey)?.status,
+      "the filed message's own read did not answer"
+    ).toBe("success")
+  );
+  await act(async () => {});
+}
+
+// The names of the issue's two relations are read as Blocked by's titles are: only while Details
+// and its Development are open, so a load that leaves either shut costs no request for them, and
+// opening Development makes one names read of both (ST-3 R-a). The filed item's own text is read
+// only then too, once that read has named it, and a closed Development reads it no more: an event
+// that reads the message again leaves it alone.
+test("Details reads the names of the issue's relations only once Development is open, in one read of both, and then the filed item's own text, which a closed Development reads no more", async () => {
+  const user = userEvent.setup();
+  const { items, restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const kept = userPreferenceStorageKey("alice", "issue.margin-sections");
+  window.localStorage.setItem(kept, "development");
+  const { queryClient, redraw, unmount } = renderDetails(undefined, SHUT_DRAWER);
+
+  try {
+    const development = await screen.findByRole("button", {
+      name: MARGIN_SECTION_NAMES.development,
+    });
+    await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "a shut Details draws no Duplicate of row"
+    ).toHaveTextContent(DUPLICATE);
+    await act(async () => {});
+    expect(namesReads(titles), "a shut Details read the names of the issue's relations").toEqual(
+      []
+    );
+
+    redraw(OPEN_DRAWER);
+    // The open drawer's reads start in the commit that opens it: its effects run here.
+    await act(async () => {});
+    expect(
+      namesReads(titles),
+      "Details read the names of the relations of a closed Development"
+    ).toEqual([]);
+    expect(
+      items.message,
+      "Details read the filed message's own text while Development is closed"
+    ).not.toHaveBeenCalled();
+
+    await user.click(development);
+    await waitFor(() =>
+      expect(
+        namesReads(titles),
+        "opening Development did not read the names of both relations in one read"
+      ).toEqual([[FILED_MESSAGE, DUPLICATE_REFERENCE]])
+    );
+    await waitFor(() =>
+      expect(
+        items.message.mock.calls,
+        "opening Development did not read the filed message's own text once, by its issue and id"
+      ).toEqual([["CORE-2", FILED_ID]])
+    );
+
+    // Both reads have answered; Development closes, and the message's read is asked for again,
+    // as an event that names the message asks for it.
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE)
+    );
+    await user.click(development);
+    await waitFor(() => expect(development).toHaveAttribute("aria-expanded", "false"));
+    await act(() =>
+      queryClient.refetchQueries({ queryKey: messageQuery("CORE-2", FILED_ID).queryKey })
+    );
+    expect(
+      items.message,
+      "a closed Development read the filed message's own text again"
+    ).toHaveBeenCalledTimes(1);
+  } finally {
+    unmount();
+    restore();
+    window.localStorage.removeItem(kept);
+  }
+});
+
+// While the names read is out, each relation row draws what the issue read holds by itself: the
+// duplicate's key, as Blocked by draws a blocker whose title has not come, and the item by the
+// page's word for its kind as the way to it, since its address is no name (ST-3 R-b).
+test("while the names of the relations are out, Duplicate of draws the key alone and Filed from the kind's word alone", async () => {
+  const held = Promise.withResolvers<ReferenceTargets>();
+  const { restore, titles } = stubRelations(relatedIssue, () => held.promise);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() => expect(namesReads(titles)).toHaveLength(1));
+    expect(
+      await duplicateRow().findByRole("link", { name: DUPLICATE }),
+      "Duplicate of draws no link to the duplicate"
+    ).toHaveAttribute("href", "/issues/CORE-7");
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of).textContent,
+      "Duplicate of drew more than the key while the names read is out"
+    ).toBe(`${PROPERTY_LABELS.duplicate_of}${DUPLICATE}`);
+    expect(
+      filedRow().getByRole("link", { name: NODE_REFERENCES_WORDS.kinds.message }),
+      "Filed from draws no link to the message by its kind's word"
+    ).toHaveAttribute("href", FILED_PATH);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from drew more than the kind's word while the names read is out"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message}`);
+    expect(screen.queryByRole("alert"), "a row says a failure while the read is out").toBeNull();
+  } finally {
+    held.resolve({ targets: [] });
+    unmount();
+    restore();
+  }
+});
+
+// While the filed item's own read is out, the row holds no line of the item, so Filed from draws
+// the page's word for its kind alone as the way to it, as it does while the names read is out.
+// The link the word is drawn in is the link that takes the first line once that read answers, so
+// a focus a Retry handed it stays on it.
+test("while the filed item's own text is out, Filed from draws the kind's word alone, in the link that then takes its first line", async () => {
+  const { items, restore } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const held = Promise.withResolvers<MessageRead>();
+  items.message.mockImplementation(() => held.promise);
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() => expect(items.message).toHaveBeenCalledTimes(1));
+    const link = filedRow().getByRole("link", { name: NODE_REFERENCES_WORDS.kinds.message });
+    expect(
+      link,
+      "Filed from does not link the message by its kind's word while its text is out"
+    ).toHaveAttribute("href", FILED_PATH);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from drew more than the kind's word while the message's own text is out"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message}`);
+    expect(screen.queryByRole("alert"), "a row says a failure while the read is out").toBeNull();
+
+    await act(async () => held.resolve(messageReadOf("CORE-2", FILED_ID, { text: FILED_BODY })));
+    await waitFor(() =>
+      expect(
+        filedRow().getByRole("link", { name: FILED_LINE }),
+        "the first line is not drawn in the link the kind's word was drawn in"
+      ).toBe(link)
+    );
+  } finally {
+    held.resolve(messageReadOf("CORE-2", FILED_ID, { text: FILED_BODY }));
+    unmount();
+    restore();
+  }
+});
+
+// Once the names and the filed item's own text are read, Duplicate of takes the form of Details'
+// other relation rows - the key in bold as the way to the issue, then its title (`IssueLine`) -
+// and Filed from names the message by the page's word for its kind and its first line, the way to
+// it; each row once, after Parent, Blocked by and Blocks (ST-3 R-c).
+test("once the names and the filed item's own text are read, Duplicate of draws the key in bold as a link with its title, and Filed from the kind's word and the first line as a link", async () => {
+  const { restore } = stubRelations({ ...relatedIssue, parent: "CORE-9" }, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.duplicate_of)).toHaveTextContent(DUPLICATE_TITLE)
+    );
+    const duplicate = duplicateRow().getByRole("link", { name: DUPLICATE });
+    expect(duplicate).toHaveAttribute("href", "/issues/CORE-7");
+    expect(duplicate, "the duplicate's key is not bold").toHaveClass("font-semibold");
+    expect(
+      duplicateRow().getByText(DUPLICATE_TITLE),
+      "the duplicate's title is not drawn as the author's words"
+    ).toHaveAttribute("data-author-text");
+
+    const filed = await filedRow().findByRole("link", { name: FILED_LINE });
+    expect(filed).toHaveAttribute("href", FILED_PATH);
+    expect(filed, "the message's first line is not drawn as the author's words").toHaveAttribute(
+      "data-author-text"
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the message by its kind's word and its first line alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${FILED_LINE}`);
+
+    // Each relation row once, in the order Details draws them.
+    const labels = [
+      PROPERTY_LABELS.parent,
+      PROPERTY_LABELS.blocked_by,
+      PROPERTY_LABELS.blocks,
+      PROPERTY_LABELS.duplicate_of,
+      PROPERTY_LABELS.filed_from,
+    ];
+    const drawn = labels.map((label) =>
+      screen.getAllByText(label, { exact: true, selector: "[data-page-chrome]" })
+    );
+    expect(
+      drawn.map((each) => each.length),
+      "a relation row is drawn more than once"
+    ).toEqual(labels.map(() => 1));
+    const order = drawn.flat();
+    for (const [index, label] of order.entries()) {
+      const before = order[index - 1];
+      if (before === undefined) continue;
+      expect(
+        before.compareDocumentPosition(label) & Node.DOCUMENT_POSITION_FOLLOWING,
+        `${label.textContent} is not drawn after ${before.textContent}`
+      ).toBeTruthy();
+    }
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A names read of the relations that failed holding no answer draws each relation row as the
+// read out does, and says the failure in each row it feeds, with Retry: the duplicate's in the
+// words of Blocked by's titles read, since it is an issue, and the message's in words of its own,
+// since a message has no title. Every other value Details draws stays as it was drawn: the
+// failure is of the two rows' names alone. The header is no part of Details; the browser row
+// "Details draws every relation of the issue once" reads it (ST-3 R-d).
+test("a names read of the relations that fails says so with Retry in both relation rows, and leaves every other row as it was drawn", async () => {
+  const { restore } = stubRelations(
+    { ...relatedIssue, blocked_by: ["CORE-3"], parent: "CORE-9", priority: 1 },
+    async (refs) => {
+      if (refs.includes(FILED_MESSAGE)) throw readFailure();
+      return issueNames(refs, { "CORE-3": "Fix the build" });
+    }
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(duplicateRow().getByRole("alert")).toHaveTextContent(TITLES_READ_FAILED)
+    );
+    for (const [label, row, words] of [
+      [PROPERTY_LABELS.duplicate_of, duplicateRow(), TITLES_READ_FAILED],
+      [PROPERTY_LABELS.filed_from, filedRow(), STATE_LINES.filed_from_unreadable],
+    ] as const) {
+      expect(row.getByRole("alert"), `${label} does not say the read failed`).toHaveTextContent(
+        words
+      );
+      expect(
+        row.getByRole("button", { name: CONTROL_LABELS.retry }),
+        `${label} offers no Retry`
+      ).toBeInTheDocument();
+    }
+    expect(
+      duplicateRow().getByRole("link", { name: DUPLICATE }),
+      "Duplicate of does not draw the duplicate by its key where its title could not be read"
+    ).toHaveAttribute("href", "/issues/CORE-7");
+    expect(
+      filedRow().getByRole("link", { name: NODE_REFERENCES_WORDS.kinds.message }),
+      "Filed from does not draw the message by its kind's word where its words could not be read"
+    ).toHaveAttribute("href", FILED_PATH);
+
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocked_by)).toHaveTextContent("Fix the build")
+    );
+    expect(
+      within(detailsRow(PROPERTY_LABELS.parent)).getByRole("link", { name: "CORE-9" }),
+      "the Parent row lost its parent"
+    ).toHaveAttribute("href", "/issues/CORE-9");
+    expect(
+      detailsRow(PROPERTY_LABELS.priority),
+      "the Priority row lost its value"
+    ).toHaveTextContent("P1");
+    expect(detailsRow(PROPERTY_LABELS.status), "the Status row lost its value").toHaveTextContent(
+      issueStatusWord("todo")
+    );
+    expect(
+      screen.getAllByRole("alert"),
+      "a row besides the two relation rows says the relations' failure"
+    ).toHaveLength(2);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A refresh that fails over the answer the relations' names read holds - an event read it again -
+// keeps that answer drawn, and says no failure: the rows are all drawn (ST-3 R-e).
+test("a refresh of the relations' names that fails over the answer they hold keeps that answer drawn and says no failure", async () => {
+  const { restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() => {
+      expect(detailsRow(PROPERTY_LABELS.duplicate_of)).toHaveTextContent(DUPLICATE_TITLE);
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE);
+    });
+
+    titles.mockRejectedValue(readFailure());
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+    const state = queryClient.getQueryState(
+      referenceTargetsQuery([DUPLICATE_REFERENCE, FILED_MESSAGE]).queryKey
+    );
+    expect(
+      [state?.status, state?.data !== undefined],
+      "the relations' names read was not refreshed with a failure over the answer it holds"
+    ).toEqual(["error", true]);
+
+    for (const [label, row] of [
+      [PROPERTY_LABELS.duplicate_of, duplicateRow()],
+      [PROPERTY_LABELS.filed_from, filedRow()],
+    ] as const) {
+      expect(
+        row.queryByRole("alert"),
+        `${label} says a failure over the answer it holds`
+      ).toBeNull();
+      expect(
+        row.queryByRole("button", { name: CONTROL_LABELS.retry }),
+        `${label} offers a Retry of a read that holds its answer`
+      ).toBeNull();
+    }
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "Duplicate of took away the title its failed refresh left it"
+    ).toHaveTextContent(DUPLICATE_TITLE);
+    expect(
+      filedRow().getByRole("link", { name: FILED_LINE }),
+      "Filed from took away the first line its failed refresh left it"
+    ).toHaveAttribute("href", FILED_PATH);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** Each relation row whose Retry the case below presses, by its label, the words its failure
+ *  line says, and the name of the first link that row draws once the names read answers, and,
+ *  for Filed from, the filed item's own read the names' answer makes. */
+const RETRIED_RELATIONS: readonly (readonly [string, string, string])[] = [
+  [PROPERTY_LABELS.duplicate_of, TITLES_READ_FAILED, DUPLICATE],
+  [PROPERTY_LABELS.filed_from, STATE_LINES.filed_from_unreadable, FILED_LINE],
+];
+
+// The failed read's Retry stays, busy and holding the focus of a reader who pressed it by
+// keyboard, while the read it sent is out; once that read answers, the row hands the focus to its
+// first link rather than to the page's body (`useTitlesRetry`), as Blocked by's Retry of its
+// titles does (ST-3 R-f).
+test.each(
+  RETRIED_RELATIONS
+)("%s's Retry of the relations' failed names read keeps the focus while the read is out, and hands it to the row's first link once it answers", async (label, failedWords, first) => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const { restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  titles.mockRejectedValueOnce(readFailure());
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+  const row = () => within(detailsRow(label));
+
+  try {
+    const retry = await waitFor(() => row().getByRole("button", { name: CONTROL_LABELS.retry }));
+    const answered = Promise.withResolvers<ReferenceTargets>();
+    titles.mockImplementationOnce(() => answered.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(titles).toHaveBeenCalledTimes(2));
+    await waitFor(() =>
+      expect(retry, "Retry does not read busy while the read it sent is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(
+      retry,
+      "the line and its Retry went while the read Retry sent is out"
+    ).toBeInTheDocument();
+    expect(row().getByRole("alert")).toHaveTextContent(failedWords);
+    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
+      retry
+    );
+
+    await act(async () =>
+      answered.resolve(namedTargets([DUPLICATE_REFERENCE, FILED_MESSAGE], RELATED_NAMES))
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("alert"),
+        "the names answered, but a relation row still says they failed"
+      ).toBeNull()
+    );
+    // The row's first link is drawn by its line once the filed item's own read, which the names'
+    // answer makes, answers too.
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the names answered, and the focus fell to the page rather than to the row's first link"
+      ).toBe(row().getByRole("link", { name: first }))
+    );
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
+// A failed read of the filed item's own record holds no line of the item, so it is a failed read
+// of the row: Filed from says so in its own words with Retry, as it says a failed names read, and
+// draws the kind's word alone meanwhile. Retry reads the record again, and not the names, keeping
+// the focus of a reader who pressed it by keyboard while that read is out; once it answers, the
+// row draws the line and hands the focus to its link (`useTitlesRetry`).
+test("a failed read of the filed item's own text says so in Filed from with Retry, which reads it again and draws the line", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const { items, restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  items.message.mockRejectedValueOnce(readFailure());
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+
+  try {
+    const retry = await waitFor(() =>
+      filedRow().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    expect(
+      filedRow().getByRole("alert"),
+      "Filed from does not say the read of the message's text failed"
+    ).toHaveTextContent(STATE_LINES.filed_from_unreadable);
+    expect(
+      filedRow().getByRole("link", { name: NODE_REFERENCES_WORDS.kinds.message }),
+      "Filed from does not draw the message by its kind's word where its text could not be read"
+    ).toHaveAttribute("href", FILED_PATH);
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "Duplicate of lost its title beside the message's failed read"
+    ).toHaveTextContent(DUPLICATE_TITLE);
+    expect(
+      screen.getAllByRole("alert"),
+      "a row besides Filed from says the failure of the message's own read"
+    ).toHaveLength(1);
+
+    const answered = Promise.withResolvers<MessageRead>();
+    items.message.mockImplementationOnce(() => answered.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() =>
+      expect(items.message, "Retry did not read the message's text again").toHaveBeenCalledTimes(2)
+    );
+    await waitFor(() =>
+      expect(retry, "Retry does not read busy while the read it sent is out").toHaveAttribute(
+        "aria-busy",
+        "true"
+      )
+    );
+    expect(
+      retry,
+      "the line and its Retry went while the read Retry sent is out"
+    ).toBeInTheDocument();
+    expect(document.activeElement, "Retry lost the focus while the read it sent is out").toBe(
+      retry
+    );
+    expect(namesReads(titles), "Retry read the relations' names again").toHaveLength(1);
+
+    await act(async () =>
+      answered.resolve(messageReadOf("CORE-2", FILED_ID, { text: FILED_BODY }))
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("alert"),
+        "the message's text answered, but Filed from still says its read failed"
+      ).toBeNull()
+    );
+    await waitFor(() =>
+      expect(
+        document.activeElement,
+        "the message's text answered, and the focus fell to the page rather than to its line"
+      ).toBe(filedRow().getByRole("link", { name: FILED_LINE }))
+    );
+  } finally {
+    stopBlurring();
+    unmount();
+    restore();
+  }
+});
+
+// While the read Retry sent for the filed item's own text is still out, another read can take
+// that failure line away without answering the press: here the names read answers the message
+// deleted, so Filed from draws its deleted line instead. Because the item's read still holds no
+// answer, Retry hands no focus to the row's link; the focus stays on the page's body, as for
+// every loss the reader did not cause.
+test("Filed from's text Retry leaves the focus on the page's body where a delete takes its line away while its read is out", async () => {
+  await warmMarkdownRenderer();
+  const user = userEvent.setup();
+  const { items, restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  items.message.mockRejectedValueOnce(readFailure());
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+  const stopBlurring = emulateChromiumFocusFixup();
+  const held = Promise.withResolvers<MessageRead>();
+
+  try {
+    const retry = await waitFor(() =>
+      filedRow().getByRole("button", { name: CONTROL_LABELS.retry })
+    );
+    items.message.mockImplementationOnce(() => held.promise);
+    act(() => retry.focus());
+    await user.keyboard("{Enter}");
+    await waitFor(() => expect(items.message).toHaveBeenCalledTimes(2));
+    expect(document.activeElement, "Retry lost the focus while its read is out").toBe(retry);
+
+    // While the press's read is still out, an event refreshes the names read with the message
+    // deleted, taking the failure line away with no answer to the press.
+    titles.mockImplementation(async (refs) =>
+      filedMarked(refs, "", { deleted_at: FILED_DELETED_AT, deleted_by: UNNAMED_SESSION })
+    );
+    await act(() => queryClient.refetchQueries({ queryKey: ["reference-targets"] }));
+    await waitFor(() => expect(filedRow().queryByRole("alert")).toBeNull());
+    expect(
+      filedRow().getByRole("link").querySelector("[data-post-deleted]"),
+      "Filed from did not draw the deleted line"
+    ).toBeInTheDocument();
+    await settleFocus();
+    expect(
+      document.activeElement,
+      "Retry handed the focus to the row's link although its read never answered"
+    ).toBe(document.body);
+  } finally {
+    stopBlurring();
+    unmount();
+    held.resolve(messageReadOf("CORE-2", FILED_ID, { text: FILED_BODY }));
+    restore();
+  }
+});
+
+// A relation changed in another session gives the names read a new set of addresses, and so a new
+// key: while that read is out, the row whose relation did not change keeps the name the last
+// answer gave it, and the changed one draws what the issue read holds by itself, until the new
+// read answers or fails (`keptUntilFailed`), as Blocks keeps its titles (ST-3 R-g).
+test("a relation changed in another session keeps the names drawn while the new read is out, until it answers or fails", async () => {
+  const otherId = "8d2e4b71-0c3f-4e6a-b5d9-7a1c2e3f4b50";
+  const otherMessage = `dispatch://CORE-2/message/${otherId}`;
+  const otherLine = "Keep the notes in the release.";
+  const otherBody = `${otherLine} Nothing else moves.`;
+  const otherDuplicate = buildDispatchReference({ key: "CORE-8", kind: "issue" });
+  const names: Readonly<Record<string, NamedTarget>> = {
+    ...RELATED_NAMES,
+    [otherMessage]: { kind: "message", name: itemName(otherBody) },
+    [otherDuplicate]: { kind: "issue", name: "Write the changelog" },
+  };
+  const answered = Promise.withResolvers<ReferenceTargets>();
+  const failed = Promise.withResolvers<ReferenceTargets>();
+  const { getIssue, restore, titles } = stubRelations(
+    relatedIssue,
+    async (refs) =>
+      refs.includes(otherDuplicate)
+        ? failed.promise
+        : refs.includes(otherMessage)
+          ? answered.promise
+          : namedTargets(refs, names),
+    { ...filedStored(FILED_BODY), [otherId]: { text: otherBody } }
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() => {
+      expect(detailsRow(PROPERTY_LABELS.duplicate_of)).toHaveTextContent(DUPLICATE_TITLE);
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE);
+    });
+
+    // Another session files CORE-1 from another message of CORE-2, and the new read is held out.
+    drawIssue(getIssue, queryClient, { ...relatedIssue, filed_from: otherMessage });
+    await waitFor(() => expect(titleReads(titles, otherMessage)).toBe(1));
+    expect(
+      await filedRow().findByRole("link", { name: NODE_REFERENCES_WORDS.kinds.message }),
+      "Filed from does not draw the new message by its kind's word while its read is out"
+    ).toHaveAttribute("href", `/issues/CORE-2/messages/${otherId}`);
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "Duplicate of drew the duplicate by its key alone while the read of the new set is out"
+    ).toHaveTextContent(DUPLICATE_TITLE);
+    await act(async () =>
+      answered.resolve(namedTargets([DUPLICATE_REFERENCE, otherMessage], names))
+    );
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(otherLine)
+    );
+
+    // Then it marks CORE-1 a duplicate of CORE-8, and the new read fails.
+    drawIssue(getIssue, queryClient, {
+      ...relatedIssue,
+      duplicate_of: "CORE-8",
+      filed_from: otherMessage,
+    });
+    await waitFor(() => expect(titleReads(titles, otherDuplicate)).toBe(1));
+    await duplicateRow().findByRole("link", { name: "CORE-8" });
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from),
+      "Filed from drew the message by its kind's word alone while the read of the new set is out"
+    ).toHaveTextContent(otherLine);
+    await act(async () => failed.reject(readFailure()));
+    await waitFor(() =>
+      expect(filedRow().getByRole("alert")).toHaveTextContent(STATE_LINES.filed_from_unreadable)
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from),
+      "Filed from drew a first line its failed read holds no answer for"
+    ).not.toHaveTextContent(otherLine);
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "Duplicate of drew a title of the set before after the new read failed"
+    ).not.toHaveTextContent(DUPLICATE_TITLE);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// A target Dispatch answers gone - deleted, or one the reader may not see - opens no page, so
+// Filed from draws it as the page's chip draws one: by its kind's word and Deleted, with no link
+// (ST-3 R-h). Its line is not its words, so its own text is not read.
+test("Filed from draws a message Dispatch answers gone by its kind's word and Deleted, with no link, and reads none of its text", async () => {
+  const { items, restore } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, {
+      ...RELATED_NAMES,
+      [FILED_MESSAGE]: { gone: true, kind: "message", name: "" },
+    })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(CONTROL_LABELS.target_gone)
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the message by its kind's word and Deleted alone"
+    ).toBe(
+      `${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${CONTROL_LABELS.target_gone}`
+    );
+    expect(filedRow().queryByRole("link"), "Filed from links a message that is gone").toBeNull();
+    await act(async () => {});
+    expect(
+      items.message,
+      "Filed from read the text of a message that is gone"
+    ).not.toHaveBeenCalled();
+    expect(
+      detailsRow(PROPERTY_LABELS.duplicate_of),
+      "Duplicate of lost its title beside a message that is gone"
+    ).toHaveTextContent(DUPLICATE_TITLE);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** Issues that hold some of the two relations, each with the rows of them it draws and the
+ *  names reads Details makes of them. */
+const HELD_RELATIONS: readonly (readonly [
+  string,
+  IssueDetails,
+  readonly ("duplicate_of" | "filed_from")[],
+  readonly (readonly string[])[],
+])[] = [
+  ["an issue with neither relation", issue, [], []],
+  [
+    "an issue with a duplicate_of alone",
+    { ...issue, duplicate_of: DUPLICATE },
+    ["duplicate_of"],
+    [[DUPLICATE_REFERENCE]],
+  ],
+  [
+    "an issue with a filed_from alone",
+    { ...issue, filed_from: FILED_MESSAGE },
+    ["filed_from"],
+    [[FILED_MESSAGE]],
+  ],
+];
+
+// A row is drawn only where the issue read holds its relation, and the names read names only the
+// relations the issue holds (ST-3 R-i).
+test.each(
+  HELD_RELATIONS
+)("%s draws the relation rows it holds and no other", async (_name, details, held, reads) => {
+  const { restore, titles } = stubRelations(details, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    // Blocks says None once its read has answered, so Development's reads are all made by then.
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.blocks)).toHaveTextContent(CONTROL_LABELS.none)
+    );
+    await waitFor(() => expect(namesReads(titles)).toEqual(reads.map((refs) => [...refs])));
+    for (const relation of ["duplicate_of", "filed_from"] as const) {
+      const label = PROPERTY_LABELS[relation];
+      expect(
+        screen.queryAllByText(label, { exact: true, selector: "[data-page-chrome]" }),
+        `the rows of ${relation}`
+      ).toHaveLength(held.includes(relation) ? 1 : 0);
+    }
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** The id of the item each form of `filed_from` below names. */
+const FORM_ID = "2b9c7e41-5d3a-4f68-8e1b-0c6d4a9f3e27";
+
+/** Each form INFRA-1253's contract gives `filed_from` (`dispatch-api-issues.ts`): what it names,
+ *  the reference, the kind of node it names, that node's words as stored, their first line, and
+ *  the page the reference opens. */
+const FILED_FORMS: readonly (readonly [string, string, BlockItemKind, string, string, string])[] = [
+  [
+    "a message of an issue",
+    `dispatch://CORE-2/message/${FORM_ID}`,
+    "message",
+    "Split the notes out. Then wait for the review.",
+    "Split the notes out.",
+    `/issues/CORE-2/messages/${FORM_ID}`,
+  ],
+  [
+    "a question of an issue",
+    `dispatch://CORE-2/ask/${FORM_ID}`,
+    "ask",
+    "Can the notes ship apart from the release? Say which.",
+    "Can the notes ship apart from the release?",
+    `/issues/CORE-2/asks/${FORM_ID}`,
+  ],
+  [
+    "a comment of an issue",
+    `dispatch://CORE-2/comment/${FORM_ID}`,
+    "comment",
+    "The notes need a page of their own. The rest is fine.",
+    "The notes need a page of their own.",
+    `/issues/CORE-2/comments/${FORM_ID}`,
+  ],
+  [
+    "a question of a project's document",
+    `dispatch://CORE/artifact/release-notes/ask/${FORM_ID}`,
+    "ask",
+    "Who writes the notes for this release? Name one.",
+    "Who writes the notes for this release?",
+    `/projects/CORE/documents/release-notes?ask=${FORM_ID}`,
+  ],
+  [
+    "a comment of a project's document",
+    `dispatch://CORE/artifact/release-notes/comment/${FORM_ID}`,
+    "comment",
+    "This section repeats the last one. Cut it.",
+    "This section repeats the last one.",
+    `/projects/CORE/documents/release-notes?comment=${FORM_ID}`,
+  ],
+];
+
+// Filed from names each item INFRA-1253 lets an issue be filed out of - an ask, a comment or a
+// message of an issue, and an ask or a comment of a project's document - by the page's word for
+// its kind, so an ask is a question, and its first line, as a link to the page the reference
+// opens (INV-6).
+test.each(
+  FILED_FORMS
+)("Filed from names %s by its kind's word and its first line, as a link to it", async (_name, filed, kind, words, line, path) => {
+  const { restore } = stubRelations(
+    { ...issue, filed_from: filed },
+    async (refs) => namedTargets(refs, { [filed]: { kind, name: itemName(words) } }),
+    { [FORM_ID]: { text: words } }
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    expect(
+      await waitFor(() => filedRow().getByRole("link", { name: line })),
+      "Filed from does not link the item by its first line"
+    ).toHaveAttribute("href", path);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the item by its kind's word and its first line alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds[kind]} ${line}`);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** When the message CORE-1 was filed from was deleted, in the case below. */
+const FILED_DELETED_AT = "2026-09-10T03:00:00Z";
+
+/** Each delete of the message CORE-1 was filed from that the case below reads: how it is named,
+ *  who the names read says deleted it, and how the deleted line the row draws for it opens, before
+ *  its time. The server records the actor on every delete; a payload that carries the time alone
+ *  reads as Deleted with no one named, as the outline reads it (`postDeletion`). */
+const FILED_DELETES: readonly (readonly [string, Actor | undefined, string])[] = [
+  [
+    "by a session nobody named",
+    UNNAMED_SESSION,
+    `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author}`,
+  ],
+  ["with no actor named", undefined, CONTROL_LABELS.post_deleted],
+];
+
+// A message its author deleted keeps its place, so the names read answers it not gone, named "",
+// with the delete's marks (`reference_targets.go`). Filed from draws it as its row in the outline
+// draws it (`node-line.tsx`'s `DeletedLine`): the kind's word, then the deleted line in its italic,
+// its actor named as the page names an author, then when, as a link to the post, whose page still
+// opens. Read by `gone` alone, the row drew the kind's word as a link, as though the read had not
+// answered, and nothing said the post was deleted.
+// Its line is not its words, so the message's own text is not read.
+test.each(
+  FILED_DELETES
+)("Filed from draws a message deleted %s by the deleted line, as a link to it", async (_name, by, deletedWords) => {
+  const { items, restore } = stubRelations(relatedIssue, async (refs) =>
+    filedMarked(refs, "", {
+      deleted_at: FILED_DELETED_AT,
+      ...(by === undefined ? {} : { deleted_by: by }),
+    })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const opening = `${deletedWords} · `;
+    await waitFor(() =>
+      expect(
+        filedRow()
+          .getByRole("link")
+          .querySelector("[data-post-deleted]")
+          ?.textContent?.slice(0, opening.length),
+        "Filed from does not draw the deleted message by the deleted line"
+      ).toBe(opening)
+    );
+    const link = filedRow().getByRole("link");
+    expect(link, "Filed from does not link the deleted message").toHaveAttribute(
+      "href",
+      FILED_PATH
+    );
+    const line = link.querySelector("[data-post-deleted]");
+    const time = line?.querySelector("time");
+    expect(time, "the deleted line does not say when the message was deleted").toHaveAttribute(
+      "datetime",
+      FILED_DELETED_AT
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the deleted message by its kind's word and the deleted line alone"
+    ).toBe(
+      `${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${opening}${time?.textContent}`
+    );
+    expect(line, "the deleted line is not drawn in its italic").toHaveClass("italic");
+    expect(line, "the deleted line's words are not the page's own").toHaveAttribute(
+      "data-page-chrome"
+    );
+    // The first words of the line that are not the page's own: its actor's name, and the time
+    // where the delete names nobody.
+    expect(
+      line?.querySelector("[data-author-text]")?.textContent,
+      "the deleted line does not name its actor as the page names an author"
+    ).toBe(by === undefined ? time?.textContent : CONTROL_LABELS.unnamed_author);
+    expect(link.textContent, "the deleted line names its actor by its id").not.toContain(
+      UNNAMED_SESSION.id.slice(0, 8)
+    );
+    expect(items.message, "Filed from read the text of a deleted message").not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The item's own read answers a post's body as stored: Markdown, whose marks are no word of it and
+// whose references are addresses. Filed from draws the first line of that text as the outline
+// draws a node's one line (`useNodeLine`), as a link to the post: a mention reads as its words,
+// an address as its target's name (R8), here the name the page published for the cited comment,
+// and no mark is drawn. Cut from the stored text, the line drew the mention's link, the bold's
+// `**` and the bare address.
+test("Filed from draws a first line holding a mention and an address as projected words, with no Markdown marks and no address", async () => {
+  await warmMarkdownRenderer();
+  const cited = `dispatch://CORE-3/comment/${FORM_ID}`;
+  const body = `Ask [@Planner](dispatch://agent/planner-session) to **cut** ${cited} first. Then wait.`;
+  const line = "Ask @Planner to cut the old notes first.";
+  const published = publishedNames(new Map([[cited, "the old notes"]]));
+  // The mentioned session is one Dispatch holds no record of.
+  const known = spyOn(api, "getKnownSessions").mockResolvedValue({ sessions: [] });
+  const { restore } = stubRelations(
+    relatedIssue,
+    async (refs) => filedMarked(refs, body),
+    filedStored(body)
+  );
+  const { unmount } = renderDetails(() => <Publisher published={published} />, OPEN_DRAWER);
+
+  try {
+    const link = await waitFor(() => filedRow().getByRole("link", { name: line }));
+    expect(link, "Filed from does not link the message by its projected line").toHaveAttribute(
+      "href",
+      FILED_PATH
+    );
+    expect(link, "the message's projected line is not drawn as the author's words").toHaveAttribute(
+      "data-author-text"
+    );
+    const drawn = detailsRow(PROPERTY_LABELS.filed_from).textContent ?? "";
+    expect(
+      drawn,
+      "Filed from does not name the message by its kind's word and its projected line alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${line}`);
+    for (const mark of ["dispatch://", "**", "[", "]", "(", ")"]) {
+      expect(drawn, `Filed from draws ${mark} of the stored Markdown`).not.toContain(mark);
+    }
+  } finally {
+    unmount();
+    known.mockRestore();
+    restore();
+  }
+});
+
+/** A line that cites the message CORE-1 was filed from by its address, drawn as the outline draws
+ *  a node's one line (`useNodeLine`): it reads the address by the name the names store holds for
+ *  the message, as every chip and link that names the message does. */
+function CitingLine(): ReactNode {
+  const { line, reads } = useNodeLine(
+    { id: "citing", text: `See ${FILED_MESSAGE}`, type: "comment" },
+    { surface: "node-row-first-line" }
+  );
+  return (
+    <p data-testid="citing-line">
+      {reads}
+      {line}
+    </p>
+  );
+}
+
+// The panel publishes nothing of the filed item to the names store: the Filed from row draws the
+// item's line from its own reads (`FiledItemLine`). Published, the panel's reading of the item
+// would stand over a newer name another read gives it: the store keeps the reading its last
+// publisher gave, and the issue's next answer, which draws the panel again, would put the post's
+// old words back on every chip and link that names it. A line that cites the item reads it by the
+// store's name (`CitingLine`), so it shows which stands. The line is drawn once the newer name is
+// published, so it reads no name of its own.
+test("the panel publishes nothing of the filed item to the names store, so a newer name for it stands through the issue's next answer", async () => {
+  await warmMarkdownRenderer();
+  const newerLine = "Keep the notes in the release.";
+  const newer = publishedNames(new Map([[FILED_MESSAGE, `${newerLine} Nothing else moves.`]]));
+  let renamed = false;
+  let citing = false;
+  const { getIssue, restore } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const { queryClient, redraw, unmount } = renderDetails(
+    () => (
+      <>
+        {renamed ? <Publisher published={newer} /> : null}
+        {citing ? <CitingLine /> : null}
+      </>
+    ),
+    OPEN_DRAWER
+  );
+
+  try {
+    await waitFor(() =>
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE)
+    );
+
+    // Another read gives the message a newer name, and a line that cites the message is drawn.
+    renamed = true;
+    redraw(OPEN_DRAWER);
+    await act(async () => {});
+    citing = true;
+    redraw(OPEN_DRAWER);
+    await waitFor(() =>
+      expect(
+        screen.getByTestId("citing-line"),
+        "the store does not name the message by the newer name another read gave it"
+      ).toHaveTextContent(newerLine)
+    );
+
+    // The issue's next answer draws the panel again.
+    drawIssue(getIssue, queryClient, { ...relatedIssue, last_seq: 251, priority: 2 });
+    await waitFor(() => expect(detailsRow(PROPERTY_LABELS.priority)).toHaveTextContent("P2"));
+    await act(async () => {});
+    expect(
+      screen.getByTestId("citing-line"),
+      "the panel published the message's old words over its newer name"
+    ).toHaveTextContent(newerLine);
+    expect(screen.getByTestId("citing-line")).not.toHaveTextContent(FILED_LINE);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R4 and R1's first-line rule (the plan's D-R4-words): Filed from draws the item's first line as
+// the outline draws a node's one line (`node-line.tsx`'s `useNodeLine`), from the post's own text:
+// the whole first sentence, up to the line's 100 characters, and no word of a later paragraph. Read
+// off the names store, the line was the name a link to the post reads: cut to a link title's 60
+// characters, with every paragraph of the post joined into it.
+test("Filed from draws the whole first sentence of a message, past a link title's room, and nothing of its next paragraph", async () => {
+  const sentence =
+    "Split the release notes out of the release branch before the review starts on Monday.";
+  const later = "The rest can wait until the notes have a page of their own.";
+  expect(sentence.length, "the first sentence fits in the room of a link's title").toBeGreaterThan(
+    linkTitleMax({ id: FILED_ID, key: "CORE-2", kind: "message" })
+  );
+  expect(sentence.length, "the first sentence is longer than a line holds").toBeLessThan(
+    FIRST_LINE_LIMIT
+  );
+  const body = `${sentence}\n\n${later}`;
+  const { restore } = stubRelations(
+    relatedIssue,
+    async (refs) => filedMarked(refs, body),
+    filedStored(body)
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const link = await waitFor(() => filedRow().getByRole("link", { name: sentence }));
+    expect(
+      link,
+      "Filed from does not link the message by its whole first sentence"
+    ).toHaveAttribute("href", FILED_PATH);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the message by its kind's word and its whole first sentence alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${sentence}`);
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** Where the message of the case below sends a reader: the fix it names and the run it waits
+ *  on, each by a long address, as a link's address often is. */
+const FIX_URL =
+  "https://github.com/cybermonklabs/legion/pull/5275/commits/0d4c1e9a7b3f5e2c8a6d1f0b9e7c3a5d2f8b6e41#diff-top";
+const RUN_URL =
+  "https://github.com/cybermonklabs/legion/actions/runs/19876543210/job/56789012345?pr=5275#step:7";
+
+// The names read answers an ask, a comment or a message by the first 240 runes of its stored
+// Markdown, cut with no ellipsis, and sends no reading of it (`refs/heads.go`'s `itemExcerpt`,
+// `reference_targets.go`), so a first sentence whose links carry long addresses runs past the head
+// it answers. Filed from draws the first line of the item's whole text, which the item's own read
+// answers with the server's reading of it: the whole first sentence, each link as its words and
+// the bold as plain words, and nothing of the next sentence. Drawn from the names read's head, the
+// line stopped inside a word: "Merge the fix after the run go".
+test("Filed from draws the whole first sentence of a message past the head of it the names read answers", async () => {
+  await warmMarkdownRenderer();
+  const body = `Merge [the fix](${FIX_URL}) after [the run](${RUN_URL}) goes **green** on main. Then ship.`;
+  const line = "Merge the fix after the run goes green on main.";
+  expect(
+    itemName(body).endsWith(") go"),
+    "the names read's head of the message does not stop inside the word after its second link"
+  ).toBe(true);
+  const { restore } = stubRelations(
+    relatedIssue,
+    async (refs) => filedMarked(refs, body),
+    filedStored(body, displayTree(body))
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(
+        filedRow().getByRole("link").textContent,
+        "Filed from does not link the message by its whole first sentence, in its words"
+      ).toBe(line)
+    );
+    expect(filedRow().getByRole("link")).toHaveAttribute("href", FILED_PATH);
+    const drawn = detailsRow(PROPERTY_LABELS.filed_from).textContent ?? "";
+    expect(
+      drawn,
+      "Filed from does not name the message by its kind's word and its whole first sentence alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${line}`);
+    for (const mark of ["[", "*"]) {
+      expect(drawn, `Filed from draws ${mark} of the stored Markdown`).not.toContain(mark);
+    }
+    expect(drawn, "Filed from draws the message's next sentence").not.toContain("Then ship");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** When the author of the message CORE-1 was filed from last edited it, in the cases below. */
+const FILED_EDITED_AT = "2026-09-09T05:00:00Z";
+
+// R2 of dispatch://INFRA-1523: every page of Dispatch that prints an issue message marks one its
+// author edited. Filed from draws an edited message's first line, then ` · edited`, inside its
+// link, as a parent line in the outline says it (`node-line.tsx`'s `ParentLink`). The mark is the
+// page's own word, marked as its chrome.
+test("Filed from says edited after the first line of a message its author edited", async () => {
+  const { restore } = stubRelations(relatedIssue, async (refs) =>
+    filedMarked(refs, FILED_BODY, { edited_at: FILED_EDITED_AT })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const mark = ` · ${CONTROL_LABELS.post_edited}`;
+    await waitFor(() =>
+      expect(
+        filedRow().getByRole("link").textContent,
+        "Filed from does not draw the edited message by its first line, then the edited mark"
+      ).toBe(`${FILED_LINE}${mark}`)
+    );
+    const link = filedRow().getByRole("link");
+    expect(link, "Filed from does not link the edited message").toHaveAttribute("href", FILED_PATH);
+    expect(
+      link.querySelector("[data-page-chrome]")?.textContent,
+      "the edited mark is not the page's own word"
+    ).toBe(mark);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the edited message by its kind's word, its first line and the mark alone"
+    ).toBe(
+      `${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${FILED_LINE}${mark}`
+    );
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R3 of dispatch://INFRA-1523: a message its author edited and then deleted is drawn by its deleted
+// line, from the delete, as its row in the outline draws it (`node-line.tsx`'s `DeletedLine`): who
+// deleted it, named as the page names an author, and when. It says no ` · edited`, since the
+// deleted line already says what became of the text.
+test("Filed from draws a message its author edited and then deleted by its deleted line, and says no edited", async () => {
+  const { items, restore } = stubRelations(relatedIssue, async (refs) =>
+    filedMarked(refs, "", {
+      deleted_at: FILED_DELETED_AT,
+      deleted_by: UNNAMED_SESSION,
+      edited_at: FILED_EDITED_AT,
+    })
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const opening = `${CONTROL_LABELS.post_deleted_by} ${CONTROL_LABELS.unnamed_author} · `;
+    await waitFor(() =>
+      expect(
+        filedRow()
+          .getByRole("link")
+          .querySelector("[data-post-deleted]")
+          ?.textContent?.slice(0, opening.length),
+        "Filed from does not draw the deleted message by the deleted line, its actor named as the page names an author"
+      ).toBe(opening)
+    );
+    const link = filedRow().getByRole("link");
+    expect(link, "Filed from does not link the deleted message").toHaveAttribute(
+      "href",
+      FILED_PATH
+    );
+    const time = link.querySelector("[data-post-deleted] time");
+    expect(time, "the deleted line does not say when the message was deleted").toHaveAttribute(
+      "datetime",
+      FILED_DELETED_AT
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from does not name the deleted message by its kind's word and the deleted line alone"
+    ).toBe(
+      `${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${opening}${time?.textContent}`
+    );
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from says edited of a deleted message"
+    ).not.toContain(` · ${CONTROL_LABELS.post_edited}`);
+    expect(items.message, "Filed from read the text of a deleted message").not.toHaveBeenCalled();
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R8 over Filed from: its line is the item's one line as the outline draws a node's
+// (`useNodeLine`), so a bare address in the item's words reads as its target's name - the name
+// the page published for it, an issue's key and then its title - and never as the address. Read
+// off the names store, the line was a title over the post, which reads an address as its short
+// form for good.
+test("Filed from's line reads a reference as its target's name", async () => {
+  await warmMarkdownRenderer();
+  const address = buildDispatchReference({ key: "CORE-3", kind: "issue" });
+  const published = publishedNames(new Map([[address, "Fix the build"]]));
+  const body = `Wait on ${address} first. Then ship.`;
+  const { restore } = stubRelations(
+    relatedIssue,
+    async (refs) => filedMarked(refs, body),
+    filedStored(body)
+  );
+  const { unmount } = renderDetails(() => <Publisher published={published} />, OPEN_DRAWER);
+
+  try {
+    await waitFor(() =>
+      expect(
+        filedRow().getByRole("link").textContent,
+        "Filed from does not read the reference in the message's words as its target's name"
+      ).toBe("Wait on CORE-3 Fix the build first.")
+    );
+    expect(filedRow().getByRole("link").textContent).not.toContain("dispatch://");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// R1's first-line rule over Filed from (the plan's D-R4-words): a body that opens with a heading
+// is drawn by the heading's words alone, since a heading ends at its own line and its marker is no
+// word of it, as the outline draws a node's one line (`useNodeLine`). Read off the names store, the
+// line was a title over the post with every block of it joined into one run, so the heading ran
+// into the paragraph under it: "Notes Split the notes out.".
+test("Filed from draws a message that opens with a heading by the heading alone, and nothing of the paragraph under it", async () => {
+  await warmMarkdownRenderer();
+  const body = "## Notes\n\nSplit the notes out.";
+  const { restore } = stubRelations(
+    relatedIssue,
+    async (refs) => filedMarked(refs, body),
+    filedStored(body)
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const link = await waitFor(() => filedRow().getByRole("link", { name: "Notes" }));
+    expect(link, "Filed from does not link the message by its heading").toHaveAttribute(
+      "href",
+      FILED_PATH
+    );
+    const drawn = detailsRow(PROPERTY_LABELS.filed_from).textContent ?? "";
+    expect(
+      drawn,
+      "Filed from does not name the message by its kind's word and its heading alone"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} Notes`);
+    expect(drawn, "Filed from draws the paragraph under the heading").not.toContain("Split");
+    expect(drawn, "Filed from draws the heading's marker").not.toContain("#");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+/** Messages whose text holds no words, which the case below files CORE-1 from: how each is
+ *  named, its text as stored, whether the message's own read answers the server's reading of it
+ *  beside that text (`body_tree`, which a block of no words holds none of) - the names read sends
+ *  none for a message - and whether its author edited it. */
+const WORDLESS_FILED: readonly (readonly [string, string, boolean, boolean])[] = [
+  ["an image alone, read from its stored text", "![](https://example.invalid/a.png)", false, false],
+  ["a horizontal rule, read from its stored text", "---", false, false],
+  ["a horizontal rule, read from the server's reading", "---", true, false],
+  ["a horizontal rule its author edited", "---", true, true],
+];
+
+// R7 and R22 over Filed from: an item whose text holds no words is named by the page's word for
+// its kind once, as the link to it, and never by its id, as a decision's parent line with no words
+// of its own is (`DecisionsRow.tsx`'s `EntryParentLine`); an edited one says ` · edited` after the
+// word. Drawn as a line with words, the row wrote the word in front of the link and again as the
+// link: "message message".
+test.each(
+  WORDLESS_FILED
+)("Filed from names a message whose text holds no words, %s, by its kind's word once, as the link", async (_name, body, read, edited) => {
+  await warmMarkdownRenderer();
+  const { restore } = stubRelations(
+    relatedIssue,
+    async (refs) => filedMarked(refs, body, edited ? { edited_at: FILED_EDITED_AT } : {}),
+    filedStored(body, read ? displayTree(body) : undefined)
+  );
+  const { queryClient, unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const word = NODE_REFERENCES_WORDS.kinds.message;
+    const mark = edited ? ` · ${CONTROL_LABELS.post_edited}` : "";
+    // The row draws the kind's word alone while the names read or the message's own read is out
+    // too, so the case reads the row once the message's own read, which the names' answer makes,
+    // has answered.
+    await filedMessageAnswered(queryClient);
+    await waitFor(() =>
+      expect(
+        detailsRow(PROPERTY_LABELS.filed_from).textContent,
+        "Filed from does not name the message by its kind's word once"
+      ).toBe(`${PROPERTY_LABELS.filed_from}${word}${mark}`)
+    );
+    const link = filedRow().getByRole("link");
+    expect(link.textContent, "Filed from does not link the message by its kind's word").toBe(
+      `${word}${mark}`
+    );
+    expect(link, "Filed from does not link the message").toHaveAttribute("href", FILED_PATH);
+    expect(link, "the kind's word is not the page's own").toHaveAttribute("data-page-chrome");
+  } finally {
+    unmount();
+    restore();
+  }
+});
+
+// The filed item's own read is kept fresh by events (`EVENT_FRESH` in `useFiledText`), so a
+// window focus past the app's 30 s staleness reads it again no more than it reads the relations'
+// names.
+test("in Details, a window focus past 30 s reads the filed item's own text no more", async () => {
+  const { getMyState, items, restore, titles } = stubRelations(relatedIssue, async (refs) =>
+    namedTargets(refs, RELATED_NAMES)
+  );
+  const client = appClient();
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER, client);
+
+  try {
+    await waitFor(() => {
+      expect(detailsRow(PROPERTY_LABELS.filed_from)).toHaveTextContent(FILED_LINE);
+      expect(items.message).toHaveBeenCalledTimes(1);
+      expect(client.isFetching()).toBe(0);
+    });
+    await focusPastStaleness(client);
+    await waitFor(() => expect(getMyState).toHaveBeenCalledTimes(2));
+    expect(
+      items.message,
+      "a window focus past 30 s read the filed message's own text again"
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      namesReads(titles),
+      "a window focus past 30 s read the relations' names again"
+    ).toHaveLength(1);
+  } finally {
+    unmount();
+    restore();
+    restoreWindowFocus();
+  }
+});
+
+// Filed from draws the item's line from the server's reading of its text (`body_tree`) beside
+// the stored Markdown, rather than parsing the stored text again (`FiledItemLine`'s `tree`). The
+// tree here reads differently from the stored body beside it, so a line drawn from the stored
+// text alone would read the stored words instead.
+test("Filed from draws the message's first line from the server's reading of its body", async () => {
+  await warmMarkdownRenderer();
+  const stored = "Stored words nobody drew. Then wait.";
+  const readLine = "Server reading of the message.";
+  const { restore } = stubRelations(
+    relatedIssue,
+    async (refs) => filedMarked(refs, stored),
+    filedStored(stored, displayTree(`${readLine} More.`))
+  );
+  const { unmount } = renderDetails(undefined, OPEN_DRAWER);
+
+  try {
+    const link = await waitFor(() => filedRow().getByRole("link", { name: readLine }));
+    expect(link).toHaveAttribute("href", FILED_PATH);
+    expect(
+      detailsRow(PROPERTY_LABELS.filed_from).textContent,
+      "Filed from did not draw the server's reading of the message"
+    ).toBe(`${PROPERTY_LABELS.filed_from}${NODE_REFERENCES_WORDS.kinds.message} ${readLine}`);
+  } finally {
+    unmount();
+    restore();
   }
 });

@@ -69,6 +69,11 @@ type settlement struct {
 	// this row, never by the room's record of the issue (roomState.closed): a close this process
 	// has not heard of yet leaves that record open.
 	issueClosed bool
+	// ancestors is the chain of the document's issue that each artifact.version this settlement
+	// appends names (DocumentEventAncestors), nil for a document of no issue. commitVersion reads it
+	// once, in the read phase, where it decides that the settlement writes a version, and both
+	// version writes take it: the document's own and each of an issue room's (commitRoomVersions).
+	ancestors []string
 	// first is the settlement's read of the room before its repairs, read at an exact commit
 	// position; read is that read's tree, and markdown, offsets and renderErr are what it renders
 	// as, which the version reuses when it is rendered from this same tree unchanged

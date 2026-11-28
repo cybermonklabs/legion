@@ -1777,19 +1777,58 @@ func (s *Service) retrySettleLocked(room string, state *roomState, generation ui
 
 // ArtifactVersionEventPayload is the one shape an `artifact.version` event is built from,
 // wherever it is appended, and it takes what the write moved in the reference graph, so no
-// producer can stay silent about the batched backlink counts it changed.
+// producer can stay silent about the batched backlink counts it changed. It takes the chain of
+// the document's issue too (DocumentEventAncestors), so no producer can forget it: a page open on
+// an ancestor of that issue reaches its tree from the event alone. NameDocumentEventAncestors
+// names it on the payload.
 func ArtifactVersionEventPayload(
 	artifactID, name string,
 	version model.Version,
 	diff *string,
 	changes model.ReferenceChanges,
+	ancestors []string,
 ) map[string]any {
 	payload := map[string]any{"artifact_id": artifactID, "name": name, "version": version}
 	if diff != nil {
 		payload["diff"] = *diff
 	}
+	NameDocumentEventAncestors(payload, ancestors)
 	model.NameReferenceChanges(payload, changes)
 	return payload
+}
+
+// DocumentEventAncestors is the chain an `artifact.created`, `artifact.version` or
+// `artifact.removed` event names for an artifact of issue: the issue's parent chain, parent first
+// up to the root, as the issue's own events name it, through the same walk (refs.IssueAncestors),
+// and [] for a root. An artifact of no issue - a project's document, an agent's conversation's
+// file - has no chain, and gets nil, whose event names none. A document's path holds its issue's
+// key and not its loaded row, so a root's chain costs the walk's one query too, where an issue
+// event's does not (api's issueAncestors). Each path reads it in its read phase, before its first
+// write: once for its event, and a node's delete, which appends a version event for each document
+// of the room it changed, once for each of those events.
+func DocumentEventAncestors(ctx context.Context, q refs.Queryer, issue *string) ([]string, error) {
+	if issue == nil || *issue == "" {
+		return nil, nil
+	}
+	ancestors, err := refs.IssueAncestors(ctx, q, *issue)
+	if err != nil {
+		return nil, err
+	}
+	// A root's chain is [] in the payload and never null, whatever the walk's scan of '{}' left,
+	// so a reader tells a root's "no ancestors" from an artifact of no issue's "no chain".
+	if ancestors == nil {
+		ancestors = []string{}
+	}
+	return ancestors, nil
+}
+
+// NameDocumentEventAncestors names the chain DocumentEventAncestors read on a map-shaped
+// artifact event payload, the one place the three artifact payloads spell it: a nil chain, an
+// artifact of no issue's, writes no `ancestors` member, and a root's [] writes `[]`.
+func NameDocumentEventAncestors(payload map[string]any, ancestors []string) {
+	if ancestors != nil {
+		payload["ancestors"] = ancestors
+	}
 }
 
 // stampBlockIDs stamps the block ids doc's tree lacks or repeats on the tree as it stands

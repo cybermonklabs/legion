@@ -83,6 +83,7 @@ import { nodeRowSelectorOf, TAB_STOP_ROW } from "../tree-focus";
 import { nodesInOrder, rowKeyOf } from "../tree-keys";
 import {
   issueTreeQuery,
+  treeRead,
   useBlocksRunning,
   useLastAnswer,
   useLoadView,
@@ -105,7 +106,6 @@ import {
   type SpecStatement,
   specDecidedBy,
 } from "./spec-decided-by";
-import { treeRead } from "./tree-read";
 
 /** What a key that folds, zooms, cycles or opens a branch does here, where the columns hold
  *  none: every statement is drawn whole (R2: "a filter draws every branch it kept open"). */

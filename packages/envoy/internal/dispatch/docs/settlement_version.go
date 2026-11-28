@@ -140,6 +140,13 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 	} else if versioning {
 		settledVersion++
 	}
+	// The chain the version events name, read once for every version this settlement writes and
+	// before the write phase runs any of them. A settlement that writes no version names none.
+	if versioning {
+		if st.ancestors, err = DocumentEventAncestors(ctx, tx, st.owner.IssueKey); err != nil {
+			return settleDone, st.abandon(err)
+		}
+	}
 	// Every update this settlement read is settled once it commits, so the row that left the
 	// settlement to a later load goes with that commit. It goes before the first event this
 	// settlement appends. A transaction marking this document owed as a copy (owedCopiesOf) holds
@@ -284,7 +291,7 @@ func (st *settlement) commitVersion(ctx context.Context) (settleStep, settleOutc
 			IssueKey: st.owner.IssueKey,
 			Type:     "artifact.version",
 			Actor:    st.credit.versionActor(),
-			Payload:  ArtifactVersionEventPayload(room, st.owner.Name, result.version, nil, result.changes),
+			Payload:  ArtifactVersionEventPayload(room, st.owner.Name, result.version, nil, result.changes, st.ancestors),
 		}
 		if st.owner.IssueKey == nil {
 			versionEvent.ArtifactID = &room
@@ -847,7 +854,7 @@ func (st *settlement) commitRoomVersions(ctx context.Context, fragments []roomFr
 			IssueKey: st.owner.IssueKey,
 			Type:     "artifact.version",
 			Actor:    write.actor,
-			Payload:  ArtifactVersionEventPayload(document, write.fragment.latest.name, write.result.version, nil, moved),
+			Payload:  ArtifactVersionEventPayload(document, write.fragment.latest.name, write.result.version, nil, moved, st.ancestors),
 		}
 		if st.owner.IssueKey == nil {
 			planned[position].ArtifactID = &document

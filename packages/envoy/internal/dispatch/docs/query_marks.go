@@ -440,7 +440,8 @@ func (s *Service) drainQueryMark(ctx context.Context, issueKey string, drain que
 // and QueryDrainActor where neither a tuple nor an event names one; for the block-index tick's
 // (tickDrain) QueryDrainActor, whoever marked the issue. Under the drain's own ledger
 // (queueWrites) it reads what each version is decided on (planRevisions), which refuses while a
-// query version of the issue still owes its record digest, so the mark is never cleared then, and
+// query version of the issue still owes its record digest, so the mark is never cleared then, and,
+// where it writes a version, the issue's chain (DocumentEventAncestors); then it
 // queues each version (writeRevisions): its row, its node and its version_renders row holding its
 // record's digest, read before the batch, and the stand of its block index where no block pass is
 // owed it - a version of the decisions query, or one whose bytes are the version before it's
@@ -448,12 +449,13 @@ func (s *Service) drainQueryMark(ctx context.Context, issueKey string, drain que
 // document (restoreReindexQueue). For each version it then queues what an edit route's version
 // writes beside it (finishRevision): the move of the document's open approval request, the carry
 // of an approval where the record moved by appended results alone, and the version's
-// artifact.version. Last it queues the clear of the mark, only where it still holds the causes
-// read, and then what the versions state, caused by the mark's greatest_event or at the sentinel
-// where it holds none, with their head rows, the last rows the write takes. The write phase is one
-// batch, and the COMMIT follows it: the transaction's window is that batch and its COMMIT. A
-// failure rolls back everything, the clear of the mark with it. Each lock wait of the transaction
-// lasts at most wait, where wait is not zero (boundLockWaits), set before the owner lock.
+// artifact.version, naming that chain. Last it queues the clear of the mark, only where it still
+// holds the causes read, and then what the versions state, caused by the mark's greatest_event or
+// at the sentinel where it holds none, with their head rows, the last rows the write takes. The
+// write phase is one batch, and the COMMIT follows it: the transaction's window is that batch and
+// its COMMIT. A failure rolls back everything, the clear of the mark with it. Each lock wait of the
+// transaction lasts at most wait, where wait is not zero (boundLockWaits), set before the owner
+// lock.
 func (s *Service) drainMark(ctx context.Context, issueKey string, drain queryDrain, wait time.Duration) ([]model.Event, bool, error) {
 	if hold := s.drainHold.Load(); hold != nil {
 		(*hold)(issueKey)
@@ -488,12 +490,20 @@ func (s *Service) drainMark(ctx context.Context, issueKey string, drain queryDra
 	if err != nil {
 		return nil, false, err
 	}
+	// The chain each version's artifact.version names, read once in the read phase, before
+	// writeRevisions queues the first write. A drain that writes no version names none.
+	var ancestors []string
+	if len(revisions) > 0 {
+		if ancestors, err = DocumentEventAncestors(ctx, tx, &issueKey); err != nil {
+			return nil, false, err
+		}
+	}
 	if err := s.writeRevisions(ctx, tx, revisions, who); err != nil {
 		return nil, false, err
 	}
 	nodes := make([]graphstore.Uncaused, 0, len(revisions))
 	for _, revised := range revisions {
-		if err := s.finishRevision(ctx, tx, issueKey, revised, who); err != nil {
+		if err := s.finishRevision(ctx, tx, issueKey, revised, who, ancestors); err != nil {
 			return nil, false, err
 		}
 		nodes = append(nodes, revised.node)
@@ -526,8 +536,9 @@ func (s *Service) drainMark(ctx context.Context, issueKey string, drain queryDra
 // approval of the version before reads changed since; the carry of the document's newest approval
 // where the version differs from the approved one by appended result nodes alone
 // (carryAppendedResults), which appends its artifact.approved after the move; and last the
-// version's artifact.version, in writer's name, which every version the drain writes appends.
-func (s *Service) finishRevision(ctx context.Context, tx pgx.Tx, issueKey string, revised queryRevision, writer model.Actor) error {
+// version's artifact.version, in writer's name, naming the issue's chain ancestors, which every
+// version the drain writes appends.
+func (s *Service) finishRevision(ctx context.Context, tx pgx.Tx, issueKey string, revised queryRevision, writer model.Actor, ancestors []string) error {
 	id, version := revised.document.id, revised.version
 	if err := moveApprovalAsk(ctx, tx, s.events, id, version, revised.markdown, nil, writer, nil, false, s.serverURL); err != nil {
 		return err
@@ -538,7 +549,7 @@ func (s *Service) finishRevision(ctx context.Context, tx pgx.Tx, issueKey string
 	sink := eventSink(ctx)
 	event := model.Event{
 		IssueKey: &issueKey, Type: "artifact.version", Actor: writer,
-		Payload: ArtifactVersionEventPayload(id, revised.document.name, version, nil, model.ReferenceChanges{}),
+		Payload: ArtifactVersionEventPayload(id, revised.document.name, version, nil, model.ReferenceChanges{}, ancestors),
 	}
 	return write(ctx, tx, func(b *store.WriteBatch) error {
 		return s.events.QueueAppend(b, event, sink)

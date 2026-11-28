@@ -1,0 +1,14 @@
+kind: Added
+body: |-
+  `WrittenArtifactCreatedEventPayloadSchema`, `WrittenArtifactVersionEventPayloadSchema` and
+  `ArtifactRemovedEventPayloadSchema` declare `ancestors`, optional: the keys of the issues above
+  the artifact's issue, parent first up to the root, `[]` for a root's artifact, and absent for an
+  artifact of no issue and from a Dispatch older than the field. The bus readings
+  `ArtifactCreatedEventPayloadSchema` and `ArtifactVersionEventPayloadSchema` keep it, and read a
+  frame without it as before.
+
+  `ArtifactRemovedEventPayloadSchema` takes the removed document's `versions` as null, which is
+  what Dispatch writes on every removal: it refused every stored `artifact.removed` payload before.
+time: 2026-11-23T20:20:57Z
+custom:
+    Issue: INFRA-5411

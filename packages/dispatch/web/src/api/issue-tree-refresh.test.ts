@@ -8,6 +8,7 @@ import {
   treeNode,
 } from "../features/issue-page/tree-read/tree-fixtures";
 import { type TreeAnswer, viewKey } from "../features/issue-page/tree-read/tree-read";
+import { dedupeRefreshTargets } from "./event-feed";
 import { eventRefreshTargets } from "./event-refresh";
 import { issueTreeKey } from "./queries";
 import { refreshQueries, trackQueryFetches } from "./query-refresh";
@@ -1336,4 +1337,1180 @@ test("an outline whose refetch answers no node of the issue it was placed above 
     spec: false,
     verification: false,
   });
+});
+
+/** The grandchild CORE-3's ancestors, parent first up to the root, as the server names them on
+ *  each event of a document of the grandchild: its parent CORE-2, then the root CORE-1. */
+const GRANDCHILD_ANCESTORS: readonly string[] = ["CORE-2", "CORE-1"];
+
+/** An event of `type` of the grandchild CORE-3's Verification document, naming `ancestors` where
+ *  the case gives them, as the server writes it: a version names its document by id, and an
+ *  upload and a removal carry the document itself. */
+function grandchildDocumentEvent(type: string, ancestors?: readonly string[]): DispatchEvent {
+  return eventOf(
+    type,
+    {
+      artifact: { id: "artifact-3", name: "verification.md", slug: "verification-md" },
+      artifact_id: "artifact-3",
+      number: 2,
+      ...(ancestors === undefined ? {} : { ancestors }),
+    },
+    "CORE-3"
+  );
+}
+
+/** The coverage read of issue `key`, which counts the checks of every issue under it as well as
+ *  its own. */
+function coverageKey(key: string): readonly unknown[] {
+  return ["issue", key, "coverage"];
+}
+
+/** A coverage read's answer, which no case reads: only whether the read is marked counts. */
+const COVERAGE = { gaps: [], has_plan: false, requirements: [] };
+
+/** Whether each read `keys` names is marked stale, by its name in `keys`. */
+function marked(
+  client: QueryClient,
+  keys: Readonly<Record<string, readonly unknown[]>>
+): Record<string, boolean> {
+  return Object.fromEntries(
+    Object.entries(keys).map(([name, queryKey]) => [
+      name,
+      client.getQueryState(queryKey)?.isInvalidated === true,
+    ])
+  );
+}
+
+/** An observer of `queryKey`, as the page observes its reads: it holds `answer` fresh until an
+ *  event marks it, reads `answer` again whenever the scheduler sends a read, and is enabled
+ *  unless `enabled` says otherwise. Answers its stop. */
+function observe(
+  client: QueryClient,
+  queryKey: readonly unknown[],
+  answer: unknown,
+  enabled = true
+): () => void {
+  return new QueryObserver(client, {
+    enabled,
+    queryFn: async () => answer,
+    queryKey,
+    staleTime: Number.POSITIVE_INFINITY,
+  }).subscribe(() => undefined);
+}
+
+/** The root CORE-1's reads as its new page holds them open on Verification: its outline,
+ *  observed and idle, holding its child CORE-2's node and no node of the grandchild CORE-3; its
+ *  Verification view, holding its requirement alone; and its coverage read. */
+function rootOnVerification(client: QueryClient): {
+  readonly marks: () => Record<string, boolean>;
+  readonly stop: () => void;
+} {
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    outline: issueTreeKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  client.setQueryData(reads.outline, OUTLINE_WITH_CHILD);
+  client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  client.setQueryData(reads.coverage, COVERAGE);
+  const stop = observe(client, reads.outline, OUTLINE_WITH_CHILD);
+  return {
+    marks: () => marked(client, reads),
+    stop: () => {
+      stop();
+      client.clear();
+    },
+  };
+}
+
+/** The root's three reads of `rootOnVerification`, each marked. */
+const ROOT_MARKED = { coverage: true, outline: true, verification: true };
+
+/** None of the root's three reads of `rootOnVerification` marked. */
+const ROOT_UNMARKED = { coverage: false, outline: false, verification: false };
+
+// ST-1, S1. A document event of an issue names the issue's ancestors, so the root's open page
+// reaches the root's outline and every view of it the page holds by the event alone - though the
+// outline holds no node of the grandchild yet, and nothing the page holds places the grandchild -
+// and the root's coverage, which counts the grandchild's checks, as a version of the root's own
+// documents marks the root's: a grandchild's first check that serves the root's requirement
+// moves the counts the Verification view draws.
+test("a grandchild's document version that names its ancestors marks the root's outline, its Verification view and its coverage", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual(ROOT_MARKED);
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S2. An upload of a document of the grandchild can bring its first check in as a version
+// can, and marks the issue's own coverage as a version does, so it reaches the root alike.
+test("a grandchild's document upload that names its ancestors marks the root's outline, its Verification view and its coverage", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.created", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual(ROOT_MARKED);
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S3. A removal takes the document's nodes out of every tree that holds them, so it reaches
+// the root's outline and view; it writes no version, and marks the coverage of no issue, its own
+// included, so it leaves the root's coverage alone.
+test("a grandchild's document removal that names its ancestors marks the root's outline and its Verification view, and leaves the root's coverage unmarked", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.removed", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual({ coverage: false, outline: true, verification: true });
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S4. Today's issue page reads the same coverage keys and holds no tree read, so a
+// grandchild's document event marks no ancestor's coverage there, nor any ancestor's detail, and
+// that page refreshes as before.
+test("a grandchild's document version that names its ancestors marks no ancestor's coverage or detail where the cache holds no tree read, as today's page holds none", () => {
+  const client = new QueryClient();
+  const reads = {
+    childCoverage: coverageKey("CORE-2"),
+    childDetail: ["issue", "CORE-2"],
+    rootCoverage: coverageKey("CORE-1"),
+    rootDetail: ["issue", "CORE-1"],
+  };
+  client.setQueryData(reads.rootDetail, { key: "CORE-1", parent: null });
+  client.setQueryData(reads.childDetail, { key: "CORE-2", parent: "CORE-1" });
+  client.setQueryData(reads.rootCoverage, COVERAGE);
+  client.setQueryData(reads.childCoverage, COVERAGE);
+  refreshQueries(
+    client,
+    eventRefreshTargets(grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS), "alice")
+  );
+  expect(marked(client, reads)).toEqual({
+    childCoverage: false,
+    childDetail: false,
+    rootCoverage: false,
+    rootDetail: false,
+  });
+});
+
+// ST-1, S5: decision 411 (2). The grandchild was moved under a new parent, CORE-4: its detail,
+// marked stale since, names its old parent CORE-2, and the new parent's outline, read before the
+// move, holds no node of it. The event's ancestors name the new parent, so the new parent's
+// outline and coverage are marked, and the old parent's outline, which holds no node of the
+// grandchild either, is not.
+test("a grandchild moved under a new parent reaches that parent's outline, read before the move, and its coverage through its event's ancestors, though its stale detail names its old parent", () => {
+  const client = new QueryClient();
+  client.setQueryData(["issue", "CORE-3"], { key: "CORE-3", parent: "CORE-2" });
+  void client.invalidateQueries({ exact: true, queryKey: ["issue", "CORE-3"] });
+  const newParentAnswer = treeAnswer([treeNode("CORE-4", "issue", null)], [], {
+    issue: "CORE-4",
+  });
+  const reads = {
+    newParentCoverage: coverageKey("CORE-4"),
+    newParentOutline: issueTreeKey("CORE-4"),
+    oldParentOutline: issueTreeKey("CORE-2"),
+  };
+  client.setQueryData(reads.newParentOutline, newParentAnswer);
+  client.setQueryData(reads.newParentCoverage, COVERAGE);
+  client.setQueryData(
+    reads.oldParentOutline,
+    treeAnswer([treeNode("CORE-2", "issue", null)], [], { issue: "CORE-2" })
+  );
+  const stop = observe(client, reads.newParentOutline, newParentAnswer);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", ["CORE-4", "CORE-1"]),
+        "alice"
+      )
+    );
+    expect(marked(client, reads)).toEqual({
+      newParentCoverage: true,
+      newParentOutline: true,
+      oldParentOutline: false,
+    });
+  } finally {
+    stop();
+    client.clear();
+  }
+});
+
+// ST-1, S6. A document event from a Dispatch older than the field names no ancestors, and the
+// page places the grandchild from what it holds (`issuesAbove`): its detail names its parent,
+// whose node the root's outline holds. The root's outline and view are marked, as before, and the
+// root's coverage with them, by that one placement.
+test("a grandchild's document version that names no ancestors marks the root's outline, view and coverage where what the page holds places the grandchild under the root", () => {
+  const client = new QueryClient();
+  const reads = { coverage: coverageKey("CORE-1"), ...grandparentHolding(client, "detail") };
+  client.setQueryData(reads.coverage, COVERAGE);
+  const stops = [
+    observe(client, reads.outline, OUTLINE_WITH_CHILD),
+    observe(client, reads.verification, VERIFICATION_WITH_REQUIREMENT),
+  ];
+  try {
+    refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
+    expect(marked(client, reads)).toEqual(ROOT_MARKED);
+  } finally {
+    for (const stop of stops) stop();
+    client.clear();
+  }
+});
+
+// ST-1, S7: decision 410. A person's edit notice comes after the versions that carried each of
+// the edits it tells of, and moves no node: it reaches no ancestor, whatever its payload names.
+test("a grandchild's edit notice that carries its ancestors marks no read of the root's", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.human_edited", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual(ROOT_UNMARKED);
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S8. A root's document event names no ancestor (`[]`): it marks the root's own outline and
+// coverage as before, no other issue's tree or coverage, and the page never asks the cache where
+// the root stands. `issuesAbove` starts its walk by asking the cache for the issue's detail by
+// that read's hash, its key as JSON, which this cache does not hold; it runs for an event that
+// names no ancestors alone.
+test("a root's document version, whose ancestors are none, marks its own outline and coverage, no other issue's, and walks no cache to place the root", () => {
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    otherCoverage: coverageKey("CORE-9"),
+    otherOutline: issueTreeKey("CORE-9"),
+    outline: issueTreeKey("CORE-1"),
+  };
+  client.setQueryData(reads.outline, treeAnswer([treeNode("CORE-1", "issue", null), REQUIREMENT]));
+  client.setQueryData(reads.coverage, COVERAGE);
+  client.setQueryData(
+    reads.otherOutline,
+    treeAnswer([treeNode("CORE-9", "issue", null)], [], { issue: "CORE-9" })
+  );
+  client.setQueryData(reads.otherCoverage, COVERAGE);
+  const cache = client.getQueryCache();
+  const get = cache.get.bind(cache);
+  const rootDetail = JSON.stringify(["issue", "CORE-1"]);
+  let askedWhereTheRootStands = 0;
+  spyOn(cache, "get").mockImplementation(((hash: string) => {
+    if (hash === rootDetail) askedWhereTheRootStands += 1;
+    return get(hash);
+  }) as typeof cache.get);
+  const version = eventOf(
+    "artifact.version",
+    { ancestors: [], artifact_id: "artifact-1", number: 2 },
+    "CORE-1"
+  );
+  refreshQueries(client, eventRefreshTargets(version, "alice"));
+  expect({ asked: askedWhereTheRootStands, marks: marked(client, reads) }).toEqual({
+    asked: 0,
+    marks: { coverage: true, otherCoverage: false, otherOutline: false, outline: true },
+  });
+});
+
+// ST-1, S9. The page can hold a view of the root with no outline beside it, and the event names
+// the root, so the view is marked by it; a view is a read under the root's tree read, so the
+// root's coverage is marked with it.
+test("a grandchild's document version that names its ancestors marks the root's Verification view and coverage where the page holds that view and no outline", () => {
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  client.setQueryData(reads.coverage, COVERAGE);
+  const stop = observe(client, reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(marked(client, reads)).toEqual({ coverage: true, verification: true });
+  } finally {
+    stop();
+    client.clear();
+  }
+});
+
+// ST-1, S10: against decision 408 (1). The root's outline has its first read out, so it holds no
+// answer a check could judge, and nothing the page holds places the grandchild. The event names
+// the root, so the outline is marked all the same and owes a read once that first one lands -
+// its answer then stays marked stale - and the root's idle view and its coverage are marked.
+test("a grandchild's document version that names its ancestors marks the root's outline whose first read is out, which then owes a read, and the root's idle view and coverage", async () => {
+  jest.useFakeTimers();
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    outline: issueTreeKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  try {
+    client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+    client.setQueryData(reads.coverage, COVERAGE);
+    const response = Promise.withResolvers<unknown>();
+    const read = client.fetchQuery({ queryFn: () => response.promise, queryKey: reads.outline });
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    const atOnce = marked(client, reads);
+    response.resolve(OUTLINE_WITH_CHILD);
+    await read;
+    // The scheduler takes up what a query owes on a zero-delay timer once its read settles.
+    await tick(0);
+    expect({ atOnce, landed: marked(client, { outline: reads.outline }) }).toEqual({
+      atOnce: ROOT_MARKED,
+      landed: { outline: true },
+    });
+  } finally {
+    client.clear();
+    realClock();
+  }
+});
+
+// ST-1, S11. The reader moved from the root's new page to the child's: the root's outline and
+// view stay in the cache with nothing observing them, and the child's outline, which holds the
+// grandchild's node, is observed. The root's reads are marked all the same, its coverage among
+// them, so the root's page draws the new counts when the reader comes back to it.
+test("a grandchild's document version that names its ancestors marks the root's outline, view and coverage that nothing observes once the reader has moved to the child's new page", () => {
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    outline: issueTreeKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  client.setQueryData(reads.outline, OUTLINE_WITH_CHILD);
+  client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  client.setQueryData(reads.coverage, COVERAGE);
+  const childAnswer = treeAnswer(
+    [
+      treeNode("CORE-2", "issue", null),
+      treeNode("CORE-3", "issue", "CORE-2", { issue: "CORE-3", read_only: true }),
+    ],
+    [],
+    { issue: "CORE-2" }
+  );
+  client.setQueryData(issueTreeKey("CORE-2"), childAnswer);
+  const stop = observe(client, issueTreeKey("CORE-2"), childAnswer);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(marked(client, reads)).toEqual(ROOT_MARKED);
+  } finally {
+    stop();
+    client.clear();
+  }
+});
+
+// ST-1, S12. A project's document belongs to no issue: its event names no ancestors, and it
+// reaches no issue's tree or coverage.
+test("a project document's version marks no read of the root's", () => {
+  const client = new QueryClient();
+  const root = rootOnVerification(client);
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        eventOf("artifact.version", { artifact_id: "artifact-9", number: 2 }, null),
+        "alice"
+      )
+    );
+    expect(root.marks()).toEqual(ROOT_UNMARKED);
+  } finally {
+    root.stop();
+  }
+});
+
+// ST-1, S13. While a write of the root is out, its page holds the root's outline on hold - its
+// observer is not enabled (`mayReadNow`) - and reads the Verification view through an observer
+// that is never enabled, as `treeRead` makes one. The event names the root, so both are marked,
+// and its coverage too: the cache holds the root's tree read, whatever observes it, and the page
+// reads all three once the write settles.
+test("a grandchild's document version that names its ancestors marks the root's outline and view that a write of the root holds from reading, and its coverage", () => {
+  const client = new QueryClient();
+  const reads = {
+    coverage: coverageKey("CORE-1"),
+    outline: issueTreeKey("CORE-1"),
+    verification: viewKey("CORE-1", "verification"),
+  };
+  client.setQueryData(reads.outline, OUTLINE_WITH_CHILD);
+  client.setQueryData(reads.verification, VERIFICATION_WITH_REQUIREMENT);
+  client.setQueryData(reads.coverage, COVERAGE);
+  const stops = [
+    observe(client, reads.outline, OUTLINE_WITH_CHILD, false),
+    observe(client, reads.verification, VERIFICATION_WITH_REQUIREMENT, false),
+  ];
+  try {
+    refreshQueries(
+      client,
+      eventRefreshTargets(
+        grandchildDocumentEvent("artifact.version", GRANDCHILD_ANCESTORS),
+        "alice"
+      )
+    );
+    expect(marked(client, reads)).toEqual(ROOT_MARKED);
+  } finally {
+    for (const stop of stops) stop();
+    client.clear();
+  }
+});
+
+// ST-1, S14. A document event that names no ancestors reaches the coverage of an issue the page
+// places above the event's issue only where the cache holds that issue's tree read, as an event
+// that names them does: the details place the root above the grandchild here, and the root's
+// coverage is marked once the root's outline is held, and not before.
+test("a grandchild's document version that names no ancestors marks the coverage of an issue the page places above it only where the cache holds that issue's tree read", () => {
+  const seen: Record<string, boolean> = {};
+  for (const [name, outlineHeld] of [
+    ["no tree read of the root", false],
+    ["the root's outline", true],
+  ] as const) {
+    const client = new QueryClient();
+    client.setQueryData(["issue", "CORE-3"], { key: "CORE-3", parent: "CORE-2" });
+    client.setQueryData(["issue", "CORE-2"], { key: "CORE-2", parent: "CORE-1" });
+    client.setQueryData(coverageKey("CORE-1"), COVERAGE);
+    if (outlineHeld) client.setQueryData(issueTreeKey("CORE-1"), OUTLINE_WITH_CHILD);
+    refreshQueries(client, eventRefreshTargets(GRANDCHILD_VERSION, "alice"));
+    seen[name] = client.getQueryState(coverageKey("CORE-1"))?.isInvalidated === true;
+  }
+  expect(seen).toEqual({ "no tree read of the root": false, "the root's outline": true });
+});
+
+// ST-2, the shared wait on an outline (R3: decision 412's cost 3). The parent CORE-1 has its
+// outline's refetch out when the events land, and CORE-2 and CORE-4 are its children. The
+// versions name no ancestors, as an older server's do: a version that names CORE-1 marks its
+// outline and views with no check (D-R2-presence), and so waits on nothing. A view that holds no
+// node of the child waits for the outline's answer, and every event that waits on one outline
+// shares one listener on the cache, which goes once the refetch ends and marks then, once, the
+// views of each event whose node the answer holds. Each row's views read are those the base reads
+// (J8, 00a3d845, as each join before it and U2, 647c646e); there L2, L3, L5, L6 and L7 held ten
+// listeners, one for each event, and L4 two.
+
+/** The parent CORE-1's outline holding no node of its children, as ST-2's outline holds it before
+ *  its refetch answers. */
+const OUTLINE_WITH_NO_CHILD = treeAnswer([treeNode("CORE-1", "issue", null), PARENT_REQUIREMENT]);
+
+/** The parent CORE-1's outline holding its child CORE-4's node alone: CORE-2 moved away. */
+const OUTLINE_WITH_D = treeAnswer([
+  treeNode("CORE-1", "issue", null),
+  PARENT_REQUIREMENT,
+  treeNode("CORE-4", "issue", "CORE-1", { issue: "CORE-4", read_only: true, text: "Draw D" }),
+]);
+
+/** The views of the parent CORE-1 that ST-2's page holds beside its outline. */
+const ST2_VIEWS = ["plan", "spec", "verification"] as const;
+
+/** Each view of ST-2's page read once, and none read. */
+const EACH_VIEW_READ = { plan: 1, spec: 1, verification: 1 };
+const NO_VIEW_READ = { plan: 0, spec: 0, verification: 0 };
+
+/** Ten versions of the child CORE-2's Verification document, which name no ancestors. */
+const TEN_CHILD_VERSIONS: readonly DispatchEvent[] = Array.from({ length: 10 }, (_, index) =>
+  eventOf("artifact.version", { artifact_id: "artifact-2", number: index + 2 }, "CORE-2")
+);
+
+/**
+ * ST-2's page on `client`: the parent CORE-1's outline, holding `outline`, and its three views
+ * (`parentBeforeTheCheck`), each observed as the new page observes them, each view's reads
+ * counted, and a refetch of the outline out until `end` answers it or refuses it. The listeners
+ * counted are the refresh checks' (`checkListeners`).
+ */
+function outlineRefetchOut(client: QueryClient, outline: TreeAnswer) {
+  const listeners = checkListeners(client);
+  parentBeforeTheCheck(client, outline);
+  const reads = { plan: 0, spec: 0, verification: 0 };
+  const stops = [observe(client, issueTreeKey("CORE-1"), outline)];
+  for (const view of ST2_VIEWS) {
+    const queryKey = viewKey("CORE-1", view);
+    const answer = client.getQueryData(queryKey);
+    stops.push(
+      new QueryObserver(client, {
+        queryFn: async () => {
+          reads[view] += 1;
+          return answer;
+        },
+        queryKey,
+        staleTime: Number.POSITIVE_INFINITY,
+      }).subscribe(() => undefined)
+    );
+  }
+  const response = Promise.withResolvers<unknown>();
+  const refetch = client
+    .fetchQuery({ queryFn: () => response.promise, queryKey: issueTreeKey("CORE-1"), staleTime: 0 })
+    .catch(() => undefined);
+  return {
+    end: async (ending: TreeAnswer | Error) => {
+      if (ending instanceof Error) response.reject(ending);
+      else response.resolve(ending);
+      await refetch;
+      await tick(3_000, 100);
+    },
+    listeners,
+    reads: () => ({ ...reads }),
+    stop: () => {
+      for (const stop of stops) stop();
+      client.clear();
+    },
+  };
+}
+
+/**
+ * One row of ST-2 on a fresh client: the page of `outlineRefetchOut`, whose outline holds
+ * `outline`; then `events`, each its own refresh; then `before`, a read the row makes while the
+ * refetch is out; then the refetch's ending: an answer, a refusal, or the outline removed before
+ * its answer lands. Answers the listeners the refresh checks held while the refetch was out and
+ * once it ended, and each view's reads from the ending on.
+ */
+async function sharedWait(
+  outline: TreeAnswer,
+  events: readonly DispatchEvent[],
+  ending: TreeAnswer | Error | "removed",
+  before?: (client: QueryClient) => Promise<unknown>
+): Promise<{ readonly listeners: readonly number[]; readonly viewsRead: Record<string, number> }> {
+  jest.useFakeTimers();
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const page = outlineRefetchOut(client, outline);
+  try {
+    for (const event of events) refreshQueries(client, eventRefreshTargets(event, "alice"));
+    const during = page.listeners();
+    await before?.(client);
+    const readBefore = page.reads();
+    if (ending === "removed") {
+      client.removeQueries({ exact: true, queryKey: issueTreeKey("CORE-1") });
+    }
+    await page.end(ending === "removed" ? OUTLINE_WITH_CHILD : ending);
+    const readAfter = page.reads();
+    return {
+      listeners: [during, page.listeners()],
+      viewsRead: Object.fromEntries(
+        ST2_VIEWS.map((view) => [view, readAfter[view] - readBefore[view]])
+      ),
+    };
+  } finally {
+    page.stop();
+    realClock();
+  }
+}
+
+// ST-2, L1. One version of the child waits on the outline's refetch with one listener, and the
+// response, which holds the child's node, reads each view once.
+test("a child's version during its parent's outline refetch holds one listener, and reads each view of the parent once where the response holds the child's node", async () => {
+  expect(
+    await sharedWait(OUTLINE_WITH_NO_CHILD, TEN_CHILD_VERSIONS.slice(0, 1), OUTLINE_WITH_CHILD)
+  ).toEqual({ listeners: [1, 0], viewsRead: EACH_VIEW_READ });
+});
+
+// ST-2, L2, and P3, decision 412's cost 3: ten versions of the child, each its own refresh, wait on
+// the outline's refetch with one listener on the cache, where the base held one for each event,
+// and the response reads each view once.
+test("ten versions of a child, each its own refresh, during its parent's outline refetch hold one listener, and read each view of the parent once where the response holds the child's node", async () => {
+  // Measured at J8 (00a3d845), the base, and at each join before it and U2 (647c646e), by this
+  // row: one listener for each event.
+  const AT_BASE = 10;
+  const AT_HEAD = 1;
+  expect(
+    await sharedWait(OUTLINE_WITH_NO_CHILD, TEN_CHILD_VERSIONS, OUTLINE_WITH_CHILD),
+    `listeners while the refetch is out: ${AT_BASE} at the base (J8, 00a3d845), ${AT_HEAD} at the head`
+  ).toEqual({ listeners: [AT_HEAD, 0], viewsRead: EACH_VIEW_READ });
+});
+
+// ST-2, L3. A response that holds no node of the child moves nothing the versions move, so no view
+// is read, and the one listener goes.
+test("ten versions of a child during its parent's outline refetch hold one listener, and read no view of the parent where the response holds no node of the child", async () => {
+  expect(
+    await sharedWait(OUTLINE_WITH_NO_CHILD, TEN_CHILD_VERSIONS, OUTLINE_WITH_NO_CHILD)
+  ).toEqual({ listeners: [1, 0], viewsRead: NO_VIEW_READ });
+});
+
+// ST-2, L4. Versions of two children wait on one listener, each event with its own views and its
+// own test: the response holds CORE-4's node alone - CORE-2 moved away - so the views are read
+// once, for CORE-4's version.
+test("versions of two children during their parent's outline refetch hold one listener, and read each view of the parent once where the response holds one child's node alone", async () => {
+  // Measured at J8 (00a3d845), the base, and at each join before it and U2 (647c646e), by this
+  // row: one listener for each event.
+  const AT_BASE = 2;
+  const AT_HEAD = 1;
+  expect(
+    await sharedWait(
+      OUTLINE_WITH_NO_CHILD,
+      [
+        eventOf("artifact.version", { artifact_id: "artifact-2", number: 2 }, "CORE-2"),
+        eventOf("artifact.version", { artifact_id: "artifact-4", number: 2 }, "CORE-4"),
+      ],
+      OUTLINE_WITH_D
+    ),
+    `listeners while the refetch is out: ${AT_BASE} at the base (J8, 00a3d845), ${AT_HEAD} at the head`
+  ).toEqual({ listeners: [AT_HEAD, 0], viewsRead: EACH_VIEW_READ });
+});
+
+// ST-2, L5. A refused refetch leaves the answer the outline held, which holds the child's node, so
+// the views are read once by it, as at the base.
+test("ten versions of a child during its parent's outline refetch that is refused hold one listener, and read each view of the parent once by the answer the outline keeps", async () => {
+  expect(await sharedWait(OUTLINE_WITH_CHILD, TEN_CHILD_VERSIONS, new Error("refused"))).toEqual({
+    listeners: [1, 0],
+    viewsRead: EACH_VIEW_READ,
+  });
+});
+
+// ST-2, L6. An outline removed while its refetch is out marks no view, and the listener goes with
+// it.
+test("ten versions of a child during its parent's outline refetch hold one listener, and read no view of the parent once the outline is removed", async () => {
+  expect(await sharedWait(OUTLINE_WITH_NO_CHILD, TEN_CHILD_VERSIONS, "removed")).toEqual({
+    listeners: [1, 0],
+    viewsRead: NO_VIEW_READ,
+  });
+});
+
+// ST-2, L7. A view read again after the events judged it, and before the response, holds what its
+// read answered, so the response reads every view but that one.
+test("ten versions of a child during its parent's outline refetch hold one listener, and read every view of the parent but the one read again before the response", async () => {
+  expect(
+    await sharedWait(OUTLINE_WITH_NO_CHILD, TEN_CHILD_VERSIONS, OUTLINE_WITH_CHILD, (client) =>
+      client.refetchQueries({ exact: true, queryKey: viewKey("CORE-1", "verification") })
+    )
+  ).toEqual({ listeners: [1, 0], viewsRead: { ...EACH_VIEW_READ, verification: 0 } });
+});
+
+// ST-2, L8. The waits are each client's own: the one version's checks, handed to two clients that
+// each hold the parent's page with its outline's refetch out, hold one listener on each client's
+// cache, and each response reads that client's views once.
+test("a child's version on two clients, each with its parent's outline refetch out, holds one listener on each client, and reads each client's views once", async () => {
+  jest.useFakeTimers();
+  const pages = [0, 1].map(() => {
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    return { client, page: outlineRefetchOut(client, OUTLINE_WITH_NO_CHILD) };
+  });
+  try {
+    const targets = eventRefreshTargets(TEN_CHILD_VERSIONS[0] as DispatchEvent, "alice");
+    for (const { client } of pages) refreshQueries(client, targets);
+    const during = pages.map(({ page }) => page.listeners());
+    for (const { page } of pages) await page.end(OUTLINE_WITH_CHILD);
+    expect(
+      pages.map(({ page }, at) => ({
+        listeners: [during[at], page.listeners()],
+        viewsRead: page.reads(),
+      }))
+    ).toEqual([
+      { listeners: [1, 0], viewsRead: EACH_VIEW_READ },
+      { listeners: [1, 0], viewsRead: EACH_VIEW_READ },
+    ]);
+  } finally {
+    for (const { page } of pages) page.stop();
+    realClock();
+  }
+});
+
+// INV-7, the identity of a check (R3: decision 412's cost 2). The tree check of an event that
+// moves a list of kinds reads the event's issue, those kinds, whether the event writes a
+// document, and the ancestors it names (none, `[]` or a chain), and nothing else: two events that
+// differ in one of them alone carry different identities (`same`), and two that agree in all of
+// them carry one, which the feed's flush then runs once for each query. An ask's event is on its
+// own target, which no identity names. An ancestor's coverage check is identified by the
+// ancestor, and the coverage check of an event that names none by the event's issue.
+test("the identity of a tree check and of an ancestor's coverage check differs where an input the check reads differs, and is one where every input is", () => {
+  const version = (issue: string, payload: Record<string, unknown> = {}) =>
+    eventOf("artifact.version", { artifact_id: `artifact-${issue}`, number: 2, ...payload }, issue);
+  const sameOf = (event: DispatchEvent, queryKey: readonly unknown[]) =>
+    eventRefreshTargets(event, "alice").find(
+      (target) =>
+        target.when !== undefined && JSON.stringify(target.queryKey) === JSON.stringify(queryKey)
+    )?.same;
+  const trees = (event: DispatchEvent) => sameOf(event, ["issue-tree"]);
+  const differ = (a: string | undefined, b: string | undefined) =>
+    a !== undefined && b !== undefined && a !== b;
+  const one = (a: string | undefined, b: string | undefined) => a !== undefined && a === b;
+  const chain = (ancestors?: readonly string[]) =>
+    trees(version("CORE-2", ancestors === undefined ? {} : { ancestors }));
+  const ask = eventOf("ask.opened", { anchor: null, id: "ask-1", state: "open" }, "CORE-2");
+  expect({
+    "a document write and a review": differ(
+      trees(version("CORE-2", { ancestors: ["CORE-1"] })),
+      trees(
+        eventOf(
+          "artifact.approved",
+          { ancestors: ["CORE-1"], artifact_id: "artifact-CORE-2", ask_id: null },
+          "CORE-2"
+        )
+      )
+    ),
+    "an ask's event": sameOf(ask, ["issue-tree"]) === undefined,
+    "an ancestor's coverage, of two ancestors": differ(
+      sameOf(version("CORE-3", { ancestors: ["CORE-2", "CORE-1"] }), coverageKey("CORE-2")),
+      sameOf(version("CORE-3", { ancestors: ["CORE-2", "CORE-1"] }), coverageKey("CORE-1"))
+    ),
+    "an ancestor's coverage, of one ancestor": one(
+      sameOf(version("CORE-2", { ancestors: ["CORE-1"] }), coverageKey("CORE-1")),
+      sameOf(version("CORE-4", { ancestors: ["CORE-1"] }), coverageKey("CORE-1"))
+    ),
+    "coverage of an event that names no ancestors, of one issue": one(
+      sameOf(version("CORE-2"), ["issue"]),
+      sameOf(version("CORE-2", { number: 3 }), ["issue"])
+    ),
+    "coverage of an event that names no ancestors, of two issues": differ(
+      sameOf(version("CORE-2"), ["issue"]),
+      sameOf(version("CORE-4"), ["issue"])
+    ),
+    "every input equal": one(
+      trees(version("CORE-2", { ancestors: ["CORE-1"] })),
+      trees(version("CORE-2", { ancestors: ["CORE-1"], artifact_id: "artifact-7", number: 5 }))
+    ),
+    "no ancestors and a chain": differ(chain(undefined), chain(["CORE-1"])),
+    "no ancestors and none": differ(chain(undefined), chain([])),
+    "none and a chain": differ(chain([]), chain(["CORE-1"])),
+    "the issue": differ(
+      trees(version("CORE-2", { ancestors: ["CORE-1"] })),
+      trees(version("CORE-4", { ancestors: ["CORE-1"] }))
+    ),
+    "the kinds": differ(
+      trees(eventOf("issue.updated", { ancestors: ["CORE-1"], changed: ["title"] }, "CORE-2")),
+      trees(eventOf("issue.updated", { ancestors: ["CORE-1"], changed: ["parent"] }, "CORE-2"))
+    ),
+    "two chains": differ(chain(["CORE-1"]), chain(["CORE-5", "CORE-1"])),
+  }).toEqual({
+    "a document write and a review": true,
+    "an ask's event": true,
+    "an ancestor's coverage, of one ancestor": true,
+    "an ancestor's coverage, of two ancestors": true,
+    "coverage of an event that names no ancestors, of one issue": true,
+    "coverage of an event that names no ancestors, of two issues": true,
+    "every input equal": true,
+    "no ancestors and a chain": true,
+    "no ancestors and none": true,
+    "none and a chain": true,
+    "the issue": true,
+    "the kinds": true,
+    "two chains": true,
+  });
+});
+
+/** An answer whose nodes count each read of them in `scans`, under `name`: how many times a
+ *  refresh scans the answer. */
+function scanned(answer: TreeAnswer, name: string, scans: Map<string, number>): TreeAnswer {
+  const { nodes, ...rest } = answer;
+  return Object.defineProperty({ ...rest }, "nodes", {
+    enumerable: true,
+    get: () => {
+      scans.set(name, (scans.get(name) ?? 0) + 1);
+      return nodes;
+    },
+  }) as TreeAnswer;
+}
+
+/**
+ * Fifty issues as a page that holds fifty open trees holds them, for the probes of decision 412's
+ * costs (after K1 of INFRA-4062's round 18 probes): the parent CORE-1, whose outline holds its
+ * child CORE-2's node, and 49 others, each with its outline and its Spec, Verification and Plan
+ * views (200 tree reads), each holding 40 requirements of its issue and counting its scans in
+ * `scans`, and each issue's detail and coverage read.
+ */
+function fiftyTrees(scans: Map<string, number>): QueryClient {
+  const client = new QueryClient();
+  for (let index = 0; index < 50; index += 1) {
+    const key = index === 0 ? "CORE-1" : `BULK-${index}`;
+    const own = Array.from({ length: 40 }, (_, at) =>
+      treeNode(`b${at}`, "requirement", key, {
+        in: "spec",
+        issue: key === "CORE-1" ? undefined : key,
+      })
+    );
+    const child = key === "CORE-1" ? [treeNode("CORE-2", "issue", "CORE-1", CHILD)] : [];
+    client.setQueryData(
+      issueTreeKey(key),
+      scanned(
+        treeAnswer([treeNode(key, "issue", null), ...own, ...child], [], { issue: key }),
+        key,
+        scans
+      )
+    );
+    for (const view of ST2_VIEWS) {
+      client.setQueryData(
+        viewKey(key, view),
+        scanned(treeAnswer(own, [], { issue: key, view }), `${key}/${view}`, scans)
+      );
+    }
+    client.setQueryData(["issue", key], { key });
+    client.setQueryData(coverageKey(key), COVERAGE);
+  }
+  return client;
+}
+
+/** A refresh target as `eventRefreshTargets` makes it: this file imports no name of
+ *  `query-refresh.ts` but the two it reads. */
+type Target = ReturnType<typeof eventRefreshTargets>[number];
+
+/** `targets` with each check counted in `checks`, by the hash of the query it judges, and each
+ *  check of D-R2-fallback's target (the one under `["issue"]` alone) in `fallback` too. */
+function countedChecks(
+  targets: readonly Target[],
+  checks: Map<string, number>,
+  fallback: { count: number }
+): Target[] {
+  return targets.map((target) => {
+    const { when } = target;
+    if (when === undefined) return target;
+    const isFallback = target.queryKey.length === 1 && target.queryKey[0] === "issue";
+    return {
+      ...target,
+      when: (data, query, client) => {
+        checks.set(query.queryHash, (checks.get(query.queryHash) ?? 0) + 1);
+        if (isFallback) fallback.count += 1;
+        return when(data, query, client);
+      },
+    };
+  });
+}
+
+/** The checks `checks` counted on tree reads (`["issue-tree", …]`, by their hash): in all, and
+ *  the most on one read. */
+function treeCheckCounts(checks: Map<string, number>): { checks: number; most: number } {
+  const counts = [...checks].filter(([hash]) => hash.startsWith('["issue-tree"')).map(([, n]) => n);
+  return { checks: counts.reduce((sum, n) => sum + n, 0), most: Math.max(0, ...counts) };
+}
+
+// P1, decision 412's cost 1: the checks one event runs over 200 open tree reads stay one for each
+// read the event does not name. Any held answer can hold a node of the event's issue - a parent's
+// outline its children's, a descendant's view its ancestors' requirements - so only a read of
+// each answer tells; an index of which answers hold which issue would be a second record of the
+// trees beside the cache, and would miss an answer that lands while a check waits for it. A
+// version that names its chain marks the parent's four reads with no check (D-R2-presence), and
+// scans no answer to place the child (`issuesAbove` runs for an event that names none alone), so
+// its scans fall by half. A version that names none runs D-R2-fallback's check on every read under
+// `["issue"]`, each issue's detail read and its coverage read (100 here), and the check passes the
+// coverage reads alone. The milliseconds are not asserted: a failure's message gives them beside
+// the base's counts, and the pull request's body gives them as measured.
+test("one event over fifty open trees checks each tree read it does not name once, and a version that names its chain scans each answer once", () => {
+  const events = {
+    "C's plain ask": eventOf(
+      "ask.opened",
+      { anchor: null, id: "q", question: "?", state: "open" },
+      "CORE-2"
+    ),
+    "C's title": eventOf(
+      "issue.updated",
+      { ancestors: ["CORE-1"], changed: ["title"], title: "T" },
+      "CORE-2"
+    ),
+    "C's version with its chain": eventOf(
+      "artifact.version",
+      { ancestors: ["CORE-1"], artifact_id: "artifact-2", number: 2 },
+      "CORE-2"
+    ),
+    "C's version with no chain": eventOf(
+      "artifact.version",
+      { artifact_id: "artifact-2", number: 2 },
+      "CORE-2"
+    ),
+  };
+  // Measured at J8 (00a3d845), the base, and at each join before it and U2 (647c646e), by this
+  // case's cache and events: there a version reads no chain, and no coverage target of an ancestor
+  // exists.
+  const AT_BASE = {
+    "C's plain ask": { checks: 200, fallbackChecks: 0, scans: 200 },
+    "C's title": { checks: 200, fallbackChecks: 0, scans: 200 },
+    "C's version with its chain": { checks: 200, fallbackChecks: 0, scans: 400 },
+    "C's version with no chain": { checks: 200, fallbackChecks: 0, scans: 400 },
+  };
+  const AT_HEAD = {
+    "C's plain ask": { checks: 200, fallbackChecks: 0, scans: 200 },
+    "C's title": { checks: 200, fallbackChecks: 0, scans: 200 },
+    "C's version with its chain": { checks: 196, fallbackChecks: 0, scans: 196 },
+    "C's version with no chain": { checks: 200, fallbackChecks: 100, scans: 400 },
+  };
+  const seen: Record<string, unknown> = {};
+  const milliseconds: Record<string, number> = {};
+  for (const [name, event] of Object.entries(events)) {
+    const scans = new Map<string, number>();
+    const client = fiftyTrees(scans);
+    const checks = new Map<string, number>();
+    const fallback = { count: 0 };
+    const targets = countedChecks(eventRefreshTargets(event, "alice"), checks, fallback);
+    const started = performance.now();
+    refreshQueries(client, targets);
+    milliseconds[name] = Math.round((performance.now() - started) * 10) / 10;
+    seen[name] = {
+      checks: treeCheckCounts(checks).checks,
+      fallbackChecks: fallback.count,
+      scans: [...scans.values()].reduce((sum, n) => sum + n, 0),
+    };
+  }
+  expect(
+    seen,
+    `at the base (J8, 00a3d845): ${JSON.stringify(AT_BASE)}; milliseconds at this run: ${JSON.stringify(milliseconds)}`
+  ).toEqual(AT_HEAD);
+});
+
+// P2, decision 412's cost 2: the checks a batch of ten events runs on one tree read, through the
+// feed's flush (`dedupeRefreshTargets`, then `refreshQueries`). Ten versions of the child carry
+// one identity, so the flush keeps one tree check of them, which runs once on each tree read, and
+// on none of the parent's, which the chain names. Ten plain asks of the child are each on a node
+// of their own (`onItsTarget`), so no check stands for another and the count stays ten: one
+// matcher for the batch would copy the frozen rule's block, anchor and document match, whose
+// edges decision 412 found one round at a time.
+test("a batch of ten versions of a child runs one check on a tree read through the feed's flush, and a batch of ten plain asks of it runs ten", () => {
+  const batches = {
+    "ten plain asks of C": Array.from({ length: 10 }, (_, index) =>
+      eventOf(
+        "ask.opened",
+        { anchor: null, id: `q${index}`, question: "?", state: "open" },
+        "CORE-2"
+      )
+    ),
+    "ten versions of C": Array.from({ length: 10 }, (_, index) =>
+      eventOf(
+        "artifact.version",
+        { ancestors: ["CORE-1"], artifact_id: `artifact-${index}`, number: 2 },
+        "CORE-2"
+      )
+    ),
+  };
+  // Measured at J8 (00a3d845), the base, and at each join before it and U2 (647c646e), by this
+  // case's cache and batches, each batch's targets handed to the refresh as they are: there the
+  // flush keeps every target with a check, and a version reads no chain. A check that answers yes
+  // on a query ends that query's checks, so the parent's four reads ran one check each there.
+  const AT_BASE = {
+    "ten plain asks of C": { checks: 2000, most: 10 },
+    "ten versions of C": { checks: 1964, most: 10 },
+  };
+  const AT_HEAD = {
+    "ten plain asks of C": { checks: 2000, most: 10 },
+    "ten versions of C": { checks: 196, most: 1 },
+  };
+  const seen: Record<string, unknown> = {};
+  for (const [name, batch] of Object.entries(batches)) {
+    const client = fiftyTrees(new Map());
+    const checks = new Map<string, number>();
+    const targets = batch.flatMap((event) =>
+      countedChecks(eventRefreshTargets(event, "alice"), checks, { count: 0 })
+    );
+    refreshQueries(client, dedupeRefreshTargets(targets));
+    seen[name] = treeCheckCounts(checks);
+  }
+  expect(
+    seen,
+    `checks on tree reads, in all and on one at the most; at the base (J8, 00a3d845): ${JSON.stringify(AT_BASE)}`
+  ).toEqual(AT_HEAD);
+});
+
+/**
+ * The one cache E2 copies fresh for each batch, which holds, for each event of a batch, a read
+ * that its own check alone marks: the parent CORE-1's outline, holding its children CORE-2's and
+ * CORE-4's nodes, and its three views; CORE-2's outline, holding its child CORE-3's node, and its
+ * Verification view, holding CORE-1's requirement; the Verification views of CORE-3 and of
+ * CORE-4's child CORE-5, each holding its parent's requirement, which a version of that parent
+ * moves and a title does not; CORE-0's outline, read before CORE-1 moved from under it to the
+ * root, which holds CORE-1's node, and which a document write of CORE-1's child reaches only
+ * where it places CORE-1 above the child; another project's outline; the detail and the coverage
+ * of each issue, each detail naming its parent; CORE-2's asks and documents; and a project
+ * document's read.
+ */
+function oneCache(): QueryClient {
+  const client = new QueryClient();
+  client.setQueryData(
+    issueTreeKey("CORE-1"),
+    treeAnswer(
+      [
+        treeNode("CORE-1", "issue", null),
+        PARENT_REQUIREMENT,
+        treeNode("CORE-2", "issue", "CORE-1", CHILD),
+        treeNode("CORE-4", "issue", "CORE-1", { issue: "CORE-4", read_only: true }),
+      ],
+      [],
+      { issue: "CORE-1" }
+    )
+  );
+  parentBeforeTheCheck(client, undefined);
+  client.setQueryData(
+    issueTreeKey("CORE-2"),
+    treeAnswer(
+      [
+        treeNode("CORE-2", "issue", null),
+        treeNode("CORE-3", "issue", "CORE-2", { issue: "CORE-3", read_only: true }),
+      ],
+      [],
+      { issue: "CORE-2" }
+    )
+  );
+  viewHoldingParent(client);
+  for (const [key, parent] of [
+    ["CORE-3", "CORE-2"],
+    ["CORE-5", "CORE-4"],
+  ] as const) {
+    const requirement = treeNode("cr1", "requirement", null, {
+      in: "spec",
+      issue: parent,
+      read_only: true,
+      role: "context",
+    });
+    client.setQueryData(
+      viewKey(key, "verification"),
+      treeAnswer([treeNode(key, "issue", null), requirement], [], {
+        issue: key,
+        view: "verification",
+      })
+    );
+  }
+  client.setQueryData(
+    issueTreeKey("CORE-0"),
+    treeAnswer(
+      [
+        treeNode("CORE-0", "issue", null),
+        treeNode("CORE-1", "issue", "CORE-0", { issue: "CORE-1", read_only: true }),
+      ],
+      [],
+      { issue: "CORE-0" }
+    )
+  );
+  client.setQueryData(
+    issueTreeKey("OTHER-9"),
+    treeAnswer([treeNode("OTHER-9", "issue", null)], [], { issue: "OTHER-9" })
+  );
+  for (const [key, parent] of [
+    ["CORE-0", null],
+    ["CORE-1", null],
+    ["CORE-2", "CORE-1"],
+    ["CORE-3", "CORE-2"],
+    ["CORE-4", "CORE-1"],
+    ["CORE-5", "CORE-4"],
+  ] as const) {
+    client.setQueryData(["issue", key], { key, parent });
+    client.setQueryData(coverageKey(key), COVERAGE);
+  }
+  client.setQueryData(["asks", "CORE-2"], []);
+  client.setQueryData(["artifacts", "CORE-2"], []);
+  client.setQueryData(["artifact", "artifact-9"], { id: "artifact-9" });
+  return client;
+}
+
+// E2, for decision 412's cost 2: the flush's dedupe changes no read a batch marks. Each batch goes
+// to a fresh copy of one cache twice, once through `dedupeRefreshTargets` and once with every
+// target kept, and both mark the same reads: versions of one issue and of two, a version beside
+// a title, a title beside a parent move, a review beside a version, asks, versions that name
+// different chains or none, and a project document's version among them. Where two events of a
+// batch differ in one input of their check, the cache holds a read that the later one alone
+// marks.
+test("a batch marks the same reads through the feed's dedupe as with every target kept", () => {
+  const version = (issue: string, ancestors?: readonly string[]) =>
+    eventOf(
+      "artifact.version",
+      { artifact_id: `artifact-${issue}`, number: 2, ...(ancestors ? { ancestors } : {}) },
+      issue
+    );
+  const batches: Record<string, readonly DispatchEvent[]> = {
+    "a mix with a project's event": [
+      version("CORE-2", ["CORE-1"]),
+      eventOf("artifact.version", { artifact_id: "artifact-9", number: 2 }, null),
+      version("CORE-2", ["CORE-1"]),
+      eventOf("artifact.version", { artifact_id: "artifact-9", number: 3 }, null),
+    ],
+    "a review and a version of C": [
+      eventOf(
+        "artifact.approved",
+        { ancestors: ["CORE-1"], artifact_id: "artifact-CORE-2", ask_id: null },
+        "CORE-2"
+      ),
+      version("CORE-2", ["CORE-1"]),
+    ],
+    "a title and a parent move of C": [
+      eventOf("issue.updated", { ancestors: ["CORE-1"], changed: ["title"] }, "CORE-2"),
+      eventOf("issue.updated", { ancestors: ["CORE-1"], changed: ["parent"] }, "CORE-2"),
+    ],
+    "a version and a title of C": [
+      version("CORE-2", ["CORE-1"]),
+      eventOf("issue.updated", { ancestors: ["CORE-1"], changed: ["title"] }, "CORE-2"),
+      version("CORE-2", ["CORE-1"]),
+    ],
+    "ten asks of C": Array.from({ length: 10 }, (_, index) =>
+      eventOf("ask.opened", { anchor: null, id: `q${index}`, state: "open" }, "CORE-2")
+    ),
+    "ten versions of C": Array.from({ length: 10 }, () => version("CORE-2", ["CORE-1"])),
+    "versions of C and of D": [
+      version("CORE-2", ["CORE-1"]),
+      version("CORE-4", ["CORE-1"]),
+      version("CORE-2", ["CORE-1"]),
+      version("CORE-4", ["CORE-1"]),
+    ],
+    "versions of C with different chains": [
+      version("CORE-2", []),
+      version("CORE-2"),
+      version("CORE-2", ["CORE-1"]),
+      version("CORE-2", []),
+    ],
+    "a version of C with none, then one with no chain": [version("CORE-2", []), version("CORE-2")],
+    "a version of C with none, then one with a chain": [
+      version("CORE-2", []),
+      version("CORE-2", ["CORE-1"]),
+    ],
+    "versions of a grandchild with different chains": [
+      version("CORE-3", []),
+      version("CORE-3"),
+      version("CORE-3", GRANDCHILD_ANCESTORS),
+      version("CORE-3", GRANDCHILD_ANCESTORS),
+    ],
+  };
+  const marks = (batch: readonly DispatchEvent[], dedupe: boolean) => {
+    const client = oneCache();
+    const targets = batch.flatMap((event) => eventRefreshTargets(event, "alice"));
+    refreshQueries(client, dedupe ? dedupeRefreshTargets(targets) : targets);
+    return client
+      .getQueryCache()
+      .getAll()
+      .filter((query) => query.state.isInvalidated)
+      .map((query) => query.queryHash)
+      .sort();
+  };
+  const deduped: Record<string, string[]> = {};
+  const kept: Record<string, string[]> = {};
+  for (const [name, batch] of Object.entries(batches)) {
+    deduped[name] = marks(batch, true);
+    kept[name] = marks(batch, false);
+  }
+  expect(
+    Object.values(kept).every((marked) => marked.length > 0),
+    "each batch marks a read"
+  ).toBe(true);
+  expect(deduped).toEqual(kept);
 });

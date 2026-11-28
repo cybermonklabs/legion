@@ -412,6 +412,16 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			want: DispatchArtifact{Key: "CAPTURE-4", ArtifactID: "0544d460-0931-4374-b20b-790408519edd", Kind: DispatchArtifactVersion, Version: 2,
 				Mark: mark(2, "2026-09-23T00:46:19.000081Z"), Actor: dispatch.Actor{Kind: "user", ID: "smoke"}},
 		},
+		// The envelope above with its payload replaced by the grandchild's artifact.version that
+		// packages/contracts/fixtures/document-event-ancestors.json holds as Dispatch stores it:
+		// a payload that names its issue's ancestors decodes to the fact one without them does.
+		{
+			name:    "Dispatch artifact version that names its ancestors",
+			subject: "notifications.dispatch.issue.CAPTURE-4.artifact.version",
+			file:    "dispatch/artifact-version-ancestors.json",
+			want: DispatchArtifact{Key: "CAPTURE-4", ArtifactID: "00000000-0000-4000-8000-000000000001", Kind: DispatchArtifactVersion, Version: 2,
+				Mark: mark(2, "2026-09-23T00:46:19.000081Z"), Actor: dispatch.Actor{Kind: "user", ID: "smoke"}},
+		},
 		{
 			name:    "Dispatch artifact approved",
 			subject: "notifications.dispatch.issue.CAPTURE-4.artifact.approved",

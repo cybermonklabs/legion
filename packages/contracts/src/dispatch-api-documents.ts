@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { ActorSchema, InboundWriterSchema } from "./dispatch-api-core";
+import { issueEventChangesFields } from "./dispatch-api-issues";
 import { ASK_TURNS } from "./dispatch-api-limits";
 import { referenceChangesFields } from "./dispatch-api-refs";
 
@@ -155,14 +156,28 @@ export const artifactFields = {
 
 export const ArtifactSchema = z.strictObject(artifactFields).readonly();
 
+/** What an `artifact.created`, `artifact.version` or `artifact.removed` event says of the issue
+ *  its artifact belongs to, spread into the written schema of each and into the bus reading of the
+ *  first two, so a page open on an ancestor learns of the write from the event alone. */
+const artifactEventAncestorsFields = {
+  /** The parent chain of the artifact's issue, parent first up to the root; `[]` for a root's;
+   *  absent for an artifact of no issue and from a Dispatch older than the field. */
+  ancestors: issueEventChangesFields.ancestors,
+};
+
 export const WrittenArtifactCreatedEventPayloadSchema = z
-  .strictObject({ artifact: ArtifactSchema, ...referenceChangesFields })
+  .strictObject({
+    artifact: ArtifactSchema,
+    ...referenceChangesFields,
+    ...artifactEventAncestorsFields,
+  })
   .readonly();
 
 export type ArtifactCreatedEventPayload = z.output<typeof WrittenArtifactCreatedEventPayloadSchema>;
 
 /** What a reader of the bus makes of an `artifact.created` payload: the three fields of the
- *  document a renderer names it by, each optional, and everything else dropped. */
+ *  document a renderer names it by and the chain of its issue, each optional, and everything else
+ *  dropped. */
 export const ArtifactCreatedEventPayloadSchema = z.object({
   artifact: z
     .object({
@@ -171,6 +186,7 @@ export const ArtifactCreatedEventPayloadSchema = z.object({
       name: artifactFields.name.optional(),
     })
     .optional(),
+  ...artifactEventAncestorsFields,
 });
 
 /** `artifact.renamed`: a person corrected a document's title. `artifact` is the document as it
@@ -184,9 +200,17 @@ export const ArtifactRenamedEventPayloadSchema = z
 export type ArtifactRenamedEventPayload = z.output<typeof ArtifactRenamedEventPayloadSchema>;
 
 /** `artifact.removed`: a document of an issue that was still untouched is gone. `artifact` is the
- *  document as it stood when it was removed; nothing of it is left to read. */
+ *  document as it stood when it was removed; nothing of it is left to read. Its `versions` is
+ *  null: the removal writes the row it read without loading its versions, so every
+ *  `artifact.removed` stored holds null there, and an exact schema that took only a list would
+ *  refuse each of them. */
 export const ArtifactRemovedEventPayloadSchema = z
-  .strictObject({ artifact: ArtifactSchema })
+  .strictObject({
+    artifact: z
+      .strictObject({ ...artifactFields, versions: artifactFields.versions.nullable() })
+      .readonly(),
+    ...artifactEventAncestorsFields,
+  })
   .readonly();
 
 export type ArtifactRemovedEventPayload = z.output<typeof ArtifactRemovedEventPayloadSchema>;
@@ -199,14 +223,19 @@ export const artifactVersionEventPayloadFields = {
 };
 
 export const WrittenArtifactVersionEventPayloadSchema = z
-  .strictObject({ ...artifactVersionEventPayloadFields, ...referenceChangesFields })
+  .strictObject({
+    ...artifactVersionEventPayloadFields,
+    ...referenceChangesFields,
+    ...artifactEventAncestorsFields,
+  })
   .readonly();
 
 export type ArtifactVersionEventPayload = z.output<typeof WrittenArtifactVersionEventPayloadSchema>;
 
-/** What a reader of the bus makes of an `artifact.version` payload: the fields a renderer shows,
- *  each optional, and of the version only its number and summary. The version number is read as
- *  the stored field, so a fractional one is refused; no writer emits one. */
+/** What a reader of the bus makes of an `artifact.version` payload: the fields a renderer shows
+ *  and the chain of the document's issue, each optional, and of the version only its number and
+ *  summary. The version number is read as the stored field, so a fractional one is refused; no
+ *  writer emits one. */
 export const ArtifactVersionEventPayloadSchema = z.object({
   artifact_id: artifactVersionEventPayloadFields.artifact_id.optional(),
   name: artifactVersionEventPayloadFields.name.optional(),
@@ -214,6 +243,7 @@ export const ArtifactVersionEventPayloadSchema = z.object({
     .object({ number: versionFields.number.optional(), summary: versionFields.summary.optional() })
     .optional(),
   diff: artifactVersionEventPayloadFields.diff,
+  ...artifactEventAncestorsFields,
 });
 
 /** `artifact.human_edited`: a person's browser edits of a document, sent once the document has

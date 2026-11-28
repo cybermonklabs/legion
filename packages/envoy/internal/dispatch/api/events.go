@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -153,6 +155,9 @@ func (s *server) eventFeedETag(lastSeq int, createdAt time.Time, options eventLi
 	for _, id := range options.ids {
 		_, _ = fmt.Fprintf(hash, "id=%d\n", id)
 	}
+	for _, kind := range options.excludeTypes {
+		_, _ = fmt.Fprintf(hash, "exclude_type=%s\n", kind)
+	}
 	return s.listETag(hash, trees)
 }
 
@@ -242,16 +247,21 @@ func parseEventListOptions(r *http.Request) (eventListOptions, error) {
 	if err != nil {
 		return eventListOptions{}, err
 	}
+	excludeTypes, err := parseEventExcludeTypes(query.Get("exclude_types"))
+	if err != nil {
+		return eventListOptions{}, err
+	}
 	if query.Has("after") && (hasBefore || descending) {
 		return eventListOptions{}, errorf(http.StatusBadRequest, "INVALID_QUERY", "after cannot be combined with before or order=desc")
 	}
 	return eventListOptions{
-		after:      after,
-		before:     before,
-		hasBefore:  hasBefore,
-		descending: descending || hasBefore,
-		ids:        ids,
-		limit:      limit,
+		after:        after,
+		before:       before,
+		hasBefore:    hasBefore,
+		descending:   descending || hasBefore,
+		ids:          ids,
+		limit:        limit,
+		excludeTypes: excludeTypes,
 	}, nil
 }
 
@@ -262,6 +272,22 @@ type eventListOptions struct {
 	descending bool
 	ids        []int64
 	limit      int
+	// excludeTypes are the event types the page leaves out, sorted with no repeat
+	// (parseEventExcludeTypes); nil leaves out none.
+	excludeTypes []string
+}
+
+// excludeTypesCondition is the where-clause condition that leaves options.excludeTypes out of a
+// readEvents statement, and that statement's arguments with the type list appended, which the
+// condition names by its place. readEvents puts it before order by and limit, so a page counts
+// only the events it keeps. With no excluded type it adds neither, and the statement is the one
+// it was without the filter.
+func (options eventListOptions) excludeTypesCondition(arguments ...any) (string, []any) {
+	if len(options.excludeTypes) == 0 {
+		return "", arguments
+	}
+	arguments = append(arguments, options.excludeTypes)
+	return fmt.Sprintf(" and not (e.type = any($%d))", len(arguments)), arguments
 }
 
 func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, options eventListOptions) ([]model.Event, error) {
@@ -275,27 +301,31 @@ func (s *server) readEvents(ctx context.Context, who model.Actor, owner owner, o
 		return nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
 	if len(options.ids) > 0 {
+		exclude, arguments := options.excludeTypesCondition(ownerValue, options.ids)
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+` and e.id = any($2)
+			where `+predicate+` and e.id = any($2)`+exclude+`
 			order by e.seq asc
-		`, ownerValue, options.ids)
+		`, arguments...)
 	}
 	if options.descending {
 		if options.hasBefore {
+			exclude, arguments := options.excludeTypesCondition(ownerValue, options.before, options.limit)
 			return s.readEventRows(ctx, who, eventSelect+`
-				where `+predicate+` and e.seq < $2
+				where `+predicate+` and e.seq < $2`+exclude+`
 				order by e.seq desc limit $3
-			`, ownerValue, options.before, options.limit)
+			`, arguments...)
 		}
+		exclude, arguments := options.excludeTypesCondition(ownerValue, options.limit)
 		return s.readEventRows(ctx, who, eventSelect+`
-			where `+predicate+`
+			where `+predicate+exclude+`
 			order by e.seq desc limit $2
-		`, ownerValue, options.limit)
+		`, arguments...)
 	}
+	exclude, arguments := options.excludeTypesCondition(ownerValue, options.after, options.limit)
 	return s.readEventRows(ctx, who, eventSelect+`
-		where `+predicate+` and e.seq > $2
+		where `+predicate+` and e.seq > $2`+exclude+`
 		order by e.seq asc limit $3
-	`, ownerValue, options.after, options.limit)
+	`, arguments...)
 }
 
 // readEventsAfterID reads one page of the global event log in id order: at most limit of the
@@ -935,4 +965,33 @@ func parseEventIDs(raw string) ([]int64, error) {
 		ids[index] = id
 	}
 	return ids, nil
+}
+
+// parseEventExcludeTypes reads an event list's exclude_types: at most 50 comma-separated event
+// types, each one Dispatch writes (contracts.DispatchEventTypes), which the page leaves out. A
+// blank value leaves out none; an empty item or a type Dispatch does not write is refused 400
+// INVALID_QUERY. The types come back sorted with no repeat, so every spelling of one set is read,
+// and hashed into the feed's ETag, as the same list.
+func parseEventExcludeTypes(raw string) ([]string, error) {
+	if strings.TrimSpace(raw) == "" {
+		return nil, nil
+	}
+	parts := strings.Split(raw, ",")
+	if len(parts) > 50 {
+		return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must include at most 50 values")
+	}
+	kinds := make([]string, len(parts))
+	for index, part := range parts {
+		kind := strings.TrimSpace(part)
+		if kind == "" {
+			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must not hold an empty value")
+		}
+		// contracts.DispatchEventTypes is sorted, which a binary search needs.
+		if _, known := slices.BinarySearch(contracts.DispatchEventTypes, kind); !known {
+			return nil, errorf(http.StatusBadRequest, "INVALID_QUERY", "exclude_types must be event types Dispatch writes: %q is not one", kind)
+		}
+		kinds[index] = kind
+	}
+	slices.Sort(kinds)
+	return slices.Compact(kinds), nil
 }

@@ -421,6 +421,59 @@ const RECORDED: readonly Sample[] = [
   },
   {
     parser: "event",
+    name: "an artifact created event that names its issue's ancestors",
+    frame: {
+      actor: USER,
+      created_at: "2026-11-23T00:00:00Z",
+      id: 43,
+      issue_key: "CORE-3",
+      notify: true,
+      payload: {
+        artifact: { id: "artifact-1", slug: "notes", name: "notes.md" },
+        ancestors: ["CORE-2", "CORE-1"],
+      },
+      seq: 8,
+      type: "artifact.created",
+    },
+  },
+  {
+    parser: "event",
+    name: "an artifact version event that names its issue's ancestors",
+    frame: {
+      actor: USER,
+      created_at: "2026-11-23T00:00:01Z",
+      id: 44,
+      issue_key: "CORE-3",
+      notify: true,
+      payload: {
+        artifact_id: "artifact-1",
+        name: "notes.md",
+        version: { number: 2, summary: null },
+        ancestors: ["CORE-2", "CORE-1"],
+      },
+      seq: 9,
+      type: "artifact.version",
+    },
+  },
+  {
+    parser: "event",
+    name: "an artifact removed event that names its issue's ancestors",
+    frame: {
+      actor: USER,
+      created_at: "2026-11-23T00:00:02Z",
+      id: 45,
+      issue_key: "CORE-3",
+      notify: true,
+      payload: {
+        artifact: { id: "artifact-1", slug: "notes", name: "notes.md", versions: null },
+        ancestors: ["CORE-2", "CORE-1"],
+      },
+      seq: 10,
+      type: "artifact.removed",
+    },
+  },
+  {
+    parser: "event",
     name: "a document event with an unlinked owner",
     frame: {
       id: 12,
@@ -950,7 +1003,9 @@ const RECORDED: readonly Sample[] = [
  * all: the copy strips it, so the one frame would read two ways and every sample built from it
  * would be a disagreement. Those fields are covered where today's parser is read on its own, in
  * `dispatch-api.test.ts`; `resolution.dispatch_words` and the hand-on's `asked_of`,
- * `asked_of_by` and `asked_of_at` are the ask's fields that stand so today.
+ * `asked_of_by` and `asked_of_at` are the ask's fields that stand so today, and `ancestors` is the
+ * field of `artifactCreated` and `artifactVersion` that does. The `event` frames above carry
+ * `ancestors` in their payloads, which both copies of the envelope pass through.
  */
 const WHOLE: Readonly<Record<ParserName, Frame>> = {
   artifactCreated: { artifact: { id: "artifact-1", slug: "spec", name: "spec.md" } },
@@ -1290,7 +1345,7 @@ const LOOSER: readonly Sample[] = [
 const SAMPLES: readonly Sample[] = [...RECORDED, ...generated(), ...LOOSER];
 
 /** How many samples this file holds; stated so a sample lost to an edit is a failure. */
-const SAMPLE_COUNT = 538;
+const SAMPLE_COUNT = 541;
 
 /** Where the two parsers disagree on `sample`, in words; empty when they agree. */
 function disagreement(sample: Sample): string | null {

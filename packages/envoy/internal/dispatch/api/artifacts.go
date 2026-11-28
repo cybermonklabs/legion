@@ -1300,14 +1300,24 @@ func (s *server) storeArtifact(
 			return
 		}
 	}
+	// The chain of the artifact's issue, which both payload shapes name
+	// (docs.DocumentEventAncestors): read here, in the read phase, where the event's owner is
+	// known, so the write phase that queueStampedEvent's append joins runs no read. A project's
+	// document and an agent's conversation's file belong to no issue, and read nothing.
+	eventOwner := ownerForArtifact(artifact)
+	ancestors, err := docs.DocumentEventAncestors(r.Context(), tx, eventOwner.IssueKey)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	// An uploaded document's body cites nodes whose rows carry a backlink count, exactly as a
 	// message or comment body does, so both payload shapes name what the upload moved.
 	eventType := "artifact.version"
-	payload := docs.ArtifactVersionEventPayload(artifact.ID, artifact.Name, version, diff, documentChanges)
+	payload := docs.ArtifactVersionEventPayload(artifact.ID, artifact.Name, version, diff, documentChanges, ancestors)
 	if created {
 		eventType = "artifact.created"
 		artifact.Versions = []model.Version{version}
-		payload = artifactCreatedEventPayload(artifact, documentChanges)
+		payload = artifactCreatedEventPayload(artifact, documentChanges, ancestors)
 	}
 	var published []*model.Event
 	// The cause the block index's facts carry: the event this upload queues, named as the id
@@ -1319,7 +1329,7 @@ func (s *server) storeArtifact(
 		if kind == "doc" {
 			stampKind = "artifact"
 		}
-		event, err := s.queueStampedEvent(ledger, ownerForArtifact(artifact).event(eventType, actor, payload), stampKind, artifact.ID)
+		event, err := s.queueStampedEvent(ledger, eventOwner.event(eventType, actor, payload), stampKind, artifact.ID)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -1901,9 +1911,10 @@ func deref(value *string) string {
 // phase (queueStampedEvent). A document of an issue room is indexed by the room's pass, whose
 // references and block mentions are keyed by the room's tree artifact (docs' indexDocumentInRoom),
 // so the room is read here, in tx's read phase, and its edges are stamped with the same event
-// right after the document's. Right after it, it queues what that version's block index stated in
-// the node and tuple store (written.Blocks), which waited for this event: the pass ran before the
-// event existed, and no tuple may be updated once it is appended.
+// right after the document's. So is the chain of eventOwner's issue, which the event names
+// (docs.DocumentEventAncestors). Right after the event, it queues what that version's block index
+// stated in the node and tuple store (written.Blocks), which waited for this event: the pass ran
+// before the event existed, and no tuple may be updated once it is appended.
 func (s *server) commitArtifactVersionEvent(
 	ctx context.Context,
 	tx pgx.Tx,
@@ -1918,10 +1929,14 @@ func (s *server) commitArtifactVersionEvent(
 	if err := tx.QueryRow(ctx, docs.DocumentRoomOfStatement, artifactID).Scan(&room); err != nil {
 		return nil, fmt.Errorf("read the document's room: %w", err)
 	}
+	ancestors, err := docs.DocumentEventAncestors(ctx, tx, eventOwner.IssueKey)
+	if err != nil {
+		return nil, err
+	}
 	event, err := s.queueStampedEvent(ledger, eventOwner.event(
 		"artifact.version",
 		actor,
-		docs.ArtifactVersionEventPayload(artifactID, name, written.Version, diff, written.Changes),
+		docs.ArtifactVersionEventPayload(artifactID, name, written.Version, diff, written.Changes, ancestors),
 	), "artifact", artifactID)
 	if err != nil {
 		return nil, err

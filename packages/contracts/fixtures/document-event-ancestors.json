@@ -1,0 +1,290 @@
+{
+  "issues": {
+    "child": "TEST-2",
+    "converted grandchild": "TEST-4",
+    "grandchild": "TEST-3",
+    "root": "TEST-1"
+  },
+  "events": [
+    {
+      "owner": "grandchild",
+      "type": "artifact.created",
+      "payload": {
+        "artifact": {
+          "id": "00000000-0000-4000-8000-000000000001",
+          "kind": "doc",
+          "name": "notes.md",
+          "room": "00000000-0000-4000-8000-000000000001",
+          "slug": "notes-md",
+          "primary": false,
+          "project": "TEST",
+          "ref_key": "TEST-3/notes-md",
+          "fragment": "prosemirror",
+          "versions": [
+            {
+              "size": 14,
+              "named": false,
+              "number": 1,
+              "authors": [
+                {
+                  "id": "alice",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "summary": null,
+              "created_at": "2026-01-01T00:00:01Z"
+            }
+          ],
+          "issue_key": "TEST-3",
+          "created_at": "2026-01-01T00:00:02Z",
+          "created_by": {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          },
+          "session_id": null
+        },
+        "ancestors": [
+          "TEST-2",
+          "TEST-1"
+        ]
+      }
+    },
+    {
+      "owner": "grandchild",
+      "type": "artifact.version",
+      "payload": {
+        "name": "notes.md",
+        "version": {
+          "size": 14,
+          "named": false,
+          "number": 2,
+          "authors": [
+            {
+              "id": "alice",
+              "kind": "user",
+              "proven": true
+            }
+          ],
+          "summary": null,
+          "created_at": "2026-01-01T00:00:03Z"
+        },
+        "ancestors": [
+          "TEST-2",
+          "TEST-1"
+        ],
+        "artifact_id": "00000000-0000-4000-8000-000000000001"
+      }
+    },
+    {
+      "owner": "grandchild",
+      "type": "artifact.removed",
+      "payload": {
+        "artifact": {
+          "id": "00000000-0000-4000-8000-000000000002",
+          "kind": "doc",
+          "name": "Launch notes",
+          "room": "00000000-0000-4000-8000-000000000002",
+          "slug": "launch-notes",
+          "primary": false,
+          "project": "TEST",
+          "ref_key": "TEST-3/launch-notes",
+          "fragment": "prosemirror",
+          "versions": null,
+          "issue_key": "TEST-3",
+          "created_at": "2026-01-01T00:00:04Z",
+          "created_by": {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          },
+          "session_id": null
+        },
+        "ancestors": [
+          "TEST-2",
+          "TEST-1"
+        ]
+      }
+    },
+    {
+      "owner": "root",
+      "type": "artifact.created",
+      "payload": {
+        "artifact": {
+          "id": "00000000-0000-4000-8000-000000000003",
+          "kind": "doc",
+          "name": "notes.md",
+          "room": "00000000-0000-4000-8000-000000000003",
+          "slug": "notes-md",
+          "primary": false,
+          "project": "TEST",
+          "ref_key": "TEST-1/notes-md",
+          "fragment": "prosemirror",
+          "versions": [
+            {
+              "size": 19,
+              "named": false,
+              "number": 1,
+              "authors": [
+                {
+                  "id": "alice",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "summary": null,
+              "created_at": "2026-01-01T00:00:05Z"
+            }
+          ],
+          "issue_key": "TEST-1",
+          "created_at": "2026-01-01T00:00:06Z",
+          "created_by": {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          },
+          "session_id": null
+        },
+        "ancestors": []
+      }
+    },
+    {
+      "owner": "root",
+      "type": "artifact.version",
+      "payload": {
+        "name": "notes.md",
+        "version": {
+          "size": 19,
+          "named": false,
+          "number": 2,
+          "authors": [
+            {
+              "id": "alice",
+              "kind": "user",
+              "proven": true
+            }
+          ],
+          "summary": null,
+          "created_at": "2026-01-01T00:00:07Z"
+        },
+        "ancestors": [],
+        "artifact_id": "00000000-0000-4000-8000-000000000003"
+      }
+    },
+    {
+      "owner": "project",
+      "type": "artifact.created",
+      "payload": {
+        "artifact": {
+          "id": "00000000-0000-4000-8000-000000000004",
+          "kind": "doc",
+          "name": "design.md",
+          "room": "00000000-0000-4000-8000-000000000004",
+          "slug": "design-md",
+          "primary": false,
+          "project": "TEST",
+          "ref_key": "TEST/design-md",
+          "fragment": "prosemirror",
+          "versions": [
+            {
+              "size": 15,
+              "named": false,
+              "number": 1,
+              "authors": [
+                {
+                  "id": "alice",
+                  "kind": "user",
+                  "proven": true
+                }
+              ],
+              "summary": null,
+              "created_at": "2026-01-01T00:00:08Z"
+            }
+          ],
+          "issue_key": null,
+          "created_at": "2026-01-01T00:00:09Z",
+          "created_by": {
+            "id": "alice",
+            "kind": "user",
+            "proven": true
+          },
+          "session_id": null
+        }
+      }
+    },
+    {
+      "owner": "project",
+      "type": "artifact.version",
+      "payload": {
+        "name": "design.md",
+        "version": {
+          "size": 15,
+          "named": false,
+          "number": 2,
+          "authors": [
+            {
+              "id": "alice",
+              "kind": "user",
+              "proven": true
+            }
+          ],
+          "summary": null,
+          "created_at": "2026-01-01T00:00:10Z"
+        },
+        "artifact_id": "00000000-0000-4000-8000-000000000004"
+      }
+    },
+    {
+      "owner": "converted grandchild",
+      "type": "artifact.version",
+      "payload": {
+        "name": "spec.md",
+        "version": {
+          "size": 28,
+          "named": false,
+          "number": 2,
+          "authors": [
+            {
+              "id": "issue-conversion",
+              "kind": "system"
+            }
+          ],
+          "summary": null,
+          "created_at": "2026-01-01T00:00:11Z"
+        },
+        "ancestors": [
+          "TEST-2",
+          "TEST-1"
+        ],
+        "artifact_id": "00000000-0000-4000-8000-000000000005"
+      }
+    },
+    {
+      "owner": "converted grandchild",
+      "type": "artifact.version",
+      "payload": {
+        "name": "verification.md",
+        "version": {
+          "size": 87,
+          "named": false,
+          "number": 2,
+          "authors": [
+            {
+              "id": "alice",
+              "kind": "user",
+              "proven": true
+            }
+          ],
+          "summary": null,
+          "created_at": "2026-01-01T00:00:12Z"
+        },
+        "ancestors": [
+          "TEST-2",
+          "TEST-1"
+        ],
+        "artifact_id": "00000000-0000-4000-8000-000000000006"
+      }
+    }
+  ]
+}

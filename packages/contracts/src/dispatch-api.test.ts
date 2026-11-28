@@ -1,4 +1,6 @@
 import { describe, expect, test } from "bun:test";
+import type { z } from "zod";
+import documentEventAncestors from "../fixtures/document-event-ancestors.json";
 import document from "../schemas/dispatch-openapi.json";
 import type { BlockTypeSchema } from "./block-schema.generated";
 import {
@@ -11,8 +13,11 @@ import {
   type AnswerAskInput,
   ArtifactApprovalSchema,
   type ArtifactBlock,
+  ArtifactCreatedEventPayloadSchema,
+  ArtifactRemovedEventPayloadSchema,
   ArtifactReviewEventPayloadSchema,
   type ArtifactText,
+  ArtifactVersionEventPayloadSchema,
   type Ask,
   type AskAnsweredEventPayload,
   AskEditedEventPayloadSchema,
@@ -75,7 +80,9 @@ import {
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
   type UserThreadStateUpdatedEventPayload,
+  WrittenArtifactCreatedEventPayloadSchema,
   WrittenArtifactReviewEventPayloadSchema,
+  WrittenArtifactVersionEventPayloadSchema,
 } from "./dispatch-api";
 
 test("review event validation preserves approved byte hashes and their provenance", () => {
@@ -356,6 +363,138 @@ test("keeps what an issue write changed, its ancestors and its thread logins, an
   };
   expect(IssueEventPayloadSchema.parse(payload)).toEqual(payload);
   expect(IssueEventPayloadSchema.parse({ title: "Older event" })).toEqual({ title: "Older event" });
+});
+
+describe("a document event names the chain of its issue", () => {
+  /** A grandchild's chain, parent first, as Dispatch writes it on an event of its documents. */
+  const CHAIN = ["CORE-2", "CORE-1"];
+  const VERSION = {
+    number: 1,
+    named: false,
+    summary: null,
+    authors: [{ kind: "user", id: "alice" }],
+    created_at: "2026-11-23T00:00:00Z",
+  };
+  const DOCUMENT = {
+    id: "artifact-1",
+    issue_key: "CORE-3",
+    project: "CORE",
+    session_id: null,
+    slug: "notes",
+    name: "notes.md",
+    kind: "doc" as const,
+    primary: false,
+    created_by: { kind: "user" as const, id: "alice" },
+    created_at: "2026-11-23T00:00:00Z",
+    versions: [VERSION],
+  };
+  /** Each event's exact schema, with a payload of it that names no chain. */
+  const WRITTEN: ReadonlyArray<{
+    readonly type: string;
+    readonly schema: z.ZodType;
+    readonly payload: Readonly<Record<string, unknown>>;
+  }> = [
+    {
+      type: "artifact.created",
+      schema: WrittenArtifactCreatedEventPayloadSchema,
+      payload: { artifact: DOCUMENT },
+    },
+    {
+      type: "artifact.version",
+      schema: WrittenArtifactVersionEventPayloadSchema,
+      payload: {
+        artifact_id: DOCUMENT.id,
+        name: DOCUMENT.name,
+        version: { ...VERSION, number: 2 },
+      },
+    },
+    {
+      type: "artifact.removed",
+      schema: ArtifactRemovedEventPayloadSchema,
+      payload: { artifact: { ...DOCUMENT, versions: null } },
+    },
+  ];
+  /** The bus reading of the two events that have one, with a frame of each that names no chain. */
+  const BUS: ReadonlyArray<{
+    readonly type: string;
+    readonly schema: z.ZodType;
+    readonly frame: Readonly<Record<string, unknown>>;
+  }> = [
+    {
+      type: "artifact.created",
+      schema: ArtifactCreatedEventPayloadSchema,
+      frame: { artifact: { id: DOCUMENT.id, slug: DOCUMENT.slug, name: DOCUMENT.name } },
+    },
+    {
+      type: "artifact.version",
+      schema: ArtifactVersionEventPayloadSchema,
+      frame: {
+        artifact_id: DOCUMENT.id,
+        name: DOCUMENT.name,
+        version: { number: 2, summary: null },
+      },
+    },
+  ];
+
+  for (const { type, schema, payload } of WRITTEN) {
+    test(`the written ${type} keeps a chain, a root's [] and none, and refuses a chain that is no list of keys`, () => {
+      expect(schema.parse({ ...payload, ancestors: CHAIN })).toEqual({
+        ...payload,
+        ancestors: CHAIN,
+      });
+      expect(schema.parse({ ...payload, ancestors: [] })).toEqual({ ...payload, ancestors: [] });
+      // A project's document and an event from a Dispatch older than the field name none.
+      expect(schema.parse(payload)).toEqual(payload);
+      // A root's chain is `[]`, never null, so null is refused with every other shape.
+      for (const ancestors of ["CORE-1", [2, 1], null, { parent: "CORE-2" }]) {
+        expect(schema.safeParse({ ...payload, ancestors }).success, JSON.stringify(ancestors)).toBe(
+          false
+        );
+      }
+    });
+  }
+
+  for (const { type, schema, frame } of BUS) {
+    test(`the bus reading of ${type} keeps the chain, and reads a frame that names none`, () => {
+      expect(schema.parse({ ...frame, ancestors: CHAIN })).toEqual({ ...frame, ancestors: CHAIN });
+      expect(schema.parse({ ...frame, ancestors: [] })).toEqual({ ...frame, ancestors: [] });
+      expect(schema.parse(frame)).toEqual(frame);
+    });
+  }
+
+  test("every payload the server stores for the three events reads as written, and on the bus keeps its chain", () => {
+    // Written by the server's own test from the events table (envoy's api package,
+    // TestDocumentEventsNameTheirIssueAncestors under -update): a grandchild's, a root's and a
+    // project's document.
+    const stored: ReadonlyArray<{
+      readonly owner: string;
+      readonly type: string;
+      readonly payload: { readonly ancestors?: readonly string[] };
+    }> = documentEventAncestors.events;
+    expect(new Set(stored.map(({ type }) => type))).toEqual(
+      new Set(WRITTEN.map(({ type }) => type))
+    );
+    expect(stored.some(({ payload }) => (payload.ancestors?.length ?? 0) > 0)).toBe(true);
+    for (const { owner, type, payload } of stored) {
+      const written = WRITTEN.find((each) => each.type === type);
+      expect(written?.schema.parse(payload), `${owner}'s ${type}`).toEqual(payload);
+      const bus = BUS.find((each) => each.type === type);
+      if (bus !== undefined) {
+        const read = bus.schema.parse(payload) as { readonly ancestors?: readonly string[] };
+        expect(read.ancestors, `${owner}'s ${type} on the bus`).toEqual(payload.ancestors);
+      }
+    }
+  });
+
+  test("reads a removal's document with its versions null, as every stored removal holds it, and no created one so", () => {
+    const removed = { ...DOCUMENT, versions: null };
+    expect(ArtifactRemovedEventPayloadSchema.parse({ artifact: removed })).toEqual({
+      artifact: removed,
+    });
+    expect(WrittenArtifactCreatedEventPayloadSchema.safeParse({ artifact: removed }).success).toBe(
+      false
+    );
+  });
 });
 
 test("keeps the thread logins on comment, message and ask event payloads", () => {

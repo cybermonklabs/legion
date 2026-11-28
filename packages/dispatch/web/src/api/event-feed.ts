@@ -116,18 +116,25 @@ export function markAskThreadsSeededByAnInFlightInbox(
 }
 
 /**
- * The batch without the repeats of a target that has no `when`: events on one issue each push
- * the same targets, and every copy past the first is one more full-cache `findAll` at the flush
- * that reaches nothing the first did not. A target with a `when` always stays, since its
- * predicate cannot be compared by key. First-seen order is kept.
+ * The batch without the repeats of a target: events on one issue each push the same targets, and
+ * every copy past the first is one more full-cache `findAll` at the flush that reaches nothing
+ * the first did not, and, for a target with a `when`, one more run of its check on each query it
+ * reaches. Two targets with no `when` are repeats where their keys are equal, and two with a
+ * `when` where their keys and their identities (`same`) are: they reach the same queries with the
+ * same check. A target with a `when` and no identity always stays, since its predicate cannot be
+ * compared. The first of each is kept, in first-seen order.
  */
-function dedupeRefreshTargets(targets: readonly RefreshTarget[]): RefreshTarget[] {
+export function dedupeRefreshTargets(targets: readonly RefreshTarget[]): RefreshTarget[] {
   const seen = new Set<string>();
   return targets.filter((target) => {
-    if (target.when !== undefined) {
+    if (target.when !== undefined && target.same === undefined) {
       return true;
     }
-    const key = `${target.exact === true} ${JSON.stringify(target.queryKey)}`;
+    const key = JSON.stringify([
+      target.exact === true,
+      target.queryKey,
+      target.when === undefined ? null : target.same,
+    ]);
     if (seen.has(key)) {
       return false;
     }

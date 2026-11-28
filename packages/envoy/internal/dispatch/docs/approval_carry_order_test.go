@@ -39,7 +39,7 @@ var orderAgent = model.Actor{Kind: "session", ID: "session-0123456789abcdef"}
 func queueVersionEvent(ctx context.Context, service *Service, issue, artifactID string, version model.Version, stated graphstore.Uncaused, who model.Actor) error {
 	event := model.Event{
 		IssueKey: &issue, Type: "artifact.version", Actor: who,
-		Payload: ArtifactVersionEventPayload(artifactID, "document.md", version, nil, model.ReferenceChanges{}),
+		Payload: ArtifactVersionEventPayload(artifactID, "document.md", version, nil, model.ReferenceChanges{}, nil),
 	}
 	sink := eventSink(ctx)
 	return ledgerFrom(ctx).Queue(func(b *store.WriteBatch) error {
