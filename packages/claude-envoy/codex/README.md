@@ -8,12 +8,11 @@ routed to it arrive in its conversation, and its `dispatch` tool runs the `dispa
 the session.
 It ships the Dispatch skills.
 
-That holds for a session in a `codex` process of its own, such as the terminal on Codex 0.154.0
-or `codex exec`.
-Codex's shared app server runs several sessions in one process (`codex agents`, a plain `codex`
-that joins a running one, and on Codex 0.170.0 every terminal session), and there the plugin
-registers no session with Envoy: such a session gets no Envoy messages and does not show on the
-Agents page, though its `dispatch` tool and its Dispatch hooks still work.
+Trust the plugin's hooks when Codex asks. Envoy registers each thread after its first prompt,
+including plain `codex` and `codex agents` threads on the shared app server. Each shared thread
+gets its own messages, leaves the Agents page when Codex unloads it, and reappears under the same
+id when resumed. Sessions in their own process, such as `codex --no-daemon` or `codex exec`, also
+register.
 
 ```bash
 codex plugin marketplace add cybermonklabs/legion

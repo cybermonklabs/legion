@@ -14,7 +14,10 @@ import { readdir } from "node:fs/promises"
 import { join, resolve } from "node:path"
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories"
 import {
+  acceptingCodexOwner,
   currentOwner,
+  hasStandbyServer,
+  markCodexServerStopping,
   type ProcessProbe,
   registerServer,
   serverAlive,
@@ -101,6 +104,17 @@ function rowBudget(): () => number {
 describe("the owner of a codex process's Envoy session", () => {
   const root = temporaryDirectory("codex-owner")
 
+  test("a departing owner keeps the election until it finishes but stops accepting records", async () => {
+    const owners = join(root, "departing")
+    const owner = await registerServer(owners, process.pid, processStarted(process.pid) ?? null)
+    expect(await acceptingCodexOwner(owners)).toEqual(owner)
+    await markCodexServerStopping(owners, owner)
+    expect(await currentOwner(owners)).toEqual(owner)
+    expect(await acceptingCodexOwner(owners)).toBeUndefined()
+    await unregisterServer(owners, owner)
+    expect(await readdir(owners)).toEqual([])
+  })
+
   test("is the live server that published first, whatever the clock says", async () => {
     const directory = join(root, "a")
     const first = await registerServer(directory, 101, "s101")
@@ -110,6 +124,11 @@ describe("the owner of a codex process's Envoy session", () => {
     expect((await currentOwner(directory, both))?.pid).toBe(101)
     expect(await stillOwner(directory, first, both)).toBe(true)
     expect(await stillOwner(directory, second, both)).toBe(false)
+    expect(await hasStandbyServer(directory, first, both)).toBe(true)
+    expect(await hasStandbyServer(directory, first, probeOf({ 101: "s101" }))).toBe(false)
+    expect(
+      await hasStandbyServer(directory, first, probeOf({ 101: "s101", 102: "reused-pid" })),
+    ).toBe(false)
     // The first is gone: the second owns. No server removes another's entry.
     expect((await currentOwner(directory, probeOf({ 102: "s102" })))?.pid).toBe(102)
     await unregisterServer(directory, second)

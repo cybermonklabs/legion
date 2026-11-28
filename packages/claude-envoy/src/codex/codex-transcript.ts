@@ -1,6 +1,7 @@
 import { type FSWatcher, watch } from "node:fs"
 import { open } from "node:fs/promises"
 import { join } from "node:path"
+import { threadIdShape } from "./codex-thread-id"
 
 /**
  * What a Codex session's transcript says, one line at a time.
@@ -340,12 +341,6 @@ const foundTranscripts = new Map<string, string>()
 const missedTranscripts = new Map<string, number>()
 /** How long a thread `findTranscript` found no transcript for is not looked for again. */
 const TRANSCRIPT_MISS_MS = 30_000
-
-/** Whether `id` has the shape of a Codex thread id: letters, digits and hyphens, nothing a path
- *  or a glob could read otherwise. */
-export function threadIdShape(id: string): boolean {
-  return /^[0-9A-Za-z-]+$/.test(id)
-}
 
 export async function findTranscript(home: string, threadId: string): Promise<string | null> {
   if (!threadIdShape(threadId)) return null
