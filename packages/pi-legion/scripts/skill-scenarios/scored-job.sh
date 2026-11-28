@@ -157,9 +157,13 @@ else
   [ -n "${SKILL_SCENARIOS_MODEL_ID:-}" ] || refuse "SKILL_SCENARIOS_MODEL_ID is unset: name the model of the $family family's runs"
   provider=gateway api=anthropic-messages base=${SKILL_SCENARIOS_GATEWAY_URL%/}
   [ "$family" = claude ] || provider=gateway-openai api=openai-responses base=$base/v1
+  # A deployment's GPT block is named openai, whose rule in Oh My Pi turns strict tool schemas on,
+  # so a tool's optional fields go out nullable. Oh My Pi reads a gateway URL under any other name
+  # as no strict host, so this block asks for strict itself, as the agents of a deployment get it.
   jq -n --arg provider "$provider" --arg api "$api" --arg base "$base" --arg model "$SKILL_SCENARIOS_MODEL_ID" \
     --arg key "!${SKILL_SCENARIOS_MODEL_KEY_COMMAND:-/work/bin/model-token}" \
-    '{providers: {($provider): {baseUrl: $base, api: $api, apiKey: $key, authHeader: true, models: [{id: $model}]}}}' \
+    '{providers: {($provider): ({baseUrl: $base, api: $api, apiKey: $key, authHeader: true, models: [{id: $model}]}
+      + (if $api == "openai-responses" then {compat: {supportsStrictMode: true}} else {} end))}}' \
     >"$SKILL_SCENARIOS_WORK/providers.yml"
   export LEGION_E2E_MODEL_ROUTE=provider LEGION_E2E_MODEL_PROVIDER=$provider LEGION_E2E_MODEL_PROVIDER_MODEL=$SKILL_SCENARIOS_MODEL_ID
   export LEGION_E2E_MODEL_PROVIDER_FILE=$SKILL_SCENARIOS_WORK/providers.yml
