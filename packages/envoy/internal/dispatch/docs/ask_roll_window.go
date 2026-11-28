@@ -33,14 +33,14 @@ import (
 // that still reads an ask's state and answer from the attributes of its block: one whose
 // registered schema version is below the version at which answers left the markdown
 // (answersLeftTheMarkdown). That version is fixed, the one this release introduced: the release
-// before this one reads schema version 6 and this release 7, so a process of it makes two builds,
+// before this one reads schema version 7 and this release 8, so a process of it makes two builds,
 // and so does a process of a build older still, which registers no schema number at all and
 // whose row holds the column's default, 0 (processes.Process.PredatesFleetColumns). A process at
 // that version or past it reads every answer from the server, as this build does, so to this
 // guard the fleet is one build however many commits and schema versions it serves: a later
-// release, at the version dispatch://INFRA-5571 sets next, which still holds this guard, reads a
-// process of this release as one of its own fleet rather than as a reader of block attributes,
-// and writes them back into nobody's documents.
+// release, at the version the next slice sets, which still holds this guard, reads a process of
+// this release as one of its own fleet rather than as a reader of block attributes, and writes
+// them back into nobody's documents.
 //
 // The rule reads the schema numbers, never the commits among themselves, for two reasons. This
 // process writes documents before it registers - main restores the decided wordings, repairs the

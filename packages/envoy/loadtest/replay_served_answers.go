@@ -71,8 +71,8 @@ func answerDigest(state, user string, selected []string, text *string) string {
 // row names one - the newest tuple of each, while it asserts, read as every statement that reads
 // the answer off the node reads it, from public's table (asks.NodeAnswerTuplesIn), since every
 // statement of this package names the schema of each Dispatch table it reads, as a schema named
-// as the database's login shadows public for every unqualified name (dispatch://INFRA-988) - and
-// open where the node holds no state; the row's own state and answer where the row names no node.
+// as the database's login shadows public for every unqualified name - and open where the node
+// holds no state; the row's own state and answer where the row names no node.
 var servedAnswersQuery = `
 select a.block_id,
        case when a.node_kind is null then a.state else coalesce(f.state, 'open') end,

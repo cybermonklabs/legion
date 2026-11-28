@@ -32,6 +32,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
@@ -128,8 +129,8 @@ func (p *dispatchPair) name(one *dispatchProcess) string {
 // dashboard build, embedder, file store and owner lock protocol of the newest process of the build
 // beside, so it is admitted beside this tree's processes and leaves the owner lock out of its
 // legacy mode, as the base release, which registers store.OwnerLockProtocol too, does; and with
-// the base release's own schema numbers (earlierBuildSchemaVersion, earlierBuildSchemaCreatable),
-// as a process of it registers them. So
+// the base release's own schema numbers (pmdoctest.ReleaseBeforeSchemaVersion,
+// pmdoctest.ReleaseBeforeSchemaCreatable), as a process of it registers them. So
 // this tree's fleet guard (docs' anotherBuildServes) reads two builds: the roll window, in which
 // this tree keeps the server-owned attributes of each ask block in step with its asks row for the
 // earlier build's pages (docs' rollWindowAskAttributes). A page that
@@ -155,7 +156,7 @@ func registerOtherBuild(t *testing.T, ctx context.Context, databaseURL, commit, 
 			schema_version, schema_creatable, embedder_identity, file_store, owner_lock_protocol)
 		select $1::uuid, $2, dashboard_build, signing_keys, now(), now(), $4, $5, embedder_identity, file_store, owner_lock_protocol
 		from server_processes where commit = $3 order by heartbeat_at desc limit 1
-	`, instance, commit, beside, earlierBuildSchemaVersion, earlierBuildSchemaCreatable)
+	`, instance, commit, beside, pmdoctest.ReleaseBeforeSchemaVersion, pmdoctest.ReleaseBeforeSchemaCreatable)
 	if err != nil || tag.RowsAffected() != 1 {
 		t.Fatalf("register a process of the build %s beside the build %q: %v (%d rows)", commit, beside, err, tag.RowsAffected())
 	}
@@ -213,15 +214,6 @@ func registerOtherBuild(t *testing.T, ctx context.Context, databaseURL, commit, 
 // process of an earlier build: one no build of this tree is stamped with, as headBuildStamp is the
 // basebuild suite's head's.
 const earlierBuildStamp = "1149114911491149114911491149114911491149"
-
-// earlierBuildSchemaVersion and earlierBuildSchemaCreatable are the schema numbers a process of
-// the base release registers (its pmdoc/schema/blocks.json is version 6, one below this tree's 7,
-// and creates nothing past version 5), which registerOtherBuild's row carries, so the fleet guard
-// reads the real boundary, version 6 against this tree's 7.
-const (
-	earlierBuildSchemaVersion   = 6
-	earlierBuildSchemaCreatable = 5
-)
 
 // ───── the API a row drives ─────────────────────────────────────────────────
 

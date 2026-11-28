@@ -1611,7 +1611,7 @@ test("register_gate on a basis waits for the saved version to record an answered
 
 // A Dispatch of the release before writes a changed answer at once onto the source ask and onto the
 // source block's live opening line. A copy's opening lines, live and in its latest version, keep
-// the earlier answer until the copy's own settlement writes it: INFRA-5570's tester observed this
+// the earlier answer until the copy's own settlement writes it: the slice's tester observed this
 // on envoy-dispatch built at main e40deb104a, with the copy's live opener holding the earlier
 // answered_at while GET /api/v1/asks/{id} and the source's live opener held the new one. The
 // copy's latest version does not record the answer the server holds, and the version that copy's

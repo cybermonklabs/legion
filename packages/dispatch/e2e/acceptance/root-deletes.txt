@@ -1,5 +1,5 @@
 # What this change keeps for one release, for the root's own pull request to delete
-# (dispatch://INFRA-1150's pull request, which lands after this one).
+# (#4173, which lands after this one).
 #
 # One line for each kept thing: its id, a tab, the thing, a tab, and what holds it - the condition
 # the root's architect reads before deleting it, and the tests that hold it now. Every place in the

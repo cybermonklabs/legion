@@ -16,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -710,30 +711,22 @@ func requireSettledAtLatestVersion(t *testing.T, service *Service, artifactID st
 // serveTwoBuilds registers in server_processes, the registry the document service reads the fleet
 // from (processes.Live), a live process of each of two builds for the rest of the test, as a roll
 // serves them: one of the release before, with the schema numbers a process of it registers
-// (baseSchemaVersion, baseSchemaCreatable), and one of this build, with its own; each at the owner
-// lock protocol both builds register (store.OwnerLockProtocol). The fleet guard reads a process
-// below this build's schema version as a build whose pages read an ask's state from its block
-// (anotherBuildServes), so the document service then keeps the server-owned attributes of each
-// ask block in step with its asks row (rollWindowAskAttributes) and writes an issue's close and
-// reopen into its asks' blocks (WriteIssueAskStates). A test's editor presents no
-// schema_creatable, so its creatable version is 1, at most the lowest version the fleet reads, and
-// its document socket stays writable beside the release before (schemaFleet.admits).
+// (pmdoctest.ReleaseBeforeSchemaVersion, pmdoctest.ReleaseBeforeSchemaCreatable), and one of this
+// build, with its own; each at the owner lock protocol both builds register
+// (store.OwnerLockProtocol). The fleet guard reads a process below this build's schema version as
+// a build whose pages read an ask's state from its block (anotherBuildServes), so the document
+// service then keeps the server-owned attributes of each ask block in step with its asks row
+// (rollWindowAskAttributes) and writes an issue's close and reopen into its asks' blocks
+// (WriteIssueAskStates). A test's editor presents no schema_creatable, so its creatable version
+// is 1, at most the lowest version the fleet reads, and its document socket stays writable beside
+// the release before (schemaFleet.admits).
 func serveTwoBuilds(t *testing.T, database *store.Store) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
 		insert into server_processes (instance, commit, schema_version, schema_creatable, heartbeat_at, owner_lock_protocol)
 		values (gen_random_uuid(), 'the-release-before', $1, $2, now() + interval '1 hour', $5),
 		       (gen_random_uuid(), 'this-release', $3, $4, now() + interval '1 hour', $5)
-	`, baseSchemaVersion, baseSchemaCreatable, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol); err != nil {
+	`, pmdoctest.ReleaseBeforeSchemaVersion, pmdoctest.ReleaseBeforeSchemaCreatable, pmdoc.SchemaVersion(), pmdoc.SchemaCreatable(), store.OwnerLockProtocol); err != nil {
 		t.Fatalf("register a live process of each of two builds: %v", err)
 	}
 }
-
-// baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
-// before registers: the base release's pmdoc/schema/blocks.json is version 6, one below this
-// build's 7, and creates nothing past version 5. So a fleet holding one drives the fleet guard at
-// the real boundary, version 6 against this build's 7.
-const (
-	baseSchemaVersion   = 6
-	baseSchemaCreatable = 5
-)

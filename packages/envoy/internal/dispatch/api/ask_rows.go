@@ -247,7 +247,7 @@ func askNodeRelationOf(ask, kind string) string {
 // across owners picks by it beside the row's state (askOpenOf). A read that decides a transition
 // reads the row's state instead, as the one writer of an answer state checks the state it moves
 // from against the row (asks.Settle), and so do the open counts (agentOpenAskCounts,
-// projectListQuery, issueSummaryJoins, priorityCountsQuery).
+// projectListQuery, issueSummaryJoins, priorityReadQuery).
 func askNodeStateOf(ask string) string {
 	return `case when ` + ask + `.node_kind is null then ` + ask + `.state else coalesce(` +
 		askNodeValueOf(ask, graphstore.TupleAnswerState) + `, '` + asks.StateOpen + `') end`

@@ -10,6 +10,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
@@ -34,7 +35,7 @@ func TestTheFleetGuardReadsAnotherBuildByTheSchemaVersionTheProcessesRegister(t 
 		commit  string
 		version *int
 	}
-	current, base := pmdoc.SchemaVersion(), baseSchemaVersion
+	current, base := pmdoc.SchemaVersion(), pmdoctest.ReleaseBeforeSchemaVersion
 	next := current + 1
 	for _, test := range []struct {
 		name      string

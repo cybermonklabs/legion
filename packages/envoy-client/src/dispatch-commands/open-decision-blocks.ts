@@ -107,11 +107,11 @@ export const OPEN_BLOCK_WAIVED =
  * server, which answers with that approval.
  *
  * The `legion` tool makes the same test before `register_gate` opens a root's design-gate step on
- * an ancestor's approval, which no person's review of the root's own document stands behind
- * (dispatch://INFRA-3320, R1), with `decidedBy: "version"` so an answered block waits for the
- * saved version that holds the answer, who gave it and when, before the basis registers: a person
- * may change an answer while its ask stays answered, and the version settlement then writes ends
- * the basis. `refusal` carries that rule and each caller's own words around the blocks named.
+ * an ancestor's approval, which no person's review of the root's own document stands behind, with
+ * `decidedBy: "version"` so an answered block waits for the saved version that holds the answer,
+ * who gave it and when, before the basis registers: a person may change an answer while its ask
+ * stays answered, and the version settlement then writes ends the basis. `refusal` carries that
+ * rule and each caller's own words around the blocks named.
  */
 export async function refuseOpenDecisionBlocks(
   client: DispatchClient,
