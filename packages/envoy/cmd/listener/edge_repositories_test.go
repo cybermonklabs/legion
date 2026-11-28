@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -1494,36 +1495,42 @@ func TestAnEdgePruneLogsARunOfFailedListsOnceAndItsEnd(t *testing.T) {
 // A broker whose repository read never answers costs the session no more than one that answers
 // 503 at once: the heartbeat of a session following a GitHub topic is refused 503
 // repositories_unknown, and its session entry is still renewed, since the read ends
-// edgeRegistrationReserve before the registration's budget does. The broker stand-in answers only
-// when the read's own context ends, so the read takes all the time it is given, and the renewal is
-// told from no write by the entry's revision, with no clock read. Control: with the read given the
-// whole budget, the renewal runs on a context that has ended and the entry is not renewed.
+// edgeRegistrationReserve before the registration's budget does. The broker stand-in waits for
+// the read's context to end. The test advances the listener's clock only after it has the read's
+// deadline. A read on the wall clock or one given the whole budget arms no deadline at that moment.
 func TestAHungRepositoryReadStillRenewsTheEdgeSession(t *testing.T) {
 	t.Parallel()
 	rig := newEdgeRig(t)
+	// Let the initial repository refresh finish before replacing the route's reader. The rig
+	// does not refresh again unless the test sends another tick.
+	rig.tick(t)
+	// Keep the setup registration's deadline in the future even in the wall-clock control.
+	fake := clocktest.New(time.Now().Add(time.Hour))
+	rig.deps.clock = fake
 	const sessionID, pub = "ses_edge_hung_broker", "notifications.github.acme.pub.>"
 	token := rig.personToken(sessionID, "PRIV")
 	requireStatus(t, rig.subscribe(t, token, sessionID, pub), http.StatusOK, "the registration following acme/pub")
 	_, registered := storedEdgeSessionRecord(t, rig, sessionID)
 
-	var bounded atomic.Bool
 	reader := newEdgeRepositories("http://broker.example", listenerBrokerAccount(edgeAccountToken), rig.projects,
 		newEdgeWithheldCounter(metrics.New()), logging.New("test"))
 	reader.client = &http.Client{Transport: edgeBrokerTransport(func(request *http.Request) (*http.Response, error) {
-		_, hasDeadline := request.Context().Deadline()
-		bounded.Store(hasDeadline)
 		<-request.Context().Done()
 		return nil, request.Context().Err()
 	})}
 	rig.deps.repositories = reader
-	// edgeTopicHold.answer uses context.WithDeadline, not the deps clock. Shorten
-	// the read's wall-clock budget without changing the renewal or refusal checks.
-	rig.deps.registrationBudget = edgeRegistrationReserve + 200*time.Millisecond
-	heartbeat := rig.subscribe(t, token, sessionID, pub)
+	request := brokerTokenRequest(t, rig.caller, http.MethodPost, "/v1/interests/subscribe", token, consumerRegistration(sessionID, "epoch-1", pub))
+	heartbeat := httptest.NewRecorder()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		rig.handler.ServeHTTP(heartbeat, request.WithContext(t.Context()))
+	}()
+	deadline := fake.Now().Add(sendRequestBudget - edgeRegistrationReserve)
+	fake.AwaitArmedAt(t, "the heartbeat's repository read deadline", deadline)
+	fake.Set(deadline)
+	testwait.Receive(t, "the heartbeat to answer after the repository read ends", done)
 	requireEdgeRefusal(t, heartbeat, http.StatusServiceUnavailable, "repositories_unknown", "the heartbeat while the broker never answers")
-	if !bounded.Load() {
-		t.Errorf("the repository read of the heartbeat had no deadline: a broker that never answers holds the registration for as long as its caller waits")
-	}
 	if _, got := storedEdgeSessionRecord(t, rig, sessionID); got <= registered {
 		t.Fatalf("the heartbeat while the broker never answers left the session entry at revision %d, the registration's %d: the entry ages out", got, registered)
 	}

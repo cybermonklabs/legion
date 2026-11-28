@@ -3647,14 +3647,15 @@ func subscribeHandler(d *listenerDeps, machineID string, logger *logging.Logger)
 		// consumer calls: each pass's create or update and the repair after the entry
 		// (sendRequestBudget, which says why it is shorter than the client's attempt, or a test's
 		// registrationBudget).
-		budgetEnds := d.clk().Now().Add(d.registrationBudgetOr())
-		ctx, cancel := d.clk().WithDeadline(r.Context(), budgetEnds)
+		clk := d.clk()
+		budgetEnds := clk.Now().Add(d.registrationBudgetOr())
+		ctx, cancel := clk.WithDeadline(r.Context(), budgetEnds)
 		defer cancel()
 		// At the edge each topic the registration names is held to the token's projects, and a
 		// GitHub topic to the repositories their issues resolve to, read fresh for it within this
 		// route's budget, before anything is planned or stored; each plan's topics, the stored
 		// row's among them, are held the same way below (edgeTopicHold).
-		hold := newEdgeTopicHold(r, d.repositories, body.SessionID, logger)
+		hold := newEdgeTopicHold(r, d.repositories, body.SessionID, logger, clk, budgetEnds)
 		topicRefusal, err := hold.refusal(ctx, body.Topics)
 		if err != nil {
 			hold.answerRepositoryOutage(ctx, w, d.registry, d.sessions, machineID, err)
