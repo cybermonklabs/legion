@@ -165,7 +165,10 @@ function scopesAfterChoice<Id extends DispatchTokenScope>(
  *  they belong to, so the boxes of one row are told from another row's by name. `disabled` is for
  *  boxes that cannot apply now: a revoked token's, or the mint form's while its mint is out.
  *  `held` is for a row's boxes while a scope change is out: `aria-disabled`, never disabled, so
- *  the box the reader pressed keeps the focus, and a change of any of them then sends nothing. */
+ *  the box the reader pressed keeps the focus, and a change of any of them then sends nothing. A
+ *  held box is dimmed, as the browser paints a disabled one; a box already disabled keeps the
+ *  browser's own look alone, so a revoked token's boxes do not change while another row's change
+ *  is out. */
 function TokenScopeChoices<Id extends DispatchTokenScope>({
   chosen,
   disabled,
@@ -192,7 +195,7 @@ function TokenScopeChoices<Id extends DispatchTokenScope>({
               aria-disabled={held || undefined}
               aria-label={`${scope.label} (${subject})`}
               checked={chosen.includes(scope.id)}
-              className={`size-4 shrink-0 rounded ${checkboxAccent}`}
+              className={`size-4 shrink-0 rounded ${checkboxAccent}${disabled ? "" : " aria-disabled:opacity-50"}`}
               disabled={disabled}
               onChange={(event) => {
                 // Held, a change writes nothing, and the box, controlled, shows the set as it was.
