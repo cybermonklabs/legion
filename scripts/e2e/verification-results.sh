@@ -49,9 +49,12 @@
 #
 # Then the one-pass phases run (one_pass_phase). Each one has the driver make the writes that need
 # a server, stops the server, has the driver write its fixture while no server runs, starts the
-# server with a pass at its start and the next pass an hour away, and has the driver assert after
-# that one pass. A phase that reads before its pass first starts the server with no pass at its
-# start, has the driver read, and stops it again. The phase `boundary` checks that boundary
+# server with a pass at its start and its reconcile every hour, and has the driver assert after
+# that one pass; the next tick falls within the hour, and the period that pass served refuses it
+# unless a new period of the lease begins between the two (the driver's section "the tooling of one
+# complete pass"). A phase that reads before its pass first takes the reconcile's lease, starts the
+# server with no pass at its start, which so runs none (hold_reconcile_lease), has the driver read,
+# stops it again and gives the lease back. The phase `boundary` checks that boundary
 # itself: the two records of the pass in duty_passes, the lease free, and one attribution line in
 # the log. The phase `k-attribution` stores two rows as the release before writes them, with no
 # texts, and after one pass reads the issue that each row of the attribution case records. The
@@ -282,6 +285,12 @@ nats_store=''
 control_bin=''
 case_bin=''
 listener_built=''
+# The pid of the psql session that holds the delivery reconcile's lease (hold_reconcile_lease), ''
+# while the run holds no lease, and the descriptors the run writes its statements to and reads
+# their answers from.
+lease_holder_pid=''
+lease_in=''
+lease_out=''
 
 # cleanup stops what the run started and prints the run's last line through lib/run-verdict.sh,
 # which exits with rc: the script's own status for EXIT, 128 plus the signal's number for INT and
@@ -299,6 +308,7 @@ cleanup() {
   stop_pid "$fake_github_pid"
   stop_pid "$fake_envoy_pid"
   stop_pid "$nats_pid"
+  stop_pid "$lease_holder_pid"
   if [ -n "$work" ]; then
     if run_passed "$rc"; then
       rm -rf "$work"
@@ -612,7 +622,7 @@ begin identity
 # packages/dispatch/e2e/run-server.sh runs it the same way), and its first pass runs as the server
 # starts: the cases' answers hold while passes run beside them, as passes run beside every read of
 # a deployment. A case that reads the answers of exactly one pass is a one-pass phase below, which
-# starts the server again with the next pass an hour away.
+# starts the server again with a pass at its start and its reconcile every hour.
 agent_token=$(openssl rand -hex 24)
 app_pem=$(openssl genrsa 2048 2>/dev/null) || fail "could not generate the throwaway App key"
 dispatch_url=http://127.0.0.1:$dispatch_port
@@ -704,16 +714,56 @@ stop_dispatch() {
   until_true 30 "envoy-dispatch to stop listening on $dispatch_port" dispatch_port_closed
 }
 
+# hold_reconcile_lease takes the delivery reconcile's lease (delivery.ReconcileLease) on a psql
+# session of the run's own, a coprocess, and keeps it until free_reconcile_lease gives it back.
+# The lease is a session's two-key advisory lock, the namespace "LOOP" (duty.leaseNamespace) and
+# the hashtext of the lease's name; duty.Exclusive skips each tick whose lease another session
+# holds. So a server started while the run holds it runs no pass, wherever its ticks fall. A start
+# with no pass at its start does not give that alone: duty.RunJittered draws the first wait in
+# [0, interval), so a server whose reconcile ticks every hour can run a pass in its first seconds,
+# and one did, inside older-rows' reads before its pass. one_pass_phase takes the lease before the
+# start whose driver reads before the pass, and gives it back after the stop.
+hold_reconcile_lease() {
+  local took=''
+  coproc lease_psql { exec psql "$database_url" -X -q -tA -v ON_ERROR_STOP=1 2>&1; }
+  lease_holder_pid=$!
+  lease_in=${lease_psql[1]} lease_out=${lease_psql[0]}
+  record_start "$lease_holder_pid" || started_at[$lease_holder_pid]=gone
+  printf '%s\n' "select pg_try_advisory_lock($reconcile_lease);" >&"$lease_in"
+  read -r -t 30 took <&"$lease_out" || true
+  [ "$took" = t ] || fail "could not take the delivery reconcile's lease: psql answered '$took'"
+}
+# The two keys of the lease: duty.leaseNamespace, "LOOP", and the hashtext of its name.
+reconcile_lease="x'4c4f4f50'::int, hashtext('delivery-reconcile')"
+
+# free_reconcile_lease gives back the lease that hold_reconcile_lease took, and ends its session.
+# A session that does not answer the unlock within 30 s is stopped (stop_pid) before the run fails,
+# so the run ends rather than wait on a client that may never read the \q.
+free_reconcile_lease() {
+  local freed=''
+  printf '%s\n' "select pg_advisory_unlock($reconcile_lease);" >&"$lease_in"
+  read -r -t 30 freed <&"$lease_out" || true
+  if [ "$freed" != t ]; then
+    stop_pid "$lease_holder_pid"
+    lease_holder_pid=''
+    fail "could not give back the delivery reconcile's lease: psql answered '$freed'"
+  fi
+  printf '%s\n' '\q' >&"$lease_in"
+  wait "$lease_holder_pid" 2>/dev/null || true
+  lease_holder_pid=''
+}
+
 # one_pass_phase PHASE [--read-before-the-pass | --store-every-2s] runs the driver's phase PHASE
 # around one complete pass of the delivery reconcile (the driver's section "the tooling of one
 # complete pass"). First the driver makes the phase's writes that need a server (--phase
 # PHASE-prepare), while the server of the step before still runs; with --store-every-2s, through
 # the server started again with its reconcile every 2 seconds, so its own passes read what its
 # intake stored in those writes. Then the shell stops the server by its recorded pid and has the
-# driver write the phase's fixture while no server runs. With --read-before-the-pass, it starts the
-# server with no pass at its start and the next pass an hour away, has the driver read the fixture
-# through it (--phase PHASE-before), and stops it again. Then it starts the server with a pass at
-# its start and the next pass an hour away, and has the driver assert after that one pass. A phase
+# driver write the phase's fixture while no server runs. With --read-before-the-pass, it takes the
+# reconcile's lease, starts the server with no pass at its start, which so runs none
+# (hold_reconcile_lease), has the driver read the fixture through it (--phase PHASE-before), stops
+# it again and gives the lease back. Then it starts the server with a pass at its start and its
+# reconcile every hour, and has the driver assert after that one pass. A phase
 # whose assert the driver skipped (VERIFICATION_RESULTS_E2E_ONLY) prints `skip PHASE`, never `ok`.
 one_pass_phase() {
   begin "$1"
@@ -726,10 +776,12 @@ one_pass_phase() {
   stop_dispatch
   driver --phase "$1-fixture"
   if [ "${2:-}" = --read-before-the-pass ]; then
+    hold_reconcile_lease
     start_dispatch 1h ''
-    note "envoy-dispatch started with no pass at its start, its delivery reconcile every 1h"
+    note "envoy-dispatch started with no pass at its start, and the run holds the reconcile's lease, so it runs none"
     driver --phase "$1-before"
     stop_dispatch
+    free_reconcile_lease
   fi
   start_dispatch 1h
   note "envoy-dispatch started again, its delivery reconcile every 1h after its start pass"
@@ -744,9 +796,11 @@ one_pass_phase() {
 
 # older_rows_upgrade runs older-rows on a database the release before wrote (the driver's section
 # "older-rows" says what each build writes there). The release before's build starts on the
-# emptied database and migrates it, with no pass at its start and its next an hour away, and the
-# driver writes through it: the project, the issues L(j), the delivery settings, the events of 260
-# merged pull requests, under the repository's old name and then its new one, and the issues D(j).
+# emptied database and migrates it, with no pass at its start, and the driver writes through it:
+# the project, the issues L(j), the delivery settings, the events of 260 merged pull requests,
+# under the repository's old name and then its new one, and the issues D(j). A pass of its own can
+# still come in its first hour (duty.RunJittered); the pass of its next start resolves the rows
+# again, and the driver checks every row that pass leaves.
 # It starts again with a pass at its start, which the driver waits for before it makes the issues
 # N(j), and stops. Then older-rows' two phases run on this checkout's build, the first with a read
 # before its pass. Last, the cases get a stack of their own (fresh_stack), so they and the phases
@@ -833,7 +887,7 @@ head_check() {
 }
 
 # first_start_tip runs first-start-tip (the driver's section "first-start-tip"), each start of it
-# with the next pass of its delivery reconcile an hour away, on a stack of its own (fresh_stack).
+# with its delivery reconcile every hour, on a stack of its own (fresh_stack).
 # A server with no GitHub App, and so no delivery intake, starts and makes the stream, as a
 # deployment's stream stands before the first start that runs an intake, and stops. The driver
 # publishes the events of two pull requests while no server runs (backlog). The server starts

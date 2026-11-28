@@ -8,10 +8,11 @@
 // lists, and every other value of a text flag is kept byte for byte.
 //
 // The shell script runs the driver again for each one-pass phase (onePassPhases), in up to four
-// halves: `--phase <phase>-prepare` while the server of the step before still runs, with no pass
-// to come; `--phase <phase>-fixture` while no server runs; `--phase <phase>-before` through a
-// server that started with no pass, where the shell asks for it; and `--phase <phase>-assert`
-// after it starts the server again with a start pass and an interval of one hour. That is the
+// halves: `--phase <phase>-prepare` while the server of the step before still runs (step 5 of the
+// section "the tooling of one complete pass" says when it can pass again); `--phase <phase>-fixture`
+// while no server runs; `--phase <phase>-before` through a server that runs no pass, where the shell
+// asks for it; and `--phase <phase>-assert` after it starts the server again with a start pass and
+// an interval of one hour. That is the
 // boundary of one complete pass (prepareOnePass, awaitOnePass). Before its first case the driver
 // checks its counter of pull request reads, and the phase `boundary` checks the boundary of one
 // pass. older-rows has two halves more, which run first, through the release before's build:
@@ -1134,12 +1135,20 @@ function summarise(stopped?: string): never {
 //   2. It deletes the reconcile's records of its passes, and reads the database's clock
 //      (prepareOnePass).
 //   3. The shell starts the server with a pass at its start and an interval of one hour, so that
-//      start pass is the one pass of the phase.
+//      start pass is the phase's pass (step 5 says when another can follow it).
 //   4. The pass ends when a record of the lease appears (awaitOnePass). Step 2 deleted every
 //      record, so the first one is the start pass's. duty.Exclusive records a pass after the pass
 //      runs, and gives the lease back after the record.
-//   5. The driver asserts (`--phase <phase>-assert`). The next tick is an hour away.
-// A record's boundary is the aligned start of its hour, not the end of the pass, so the driver
+//   5. The driver asserts (`--phase <phase>-assert`). The next tick comes at a moment of the first
+//      hour that the start drew (duty.RunJittered), and duty.Exclusive refuses it as served unless
+//      one of the lease's aligned periods (duty.LeasePeriod of the hour, 54 minutes) begins between
+//      the start pass and that tick.
+// A phase that reads before its pass (`--phase <phase>-before`) reads between steps 2 and 3,
+// through a server started with no pass at its start while the shell holds the reconcile's lease
+// (its hold_reconcile_lease): duty.RunJittered draws a start's first wait in [0, interval), so a
+// start with no pass can still tick in its first seconds, and duty.Exclusive skips each tick while
+// another session holds the lease.
+// A record's boundary is the aligned start of its period, not the end of the pass, so the driver
 // does not compare it with the clock that it read in step 2.
 
 /** What one process of the driver leaves for a later one in the state file, by key. */
@@ -1336,9 +1345,10 @@ async function attributionCounts(): Promise<AttributionCounts> {
 }
 
 /** One phase that the shell runs around one complete pass (one_pass_phase), in up to four halves:
- *  `prepare`, the writes that need a server, while the server of the step before still runs and
- *  makes no pass; `fixture`, the writes while no server runs; `before`, the reads through a server
- *  that started with no pass, where the shell asks for them; and `assert`, the case after the
+ *  `prepare`, the writes that need a server, while the server of the step before still runs (step 5
+ *  of the tooling above says when it can pass again); `fixture`, the writes while no server runs;
+ *  `before`, the reads through a server
+ *  that runs no pass, where the shell asks for them; and `assert`, the case after the
  *  start pass, given what awaitOnePass read. `prepare`, `before` and `assert` are parts of the case
  *  `caseName`. `baseOf` names the cases of the seven checks that stand on this phase's writes:
  *  under VERIFICATION_RESULTS_E2E_ONLY, the phase writes for them and asserts nothing.
@@ -3693,7 +3703,7 @@ async function olderRowsFixture(): Promise<void> {
   await resetPullReads();
 }
 
-/** older-rows, before any pass, through a server that started with no pass: each pull request
+/** older-rows, before any pass, through a server that runs no pass: each pull request
  *  with a results row is a basis of the issue that row stores, or of none, #7221 to #7240 too,
  *  which that start's boot pass rewrote from the old name; D(j) names its pull requests with a
  *  timeline row alone as heads Dispatch has not read; and no read of GitHub. */
@@ -4136,10 +4146,11 @@ function readingPull(number: number): FakePullRequest {
 
 /** key-reading-changes, before its fixture, through the server started with its reconcile every 2
  *  seconds: GitHub's answers for its 5,000 pull requests and their merged events; the wait until
- *  the intake has stored each, and then until the passes have read the 5,000 by the batched query,
- *  or each has texts whose commit messages are read; and the reading `dispatch attribution` prints.
- *  The waits are for those facts, whatever the build stores, and fail the case only when a build
- *  stores nothing for 600 s. */
+ *  the intake has stored each, and then until each has texts whose commit messages are read, or
+ *  until no texts row of the 5,000 lacks its messages and the passes have read the 5,000 by the
+ *  batched query; and the reading `dispatch attribution` prints. Each wait gives up after 600 s and
+ *  fails the case then: a build that stores no rows does, and so does one that stores texts and
+ *  never their messages. */
 async function readingStored(): Promise<string | undefined> {
   const pulls: Record<string, FakePullRequest> = {};
   for (let number = readingFirst; number <= readingLast; number++) {
@@ -4183,17 +4194,34 @@ async function readingStored(): Promise<string | undefined> {
     };
     return reads[attributionRepo]?.graphql_pulls ?? 0;
   };
-  const read = () =>
-    countOf(
-      `select count(*) from pull_request_texts where ${range} and commit_messages is not null`
-    );
-  if (
-    !(await awaitTrue(async () => (await batched()) >= 5000 || (await read()) === 5000, 600_000))
-  ) {
-    return `600 s after the server stored them, its passes had read ${await batched()} of the 5,000 pull requests by the batched query, and ${await read()} have texts with their commit messages`;
+  const texts = async () => {
+    const [withMessages = "", withoutMessages = ""] = (
+      await sql(
+        `select count(*) filter (where commit_messages is not null), count(*) filter (where commit_messages is null)
+         from pull_request_texts where ${range}`
+      )
+    ).split("|");
+    return { withMessages: Number(withMessages), withoutMessages: Number(withoutMessages) };
+  };
+  // The fake counts a batched read when it answers it, before the server writes what it answered,
+  // so a count of 5,000 can stand while the rows of the last query, up to FactsBatchSize of them,
+  // still wait for their commit messages. A server stopped then leaves them without, and the pass
+  // at the boundary reads them from GitHub. So the wait is for the rows: each has texts with its
+  // messages, or no texts row lacks its messages and the passes have read the 5,000. A build that
+  // keeps no texts row, as the negative control's, stands the second way. The build under test
+  // writes each head row with its texts (upsertHead), so for it the second way too holds only once
+  // every one of the 5,000 has its messages.
+  const stands = async () => {
+    const { withMessages, withoutMessages } = await texts();
+    return withMessages === 5000 || (withoutMessages === 0 && (await batched()) >= 5000);
+  };
+  if (!(await awaitTrue(stands, 600_000))) {
+    const { withMessages, withoutMessages } = await texts();
+    return `600 s after the server stored them, its passes had read ${await batched()} of the 5,000 pull requests by the batched query; ${withMessages} have texts with their commit messages and ${withoutMessages} texts without them`;
   }
+  const { withMessages, withoutMessages } = await texts();
   note(
-    `the server's passes read ${await batched()} of them by the batched query; ${await read()} have texts with their commit messages`
+    `the server's passes read ${await batched()} of them by the batched query; ${withMessages} have texts with their commit messages and ${withoutMessages} texts without them`
   );
   return readingRecorded();
 }
