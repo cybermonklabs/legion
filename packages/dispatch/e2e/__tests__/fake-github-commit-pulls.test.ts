@@ -98,3 +98,41 @@ test("the REST list of a commit's pull requests is answered in GitHub's pages", 
     await fake.stop();
   }
 });
+
+// GitHub answers a commit the repository does not hold `422 No commit found for SHA` over REST,
+// and null with no error for its alias in the batched query, while a commit it holds answers its
+// list in both (read live on 2026-11-28). A fake that answers an empty list for both reads a
+// commit GitHub never had as one with no pull request.
+test("a commit the repository does not hold answers 422 over REST and null in the batched query", async () => {
+  const fake = await startFakeGitHub();
+  try {
+    expect((await seed(fake.origin)).status).toBeLessThan(300);
+    const absent = "d".repeat(40);
+    const rest = await Bun.fetch(`${fake.origin}/repos/${repository}/commits/${absent}/pulls`);
+    expect(rest.status).toBe(422);
+    const token = await Bun.fetch(`${fake.origin}/app/installations/4209/access_tokens`, { method: "POST" });
+    const { token: bearer } = (await token.json()) as { token: string };
+    const answer = await Bun.fetch(`${fake.origin}/graphql`, {
+      body: JSON.stringify({
+        query:
+          "query($owner: String!, $name: String!) {\n  repository(owner: $owner, name: $name) {\n" +
+          `    c0: object(oid: "${commit}") { ... on Commit { associatedPullRequests(first: 10) { totalCount nodes { ...pullRequestFacts } } } }\n` +
+          `    c1: object(oid: "${absent}") { ... on Commit { associatedPullRequests(first: 10) { totalCount nodes { ...pullRequestFacts } } } }\n` +
+          "  }\n}\nfragment pullRequestFacts on PullRequest { number }\n",
+        variables: { name: "paged", owner: "acme" },
+      }),
+      headers: { Authorization: `Bearer ${bearer}`, "Content-Type": "application/json" },
+      method: "POST",
+    });
+    expect(answer.status).toBe(200);
+    const body = (await answer.json()) as {
+      data: { repository: Record<string, { associatedPullRequests: { totalCount: number } } | null> };
+      errors?: unknown[];
+    };
+    expect(body.errors).toBeUndefined();
+    expect(body.data.repository.c0?.associatedPullRequests.totalCount).toBe(40);
+    expect(body.data.repository.c1).toBeNull();
+  } finally {
+    await fake.stop();
+  }
+});

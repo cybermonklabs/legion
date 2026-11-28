@@ -286,7 +286,7 @@ func (f *attributionFake) serveFacts(t *testing.T, build string) http.HandlerFun
 			return
 		}
 		if commits := attributionCommitAlias.FindAllStringSubmatch(request.Query, -1); len(commits) > 0 {
-			f.serveCommitsPulls(t, w, build, request.Variables, commits)
+			f.serveCommitsPulls(t, w, build, request.Query, request.Variables, commits)
 			return
 		}
 		f.mu.Lock()
@@ -334,14 +334,20 @@ func (f *attributionFake) serveFacts(t *testing.T, build string) http.HandlerFun
 }
 
 // attributionCommitAlias is one alias of the batched read of commits' pull requests: c<i> and the
-// commit it names.
-var attributionCommitAlias = regexp.MustCompile(`(c\d+): object\(oid: "([0-9a-f]+)"\)`)
+// commit it names. attributionCommitFirst is how many pull requests the query reads of each.
+var (
+	attributionCommitAlias = regexp.MustCompile(`(c\d+): object\(oid: "([0-9a-f]+)"\)`)
+	attributionCommitFirst = regexp.MustCompile(`associatedPullRequests\(first: (\d+)\)`)
+)
 
 // serveCommitsPulls answers the batched read of commits' pull requests (delivery's
-// commitPullsQuery) from the stand-in's state, as GET …/commits/{sha}/pulls answers each commit:
-// every pull request that holds the commit, with their count, and each commit counted as one read
-// of a commit's pull requests. A repository the App is not installed on is null with NOT_FOUND.
-func (f *attributionFake) serveCommitsPulls(t *testing.T, w http.ResponseWriter, build string, variables map[string]any, commits [][]string) {
+// commitPullsQuery) from the stand-in's state, as GitHub does: for each commit, the first of the
+// pull requests that hold it, oldest first, as many as the query's associatedPullRequests(first:)
+// asks, with the count of them all, so a commit of more is read over GET …/commits/{sha}/pulls as
+// the read does against GitHub. Each commit is counted as one read of a commit's pull requests. A
+// commit the stand-in does not hold, one no pull request holds, is null, as GitHub answers it. A
+// repository the App is not installed on is null with NOT_FOUND.
+func (f *attributionFake) serveCommitsPulls(t *testing.T, w http.ResponseWriter, build, query string, variables map[string]any, commits [][]string) {
 	owner, _ := variables["owner"].(string)
 	name, _ := variables["name"].(string)
 	repo := owner + "/" + name
@@ -355,14 +361,29 @@ func (f *attributionFake) serveCommitsPulls(t *testing.T, w http.ResponseWriter,
 		})
 		return
 	}
+	first := -1
+	if read := attributionCommitFirst.FindStringSubmatch(query); read != nil {
+		first, _ = strconv.Atoi(read[1])
+	}
 	answered := map[string]any{}
 	for _, commit := range commits {
 		f.countLocked(build, "commit pulls")
+		pulls := f.pullsAtLocked(repo, commit[2])
+		if len(pulls) == 0 {
+			// The stand-in holds a commit only as a pull request's (GET …/commits/{sha} answers
+			// 422 for any other), and GitHub answers a commit the repository does not hold null.
+			answered[commit[1]] = nil
+			continue
+		}
+		listed := pulls
+		if first >= 0 && len(listed) > first {
+			listed = listed[:first]
+		}
 		nodes := []any{}
-		for _, pull := range f.pullsAtLocked(repo, commit[2]) {
+		for _, pull := range listed {
 			nodes = append(nodes, pull.node(repo))
 		}
-		answered[commit[1]] = map[string]any{"associatedPullRequests": map[string]any{"totalCount": len(nodes), "nodes": nodes}}
+		answered[commit[1]] = map[string]any{"associatedPullRequests": map[string]any{"totalCount": len(pulls), "nodes": nodes}}
 	}
 	writeGitHubJSON(t, w, http.StatusOK, map[string]any{"data": map[string]any{"repository": answered}})
 }

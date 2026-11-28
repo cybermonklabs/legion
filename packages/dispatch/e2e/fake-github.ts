@@ -748,10 +748,12 @@ const server = Bun.serve({
           { headers: spentBudgetHeaders("graphql") }
         );
       }
-      // The batched read of commits' pull requests: each commit answers what `GET
-      // …/commits/{sha}/pulls` answers for it (`commit_pulls`), its first `first` pull requests
-      // with their count, so a commit that names none answers an empty list, as REST does. A
-      // repository the token's installation does not hold answers null with NOT_FOUND.
+      // The batched read of commits' pull requests: each commit the repository holds
+      // (`heldCommits`) answers what `GET …/commits/{sha}/pulls` answers for it (`commit_pulls`),
+      // its first `first` pull requests with their count, so a held commit that names none answers
+      // an empty list, as REST does. A commit the repository does not hold answers null with no
+      // error, as GitHub answered such a commit on 2026-11-28. A repository the token's
+      // installation does not hold answers null with NOT_FOUND.
       if (commitsAsked.length > 0) {
         const data: Record<string, unknown> = {};
         const errors: { message: string; path: string[]; type: string }[] = [];
@@ -771,7 +773,12 @@ const server = Bun.serve({
             continue;
           }
           const answer: Record<string, unknown> = {};
+          const held = heldCommits(seeded);
           for (const commit of repository.commits) {
+            if (!held.has(commit.sha)) {
+              answer[commit.alias] = null;
+              continue;
+            }
             const named = (seeded.commit_pulls?.[commit.sha] ?? []).filter(
               (number) => seeded.pulls?.[String(number)] !== undefined
             );
@@ -978,12 +985,18 @@ const server = Bun.serve({
     // The pull requests GitHub names for a commit, which Dispatch reads through when a result
     // names a commit that is the head of no pull request it has an event for. It must match
     // before the bare `commits/{ref}` route below. GitHub lists them oldest first in its pages
-    // (`per_page`, default 30, at most 100, and `page`), as every list route here answers.
+    // (`per_page`, default 30, at most 100, and `page`), as every list route here answers, and
+    // answers `422 No commit found for SHA` for a commit the repository does not hold, as the bare
+    // route does.
     const commitPulls = url.pathname.match(/^\/repos\/([^/]+)\/([^/]+)\/commits\/([^/]+)\/pulls$/);
     if (request.method === "GET" && commitPulls !== null) {
       const repo = repos.get(`${commitPulls[1]}/${commitPulls[2]}`);
       if (repo === undefined) {
         return Response.json({ message: "Not Found" }, { status: 404 });
+      }
+      const sha = commitPulls[3] ?? "";
+      if (!heldCommits(repo).has(sha)) {
+        return Response.json({ message: `No commit found for SHA: ${sha}` }, { status: 422 });
       }
       const numbers = repo.commit_pulls?.[commitPulls[3] ?? ""] ?? [];
       const listed = numbers.filter((number) => repo.pulls?.[String(number)] !== undefined);
