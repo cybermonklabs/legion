@@ -142,7 +142,7 @@ func TestJobEventsReadNoSettings(t *testing.T) {
 	if read := counter.reads.Load() - before; read != 0 {
 		t.Fatalf("10 job events read delivery_settings %d times, want none", read)
 	}
-	if armed := clock.armed(); armed != 1 {
+	if armed := len(clock.Armed()); armed != 1 {
 		t.Fatalf("10 job events of a tracked run armed %d reads, want 1: they did not pass the settings check", armed)
 	}
 }

@@ -19,13 +19,23 @@ import (
 const githubPageAttempts = 3
 
 // githubPageRetryWait is how long a retry waits before asking again, multiplied by the attempt
-// just made (1 s, then 2 s). A var rather than a const so a test can shrink it; nothing outside
-// a test writes it.
+// just made (1 s, then 2 s), on the clock the read's caller passes (waitBeforeRetry): a test that
+// exercises a retry moves a fake past each wait rather than waiting it out.
 //
 // One attempt's own deadline is githubapp.RequestTimeout, which githubapp.Client.request applies
 // to every call it makes. This file adds none of its own, so a page has one deadline however it
 // is read.
-var githubPageRetryWait = time.Second
+const githubPageRetryWait = time.Second
+
+// pageClock is the part of a clock a page read waits on between its tries (waitBeforeRetry), a
+// narrowing of clock.Clock: clock.Real in production, and a test's clocktest.Fake, on which a page
+// is asked again only once the test moves the fake past the wait before it. The reconcile passes
+// its own (Reconcile.clock) and the intakes theirs (heldDurable.clock) down through every reader
+// below them; a read the results routes make through an exported reader that takes no clock
+// (Attributor.ReadCommitPulls, PullRequestOpenOrMerged and their kin) waits on clock.Real.
+type pageClock interface {
+	Sleep(ctx context.Context, d time.Duration) error
+}
 
 // readGitHubPage performs one GET of a list page, retrying a timeout or one of GitHub's own
 // timeout answers up to githubPageAttempts times. Returns the last attempt's answer exactly as
@@ -45,12 +55,13 @@ var githubPageRetryWait = time.Second
 // Each try runs in a held scope of the pass's attempt (githubreads.Hold): the failures the client
 // notes on a try asked again are dropped, since the page's outcome is the try it returns, and that
 // try's notes are kept. A page GitHub answers 502 once and then reads is no failure of the pass,
-// and one it answers 502 every try is the last try's 502.
-func readGitHubPage(ctx context.Context, client *githubapp.Client, token, path string) ([]byte, int, http.Header, error) {
+// and one it answers 502 every try is the last try's 502. The wait before each try asked again is
+// on waits, the caller's clock (pageClock).
+func readGitHubPage(ctx context.Context, waits pageClock, client *githubapp.Client, token, path string) ([]byte, int, http.Header, error) {
 	for attempt := 1; ; attempt++ {
 		asked, held := githubreads.Hold(ctx)
 		body, status, header, err := client.Read(asked, token, path)
-		if retryGitHubPage(ctx, attempt, status, err) && waitBeforeRetry(ctx, attempt) == nil {
+		if retryGitHubPage(ctx, attempt, status, err) && waitBeforeRetry(ctx, waits, attempt) == nil {
 			held.Drop()
 			continue
 		}
@@ -59,14 +70,14 @@ func readGitHubPage(ctx context.Context, client *githubapp.Client, token, path s
 	}
 }
 
-// queryGitHubPage is readGitHubPage for one GraphQL search page: the same bounded retry, each try
-// held the same way. A GraphQL query is a read however GitHub spells it, so retrying one repeats
-// nothing.
-func queryGitHubPage(ctx context.Context, client *githubapp.Client, token, query string, variables map[string]any) ([]byte, int, http.Header, error) {
+// queryGitHubPage is readGitHubPage for one GraphQL search page: the same bounded retry on the same
+// clock, each try held the same way. A GraphQL query is a read however GitHub spells it, so
+// retrying one repeats nothing.
+func queryGitHubPage(ctx context.Context, waits pageClock, client *githubapp.Client, token, query string, variables map[string]any) ([]byte, int, http.Header, error) {
 	for attempt := 1; ; attempt++ {
 		asked, held := githubreads.Hold(ctx)
 		body, status, header, err := client.GraphQL(asked, token, query, variables)
-		if retryGitHubPage(ctx, attempt, status, err) && waitBeforeRetry(ctx, attempt) == nil {
+		if retryGitHubPage(ctx, attempt, status, err) && waitBeforeRetry(ctx, waits, attempt) == nil {
 			held.Drop()
 			continue
 		}
@@ -106,17 +117,10 @@ func retryGitHubPage(ctx context.Context, attempt, status int, err error) bool {
 	return status == http.StatusBadGateway || status == http.StatusGatewayTimeout
 }
 
-// waitBeforeRetry sleeps between attempts, or returns the caller's context error when it ends
-// first.
-func waitBeforeRetry(ctx context.Context, attempt int) error {
-	timer := time.NewTimer(time.Duration(attempt) * githubPageRetryWait)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-timer.C:
-		return nil
-	}
+// waitBeforeRetry sleeps between attempts on waits, attempt times githubPageRetryWait, or returns
+// the caller's context error when it ends first.
+func waitBeforeRetry(ctx context.Context, waits pageClock, attempt int) error {
+	return waits.Sleep(ctx, time.Duration(attempt)*githubPageRetryWait)
 }
 
 // pageAttemptsNote names the retry budget in an error, so a failure that exhausted it reads as

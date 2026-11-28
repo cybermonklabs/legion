@@ -101,7 +101,7 @@ func (r *Reconcile) backfillWindow(ctx context.Context, owner, repo, repoFull, w
 		runs = append(runs, window...)
 		return nil
 	}
-	if err := ListWorkflowRuns(ctx, r.github, owner, repo, workflowPath, since, last, githubResultCap, collect); err != nil {
+	if err := ListWorkflowRuns(ctx, r.clock, r.github, owner, repo, workflowPath, since, last, githubResultCap, collect); err != nil {
 		return fmt.Errorf("list %s workflow runs: %w", kind, err)
 	}
 	skipJobs, err := ListRunIDsSkippingJobs(ctx, r.pool, repoFull, completedRunIDs(runs))

@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp/ratelimit"
@@ -1013,9 +1014,11 @@ func TestEachLeasedReconcilePassRecordsItsAttemptAtReadingGitHub(t *testing.T) {
 // try; in each the cause is the client's, which reaches the attempt before the pass's own note.
 // A page GitHub answers 502 once and then reads is a page read, whose dropped note is no failure,
 // and a pull request of a deleted repository is an answer the pass takes as data, marking it
-// unfetchable: each records succeeded.
+// unfetchable: each records succeeded. Each row's pass waits between a page's tries on a fake
+// clock of its own (Reconcile.clock), which the row moves past each wait once the pass has armed
+// it (movePastPageRetries), so the rows run beside each other and beside the package's other tests.
 func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	answer := func(status int, message string) http.HandlerFunc {
 		return func(w http.ResponseWriter, _ *http.Request) {
 			w.WriteHeader(status)
@@ -1233,6 +1236,7 @@ func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) 
 		},
 	}} {
 		t.Run(row.name, func(t *testing.T) {
+			t.Parallel()
 			pool, ctx := deliveryTestPool(t)
 			seedDeliverySettings(t, ctx, pool)
 			fake := newFakeGitHub(t)
@@ -1249,9 +1253,12 @@ func TestALeasedReconcilePassRecordsAReadOfGitHubItGaveUpAsFailed(t *testing.T) 
 				}
 				options = append(options, githubapp.WithLimits(limits))
 			}
-			pass, reads := leasedReconciles(t, ctx, pool, NewReconcile(pool, fake.newTestClient(options...), events.NewBroker(), unrenamed()))
+			reconcile := NewReconcile(pool, fake.newTestClient(options...), events.NewBroker(), unrenamed())
+			waits := clocktest.New(time.Date(2024, 2, 1, 0, 0, 0, 0, time.UTC))
+			reconcile.clock = waits
+			pass, reads := leasedReconciles(t, ctx, pool, reconcile)
 
-			pass()
+			movePastPageRetries(t, waits, pass)
 
 			got := reads.take()
 			if len(got) != 1 || got[0].read != githubreads.DeliveryReconcile {

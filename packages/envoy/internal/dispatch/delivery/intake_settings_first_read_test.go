@@ -57,7 +57,7 @@ func TestAnIntakeBindsOnlyOnceTheSettingsCachesFirstReadHasAnswered(t *testing.T
 		t.Fatalf("lock delivery_settings: %v", err)
 	}
 
-	cache := newSettingsCache(pool, nil, tuningFor(t).log)
+	cache := newSettingsCache(pool, nil, tuningFor(t))
 	runSettingsCache(t, cache)
 	startIntake(t, newIntake(tuningFor(t), natsClient, pool, deliveryTestLeases(t, pool), fake.newTestClient(), events.NewBroker(), cache, unrenamed()))
 	publishPullRequestEnvelope(t, natsClient, "acme", "widgets", 42, map[string]string{

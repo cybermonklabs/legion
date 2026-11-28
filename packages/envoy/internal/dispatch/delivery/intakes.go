@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -135,13 +136,15 @@ func ReserveDurableLeases(callers *store.LeaseCallers, durable string) (DurableL
 // intake's take-over can block the other's, which one lease over both durables did (the
 // measurement is on consumerLease).
 func StartIntakes(ctx context.Context, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
-	return startIntakes(ctx, newIntakeTuning(), connect, pool, leases, github, broker, settingsWake, pushes, attributor)
+	return startIntakes(ctx, newIntakeTuning(), connect, pool, leases, github, broker, settingsWake, pushes, attributor, clock.Real())
 }
 
 // startIntakes is StartIntakes with both intakes, and the settings cache they route by, timed by
-// tuning and logging to its logger (intakeTuning.log): production's values from StartIntakes, or a
-// test's.
-func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor) (stop func(), err error) {
+// tuning, logging to its logger (intakeTuning.log) and hooked where it hooks a step, and both
+// intakes' own deadlines on c (heldDurable.clock): production's tuning (newIntakeTuning) and
+// clock.Real from StartIntakes, or a test's tuning and its clocktest.Fake, on which the intakes'
+// stops, handlers, job reads and page retries end only where the test moves it.
+func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name string) (*bus.Client, error), pool *store.Pool, leases IntakeLeases, github *githubapp.Client, broker *events.Broker, settingsWake <-chan struct{}, pushes PushImports, attributor *Attributor, c intakeClock) (stop func(), err error) {
 	if github == nil {
 		tuning.log.Info("dispatch delivery: no GitHub App key — the intakes are idle")
 		return func() {}, nil
@@ -155,10 +158,11 @@ func startIntakes(ctx context.Context, tuning *intakeTuning, connect func(name s
 		intakeClient.Close()
 		return nil, fmt.Errorf("connect the job intake: %w", err)
 	}
-	settings := newSettingsCache(pool, settingsWake, tuning.log)
+	settings := newSettingsCache(pool, settingsWake, tuning)
 	intake := newIntake(tuning, intakeClient, pool, leases.events, github, broker, settings, attributor)
+	intake.clock = c
 	intake.pushes = pushes
-	job := newJobIntake(tuning, jobClient, pool, leases.jobs, github, realJobClock{}, settings)
+	job := newJobIntake(tuning, jobClient, pool, leases.jobs, github, c, settings)
 	var running sync.WaitGroup
 	running.Go(func() { settings.Run(ctx) })
 	running.Go(func() { intake.Run(ctx) })

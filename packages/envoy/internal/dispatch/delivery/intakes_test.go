@@ -14,6 +14,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/testnats"
 )
@@ -172,7 +173,7 @@ func TestAMessageInItsHandlerAtShutdownIsAcknowledged(t *testing.T) {
 	// holds production's values and the test's logger.
 	stop, err := startIntakes(runCtx, tuningFor(t), func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL}, bus.WithLogger(logger))
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed(), clock.Real())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -251,7 +252,7 @@ func TestAHandlerTheStopGivesUpIsRedeliveredAtOnce(t *testing.T) {
 	runCtx, cancel := context.WithCancel(ctx)
 	stop, err := startIntakes(runCtx, tuning, func(string) (*bus.Client, error) {
 		return bus.Connect([]string{natsURL})
-	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed())
+	}, pool, deliveryTestIntakeLeases(t, pool), github, events.NewBroker(), nil, nil, unrenamed(), clock.Real())
 	if err != nil {
 		cancel()
 		t.Fatalf("start the intakes: %v", err)
@@ -356,7 +357,7 @@ func TestTwoIntakesOnOneClientRefuseTheSecondBind(t *testing.T) {
 
 	jobsCtx, stopJobs := context.WithCancel(ctx)
 	jobsDone := make(chan struct{})
-	jobs := newJobIntake(tuningFor(t), shared, pool, leases, github, realJobClock{}, loadedSettingsCache(t, ctx, pool))
+	jobs := newJobIntake(tuningFor(t), shared, pool, leases, github, clock.Real(), loadedSettingsCache(t, ctx, pool))
 	go func() {
 		defer close(jobsDone)
 		jobs.Run(jobsCtx)

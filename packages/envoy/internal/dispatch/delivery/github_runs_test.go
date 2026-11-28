@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
@@ -64,7 +65,7 @@ func TestListWorkflowRunsAsksForATokenPerPage(t *testing.T) {
 			mustEncode(t, w, map[string]any{"total_count": 15, "workflow_runs": repeatRunItems(5, 11)})
 		}
 	})
-	runs, err := collectWorkflowRuns(t.Context(), fake.newTestClient(), "acme", "widgets", "deploy.yml",
+	runs, err := collectWorkflowRuns(t.Context(), clock.Real(), fake.newTestClient(), "acme", "widgets", "deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns across a token's expiry: %v", err)
@@ -92,7 +93,7 @@ func TestListWorkflowRunJobsAsksForATokenPerPage(t *testing.T) {
 			mustEncode(t, w, map[string]any{"total_count": runJobsPageSize + 5, "jobs": repeatJobItems(5)})
 		}
 	})
-	jobs, err := ListWorkflowRunJobs(t.Context(), fake.newTestClient(), "acme", "widgets", 7)
+	jobs, err := ListWorkflowRunJobs(t.Context(), clock.Real(), fake.newTestClient(), "acme", "widgets", 7)
 	if err != nil {
 		t.Fatalf("ListWorkflowRunJobs across a token's expiry: %v", err)
 	}
@@ -141,7 +142,7 @@ func TestListWorkflowRunsMapsRunShapes(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	runs, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", ".github/workflows/deploy.yml",
+	runs, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", ".github/workflows/deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns: %v", err)
@@ -211,7 +212,7 @@ func TestListWorkflowRunsPaginatesAcrossPages(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	runs, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", "deploy.yml",
+	runs, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", "deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns: %v", err)
@@ -265,7 +266,7 @@ func TestListWorkflowRunsHalvesOnOverflowWithoutGapOrOverlap(t *testing.T) {
 
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC)
-	runs, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", "deploy.yml", since, until)
+	runs, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", "deploy.yml", since, until)
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns: %v", err)
 	}
@@ -297,7 +298,7 @@ func TestListWorkflowRunsUpstream404IsWrapped(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", "deploy.yml",
+	_, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", "deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("ListWorkflowRuns: err = %v, want an error naming the 404 status", err)
@@ -312,7 +313,7 @@ func TestListWorkflowRunsUpstream500IsWrapped(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := collectWorkflowRuns(t.Context(), client, "acme", "widgets", "deploy.yml",
+	_, err := collectWorkflowRuns(t.Context(), clock.Real(), client, "acme", "widgets", "deploy.yml",
 		time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC), time.Date(2024, 1, 2, 0, 0, 0, 0, time.UTC))
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("ListWorkflowRuns: err = %v, want an error naming the 500 status", err)
@@ -336,7 +337,7 @@ func TestListWorkflowRunJobsMapsEveryField(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	jobs, err := ListWorkflowRunJobs(t.Context(), client, "acme", "widgets", 42)
+	jobs, err := ListWorkflowRunJobs(t.Context(), clock.Real(), client, "acme", "widgets", 42)
 	if err != nil {
 		t.Fatalf("ListWorkflowRunJobs: %v", err)
 	}
@@ -406,7 +407,7 @@ func TestListWorkflowRunJobsPaginatesAcrossPages(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	jobs, err := ListWorkflowRunJobs(t.Context(), client, "acme", "widgets", 7)
+	jobs, err := ListWorkflowRunJobs(t.Context(), clock.Real(), client, "acme", "widgets", 7)
 	if err != nil {
 		t.Fatalf("ListWorkflowRunJobs: %v", err)
 	}
@@ -437,7 +438,7 @@ func TestListWorkflowRunJobsUpstream404IsWrapped(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := ListWorkflowRunJobs(t.Context(), client, "acme", "widgets", 404)
+	_, err := ListWorkflowRunJobs(t.Context(), clock.Real(), client, "acme", "widgets", 404)
 	if err == nil || !strings.Contains(err.Error(), "404") {
 		t.Fatalf("ListWorkflowRunJobs: err = %v, want an error naming the 404 status", err)
 	}
@@ -451,7 +452,7 @@ func TestListWorkflowRunJobsUpstream500IsWrapped(t *testing.T) {
 	})
 	client := fake.newTestClient()
 
-	_, err := ListWorkflowRunJobs(t.Context(), client, "acme", "widgets", 500)
+	_, err := ListWorkflowRunJobs(t.Context(), clock.Real(), client, "acme", "widgets", 500)
 	if err == nil || !strings.Contains(err.Error(), "500") {
 		t.Fatalf("ListWorkflowRunJobs: err = %v, want an error naming the 500 status", err)
 	}
@@ -460,10 +461,10 @@ func TestListWorkflowRunJobsUpstream500IsWrapped(t *testing.T) {
 // collectWorkflowRuns is ListWorkflowRuns for a test that wants every run at once rather than one
 // window at a time, with the full 1,000-result window the GitHub cap allows (reconcile's own
 // runsWindow is smaller, and its per-window progress is reconcile_test.go's subject, not this
-// file's).
-func collectWorkflowRuns(ctx context.Context, client *githubapp.Client, owner, repo, workflowPath string, since, until time.Time) ([]FetchedRun, error) {
+// file's), its pages waiting between their tries on waits.
+func collectWorkflowRuns(ctx context.Context, waits pageClock, client *githubapp.Client, owner, repo, workflowPath string, since, until time.Time) ([]FetchedRun, error) {
 	var runs []FetchedRun
-	err := ListWorkflowRuns(ctx, client, owner, repo, workflowPath, since, until, githubResultCap, func(_ time.Time, window []FetchedRun) error {
+	err := ListWorkflowRuns(ctx, waits, client, owner, repo, workflowPath, since, until, githubResultCap, func(_ time.Time, window []FetchedRun) error {
 		runs = append(runs, window...)
 		return nil
 	})

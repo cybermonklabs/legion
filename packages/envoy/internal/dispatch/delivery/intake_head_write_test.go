@@ -16,6 +16,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -308,7 +309,7 @@ func TestADeliveryWhoseHoldHasLapsedAnswersNothingOfItsOwn(t *testing.T) {
 	if hold == nil {
 		t.Fatal("the hold this row lapses is held by another process, though the test's database is its own")
 	}
-	delivery := &intakeDelivery{hold: hold, subject: natsgo.NewInbox()}
+	delivery := &intakeDelivery{hold: hold, holdClock: clock.Real(), subject: natsgo.NewInbox()}
 	if !delivery.mayAnswer() {
 		t.Fatal("a delivery under a live hold, with nothing stopped, reports that it may not answer the durable itself")
 	}

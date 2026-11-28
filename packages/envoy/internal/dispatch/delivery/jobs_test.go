@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"slices"
 	"sync"
@@ -15,85 +16,20 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// fakeJobClock is a jobClock the test moves: Advance fires, in due order and on the caller's
-// goroutine, every timer due by the new time, so a read a timer starts has finished when Advance
-// returns. A timer is placed at the moment it is armed for, so one armed for a moment the clock has
-// already reached fires at the next Advance.
-type fakeJobClock struct {
-	mu     sync.Mutex
-	now    time.Time
-	timers []*fakeJobTimer
-}
-
-type fakeJobTimer struct {
-	clock   *fakeJobClock
-	at      time.Time
-	f       func()
-	stopped bool
-	fired   bool
-}
-
-func newFakeJobClock() *fakeJobClock {
-	return &fakeJobClock{now: time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)}
-}
-
-func (c *fakeJobClock) Now() time.Time {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.now
-}
-
-func (c *fakeJobClock) At(at time.Time, f func()) jobTimer {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	timer := &fakeJobTimer{clock: c, at: at, f: f}
-	c.timers = append(c.timers, timer)
-	return timer
-}
-
-func (t *fakeJobTimer) Stop() bool {
-	t.clock.mu.Lock()
-	defer t.clock.mu.Unlock()
-	if t.stopped || t.fired {
-		return false
-	}
-	t.stopped = true
-	return true
-}
-
-// armed counts the timers neither fired nor stopped.
-func (c *fakeJobClock) armed() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	n := 0
-	for _, timer := range c.timers {
-		if !timer.stopped && !timer.fired {
-			n++
-		}
-	}
-	return n
-}
-
-func (c *fakeJobClock) Advance(d time.Duration) {
-	c.mu.Lock()
-	c.now = c.now.Add(d)
-	var due []*fakeJobTimer
-	for _, timer := range c.timers {
-		if !timer.stopped && !timer.fired && !timer.at.After(c.now) {
-			timer.fired = true
-			due = append(due, timer)
-		}
-	}
-	c.mu.Unlock()
-	slices.SortStableFunc(due, func(a, b *fakeJobTimer) int { return a.at.Compare(b.at) })
-	for _, timer := range due {
-		timer.f()
-	}
+// newFakeJobClock is the JobIntake's clock in a test (heldDurable.clock): a clocktest.Fake the
+// test moves, whose Advance fires every timer due by the new time in due order and returns once
+// each has run, so a read a timer starts has finished when Advance returns. A timer armed for a
+// moment the clock has already reached fires as it is armed.
+func newFakeJobClock() *clocktest.Fake {
+	return clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))
 }
 
 // jobsFake is a fake GitHub answering run 500's jobs: a build job and the production job, each
@@ -189,7 +125,7 @@ func TestAJobOfATrackedDeployRunRecordsItsJobsWhileItRuns(t *testing.T) {
 	}, func() string { return "the job intake never bound its durable" })
 
 	publishGitHubEnvelope(t, natsClient, "notifications.github.acme.widgets.job.500.completed", jobPayload("acme/widgets", 500))
-	waitFor(t, 20*time.Second, func() bool { return clock.armed() == 1 }, func() string { return "the job event scheduled no read" })
+	waitFor(t, 20*time.Second, func() bool { return len(clock.Armed()) == 1 }, func() string { return "the job event scheduled no read" })
 	if calls := fake.calls.Load(); calls != 0 {
 		t.Fatalf("read the jobs %d times before the burst went quiet", calls)
 	}
@@ -272,7 +208,7 @@ func TestAJobOfAnUntrackedRunCostsNoGitHubCall(t *testing.T) {
 	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 999))
 	clock.Advance(jobMaxWait)
-	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
+	if armed, calls, mints := len(clock.Armed()), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
 		t.Fatalf("an untracked run's job: %d timers, %d jobs reads, %d token mints, want none", armed, calls, mints)
 	}
 }
@@ -289,7 +225,7 @@ func TestAJobOfAnotherRepositoryIsIgnored(t *testing.T) {
 	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/other", 500))
 	clock.Advance(jobMaxWait)
-	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
+	if armed, calls, mints := len(clock.Armed()), fake.calls.Load(), fake.tokenMints.Load(); armed != 0 || calls != 0 || mints != 0 {
 		t.Fatalf("another repository's job: %d timers, %d jobs reads, %d token mints, want none", armed, calls, mints)
 	}
 }
@@ -418,8 +354,9 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 	clock := newFakeJobClock()
 	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, loadedSettingsCache(t, ctx, pool))
 	jobs.receive(ctx, jobPayload("acme/widgets", 500))
-	read := make(chan struct{})
-	go func() { defer close(read); clock.Advance(jobQuiet) }()
+	// The move that fires the read returns once the read has, which waits at GitHub for the row's
+	// release, so it is made off the test goroutine (clocktest.Fake.StartMove) and joined below.
+	joinRead := clock.StartMove("the move that runs the job intake's read", clock.Now().Add(jobQuiet))
 	<-entered
 
 	// The run's end, as Intake writes it: the run concluded and every job finished.
@@ -439,7 +376,7 @@ func TestAReadThatLandsAfterTheRunEndedUndoesNothing(t *testing.T) {
 		t.Fatalf("store the ended run's jobs: %v", err)
 	}
 	close(release)
-	<-read
+	joinRead(t)
 
 	stored, err := ListRunJobs(ctx, pool, "acme/widgets", 500)
 	if err != nil {
@@ -498,41 +435,31 @@ func TestAJobsReadThatFailsIsLoggedAndTheRunIsReadAtItsEnd(t *testing.T) {
 	}
 }
 
-// concurrentJobClock is a jobClock whose timers all fire at once, each on a goroutine of its own,
-// when the test calls fireAll: the way a backlog that drains faster than jobQuiet ends every run's
-// burst together.
+// concurrentJobClock is a clocktest.Fake whose timers' functions all run at once, each on a
+// goroutine of its own beside the others, when the test calls fireAll: the way a backlog that
+// drains faster than jobQuiet ends every run's burst together. The Fake's own move runs one
+// function after another and waits for each; this one's functions only start theirs in fired.
 type concurrentJobClock struct {
-	mu     sync.Mutex
-	timers []func()
+	*clocktest.Fake
+	fired sync.WaitGroup
 }
 
-// unstoppableTimer is the timer concurrentJobClock hands back; each run is scheduled once here,
-// so nothing stops one.
-type unstoppableTimer struct{}
-
-func (unstoppableTimer) Stop() bool { return false }
-
-func (c *concurrentJobClock) Now() time.Time { return time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC) }
-
-func (c *concurrentJobClock) At(_ time.Time, f func()) jobTimer {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.timers = append(c.timers, f)
-	return unstoppableTimer{}
+func newConcurrentJobClock() *concurrentJobClock {
+	return &concurrentJobClock{Fake: clocktest.New(time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC))}
 }
 
-// fireAll starts every timer's function on a goroutine of its own and returns the group they run
-// in.
+func (c *concurrentJobClock) AfterFunc(d time.Duration, f func()) clock.Timer {
+	return c.Fake.AfterFunc(d, func() { c.fired.Go(f) })
+}
+
+// fireAll moves the fake past every timer armed, which starts each one's function on a goroutine
+// of its own, and returns the group they run in: every function has started in it by then, since
+// the move waits for each timer's function, which only starts it.
 func (c *concurrentJobClock) fireAll() *sync.WaitGroup {
-	c.mu.Lock()
-	timers := c.timers
-	c.timers = nil
-	c.mu.Unlock()
-	var fired sync.WaitGroup
-	for _, f := range timers {
-		fired.Go(f)
+	if armed := c.Armed(); len(armed) > 0 {
+		c.Advance(max(armed[len(armed)-1].Sub(c.Now()), 0))
 	}
-	return &fired
+	return &c.fired
 }
 
 // TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce: when many tracked runs' bursts end
@@ -570,7 +497,7 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 	// handlers it holds.
 	t.Cleanup(releaseOnce)
 
-	clock := &concurrentJobClock{}
+	clock := newConcurrentJobClock()
 	jobs := newJobIntake(tuningFor(t), nil, pool, nil, github, clock, nil)
 	for id := int64(600); id < 600+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
@@ -601,35 +528,43 @@ func TestTheJobIntakeReadsAtMostABoundedNumberOfRunsAtOnce(t *testing.T) {
 }
 
 // TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot: a run whose burst ends while every read slot
-// is taken waits for one, and its read's deadline (intakeMessageTimeout) starts only once it holds
-// the slot. Here every listing takes jobsLatency, and the deadline is longer than one listing but
-// shorter than the waves of listings ahead of the last runs to get a slot. A deadline started
-// before the wait would expire on those runs' reads: each would log that it could not read or
-// store its run's jobs, and their jobs would not be stored. Each read finishes inside its own
-// deadline instead, and every run's jobs are stored.
+// is taken waits for one, and its read's deadline (intakeMessageTimeout, on the intake's clock)
+// starts only once it holds the slot. Here every slot is held by a read whose listing waits on a
+// gate, one more run waits for a slot, and the clock moves past the deadlines the slot holders
+// armed. A deadline started before the wait would have expired with theirs: the waiting run's read
+// would log that it could not read its run's jobs and store none. Its deadline is armed once it
+// holds a slot instead, a whole intakeMessageTimeout past the moment it took it, and its read stores
+// the run's jobs.
 func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 	logs := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
-	const (
-		waves       = 16
-		runs        = waves * reconcilePartialConcurrency
-		jobsLatency = 300 * time.Millisecond
-		// Far longer than one listing, so a read that holds its slot finishes inside it even on a
-		// starved host, and shorter than the at least (waves-2)*jobsLatency the last two waves of
-		// runs wait for a slot, so with the deadline started before the wait their reads expire.
-		deadline = 4 * time.Second
-	)
-	tuningFor(t).messageTimeout = deadline
+	// Every read slot taken, and one run waiting for a slot.
+	const runs = reconcilePartialConcurrency + 1
 	started := time.Date(2026, 9, 3, 12, 0, 0, 0, time.UTC)
 	for id := int64(700); id < 700+runs; id++ {
 		if err := UpsertRun(ctx, pool, changeTestRun(id, DeliveryRunKindDeploy, started.Add(-time.Minute), started)); err != nil {
 			t.Fatalf("seed run %d: %v", id, err)
 		}
 	}
+	// The slot holders' listings wait on held, and the listing of the run that waited, the first
+	// to reach GitHub once every slot holder has, on waited. Only the row's release, the read's own
+	// deadline or the client's own bound on a call (githubapp.RequestTimeout, 20 s of the wall
+	// clock, far past the milliseconds the row stages its steps in) ends a held listing.
+	held, waited := make(chan struct{}), make(chan struct{})
+	releaseHeld, releaseWaited := sync.OnceFunc(func() { close(held) }), sync.OnceFunc(func() { close(waited) })
+	var mu sync.Mutex
+	reached := map[string]bool{}
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/actions/runs/{run_id}/jobs", func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		gate := held
+		if len(reached) == reconcilePartialConcurrency {
+			gate = waited
+		}
+		reached[r.PathValue("run_id")] = true
+		mu.Unlock()
 		select {
-		case <-time.After(jobsLatency):
+		case <-gate:
 		case <-r.Context().Done():
 			return
 		}
@@ -637,46 +572,97 @@ func TestAQueuedJobReadsDeadlineStartsOnceItHoldsItsSlot(t *testing.T) {
 			{"name": "build", "started_at": "2026-09-03T12:00:00Z", "completed_at": "2026-09-03T12:04:00Z", "conclusion": "success"},
 		}})
 	})
+	reachedGitHub := func() map[string]bool {
+		mu.Lock()
+		defer mu.Unlock()
+		return maps.Clone(reached)
+	}
 
-	clock := &concurrentJobClock{}
+	clock := newConcurrentJobClock()
 	jobs := newJobIntake(tuningFor(t), nil, pool, nil, fake.newTestClient(), clock, nil)
 	for id := int64(700); id < 700+runs; id++ {
 		jobs.schedule(runKey{repo: "acme/widgets", runID: id}, Production{})
 	}
-	began := time.Now()
-	clock.fireAll().Wait()
-	took := time.Since(began)
+	fired := clock.fireAll()
+	// After the fake's server, so it runs before its Close, which waits for the handlers held at
+	// GitHub.
+	t.Cleanup(func() {
+		releaseHeld()
+		releaseWaited()
+		testwait.Returns(t, "every run's jobs read the fake clock fired to return once its listing was released", fired.Wait)
+	})
 
-	failures := map[string]bool{
-		"dispatch delivery: read the jobs of a running deploy run; its end reads them again": true,
-		"dispatch delivery: store the jobs of a running deploy run":                          true,
-	}
-	var failed []map[string]any
-	for _, record := range logs() {
-		if message, _ := record["msg"].(string); failures[message] {
-			failed = append(failed, record)
+	// Every slot is held by a read whose listing waits at GitHub; the run left over waits for a slot.
+	testwait.Eventually(t, "every slot holder's listing to reach GitHub", func() bool {
+		return len(reachedGitHub()) == reconcilePartialConcurrency
+	})
+	var waiter int64
+	for id := int64(700); id < 700+runs; id++ {
+		if !reachedGitHub()[fmt.Sprint(id)] {
+			waiter = id
 		}
 	}
-	var stored int
-	if err := pool.QueryRow(ctx, `select count(distinct run_id) from delivery_run_jobs where repo = 'acme/widgets'`).Scan(&stored); err != nil {
-		t.Fatalf("count the runs with stored jobs: %v", err)
-	}
-	if len(failed) > 0 || stored != runs {
-		first := map[string]any{}
-		if len(failed) > 0 {
-			first = failed[0]
+	failedRead := func() map[string]any {
+		for _, record := range logs() {
+			switch record["msg"] {
+			case "dispatch delivery: read the jobs of a running deploy run; its end reads them again", "dispatch delivery: store the jobs of a running deploy run":
+				if record["run_id"] == float64(waiter) {
+					return record
+				}
+			}
 		}
-		t.Fatalf("%d of %d runs' reads failed and %d have their jobs stored, after %s with a %s deadline and %s listings; first failure: %v",
-			len(failed), runs, stored, took.Round(time.Millisecond), deadline, jobsLatency, first)
+		return nil
 	}
-	t.Logf("%d runs read in %s, %d at a time, each inside its %s deadline", runs, took.Round(time.Millisecond), reconcilePartialConcurrency, deadline)
+
+	// The clock moves past every deadline the slot holders armed while run waiter waits for a slot,
+	// and the slots are let go.
+	clock.Advance(intakeMessageTimeout)
+	tookSlot := clock.Now()
+	releaseHeld()
+
+	// The run that waited takes a slot and reads, unless its deadline had already passed. A try
+	// that finds neither reads the runs whose listings reached GitHub.
+	var failure map[string]any
+	testwait.Until(t, fmt.Sprintf("run %d's listing to reach GitHub, or its read to fail", waiter), func() (string, bool) {
+		reached := reachedGitHub()
+		if failure = failedRead(); failure != nil || reached[fmt.Sprint(waiter)] {
+			return fmt.Sprintf("run %d's listing reached GitHub (%t) or its read failed (%v)", waiter, reached[fmt.Sprint(waiter)], failure), true
+		}
+		return fmt.Sprintf("run %d's read logged no failure; the listings that reached GitHub are runs %v", waiter, slices.Sorted(maps.Keys(reached))), false
+	})
+	if failure != nil {
+		t.Fatalf("run %d's read failed once it held a slot, the clock having moved %s past the moment its burst ended while it waited for one: %v", waiter, intakeMessageTimeout, failure)
+	}
+	armed := clock.AwaitArmed(t, fmt.Sprintf("run %d's read deadline, armed as it took a slot", waiter), 1)
+	if want := tookSlot.Add(intakeMessageTimeout); len(armed) != 1 || !armed[0].Equal(want) {
+		t.Fatalf("with run %d reading, the clock holds the deadlines %v, want only %v: %s past %v, when it took its slot", waiter, armed, want, intakeMessageTimeout, tookSlot)
+	}
+	releaseWaited()
+	// A try that finds neither reads whether the run's jobs are stored and the runs whose listings
+	// reached GitHub.
+	testwait.Until(t, fmt.Sprintf("run %d's jobs to be stored, or its read to fail", waiter), func() (string, bool) {
+		var stored bool
+		if err := pool.QueryRow(ctx, `select exists (select from delivery_run_jobs where repo = 'acme/widgets' and run_id = $1)`, waiter).Scan(&stored); err != nil {
+			t.Fatalf("read run %d's stored jobs: %v", waiter, err)
+		}
+		if failure = failedRead(); stored || failure != nil {
+			return fmt.Sprintf("run %d's jobs stored (%t) or its read failed (%v)", waiter, stored, failure), true
+		}
+		return fmt.Sprintf("run %d's jobs stored: %t; its read logged no failure; the listings that reached GitHub are runs %v", waiter, stored, slices.Sorted(maps.Keys(reachedGitHub()))), false
+	})
+	if failure != nil {
+		t.Fatalf("run %d's read failed once it was released: %v", waiter, failure)
+	}
+	if failure := failedRead(); failure != nil {
+		t.Fatalf("run %d's read stored its jobs and logged a failure: %v", waiter, failure)
+	}
 }
 
-// holdingJobClock is a fakeJobClock whose first timer holds the handling that armed it until the
+// holdingJobClock is a fake job clock whose first timer holds the handling that armed it until the
 // row releases it. It is the one place a job event's handling can be held: deliver acknowledges
 // on receipt, reads one indexed row and arms a timer, and calls GitHub not at all.
 type holdingJobClock struct {
-	*fakeJobClock
+	*clocktest.Fake
 	// armedFirst is closed as the first handling reaches the timer it arms.
 	armedFirst chan struct{}
 	release    chan struct{}
@@ -685,13 +671,13 @@ type holdingJobClock struct {
 
 func newHoldingJobClock() *holdingJobClock {
 	return &holdingJobClock{
-		fakeJobClock: newFakeJobClock(),
-		armedFirst:   make(chan struct{}), release: make(chan struct{}),
+		Fake:       newFakeJobClock(),
+		armedFirst: make(chan struct{}), release: make(chan struct{}),
 	}
 }
 
-func (c *holdingJobClock) At(at time.Time, f func()) jobTimer {
-	timer := c.fakeJobClock.At(at, f)
+func (c *holdingJobClock) AfterFunc(d time.Duration, f func()) clock.Timer {
+	timer := c.Fake.AfterFunc(d, f)
 	holding := false
 	c.first.Do(func() { holding = true })
 	if holding {
@@ -843,7 +829,7 @@ func TestAJobEventHandledAfterTheIntakeStoppedIsHandedBackToTheNextHolderAtOnce(
 			t.Errorf("the stopped intake read the event's run under the cancelled context: %v", record)
 		}
 	}
-	if armed, calls, mints := clock.armed(), fake.calls.Load(), fake.tokenMints.Load(); armed != 1 || calls != 0 || mints != 0 {
+	if armed, calls, mints := len(clock.Armed()), fake.calls.Load(), fake.tokenMints.Load(); armed != 1 || calls != 0 || mints != 0 {
 		t.Fatalf("after the stop: %d timers armed, %d jobs reads, %d token mints; want the first event's one timer and nothing of the event handled after the stop",
 			armed, calls, mints)
 	}

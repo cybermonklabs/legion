@@ -13,6 +13,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -608,17 +609,17 @@ func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
 		t.Fatalf("mint a token: %v", err)
 	}
 
-	pulls, err := fetchCommitPullPayloads(ctx, client, token, "acme", "widgets", "6666666666666666666666666666666666666666")
+	pulls, err := fetchCommitPullPayloads(ctx, clock.Real(), client, token, "acme", "widgets", "6666666666666666666666666666666666666666")
 	if err != nil {
 		t.Fatalf("fetch the pull requests of a commit: %v", err)
 	}
 	if len(pulls) != 1 || pulls[0].Number != 3 || pulls[0].MergedAt == nil || pulls[0].Base.Ref != "main" {
 		t.Fatalf("the pull requests of a commit = %+v, want one merged pull request #3 onto main", pulls)
 	}
-	if none, err := fetchCommitPullPayloads(ctx, client, token, "acme", "widgets", "0000000000000000000000000000000000000000"); err != nil || len(none) != 0 {
+	if none, err := fetchCommitPullPayloads(ctx, clock.Real(), client, token, "acme", "widgets", "0000000000000000000000000000000000000000"); err != nil || len(none) != 0 {
 		t.Fatalf("the pull requests of a commit the repository lacks = %+v, %v; want none and no error", none, err)
 	}
-	if _, err := fetchCommitPullPayloads(ctx, client, token, "acme", "hidden", "6666666666666666666666666666666666666666"); !errors.Is(err, githubapp.ErrRepositoryUnreadable) {
+	if _, err := fetchCommitPullPayloads(ctx, clock.Real(), client, token, "acme", "hidden", "6666666666666666666666666666666666666666"); !errors.Is(err, githubapp.ErrRepositoryUnreadable) {
 		t.Fatalf("the pull requests of a commit of an unreadable repository = %v, want ErrRepositoryUnreadable", err)
 	}
 

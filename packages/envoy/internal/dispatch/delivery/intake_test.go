@@ -32,7 +32,7 @@ import (
 // deliveryTestParallelism is how many of this package's tests run at once when the command line
 // names no -parallel. Every test calls t.Parallel except those that change or read back something
 // the whole process shares, which stay serial and run before the rest: a package variable a test
-// shortens (githubPageRetryWait, decodeEnvelope), t.Setenv, the process's goroutines, a select on
+// shortens (decodeEnvelope), t.Setenv, the process's goroutines, a select on
 // a short time.After or a quiet window close to what it waits for, a measurement of the machine's
 // speed, or a read of Postgres's whole-server views. No test reads the default logger: an
 // intake's own timers, hooks and logger are its tuning (tuningFor, captureIntakeLogs), which no
@@ -99,6 +99,9 @@ func copyTuning(from *intakeTuning) *intakeTuning {
 	to.stopArmed.Store(from.stopArmed.Load())
 	to.beforeRelease.Store(from.beforeRelease.Load())
 	to.attempted.Store(from.attempted.Load())
+	to.checked.Store(from.checked.Load())
+	to.awaitingSettings.Store(from.awaitingSettings.Load())
+	to.settingsWaiting.Store(from.settingsWaiting.Load())
 	return to
 }
 
@@ -348,10 +351,11 @@ func capHeadWriteDeliveriesAt(t *testing.T, deliveries uint64) {
 // loadedSettingsCache is a settings cache holding what delivery_settings holds now, read once and
 // never again: what an intake under test routes by when nothing changes its settings meanwhile.
 // With no row it holds nothing, as a server's cache does before the settings are first written.
-// It logs to the test's intake logger (tuningFor), as the cache startIntakes builds does.
+// It logs to the test's intake logger and runs its hooks (tuningFor), as the cache startIntakes
+// builds does.
 func loadedSettingsCache(t *testing.T, ctx context.Context, pool *store.Pool) *SettingsCache {
 	t.Helper()
-	settings := newSettingsCache(pool, nil, tuningFor(t).log)
+	settings := newSettingsCache(pool, nil, tuningFor(t))
 	if !settings.reload(ctx) {
 		t.Fatal("read delivery_settings into the cache")
 	}

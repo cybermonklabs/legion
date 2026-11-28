@@ -76,7 +76,11 @@ func (f *backfillFake) list(w http.ResponseWriter, r *http.Request) {
 		_, _ = w.Write([]byte(`{"message":"API rate limit exceeded"}`))
 		return
 	}
-	since, until := parseCreatedWindow(f.t, created)
+	since, until, err := parseCreatedWindow(created)
+	if err != nil {
+		refuseRequest(f.t, w, "%v", err)
+		return
+	}
 	var inWindow []map[string]any
 	for _, run := range f.runs {
 		at, _ := time.Parse(time.RFC3339, run["created_at"].(string))
@@ -245,7 +249,11 @@ func TestBackfillRunsKeepsItsFailuresOutOfTheHealthState(t *testing.T) {
 	// The regular step lists from 28 days ago in one window the fake answers empty; every one of
 	// the backfill's one-hour windows is refused.
 	github.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fdeploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
-		since, until := parseCreatedWindow(t, r.URL.Query().Get("created"))
+		since, until, err := parseCreatedWindow(r.URL.Query().Get("created"))
+		if err != nil {
+			refuseRequest(t, w, "%v", err)
+			return
+		}
 		if until.Sub(since) < 2*time.Hour {
 			w.Header().Set("X-RateLimit-Remaining", "0")
 			w.Header().Set("Retry-After", "60")
@@ -553,7 +561,10 @@ func TestBackfillRunsLeavesTheRegularStepAlone(t *testing.T) {
 	if len(calls) == 0 {
 		t.Fatal("the regular step listed nothing")
 	}
-	since, _ := parseCreatedWindow(t, calls[0][:len(calls[0])-len(" page 1")])
+	since, _, err := parseCreatedWindow(calls[0][:len(calls[0])-len(" page 1")])
+	if err != nil {
+		t.Fatal(err)
+	}
 	if !since.Equal(regularThrough.Add(-reconcileOverlap)) {
 		t.Fatalf("the regular step listed from %v, want its own progress minus the overlap, %v", since, regularThrough.Add(-reconcileOverlap))
 	}

@@ -18,6 +18,7 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
@@ -55,12 +56,18 @@ type Reconcile struct {
 	// gitHubReads is what RecordGitHubReads set: each leased pass's attempt at reading GitHub
 	// goes through it, and nil records nothing.
 	gitHubReads githubreads.Recorder
+	// clock is what every GitHub page read of a pass waits on between its tries (readGitHubPage):
+	// clock.Real, which NewReconcile gives it, and a test's clocktest.Fake, set before the pass, on
+	// which a page GitHub answered its own timeout is asked again only once the test moves the fake
+	// past the wait before it.
+	clock pageClock
 }
 
 // NewReconcile builds a Reconcile, which attributes pull requests and keys their head rows with
-// attributor, the Attributor of the rename pairs the process read at boot.
+// attributor, the Attributor of the rename pairs the process read at boot, and whose page reads
+// wait between their tries on the real clock.
 func NewReconcile(pool *store.Pool, github *githubapp.Client, broker *events.Broker, attributor *Attributor) *Reconcile {
-	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor}
+	return &Reconcile{pool: pool, github: github, events: broker, attributor: attributor, clock: clock.Real()}
 }
 
 // FirstPassAtStart makes Run run one pass as it starts, before its jittered ticks, for an
@@ -458,7 +465,7 @@ func (r *Reconcile) reconcileMergedPullRequests(ctx context.Context, settings De
 		return nil
 	}
 
-	if err := SearchMergedPullRequestsAcrossInstallation(ctx, r.github, settings.PopulationAuthors, since, until, listed, visit); err != nil {
+	if err := SearchMergedPullRequestsAcrossInstallation(ctx, r.clock, r.github, settings.PopulationAuthors, since, until, listed, visit); err != nil {
 		mu.Lock()
 		failures = append(failures, fmt.Errorf("search merged pull requests: %w", err))
 		mu.Unlock()
@@ -595,7 +602,7 @@ func (r *Reconcile) reconcilePullRequestHeads(ctx context.Context, now time.Time
 		return err
 	}
 	refresh := func(ctx context.Context, head PullRequestHead) error {
-		err := r.attributor.RefreshPullRequestHead(ctx, r.pool, r.github, r.events, head.Repo, head.Number, now)
+		err := r.attributor.refreshPullRequestHead(ctx, r.clock, r.pool, r.github, r.events, head.Repo, head.Number, now)
 		if err == nil {
 			return nil
 		}
@@ -726,7 +733,7 @@ func (r *Reconcile) readAttributionInputs(ctx context.Context, pr DeliveryPullRe
 	if !budget.reserve(maxAttributionCalls) {
 		return nil
 	}
-	facts, calls, err := fetchAttributionFacts(ctx, r.github, owner, repo, pr.Repo, pr.Number)
+	facts, calls, err := fetchAttributionFacts(ctx, r.clock, r.github, owner, repo, pr.Repo, pr.Number)
 	budget.settle(maxAttributionCalls, calls)
 	if err != nil {
 		if limited, ok := githubapp.AsRateLimit(err); ok {
@@ -772,7 +779,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 		slog.Warn("dispatch delivery: partial pull request", "repo", pr.Repo, "number", pr.Number, "error", err)
 		return nil
 	}
-	fetched, err := FetchPullRequest(ctx, r.github, owner, repo, pr.Number)
+	fetched, err := FetchPullRequest(ctx, r.clock, r.github, owner, repo, pr.Number)
 	if err != nil {
 		if limited, ok := githubapp.AsRateLimit(err); ok {
 			slog.Warn("dispatch delivery: stopped completing partial pull request: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
@@ -794,7 +801,7 @@ func (r *Reconcile) completePartialPullRequest(ctx context.Context, pr DeliveryP
 	if fetched.MergedAt == nil {
 		return nil
 	}
-	if err := r.attributor.completePullRequest(ctx, r.pool, r.github, owner, repo, pr.Repo, pr.Number, fetched, nil); err != nil {
+	if err := r.attributor.completePullRequest(ctx, r.clock, r.pool, r.github, owner, repo, pr.Repo, pr.Number, fetched, nil); err != nil {
 		if limited, ok := githubapp.AsRateLimit(err); ok {
 			slog.Warn("dispatch delivery: stopped completing partial pull requests: rate limit", "repo", pr.Repo, "number", pr.Number, "error", err)
 			return limited
@@ -895,7 +902,7 @@ func (r *Reconcile) reconcileWorkflow(ctx context.Context, owner, repo, repoFull
 		return nil
 	}
 
-	if listErr := ListWorkflowRuns(ctx, r.github, owner, repo, workflowPath, since, until, runsWindow, visit); listErr != nil {
+	if listErr := ListWorkflowRuns(ctx, r.clock, r.github, owner, repo, workflowPath, since, until, runsWindow, visit); listErr != nil {
 		return fmt.Errorf("list %s workflow runs: %w", kind, listErr)
 	}
 	if len(failures) > 0 {
@@ -922,7 +929,7 @@ func (r *Reconcile) reconcileRun(ctx context.Context, owner, repo, repoFull stri
 	if jobsUnfetchable[run.RunID] {
 		return nil
 	}
-	fetchedJobs, err := ListWorkflowRunJobs(ctx, r.github, owner, repo, run.RunID)
+	fetchedJobs, err := ListWorkflowRunJobs(ctx, r.clock, r.github, owner, repo, run.RunID)
 	if err != nil {
 		if errors.Is(err, ErrRunNotFound) || errors.Is(err, githubapp.ErrNoInstallation) {
 			if markErr := MarkRunJobsUnfetchable(ctx, r.pool, repoFull, run.RunID, err.Error()); markErr != nil {

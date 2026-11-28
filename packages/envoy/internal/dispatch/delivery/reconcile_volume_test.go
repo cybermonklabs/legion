@@ -12,18 +12,49 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
-// fastPageRetries shrinks the wait between page retries for a test that means to exercise one.
-// Production's wait is a second, which would only make these tests slower.
-func fastPageRetries(t *testing.T) {
+// movePastPageRetries runs read on a goroutine of its own, its GitHub page reads waiting between
+// their tries on waits (waitBeforeRetry), moves waits past each such wait once read has armed it,
+// and returns once read has, with the span of each wait it moved past, in the order it moved:
+// githubPageRetryWait times the attempt the wait follows. Nothing but those waits is armed on
+// waits. A read that neither arms a wait nor returns fails the row at testwait's give-up, naming
+// where the fake stands.
+func movePastPageRetries(t *testing.T, waits *clocktest.Fake, read func()) []time.Duration {
 	t.Helper()
-	previous := githubPageRetryWait
-	githubPageRetryWait = time.Millisecond
-	t.Cleanup(func() { githubPageRetryWait = previous })
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		read()
+	}()
+	var spans []time.Duration
+	for {
+		var armed []time.Time
+		done := false
+		testwait.Until(t, "the read to arm its wait before asking a page again, or to return", func() (string, bool) {
+			select {
+			case <-returned:
+				done = true
+				return "the read returned", true
+			default:
+			}
+			if armed = waits.Armed(); len(armed) > 0 {
+				return fmt.Sprintf("waits armed until %v, the fake at %v", armed, waits.Now()), true
+			}
+			return fmt.Sprintf("the read has neither returned nor armed a wait; the fake stands at %v", waits.Now()), false
+		})
+		if done {
+			return spans
+		}
+		spans = append(spans, armed[0].Sub(waits.Now()))
+		waits.Set(armed[0])
+	}
 }
 
 // TestWalkWindowedVisitsAWindowItCannotHalveWhole pins the one case where visit receives more
@@ -94,15 +125,21 @@ func maximalRun(id int64, created time.Time) map[string]any {
 
 // runsPage serves one page of a runs listing the way GitHub does: the runs created inside the
 // request's own created=A..B window, newest first, cut to its per_page and page, with the
-// window's whole count as total_count.
+// window's whole count as total_count. A request whose window it cannot read is refused
+// (refuseRequest): it runs on the fake server's goroutine.
 func runsPage(t *testing.T, w http.ResponseWriter, r *http.Request, runs []map[string]any) {
 	t.Helper()
-	since, until := parseCreatedWindow(t, r.URL.Query().Get("created"))
+	since, until, err := parseCreatedWindow(r.URL.Query().Get("created"))
+	if err != nil {
+		refuseRequest(t, w, "%v", err)
+		return
+	}
 	var inWindow []map[string]any
 	for _, run := range runs {
 		created, err := time.Parse(time.RFC3339, run["created_at"].(string))
 		if err != nil {
-			t.Fatalf("parse fixture created_at: %v", err)
+			refuseRequest(t, w, "parse fixture created_at: %v", err)
+			return
 		}
 		if !created.Before(since) && !created.After(until) {
 			inWindow = append(inWindow, run)
@@ -124,22 +161,21 @@ func runsPage(t *testing.T, w http.ResponseWriter, r *http.Request, runs []map[s
 	mustEncode(t, w, map[string]any{"total_count": len(inWindow), "workflow_runs": inWindow[start:end]})
 }
 
-// parseCreatedWindow reads back the created=ISO..ISO qualifier the run listing sends.
-func parseCreatedWindow(t *testing.T, created string) (time.Time, time.Time) {
-	t.Helper()
+// parseCreatedWindow reads back the created=ISO..ISO qualifier the run listing sends, and answers
+// an error naming what it could not read: a fake's handler refuses the request with it
+// (refuseRequest), since it runs on the server's goroutine.
+func parseCreatedWindow(created string) (since, until time.Time, err error) {
 	bounds := strings.SplitN(created, "..", 2)
 	if len(bounds) != 2 {
-		t.Fatalf("created qualifier = %q, want ISO..ISO", created)
+		return since, until, fmt.Errorf("created qualifier = %q, want ISO..ISO", created)
 	}
-	since, err := time.Parse(time.RFC3339, bounds[0])
-	if err != nil {
-		t.Fatalf("parse created since %q: %v", bounds[0], err)
+	if since, err = time.Parse(time.RFC3339, bounds[0]); err != nil {
+		return since, until, fmt.Errorf("parse created since %q: %w", bounds[0], err)
 	}
-	until, err := time.Parse(time.RFC3339, bounds[1])
-	if err != nil {
-		t.Fatalf("parse created until %q: %v", bounds[1], err)
+	if until, err = time.Parse(time.RFC3339, bounds[1]); err != nil {
+		return since, until, fmt.Errorf("parse created until %q: %w", bounds[1], err)
 	}
-	return since, until
+	return since, until, nil
 }
 
 // TestListWorkflowRunsPagesABusyDeployRepositoryUnderTheResponseLimit is the deploy-run failure
@@ -166,7 +202,7 @@ func TestListWorkflowRunsPagesABusyDeployRepositoryUnderTheResponseLimit(t *test
 		}
 	})
 
-	got, err := collectWorkflowRuns(t.Context(), fake.newTestClient(), "acme", "widgets", "deploy.yml", since, until)
+	got, err := collectWorkflowRuns(t.Context(), clock.Real(), fake.newTestClient(), "acme", "widgets", "deploy.yml", since, until)
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns over a busy deploy repository: %v", err)
 	}
@@ -193,9 +229,11 @@ func (c *countingWriter) Write(p []byte) (int, error) {
 
 // TestListWorkflowRunsRetriesAPageGitHubAnswersWithItsOwnTimeout is the PR-checks failure: a page
 // that failed once failed the whole pass, which then restarted its 28-day window from the
-// beginning and failed again. GitHub reports a query it gave up on as a 502 or a 504.
+// beginning and failed again. GitHub reports a query it gave up on as a 502 or a 504. The page is
+// asked again after one wait of githubPageRetryWait, on a fake clock the row moves past it once
+// the read has armed it.
 func TestListWorkflowRunsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 	runs := make([]map[string]any, 0, 25)
@@ -222,7 +260,12 @@ func TestListWorkflowRunsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T
 		runsPage(t, w, r, runs)
 	})
 
-	got, err := collectWorkflowRuns(t.Context(), fake.newTestClient(), "acme", "widgets", "deploy.yml", since, until)
+	client, waits := fake.newTestClient(), clocktest.New(until)
+	var got []FetchedRun
+	var err error
+	spans := movePastPageRetries(t, waits, func() {
+		got, err = collectWorkflowRuns(t.Context(), waits, client, "acme", "widgets", "deploy.yml", since, until)
+	})
 	if err != nil {
 		t.Fatalf("ListWorkflowRuns across one page GitHub timed out on: %v", err)
 	}
@@ -232,6 +275,9 @@ func TestListWorkflowRunsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T
 	if !timedOut {
 		t.Fatal("the fake never answered a timeout, so the retry was never exercised")
 	}
+	if want := []time.Duration{githubPageRetryWait}; !slices.Equal(spans, want) {
+		t.Fatalf("the listing waited %v between its tries, want %v: one wait of githubPageRetryWait before page 2 is asked again", spans, want)
+	}
 }
 
 // TestListWorkflowRunsAsksAgainWithinTheCallOnlyForGitHubsOwnTimeouts: a page GitHub answers once
@@ -240,7 +286,7 @@ func TestListWorkflowRunsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T
 // caller after one ask, whose retry is the next reconcile pass (retryGitHubPage says why); the
 // 429 as a *githubapp.RateLimitError, whose wait the caller keeps.
 func TestListWorkflowRunsAsksAgainWithinTheCallOnlyForGitHubsOwnTimeouts(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 	runs := make([]map[string]any, 0, 25)
@@ -259,6 +305,7 @@ func TestListWorkflowRunsAsksAgainWithinTheCallOnlyForGitHubsOwnTimeouts(t *test
 		{http.StatusTooManyRequests, false},
 	} {
 		t.Run(strconv.Itoa(tc.status), func(t *testing.T) {
+			t.Parallel()
 			fake := newFakeGitHub(t)
 			var mu sync.Mutex
 			failed, secondPages := false, 0
@@ -279,7 +326,12 @@ func TestListWorkflowRunsAsksAgainWithinTheCallOnlyForGitHubsOwnTimeouts(t *test
 				}
 				runsPage(t, w, r, runs)
 			})
-			got, err := collectWorkflowRuns(t.Context(), fake.newTestClient(), "acme", "widgets", "deploy.yml", since, until)
+			client, waits := fake.newTestClient(), clocktest.New(until)
+			var got []FetchedRun
+			var err error
+			spans := movePastPageRetries(t, waits, func() {
+				got, err = collectWorkflowRuns(t.Context(), waits, client, "acme", "widgets", "deploy.yml", since, until)
+			})
 			if !failed {
 				t.Fatalf("the fake never answered %d, so the row is blind", tc.status)
 			}
@@ -287,10 +339,13 @@ func TestListWorkflowRunsAsksAgainWithinTheCallOnlyForGitHubsOwnTimeouts(t *test
 				if err != nil || len(got) != 25 || secondPages != 2 {
 					t.Fatalf("ListWorkflowRuns across a page answered %d once = %d runs, %v, page 2 asked %d times; want 25 runs, page 2 asked twice", tc.status, len(got), err, secondPages)
 				}
+				if want := []time.Duration{githubPageRetryWait}; !slices.Equal(spans, want) {
+					t.Fatalf("ListWorkflowRuns across a page answered %d once waited %v between its tries, want %v", tc.status, spans, want)
+				}
 				return
 			}
-			if err == nil || secondPages != 1 {
-				t.Fatalf("ListWorkflowRuns across a page answered %d = %d runs, %v, page 2 asked %d times; want the failure, page 2 asked once", tc.status, len(got), err, secondPages)
+			if err == nil || secondPages != 1 || len(spans) != 0 {
+				t.Fatalf("ListWorkflowRuns across a page answered %d = %d runs, %v, page 2 asked %d times after waits %v; want the failure, page 2 asked once, no wait", tc.status, len(got), err, secondPages, spans)
 			}
 			if _, limited := githubapp.AsRateLimit(err); limited != (tc.status == http.StatusTooManyRequests) {
 				t.Fatalf("ListWorkflowRuns across a page answered %d = %v; want GitHub's rate limit for a 429 alone", tc.status, err)
@@ -312,9 +367,10 @@ func smallRun(id int64, created time.Time) map[string]any {
 
 // TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout is the merged-PR search
 // failure: one slow search page failed the whole installation's search, and with no progress kept
-// the next pass restarted the same 28-day window.
+// the next pass restarted the same 28-day window. The page is asked again after one wait of
+// githubPageRetryWait, on a fake clock the row moves past it once the search has armed it.
 func TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	since := time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC)
 	until := since.Add(24 * time.Hour)
 
@@ -326,7 +382,8 @@ func TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *t
 			Variables map[string]any `json:"variables"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-			t.Fatalf("decode GraphQL request: %v", err)
+			refuseRequest(t, w, "decode GraphQL request: %v", err)
+			return
 		}
 		after, _ := body.Variables["after"].(string)
 		mu.Lock()
@@ -346,7 +403,12 @@ func TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *t
 		mustEncode(t, w, searchAnswer(2, "cursor-2", false, []any{searchNode(2, "2024-01-01T02:00:00Z")}))
 	})
 
-	found, err := SearchMergedPullRequests(t.Context(), fake.newTestClient(), "acme", "widgets", []string{"octocat"}, since, until)
+	client, waits := fake.newTestClient(), clocktest.New(until)
+	var found []FetchedPullRequest
+	var err error
+	spans := movePastPageRetries(t, waits, func() {
+		found, err = SearchMergedPullRequests(t.Context(), waits, client, "acme", "widgets", []string{"octocat"}, since, until)
+	})
 	if err != nil {
 		t.Fatalf("SearchMergedPullRequests across one page GitHub timed out on: %v", err)
 	}
@@ -355,6 +417,9 @@ func TestSearchMergedPullRequestsRetriesAPageGitHubAnswersWithItsOwnTimeout(t *t
 	}
 	if !timedOut {
 		t.Fatal("the fake never answered a timeout, so the retry was never exercised")
+	}
+	if want := []time.Duration{githubPageRetryWait}; !slices.Equal(spans, want) {
+		t.Fatalf("the search waited %v between its tries, want %v: one wait of githubPageRetryWait before the page is asked again", spans, want)
 	}
 }
 
@@ -419,7 +484,11 @@ func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
 	failing := true
 	var windowStarts []time.Time
 	fake.handle("GET /repos/acme/widgets/actions/workflows/.github%2Fworkflows%2Fdeploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
-		since, _ := parseCreatedWindow(t, r.URL.Query().Get("created"))
+		since, _, err := parseCreatedWindow(r.URL.Query().Get("created"))
+		if err != nil {
+			refuseRequest(t, w, "%v", err)
+			return
+		}
 		mu.Lock()
 		windowStarts = append(windowStarts, since)
 		refuse := failing && !since.Before(failFrom)

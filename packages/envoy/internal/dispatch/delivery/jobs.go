@@ -11,6 +11,7 @@ import (
 
 	"github.com/sjawhar/envoy/githubrate"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -31,13 +32,13 @@ import (
 type JobIntake struct {
 	pool   *store.Pool
 	github *githubapp.Client
-	clock  jobClock
 	// settings is the delivery settings a job event is checked against, shared with the intake
 	// (StartIntakes): a message reads them from memory, not from delivery_settings.
 	settings *SettingsCache
 	// heldDurable is this intake's delivery from bus.DispatchJobDurable under the durable's own
 	// hold and consumer lease, one name each per durable, so that a take-over stuck on the other
-	// intake's durable does not keep this one from delivering.
+	// intake's durable does not keep this one from delivering. Its clock is what the bursts and the
+	// reads are scheduled and bounded by (schedule, fire).
 	heldDurable
 
 	// ctx is Run's context: every read a timer starts runs under it, so a stopped process stops them.
@@ -66,7 +67,7 @@ type runKey struct {
 type pendingRun struct {
 	first      time.Time
 	production Production
-	timer      jobTimer
+	timer      clock.Timer
 }
 
 const (
@@ -81,32 +82,18 @@ const (
 	jobCheckTimeout = 10 * time.Second
 )
 
-// jobClock is the time JobIntake schedules by; a test hands it a clock it moves itself. Its timer
-// calls f once the clock reaches at, at once when it already has, so a clock that moves between the
-// read and the arm fires the timer all the same (api's hubClock has the same shape).
-type jobClock interface {
-	Now() time.Time
-	At(at time.Time, f func()) jobTimer
-}
-
-type jobTimer interface{ Stop() bool }
-
-type realJobClock struct{}
-
-func (realJobClock) Now() time.Time { return time.Now() }
-
-func (realJobClock) At(at time.Time, f func()) jobTimer { return time.AfterFunc(time.Until(at), f) }
-
 // newJobIntake builds a JobIntake on natsClient, a connected client StartIntakes opens for it alone,
-// scheduling its reads by clock, checking each job event against settings, and holding its
-// durable and taking it over under a hold and a lease it takes on leases, timed by tuning.
-func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, clock jobClock, settings *SettingsCache) *JobIntake {
+// scheduling and bounding its reads, and stopping, by c (heldDurable.clock), checking each job event
+// against settings, and holding its durable and taking it over under a hold and a lease it takes on
+// leases, timed by tuning. A test hands c a clocktest.Fake it moves itself.
+func newJobIntake(tuning *intakeTuning, natsClient *bus.Client, pool *store.Pool, leases DurableLeases, github *githubapp.Client, c intakeClock, settings *SettingsCache) *JobIntake {
 	j := &JobIntake{
-		pool: pool, github: github, clock: clock, settings: settings,
+		pool: pool, github: github, settings: settings,
 		ctx: context.Background(), pending: map[runKey]*pendingRun{},
 		reads: make(chan struct{}, reconcilePartialConcurrency),
 	}
 	j.heldDurable = newHeldDurable(tuning, natsClient, leases, jobConsumerConfig, jobKey, j.deliver)
+	j.clock = c
 	return j
 }
 
@@ -216,8 +203,11 @@ func (j *JobIntake) receive(ctx context.Context, payload string) {
 }
 
 // schedule starts a run's burst or moves its read to jobQuiet after this event, but never past
-// jobMaxWait after the burst's first event. A later event replaces production so a settings update
-// observed before that event governs the deferred read.
+// jobMaxWait after the burst's first event, on the intake's clock. A later event replaces
+// production so a settings update observed before that event governs the deferred read. The read's
+// timer is armed for its moment as the wait from the clock's present at the arm, so a clock that
+// moved since the event's reading fires it at that moment all the same, or at once once it has
+// passed.
 func (j *JobIntake) schedule(key runKey, production Production) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
@@ -234,12 +224,13 @@ func (j *JobIntake) schedule(key runKey, production Production) {
 	if limit := run.first.Add(jobMaxWait); limit.Before(due) {
 		due = limit
 	}
-	run.timer = j.clock.At(due, func() { j.fire(key, run) })
+	run.timer = j.clock.AfterFunc(due.Sub(j.clock.Now()), func() { j.fire(key, run) })
 }
 
 // fire ends a run's burst and reads its jobs once a read slot is free (reads). An event that
 // arrives during the read starts the next burst; two reads of one run that overlap are safe, since
-// a read never undoes a later one (UpsertRunJobs). The read's deadline starts once it has its slot.
+// a read never undoes a later one (UpsertRunJobs). The read's deadline, the intake's message
+// timeout (intakeTuning.messageTimeout) on its clock, starts once it has its slot.
 func (j *JobIntake) fire(key runKey, run *pendingRun) {
 	j.mu.Lock()
 	if j.pending[key] != run {
@@ -254,7 +245,7 @@ func (j *JobIntake) fire(key runKey, run *pendingRun) {
 		return
 	}
 	defer func() { <-j.reads }()
-	ctx, cancel := context.WithTimeout(j.ctx, j.tuning.messageTimeout)
+	ctx, cancel := j.clock.WithTimeout(j.ctx, j.tuning.messageTimeout)
 	defer cancel()
 	j.read(ctx, key, run.production)
 }
@@ -268,7 +259,7 @@ func (j *JobIntake) read(ctx context.Context, key runKey, production Production)
 		j.tuning.log.Error("dispatch delivery: job run repository", "repo", key.repo, "error", err)
 		return
 	}
-	fetched, err := ListWorkflowRunJobs(ctx, j.github, owner, repo, key.runID)
+	fetched, err := ListWorkflowRunJobs(ctx, j.clock, j.github, owner, repo, key.runID)
 	if err != nil {
 		j.tuning.log.Warn("dispatch delivery: read the jobs of a running deploy run; its end reads them again", "repo", key.repo, "run_id", key.runID, "error", err)
 		return

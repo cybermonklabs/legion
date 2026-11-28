@@ -12,6 +12,7 @@ import (
 	natsgo "github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/duty"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
@@ -32,6 +33,8 @@ type intakeDelivery struct {
 	// message is handed back rather than handled, since this intake may no longer act on the
 	// durable's messages.
 	hold *duty.Hold
+	// holdClock is the clock hold is read on (heldDurable.holdClock), which holdCovers reads.
+	holdClock clock.Clock
 	// subject is the deliver subject this subscription was bound to: the subject the hold's
 	// token records while this delivery is the one the durable delivers to
 	// (heldDurable.finishTakeOver), and the one every message of it was fetched on.
@@ -40,6 +43,8 @@ type intakeDelivery struct {
 	// gives up the handlers still running when its context ends.
 	handling context.Context
 	abandon  context.CancelFunc
+	// clock is the intake's own (heldDurable.clock), which the stop's wait for its drain reads.
+	clock    intakeClock
 	stopping atomic.Bool
 	stopped  sync.Once
 
@@ -112,8 +117,8 @@ type intakeMessage struct {
 func (d *heldDurable) subscribe(deliverSubject string) (*natsgo.Subscription, error) {
 	handling, abandon := context.WithCancel(context.Background())
 	delivery := &intakeDelivery{
-		nats: d.nats, key: d.key, hold: d.hold, settled: d.settled, subject: deliverSubject,
-		handling: handling, abandon: abandon, sealedSignal: make(chan struct{}), tuning: d.tuning,
+		nats: d.nats, key: d.key, hold: d.hold, holdClock: d.holdClock, settled: d.settled, subject: deliverSubject,
+		handling: handling, abandon: abandon, clock: d.clock, sealedSignal: make(chan struct{}), tuning: d.tuning,
 	}
 	delivery.keys = newKeyedRunner(func(message intakeMessage) {
 		if message.work != nil {
@@ -199,16 +204,17 @@ func subscribeDurable(client *bus.Client, wanted natsgo.ConsumerConfig, deliverS
 // an ordinary handler finishes and is acknowledged rather than redone. A call GitHub does not
 // answer holds one attempt for up to githubapp.RequestTimeout (20 s), and is then asked again,
 // which no budget inside stopGrace could wait out. It is the default of the intake's own
-// stopBudget (intakeTuning), which a test shortens on the intakes it builds.
+// stopBudget (intakeTuning), and runs on the intake's clock (heldDurable.clock), so a test moves a
+// fake past it rather than waiting it out.
 const intakeStopBudget = 15 * time.Second
 
 // stopContext returns the stop deadline of an intake whose Run runs until ctx ends: a context that
-// ends budget (the intake's stopBudget) after ctx does, armed by ctx's end, so everything of the
-// stop -- a take-over under way at that moment, the handler wait, the drain's wait -- runs under
-// one deadline counted from it. release frees it, for run to defer.
-func stopContext(ctx context.Context, budget time.Duration) (stopping context.Context, release func()) {
+// ends budget (the intake's stopBudget) after ctx does on c, the intake's clock, armed by ctx's end,
+// so everything of the stop -- a take-over under way at that moment, the handler wait, the drain's
+// wait -- runs under one deadline counted from it. release frees it, for run to defer.
+func stopContext(ctx context.Context, c intakeClock, budget time.Duration) (stopping context.Context, release func()) {
 	stopping, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	disarm := context.AfterFunc(ctx, func() { time.AfterFunc(budget, cancel) })
+	disarm := context.AfterFunc(ctx, func() { c.AfterFunc(budget, cancel) })
 	return stopping, func() {
 		disarm()
 		cancel()
@@ -321,15 +327,16 @@ func (d *intakeDelivery) stop(ctx context.Context) {
 		// it under its connection lock, which a reconnect's dial and handshake hold, so the wait also
 		// reads whether NATS is connected, within bus.ConnLockWait, and a read that does not answer,
 		// or answers that it is not, ends the wait as the deadline does: the stop then waits out no
-		// reconnect attempt for a drain nats.go cannot end during it.
-		waitedFrom := time.Now()
+		// reconnect attempt for a drain nats.go cannot end during it. The wait's span is read on the
+		// intake's clock (clock).
+		waitedFrom := d.clock.Now()
 		for draining != nil && draining.IsValid() {
 			connected, answered := callNATS(d.tuning, "read whether NATS is connected while the drain ends", func() (bool, error) {
 				return d.nats.Connected(), nil
 			})
 			lost := !answered || !connected
-			if lost || d.handling.Err() != nil || time.Since(waitedFrom) >= time.Duration(d.tuning.drainWait.Load()) {
-				d.tuning.log.Error("dispatch delivery: the intake's subscription did not finish draining; unsubscribing it", "waited", time.Since(waitedFrom), "connection_lost", lost)
+			if waited := d.clock.Now().Sub(waitedFrom); lost || d.handling.Err() != nil || waited >= time.Duration(d.tuning.drainWait.Load()) {
+				d.tuning.log.Error("dispatch delivery: the intake's subscription did not finish draining; unsubscribing it", "waited", waited, "connection_lost", lost)
 				callNATS(d.tuning, "unsubscribe the intake's subscription", func() (struct{}, error) {
 					return struct{}{}, draining.Unsubscribe()
 				})
@@ -663,10 +670,11 @@ func (d *intakeDelivery) receive(msg *natsgo.Msg) {
 }
 
 // holdCovers reports whether the hold this delivery delivers under has not passed its loss
-// deadline (duty.Hold.Deadline), and so whether this intake may still act on the durable's
-// messages. A delivery with no hold is one no hold governs, and is covered.
+// deadline (duty.Hold.Deadline) on the hold's clock (holdClock), and so whether this intake may
+// still act on the durable's messages. A delivery with no hold is one no hold governs, and is
+// covered.
 func (d *intakeDelivery) holdCovers() bool {
-	return d.hold == nil || time.Now().Before(d.hold.Deadline())
+	return d.hold == nil || d.holdClock.Now().Before(d.hold.Deadline())
 }
 
 // mayAnswer reports whether this delivery may answer the durable with a hand-back of its own,
