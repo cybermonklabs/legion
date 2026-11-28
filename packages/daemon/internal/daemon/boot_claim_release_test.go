@@ -210,8 +210,12 @@ func newBootClaimRig(t *testing.T, fixtures []bootClaimFixture, answer func(int)
 	}
 	seedSessionClaim(t, pool, "elsewhere-architect", "CAPTURE", bootOtherTree, bootOtherTree, bootOtherSession)
 	clock := microClock()
+	// The runner's project is the claims' own spelling of it, which the executor reads
+	// claim_sessions by. Every issue's claim records bootOwnSession, which claim_sessions holds for
+	// the first of them alone; each release meets it as its own tree's current session before it
+	// asks whose claim the name is held for.
 	return &bootClaimRig{t: t, pool: pool, w: w, client: client, clock: clock,
-		runner: &outbox{pool: pool, dispatchProject: "CAPTURE", records: records, dispatch: client,
+		runner: &outbox{pool: pool, dispatchProject: "CAPTURE", project: "CAPTURE", records: records, dispatch: client,
 			log: quietLogger(), now: clock.Now}}
 }
 

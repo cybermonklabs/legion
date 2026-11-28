@@ -274,11 +274,13 @@ describe("which credential a session connects to NATS with", () => {
     await expect(credential.ready({ waitForReady: true })).rejects.toThrow(refusal);
     await expect(credential.renew()).rejects.toThrow(refusal);
     expect(credential.authenticator("nonce-1")).toBeUndefined();
-    await Bun.sleep(50);
     expect(broker.state.trades).toBe(0);
-    // The control: once the name reads a session, its token is traded.
+    // The control: once the name reads a session, its token is traded. That trade is the later
+    // action whose effect is ordered after anything the calls above started: the broker counts
+    // each trade as it reaches it, so a trade they made would be counted beside this one.
     session = "ses_named";
     await credential.ready();
+    expect(broker.state.trades).toBe(1);
     expect(broker.state.minted.map((one) => one.session)).toEqual(["ses_named"]);
   });
 });

@@ -235,7 +235,7 @@ func TestAFallbackPassResumedPastItsHoldsDeadlineClaimsNothing(t *testing.T) {
 	}
 	held := readHeldCopy(t, database, commentID, sessionTopic)
 
-	full, failed := publishFallbackCopies(ctx, deps, resumedPastTheDeadline{}, holdingProcess(t, database))
+	full, failed, _ := publishFallbackCopies(ctx, deps, resumedPastTheDeadline{}, holdingProcess(t, database))
 
 	if full || failed {
 		t.Fatalf("the pass reports full=%v failed=%v, want neither: it claimed no row and no statement of it failed",
