@@ -934,28 +934,38 @@ describe("the rounds census", () => {
     SLOW
   );
 
-  // A result a retraction takes back, or one recorded against the check's older words, is no run.
-  for (const [title, change, reason] of [
-    ["a retracted pass", { retracted: RETRACTION }, "no result of the round's session at the head"],
-    [
-      "a pass of the check's older words",
-      { check_words_moved: true },
-      "its words moved after the round's session recorded its result at the head, so it is not judged",
-    ],
-  ] as const) {
-    test(
-      `${title} of the round's session at the head is no run, so the check is listed`,
-      async () => {
-        const { report, exitCode } = await rounds(
-          withC3(roundScene(), { ...c3Result({}), ...change })
-        );
-        expect(report.unknown).toEqual([]);
-        expect(roundRows(report)).toEqual([`c3 ${reason}`]);
-        expect(exitCode).toBe(1);
-      },
-      SLOW
-    );
-  }
+  test(
+    "a retracted pass of the round's session at the head is no run, so the check is listed",
+    async () => {
+      const { report, exitCode } = await rounds(
+        withC3(roundScene(), { ...c3Result({}), retracted: RETRACTION })
+      );
+      expect(report.unknown).toEqual([]);
+      expect(roundRows(report)).toEqual(["c3 no result of the round's session at the head"]);
+      expect(exitCode).toBe(1);
+    },
+    SLOW
+  );
+
+  test(
+    "a pass of the check's older words is not judged: the check is left out of the round and named, and nothing is listed",
+    async () => {
+      const older = { ...c3Result({}), id: "c3-older", check_words_moved: true };
+      const { report, exitCode } = await rounds(withC3(roundScene(), older));
+      expect(report.unknown).toEqual([]);
+      expect(report.rows).toEqual([]);
+      expect(report.excluded).toContainEqual({
+        issue: expect.any(String),
+        round: expect.any(Number),
+        check: "c3",
+        reason:
+          "its words moved after the round's session recorded its result at the head, so it is not judged",
+        detail: older.id,
+      });
+      expect(exitCode).toBe(0);
+    },
+    SLOW
+  );
 
   test(
     "a pass of the check's older words beside one at its words now is judged by the one now",
@@ -1224,8 +1234,10 @@ describe("the rounds census", () => {
     SLOW
   );
 
-  /** A pass the implementer recorded on `c5`, which carries `ci_check`, during the first round. */
+  /** A pass the implementer recorded on `c5` during the first round. `c5` carries `ci_check` now,
+   *  and the attribute is part of its words, so the pass reads them moved. */
   const c5Recorded = {
+    check_words_moved: true,
     id: "c5-implementer",
     session: "ses-implementer",
     actor: { kind: "session", id: "ses-implementer" },
@@ -1242,30 +1254,49 @@ describe("the rounds census", () => {
     async () => {
       const { report, exitCode } = await rounds(withResult(roundScene(), "c5", c5Recorded));
       expect(roundRows(report)).toContain(
-        "c5 it carries ci_check, and a role recorded a result on it during the round at the words it has now"
+        "c5 a role recorded a result on it during the round, so it carried no ci_check when that result was written"
       );
       expect(exitCode).toBe(1);
     },
     SLOW
   );
 
-  for (const [title, change] of [
-    ["a retracted result", { retracted: RETRACTION }],
-    ["a result of the check's older words", { check_words_moved: true }],
-  ] as const) {
-    test(
-      `${title} a role recorded during the round on a check that carries ci_check is no record, and is not listed`,
-      async () => {
-        const { report, exitCode } = await rounds(
-          withResult(roundScene(), "c5", { ...c5Recorded, ...change })
-        );
-        expect(report.unknown).toEqual([]);
-        expect(roundRows(report)).toEqual(["c3 no result of the round's session at the head"]);
-        expect(exitCode).toBe(1);
-      },
-      SLOW
-    );
-  }
+  test(
+    "a retracted result a role recorded during the round on a check that carries ci_check is listed too",
+    async () => {
+      const { report, exitCode } = await rounds(
+        withResult(roundScene(), "c5", { ...c5Recorded, retracted: RETRACTION })
+      );
+      expect(roundRows(report)).toContain(
+        "c5 a role recorded a result on it during the round, so it carried no ci_check when that result was written"
+      );
+      expect(exitCode).toBe(1);
+    },
+    SLOW
+  );
+
+  // A result Dispatch derives from the CI run of a check CI proves, as GET .../results gives it:
+  // stored nowhere, its actor the GitHub App that made the run, and no session.
+  test(
+    "a result Dispatch derived from c5's CI run during the round is no result a role recorded, and is not listed",
+    async () => {
+      const derived = {
+        id: "ci-run:7001",
+        session: "",
+        actor: { kind: "github_app", id: "github-actions" },
+        role: "ci",
+        verdict: "pass",
+        commit_sha: "H1",
+        created_at: "2026-11-24T10:05:00Z",
+        run: "test",
+        observed: "success",
+      };
+      const { report } = await rounds(withResult(roundScene(), "c5", derived));
+      expect(report.unknown).toEqual([]);
+      expect(report.rows.filter((row) => row.check === "c5")).toEqual([]);
+    },
+    SLOW
+  );
 
   for (const [title, body] of [
     [

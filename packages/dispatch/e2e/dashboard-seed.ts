@@ -450,10 +450,7 @@ interface SeededCheck {
 
 /** Met: r1 (c1 and c5 passed) and r4 (c3 and c5 passed); not met: r2 (c2 failed); unknown: r3 (c4
  *  has no result, and c8 and c9 each passed at one open head of two) and r5 (c6's newest pass is
- *  at `EARLIER_SHA`, which is not the commit the page names, and c7's at `HEAD_SHA`). Passed at
- *  that commit: c1, c3, c5 and c7 of nine. c8 and c9 are the controls of the subject rule: a pass
- *  at one open head of two does not stand (`passStandsOf`), so each row reads Failed, never
- *  Passed, and a statement read at the named commit never reads Not met over c9's pass there. */
+ *  at `EARLIER_SHA`, which is not the commit the page names, and c7's at `HEAD_SHA`). */
 const CHECKS: readonly SeededCheck[] = [
   { id: "c1", serves: ["r1"], state: "passed", words: "The list holds each seeded item once." },
   { id: "c2", serves: ["r2"], state: "failed", words: "Each item takes its act in place." },
@@ -498,11 +495,9 @@ interface SeededResult {
   readonly verdict: "fail" | "pass";
 }
 
-/** Every result the seed records, in the order it records them. Each check meant to read Passed
- *  passed at both open heads; c6's pass at `HEAD_SHA` comes first, so its newest pass is at
- *  `EARLIER_SHA`; c8 passed at `EARLIER_SHA` alone and c9 at `HEAD_SHA` alone. Every other result
- *  at `HEAD_SHA` comes after every result at `EARLIER_SHA`, so `HEAD_SHA` is the commit the page
- *  names. */
+/** Every result the seed records, in the order it records them. c6's pass at `HEAD_SHA` comes
+ *  first, so its newest pass is at `EARLIER_SHA`. Every other result at `HEAD_SHA` comes after
+ *  every result at `EARLIER_SHA`, so `HEAD_SHA` is the commit the page names. */
 const RESULTS: readonly SeededResult[] = [
   { check: "c6", commit: HEAD_SHA, verdict: "pass" },
   { check: "c1", commit: EARLIER_SHA, verdict: "pass" },

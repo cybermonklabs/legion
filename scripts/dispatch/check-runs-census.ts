@@ -4,9 +4,7 @@
  * that started since a time and says which of the testing step's checks it has no run of. It
  * reads no prompt text.
  *
- * It reads Dispatch through `census-dispatch.ts`, as `ask-census.ts` does: Dispatch resolved with
- * `sessionDispatchSettings`, and eight issues read at a time. `--json` prints one object and
- * nothing else.
+ * `--json` prints one object and nothing else.
  *
  * Exit 0: the run is complete and nothing is listed. Exit 1: the run is complete and holds rows
  * for a reader. Exit 3: UNKNOWN, with the reason — a list below its total, a text, page or
@@ -1503,10 +1501,16 @@ function duringRound(result: Pick<CheckResult, "id" | "created_at">, round: Roun
   return at > round.from && at <= round.to;
 }
 
-/** Whether a result is a run the census counts: no retraction takes it back, and it was recorded
- *  against the check's words as they are now. */
+/** Whether a result is a run the `run` step counts: no retraction takes it back, and it was
+ *  recorded against the check's words as they are now. */
 function isRun(result: Pick<CheckResult, "retracted" | "check_words_moved">): boolean {
   return result.retracted === undefined && result.check_words_moved !== true;
+}
+
+/** Whether a role recorded the result. Dispatch derives a result of a check CI proves from the
+ *  check's CI run, with the actor `github_app`, and stores it nowhere. */
+function recordedByRole(result: Pick<CheckResult, "actor">): boolean {
+  return result.actor.kind !== "github_app";
 }
 
 /** Every link a result names, which the census reads for its run. */
@@ -1811,8 +1815,11 @@ interface CheckVerdict {
  * a role recorded in the round on a check that carries `ci_check`. A check a step proves — of its
  * named job, where it carries `ci_check` — is CI's, and the `run` step reads no run of it. The
  * `run` step then looks for the round session's own run at the head, unless the check's words or
- * the issue's plan give its run to another runner or one run at a head. Both steps count a result
- * as a run only where `isRun` holds: a retracted result, and one of older words, is no run.
+ * the issue's plan give its run to another runner or one run at a head. The `jobs` step reads
+ * every result a role recorded in the round, a retracted one and one of older words included:
+ * each shows that the check carried no `ci_check` when it was written, since Dispatch refuses a
+ * result on a check that carries one. The `run` step counts a result as a run only where `isRun`
+ * holds.
  */
 async function judgeCheck(input: {
   config: DispatchConfig;
@@ -1884,14 +1891,14 @@ async function judgeCheck(input: {
       });
     }
     const recorded = (check.results ?? []).filter(
-      (result) => isRun(result) && duringRound(result, round)
+      (result) => recordedByRole(result) && duringRound(result, round)
     );
     if (recorded.length > 0) {
       verdict.rows.push({
         ...row,
         step: "jobs",
         reason:
-          "it carries ci_check, and a role recorded a result on it during the round at the words it has now",
+          "a role recorded a result on it during the round, so it carried no ci_check when that result was written",
         detail: recorded.map((result) => result.id).join(", "),
       });
     }
@@ -1935,12 +1942,12 @@ async function judgeCheck(input: {
   if (taken === undefined) {
     // Every result the round's session recorded at the head is of the check's older words.
     if (ofRound.length > 0) {
-      verdict.rows.push({
-        ...audit,
+      verdict.excluded = {
+        ...place,
         reason:
           "its words moved after the round's session recorded its result at the head, so it is not judged",
         detail: ofRound.map((result) => result.id).join(", "),
-      });
+      };
     } else {
       verdict.rows.push({ ...audit, reason: "no result of the round's session at the head" });
     }

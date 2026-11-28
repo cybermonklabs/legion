@@ -182,20 +182,21 @@ therefore one the run cannot judge. The step must also meet the proof rule's oth
 other step that holds `dispatch result` and names the check, and a search line outside a workflow
 file that names it, is one the run cannot judge, never a reason to leave the check out.
 
-A result that a retraction takes back, or that was recorded against older words of the check
-(`check_words_moved`), is no run, and neither step below counts it.
-
 Then each check is read against the jobs (the `jobs` step): a check with no `ci_check` that a step
 proves is listed, and is CI's; a `ci_check` whose named job holds no step that names the check's
-command is listed; and a result a role recorded during the round, at the words the check has now,
-on a check that carries `ci_check` is listed. A check a step of its named job proves is CI's.
+command is listed; and a result a role recorded during the round on a check that carries
+`ci_check` now is listed, for the check carried none when that result was written. A retracted
+result, and one recorded against older words of the check, show that too. A result Dispatch
+derives from a CI run is no result a role recorded. A check a step of its named job proves is CI's.
 Every other check is left out where its words give its run only to another runner, or where the
 issue's plan gives it one run at a head.
 
 For each check left (the `run` step), the run looks for a result of the round's session, at the
-round's head, between the move into testing and the handoff. It lists a check with no such
-result; a check whose only such results are of its older words, as not judged; one whose reading
-carries an earlier run; and one whose linked output shows a run at another head. A result that
+round's head, between the move into testing and the handoff. A retracted result, and one recorded
+against older words of the check (`check_words_moved`), is no run there. It lists a check with no
+such result; one whose reading carries an earlier run; and one whose linked output shows a run at
+another head. A check whose only such results are of its older words is left out of the round,
+not judged, with those results named. A result that
 links no output, whose output does not load, or whose output at the head does not show the
 check's own command, reports UNKNOWN, never a pass. A linked output is read with no credential,
 only from GitHub over HTTPS (`github.com`, `api.github.com` and the hosts under
