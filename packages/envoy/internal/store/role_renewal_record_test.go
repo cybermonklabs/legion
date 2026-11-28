@@ -481,7 +481,7 @@ func TestARenewalFailureRecordIsKeyedByHolderAndPrunedPastTheLiveWindow(t *testi
 	rig := newRepairRig(t, nil)
 	claimRoleAs(t, rig.reg, holder, "m1", both, roleClaimInstance)
 	claimRoleAs(t, rig.reg, holder, "m1", lostRole, roleClaimInstance)
-	putRoleClaim(t, rig.roles, copyRole, holder)
+	putRoleClaim(t, rig.roles, copyRole, holder, rig.clock.Now)
 	registered(t, rig.reg, other, contracts.RoleTopicPrefix+otherRole)
 	waitForHeld(t, rig.reg, holder, both, copyRole, lostRole)
 	settle(rig)

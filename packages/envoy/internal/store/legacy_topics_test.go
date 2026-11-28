@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 )
@@ -403,5 +402,5 @@ func TestARecordStoresEachTopicAsTheCallerWroteIt(t *testing.T) {
 	if !slices.Equal(row.Topics, want) {
 		t.Fatalf("stored topics = %q, want %q as written", row.Topics, want)
 	}
-	pollMatch(t, reader, "m1", contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"), 1, 5*time.Second)
+	waitForMatches(t, reader, "the second registry's watcher to deliver ses_r9's row", "m1", contracts.DispatchIssueSubject("INFRA", "INFRA-12", "comment.created"), 1)
 }

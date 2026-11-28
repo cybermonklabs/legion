@@ -402,7 +402,7 @@ func TestTheRoleClaimReaperGoesPastAClaimItCouldNotRead(t *testing.T) {
 		if role == unreadable {
 			continue
 		}
-		putRoleClaim(t, raw, role, "ses_gone")
+		putRoleClaim(t, raw, role, "ses_gone", reg.now)
 	}
 	// Stored by a direct put, because a record this build cannot decode is not one putRoleClaim
 	// can write: valid JSON that is not a claim, which the bus hands over and DecodeRoleClaim
@@ -451,7 +451,7 @@ func TestTheRoleClaimReaperGoesPastAClaimItCouldNotRelease(t *testing.T) {
 	roles := []string{"legion-controller", undeletable, "legion-reviewer", "legion-merger"}
 	raw := reg.roleKV.Legacy()
 	for _, role := range roles {
-		putRoleClaim(t, raw, role, holder)
+		putRoleClaim(t, raw, role, holder, reg.now)
 	}
 	// The delete fails the way a loaded bucket fails one key's, so nothing says the next pass
 	// cannot make it either.
@@ -545,7 +545,7 @@ func TestTheRoleClaimReaperEndsThePassWhenItsContextEnds(t *testing.T) {
 	roles := []string{"legion-architect", "legion-controller", "legion-merger", "legion-reviewer", "legion-tester"}
 	raw := reg.roleKV.Legacy()
 	for _, role := range roles {
-		putRoleClaim(t, raw, role, "ses_gone")
+		putRoleClaim(t, raw, role, "ses_gone", reg.now)
 	}
 	const releaseFailure = "role reaper skipped a claim it could not release"
 
@@ -795,14 +795,14 @@ func TestTheRoleClaimReaperLogsAPassThatFailedUnderALiveLoopAtError(t *testing.T
 	defer cleanup()
 
 	reg, _ := coldRegistry(t, conn)
-	putRoleClaim(t, reg.roleKV.Legacy(), "legion-architect", "ses_gone")
+	putRoleClaim(t, reg.roleKV.Legacy(), "legion-architect", "ses_gone", reg.now)
 	watchRoleBucketThrough(t, reg, earlyEndKV{KeyValue: reg.roles().WatchHandle(), ended: true})
 
 	loopCtx, endLoop := context.WithCancel(context.Background())
 	defer endLoop()
 	const cycleFailed = "role claim reaper cycle failed"
 	done := reg.StartRoleClaimReaper(loopCtx, func(string) bool { return false }, 10*time.Millisecond, 0, 0)
-	waitFor(t, 30*time.Second, func() bool { return logLines(logs, cycleFailed) > 0 })
+	waitFor(t, func() bool { return logLines(logs, cycleFailed) > 0 })
 	line := logLine(t, logs, cycleFailed)
 	endLoop()
 	select {

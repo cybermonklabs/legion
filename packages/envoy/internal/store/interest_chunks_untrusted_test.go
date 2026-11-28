@@ -53,7 +53,7 @@ func TestADeleteThatReadNothingAndCannotReadHistoryKeepsTheRow(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	waitFor(t, reg.watcher.Ready)
 	topics := kvchunktest.Topics("unread", 400)
 	if _, err := reg.Upsert(Interest{SessionID: "ses_unread", MachineID: "m1"}, topics); err != nil {
 		t.Fatalf("store the record: %v", err)
@@ -63,7 +63,7 @@ func TestADeleteThatReadNothingAndCannotReadHistoryKeepsTheRow(t *testing.T) {
 	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(missingGetKeyValue{KeyValue: base.Legacy(), key: "ses_unread", leader: base},
 		historyFailingWatch{KeyValue: base.WatchHandle(), key: "ses_unread"}, base.Streams()), interestCache{reg})
 	reg.watcher.Start()
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	waitFor(t, reg.watcher.Ready)
 	if err := reg.deleteInterest(t.Context(), "ses_unread"); err != nil {
 		t.Fatalf("the delete whose read found nothing: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestADeleteThatReadNothingKeepsTheChunkedRowItsCacheHolds(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	waitFor(t, reg.watcher.Ready)
 	topics := kvchunktest.Topics("kept", 400)
 	if _, err := reg.Upsert(Interest{SessionID: "ses_kept", MachineID: "m1"}, topics); err != nil {
 		t.Fatalf("store the record: %v", err)

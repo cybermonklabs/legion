@@ -114,7 +114,7 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 	if err != nil {
 		t.Fatalf("create the role bucket: %v", err)
 	}
-	putRoleClaim(t, rawRoles, "restored", "ses_a")
+	putRoleClaim(t, rawRoles, "restored", "ses_a", time.Now)
 
 	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
@@ -143,23 +143,23 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 			return err == nil && slices.Equal(got, append([]string{}, want...))
 		}
 	}
-	putRoleClaim(t, rawRoles, "reviewer", "ses_a")
-	waitFor(t, 5*time.Second, held("ses_a", "restored", "reviewer"))
+	putRoleClaim(t, rawRoles, "reviewer", "ses_a", reg.now)
+	waitFor(t, held("ses_a", "restored", "reviewer"))
 
-	putRoleClaim(t, rawRoles, "reviewer", "ses_b")
-	waitFor(t, 5*time.Second, held("ses_b", "reviewer"))
-	waitFor(t, 5*time.Second, held("ses_a", "restored"))
+	putRoleClaim(t, rawRoles, "reviewer", "ses_b", reg.now)
+	waitFor(t, held("ses_b", "reviewer"))
+	waitFor(t, held("ses_a", "restored"))
 
 	if err := rawRoles.Delete("reviewer"); err != nil {
 		t.Fatalf("delete reviewer's claim: %v", err)
 	}
-	waitFor(t, 5*time.Second, held("ses_b"))
+	waitFor(t, held("ses_b"))
 
 	if _, err := rawRoles.Put("restored", []byte(`{"holder_session_id":""}`)); err != nil {
 		t.Fatalf("store a claim naming no holder: %v", err)
 	}
-	waitFor(t, 5*time.Second, held("ses_a"))
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, held("ses_a"))
+	waitFor(t, func() bool {
 		return strings.Contains(logs.String(), "role claim watcher found a claim it cannot read")
 	})
 	if n := strings.Count(logs.String(), "role claim watcher found a claim it cannot read"); n != 1 {
@@ -179,7 +179,7 @@ func TestRolesHeldByFollowsTheRoleClaims(t *testing.T) {
 		}
 	}})
 	reg.roleWatcher.Start()
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, func() bool {
 		return servableView(reg)
 	})
 	claimRoleAs(t, reg, "ses_c", "m1", "planner", roleClaimInstance)
@@ -221,7 +221,7 @@ func TestRolesHeldByRefusesWhenItsViewCannotAnswer(t *testing.T) {
 	if err := js.DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		_, err := reg.RolesHeldBy("ses_a")
 		return errors.Is(err, ErrRoleViewNotReady)
 	})
@@ -262,7 +262,7 @@ func heldOnceComplete(t *testing.T, reg *Registry, sessionID string, want []stri
 // starts the view again knows the claims reached it before it did.
 func waitForHeld(t *testing.T, reg *Registry, sessionID string, want ...string) {
 	t.Helper()
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, func() bool {
 		roles, err := reg.RolesHeldBy(sessionID)
 		return err == nil && slices.Equal(roles, want)
 	})
@@ -309,15 +309,15 @@ func TestARoleViewWhoseFirstScanTimedOutAnswersOnlyOnceItsRescanCompletes(t *tes
 	if err != nil {
 		t.Fatalf("open the role bucket: %v", err)
 	}
-	putRoleClaim(t, rawRoles, "architect", "ses_other")
-	putRoleClaim(t, rawRoles, "reviewer", "ses_holder")
-	putRoleClaim(t, rawRoles, "planner", "ses_holder")
+	putRoleClaim(t, rawRoles, "architect", "ses_other", reg.now)
+	putRoleClaim(t, rawRoles, "reviewer", "ses_holder", reg.now)
+	putRoleClaim(t, rawRoles, "planner", "ses_holder", reg.now)
 	// The registry's own view reaches the claims first, so the view the test then starts again
 	// is the only one short of them.
 	waitForHeld(t, reg, "ses_holder", "planner", "reviewer")
 
 	restartRoleViewTimingOutAfter(t, conn, reg, rawRoles, 1)
-	waitFor(t, 5*time.Second, reg.roleWatcher.Ready)
+	waitFor(t, reg.roleWatcher.Ready)
 	if roles, err := reg.RolesHeldBy("ses_holder"); !errors.Is(err, ErrRoleViewNotReady) {
 		t.Fatalf("after a first scan the idle timer ended, RolesHeldBy(ses_holder) = %v, %v; want ErrRoleViewNotReady", roles, err)
 	}
@@ -403,9 +403,9 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	if err != nil {
 		t.Fatalf("open the role bucket: %v", err)
 	}
-	putRoleClaim(t, old, "planner", "ses_holder")
-	oldArchitect := putRoleClaim(t, old, "architect", "ses_other")
-	waitFor(t, 5*time.Second, func() bool {
+	putRoleClaim(t, old, "planner", "ses_holder", reg.now)
+	oldArchitect := putRoleClaim(t, old, "architect", "ses_other", reg.now)
+	waitFor(t, func() bool {
 		holder, errHolder := reg.RolesHeldBy("ses_holder")
 		other, errOther := reg.RolesHeldBy("ses_other")
 		return errHolder == nil && errOther == nil &&
@@ -435,17 +435,17 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 	reg.roleWatcher.Stop()
 	reg.roleWatcher = kvwatch.New("role claims", reg.roles(), cache)
 	reg.roleWatcher.Start()
-	waitFor(t, 5*time.Second, reg.roleWatcher.Ready)
+	waitFor(t, reg.roleWatcher.Ready)
 	heldOnceComplete(t, reg, "ses_holder", []string{"planner", "reviewer"})
 
 	if err := js.DeleteKeyValue(bus.RoleClaimBucket); err != nil {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
 	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: 1, Storage: natsgo.FileStorage})
-	if newArchitect := putRoleClaim(t, recreated, "architect", "ses_other"); newArchitect >= oldArchitect {
+	if newArchitect := putRoleClaim(t, recreated, "architect", "ses_other", reg.now); newArchitect >= oldArchitect {
 		t.Fatalf("the new bucket's architect claim is at revision %d, the old one's at %d; the test needs the new one lower", newArchitect, oldArchitect)
 	}
-	putRoleClaim(t, recreated, "reviewer", "ses_holder")
+	putRoleClaim(t, recreated, "reviewer", "ses_holder", reg.now)
 	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
@@ -461,7 +461,7 @@ func TestARecreatedRoleBucketsViewAnswersOnlyOnceItsRefillCompletes(t *testing.T
 		t.Fatalf("with the refill short of the holder's claim, ses_holder holds %v, want the copy it had, [planner reviewer]", got)
 	}
 	release()
-	waitFor(t, 30*time.Second, reg.roleWatcher.Following)
+	waitFor(t, reg.roleWatcher.Following)
 	if got := heldRoles(t, reg, "ses_holder"); !slices.Equal(got, []string{"reviewer"}) {
 		t.Fatalf("after the refill ses_holder holds %v, want [reviewer]: a claim only the old bucket had outlived the reset", got)
 	}

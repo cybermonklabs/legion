@@ -249,7 +249,7 @@ func putRoleClaimsInParallel(t *testing.T, kv natsgo.KeyValue, roles []string, h
 		go func() {
 			defer pool.Done()
 			for role := range pending {
-				putRoleClaim(t, kv, role, holder(role))
+				putRoleClaim(t, kv, role, holder(role), time.Now)
 			}
 		}()
 	}
@@ -502,7 +502,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		for _, role := range gone {
 			holder := "ses_gone_holder_of_" + role
 			goneHolders[holder] = true
-			putRoleClaim(t, rawRoles, role, holder)
+			putRoleClaim(t, rawRoles, role, holder, reg.now)
 		}
 		counting := countRoleBucketCalls(t, reg, &sweepRoleKeyValue{delay: claimCallDelay})
 

@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/kvchunk"
@@ -28,7 +27,7 @@ func openReplicatedRegistry(t *testing.T) (*testnats.Cluster, *Registry) {
 	for _, bucket := range []string{bus.InterestBucket, bus.RoleClaimBucket} {
 		cluster.MoveStreamLeader(t, "KV_"+bucket, 0)
 	}
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	waitFor(t, reg.watcher.Ready)
 	return cluster, reg
 }
 

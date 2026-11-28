@@ -77,7 +77,7 @@ func TestARecordPastTheMaxPayloadIsStoredInChunksAndReadWhole(t *testing.T) {
 	requireTopics(t, "the writer's cache", cached, want)
 
 	other := openRegistry(t, conn)
-	waitFor(t, 10*time.Second, func() bool {
+	waitFor(t, func() bool {
 		item, ok := other.Cached("ses_wide")
 		return ok && slices.Equal(item.Topics, want)
 	})
@@ -209,7 +209,7 @@ func TestAReaderDuringRewritesGetsOneWholeRecord(t *testing.T) {
 	if _, err := writer.Upsert(Interest{SessionID: "ses_rewritten", MachineID: "m1"}, base); err != nil {
 		t.Fatalf("store the first record: %v", err)
 	}
-	waitFor(t, 10*time.Second, func() bool { _, ok := other.Cached("ses_rewritten"); return ok })
+	waitFor(t, func() bool { _, ok := other.Cached("ses_rewritten"); return ok })
 
 	ctx, stop := context.WithCancel(t.Context())
 	var wg sync.WaitGroup
@@ -293,7 +293,7 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	waitFor(t, reg.watcher.Ready)
 	other := openRegistry(t, conn)
 	kv := rawInterests(t, conn)
 	legacy := reg.watcher.KV().Legacy()
@@ -311,7 +311,7 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 			t.Fatalf("after a write stopped %s the record reads %v, want the old one", step, err)
 		}
 		requireTopics(t, "the bucket's record after a write stopped "+step, row, old)
-		waitFor(t, 10*time.Second, func() bool {
+		waitFor(t, func() bool {
 			item, ok := other.Cached("ses_crashed")
 			return ok && slices.Equal(item.Topics, old)
 		})
@@ -354,7 +354,7 @@ func TestAWriteStoppedAtAnyStepLeavesTheOldRecordServedAndItsChunksCollected(t *
 	if err := reg.Rewatch(t.Context(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
-	waitFor(t, 10*time.Second, reg.watcher.Following)
+	waitFor(t, reg.watcher.Following)
 	collected, err := reg.collectInterestChunks(t.Context())
 	if err != nil {
 		t.Fatalf("collect the chunks past the grace: %v", err)
@@ -502,7 +502,7 @@ func TestAFencedDeleteOfAChunkedRecordLeavesNoChunk(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	waitFor(t, reg.watcher.Ready)
 	kv := rawInterests(t, conn)
 	requireNoKey := func(how string) {
 		t.Helper()
@@ -588,7 +588,7 @@ func TestAReaperPassCollectsChunksWhenItsReapFailed(t *testing.T) {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	waitFor(t, 30*time.Second, reg.watcher.Ready)
+	waitFor(t, reg.watcher.Ready)
 	kv := rawInterests(t, conn)
 	legacy := reg.watcher.KV().Legacy()
 	if _, err := reg.Upsert(Interest{SessionID: "ses_dead", MachineID: "m1"}, []string{"notifications.team.dead"}); err != nil {
@@ -609,7 +609,7 @@ func TestAReaperPassCollectsChunksWhenItsReapFailed(t *testing.T) {
 	ctx, stop := context.WithCancel(t.Context())
 	done := reg.StartReaper(ctx, func(string) (bool, error) { return false, nil }, 20*time.Millisecond, InterestReapGrace)
 	t.Cleanup(func() { stop(); <-done })
-	waitFor(t, 10*time.Second, func() bool { return len(kvchunktest.LiveChunkKeys(t, kv)) == 0 })
+	waitFor(t, func() bool { return len(kvchunktest.LiveChunkKeys(t, kv)) == 0 })
 }
 
 // headRefusingKeyValue is the interest bucket whose writes of key's record the server refuses, as a

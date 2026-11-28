@@ -157,7 +157,7 @@ func openRegistry(t *testing.T, conn *natsgo.Conn) *Registry {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	waitFor(t, 30*time.Second, registry.watcher.Ready)
+	waitFor(t, registry.watcher.Ready)
 	return registry
 }
 
@@ -613,8 +613,8 @@ func TestAPassWhoseScanTimedOutPurgesNothingAndLeavesTheRegistryHealthy(t *testi
 	t.Cleanup(registry.StopWatch)
 	registry.watcher.Start()
 	registry.roleWatcher.Start()
-	waitFor(t, 30*time.Second, registry.watcher.Ready)
-	waitFor(t, 30*time.Second, registry.roleWatcher.Ready)
+	waitFor(t, registry.watcher.Ready)
+	waitFor(t, registry.roleWatcher.Ready)
 
 	collector := collectorOf(registry)
 	collector.scanIdle = idle
@@ -769,7 +769,7 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	waitFor(t, 30*time.Second, func() bool { _, err := js.AccountInfo(); return err == nil })
+	waitFor(t, func() bool { _, err := js.AccountInfo(); return err == nil })
 	kv, err := js.CreateKeyValue(&natsgo.KeyValueConfig{Bucket: bus.InterestBucket, Replicas: 1, Storage: natsgo.FileStorage})
 	if err != nil {
 		t.Fatalf("create the interest bucket: %v", err)
@@ -781,7 +781,7 @@ func startGrantedServer(t *testing.T, deny []string) grantedServer {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	waitFor(t, 30*time.Second, registry.watcher.Ready)
+	waitFor(t, registry.watcher.Ready)
 	return grantedServer{srv: srv, conn: conn, registry: registry, js: js, kv: kv}
 }
 

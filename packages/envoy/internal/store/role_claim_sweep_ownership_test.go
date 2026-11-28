@@ -86,7 +86,7 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 		}
 	}})
 	reg.roleWatcher.Start()
-	waitFor(t, 30*time.Second, func() bool { return servableView(reg) })
+	waitFor(t, func() bool { return servableView(reg) })
 
 	// claimAndDropTheTopic has session claim role through the registry, naming the process the
 	// deregistrations below state (releasedByItsProcess), so the claim reaches the view through
@@ -132,7 +132,7 @@ func TestTheDeregistrationSweepLeavesEveryClaimAnotherSessionHolds(t *testing.T)
 		// Another session takes the role by writing its claim to the bucket, as another listener
 		// does. The watcher's delivery of it is gated, so the view goes on naming the session
 		// below the holder: the disagreement the sweep must not act on.
-		revision := putRoleClaim(t, rawRoles, takenBefore, otherHolder)
+		revision := putRoleClaim(t, rawRoles, takenBefore, otherHolder, reg.now)
 		if holder := holderOf(reg, takenBefore); holder != session {
 			t.Fatalf("the view names %q the holder of %s, want the stale %s: the gate did not hold the delivery and the case tests nothing", holder, takenBefore, session)
 		}
@@ -350,7 +350,7 @@ func TestTheDeregistrationSweepFreesOnlyTheClaimsTheDeregisteringProcessHolds(t 
 	// The lane's own claim, written by the process the claim names, and a claim of the same
 	// session whose claimant stated no process, which names none.
 	putRenewedRoleClaim(t, rawRoles, held, session, roleClaimInstance, time.Now())
-	putRoleClaim(t, rawRoles, unnamed, session)
+	putRoleClaim(t, rawRoles, unnamed, session, reg.now)
 	if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, []string{recorded}); err != nil {
 		t.Fatalf("store %s's interest record: %v", session, err)
 	}

@@ -80,7 +80,7 @@ func newRepairRig(t *testing.T, seed func(roles natsgo.KeyValue)) *repairRig {
 func (rig *repairRig) scheduled() *kvwatchtest.Wait {
 	rig.t.Helper()
 	var wait *kvwatchtest.Wait
-	waitFor(rig.t, 10*time.Second, func() bool {
+	waitFor(rig.t, func() bool {
 		wait = rig.waits.Armed()
 		return wait != nil
 	})
@@ -195,8 +195,8 @@ func TestARoleCopyLostClaimIsBackWithinTheRepairBound(t *testing.T) {
 	)
 	logs := captureRegistryLogs(t)
 	rig := newRepairRig(t, func(roles natsgo.KeyValue) {
-		putRoleClaim(t, roles, role, holder)
-		putRoleClaim(t, roles, "reviewer", kept)
+		putRoleClaim(t, roles, role, holder, func() time.Time { return repairBase })
+		putRoleClaim(t, roles, "reviewer", kept, func() time.Time { return repairBase })
 	})
 	if wait := rig.scheduled(); wait.Delay() > RoleClaimRepairBound {
 		t.Fatalf("the role claim watcher armed its scheduled read %s after the read that completed, past the repair bound of %s",
@@ -242,7 +242,7 @@ func TestARoleCopySurplusClaimIsOutWithinTheRepairBound(t *testing.T) {
 	)
 	logs := captureRegistryLogs(t)
 	rig := newRepairRig(t, func(roles natsgo.KeyValue) {
-		putRoleClaim(t, roles, "planner", kept)
+		putRoleClaim(t, roles, "planner", kept, func() time.Time { return repairBase })
 	})
 
 	gainedAt := rig.clock.Now()
@@ -283,9 +283,9 @@ func TestARoleCopySurplusClaimIsOutWithinTheRepairBound(t *testing.T) {
 func TestTheFirstReadOfAnEpochCountsNoRepair(t *testing.T) {
 	logs := captureRegistryLogs(t)
 	rig := newRepairRig(t, func(roles natsgo.KeyValue) {
-		putRoleClaim(t, roles, "planner", "ses_a")
-		putRoleClaim(t, roles, "reviewer", "ses_b")
-		putRoleClaim(t, roles, "architect", "ses_b")
+		putRoleClaim(t, roles, "planner", "ses_a", func() time.Time { return repairBase })
+		putRoleClaim(t, roles, "reviewer", "ses_b", func() time.Time { return repairBase })
+		putRoleClaim(t, roles, "architect", "ses_b", func() time.Time { return repairBase })
 	})
 	started := rig.reg.RoleClaimRepair()
 	if started.Completed != 1 || started.PutBack != 0 || started.TookOut != 0 || !started.CompletedAt.Equal(repairBase) {
@@ -309,13 +309,13 @@ func TestTheFirstReadOfAnEpochCountsNoRepair(t *testing.T) {
 		t.Fatalf("delete the role bucket: %v", err)
 	}
 	recreated := testnats.RecreateKeyValue(t, js, &natsgo.KeyValueConfig{Bucket: bus.RoleClaimBucket, Replicas: 1, Storage: natsgo.FileStorage})
-	putRoleClaim(t, recreated, "reviewer", "ses_a")
-	putRoleClaim(t, recreated, "lead", "ses_c")
+	putRoleClaim(t, recreated, "reviewer", "ses_a", rig.clock.Now)
+	putRoleClaim(t, recreated, "lead", "ses_c", rig.clock.Now)
 	if err := rig.reg.Rewatch(context.Background(), rig.conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
 	want := map[string][]string{"ses_a": {"reviewer"}, "ses_c": {"lead"}}
-	waitFor(t, 30*time.Second, func() bool {
+	waitFor(t, func() bool {
 		held, err := rig.reg.RolesBySession()
 		return err == nil && maps.EqualFunc(held, want, slices.Equal)
 	})
@@ -344,8 +344,8 @@ func TestARepairMidScanKeepsAClaimGrantedWhileTheReadRuns(t *testing.T) {
 		granted = "ses_granted_mid_scan"
 	)
 	rig := newRepairRig(t, func(roles natsgo.KeyValue) {
-		putRoleClaim(t, roles, role, before)
-		putRoleClaim(t, roles, passed, "ses_other")
+		putRoleClaim(t, roles, role, before, func() time.Time { return repairBase })
+		putRoleClaim(t, roles, passed, "ses_other", func() time.Time { return repairBase })
 	})
 
 	var scheduled atomic.Bool
@@ -375,7 +375,7 @@ func TestARepairMidScanKeepsAClaimGrantedWhileTheReadRuns(t *testing.T) {
 	rig.reg.roleWatcher = kvwatch.New("role claims", rig.reg.roles(), cache,
 		kvwatch.WithScheduledRead(roleClaimRepairInterval), kvwatch.WithAfterFunc(rig.waits.After))
 	rig.reg.roleWatcher.Start()
-	waitFor(t, 10*time.Second, func() bool { return servableView(rig.reg) })
+	waitFor(t, func() bool { return servableView(rig.reg) })
 
 	scheduled.Store(true)
 	report, fired := rig.fire(rig.due())
@@ -489,7 +489,7 @@ func TestARepairCountsADeleteItDeliversOnceAndAReleaseNotAtAll(t *testing.T) {
 	rig.reg.roleWatcher = kvwatch.New("role claims", rig.reg.roles(), cache,
 		kvwatch.WithScheduledRead(roleClaimRepairInterval), kvwatch.WithAfterFunc(rig.waits.After))
 	rig.reg.roleWatcher.Start()
-	waitFor(t, 10*time.Second, func() bool { return servableView(rig.reg) })
+	waitFor(t, func() bool { return servableView(rig.reg) })
 
 	missing.Store(true)
 	if err := rig.roles.Delete(deleted); err != nil {
@@ -504,8 +504,8 @@ func TestARepairCountsADeleteItDeliversOnceAndAReleaseNotAtAll(t *testing.T) {
 	if got := holderOf(rig.reg, deleted); got != holder {
 		t.Fatalf("with the delete of %s's claim missed, the copy names %q for it, want %s", deleted, got, holder)
 	}
-	putRoleClaim(t, rig.roles, passed, "ses_other")
-	waitFor(t, 10*time.Second, func() bool { return holderOf(rig.reg, passed) == "ses_other" })
+	putRoleClaim(t, rig.roles, passed, "ses_other", rig.clock.Now)
+	waitFor(t, func() bool { return holderOf(rig.reg, passed) == "ses_other" })
 
 	scheduled.Store(true)
 	report, fired := rig.fire(rig.due())
@@ -560,7 +560,7 @@ func TestARescanBringsBackAClaimNeitherTheRecordNorTheCopyNames(t *testing.T) {
 	if _, err := rig.interests.Put(holder, []byte(undecodableInterestRecord)); err != nil {
 		t.Fatalf("store %s's interest record: %v", holder, err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, func() bool {
 		_, cached := rig.reg.Cached(holder)
 		return !cached
 	})

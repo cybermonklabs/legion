@@ -30,7 +30,7 @@ const (
 // it applied.
 func awaitInterestApplied(t *testing.T, r *Registry, key string, revision uint64) {
 	t.Helper()
-	waitFor(t, 5*time.Second, func() bool {
+	waitFor(t, func() bool {
 		r.mu.RLock()
 		defer r.mu.RUnlock()
 		_, epoch := r.watcher.Handle()

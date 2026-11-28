@@ -28,6 +28,7 @@ import (
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/kvchunk"
 	"github.com/sjawhar/envoy/internal/kvwatch"
+	"github.com/sjawhar/envoy/internal/kvwatch/kvwatchtest"
 	"github.com/sjawhar/envoy/internal/logtest"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testport"
@@ -69,6 +70,7 @@ func interestFixture(t testing.TB, key string, item Interest) []byte {
 }
 
 func TestMatch_FiltersByMachineID(t *testing.T) {
+	t.Parallel()
 	r := holding(t, map[string]Interest{
 		"ses_a": {SessionID: "ses_a", MachineID: "machine-A", Topics: []string{"notifications.>"}},
 		"ses_b": {SessionID: "ses_b", MachineID: "machine-B", Topics: []string{"notifications.>"}},
@@ -100,6 +102,7 @@ func TestMatch_FiltersByMachineID(t *testing.T) {
 // match, whatever machine it registered on, each once however many of its topics match; a session
 // whose topics do not match is left out on every machine.
 func TestMatchAllMachinesReturnsEachMatchingSessionOnceWhateverItsMachine(t *testing.T) {
+	t.Parallel()
 	r := holding(t, map[string]Interest{
 		"ses_a":     {SessionID: "ses_a", MachineID: "machine-A", Topics: []string{"notifications.team.x.>"}},
 		"ses_b":     {SessionID: "ses_b", MachineID: "machine-B", Topics: []string{"notifications.team.x.>", "notifications.team.*.update"}},
@@ -125,6 +128,7 @@ func TestMatchAllMachinesReturnsEachMatchingSessionOnceWhateverItsMachine(t *tes
 }
 
 func TestMatch_WildcardPatterns(t *testing.T) {
+	t.Parallel()
 	r := holding(t, map[string]Interest{
 		"ses_exact":   {SessionID: "ses_exact", MachineID: "m1", Topics: []string{"notifications.github.sjawhar.legion.pr"}},
 		"ses_star":    {SessionID: "ses_star", MachineID: "m1", Topics: []string{"notifications.github.*.*.pr"}},
@@ -159,6 +163,7 @@ func TestMatch_WildcardPatterns(t *testing.T) {
 }
 
 func TestMatch_SlackThreadIsolation(t *testing.T) {
+	t.Parallel()
 	r := holding(t, map[string]Interest{
 		"ses_thread_a": {SessionID: "ses_thread_a", MachineID: "m1", Topics: []string{
 			"notifications.slack.T123.C456.thread.1111111111_111111.>",
@@ -205,6 +210,7 @@ func TestMatch_SlackThreadIsolation(t *testing.T) {
 }
 
 func TestMatch_EmptyCache(t *testing.T) {
+	t.Parallel()
 	r := holding(t, map[string]Interest{})
 	got := r.Match("m1", "notifications.test")
 	if len(got) != 0 {
@@ -213,6 +219,7 @@ func TestMatch_EmptyCache(t *testing.T) {
 }
 
 func TestMatch_MultipleTopicsOnOneEntry(t *testing.T) {
+	t.Parallel()
 	r := holding(t, map[string]Interest{
 		"ses_multi": {
 			SessionID: "ses_multi",
@@ -247,6 +254,7 @@ func TestMatch_MultipleTopicsOnOneEntry(t *testing.T) {
 // (only the agent topic), truncating the session's subscriptions to its own topic.
 
 func TestMergeForUpsert_SuccessfulGetMergesTopics(t *testing.T) {
+	t.Parallel()
 	cur := Interest{
 		SessionID: "ses_x",
 		MachineID: "m1",
@@ -274,6 +282,7 @@ func TestMergeForUpsert_SuccessfulGetMergesTopics(t *testing.T) {
 }
 
 func TestMergeForUpsert_ErrKeyNotFoundCreatesNewEntry(t *testing.T) {
+	t.Parallel()
 	item := Interest{
 		SessionID: "ses_new",
 		MachineID: "m1",
@@ -296,6 +305,7 @@ func TestMergeForUpsert_ErrKeyNotFoundCreatesNewEntry(t *testing.T) {
 }
 
 func TestMergeForUpsert_TransientErrorRefusesToWrite(t *testing.T) {
+	t.Parallel()
 	// This is the regression test for the Atlas dropout bug. A transient KV error
 	// (NOT ErrKeyNotFound) MUST propagate up so the caller refuses to silently
 	// overwrite durable state with whatever was passed in.
@@ -316,6 +326,7 @@ func TestMergeForUpsert_TransientErrorRefusesToWrite(t *testing.T) {
 }
 
 func TestMergeForUpsert_PreservesMachineIDAndDirFromExistingEntry(t *testing.T) {
+	t.Parallel()
 	// Heartbeats from the plugin do not send MachineID. The cached state must win.
 	cur := Interest{
 		SessionID: "ses_x",
@@ -358,6 +369,7 @@ func TestMergeForUpsert_PreservesMachineIDAndDirFromExistingEntry(t *testing.T) 
 // claims name that project's controller role, since the row is the filter of the consumer those
 // notices now reach it through.
 func TestMergeForUpsert_DropsStoredTopicsReachingAPrivateStreamSubject(t *testing.T) {
+	t.Parallel()
 	cur := Interest{
 		SessionID: "ses_x",
 		MachineID: "m1",
@@ -399,6 +411,7 @@ func TestMergeForUpsert_DropsStoredTopicsReachingAPrivateStreamSubject(t *testin
 // sends (cmd/listener/api.go's senderStamp) - names the listener the session is registered through
 // now, not the one it registered through first.
 func TestMergeForUpsertMovesTheRowToTheMachineAndDirectoryOfASecondRegistration(t *testing.T) {
+	t.Parallel()
 	cur := Interest{
 		SessionID: "ses_moved",
 		MachineID: "machine-first",
@@ -424,6 +437,7 @@ func TestMergeForUpsertMovesTheRowToTheMachineAndDirectoryOfASecondRegistration(
 // so the row keeps the directory the session's registration stored: claiming a role never clears
 // the Cwd of the sender stamp.
 func TestMergeForUpsertKeepsTheStoredDirectoryForARoleClaimThatCarriesNone(t *testing.T) {
+	t.Parallel()
 	cur := Interest{
 		SessionID: "ses_claimant",
 		MachineID: "machine-first",
@@ -444,6 +458,7 @@ func TestMergeForUpsertKeepsTheStoredDirectoryForARoleClaimThatCarriesNone(t *te
 // A request that carries no machine id keeps the stored one: a caller that names no machine says
 // nothing about where the session runs, so the row is left naming the listener it has.
 func TestMergeForUpsertKeepsTheStoredMachineIDForARequestThatCarriesNone(t *testing.T) {
+	t.Parallel()
 	cur := Interest{
 		SessionID: "ses_machineless",
 		MachineID: "machine-first",
@@ -464,6 +479,7 @@ func TestMergeForUpsertKeepsTheStoredMachineIDForARequestThatCarriesNone(t *test
 // A plan's Withheld topics leave the stored row, and every other stored topic is kept beside the
 // plan's own: the write merges into the row it read, less what the caller's rule withheld.
 func TestMergeForUpsertTakesAPlansWithheldTopicsOutOfTheStoredRow(t *testing.T) {
+	t.Parallel()
 	cur := Interest{
 		SessionID: "ses_withheld",
 		MachineID: "m1",
@@ -504,28 +520,44 @@ func putInterest(t *testing.T, kv natsgo.KeyValue, item Interest) {
 	}
 }
 
-func waitFor(t *testing.T, timeout time.Duration, condition func() bool) {
+// waitFor waits, through the shared wait (testwait.Until), until condition reports true, with no
+// bound of its own: like every wait of testwait's, it gives up only before the test binary's
+// deadline. Its condition names no fact and returns nothing to print, so a wait that can say what
+// it waits for, or what it read, calls testwait.Until itself, as waitForMatches does.
+func waitFor(t *testing.T, condition func() bool) {
 	t.Helper()
-	testwait.WithinPolling(t, timeout, testwait.Poll, "observable state", condition)
+	testwait.Until(t, "observable state", func() (string, bool) {
+		if condition() {
+			return "the condition held", true
+		}
+		return "the condition did not hold", false
+	})
 }
 
-// pollMatch retries Match() until the expected count is reached or timeout fires.
-func pollMatch(t *testing.T, r *Registry, machineID, topic string, wantCount int, timeout time.Duration) []Interest {
+// waitForMatches waits for what, the watcher's delivery of a write the caller made or of the bucket
+// Open loaded, until r.Match(machineID, topic) answers wantCount interests, and returns them. A
+// give-up prints the last answer.
+func waitForMatches(t *testing.T, r *Registry, what, machineID, topic string, wantCount int) []Interest {
 	t.Helper()
 	var got []Interest
-	waitFor(t, timeout, func() bool {
-		got = r.Match(machineID, topic)
-		return len(got) == wantCount
+	testwait.Until(t, fmt.Sprintf("%s, so Match(%s, %s) answers %d interests", what, machineID, topic, wantCount), func() (string, bool) {
+		matched := r.Match(machineID, topic)
+		if len(matched) != wantCount {
+			return fmt.Sprintf("Match(%s, %s) = %d interests %+v", machineID, topic, len(matched), matched), false
+		}
+		got = matched
+		return "", true
 	})
 	return got
 }
 
 func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	// Pre-populate the KV bucket before Open()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -536,23 +568,24 @@ func TestOpen_WatchPopulatesExistingKeys(t *testing.T) {
 	putInterest(t, kv, Interest{SessionID: "ses_preload", MachineID: "m1", Topics: []string{"notifications.>"}})
 
 	// Open registry — watch() populates cache asynchronously
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 
-	// Cache is populated asynchronously by watch(); poll until ready
-	got := pollMatch(t, reg, "m1", "notifications.test", 1, 5*time.Second)
+	// Cache is populated asynchronously by watch(); wait until it is
+	got := waitForMatches(t, reg, "the watch to load ses_preload, stored before Open", "m1", "notifications.test", 1)
 	if got[0].SessionID != "ses_preload" {
 		t.Fatalf("expected ses_preload, got %s", got[0].SessionID)
 	}
 }
 
 func TestWatch_PropagatesUpsert(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -568,19 +601,20 @@ func TestWatch_PropagatesUpsert(t *testing.T) {
 		t.Fatalf("Upsert failed: %v", err)
 	}
 
-	// Poll with bounded timeout
-	got = pollMatch(t, reg, "m1", "notifications.test.x", 1, 5*time.Second)
+	// The watcher delivers the upsert to the cache
+	got = waitForMatches(t, reg, "the watcher to deliver ses_new's upsert", "m1", "notifications.test.x", 1)
 	if got[0].SessionID != "ses_new" {
 		t.Fatalf("expected ses_new, got %s", got[0].SessionID)
 	}
 }
 
 func TestWatch_PropagatesDelete(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	// Pre-populate
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -590,29 +624,30 @@ func TestWatch_PropagatesDelete(t *testing.T) {
 	}
 	putInterest(t, kv, Interest{SessionID: "ses_del", MachineID: "m1", Topics: []string{"notifications.>"}})
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 
 	// Verify pre-loaded (async via watch)
-	pollMatch(t, reg, "m1", "notifications.test", 1, 5*time.Second)
+	waitForMatches(t, reg, "the watch to load ses_del, stored before Open", "m1", "notifications.test", 1)
 
 	// Delete via KV Delete operation (empty topics = delete all)
 	if _, err := reg.Remove(context.Background(), "ses_del", nil, releasedByItsProcess); err != nil {
 		t.Fatalf("Remove failed: %v", err)
 	}
 
-	// Poll until cache reflects the delete
-	pollMatch(t, reg, "m1", "notifications.test", 0, 5*time.Second)
+	// Wait until the cache reflects the delete
+	waitForMatches(t, reg, "the watcher to deliver ses_del's removal", "m1", "notifications.test", 0)
 }
 
 func TestWatch_PropagatesPurge(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	// Pre-populate
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -622,31 +657,32 @@ func TestWatch_PropagatesPurge(t *testing.T) {
 	}
 	putInterest(t, kv, Interest{SessionID: "ses_purge", MachineID: "m1", Topics: []string{"notifications.>"}})
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 
 	// Verify pre-loaded (async via watch)
-	pollMatch(t, reg, "m1", "notifications.test", 1, 5*time.Second)
+	waitForMatches(t, reg, "the watch to load ses_purge, stored before Open", "m1", "notifications.test", 1)
 
 	// Purge via NATS KV API (different from Delete — removes all revisions)
 	if err := kv.Purge("ses_purge"); err != nil {
 		t.Fatalf("Purge failed: %v", err)
 	}
 
-	// Poll until cache reflects the purge
-	pollMatch(t, reg, "m1", "notifications.test", 0, 5*time.Second)
+	// Wait until the cache reflects the purge
+	waitForMatches(t, reg, "the watcher to deliver ses_purge's purge", "m1", "notifications.test", 0)
 }
 
 func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	conn := testnats.Connect(t, uri)
 	// Safety net: a double close is a no-op.
 	t.Cleanup(conn.Close)
 
 	// Pre-populate and open
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -656,13 +692,13 @@ func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
 	}
 	putInterest(t, kv, Interest{SessionID: "ses_survive", MachineID: "m1", Topics: []string{"notifications.>"}})
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 
 	// Verify cache is populated via watch() before NATS shutdown
-	pollMatch(t, reg, "m1", "notifications.test", 1, 5*time.Second)
+	waitForMatches(t, reg, "the watch to load ses_survive, stored before Open", "m1", "notifications.test", 1)
 
 	// Kill NATS — KV is now unreachable
 	conn.Close()
@@ -679,10 +715,11 @@ func TestMatch_IndependentOfKVAfterStartup(t *testing.T) {
 }
 
 func TestOpen_EmptyBucketSucceeds(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed on empty bucket: %v", err)
 	}
@@ -702,7 +739,7 @@ func TestOpen_EmptyBucketSucceeds(t *testing.T) {
 // Its watcher is never started, so the cache stays cold for the test's lifetime.
 func coldRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, natsgo.KeyValue) {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("failed to get JetStream: %v", err)
 	}
@@ -730,6 +767,7 @@ func coldRegistry(t *testing.T, conn *natsgo.Conn) (*Registry, natsgo.KeyValue) 
 }
 
 func TestGet_ColdCacheFallsBackToKV(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -750,6 +788,7 @@ func TestGet_ColdCacheFallsBackToKV(t *testing.T) {
 }
 
 func TestGet_ColdCachePopulatesCacheOnHit(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -769,6 +808,7 @@ func TestGet_ColdCachePopulatesCacheOnHit(t *testing.T) {
 }
 
 func TestGet_ColdCacheMissReturnsError(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -788,6 +828,7 @@ func TestGet_ColdCacheMissReturnsError(t *testing.T) {
 // release's read - instead returns ctx's end, naming the call, and a release left that way deletes
 // nothing.
 func TestReadsWhoseContextHasEndedAnswerOnlyFromTheCache(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -829,6 +870,7 @@ func TestReadsWhoseContextHasEndedAnswerOnlyFromTheCache(t *testing.T) {
 // A claim record the bucket holds and no read can decode is ErrMalformedRoleClaim, so a caller can
 // tell it from a read that did not answer, with the detail of what is wrong kept in the message.
 func TestRoleClaimReadsAnUndecodableRecordAsErrMalformedRoleClaim(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -852,11 +894,13 @@ func TestRoleClaimReadsAnUndecodableRecordAsErrMalformedRoleClaim(t *testing.T) 
 // caller can tell it from a read that did not answer, with the decode failure kept in the message,
 // and the registry logs it at WARN naming the session. Nothing is cached from it.
 func TestGetReadsAnUndecodableInterestRecordAsErrMalformedInterest(t *testing.T) {
-	logs := captureRegistryLogs(t)
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
+	logs, logger := ownLogs()
+	reg.log = logger
 	const sessionID = "ses_unreadable_interest"
 	if _, err := kv.Put(sessionID, []byte("not a json interest record")); err != nil {
 		t.Fatalf("store the interest record: %v", err)
@@ -901,6 +945,7 @@ func storeUndecodableInterest(t *testing.T, reg *Registry, kv natsgo.KeyValue, s
 // record and releases the session's role claims, as it does for a record that decodes: failing on
 // the read would leave nothing that can clear the record.
 func TestRemoveAllDeletesAnUndecodableInterestRecordAndReleasesItsRoles(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -922,11 +967,13 @@ func TestRemoveAllDeletesAnUndecodableInterestRecordAndReleasesItsRoles(t *testi
 // role claims those topics name and leaves the record as it is, logged at WARN naming the session:
 // the record routes none of its topics here, so there is nothing to take out of it.
 func TestRemoveTopicsLeavesAnUndecodableInterestRecordAndReleasesTheirRoles(t *testing.T) {
-	logs := captureRegistryLogs(t)
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
+	logs, logger := ownLogs()
+	reg.log = logger
 	const sessionID = "ses_undecodable_remove_topics"
 	storeUndecodableInterest(t, reg, kv, sessionID, "reviewer")
 	if _, err := reg.Remove(context.Background(), sessionID, []string{"notifications.role.reviewer"}, releasedByItsProcess); err != nil {
@@ -951,11 +998,13 @@ func TestRemoveTopicsLeavesAnUndecodableInterestRecordAndReleasesTheirRoles(t *t
 // session's own subscribe is the authority on its record. The session's role claims live in the
 // role bucket, so they are kept.
 func TestUpsertReplacesAnUndecodableInterestRecord(t *testing.T) {
-	logs := captureRegistryLogs(t)
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
+	logs, logger := ownLogs()
+	reg.log = logger
 	const sessionID = "ses_undecodable_upsert"
 	storeUndecodableInterest(t, reg, kv, sessionID, "reviewer")
 	item, err := reg.Upsert(Interest{SessionID: sessionID, MachineID: "m1", Dir: "/workspace"},
@@ -992,11 +1041,12 @@ func TestUpsertReplacesAnUndecodableInterestRecord(t *testing.T) {
 // the role's previous holder's: the claimant's record is replaced by one naming the role, and the
 // previous holder's is left as it is.
 func TestSetRoleClaimsOverUndecodableInterestRecords(t *testing.T) {
-	captureRegistryLogs(t)
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
+	_, reg.log = ownLogs()
 	const (
 		claimant = "ses_undecodable_claimant"
 		previous = "ses_undecodable_previous"
@@ -1029,6 +1079,7 @@ func TestSetRoleClaimsOverUndecodableInterestRecords(t *testing.T) {
 }
 
 func TestUpsert_TransientGetErrorPropagatesAndDoesNotClobber(t *testing.T) {
+	t.Parallel()
 	// Integration regression for the Atlas dropout bug: when the interest bucket's Get fails
 	// transiently (not ErrKeyNotFound), Upsert MUST return the error rather
 	// than silently writing a truncated state to KV.
@@ -1061,6 +1112,7 @@ func TestUpsert_TransientGetErrorPropagatesAndDoesNotClobber(t *testing.T) {
 }
 
 func TestUpsert_ColdCacheMergesWithExistingKVEntry(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1118,6 +1170,7 @@ func TestUpsert_ColdCacheMergesWithExistingKVEntry(t *testing.T) {
 	}
 }
 func TestUpsert_ColdCacheDuplicateTopicDeduped(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1166,17 +1219,15 @@ func clockedRegistry(t *testing.T, clock *manualClock) (*Registry, natsgo.KeyVal
 	t.Helper()
 	conn, cleanup := connectNATS(t)
 	t.Cleanup(cleanup)
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("interest cache not ready: %v", err)
 	}
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -1211,6 +1262,7 @@ func upsertOrFail(t *testing.T, reg *Registry, sessionID string, topics ...strin
 // InterestRefreshAge old: before that Upsert returns the stored row, UpdatedAt and all, and the
 // bucket gains no revision; at that age, and past it, the row is written and restamped.
 func TestUpsertWritesAnUnchangedRowOnlyOnceItIsInterestRefreshAgeOld(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	clock := &manualClock{at: start}
 	reg, kv := clockedRegistry(t, clock)
@@ -1265,6 +1317,7 @@ func TestUpsertWritesAnUnchangedRowOnlyOnceItIsInterestRefreshAgeOld(t *testing.
 // A heartbeat that adds a topic is written at once, however young the row; one that re-sends the
 // stored topics in another order changes nothing, since the merge sorts them.
 func TestUpsertWritesAChangedTopicSetAtOnce(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	clock := &manualClock{at: start}
 	reg, kv := clockedRegistry(t, clock)
@@ -1292,6 +1345,7 @@ func TestUpsertWritesAChangedTopicSetAtOnce(t *testing.T) {
 // A row stored with a null topic list is not the [] a write would store, so the first heartbeat
 // over it writes it once, however young it is, and the next one finds it unchanged.
 func TestUpsertWritesARowStoredWithNullTopicsOnce(t *testing.T) {
+	t.Parallel()
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	clock := &manualClock{at: start}
 	reg, kv := clockedRegistry(t, clock)
@@ -1319,6 +1373,7 @@ func TestUpsertWritesARowStoredWithNullTopicsOnce(t *testing.T) {
 }
 
 func TestRemove_ColdCacheReadsFromKV(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1352,9 +1407,10 @@ func TestRemove_ColdCacheReadsFromKV(t *testing.T) {
 // filter while the write, reading them again for the row, kept it in the row. The plan reads the
 // claim record the grant wrote, so nothing waits for the role claim copy to follow it.
 func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1400,7 +1456,7 @@ func TestPlanInterestKeepsTheControllerLaneAHeartbeatOmits(t *testing.T) {
 // registration, the reaper and every other listener read, rather than from this registry's cache.
 func storedInterest(t *testing.T, conn *natsgo.Conn, sessionID string) Interest {
 	t.Helper()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("JetStream: %v", err)
 	}
@@ -1431,9 +1487,10 @@ func storedInterest(t *testing.T, conn *natsgo.Conn, sessionID string) Interest 
 // trigger is the daemon's fire-and-forget unsubscribe at the end of a role racing the next
 // heartbeat.
 func TestUpsertPlannedKeepsAnUnsubscribeThatOutranItsPlan(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -1497,6 +1554,7 @@ func TestUpsertPlannedKeepsAnUnsubscribeThatOutranItsPlan(t *testing.T) {
 // agent subject and a failed-delivery lane are dropped, so Match stops fanning that lane out to the
 // session, while its own agent subject and the issue topic it follows stay.
 func TestRemoveAndSetRole_DropStoredTopicsReachingAPrivateStreamSubject(t *testing.T) {
+	t.Parallel()
 	const lane = "notifications.envoy.exceptions.notifications.agent.ses_other"
 	stale := []string{
 		"notifications.agent.ses_other",
@@ -1516,6 +1574,7 @@ func TestRemoveAndSetRole_DropStoredTopicsReachingAPrivateStreamSubject(t *testi
 		},
 	} {
 		t.Run(name, func(t *testing.T) {
+			t.Parallel()
 			conn, cleanup := connectNATS(t)
 			defer cleanup()
 			reg, kv := coldRegistry(t, conn)
@@ -1553,6 +1612,7 @@ func TestRemoveAndSetRole_DropStoredTopicsReachingAPrivateStreamSubject(t *testi
 }
 
 func TestSetRole_ClaimNewRole(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1594,6 +1654,7 @@ func TestSetRole_ClaimNewRole(t *testing.T) {
 	}
 }
 func TestSetRole_PersistsClaimMetadata(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1621,6 +1682,7 @@ func TestSetRole_PersistsClaimMetadata(t *testing.T) {
 }
 
 func TestSetRole_TransferRole(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1680,6 +1742,7 @@ func TestSetRole_TransferRole(t *testing.T) {
 }
 
 func TestSetRole_Idempotent(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1708,6 +1771,7 @@ func TestSetRole_Idempotent(t *testing.T) {
 }
 
 func TestRemove_ReleasesRoleClaimAfterSameSessionReplacement(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1724,6 +1788,7 @@ func TestRemove_ReleasesRoleClaimAfterSameSessionReplacement(t *testing.T) {
 }
 
 func TestSetRole_OldHolderMissing(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1750,15 +1815,18 @@ func TestSetRole_OldHolderMissing(t *testing.T) {
 // --- Reaper Tests (cross-reference sessions for stale interest cleanup) ---
 
 func TestInterestReaper(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	reg.now = clocktest.New(start).Now
 
-	// Create interests for alive and dead sessions (both updated 10 min ago)
-	now := time.Now().UnixMilli()
-	putInterest(t, kv, Interest{SessionID: "ses_alive", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: now - 600_000})
-	putInterest(t, kv, Interest{SessionID: "ses_dead", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: now - 600_000})
+	// Create interests for alive and dead sessions (both updated 10 min ago on the registry's clock)
+	tenMinutesAgo := start.Add(-10 * time.Minute).UnixMilli()
+	putInterest(t, kv, Interest{SessionID: "ses_alive", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: tenMinutesAgo})
+	putInterest(t, kv, Interest{SessionID: "ses_dead", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: tenMinutesAgo})
 
 	// Warm cache via Get (coldRegistry has no watch())
 	if _, err := reg.Get(context.Background(), "ses_alive"); err != nil {
@@ -1791,10 +1859,13 @@ func TestInterestReaper(t *testing.T) {
 	}
 }
 func TestReapKeepsRoleClaimsForSessionRecovery(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, _ := coldRegistry(t, conn)
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	reg.now = clocktest.New(start).Now
 	const (
 		sessionID = "ses_reap_role"
 		role      = "legion-controller"
@@ -1806,7 +1877,7 @@ func TestReapKeepsRoleClaimsForSessionRecovery(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get role interest: %v", err)
 	}
-	stale.UpdatedAt = time.Now().Add(-(InterestRefreshAge + time.Minute)).UnixMilli()
+	stale.UpdatedAt = start.Add(-(InterestRefreshAge + time.Minute)).UnixMilli()
 	raw, err := json.Marshal(stale)
 	if err != nil {
 		t.Fatalf("marshal stale interest: %v", err)
@@ -1831,6 +1902,7 @@ func TestReapKeepsRoleClaimsForSessionRecovery(t *testing.T) {
 	assertRoleHolder(t, reg, role, sessionID)
 }
 func TestReapRoleClaimsDropsDeadHolderAfterTTL(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1853,10 +1925,12 @@ func TestReapRoleClaimsDropsDeadHolderAfterTTL(t *testing.T) {
 }
 
 func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentChange(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	registry, _ := coldRegistry(t, conn)
+	registry.now = clocktest.New(time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)).Now
 	const role = "legion-controller"
 	if _, err := registry.SetRole("ses_lapsed", "example-host", role, false); err != nil {
 		t.Fatalf("seed lapsed role claim: %v", err)
@@ -1871,7 +1945,7 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentChange(t 
 			}
 			replacement, err := json.Marshal(RoleClaim{
 				HolderSessionID: "ses_replacement",
-				ClaimedAt:       time.Now().UnixMilli(),
+				ClaimedAt:       registry.now().UnixMilli(),
 			})
 			if err != nil {
 				t.Fatalf("marshal replacement role claim: %v", err)
@@ -1900,6 +1974,7 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentChange(t 
 }
 
 func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentRemoval(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1938,6 +2013,7 @@ func TestReleaseReadExpiredRoleClaimDoesNotReportReleaseAfterConcurrentRemoval(t
 }
 
 func TestReleaseReadExpiredRoleClaimReturnsErrorWithoutRelease(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -1969,6 +2045,7 @@ func TestReleaseReadExpiredRoleClaimReturnsErrorWithoutRelease(t *testing.T) {
 }
 
 func TestReaperGraceWindow(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2017,6 +2094,7 @@ func TestReaperGraceWindow(t *testing.T) {
 // after the session row's 5-minute TTL has made the session dead. A session back under the same
 // id at 6 or at 9 minutes finds its row and topics.
 func TestAPausedSessionKeepsItsInterestThroughTheReapGrace(t *testing.T) {
+	t.Parallel()
 	const sessionTTL = 5 * time.Minute // the session bucket's MaxAge, the liveness clock
 	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
 	clock := &manualClock{at: start}
@@ -2102,9 +2180,9 @@ func TestAPausedSessionKeepsItsInterestThroughTheReapGrace(t *testing.T) {
 	}
 }
 
-// upsertWithin upserts item on another goroutine and reports whether it finished within five
-// seconds, failing the test when it did not or when it failed. A reaper pass calls it from isAlive,
-// so a pass that held the interest lock there would make it time out rather than deadlock.
+// upsertWithin upserts item on another goroutine while a reaper pass calls isAlive, and waits for
+// it to return, failing the test when it failed. A pass that held the interest lock there would
+// keep it from returning, and the wait then gives up naming that lock.
 func upsertWithin(t *testing.T, reg *Registry, item Interest, topics []string) bool {
 	t.Helper()
 	done := make(chan error, 1)
@@ -2112,25 +2190,22 @@ func upsertWithin(t *testing.T, reg *Registry, item Interest, topics []string) b
 		_, err := reg.Upsert(item, topics)
 		done <- err
 	}()
-	select {
-	case err := <-done:
-		if err != nil {
-			t.Errorf("Upsert(%s) during the reaper pass: %v", item.SessionID, err)
-			return false
-		}
-		return true
-	case <-time.After(5 * time.Second):
-		t.Errorf("Upsert(%s) did not finish while Reap was calling isAlive: the pass holds the interest lock", item.SessionID)
+	if err := testwait.Receive(t, fmt.Sprintf("Upsert(%s) to return while Reap calls isAlive, which it cannot while the pass holds the interest lock", item.SessionID), done); err != nil {
+		t.Errorf("Upsert(%s) during the reaper pass: %v", item.SessionID, err)
 		return false
 	}
+	return true
 }
 
 func TestReapCallsIsAliveWithoutHoldingTheInterestLock(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_dead", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: time.Now().Add(-10 * time.Minute).UnixMilli()})
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	reg.now = clocktest.New(start).Now
+	putInterest(t, kv, Interest{SessionID: "ses_dead", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: start.Add(-10 * time.Minute).UnixMilli()})
 	if _, err := reg.Get(context.Background(), "ses_dead"); err != nil {
 		t.Fatalf("Get ses_dead failed: %v", err)
 	}
@@ -2160,11 +2235,14 @@ func TestReapCallsIsAliveWithoutHoldingTheInterestLock(t *testing.T) {
 }
 
 func TestReapKeepsAnInterestReupsertedDuringThePass(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_back", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: time.Now().Add(-10 * time.Minute).UnixMilli()})
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	reg.now = clocktest.New(start).Now
+	putInterest(t, kv, Interest{SessionID: "ses_back", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: start.Add(-10 * time.Minute).UnixMilli()})
 	if _, err := reg.Get(context.Background(), "ses_back"); err != nil {
 		t.Fatalf("Get ses_back failed: %v", err)
 	}
@@ -2191,17 +2269,20 @@ func TestReapKeepsAnInterestReupsertedDuringThePass(t *testing.T) {
 }
 
 func TestReapKeepsAnInterestWrittenAfterItsRecheck(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
-	putInterest(t, kv, Interest{SessionID: "ses_raced", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: time.Now().Add(-10 * time.Minute).UnixMilli()})
+	start := time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC)
+	reg.now = clocktest.New(start).Now
+	putInterest(t, kv, Interest{SessionID: "ses_raced", MachineID: "m1", Topics: []string{"notifications.>"}, UpdatedAt: start.Add(-10 * time.Minute).UnixMilli()})
 	if _, err := reg.Get(context.Background(), "ses_raced"); err != nil {
 		t.Fatalf("Get ses_raced failed: %v", err)
 	}
 	// Another listener's write lands after the pass re-checked the candidate and before its delete
 	// reaches the bucket.
-	fresh := Interest{SessionID: "ses_raced", MachineID: "m2", Topics: []string{"notifications.>"}, UpdatedAt: time.Now().UnixMilli()}
+	fresh := Interest{SessionID: "ses_raced", MachineID: "m2", Topics: []string{"notifications.>"}, UpdatedAt: start.UnixMilli()}
 	current := reg.watcher.KV()
 	reg.watcher = kvwatch.New("interest registry", bus.NewKeyValue(&putBeforeDeleteKeyValue{
 		KeyValue:     kv,
@@ -2246,10 +2327,11 @@ func (kv *putBeforeDeleteKeyValue) Delete(key string, opts ...natsgo.DeleteOpt) 
 }
 
 func TestPing_HealthyConnReturnsNil(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2260,12 +2342,13 @@ func TestPing_HealthyConnReturnsNil(t *testing.T) {
 }
 
 func TestPing_ClosedConnReturnsError(t *testing.T) {
+	t.Parallel()
 	// A closed KV handle must remain observable through Ping so /healthz can
 	// report the unavailable dependency while NATS reconnects.
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -2288,22 +2371,22 @@ func TestPing_ClosedConnReturnsError(t *testing.T) {
 // interests" even when the durable KV entry has subscribers.
 
 func TestWaitForCacheReady_ReturnsAfterInitialScan(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady timed out on a healthy registry: %v", err)
 	}
 }
 
 func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
+	t.Parallel()
 	// The whole point of this gate: after WaitForCacheReady returns, every
 	// existing KV entry must be findable via Match without falling through to
 	// "no matching interests".
@@ -2312,13 +2395,11 @@ func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
 
 	// Pre-populate KV via a temporary registry, then Close conn to release
 	// any watcher state.
-	reg1, err := Open(t.Context(), conn, WithReplicas(1))
+	reg1, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("first Open failed: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg1.WaitForCacheReady(ctx); err != nil {
+	if err := reg1.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("first WaitForCacheReady: %v", err)
 	}
 	if _, err := reg1.Upsert(Interest{SessionID: "ses_pre", MachineID: "m1"}, []string{"topic.pre"}); err != nil {
@@ -2327,13 +2408,11 @@ func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
 
 	// Second registry on the same bucket — simulates listener restart against
 	// existing KV state.
-	reg2, err := Open(t.Context(), conn, WithReplicas(1))
+	reg2, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("second Open failed: %v", err)
 	}
-	ctx2, cancel2 := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel2()
-	if err := reg2.WaitForCacheReady(ctx2); err != nil {
+	if err := reg2.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("second WaitForCacheReady: %v", err)
 	}
 
@@ -2346,6 +2425,7 @@ func TestWaitForCacheReady_PrePopulatedKVIsVisibleAfterReady(t *testing.T) {
 }
 
 func TestRemoveWritesThroughCache(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2378,6 +2458,7 @@ func TestRemoveWritesThroughCache(t *testing.T) {
 }
 
 func TestRemoveAllClearsCache(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2401,6 +2482,7 @@ func TestRemoveAllClearsCache(t *testing.T) {
 	}
 }
 func TestRemoveAllReleasesRoleClaims(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2422,6 +2504,7 @@ func TestRemoveAllReleasesRoleClaims(t *testing.T) {
 // never named its topic, which is what this case is about: the sweep reads the role bucket's
 // own keys.
 func TestRemoveAllReleasesRoleClaimMissingFromInterest(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2443,6 +2526,7 @@ func TestRemoveAllReleasesRoleClaimMissingFromInterest(t *testing.T) {
 }
 
 func TestSetRoleRollsBackWhenInterestUpsertFails(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2482,6 +2566,7 @@ func TestSetRoleRollsBackWhenInterestUpsertFails(t *testing.T) {
 // and retries only a conflict, so a genuine failure of that write is still a failure: the claim is
 // refused, the old holder keeps the role, and the claimant's role topic is rolled back.
 func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2518,6 +2603,7 @@ func TestSetRoleLeavesInterestWhenRoleWriteFails(t *testing.T) {
 // A soft claim of an unheld role creates its claim conditionally, so a genuine failure of that
 // create is still a failure: nothing holds the role and the claimant's role topic is rolled back.
 func TestSetRoleRollsBackWhenRoleCreateFails(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2543,11 +2629,13 @@ func TestSetRoleRollsBackWhenRoleCreateFails(t *testing.T) {
 // no role, since the claim alone says who holds one, so the failure is logged at WARN and not
 // returned.
 func TestSetRoleSucceedsWhenOldHolderCleanupFails(t *testing.T) {
-	logs := captureRegistryLogs(t)
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
 	reg, kv := coldRegistry(t, conn)
+	logs, logger := ownLogs()
+	reg.log = logger
 	const (
 		oldSession = "ses_old"
 		newSession = "ses_new"
@@ -2578,26 +2666,22 @@ func TestSetRoleSucceedsWhenOldHolderCleanupFails(t *testing.T) {
 	assertRoleHolder(t, reg, role, newSession)
 	assertInterestTopicsForSession(t, reg, newSession, roleTopic)
 	assertInterestTopicsForSession(t, reg, oldSession, roleTopic, "notifications.slack.>")
-	for _, want := range []string{"level=WARN", "role=legion-controller", "old_session_id=ses_old", "new_session_id=ses_new"} {
-		waitFor(t, 5*time.Second, func() bool {
-			return strings.Contains(logs.String(), want)
-		})
-	}
+	logtest.AwaitLogged(t, logs, "the WARN line for the old holder's failed cleanup",
+		"level=WARN", "role=legion-controller", "old_session_id=ses_old", "new_session_id=ses_new")
 	t.Logf("old-holder cleanup warning: %s", strings.TrimSpace(logs.String()))
 }
 
 func TestWatcherEvictsMalformedValue(t *testing.T) {
-	logs := captureRegistryLogs(t)
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	logs, logger := ownLogs()
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithLogger(logger))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 
@@ -2609,41 +2693,34 @@ func TestWatcherEvictsMalformedValue(t *testing.T) {
 	if _, err := reg.Upsert(Interest{SessionID: sessionID, MachineID: machineID}, []string{topic}); err != nil {
 		t.Fatalf("Upsert: %v", err)
 	}
-	pollMatch(t, reg, machineID, topic, 1, 5*time.Second)
+	waitForMatches(t, reg, "the watcher to deliver ses_malformed's upsert", machineID, topic, 1)
 
 	revision, err := reg.watcher.KV().Put(sessionID, []byte("{"))
 	if err != nil {
 		t.Fatalf("put malformed value: %v", err)
 	}
-	pollMatch(t, reg, machineID, topic, 0, 5*time.Second)
+	waitForMatches(t, reg, "the watcher to evict ses_malformed for its malformed value", machineID, topic, 0)
 	if _, err := reg.Get(context.Background(), sessionID); err == nil {
 		t.Fatal("Get must not return a route after its watched value is malformed")
 	}
 
-	for _, want := range []string{
-		"level=WARN",
-		"key=" + sessionID,
-		"revision=" + strconv.FormatUint(revision, 10),
-	} {
-		waitFor(t, 5*time.Second, func() bool {
-			return strings.Contains(logs.String(), want)
-		})
-	}
+	logtest.AwaitLogged(t, logs, "the watcher's WARN line for ses_malformed's malformed value",
+		"level=WARN", "key="+sessionID, "revision="+strconv.FormatUint(revision, 10))
 	t.Logf("interest watcher malformed-value warning: %s", strings.TrimSpace(logs.String()))
 }
 
 // useKV rebuilds the registry's watcher over kv, a wrapper of its interest bucket handle that
 // watches through the handle's own jetstream one, so the registry writes interests through kv from
-// here on. The replaced watcher is stopped first.
+// here on. The replaced watcher is stopped first. The new one logs where the registry does
+// (Registry.log: the logger Open was given, or a test's own on a registry built without Open), as
+// Open's own watcher does, and where slog.Default() points for a registry with none.
 func useKV(t *testing.T, r *Registry, kv natsgo.KeyValue) {
 	t.Helper()
 	base := r.watcher.KV()
 	r.watcher.Stop()
-	r.watcher = kvwatch.New("interest registry", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), interestCache{r})
+	r.watcher = kvwatch.New("interest registry", bus.NewKeyValue(kv, base.WatchHandle(), base.Streams()), interestCache{r}, kvwatch.WithLogger(r.log))
 	r.watcher.Start()
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := r.watcher.WaitReady(ctx); err != nil {
+	if err := r.watcher.WaitReady(testwait.Context(t)); err != nil {
 		t.Fatalf("wait for the rebuilt watcher: %v", err)
 	}
 }
@@ -2727,11 +2804,25 @@ func assertInterestMissing(t *testing.T, reg *Registry, sessionID string) {
 	}
 }
 
+// captureRegistryLogs makes a text handler over a buffer the process's default logger until t ends
+// (logtest.SetDefault), and returns the buffer: every line logged through slog.Default() lands in
+// it, whichever test logged it, so a test that calls it does not run beside the others. A test that
+// reads the lines of a registry, or of a watcher it builds, gives each a logger of its own instead
+// (ownLogs).
 func captureRegistryLogs(t *testing.T) *lockedBuffer {
 	t.Helper()
 	var logs lockedBuffer
 	logtest.SetDefault(t, slog.NewTextHandler(&logs, nil))
 	return &logs
+}
+
+// ownLogs is a logger of the test's own, in captureRegistryLogs's text format, and the buffer it
+// writes: Open takes the logger through WithLogger, and a registry built without Open
+// (coldRegistry) in its log field, which WithLogger fills and Registry.logger reads. The test reads
+// the buffer, and the process's default logger stays as it was, so the test runs beside the others.
+func ownLogs() (*lockedBuffer, *slog.Logger) {
+	logs := &lockedBuffer{}
+	return logs, slog.New(slog.NewTextHandler(logs, nil))
 }
 
 type lockedBuffer = logtest.Buffer
@@ -2747,6 +2838,7 @@ type lockedBuffer = logtest.Buffer
 // for the other two shapes - a second process of that session id, and a claimant that states
 // none - are TestAClaimWhoseWriteFailedIsSuccessOnlyForTheClaimantsOwnProcess.
 func TestSetRoleSoftTreatsSameProcessCASConflictAsConcurrentSuccess(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2786,6 +2878,7 @@ func TestSetRoleSoftTreatsSameProcessCASConflictAsConcurrentSuccess(t *testing.T
 // wrote as a 500. The role ends held by one of the claimants, and that holder's interest row names
 // the role topic: no cleanup takes the topic from the session that ended up holding the role.
 func TestSetRoleConcurrentHardClaimsOfOneRoleAllLand(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2838,6 +2931,7 @@ func TestSetRoleConcurrentHardClaimsOfOneRoleAllLand(t *testing.T) {
 // other (POST /v1/roles/set, which reads the standing claim's own process and renewal) and
 // reaches this call listed or refused.
 func TestSetRoleSoft_TakesUnheldAndSupersedableRolesAndRefusesItsOwnHolderUnlessListed(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2874,6 +2968,7 @@ func TestSetRoleSoft_TakesUnheldAndSupersedableRolesAndRefusesItsOwnHolderUnless
 }
 
 func TestSetRoleSoft_RefusesLiveHolderAndLeavesClaimUntouched(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -2905,6 +3000,7 @@ func TestSetRoleSoft_RefusesLiveHolderAndLeavesClaimUntouched(t *testing.T) {
 }
 
 func TestSetRoleOldHolderCleanupDoesNotDeleteNewerClaim(t *testing.T) {
+	t.Parallel()
 	// Interleaving: role at A. B claims — its role-row write lands (row -> B)
 	// — and before B's cleanup of A runs, A re-claims (row -> A). B's cleanup
 	// must not delete A's fresh claim. The previous implementation released
@@ -2962,16 +3058,15 @@ func (kv *afterRoleWriteKeyValue) Update(key string, value []byte, last uint64) 
 }
 
 func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
-	reg, err := Open(t.Context(), conn, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-	defer cancel()
-	if err := reg.WaitForCacheReady(ctx); err != nil {
+	if err := reg.WaitForCacheReady(testwait.Context(t)); err != nil {
 		t.Fatalf("WaitForCacheReady: %v", err)
 	}
 
@@ -2985,7 +3080,7 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 	); err != nil {
 		t.Fatalf("initial Upsert: %v", err)
 	}
-	pollMatch(t, reg, machineID, "notifications.a", 1, 5*time.Second)
+	waitForMatches(t, reg, "the watcher to deliver ses_revision's upsert", machineID, "notifications.a", 1)
 
 	interestKV := reg.watcher.KV()
 	useKV(t, reg, &interleavingPutKeyValue{
@@ -2996,7 +3091,7 @@ func TestRemoveDoesNotOverwriteNewerWatcherValue(t *testing.T) {
 				MachineID: machineID,
 				Topics:    []string{"notifications.remote"},
 			})
-			pollMatch(t, reg, machineID, "notifications.remote", 1, 5*time.Second)
+			waitForMatches(t, reg, "the watcher to deliver the remote write of ses_revision", machineID, "notifications.remote", 1)
 		},
 	})
 	if _, err := reg.Remove(context.Background(), sessionID, []string{"notifications.b"}, releasedByItsProcess); err != nil {
@@ -3080,6 +3175,7 @@ func (kv *interleavingPutKeyValue) Update(key string, value []byte, revision uin
 }
 
 func TestDeleteHistoryFailureSuppressesStaleWatcherUpdate(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 
@@ -3127,16 +3223,21 @@ func (kv *historyFailKeyValue) History(string, ...natsgo.WatchOpt) ([]natsgo.Key
 	return nil, kv.err
 }
 
-// TestMain removes the NATS server the package's tests share (testnats.Main).
-func TestMain(m *testing.M) { os.Exit(testnats.Main(m)) }
+// TestMain removes the NATS server the package's tests share (testnats.Main), which declares 1,024
+// accounts from its start (testnats.Accounts): each test and subtest that connects takes an account
+// of its own (testnats.URL), and this package's run asks for more than the 256 a server starts
+// with, so without them a reload that declares more would hold every client of the server while
+// the tests run beside each other.
+func TestMain(m *testing.M) { os.Exit(testnats.Main(m, testnats.Accounts(1024))) }
 
 // The registry's clock stamps what it records: an interest's UpdatedAt and a role claim's
 // ClaimedAt come from the clock Open was given, as the grace window does.
 func TestTheRegistryClockStampsWhatItRecords(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
 	at := time.Date(2026, 9, 25, 12, 0, 0, 0, time.UTC)
-	reg, err := Open(t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return at }))
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(func() time.Time { return at }))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -3165,11 +3266,24 @@ func TestTheRegistryClockStampsWhatItRecords(t *testing.T) {
 // then swept. The recreated stream numbers its revisions from 1, so a cache still fenced by the old
 // bucket's revisions would keep an old value for every key the new bucket has not yet written past.
 func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	reg, held, _ := rebuiltRegistry(t, conn)
+	// The registry is rebuilt as rebuiltRegistry rebuilds one, less its delayingKV, which this row
+	// never delays, and with the shared wait's bounds in place of its own: the first watcher
+	// completes a read of the empty buckets and is ended, so nothing more reaches the cache through
+	// it, and the watcher that replaces it has a holdingCache in front of the cache, so the row can
+	// hold the new bucket's read before its sweep.
+	reg, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	kvwatchtest.AwaitFollowing(t, "the registry's first read of the interest bucket to complete", reg.watcher)
+	reg.watcher.End(testwait.Context(t))
+	held := &holdingCache{Cache: interestCache{reg}}
+	reg.watcher = kvwatch.New("interest registry", reg.watcher.KV(), held)
 	reg.watcher.Start()
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	kvwatchtest.AwaitFollowing(t, "the started watcher to complete its read of the interest bucket", reg.watcher)
 	for i := range 20 {
 		if _, err := reg.Upsert(Interest{SessionID: "ses_a", MachineID: "m1"}, []string{fmt.Sprintf("notifications.old.%d", i)}); err != nil {
 			t.Fatalf("upsert ses_a: %v", err)
@@ -3178,9 +3292,9 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	if _, err := reg.Upsert(Interest{SessionID: "ses_ghost", MachineID: "m1"}, []string{"notifications.ghost"}); err != nil {
 		t.Fatalf("upsert ses_ghost: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool { return len(reg.Match("m1", "notifications.ghost")) == 1 })
+	waitForMatches(t, reg, "the watcher to deliver ses_ghost's upsert", "m1", "notifications.ghost", 1)
 
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3200,7 +3314,7 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	if err := reg.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("Rewatch: %v", err)
 	}
-	waitClosed(t, completion.reached, "the new bucket's read to deliver every record")
+	testwait.Receive(t, "the new bucket's read to deliver every record", completion.reached)
 	if got := reg.Match("m1", "notifications.ghost"); len(got) != 1 {
 		t.Fatalf("during the read the cache dropped ses_ghost before the read completed: %v", got)
 	}
@@ -3215,11 +3329,11 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 	}
 
 	completion.open()
-	waitClosed(t, completion.done, "the read's sweep")
+	testwait.Receive(t, "the read's sweep", completion.done)
 	if want := []string{"ses_a", "ses_b"}; !slices.Equal(swept, want) {
 		t.Fatalf("cached right after the sweep = %v, want the new bucket's %v", swept, want)
 	}
-	waitFor(t, 5*time.Second, reg.watcher.Following)
+	kvwatchtest.AwaitFollowing(t, "the rebuilt watcher to follow the recreated bucket", reg.watcher)
 	if got := reg.Match("m1", "notifications.ghost"); len(got) != 0 {
 		t.Fatalf("the cache kept a session the recreated bucket does not hold: %v", got)
 	}
@@ -3229,14 +3343,15 @@ func TestRewatchOntoARecreatedBucketRefillsTheCache(t *testing.T) {
 // watcher and both bucket handles stay on the connection they were on, so the registry keeps
 // working there instead of writing interests through one connection and roles through another.
 func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
+	t.Parallel()
 	first, closeFirst := connectNATS(t)
 	defer closeFirst()
-	reg, err := Open(t.Context(), first, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), first, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
 	t.Cleanup(reg.StopWatch)
-	js, err := first.JetStream()
+	js, err := first.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3271,9 +3386,10 @@ func TestARewatchThatCannotOpenTheRoleBucketMovesNothing(t *testing.T) {
 // claim watcher stay on the connection they were on, so the registry does not read and write the
 // two buckets through different connections, and the role claim view still answers there.
 func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
+	t.Parallel()
 	first, closeFirst := connectNATS(t)
 	defer closeFirst()
-	reg, err := Open(t.Context(), first, WithReplicas(1))
+	reg, err := openOnScanClock(t, t.Context(), first, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("Open: %v", err)
 	}
@@ -3281,11 +3397,11 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 	if _, err := reg.SetRole("ses_role_holder", "m1", "reviewer", false); err != nil {
 		t.Fatalf("SetRole: %v", err)
 	}
-	waitFor(t, 5*time.Second, func() bool {
+	testwait.Until(t, "the role claim view to hold ses_role_holder's reviewer claim", func() (string, bool) {
 		roles, err := reg.RolesHeldBy("ses_role_holder")
-		return err == nil && slices.Equal(roles, []string{"reviewer"})
+		return fmt.Sprintf("RolesHeldBy(ses_role_holder) = %v, %v", roles, err), err == nil && slices.Equal(roles, []string{"reviewer"})
 	})
-	js, err := first.JetStream()
+	js, err := first.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3319,9 +3435,10 @@ func TestARewatchWhoseInterestWatcherCannotMoveMovesNothing(t *testing.T) {
 // it ends up with must be the bucket's: every claim at the revision stored for it, no entry for a
 // deleted key, and the grace those revisions exist for.
 func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3330,10 +3447,13 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 		t.Fatalf("create the role bucket: %v", err)
 	}
 	const claims = 64
+	// The claims are stamped on the registry's clock, the test's own, which Open is given below and
+	// which nothing moves.
+	clock := clocktest.New(time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC))
 	want := map[string]uint64{}
 	for i := range claims + 1 {
 		role := fmt.Sprintf("role-%03d", i)
-		revision := putRoleClaim(t, rawRoles, role, fmt.Sprintf("ses_%03d", i))
+		revision := putRoleClaim(t, rawRoles, role, fmt.Sprintf("ses_%03d", i), clock.Now)
 		want[role] = revision
 	}
 	// A deleted claim leaves a marker on its subject, which the bucket keeps until something
@@ -3356,16 +3476,16 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 		t.Fatalf("watch stream message gets: %v", err)
 	}
 	defer func() { _ = legacyGets.Unsubscribe() }()
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the watches: %v", err)
 	}
 
-	registry, err := Open(t.Context(), conn, WithReplicas(1))
+	registry, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	if err := conn.Flush(); err != nil {
+	if err := conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush after Open: %v", err)
 	}
 	if sent := pending(t, gets) + pending(t, legacyGets); sent != 0 {
@@ -3383,14 +3503,15 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 	// What the snapshot is for, through the caller that reads it: an absent holder keeps its claim
 	// for one session TTL after the restart, and a key the bucket no longer holds has none to keep.
 	// The release is handed the claim its caller read, as the reaper's pass hands it the claim it
-	// read to find the holder gone (ReapRoleClaims).
+	// read to find the holder gone (ReapRoleClaims), and a session TTL of stagedAhead on the
+	// registry's clock, which has not moved since the open.
 	release := func(role string) (ExpiredRoleClaimRelease, error) {
 		t.Helper()
 		claim, err := registry.RoleClaim(context.Background(), role)
 		if err != nil {
 			return ExpiredRoleClaimRetained, err
 		}
-		return registry.releaseReadExpiredRoleClaim(context.Background(), role, claim, time.Minute)
+		return registry.releaseReadExpiredRoleClaim(context.Background(), role, claim, stagedAhead)
 	}
 	if got, err := release("role-000"); err != nil || got != ExpiredRoleClaimRetained {
 		t.Fatalf("restored claim within its grace = %v, %v; want it retained", got, err)
@@ -3400,8 +3521,9 @@ func TestOpeningTheRegistryReadsEveryRoleRevisionWithoutAGetPerKey(t *testing.T)
 	}
 }
 
-// pending counts the requests sub has received. conn.Flush has already round-tripped every request
-// the store sent, so the server has echoed each one back to sub before this reads the count.
+// pending counts the requests sub has received. A flush of the connection (FlushWithContext) has
+// already round-tripped every request the store sent, so the server has echoed each one back to sub
+// before this reads the count.
 func pending(t *testing.T, sub *natsgo.Subscription) int {
 	t.Helper()
 	count, _, err := sub.Pending()
@@ -3411,17 +3533,40 @@ func pending(t *testing.T, sub *natsgo.Subscription) int {
 	return count
 }
 
-func putRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder string) uint64 {
+// stagedAhead is the session TTL a row of this package hands the release of a role claim the
+// registry restored at its open (releaseReadExpiredRoleClaim), when the row means the claim to be
+// within the grace a restart owes its holder: the release keeps such a claim for one session TTL
+// after the open, on the registry's clock. It is staged state for that clock, not a wait: a day, so
+// the restored claim reads within its grace whatever moves the row makes of the clock it gives the
+// registry (WithClock) before it asks.
+const stagedAhead = 24 * time.Hour
+
+// putRoleClaim stores holder's claim on role straight to the role bucket kv, stamped at now's
+// reading, and returns its revision. now is the clock of the registry that reads the claim
+// (WithClock, Registry.now): a pass weighs a claim's renewal by that stamp against that clock
+// (Registry.ClaimRenewedWithin), so the two are one clock's readings.
+func putRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder string, now func() time.Time) uint64 {
 	t.Helper()
-	value, err := json.Marshal(RoleClaim{HolderSessionID: holder, ClaimedAt: time.Now().UnixMilli()})
+	revision, err := putRoleClaimOffTest(kv, role, holder, now)
 	if err != nil {
-		t.Fatalf("encode claim: %v", err)
+		t.Fatal(err)
+	}
+	return revision
+}
+
+// putRoleClaimOffTest is putRoleClaim for a goroutine that is not the test's, where FailNow may
+// not run: it answers a claim it could not store as an error, which the caller hands to the test's
+// goroutine.
+func putRoleClaimOffTest(kv natsgo.KeyValue, role, holder string, now func() time.Time) (uint64, error) {
+	value, err := json.Marshal(RoleClaim{HolderSessionID: holder, ClaimedAt: now().UnixMilli()})
+	if err != nil {
+		return 0, fmt.Errorf("encode claim: %w", err)
 	}
 	revision, err := kv.Put(role, value)
 	if err != nil {
-		t.Fatalf("store %s: %v", role, err)
+		return 0, fmt.Errorf("store %s: %w", role, err)
 	}
-	return revision
+	return revision, nil
 }
 
 // A restart's own log says how much of the role bucket it read. The SRE reading a staging restart
@@ -3431,9 +3576,10 @@ func putRoleClaim(t *testing.T, kv natsgo.KeyValue, role, holder string) uint64 
 // to find them and is what grows without bound. A single total of both would read as claims the
 // restart failed to restore, which is the misreading this whole issue was filed on.
 func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
+	t.Parallel()
 	conn, cleanup := connectNATS(t)
 	defer cleanup()
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
@@ -3445,19 +3591,20 @@ func TestOpeningTheRegistryLogsHowManyRoleClaimsItRestored(t *testing.T) {
 		claims  = 5
 		markers = 3
 	)
+	clock := clocktest.New(time.Date(2026, 10, 27, 12, 0, 0, 0, time.UTC))
 	for i := range claims {
-		putRoleClaim(t, rawRoles, fmt.Sprintf("role-%d", i), fmt.Sprintf("ses_%d", i))
+		putRoleClaim(t, rawRoles, fmt.Sprintf("role-%d", i), fmt.Sprintf("ses_%d", i), clock.Now)
 	}
 	for i := range markers {
 		gone := fmt.Sprintf("gone-%d", i)
-		putRoleClaim(t, rawRoles, gone, "ses_gone")
+		putRoleClaim(t, rawRoles, gone, "ses_gone", clock.Now)
 		if err := rawRoles.Delete(gone); err != nil {
 			t.Fatalf("delete %s: %v", gone, err)
 		}
 	}
 
-	logs := captureRegistryLogs(t)
-	registry, err := Open(t.Context(), conn, WithReplicas(1))
+	logs, logger := ownLogs()
+	registry, err := openOnScanClock(t, t.Context(), conn, WithReplicas(1), WithLogger(logger), WithClock(clock.Now))
 	if err != nil {
 		t.Fatalf("Open failed: %v", err)
 	}
@@ -3537,7 +3684,7 @@ func TestARoleRevisionScanThatEndsEarlyIsAnErrorNotAShortSnapshot(t *testing.T) 
 		t.Fatalf("create the role bucket: %v", err)
 	}
 	for i := range 4 {
-		putRoleClaim(t, rawRoles, fmt.Sprintf("role-%d", i), fmt.Sprintf("ses_%d", i))
+		putRoleClaim(t, rawRoles, fmt.Sprintf("role-%d", i), fmt.Sprintf("ses_%d", i), clocktest.New(scanClockStart).Now)
 	}
 	roles, err := bus.WrapKeyValue(conn, rawRoles)
 	if err != nil {
