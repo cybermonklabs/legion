@@ -193,6 +193,29 @@ func TestAStaleNextChangeHoldsNoClose(t *testing.T) {
 	closedOnChecks(t, rig, waitRoot)
 }
 
+// A defect is carried only by a change of the issue's own generation: the open next change, or the
+// return of the current generation before its merge (record.CarriedNow). A defect a re-admission
+// left carried by the generation it ended is carried by no change that can end it, since
+// MergeDefects marks merged only the carrying generation's defects, and generations never come
+// back. So it is a reason again, and the next change after the re-run's merge carries it. Read as
+// carried while `carried_by` was set at all, it was skipped as a reason (changeReasons) and still
+// held the close as an open defect, so the issue waited in verifying with no change started and
+// none to come.
+func TestADefectARereadmissionLeftCarriedStartsTheNextChange(t *testing.T) {
+	t.Parallel()
+	rig := newWaitRig(t, claim.RoleTester)
+	mergedRoot(t, rig)
+	defect := rig.seedDefect(waitRoot, "The page is blank after a save.")
+	if _, err := rig.pool.Exec(t.Context(), `update defects set generation = $2, carried_by = $2 where id = $1`, defect, waitGeneration-1); err != nil {
+		t.Fatalf("carry %s's defect by the generation a re-admission left: %v", waitRoot, err)
+	}
+	rig.read(waitRoot, answerOf(waitRoot, nil, passing("c-after", waitRootMerge)))
+	rig.started(waitRoot, changeGeneration, 1)
+	if rows := rig.defectRows(waitRoot); len(rows) != 1 || rows[0].carriedBy != changeGeneration {
+		t.Fatalf("the reasons of %s = %+v, want the left defect carried by the next change, %d", waitRoot, rows, changeGeneration)
+	}
+}
+
 // changeMerges stands issue's open change in merging on pull request number at head, its merger
 // done, and merges it at merge.
 func (r *waitRig) changeMerges(key string, number int, merge, head string) {
