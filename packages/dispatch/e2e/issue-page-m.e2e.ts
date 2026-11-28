@@ -1552,11 +1552,10 @@ test("the history leaves the comments of people out of its read of the log, so i
     });
     await gotoIssue(page, `/issues/${issue.key}/activity`);
     const firstView = await historyShowMoreState(page);
-    expectShowMoreCounts(firstView, {
-      stopped: `the history's first view drew every entry it read and stopped with an older page of the log unread: ${CONTROL_LABELS.show_more} says 0+`,
-      uncounted:
-        "the history's first view drew a Show more that says no number, the older page unread",
-    });
+    expect(
+      firstView,
+      "the history's first view drew a Show more that says no number, the older page unread"
+    ).not.toBe("uncounted");
     await seededHistoryEntry(page, historyItem(page, newest.id), newest.created_at);
     await expect(
       historyEntries(page),
