@@ -436,10 +436,7 @@ const legionHandedOffDeliveryStatus = "handed_off"
 //     (deliveryMessage.finalize does nothing to one), so there the message ends with the ERROR
 //     line alone. A hand-off the bus refused because the deployed stream, as the bus client last
 //     read its subjects, does not capture its subject (bus.ErrSubjectNotDeployed) is such a
-//     failure: it stored nothing, so only a redelivery below the stream's last delivery that
-//     comes once the stream captures the subject again and the client has read that can hand the
-//     message off, and a narrowing that outlasts the message's deliveries ends it with the ERROR
-//     line alone.
+//     failure.
 //
 // It answers false when nothing was handed off - no registry entry for the session, a project
 // that does not answer, a session that is not gone, a message that opted out, a registry that

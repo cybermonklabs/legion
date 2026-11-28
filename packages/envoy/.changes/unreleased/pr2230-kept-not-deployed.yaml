@@ -8,9 +8,8 @@ body: |-
   `Retry-After: 1` whose `error` starts `envoy: the message was not sent, and may be sent again
   later: `, and the request line records `subject_not_deployed`. The listener asks before it reports
   the role's wake, so it reports no wake, keeps nothing and charges the sender limit nothing. Before,
-  the keep's publish went to a subject no stream stored or answered, so after the keep's two
-  seconds the role publish got the `404` that says nothing was kept and the marked send the `503`
-  that says the bus did not answer, each after a wake that cost the sender one.
+  the keep's publish failed, and the role publish got the `404` that says nothing was kept and the
+  marked send the `503` that says the bus did not answer.
   `bus.Client.PublishStoredAck`, and `PublishStoredAs` through it, now refuse such a subject with
   `bus.ErrSubjectNotDeployed` before anything is sent, as `PublishAckWithin` and `PublishRetained`
   already did. So the sweep's repeated wake report and a dropped copy's dead letter send nothing to a

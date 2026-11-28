@@ -2434,8 +2434,7 @@ func (c *Client) UndeployedRefusal(topic string) error {
 // publishPathOf is the one verdict on the path a publish of topic takes, which UsesCoreTransport
 // (and ReachesNoSession through it), UndeployedRefusal, PublishAckWithin (and the five publish
 // functions that go through it), PublishStoredAck (and PublishStoredAs through it) and
-// PublishRetained read. PublishStoredAck and PublishRetained act on its refusal alone (step 4) and
-// send every other subject over JetStream. publishJetStream reads it not at all: its one caller,
+// PublishRetained read. publishJetStream reads it not at all: its one caller,
 // PublishAckWithin, has decided the path by it already. Its answers, in order:
 //
 //  1. A subject outside NotificationTopicPrefix takes JetStream.
@@ -2950,7 +2949,7 @@ func unacknowledged(err error, mayHold bool) error {
 // sendStored publishes data to subject on the notification stream under options, once more if the
 // connection had closed under it, and names a refusal as the ErrPublishDenied, ErrTooLarge,
 // ErrStreamFull or ErrDuplicateInProcess it is. It is the one send of the stored path: its callers
-// (PublishStoredAck, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
+// (publishStoredEnvelope, publishStoredRaw) bound ctx, connected first and pass nats.Context(ctx)
 // among the options, so the acknowledgement wait ends with that bound.
 //
 // A failure after a send that may have reached the stream wraps ErrUnacknowledged: ctx was live

@@ -1172,9 +1172,7 @@ reports no wake, and is
 acknowledged. A hand-off whose publish failed logs ERROR `listener legion hand-off failed`,
 counts `failed`, and reports no wake; so does a hand-off refused because the deployed stream, as
 the listener's client last read its subjects, does not capture the hand-off subject
-(`bus.ErrSubjectNotDeployed`), which stored nothing: only a delivery below the 20th that comes
-once the stream captures the subject again and the client has read that, at most 70 s later when
-that read succeeds, can hand the message off. Below the stream's 20th and last delivery the
+(`bus.ErrSubjectNotDeployed`). Below the stream's 20th and last delivery the
 message is sent back to be decided again; at that last delivery, after which the stream delivers
 it no more, and on a core delivery, which nothing delivers again, it ends with that ERROR line
 alone. A
