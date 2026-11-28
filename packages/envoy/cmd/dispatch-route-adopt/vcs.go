@@ -60,10 +60,10 @@ func (g gitRepo) defaultRevision() string {
 }
 
 // startMerge makes the merge this step works in, of here (the commit sidesOf read as this
-// checkout's own) and there. The step writes route files, takes routes_table.go and
-// routes_shapes.go whole from the new side, and writes conflicts into the index, so it must own
-// the merge. Afterwards the tree is mid-merge, and refuseATreeThisDidNotStart refuses another
-// run for that reason alone.
+// checkout's own) and there. The step writes route files, takes routes_table.go, routes_shapes.go
+// and read_classes.go whole from the new side, removes read_classes.go where the new side removed
+// it, and writes conflicts into the index, so it must own the merge. Afterwards the tree is
+// mid-merge, and refuseATreeThisDidNotStart refuses another run for that reason alone.
 func (g gitRepo) startMerge(into, here, there string) error {
 	if g.jj {
 		// git answers a revision the branch holds already with "Already up to date" and no
@@ -92,7 +92,7 @@ func (g gitRepo) startMerge(into, here, there string) error {
 	// that tree would leave changes nobody asked for, so the failure is answered here.
 	mergeHead, err := g.mergeHead()
 	if err != nil {
-		return fmt.Errorf("%w\ngit merge %s ran, and whether it left a merge is unread: if `git status` says a merge is in progress, end it with %s", err, into, g.gitAbort())
+		return fmt.Errorf("%w\ngit merge %s ran, and whether it left a merge is unread: if `git -C %s status` says a merge is in progress, end it with %s", err, into, shellQuoted(g.root), g.gitAbort())
 	}
 	if mergeHead == "" {
 		if mergeErr != nil {
@@ -236,9 +236,11 @@ func (g gitRepo) stage(names, removed []string) error {
 		}
 	}
 	// A route the branch removes is a file the incoming side added, so git's index holds it as a
-	// staged addition, which a plain `git rm` refuses to drop. adopt removes only a file whose bytes
-	// are the merge base's own, or the fixture the new layout no longer commits, so nobody's change
-	// is lost: the index entry is forced out and the file deleted.
+	// staged addition, which a plain `git rm` refuses to drop. adopt removes only a route file whose
+	// bytes are the merge base's own; read_classes.go where the new side removed it, whose
+	// readClasses entries are the route files' now and whose other edits the report prints to
+	// carry; or the fixture the new layout no longer commits. So nobody's change is lost: whatever
+	// the index holds for the file is forced out and the file deleted.
 	if len(removed) > 0 {
 		if _, err := g.run(append([]string{"rm", "-q", "-f", "--ignore-unmatch", "--"}, prefixed(removed)...)...); err != nil {
 			return err

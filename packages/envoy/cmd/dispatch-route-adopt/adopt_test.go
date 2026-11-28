@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -1243,6 +1244,64 @@ func TestTheStepRefusesBeforeItMerges(t *testing.T) {
 				t.Fatalf("the refused step left the tree dirty:\n%s", dirty)
 			}
 		})
+	}
+}
+
+// A merge git cannot read back leaves the step unable to say whether a merge is in progress, so
+// its failure names the command that tells and the one that ends it, each acting on the adopted
+// tree by its root, as every command the step prints does: the person ran the step with -C, and
+// a bare `git status` pasted where they are reads that directory's repository. The failure is
+// real git's: git takes every MERGE_HEAD it cannot open - a directory, a dangling or looping
+// link, bytes that name no commit - for no merge, exit 1, so a git first on PATH runs the real
+// one and, once `git merge` has written MERGE_HEAD, writes a packed-refs file git cannot parse.
+// MERGE_HEAD is left as the merge wrote it, and git dies (exit 128) reading the refs the name
+// could also mean, refs/tags/MERGE_HEAD among them.
+func TestAMergeGitCannotReadBackNamesCommandsOnTheAdoptedTree(t *testing.T) {
+	// The files ref store, the one that reads packed-refs, whatever git's default is.
+	t.Setenv("GIT_DEFAULT_REF_FORMAT", "files")
+	repo := newScratchRepo(t)
+	base := strings.TrimSpace(repo.git("rev-parse", "HEAD"))
+	repo.addRouteOn("branch-a", base, "a")
+	repo.moveMain()
+	repo.git("checkout", "-q", "branch-a")
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gitDir := filepath.Join(repo.root, ".git")
+	wrapper := t.TempDir()
+	script := "#!/bin/sh\n" + shellQuoted(realGit) + ` "$@"
+status=$?
+if [ "$1" = merge ]; then
+	echo 'not a packed-refs file' >` + shellQuoted(filepath.Join(gitDir, "packed-refs")) + `
+fi
+exit $status
+`
+	if err := os.WriteFile(filepath.Join(wrapper, "git"), []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", wrapper+string(os.PathListSeparator)+os.Getenv("PATH"))
+	_, err = repo.adoptMain()
+	if info, statErr := os.Lstat(filepath.Join(gitDir, "MERGE_HEAD")); statErr != nil || !info.Mode().IsRegular() {
+		t.Fatalf("git merge left no MERGE_HEAD file, so this row does not test a merge git cannot read back: %v", statErr)
+	}
+	// The control: real git fails to read MERGE_HEAD, rather than answering that no merge is in
+	// progress, which would send the step down another path.
+	var exit *exec.ExitError
+	if output, readErr := runIn(repo.root, realGit, "rev-parse", "-q", "--verify", "MERGE_HEAD"); !errors.As(readErr, &exit) || exit.ExitCode() == 1 {
+		t.Fatalf("the control failed: git's read of MERGE_HEAD answered %v, want an exit other than 1: %s", readErr, output)
+	}
+	if err == nil {
+		t.Fatal("the step went on past a merge git could not read back")
+	}
+	root := shellQuoted(repo.root)
+	for _, command := range []string{"`git -C " + root + " status`", "`git -C " + root + " merge --abort`"} {
+		if !strings.Contains(err.Error(), command) {
+			t.Fatalf("the failure does not name %s, which acts on the adopted tree: %v", command, err)
+		}
+	}
+	if strings.Contains(err.Error(), "`git status`") {
+		t.Fatalf("the failure names a bare `git status`, which reads the repository it is pasted in: %v", err)
 	}
 }
 
