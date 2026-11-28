@@ -41,6 +41,7 @@ import (
 // window's end: the bound that keeps those runs, which a cut at the window's end would get wrong,
 // was then never tested. Each round's seed is in its failure.
 func TestAWindowsReadAnswersWhatItsTwoReadsAnswer(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	base := time.Date(2024, 3, 1, 0, 0, 0, 0, time.UTC)
 	settings := DeliverySettings{DeployRepo: waitingRepo, ProductionJobNames: []string{waitingJob}, ProductionApplyStepName: new(waitingStep)}
@@ -262,6 +263,7 @@ func (h windowTruth) check(t *testing.T, label string, settings DeliverySettings
 // TestTheLatestShipBeforeReadStartsAtItsMomentWhateverThePlan's for the one read it plans and
 // TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale's for the run-jobs reads.
 func TestTheWindowsRunsReadIsBoundedThroughItsIndexes(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAYearOfDeployRuns(t, ctx, pool)
 	connection, err := pool.Acquire(ctx)
@@ -370,6 +372,7 @@ func seedAYearOfDeployRuns(t *testing.T, ctx context.Context, pool *store.Pool) 
 // one the deploy ships. The window's own pull requests, which the routes' population is, keep
 // every repository's.
 func TestTheEarlierPullRequestsAreTheDeployRepositorysAloneBeforeTheRowCap(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	from := time.Date(2024, 5, 10, 0, 0, 0, 0, time.UTC)
 	to := from.Add(24 * time.Hour)

@@ -154,7 +154,7 @@ func readHead(t *testing.T, ctx context.Context, pool *store.Pool, repo string, 
 // branch already attributes costs no commits read: the commit messages are the last of the five
 // sources, and the event path skips them in the same case.
 func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedHeadIssue(t, ctx, pool, 1)
@@ -232,7 +232,7 @@ func TestReconcileRereadsAStalePullRequestHead(t *testing.T) {
 // The read-through stores every pull request GitHub names for one commit, each attributed as the
 // stored pull requests are.
 func TestReadThroughCommitPullsStoresEveryPullRequestNamedForACommit(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 2)
 	seedHeadIssue(t, ctx, pool, 1)
@@ -451,7 +451,7 @@ func TestNewestPullRequestHeadTakesTheOpenOneElseTheMergedOne(t *testing.T) {
 // attributed head row is what a `before_merge` result's commit stands at, so an issue that
 // resolves to another repository attributes nothing: the row is still written, with no issue.
 func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 3)
 
@@ -493,7 +493,7 @@ func TestAPullRequestNamingAnIssueOfAnotherRepositoryAttributesNobody(t *testing
 // of the row answer for it: the `pull_request` envelope and the read-through a recorded result
 // makes.
 func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	foreign := seedHeadIssue(t, ctx, pool, 4)
 	own := seedGadgetsIssue(t, ctx, pool, 4)
@@ -565,7 +565,7 @@ func TestAPullRequestTitledAfterAnotherRepositorysIssueKeepsItsOwn(t *testing.T)
 // installation cannot read is ErrRepositoryUnreadable whichever read asks, which the results
 // read takes as unknown rather than as a commit it placed elsewhere.
 func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	fake := newFakeGitHub(t)
 	fake.handle("GET /repos/acme/widgets/commits/{sha}/pulls", func(w http.ResponseWriter, r *http.Request) {
 		if r.PathValue("sha") == "0000000000000000000000000000000000000000" {
@@ -648,7 +648,7 @@ func TestCommitPullsAndCommitOnBranchReadThroughTheApp(t *testing.T) {
 // repository's, so the row is written but attributed to nobody, and a result recorded at that
 // commit never stands at it.
 func TestAForkPullRequestNamedForACommitIsNoBasisForAResult(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 4)
 
@@ -687,7 +687,7 @@ func TestAForkPullRequestNamedForACommitIsNoBasisForAResult(t *testing.T) {
 // that names no head repository at all — one an older publisher made — attributes nobody
 // either, and leaves the row unstamped for the reconcile to settle from GitHub's own answer.
 func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 5)
 
@@ -751,7 +751,7 @@ func TestAForkPullRequestEnvelopeIsNoBasisForAResult(t *testing.T) {
 // fails with something other than a rate limit: an incomplete read attributes nobody, and
 // nobody is not an answer it may write over the issue the row holds.
 func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedHeadIssue(t, ctx, pool, 6)
 
@@ -818,7 +818,7 @@ func TestAReadThroughKeepsAnAttributionOnlyTheCommitMessagesName(t *testing.T) {
 // orders the never-read first, so an unstamped row holds the front of every batch. So is a row
 // stored under a name GitHub does not allow, `acme/..`, which no read can reach.
 func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 
@@ -873,7 +873,7 @@ func TestAnUnreadableRepositoryStampsThePullRequestHead(t *testing.T) {
 // (MarkPullRequestHeadChecked) — rule and time together, since the rule is what ends the offer
 // of a row whose checked_at an older rule already set.
 func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	issue := seedHeadIssue(t, ctx, pool, 7)
@@ -1077,7 +1077,7 @@ func TestReconcileAttributesAMergedHeadTheEnvelopeLeftUnattributed(t *testing.T)
 // would otherwise land as "attributed to nobody, read already": out of the merged arm, which
 // takes only rows no read has reached, and no basis for good at the issue's own merged head.
 func TestAMergeEnvelopeNamingNoHeadRepositoryKeepsTheStoredAttribution(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedHeadIssue(t, ctx, pool, 8)
 
@@ -1209,7 +1209,7 @@ func headRepos(t *testing.T, ctx context.Context, pool *store.Pool, number int) 
 // them): one pass leaves one row, keyed by the name the App can read, attributed to the issue,
 // with the old row gone and a result at that head standing at it.
 func TestReconcileRekeysAHeadStoredUnderARepositorysOldName(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	issue := seedGadgetsIssue(t, ctx, pool, 20)
@@ -1252,7 +1252,7 @@ func TestReconcileRekeysAHeadStoredUnderARepositorysOldName(t *testing.T) {
 // such an issue unmarked. The pair is seeded by SQL and the Renames read after it, as a boot
 // reads it.
 func TestAPullRequestIsAttributedToAnIssueRecordedUnderTheOldName(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssueUnderTheOldName(t, ctx, pool, 21)
 
@@ -1279,7 +1279,7 @@ func TestAPullRequestIsAttributedToAnIssueRecordedUnderTheOldName(t *testing.T) 
 // stored before the rename still credits the issue, as the link source and not through the
 // title, which names nothing here.
 func TestAPullRequestOnTheNewNameIsAttributedByALinkStoredUnderTheOldName(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssue(t, ctx, pool, 23)
 	seedRenamedGadgets(t, ctx, pool)
@@ -1306,7 +1306,7 @@ func TestAPullRequestOnTheNewNameIsAttributedByALinkStoredUnderTheOldName(t *tes
 // per-row step, handed the old key, merges them: the canonical row wins, the old row goes, and
 // the facts that stand are the ones the upsert's event-time rule keeps.
 func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssue(t, ctx, pool, 22)
 	seedRenamedGadgets(t, ctx, pool)
@@ -1353,7 +1353,7 @@ func TestOnePullRequestStoredUnderBothNamesEndsAsOneRow(t *testing.T) {
 // pull request each answer with no error, and each credits the issue that resolves to the pull
 // request's repository through its project's default.
 func TestAttributionAndAHeadRefreshAnswerWithRepoProjectsDropped(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	issue := seedGadgetsIssue(t, ctx, pool, 24)
 	if _, err := pool.Exec(ctx, `drop table repo_projects`); err != nil {

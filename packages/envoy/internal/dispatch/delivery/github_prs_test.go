@@ -16,6 +16,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 	"github.com/sjawhar/envoy/internal/githubtest"
@@ -52,6 +53,10 @@ type fakeGitHub struct {
 	// zero is GitHub's hour. tokenExpiry records each minted token's expiry for tokenExpired.
 	tokenLifetime time.Duration
 	tokenExpiry   sync.Map
+	// clock is the fake's time: a minted token expires tokenLifetime after clock's moment at its
+	// mint, and tokenExpired reads clock's moment against that expiry. The real clock, unless a
+	// test that outlives a token gives it a fake it moves (expiringTokens).
+	clock clock.Clock
 	// installationStatus, keyed by "owner/repo", answers that repository's installation lookup
 	// with the status and GitHub's error body rather than the installation: 404 is a repository
 	// the App is not installed on, or one deleted. answerInstallation sets it, under mu, since a
@@ -79,10 +84,10 @@ func (f *fakeGitHub) installationAnswer(repo string) int {
 }
 
 // tokenExpired reports whether r's bearer is an installation token this fake minted whose expiry
-// has passed: GitHub answers such a request 401 Bad credentials.
+// has passed on the fake's clock: GitHub answers such a request 401 Bad credentials.
 func (f *fakeGitHub) tokenExpired(r *http.Request) bool {
 	expires, ok := f.tokenExpiry.Load(strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
-	return ok && !time.Now().Before(expires.(time.Time))
+	return ok && !f.clock.Now().Before(expires.(time.Time))
 }
 
 func newFakeGitHub(t *testing.T) *fakeGitHub {
@@ -91,6 +96,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		t: t, mux: http.NewServeMux(), installID: 1,
 		permissions:       map[string]string{"contents": "read", "actions": "read", "pull_requests": "read"},
 		installationRepos: []string{"acme/widgets"},
+		clock:             clock.Real(),
 	}
 	f.mux.HandleFunc("GET /repos/{owner}/{repo}/installation", func(w http.ResponseWriter, r *http.Request) {
 		if status := f.installationAnswer(r.PathValue("owner") + "/" + r.PathValue("repo")); status != 0 {
@@ -144,7 +150,7 @@ func newFakeGitHub(t *testing.T) *fakeGitHub {
 		if lifetime == 0 {
 			lifetime = time.Hour
 		}
-		token, expires := fmt.Sprintf("ghs_fake_%s_%d", r.PathValue("id"), mints), time.Now().Add(lifetime)
+		token, expires := fmt.Sprintf("ghs_fake_%s_%d", r.PathValue("id"), mints), f.clock.Now().Add(lifetime)
 		f.tokenExpiry.Store(token, expires)
 		w.WriteHeader(http.StatusCreated)
 		if err := json.NewEncoder(w).Encode(map[string]any{"token": token, "expires_at": expires.Format(time.RFC3339Nano)}); err != nil {
@@ -525,15 +531,16 @@ func TestSearchMergedPullRequestsPaginatesAcrossPages(t *testing.T) {
 // maxCommitPages of them, each ask for a token, so a page answered after the previous page's
 // token expired is asked for with a new one.
 func TestFetchCommitMessagesAsksForATokenPerPage(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
-	refuse, expired := expiringTokens(t, fake)
+	refuse, expired, outlive := expiringTokens(t, fake)
 	fake.handle("GET /repos/acme/widgets/pulls/7/commits", func(w http.ResponseWriter, r *http.Request) {
 		if refuse(w, r) {
 			return
 		}
 		count := 100
 		if r.URL.Query().Get("page") == "1" {
-			time.Sleep(400 * time.Millisecond)
+			outlive()
 		} else {
 			count = 5
 		}
@@ -557,15 +564,16 @@ func TestFetchCommitMessagesAsksForATokenPerPage(t *testing.T) {
 // client.Token) reconciles each window's pull requests between pages, so it asks for a token per
 // page, and a page answered after the previous page's token expired is asked for with a new one.
 func TestSearchMergedPullRequestsAcrossInstallationAsksForATokenPerPage(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
-	refuse, expired := expiringTokens(t, fake)
+	refuse, expired, outlive := expiringTokens(t, fake)
 	fake.handle("POST /graphql", func(w http.ResponseWriter, r *http.Request) {
 		if refuse(w, r) {
 			return
 		}
 		_, variables := decodeGraphQLRequest(t, r)
 		if after, _ := variables["after"].(string); after == "" {
-			time.Sleep(400 * time.Millisecond)
+			outlive()
 			mustEncode(t, w, searchResponseJSON(150, repeatSearchNodes(100, 1), true, "cursor-100"))
 			return
 		}

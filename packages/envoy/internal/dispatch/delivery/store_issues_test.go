@@ -193,6 +193,7 @@ func TestIssueAncestorsStopsAtTheDepthCap(t *testing.T) {
 // ALPHA-2 under BETA-4 has none, while BETA-2 under BETA-1 has BETA-1 and ALPHA-5 under ALPHA-1
 // has ALPHA-1. Keys of two projects read together each keep to their own.
 func TestIssueAncestorsStopsAtTheProjectEdge(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedIssues(t, ctx, pool, "ALPHA", []issueSeed{
 		{key: "ALPHA-1"},

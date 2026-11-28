@@ -8,18 +8,31 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/githubapp"
 )
 
-// expiringTokens makes fake mint installation tokens that live 250 ms, under githubapp's own
-// five-minute renewal margin, so the client mints one each time it is asked for a token, and
-// counts every request that carries a token past its expiry, which it answers as GitHub does:
-// 401 Bad credentials. A handler that returns true has answered.
-func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWriter, *http.Request) bool, expired *atomic.Int64) {
+// expiringTokens makes fake mint installation tokens that live 250 ms on a fake clock, under
+// githubapp's own five-minute renewal margin, so the client mints one each time it is asked for a
+// token, and counts every request that carries a token past its expiry on that clock, which it
+// answers as GitHub does: 401 Bad credentials. A handler that returns true has answered. outlive
+// moves the clock past a token's life, so every token minted before it has expired: a page handler
+// that calls it before it answers stands for a page answered after its token expired.
+//
+// The clock moves only by outlive (clocktest.New), so no time a loaded machine takes between a
+// mint and the request that carries the token can expire it. The client reads a token's
+// expires_at on its own wall clock (githubapp.Client.Token, whose clock no option sets) and keeps
+// it until five minutes before it (tokenExpirySlack). The fake clock starts at the wall clock's
+// moment and each outlive moves it on twice a token's life, so every expiry it stamps lies well
+// inside that margin of the client's moment, and the client still mints a token each time.
+func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWriter, *http.Request) bool, expired *atomic.Int64, outlive func()) {
 	t.Helper()
-	fake.tokenLifetime = 250 * time.Millisecond
+	const lifetime = 250 * time.Millisecond
+	tokens := clocktest.New(time.Now())
+	fake.clock = tokens
+	fake.tokenLifetime = lifetime
 	expired = &atomic.Int64{}
-	return func(w http.ResponseWriter, r *http.Request) bool {
+	refuse = func(w http.ResponseWriter, r *http.Request) bool {
 		if !fake.tokenExpired(r) {
 			return false
 		}
@@ -27,7 +40,8 @@ func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWr
 		w.WriteHeader(http.StatusUnauthorized)
 		mustEncode(t, w, map[string]any{"message": "Bad credentials"})
 		return true
-	}, expired
+	}
+	return refuse, expired, func() { tokens.Advance(2 * lifetime) }
 }
 
 // TestListWorkflowRunsAsksForATokenPerPage: a walk whose pages outlast the installation token its
@@ -35,15 +49,16 @@ func expiringTokens(t *testing.T, fake *fakeGitHub) (refuse func(http.ResponseWr
 // busy repository runs past a token's hour, and GitHub answers the next page 401 Bad credentials.
 // The first page here is answered after its token has expired.
 func TestListWorkflowRunsAsksForATokenPerPage(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
-	refuse, expired := expiringTokens(t, fake)
+	refuse, expired, outlive := expiringTokens(t, fake)
 	fake.handle("GET /repos/acme/widgets/actions/workflows/deploy.yml/runs", func(w http.ResponseWriter, r *http.Request) {
 		if refuse(w, r) {
 			return
 		}
 		switch r.URL.Query().Get("page") {
 		case "1":
-			time.Sleep(400 * time.Millisecond)
+			outlive()
 			mustEncode(t, w, map[string]any{"total_count": 15, "workflow_runs": repeatRunItems(10, 1)})
 		default:
 			mustEncode(t, w, map[string]any{"total_count": 15, "workflow_runs": repeatRunItems(5, 11)})
@@ -62,15 +77,16 @@ func TestListWorkflowRunsAsksForATokenPerPage(t *testing.T) {
 // TestListWorkflowRunJobsAsksForATokenPerPage: a run's jobs pages, too, each ask for a token, so a
 // page answered after the previous page's token expired is asked for with a new one.
 func TestListWorkflowRunJobsAsksForATokenPerPage(t *testing.T) {
+	t.Parallel()
 	fake := newFakeGitHub(t)
-	refuse, expired := expiringTokens(t, fake)
+	refuse, expired, outlive := expiringTokens(t, fake)
 	fake.handle("GET /repos/acme/widgets/actions/runs/7/jobs", func(w http.ResponseWriter, r *http.Request) {
 		if refuse(w, r) {
 			return
 		}
 		switch r.URL.Query().Get("page") {
 		case "1":
-			time.Sleep(400 * time.Millisecond)
+			outlive()
 			mustEncode(t, w, map[string]any{"total_count": runJobsPageSize + 5, "jobs": repeatJobItems(runJobsPageSize)})
 		default:
 			mustEncode(t, w, map[string]any{"total_count": runJobsPageSize + 5, "jobs": repeatJobItems(5)})

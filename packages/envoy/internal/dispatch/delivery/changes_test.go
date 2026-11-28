@@ -15,6 +15,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // latestChange is the change log's newest seq, which a test reads after its setup so its
@@ -438,8 +440,11 @@ func TestEveryLoggedChangeNotifiesAtCommit(t *testing.T) {
 
 // TestChangeSeqsFollowCommitOrder: a second writer's change waits on the trigger's advisory lock
 // until the first writer commits, so it cannot take a seq a reader could pass before the first
-// writer's lands.
+// writer's lands. The wait for B reads the backends queued behind A's own transaction
+// (storetest.WaitForLockWaiters), which no session of another database can join; A holds no other
+// lock B's insert of another pull request could queue on, so the one waiter is B on that lock.
 func TestChangeSeqsFollowCommitOrder(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	before := latestChange(t, ctx, pool)
 	insert := `
@@ -473,19 +478,12 @@ func TestChangeSeqsFollowCommitOrder(t *testing.T) {
 		bErr <- b.Commit(ctx)
 	}()
 
-	waitFor(t, 10*time.Second, func() bool {
-		var waiting int
-		err := pool.QueryRow(ctx, `
-			select count(*) from pg_locks
-			where locktype = 'advisory' and not granted and classid = 6900 and objid = 0 and objsubid = 2
-		`).Scan(&waiting)
-		return err == nil && waiting == 1
-	}, func() string { return "B never waited on the change log's advisory lock" })
+	storetest.WaitForLockWaiters(t, a, 1)
 
 	if err := a.Commit(ctx); err != nil {
 		t.Fatalf("commit A: %v", err)
 	}
-	wg.Wait()
+	testwait.Returns(t, "B's insert and commit to return once A committed and let the change log's lock go", wg.Wait)
 	if err := <-bErr; err != nil {
 		t.Fatalf("B: %v", err)
 	}

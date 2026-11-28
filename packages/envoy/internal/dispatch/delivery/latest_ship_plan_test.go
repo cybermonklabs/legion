@@ -24,6 +24,7 @@ import (
 // statement's plan is pinned by no test, and its answers are held to the Go rule by
 // TestTheWaitingSQLAgreesWithTheShippingRule and the tests beside it.
 func TestTheLatestShipBeforeReadIsBoundedByItsMoment(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	connection, err := pool.Acquire(ctx)
 	if err != nil {
@@ -52,6 +53,7 @@ func TestTheLatestShipBeforeReadIsBoundedByItsMoment(t *testing.T) {
 // a month after the newest run, so a plan that took every run created before it would read them
 // all: that is what the bound's index condition, and not the table's size, keeps it from.
 func TestTheLatestShipBeforeReadStartsAtItsMomentWhateverThePlan(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedAYearOfDeployRuns(t, ctx, pool)
 	statement := explaintest.Statement{

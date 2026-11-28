@@ -483,6 +483,7 @@ func TestComputeDeployedStatus(t *testing.T) {
 // listing's verdict is also checked against its expected applies, missing-step and unmatched runs
 // so the fixture is proved to exercise every rule.
 func TestTheJudgedJobNamesJudgeARunAsItsEveryJobDoes(t *testing.T) {
+	t.Parallel()
 	const deploy, nested, step = "production / production-apply", "dispatch-apply / staging-e2e / staging-e2e", "Run ./.github/actions/apply"
 	production := Production{JobNames: []string{deploy, nested}, ApplyStep: new(step)}
 	if got, want := production.JudgedJobNames(), []string{deploy, nested, "production", "dispatch-apply", "dispatch-apply / staging-e2e"}; !slices.Equal(got, want) {

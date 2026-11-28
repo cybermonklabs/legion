@@ -23,6 +23,7 @@ import (
 // key takes, and that the statement answers the named jobs alone. That the planner takes the
 // index when it may scan is TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale's.
 func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
 	success := DeliveryJobConclusionSuccess
@@ -91,6 +92,7 @@ func TestTheRunJobsReadKeysTheJobsItNames(t *testing.T) {
 // Like the test above, it plans with sequential scans off over a handful of rows, so it shows what
 // the statements offer the planner, and the plan it takes with them allowed is the scale test's.
 func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	started := time.Date(2026, 10, 14, 9, 0, 0, 0, time.UTC)
 	at := func(minutes int) *time.Time { v := started.Add(time.Duration(minutes) * time.Minute); return &v }
@@ -256,6 +258,7 @@ func TestTheTimelinesRunJobsReadKeysTheNamedJobsAndTheFailedOnes(t *testing.T) {
 // key alone, each of whose three columns is in the index condition, the job's name among them; the
 // failed read through delivery_run_jobs_failed or the primary key, and no other index.
 func TestTheRunJobsReadsUseTheirIndexesOnEveryPlanAtScale(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	// The triggers that log each change take a lock and write a row for each of the hundred
 	// thousand rows, which this test's database, its own, does not need logged.

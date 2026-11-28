@@ -383,7 +383,7 @@ func searchNode(number int, merged string) map[string]any {
 // requests, past one installation's hourly rate limit -- could never finish one, since each pass
 // restarted it from the beginning.
 func TestReconcileResumesWorkflowRunsWhereAFailedPassStopped(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	// This test is the regular runs/deploy step's: a finished backfill lists nothing, so every
@@ -504,7 +504,7 @@ func countRuns(t *testing.T, ctx context.Context, pool *store.Pool) int {
 // that is removed, or whose repositories move to another, leaves a row keyed by an id no listing
 // answers for again, and nothing else would ever collect it.
 func TestReconcilePrunesProgressOfAnInstallationThatNoLongerExists(t *testing.T) {
-	fastPageRetries(t)
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	settings := seedDeliverySettings(t, ctx, pool)
 	scope := searchProgressScope(settings)

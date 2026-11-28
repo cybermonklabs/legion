@@ -114,6 +114,7 @@ var processHolds = map[string][]string{
 // statement, or one that does not end with the read's registered text (resultsHeadsRead.text): a
 // statement only a read-only read sends, before or beside its one, fails here.
 func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
+	t.Parallel()
 	source := parsePackageSource(t)
 
 	keeping := source.keepingTypes()
@@ -217,6 +218,7 @@ func TestEachHeadsReadOnTheResultsPathIsOneStatement(t *testing.T) {
 		}
 		for _, history := range foldHistories() {
 			t.Run(history.name, func(t *testing.T) {
+				t.Parallel()
 				pool, ctx, attributor, answers := foldSetup(t, history.steps)
 				recorder := &storetest.StatementRecorder{}
 				traced := storetest.Traced(t, pool, recorder, nil)
@@ -568,8 +570,10 @@ func (q foldQuestion) String() string {
 // with the request's answers, and must give the oracle's answer to every question (foldQuestions).
 // The request must hold one answer for each run of equal answers (foldAnswerRuns, plan D33).
 func TestTheReadOnlyFoldAnswersAsTheWritersPath(t *testing.T) {
+	t.Parallel()
 	for _, history := range foldHistories() {
 		t.Run(history.name, func(t *testing.T) {
+			t.Parallel()
 			pool, ctx, attributor, answers := foldSetup(t, history.steps)
 			if held, runs := len(answers.columns.repo), foldAnswerRuns(history.steps); held != runs {
 				t.Errorf("the request holds %d answers, want %d, one for each run of its answers for one pull request equal in every column "+
