@@ -87,8 +87,16 @@ const ChangesChannel = "delivery_changes"
 //     (recordDeployedEvent), which appends the event and then marks its pull request's row, in
 //     the update that locks the row.
 //   - After its row locks, in the repository rename pass (store.RewriteRenamedRepositories):
-//     the pass locks the rows each delivery line writes before any of its triggers can run.
-//     It locks runs before jobs and locks a run's jobs in name order.
+//     the pass locks the rows each delivery line finds naming an old name, which it then updates
+//     or deletes, before any of its triggers can run. It locks runs before jobs and locks a run's
+//     jobs in name order. The rows it inserts, each run under its new name, are rows it cannot
+//     lock first: their insert is the runs line's first statement that fires a change trigger,
+//     whose triggers run at the statement's end, so the pass waits for a run another writer
+//     holds under the new name before it takes the lock, and a run stored there meanwhile is a
+//     collision, whose row under the old name it deletes. Each delivery line writes no row but
+//     those it locked and those it wrote since: a row stored naming an old name after its locks
+//     stays as it is for the next boot's pass, so the line never waits on it while it holds the
+//     lock.
 //   - First, with this statement queued ahead of its writes (queueLockChanges): every write of
 //     the session groups (writeSessionGroup, after the reads that decide it).
 //   - First, in SQL: the drain (DrainPending), whose function delivery_changes_drain takes it

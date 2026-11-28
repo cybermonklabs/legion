@@ -3565,6 +3565,7 @@ A URL matches when its host is `github.com` or `www.github.com` and its first tw
 A scope of the delivery reconcile's progress matches where it holds the old name as a token.
 The transaction of each line takes the pass's one advisory lock (`repoRenameLockNamespace`, `0`) and a five-second `lock_timeout`, so two processes that boot at once take turns on each line, and the second finds nothing left to write.
 Where the new name gives a row the key of another row, the row under the new name stays, and the pass deletes the row under the old name and logs it at WARN with its table and key.
+The lines of `delivery_pull_requests`, `delivery_runs` and `delivery_settings` write only the rows they locked when they began, and the line of `delivery_runs` the copies it makes of its runs under the new name: a row another writer, such as the release before during a roll, stores naming an old name after those locks stays as it is, a run with its jobs, among the rows left that the pass counts below, and the next boot rewrites it.
 The pass logs each field it writes at INFO with `field`, `from`, `to` and `rows`, and each line that fails at ERROR with its field, and it then goes on to the next line.
 It writes no other column, `updated_at` included, and appends no event.
 It never writes `repo_projects`, the event log, or the text of documents, comments, asks and messages, which keep their words.

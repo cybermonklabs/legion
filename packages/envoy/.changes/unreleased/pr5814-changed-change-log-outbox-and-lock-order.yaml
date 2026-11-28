@@ -11,11 +11,17 @@ body: |-
   A run's jobs write is one statement that locks the run's row `for no key update`, then takes the
   jobs in their names' order and takes the change log's lock last, so neither two listings of one
   run nor a jobs write of the previous release deadlocks with it; the repository rename pass locks
-  each delivery line's rows (runs before jobs, in name order) before its first statement that
-  fires a change trigger; the `issue.deployed` write marks its pull request in its last statement;
-  and a session group's write runs its reads, the title rule's read of every pull request among
-  them, before it takes the change log's lock, and sends its writes after the lock in one round
-  trip. So each table has one position for that lock.
+  the rows each delivery line finds naming an old name (runs before jobs, in name order) before its
+  first statement that fires a change trigger, and in the runs line that statement is the insert
+  of each run under its new name, so the pass waits for a run that a webhook write holds under the
+  new name before it takes the change log's lock, and handles a run stored there meanwhile as a
+  collision. Each delivery line writes only the rows it locked, and the runs line its copies of
+  them, so a row stored naming an old name after its locks stays as it is, counted among the rows
+  left, until the next boot's pass rewrites it. The `issue.deployed` write marks its pull request
+  in its last statement; and a session group's write runs its reads, the title rule's read of
+  every pull request among them, before it takes the change log's lock, and sends its writes after
+  the lock in one round trip. So each table has one position for that lock, the rename pass's
+  inserts included.
 time: 2026-11-24T08:52:28Z
 custom:
     Issue: INFRA-5577
