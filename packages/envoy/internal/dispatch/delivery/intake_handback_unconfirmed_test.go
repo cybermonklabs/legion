@@ -159,11 +159,14 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 
 	const inFlight = 100
 	row.stopClock, row.holdClock = fakeIntakeClock(), fakeIntakeClock()
+	var holderTried <-chan struct{}
 	holder := startIntakeProcessWith(t, pool, row.relay.URL(), func(number int) bool { return number == inFlight }, func(p *intakeProcess) {
 		p.intake.clock, p.intake.holdClock = row.stopClock, row.holdClock
+		holderTried = firstTryEnded(p.intake)
 	}, options...)
 	row.holder = holder
 	awaitBoundDurable(t, row.publisher)
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
 	row.standby = newHoldTries()
 	startIntakeProcessWith(t, pool, natsURL, nil, row.standby.before)
 	if row.standby.first(t, "the standby's try for the hold as it starts") {
@@ -220,19 +223,11 @@ func stopWithAnUnconfirmedHandBack(t *testing.T, options ...bus.ConnectOption) u
 	return row
 }
 
-// passStop moves the holder's stop through what it waits for on its clocks until its Run returns:
-// the stop's deadline, the holder's stopBudget on its stopClock from the moment its Run's context
-// ended, which the clock has not moved from (stopContext), once the stop has armed it; then its
-// holdClock to each moment the stop and its loss watcher arm a flush's bound or wait at, one
-// intakeFlushWait on (flushHandBacks, watchLoss), until Run has returned.
+// passStop moves the holder's stop through what it waits for on its clocks until its Run returns
+// (passStopOn).
 func (row unconfirmedHandBack) passStop(t *testing.T) {
 	t.Helper()
-	budget := tuningFor(t).stopBudget
-	row.stopClock.AwaitArmedAt(t, "the holder's stop deadline, armed as its Run's context ended", row.stopClock.Now().Add(budget))
-	row.stopClock.Advance(budget)
-	moveTicks(t, row.holdClock, intakeFlushWait, func() bool { return closedChannel(row.stopped) }, func() string {
-		return fmt.Sprintf("the holder's Run has not returned past its stop's deadline; its hold clock stands at %s, with %v armed", row.holdClock.Now(), row.holdClock.Armed())
-	})
+	passStopOn(t, row.stopClock, row.holdClock, row.stopped)
 }
 
 // finalize moves the holder's holdClock to each tick its hand-back's finalizer waits for, one

@@ -139,8 +139,10 @@ func TestAHolderThatStopsIsReplacedWithinTheBoundTheCodeStates(t *testing.T) {
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t)
 
-	holder := startIntakeProcess(t, pool, natsURL, nil)
+	var holderTried <-chan struct{}
+	holder := startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) { holderTried = firstTryEnded(p.intake) })
 	held := awaitPushBound(t, publisher, "", "the holder never bound the durable")
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
 	tries := newHoldTries()
 	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
 	if tries.first(t, "the standby's try for the hold as it starts") {

@@ -259,13 +259,14 @@ type heldDurable struct {
 	// durableBindInterval and its checks of the durable every intakeHoldRenew (run), the bound of each call
 	// it makes of the hold or of the durable's state (takeHold, lookupDurable, releaseHold), the hold's
 	// renewals and its loss deadline (duty.HoldOptions.Clock, duty.Hold.Deadline), every reading of
-	// whether it still holds the hold (holds, intakeDelivery.holdCovers, retryHeld), the take-over's
-	// bound and its waits between tries (finishTakeOver, retryHeld), and the flushes that confirm its
-	// hand-backs, the waits between them and their bounds (finalizeHandBacks, watchLoss, lostWith,
-	// flushHandBacks). clock.Real, which newHeldDurable gives it, and a test's clocktest.Fake, set
-	// before Run. Whether another process may take the hold is the database's clock either way: the
-	// hold's row lapses intakeHoldTTL after its last renewal on the database's now() (duty.TryHold),
-	// which no Go clock moves.
+	// whether it still holds the hold (holds, intakeDelivery.holdCovers, retryHeld), the budget its
+	// handlers are given when the hold is lost or the durable is found elsewhere
+	// (stopDeliveringWithin), the take-over's bound and its waits between tries (finishTakeOver,
+	// retryHeld), and the flushes that confirm its hand-backs, the waits between them and their bounds
+	// (finalizeHandBacks, watchLoss, lostWith, flushHandBacks). clock.Real, which newHeldDurable gives
+	// it, and a test's clocktest.Fake, set before Run. Whether another process may take the hold is
+	// the database's clock either way: the hold's row lapses intakeHoldTTL after its last renewal on
+	// the database's now() (duty.TryHold), which no Go clock moves.
 	holdClock clock.Clock
 
 	mu sync.Mutex
@@ -376,10 +377,12 @@ func (d *heldDurable) run(ctx context.Context) {
 }
 
 // stopDeliveringWithin stops this intake's subscription, giving the handlers still running budget
-// to finish and be acknowledged before it gives them up (StopDelivering). It runs on a context of
-// its own, so a stop of the process does not cut the hand-back short.
+// to finish and be acknowledged before it gives them up (StopDelivering). The budget runs on the
+// hold's clock (holdClock), as the hold's loss deadline and the check that call it do, so a test
+// moves a fake past it rather than waiting it out. It runs on a context of its own, so a stop of the
+// process does not cut the hand-back short.
 func (d *heldDurable) stopDeliveringWithin(budget time.Duration) {
-	ctx, cancel := context.WithTimeout(context.Background(), budget)
+	ctx, cancel := d.holdClock.WithTimeout(context.Background(), budget)
 	defer cancel()
 	d.StopDelivering(ctx)
 }

@@ -9,7 +9,6 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	natsgo "github.com/nats-io/nats.go"
 
@@ -216,26 +215,31 @@ func callbackHandBackAsTheStopEnds(t *testing.T, heldPastTheStop bool) {
 // (heldDurable.severHandBacks, bus.Client.Sever).
 //
 // Both subtests hold a write on the holder's link from inside its stop's hand-back
-// (stopWithAHeldHandBack) and wait for the stop to return with the hand-back pending and the hold
-// live. Two subtests:
-//   - a hand-back pending while the hold renews (the control): the hold renews past the expiry it had
-//     then, the link moves, and the hand-back reaches the server before the standby creates the
-//     durable.
+// (stopWithAHeldHandBack), move the holder's stop clock to the stop's deadline (passStop), and
+// require the stop returned with the hand-back pending and the hold live. Two subtests:
+//   - a hand-back pending while the hold renews (the control): the row moves the hold's clock to
+//     its next renewal and reads it land (renewHoldOnItsClock), the link moves, the holder releases
+//     its hold, and the hand-back reaches the server before the standby creates the durable.
 //   - a hand-back pending when the hold's renewals fail: the row refuses the holder's every database
-//     statement (cuttableLeases), waits until the standby has created the durable, and only then lets
-//     the link move. It then waits until the hand-back's publish has returned, flushes the holder's
-//     connection unless it has closed, so the server has handled whatever that connection sent, and
-//     takes a barrier of its watch (durableEvents.barrier), so the watch has recorded it. No -NAK
-//     reached the server after the creation; a hand-back dropped with the severed connection never
-//     reaches it, which is allowed (requireNoHandBackAfterCreation). The standby acknowledges the
-//     message as soon as it is delivered, so a late -NAK usually finds it acknowledged and changes
-//     no count; the order is what shows it.
+//     statement (cuttableLeases), moves the hold's clock to the loss deadline and past the wait the
+//     loss watcher arms for a flush's answer there, until the holder logs the sever
+//     (loseHoldUntilSevered), and only then lapses the hold's row on the database's clock
+//     (lapseHoldRow), so the standby takes the durable over. Once the standby has created it, the row
+//     lets the link move. It then waits until the hand-back's publish has returned, flushes the
+//     holder's connection unless it has closed, so the server has handled whatever that connection
+//     sent, and takes a barrier of its watch (durableEvents.barrier), so the watch has recorded it.
+//     No -NAK reached the server after the creation; a hand-back dropped with the severed
+//     connection never reaches it, which is allowed (requireNoHandBackAfterCreation). The standby
+//     acknowledges the message as soon as it is delivered, so a late -NAK usually finds it
+//     acknowledged and changes no count; the order is what shows it.
 //
 // Each ends by requiring that the standby's consumer delivered each message the holder left once.
-// No step waits on a time but the hold's own expiry; the shared wait's bound covers a standby that
-// never takes over. The negative control is the finalizer before the sever, which returned at the
-// lost hold and left the hand-back pending: the second subtest fails there with the -NAK after the
-// creation.
+// No step waits on a time: the stop's deadline, the hold's renewal and loss deadline, the loss
+// watcher's wait and the flushes' bounds are on the holder's two fake clocks, the hold's row lapses
+// by the row's own statement, and the standby tries for the hold only where the row moves its own
+// fake; every wait is testwait's, which only guards against an event that never comes. The negative
+// control is the finalizer before the sever, which returned at the lost hold and left the hand-back
+// pending: the second subtest fails there, since no sever comes and the wait for its line gives up.
 func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *testing.T) {
 	t.Parallel()
 	for _, tc := range []struct {
@@ -246,12 +250,10 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 		{name: "a hand-back pending when the hold's renewals fail", lose: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			logs := captureIntakeLogs(t)
 			row := stopWithAHeldHandBack(t)
-			select {
-			case <-row.stopped:
-			case <-time.After(30 * time.Second):
-				t.Fatal("the holder's Run did not return within 30 s while its hand-back was held")
-			}
+			row.passStop(t)
 			if !row.handBackPending() {
 				t.Fatal("control: the stop's hand-back reached NATS while the write was held")
 			}
@@ -259,24 +261,26 @@ func TestAHandBackPendingWhenTheHoldIsLostNeverReachesTheStandbysDurable(t *test
 				t.Fatal("control: the stop released its hold with its hand-back pending")
 			}
 			if !tc.lose {
-				if !holdRenewedBeforeItsExpiry(t, row.pool) {
-					t.Fatal("control: the hold reached its expiry unrenewed while its hand-back was pending and its database reachable")
-				}
+				row.renewHoldOnItsClock(t)
 				row.thaw()
+				row.standbyTakesOverOnceReleased(t)
 				requireHandBackBeforeCreation(t, row.recorded, row.from, row.publisher, row.sequences)
 				return
 			}
 			row.holder.leases.cut.Store(true)
+			loseHoldUntilSevered(t, row.holdClock, row.holder.intake,
+				"the lost hold's sever of the connection that carries the pending hand-back (a finalizer that returns at the loss severs nothing)",
+				func() (string, bool) {
+					return fmt.Sprintf("the holder logged %q", loggedMessages(logs())), loggedMessage(logs(), intakeHandBacksSevered)
+				})
+			lapseHoldRow(t, row.pool, row.holder.intake.holder)
+			row.standby.untilDelivering(t, "the standby to take over the hold the holder lost")
 			waitFor(t, func() bool { return slices.Contains(row.recorded.since(row.from), durableCreated) }, func() string {
 				return fmt.Sprintf("the standby did not take over the lapsed hold and create the durable: %q; %s", row.recorded.since(row.from), consumerState(row.publisher))
 			})
 			row.thaw()
-			select {
-			case <-row.delivery.handBacksLanded():
-			case <-time.After(30 * time.Second):
-				t.Fatal("the hand-back's publish had not returned 30 s after the link moved")
-			}
-			if err := row.conn.FlushTimeout(10 * time.Second); err != nil && !errors.Is(err, natsgo.ErrConnectionClosed) {
+			testwait.Receive(t, "the hand-back's publish to return once the link moved", row.delivery.handBacksLanded())
+			if err := row.conn.FlushWithContext(testnats.Context(t)); err != nil && !errors.Is(err, natsgo.ErrConnectionClosed) {
 				t.Fatalf("flush the holder's connection once its link moved: %v", err)
 			}
 			row.recorded.barrier(t)

@@ -1,7 +1,6 @@
 package delivery
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"slices"
@@ -21,6 +20,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // A pull-request envelope whose head row could not be stored at all is handed back for
@@ -101,8 +101,11 @@ type headWriteProcess struct {
 // GitHub answers the pull request's commit read with no commits, after counting it, and holds
 // the first one when hold is set until the row releases it or the handler making it is
 // abandoned. That read is where a handler can be held for this row: everything after it is the
-// head write, which is the failure under test.
-func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold bool) *headWriteProcess {
+// head write, which is the failure under test. before runs on the intake once it is built and
+// before it runs, for a row that gives it a hold clock of its own (heldDurable.holdClock) or tries
+// for the hold it reads (holdTries.on). The process's stop is runIntake's, which waits for Run
+// through the shared wait.
+func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold bool, before func(*Intake)) *headWriteProcess {
 	t.Helper()
 	second := storetest.SecondProcess(t, &store.Store{Pool: pool})
 	leasePool := storetest.Leases(t, second.Pool)
@@ -138,16 +141,8 @@ func startHeadWriteProcess(t *testing.T, pool *store.Pool, natsURL string, hold 
 
 	process.intake = newIntake(tuningFor(t), client, second.Pool, process.leases, github, events.NewBroker(),
 		loadedSettingsCache(t, t.Context(), second.Pool), unrenamed())
-	runCtx, cancel := context.WithCancel(context.Background())
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		process.intake.Run(runCtx)
-	}()
-	t.Cleanup(func() {
-		cancel()
-		<-done
-	})
+	before(process.intake)
+	runIntake(t, process.intake)
 	return process
 }
 
@@ -202,6 +197,13 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // lapsed. Its head write fails because branch_commits is away, which is the failure the
 // hand-back is for.
 //
+// The holder's hold runs on a fake hold clock only the row moves (heldDurable.holdClock): with the
+// pool cut, the row moves it to the loss deadline (loseHold), and never past the budget the stop
+// gives the handler there (stopDeliveringWithin), so the handler surely returns inside it. Once the
+// holder has let the durable go, the row lapses the hold's row on the database's clock
+// (lapseHoldRow), and the keeper, which tries for the hold on a fake of its own, takes the durable
+// over at the try the row moves it to (awaitDurableTakenOver).
+//
 // What it measures is the answers published to the durable, read from the ack subject itself
 // rather than from the consumer's counts: a hand-back is a publish, and whether the server
 // still has a consumer to act on it depends on how far the take-over has got. None of them may
@@ -212,6 +214,7 @@ func durableAnswers(t *testing.T, client *bus.Client) func() []string {
 // anything, so the keeper's handling is the ordinary one: it writes the head row the holder
 // could not, acknowledges the envelope, and is handed it exactly once.
 func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelopeOnce(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	seedDeliveryProject(t, ctx, pool)
@@ -224,9 +227,19 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	// by the server's redelivery at the ack wait, which then never comes inside the run
 	// (ackWaitPastTheRun).
 	ackWaitPastTheRun(t)
-	holder := startHeadWriteProcess(t, pool, natsURL, true)
+	holdClock := fakeIntakeClock()
+	var holderTried <-chan struct{}
+	holder := startHeadWriteProcess(t, pool, natsURL, true, func(intake *Intake) {
+		intake.holdClock = holdClock
+		holderTried = firstTryEnded(intake)
+	})
 	awaitBoundDurable(t, publisher)
-	keeper := startHeadWriteProcess(t, pool, natsURL, false)
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	tries := newHoldTries()
+	keeper := startHeadWriteProcess(t, pool, natsURL, false, tries.on)
+	if tries.first(t, "the keeper's try for the hold as it starts") {
+		t.Fatal("control: the keeper took the durable over at its start, while the holder held it")
+	}
 
 	// A merge, so the head row and its branch seed are written together and the write is the
 	// one that fails; its own head repository and a branch naming no issue, so the attribution
@@ -243,10 +256,11 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	})
 
 	// The cut takes the holder off the lease pool its hold is renewed on, as a network that
-	// took it off Postgres would: the hold lapses, and the holder stops delivering.
+	// took it off Postgres would: the hold is lost, and the holder stops delivering.
 	holder.leases.cut.Store(true)
+	loseHold(t, holdClock, holder.intake)
 	waitFor(t, func() bool { return keyedRunnerStopped(holder.intake) }, func() string {
-		return "the holder never began stopping, though its hold is no longer renewed: " + consumerState(publisher)
+		return "the holder never began stopping, though its hold is lost: " + consumerState(publisher)
 	})
 	holder.release()
 
@@ -260,8 +274,8 @@ func TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelop
 	})
 	restoreBranchCommits()
 
-	// The hold's lapse (intakeHoldTTL, 15 s), the keeper's poll (durableBindInterval, 2 s) and its
-	// take-over's delete, subscribe and create under the consumer lease.
+	lapseHoldRow(t, pool, holder.intake.holder)
+	awaitDurableTakenOver(t, holder.intake, keeper.intake, publisher, tries.clock)
 	waitFor(t, func() bool { return keeper.reads.Load() >= 1 }, func() string {
 		return fmt.Sprintf("the keeper was never handed the envelope the holder left unanswered: holder %d read(s), keeper %d; %s",
 			holder.reads.Load(), keeper.reads.Load(), consumerState(publisher))

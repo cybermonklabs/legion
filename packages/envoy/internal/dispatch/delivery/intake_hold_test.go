@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net"
 	"net/http"
 	"net/url"
@@ -82,7 +83,10 @@ func (cutOffRow) Scan(...any) error { return errCutOff }
 // partition leaves the process: its client reconnects and fails until Restore. The relay keeps its
 // port for the whole test, so the client's reconnects reach it again once restored. latency holds
 // back each read from the client by that long before the server is handed it, in order, as a slow
-// link to the server does, and SlowTo changes it while the test runs.
+// link to the server does, and SlowTo changes it while the test runs. Hold stops everything the
+// client sends at the relay, in order, until Release, as a link that carries nothing from the
+// process to the server for as long as the row needs does, while what the server sends goes on
+// reaching the client.
 type natsCut struct {
 	listener net.Listener
 	target   string
@@ -91,6 +95,9 @@ type natsCut struct {
 	mu    sync.Mutex
 	cut   bool
 	conns []net.Conn
+	// gate, while not nil, is what each read from a client waits on before the server is handed
+	// it (Hold, Release).
+	gate chan struct{}
 }
 
 // startNATSCut relays to natsURL's server, holding back what the client sends by latency, until
@@ -147,14 +154,21 @@ func (r *natsCut) serve() {
 	}
 }
 
-// toServer copies what the client sends to the server, each read held back by the latency the
-// relay holds as it is read (SlowTo), on the clock the shared waits read (testwait.Pause): the
-// latency is the stand-in's own argument, the slow link a row asks for.
+// toServer copies what the client sends to the server, each read held back by the gate while the
+// relay holds (Hold), and by the latency the relay holds as it is read (SlowTo), on the clock the
+// shared waits read (testwait.Pause): the latency is the stand-in's own argument, the slow link a
+// row asks for.
 func (r *natsCut) toServer(server, client net.Conn) {
 	buffer := make([]byte, 32*1024)
 	for {
 		n, err := client.Read(buffer)
 		if n > 0 {
+			r.mu.Lock()
+			gate := r.gate
+			r.mu.Unlock()
+			if gate != nil {
+				<-gate
+			}
 			if latency := time.Duration(r.latency.Load()); latency > 0 {
 				testwait.Pause(latency)
 			}
@@ -168,7 +182,27 @@ func (r *natsCut) toServer(server, client net.Conn) {
 	}
 }
 
-// Cut closes every connection through the relay and every new one until Restore.
+// Hold stops what every client sends at the relay until Release.
+func (r *natsCut) Hold() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.gate == nil {
+		r.gate = make(chan struct{})
+	}
+}
+
+// Release hands the server what the relay held, in order, and relays freely again.
+func (r *natsCut) Release() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.gate != nil {
+		close(r.gate)
+		r.gate = nil
+	}
+}
+
+// Cut closes every connection through the relay and every new one until Restore, and lets go what
+// Hold held, which has nowhere to go.
 func (r *natsCut) Cut() {
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -177,6 +211,10 @@ func (r *natsCut) Cut() {
 		_ = conn.Close()
 	}
 	r.conns = nil
+	if r.gate != nil {
+		close(r.gate)
+		r.gate = nil
+	}
 }
 
 // Restore relays new connections again.
@@ -356,6 +394,21 @@ func (h *holdTries) on(intake *Intake) {
 	intake.tuning.attempted.Store(&tried)
 }
 
+// firstTryEnded has the attempted hook of intake's tuning close the channel it returns once intake's
+// first try for the hold has ended (heldDurable.run), for a holder a row starts before the standby
+// whose tries it reads (holdTries). The hook is the tuning every intake of the test shares, and a
+// holder's first try that takes the durable over runs on after the server reports it bound -- its
+// token's write and the consumer lease's release -- so a standby's hook set before that try has
+// ended would count it as the standby's. A row waits for the channel before it starts the standby,
+// and from then on the holder, which delivers, tries for nothing until it loses its hold.
+func firstTryEnded(intake *Intake) <-chan struct{} {
+	ended := make(chan struct{})
+	var once sync.Once
+	tried := func() { once.Do(func() { close(ended) }) }
+	intake.tuning.attempted.Store(&tried)
+	return ended
+}
+
 // first waits for the try the intake makes as its run starts, before the row has moved its clock,
 // and reports whether that try left it delivering.
 func (h *holdTries) first(t *testing.T, what string) bool {
@@ -428,6 +481,65 @@ func moveTicks(t *testing.T, c *clocktest.Fake, every time.Duration, done func()
 		})
 		return false
 	}, failure)
+}
+
+// loseHold moves holdClock, intake's hold clock (heldDurable.holdClock), a fake only the row moves,
+// to the loss deadline of the hold intake delivers under, once the hold has armed it there, and
+// fails the test unless the hold is lost at that moment. The row has cut the lease pool the hold is
+// renewed on first (cuttableLeases), so no renewal the move brings lands and moves the deadline on
+// (duty.Hold), as for a holder the database no longer answers; the run loop's tries and checks the
+// move passes run as they do on the way to a loss. It returns the deadline.
+func loseHold(t *testing.T, holdClock *clocktest.Fake, intake *Intake) time.Time {
+	t.Helper()
+	delivering := subscribedDelivery(intake)
+	if delivering == nil || delivering.hold == nil {
+		t.Fatal("control: the holder delivers under no hold")
+	}
+	deadline := delivering.hold.Deadline()
+	holdClock.AwaitArmedAt(t, "the holder's loss deadline, armed as its hold was taken or last renewed", deadline)
+	holdClock.Set(deadline)
+	select {
+	case <-delivering.hold.Lost():
+	default:
+		t.Fatalf("control: the holder's hold was not lost with its clock at the loss deadline %s", deadline)
+	}
+	return deadline
+}
+
+// passLossMargin moves holdClock, the hold clock of intake, whose hold loseHold lost at deadline,
+// past the budget the lost hold gives the handlers still running before it gives them up
+// (heldDurable.run, stopDeliveringWithin: intakeHoldMargin on that clock), once the stop has begun
+// (keyedRunnerStopped), which comes after the budget is armed. A row whose handler holds its message
+// through the loss moves it there, so the stop gives that handler up as it does a margin past the
+// loss.
+func passLossMargin(t *testing.T, holdClock *clocktest.Fake, intake *Intake, deadline time.Time) {
+	t.Helper()
+	waitFor(t, func() bool { return keyedRunnerStopped(intake) }, func() string {
+		return "the holder never began to stop delivering at its lost hold"
+	})
+	end := deadline.Add(intakeHoldMargin)
+	holdClock.AwaitArmedAt(t, "the budget the lost hold's stop gives the handlers still running (stopDeliveringWithin)", end)
+	holdClock.Set(end)
+}
+
+// lapseHoldRow lapses the delivery durable's hold row, which names holder, on the database's clock,
+// as that clock passing intakeHoldTTL after the holder's last renewal does: the test's own statement,
+// on the test's own pool, sets the row's expiry to the database's now(), keeps its holder and token,
+// and notifies no release, so a standby's next try takes the hold (duty.TryHold) and reads the token
+// the row records (duty.HoldToken). It stands in for waiting the TTL out, which no clock of the test
+// moves (dispatch://INFRA-3149/comment/cc01d314-cbbc-4990-b232-cb40ac523f86, item 6). A row lapses
+// the row only once it has cut the holder's renewals and moved its hold clock to its loss deadline
+// (loseHold), the order the hold's margin keeps in production (intakeHoldMargin).
+func lapseHoldRow(t *testing.T, pool *store.Pool, holder uuid.UUID) {
+	t.Helper()
+	tag, err := pool.Exec(t.Context(), `update duty_holds set expires_at = now() where name = $1 and holder = $2`,
+		intakeHoldName(bus.DispatchDeliveryDurable), holder)
+	if err != nil {
+		t.Fatalf("lapse the holder's hold row on the database's clock: %v", err)
+	}
+	if tag.RowsAffected() != 1 {
+		t.Fatalf("control: the delivery durable's hold row does not name the holder %s, so the row has no hold of its to lapse", holder)
+	}
 }
 
 // publishMergedPullRequest publishes the merge of acme/widgets pull request number by a population
@@ -503,9 +615,13 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 
 	const inFlight = 100
 	const queued = 4
-	holder := startIntakeProcessWith(t, pool, natsURL, func(number int) bool { return number == inFlight },
-		func(p *intakeProcess) { p.intake.clock = fakeIntakeClock() })
+	var holderTried <-chan struct{}
+	holder := startIntakeProcessWith(t, pool, natsURL, func(number int) bool { return number == inFlight }, func(p *intakeProcess) {
+		p.intake.clock = fakeIntakeClock()
+		holderTried = firstTryEnded(p.intake)
+	})
 	awaitBoundDurable(t, publisher)
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
 	tries := newHoldTries()
 	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
 	if tries.first(t, "the standby's try for the hold as it starts") {
@@ -571,26 +687,6 @@ func TestAGracefulStopHandsTheBufferedMessagesToTheStandby(t *testing.T) {
 	}
 }
 
-// holderLinkLatency is how long the relay the stopped-holder row puts that holder's NATS
-// connection through holds back everything the connection sends to the server, its stop's
-// unsubscribe first of all (natsCut.SlowTo). It is the width of that row's window: until the
-// unsubscribe lands the server goes on delivering to the subscription the stop drains, and the
-// client ends that subscription when the flush nats.go's checkDrained opens the drain with is
-// answered, which is one crossing of the same link (and sooner than the ten seconds that flush
-// would otherwise wait). What the server sends the connection is not held back at all, so a
-// message pushed there reaches the client as soon as it is published. The relay is slowed only
-// once the holder's client is connected: the server gives a connection's handshake its
-// authorization timeout to arrive, which is far shorter than this.
-const holderLinkLatency = 8 * time.Second
-
-// stopBeforeLapse is how long before its hold's loss deadline that row stops the holder's
-// process: long enough for the stop to be under way and its drain open when the deadline
-// passes, and far enough inside holderLinkLatency that the window is still open then. The
-// holder's run loop must not reach the lost hold first, since that stops delivering under a
-// budget of intakeHoldMargin (2 s) instead, and a stop that short gives its subscription up
-// before the deadline the row is waiting for.
-const stopBeforeLapse = 2 * time.Second
-
 // withheldHandBack is the line intakeDelivery.handBack logs for a message it leaves with the
 // durable rather than handing back, because the hold no longer covers the delivery.
 const withheldHandBack = "dispatch delivery: the hold no longer covers this delivery, so the message is left with the durable for the next holder's take-over"
@@ -623,6 +719,13 @@ const withheldHandBack = "dispatch delivery: the hold no longer covers this deli
 // runs its hand-backs after the loss deadline, since the handler is given up only when the
 // stop's own budget (intakeHoldMargin) ends, a margin past that deadline.
 //
+// The holder's hold runs on a fake hold clock only the row moves (heldDurable.holdClock): with the
+// pool cut, the row moves it to the loss deadline (loseHold) and, once the stop has begun, past the
+// budget the stop gives the held handler (passLossMargin), and only then lapses the hold's row on
+// the database's clock (lapseHoldRow), as the margin orders the two in production. The standby
+// tries for the hold on a fake of its own, which the row moves to each of its tries until it takes
+// the durable over (awaitDurableTakenOver). No step waits on a time.
+//
 // What it measures is the answers published to the durable, read off the ack subject itself
 // rather than from the consumer's counts, as the head-write row does
 // (TestAHolderWhoseHoldLapsedPublishesNoHandBackAndTheKeeperIsHandedTheEnvelopeOnce): a
@@ -631,6 +734,7 @@ const withheldHandBack = "dispatch delivery: the hold no longer covers this deli
 // acknowledgements are there to be read beside them, so a recorder that saw nothing at all
 // cannot pass the row by silence.
 func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessageOnce(t *testing.T) {
+	t.Parallel()
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
@@ -647,9 +751,19 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 	// the stop giving the handler up and not a deadline of the handler's own.
 	const inFlight = 300
 	queued := tuningFor(t).maxAckPending - 1
-	holder := startIntakeProcess(t, pool, natsURL, func(number int) bool { return number == inFlight })
+	holdClock := fakeIntakeClock()
+	var holderTried <-chan struct{}
+	holder := startIntakeProcessWith(t, pool, natsURL, func(number int) bool { return number == inFlight }, func(p *intakeProcess) {
+		p.intake.holdClock = holdClock
+		holderTried = firstTryEnded(p.intake)
+	})
 	awaitBoundDurable(t, publisher)
-	standby := startIntakeProcess(t, pool, natsURL, nil)
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	tries := newHoldTries()
+	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
+	if tries.first(t, "the standby's try for the hold as it starts") {
+		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
+	}
 
 	publishMergedPullRequest(t, publisher, inFlight)
 	waitFor(t, func() bool { return holder.fetches(inFlight) == 1 }, func() string {
@@ -661,26 +775,23 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 	awaitAckPending(t, publisher, 1+queued)
 
 	// The cut takes the holder off the lease pool its hold is renewed on, as a network that took
-	// it off Postgres would, or as a freeze leaves a process that renews nothing: the hold
-	// lapses, and the holder stops delivering.
-	cut := time.Now()
+	// it off Postgres would, or as a freeze leaves a process that renews nothing: the hold is lost
+	// at its deadline, and the holder stops delivering, giving its handler the margin.
 	holder.leases.cut.Store(true)
-	waitFor(t, holder.keyedRunnerStopped, func() string {
-		return "the holder never began stopping, though its hold is no longer renewed: " + consumerState(publisher)
-	})
+	deadline := loseHold(t, holdClock, holder.intake)
+	passLossMargin(t, holdClock, holder.intake, deadline)
 	// The stop hands the messages it held back once the handler it gave up has returned, which
 	// is a margin past the loss deadline, so every one of those hand-backs is withheld.
 	waitFor(t, holder.heldListReleased, func() string {
 		return "the holder's stop never released the messages it held: " + consumerState(publisher)
 	})
 
-	// The handler given up when the stop's budget ends, the hold's lapse (intakeHoldTTL, 15 s), the
-	// standby's poll (durableBindInterval, 2 s) and its take-over.
+	lapseHoldRow(t, pool, holder.intake.holder)
+	awaitDurableTakenOver(t, holder.intake, standby.intake, publisher, tries.clock)
 	waitFor(t, func() bool { return standby.fetches(inFlight) == 1+queued }, func() string {
 		return fmt.Sprintf("the standby handled %d of the lapsed holder's %d messages: holder %d; %s",
 			standby.fetches(inFlight), 1+queued, holder.fetches(inFlight), consumerState(publisher))
 	})
-	t.Logf("the standby handled the lapsed holder's messages %s after its lease pool was cut", time.Since(cut))
 	awaitEverythingAcknowledged(t, publisher)
 
 	published := answers()
@@ -716,26 +827,29 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 // breath as it releases that held list -- the handlers' context being done is what ends its
 // drain wait (intakeDelivery.stop) -- so from that moment its client is handed nothing more.
 // Here no handler of the holder's is running, so its stop releases at once and goes on
-// draining under the process stop's budget (intakeStopBudget, 15 s), which outlasts the hold's
-// own deadline.
+// draining.
 //
-// What keeps the messages coming is the slow link (holderLinkLatency, through natsCut.SlowTo):
-// the stop drains before it does anything else, so its unsubscribe is on its way to the server
-// from the first moment, and until that lands the server goes on pushing the durable's messages
-// to that subscription, which nats.go hands to the callback while the drain runs. The client
-// side of that drain lasts as long: it ends the subscription once the flush it opens with is
-// answered (nats.go's checkDrained), and that flush crosses the same link, so both sides of
-// the window are one crossing of it wide.
+// What keeps the messages coming is the link the relay holds (natsCut.Hold): the stop drains
+// before it does anything else, so its unsubscribe is on its way to the server from the first
+// moment, and until that lands the server goes on pushing the durable's messages to that
+// subscription, which nats.go hands to the callback while the drain runs. The client side of that
+// drain lasts as long: it ends the subscription once the flush it opens with is answered (nats.go's
+// checkDrained), and that flush is held at the relay too. The hold is the link's order itself, the
+// push reaching the draining holder before its unsubscribe reaches the server, with no latency
+// standing in for it; testnats offers no hold of one direction of a link (its proxy freezes both,
+// or the server's replies alone), so the row's own relay holds it.
 //
-// The hold is what the window has to hold: the row cuts the lease pool, so no renewal of the
-// hold lands and it runs down to its loss deadline, and stops the process stopBeforeLapse
-// before that deadline, which is both late enough that the deadline falls inside the window and
-// early enough that the holder's own run loop never reaches the lost hold -- a hold lost while
-// the process still runs stops delivering under intakeHoldMargin instead, and a stop that
-// short gives its subscription up before the deadline it is waiting for. The row publishes once
-// the stop has released and the deadline has passed: giveBack hands the message back at once,
-// because the held list is released, and handBack withholds that hand-back, because the hold no
-// longer covers the delivery.
+// The hold's loss deadline is on a fake the row moves (heldDurable.holdClock), and the stop's
+// budget and drain wait on one the row never moves (heldDurable.clock), so no real time decides
+// the order: the row cuts the holder's lease pool, so no renewal of its hold lands, stops the
+// process while the deadline is still ahead on its clock -- so its run loop never reaches the
+// lost hold, which would stop delivering under intakeHoldMargin instead -- and moves that clock to
+// the deadline once the stop has released its held list (loseHold). It publishes then: giveBack
+// hands the message back at once, because the held list is released, and handBack withholds that
+// hand-back, because the hold no longer covers the delivery. Only once the holder's callback has
+// answered the message does the row let the link move and lapse the hold's row on the database's
+// clock (lapseHoldRow), and the standby, which tries for the hold only where the row moves its own
+// fake (holdTries), takes the durable over.
 //
 // A hand-back published instead would land on the durable the standby's take-over recreates
 // under the same name (heldDurable.takeOver), move that message's pending entry and have the
@@ -744,6 +858,7 @@ func TestAStopPastTheHoldsLapsePublishesNoHandBackAndTheStandbyHandlesEachMessag
 // handBack logs for a message it withholds, so a run whose message never reached that callback
 // fails rather than passing on a branch it never ran.
 func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *testing.T) {
+	t.Parallel()
 	records := captureIntakeLogs(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
@@ -759,47 +874,81 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 	// hold's loss deadline has passed.
 	const lateNumber = 310
 	relay, holderURL := startNATSCut(t, natsURL, 0)
-	holder := startIntakeProcess(t, pool, holderURL, nil)
+	holdClock := fakeIntakeClock()
+	var holderTried <-chan struct{}
+	holder := startIntakeProcessWith(t, pool, holderURL, nil, func(p *intakeProcess) {
+		p.intake.clock, p.intake.holdClock = fakeIntakeClock(), holdClock
+		holderTried = firstTryEnded(p.intake)
+	})
 	awaitBoundDurable(t, publisher)
-	standby := startIntakeProcess(t, pool, natsURL, nil)
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	tries := newHoldTries()
+	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
+	if tries.first(t, "the standby's try for the hold as it starts") {
+		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
+	}
 
-	// The lease pool is cut, so no renewal of the holder's hold lands and it runs down to its
-	// loss deadline.
-	cut := time.Now()
+	// The lease pool is cut, so no renewal of the holder's hold lands, and what its client sends
+	// the server is held at the relay, so its stop drains for as long as the row holds the link. The
+	// stop's drain is a call to NATS it waits for at most the intakes' callWait, and one it went on
+	// without would end its drain at once and release the hold: the stop's calls wait for NATS with
+	// no bound of the row's.
 	holder.leases.cut.Store(true)
-
-	// The link goes slow and the process stops a little before that deadline, as a network that
-	// cut the holder off from Postgres and left its packets to the server crawling does: its
-	// stop drains, and the deadline passes while that drain still has the server delivering to
-	// it.
-	waitFor(t, func() bool {
-		deadline := holder.holdDeadline()
-		return !deadline.IsZero() && time.Until(deadline) <= stopBeforeLapse
-	}, func() string {
-		return "the holder's hold never came within reach of its loss deadline: " + consumerState(publisher)
+	tuningFor(t).callWait.Store(math.MaxInt64)
+	relay.Hold()
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		holder.stop()
+	}()
+	waitFor(t, holder.heldListReleased, func() string {
+		return "the holder's stop never released its held list: " + consumerState(publisher)
 	})
-	relay.SlowTo(holderLinkLatency)
-	go holder.stop()
-
-	waitFor(t, func() bool { return holder.heldListReleased() && holder.holdLapsed() }, func() string {
-		return "the holder's stop never released its held list with the hold's deadline behind it: " + consumerState(publisher)
-	})
+	loseHold(t, holdClock, holder.intake)
+	if !holder.holdLapsed() {
+		t.Fatalf("control: the holder's hold still covers its delivery with its clock at the loss deadline %s", holder.holdDeadline())
+	}
 	publishMergedPullRequest(t, publisher, lateNumber)
 
-	// The hold's lapse on the database's clock (intakeHoldTTL, 15 s), the standby's poll
-	// (durableBindInterval, 2 s) and its take-over.
+	// The message reaches the callback of the subscription the stop is draining, which answers it
+	// with one line naming its subject (handBack) or with a hand-back it publishes (handedBack).
+	lateSubject := contracts.GithubResourceSubject("acme", "widgets", "pr", strconv.Itoa(lateNumber))
+	withheldFor := func() int {
+		withheld := 0
+		for _, record := range records() {
+			if record["msg"] == withheldHandBack && record["subject"] == lateSubject {
+				withheld++
+			}
+		}
+		return withheld
+	}
+	waitFor(t, func() bool {
+		if subscribedDelivery(holder.intake).handedBack() {
+			return true
+		}
+		for _, record := range records() {
+			if record["subject"] == lateSubject {
+				return true
+			}
+		}
+		return false
+	}, func() string {
+		return fmt.Sprintf("the lapsed holder's draining subscription has not answered pull request %d: %s", lateNumber, consumerState(publisher))
+	})
+	relay.Release()
+	testwait.Receive(t, "the holder's stop to return once its link moved", stopped)
+	lapseHoldRow(t, pool, holder.intake.holder)
+	tries.untilDelivering(t, "the standby to take the durable over once the stopped holder's hold row lapsed")
 	waitFor(t, func() bool { return standby.fetches(lateNumber) == 1 }, func() string {
 		return fmt.Sprintf("the standby handled the message published to the stopped holder %d times, want it once: holder %d; %s",
 			standby.fetches(lateNumber), holder.fetches(lateNumber), consumerState(publisher))
 	})
-	t.Logf("the standby handled the message published to the stopped holder %s after its lease pool was cut", time.Since(cut))
 
 	// Everything the holder's client wrote is with the server once a flush of its own is
 	// answered: nats.go writes one connection's publishes in the order they were made and the
 	// relay hands on what it reads in that same order, so a hand-back published for that
-	// message is there to be read below rather than still crossing the link. The flush crosses
-	// it too, which is what it costs.
-	if err := holder.client.Conn.FlushTimeout(4 * holderLinkLatency); err != nil {
+	// message is there to be read below rather than still crossing the link.
+	if err := holder.client.Conn.FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("wait for what the stopped holder's client sent to reach the server: %v", err)
 	}
 	awaitEverythingAcknowledged(t, publisher)
@@ -807,13 +956,7 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 	// The message reached the callback of the subscription the stop was draining: the holder
 	// logged the hand-back it withheld for it. Without that line the row says nothing about the
 	// branch it is here for, whatever the counts below read.
-	lateSubject := contracts.GithubResourceSubject("acme", "widgets", "pr", strconv.Itoa(lateNumber))
-	withheld := 0
-	for _, record := range records() {
-		if record["msg"] == withheldHandBack && record["subject"] == lateSubject {
-			withheld++
-		}
-	}
+	withheld := withheldFor()
 	if withheld == 0 {
 		t.Errorf("the lapsed holder withheld no hand-back for pull request %d, so that message never reached the callback of the subscription its stop was draining and the row measured nothing of that branch: %s",
 			lateNumber, consumerState(publisher))
@@ -846,18 +989,64 @@ func TestAMessagePushedToADrainingHolderPastItsHoldsLapseIsLeftToTheStandby(t *t
 
 // A holder abandoned without a stop, as a SIGKILL leaves it -- its NATS connection gone and its hold
 // no longer renewed -- strands the messages it had been delivered. The standby takes the durable
-// over once the hold lapses and is redelivered every one of them at once: within the hold's 15 s
-// TTL, a 2 s bind interval and a margin, not after the 85 s ack wait.
+// over once the hold lapses and is redelivered every one of them at once: within the hold's TTL
+// and one bind interval, not after the ack wait.
+//
+// No real time decides it. The hold's liveness is its row on the database's clock (duty.Hold),
+// which no clock of the test reaches. The row reads that the take stored a lapse no more than
+// intakeHoldTTL past the database's now(), and a loss deadline intakeHoldTTL less intakeHoldMargin
+// past the take on the holder's hold clock (heldDurable.holdClock), a fake only the row moves. Once
+// the holder is abandoned it moves that clock to the loss deadline (loseHold), and then lapses the
+// row as the database's clock passing the TTL does (lapseHoldRow). The standby tries for the hold
+// on a fake of its own, one durableBindInterval at a time where the row moves it (holdTries): its
+// try while the abandoned hold's row is live stands by, and its first try after the row lapses
+// takes the durable over, which is the bound the row holds -- the TTL from the last renewal, then
+// one try. Both intakes' ack wait is past the run (ackWaitPastTheRun), so the server's own
+// redelivery never brings the stranded messages: only the take-over's recreate at the ack floor
+// does.
 func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing.T) {
-	shrinkIntakeFlowControl(t)
+	t.Parallel()
+	ackWaitPastTheRun(t)
 	pool, ctx := deliveryTestPool(t)
 	seedDeliverySettings(t, ctx, pool)
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t)
 
-	holder := startIntakeProcess(t, pool, natsURL, func(int) bool { return true })
+	holdClock := fakeIntakeClock()
+	take := holdClock.Now()
+	var holderTried <-chan struct{}
+	holder := startIntakeProcessWith(t, pool, natsURL, func(int) bool { return true }, func(p *intakeProcess) {
+		p.intake.holdClock = holdClock
+		holderTried = firstTryEnded(p.intake)
+	})
+	// The holder's fetches hold its handlers until the test lets them go, which it does as it ends,
+	// before the holder's stop (registered after it, so run first): the stop of its lost hold waits
+	// for them, under a budget on the hold clock the row does not move past.
+	t.Cleanup(holder.release)
 	awaitBoundDurable(t, publisher)
-	standby := startIntakeProcess(t, pool, natsURL, nil)
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	// The lapse the row brings about below is the one the take stored: on the holder's fake, which
+	// has not moved, the hold's loss deadline is the take's moment plus intakeHoldTTL less
+	// intakeHoldMargin, and the row the take wrote lapses no later than intakeHoldTTL past the
+	// database's now().
+	if got, want := holder.holdDeadline(), take.Add(intakeHoldTTL-intakeHoldMargin); !got.Equal(want) {
+		t.Fatalf("the holder's hold has its loss deadline at %s, want %s: the take's moment plus intakeHoldTTL (%s) less intakeHoldMargin (%s)",
+			got, want, intakeHoldTTL, intakeHoldMargin)
+	}
+	holdName := intakeHoldName(bus.DispatchDeliveryDurable)
+	var withinTTL bool
+	if err := pool.QueryRow(ctx, `select expires_at <= now() + make_interval(secs => $2) from duty_holds where name = $1 and holder = $3`,
+		holdName, intakeHoldTTL.Seconds(), holder.intake.holder).Scan(&withinTTL); err != nil {
+		t.Fatalf("read the lapse the holder's take stored: %v", err)
+	}
+	if !withinTTL {
+		t.Fatalf("the holder's take stored a lapse more than intakeHoldTTL (%s) past the database's now()", intakeHoldTTL)
+	}
+	tries := newHoldTries()
+	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
+	if tries.first(t, "the standby's try for the hold as it starts") {
+		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
+	}
 
 	stranded := []int{1, 2, 3, 4}
 	for _, number := range stranded {
@@ -865,12 +1054,37 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 	}
 	awaitAckPending(t, publisher, len(stranded))
 
-	abandoned := time.Now()
 	holder.leases.cut.Store(true)
 	holder.client.Close()
+	loseHold(t, holdClock, holder.intake)
 
-	// The bound is the row's subject (within the hold's lapse, not after the ack wait), so the wait
-	// for the standby's handling is the shared one and the bound is read after it.
+	// A try while the abandoned hold's row is still live stands by: the hold still names the holder
+	// and the standby has handled nothing.
+	if tries.next(t, "the standby's try while the abandoned hold's row is live") {
+		t.Fatalf("the standby took the durable over while the abandoned hold's row was still live: %s", consumerState(publisher))
+	}
+	var named string
+	var live bool
+	if err := pool.QueryRow(ctx, "select holder::text, expires_at > now() from duty_holds where name = $1", holdName).Scan(&named, &live); err != nil {
+		t.Fatalf("read the durable's hold: %v", err)
+	}
+	if named != holder.intake.holder.String() || !live {
+		t.Fatalf("after the standby's try while the abandoned hold was live, the hold names %s, live = %t; want the holder's %s, live",
+			named, live, holder.intake.holder)
+	}
+	for _, number := range stranded {
+		if got := standby.fetches(number); got != 0 {
+			t.Fatalf("the standby handled pull request %d %d times while the abandoned hold was still live, want none: %s",
+				number, got, consumerState(publisher))
+		}
+	}
+
+	// The hold's row lapses, and the standby's next try takes the durable over.
+	lapseHoldRow(t, pool, holder.intake.holder)
+	if !tries.next(t, "the standby's first try after the abandoned hold's row lapsed") {
+		t.Fatalf("the standby's first try after the abandoned hold's row lapsed, one durableBindInterval (%s) on its clock, did not take the durable over: %s",
+			durableBindInterval, consumerState(publisher))
+	}
 	waitFor(t, func() bool {
 		for _, number := range stranded {
 			if standby.fetches(number) == 0 {
@@ -879,14 +1093,9 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 		}
 		return true
 	}, func() string {
-		return fmt.Sprintf("the standby has not handled the abandoned holder's messages %v: standby %v; %s",
+		return fmt.Sprintf("the standby took the durable over and has not handled the abandoned holder's messages %v: standby %v; %s",
 			stranded, fetchesOf(standby, stranded), consumerState(publisher))
 	})
-	if handled := time.Since(abandoned); handled > 25*time.Second {
-		t.Errorf("the standby handled the abandoned holder's messages %v %s after the holder was abandoned, past the 25s bound: %s",
-			stranded, handled, consumerState(publisher))
-	}
-	t.Logf("the standby handled the stranded messages %s after the holder was abandoned", time.Since(abandoned))
 }
 
 // A holder cut off from NATS and Postgres loses its hold, and the standby takes the durable over.
@@ -894,6 +1103,14 @@ func TestAnAbandonedHoldersMessagesReachTheStandbyWithinTheHoldsLapse(t *testing
 // the lost hold stopped its delivery, which unsubscribes a subscription whose link is down, and the
 // standby's take-over deleted the durable and created it again on another deliver subject. So the
 // holder is handed nothing, and each later message is handled by the standby alone, exactly once.
+//
+// The holder's hold runs on a fake hold clock only the row moves (heldDurable.holdClock): with its
+// link and its lease pool cut, the row moves it to the loss deadline (loseHold) and lapses the
+// hold's row on the database's clock (lapseHoldRow); the standby, on a fake of its own, takes the
+// durable over at the try the row moves it to (awaitDurableTakenOver). Once the holder is back, the
+// row moves its clock to its next try for the hold, which finds the standby's hold live and stands
+// by, before it reads the holder's fence. The holder's client redials at once after the cut
+// (bus.WithPromptReconnect), rather than a ReconnectWait later.
 func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) {
 	t.Parallel()
 	shrinkIntakeFlowControl(t)
@@ -903,25 +1120,40 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	publisher := intakeTestClient(t)
 
 	relay, relayedURL := startNATSCut(t, natsURL, 0)
-	holder := startIntakeProcess(t, pool, relayedURL, nil)
+	holdClock := fakeIntakeClock()
+	start := holdClock.Now()
+	var holderTried <-chan struct{}
+	holder := startIntakeProcessWith(t, pool, relayedURL, nil, func(p *intakeProcess) {
+		p.intake.holdClock = holdClock
+		holderTried = firstTryEnded(p.intake)
+	}, bus.WithPromptReconnect())
 	awaitBoundDurable(t, publisher)
-	standby := startIntakeProcess(t, pool, natsURL, nil)
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
+	tries := newHoldTries()
+	standby := startIntakeProcessWith(t, pool, natsURL, nil, tries.before)
+	if tries.first(t, "the standby's try for the hold as it starts") {
+		t.Fatal("control: the standby took the durable over at its start, while the holder held it")
+	}
 
 	// Each wait below reads what only the cut can bring about. The cut closes both of the relay's
 	// sockets at once, but each end acts on that only once its own read loop runs: until the
 	// server's has, the durable still reads push-bound to the holder's subscription, and until the
 	// holder client's has, the client still reads connected. Under load both took milliseconds, and
 	// waits on those two states passed before either end had seen the cut, so the row flushed a
-	// connection nats.go then dropped (INFRA-3904).
+	// connection nats.go then dropped (INFRA-3904). The holder's client reads disconnected before its
+	// hold is lost, so the checks of the durable its clock's move brings fail at once.
 	holderConn := holder.client.Connection()
 	reconnectsBeforeCut := holderConn.Stats().Reconnects
 	relay.Cut()
 	holder.leases.cut.Store(true)
-	cut := time.Now()
+	waitFor(t, func() bool { return !holder.client.Connected() }, func() string {
+		return "the holder's client still reads connected after its link was cut"
+	})
+	deadline := loseHold(t, holdClock, holder.intake)
+	lapseHoldRow(t, pool, holder.intake.holder)
 	// The standby's take-over under way: it has deleted the durable the holder was bound to and
 	// subscribed to a fresh deliver subject, which it can do only once the holder's hold has lapsed.
-	awaitDurableTakenOver(t, holder.intake, standby.intake, publisher)
-	t.Logf("the standby took the durable over %s after the holder was cut off", time.Since(cut))
+	awaitDurableTakenOver(t, holder.intake, standby.intake, publisher, tries.clock)
 
 	relay.Restore()
 	holder.leases.cut.Store(false)
@@ -942,8 +1174,18 @@ func TestAHolderCutOffAndRestoredHandlesNothingTheStandbyTookOver(t *testing.T) 
 	// anything else it writes; a round trip on that connection (a flush) returns only once the
 	// server has read them, so whatever the holder could still be handed is in place before the
 	// later messages are published.
-	if err := holder.client.Connection().FlushTimeout(untilTheBinaryDeadline(t)); err != nil {
+	if err := holder.client.Connection().FlushWithContext(testnats.Context(t)); err != nil {
 		t.Fatalf("flush the holder's restored connection: %v", err)
+	}
+	// The holder, back, tries for the hold at its next tick, one durableBindInterval on the grid its
+	// run began, and that try finds the standby's hold live and stands by: once the tick after it is
+	// armed (heldDurable.run), the try has ended, and the holder delivers nothing.
+	nextTry := start.Add((deadline.Sub(start)/durableBindInterval + 1) * durableBindInterval)
+	holdClock.AwaitArmedAt(t, "the holder's next try for the hold, past its lost hold", nextTry)
+	holdClock.Set(nextTry)
+	holdClock.AwaitArmedAt(t, "the holder's try after that one, armed once the try the move brought has ended", nextTry.Add(durableBindInterval))
+	if intakeDelivers(holder.intake) {
+		t.Fatalf("the holder, back, took the durable over at its try while the standby held it: %s", consumerState(publisher))
 	}
 	// The holder's fence, before anything is published for it to be handed: its delivery
 	// subscription closed. Its lost hold stopped its delivery, which unsubscribes a subscription

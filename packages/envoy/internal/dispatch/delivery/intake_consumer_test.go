@@ -592,8 +592,10 @@ func TestASecondProcessStandsByForADurableAnotherHolds(t *testing.T) {
 	natsURL := testnats.URL(t)
 	publisher := intakeTestClient(t, bus.WithLogger(logger))
 
-	holder := startIntakeProcess(t, pool, natsURL, nil, bus.WithLogger(logger))
+	var holderTried <-chan struct{}
+	holder := startIntakeProcessWith(t, pool, natsURL, nil, func(p *intakeProcess) { holderTried = firstTryEnded(p.intake) }, bus.WithLogger(logger))
 	held := awaitPushBound(t, publisher, "", "the first process did not bind the durable")
+	testwait.Receive(t, "the holder's first try for the hold to end", holderTried)
 	tries := newHoldTries()
 	startIntakeProcessWith(t, pool, natsURL, nil, tries.before, bus.WithLogger(logger))
 	if tries.first(t, "the standby's try for the hold as it starts") {
