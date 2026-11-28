@@ -37,8 +37,14 @@ var RereadBudget = ratelimit.Limit{Every: time.Second, Burst: 10}
 // Backend is the GCP store's registry entry.
 type Backend struct{}
 
-func (Backend) Name() string                  { return Name }
-func (Backend) ID() string                    { return "gcp" }
+func (Backend) Name() string { return Name }
+func (Backend) ID() string   { return "gcp" }
+
+// ServiceSDKs is Secret Manager's client, which this store alone imports.
+func (Backend) ServiceSDKs() []string {
+	return []string{"cloud.google.com/go/secretmanager"}
+}
+
 func (Backend) Development() bool             { return false }
 func (Backend) RereadBudget() ratelimit.Limit { return RereadBudget }
 func (Backend) Variables() []string           { return []string{keyVariable} }

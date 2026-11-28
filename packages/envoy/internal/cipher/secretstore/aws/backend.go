@@ -18,8 +18,21 @@ import (
 // Backend is the AWS store's registry entry.
 type Backend struct{}
 
-func (Backend) Name() string                  { return Name }
-func (Backend) ID() string                    { return "aws" }
+func (Backend) Name() string { return Name }
+func (Backend) ID() string   { return "aws" }
+
+// ServiceSDKs are the AWS SDK's service packages this store alone imports: Secrets Manager and
+// KMS, which hold and encrypt the secrets, and STS, SSO and SSO OIDC, the writer's sign-in.
+func (Backend) ServiceSDKs() []string {
+	return []string{
+		"github.com/aws/aws-sdk-go-v2/service/secretsmanager",
+		"github.com/aws/aws-sdk-go-v2/service/kms",
+		"github.com/aws/aws-sdk-go-v2/service/sts",
+		"github.com/aws/aws-sdk-go-v2/service/sso",
+		"github.com/aws/aws-sdk-go-v2/service/ssooidc",
+	}
+}
+
 func (Backend) Development() bool             { return false }
 func (Backend) RereadBudget() ratelimit.Limit { return secretstore.DefaultRereadBudget }
 func (Backend) Variables() []string           { return []string{keyVariable} }

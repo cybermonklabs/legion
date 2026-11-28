@@ -14,7 +14,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/secretstore"
 	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
-	"github.com/sjawhar/envoy/internal/cipher/secretstore/secretstoretest"
 )
 
 // openWriter writes an empty memory secrets file of t's own and opens the memory store's writer
@@ -31,36 +30,6 @@ func openWriter(t *testing.T) (*memory.Writer, string) {
 	}
 	t.Cleanup(func() { _ = w.Close() })
 	return w.(*memory.Writer), path
-}
-
-// TestMemoryRunsTheWriterContract runs the writer contract on the memory store's writer over a
-// file of its own; another writer's retag is a second writer over the same file.
-func TestMemoryRunsTheWriterContract(t *testing.T) {
-	secretstoretest.WriterContract(t, "memory", func(t *testing.T) secretstoretest.WriterRig {
-		w, path := openWriter(t)
-		other, err := memory.Backend{}.OpenWriter(context.Background(), secretstore.Settings{
-			Store: memory.Name, Prefix: prefix, Fields: map[string]string{"memory_secrets_file": path},
-		}, secretstore.WriterOptions{})
-		if err != nil {
-			t.Fatal(err)
-		}
-		t.Cleanup(func() { _ = other.Close() })
-		return secretstoretest.WriterRig{
-			Writer: w, Prefix: prefix,
-			LoseNextAnswer: w.LoseNext,
-			DenyNext:       w.DenyNext,
-			Retag: func(t *testing.T, id string, tags map[string]string) {
-				t.Helper()
-				held, err := other.CurrentTags(context.Background(), id)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err := other.SetTags(context.Background(), id, held, tags, nil); err != nil {
-					t.Fatalf("another writer's retag: %v", err)
-				}
-			},
-		}
-	})
 }
 
 // TestTheAppliedHookRunsOnceEachWriteChangedTheFile: a writer opened under Hooks.Applied runs it

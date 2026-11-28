@@ -1,5 +1,5 @@
-// Package backends is the registry of secret stores: the one map cipherd chooses a store from, by
-// the name BROKER_SECRETS_STORE and GET /v1/settings carry. Each store is one
+// Package backends is the registry of secret stores: the one map cipherd and agent-secrets choose
+// a store from, by the name BROKER_SECRETS_STORE and GET /v1/settings carry. Each store is one
 // file here, <id>.go, which starts //go:build !cipher_no_<id> and registers the store's Backend,
 // so this directory lists the stores of a build and a build tag leaves one out with its SDK. No
 // store registers itself from an init function.

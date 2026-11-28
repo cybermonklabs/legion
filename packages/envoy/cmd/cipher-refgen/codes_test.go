@@ -53,3 +53,39 @@ func dispatch() int {
 		})
 	}
 }
+
+// TestAStorePackageCallsNoExit: checkExitCodes parses every non-test package under
+// internal/cipher/secretstore and refuses an os.Exit there, naming its file, since a store's code
+// runs inside agent-secrets and cipherd alike and an exit code from it is none the error page
+// lists. A store package that calls none passes (the control).
+func TestAStorePackageCallsNoExit(t *testing.T) {
+	const cli = "package main\nfunc run() int { return 0 }\n"
+	for _, tc := range []struct{ name, store, want string }{
+		{"store exit", "package fixture\nimport \"os\"\nfunc Quit() { os.Exit(3) }\n", "internal/cipher/secretstore/fixture/store.go"},
+		{"store without exit", "package fixture\nfunc Quit() {}\n", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			for dir, text := range map[string]string{cliDir: cli, storesDir + "/fixture": tc.store} {
+				if err := os.MkdirAll(filepath.Join(root, dir), 0755); err != nil {
+					t.Fatal(err)
+				}
+				name := "main.go"
+				if dir != cliDir {
+					name = "store.go"
+				}
+				if err := os.WriteFile(filepath.Join(root, dir, name), []byte(text), 0600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := checkExitCodes(root, nil)
+			if tc.want == "" {
+				if err != nil {
+					t.Fatal(err)
+				}
+			} else if err == nil || !strings.Contains(err.Error(), tc.want) || !strings.Contains(err.Error(), "os.Exit") {
+				t.Fatalf("got %v, want the os.Exit in %s refused", err, tc.want)
+			}
+		})
+	}
+}

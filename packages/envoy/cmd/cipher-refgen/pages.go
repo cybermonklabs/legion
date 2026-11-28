@@ -15,6 +15,8 @@ import (
 const (
 	helperDir = envoyDir + "/internal/cipher/helper"
 	cliDir    = envoyDir + "/cmd/cipher"
+	// storesDir holds the secret stores' packages, each of which checkExitCodes holds to no os.Exit.
+	storesDir = envoyDir + "/internal/cipher/secretstore"
 )
 
 func frontMatter(title, description, from string) string {

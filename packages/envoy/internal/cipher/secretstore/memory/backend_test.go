@@ -25,8 +25,8 @@ func TestTheBackendOpensItsFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "memory-secrets.json")
 	writeFile(t, path, `{"secrets": [{"name": "example/agent-secrets/deel-api-key", "tags": {"owner": "shared", "tier": "agent"}, "value": "v"}]}`)
 	b := memory.Backend{}
-	if b.Name() != memory.Name || b.ID() != "memory" || !b.Development() {
-		t.Fatalf("memory.Backend = %s/%s development %t; want memory/memory, the development store", b.Name(), b.ID(), b.Development())
+	if b.Name() != memory.Name || b.ID() != "memory" || !b.Development() || len(b.ServiceSDKs()) != 0 {
+		t.Fatalf("memory.Backend = %s/%s development %t SDKs %v; want memory/memory, the development store, no SDK", b.Name(), b.ID(), b.Development(), b.ServiceSDKs())
 	}
 	if b.RereadBudget() != secretstore.DefaultRereadBudget {
 		t.Fatalf("RereadBudget = %+v, want the default", b.RereadBudget())
