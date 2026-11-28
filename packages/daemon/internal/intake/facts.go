@@ -2497,10 +2497,19 @@ func LookIDLine(id string) string {
 // Dispatch, Envoy, the API and supervision passes here, so the rule is given to facts here once;
 // the boot's Dispatch listing, which admission applies outside ApplyFact, takes it in admission's
 // Reconcile.
+//
+// The handlers that read before the fact's transaction (Reader) read next, on the fact as the store
+// keeps it. They read before the fact takes its pool's turn, so a read that waits holds no turn,
+// no connection and no fact lock. The context they answer carries what they read into the turn
+// and the transaction. A fact that joins a transaction already open on ctx is read by none.
 func ApplyFact(ctx context.Context, pool store.TxPool, source, eventID string, fact Fact, handlers ...Handler) (Result, error) {
 	source, eventID, fact = storetext.Text(source), storetext.Text(eventID), storetext.Strings(fact)
+	joins := store.CommitScoped(ctx)
+	if !joins {
+		ctx = readFact(ctx, pool, fact, handlers)
+	}
 	turn := func() {}
-	if turns, ok := pool.(factTurns); ok && !store.CommitScoped(ctx) {
+	if turns, ok := pool.(factTurns); ok && !joins {
 		release, err := turns.FactTurn(ctx)
 		if err != nil {
 			return Result{}, fmt.Errorf("wait for the pool's turn to apply fact %s/%s: %w", source, eventID, err)

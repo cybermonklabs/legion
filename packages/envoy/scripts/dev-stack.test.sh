@@ -81,15 +81,27 @@
 # readiness bound that is no whole number of seconds from 1 to 9999 (t2), naming the variable; (u)
 # every broker a run starts, the --callout run's second among them, lists the run's registrar as
 # the registrar of the pod's account and of nothing else (BROKER_POD_REGISTRARS), without which the
-# one registration the run makes is refused; and (v) a run on a PATH that holds a version manager's
+# one registration the run makes is refused; (v) a run on a PATH that holds a version manager's
 # python3 shim after the fakes, as a developer's box does (mise's), reaches ready and stops: the
 # fake python3 runs the real interpreter by the path that interpreter names for itself, never
-# through the shim, which would hand the call back to the fake. (q) and (r) run after (h), and (s)
-# and (t) after (i).
+# through the shim, which would hand the call back to the fake; and (w) await, which every start
+# waits on, reads again after 0.05, 0.1 and 0.2 s and then every 0.25 s, returns at the first read
+# that finds its value, fails at once when its process is gone, and gives up 60 s after it began,
+# held by the driver's own await under a clock of its own shell, as the stop's grace is. (q) and
+# (r) run after (h), and (s) and (t) after (i).
 #
 # The fake docker is scripts/lib/dev-stack-test-docker.sh's, and assert_project_access and the
 # --project-access cases are scripts/lib/dev-stack-test-project-access.sh's; this file sources
 # both, and is the one entry point that runs every case.
+#
+# The cases run in two parts, each after the setup above the first case and each starting every
+# stack it reads, so neither reads anything the other made: `stops`, the cases from (a) to (v) in
+# this file's order, and `options`, those from (h) to (p). `dev-stack.test.sh <part>` runs one
+# part, `dev-stack.test.sh` with no argument runs both, stops first, and `dev-stack.test.sh
+# --parts` prints the two names, one a line. CI runs each part as a pool entry of its own, named
+# `scripts/dev-stack.test.sh <part>` (.github/workflows/ci-job-envoy-go-checks.yaml). Some
+# controls of the part options stand in stops: instance 1, run without --binaries, --callout or
+# --project-access, and the rows (e3), (e7) and (e9a), which run with bounds the driver takes.
 set -euo pipefail
 # Monitor mode, for the two cases that signal an instance: a background command of a shell
 # without job control inherits SIGINT ignored, and a shell cannot trap a signal that was ignored
@@ -103,6 +115,36 @@ set -euo pipefail
 # reads the instance's own report that it was not started with SIGINT ignored, so the INT reaches
 # dev-stack.sh's trap exactly as a terminal's Ctrl-C does whatever started this test.
 set -m
+
+# The parts, in the order a run with no argument runs them. An argument that names no part, or
+# more than one argument, is refused with exit 2 before anything is created.
+part_names=(stops options)
+if (($# == 1)) && [[ "$1" == --parts ]]; then
+  printf '%s\n' "${part_names[@]}"
+  exit 0
+fi
+part=all
+if (($# > 0)); then
+  part=
+  if (($# == 1)); then
+    for listed in "${part_names[@]}"; do
+      [[ "$1" != "$listed" ]] || part=$1
+    done
+  fi
+fi
+if [[ -z "$part" ]]; then
+  {
+    if (($# == 1)); then
+      printf 'dev-stack.test.sh: %s is no part of this test\n' "$1"
+    else
+      printf 'dev-stack.test.sh: given %s arguments, where it takes one part or none\n' "$#"
+    fi
+    printf 'Run one part as dev-stack.test.sh <part>, <part> one of these (--parts prints them):\n'
+    printf '  %s\n' "${part_names[@]}"
+    printf 'and every part, in that order, as dev-stack.test.sh with no argument.\n'
+  } >&2
+  exit 2
+fi
 
 project_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)"
 readonly project_root
@@ -1065,7 +1107,12 @@ curl_calls1="${temporary_dir}/curl-calls-1"
 curl_calls2="${temporary_dir}/curl-calls-2"
 go_calls1="${temporary_dir}/go-calls-1"
 argv1="${temporary_dir}/argv-1"
+# The file a refused run's output goes to: (f)'s run in the part stops, and refuse_run's in the
+# part options, which runs no (f) of its own.
+refusal="${temporary_dir}/refusal.log"
 
+# The part stops: the cases from (a) to (v).
+if [[ "$part" == all || "$part" == stops ]]; then
 # Both instances start before either is waited on: this is the scenario a port and a database of
 # each run's own exist to make safe, not two sequential runs that never contend for anything.
 # Instance 1 records its go calls, the control for (h): a run that builds is seen to call go; and
@@ -1106,7 +1153,7 @@ printf 'PASS: a run without --callout runs no auth service, no second broker and
 # the run started along the way (the fakes of both record theirs), where env -i put every
 # setting.
 declare -A want_environ=(
-  [broker]="BROKER_ACCESS_TOKEN_SECONDS BROKER_API_ACCOUNTS BROKER_DATABASE_URL BROKER_DISPATCH_SIGNIN BROKER_DRAIN_SECONDS BROKER_EXCHANGE_ACCOUNTS BROKER_EXCHANGE_K8S_AUDIENCE BROKER_FAKE_SECRETS_FILE BROKER_GOOGLE_OIDC_AUDIENCE BROKER_GOOGLE_OIDC_ISSUER BROKER_K8S_OIDC_AUDIENCE BROKER_K8S_OIDC_ISSUER BROKER_LISTEN_ADDR BROKER_MACHINE_LOGIN_URL BROKER_METRICS_LISTEN_ADDR BROKER_POD_REGISTRARS BROKER_PUBLIC_URL BROKER_SECRETS_KMS_KEY_ARN BROKER_SECRETS_PREFIX BROKER_SERVICE_LOGINS BROKER_SIGNIN_CLIENT_ID BROKER_SIGNIN_CLIENT_SECRET_FILE BROKER_SIGNIN_DEVICE_AUDIENCE BROKER_SIGNIN_DOMAIN BROKER_SIGNIN_ISSUER BROKER_VM_EXCHANGE_ACCOUNTS BROKER_VM_SERVICES PATH "
+  [broker]="BROKER_ACCESS_TOKEN_SECONDS BROKER_API_ACCOUNTS BROKER_DATABASE_URL BROKER_DISPATCH_SIGNIN BROKER_DRAIN_SECONDS BROKER_EXCHANGE_ACCOUNTS BROKER_EXCHANGE_K8S_AUDIENCE BROKER_GOOGLE_OIDC_AUDIENCE BROKER_GOOGLE_OIDC_ISSUER BROKER_K8S_OIDC_AUDIENCE BROKER_K8S_OIDC_ISSUER BROKER_LISTEN_ADDR BROKER_MACHINE_LOGIN_URL BROKER_MEMORY_SECRETS_FILE BROKER_METRICS_LISTEN_ADDR BROKER_POD_REGISTRARS BROKER_PUBLIC_URL BROKER_SECRETS_PREFIX BROKER_SECRETS_STORE BROKER_SERVICE_LOGINS BROKER_SIGNIN_CLIENT_ID BROKER_SIGNIN_CLIENT_SECRET_FILE BROKER_SIGNIN_DEVICE_AUDIENCE BROKER_SIGNIN_DOMAIN BROKER_SIGNIN_ISSUER BROKER_VM_EXCHANGE_ACCOUNTS BROKER_VM_SERVICES PATH "
   [listener]="ENVOY_AGENT_SECRETS_ACCOUNT_TOKEN_FILE ENVOY_AGENT_SECRETS_URL ENVOY_API_TOKEN ENVOY_DISPATCH_PRINCIPAL ENVOY_HOST_BRIDGE ENVOY_LISTEN_FD ENVOY_LISTEN_HOST ENVOY_MACHINE_ID ENVOY_OIDC_AUDIENCE ENVOY_OIDC_ISSUER ENVOY_PUBLIC_URL NATS_URLS PATH "
   [dispatch]="DATABASE_URL DISPATCH_AGENT_SECRETS_ACCOUNT_TOKEN_FILE DISPATCH_AGENT_SECRETS_URL DISPATCH_AGENT_TOKEN DISPATCH_DEV_SIGNIN DISPATCH_IDENTITY DISPATCH_INSECURE_COOKIE DISPATCH_LISTEN_FD DISPATCH_LISTEN_HOST DISPATCH_SERVER_URL DISPATCH_WEB_DIST ENVOY_ACCOUNT_TOKEN_FILE ENVOY_TOKEN ENVOY_URL HOME NATS_URLS PATH XDG_CACHE_HOME XDG_CONFIG_HOME XDG_DATA_HOME "
 )
@@ -1503,17 +1550,21 @@ kill "$stranger" 2>/dev/null || true
 [[ "$(cat "$stop_out")" == returned ]] || fail "the stop's helpers printed more than they should: $(cat "$stop_out")"
 printf 'PASS: the stop stopped a running child, waited on no child that had exited, even one bash still listed, and left alone pid %s, which a process it never started held in place of one that exited\n' "$stranger"
 
-# (e10b) The stop's grace, the default and one a caller gives, held by what the stop does: the
-# same helpers run in a shell of their own on a child that ignores SIGTERM, under that shell's own
-# clock. EPOCHREALTIME, once unset, is a plain variable, and `sleep` there is a function that moves
-# it on by the 0.1 s the stop asks for and returns at once, so the whole grace passes in the stop's
-# own polls, with no real wait and no scheduler to wake it late, and its kill line names the time
-# by that clock. With DEV_STACK_STOP_GRACE_SECONDS unset it must be the pinned default exactly, and
-# with it set to 3, 3 s exactly: a stop that took another grace, a literal of its own, or killed
-# before its grace names another. The child says it ignores SIGTERM before the stop signals it, so
-# the signal cannot end it first, and the shell kills its own child on any way out, a timeout's
-# TERM included, and writes its pid where this row kills it if the shell itself was killed, so no
-# such child outlives a failing row.
+# (e10b) The stop's grace, the default and one a caller gives, and its naps, held by what the stop
+# does: the same helpers run in a shell of their own on a child that ignores SIGTERM, under that
+# shell's own clock. EPOCHREALTIME, once unset, is a plain variable, and `sleep` there is a
+# function that records the nap asked of it, moves the clock on by that nap and returns at once,
+# as (w)'s does, so the whole grace passes in the stop's own polls, with no real wait and no
+# scheduler to wake it late, and its kill line names the time by that clock. The record is named
+# apart from the stop's locals, which `sleep`, called from the stop, would otherwise write in their
+# place. With DEV_STACK_STOP_GRACE_SECONDS unset it must be the pinned default exactly, and with it
+# set to 3, 3 s exactly: a stop that took another grace, a literal of its own, or killed before its
+# grace names another. Its naps must be 0.02, 0.03 and 0.05 s and then 0.1 s each: the shell
+# checks its record and prints any other naps, which the row's comparison then fails on. The first
+# three add up to 0.1 s, so the grace still ends on a nap's end. The child says it ignores SIGTERM
+# before the stop signals it, so the signal cannot end it first, and the shell kills its own child
+# on any way out, a timeout's TERM included, and writes its pid where this row kills it if the
+# shell itself was killed, so no such child outlives a failing row.
 grace_by_clock() { # <want seconds> [DEV_STACK_STOP_GRACE_SECONDS value]
   local want="$1" out="${temporary_dir}/stop-grace-clock.out" child_file="${temporary_dir}/stop-grace-clock.pid"
   local -a grace_env=(-u DEV_STACK_STOP_GRACE_SECONDS)
@@ -1535,13 +1586,19 @@ for _ in $(seq 1 200); do [ -e "$ready" ] && break; sleep 0.05; done
 [ -e "$ready" ] || { echo "the child that ignores SIGTERM never said so"; exit 1; }
 unset EPOCHREALTIME
 EPOCHREALTIME=1000.000000
+slept=()
 sleep() {
-  local now=${EPOCHREALTIME//[!0-9]/}
-  now=$((now + 100000))
+  slept+=("$1")
+  local now=${EPOCHREALTIME//[!0-9]/} whole="${1%%.*}" fraction
+  fraction="${1#"$whole"}"
+  fraction="${fraction#.}000000"
+  now=$((now + 10#${whole:-0} * 1000000 + 10#${fraction:0:6}))
   printf -v EPOCHREALTIME "%d.%06d" $((now / 1000000)) $((now % 1000000))
 }
 stop_bounded "a child that ignores SIGTERM" "$stubborn"
 kill -0 "$stubborn" 2>/dev/null && echo "a child that ignores SIGTERM outlived the grace"
+[[ "${slept[*]}" =~ ^0\.02\ 0\.03\ 0\.05(\ 0\.1)+$ ]] ||
+  echo "the stop napped ${slept[*]}, not 0.02, 0.03 and 0.05 s and then 0.1 s each"
 exit 0' _ "${temporary_dir}/stop-grace-clock.ready" "$child_file" >"$out" 2>&1 || status=$?
   child="$(cat "$child_file" 2>/dev/null || true)"
   if [[ "$child" =~ ^[1-9][0-9]*$ ]] && kill -0 "$child" 2>/dev/null; then
@@ -1550,15 +1607,98 @@ exit 0' _ "${temporary_dir}/stop-grace-clock.ready" "$child_file" >"$out" 2>&1 |
   fi
   [[ "$status" -eq 0 ]] || fail "$label did not return within 15 s (status $status): $(cat "$out")"
   [[ "$(cat "$out")" == "dev-stack: a child that ignores SIGTERM (pid "*") did not stop within ${want} s of its SIGTERM; killing it ${want}.000 s after it" ]] ||
-    fail "$label did not kill a child that ignores SIGTERM ${want} s after its SIGTERM by its own clock: $(cat "$out")"
+    fail "$label did not kill a child that ignores SIGTERM ${want} s after its SIGTERM by its own clock, after naps of 0.02, 0.03 and 0.05 s and then 0.1 s each: $(cat "$out")"
 }
 grace_by_clock "$stop_grace_default"
 grace_by_clock 3 3
 printf "PASS: the stop killed a child that ignores SIGTERM exactly when its grace ran out by its own clock: %s s with no grace set, 3 s when given 3\n" "$stop_grace_default"
 
+# (w) await, which every start waits on, held by what it does: the driver's own await and its
+# awaited="" line are read out of it, as (e10) reads the stop's helpers, and run in a shell of
+# their own, under the driver's set -euo pipefail and a clock of that shell's own. No stub shows
+# await's naps, since each reports within milliseconds of its start, and no row waits out its
+# 60 s. SECONDS, once unset, is a plain variable, here 0, and `sleep` is a function that records
+# the nap asked of it and moves a count of microseconds on by it, putting SECONDS at that count's
+# whole seconds, so the deadline passes in await's own naps, with no real wait. The record and the
+# count are named apart from await's locals, which `sleep`, called from await, would otherwise
+# write in their place. The reader counts its reads in a file, since it runs in await's command
+# substitution, where a variable would not keep the count, and prints ready from its Nth read on.
+# A reader that prints at its first read is returned at once, with no nap; one that prints at its
+# fourth, its process alive, after naps of exactly 0.05, 0.1 and 0.2 s. One that never prints, its
+# process alive, is read after naps of 0.05, 0.1 and 0.2 s and then every 0.25 s, and await fails,
+# naming what it waited for, with its log, once the naps add up to 60 s: no sooner, and not a nap
+# later (before 60.25 s). One whose process has exited and been reaped fails at once, saying so,
+# with its log and no nap. The shell kills its live process on any way out, a timeout's TERM
+# included; a timeout reads as status 124.
+awaiter="$(sed -n -e '/^awaited=""$/p' -e '/^await() {$/,/^}$/p' "$driver")"
+grep -qx 'awaited=""' <<<"$awaiter" || fail 'dev-stack.sh defines no awaited="" at the start of a line'
+grep -qx 'await() {' <<<"$awaiter" || fail 'dev-stack.sh defines no await() at the start of a line'
+await_by_clock() { # <the read that first prints ready, 0 for none> <live|reaped>
+  local out="${temporary_dir}/await-clock.out" err="${temporary_dir}/await-clock.err"
+  local reads="${temporary_dir}/await-clock.reads" log="${temporary_dir}/await-clock.log"
+  local -a report
+  await_status=0
+  rm -f "$reads"
+  printf 'the log of a stub\n' >"$log"
+  # shellcheck disable=SC2016 # await's shell expands these, not this one
+  timeout -k 5 15 bash -c "$awaiter"$'\n''
+set -euo pipefail
+first="$1" which="$2" reads="$3" log="$4"
+slept=()
+clock_us=0
+command sleep 600 &
+live=$!
+report() {
+  kill "$live" 2>/dev/null || true
+  wait "$live" 2>/dev/null || true
+  printf "%s\n" "${slept[*]}" "$clock_us" "$awaited"
+}
+trap report EXIT
+trap "exit 1" TERM
+command sleep 0 &
+reaped=$!
+wait "$reaped"
+pid="$live"
+if [ "$which" = reaped ]; then pid="$reaped"; fi
+unset SECONDS
+SECONDS=0
+sleep() {
+  slept+=("$1")
+  local whole="${1%%.*}" fraction
+  fraction="${1#"$whole"}"
+  fraction="${fraction#.}000000"
+  clock_us=$((clock_us + 10#${whole:-0} * 1000000 + 10#${fraction:0:6}))
+  SECONDS=$((clock_us / 1000000))
+}
+ready_from() {
+  local -a marks
+  echo read >>"$2"
+  mapfile -t marks <"$2"
+  if (($1 > 0 && ${#marks[@]} >= $1)); then echo ready; fi
+}
+await "a stub" "$pid" "$log" "$reads" "its value" ready_from "$first"' _ "$1" "$2" "$reads" "$log" >"$out" 2>"$err" || await_status=$?
+  mapfile -t report <"$out"
+  await_naps="${report[0]:-}" await_clock="${report[1]:-}" await_value="${report[2]:-}" await_err="$(<"$err")"
+  await_got="status ${await_status}, naps '${await_naps}', clock ${await_clock} us, awaited '${await_value}', stderr '${await_err}'"
+}
+naps_settled='^0\.05 0\.1 0\.2( 0\.25)+$'
+await_by_clock 1 live
+[[ "$await_status" -eq 0 && -z "$await_naps" && "$await_value" == ready && -z "$await_err" ]] ||
+  fail "await on a reader that prints at its first read did not return 0 with ready at once: $await_got"
+await_by_clock 4 live
+[[ "$await_status" -eq 0 && "$await_naps" == '0.05 0.1 0.2' && "$await_value" == ready && -z "$await_err" ]] ||
+  fail "await on a reader that prints at its fourth read, its process alive, did not return 0 with ready after naps of exactly 0.05, 0.1 and 0.2 s: $await_got"
+await_by_clock 0 live
+[[ "$await_status" -eq 1 && "$await_naps" =~ $naps_settled && "$await_clock" -ge 60000000 && "$await_clock" -lt 60250000 &&
+  -z "$await_value" && "$await_err" == $'dev-stack: a stub did not report its value within 60s\nthe log of a stub' ]] ||
+  fail "await on a reader that never prints, its process alive, did not nap 0.05, 0.1 and 0.2 s and then 0.25 s and fail, naming its value, with its log, 60 s after it began by its own clock: $await_got"
+await_by_clock 0 reaped
+[[ "$await_status" -eq 1 && -z "$await_naps" && -z "$await_value" && "$await_err" == $'dev-stack: a stub exited during startup\nthe log of a stub' ]] ||
+  fail "await on a reader that prints nothing, its process gone, did not fail at once, saying so, with its log and no nap: $await_got"
+printf 'PASS: await reads again after 0.05, 0.1 and 0.2 s and then every 0.25 s, returns at the first read that finds its value, fails at once when its process is gone, and gives up 60 s after it began by its own clock\n'
+
 # (f) No database URL at all: the refusal names all three sources and exits 2, before anything is
 # created.
-refusal="${temporary_dir}/refusal.log"
 refusal_status=0
 env -u LEGION_TEST_PG_DSN -u DATABASE_URL PATH="${fake_bin_dir}:${PATH}" TMPDIR="$temporary_dir" \
   DEV_STACK_TEST_PSQL_CALL_FILE="${temporary_dir}/psql-calls-refusal" \
@@ -1618,7 +1758,10 @@ assert_everything_stopped "$label"
 assert_databases_dropped "$label" "$psql_calls1" "$run_suffix"
 printf 'PASS: a run whose PATH holds a python3 shim after the fakes, as a developer'"'"'s box does, reached ready (listener %s, dispatch %s) and stopped on INT\n' \
   "${process_port[listener]}" "${process_port[dispatch]}"
+fi
 
+# The part options: the cases from (h) to (p).
+if [[ "$part" == all || "$part" == options ]]; then
 # (h) Prebuilt binaries, as the builds farm makes them for a pod that compiles no Go: the fake go
 # makes a stub of each binary in a directory of its own, and a run given that directory with
 # --binaries calls no go at all, puts a copy of each in its own bin directory, and runs those.
@@ -1981,5 +2124,6 @@ wait_line="$(grep -n -E '^[[:space:]]*wait -n -p ' "$driver" | head -n1 | cut -d
 ((call_line < first_command_line && call_line < wait_line)) ||
   fail "dev-stack.sh calls its bash gate at line $call_line, after its first command ($first_command_line) or its wait -n -p ($wait_line)"
 printf 'PASS: bash 4.4 and 5.0 are refused with exit 2 and one line naming 5.1, 5.1 and 5.3 are taken, and the gate runs before the first command\n'
+fi
 
 printf 'ALL PASS: dev-stack.test.sh\n'

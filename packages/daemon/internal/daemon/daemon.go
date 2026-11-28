@@ -324,6 +324,21 @@ type overrides struct {
 	// at an operator's spawn keeps its own: it draws only the tree-unit experiments, and an
 	// experiment that sets how an issue is done draws for each issue (config's checkExperimentPlans).
 	experimentSource func(uint64) (uint64, error)
+	// totalsRead runs once each fact's read of its agents' totals has made its reads, before the
+	// fact's transaction, on the fact's own goroutine (workflowRuntime.readTotals). It is given the
+	// agents read and the reads that gave totals. nil, in production, is nothing. It is the seam a
+	// test holds a fact at between its read and its transaction.
+	totalsRead func(agents []claim.Token, reads workflow.FactReads)
+	// totalsClock is the clock of each read of an agent's totals: it bounds the read at
+	// streamDrainBound and stamps when each answer came. nil is clock, the machines' own. A test
+	// gives it a clock of its own, whose bound it fires.
+	totalsClock supervise.Clock
+	// taskConfirmedApplied runs once the fact that a role's agent took its work has been applied, on
+	// that fact's own goroutine (workflowRuntime.taskConfirmed). It names the claim, the delivery
+	// the turn confirmed ("" for a claim that held none), and the error the fact met, nil where it
+	// applied. nil, in production, is nothing. The fact reads its agents' totals first, so it is the
+	// seam a test waits on before it holds those reads.
+	taskConfirmedApplied func(token claim.Token, delivery string, err error)
 }
 
 // Run is the daemon. It refuses what it cannot run on before it touches anything — the
@@ -553,6 +568,10 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 		workflow.controllerFirstWake, workflow.idleTick, workflow.mergeStateRetry, workflow.entrySweep = o.controllerFirstWake, o.idleTick, o.mergeStateRetry, o.entrySweep
 		workflow.outboxSweep = o.outboxSweep
 		workflow.catchUpRetryDelay = o.catchUpRetry
+		// The reads of the agents' totals before each fact run on their own clock, and a test's
+		// seams see them and each confirmation of a task. Nothing applies a fact before this line.
+		workflow.totalsClock, workflow.totalsRead = plan.totalsClock, o.totalsRead
+		workflow.taskConfirmedApplied = o.taskConfirmedApplied
 		plan.identity = workflow.identity
 		plan.knownIdentity = workflow.knownIdentity
 		plan.repository, plan.launchRepository = workflow.issueRepository, workflow.issueLaunchRepository
@@ -1455,6 +1474,9 @@ type plan struct {
 	beforeDecision func(claim.Token, supervise.Event)
 	// streamListen is overrides.streamListen; nil binds the worker stream's address.
 	streamListen func(network, address string) (net.Listener, error)
+	// totalsClock is overrides.totalsClock, and clock where that is nil: the clock of each read of
+	// an agent's totals (workflowRuntime.readTotals).
+	totalsClock supervise.Clock
 }
 
 // appOwners is, for a daemon of runtimeName, the owner accounts the addressing of every launch
@@ -1575,6 +1597,10 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if clock == nil {
 		clock = supervise.RealClock{}
 	}
+	totalsClock := o.totalsClock
+	if totalsClock == nil {
+		totalsClock = clock
+	}
 	orphanSweep := o.orphanSweep
 	if orphanSweep == 0 {
 		orphanSweep = orphanSweepInterval
@@ -1603,6 +1629,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
 		holdOutbox: o.holdOutbox, gateRegistrationRead: o.gateRegistrationRead, dropConsumedEvent: o.dropConsumedEvent,
 		streamWaitBegan: o.streamWaitBegan, beforeDecision: o.beforeDecision, streamListen: o.streamListen,
+		totalsClock: totalsClock,
 	}
 	if cfg.Runtime.Name == "kubernetes" {
 		err = prepareSandbox(cfg, o, reads.sandbox, &p)

@@ -1074,17 +1074,15 @@ func (a *lookIDAgent) listen() {
 
 // reconnect dials the running daemon's worker stream again with the boot token of the claim's
 // latest launch, as the pane's shim does when the daemon comes back, and reads the new connection.
+// It dials through dialShimUntilAcked, which the base commit's tree holds too, since the base run
+// builds this file over that tree.
 func (a *lookIDAgent) reconnect() {
 	t := a.f.t
 	t.Helper()
 	a.f.built.mu.Lock()
 	address := a.f.built.address
 	a.f.built.mu.Unlock()
-	sh, err := ackedShim(t, address, lastLaunch(t, a.f.rt, a.token).BootToken)
-	if err != nil {
-		t.Fatalf("the %s's shim reconnecting to the restarted daemon: %v", a.role, err)
-	}
-	a.sh = sh
+	a.sh = dialShimUntilAcked(t, address, lastLaunch(t, a.f.rt, a.token).BootToken)
 	a.listen()
 }
 

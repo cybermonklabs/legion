@@ -1,0 +1,6 @@
+kind: Added
+body: |-
+  `programfile.Write` writes a file that a process then runs, such as a script or a helper git runs, so that no child process the caller starts from another goroutine holds it open for writing when it runs: it holds back every fork os/exec makes from the open to the close and sets the mode exactly, so the run cannot fail with "text file busy". The Legion daemon writes each of its program files with it.
+time: 2026-11-23T21:20:57.755315530Z
+custom:
+    Issue: pr5265
