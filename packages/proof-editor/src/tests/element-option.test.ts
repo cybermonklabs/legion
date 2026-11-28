@@ -360,6 +360,93 @@ await test("rebindElement keeps every plugin the view holds, including readingsI
   }
 });
 
+await test("the rebind's own updateState destroys and makes no plugin view, and makes the root's node view for the new block", async () => {
+  const room = await seededRoom();
+  const fragment = room.getXmlFragment("prosemirror");
+  try {
+    await withEditor(room, { element: findBlock(fragment, "r1") }, (handle) => {
+      const { view } = handle;
+      // Each plugin view and each node view the view makes or destroys, named in the order it
+      // happens: a plugin of the host's with a view, and a node view for each node type.
+      const events: string[] = [];
+      let made = 0;
+      const nodeTypes = Object.keys(view.state.schema.nodes).filter((name) => name !== "text");
+      const views = new Plugin({
+        key: new PluginKey("rebind-views"),
+        props: {
+          nodeViews: Object.fromEntries(
+            nodeTypes.map((name) => [
+              name,
+              (node: {
+                readonly attrs: Record<string, unknown>;
+                readonly type: { name: string };
+              }) => {
+                const id = `node view ${node.type.name} ${String(node.attrs.blockId)} ${made++}`;
+                events.push(`made ${id}`);
+                const dom = view.dom.ownerDocument.createElement("div");
+                return { contentDOM: dom, destroy: () => events.push(`destroyed ${id}`), dom };
+              },
+            ])
+          ),
+        },
+        view: () => {
+          const id = `plugin view ${made++}`;
+          events.push(`made ${id}`);
+          return { destroy: () => events.push(`destroyed ${id}`) };
+        },
+      });
+      view.updateState(view.state.reconfigure({ plugins: [...view.state.plugins, views] }));
+      // The rebind's own `updateState` is the call whose state roots the new block, r2, in place
+      // of the old, r1: the collaboration service's disconnect and connect make calls of their own
+      // on either side of it, which reconfigure the plugins and so make their views again.
+      // ProseMirror draws the root with a view of its own (`docView`, which prosemirror-view
+      // marks internal, so it is read by its name), never with a node view of the host's.
+      const rootView = (): unknown => Reflect.get(view, "docView");
+      const update = view.updateState.bind(view);
+      let own:
+        | {
+            readonly events: string[];
+            readonly rootAfter: unknown;
+            readonly rootBefore: unknown;
+            /** Whether the root's view, as the call leaves it, draws the call's own root: the view
+             *  is one object, which the calls after it update in place. */
+            readonly rootDrawn: boolean;
+          }
+        | undefined;
+      view.updateState = (state) => {
+        const puts = view.state.doc.attrs.blockId === "r1" && state.doc.attrs.blockId === "r2";
+        const from = events.length;
+        const rootBefore = rootView();
+        update(state);
+        if (puts) {
+          const rootAfter = rootView();
+          const rootDrawn = Reflect.get(Object(rootAfter), "node") === state.doc;
+          own = { events: events.slice(from), rootAfter, rootBefore, rootDrawn };
+        }
+      };
+      try {
+        handle.rebindElement(findBlock(fragment, "r2"));
+      } finally {
+        view.updateState = update;
+      }
+
+      assert(own !== undefined, "the rebind made no updateState that roots the new block");
+      assert(
+        !own.events.some((event) => event.includes("plugin view")),
+        `the rebind's own updateState destroyed or made a plugin view: ${own.events.join(", ")}`
+      );
+      // The root is another node, with the new block's own attributes, so its view is made for it.
+      assert(
+        own.rootAfter !== own.rootBefore,
+        "the rebind's own updateState kept the old root's view"
+      );
+      assert(own.rootDrawn, "the root's view is not made for the new block");
+    });
+  } finally {
+    room.destroy();
+  }
+});
+
 await test("a cursor install of the old bind does not run after the rebind", async () => {
   const room = await seededRoom();
   const empty = new Y.XmlElement("paragraph");

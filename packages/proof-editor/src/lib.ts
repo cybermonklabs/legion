@@ -678,6 +678,10 @@ export async function createProofEditor(
         service.disconnect();
         Object.assign(schema, { topNodeType: nodeType });
         const state = EditorState.create({ doc, plugins: view.state.plugins });
+        // The new state keeps the view's own configuration, so this `updateState` keeps each
+        // plugin view and draws only the new block (decision 551, amended). prosemirror-state
+        // marks `config` internal and leaves it out of its types, so it is read by its name.
+        Object.assign(state, { config: Reflect.get(view.state, 'config') });
         ctx.set(editorStateCtx, state);
         view.updateState(state);
         service.bindXmlFragment(element);

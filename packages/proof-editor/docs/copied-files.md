@@ -127,6 +127,15 @@ Biome's formatter, linter and `assist` are off over the copies, in the first ove
     | 611 | 1 added | Yield after `applyAccess`, before the collaboration binding (the `collaboration` phase). |
     | 660 | 1 added | End the last phase's measure before the handle is returned. |
 
+    Decision 551, amended, adds 4 lines to `src/lib.ts` beyond the lines above and rewrites none (`+4 / −0`), in `rebindElement`, so an editor made without `element` builds as before:
+
+    | Lines after the amendment | Count | Change |
+    | --- | ---: | --- |
+    | 681–683 | 3 added | Say why the new state keeps the view's own configuration, and that prosemirror-state marks `config` internal. |
+    | 684 | 1 added | Give the new state the view's own configuration (`Object.assign(state, { config: Reflect.get(view.state, 'config') })`), so the rebind's own `view.updateState` destroys and makes no plugin view. |
+
+    `src/tests/element-option.test.ts` holds it: in the rebind's own `view.updateState`, no plugin view is destroyed or made again, and the root's view is made for the new block. With the line taken out, that call destroys and makes each plugin view again, and the case fails.
+
     `src/block-build-timing.ts`, Dispatch's own file beside the copies, adds a gate to each of Milkdown's `initTimerCtx`, `schemaTimerCtx`, `editorStateTimerCtx` and `editorViewTimerCtx` and releases it in a task of its own, by a zero-delay timer, once every other timer in that list has resolved; Milkdown's plugins and their order are unchanged.
     Each phase records one `block-editor-task` measure, from when its task begins to the next yield.
     A hidden page releases each phase at once, with its measure: browsers run a hidden page's timers at most once a second, and Milkdown fails a timer still waited for 3 s after its first wait.
