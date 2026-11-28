@@ -199,6 +199,90 @@ func TestMeasureSubscribesItsInboxUnderBothRoots(t *testing.T) {
 	})
 }
 
+// JSRead is the JetStream reader's grant as the deployment repository renders its static user
+// legion-jsread today (envoy-cluster/hub.go, hubJSReadPublish and hubJSReadSubscribe), copied into
+// the fixture entry for entry, in order, at the commit its source names. So a reader the auth
+// service admits holds exactly the lists that static user holds, and a subject added to either
+// list, or dropped from it, fails here naming it.
+func TestJSReadMatchesTheDeployedList(t *testing.T) {
+	var deployed set
+	readJSON(t, "testdata/deployment-jsread-grant.json", &deployed)
+	require.NotEmpty(t, deployed.Subscribe, "the fixture holds no subscribe list for JSRead()")
+	requireSet(t, deployed, natsgrant.JSRead(), "JSRead()")
+}
+
+// The JetStream reader sets its inbox prefix to JSReadInbox (nats.CustomInboxPrefix), and its grant
+// admits replies under that prefix alone. Each row is a subscription a client makes: the reader's
+// request mux, the prefix, a nuid and * (nats.go's createNewRequestAndSend), is admitted; nats.go's
+// default inbox, where other clients' replies arrive, a token under the reply root, the measurement
+// job's inbox before its move, and a session's delivery channel are refused. The control is
+// Daemon(), which subscribes nats.go's default inbox, so the helper admits that row for it.
+func TestJSReadSubscribesOnlyItsOwnInbox(t *testing.T) {
+	require.Equal(t, "_INBOX_legion_jsread", natsgrant.JSReadInbox)
+	rows := []struct {
+		name, subscription string
+		admitted           bool
+	}{
+		{"the reader's own inbox", "_INBOX_legion_jsread.Fq3kZ.*", true},
+		{"nats.go's inbox, where other clients' replies arrive", "_INBOX.Fq3kZ.*", false},
+		{"a token under the reply root", "_INBOX_envoy.x.*", false},
+		{"the measurement job's inbox before its move", "_INBOX_envoy_measure.x.*", false},
+		{"a session's delivery channel", "notifications.envoy.deliver.ses_a", false},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			require.Equal(t, row.admitted, subscribes(t, natsgrant.JSRead(), row.subscription),
+				"JSRead() admits a subscription to %q", row.subscription)
+		})
+	}
+	t.Run("control: a grant of nats.go's inbox admits its row", func(t *testing.T) {
+		require.True(t, subscribes(t, natsgrant.Daemon(), "_INBOX.Fq3kZ.*"))
+	})
+}
+
+// The JetStream reader's grant reads JetStream's state and nothing past it: no publish entry of it
+// collides, by nats-server's own rule for two subjects one literal subject could both match
+// (SubjectsCollide), with a read of a stored message (a direct get, a stream message get), a
+// consumer's create, durable or not, which would deliver a stream's messages to a subject of the
+// creator's choosing, a stream's create, update, delete or purge, or any notification subject. The
+// control is a grant of the whole JetStream API, which collides with each of those JetStream calls.
+func TestJSReadPublishesOnlyJetStreamReads(t *testing.T) {
+	forbidden := []string{
+		"$JS.API.DIRECT.GET.>",
+		"$JS.API.STREAM.MSG.GET.*",
+		"$JS.API.CONSUMER.CREATE.>",
+		"$JS.API.CONSUMER.DURABLE.CREATE.>",
+		"$JS.API.STREAM.CREATE.*",
+		"$JS.API.STREAM.UPDATE.*",
+		"$JS.API.STREAM.DELETE.*",
+		"$JS.API.STREAM.PURGE.*",
+		"notifications.>",
+	}
+	// collisions is each publish entry of grant that collides with a forbidden subject, with it.
+	collisions := func(grant natsgrant.Permissions) []string {
+		var found []string
+		for _, entry := range grant.Publish {
+			for _, subject := range forbidden {
+				if natsserver.SubjectsCollide(entry, subject) {
+					found = append(found, entry+" collides with "+subject)
+				}
+			}
+		}
+		return found
+	}
+	require.NotEmpty(t, natsgrant.JSRead().Publish, "JSRead() publishes nothing, so no entry can collide")
+	require.Empty(t, collisions(natsgrant.JSRead()), "JSRead() publishes a subject that reads a message or changes JetStream")
+	t.Run("control: a grant of the whole JetStream API", func(t *testing.T) {
+		var want []string
+		for _, subject := range forbidden {
+			if strings.HasPrefix(subject, "$JS.API.") {
+				want = append(want, "$JS.API.> collides with "+subject)
+			}
+		}
+		require.Equal(t, want, collisions(natsgrant.Permissions{Publish: []string{"$JS.API.>"}}))
+	})
+}
+
 // Every reply inbox a grant of this package subscribes sits under one token, ReplyRoot, which a
 // render that puts JetStream in an account of its own exports to the clients' account as
 // ReplyRoot+".>": a push or ordered consumer's deliveries and a stream's republish reach a client
@@ -207,12 +291,13 @@ func TestMeasureSubscribesItsInboxUnderBothRoots(t *testing.T) {
 // (outsideTheRoot). Each row is one kind's grant, its inbox prefix under the root once its client
 // moved, and the inboxes it still subscribes outside the root while its client moves
 // (transitional), each named: nats.go's _INBOX.> for the listener's kinds, Dispatch and the daemon,
-// the edge listener's own machine's prefix (#4807), and the measurement job's prefix before its
-// move. For each row, every reply inbox of the grant is under the root or one the row names; each
-// one the row names is one the grant subscribes and one the root's export does not reach; and a
-// prefix under the root is reached by the root's export and admitted by the grant. So a kind that
-// subscribes any other inbox outside the root fails, naming it. The control is the edge row's grant
-// checked without its listing, which names the edge's prefix.
+// the edge listener's own machine's prefix (#4807), the measurement job's prefix before its move,
+// and the JetStream reader's prefix (JSReadInbox). For each row, every reply inbox of the grant is
+// under the root or one the row names; each one the row names is one the grant subscribes and one
+// the root's export does not reach; and a prefix under the root is reached by the root's export and
+// admitted by the grant. So a kind that subscribes any other inbox outside the root fails, naming
+// it. The control is the edge row's grant checked without its listing, which names the edge's
+// prefix.
 func TestEveryReplyPrefixIsUnderTheReplyRoot(t *testing.T) {
 	require.Equal(t, "_INBOX_envoy", natsgrant.ReplyRoot)
 	export := natsgrant.ReplyRoot + ".>"
@@ -236,6 +321,10 @@ func TestEveryReplyPrefixIsUnderTheReplyRoot(t *testing.T) {
 		// The measurement job's prefix before its move shares the root's characters but not its
 		// token, so the root's export does not reach it; it goes when no job sets it.
 		{"measure", natsgrant.Measure(), natsgrant.MeasureInbox, []string{"_INBOX_envoy_measure.>"}},
+		// The JetStream reader's prefix is the one the deployment's static user names, outside the
+		// root. The reader only sends requests, and a request's reply comes back through the
+		// service import's response mapping, which needs no export (ReplyRoot).
+		{"jsread", natsgrant.JSRead(), "", []string{"_INBOX_legion_jsread.>"}},
 		// The edge listener's own machine's prefix shares the root's characters but not its token,
 		// so a render with JetStream in an account of its own exports it once per edge machine
 		// until the edge listener moves under the root.
@@ -582,6 +671,7 @@ func grantTable(t *testing.T) map[string]natsgrant.Permissions {
 		"Session(ses_a)":     session,
 		"Daemon()":           natsgrant.Daemon(),
 		"Measure()":          natsgrant.Measure(),
+		"JSRead()":           natsgrant.JSRead(),
 		"HoldProbe()":        natsgrant.HoldProbe(),
 		"Operator(released)": natsgrant.Operator(natsgrant.OperatorPhaseReleased),
 		"Operator(prepare)":  natsgrant.Operator(natsgrant.OperatorPhasePrepare),

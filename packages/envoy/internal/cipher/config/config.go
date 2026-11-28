@@ -1148,13 +1148,15 @@ type Config struct {
 	// a seed of its kind (a user, an account, a curve key), naming the variable and never the
 	// value. BROKER_NATS_SERVICES lists the services admitted by platform identity, as
 	// whitespace-separated <kind>/<machine id or ->/<* or ->=<account> entries (dispatch,
-	// listener, webhook-listener, edge-listener, daemon or measure; webhook-listener is the
-	// listener that receives GitHub's webhook, the one listener whose grant publishes GitHub's
-	// lane; operator, the deployment's one operator identity, whose grant is the writer hold's
-	// phase's and whose token alone writes the hold through /v1/nats-hold; or probe, the hold's
-	// one probe; * for the kind's whole grant, - for the projects the account's exchange entry
-	// lists, which operator and probe refuse, as they refuse a machine id and a second entry of
-	// their kind), each account written as
+	// listener, webhook-listener, edge-listener, daemon, measure or jsread; webhook-listener is
+	// the listener that receives GitHub's webhook, the one listener whose grant publishes GitHub's
+	// lane; jsread is the JetStream reader, whose grant reads every stream's and consumer's names
+	// and infos and no message (natsgrant.JSRead): its entry takes no machine id and refuses -,
+	// and a deployment lists one for each account its Legion pods run under; operator, the
+	// deployment's one operator identity, whose grant is the writer hold's phase's and whose token
+	// alone writes the hold through /v1/nats-hold; or probe, the hold's one probe; * for the kind's
+	// whole grant, - for the projects the account's exchange entry lists, which operator and probe
+	// refuse, as they refuse a machine id and a second entry of their kind), each account written as
 	// BROKER_API_ACCOUNTS writes one, every entry read once at load (ParseNATSServices). An edge
 	// listener's entry, edge-listener/<machine id>/<KEY>[,<KEY>…]=<account>, lists in place of * or
 	// - the projects its grant is built for and GET /v1/project-repositories answers that account

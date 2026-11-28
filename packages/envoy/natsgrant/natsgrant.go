@@ -676,6 +676,43 @@ func Measure() Permissions {
 	}
 }
 
+// JSReadInbox is the JetStream reader's inbox prefix (nats.CustomInboxPrefix), the one subscribe
+// of its grant (JSRead), as the deployment repository's static user legion-jsread names it. It is
+// outside ReplyRoot: the reader only sends requests, and a request's reply needs no export.
+const JSReadInbox = "_INBOX_legion_jsread"
+
+// JSRead is the grant of the JetStream reader, a BROKER_NATS_SERVICES entry of kind jsread: a
+// Legion pod that reads the account's JetStream state, which the deployment repository deploys
+// today as the static user legion-jsread (its envoy-cluster/hub.go, hubJSReadPublish and
+// hubJSReadSubscribe, at 21b66a4a3ae3643b4ac420f41d8560908a0cf773), whose lists this grant copies
+// entry for entry. Publish: JetStream's account info, the stream names and
+// list, any stream's info, and any stream's consumer names, list and infos. A stream's info names
+// its subjects and, asked with a subject filter, how many stored messages each subject holds; a
+// consumer's info names its filter and its position. It reads no message: it holds no direct get
+// (DIRECT.GET), no stored-message get (STREAM.MSG.GET) and no consumer create, which would deliver
+// a stream's messages to a subject of the creator's choosing. And it changes nothing: it holds no
+// create, update, delete or purge of any stream or consumer, and no publish outside the JetStream
+// API. As every grant that holds a JetStream API request, it can have the server publish a
+// JetStream answer on a reply subject of its choosing; operatorReleased's comment says what that
+// reaches. Subscribe: its own inbox prefix alone (JSReadInbox), never _INBOX.>, where other
+// clients' replies arrive. It has no deny list. Its lists are written here and not shared with
+// Measure, whose first seven publish entries are the same, so a change to either grant changes no
+// other's.
+func JSRead() Permissions {
+	return Permissions{
+		Publish: []string{
+			jsAPI + "INFO",
+			jsAPI + "STREAM.NAMES",
+			jsAPI + "STREAM.LIST",
+			jsAPI + "STREAM.INFO.*",
+			jsAPI + "CONSUMER.NAMES.*",
+			jsAPI + "CONSUMER.LIST.*",
+			jsAPI + "CONSUMER.INFO.*.*",
+		},
+		Subscribe: []string{JSReadInbox + ".>"},
+	}
+}
+
 // ReplyRoot is the subject token Envoy's reply prefixes move under, so that a render that moves
 // JetStream into an account of its own exports one reply root to the clients' account rather than
 // a prefix for each client: a push or ordered consumer's deliveries and a stream's republish are
