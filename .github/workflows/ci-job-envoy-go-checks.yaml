@@ -101,16 +101,19 @@ jobs:
         working-directory: packages/envoy
       # Each cluster part runs in its own process with its own fakes (`cluster.test.sh --parts`
       # lists them), so the pool can run parts beside each other and beside the other harnesses.
-      # The parts queue longest first by median so the shorter entries fill the cores around them.
+      # The parts queue longest first by the medians below, so the shorter entries fill the
+      # cores around them.
       # These timing records were read on 2026-11-28. As one pool entry,
       # the whole harness took 576.4 s of wall time and 163.4 CPU-seconds in base run 46119586305
       # (job 140901259898, main 562c898d2e2e). It took 279.0 to 571.6 s of wall time in four
       # green merge-group runs on 2026-11-27 (46076851429, 46077299610, 46078481774, 46083105841).
-      # The sums of each part's cases in those four runs (median / most, in seconds) explain
-      # the queue order: all-full 82.3 / 95.9, all-seeded 67.5 / 90.6, all-quick 50.4 / 64.8,
-      # typing 43.9 / 62.5, stops 38.4 / 43.2, path 33.5 / 43.1, identity 32.9 / 62.3,
+      # The sums of each part's cases in those four runs (median / most, in seconds) were:
+      # all-full 82.3 / 95.9, all-seeded 67.5 / 90.6, all-quick 50.4 / 64.8, typing 43.9 / 62.5,
+      # stops 23.0 / 25.5, waits 15.7 / 17.7, path 33.5 / 43.1, identity 32.9 / 62.3,
       # checker-quota 27.2 / 29.0, daemons 25.1 / 33.1, units 16.4 / 36.3, and
       # refusals 13.3 / 18.1 (dispatch://INFRA-6321/artifact/cluster-test-cases-md).
+      # The `stops` and `waits` parts together keep the original `stops` position in the queue.
+      # Run 46132865270 measured `stops` at 83.1 s before the split, over the 60 s target.
       # Each part keeps the 15 min bound to end a hang. The pool's records show whether each
       # entry meets the 60 s target of dispatch://INFRA-6321. That target is not a timeout.
       # The pool sets HARNESS_POOL_DEADLINE_MS to the part's start plus the bound less 30 s.
@@ -132,6 +135,9 @@ jobs:
         working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh, part stops (fakes kubectl, gh and curl; no cluster)
         run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh stops' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh stops'
+        working-directory: packages/envoy
+      - name: Test loadtest/cluster/cluster.sh, part waits (fakes kubectl, gh and curl; no cluster)
+        run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh waits' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh waits'
         working-directory: packages/envoy
       - name: Test loadtest/cluster/cluster.sh, part path (fakes kubectl, gh and curl; no cluster)
         run: ../../.github/scripts/harness-pool.sh start --minutes 15 'loadtest/cluster/cluster.test.sh path' bash -c 'LEGION_PROOF_DEADLINE_MS=$HARNESS_POOL_DEADLINE_MS exec bash loadtest/cluster/cluster.test.sh path'

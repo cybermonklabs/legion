@@ -194,7 +194,7 @@
 # fact, and only on their fact where it is not.
 set -euo pipefail
 
-readonly -a cluster_test_parts=(refusals path all-quick all-seeded all-full typing checker-quota identity units daemons stops)
+readonly -a cluster_test_parts=(refusals path all-quick all-seeded all-full typing checker-quota identity units daemons stops waits)
 readonly cluster_test_part=${1-}
 if [ "$#" -eq 1 ] && [ "$cluster_test_part" = --parts ]; then
   printf '%s\n' "${cluster_test_parts[@]}"
@@ -1080,7 +1080,7 @@ fi
 exec $real_sleep "\$@"
 EOF
 
-# The jq stand-in is on PATH only during part path and case (ff) in stops. It records arguments in
+# The jq stand-in is on PATH only during part path and case (ff) in waits. It records arguments in
 # jq-argv.log, one call a line, then runs the real jq. In path, no_credential_in_args reads that log
 # as it reads kubectl.log, since any pod user can read arguments in /proc/<pid>/cmdline.
 # Case (ff) uses the stand-in to hold each daemon before it writes its pidfile.
@@ -1472,6 +1472,14 @@ part_end_check() {
   [ -s "$fake_dir/kubectl-count" ] || fail "part $label: no kubectl call was recorded"
   count=$(wc -c <"$fake_dir/kubectl-count")
   pass "part $label: every kubectl call of the part ($count of them, the daemons' included) carries -n $ns"
+}
+
+# all_gone PID...: none of the pids is a live process any more.
+all_gone() {
+  local pid
+  for pid in "$@"; do
+    if kill -0 "$pid" 2>/dev/null; then return 1; fi
+  done
 }
 
 part_refusals() {
@@ -3600,63 +3608,6 @@ pass "up sizes the Postgres claim with --pg-volume and refuses one the quota can
 
 part_stops() {
 
-# all_gone PID...: none of the pids is a live process any more.
-all_gone() {
-  local pid
-  for pid in "$@"; do
-    if kill -0 "$pid" 2>/dev/null; then return 1; fi
-  done
-}
-
-# keep_timer_readings FILE: in a shell that has sourced cluster.sh, timer_now also appends each
-# reading to FILE, "WHAT SECOND" a line: the record of the clock runner_wait and pg_disk_watch_stop
-# judge their bounds by, which the bounds of (dd) and (ee) are held to, rather than to this test's
-# own clock. Where the case has made FAKE_DIR/clock, that clock is the fake one, which only the
-# fake sleep's recorded waits move: a wait whose polls are fast sleeps then reaches a bound of
-# seconds or minutes at the poll that would reach it in production, with no real second passing.
-# shellcheck disable=SC2317 # timer_now runs where cluster.sh's waits call it, by name
-keep_timer_readings() {
-  timer_readings=$1
-  : >"$timer_readings"
-  timer_now() {
-    if [ -f "$FAKE_DIR/clock" ]; then NOW=$(<"$FAKE_DIR/clock"); else NOW=$EPOCHSECONDS; fi
-    printf '%s %s\n' "$*" "$NOW" >>"$timer_readings"
-  }
-}
-
-# timer_lags PREFIX: for each reading in timer_readings whose WHAT starts with PREFIX, how many
-# seconds past the second it judged (its due= or deadline=) it was read, one a line, in order.
-timer_lags() {
-  awk -v p="$1 " 'index($0, p) == 1 { d = $0; sub(/^.*(due|deadline)=/, "", d); sub(/ .*/, "", d); print $NF - d }' \
-    "$timer_readings"
-}
-
-# ends_at_bound PREFIX BOUND: the readings of PREFIX (timer_lags) stay under BOUND seconds past
-# their second until the last, which is at or past it: the wait ended at its first judgment past
-# its bound, by its own clock, neither before its bound nor at a later one. Prints the lags when not.
-ends_at_bound() {
-  timer_lags "$1" | awk -v b="$2" '
-    { lag[NR] = $1 }
-    END {
-      ok = NR > 0 && lag[NR] >= b
-      for (i = 1; i < NR; i++) if (lag[i] >= b) ok = 0
-      if (!ok) { for (i = 1; i <= NR; i++) printf "%s ", lag[i]; exit 1 }
-    }'
-}
-
-# armed_after AT NEXT SECONDS: the first reading whose WHAT starts with NEXT, after the last that
-# starts with AT, judges the second SECONDS after that reading of AT: the deadline the wait armed
-# when it acted at AT. Prints both readings when not.
-armed_after() {
-  awk -v at="$1 " -v next_="$2 " -v s="$3" '
-    index($0, at) == 1 { t = $NF; armed = ""; seen = 1; next }
-    seen && armed == "" && index($0, next_) == 1 { armed = $0 }
-    END {
-      d = armed; sub(/^.*(due|deadline)=/, "", d); sub(/ .*/, "", d)
-      if (!seen || armed == "" || d + 0 != t + s) { printf "%s at %s, then %s", at, t, armed; exit 1 }
-    }' "$timer_readings"
-}
-
 # (w) The liveness of what a step leaves on this pod. A step killed outright (a SIGKILL, an OOM, a
 # worker turn cut short) runs neither pg_disk_watch_stop nor its EXIT trap, so its disk watcher
 # read the volume every 30 s for ever and its wait on the runner job polled that job's .rc file on
@@ -4139,6 +4090,58 @@ run_cluster down --namespace "$ns"
 ((RC == 0)) || fail "down exited $RC: $(cat "$tmp/out")"
 rm -f -- "$fake/lock-get-fails"
 pass "a guarded write, kill or removal whose every read of the lock fails stops after 3 tries 2 s apart, touching nothing of the copy, saying so and carrying what that read said, and one whose read answers after a failed try acts"
+}
+
+part_waits() {
+
+# keep_timer_readings FILE: in a shell that has sourced cluster.sh, timer_now also appends each
+# reading to FILE, "WHAT SECOND" a line: the record of the clock runner_wait and pg_disk_watch_stop
+# judge their bounds by, which the bounds of (dd) and (ee) are held to, rather than to this test's
+# own clock. Where the case has made FAKE_DIR/clock, that clock is the fake one, which only the
+# fake sleep's recorded waits move: a wait whose polls are fast sleeps then reaches a bound of
+# seconds or minutes at the poll that would reach it in production, with no real second passing.
+# shellcheck disable=SC2317 # timer_now runs where cluster.sh's waits call it, by name
+keep_timer_readings() {
+  timer_readings=$1
+  : >"$timer_readings"
+  timer_now() {
+    if [ -f "$FAKE_DIR/clock" ]; then NOW=$(<"$FAKE_DIR/clock"); else NOW=$EPOCHSECONDS; fi
+    printf '%s %s\n' "$*" "$NOW" >>"$timer_readings"
+  }
+}
+
+# timer_lags PREFIX: for each reading in timer_readings whose WHAT starts with PREFIX, how many
+# seconds past the second it judged (its due= or deadline=) it was read, one a line, in order.
+timer_lags() {
+  awk -v p="$1 " 'index($0, p) == 1 { d = $0; sub(/^.*(due|deadline)=/, "", d); sub(/ .*/, "", d); print $NF - d }' \
+    "$timer_readings"
+}
+
+# ends_at_bound PREFIX BOUND: the readings of PREFIX (timer_lags) stay under BOUND seconds past
+# their second until the last, which is at or past it: the wait ended at its first judgment past
+# its bound, by its own clock, neither before its bound nor at a later one. Prints the lags when not.
+ends_at_bound() {
+  timer_lags "$1" | awk -v b="$2" '
+    { lag[NR] = $1 }
+    END {
+      ok = NR > 0 && lag[NR] >= b
+      for (i = 1; i < NR; i++) if (lag[i] >= b) ok = 0
+      if (!ok) { for (i = 1; i <= NR; i++) printf "%s ", lag[i]; exit 1 }
+    }'
+}
+
+# armed_after AT NEXT SECONDS: the first reading whose WHAT starts with NEXT, after the last that
+# starts with AT, judges the second SECONDS after that reading of AT: the deadline the wait armed
+# when it acted at AT. Prints both readings when not.
+armed_after() {
+  awk -v at="$1 " -v next_="$2 " -v s="$3" '
+    index($0, at) == 1 { t = $NF; armed = ""; seen = 1; next }
+    seen && armed == "" && index($0, next_) == 1 { armed = $0 }
+    END {
+      d = armed; sub(/^.*(due|deadline)=/, "", d); sub(/ .*/, "", d)
+      if (!seen || armed == "" || d + 0 != t + s) { printf "%s at %s, then %s", at, t, armed; exit 1 }
+    }' "$timer_readings"
+}
 
 # (bb) A lock no read answered is "act on nothing this time", never "stop watching". Failing
 # closed is right either way, but the two cases are not the same: a lock that names another run
