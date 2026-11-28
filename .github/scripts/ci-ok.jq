@@ -19,6 +19,11 @@
 # reading never fires. The verdict itself does not move: such a job was not selected, and ci-ok
 # accepts its skip exactly as before. `gated` marks it, so ci-ok.sh can name it apart from the
 # jobs that ran: its paths chose it and it did not run at this head.
+
+# `queue_runs` is where a suite a pull request held back runs, in the one wording `selection`'s
+# why and ci-ok.sh's not-run line both give it.
+def queue_runs:
+  "the merge queue runs the suites its own generator selects against its own base, which may be fewer than this head's selection";
 def selection($job; $map; $out; $pr; $event):
   $map[$job] as $output
   | ($out[$output] // "unset") as $value
@@ -27,7 +32,7 @@ def selection($job; $map; $out; $pr; $event):
   | if $value != "true" then
       if $event == "pull_request" and $verdicts[$output] == "true" then
         {selected: false, gated: true,
-         why: "selected by paths, held back on a pull request: the merge queue runs it before the change lands"}
+         why: "selected by paths, held back on a pull request: \(queue_runs)"}
       else {selected: false, why: "needs.changes.outputs.\($output) is \($value)"}
       end
     elif $pr_only and $event != "pull_request" then

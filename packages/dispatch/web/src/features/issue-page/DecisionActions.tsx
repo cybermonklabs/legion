@@ -213,6 +213,7 @@ function DecisionControls({
   const { reads, words: name } = useDecisionHeadingWords(decision, source);
   const keep = useKeyedWrite({
     inline: true,
+    issue: issueKey,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${CONTROL_LABELS.keep_decision} ${name}`,
     method: "POST",
@@ -344,6 +345,7 @@ function ChangeComposer({
   const field = useRef<MentionFieldHandle | null>(null);
   const send = useKeyedWrite({
     inline: true,
+    issue: issueKey,
     // A write's label holds no markup: the reading list's `decision-heading-words`.
     label: () => `${CONTROL_LABELS.change_decision} ${name}`,
     method: "POST",
