@@ -13,16 +13,19 @@
 // Every function takes the caller's connection, a transaction where the caller's writes must
 // stand or fall together (ReplaceDays, MarkDays, LockProject), so a run decides where its
 // transactions begin and end. The shapes the functions take and answer are the survival package's
-// (survival.MeasureOutput, survival.Fingerprint, survival.DayStatus, survival.Change and
-// survival.Pair), so the run hands what Measure answered to the store and the store's reads to
+// (survival.MeasureOutput with its survival.Change and survival.Pair, survival.Fingerprint and
+// survival.DayStatus) and fold's (fold.Change and fold.Pair, a change and a pair with their
+// repository), so the run hands what Measure answered to the store and the store's reads to
 // SelectDays, ChangedDays and the regroup with no conversion between.
 //
 // Every transaction that builds projects' day rows of the two code evals (the run's results,
 // WriteMarks, the rebuild of a repository that turned unreadable or readable, and the regroup)
 // takes its locks in one order (prepare, rows.go): first each project's row of code_projects
-// (LockProject), in key order, then each project's group series with the code evals' locks
-// (evals.WriteCodeGroupSeriesTx), in key order, then it writes the day rows. So no two of them
-// wait for each other in a cycle.
+// (LockProject), in key order, and only then reads the projects' default repositories and code
+// groups; then each project's group series with the code evals' locks
+// (evals.WriteCodeGroupSeriesTx), in key order; then it writes the day rows. So no two of them
+// wait for each other in a cycle, and a save of a project's groups that commits while a builder
+// waits for its row is what that builder builds.
 package codesurvival
 
 import (
@@ -423,85 +426,41 @@ func DayStatuses(ctx context.Context, db Querier, repo string, from, to time.Tim
 	return statuses, nil
 }
 
-// Changes is every change of repo on days, in the order the commits were made: what a run
-// measured, as survival.Measure answered it.
-func Changes(ctx context.Context, db Querier, repo string, days []time.Time) ([]survival.Change, error) {
-	if len(days) == 0 {
-		return nil, nil
-	}
-	rows, err := db.Query(ctx, `
-		select sha, day, committed_at, pr_number, head_ref, author, coalesce(issue_key, ''), added, alive, removed_by_non_pr
-		from code_changes where repo = $1 and day = any($2::date[]) order by committed_at, sha`, repo, days)
-	if err != nil {
-		return nil, fmt.Errorf("read the changes of %s: %w", repo, err)
-	}
-	changes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (survival.Change, error) {
-		var change survival.Change
-		err := row.Scan(&change.SHA, &change.Day, &change.CommittedAt, &change.PR, &change.HeadRef, &change.Author, &change.IssueKey,
-			&change.Added, &change.AliveAtMark, &change.RemovedByNonPR)
-		change.Day, change.CommittedAt = change.Day.UTC(), change.CommittedAt.UTC()
-		return change, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the changes of %s: %w", repo, err)
-	}
-	return changes, nil
+// changeColumns are the columns of a change, a row of code_changes c, with the project of its
+// issue from issues i, left joined on c.issue_key ("" for a change of no issue or of an issue no
+// row holds), in the order scanChange reads them.
+const changeColumns = `c.repo, coalesce(i.project_key, ''), c.sha, c.day, c.committed_at, c.pr_number, c.head_ref, c.author,
+	coalesce(c.issue_key, ''), c.added, c.alive, c.removed_by_non_pr`
+
+// scanChange reads a row of changeColumns.
+func scanChange(row pgx.CollectableRow) (fold.Change, error) {
+	var change fold.Change
+	err := row.Scan(&change.Repo, &change.IssueProject, &change.SHA, &change.Day, &change.CommittedAt, &change.PR, &change.HeadRef,
+		&change.Author, &change.IssueKey, &change.Added, &change.AliveAtMark, &change.RemovedByNonPR)
+	change.Day, change.CommittedAt = change.Day.UTC(), change.CommittedAt.UTC()
+	return change, err
 }
 
 // ChangesOn is every change of repos[i] on days[i], pairs of a repository and a day, each with its
-// repository, by repository and then in the order the commits were made: what Changes reads of
-// each repository, read for every pair in one statement.
+// repository and its issue's project (changeColumns), by repository and then in the order the
+// commits were made, read for every pair in one statement.
 func ChangesOn(ctx context.Context, db Querier, repos []string, days []time.Time) ([]fold.Change, error) {
 	if len(days) == 0 {
 		return nil, nil
 	}
 	rows, err := db.Query(ctx, `
-		select c.repo, c.sha, c.day, c.committed_at, c.pr_number, c.head_ref, c.author, coalesce(c.issue_key, ''), c.added, c.alive,
-			c.removed_by_non_pr
+		select `+changeColumns+`
 		from code_changes c join unnest($1::text[], $2::date[]) as w(repo, day) on c.repo = w.repo and c.day = w.day
+		left join issues i on i.key = c.issue_key
 		order by c.repo, c.committed_at, c.sha`, repos, days)
 	if err != nil {
 		return nil, fmt.Errorf("read the changes of %d days of the repositories: %w", len(days), err)
 	}
-	changes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (fold.Change, error) {
-		var change fold.Change
-		err := row.Scan(&change.Repo, &change.SHA, &change.Day, &change.CommittedAt, &change.PR, &change.HeadRef, &change.Author,
-			&change.IssueKey, &change.Added, &change.AliveAtMark, &change.RemovedByNonPR)
-		change.Day, change.CommittedAt = change.Day.UTC(), change.CommittedAt.UTC()
-		return change, err
-	})
+	changes, err := pgx.CollectRows(rows, scanChange)
 	if err != nil {
 		return nil, fmt.Errorf("read the changes of %d days of the repositories: %w", len(days), err)
 	}
 	return changes, nil
-}
-
-// Pairs is every pair of repo whose adder is a change on days, in the order of the adders' commits
-// and then of the removers' SHAs: what a run measured, as survival.Measure answered it.
-func Pairs(ctx context.Context, db Querier, repo string, days []time.Time) ([]survival.Pair, error) {
-	if len(days) == 0 {
-		return nil, nil
-	}
-	rows, err := db.Query(ctx, `
-		select p.adder_sha, p.remover_sha, p.remover_pr, p.remover_head_ref, p.remover_author,
-			coalesce(p.remover_issue_key, ''), p.lines, p.days_between
-		from code_pairs p
-		join code_changes c on c.repo = p.repo and c.sha = p.adder_sha
-		where c.repo = $1 and c.day = any($2::date[])
-		order by c.committed_at, c.sha, p.remover_sha`, repo, days)
-	if err != nil {
-		return nil, fmt.Errorf("read the pairs of %s: %w", repo, err)
-	}
-	pairs, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (survival.Pair, error) {
-		var pair survival.Pair
-		err := row.Scan(&pair.AdderSHA, &pair.RemoverSHA, &pair.Remover.PR, &pair.Remover.HeadRef, &pair.Remover.Author,
-			&pair.Remover.IssueKey, &pair.Lines, &pair.DaysBetween)
-		return pair, err
-	})
-	if err != nil {
-		return nil, fmt.Errorf("read the pairs of %s: %w", repo, err)
-	}
-	return pairs, nil
 }
 
 // Project is one row of code_projects: the digest of the default repository and the code groups

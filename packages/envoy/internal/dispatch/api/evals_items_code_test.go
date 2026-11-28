@@ -827,6 +827,131 @@ func TestAnAbsentRowNamesEachReason(t *testing.T) {
 	t.Logf("%d absent rows named their reasons", named)
 }
 
+// The seed of TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository: acme/stray,
+// HOME's default repository, and LONE, a project with no default repository, whose one issue
+// LONE-1 is of acme/stray.
+const (
+	codeStrayRepo  = "acme/stray"
+	codeStrayHome  = "HOME"
+	codeStrayLone  = "LONE"
+	codeStrayIssue = "LONE-1"
+)
+
+// TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository (R8, R9, R11): a project
+// with no default repository takes its own days from each repository that holds a change of one of
+// its issues on any day (codesurvival.OwnRepos), so the absent row of each blocked or marked day of
+// its own rows names that repository's blocking commit or marked day, on a day that holds no change
+// of the project too. acme/stray lands one commit a day for ten days: day 1's, whose patch the
+// double withholds, blocks days 0 and 1; day 3's is the one change of LONE-1; day 5's is a change of
+// no issue, which counts for HOME alone. The run measures days 0 to 7, and codesurvival.WriteMarks
+// then marks day 5. Over days 0 to 8, LONE answers in both code evals the blocking commit, keyed
+// blocked@acme/stray@<sha>, and the marked day with its first change, keyed
+// marked@<day 5>@acme/stray, each addressed to its commit, as HOME, whose default repository
+// acme/stray is, does.
+func TestAnOwnRowOfAProjectWithNoDefaultRepositoryNamesItsIssuesRepository(t *testing.T) {
+	t.Parallel()
+	h := codesurvivaltest.NewHistory(t)
+	write := func(path, what string, n int) {
+		lines := make([]string, n)
+		for i := range lines {
+			lines[i] = fmt.Sprintf("%s, line %d of %s, written once and kept as written", what, i, path)
+		}
+		h.Repo.Write(path, strings.Join(lines, "\n")+"\n")
+	}
+	var blocked, marked string
+	for n := range 10 {
+		at := codeItemsDay(n).Add(9 * time.Hour)
+		switch n {
+		case 1:
+			for file := range 12 {
+				write(fmt.Sprintf("data/table%02d.txt", file), fmt.Sprintf("day %d table %d", n, file), 2)
+			}
+			blocked = h.Push("twelve tables", at)
+		case 3:
+			write("src/lone.txt", "the lone work", 4)
+			h.Land(codesurvivaltest.Pull{Number: 1, HeadRef: "feature/1", Author: "someone", Title: codeStrayIssue + ": the lone work"}, at)
+		case 5:
+			write("src/home.txt", "a change of no issue", 4)
+			marked = h.Land(codesurvivaltest.Pull{Number: 2, HeadRef: "feature/2", Author: "someone", Title: "a change of no issue"}, at)
+		default:
+			write(fmt.Sprintf("notes/day%02d.txt", n), fmt.Sprintf("note of day %d", n), 1)
+			h.Push("note", at)
+		}
+	}
+	branch := h.Branch()
+
+	handler, database, deps := newTestServer(t, testServerOptions{})
+	ctx := t.Context()
+	createTestProject(t, handler, codeStrayHome, codeStrayLone)
+	setDefaultRepository(t, handler, codeStrayHome, codeStrayRepo)
+	every := []delivery.CodeGroup{{Name: "all"}}
+	for _, project := range []string{codeStrayHome, codeStrayLone} {
+		saveProjectDelivery(t, database.Pool, delivery.ProjectSettingsInput{Project: project, CodeGroups: &every})
+	}
+	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues",
+		map[string]string{"project": codeStrayLone, "title": "the lone work", "repo": codeStrayRepo}, "alice")
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create %s: status %d, body %s", codeStrayIssue, created.Code, created.Body.String())
+	}
+	if got := decodeBody[struct {
+		Key string `json:"key"`
+	}](t, created).Key; got != codeStrayIssue {
+		t.Fatalf("the issue created as %s is %s", codeStrayIssue, got)
+	}
+
+	double := codesurvivaltest.New(t)
+	double.Serve(codeStrayRepo, branch)
+	double.Refuse(blocked, codesurvivaltest.Refusal{Status: 422, Body: "diff too large", Withheld: 3})
+	pass := codeItemsDay(40).Add(time.Hour)
+	run := &codesurvival.Run{Pool: database.Pool, Client: double.Client(t), Attributor: deps.Attributor, Build: testServerBuild,
+		Now: func() time.Time { return pass }}
+	run.Pass(ctx)
+	statuses, err := codesurvival.DayStatuses(ctx, database.Pool, codeStrayRepo, codeItemsDay(0), codeItemsDay(7))
+	if err != nil {
+		t.Fatalf("read the days of %s: %v", codeStrayRepo, err)
+	}
+	var states []survival.DayState
+	for _, status := range statuses {
+		states = append(states, status.State)
+	}
+	if want := []survival.DayState{survival.DayBlocked, survival.DayBlocked, survival.DayMeasured, survival.DayMeasured, survival.DayMeasured,
+		survival.DayMeasured, survival.DayMeasured, survival.DayMeasured}; !slices.Equal(states, want) {
+		t.Fatalf("the run stored the days 0 to 7 of %s as %v, want %v", codeStrayRepo, states, want)
+	}
+	if got, err := codesurvival.WriteMarks(ctx, database.Pool, codeStrayRepo, []time.Time{codeItemsDay(5)}, pass.Add(time.Hour), testServerBuild); err != nil ||
+		!slices.Equal(got, []time.Time{codeItemsDay(5)}) {
+		t.Fatalf("the mark of day 5 of %s marked %v (%v)", codeStrayRepo, got, err)
+	}
+
+	r := &codeItemsRig{handler: handler}
+	day := func(n int) string { return codeItemsDay(n).Format(time.DateOnly) }
+	want := []string{
+		fmt.Sprintf("blocked@%s@%s: blocked by %s of %s, 3 files, diff refused (422), files[] withheld 3 of 12 files, days %v",
+			codeStrayRepo, blocked, blocked, codeStrayRepo, []string{day(0), day(1)}),
+		fmt.Sprintf("marked@%s@%s: marked day %s of %s, first change %s", day(5), codeStrayRepo, day(5), codeStrayRepo, marked),
+	}
+	for _, project := range []string{codeStrayHome, codeStrayLone} {
+		for slug := range codeSlugs {
+			query := codeWindow(0, 8)
+			query.Set("row_kind", "absent")
+			var got []string
+			for _, row := range r.items(t, project, slug, query) {
+				got = append(got, row.RowKey+": "+absentWords(t, row))
+				sha := colText(t, row, "sha")
+				if row.Href != wantCommitURL(codeStrayRepo, sha) {
+					t.Errorf("%s/%s's absent row %s is addressed %q, want the commit it names, %s", project, slug, row.RowKey, row.Href, wantCommitURL(codeStrayRepo, sha))
+				}
+				if links := linksOfRel(row, "via"); colText(t, row, "cause") == "blocked" && (len(links) != 1 || links[0].Href != wantCommitURL(codeStrayRepo, sha)) {
+					t.Errorf("%s/%s's absent row %s links %+v, want one via link to %s", project, slug, row.RowKey, row.Links, wantCommitURL(codeStrayRepo, sha))
+				}
+			}
+			if slices.Sort(got); !slices.Equal(got, want) {
+				t.Errorf("%s/%s over days 0 to 8 names %q, want %q", project, slug, got, want)
+			}
+		}
+	}
+}
+
 // absentWords is what an absent row names, in words a failure shows.
 func absentWords(t *testing.T, row evalItemRow) string {
 	t.Helper()

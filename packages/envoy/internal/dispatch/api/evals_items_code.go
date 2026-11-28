@@ -165,9 +165,9 @@ func codeDayState(row evals.DayRow) survival.DayState {
 // codeRangeOf is read's range as the code evals' rows read it (codeRange). Without a repository
 // filter every change of every repository the run reads (code_repos) is read on the days the
 // project's own rows measured or marked; with one, each named repository's changes on the days its
-// own rows did; every repository's in one statement (codesurvival.ChangesOn). A change is the
-// project's where fold.CountsFor says so, with its issue's project read from issues, as the run
-// reads it. No change of a day whose status row states it blocked is read.
+// own rows did; every repository's in one statement (codesurvival.ChangesOn), each change with its
+// issue's project, as the run reads it. A change is the project's where fold.CountsFor says so. No
+// change of a day whose status row states it blocked is read.
 func codeRangeOf(ctx context.Context, read evalItemsRead) (*codeRange, error) {
 	if read.shared.code != nil {
 		return read.shared.code, nil
@@ -211,12 +211,7 @@ func codeRangeOf(ctx context.Context, read evalItemsRead) (*codeRange, error) {
 	if err != nil {
 		return nil, err
 	}
-	projects, err := issueProjectsOf(ctx, read.tx, stored)
-	if err != nil {
-		return nil, err
-	}
 	for _, change := range stored {
-		change.IssueProject = projects[change.IssueKey]
 		key := codeCutDay{cutOf(change.Repo), change.Day.Unix()}
 		row := r.status[key]
 		state := codeDayState(row)
@@ -256,33 +251,6 @@ func codeRepos(ctx context.Context, tx pgx.Tx) ([]string, error) {
 		return nil, fmt.Errorf("read the code repositories: %w", err)
 	}
 	return repos, nil
-}
-
-// issueProjectsOf is the project of each issue changes name, by the issue's key; an issue no row
-// holds has none.
-func issueProjectsOf(ctx context.Context, tx pgx.Tx, changes []fold.Change) (map[string]string, error) {
-	var keys []string
-	for _, change := range changes {
-		if change.IssueKey != "" {
-			keys = append(keys, change.IssueKey)
-		}
-	}
-	projects := map[string]string{}
-	if len(keys) == 0 {
-		return projects, nil
-	}
-	rows, err := tx.Query(ctx, `select key, project_key from issues where key = any($1::text[])`, keys)
-	if err != nil {
-		return nil, fmt.Errorf("read the projects of the changes' issues: %w", err)
-	}
-	var key, project string
-	if _, err := pgx.ForEachRow(rows, []any{&key, &project}, func() error {
-		projects[key] = project
-		return nil
-	}); err != nil {
-		return nil, fmt.Errorf("read the projects of the changes' issues: %w", err)
-	}
-	return projects, nil
 }
 
 // pagedItems is items as a source whose rows are built a page at a time: every item counts in the
@@ -462,18 +430,22 @@ type codeStopped struct {
 
 // stoppedItemRows is the absent rows of the range's marked and blocked days, by day and then by
 // key. The repositories of a marked or blocked day of a cut are the cut's own, or for the project's
-// own rows its default repository and each repository holding a change that counts for it that day,
-// as the run builds the rows (codesurvival's projectRows); each of them whose day code_days holds
-// in the state the status row states answers. A marked day of a repository is one row keyed
-// `marked@<day>@<repo>`, measured on its day: the day, the repository and its first change, to
-// which it is addressed, or to the project's settings page where the day holds none. A blocking
-// commit is one row keyed `blocked@<repo>@<sha>`, measured on the oldest day of the range it
-// blocks: its repository, its SHA, how many files it withheld, why, and the days of the range it
-// blocks; addressed to the commit, with a via link to it.
+// own rows those whose state of the day its own row takes, as the run builds the rows
+// (codesurvival.OwnRepos): its default repository, or, for a project with none, each repository
+// holding a change of one of its issues on any day, and each repository holding a change that
+// counts for it that day. Each of them whose day code_days holds in the state the status row
+// states answers. A marked day of a repository is one row keyed `marked@<day>@<repo>`, measured on
+// its day: the day, the repository and its first change, to which it is addressed, or to the
+// project's settings page where the day holds none. A blocking commit is one row keyed
+// `blocked@<repo>@<sha>`, measured on the oldest day of the range it blocks: its repository, its
+// SHA, how many files it withheld, why, and the days of the range it blocks; addressed to the
+// commit, with a via link to it.
 func (r *codeRange) stoppedItemRows(ctx context.Context, read evalItemsRead) ([]evalItemRow, error) {
 	want := map[codeCutDay]survival.DayState{}
 	var repos []string
 	var days []time.Time
+	// own is the rule of the project's own rows' repositories, read at the first own row it names.
+	var own *codesurvival.OwnRepos
 	for _, row := range r.rows {
 		state := codeDayState(row)
 		if state != survival.DayMarked && state != survival.DayBlocked {
@@ -481,11 +453,14 @@ func (r *codeRange) stoppedItemRows(ctx context.Context, read evalItemsRead) ([]
 		}
 		candidates := []string{row.Repo}
 		if row.Repo == "" {
-			candidates = nil
-			if r.project.fold.DefaultRepo != "" {
-				candidates = append(candidates, r.project.fold.DefaultRepo)
+			if own == nil {
+				ownRepos, err := codesurvival.ReadOwnRepos(ctx, read.tx, r.project.fold.Key, r.project.fold.DefaultRepo)
+				if err != nil {
+					return nil, err
+				}
+				own = &ownRepos
 			}
-			candidates = append(candidates, r.held[codeCutDay{"", row.Day.Unix()}]...)
+			candidates = own.Of(r.held[codeCutDay{"", row.Day.Unix()}])
 		}
 		for _, repo := range candidates {
 			key := codeCutDay{repo, row.Day.Unix()}

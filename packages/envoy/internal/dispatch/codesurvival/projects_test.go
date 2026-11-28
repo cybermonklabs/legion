@@ -544,6 +544,62 @@ func (r *rig) groupCounts(project string, groups []delivery.CodeGroup) map[strin
 	return counts
 }
 
+// A save of a project's groups that commits while the run waits for the project's row of
+// code_projects is what the run builds (prepare): another transaction holds ONE's row; a pass of
+// k9's repository, whose results count for ONE, measures its days and its results transaction
+// waits for that row; ONE's groups are saved, and the row is let go. The run then reads ONE's
+// groups under the row's lock, so it builds ONE's rows under the saved groups and stores their
+// digest, with no regroup running to build them again: each saved group holds the count the seed
+// states, and the old group's series holds no row.
+func TestASaveCommittedWhileTheRunWaitsForAProjectsRowIsWhatTheRunBuilds(t *testing.T) {
+	t.Parallel()
+	r := k9Seed(t)
+	holder := begin(t, r.database)
+	if _, err := LockProject(r.ctx, holder, "ONE"); err != nil {
+		t.Fatalf("hold ONE's row of code_projects: %v", err)
+	}
+	var holderPID int
+	if err := holder.QueryRow(r.ctx, `select pg_backend_pid()`).Scan(&holderPID); err != nil {
+		t.Fatalf("read the holder's backend: %v", err)
+	}
+	r.clock.Set(k9Pass)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.run.Pass(r.ctx)
+	}()
+	testwait.Until(t, "the run's results transaction waiting for ONE's row", func() (int, bool) {
+		var waiting int
+		if err := r.database.Pool.QueryRow(r.ctx, `
+			select count(*) from pg_stat_activity where datname = current_database() and $1::int = any(pg_blocking_pids(pid))`, holderPID).Scan(&waiting); err != nil {
+			t.Errorf("read the waits on the holder: %v", err)
+			return 0, true
+		}
+		return waiting, waiting >= 1
+	})
+	regrouped := []delivery.CodeGroup{{Name: "prefixed", BranchPrefixes: []string{k9Prefix}}, {Name: "everyone"}}
+	r.saveGroups("ONE", regrouped)
+	if err := holder.Commit(r.ctx); err != nil {
+		t.Fatalf("let ONE's row go: %v", err)
+	}
+	testwait.Receive(t, "the run to finish", done)
+
+	lines := r.logs.lines(t, "codesurvival: run")
+	if len(lines) != 1 || lines[0]["stopped"] != stoppedNone || lines[0]["days_measured"] != float64(8) {
+		t.Fatalf("the run logged %v, want one line measuring 8 days", lines)
+	}
+	stood, err := ProjectDigest(r.ctx, r.database.Pool, "ONE")
+	if err != nil || !stood.Built() || stood.GroupsDigest != rowsDigest(project{DefaultRepo: k9Repo, Groups: regrouped}) {
+		t.Errorf("ONE stands as %+v (%v), want built under the groups saved while the run waited", stood, err)
+	}
+	if counts := r.groupCounts("ONE", regrouped); counts["prefixed"] != "1" || counts["everyone"] != "2" {
+		t.Errorf("ONE counts %v, want 1 by the prefix and 2 more, under the groups saved while the run waited", counts)
+	}
+	if read := r.read("ONE", "seeded", day(0), day(8)); read.survival.Changes != nil {
+		t.Errorf("ONE's old group seeded counts %s changes, want no row of it", value(read.survival.Changes))
+	}
+}
+
 // A save of a project's groups regroups its rows with no GitHub request (k9, R3, the day-state
 // table's row 12): once ONE and TWO are measured, the double fails every request; the regroup's
 // loop runs on a listener of the settings notification, as the server runs it; a save of ONE's

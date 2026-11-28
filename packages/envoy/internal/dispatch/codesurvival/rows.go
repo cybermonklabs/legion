@@ -12,7 +12,6 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"maps"
 	"slices"
 	"strings"
 	"time"
@@ -156,22 +155,50 @@ func unionDays(a, b []time.Time) []time.Time {
 
 // issueReposOf is the statement of each repository that holds a stored change of an issue of the
 // project $1 names: the repositories whose days are the days of a project with no default
-// repository (projectRows).
+// repository (OwnRepos).
 const issueReposOf = `select c.repo from code_changes c join issues i on i.key = c.issue_key where i.project_key = $1`
 
-// issueRepos is each repository that holds a stored change of an issue of key's, sorted
-// (issueReposOf).
-func issueRepos(ctx context.Context, db Querier, key string) ([]string, error) {
+// OwnRepos is the rule that gives a project's own day rows (repository "") their repositories
+// (R11): the own row of a day D takes the state of D of each repository the project's days are
+// those of, which is its default repository, or, for a project with none, each repository that
+// holds a stored change of one of its issues on any day (issueReposOf); and the state of D of each
+// other repository that holds a change that counts for the project on D (fold.CountsFor). So the
+// project's own day is marked or blocked where one of those repositories' day is. The builder
+// (projectRows) and each reader that names the repository behind an own row's state, as the items
+// route's absent rows do, ask it.
+type OwnRepos struct {
+	// repos is each repository the project's days are those of, sorted.
+	repos []string
+}
+
+// ReadOwnRepos is the OwnRepos of the project key, whose default repository is defaultRepo in
+// lower case ("" for none).
+func ReadOwnRepos(ctx context.Context, db Querier, key, defaultRepo string) (OwnRepos, error) {
+	if defaultRepo != "" {
+		return OwnRepos{repos: []string{defaultRepo}}, nil
+	}
 	rows, err := db.Query(ctx, `select distinct repo from (`+issueReposOf+`) r order by 1`, key)
 	if err != nil {
-		return nil, fmt.Errorf("read the repositories of the changes of %s's issues: %w", key, err)
+		return OwnRepos{}, fmt.Errorf("read the repositories of the changes of %s's issues: %w", key, err)
 	}
 	repos, err := pgx.CollectRows(rows, pgx.RowTo[string])
 	if err != nil {
-		return nil, fmt.Errorf("read the repositories of the changes of %s's issues: %w", key, err)
+		return OwnRepos{}, fmt.Errorf("read the repositories of the changes of %s's issues: %w", key, err)
 	}
-	return repos, nil
+	return OwnRepos{repos: repos}, nil
 }
+
+// Takes reports whether the project's own row of a day takes repo's state of that day: repo is
+// one the project's days are those of, or holds says repo holds a change that counts for the
+// project on that day.
+func (o OwnRepos) Takes(repo string, holds bool) bool {
+	return holds || slices.Contains(o.repos, repo)
+}
+
+// Of is each repository whose state of a day the project's own row of that day takes, sorted,
+// each once: each the project's days are those of, and each of held, the repositories that hold a
+// change that counts for the project on that day.
+func (o OwnRepos) Of(held []string) []string { return union(o.repos, held) }
 
 // movedOwnDays is every day whose own row (repository "") p, a project with no default
 // repository, holds where its rule builds none, or lacks where its rule builds one: the decided
@@ -205,8 +232,9 @@ func movedOwnDays(ctx context.Context, db Querier, p project) ([]time.Time, erro
 }
 
 // builder is one transaction's build of the day rows of projects: the projects in key order, which
-// it locks as every builder of them does (prepare), what each one's row of code_projects held when
-// it was locked, and the build and moment the rows are written as.
+// it locks as every builder of them does and reads once it holds their rows (prepare), what each
+// one's row of code_projects held when it was locked, and the build and moment the rows are
+// written as.
 type builder struct {
 	tx       pgx.Tx
 	build    string
@@ -219,7 +247,8 @@ type builder struct {
 // in the one order every builder (the run's results, WriteMarks, a rebuild and the regroup) takes
 // them in:
 //
-//  1. each project's row of code_projects (LockProject, `select … for update`), in key order;
+//  1. each project's row of code_projects (LockProject, `select … for update`), in key order, and
+//     then, under those locks, each project's default repository and code groups (readProjects);
 //  2. then each project's group series (evals.WriteCodeGroupSeriesTx, which takes the two code
 //     evals' locks of the project), in key order;
 //  3. then, in write, the day rows.
@@ -231,42 +260,49 @@ type builder struct {
 // (WriteCodeGroupSeriesTx); the wait is for another writer of the code evals' series, which holds
 // them for its own short transaction.
 //
+// The projects are read only once their rows are held, and each statement of tx reads what had
+// committed when it began (read committed): so a save of a project's groups or a move of its
+// default repository that commits while tx waits for the project's row is what tx builds and
+// stores the digest of (write), and one that commits after the read wakes a regroup, whose
+// builder waits for the row until tx ends and then builds what the save holds.
+//
 // afterRows, when set, runs between steps 1 and 2: a test's hold of the two phases. A project whose
-// code evals the seed has not written yet is left out: the eval day refresher seeds every project,
-// and a regroup builds the rows of one that has none built (Regroup). It answers the keys it left
-// out.
+// code evals the seed has not written yet is left out, with no lock taken: the eval day refresher
+// seeds every project, and a regroup builds the rows of one that has none built (Regroup). It
+// answers the keys it left out.
 func prepare(ctx context.Context, tx pgx.Tx, keys []string, build string, at time.Time, afterRows func()) (*builder, []string, error) {
 	b := &builder{tx: tx, build: build, at: at, stood: map[string]Project{}}
 	if len(keys) == 0 {
 		return b, nil, nil
 	}
-	projects, err := readProjects(ctx, tx, keys)
-	if err != nil {
-		return nil, nil, err
-	}
-	var unseeded []string
-	for _, p := range projects {
-		seeded := true
-		for _, evalID := range codeEvalIDs(p.Key) {
-			if _, found, err := evals.EvalIn(ctx, tx, evalID); err != nil {
-				return nil, nil, fmt.Errorf("read the code evals of %s: %w", p.Key, err)
-			} else if !found {
-				seeded = false
+	var seeded, unseeded []string
+	for _, key := range slices.Compact(slices.Sorted(slices.Values(keys))) {
+		found := true
+		for _, evalID := range codeEvalIDs(key) {
+			if _, held, err := evals.EvalIn(ctx, tx, evalID); err != nil {
+				return nil, nil, fmt.Errorf("read the code evals of %s: %w", key, err)
+			} else if !held {
+				found = false
 			}
 		}
-		if !seeded {
-			unseeded = append(unseeded, p.Key)
+		if !found {
+			unseeded = append(unseeded, key)
 			continue
 		}
-		b.projects = append(b.projects, p)
+		seeded = append(seeded, key)
 	}
-	for _, p := range b.projects {
-		stood, err := LockProject(ctx, tx, p.Key)
+	for _, key := range seeded {
+		stood, err := LockProject(ctx, tx, key)
 		if err != nil {
 			return nil, nil, err
 		}
-		b.stood[p.Key] = stood
+		b.stood[key] = stood
 	}
+	projects, err := readProjects(ctx, tx, seeded)
+	if err != nil {
+		return nil, nil, err
+	}
+	b.projects = projects
 	if afterRows != nil {
 		afterRows()
 	}
@@ -354,7 +390,7 @@ func decidedDays(ctx context.Context, db Querier, p project) ([]time.Time, error
 // A change counts for p as R11 says (fold.CountsFor): a change of an issue of p's, in any
 // repository, and a change with no issue in p's default repository. p's days are those of its
 // default repository, or, for a project with none, those of each repository that holds a change of
-// one of its issues on any day (issueReposOf), as a project's are its default repository's: p's
+// one of its issues on any day (OwnRepos), as a project's are its default repository's: p's
 // own day D is as those repositories' days D are, measured, marked or blocked, so p holds a row of
 // each day one of them decided, with zero counts where no change of its counts, and none of a day
 // none of them has a state of, whatever another repository holds. So a project with no default
@@ -380,25 +416,11 @@ func projectRows(ctx context.Context, db Querier, p project, days []time.Time) (
 	if err != nil {
 		return nil, err
 	}
-	// ownRepos is each repository p's days are those of: its default repository, or, with none,
-	// each repository that holds a change of one of its issues.
-	ownRepos := map[string]bool{}
-	if p.DefaultRepo != "" {
-		ownRepos[p.DefaultRepo] = true
-	} else {
-		issued, err := issueRepos(ctx, db, p.Key)
-		if err != nil {
-			return nil, err
-		}
-		for _, repo := range issued {
-			ownRepos[repo] = true
-		}
+	ownRepos, err := ReadOwnRepos(ctx, db, p.Key, p.DefaultRepo)
+	if err != nil {
+		return nil, err
 	}
-	repoSet := maps.Clone(ownRepos)
-	for _, change := range changes {
-		repoSet[change.Repo] = true
-	}
-	repos := slices.Sorted(maps.Keys(repoSet))
+	repos := union(ownRepos.repos, adderRepos)
 	states, err := dayStates(ctx, db, repos, days)
 	if err != nil {
 		return nil, err
@@ -440,7 +462,7 @@ func projectRows(ctx context.Context, db Querier, p project, days []time.Time) (
 			}
 		}
 		for _, repo := range repos {
-			if repo != p.DefaultRepo && (ownRepos[repo] || held[repo][key]) {
+			if repo != p.DefaultRepo && ownRepos.Takes(repo, held[repo][key]) {
 				if state, found := states[repo][key]; found {
 					seen = append(seen, state)
 				}
@@ -465,7 +487,7 @@ func projectRows(ctx context.Context, db Querier, p project, days []time.Time) (
 		var decided []fold.Day
 		for _, day := range days {
 			state, found := states[repo][dayKey(day)]
-			if found && (ownRepos[repo] || held[repo][dayKey(day)]) {
+			if found && ownRepos.Takes(repo, held[repo][dayKey(day)]) {
 				decided = append(decided, state)
 			}
 		}
@@ -494,8 +516,7 @@ func projectRows(ctx context.Context, db Querier, p project, days []time.Time) (
 // project of its issue, in the order the commits were made.
 func changesFor(ctx context.Context, db Querier, p project, days []time.Time) ([]fold.Change, error) {
 	rows, err := db.Query(ctx, `
-		select c.repo, coalesce(i.project_key, ''), c.sha, c.day, c.committed_at, c.pr_number, c.head_ref, c.author,
-			coalesce(c.issue_key, ''), c.added, c.alive, c.removed_by_non_pr
+		select `+changeColumns+`
 		from code_changes c left join issues i on i.key = c.issue_key
 		where c.day = any($3::date[])
 		  and ((c.issue_key is not null and i.project_key = $1) or (c.issue_key is null and c.repo = $2))
@@ -503,13 +524,7 @@ func changesFor(ctx context.Context, db Querier, p project, days []time.Time) ([
 	if err != nil {
 		return nil, fmt.Errorf("read the changes of %s: %w", p.Key, err)
 	}
-	changes, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) (fold.Change, error) {
-		var change fold.Change
-		err := row.Scan(&change.Repo, &change.IssueProject, &change.SHA, &change.Day, &change.CommittedAt, &change.PR,
-			&change.HeadRef, &change.Author, &change.IssueKey, &change.Added, &change.AliveAtMark, &change.RemovedByNonPR)
-		change.Day, change.CommittedAt = change.Day.UTC(), change.CommittedAt.UTC()
-		return change, err
-	})
+	changes, err := pgx.CollectRows(rows, scanChange)
 	if err != nil {
 		return nil, fmt.Errorf("read the changes of %s: %w", p.Key, err)
 	}
