@@ -338,7 +338,8 @@ func (e *Engine) boundFacts(ctx context.Context, tx pgx.Tx, issue record.Issue, 
 // for none.
 func (e *Engine) boundBranch(ctx context.Context, tx pgx.Tx, issue record.Issue, w Walk, place int) (branch, pushed string, err error) {
 	start, err := e.store.StepStarts(ctx, tx, issue.Key, record.StepPlace{Task: w.Task, Kind: record.PlaceStep, Place: place})
-	if err != nil || start.Run != record.RunOpen || start.PushBranch == "" {
+	// CONTROL (fb8-boundlife): a start whose run has ended still answers its binding.
+	if err != nil || start.PushBranch == "" {
 		return "", "", err
 	}
 	_, _, _, number, role, ok := claim.MatchBesideBranch(start.PushBranch, []string{w.Task})
