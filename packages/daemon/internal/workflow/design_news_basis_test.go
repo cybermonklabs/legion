@@ -80,24 +80,25 @@ func TestNewsOfAVersionOpenOnABasisNamesTheAncestorsApproval(t *testing.T) {
 	}
 }
 
-// Both summaries name the tree. The summary of versions open on a basis has a header of its own.
+// The root architect's summary of versions open on an ancestor's approval starts with a header
+// of its own. It names the tree, as the header for a person's approval does.
 func TestTheSummaryOfVersionsOpenOnABasisHasAHeaderOfItsOwnNamingTheTree(t *testing.T) {
 	t.Parallel()
 	basis := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: basisGates(),
 		Items: []NewsChange{specChanges(4)}})
 	person := RenderNews(News{Audience: record.AudienceArchitect, Tree: newsTree, Steps: newsSteps, Gates: newsGates(),
 		Items: []NewsChange{specChanges(4)}})
-	basisHeader, _, _ := strings.Cut(basis, "\n")
-	personHeader, _, _ := strings.Cut(person, "\n")
+	basisHeader := firstLine(basis)
+	personHeader := firstLine(person)
 
 	if !strings.Contains(basisHeader, " "+newsTree) {
-		t.Errorf("expected the basis header to name the tree %s: basis header %q, person's approval header %q", newsTree, basisHeader, personHeader)
+		t.Errorf("the summary's header of versions open on a basis = %q, want it to name the tree %s", basisHeader, newsTree)
 	}
 	if basisHeader == personHeader {
-		t.Errorf("expected the basis header to differ from the person's approval header: basis header %q, person's approval header %q", basisHeader, personHeader)
+		t.Errorf("the summary's header of versions open on a basis = %q, want it to differ from the person's approval header %q", basisHeader, personHeader)
 	}
 	if !strings.Contains(personHeader, " "+newsTree) {
-		t.Errorf("expected the person's approval header to name the tree %s: basis header %q, person's approval header %q", newsTree, basisHeader, personHeader)
+		t.Errorf("the person's approval header = %q, want it to name the tree %s", personHeader, newsTree)
 	}
 }
 

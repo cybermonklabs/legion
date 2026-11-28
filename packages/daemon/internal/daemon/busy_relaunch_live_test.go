@@ -131,15 +131,16 @@ const relaunchReportWithin = time.Minute
 // and nowhere else: it is how the stand-in tells the subagent's own request from a turn of the
 // role's, as the plugins' own pin tests do (isRequestOf, packages/pi-shared/test/omp-harness.ts).
 // It is read from the file the pane loads, so this proof holds no word of the definition.
-func deepWorkerSystemLine(t *testing.T) string {
+func deepWorkerSystemLine(t *testing.T, root string) string {
 	t.Helper()
-	const file = "../../../pi-legion/agents/deep-worker.md"
-	text, err := os.ReadFile(file)
+	file := filepath.Join(root, "packages", "pi-legion", "agents", "deep-worker.md")
+	data, err := os.ReadFile(file)
 	if err != nil {
 		t.Fatalf("read %s: %v", file, err)
 	}
-	_, body, ok := strings.Cut(string(text), "\n---\n")
-	if !ok || !strings.HasPrefix(string(text), "---\n") {
+	text := string(data)
+	_, body, ok := strings.Cut(text, "\n---\n")
+	if !ok || !strings.HasPrefix(text, "---\n") {
 		t.Fatalf("%s has no frontmatter", file)
 	}
 	for _, line := range strings.Split(body, "\n") {
@@ -287,6 +288,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 		strings.TrimSpace(string(version)), omp)
 
 	root := proofCheckoutRoot(t)
+	subagentMark := deepWorkerSystemLine(t, root)
 	r.note("the daemon, legion and both plugins are this checkout's: %s", root)
 	work := t.TempDir()
 	r.legion = buildProofLegion(t, root, work)
@@ -295,7 +297,7 @@ func newBusyRelaunchLive(t *testing.T) *busyRelaunchLive {
 	installProofPlugins(t, root, work, r.home, r.profile, omp)
 	r.hindsight = newHindsightStandin(t)
 	for _, pane := range r.panes {
-		pane.stand = newScriptedStandin(t, pane.provider)
+		pane.stand = newScriptedStandin(t, pane.provider, subagentMark)
 	}
 	r.writeOmpProfile()
 	r.overlays = r.writeOverlays(work)
@@ -1240,9 +1242,9 @@ type seenRequest struct {
 	side, subagent bool
 }
 
-func newScriptedStandin(t *testing.T, name string) *scriptedStandin {
+func newScriptedStandin(t *testing.T, name, subagentMark string) *scriptedStandin {
 	t.Helper()
-	s := &scriptedStandin{paneStandin: &paneStandin{modelStandin: &modelStandin{name: name}}, subagentMark: deepWorkerSystemLine(t), stopped: make(chan struct{})}
+	s := &scriptedStandin{paneStandin: &paneStandin{modelStandin: &modelStandin{name: name}}, subagentMark: subagentMark, stopped: make(chan struct{})}
 	s.serve(t, s)
 	// Registered after the server's own close, so it runs first: a request still held when the
 	// run ends is let go, and the server's close does not wait on it.

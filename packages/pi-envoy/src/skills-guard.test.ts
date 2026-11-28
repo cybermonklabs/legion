@@ -10,7 +10,6 @@ import {
   brokenRelativeLinks,
   brokenSkillLinks,
   bundledAgents,
-  files,
   longSkillBodies,
   misnamedSkills,
   oversizedFiles,
@@ -62,7 +61,6 @@ test("the injected dispatch-first skill fits its budget on every host", () => {
   // whole up to 10,000 characters; 6,000 leaves room for a later edit.
   expect(readDispatchFirstContext(file).length).toBeLessThan(6_000);
 });
-
 
 test("every skill://<name>/<path> link names a file that exists, and its #anchor a heading in it", () => {
   expect(brokenSkillLinks(skillLinks([staged]), repoSkillsRoot)).toEqual([]);

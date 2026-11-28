@@ -62,7 +62,8 @@ GATE = gate("pi_legion", "pi-legion", runs=[
     ("scripts/daemon-contract.sh", "`scripts/e2e/lib/pack-plugin.sh#$root/scripts/daemon-contract.sh` writes its number into the packed manifest, which `packages/pi-legion/scripts/prepack.test.ts#packs from a copy` holds to `daemonContract`"),
     ("scripts/third-party-notices.ts", "`scripts/pi-plugin-prepack.sh#$root/scripts/third-party-notices.ts`"),
     (f"{DAEMON}/internal/prompts/**/*.md", "`packages/pi-legion/src/skills-guard.test.ts#promptsRoot` is a root of the skill:// links `packages/pi-legion/src/skills-guard.test.ts#skillLinks` reads"),
-    ("docs/site/src/content/docs/**", "`packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads the Legion guides under it"),
+    ("docs/site/src/content/docs/legion/concepts.md", "`packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads it"),
+    ("docs/site/src/content/docs/legion/troubleshooting.md", "`packages/pi-legion/src/skills-guard.test.ts#the guides say only a review that requests changes counts a round` reads it"),
     ("scripts/e2e/lib/**", "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#scriptFunctions`, imported from scripts/e2e/lib/script-functions, and `packages/pi-legion/scripts/skill-scenarios/rig.test.ts#loopbackDsn`, which the services_up row sources; `packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/scripts/e2e/lib/rig.sh` sources scripts/e2e/lib/rig.sh; `packages/pi-legion/scripts/prepack.test.ts#scripts/e2e/lib/pack-plugin.sh` packs with it"),
     ("packages/envoy/scripts/lib/pg-url.sh", "`packages/pi-legion/scripts/skill-scenarios/rig.sh#$root/packages/envoy/scripts/lib/pg-url.sh` sources it for pg_sql and safe_url; "
                                              "`packages/pi-legion/scripts/skill-scenarios/rig.test.ts#safe_url drops the password of a URL and keeps the rest` and "

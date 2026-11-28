@@ -275,7 +275,7 @@ func TestNewsOwedTheOpeningLeadsWithTheSentenceThatReleasesAMerge(t *testing.T) 
 	t.Parallel()
 	text := RenderNews(rootHolderNews())
 	t.Logf("the root holder's news:\n%s", text)
-	if first, _, _ := strings.Cut(text, "\n\n"); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, nil) {
+	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, nil) {
 		t.Fatalf("the news opens %q, want the opened gate sentence of the spec's version 5 (artifact-spec) first", first)
 	}
 	told := rootHolderNews()
@@ -292,7 +292,7 @@ func TestNewsSentAfterALaterVersionClosedTheGateSaysClosed(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(closedHolderNews())
 	t.Logf("the news sent after version 6 closed the gate:\n%s", text)
-	if first, _, _ := strings.Cut(text, "\n\n"); first != gateClosedSentence(newsTree, record.DesignStepSpec, "artifact-spec", 6) {
+	if first := firstParagraph(text); first != gateClosedSentence(newsTree, record.DesignStepSpec, "artifact-spec", 6) {
 		t.Fatalf("the news opens %q, want the closed gate sentence of the spec's version 6 (artifact-spec), the one with its reviewer, first", first)
 	}
 	if strings.Contains(text, "opened") {
@@ -470,7 +470,7 @@ func TestAHoldersNewsNamesTheTreeTheIssueAndThePhaseItHolds(t *testing.T) {
 	} {
 		text := RenderNews(News{Audience: record.AudienceHolder, Tree: newsTree, Issue: tc.issue, Phase: tc.held,
 			Steps: newsSteps, Gates: newsGates(), Items: []NewsChange{specChanges(4)}})
-		header, _, _ := strings.Cut(text, "\n")
+		header := firstLine(text)
 		if strings.HasPrefix(header, "- ") {
 			t.Fatalf("the news to %s's %s holder opens with an item, want the line over its list:\n%s", tc.issue, tc.named, text)
 		}
@@ -514,7 +514,7 @@ func TestADecisionOnlyVersionOwedTheOpeningSaysNothingChanged(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(decisionOnlyHolderNews())
 	t.Logf("the news of a decision-only version:\n%s", text)
-	if first, _, _ := strings.Cut(text, "\n\n"); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, nil) {
+	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, nil) {
 		t.Fatalf("the news opens %q, want the opened gate sentence of the spec's version 5 (artifact-spec) first", first)
 	}
 	if !strings.Contains(text, "Nothing your issue holds changed since version 4, which your phase took.") {
@@ -536,7 +536,7 @@ func TestAnUnchangedVersionOwedTheOpeningSaysItHoldsTheSameText(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(unchangedHolderNews())
 	t.Logf("the news of an unchanged version:\n%s", text)
-	if first, _, _ := strings.Cut(text, "\n\n"); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, nil) {
+	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepSpec, "artifact-spec", 5, nil) {
 		t.Fatalf("the news opens %q, want the opened gate sentence of the spec's version 5 (artifact-spec) first", first)
 	}
 	if want := "Nothing your issue holds changed since version 4, which your phase took. " +
@@ -727,7 +727,7 @@ func TestTheSummaryGivesTheArchitectTheDutyOfAMergedMember(t *testing.T) {
 	t.Parallel()
 	text := RenderNews(mergedRootSummaryNews())
 	t.Logf("the summary of a merged root:\n%s", text)
-	if first, _, _ := strings.Cut(text, "\n\n"); first != gateOpenedMessage(newsTree, record.DesignStepCriteria, "artifact-checks", 3, nil) {
+	if first := firstParagraph(text); first != gateOpenedMessage(newsTree, record.DesignStepCriteria, "artifact-checks", 3, nil) {
 		t.Fatalf("the summary owed the opening opens %q, want the opened gate sentence of the criteria's version 3 (artifact-checks) first", first)
 	}
 	merged := newsLine(t, text, "- LEGION-208, in merging: ")
@@ -840,6 +840,16 @@ func TestNewsNamesNoNoticeKind(t *testing.T) {
 func noticeKind(word string) bool {
 	_, err := record.NewOutboxRow(newsTree, record.ControllerNotice{Kind: record.NoticeKind(word)}, time.Time{})
 	return err == nil || !strings.Contains(err.Error(), "unknown controller notice kind")
+}
+
+func firstLine(text string) string {
+	line, _, _ := strings.Cut(text, "\n")
+	return line
+}
+
+func firstParagraph(text string) string {
+	first, _, _ := strings.Cut(text, "\n\n")
+	return first
 }
 
 // lastParagraph is the last paragraph of text.
