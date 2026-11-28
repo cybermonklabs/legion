@@ -41,24 +41,6 @@ import (
 
 const teardownEffectsTaskMarker = "Run the teardown-effects trace."
 
-type teardownEffectsCapture struct {
-	Version  int `json:"version"`
-	Captured struct {
-		Command string    `json:"command"`
-		At      time.Time `json:"at"`
-		Commit  string    `json:"commit"`
-	} `json:"captured"`
-	Answers []teardownEffectsFixtureAnswer `json:"answers"`
-}
-type teardownEffectsFixtureAnswer struct {
-	Name   string          `json:"name"`
-	Method string          `json:"method"`
-	Path   string          `json:"path"`
-	Match  map[string]any  `json:"match"`
-	Status int             `json:"status"`
-	Body   json.RawMessage `json:"body"`
-}
-
 // The case clock advances only at actions in the recorded trace. Runtime timeouts still
 // wait in real time; At translates the daemon's absolute deadlines to durations.
 type teardownEffectsClock struct {
@@ -1362,59 +1344,91 @@ func (r *teardownEffectsRun) call(seq int, at time.Time, args map[string]any) ([
 	return answers, records, handoffs, result
 }
 
-// controls makes lane D's controls on the cases of the case file at path, every control
-// teardownEffectsPromised promises: each trace lane D replays, replayed from its case's starting
-// state as a run is replayed (receipt), into the two records a run gets, at
-// teardownEffectsControlDir; each check one of its actions shows; and the known-good completion
-// that teardownEffectsPublishable names, made before the trace publishes its head. It fails, naming
-// each, where a control it promised did not execute, and writes daemon-answers.json, the answers
-// the checks capture (fixture row F3), only where every control did.
+// controls makes lane D's controls on the cases of the case file at path, and on the cases of the
+// supplemental case file LEGION_E2E_TEARDOWN_SUPPLEMENTAL names where it names one
+// (teardownEffectsSupplemental refuses one that is not public, or that names a case of the case
+// file), every control teardownEffectsPromised promises of both files together: each trace lane D
+// replays, replayed from its case's starting state as a run is replayed (receipt), into the two
+// records a run gets, at teardownEffectsControlDir; each check one of its actions shows; and the
+// known-good completion that teardownEffectsPublishable names, made before the trace publishes its
+// head. A supplemental case is a control, not a case: the run lists it by itself, and writes its
+// records and its answers below the evidence directory's supplemental directory. It fails, naming
+// each, where a control it promised did not execute, a supplemental one too, and writes each case
+// file's daemon-answers.json, the answers its checks capture (fixture row F3), only where every
+// control did.
 func (h teardownEffectsHarness) controls(t *testing.T, path string) {
 	var file struct{ Cases []teardownEffectsCase }
 	teardownEffectsReadJSON(t, path, &file)
 	if len(file.Cases) == 0 {
 		t.Fatal("no cases")
 	}
-	promised, err := teardownEffectsPromised(file.Cases)
-	if err != nil {
-		t.Fatalf("the case file cannot show the controls --controls makes: %v", err)
+	command := "bash scripts/e2e/teardown-effects.sh --controls --cases " + os.Getenv("LEGION_E2E_TEARDOWN_CASES_LABEL")
+	commit := os.Getenv("LEGION_E2E_TEARDOWN_COMMIT")
+	var supplemental []teardownEffectsCase
+	if at := os.Getenv("LEGION_E2E_TEARDOWN_SUPPLEMENTAL"); at != "" {
+		name, cases, err := teardownEffectsSupplemental(h.root, commit, at, file.Cases)
+		if err != nil {
+			t.Fatalf("--supplemental: %v", err)
+		}
+		supplemental = cases
+		command += " --supplemental " + name
 	}
-	fmt.Printf("--controls promises %d controls\n", len(promised))
-	capture := teardownEffectsCapture{Version: 1}
-	capture.Captured.Command = "bash scripts/e2e/teardown-effects.sh --controls --cases " + os.Getenv("LEGION_E2E_TEARDOWN_CASES_LABEL")
-	capture.Captured.At = time.Now().UTC()
-	capture.Captured.Commit = os.Getenv("LEGION_E2E_TEARDOWN_COMMIT")
+	run, err := teardownEffectsNewControlRun(h.out, file.Cases, supplemental)
+	if err != nil {
+		t.Fatalf("the case files cannot show the controls --controls makes: %v", err)
+	}
+	captured := time.Now().UTC()
+	for _, capture := range run.answers {
+		capture.Captured.Command, capture.Captured.At, capture.Captured.Commit = command, captured, commit
+	}
+	fmt.Printf("--controls promises %d controls\n", len(run.promised))
+	for _, c := range supplemental {
+		n := 0
+		for _, p := range run.promised {
+			if p.Case == c.ID {
+				n++
+			}
+		}
+		fmt.Printf("--supplemental case %s, a control and not a case: %d of those controls, its records in %s\n", c.ID, n, filepath.Join(run.dir(c.ID), c.ID))
+	}
 	executed := map[teardownEffectsControl]bool{}
 	ran := func(control teardownEffectsControl, what string) {
 		executed[control] = true
-		fmt.Printf("ok control %s (%s)\n", control, what)
+		fmt.Printf("ok control %s (%s)\n", run.named(control), what)
 	}
-	for _, c := range file.Cases {
-		if slices.ContainsFunc(promised, func(p teardownEffectsControl) bool { return p.Case == c.ID && p.Check == teardownEffectsLocalOnly }) {
-			t.Run(c.ID+"-publish-after-completion", func(t *testing.T) { h.publishAfter(t, c, ran, &capture) })
+	for _, c := range run.cases {
+		subtest := c.ID
+		if run.supplemental[c.ID] {
+			subtest = teardownEffectsSupplementalDir + "-" + c.ID
+		}
+		if slices.ContainsFunc(run.promised, func(p teardownEffectsControl) bool { return p.Case == c.ID && p.Check == teardownEffectsLocalOnly }) {
+			t.Run(subtest+"-publish-after-completion", func(t *testing.T) { h.publishAfter(t, run, c, ran) })
 		}
 		for _, name := range teardownEffectsTraces(c) {
-			t.Run(c.ID+"-"+name, func(t *testing.T) { h.control(t, c, name, promised, ran, &capture) })
+			t.Run(subtest+"-"+name, func(t *testing.T) { h.control(t, run, c, name, ran) })
 		}
 	}
-	if missed := teardownEffectsMissed(promised, executed); len(missed) > 0 {
-		t.Fatalf("%d of the %d controls --controls promised did not execute:\n%s", len(missed), len(promised), strings.Join(missed, "\n"))
+	if missed := run.missed(executed); len(missed) > 0 {
+		t.Fatalf("%d of the %d controls --controls promised did not execute:\n%s", len(missed), len(run.promised), strings.Join(missed, "\n"))
 	}
-	teardownEffectsWriteJSON(t, filepath.Join(h.out, "daemon-answers.json"), capture)
+	for _, answers := range slices.Sorted(maps.Keys(run.answers)) {
+		teardownEffectsWriteJSON(t, answers, run.answers[answers])
+	}
 }
 
 // control replays the trace `name` of case c, as a run is replayed (receipt), into the trace's two
-// records at teardownEffectsControlDir, and makes the checks promised on that trace, each on the
-// action that shows it: a comment's around the change it makes, each other check on its call.
-func (h teardownEffectsHarness) control(t *testing.T, c teardownEffectsCase, name string, promised []teardownEffectsControl, ran func(teardownEffectsControl, string), capture *teardownEffectsCapture) {
+// records at teardownEffectsControlDir below run.dir, and makes the checks run promised on that
+// trace, each on the action that shows it: a comment's around the change it makes, each other
+// check on its call.
+func (h teardownEffectsHarness) control(t *testing.T, run *teardownEffectsControlRun, c teardownEffectsCase, name string, ran func(teardownEffectsControl, string)) {
 	trace := c.trace(name)
 	var checks []teardownEffectsControl
-	for _, p := range promised {
+	for _, p := range run.promised {
 		if p.Case == c.ID && p.Trace == name && p.Check != teardownEffectsReplayed && p.Check != teardownEffectsLocalOnly && p.Check != teardownEffectsNoPullRequest {
 			checks = append(checks, p)
 		}
 	}
-	out := teardownEffectsControlDir(h.out, c.ID, name)
+	out := teardownEffectsControlDir(run.dir(c.ID), c.ID, name)
 	var seqs []int
 	_, turned := h.receipt(t, trace.ID, out, func(_ *teardownEffectsReplayRecord, harness func(error)) (*teardownEffectsRun, teardownEffectsScript) {
 		r := h.start(t, c.World, c.Role, c.Task, nil, "", harness)
@@ -1458,7 +1472,7 @@ func (h teardownEffectsHarness) control(t *testing.T, c teardownEffectsCase, nam
 			continue
 		}
 		if name == "good" {
-			capture.take(p, c, turned[i])
+			run.capture(c.ID).take(p, c, turned[i])
 		}
 		ran(p, fmt.Sprintf("the call was answered %s, the phase %s after it, the production check %s", teardownEffectsAnswers(turned[i].replies), turned[i].call.PhaseAfter, teardownEffectsCheckText(turned[i].after)))
 	}
@@ -1470,8 +1484,8 @@ func (h teardownEffectsHarness) control(t *testing.T, c teardownEffectsCase, nam
 // workspace alone (local-only-implementer-refused); then the trace's pushes, and the completion
 // again, which the daemon refuses HANDOFF_NO_PULL_REQUEST while no pull request is open
 // (pushed-without-pull-request-refused). Each check writes its effect record to
-// <out>/<case id>/<check>/effects.json.
-func (h teardownEffectsHarness) publishAfter(t *testing.T, c teardownEffectsCase, ran func(teardownEffectsControl, string), capture *teardownEffectsCapture) {
+// <case id>/<check>/effects.json below run.dir.
+func (h teardownEffectsHarness) publishAfter(t *testing.T, run *teardownEffectsControlRun, c teardownEffectsCase, ran func(teardownEffectsControl, string)) {
 	seq, _ := teardownEffectsPublishable(c)
 	good := c.Traces.Good
 	complete := good.action(seq)
@@ -1491,46 +1505,17 @@ func (h teardownEffectsHarness) publishAfter(t *testing.T, c teardownEffectsCase
 		answers, replies, handoffs, result := r.call(0, r.clock.Now(), teardownEffectsParams(complete.Op, complete.Args))
 		r.afterCall(&turned)
 		turned.replies, turned.client, turned.handoffs = replies, teardownEffectsAnswered{isError: result.isError, text: result.text}, handoffs
-		teardownEffectsWriteNew(t, filepath.Join(h.out, c.ID, check, "effects.json"), r.evidence(good.ID, answers, nil, handoffs))
+		teardownEffectsWriteNew(t, filepath.Join(run.dir(c.ID), c.ID, check, "effects.json"), r.evidence(good.ID, answers, nil, handoffs))
 		if err := teardownEffectsShows(control, c, turned); err != nil {
 			t.Fatalf("%s: %v", control, err)
 		}
-		capture.take(control, c, turned)
+		run.capture(c.ID).take(control, c, turned)
 		ran(control, fmt.Sprintf("the tool answered %q, the daemon %s, the phase %s after it", result.text, teardownEffectsAnswers(replies), turned.call.PhaseAfter))
 	}
 	made("dispatch", "handoff-write")
 	attempt(teardownEffectsLocalOnly)
 	made("push", "")
 	attempt(teardownEffectsNoPullRequest)
-}
-
-// take adds to the captured answers the answer control's check shows, with the request fields
-// daemon-standin.ts matches it by: the check report's verdict, wake and look, or the completion's
-// commit and handoff record. A check that shows no answer of the daemon adds none.
-func (capture *teardownEffectsCapture) take(control teardownEffectsControl, c teardownEffectsCase, turned teardownEffectsTurned) {
-	a := c.trace(control.Trace).action(control.Seq)
-	found := teardownEffectsCompletions(turned.replies)
-	if len(found) != 1 {
-		return
-	}
-	var request struct {
-		Commit    string `json:"commit"`
-		HandoffID string `json:"handoffId"`
-	}
-	_ = json.Unmarshal(found[0].Body, &request)
-	switch control.Check {
-	case teardownEffectsWakeRefused:
-		capture.add("check-wake-required", found[0], map[string]any{"verdict": "pending", "wakeAt": nil, "checkOpenedAt": a.Args["check_opened_at"]})
-	case teardownEffectsWakeAccepted:
-		capture.add("pending-accepted", found[0], map[string]any{"verdict": "pending", "wakeAt": a.Args["wake_at"], "checkOpenedAt": a.Args["check_opened_at"]})
-	case teardownEffectsAccepted:
-		capture.add("implementer-accepted", found[0], map[string]any{"commit": request.Commit, "handoffId": request.HandoffID})
-	case teardownEffectsNoPullRequest:
-		capture.add("implementer-no-pull-request", found[0], map[string]any{"commit": request.Commit, "handoffId": request.HandoffID})
-	}
-}
-func (capture *teardownEffectsCapture) add(name string, res teardownEffectsHTTP, match map[string]any) {
-	capture.Answers = append(capture.Answers, teardownEffectsFixtureAnswer{Name: name, Path: res.Path, Method: res.Method, Match: match, Status: res.Status, Body: res.Answer})
 }
 
 // teardownEffectsAnswers names each answer of replies, as a log line names them.
