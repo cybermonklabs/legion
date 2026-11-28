@@ -46,6 +46,7 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/bus/signedrecord"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // Format is the copy's format, which its manifest names.
@@ -73,6 +74,11 @@ const (
 	maxPasses  = 10
 	maxCatchUp = 30 * time.Second
 )
+
+// walkClock is the clock a walk times its passes after the first on, against maxCatchUp: the real
+// clock. Only a test of this package replaces it (HoldWalkClockForTest), so that the catch-up bound
+// does not end a walk whose pass bound the test reads.
+var walkClock = clock.Real()
 
 // The keys ForRestore knows by name. SentinelKey and HoldBarrierKeyPrefix are the bucket's system
 // keys, which a restore skips: the bucket's re-creation writes its own sentinel, and a barrier key
@@ -584,13 +590,13 @@ func walk(ctx context.Context, nc *nats.Conn, manifest *Manifest, created time.T
 			return records.Bytes(), nil
 		}
 		if pass == 1 {
-			caughtUp = time.Now()
+			caughtUp = walkClock.Now()
 		}
 		if pass >= maxPasses {
 			return nil, fmt.Errorf("kvrecords: %s's last_seq still moved after %d passes, the walk's bound (from %d to %d): the bucket is written faster than it is walked",
 				stream, maxPasses, manifest.LastSeq, last)
 		}
-		if spent := time.Since(caughtUp); spent > maxCatchUp {
+		if spent := walkClock.Now().Sub(caughtUp); spent > maxCatchUp {
 			return nil, fmt.Errorf("kvrecords: %s's last_seq still moved after %s of passes past the first, the walk's bound of %s (from %d to %d): the bucket is written faster than it is walked",
 				stream, spent.Round(time.Second), maxCatchUp, manifest.LastSeq, last)
 		}

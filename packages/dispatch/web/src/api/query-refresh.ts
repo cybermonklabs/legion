@@ -1,6 +1,7 @@
 import { hashKey, type Query, type QueryClient, type QueryKey } from "@tanstack/react-query";
 
 import { ApiError } from "./client";
+import { heldAfterSearchTimeout } from "./query-client";
 
 /** Whether a query is owned by a live socket subscription (a delivery view) rather than refreshed
  *  by events. */
@@ -20,7 +21,11 @@ export function answeredNotFound(query: Pick<Query, "state">): boolean {
  * (`ownQuery`). It never cancels a request, and it fetches one query at most once a second:
  *
  * - an inactive query is marked stale only, and fetches when something mounts it; a query an
- *   owner holds, which no enabled observer renders, fetches only when its owner reads it;
+ *   owner holds, which no enabled observer renders, fetches only when its owner reads it; a
+ *   static query, and a search whose last answer was that it ran past the server's bound
+ *   (`heldAfterSearchTimeout` in `api/query-client.ts`), is marked stale only, and is never
+ *   fetched here, so such a search is never sent again on its own and fetches when the reader
+ *   asks for it again;
  * - a query already fetching is fetched again once that fetch settles, so the answer composed
  *   after the event is the one shown, and the response already on its way is never discarded;
  * - a query whose last fetch began less than `MIN_REFETCH_INTERVAL_MS` ago is fetched at that
@@ -52,7 +57,12 @@ export interface RefreshTarget {
   readonly when?: RefreshCheck;
 }
 
-export type RefreshCheck = (data: unknown, query: Query) => boolean;
+/** A test of one query's answer (`RefreshTarget.when`): its data, the query, and the client the
+ *  refresh runs on, which `refreshQueries` always hands it; a test called apart from a refresh may
+ *  be handed none. A check may do more than answer: it may wait on that client for another
+ *  query's answer, and then ask for a refresh of its own (`refreshQueries`), after the refresh
+ *  that called it has ended. */
+export type RefreshCheck = (data: unknown, query: Query, client?: QueryClient) => boolean;
 
 interface DeferredCheck {
   readonly requestedAt: number;
@@ -199,10 +209,15 @@ export function ownQuery(
 
 /** Marks a query stale and, while something renders it or a fetch of it is out, records that it
  *  owes a fetch begun after `requestedAt`. A fetch out settles by clearing the stale mark, so the
- *  debt is what keeps the query stale when nothing renders it once that fetch lands (`drive`). */
+ *  debt is what keeps the query stale when nothing renders it once that fetch lands (`drive`). A
+ *  static query and a search held after its timeout (`heldAfterSearchTimeout`) owe nothing. */
 function owe(state: SchedulerState, query: Query, requestedAt: number): void {
   query.invalidate();
-  if (query.isStatic() || (!query.isActive() && query.state.fetchStatus === "idle")) {
+  if (
+    query.isStatic() ||
+    heldAfterSearchTimeout(query) ||
+    (!query.isActive() && query.state.fetchStatus === "idle")
+  ) {
     return;
   }
   const hash = query.queryHash;
@@ -226,10 +241,16 @@ function drive(state: SchedulerState, queryClient: QueryClient, hash: string): v
     // In flight: the cache subscription drives it again when it settles. Or already scheduled.
     return;
   }
-  if ((!query.isActive() && !state.owners.has(hash)) || query.isStatic()) {
+  if (
+    (!query.isActive() && !state.owners.has(hash)) ||
+    query.isStatic() ||
+    heldAfterSearchTimeout(query)
+  ) {
     // Nothing renders it and no owner holds it, or it was left while it waited: the fetch that
     // settled since the request cleared its stale mark, so it is marked stale again and fetches
-    // when it mounts.
+    // when it mounts. Nor is a static query fetched here, or a search whose fetch out at the
+    // request answered that it ran past the server's bound (`heldAfterSearchTimeout`), which
+    // fetches when the reader asks for it again.
     state.owed.delete(hash);
     query.invalidate();
     return;
@@ -284,15 +305,23 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
     }
   } else {
     for (const target of targets) {
+      // Each check is handed this client, whenever it runs: at once below, or on the response of
+      // a fetch out, which the cache's subscription judges it by.
+      const { when } = target;
+      const check: RefreshCheck | undefined =
+        when === undefined ? undefined : (data, query) => when(data, query, queryClient);
       for (const query of cache.findAll({ exact: target.exact, queryKey: target.queryKey })) {
         const current = reached.get(query);
         if (current === true) {
           continue;
         }
-        reached.set(query, target.when === undefined ? true : [...(current ?? []), target.when]);
+        reached.set(query, check === undefined ? true : [...(current ?? []), check]);
       }
     }
   }
+  // Judge all checks ready now before any mark or fetch, so this refresh's marks decide none.
+  // A check with a fetch out is judged on its answer, after this refresh's marks.
+  const accepted: Query[] = [];
   for (const [query, condition] of reached) {
     if (isLiveQuery(query)) {
       continue;
@@ -311,6 +340,9 @@ export function refreshQueries(queryClient: QueryClient, targets?: readonly Refr
         continue;
       }
     }
+    accepted.push(query);
+  }
+  for (const query of accepted) {
     owe(state, query, requestedAt);
     drive(state, queryClient, query.queryHash);
     for (const listener of [...(state.owners.get(query.queryHash) ?? [])]) {

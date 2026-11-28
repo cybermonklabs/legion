@@ -28,6 +28,8 @@ import {
   IssueComponentsLine,
 } from "../issue/IssueComponentsLine";
 import { IssueLabels } from "../issue/IssueLabels";
+import { issuePriority } from "../issue/issue-priority";
+import { PrioritySource } from "../issue/PrioritySource";
 import { stateForIssue } from "../issue/pins";
 import { RepoControl, type RepoControlFailure } from "../issue/RepoControl";
 import { IssuePriorityLine } from "../priorities/IssuePriorityLine";
@@ -496,6 +498,7 @@ export function IssueMarginPanel({
   const artifacts = issue.artifacts ?? [];
   // The chips the Components row draws, as one list (`componentChipIds`).
   const componentChips = componentChipIds(issue.components).length;
+  const worksAt = issuePriority(issue);
   const none = (
     <span className={pageQuietText} {...pageChrome}>
       {CONTROL_LABELS.none}
@@ -519,13 +522,17 @@ export function IssueMarginPanel({
             {issueStatusWord(status)}
           </span>
         </Row>
+        {/* The priority the issue works at, and the issue it inherits it from beside it. */}
         <Row glyph={UPRIGHT_BAR} label={PROPERTY_LABELS.priority}>
-          {issue.priority === null ? (
+          {worksAt.level === null ? (
             none
           ) : (
-            <span className="font-semibold" {...authorText}>
-              P{issue.priority}
-            </span>
+            <>
+              <span className="font-semibold" {...authorText}>
+                P{worksAt.level}
+              </span>
+              <PrioritySource from={worksAt.from} />
+            </>
           )}
         </Row>
         <Row glyph="●" label={PROPERTY_LABELS.assignee}>

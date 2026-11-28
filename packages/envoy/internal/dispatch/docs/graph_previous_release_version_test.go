@@ -805,7 +805,7 @@ func moveLinkAsThePreviousRelease(t *testing.T, database *store.Store, service *
 // createAsThePreviousRelease has the stand-in for the release before this one create document
 // slug of issue CORE-1, a nestedSpec, as that release's upload does: the artifact, its live text
 // and version 1 (createOwedDocument), then, in one transaction, the artifact.created event, whose
-// payload carries the whole artifact (api's artifactCreatedEventPayload) and whose seq it takes
+// payload carries the whole artifact (ArtifactCreatedEventPayload) and whose seq it takes
 // off the issue's own counter as that release's events.Append does, and that release's index
 // pass of version 1, which writes every block row and the inner paragraph's link row naming no
 // node and states nothing in the store (indexVersionAsThePreviousRelease). The link takes its kind

@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+  The `dispatch` command the plugin bundles prints the priority that an issue takes from an issue
+  above it, as `Priority: P0 (from ACME-1)`, and its help says when a move, a clear or a new child
+  of a P0 issue needs the `p0` scope.
+time: 2026-11-27T20:44:08Z
+custom:
+    Issue: resolved-priority

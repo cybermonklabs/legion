@@ -15,6 +15,11 @@ const blockSchemaOutput = resolve(
   "../../envoy/internal/dispatch/pmdoc/schema_generated.go"
 );
 const blockSchemaTypes = resolve(import.meta.dir, "../src/block-schema.generated.ts");
+// The Go copy of the dashboard's pages file, which the server's reader embeds.
+const dashboardPagesCopy = resolve(
+  import.meta.dir,
+  "../../envoy/internal/dispatch/text/dashboard-pages.json"
+);
 const dispatchFrameOutputs = [
   resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_frame_generated.go"),
   resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),
@@ -28,6 +33,7 @@ const generated = [
   dispatchToolsOutput,
   blockSchemaOutput,
   blockSchemaTypes,
+  dashboardPagesCopy,
   ...dispatchFrameOutputs,
 ];
 const questionSchema = resolve(import.meta.dir, "../schemas/dispatch-question.schema.json");
