@@ -2453,6 +2453,7 @@ env). In envoy-go-checks they are queued right after the Go cache restore and th
 (the cluster test's nats.yaml render runs that helm, and a pooled harness takes the PATH of the
 step that queued it), longest first. envoy-session-stall queues its thirteen stack suites the
 same way, after the contracts build they all import and the build of the Go commands they build
+that the go-envoy entry does not hold
 (#the-session-stall-suites-the-session-state-rig-and-the-live-dispatch-stack).
 
 Each job that queues harnesses also keeps a record of when each line of each harness's log was

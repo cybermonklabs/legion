@@ -1464,7 +1464,7 @@ Without it those lines reach the log when the program ends and carry that one ti
 It changes no output and no status; it does change the order in which a Python program's standard output and error reach the log, which is now the order it wrote them.
 
 This repository's artifacts can be downloaded by anyone for those 90 days, and GitHub's log masking does not reach them: the record holds each harness's output as the harness wrote it.
-No pooled harness is given a secret today — each runs over fakes — and a harness that is ever given one must keep it out of its output, as every harness whose log the wait prints already must.
+No pooled harness is given a secret today — the shell harnesses run over fakes, and envoy-session-stall's suites over stacks of their own with fixture secrets made for the run — and a harness that is ever given one must keep it out of its output, as every harness whose log the wait prints already must.
 
 ## A test asserts no count of work a broker may repeat
 
