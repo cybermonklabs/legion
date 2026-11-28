@@ -1,1 +1,4 @@
- For each step, a fresh agent or the agent of an earlier step, and why.
+ For every step, `acceptance:owner` included, the agent the work needs (a fresh
+agent, or the agent of a named earlier step of this or an earlier issue) and why: what it knows or
+must not know. Where this release cannot start that agent, or its session has ended, that choice
+still, and then what Legion does in its place.
