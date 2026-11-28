@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"math"
 	"reflect"
 	"slices"
@@ -14,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testcleanup"
@@ -336,4 +338,81 @@ func TestASettlementUnderTheHooksNamesItsTransactionAndRunsItsHookOnceItEnds(t *
 		t.Fatalf("when the hook after the settlement's transaction ran, %s", failure)
 	}
 	testwait.Receive(t, "the settlement to return", settled)
+}
+
+// A reconciliation pass on a fake clock, however far the fake stands from the wall clock, answers
+// its next run on the wall clock, the one its loop arms a timer on (duty.RunWoken): the wait to
+// the one retry owed, judged at the fake's reading, from the wall clock's present. A due time on
+// the fake's own timeline, years behind the wall, would read to the loop as long past.
+func TestAnExcerptPassOnAFakeClockAnswersItsRetryOnTheWallClock(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	ctx := context.Background()
+	document := owedDocuments(t, database, 1)[0]
+	deps := testServiceDeps(database)
+	deps.Clock = clocktest.New(time.Date(2020, 1, 1, 9, 0, 0, 0, time.UTC))
+	service := newSeamService(t, deps)
+	deferred := service.excerptMoment()
+	drifted, err := refs.DriftedExcerptsAt(ctx, database.Pool, 1, deferred)
+	if err != nil || len(drifted) != 1 || drifted[0].FromID != document {
+		t.Fatalf("the drift lists %+v (%v), want the one owed document %s", drifted, err, document)
+	}
+	if err := refs.DeferExcerptsAt(ctx, database.Pool, document, drifted[0].Version, time.Minute, referenceExcerptRetryCeiling, deferred); err != nil {
+		t.Fatalf("defer the owed document: %v", err)
+	}
+	var retry time.Time
+	if err := database.Pool.QueryRow(ctx,
+		`select next_attempt_at from reference_excerpt_backoff where artifact_id = $1::uuid`, document).Scan(&retry); err != nil {
+		t.Fatalf("read the owed document's retry: %v", err)
+	}
+	wait := retry.Sub(*deferred)
+	before := time.Now()
+	if due := service.reconcileExcerptPass(ctx, referenceExcerptSchedule); due.Before(before.Add(wait)) {
+		t.Fatalf("the pass answers its next run at %v, before the wall clock's %v read ahead of it plus the retry's wait of %v",
+			due, before, wait)
+	}
+}
+
+// Shutdown's drain ends at Deps.ShutdownDrainDeadline, a wall-clock moment, on the wall clock
+// whatever Deps.Clock is: on a fake years behind the wall and never moved, a drain that a room's
+// held append keeps waiting still ends once the wall clock reaches the deadline, and Shutdown
+// returns then, and not before, with the append the drain did not see through. Measured and
+// armed on the fake, the drain would last the years between the two clocks.
+func TestShutdownsDrainEndsAtItsDeadlineOnTheWallClockWhateverDepsClockIs(t *testing.T) {
+	t.Parallel()
+	database := storetest.Open(t)
+	artifactID := createDocument(t, database, "# First")
+	appends := &heldStore{VersionedStore: NewPgVersioned(database), room: artifactID, entered: make(chan struct{}), release: make(chan struct{})}
+	deadline := time.Now().Add(3 * time.Second)
+	deps := testServiceDeps(database)
+	deps.Persistence = appends
+	deps.Clock = clocktest.New(time.Date(2020, 1, 1, 9, 0, 0, 0, time.UTC))
+	deps.ShutdownDrainDeadline = clock.DeadlineAt(deadline, true)
+	service := newSeamService(t, deps)
+	// Registered after the service, so they run before its shutdown, in reverse: a row that fails
+	// with Shutdown still draining ends that drain, then lets the held append go.
+	testcleanup.Add(t, appends.let)
+	shutdownCtx, cancelShutdown := context.WithCancel(context.Background())
+	testcleanup.Add(t, cancelShutdown)
+	service.SetFormGate(formKept)
+	seedServiceText(t, service, artifactID, "Before.\n")
+	settleCurrentGeneration(t, service, artifactID)
+	appends.armed.Store(true)
+	editLiveTree(t, service, artifactID, replaceRun("Before.", "After."))
+	testwait.Receive(t, "the room's append to reach the store", appends.entered)
+
+	shutdown := make(chan error, 1)
+	go func() { shutdown <- service.Shutdown(shutdownCtx) }()
+	err := testwait.Receive(t, "Shutdown to return once the wall clock reached its drain deadline", shutdown)
+	if returned := time.Now(); returned.Before(deadline) {
+		t.Fatalf("Shutdown returned at %v, before its drain deadline %v", returned, deadline)
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Shutdown returned %v, want the held append its drain deadline did not see through", err)
+	}
+	// The append lands once let go, so the shutdown the test's end runs finds nothing in flight.
+	appends.let()
+	if err := service.waitForDurableAppends(testwait.Context(t), artifactID); err != nil {
+		t.Fatalf("wait for the held append to land once let go: %v", err)
+	}
 }

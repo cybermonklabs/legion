@@ -118,9 +118,9 @@ type roomQueries struct {
 	// of what an answer holds sets a bound of its own: roomQueryWait is a latency budget, and on a
 	// loaded machine an answer can take longer than that to cross Postgres twice.
 	wait time.Duration
-	// waitEach, where a test sets it, answers answerWait's bound at each ask in place of wait: a
-	// bound read when the ask is made, such as what is left of the test's own deadline. Nil, as
-	// in production, leaves the bound to wait.
+	// waitEach, where a test sets it, answers answerWait's bound in place of wait each time it is
+	// read - at each ask, and at each flush this process answers: a bound read then, such as what
+	// is left of the test's own deadline. Nil, as in production, leaves the bound to wait.
 	waitEach func() time.Duration
 	mu       sync.Mutex
 	pending  map[string]*pendingRoomQuery

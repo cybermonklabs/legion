@@ -110,7 +110,8 @@ type Deps struct {
 	// place of ShutdownDrainBudget (9 s) after it began; the zero value is production's. Only a
 	// test process sets another (cmd/dispatch: DISPATCH_TEST_DOCUMENT_SHUTDOWN_DEADLINE, under the
 	// test hooks): its give-up, for an end-to-end row whose settlement at shutdown waits on a step
-	// of the row's own.
+	// of the row's own. It is a wall-clock moment (clock.Deadline), so Shutdown measures and arms
+	// it on the wall clock whatever Clock is.
 	ShutdownDrainDeadline clock.Deadline
 	// PeerWriteDeadline is the end a test gives ygo's deadline on each write to a document socket
 	// (Server.PeerWriteTimeout), in place of the fork's ten seconds from the write's start; the
@@ -523,9 +524,10 @@ type Service struct {
 	// between the mutation's read of it and its write, where a peer's update can land: Apply runs
 	// the mutation outside the document's lock and takes the lock for each transaction alone.
 	inServiceTransaction func(txn *crdt.Transaction)
-	// markTimer arms the wait VerifyMark gives a browser's update, markWait long: a wall timer
-	// (wallMarkTimer), set in New. Tests replace it, as they replace now, to read the duration it
-	// was armed with and to fire it themselves.
+	// markTimer arms the wait VerifyMark gives a browser's update, markWait long, set in New
+	// (markTimerOn): a wall timer (wallMarkTimer) where Deps.Clock is nil, else a timer on that
+	// clock. Tests replace it, as they replace now, to read the duration it was armed with and to
+	// fire it themselves.
 	markTimer func(time.Duration) (<-chan time.Time, func() bool)
 	// now is the clock the unrecorded-mark sweep ages marks by (sweepUnrecordedMarks), and the
 	// block-index tick times its object pass by (objectPassInterval).
@@ -1034,7 +1036,6 @@ func New(deps Deps) *Service {
 	if serviceClock == nil {
 		serviceClock = clock.Real()
 	}
-	shutdownDrain := deps.ShutdownDrainDeadline
 	if deps.Events == nil {
 		deps.Events = events.NewBroker()
 	}
@@ -1075,7 +1076,7 @@ func New(deps Deps) *Service {
 		editNoticeQuiet:   editNoticeQuiet,
 		clock:             serviceClock,
 		excerptClock:      deps.Clock,
-		shutdownDrain:     shutdownDrain,
+		shutdownDrain:     deps.ShutdownDrainDeadline,
 		buildCommit:       deps.BuildCommit,
 		markingRule:       refs.BlockIndexMarkingRule,
 		reads:             newDocumentReads(readBudget),
@@ -1335,8 +1336,9 @@ func poolFigures(stat *pgxpool.Stat) PoolFigures {
 // a room's writer records, whenever Shutdown's scan found the room, not just the ones it already
 // held. A settlement it cuts short, and the close of its room's editors that follows it, get what
 // is left of the caller's deadline, so a caller's deadline has to exceed it. The budget runs on
-// Deps.Clock, the real clock in production; Deps.ShutdownDrainDeadline ends it at a test process's
-// give-up instead, which no fake reaches.
+// Deps.Clock, the real clock in production. Deps.ShutdownDrainDeadline, which only a test process
+// sets, ends the drain at that wall-clock moment instead, measured and armed on the wall clock
+// whatever Deps.Clock is, as socketWriteTimeout arms the socket deadlines.
 const ShutdownDrainBudget = 9 * time.Second
 
 // Shutdown stops queued settlements and runs one worker per loaded room inside the drain budget:
@@ -1408,7 +1410,13 @@ func (s *Service) Shutdown(ctx context.Context) error {
 		return true
 	})
 	s.stopAllSettleTimers()
-	drainCtx, cancelDrain := s.shutdownDrain.WithTimeout(s.clock, ctx, ShutdownDrainBudget)
+	// The budget runs on Deps.Clock; a deadline a test handed is a wall-clock moment, so it is
+	// measured and armed on the wall clock (ShutdownDrainBudget).
+	drainClock := s.clock
+	if !s.shutdownDrain.IsZero() {
+		drainClock = clock.Real()
+	}
+	drainCtx, cancelDrain := s.shutdownDrain.WithTimeout(drainClock, ctx, ShutdownDrainBudget)
 	defer cancelDrain()
 	rooms := make([]string, 0, len(loaded))
 	for _, room := range loaded {

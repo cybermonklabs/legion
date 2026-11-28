@@ -631,10 +631,13 @@ func (s *Service) markStaleExcerpts(ctx context.Context) bool {
 // reconcileExcerptPass is one pass of the reconciliation's batch, and returns when the loop next
 // needs to run with no wake: now while a full batch leaves documents it can still record, else the
 // earliest due time of a document it deferred, else never. A pass whose own read failed asks again
-// after schedule.retryBase. The due time is the wait to that retry on the clock that stamped it
-// (refs.NextExcerptRetryAt), from the moment the pass judges at: the database's now(), added to
-// this process's own clock, where Deps.Clock is nil, as in production, so skew between the two
-// does not move the timer; the reading of the clock a test set (excerptMoment) where it set one.
+// after schedule.retryBase. The due time is the wait to that retry, measured on the clock that
+// stamped it (refs.NextExcerptRetryAt) from the moment the pass judges at - the database's now()
+// where Deps.Clock is nil, as in production, and the reading of the clock a test set
+// (excerptMoment) where it set one - added to this process's wall clock, the one the loop arms its
+// timer on (duty.RunWoken) until duty takes a clock (INFRA-6392). So neither skew between the
+// database's clock and this process's nor a test's fake, however far it stands from the wall
+// clock, moves the timer.
 func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSchedule) time.Time {
 	documents, full, err := s.reconcileReferenceExcerpts(ctx, schedule.retryBase)
 	if documents > 0 {
@@ -649,8 +652,7 @@ func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSche
 	case full:
 		return time.Now()
 	}
-	judged := s.excerptMoment()
-	wait, owed, err := refs.NextExcerptRetryAt(ctx, s.store.Pool, judged)
+	wait, owed, err := refs.NextExcerptRetryAt(ctx, s.store.Pool, s.excerptMoment())
 	if err != nil {
 		if ctx.Err() != nil {
 			return time.Time{}
@@ -660,9 +662,6 @@ func (s *Service) reconcileExcerptPass(ctx context.Context, schedule excerptSche
 	}
 	if !owed {
 		return time.Time{}
-	}
-	if judged != nil {
-		return judged.Add(wait)
 	}
 	return time.Now().Add(wait)
 }
