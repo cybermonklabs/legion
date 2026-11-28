@@ -7,6 +7,8 @@ body: |-
   person's text is never among them. An empty list, or a list holding anything but a string - a null
   among them - is refused 400 PRIORITY_INPUT. A build from before the list refuses one 400 INVALID_JSON, a verdict
   that writes nothing, so no write goes over another person's change while two builds serve.
+  An `expected.title` or `expected.description` that is neither a string nor a list - a number, a
+  boolean, an object - is now refused 400 PRIORITY_INPUT, not 400 INVALID_JSON.
 time: 2026-11-26T19:35:25Z
 custom:
     Issue: pr5669

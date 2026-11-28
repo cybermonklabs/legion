@@ -331,41 +331,44 @@ type patchPriorityExpected struct {
 
 // expectedValues reads one attribute of a patch's expected: nil where it is absent or null, the
 // one value of a string, and the values of a list of strings. It answers why it refuses anything
-// else - a list naming no value, or holding anything but a string - naming where. Each element
-// is read on its own, and a null element refused by its own bytes: unmarshalling a list straight
-// into []string reads null as "", and so does unmarshalling the element, since taking null into
-// a value that is no pointer is a no-op that answers no error (encoding/json). A write naming
-// [null] would then name "", the description of a priority nobody has written, and go over it
-// though its writer never read it.
+// else - a list naming no value, a list holding anything but a string, or a value that is neither
+// a string nor a list - naming where, and formats that answer only where it refuses. The value's
+// first byte says which it is, so a string and a list are each decoded once. A list decodes into
+// pointers, and an element that is null, a nil pointer, is refused: decoding a list straight into
+// []string reads null as "", since taking null into a value that is no pointer is a no-op that
+// answers no error (encoding/json). A write naming [null] would then name "", the description of
+// a priority nobody has written, and go over it though its writer never read it. An element ""
+// stays "", which is what a writer who did read that empty description names.
 func expectedValues(name string, raw json.RawMessage) ([]string, string) {
-	refuses := fmt.Sprintf("expected.%s is the %s an edit started from, a string, or a list of the strings it may go over", name, name)
+	const refuses = "expected.%s is the %s an edit started from, a string, or a list of the strings it may go over"
 	trimmed := bytes.TrimSpace(raw)
 	if len(trimmed) == 0 || bytes.Equal(trimmed, []byte("null")) {
 		return nil, ""
 	}
-	var one string
-	if err := json.Unmarshal(trimmed, &one); err == nil {
-		return []string{one}, ""
-	}
-	var elements []json.RawMessage
-	if err := json.Unmarshal(trimmed, &elements); err != nil {
-		return nil, refuses
-	}
-	if len(elements) == 0 {
-		return nil, fmt.Sprintf("expected.%s names no %s: a list holds at least one value the write may go over", name, name)
-	}
-	values := make([]string, 0, len(elements))
-	for _, element := range elements {
-		var value string
-		if bytes.Equal(bytes.TrimSpace(element), []byte("null")) {
-			return nil, refuses
+	switch trimmed[0] {
+	case '"':
+		var one string
+		if err := json.Unmarshal(trimmed, &one); err == nil {
+			return []string{one}, ""
 		}
-		if err := json.Unmarshal(element, &value); err != nil {
-			return nil, refuses
+	case '[':
+		var elements []*string
+		if err := json.Unmarshal(trimmed, &elements); err != nil {
+			break
 		}
-		values = append(values, value)
+		if len(elements) == 0 {
+			return nil, fmt.Sprintf("expected.%s names no %s: a list holds at least one value the write may go over", name, name)
+		}
+		values := make([]string, len(elements))
+		for i, element := range elements {
+			if element == nil {
+				return nil, fmt.Sprintf(refuses, name, name)
+			}
+			values[i] = *element
+		}
+		return values, ""
 	}
-	return values, ""
+	return nil, fmt.Sprintf(refuses, name, name)
 }
 
 // patchPriority is PATCH /api/v1/priorities/{id}: the attributes the body names, and the move
