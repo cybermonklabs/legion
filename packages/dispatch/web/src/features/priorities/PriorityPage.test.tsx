@@ -468,13 +468,17 @@ test("an empty description is, for a writer, the prompt above the empty editor",
 });
 
 test("the owner is a chip beside the title, which opens into its field and writes the owner", async () => {
-  const user = userEvent.setup();
+  // The clock is held while the reader types, so the typing does not rest and write part of it
+  // before the reader leaves the field, however long the typing takes here.
+  const user = userEvent.setup({ delay: null });
   const { patch } = page();
   await user.click(await screen.findByRole("button", { name: "Owner BET and LINUX controllers" }));
   const owner = screen.getByRole("combobox", { name: "Owner" });
   expect(document.activeElement).toBe(owner);
-  await user.clear(owner);
-  await user.type(owner, "LINUX controller");
+  await onFakeClock(async () => {
+    await user.clear(owner);
+    await user.type(owner, "LINUX controller");
+  });
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   expect(patch.mock.calls[0]?.[1]).toEqual({ owner: "LINUX controller" });
@@ -486,18 +490,25 @@ test("the owner is a chip beside the title, which opens into its field and write
 // The changes to one priority go out in press order (`priority:<id>`): a change made while an
 // earlier one is out waits for it, so an older write never lands after a newer one.
 test("a change made while an earlier change to the priority is out waits for it", async () => {
-  const user = userEvent.setup();
+  // The clock is held while the reader types, so the typing does not rest and write part of it
+  // before the reader leaves the field, however long the typing takes here: each change is one
+  // write, written as the reader leaves the field.
+  const user = userEvent.setup({ delay: null });
   const { patch } = page();
   const first = Promise.withResolvers<Priority>();
   patch.mockImplementationOnce(() => first.promise);
   await user.click(await screen.findByRole("button", { name: "Owner BET and LINUX controllers" }));
   const owner = screen.getByRole("combobox", { name: "Owner" });
-  await user.clear(owner);
-  await user.type(owner, "LINUX controller");
+  await onFakeClock(async () => {
+    await user.clear(owner);
+    await user.type(owner, "LINUX controller");
+  });
   await user.tab();
   await waitFor(() => expect(patch).toHaveBeenCalledTimes(1));
   const title = await openTitle(user);
-  await user.type(title, " again");
+  await onFakeClock(async () => {
+    await user.type(title, " again");
+  });
   await user.tab();
   await act(() => new Promise((resolve) => setTimeout(resolve, 100)));
   expect(patch).toHaveBeenCalledTimes(1);
