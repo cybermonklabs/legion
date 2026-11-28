@@ -258,6 +258,11 @@ export interface TreeNode {
   readonly chips: readonly NodeChip[];
   /** What the coverage read counts for a requirement. */
   readonly counts?: NodeCounts;
+  /** The coverage read's own lines a requirement draws in its body where its gaps are, each in the
+   *  page's words (`coverageNotes`): while a document of the issue is still being indexed, that
+   *  document's line, which the server writes in place of every missing check, so the requirement
+   *  is drawn lacking none and says why. Absent where the read holds none. */
+  readonly coverageNotes?: readonly string[];
   /** When its author deleted this comment or message, as its read stores the time
    *  (`deleted_at`); absent on every other node. A deleted post keeps its place in the tree and
    *  holds no part of its body: its `text` is the deleted line (`tree-drafts.ts`'s
@@ -379,7 +384,7 @@ export function isStatement(node: Pick<TreeNode, "statement">): boolean {
 
 /**
  * Whether `node` is a check: a `check` block of the issue's Verification document, the one the
- * issue read names by `verification_artifact_id`, or a check the results read answers for. Each
+ * issue read names for its verification query, or a check the results read answers for. Each
  * draws a state - `no-result` until the results read answers (`tree-drafts.ts`'s
  * `addDocumentBlocks`) - and a `check` block of any other document draws none and is a block and
  * nothing more: no row and no count of the Verification filter, no check of a statement, and no
@@ -733,6 +738,7 @@ function assemble(
       children,
       chips: draft.chips,
       ...(draft.counts === undefined ? {} : { counts: draft.counts }),
+      ...(draft.coverageNotes === undefined ? {} : { coverageNotes: draft.coverageNotes }),
       ...(draft.deletedAt === undefined ? {} : { deletedAt: draft.deletedAt }),
       ...(draft.deletedBy === undefined ? {} : { deletedBy: draft.deletedBy }),
       ...(draft.editedAt === undefined ? {} : { editedAt: draft.editedAt }),

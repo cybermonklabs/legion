@@ -60,9 +60,12 @@ test("a root issue of a project gating both steps reads each step's own document
     title: "Design gate",
   });
 
-  // The Verification document was approved and then written again, so its approval is stale.
+  // The Verification document was approved and then written again, so its approval is stale. An
+  // approval covers the record of the Verification query - its checks and their results - and not
+  // its paragraphs (R14), so the words the edit changes are a check's: as a paragraph, the edit
+  // would carry the approval to version 2.
   const verification = await createIssueArtifact(issue.key, {
-    content: "# Verification\n\nOne check.\n",
+    content: "# Verification\n\n:::check{#c-one}\nOne check.\n:::\n",
     name: "verification.md",
   });
   expect(

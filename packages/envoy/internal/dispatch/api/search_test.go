@@ -14,6 +14,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -97,6 +99,33 @@ func searchResponse(t *testing.T, handler http.Handler, query string) model.Sear
 	return searchResponseOn(t, handler, "/api/v1/search", query)
 }
 
+// countRows answers the one count statement asks of the test's database, with the arguments it
+// names.
+func countRows(t *testing.T, database *store.Store, statement string, args ...any) int64 {
+	t.Helper()
+	var count int64
+	if err := database.Pool.QueryRow(context.Background(), statement, args...).Scan(&count); err != nil {
+		t.Fatalf("%s: %v", statement, err)
+	}
+	return count
+}
+
+// blockHolding is the id of the one block of the document artifactID whose text holds word, which
+// a keyword hit on the document names as the node that matched (searchDocumentKeywordLeg).
+func blockHolding(t *testing.T, handler http.Handler, artifactID, word string) string {
+	t.Helper()
+	var held []string
+	for blockText, id := range blockIDsByText(t, handler, artifactID) {
+		if strings.Contains(strings.ToLower(blockText), word) {
+			held = append(held, id)
+		}
+	}
+	if len(held) != 1 {
+		t.Fatalf("document %s holds %q in the blocks %v, want one", artifactID, word, held)
+	}
+	return held[0]
+}
+
 func TestSearchFindsEveryKindWithSnippetsAndHrefs(t *testing.T) {
 	t.Parallel()
 	handler := newTestHandler(t)
@@ -109,7 +138,7 @@ func TestSearchFindsEveryKindWithSnippetsAndHrefs(t *testing.T) {
 		href  string
 		mark  string
 	}{
-		{"astrolabe", "document", corpus.primaryArtifactID, "/issues/" + corpus.issueKey + "/spec?q=astrolabe", "<mark>astrolabe</mark>"},
+		{"astrolabe", "document", corpus.primaryArtifactID, "/issues/" + corpus.issueKey + "/spec?q=astrolabe#b-" + text.EncodeBlockID(blockHolding(t, handler, corpus.primaryArtifactID, "astrolabe")), "<mark>astrolabe</mark>"},
 		{"sextant", "comment", corpus.commentID, "/issues/" + corpus.issueKey + "/comments/" + corpus.commentID, "<mark>sextant</mark>"},
 		{"quadrant", "ask", corpus.askID, "/issues/" + corpus.issueKey + "/asks/" + corpus.askID, "<mark>quadrant</mark>"},
 		{"alidade", "ask", corpus.askID, "/issues/" + corpus.issueKey + "/asks/" + corpus.askID, "<mark>alidade</mark>"},
@@ -610,7 +639,7 @@ func TestSearchFindsStandaloneProjectDocumentsAndTheirDiscussions(t *testing.T) 
 		id    string
 		href  string
 	}{
-		{"astrolabe", "document", document.ID, "/projects/CORE/documents/" + document.Slug + "?q=astrolabe"},
+		{"astrolabe", "document", document.ID, "/projects/CORE/documents/" + document.Slug + "?q=astrolabe#b-" + text.EncodeBlockID(blockHolding(t, handler, document.ID, "astrolabe"))},
 		{"quadrant", "ask", ask.ID, "/projects/CORE/documents/" + document.Slug + "?ask=" + ask.ID},
 		{"alidade", "comment", comment.ID, "/projects/CORE/documents/" + document.Slug + "?comment=" + comment.ID},
 	}

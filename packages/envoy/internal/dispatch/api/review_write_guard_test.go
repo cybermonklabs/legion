@@ -30,7 +30,7 @@ var (
 	reviewUpdateStatement = regexp.MustCompile(`(?i)\bupdate\s+(?:only\s+)?` + reviewTable)
 )
 
-// TestOnlyQueueReviewWritesReviews enforces what docs.ReviewOrder's `event_seq desc nulls last`
+// TestOnlyQueueReviewWritesReviews enforces what model.ReviewOrder's `event_seq desc nulls last`
 // rests on: every review committed after migration 0120 carries the sequence of its artifact.*
 // event, so a row without one is older than every row with one. docs.QueueReview inserts the row
 // and then writes the sequence of the event it appended; the migration's trigger covers the
@@ -87,7 +87,7 @@ func TestOnlyQueueReviewWritesReviews(t *testing.T) {
 	if len(offences) > 0 {
 		t.Fatalf("only docs.QueueReview (%s) may write artifact_reviews, and these statements also do:\n\t%s\n"+
 			"Record a review through docs.QueueReview instead. It writes the sequence of the review's "+
-			"artifact.* event in the review's own transaction, and docs.ReviewOrder ranks a review "+
+			"artifact.* event in the review's own transaction, and model.ReviewOrder ranks a review "+
 			"without one below every review with one.", reviewWriter, strings.Join(offences, "\n\t"))
 	}
 	if inserts != 1 || updates != 2 {

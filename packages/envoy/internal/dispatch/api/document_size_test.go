@@ -85,7 +85,7 @@ func TestArtifactListsGiveANearCapDocumentsStoredSizeWithoutRenderingIt(t *testi
 	var broken *invalidLoadOnceStore
 	watch := &renderWatch{}
 	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
-		broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
+		broken = newInvalidLoadOnceStore(database)
 		service := docs.New(docs.Deps{Store: database, Persistence: broken, Settle: time.Hour})
 		t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
 		watch.API = service
@@ -117,7 +117,7 @@ func TestArtifactListsGiveANearCapDocumentsStoredSizeWithoutRenderingIt(t *testi
 	if err := watch.Quiesce(context.Background()); err != nil {
 		t.Fatalf("close the live documents: %v", err)
 	}
-	broken.failNextLoad(document.ID)
+	broken.failNextLoad(t, document.ID)
 	watch.watch(true)
 
 	find := func(read string, artifacts []model.Artifact, id string) model.Artifact {
@@ -242,17 +242,18 @@ func TestEveryVersionAWriteOrAReferenceReadAnswersCarriesItsStoredSize(t *testin
 	grown := documentMarkdown(t, handler, upload.Artifact.ID)
 	requireSize(t, "the edit's answer", *editVersion, len(grown))
 
-	events := decodeBody[[]struct {
-		Type    string `json:"type"`
-		Payload struct {
-			ArtifactID string        `json:"artifact_id"`
-			Version    model.Version `json:"version"`
-		} `json:"payload"`
-	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+target.Key+"/events", nil, "alice"))
+	events := carryEvents(t, handler, target.Key)
 	carried := false
 	for _, event := range events {
-		if event.Type == "artifact.version" && event.Payload.ArtifactID == upload.Artifact.ID && event.Payload.Version.Number == editVersion.Number {
-			requireSize(t, "the edit's artifact.version event", event.Payload.Version, len(grown))
+		if event.Type != "artifact.version" {
+			continue
+		}
+		payload := decodePayload[struct {
+			ArtifactID string        `json:"artifact_id"`
+			Version    model.Version `json:"version"`
+		}](t, event)
+		if payload.ArtifactID == upload.Artifact.ID && payload.Version.Number == editVersion.Number {
+			requireSize(t, "the edit's artifact.version event", payload.Version, len(grown))
 			carried = true
 		}
 	}

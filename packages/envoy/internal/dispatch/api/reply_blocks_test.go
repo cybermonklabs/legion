@@ -183,11 +183,11 @@ func TestAReplyNamesTheBlockItAnswers(t *testing.T) {
 	rootCreated, _ := eventReplyBlock(t, handler, issue.Key, "comment.created", x.ID)
 	requireReplyBlock(t, "the root's comment.created payload", rootCreated, nil)
 
-	// The reply's node belongs to the block it names (R12), and ?to= the block lists it.
+	// The reply's node belongs to the comment it answers (R8), and ?to= the block lists it.
 	replyRef := "dispatch://" + issue.Key + "/comment/" + reply.ID
 	if node := readGraph(t, handler, url.Values{"from": {replyRef}}).Node; node.Parent == nil ||
-		*node.Parent != (model.NodeParent{Kind: "block", ID: beta.Node, Ref: beta.Ref}) {
-		t.Fatalf("the reply's node %#v, want its parent block b2 of comment %s", node, x.ID)
+		*node.Parent != (model.NodeParent{Kind: "comment", ID: x.ID, Ref: xRef}) {
+		t.Fatalf("the reply's node %#v, want its parent comment %s, which it answers, not its block b2", node, x.ID)
 	}
 	if edges := readGraph(t, handler, url.Values{"to": {beta.Ref}, "kind": {"replies_to"}}).Edges; len(edges) != 1 || edges[0].Node.ID != reply.ID {
 		t.Fatalf("?to= block b2 lists the replies %#v, want the reply", edges)

@@ -9,7 +9,7 @@ import (
 )
 
 // roleHolderMarksVersion adds projects.proven_sessions and project_role_holder_marks, and marks
-// each project that already has a role holder (INFRA-4764).
+// each project that already has a role holder (the spec-writer spec).
 const roleHolderMarksVersion = 20261120204136
 
 // TestTheRoleHolderMarksMigrationMarksEachProjectThatHasARoleHolder runs the shipped files over

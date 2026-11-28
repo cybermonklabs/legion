@@ -382,10 +382,12 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			Changed          []string        `json:"changed"`
 			Labels           []string        `json:"labels"`
 			ResolvedRepo     json.RawMessage `json:"resolved_repo"`
-			// An event retained from a Dispatch that did not yet send blocked_by decodes to no
-			// blockers, as an issue waiting on nothing does: unlike a missing repository, which the
-			// consumer fills, nothing reads an absence here.
-			BlockedBy []string `json:"blocked_by"`
+			// An event of a Dispatch of the issue-tree spec's release on carries needs beside
+			// blocked_by, and is read by needs (dispatch.WaitsOf). An event retained from a Dispatch
+			// that sent neither decodes to no blockers, as an issue waiting on nothing does: unlike
+			// a missing repository, which the consumer fills, nothing reads an absence here.
+			Needs     *[]string `json:"needs"`
+			BlockedBy []string  `json:"blocked_by"`
 			// Claim is present on every issue event of a Dispatch that has claims (null for none),
 			// and absent from an event retained from before it did, which says nothing of the claim.
 			Claim json.RawMessage `json:"claim"`
@@ -424,7 +426,7 @@ func decodeDispatchEvent(event dispatchEvent, unread *[]string) (Fact, error) {
 			Priority: issueEventPriority("priority", issue.Priority, unread), Resolved: issueEventResolved(issue.ResolvedPriority, issue.PriorityFrom, unread),
 			ResolvedOnly: resolvedOnly(issue.Changed), HandedOver: dispatch.CarriesLegionLabel(issue.Labels), Labels: issue.Labels,
 			ActorSession: actorSession, DaemonActor: daemonActor, ResolvedRepo: deref(resolved),
-			ResolvedRepoMissing: missing, Blockers: issue.BlockedBy, ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
+			ResolvedRepoMissing: missing, Blockers: dispatch.WaitsOf(issue.Needs, issue.BlockedBy), ClaimedBy: claimedBy, ClaimKnown: claimKnown}, nil
 	}
 	switch event.Type {
 	case "artifact.approved", "artifact.changes_requested":

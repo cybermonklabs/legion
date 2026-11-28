@@ -787,11 +787,14 @@ export async function seedLinkedChecks(): Promise<LinkedChecksSeed> {
     }
     await pause(100);
   }
+  // A pass of a before_merge check states the negative control that would have caught its
+  // failure, which the record route requires of it (400 NEGATIVE_CONTROL_REQUIRED).
   await recordCheckResult(
     key,
     {
       check: LINKED_BLOCKS.check,
       commit: HEAD_SHA,
+      negative_control: "Dropped the check's links and the run failed.",
       observed: "1 passed",
       role: "tester",
       run: "bun run e2e -- e2e/issue-page-v.e2e.ts",

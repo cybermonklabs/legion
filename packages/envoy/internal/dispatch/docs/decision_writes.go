@@ -42,7 +42,7 @@ func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error
 		id, _ := node.Attrs[pmdoc.BlockIDAttr].(string)
 		return drop[id]
 	}
-	err := r.service.applyLive(ctx, r.decisions.id, DecisionStepActor, func(doc *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+	err := r.service.applyLive(ctx, r.decisions.id, DecisionStepActor, func(doc liveDoc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 		tree := current.Node()
 		if tree == nil {
 			return fmt.Errorf("the decisions document of %s is outside the Proof schema, so the decisions step cannot read its sections", r.issue)
@@ -62,7 +62,7 @@ func (r *issueRestore) writeDecisionsDocument(ctx context.Context) (int64, error
 		if err != nil {
 			return err
 		}
-		_, err = rewriteLive(doc, nil, func(live *pmdoc.Node) bool {
+		_, err = doc.rewrite(func(live *pmdoc.Node) bool {
 			next, took := withoutBlocks(live, dropped)
 			if !took {
 				return false
@@ -156,7 +156,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 	var refused error
 	var pointerLine string
 	var headingAdded bool
-	err = r.service.applyLive(ctx, r.spec.id, DecisionStepActor, func(doc *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+	err = r.service.applyLive(ctx, r.spec.id, DecisionStepActor, func(doc liveDoc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 		if current.Node() == nil {
 			return fmt.Errorf("the spec of %s is outside the Proof schema, so the decisions step cannot write into it", r.issue)
 		}
@@ -165,7 +165,7 @@ func (r *issueRestore) writeSpec(ctx context.Context) (int64, error) {
 		if err != nil {
 			return err
 		}
-		_, err = rewriteLive(doc, nil, func(live *pmdoc.Node) bool {
+		_, err = doc.rewrite(func(live *pmdoc.Node) bool {
 			for _, block := range added {
 				id, _ := block.Attrs[pmdoc.BlockIDAttr].(string)
 				if blockIDHeld(live, id) {
@@ -375,7 +375,7 @@ func (r *issueRestore) writePresentDocuments(ctx context.Context) error {
 		}
 		document := r.documents[id]
 		edits := r.present[id]
-		err := r.service.applyLive(ctx, id, DecisionStepActor, func(doc *crdt.Doc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+		err := r.service.applyLive(ctx, id, DecisionStepActor, func(doc liveDoc, current pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
 			if current.Node() == nil {
 				return fmt.Errorf("%s is outside the Proof schema, so the decisions step cannot write into it", document.address)
 			}
@@ -384,7 +384,7 @@ func (r *issueRestore) writePresentDocuments(ctx context.Context) error {
 			if err != nil {
 				return err
 			}
-			_, err = rewriteLive(doc, nil, func(live *pmdoc.Node) bool {
+			_, err = doc.rewrite(func(live *pmdoc.Node) bool {
 				return r.writePresent(id, live, edits, withAsk)
 			})
 			return err
@@ -716,7 +716,7 @@ func (r *issueRestore) movedBlockOf(ctx context.Context, restore *restoredBlock)
 	// with the form a version keeps.
 	// kept for one release: stored-ask-state
 	blocks, _ := readableAskBlocks(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{node}})
-	read, err := readBlockAsks(ctx, r.tx, r.spec.id, nil, blocks, readCopiedAskSources)
+	read, err := readBlockAsks(ctx, r.tx, documentAsksOf(r.spec.id), nil, blocks, readCopiedAskSources)
 	if err != nil {
 		return nil, err
 	}

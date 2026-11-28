@@ -819,8 +819,8 @@ func TestABlockOfACommentIsAddressable(t *testing.T) {
 	if len(replies) != 1 || replies[0].Node.ID != reply || replies[0].Block == nil || replies[0].Block.BlockID != "b2" {
 		t.Fatalf("?to= comment X lists the replies %#v, want the reply once, under block b2", replies)
 	}
-	if parent := replies[0].Node.Parent; parent == nil || *parent != (model.NodeParent{Kind: "block", ID: "comment/" + x.ID + "#b2", Ref: xRef + "#b-b2"}) {
-		t.Fatalf("the reply's parent = %#v, want block b2 of comment %s", parent, x.ID)
+	if parent := replies[0].Node.Parent; parent == nil || *parent != (model.NodeParent{Kind: "comment", ID: x.ID, Ref: xRef}) {
+		t.Fatalf("the reply's parent = %#v, want comment %s, which it answers, not its block b2", parent, x.ID)
 	}
 	if replies := readGraph(t, handler, url.Values{"to": {xRef + "#b-b2"}, "kind": {"replies_to"}}).Edges; len(replies) != 1 || replies[0].Node.ID != reply {
 		t.Fatalf("?to= block b2 lists the replies %#v, want the reply", replies)
@@ -840,8 +840,8 @@ func TestABlockOfACommentIsAddressable(t *testing.T) {
 	if len(messageReplies) != 1 || messageReplies[0].Node.ID != messageReply || messageReplies[0].Block == nil || messageReplies[0].Block.BlockID != "b2" {
 		t.Fatalf("?to= the message lists the replies %#v, want the reply once, under block b2", messageReplies)
 	}
-	if parent := messageReplies[0].Node.Parent; parent == nil || *parent != (model.NodeParent{Kind: "block", ID: "message/" + message.ID + "#b2", Ref: mRef + "#b-b2"}) {
-		t.Fatalf("the message reply's parent = %#v, want block b2 of message %s", parent, message.ID)
+	if parent := messageReplies[0].Node.Parent; parent == nil || *parent != (model.NodeParent{Kind: "message", ID: message.ID, Ref: mRef}) {
+		t.Fatalf("the message reply's parent = %#v, want message %s, which it answers, not its block b2", parent, message.ID)
 	}
 }
 

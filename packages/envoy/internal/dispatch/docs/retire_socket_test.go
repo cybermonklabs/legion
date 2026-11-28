@@ -12,6 +12,7 @@ import (
 	gws "github.com/gorilla/websocket"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 )
 
 // A socket to a retired document's room is refused 409 DOCUMENT_RETIRED before anything reserves a
@@ -148,5 +149,73 @@ func TestASocketWhoseDocumentIsRetiredAsItTakesItsRoomIsRefused(t *testing.T) {
 	}
 	if service.srv.GetDoc(artifactID) != nil {
 		t.Errorf("a room of the retired document %s is loaded once its socket was refused", artifactID)
+	}
+}
+
+// A socket asking for a document of an issue room reads that document's retirement, not the
+// room's: a retirement of the Verification document that commits while its socket takes the
+// issue's room, after the socket's first read found it standing, refuses the socket 409
+// DOCUMENT_RETIRED once it is held (ServeHTTP, refuseRetired), with no room of the issue loaded;
+// a socket asking for it again is refused by the first read (refusedDocument). The room's tree
+// artifact is not retired, so a socket that read the room's retirement would connect and type
+// into a fragment the room's layout leaves out (roomLayoutSQL). A socket asking for the spec, a
+// document of the same room that stands, connects and reads the room.
+func TestASocketToARetiredDocumentOfAnIssueRoomIsRefusedAndTheSpecsConnects(t *testing.T) {
+	database := storetest.Open(t)
+	service, server := newTestServiceInstance(t, database)
+	room := createIssueRoom(t, database, 1)
+	var retired atomic.Bool
+	service.afterSocketIssueRead = func(read string) {
+		if read != room.tree || retired.Swap(true) {
+			return
+		}
+		ctx := context.Background()
+		tx, err := database.Pool.Begin(ctx)
+		if err != nil {
+			t.Errorf("begin the retirement: %v", err)
+			return
+		}
+		defer tx.Rollback(ctx)
+		if _, err := RetireDocument(ctx, tx, room.verification, model.Actor{Kind: "user", ID: "alice"}, "The checks moved to the plan."); err != nil {
+			t.Errorf("retire the Verification document: %v", err)
+			return
+		}
+		if err := tx.Commit(ctx); err != nil {
+			t.Errorf("commit the retirement: %v", err)
+			return
+		}
+		service.documentRemoved(ctx, room.verification)
+		service.closeMovedRoom(ctx, room.tree)
+	}
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + room.verification
+	header := http.Header{"X-Dispatch-User": []string{"alice"}}
+	refused := func(when string) {
+		t.Helper()
+		socket, response, err := gws.DefaultDialer.Dial(url, header)
+		if err == nil {
+			_ = socket.Close()
+			t.Fatalf("%s, a socket to the retired Verification document %s of the issue room %s connected, want it refused", when, room.verification, room.tree)
+		}
+		if response == nil {
+			t.Fatalf("%s, a socket to the retired Verification document failed with no answer: %v", when, err)
+		}
+		body, _ := io.ReadAll(response.Body)
+		if response.StatusCode != http.StatusConflict || !strings.Contains(string(body), "DOCUMENT_RETIRED") {
+			t.Fatalf("%s, a socket to the retired Verification document answers %d %q, want 409 DOCUMENT_RETIRED", when, response.StatusCode, body)
+		}
+	}
+	refused("retired as it took the issue's room")
+	if !retired.Load() {
+		t.Fatal("the socket's admission never reached the hook that retires its document, so nothing here is tested")
+	}
+	if service.srv.GetDoc(room.tree) != nil {
+		t.Errorf("the issue room %s is loaded once the socket to its retired Verification document was refused", room.tree)
+	}
+	refused("asked for again once retired")
+
+	peer := connectPeer(t, server.URL, room.spec, "alice")
+	if err := peer.WaitForText(fragmentMarkdown(room.plan), planSeed, roomWait(t)); err != nil {
+		t.Fatalf("a socket to the spec of the room whose Verification document was retired: %v", err)
 	}
 }

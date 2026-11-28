@@ -1,0 +1,12 @@
+kind: Fixed
+body: |-
+  The plan view of the tree read (`GET /api/v1/issues/{key}/tree?view=plan`) now gives no position
+  to a plan task that stands inside the subtree of an overtaken ask, comment or message, and lists it
+  among the overtaken: under a block of such an item, under the item itself, or under a reply in its
+  thread. A plan task whose `parent` attribute names an ask, a comment or a message now takes its
+  place in the order. Before, the plan read took the state of the issue alone above the
+  conversation, so such a task kept a position while the tree read drew it closed, and it never
+  reached a task under an item itself, which then had no position and was in no list.
+time: 2026-11-27T11:30:00Z
+custom:
+    Issue: INFRA-1253

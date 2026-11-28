@@ -123,7 +123,7 @@ func (s *Service) AskBlockAttributes(ctx context.Context, artifactID string) (ma
 	if s.hooks == nil {
 		return nil, ErrTestHooksOff
 	}
-	tree, _, err := s.loadTree(ctx, artifactID)
+	tree, err := s.documentTree(ctx, artifactID)
 	if err != nil {
 		return nil, err
 	}

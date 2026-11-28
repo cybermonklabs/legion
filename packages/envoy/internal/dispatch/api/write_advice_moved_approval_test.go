@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"reflect"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
@@ -258,21 +259,24 @@ func TestMovedApprovalRequestIsAbsentWhenNoRequestNamesTheDocument(t *testing.T)
 // the agent edited it, and the request stands at version 2; the agent's next edit undoes the
 // first, in the route's own transaction, so its version holds the text he approved, carries his
 // approval (docs.carryApproval) and answers the request. The request is answered, not moved onto
-// the agent's turn, so the edit's answer names it nowhere. (The carry is the restore's.)
+// the agent's turn, so the edit's answer names it nowhere. (The carry is the restore's.) The
+// document is one no query covers (uncoveredDocument): on the issue's spec R14's record carry
+// carries the approval across the first edit's prose, and no request would be open to answer.
 func TestMovedApprovalRequestIsAbsentWhenTheWritesOwnCarryAnsweredIt(t *testing.T) {
 	t.Parallel()
 	handler := approvalCarryHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "Context\n")
-	approveVersion(t, handler, issue.PrimaryArtifactID, "alice", 1)
-	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)
-	request := requestApproval(t, handler, issue.PrimaryArtifactID)
+	issue := createInteractionIssue(t, handler, "TEST", "Carried, not moved", "A spec")
+	notes := uncoveredDocument(t, handler, issue.Key, "Context\n")
+	approveVersion(t, handler, notes, "alice", 1)
+	reviseDocument(t, handler, notes, "Context", "Context, revised", 2)
+	request := requestApproval(t, handler, notes)
 
-	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/edits", map[string]any{
+	edited := sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+notes+"/edits", map[string]any{
 		"actor": adviceSessionActor("session-editor"),
 		"ops":   []map[string]string{{"op": "replace", "find": "Context, revised", "with": "Context"}},
 	})
 	advice := adviceFromResponse(t, edited.Code, edited.Body.String())
-	requireReviewCarriedWith(t, handler, issue.PrimaryArtifactID, 3, 1, restoreSentence(1), &request.ID)
+	requireReviewCarriedWith(t, handler, notes, 3, 1, restoreSentence(1), &request.ID)
 	if answered := readBlockAsk(t, handler, request.ID); answered.State != "answered" {
 		t.Fatalf("request after the carry = %q, want answered", answered.State)
 	}
@@ -378,11 +382,13 @@ func TestMovedApprovalRequestReachesAPersonsWrite(t *testing.T) {
 // (docs.restoresApprovedText), which answers the spec's half alone: nobody has approved the
 // Verification document, so the request stays open. The edit that then versions the Verification
 // document takes it further from him, and the report names that document as the one standing
-// above the version the request asks about.
+// above the version the request asks about. The issue has not converted, so the spec's review
+// pins its markdown and a restore still carries it.
 func TestMovedApprovalRequestNamesTheDocumentACarryLeftBehind(t *testing.T) {
 	t.Parallel()
-	handler := approvalCarryHandler(t)
-	issue := createInteractionIssue(t, handler, "TEST", "Carried one half", "Context\n")
+	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
+	issue := createInteractionIssue(t, handler, "TEST", "Carried one half", ":::requirement{#r1}\nContext\n:::\n")
 	verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne.\n")
 	reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
 	reviseDocument(t, handler, issue.PrimaryArtifactID, "Context", "Context, revised", 2)

@@ -53,8 +53,9 @@ func writtenAt(t *testing.T, database *store.Store, table, column, id string) ti
 }
 
 // windowsUnder counts the embeddings windows of kind kind the indexers wrote under one owner:
-// a document's under its artifact id, a comment's, an ask's or a message's under <kind>/<id>
-// (refs.writeWindows).
+// a document's under the room it is edited in (documentWindowOwner) - its issue's tree artifact
+// once its issue's room holds it, else its artifact id - and a comment's, an ask's or a message's
+// under <kind>/<id> (refs.writeWindows).
 func windowsUnder(t *testing.T, database *store.Store, kind, owner string) int64 {
 	t.Helper()
 	var count int64
@@ -68,8 +69,9 @@ func windowsUnder(t *testing.T, database *store.Store, kind, owner string) int64
 // A write of each kind the index holds - an issue, and a document, a comment, an ask and a
 // message - is returned by a search of its own words within 60 seconds of the write, and the
 // blocks of the document, the comment, the ask and the message are indexed as windows under
-// them over that same wait, each measured from its own row's write on the database's clock
-// (within).
+// their owners over that same wait, each measured from its own row's write on the database's
+// clock (within). The document is the spec of an issue born converted, so its windows stand
+// under the room's tree artifact, of which it is the one document holding a block.
 func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{})
@@ -94,7 +96,7 @@ func TestASearchReturnsEveryIndexedKindWithinSixtySeconds(t *testing.T) {
 	}
 
 	for _, window := range []struct{ kind, owner, table, id string }{
-		{"document_block", corpus.primaryArtifactID, "artifacts", corpus.primaryArtifactID},
+		{"document_block", documentWindowOwner(t, database, corpus.primaryArtifactID), "artifacts", corpus.primaryArtifactID},
 		{"comment_block", "comment/" + corpus.commentID, "comments", corpus.commentID},
 		{"ask_part", "ask/" + corpus.askID, "asks", corpus.askID},
 		{"message_block", "message/" + corpus.messageID, "messages", corpus.messageID},

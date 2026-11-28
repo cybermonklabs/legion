@@ -23,6 +23,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // The corpus, as c-write-cost states it. The two documents are a stated shape and not a guess:
@@ -240,16 +241,20 @@ func writeCostVersion(t *testing.T, corpus *writeCostCorpus, name string, blocks
 //
 // The tick is a loop of the server's own and no request, so it is measured where it commits: the
 // pass indexes each owed document in a transaction of its own, so the owed count falls once for
-// each document it finishes. The run holds the pass's own lease while it writes the batch's new
-// versions (costHoldBlockIndex), so no tick runs over a half-written batch; gives the lease
-// back; and reads the owed count every 5 ms. The reading is from the first document that tick
-// committed to the last, which is the tick's own indexing work with the wait before it left out.
-// Both arms are measured that way, each on its own server's own loop, so the one quantity is
-// compared with itself.
+// each document it finishes. The run holds the pass's own lease and the reference forms drain's
+// while it writes the batch's new versions (costHoldBlockIndex), so neither a tick nor a drain pass
+// runs over a half-written batch; gives the block-index lease back alone and keeps the drain's
+// until the reading ends (blockIndexHold.giveBackIndex), since the drain indexes a document through
+// the block index's own index and, given its lease, could index the batch before the tick and leave
+// the reading a tick with no work; and reads the owed count every 5 ms. The reading is from the
+// first document that tick committed to the last, which is the tick's own indexing work with the
+// wait before it left out. Both arms are measured that way, each on its own server's own loop, so
+// the one quantity is compared with itself.
 func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration {
 	t.Helper()
 	arm := corpus.arm
-	release := costHoldBlockIndex(t, arm)
+	hold := costHoldBlockIndex(t, arm)
+	defer hold.giveBack()
 	for index := range corpus.tick {
 		body := arm.server.documentUpload(t, corpus.issue, writeCostTickName(index),
 			costDocumentText(writeCostTickBlocks, writeCostNesting, costPointerCount(writeCostTickBlocks), corpus.targets, run+2, -1),
@@ -258,11 +263,10 @@ func writeCostTick(t *testing.T, corpus *writeCostCorpus, run int) time.Duration
 	}
 	owed := arm.count(t, `select count(*) from document_block_versions where version is null`)
 	if owed != int64(len(corpus.tick)) {
-		release()
 		t.Fatalf("%s: %d document(s) are owed a block index before the measured tick, want the %d of the batch",
 			arm.name, owed, len(corpus.tick))
 	}
-	release()
+	hold.giveBackIndex()
 
 	deadline := time.Now().Add(writeCostTickWait)
 	var first time.Time
@@ -415,9 +419,9 @@ func writeCostWhereTheTimeWent(t *testing.T, arms []*costArm, corpora map[*costA
 			}
 			before[index] = arm.count(t, count.statement)
 		}
-		release := costHoldBlockIndex(t, arm)
+		hold := costHoldBlockIndex(t, arm)
 		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+7, -1)
-		release()
+		hold.giveBack()
 		written := []string{}
 		var nodes, tuples int64
 		for index, count := range counts {
@@ -459,22 +463,27 @@ func writeCostWhereTheTimeWent(t *testing.T, arms []*costArm, corpora map[*costA
 // The rewrite above was the document's last version, and it moved every item, so an edit written
 // straight after it would move every item back. A first edit brings the document to the edit's
 // shape - every item but one at revision 0 - and the second, which changes that one item again,
-// is the edit whose rows are printed.
+// is the edit whose rows are printed. The forms drain's lease is held from the first edit until
+// the rows after the second are read, and the block-index lease over each edit alone
+// (blockIndexHold.giveBackIndex, holdIndexAgain), so the rows read after each edit are the
+// edit's and its tick's: the drain, which indexes a document through the block index's own
+// index, appends none between the two readings.
 func writeCostWhatTheEditWrote(t *testing.T, arms []*costArm, corpora map[*costArm]*writeCostCorpus) {
 	t.Helper()
 	const changed = writeCostUnderBlocks / 2
 	for _, arm := range arms {
 		corpus := corpora[arm]
-		release := costHoldBlockIndex(t, arm)
+		hold := costHoldBlockIndex(t, arm)
 		writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+8, changed)
-		release()
+		hold.giveBackIndex()
 		costBlockIndexDrained(t, arm, 10*time.Minute)
 		before := readWriteCostEditRows(t, arm, corpus.under, nil)
-		release = costHoldBlockIndex(t, arm)
+		hold.holdIndexAgain()
 		taken := writeCostVersion(t, corpus, "under.md", writeCostUnderBlocks, costWriteRuns+9, changed)
-		release()
+		hold.giveBackIndex()
 		costBlockIndexDrained(t, arm, 10*time.Minute)
 		after := readWriteCostEditRows(t, arm, corpus.under, &before)
+		hold.giveBack()
 		var printed strings.Builder
 		for _, table := range before.tables {
 			writeCostRowChanges(&printed, table, before.rows[table], after.rows[table])
@@ -666,8 +675,8 @@ func writeCostStoreWrite(t *testing.T, arm *costArm, nodes, relations int64) (ti
 	batch := make([]graphstore.Node, 0, nodes)
 	for index := range int(nodes) {
 		batch = append(batch, graphstore.Node{
-			Kind: "block", ID: fmt.Sprintf("00000000-0000-4000-9000-%012d", index),
-			Supertag: "paragraph", Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
+			Kind: refs.BlockNodeKind, ID: fmt.Sprintf("00000000-0000-4000-9000-%012d", index),
+			Supertag: refs.BlockSupertag, Visibility: graphstore.VisibilityProject, State: graphstore.StateLive,
 			MadeAt: at, MadeBy: actor, SourceEvent: graphstore.NoEvent,
 		})
 	}
@@ -744,11 +753,12 @@ func requireWriteCostReachesTheStore(t *testing.T, head *costArm, corpus *writeC
 		comments, sessions)
 }
 
-// costStoreCounts is the store's own row counts, which only this child's arm holds.
+// costStoreCounts is the store's own row counts on the arm's database, or the words saying the arm
+// holds none, read off the database and not the arm: a base build past #3178 holds the store too.
 func costStoreCounts(t *testing.T, arm *costArm) string {
 	t.Helper()
-	if !arm.head {
-		return ", and no node and tuple store, which the commit before this child has not got"
+	if arm.count(t, `select count(to_regclass(name)) from unnest(array['graph_nodes', 'graph_tuples']) as name`) != 2 {
+		return ", and no node and tuple store, which " + arm.name + " has not got"
 	}
 	return fmt.Sprintf(", %d node(s) and %d tuple(s)",
 		arm.count(t, `select count(*) from graph_nodes`),

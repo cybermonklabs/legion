@@ -90,7 +90,9 @@ func compareBlockLinks(t *testing.T, stage string, got []model.BlockLink, want [
 // A4: rollout.md has two blocks citing blocks of the spec, written in two versions, and the
 // spec has one block citing rollout.md's first block. The links from rollout.md to the spec
 // are exactly its two, newest first, each dated by the version that wrote it; the links back are
-// exactly the spec's one.
+// exactly the spec's one. The spec is a fragment of its issue's room, whose tree keys its blocks'
+// nodes; rollout.md plays no role, so it is a room of its own, whose ref_key keys its blocks' nodes
+// (R5 of the issue-tree spec).
 func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
@@ -98,7 +100,8 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 	holdIt := ":::callout{#hold-it kind=\"note\" title=\"\"}\nHold it.\n:::"
 	issue := createSpecIssue(t, handler, "CORE", shipIt("Ship it.")+"\n\n"+holdIt+"\n\nOther paragraph.\n")
 	specRef := "dispatch://" + issue.Key + "/spec"
-	specKey := issue.Key + "/spec"
+	// The room's node of a block of the spec (refs.DocumentRoomSQL).
+	node := readDecisionDocument(t, database, issue.Key, "spec").address
 
 	shipParagraph := "Ship per " + specRef + "#b-ship%5Fit."
 	rollout := uploadIssueDocument(t, handler, issue.Key, "rollout.md",
@@ -133,13 +136,13 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 		{
 			Kind:         "mentions",
 			FromDocument: rolloutRef, FromID: rolloutKey + "#" + holdFrom, FromKind: "block", FromBlockID: holdFrom,
-			ToDocument: specRef, ToID: specKey + "#hold-it", ToKind: "block", ToBlockID: "hold-it",
+			ToDocument: specRef, ToID: node("hold-it"), ToKind: "block", ToBlockID: "hold-it",
 			CreatedVersion: 2, CreatedAt: rolloutV2.CreatedAt,
 		},
 		{
 			Kind:         "mentions",
 			FromDocument: rolloutRef, FromID: rolloutKey + "#" + shipFrom, FromKind: "block", FromBlockID: shipFrom,
-			ToDocument: specRef, ToID: specKey + "#ship_it", ToKind: "block", ToBlockID: "ship_it",
+			ToDocument: specRef, ToID: node("ship_it"), ToKind: "block", ToBlockID: "ship_it",
 			CreatedVersion: 1, CreatedAt: rolloutV1.CreatedAt,
 		},
 	})
@@ -150,14 +153,15 @@ func TestBlockLinksListLinksFromBlocksOfOneDocumentToBlocksOfAnother(t *testing.
 	}
 	compareBlockLinks(t, "the spec to rollout.md", backward.Links, []blockLink{{
 		Kind:         "mentions",
-		FromDocument: specRef, FromID: specKey + "#" + citeFrom, FromKind: "block", FromBlockID: citeFrom,
+		FromDocument: specRef, FromID: node(citeFrom), FromKind: "block", FromBlockID: citeFrom,
 		ToDocument: rolloutRef, ToID: rolloutKey + "#first_call", ToKind: "block", ToBlockID: "first_call",
 		CreatedVersion: 2, CreatedAt: specV2.CreatedAt,
 	}})
 }
 
 // A document's blocks can link to one another: the links from a document to itself are those.
-// A document with none answers an empty list, never null.
+// A document with none answers an empty list, never null. The spec is a fragment of its issue's
+// room, whose tree keys its blocks' nodes.
 func TestBlockLinksListALinkWithinOneDocument(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
@@ -182,10 +186,11 @@ func TestBlockLinksListALinkWithinOneDocument(t *testing.T) {
 	if paragraphID == "" {
 		t.Fatalf("the inserted paragraph %q is not among GET …/blocks", paragraph)
 	}
+	node := readDecisionDocument(t, database, issue.Key, "spec").address
 	compareBlockLinks(t, "the spec to itself", readBlockLinks(t, handler, specRef, specRef).Links, []blockLink{{
 		Kind:         "mentions",
-		FromDocument: specRef, FromID: issue.Key + "/spec#" + paragraphID, FromKind: "block", FromBlockID: paragraphID,
-		ToDocument: specRef, ToID: issue.Key + "/spec#ship_it", ToKind: "block", ToBlockID: "ship_it",
+		FromDocument: specRef, FromID: node(paragraphID), FromKind: "block", FromBlockID: paragraphID,
+		ToDocument: specRef, ToID: node("ship_it"), ToKind: "block", ToBlockID: "ship_it",
 		CreatedVersion: version.Number, CreatedAt: version.CreatedAt,
 	}})
 }

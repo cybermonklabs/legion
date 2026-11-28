@@ -16,7 +16,7 @@ import (
 // insert triggers and its seed follow. lastRefsDecisionsFormsTrigger is the last of the triggers
 // (20261126040500) that the seed runs after.
 const (
-	beforeRefsDecisionsForms      = 20261125005337
+	beforeRefsDecisionsForms      = 20261125160000
 	lastRefsDecisionsFormsTrigger = 20261126040500
 )
 

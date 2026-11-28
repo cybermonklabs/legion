@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"maps"
 
 	"github.com/jackc/pgx/v5"
 
@@ -31,7 +32,9 @@ func typedSources(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc
 // introduced the block, the rule an ask block's row is opened by (askBlockSources.author).
 //
 //   - A document this transaction seeds (SeedText: an issue's first document, a new upload) is its
-//     writer's, every block of it.
+//     writer's, every block of it. For an issue room indexed under its tree artifact, whose one
+//     pass reads every fragment, that is every credited block of each fragment this transaction
+//     seeded (seededFragmentAuthors): the ledger records a seed under the document it seeded.
 //   - A block this transaction's live write added, or whose id its stamp re-minted, is the author
 //     that write registers for it (writtenAskAuthors): its own actor, or the one it carried.
 //   - Any other is the one the settlement writing the version read (settled), else the one the
@@ -44,13 +47,15 @@ func typedSources(ctx context.Context, tx pgx.Tx, artifactID string, tree *pmdoc
 func blockAuthors(ctx context.Context, tx pgx.Tx, artifactID string, ids []string, settled *askBlockSources) (map[string]model.Actor, error) {
 	authors := make(map[string]model.Actor, len(ids))
 	ledger := ledgerFrom(ctx)
+	var seeded map[string]model.Actor
 	if ledger != nil {
-		if seed, seeded := ledger.seeds[artifactID]; seeded {
+		if seed, own := ledger.seeds[artifactID]; own {
 			for _, id := range ids {
 				authors[id] = seed.actor
 			}
 			return authors, nil
 		}
+		seeded = seededFragmentAuthors(ledger, artifactID)
 	}
 	var written map[string]model.Actor
 	if write := ledger.liveWriteFor(artifactID); write != nil && write.actor != nil {
@@ -58,7 +63,9 @@ func blockAuthors(ctx context.Context, tx pgx.Tx, artifactID string, ids []strin
 	}
 	var rest []string
 	for _, id := range ids {
-		if actor, own := written[id]; own {
+		if actor, own := seeded[id]; own {
+			authors[id] = actor
+		} else if actor, own := written[id]; own {
 			authors[id] = actor
 		} else {
 			rest = append(rest, id)
@@ -81,4 +88,21 @@ func blockAuthors(ctx context.Context, tx pgx.Tx, artifactID string, ids []strin
 		}
 	}
 	return authors, nil
+}
+
+// seededFragmentAuthors is the author of each credited block of every document ledger's
+// transaction seeded into the issue room room (SeedText into its fragment), that seed's actor, by
+// block id; none where it seeded no fragment of room.
+func seededFragmentAuthors(ledger *Ledger, room string) map[string]model.Actor {
+	var authors map[string]model.Actor
+	for document, seed := range ledger.seeds {
+		if seed.room != room || document == room {
+			continue
+		}
+		if authors == nil {
+			authors = map[string]model.Actor{}
+		}
+		maps.Copy(authors, seededAskAuthors(seed))
+	}
+	return authors
 }

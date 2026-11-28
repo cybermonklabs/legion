@@ -83,12 +83,16 @@ func Follow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.A
 	if !result.marked {
 		return followed, nil
 	}
-	relation := FollowedBy(askID, sessionID, true, who, result.since, event)
+	relation := followChange(askID, sessionID, true, who, result.since, event)
 	if event == graphstore.NoEvent {
-		followed.Uncaused.Tuples = append(followed.Uncaused.Tuples, graphstore.UncausedTuple{Tuple: relation})
+		followed.Uncaused.State(graphstore.UncausedTuple{Tuple: relation})
 		return followed, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{relation}); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
+		return nil
+	}); err != nil {
 		return Followed{}, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
 	}
 	return followed, nil
@@ -124,6 +128,9 @@ type followResult struct {
 // dated by the row's own `since`, as the old arm dates the edge; one that finds the row marked
 // already states nothing, so a session replying on an ask it follows appends no relation at all.
 // That relation is stated after the row: its time is the row's, which the insert gives it.
+// That followed_by changes the ask's node it goes out of (graphstore.Tuple's Changes), as a
+// pointer a request appends does, so a follow made for a run of the command bar names the ask
+// as changed by that run (store.WithRun); the following session's node is never marked.
 //
 // A follow whose cause comes later states no base attribute in that statement and holds the
 // node for the caller to cause under its event (graphstore.WriteArmsUncaused): no tuple may be
@@ -191,6 +198,16 @@ func FollowedBy(askID, sessionID string, asserted bool, who model.Actor, at time
 		ToKind: graphstore.KindSession, ToID: sessionID,
 		At: at, Who: who, SourceEvent: event, Asserted: asserted,
 	}
+}
+
+// followChange is FollowedBy marked as changing the ask's node (graphstore.Tuple's Changes): the
+// relation a follow or an unfollow states, which a write made for a run names the ask's node
+// changed by. CatchUpFollower states what another build's follow or unfollow did, which no run
+// made, through FollowedBy alone.
+func followChange(askID, sessionID string, asserted bool, who model.Actor, at time.Time, event int64) graphstore.Tuple {
+	relation := FollowedBy(askID, sessionID, asserted, who, at, event)
+	relation.Changes = true
+	return relation
 }
 
 // PlannedFollow is the follow of an ask by a session author as PlanFollowAuthor or
@@ -301,12 +318,13 @@ func (p PlannedFollow) Queue(b *store.WriteBatch, event int64) (graphstore.Uncau
 	if err != nil || !p.marks {
 		return held, err
 	}
-	relation := FollowedBy(p.askID, p.sessionID, true, p.who, p.since, event)
+	relation := followChange(p.askID, p.sessionID, true, p.who, p.since, event)
 	if event == graphstore.NoEvent {
-		held.Tuples = append(held.Tuples, graphstore.UncausedTuple{Tuple: relation})
+		held.State(graphstore.UncausedTuple{Tuple: relation})
 		return held, nil
 	}
 	graphstore.QueueWrite(b, nil, []graphstore.Tuple{relation})
+	graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
 	return held, nil
 }
 
@@ -321,8 +339,9 @@ type Unfollowed struct {
 // Unfollow removes sessionID from askID's followers in the caller's transaction and reports
 // whether a row went. Where that row was marked, the ask node's followed_by to the session is its
 // record, and the unfollow states its end: a retraction made by who at at, held in Unfollowed for
-// the event the caller appends after the delete, as a follow holds its relation. An unmarked row
-// is answered by graph_edges' old arm, which its delete takes the edge out of with nothing more.
+// the event the caller appends after the delete, as a follow holds its relation, and marked as
+// changing the ask's node (graphstore.Tuple's Changes), as a follow's is. An unmarked row is
+// answered by graph_edges' old arm, which its delete takes the edge out of with nothing more.
 func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model.Actor, at time.Time) (Unfollowed, error) {
 	var marked bool
 	err := tx.QueryRow(ctx, `
@@ -337,7 +356,8 @@ func Unfollow(ctx context.Context, tx pgx.Tx, askID, sessionID string, who model
 	}
 	unfollowed := Unfollowed{Removed: true}
 	if marked {
-		unfollowed.Uncaused.Tuples = []graphstore.UncausedTuple{{Tuple: FollowedBy(askID, sessionID, false, who, at, graphstore.NoEvent)}}
+		retraction := followChange(askID, sessionID, false, who, at, graphstore.NoEvent)
+		unfollowed.Uncaused = graphstore.Holding(graphstore.UncausedTuple{Tuple: retraction})
 	}
 	return unfollowed, nil
 }
@@ -371,7 +391,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 			return false, fmt.Errorf("mark the follow of ask %q by %q: %w", askID, sessionID, err)
 		}
 		nodes := []graphstore.Node{graphstore.SessionNode(sessionID, who, since, event)}
-		if err := graphstore.Write(ctx, tx, nodes, []graphstore.Tuple{FollowedBy(askID, sessionID, true, who, since, event)}); err != nil {
+		relation := FollowedBy(askID, sessionID, true, who, since, event)
+		if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+			graphstore.QueueWrite(b, nodes, []graphstore.Tuple{relation})
+			graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{relation}))
+			return nil
+		}); err != nil {
 			return false, fmt.Errorf("state that %q follows ask %q: %w", sessionID, askID, err)
 		}
 		return true, nil
@@ -389,7 +414,12 @@ func CatchUpFollower(ctx context.Context, tx pgx.Tx, askID, sessionID string, ad
 	if !gone || !asserted {
 		return false, nil
 	}
-	if err := graphstore.Write(ctx, tx, nil, []graphstore.Tuple{FollowedBy(askID, sessionID, false, who, at, event)}); err != nil {
+	retraction := FollowedBy(askID, sessionID, false, who, at, event)
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nil, []graphstore.Tuple{retraction})
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, []graphstore.Tuple{retraction}))
+		return nil
+	}); err != nil {
 		return false, fmt.Errorf("state that %q no longer follows ask %q: %w", sessionID, askID, err)
 	}
 	return true, nil

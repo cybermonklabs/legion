@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+  `CommentThreadPage`, the comment page of `GET /api/v1/issues/{key}/comments?order=activity`,
+  carries the optional member `node_anchor` on each comment of a row, its first comment and its
+  replies (`CommentThreadRow` holds `CommentWithNodeAnchor`), which a caller that sends
+  `node_anchor=true` is answered. A comment read without the parameter, or from a Dispatch that
+  does not know it, carries none.
+time: 2026-11-27T10:54:04Z
+custom:
+    Issue: INFRA-1253

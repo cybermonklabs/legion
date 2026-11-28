@@ -33,7 +33,7 @@ func newProjectDocument(t *testing.T, database *store.Store, name, slug string) 
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit the project document fixture: %v", err)
 	}
-	return parentDocument{database: database, artifact: id, refKey: refKey}
+	return parentDocument{database: database, artifact: id, refKey: refKey, topKind: graphstore.KindArtifact, topID: refKey}
 }
 
 // indexWhole records version number of the document, rendered as version and written whole by
@@ -46,11 +46,11 @@ func (d parentDocument) indexWhole(t *testing.T, number int, version typedVersio
 	ctx := context.Background()
 	record := d.writeVersion(t, number, version.markdown, writer)
 	commitIndex(t, d.database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := versionFacts(ctx, tx, d.artifact, number, version, writerSources(tx, d.artifact, writer))
+		facts, err := versionFacts(ctx, tx, d.artifact, number, record.at, version, writerSources(tx, d.artifact, writer))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, won, write, err := IndexBlocks(ctx, tx, d.artifact, number, record.at, version.markdown, version.blocks, version.located, version.pointers, "", facts)
+		_, won, write, _, err := IndexBlocks(ctx, tx, d.artifact, OneVersion(d.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, "", facts)
 		if err == nil && !won {
 			err = fmt.Errorf("version %d of %s lost the revision fence", number, d.refKey)
 		}

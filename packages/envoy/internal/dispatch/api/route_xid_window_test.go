@@ -44,6 +44,10 @@ type routeXidWindowCase struct {
 	// settlements until it reopens, so the measurement waits for the database to fall quiet
 	// rather than for every settlement (awaitQuietDatabase).
 	closedIssue bool
+	// unsettled says the request is made while a browser's edit no settlement has versioned stands
+	// in the document, which the request's own version takes up, so the measurement waits for the
+	// database to fall quiet rather than for every settlement, as for a closed issue.
+	unsettled bool
 }
 
 // routeXidWindowTable is the window table, its rows by kind of route, each kind in a file of its
@@ -61,15 +65,15 @@ func TestXidWindowRouteTable(t *testing.T) {
 }
 
 // measureRouteXidWindow readies row on a traced server with the harness's large spec, waits for
-// every settlement the seeding owed to finish (for a closed issue, for the database to fall
-// quiet), so the request is measured alone, and judges the transactions the request ran against
-// the row's window.
+// every settlement the seeding owed to finish (for a closed issue, or a browser's edit the request
+// versions, for the database to fall quiet), so the request is measured alone, and judges the
+// transactions the request ran against the row's window.
 func measureRouteXidWindow(t *testing.T, row routeXidWindowCase) {
 	t.Helper()
 	tracer := storetest.NewXidTracer()
 	spec, _ := xidSpec(1)
 	write := row.ready(t, routeFixture{options: testServerOptions{tracer: tracer}, spec: spec})
-	awaitQuietDatabase(t, write.database, !row.closedIssue)
+	awaitQuietDatabase(t, write.database, !row.closedIssue && !row.unsettled)
 	marked := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		write.server.ServeHTTP(w, r.WithContext(storetest.MarkXid(r.Context())))
 	})

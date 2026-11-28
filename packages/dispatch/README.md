@@ -458,8 +458,8 @@ agent sees it, through the HTTP API and the real `dispatch` CLI
 shell's Dispatch URL, token file and Envoy configuration never reach it). It covers a comment
 citing a block and the block's backlinks, a deleted and restored block, a pinned block reference
 that changes and is removed, `GET /api/v1/block-links` between the blocks of two documents, each
-block's changed version, every block `part_of` its document, a link in a list item, the six facts
-every node carries (`made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`)
+block's changed version, every block `part_of` its document, a link in a list item, six facts
+of every node (`made_by`, `made_at`, `changed_by`, `changed_at`, `parent`, `parent_version`)
 for an issue, a document, a file, a picture, a block, a removed pinned block, an ask, a comment, a
 message, a session and a component, read by its own reference, as an edge's other end and on the
 `Node:` line of `dispatch read`, and the older `GET /api/v1/artifacts/{id}/references` route. It
@@ -800,6 +800,51 @@ assertion prints `PASS: <n> <what>` on stderr, the first failure prints `FAIL:` 
 a run that reaches the end writes `all <n> assertions passed` as the one line on stdout, so a run
 cut short fails a reader that reads that line.
 
+`e2e/acceptance/seed-corpus.sh` writes the corpus the issue-tree upgrade checks
+read, through the API of the release before: the server `e2e/acceptance/lib-baseline.sh`
+builds from `BASELINE_SHA` and boots, so every row of it is one that release's own writers left.
+It writes a project of nine issues. The first holds a spec, a `verification.md`, a `plan.md` and
+a `notes.md`, each of three versions and each holding the shapes the tree census reads (headings
+followed by paragraphs, a nested list, a list whose last item is empty, a callout holding a code
+block and a table, and a quote holding a list), beside requirements, checks, plan tasks, one image
+upload, comments that cite blocks, messages, asks and recorded results; the second is its child.
+Five more serve the render boundary's two counts and the conversion's dry run: one approved at its
+newest versions, one whose approval a later version supersedes, one approved and then asked for
+changes, one closed, and one holding a spec alone. The eighth has the size of the largest issue
+measured, the memory experiment's measurement: 10,842 blocks over 243 documents, 34 comments,
+34 messages and no ask. The ninth holds the role documents of `LARGEST_ISSUE`, read from the
+deployment `DISPATCH_URL` names, with every reference to that issue naming the ninth instead;
+the conversion's dry run measures it. It
+prints each issue it writes and each count with the time it was taken, the boundary's two counts
+(`pre_cutover_versions` and `standing_approvals`) among them, stops the server, keeps the database,
+and ends with `PASS: seed-corpus.sh complete 6 sections`. Its inputs:
+
+- `DATABASE_URL`, an empty database on this machine, which the run refuses when it holds a table;
+- `PROJECT`, the project it creates (`CORE`, as the checks name it);
+- `DEV_SIGNIN_LOGIN`, the person who writes every approval and every person's comment and
+  message, signed in before the project's create names them as its default assignee;
+- `DISPATCH_TOKEN`, optional, the bearer the server accepts; unset, the run makes one of its own;
+- `BASELINE_SHA`, `BASELINE_BINARY`, `BASELINE_EXTRA_ENV` and `LEGION_WORKSPACE`, as the head
+  comment of `lib-baseline.sh` states them;
+- `CORPUS_LARGE_BLOCKS`, `CORPUS_LARGE_DOCUMENTS`, `CORPUS_LARGE_COMMENTS`,
+  `CORPUS_LARGE_MESSAGES` and `CORPUS_LARGE_ASKS`, optional, the size of the eighth issue, each
+  defaulting to the measured one, so a quick run can ask for less;
+- `LARGEST_ISSUE`, the key of the issue whose role documents the ninth issue holds;
+- `DISPATCH_URL` and `DISPATCH_TOKEN_FILE`, the deployment that issue is read from and a file
+  holding its bearer token, which the run uses for reads alone.
+
+At the measured size a run took under three minutes in a Legion pod, the baseline's build
+included. Sourced after `lib.sh` and `lib-tree.sh` instead, it gives a driver its writers,
+`corpus_large_issue` among them, and boots nothing:
+
+```bash
+createdb -h 127.0.0.1 -p 5433 -U legion_test infra_1253_corpus
+DATABASE_URL=postgres://legion_test@127.0.0.1:5433/infra_1253_corpus?sslmode=disable \
+  PROJECT=CORE DEV_SIGNIN_LOGIN=alice DISPATCH_TOKEN=e2e-token BASELINE_SHA=<commit> \
+  LARGEST_ISSUE=<issue key> DISPATCH_URL=<deployment URL> DISPATCH_TOKEN_FILE=<token file> \
+  bash packages/dispatch/e2e/acceptance/seed-corpus.sh
+```
+
 `e2e/acceptance/with-harness.sh` runs one command against a stack of its own, for a driver that
 has no server to speak to: it starts `e2e/harness-up.ts`, waits for the stack's exports, applies
 them, runs the command with `DISPATCH_E2E_PORT` and the rest in its environment, and stops the
@@ -819,11 +864,36 @@ who has signed in, so the project may name her.
 was written `bun e2e/run.ts -- <command>`; that program is gone, and the browser suite starts its
 stacks through Playwright's own global setup now, which no shell driver can reach.
 
-All ten drivers source `e2e/acceptance/lib.sh`, the preamble and the check vocabulary they
-share: it refuses an unset input or a missing command with exit 2, reads the bearer from
-`DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it, unsetting both so no process the
-script starts inherits it, and holds the `pass`, `fail`, `skip`, `want_status`, `expect` and
-`query` every driver checks with. `with-harness.sh` is no driver and sources none of it.
+Twenty-five of the twenty-nine drivers in `e2e/acceptance/` source `e2e/acceptance/lib.sh`, the
+preamble and the check vocabulary they share: it refuses an unset input or a missing command with
+exit 2, reads the bearer from `DISPATCH_TOKEN` or `DISPATCH_TOKEN_FILE` without printing it,
+unsetting both so no process the script starts inherits it, and holds the `pass`, `fail`, `skip`,
+`want_status`, `expect` and `query` each of them checks with. Twenty-three source it themselves,
+and four of those (`answer-attribute-removal.sh`, `answered-decisions.sh`, `decision-nodes.sh` and
+`restore-redirects.sh`) source `lib-baseline.sh` beside it; `lens-schema.sh` and
+`node-visibility-census.sh` source `lib-processes.sh`, which sources `lib-baseline.sh`, which
+sources `lib.sh`. The other four source none of it:
+`document-roundtrip.sh` and `omp-roundtrip.sh` check with functions of their own,
+`outside-path-reach.sh` is handed to a person as one file (below), and `outside-edge-refusals.sh`
+is one file that sources nothing (below). `with-harness.sh` is no driver
+and sources none of it, and `lib-baseline.sh`, `lib-processes.sh`, `lib-tree.sh`,
+`seed-decisions.sh`, `node-visibility-census-lib.sh` and `node-visibility-census-stages.sh`
+(which `node-visibility-census.sh` sources) are files the drivers source, not drivers.
+
+The issue-tree drivers and `seed-corpus.sh` also source `e2e/acceptance/lib-tree.sh`,
+after `lib.sh` and, for a driver over rows an earlier release wrote, after `lib-baseline.sh`. It
+holds what they share, so no driver copies it: the request as the agent or as the person
+(`tree_send`, `tree_person_send`, and `tree_want`, whose failure names the request), the dev
+sign-in and the project create that names that person as its default assignee, the tree read
+(`GET /api/v1/issues/{key}/tree` with `view`, `v` and `cursor`) and every page of it, the
+`dispatch` client and the stamped `envoy-dispatch`, the boot of this head's server over the
+baseline's database with the test settings that hold the conversion step (`tree_boot_head`), the
+waits for the boot's store backfill and for this head's build announcement, each polled every 2 s
+for at most 300 s, the conversion (`envoy-dispatch convert-issues`) and what it left, the reset of
+the upgrade database, which refuses, naming the driver, any address but this machine's
+(`loopback_database_url`), the checks of an issue key and a uuid, a node's tuples and its move,
+the person's edit, and the socket peer the issue-room drivers write with, the Bun program
+`e2e/acceptance/issue-room-peer.ts`. Its head comment names the variables each function reads.
 
 `e2e/acceptance/outside-path-reach.sh` is the driver of the check `c-outside-path-reach`: it
 measures which of our listed addresses a machine reaches over the path given to a person from

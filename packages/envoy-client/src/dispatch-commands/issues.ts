@@ -4,6 +4,7 @@ import type {
   ClaimedIssue,
   DuplicateCandidate,
   Issue,
+  IssueCheckResults,
   IssueComponents,
   IssueComponentsInput,
   IssueDetails,
@@ -156,6 +157,26 @@ function advancesRevisionAnswer(issueKey: string, error: unknown): string {
   return `read the issue with ${commandLine("dispatch_read", { issue: issueKey })}, then send the whole set you mean with ${fieldFlag("dispatch_issue_update", "advances_revision")} ${held}`;
 }
 
+/** The two members a create or an update names the issue's waits by: needs, which a Dispatch of
+ *  the issue tree reads, and blocked_by with the same targets, which a Dispatch of the release
+ *  before reads alone, so a CLI of this release is served by either (R10 of the issue-tree spec).
+ *  A call naming no waits sends neither. */
+function waitsBody(blockedBy: readonly string[] | undefined): {
+  readonly needs?: string[];
+  readonly blocked_by?: string[];
+} {
+  return blockedBy === undefined ? {} : { needs: [...blockedBy], blocked_by: [...blockedBy] };
+}
+
+/** The issues an issue answer says the issue waits on: its needs, where the answer holds it, and
+ *  else its blocked_by, which a Dispatch of the release before answers alone. */
+function waitsOf(issue: {
+  readonly needs?: readonly string[] | null;
+  readonly blocked_by?: readonly string[] | null;
+}): readonly string[] {
+  return issue.needs ?? issue.blocked_by ?? [];
+}
+
 /** `dispatch issue`: open an issue, or report the one an external reference already holds. */
 export async function issueCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client, actor, input, linkBase } = context;
@@ -169,15 +190,19 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
   const assignee = optionalString(args, "assignee");
   const components = optionalComponents(args, "components");
   const repo = optionalString(args, "repo");
-  const labels = args.labels;
-  const blockedBy = args.blocked_by;
+  const labels = optionalStringArray(args, "labels");
+  const blockedBy = optionalStringArray(args, "blocked_by");
+  const duplicateOf = optionalString(args, "duplicate_of");
+  const filedFrom = optionalString(args, "filed_from");
   const advances = optionalStringArray(args, "advances");
   try {
     const created = await client.issue({
       project,
       title,
       ...(parent === undefined ? {} : { parent }),
-      ...(Array.isArray(blockedBy) ? { blocked_by: blockedBy as string[] } : {}),
+      ...waitsBody(blockedBy),
+      ...(duplicateOf === undefined ? {} : { duplicate_of: duplicateOf }),
+      ...(filedFrom === undefined ? {} : { filed_from: filedFrom }),
       ...(advances === undefined ? {} : { advances }),
       ...(external === undefined ? {} : { external }),
       ...(force === undefined ? {} : { force }),
@@ -186,7 +211,7 @@ export async function issueCommand(context: CommandContext): Promise<DispatchToo
       ...(assignee === undefined ? {} : { assignee }),
       ...(components === undefined ? {} : { components }),
       ...(repo === undefined ? {} : { repo }),
-      ...(Array.isArray(labels) ? { labels: labels as string[] } : {}),
+      ...(labels === undefined ? {} : { labels }),
       actor,
     });
     refuseUnsavedRepository(created.created ? "created" : "already holds", created, repo);
@@ -274,9 +299,11 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
   const rankAfter = optionalString(args, "after");
   const priority = optionalPriority(args, "priority");
   const assignee = optionalNullableString(args, "assignee");
-  const labels = Array.isArray(args.labels) ? (args.labels as string[]) : undefined;
+  const labels = optionalStringArray(args, "labels");
   const labelsAdd = optionalStringArray(args, "labels_add");
-  const blockedBy = Array.isArray(args.blocked_by) ? (args.blocked_by as string[]) : undefined;
+  const blockedBy = optionalStringArray(args, "blocked_by");
+  const duplicateOf = optionalString(args, "duplicate_of");
+  const filedFrom = optionalString(args, "filed_from");
   const advances = optionalStringArray(args, "advances");
   const advancesRevision = optionalNumber(args, "advances_revision");
   const requestedLinks = Array.isArray(args.external_links)
@@ -376,7 +403,11 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
       ...(assignee === undefined ? {} : { assignee }),
       ...(route === undefined ? {} : { route }),
       ...(parent === undefined ? {} : { parent: parent === "" ? null : parent }),
-      ...(blockedBy === undefined ? {} : { blocked_by: blockedBy }),
+      ...waitsBody(blockedBy),
+      ...(duplicateOf === undefined
+        ? {}
+        : { duplicate_of: duplicateOf === "" ? null : duplicateOf }),
+      ...(filedFrom === undefined ? {} : { filed_from: filedFrom === "" ? null : filedFrom }),
       ...advancesWrite,
       ...(components === undefined ? {} : { components }),
       ...(repo === undefined ? {} : { repo: repo === "" ? null : repo }),
@@ -468,9 +499,23 @@ export async function issueUpdateCommand(context: CommandContext): Promise<Dispa
     ...(blockedBy === undefined
       ? []
       : [
-          (after.blocked_by ?? []).length === 0
+          waitsOf(after).length === 0
             ? "blocked_by cleared"
-            : `blocked by ${(after.blocked_by ?? []).join(", ")}`,
+            : `blocked by ${waitsOf(after).join(", ")}`,
+        ]),
+    ...(duplicateOf === undefined
+      ? []
+      : [
+          (after.duplicate_of ?? null) === null
+            ? "duplicate_of cleared"
+            : `duplicate of ${after.duplicate_of}`,
+        ]),
+    ...(filedFrom === undefined
+      ? []
+      : [
+          (after.filed_from ?? null) === null
+            ? "filed_from cleared"
+            : `filed from ${after.filed_from}`,
         ]),
     ...(advances === undefined
       ? []
@@ -830,8 +875,27 @@ export async function resultCommand(context: CommandContext): Promise<DispatchTo
   };
 }
 
+/**
+ * Whether the issue whose results read answered no check has a Verification document at all: its
+ * queries say, where the issue read carries them, since a results read with no check is the same
+ * for an empty verification query and for none.
+ */
+async function hasVerificationDocument(
+  client: DispatchClient,
+  issue: string,
+  results: IssueCheckResults
+): Promise<boolean> {
+  const { queries } = await client.getIssue(issue);
+  // A server of the release before answers the issue read with no `queries`. Its results read
+  // names the Verification document itself, "" where the issue has none.
+  // kept for one release: role-artifact-ids
+  if (queries === undefined) return results.verification_artifact_id !== "";
+  return queries.some(({ query }) => query === "verification");
+}
+
 /** `dispatch results`: each check of an issue's Verification document with every result recorded
- *  against it. */
+ *  against it, and for an issue with no Verification query or role document, that it has none
+ *  rather than an empty list. */
 export async function resultsCommand(context: CommandContext): Promise<DispatchToolResult> {
   const { args, client } = context;
   const issue = stringArg(args, "issue");
@@ -839,6 +903,8 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
   const brief = optionalBoolean(args, "brief") === true;
   const results = await client.issueResults(issue, at);
   const checks = results.checks ?? [];
+  const hasVerification =
+    checks.length > 0 || (await hasVerificationDocument(client, issue, results));
   // A basis omits the issue's own repository. Resolve it only for the two answers that name
   // that repository, once per check owner, including a check inherited from an ancestor.
   const repositories: Record<string, string> = {};
@@ -858,7 +924,9 @@ export async function resultsCommand(context: CommandContext): Promise<DispatchT
     })
   );
   return {
-    text: formatCheckResults(results, brief, repositories),
+    text: hasVerification
+      ? formatCheckResults(results, brief, repositories)
+      : `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`,
     details: {
       issue,
       checks: checks.length,

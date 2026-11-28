@@ -1,6 +1,7 @@
 package api
 
 import (
+	"context"
 	"fmt"
 	"net/http"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // c-reading-approval: a reading never changes the decision it reads, so
@@ -61,6 +63,17 @@ const (
 	readingOfAnswer = "The agent reads the answer as the quiet region first."
 )
 
+// The spec of the writes that change more than a reading (supersedingWrites): readingSpec and,
+// after its asks, the requirement q1, so the Spec query's record holds a node a write can move. The
+// Spec query takes memo callouts, criteria and requirements alone (R14), so readingSpec's record is
+// empty, and an approval of it stands across every change of its text. readingRequirementReworded
+// is q1's words with one word changed.
+const (
+	readingRequirementWords    = "Every client reaches the service over HTTP."
+	readingRequirementReworded = "Every client reaches the service over gRPC."
+	readingRequirementSpec     = readingSpec + "\n:::requirement{#q1}\n" + readingRequirementWords + "\n:::\n"
+)
+
 // readingCarrySentence is the reason the reading case records, carrying the approval of version
 // from (docs.carriedReasonPrefix, readingCase, carriedReasonEnd).
 func readingCarrySentence(from int) string {
@@ -83,16 +96,24 @@ type readingFixture struct {
 	open, declined       string
 }
 
-// approvedReadingSpec has the agent's session create an issue of project TEST holding readingSpec,
-// so d1 and d2 are the agent's decisions, waits for settlement to open the asks of a1 to a4, has
-// alice answer a1 and a2 and decline a4 with a note - each of which settles into a version of its
-// own, the ask block's kept state (R3) - and approve the spec's latest version once it owes no
-// settlement. It fails unless the spec is the check's fixture: d1 decided by the session with its
-// level of certainty and its reason, a3 open, and a4 declined with the note.
+// approvedReadingSpec is approvedReadingSpecHolding the reading tests' fixture spec, readingSpec.
 func approvedReadingSpec(t *testing.T, handler http.Handler, database *store.Store, title string) readingFixture {
 	t.Helper()
+	return approvedReadingSpecHolding(t, handler, database, title, readingSpec)
+}
+
+// approvedReadingSpecHolding has the agent's session create an issue of project TEST whose spec is
+// markdown, readingSpec or readingRequirementSpec, so d1 and d2 are the agent's decisions, waits for
+// settlement to open the asks of a1 to a4, has alice answer a1 and a2 and decline a4 with a note -
+// each of which settles into a version of its own, the ask block's kept state (R3) - and approve
+// the spec's latest version once it owes no settlement, the issue's queries owe no drain, and that
+// version's version_renders row holds its time and owes no record digest. It fails unless the spec
+// is the check's fixture: d1 decided by the session with its level of certainty and its reason, a3
+// open, and a4 declined with the note.
+func approvedReadingSpecHolding(t *testing.T, handler http.Handler, database *store.Store, title, markdown string) readingFixture {
+	t.Helper()
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{
-		"project": "TEST", "title": title, "spec": readingSpec, "force": true, "actor": sessionActor(),
+		"project": "TEST", "title": title, "spec": markdown, "force": true, "actor": sessionActor(),
 	})
 	requireAgentWrite(t, "the agent's issue "+title, created, http.StatusCreated)
 	issue := decodeBody[model.Issue](t, created)
@@ -111,9 +132,23 @@ func approvedReadingSpec(t *testing.T, handler http.Handler, database *store.Sto
 	requireValue(t, database, spec.address("d1"), refs.ValueUncertaintyReason, readingReason)
 	// The answers and the decline each settle into a version of their own, the ask block's kept
 	// state (R3): the person approves once the spec owes no settlement, so the version approved is
-	// the latest and the versions each case's write stores follow it.
-	awaitSettled(t, database, issue.PrimaryArtifactID)
+	// the latest and the versions each case's write stores follow it. On a converted issue wait for
+	// the version's saved-cut digest as well. A markdown document does not owe a record digest.
+	renderAtVersionQuiet(t, database, issue.Key, issue.PrimaryArtifactID)
+	versions := documentVersions(t, handler, issue.PrimaryArtifactID)
+	latest := versions[len(versions)-1].Number
+	if tree, err := issueTreeOf(context.Background(), database.Pool, issue.Key); err != nil {
+		t.Fatalf("read the issue's tree: %v", err)
+	} else if tree != "" {
+		testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("version %d of the spec of %s to hold its time and owe no record digest (its version_renders row)", latest, issue.Key), func() (string, bool) {
+			row := versionFillRowOf(t, database, issue.PrimaryArtifactID, latest)
+			return fmt.Sprintf("holds a time %t, holds a record digest %t, digest_owed %t", row.at != nil, row.digest != nil, row.owed), row.at != nil && !row.owed
+		})
+	}
 	approval := reviewDocument(t, handler, issue.PrimaryArtifactID, "alice", "approved", "")
+	if approval.Version != latest {
+		t.Fatalf("alice approved version %d of the spec of %s, want version %d, whose digest the wait read", approval.Version, issue.Key, latest)
+	}
 	return readingFixture{issueKey: issue.Key, artifactID: issue.PrimaryArtifactID, approval: approval, open: asks["a3"], declined: asks["a4"]}
 }
 
@@ -269,9 +304,11 @@ var readingWrites = []readingWrite{
 	},
 }
 
-// The four writes that must still supersede the approval: the decision's own words, prose
-// outside any reading, a write that changes both at once beside a reading, and a reading retyped
-// into a decision.
+// The four writes that change more than a reading, which no case of carryVerdict carries: the
+// decision's own words, prose outside any reading, a write that changes both at once beside a
+// reading, and a reading retyped into a decision. None of them changes a node the Spec query takes,
+// so none moves the spec's record (R14), and the record carry carries the approval across each; the
+// same write with one word of a requirement changed moves the record and supersedes it.
 var supersedingWrites = []readingWrite{
 	{name: "the decision's own words changed", edit: []map[string]string{replaceOp(readingDecisionOne, "We chose gRPC.")}},
 	{name: "prose outside any reading changed", edit: []map[string]string{replaceOp(readingProse, "The service ships behind a flag and a canary.")}},
@@ -401,6 +438,34 @@ func requireSupersededByTheWrite(t *testing.T, handler http.Handler, fixture rea
 	}
 }
 
+// requireCarriedByTheRecord is the reads after a write of the edits route that changes more than a
+// reading and no node the Spec query takes, on a converted spec: no carry case weighs it (R14's
+// hash gate writes no carried review there), and the spec's approval stands by the digest of its
+// record, which the write did not move. Once the spec owes no settlement its latest version is the
+// one the write stored, and GET /api/v1/artifacts/{id} answers the document approved at the version
+// alice approved, with the stored version the latest; the two versions answer one digest, the
+// newest review is still alice's own approval, and the write's advice names no superseded approval.
+func requireCarriedByTheRecord(t *testing.T, handler http.Handler, database *store.Store, fixture readingFixture, advice *testWriteAdvice, what string) {
+	t.Helper()
+	approved, written := fixture.approval.Version, fixture.approval.Version+1
+	awaitSettled(t, database, fixture.artifactID)
+	got := readApproval(t, handler, fixture.artifactID)
+	if got.Approval == nil || got.Approval.State != "approved" || got.Approval.LatestVersion != written ||
+		got.Approval.Version == nil || *got.Approval.Version != approved {
+		t.Fatalf("%s: GET /api/v1/artifacts/%s answers %s, want the approval of version %d standing with the version %d the write stored the latest",
+			what, fixture.artifactID, describeApproval(got), approved, written)
+	}
+	if got, want := versionDigestOf(t, database, fixture.artifactID, written), versionDigestOf(t, database, fixture.artifactID, approved); got != want {
+		t.Errorf("%s: version %d of %s answers the digest %s, want the approved version %d's, %s", what, written, fixture.artifactID, got, approved, want)
+	}
+	if reviews := listReviews(t, handler, fixture.artifactID); len(reviews) == 0 || reviews[0].Version != approved || reviews[0].CarriedFromVersion != nil {
+		t.Errorf("%s: the reviews of %s read %+v, want alice's own approval of version %d newest: the hash gate writes no carried review", what, fixture.artifactID, reviews, approved)
+	}
+	if advice.SupersededApproval != nil {
+		t.Fatalf("%s: the write's advice reports the superseded approval %+v, want none: the approval stands by its digest", what, advice.SupersededApproval)
+	}
+}
+
 // A person approves the fixture spec at a version - the agent's decision with its level of
 // certainty, its reason and a reading under it, beside an answered ask, an open one and a declined
 // one with a note (approvedReadingSpec) - and a session writes a reading under one of its
@@ -411,9 +476,11 @@ func requireSupersededByTheWrite(t *testing.T, handler http.Handler, fixture rea
 // removal of one, each written as an upload of the whole document and as an edit of it (the
 // reading inside the ask that offers options as an upload alone: readingWrites). A write that
 // writes a decided ask's block from the agent's text stores two versions, each carried
-// (readingWrite.carryReasons). Four writes still supersede the approval: the decision's own
-// words, prose outside any reading, both at once beside a reading, and a reading retyped into a
-// decision (requireSupersededByTheWrite).
+// (readingWrite.carryReasons). Four writes change more than a reading: the decision's own words,
+// prose outside any reading, both at once beside a reading, and a reading retyped into a decision.
+// R14 covers the converted spec by the Spec query's record. None of those writes moves it, so
+// the approval stands without a carry (requireCarriedByTheRecord); the same write with one word
+// changed moves the record and supersedes the approval (requireSupersededByTheWrite).
 func TestAReadingKeepsAPersonsApprovalOfTheCurrentSpec(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := settlingCarryDocuments(t, 20*time.Millisecond)
@@ -423,6 +490,7 @@ func TestAReadingKeepsAPersonsApprovalOfTheCurrentSpec(t *testing.T) {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
 	issues := 0
+	release := holdUnconverted(t, database)
 	fixture := func(t *testing.T) readingFixture {
 		t.Helper()
 		issues++
@@ -447,12 +515,27 @@ func TestAReadingKeepsAPersonsApprovalOfTheCurrentSpec(t *testing.T) {
 			})
 		}
 	}
+	release()
+	requirementFixture := func(t *testing.T) readingFixture {
+		t.Helper()
+		issues++
+		return approvedReadingSpecHolding(t, handler, database, fmt.Sprintf("Reading fixture %d", issues), readingRequirementSpec)
+	}
 	for _, write := range supersedingWrites {
 		t.Run(write.name, func(t *testing.T) {
-			spec := fixture(t)
+			spec := requirementFixture(t)
 			advice := agentEdit(t, handler, spec.artifactID, spec.approval.Version+1, write.edit...)
-			requireSupersededByTheWrite(t, handler, spec, advice, write.name)
-			t.Logf("%s: version %d supersedes the person's approval of version %d", write.name, spec.approval.Version+1, spec.approval.Version)
+			requireCarriedByTheRecord(t, handler, database, spec, advice, write.name)
+			t.Logf("%s: version %d reads approved, carried by the record from the person's approval of version %d",
+				write.name, spec.approval.Version+1, spec.approval.Version)
+		})
+		reworded := write.name + ", with a word of the requirement changed"
+		t.Run(reworded, func(t *testing.T) {
+			spec := requirementFixture(t)
+			ops := append(append([]map[string]string{}, write.edit...), replaceOp(readingRequirementWords, readingRequirementReworded))
+			advice := agentEdit(t, handler, spec.artifactID, spec.approval.Version+1, ops...)
+			requireSupersededByTheWrite(t, handler, spec, advice, reworded)
+			t.Logf("%s: version %d supersedes the person's approval of version %d", reworded, spec.approval.Version+1, spec.approval.Version)
 		})
 	}
 }

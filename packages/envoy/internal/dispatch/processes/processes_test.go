@@ -247,6 +247,37 @@ func TestARowAtTheDefaultsPredatesTheFleetColumns(t *testing.T) {
 	}
 }
 
+// Register writes this build's capabilities into the process's row, issue_room among them, and a
+// row written again after a prune carries them too; a row a build before the column wrote holds
+// null there and lists nothing (decision 7 of the issue-tree plan), so an issue is born
+// converted only while every live row lists issue_room.
+func TestRegisterWritesTheBuildsCapabilitiesAndARowWithoutThemListsNone(t *testing.T) {
+	setInterval(t, &HeartbeatInterval, 50*time.Millisecond)
+	database := storetest.Open(t)
+	registration := mustRegister(t, database, "c1", "K0")
+	lists := func(what string, got Process) {
+		t.Helper()
+		if !got.Lists(CapabilityIssueRoom) || !slices.Equal(got.Capabilities, Capabilities) {
+			t.Errorf("%s lists the capabilities %v, want this build's %v, %s among them", what, got.Capabilities, Capabilities, CapabilityIssueRoom)
+		}
+	}
+	lists("the registered row", liveProcess(t, database, registration.ID))
+	underRegistryLock(t, database, func(tx pgx.Tx) { prunedRow(t, tx, registration.ID) })
+	waitForLive(t, database, registration.ID, "a process whose row was pruned")
+	lists("the row written again after a prune", liveProcess(t, database, registration.ID))
+
+	var before string
+	if err := database.Pool.QueryRow(context.Background(), `
+		insert into server_processes (instance, commit, dashboard_build, signing_keys)
+		values (gen_random_uuid(), 'c0', 'build-c0', $1)
+		returning instance::text`, fingerprints(t, "K0")).Scan(&before); err != nil {
+		t.Fatalf("insert a row as a build before the capabilities column writes it: %v", err)
+	}
+	if got := liveProcess(t, database, before); got.Lists(CapabilityIssueRoom) || len(got.Capabilities) != 0 {
+		t.Errorf("a row a build before the column wrote lists %v, want none", got.Capabilities)
+	}
+}
+
 // Live is measured on the database's clock: a heartbeat 14 seconds before the database's now() is
 // live, one 16 seconds before it is not, whatever this process's clock says.
 func TestLiveCountsAHeartbeatWithinFifteenSecondsOfTheDatabaseClock(t *testing.T) {

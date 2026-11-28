@@ -1674,6 +1674,18 @@ test("a plan task nobody asked for says so, in words", () => {
   });
 });
 
+// While a document of the issue is still being indexed no statement is drawn as lacking a check:
+// its body draws, where its gaps are, that document's line in the server's own words, and its row
+// draws no gap.
+test("a statement whose coverage waits on a document still being indexed draws its line and no gap", () => {
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  expect(
+    drawnGap(
+      node({ coverageNotes: [owed], id: "spec-md#b-r1", statement: true, type: "requirement" })
+    )
+  ).toEqual({ chip: undefined, line: owed });
+});
+
 /** One row the way the tree draws it: unfocused until a focus lands inside it, and then the
  *  focused row, so a test reads what that focus does to the page. */
 function FocusableRow({ drawn }: { drawn: TreeNode }): ReactNode {

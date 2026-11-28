@@ -245,11 +245,7 @@ func (issue *restoreIssue) latest(document string) string {
 // refKey is document's ref_key.
 func (issue *restoreIssue) refKey(document string) string {
 	issue.t.Helper()
-	var refKey string
-	if err := issue.database.Pool.QueryRow(context.Background(), `select ref_key from artifacts where id = $1`, document).Scan(&refKey); err != nil {
-		issue.t.Fatalf("read the ref_key of %s: %v", document, err)
-	}
-	return refKey
+	return refKeyOf(issue.t, issue.database, document)
 }
 
 // movedTo is each moved_to tuple the store states, from address to address, from document's
@@ -357,10 +353,13 @@ func TestTheConversionTurnsEachSectionIntoANodeOrARuleDeletesIt(t *testing.T) {
 	if err := issue.database.Pool.QueryRow(context.Background(), `select retired_at is not null, role from artifacts where id = $1`, decisions).Scan(&retired, &role); err != nil || !retired || role != nil {
 		t.Errorf("the decisions document reads retired %v role %v (%v), want retired with no role", retired, role, err)
 	}
+	// The readings' alone: the block index states an authored_by of every authored node too (the
+	// requirement r1 alice wrote, the issue tree's branch), which is no reading.
 	var authored int
 	if err := issue.database.Pool.QueryRow(context.Background(), `
-		select count(*) from graph_tuples
-		where kind = $1 and from_kind = $2 and starts_with(from_id, $3) and to_kind = $4 and to_id = 'alice' and asserted
+		select count(*) from graph_tuples t
+		where t.kind = $1 and t.from_kind = $2 and starts_with(t.from_id, $3) and t.to_kind = $4 and t.to_id = 'alice' and t.asserted
+		  and exists (select 1 from graph_nodes n where n.kind = t.from_kind and n.id = t.from_id and n.supertag = 'reading')
 	`, graphstore.TupleAuthoredBy, refs.BlockNodeKind, issue.refKey(issue.spec)+"#", graphstore.KindPerson).Scan(&authored); err != nil || authored != 1 {
 		t.Errorf("the spec's readings hold %d authored_by tuples to alice (%v), want the one reading's: the author of its section's newest version", authored, err)
 	}
@@ -1208,7 +1207,9 @@ func TestEveryAskBlockOfADecisionsDocumentMovesAndTheSectionThatHeldItConverts(t
 // that cites it into a reading of that block and another section into a decision in one version.
 // That version holds the reading inside the ask's block, and the reading's node and its
 // document_blocks row exist, so the moved_to from the section's heading names a block that holds
-// the section's words.
+// the section's words. The restore that gives the returning ask its fresh id points the ask's
+// asked_on at the fresh block and retracts the old one in its own write, so the store census's
+// asked_on kind reads no difference in either direction right after it, with no backfill between.
 func TestTheConversionWritesAReadingIntoAPresentAskBlockThatIsNotTheSpecsFirst(t *testing.T) {
 	ctx := context.Background()
 	const pointer = "The decisions this spec rests on are in dispatch://DOC-1/artifact/decisions-md."
@@ -1222,6 +1223,21 @@ func TestTheConversionWritesAReadingIntoAPresentAskBlockThatIsNotTheSpecsFirst(t
 		"## Readings come from the seeded database\n\nThe person ruled the test database, and we add that it stays small. "+
 		"Decided in dispatch://DOC-1/ask/"+left+".\n\n"+
 		"## Files stay out of the corpus\n\nWe write no file beside the database.\n")
+	askedOn := func() []string {
+		t.Helper()
+		held, err := graphstore.CurrentOut(ctx, issue.database.Pool, graphstore.KindAsk, left, []string{graphstore.TupleAskedOn})
+		if err != nil {
+			t.Fatalf("read the asked_on of ask %s: %v", left, err)
+		}
+		ends := make([]string, len(held))
+		for index, tuple := range held {
+			ends[index] = tuple.ToKind + ":" + tuple.ToID
+		}
+		return ends
+	}
+	if ends, want := askedOn(), refs.BlockNodeKind+":"+issue.refKey(issue.spec)+"#q-left"; !slices.Equal(ends, []string{want}) {
+		t.Fatalf("before the restore ask %s states asked_on %v, want the one to %s: this case proves nothing", left, ends, want)
+	}
 
 	restored := issue.run(false)
 	if len(restored.Restored) != 1 || !restored.Restored[0].NewID {
@@ -1230,6 +1246,13 @@ func TestTheConversionWritesAReadingIntoAPresentAskBlockThatIsNotTheSpecsFirst(t
 	block, _ := issue.askRow(left)
 	if spec := issue.latest(issue.spec); strings.Index(spec, "#q-first ") > strings.Index(spec, "#"+block+" ") {
 		t.Fatalf("the restored ask block %s does not stand after the spec's first ask block:\n%s", block, spec)
+	}
+	if ends, want := askedOn(), refs.BlockNodeKind+":"+issue.refKey(issue.spec)+"#"+block; !slices.Equal(ends, []string{want}) {
+		t.Errorf("after the restore ask %s states asked_on %v, want only the one to its fresh block %s", left, ends, want)
+	}
+	if kind := censusKind(t, takeStoreCensus(t, issue.database), graphstore.TupleAskedOn); kind.Rows != 2 || kind.Nodes != 2 || kind.RowDifferences != 0 || kind.NodeDifferences != 0 {
+		t.Errorf("after the restore the asked_on census reads %d rows, %d tuples, %d rows no tuple states and %d tuples no row projects (%+v, %+v), want the two asks' rows and tuples and no difference",
+			kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences, kind.ReportedRows, kind.ReportedNodes)
 	}
 
 	result := issue.run(true)

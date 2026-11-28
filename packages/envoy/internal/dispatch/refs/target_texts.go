@@ -6,21 +6,33 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 )
 
-// BlockTexts is the whole current text of each block targets names, by target: a document's
-// block (kind block, addressed '<document ref_key>#<block id>') as its latest indexed version
-// holds it (CurrentBlockText), and a block of a comment, of a message or of an ask (the item's
-// block kind, ItemKind.BlockKind) as CurrentItemBlockText reads it. A target of any other kind
-// is passed over, and a block no current version or revision holds has no entry, which is the
-// block TargetNames answers nothing for either.
+// BlockTexts is the whole current text of each block targets names, by target, for who: a
+// document's block (kind block, addressed '<document ref_key>#<block id>') as its latest indexed
+// version holds it (CurrentBlockText); a block of a comment, of a message or of an ask (the item's
+// block kind, ItemKind.BlockKind) as CurrentItemBlockText reads it; and a finding of a lens (kind
+// lens_block, addressed 'lens/<uuid>#<block id>') as the newest value of its text tuple, the text
+// the lens read answers for it and its loader cuts its name from (standingText). A target of any
+// other kind is passed over, and a block no current version or revision holds has no entry, which
+// is the block TargetNames answers nothing for either.
+//
+// A finding's text is read off its own node in the store, whose row says who may see it, so its
+// statement holds each row to the condition the finding's loader (loadReasoningNodes) holds it to
+// (heldNodesWhere), the predicate of its kind for who over that row (VisibleKindRow) among it: a
+// finding the store holds gone, or one reserved for an author who is not who, has no entry,
+// whatever the caller resolved first. A block of a document or of an item is read for a caller
+// that has already resolved it for who through TargetNames, which binds each block kind's
+// predicate, so its statement binds none.
 //
 // It is TargetNames' companion for a reader that draws a block whole rather than by its name,
 // which stops at the block's stored excerpt: each kind is read in one statement whatever the
 // number of targets, so a batch costs a statement per kind of block it names and none for a
 // kind it does not.
-func BlockTexts(ctx context.Context, q Queryer, targets []Target) (map[Target]string, error) {
+func BlockTexts(ctx context.Context, q Queryer, who model.Actor, targets []Target) (map[Target]string, error) {
 	ids := map[string][]string{}
 	for _, target := range targets {
 		ids[target.Kind] = append(ids[target.Kind], target.ID)
@@ -73,6 +85,19 @@ func BlockTexts(ctx context.Context, q Queryer, targets []Target) (map[Target]st
 		}
 		if err := scanBlockTexts(rows, kind, texts); err != nil {
 			return nil, fmt.Errorf("read the texts of %s blocks: %w", string(item), err)
+		}
+	}
+	if nodes := ids[graphstore.KindLensBlock]; len(nodes) > 0 {
+		rows, err := q.Query(ctx, `
+			select held.id, `+standingText[graphstore.KindLensBlock]("held", "$4")+`
+			from graph_nodes held
+			where `+heldNodesWhere(graphstore.KindLensBlock),
+			StoredKindOf(graphstore.KindLensBlock), nodes, graphstore.StateGone, VisibilityArg(who))
+		if err != nil {
+			return nil, fmt.Errorf("read the texts of findings: %w", err)
+		}
+		if err := scanBlockTexts(rows, graphstore.KindLensBlock, texts); err != nil {
+			return nil, fmt.Errorf("read the texts of findings: %w", err)
 		}
 	}
 	return texts, nil

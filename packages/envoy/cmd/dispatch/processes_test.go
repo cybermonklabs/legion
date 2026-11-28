@@ -215,9 +215,9 @@ func registerOtherBuild(t *testing.T, ctx context.Context, databaseURL, commit, 
 const earlierBuildStamp = "1149114911491149114911491149114911491149"
 
 // earlierBuildSchemaVersion and earlierBuildSchemaCreatable are the schema numbers a process of
-// the base release registers (its pmdoc/schema/blocks.json is version 6, below this tree's 8, and
+// the base release registers (its pmdoc/schema/blocks.json is version 6, below this tree's 9, and
 // creates nothing past version 5), which registerOtherBuild's row carries, so the fleet guard
-// reads the real boundary, version 6 against this tree's 8.
+// reads the real boundary, version 6 against this tree's 9.
 const (
 	earlierBuildSchemaVersion   = 6
 	earlierBuildSchemaCreatable = 5

@@ -198,17 +198,22 @@ func latestIssueSeq(t *testing.T, database *store.Store, issue string) int {
 }
 
 // requireQuietVersionEvents fails t unless the events of issue whose seq is above seq are exactly
-// want artifact.version events, none of which notifies anyone (events.Broker.Notify): the
-// versions settlements wrote of documents nobody named a version of (events.Quiet), and nothing
-// else.
-func requireQuietVersionEvents(t *testing.T, database *store.Store, issue string, seq, want int) {
+// versions artifact.version events and digests artifact.digest events, none of which notifies
+// anyone (events.Broker.Notify): the versions settlements and drains wrote of documents nobody
+// named a version of (events.Quiet), and the artifact.digest the fill or the drain appends after
+// the artifact.version of each version of a query document (R14's hash gate), and nothing else.
+func requireQuietVersionEvents(t *testing.T, database *store.Store, issue string, seq, versions, digests int) {
 	t.Helper()
 	type appendedEvent struct {
-		Type   string
-		Notify bool
+		Type     string
+		Notify   bool
+		Artifact string
+		Version  string
 	}
+	// An artifact.version's payload holds its version whole, and an artifact.digest's its number.
 	rows, err := database.Pool.Query(context.Background(), `
-		select type, notify from events where issue_key = $1 and seq > $2 order by seq
+		select type, notify, coalesce(payload->>'artifact_id', ''), coalesce(payload->'version'->>'number', payload->>'version', '')
+		from events where issue_key = $1 and seq > $2 order by seq
 	`, issue, seq)
 	if err != nil {
 		t.Fatalf("read the events of %s after %d: %v", issue, seq, err)
@@ -217,13 +222,21 @@ func requireQuietVersionEvents(t *testing.T, database *store.Store, issue string
 	if err != nil {
 		t.Fatalf("read the events of %s after %d: %v", issue, seq, err)
 	}
-	if len(appended) != want {
-		t.Fatalf("%s appended %+v after seq %d, want %d artifact.version events", issue, appended, seq, want)
-	}
+	counted := map[string]int{}
+	versioned := map[[2]string]bool{}
 	for _, event := range appended {
-		if event.Type != "artifact.version" || event.Notify {
-			t.Fatalf("%s appended %+v after seq %d, want only artifact.version events that notify nobody", issue, appended, seq)
+		counted[event.Type]++
+		switch {
+		case event.Notify:
+			t.Fatalf("%s appended %+v after seq %d, want only events that notify nobody", issue, appended, seq)
+		case event.Type == "artifact.version":
+			versioned[[2]string{event.Artifact, event.Version}] = true
+		case event.Type == model.ArtifactDigestEventType && !versioned[[2]string{event.Artifact, event.Version}]:
+			t.Fatalf("%s appended %+v after seq %d, want each artifact.digest after the artifact.version of its version", issue, appended, seq)
 		}
+	}
+	if len(appended) != versions+digests || counted["artifact.version"] != versions || counted[model.ArtifactDigestEventType] != digests {
+		t.Fatalf("%s appended %+v after seq %d, want %d artifact.version events and %d artifact.digest events", issue, appended, seq, versions, digests)
 	}
 }
 
@@ -302,8 +315,10 @@ func TestRepairWithdrawsTheOpenAsksOfAnIssueClosedWithoutWithdrawing(t *testing.
 
 	// The repair's write of the blocks left the document owing a settlement, which runs on the
 	// closed issue; it is done before the second repair's snapshot, which counts that repair's
-	// writes alone.
-	awaitSettled(t, f.database, issue.PrimaryArtifactID)
+	// writes alone. So are the fill and the drain the settlement runs once it has committed, whose
+	// artifact.digest of the spec's new version (R14's hash gate) would otherwise land after the
+	// snapshot (awaitNoSettlementOwed).
+	awaitNoSettlementOwed(t, f.database)
 	rows := askRowTexts(t, f.database, asks...)
 	events := eventCount(t, f.database, issue.Key)
 	live, _ := documentTexts(t, f.handler, issue.PrimaryArtifactID)
@@ -467,12 +482,18 @@ func TestRepairRestoresTheWithdrawnAsksOfAnIssueReopenedWithoutRestoring(t *test
 
 	// The restoration writes no block on a fleet of one build and marks
 	// the document owing the settlement that reconciles the restored ask's block, which it arms
-	// nothing to run (docs.MarkReopenOwedAskDocuments): the resumption runs it, before the second
-	// repair's snapshot, which counts that repair's events alone.
+	// nothing to run (docs.MarkReopenOwedAskDocuments): the load of its room the read above made,
+	// or else the resumption, runs it, before the second repair's snapshot, which counts that
+	// repair's events alone. So do the fill and the drain that settlement runs in its own goroutine
+	// once it has committed: the spec's new version owes its record digest
+	// (version_renders.digest_owed), whose artifact.digest the fill appends, and the settlement's
+	// write of the issue room marks the issue's queries owed (issue_query_marks), whose versions
+	// the drain appends. A wait for the pending settlement alone (awaitSettled) ends at that
+	// settlement's COMMIT, before either, so the wait is for all three (awaitNoSettlementOwed).
 	if err := f.documents.ResumeOwedSettlementsForTest(context.Background(), 0); err != nil {
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
-	awaitSettled(t, f.database, issue.PrimaryArtifactID)
+	awaitNoSettlementOwed(t, f.database)
 	events := eventCount(t, f.database, issue.Key)
 	if again := repairNow(t, f); again.Changed() {
 		t.Fatalf("second repair = %+v, want nothing changed", again)
@@ -507,8 +528,8 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour, CloseMargin: pastTheRun})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	peers := map[string]*syncedPeer{
-		swept.PrimaryArtifactID:     connectBrowserPeer(t, other, swept.PrimaryArtifactID),
-		untouched.PrimaryArtifactID: connectBrowserPeer(t, other, untouched.PrimaryArtifactID),
+		swept.PrimaryArtifactID:     connectBrowserPeer(t, f.handler, other, swept.PrimaryArtifactID),
+		untouched.PrimaryArtifactID: connectBrowserPeer(t, f.handler, other, untouched.PrimaryArtifactID),
 	}
 	for _, issue := range []string{swept.Key, untouched.Key} {
 		if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
@@ -548,7 +569,7 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	if _, version := documentTexts(t, f.handler, swept.PrimaryArtifactID); !strings.Contains(version, `#other-room urgency="low" multiple="false" state="resolved"`) {
 		t.Fatalf("the settlement after the sweep left the latest version reading:\n%s\nwant the block saved resolved", version)
 	}
-	requireQuietVersionEvents(t, f.database, swept.Key, sweptSeq, 1)
+	requireQuietVersionEvents(t, f.database, swept.Key, sweptSeq, 1, 0)
 	if got, _ := documentTexts(t, f.handler, untouched.PrimaryArtifactID); got != untouchedText {
 		t.Fatalf("the repair changed the untouched document:\n%s\nwant\n%s", got, untouchedText)
 	}
@@ -557,6 +578,46 @@ func TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess(t *testing.T) 
 	}
 	if got := eventCount(t, f.database, untouched.Key); got != untouchedEvents {
 		t.Fatalf("the repair appended %d events to the untouched issue", got-untouchedEvents)
+	}
+}
+
+// A closed issue born converted whose issue room owes a settlement - a browser on another
+// process's room wrote an ask block into its spec after the close, and that room, whose settle
+// delay is an hour, has not settled it - is swept by the repair, as a document that is its own
+// room is (TestRepairSweepsAClosedIssuesDocumentWrittenByAnotherProcess): the pending row is the
+// issue room's, keyed by the issue's tree artifact and by none of its documents, and the repair
+// finds it there. The issue is born converted on a fleet of this build alone (api's
+// fleetServesIssueRoom), and a process of the release before then joins it, so the close and the
+// sweep write block states (docs.WriteIssueAskStates).
+func TestRepairSweepsAClosedConvertedIssueWhoseRoomOwesASettlement(t *testing.T) {
+	f := newRepairFixture(t)
+	issue := createInteractionIssue(t, f.handler, "ROOM", "Converted and written after its close", "Context\n")
+	awaitSettled(t, f.database, issue.PrimaryArtifactID)
+	registerTwoBuilds(t, f.database)
+	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour})
+	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
+	peer := connectBrowserPeer(t, f.handler, other, issue.PrimaryArtifactID)
+	if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
+		t.Fatalf("close %s: status=%d body=%s", issue.Key, closed.Code, closed.Body.String())
+	}
+	peer.appendParagraph(t, `:::ask{#other-room urgency="low" multiple="false"}`+"\nWritten in the other room?\n:::\n")
+	peer.barrier(t)
+	awaitOwedSettlement(t, f.database, issue.PrimaryArtifactID)
+	awaitLiveText(t, f.handler, issue.PrimaryArtifactID, "#other-room")
+	var owing string
+	if err := f.database.Pool.QueryRow(context.Background(), `
+		select string_agg(a.kind, ',' order by a.kind) from doc_settlements_pending p join artifacts a on a.id = p.artifact_id
+		where a.issue_key = $1`, issue.Key).Scan(&owing); err != nil || owing != "tree" {
+		t.Fatalf("the converted issue owes the settlements of %q (%v), want its issue room's alone, keyed by its tree", owing, err)
+	}
+
+	repair := repairNow(t, f)
+	if repair.Swept != 1 || repair.Withdrawn != 0 || repair.Restored != 0 {
+		t.Fatalf("repair = %+v, want the block the other room wrote into the converted issue's spec swept", repair)
+	}
+	requireLiveText(t, f.handler, issue.PrimaryArtifactID, `#other-room state="resolved"`)
+	if id := findBlockAsk(t, f.handler, issue.Key, issue.PrimaryArtifactID, "other-room"); id != "" {
+		t.Fatalf("the other room's block is ask %s on a closed issue", id)
 	}
 }
 
@@ -577,8 +638,8 @@ func TestAnIntervalRepairSweepsOnlyTheDocumentsMarkedSinceItsLastPass(t *testing
 	other := docs.New(docs.Deps{Store: f.database, Identity: headerIdentity(f.database), Settle: time.Hour, CloseMargin: pastTheRun})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	peers := map[string]*syncedPeer{
-		stale.PrimaryArtifactID: connectBrowserPeer(t, other, stale.PrimaryArtifactID),
-		fresh.PrimaryArtifactID: connectBrowserPeer(t, other, fresh.PrimaryArtifactID),
+		stale.PrimaryArtifactID: connectBrowserPeer(t, f.handler, other, stale.PrimaryArtifactID),
+		fresh.PrimaryArtifactID: connectBrowserPeer(t, f.handler, other, fresh.PrimaryArtifactID),
 	}
 	for _, issue := range []string{stale.Key, fresh.Key} {
 		if closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]string{"status": "done"}, "alice"); closed.Code != http.StatusOK {
@@ -645,7 +706,7 @@ func TestARepairThatChangesNothingAppendsNoUpdateAndMarksNoDocument(t *testing.T
 	}
 	requireLiveText(t, f.handler, closed.PrimaryArtifactID, `#close-decision state="resolved"`)
 	plainAsk := createSessionAsk(t, f.handler, older.Key, "Which region?")
-	peer := connectBrowserPeer(t, f.documents, older.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, f.handler, f.documents, older.PrimaryArtifactID)
 	stored := storedUpdateCount(t, f.database, older.PrimaryArtifactID)
 	peer.appendParagraph(t, `:::ask{#browser-decision urgency="low" multiple="false"}`+"\nWritten in a browser?\n:::\n")
 	peer.barrier(t)
@@ -906,7 +967,7 @@ func awaitOwedSettlement(t *testing.T, database *store.Store, document string) {
 	testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("document %s to owe a settlement", document), func() (bool, bool) {
 		var owed bool
 		if err := database.Pool.QueryRow(context.Background(), `
-			select exists (select 1 from doc_settlements_pending where artifact_id = $1)
+			select exists (select 1 from doc_settlements_pending where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`)
 		`, document).Scan(&owed); err != nil {
 			t.Fatalf("read the pending settlement: %v", err)
 		}
@@ -925,12 +986,14 @@ func awaitLiveText(t *testing.T, handler http.Handler, document, part string) {
 	})
 }
 
-// storedUpdateCount is how many updates document's stored history holds now.
+// storedUpdateCount is how many updates the stored history of the room document is edited in holds
+// now (refs.DocumentRoomSQL): its issue's room for a converted document, whose one history every
+// document of the issue writes, so a caller counts what lands after a reading of it.
 func storedUpdateCount(t *testing.T, database *store.Store, document string) int {
 	t.Helper()
 	var updates int
 	if err := database.Pool.QueryRow(context.Background(),
-		`select count(*) from doc_updates where artifact_id = $1`, document).Scan(&updates); err != nil {
+		`select count(*) from doc_updates where artifact_id = `+refs.DocumentRoomSQL("$1::uuid"), document).Scan(&updates); err != nil {
 		t.Fatalf("count the stored updates of document %s: %v", document, err)
 	}
 	return updates
@@ -949,8 +1012,9 @@ func awaitStoredUpdates(t *testing.T, database *store.Store, document string, wa
 	})
 }
 
-// documentWrites is, for each of documents, how many updates it holds and when its owed
-// settlement was marked, or that it owes none.
+// documentWrites is, for each of documents, how many updates the room it is edited in holds and
+// when that room's owed settlement was marked, or that it owes none, both keyed by the room
+// (refs.DocumentRoomSQL).
 func documentWrites(t *testing.T, database *store.Store, documents ...string) map[string]string {
 	t.Helper()
 	writes := make(map[string]string, len(documents))
@@ -959,8 +1023,8 @@ func documentWrites(t *testing.T, database *store.Store, documents ...string) ma
 		var marked string
 		if err := database.Pool.QueryRow(context.Background(), `
 			select
-				(select count(*) from doc_updates where artifact_id = $1),
-				coalesce((select marked_at::text from doc_settlements_pending where artifact_id = $1), 'none')
+				(select count(*) from doc_updates where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`),
+				coalesce((select marked_at::text from doc_settlements_pending where artifact_id = `+refs.DocumentRoomSQL("$1::uuid")+`), 'none')
 		`, document).Scan(&updates, &marked); err != nil {
 			t.Fatalf("read the writes of document %s: %v", document, err)
 		}

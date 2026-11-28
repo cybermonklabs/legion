@@ -256,6 +256,20 @@ func (p *PgVersioned) writeCompaction(ctx context.Context, pool *pgxpool.Pool, r
 		if err := lockDocumentRoom(ctx, tx, room); err != nil {
 			return err
 		}
+		// The rows of a room whose document moved into its issue's room stay as they stood
+		// (R6 of the issue-tree spec): nothing folds or deletes them, and the room leaves the
+		// sweep's list.
+		var moved bool
+		if err := tx.QueryRow(ctx, `select exists (select 1 from document_rooms where artifact_id = $1)`, room).Scan(&moved); err != nil {
+			return fmt.Errorf("read whether the document moved into its issue's room: %w", err)
+		}
+		if moved {
+			if _, err := tx.Exec(ctx, `delete from doc_compaction_owed where artifact_id = $1`, room); err != nil {
+				return fmt.Errorf("delete a moved document's compaction entry: %w", err)
+			}
+			result = compactResult{outcome: compactNothing}
+			return tx.Commit(ctx)
+		}
 		_, recovered, err := p.recoverPruneTx(ctx, tx, room)
 		if err != nil {
 			return err

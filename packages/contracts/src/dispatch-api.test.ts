@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import document from "../schemas/dispatch-openapi.json";
 import type { BlockTypeSchema } from "./block-schema.generated";
 import {
   type Actor,
@@ -8,6 +9,7 @@ import {
   type Anchor,
   type AnchorInput,
   type AnswerAskInput,
+  ArtifactApprovalSchema,
   type ArtifactBlock,
   ArtifactReviewEventPayloadSchema,
   type ArtifactText,
@@ -46,8 +48,10 @@ import {
   IDEMPOTENCY_KEY_PATTERN,
   IDEMPOTENCY_KEY_REUSED,
   type IdempotencyLandedCode,
+  type IssueCoverage,
   IssueDeployedEventPayloadSchema,
   IssueEventPayloadSchema,
+  type IssueTreeRead,
   type ItemBlocks,
   inboxThreadRow,
   type Message,
@@ -71,6 +75,7 @@ import {
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
   type UserThreadStateUpdatedEventPayload,
+  WrittenArtifactReviewEventPayloadSchema,
 } from "./dispatch-api";
 
 test("review event validation preserves approved byte hashes and their provenance", () => {
@@ -88,6 +93,45 @@ test("review event validation preserves approved byte hashes and their provenanc
     artifact_id: "doc-1",
     version: 2,
   });
+});
+
+test("artifact approval and review event schemas hold carried_from_version as integer, null or absent", () => {
+  // This build writes carried_from_version on every answer and payload (the source version for a
+  // carry, null for a person's own act); a Dispatch from the release before leaves it out during
+  // a roll.
+  for (const carried of [4, null, undefined] as const) {
+    const approval = {
+      latest_version: 5,
+      state: "approved" as const,
+      ...(carried === undefined ? {} : { carried_from_version: carried }),
+    };
+    expect(ArtifactApprovalSchema.parse(approval)).toEqual(approval);
+
+    const written = {
+      actor: { id: "alice", kind: "user" as const },
+      artifact_id: "doc-1",
+      ask_id: null,
+      name: "spec.md",
+      reason: null,
+      version: 5,
+      ...(carried === undefined ? {} : { carried_from_version: carried }),
+    };
+    expect(WrittenArtifactReviewEventPayloadSchema.parse(written)).toEqual(written);
+
+    const inbound = {
+      artifact_id: "doc-1",
+      version: 5,
+      ...(carried === undefined ? {} : { carried_from_version: carried }),
+    };
+    expect(ArtifactReviewEventPayloadSchema.parse(inbound)).toEqual(inbound);
+  }
+  expect(
+    ArtifactApprovalSchema.safeParse({
+      carried_from_version: 4.5,
+      latest_version: 5,
+      state: "approved",
+    }).success
+  ).toBe(false);
 });
 
 test("a project.access_changed payload names the project and the change, and no access list", () => {
@@ -1487,6 +1531,48 @@ test("keeps document read tokens optional for older Dispatch servers", () => {
   expect("token" in text).toBe(false);
 });
 
+test("keeps owed_documents optional on the coverage and tree reads for older Dispatch servers", () => {
+  // A server names each document of the issue that owes its block index, by its id and the version
+  // whose blocks wait; an issue that owes none, and a server of the release before, answer no
+  // member at all, which a reader takes as nothing owed. tsc holds each literal below to its type,
+  // and the route table's document the types are generated from is read as the test runs: it
+  // declares owed_documents on both reads, each answer that leaves it out holds every field the
+  // document requires of its read, and the entry of owed_documents every field it requires of one.
+  const coverage: IssueCoverage = {
+    gaps: [],
+    has_plan: false,
+    issue: "CORE-1",
+    requirements: [],
+    spec_artifact_id: "spec",
+  };
+  const tree: IssueTreeRead = {
+    converted: false,
+    cursor: null,
+    documents: null,
+    issue: "CORE-1",
+    nodes: [],
+    tree: null,
+    tuples: [],
+    version: null,
+    view: "",
+    view_of: null,
+  };
+  const owed: IssueTreeRead = {
+    ...tree,
+    owed_documents: [{ artifact_id: "verification", version: 2 }],
+  };
+  const declared = document.components.schemas;
+  for (const [answer, shape] of [
+    [coverage, declared.IssueCoverage],
+    [tree, declared.IssueTreeRead],
+  ] as const) {
+    expect(Object.keys(shape.properties)).toContain("owed_documents");
+    expect(shape.required.filter((field) => !(field in answer))).toEqual([]);
+  }
+  const entry = owed.owed_documents?.[0] ?? {};
+  expect(declared.OwedDocument.required.filter((field) => !(field in entry))).toEqual([]);
+});
+
 test("models a comment's and a direct message's blocks", () => {
   const comment = "11111111-1111-4111-8111-111111111111";
   const commentBlocks: ItemBlocks = {
@@ -1501,6 +1587,8 @@ test("models a comment's and a direct message's blocks", () => {
       changed_at: "2026-10-28T00:00:00Z",
       parent: { kind: "issue", id: "CORE-1", ref: "dispatch://CORE-1" },
       parent_version: null,
+      state: "live",
+      visibility: "project",
     },
     revision: 2,
     indexed: true,
@@ -1530,6 +1618,8 @@ test("models a comment's and a direct message's blocks", () => {
       // A direct message belongs to no issue, so its node has no parent.
       parent: null,
       parent_version: null,
+      state: "live",
+      visibility: "project",
     },
     indexed: true,
     blocks: [

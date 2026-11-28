@@ -1,0 +1,21 @@
+-- pgmigrate:non-transactional
+-- 20261125120100_issue_tree_asks_block_artifact_id_index.up.sql - the asks whose block a document
+-- holds, by that document.
+--
+-- The removal of a document deletes its artifacts row (api's removeArtifact), and Postgres checks
+-- every foreign key to artifacts (id) for that row. asks_block_artifact_id_fkey takes no action, so
+-- its check reads the asks whose block_artifact_id names the row and locks each for key share. No
+-- index of asks led by block_artifact_id held every ask: asks_block_id_unique leads with it but
+-- holds only the asks whose block_id is not null, so the check read every row of asks, while the
+-- removal holds the issue's owner lock that every comment, ask and upload of the issue waits on.
+-- This index holds every ask, keyed by block_artifact_id alone, so the check is one probe of it
+-- (this issue's spec R7).
+--
+-- asks grows with every ask. A concurrent build does not hold off its writers while it scans the
+-- table, so the migration runs outside a transaction, alone in its file, as the census admits a
+-- concurrent build of any table's size (pgmigrate's ConcurrentIndex, this issue's spec R19). It is
+-- a performance index: no constraint and no later migration depends on it, and the release before
+-- reads and writes asks as it did. A failed concurrent build leaves an INVALID index of this name on
+-- asks, which the runner drops with DROP INDEX CONCURRENTLY and builds again on the next attempt.
+create index concurrently if not exists asks_block_artifact_id
+    on asks (block_artifact_id);

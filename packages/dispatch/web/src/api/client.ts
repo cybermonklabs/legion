@@ -24,6 +24,8 @@ import {
   sleep,
 } from "@legion/contracts";
 
+import { decisionsFromRead, decisionsFromTree } from "./decisions-tree";
+
 import {
   type Answer,
   type Body,
@@ -496,6 +498,30 @@ export function isNoRoute(error: unknown): boolean {
     error.code === "NOT_FOUND" &&
     error.message.startsWith(NO_ROUTE_MESSAGE_PREFIX)
   );
+}
+
+// Whether `error` is what a request throws once every attempt met a Dispatch process with no route
+// for it (`answered`'s `exhausted`): no process that answered serves the route, as a server of the
+// release before answers for a route this build added.
+function isNoRouteOnEveryAttempt(error: unknown): boolean {
+  return (
+    error instanceof ApiError &&
+    error.status === 404 &&
+    error.code === "NOT_FOUND" &&
+    error.message === NO_ROUTE_ROLLING_RELEASE_MESSAGE
+  );
+}
+
+// What `read` answers, or null where every attempt of it met a Dispatch process with no route for
+// it (isNoRouteOnEveryAttempt), as a server of the release before answers for a route this build
+// added; any other failure is thrown.
+async function unlessNoRouteOnEveryAttempt<T>(read: Promise<T>): Promise<T | null> {
+  try {
+    return await read;
+  } catch (error) {
+    if (isNoRouteOnEveryAttempt(error)) return null;
+    throw error;
+  }
 }
 
 /** What a page read of an issue's comments, messages or asks rejects with where the build that
@@ -1327,6 +1353,22 @@ export class DispatchApiClient {
     return this.read("/api/v1/issues/{key}", { key });
   }
 
+  /** `GET /api/v1/issues/{key}/tree`: the issue's tree as the reader may see it, under the view
+   *  `query` names. Every view answers `view_of`: the issue whose spec this issue is a view on, or
+   *  null where it is none. */
+  getIssueTree(key: string, query: Query<"/api/v1/issues/{key}/tree", "get"> = {}) {
+    return this.read("/api/v1/issues/{key}/tree", { key }, query);
+  }
+
+  /** The issue whose spec the issue `key` is a view on, as its spec view's tree read answers
+   *  `view_of`, or null where it is none. A server of the release before serves no tree read and
+   *  holds no view, so a read every attempt of which met no route answers null. */
+  async getIssueViewOf(key: string): Promise<string | null> {
+    // kept for one release: view-of-route
+    const tree = await unlessNoRouteOnEveryAttempt(this.getIssueTree(key, { view: "spec" }));
+    return tree === null ? null : tree.view_of;
+  }
+
   /** What a reference to the issue or one of its documents shows: title, status and each
    *  document's name, kind and latest version, without the full issue read. */
   getIssueSummary(key: string) {
@@ -1562,19 +1604,22 @@ export class DispatchApiClient {
       : (answer.threads ?? []).flatMap(({ comment, replies }) => [comment, ...(replies ?? [])]);
   }
 
-  /** `GET /api/v1/issues/{key}/comments?order=activity`: one page of the issue's comment threads,
-   *  the newest last activity first, from `query.before` when it names the last page's position;
-   *  `artifact`, `limit`, `before`, `author` and `person` (`in` alone) as the route takes them.
-   *  A build from before the page answers the bare list, and the read rejects
+  /** `GET /api/v1/issues/{key}/comments?order=activity&node_anchor=true`: one page of the issue's
+   *  comment threads, the newest last activity first, from `query.before` when it names the last
+   *  page's position; `artifact`, `limit`, `before`, `author` and `person` (`in` alone) as the
+   *  route takes them. The read always sends `node_anchor=true`, so each comment, first or reply,
+   *  whose anchor names a node or a block carries its `node_anchor`; a build from before node
+   *  anchors ignores the parameter and answers none, which the member's being optional takes. A
+   *  build from before the page answers the bare list, and the read rejects
    *  (`threadPageNotOffered`). */
   async listCommentThreads(
     key: string,
-    query: ThreadPageQuery<"/api/v1/issues/{key}/comments"> = {}
+    query: Omit<ThreadPageQuery<"/api/v1/issues/{key}/comments">, "node_anchor"> = {}
   ): Promise<CommentThreadPage> {
     const answer = await this.read(
       "/api/v1/issues/{key}/comments",
       { key },
-      { ...query, order: "activity" }
+      { ...query, order: "activity", node_anchor: true }
     );
     if (Array.isArray(answer)) throw threadPageNotOffered();
     return answer;
@@ -1825,10 +1870,25 @@ export class DispatchApiClient {
     return this.read("/api/v1/artifacts/{id}/blocks", { id });
   }
 
-  /** An issue's decision records: its decision nodes and asks (`entries`), the open questions
-   *  its spec holds, and each decision with the spec nodes it shaped. */
-  getIssueDecisions(key: string) {
-    return this.read("/api/v1/issues/{key}/decisions", { key });
+  /** The Decisions query, in the entry shape shared by the tab and the spec's marks. A server of
+   *  the release before serves no tree read: where every attempt of the first page met no route,
+   *  the entries are read from that server's Decisions read instead (`decisionsFromRead`). */
+  async getIssueDecisions(key: string) {
+    const first = await unlessNoRouteOnEveryAttempt(this.getIssueTree(key, { view: "decisions" }));
+    if (first === null) {
+      // kept for one release: decisions-route
+      return decisionsFromRead(key, await this.read("/api/v1/issues/{key}/decisions", { key }));
+    }
+    const nodes = [...(first.nodes ?? [])];
+    const tuples = [...(first.tuples ?? [])];
+    let cursor = first.cursor;
+    while (typeof cursor === "string") {
+      const page = await this.getIssueTree(key, { view: "decisions", cursor });
+      for (const node of page.nodes ?? []) nodes.push(node);
+      for (const tuple of page.tuples ?? []) tuples.push(tuple);
+      cursor = page.cursor;
+    }
+    return decisionsFromTree(key, nodes, tuples);
   }
 
   /** Record that the caller agrees with the decision at that block, as the text they

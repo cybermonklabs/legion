@@ -258,6 +258,11 @@ type Deps struct {
 	// a parent's status out of line with its children's (R24) is refused 409
 	// PARENT_STATUS_CONFLICT. The zero value is off.
 	ParentStatusRule ParentStatusRule
+	// IssueTreePageSize is the most nodes one page of GET /api/v1/issues/{key}/tree answers. Zero
+	// keeps issueTreePageSize, and every deployment leaves it zero: no flag, setting or environment
+	// variable reaches it. Only this package's tests set another (testServerOptions), so a case of a
+	// few nodes reads several pages.
+	IssueTreePageSize int
 }
 
 // defaultStreamHeartbeat is StreamHeartbeat when DepsInput leaves it zero.
@@ -506,6 +511,13 @@ type server struct {
 	// test sets it: it is how a case commits a write between the decision and the list, to read
 	// that the list answers the snapshot the decision read.
 	betweenPersonPageReads func()
+	// betweenNodeRouteReads runs on a write of a node route (PATCH and DELETE of
+	// /api/v1/issues/{key}/nodes/{id}) after each read it makes with no lock held and before that
+	// attempt takes its owner locks (lockNodeRouteOwners), with the attempt's number from 1; nil,
+	// which every server the deployment builds leaves it, runs nothing. Only a test sets it: it is
+	// how a case commits a move between the read that names the locks and the read under them, to
+	// read that the route starts over and, at each attempt, answers 409 PARENT_CONTENDED.
+	betweenNodeRouteReads func(ctx context.Context, attempt int)
 	// crossProjectWait overrides how long the related-item check waits for its cross-project leg
 	// once its meaning stage has answered (awaitCrossProject); zero, which every server the
 	// deployment builds leaves it, means crossProjectGrace. Only a test sets it, so a grace that
@@ -663,6 +675,8 @@ type server struct {
 	// slowWrites and leaves its record here, so a test can disarm a route and still read what the
 	// hook did before and since.
 	slowWriteRuns sync.Map
+	// relatedReadHolds delays the next graph or text read on this process when a test arms it.
+	relatedReadHolds relatedReadHolds
 	// newIssueOverride is what the new-issue test hook last set
 	// (POST /api/v1/settings/new-issue/_test), which GET /api/v1/settings/new-issue answers in
 	// place of the two settings Deps carries; nil until a hook call sets one, which is every
@@ -949,13 +963,24 @@ func register(mux RouteMux, lifetime context.Context, deps Deps) *server {
 // zero value for a row that has none.
 func (s *server) routeHandler(route apiRoute, keyed keyedRoute) http.HandlerFunc {
 	handler := route.Handler
-	if keyedMethod(route.Method) {
+	keyedWrite := keyedMethod(route.Method)
+	if keyedWrite {
 		handler = s.keyedWrites(route.Method, route.Pattern, handler, keyed)
 	}
 	if route.Method+" "+route.Pattern == issueUploadRoute {
 		handler = s.refuseUploadToAClosedIssue(handler)
 	}
 	if route.Method != http.MethodGet {
+		// A write made for a run of the command bar: the one reader of its header, inside the
+		// checks below, so a caller they refuse is told that first, and outside the keyed
+		// layer and the upload's spool, so a run it refuses claims no key and costs no body
+		// (withinGoingRun). A refused request whose key already holds an answer still reaches
+		// the keyed layer, which answers it from that key alone and never runs its handler
+		// (answerRefusedRun): so a retry after its run ended reads the write it made, and no
+		// handler runs a write for a run this check did not admit. Inside the keyed layer the
+		// replay would come first by itself, but a refused run would then claim its key, and
+		// the same intent sent again without the header would be answered the key reused.
+		handler = s.withinGoingRun(handler, keyedWrite)
 		// Outside the keyed layer and the upload's spool, so a write to another project's
 		// object, into another session's own rows, or by a machine's credential that names no
 		// person claims no idempotency key and costs no body (withinProjectScope,
@@ -1220,12 +1245,12 @@ func parseQueryInt(query url.Values, field string, min, max int) (value int, pre
 // parseQueryBool reads one query parameter as true or false, as parseQueryInt reads one as an
 // integer: present is false when the request carried no value the route reads, and a value that
 // is neither "true" nor "false" is present with valid false, so each route writes its own code
-// and message around it. The two routes that read such a parameter read it differently, and
+// and message around it. The three routes that read such a parameter read it in two ways, and
 // both readings are carried here rather than either being changed: trim cuts the value's
 // surrounding whitespace before it is read, which search's ?keywords_only= does and GET
-// /api/v1/projects/{key}/related does not, and readFirst reads the parameter as url.Values.Get
-// does - the first value, however many were sent, and a blank one as no value at all - which
-// that related route does where search refuses a repeated or a blank one.
+// /api/v1/projects/{key}/related and the node delete's ?dry_run= do not, and readFirst reads the
+// parameter as url.Values.Get does - the first value, however many were sent, and a blank one as
+// no value at all - which those two routes do where search refuses a repeated or a blank one.
 func parseQueryBool(query url.Values, field string, trim, readFirst bool) (value, present, valid bool) {
 	values, ok := query[field]
 	if !ok {
@@ -1504,7 +1529,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		}
 		// Recorded: the actor a handler writes and compares carries no credential, as a stored
 		// actor decoded from JSON carries none (model.Actor.Recorded). It keeps the Proven mark
-		// brokerTokenActor set, since the credential, not the body, named this session.
+		// brokerTokenActor set, with or without an owner, since the credential, not the body,
+		// named this session.
 		actor := authenticated.Recorded()
 		if supplied != nil {
 			actor.Origin = supplied.Origin
@@ -1514,10 +1540,10 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// and never from a body). That pair is what R14 calls "a session the server itself
 		// proved theirs", and the store ties the two with an alias_of tuple on the next write
 		// (graphstore.aliases). The act names the session the credential proved, exactly as
-		// actingPerson names the agent that acted for a person, and says it was proved
-		// (SessionProven), as every act naming a session the credential proved does; the actor's
-		// kind and id are left as they were, so every stored author, every event and every reader
-		// keeps the shape it has.
+		// actingPerson names the agent that acted for a person, and is SessionProven for the same
+		// reason actingPerson's is: the credential, not the request, named that session. The
+		// actor's kind and id are left as they were, so every stored author, every event and
+		// every reader keeps the shape it has.
 		//
 		// A session named in a request body earns none of this: the branch below, which every
 		// credential that proves no session of its own takes, records the session the caller
@@ -1547,7 +1573,8 @@ func bearerSessionActor(r *http.Request, authenticated model.Actor, supplied *mo
 		// No Credential: this actor is one a handler records and compares, and a stored actor
 		// was decoded from JSON, which carries none (model.Actor.Recorded). A layer that needs
 		// the request's own credential reads it from optionalActor (callerHoldsScope).
-		// Not Proven: the body named this session and the credential proved none.
+		// Not Proven, whatever the body says: the body named this session and the credential
+		// proved none.
 	}, nil
 }
 
@@ -2160,15 +2187,21 @@ func (s *server) appendEvent(ctx context.Context, tx pgx.Tx, event model.Event) 
 // appendCausingEvent is appendEvent for an event that causes a write of the node and tuple store
 // made before it existed (graphstore.Uncaused): the event's append and the append of what that
 // write stated under it, in one batch, the second naming the event's id as the id sequence left it
-// (graphstore.LatestEvent). A route that writes as it goes pays one statement for the two, as
-// it paid for the event alone.
-func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused) (model.Event, error) {
+// (graphstore.LatestEvent), then each of then, statements the caller queues after those facts -
+// the follow route's mark of the queries of its ask's issue (docs.QueueAskQueryMark) - and then
+// the head write of the nodes it stated of (graphstore.QueueHeads). A route that writes as it goes
+// pays one round trip for them all, as it paid for the event alone.
+func (s *server) appendCausingEvent(ctx context.Context, tx pgx.Tx, event model.Event, stated graphstore.Uncaused, then ...func(*store.WriteBatch)) (model.Event, error) {
 	var appended model.Event
 	err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		if err := s.deps.Events.QueueAppend(b, event, func(written model.Event) { appended = written }); err != nil {
 			return err
 		}
 		graphstore.QueueCaused(b, stated, graphstore.LatestEvent)
+		for _, step := range then {
+			step(b)
+		}
+		graphstore.QueueHeads(b, graphstore.HeldHeads(stated))
 		return nil
 	})
 	return appended, err

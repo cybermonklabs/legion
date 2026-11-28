@@ -650,11 +650,11 @@ func requireReadCostNodes(t *testing.T, arm *costArm, state string, named bool) 
 // load of this pod. Every line and every failure names the state.
 func readCostMeasure(t *testing.T, state string, head, base *costArm, shapes map[*costArm][]*readCostShape) {
 	t.Helper()
-	// No tick of either server's own runs inside a measured window. The lease goes back once
-	// this state's readings are taken, because the backfill between the two states leaves a
-	// mark that this child's own reconciliation drains.
+	// No tick of either server's block index and no pass of its forms drain runs inside a measured
+	// window. The leases go back once this state's readings are taken, because the backfill
+	// between the two states leaves a mark that this child's own reconciliation drains.
 	for _, arm := range []*costArm{head, base} {
-		defer costHoldBlockIndex(t, arm)()
+		defer costHoldBlockIndex(t, arm).giveBack()
 	}
 	headName := head.name + ", " + state
 	readings := []costReading{}
@@ -688,22 +688,22 @@ func readCostMeasure(t *testing.T, state string, head, base *costArm, shapes map
 			here := held[read.name][shape.name+" @ "+head.name]
 			if read.headOnly {
 				t.Logf("%s over %q, %s: p99 %.1f ms. "+
-					"The commit before this child serves no such read - GET /api/v1/people/{login}/nodes "+
+					"%s serves no such read - GET /api/v1/people/{login}/nodes "+
 					"is this child's own route - so this reading is held to no rise: there is no reading "+
 					"at the older arm to rise from.",
-					read.name, shape.name, headName, costMilliseconds(here.p99()))
+					read.name, shape.name, headName, costMilliseconds(here.p99()), base.name)
 				continue
 			}
 			before := held[read.name][shape.name+" @ "+base.name]
 			rise := here.p99() - before.p99()
-			t.Logf("%s over %q, %s: p99 %.1f ms against %.1f ms at the commit before this child, a rise of %.1f ms against the %s budget",
+			t.Logf("%s over %q, %s: p99 %.1f ms against %.1f ms at %s, a rise of %.1f ms against the %s budget",
 				read.name, shape.name, headName, costMilliseconds(here.p99()),
-				costMilliseconds(before.p99()), costMilliseconds(rise), costBudget)
+				costMilliseconds(before.p99()), base.name, costMilliseconds(rise), costBudget)
 			if rise > costBudget {
-				t.Errorf("%s over %q, %s: p99 %.1f ms against %.1f ms at the commit before this child, a rise of %.1f ms, over the %s budget (this child's readings %s; the commit before's %s)",
+				t.Errorf("%s over %q, %s: p99 %.1f ms against %.1f ms at %s, a rise of %.1f ms, over the %s budget (this child's readings %s; %s's %s)",
 					read.name, shape.name, headName, costMilliseconds(here.p99()),
-					costMilliseconds(before.p99()), costMilliseconds(rise), costBudget,
-					here.printed(), before.printed())
+					costMilliseconds(before.p99()), base.name, costMilliseconds(rise), costBudget,
+					here.printed(), base.name, before.printed())
 			}
 		}
 	}

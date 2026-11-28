@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"maps"
 	"reflect"
 	"regexp"
 	"runtime"
@@ -4210,14 +4209,14 @@ func pendingAuthors(t *testing.T, service *Service, artifactID string) []model.A
 	state := service.room(artifactID)
 	state.mu.Lock()
 	for _, record := range state.unconsumedInflightLocked(state.creditSeq.Load()) {
-		maps.Copy(owed, record.authors)
+		mergeAuthors(owed, record.authors)
 	}
 	state.mu.Unlock()
 	durable, err := readPendingAuthors(context.Background(), service.store.Pool, artifactID)
 	if err != nil {
 		t.Fatalf("read the document's pending authors: %v", err)
 	}
-	maps.Copy(owed, durable)
+	mergeAuthors(owed, durable)
 	return actorSlice(owed)
 }
 
@@ -5843,17 +5842,17 @@ func (s failingVersionedStore) Load(ctx context.Context, room string) (persisten
 	return s.VersionedStore.Load(ctx, room)
 }
 
-func (s failingVersionedStore) DocumentStamp(ctx context.Context, room string) (DocumentStamp, error) {
+func (s failingVersionedStore) DocumentStamp(ctx context.Context, artifactID string) (string, DocumentStamp, error) {
 	if s.respectContext && ctx.Err() != nil {
-		return DocumentStamp{}, ctx.Err()
+		return "", DocumentStamp{}, ctx.Err()
 	}
 	if s.loadErr != nil {
-		return DocumentStamp{}, s.loadErr
+		return "", DocumentStamp{}, s.loadErr
 	}
 	if s.loadUpdate != nil {
-		return DocumentStamp{Version: 1}, nil
+		return artifactID, DocumentStamp{Version: 1}, nil
 	}
-	return s.VersionedStore.DocumentStamp(ctx, room)
+	return s.VersionedStore.DocumentStamp(ctx, artifactID)
 }
 
 func (s failingVersionedStore) LoadDocument(ctx context.Context, room string) (LoadedDocument, error) {
@@ -6032,34 +6031,48 @@ func joinedWrite(service *Service, write func(ctx context.Context) error) error 
 }
 
 // replacementPrecondition is what a replacement names: the token the document stands at now,
-// which ReplaceText asks of every replacement, and none at all for a document whose live tree is
-// outside the Proof schema, which has no token and which only a replacement can repair. A test
-// whose subject is not the token reads it here.
+// which ReplaceText asks of every replacement, and none at all for a document that has no token.
+// Two documents have none: one whose live tree is outside the Proof schema, which only a
+// replacement can repair, and a converted document whose fragment of its issue room holds
+// nothing, which has no tree (readFragments) and whose read answers no token (TextWithToken), so
+// that ReplaceText takes its first text as a repair. A test whose subject is not the token reads
+// it here.
 //
 // The token comes from the write's own fork inside a joined context, from the room where one
 // holds the document, and from the store where none does: reading the live document of a room
 // nothing holds would load one, and a cold write is measured by finding none
 // (TestAColdWritesShadowMeasuresTheRoomThatLoadedUnderIt).
 func replacementPrecondition(ctx context.Context, service *Service, artifactID string) (*model.EditPrecondition, error) {
-	token, err := documentTokenForReplacement(ctx, service, artifactID)
-	if errors.Is(err, ErrDocOutsideSchema) || errors.Is(err, ErrDocSchema) {
-		return nil, nil
+	tree, err := replacedTree(ctx, service, artifactID)
+	var token string
+	if err == nil && tree != nil {
+		token, err = nodeToken(tree)
 	}
-	if err != nil {
+	switch {
+	case errors.Is(err, ErrDocOutsideSchema) || errors.Is(err, ErrDocSchema):
+		return nil, nil
+	case err != nil:
 		return nil, err
+	case tree == nil:
+		return nil, nil
 	}
 	return &model.EditPrecondition{Document: token}, nil
 }
 
-func documentTokenForReplacement(ctx context.Context, service *Service, artifactID string) (string, error) {
-	if _, joined := txFromContext(ctx); !joined && service.srv.GetDoc(artifactID) == nil {
-		tree, err := service.storedTree(ctx, artifactID)
+// replacedTree is the tree of the document a replacement replaces, read where
+// replacementPrecondition reads its token: nil for a converted document whose fragment holds
+// nothing.
+func replacedTree(ctx context.Context, service *Service, artifactID string) (*pmdoc.Node, error) {
+	if _, joined := txFromContext(ctx); !joined {
+		target, err := service.targetOf(ctx, artifactID)
 		if err != nil {
-			return "", err
+			return nil, err
 		}
-		return nodeToken(tree)
+		if service.srv.GetDoc(target.room) == nil {
+			return service.storedTree(ctx, target)
+		}
 	}
-	return service.currentToken(ctx, artifactID)
+	return service.docTree(ctx, artifactID)
 }
 
 // liveDocumentToken is replacementPrecondition for a test that holds a *testing.T and reads the
@@ -6117,10 +6130,10 @@ func joinedApplyOps(service *Service, artifactID string, ops []model.EditOp, act
 	return outcome, err
 }
 
-func joinedMarkQuote(service *Service, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error) {
+func joinedMarkQuote(service *Service, artifactID string, mark MarkSpec, quote string, scope *QuoteScope) (Anchored, error) {
 	var anchored Anchored
 	err := joinedWrite(service, func(ctx context.Context) (err error) {
-		anchored, err = service.MarkQuote(ctx, artifactID, mark, quote, occurrence)
+		anchored, err = service.MarkQuote(ctx, artifactID, mark, quote, scope)
 		return err
 	})
 	return anchored, err

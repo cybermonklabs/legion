@@ -11,6 +11,7 @@ import type {
   WriteSuggestion,
 } from "@legion/contracts";
 import { bearerCredential } from "../bearer";
+import { documentPlaysPlan } from "../dispatch-commands/document-targets";
 import type { ExecFn } from "../dispatch-cwd";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
 
@@ -707,6 +708,46 @@ describe("the related-item check", () => {
     expect(result.details.advice).toEqual(advice({ suggestions }));
   });
 
+  test("dispatch_issue lists graph neighbours after the text results", async () => {
+    const result = await createIssue({
+      outcome: "found",
+      related: [issueItem("DSP-7", "Existing issue", "triage")],
+      neighbourhood: { outcome: "made" },
+      neighbours: [
+        {
+          key: "DSP-8",
+          status: "triage",
+          title: "Other work",
+          shares: ["dispatch://DSP/component/api", "dispatch://DSP-2"],
+          href: "/issues/DSP-8",
+        },
+      ],
+    });
+
+    expect(result.text).toBe(
+      [
+        createdLine,
+        "Related items:",
+        "- DSP-7 [triage] Existing issue → http://dispatch.test/issues/DSP-7",
+        "Graph neighbours (shared targets):",
+        "- DSP-8 [triage] Other work · shares dispatch://DSP/component/api, dispatch://DSP-2 → http://dispatch.test/issues/DSP-8",
+      ].join("\n")
+    );
+  });
+
+  test.each([
+    [{ outcome: "none" }, "Graph neighbourhood check found no issue that shares a target."],
+    [
+      { outcome: "not_made", missing: "the graph read did not answer within 5s" },
+      "No graph neighbourhood check was made: the graph read did not answer within 5s.",
+    ],
+  ] as const)("dispatch_issue reports a graph check with no neighbours: %p", async (neighbourhood, line) => {
+    const result = await createIssue({ outcome: "none", related: [], neighbourhood });
+    expect(result.text).toBe(
+      [createdLine, "Related-item check searched and found nothing.", line].join("\n")
+    );
+  });
+
   test("a keywords-only search names why in its header", async () => {
     const result = await createIssue({
       outcome: "found",
@@ -1311,7 +1352,7 @@ describe("dispatch_doc_edit's ask block checks", () => {
 // a list that did not read as one all print the line without it.
 describe("a document write that superseded a person's approval", () => {
   const stored =
-    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write stores the text of version 14 again exactly, with no ask block in it decided since.";
+    "Stored version 15, superseding version 14, which alice approved. That approval is stale until someone approves version 15 or a later write leaves what it covers as version 14 held it: on an issue Dispatch has converted to one tree, the digest of the document's query; on any other document, the text of version 14 again exactly, with no ask block in it decided since.";
   const nextStep =
     "Meant to change the approved design? Request approval with `dispatch request-approval`. Meant a correction beside it? Tell the issue's architect, and keep the next one in a comment or in the plan.";
   const supersededLine = `${stored} ${nextStep}`;
@@ -1494,13 +1535,15 @@ describe("a document write that superseded a person's approval", () => {
   // with no role is still a plan and names `dispatch plan-approve`, while a project document named
   // plan.md is a plain document: a person's approval of it comes back through a request, which
   // Dispatch then accepts, and `dispatch plan-approve`, which takes an issue alone, cannot reach
-  // it. Each document is answered as Dispatch answers it: no role key on either.
+  // it. Each document is answered as Dispatch answers it: a markdown document, with no role key on
+  // either.
   const roleLessPlan = {
     id: "artifact-43",
     issue_key: "DSP-42",
     project: "DSP",
     name: "plan.md",
     slug: "plan-md",
+    kind: "doc",
     primary: false,
   };
   const projectPlan = {
@@ -1509,8 +1552,19 @@ describe("a document write that superseded a person's approval", () => {
     project: "DSP",
     name: "plan.md",
     slug: "plan-md",
+    kind: "doc",
     primary: false,
   };
+  // The slug fallback is Dispatch's own rule (documentPlays, api/artifacts.go): it names a
+  // role-less issue row a plan by its slug only when that row is a markdown document, the row a
+  // rolling deploy leaves, and never a file uploaded as plan.md, whose bytes are not markdown.
+  test.each([
+    ["a role-less doc with the slug plan-md", true, { ...roleLessPlan, kind: "doc" }],
+    ["a role-less file with the slug plan-md", false, { ...roleLessPlan, kind: "file" }],
+  ])("documentPlaysPlan of %s is %p", (_which, plays, document) => {
+    expect(documentPlaysPlan(document)).toBe(plays);
+  });
+
   test.each([
     ["dispatch_artifact", "an issue's plan.md with no role", planUpload, roleLessPlan, true],
     ["dispatch_doc_edit", "an issue's plan.md with no role", planEdit, roleLessPlan, true],

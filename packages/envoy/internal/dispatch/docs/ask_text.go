@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 
@@ -50,7 +51,9 @@ type AskedText struct {
 // that version's text without a rendering (storedText) where it holds no ask block; one that holds
 // an ask block is read through the room, and where the history the room stands behind does not
 // decode, the version's text is read back into a tree and served from it (storedAskedText) rather
-// than failing the read.
+// than failing the read. A document converted into an issue room is read from its fragment of that
+// room, as TextWithToken reads it (documentReadRoom), since its own latest version no longer says
+// what its room holds.
 func (s *Service) TextWithAsks(ctx context.Context, artifactID string, withBlocks bool) (AskedText, error) {
 	return s.askedText(ctx, artifactID, withBlocks, false)
 }
@@ -90,8 +93,12 @@ func servedAskTree(tree *pmdoc.Node, kept bool) (*pmdoc.Node, bool) {
 
 // askedText is TextWithAsks, or KeptText where kept.
 func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, kept bool) (AskedText, error) {
+	room, stamp, err := s.documentReadRoom(ctx, artifactID)
+	if err != nil {
+		return AskedText{}, err
+	}
 	var stored *AskedText
-	if !withBlocks {
+	if !withBlocks && room == artifactID && stamp == nil {
 		markdown, token, served, err := s.storedText(ctx, artifactID)
 		if err != nil {
 			return AskedText{}, err
@@ -103,7 +110,7 @@ func (s *Service) askedText(ctx context.Context, artifactID string, withBlocks, 
 			stored = &AskedText{Markdown: markdown, Token: token}
 		}
 	}
-	read, tree, err := s.readDocument(ctx, artifactID)
+	read, tree, err := s.readDocumentIn(ctx, room, artifactID, stamp)
 	if err != nil {
 		if stored != nil && errors.Is(err, ErrDocumentUnloadable) {
 			return s.storedAskedText(ctx, artifactID, *stored, err, kept)
@@ -181,10 +188,10 @@ func (s *Service) storedAskedText(ctx context.Context, artifactID string, stored
 // parseAskBlock): one entry per ask block, in document order, its answer as every read of an ask
 // shows it (asks.NodeAnswer.ApplyTo) - off the node of the ask that answers for it
 // (askNodeAnswers), or off that ask's row where the row names no node, its answer's only record
-// (textAskOf). A block an ask of the document indexes reads that ask; a copy of an ask of another
-// document of its owner (readBlockAsks) reads its source, and names it and its document; on a
-// closed issue's document, a readable block that neither has an ask nor copies one - a block no
-// settlement has indexed yet, which opens no ask while the issue is closed - reads resolved,
+// (textAskOf). A block an ask of the fragment indexes reads that ask (asksOfBlocks); a copy of
+// an ask of another document of its owner reads its source and names it and its document
+// (classifyBlockAsks). On a closed issue's document, a readable block that neither has an ask
+// nor copies one - a block no settlement has indexed yet - reads resolved,
 // since the close withdrew every ask of its issue; and every other block reads no state, a
 // question nobody has opened yet, which the text routes showed with no state before they took the
 // attributes off, and so does every block of a tree that repeats an ask block's id, which
@@ -214,6 +221,11 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 		return entries, nil
 	}
 	err := pgx.BeginTxFunc(ctx, s.store.Pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(tx pgx.Tx) error {
+		held := slices.AppendSeq(make([]string, 0, len(nodes)), maps.Keys(nodes))
+		indexed, err := asksOfBlocks(ctx, tx, artifactID, held)
+		if err != nil {
+			return err
+		}
 		parsedBlocks := make([]askBlock, 0, len(nodes))
 		parsed := make(map[string]bool, len(nodes))
 		for id, node := range nodes {
@@ -221,17 +233,17 @@ func (s *Service) textAsks(ctx context.Context, artifactID string, tree *pmdoc.N
 				parsedBlocks, parsed[id] = append(parsedBlocks, block), true
 			}
 		}
-		read, err := readBlockAsks(ctx, tx, artifactID, nil, parsedBlocks, readCopiedAskSources)
+		read, err := classifyBlockAsks(ctx, tx, artifactID, nil, parsedBlocks, indexed, readCopiedAskSources)
 		if err != nil {
 			return err
 		}
-		indexed, sources := read.rows, read.sources
 		closed := false
 		if read.owner != nil {
 			if closed, err = ownerIssueClosed(ctx, tx, *read.owner); err != nil {
 				return err
 			}
 		}
+		sources := read.sources
 		answers, err := askNodeAnswers(ctx, tx, read.askIDs())
 		if err != nil {
 			return err

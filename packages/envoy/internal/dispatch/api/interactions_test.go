@@ -17,6 +17,7 @@ import (
 	"github.com/reearth/ygo/crdt"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
@@ -702,16 +703,54 @@ func TestAnchorsCaptureAnUnnamedVersionWhenLiveTextChanged(t *testing.T) {
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	var log []struct {
-		Type   string `json:"type"`
-		Notify bool   `json:"notify"`
+		Type    string `json:"type"`
+		Notify  bool   `json:"notify"`
+		Payload struct {
+			ArtifactID string `json:"artifact_id"`
+		} `json:"payload"`
 	}
 
 	if err := json.NewDecoder(events.Body).Decode(&log); err != nil {
 		t.Fatalf("decode dirty document events: %v", err)
 	}
-	if len(log) != 3 || log[1].Type != "artifact.version" || log[1].Notify || log[2].Type != "ask.opened" || !log[2].Notify {
-		t.Fatalf("dirty document events = %#v; want non-notifying unnamed artifact.version before notifying ask.opened", log)
+	// The ask is a node the issue's Decisions query takes, so it moves that query's record, and R14
+	// has a write that moves a query's record append a version of the query's document: the ask's
+	// write marks the issue's queries owed, and the drain it runs once it has committed writes that
+	// version, with its own non-notifying artifact.version, after the ask's ask.opened
+	// (docs.Service.DrainOwedQueries). Each version of a query document owes its record's digest,
+	// which the fill after its write's COMMIT records with a quiet artifact.digest (R14's hash
+	// gate): the create's fill those of version 1 of the spec and of the decisions query, in the
+	// order of their ids; the drain's own fill the spec's version the anchor captured, before the
+	// drain's version; and the drain that version's own, after it.
+	decisions := queryArtifactOf(t, database, issue.Key, graphstore.QueryDecisions)
+	spec := issue.PrimaryArtifactID
+	want := []loggedDocumentEvent{
+		{"issue.created", true, ""},
+		{"artifact.digest", false, spec}, {"artifact.digest", false, decisions},
+		{"artifact.version", false, spec},
+		{"ask.opened", true, ""},
+		{"artifact.digest", false, spec},
+		{"artifact.version", false, decisions},
+		{"artifact.digest", false, decisions},
 	}
+	if decisions < spec {
+		want[1], want[2] = want[2], want[1]
+	}
+	got := make([]loggedDocumentEvent, 0, len(log))
+	for _, event := range log {
+		got = append(got, loggedDocumentEvent{event.Type, event.Notify, event.Payload.ArtifactID})
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("dirty document events = %+v; want %+v: the spec's non-notifying unnamed artifact.version before notifying ask.opened, then the non-notifying artifact.version of the decisions query %s, each version's quiet artifact.digest after it", got, want, decisions)
+	}
+}
+
+// loggedDocumentEvent is what the anchors tests read of an issue event: its type, whether it
+// notifies, and the document its payload names.
+type loggedDocumentEvent struct {
+	Type       string
+	Notify     bool
+	ArtifactID string
 }
 
 func TestDocumentEditMapsMissingAndAmbiguousTargets(t *testing.T) {
@@ -856,7 +895,7 @@ func TestDocumentEditWithoutSummaryWritesUnnamedVersionAndEvent(t *testing.T) {
 
 func TestAnchorsKeepCleanDocumentAtExistingVersion(t *testing.T) {
 	t.Parallel()
-	handler := newTestHandler(t)
+	handler, database := newTestHandlerWithStore(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Clean document", "The quick brown fox")
 	created := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/asks", map[string]any{
 		"question": "Why brown?", "anchor": map[string]any{"artifact": "spec", "quote": "brown"}, "actor": sessionActor(),
@@ -870,13 +909,40 @@ func TestAnchorsKeepCleanDocumentAtExistingVersion(t *testing.T) {
 	}
 	events := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/events", nil, "alice")
 	var cleanLog []struct {
-		Type string `json:"type"`
+		Type    string `json:"type"`
+		Notify  bool   `json:"notify"`
+		Payload struct {
+			ArtifactID string `json:"artifact_id"`
+		} `json:"payload"`
 	}
 	if err := json.NewDecoder(events.Body).Decode(&cleanLog); err != nil {
 		t.Fatalf("decode clean document events: %v", err)
 	}
-	if len(cleanLog) != 2 || cleanLog[0].Type != "issue.created" || cleanLog[1].Type != "ask.opened" {
-		t.Fatalf("clean document events = %#v; want issue.created then ask.opened", cleanLog)
+	// The anchor writes no version of the clean spec. The ask itself is a node the issue's
+	// Decisions query takes, so its create marks the issue's queries owed and its drain writes a
+	// version of the decisions query once the create has committed (R14): that version's
+	// artifact.version follows the ask.opened, and it is no version of the spec. The drain appends
+	// that version's quiet artifact.digest after it, and the create's fill the quiet artifact.digest
+	// of version 1 of the spec and of the decisions query after the issue.created, in the order of
+	// their ids (R14's hash gate).
+	decisions := queryArtifactOf(t, database, issue.Key, graphstore.QueryDecisions)
+	spec := issue.PrimaryArtifactID
+	want := []loggedDocumentEvent{
+		{"issue.created", true, ""},
+		{"artifact.digest", false, spec}, {"artifact.digest", false, decisions},
+		{"ask.opened", false, ""}, // a session's ask notifies nobody (events.Broker.Notify)
+		{"artifact.version", false, decisions},
+		{"artifact.digest", false, decisions},
+	}
+	if decisions < spec {
+		want[1], want[2] = want[2], want[1]
+	}
+	got := make([]loggedDocumentEvent, 0, len(cleanLog))
+	for _, event := range cleanLog {
+		got = append(got, loggedDocumentEvent{event.Type, event.Notify, event.Payload.ArtifactID})
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("clean document events = %+v; want %+v: issue.created, ask.opened, then the artifact.version of the decisions query %s, no version of the spec", got, want, decisions)
 	}
 }
 func TestCommentsSuggestionsAndArtifactFilter(t *testing.T) {
@@ -1409,7 +1475,7 @@ func TestAnUploadKeepsTheCreditOfAnEditItsUploaderMakesWhileItWrites(t *testing.
 	documentService, handler, database := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Upload timing", "First.\n\nSecond.\n")
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 
 	ctx := context.Background()
@@ -1495,7 +1561,7 @@ func TestAnUploadClearsPendingCreditOnlyWhenItChangesTheDocument(t *testing.T) {
 			if notes.ID == "" {
 				t.Fatal("uploaded document is missing")
 			}
-			browser := connectBrowserPeer(t, documentService, notes.ID)
+			browser := connectBrowserPeer(t, handler, documentService, notes.ID)
 			t.Cleanup(browser.close)
 			browser.appendParagraph(t, "Alice wrote this.")
 			browser.barrier(t)
@@ -1548,7 +1614,7 @@ func TestUploadClearsItsUploaderBeforeNextVersion(t *testing.T) {
 		t.Fatalf("uploaded document missing from %s", listed.Body.String())
 	}
 	// alice types in her browser before she uploads again: the room credits her with it.
-	browser := connectBrowserPeer(t, documentService, notes.ID)
+	browser := connectBrowserPeer(t, handler, documentService, notes.ID)
 	t.Cleanup(browser.close)
 	browser.appendParagraph(t, "Typed in the browser.")
 	browser.barrier(t)
@@ -2500,9 +2566,12 @@ func awaitMarkProjection(t *testing.T, database *store.Store, artifactID, markID
 	})
 }
 
+// findMarkProjection reads markID's record in the stored history of the room artifactID's
+// document is edited in (documentRoomOf), whose margin holds every fragment's records.
 func findMarkProjection(t *testing.T, database *store.Store, artifactID, markID string) (map[string]any, bool) {
 	t.Helper()
-	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), artifactID)
+	room, _ := documentRoomOf(t, database.Pool, artifactID)
+	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), room)
 	if err != nil {
 		t.Fatalf("load persisted document: %v", err)
 	}

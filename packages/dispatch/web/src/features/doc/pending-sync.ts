@@ -6,7 +6,7 @@ import * as Y from "yjs";
 
 import { changesOnlyDerived } from "./derived-attributes";
 import type { PendingEdits, PendingKey, RestoredEdit } from "./pending-edits";
-import { FRAGMENT_NAME, MARKS_MAP_NAME } from "./roots";
+import { MARKS_MAP_NAME } from "./roots";
 import { readField } from "./sync-frame";
 
 export interface PendingState {
@@ -55,6 +55,8 @@ type SentFrame = { kind: "update"; update: Uint8Array } | { kind: "step2"; throu
 
 export interface PendingSyncOptions {
   doc: Y.Doc;
+  /** The editor's tree: the fragment of the room that holds this document (`fragmentOf`). */
+  fragment: string;
   onChange(state: PendingState): void;
   /** Updates received from the provider must never be stored as local edits. */
   remoteOrigin: unknown;
@@ -196,43 +198,50 @@ function readableValue(value: unknown): unknown {
 }
 
 /**
- * Everything a reader of `scratch` sees, as one string to compare: the editor's tree and the
- * margin records, the only two roots a Dispatch document holds. A root nobody has asked for by
- * its class yet - the editor's fragment before the editor exists - is a bare type that shows
- * nothing, so both are asked for by their class here. That defines them on the document it is
- * called on, so it is only ever called on a scratch copy, never on the live document the editor
- * binds. Only public reads are used: children, names, attributes, a text's delta with its
- * formats, and the margin records as JSON. Values are compared as JSON, so an object attribute is
- * compared by what it holds rather than printed as `[object Object]`.
+ * Everything a reader of `scratch` sees of `roots`, as one string to compare: the margin records
+ * as a map, and every other root - the editor's tree, and in an issue's room the issue's own nodes
+ * and each other document's tree - as the fragment it is. A root nobody has asked for by its class
+ * yet - the editor's fragment before the editor exists - is a bare type that shows nothing, so
+ * each is asked for by its class here. That defines them on the document it is called on, so it
+ * is only ever called on a scratch copy, never on the live document the editor binds. Only public
+ * reads are used: children, names, attributes, a text's delta with its formats, and the margin
+ * records as JSON. Values are compared as JSON, so an object attribute is compared by what it
+ * holds rather than printed as `[object Object]`.
  */
-function readable(scratch: Y.Doc): string {
-  return JSON.stringify([
-    scratch.getXmlFragment(FRAGMENT_NAME).toArray().map(readableNode),
-    sortedEntries(scratch.getMap(MARKS_MAP_NAME).toJSON()),
-  ]);
+function readable(scratch: Y.Doc, roots: ReadonlySet<string>): string {
+  return JSON.stringify(
+    [...roots].map((name) =>
+      name === MARKS_MAP_NAME
+        ? sortedEntries(scratch.getMap(name).toJSON())
+        : scratch.getXmlFragment(name).toArray().map(readableValue)
+    )
+  );
 }
 
 /**
  * Whether one browser client's stored rows, applied in order to a copy of `doc`, park nothing and
  * leave what the copy shows as it was. Rows the document already holds do; so do rows whose only
  * change the editor of this load derived again. Rows that park never do, so a row typed against a
- * rebuilt history stays named. A copy that holds any root but the tree and the margin records,
- * before or after the rows, holds something the comparison cannot read, so its rows are kept
+ * rebuilt history stays named. Every root the copy holds is compared, beside the editor's tree,
+ * `fragment`, and the margin records, which the rows may be the first to write. A root the rows
+ * add besides those is one the comparison has no reading for before them, so its rows are kept
  * rather than risk dropping a person's unsent edit. Applying a row adds roots and never removes
  * one, so the roots after the rows cover those before.
  */
-function changesNothing(doc: Y.Doc, updates: readonly Uint8Array[]): boolean {
+function changesNothing(doc: Y.Doc, fragment: string, updates: readonly Uint8Array[]): boolean {
   const scratch = scratchOf(doc);
-  const before = readable(scratch);
+  const roots = new Set([fragment, MARKS_MAP_NAME, ...scratch.share.keys()]);
+  const before = readable(scratch, roots);
   return (
     updates.every((update) => !addsParking(scratch, update)) &&
-    [...scratch.share.keys()].every((name) => name === FRAGMENT_NAME || name === MARKS_MAP_NAME) &&
-    readable(scratch) === before
+    [...scratch.share.keys()].every((name) => roots.has(name)) &&
+    readable(scratch, roots) === before
   );
 }
 
 export function startPendingSync({
   doc,
+  fragment,
   onChange,
   remoteOrigin,
   store,
@@ -409,7 +418,7 @@ export function startPendingSync({
         const redundant: PendingKey[] = [];
         for (const clientRows of byClient.values()) {
           const updates = clientRows.map((row) => row.update);
-          if (changesNothing(doc, updates)) {
+          if (changesNothing(doc, fragment, updates)) {
             redundant.push(...clientRows.map((row) => row.key));
           }
         }

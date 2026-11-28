@@ -201,9 +201,9 @@ func opensDecisionSection(level int, inReplaced bool) bool {
 }
 
 // sectionTies are what the block index stored of a decisions document's citing blocks, by the id
-// of the block that cites: the blocks of the spec each one links (spec), read through the
-// moved_to tuples a block that left reaches, and the asks each one mentions (asks), each in order
-// and once.
+// of the block that cites: the blocks of the spec each one links (spec), read through the one
+// resolution of a far end (refs.ResolvedBlockSQL), whose moved_to tuples a block that left
+// reaches, and the asks each one mentions (asks), each in order and once.
 //
 // kept for one release: decisions-step
 type sectionTies struct {
@@ -220,11 +220,7 @@ func readSectionTies(ctx context.Context, q graphstore.Queryer, decisionsID, spe
 	rows, err := q.Query(ctx, `
 		select distinct r.block_id, t.block_id
 		from block_refs r
-		cross join lateral (
-			select coalesce(
-				(select held.node_id from document_blocks held where held.node_id = r.to_id limit 1),
-				block_moved_to(r.to_id)) as node_id
-		) target
+		cross join lateral (select `+refs.ResolvedBlockSQL("r.to_id")+` as node_id) target
 		join document_blocks t on t.node_id = target.node_id and t.artifact_id = $2::uuid
 		where r.artifact_id = $1::uuid and r.to_kind = '`+refs.BlockNodeKind+`'
 		order by r.block_id, t.block_id

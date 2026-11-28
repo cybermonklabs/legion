@@ -371,9 +371,10 @@ func TestEveryNodeOfTheSchemaWeighsWhatItMakes(t *testing.T) {
 		"check":               {repeated(":::check{}\n:::\n\n"), repeated(":::check{}\nc\n:::\n\n")},
 		"decision":            {repeated(":::decision{}\n:::\n\n"), repeated(":::decision{}\nd\n:::\n\n")},
 		"reading":             {repeated("::::decision{}\nd\n\n:::reading{}\nr\n:::\n::::\n\n")},
+		"criterion":           {repeated(":::criterion{}\n:::\n\n"), repeated(":::criterion{}\nc\n:::\n\n")},
 	}
 	oneADocument := map[string]bool{"doc": true, "frontmatter": true}
-	types := typedBlockNames()
+	types := TypedBlockNames()
 	for typeName := range active.Load().nodes {
 		types = append(types, typeName)
 	}

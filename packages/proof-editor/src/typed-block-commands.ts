@@ -2,8 +2,8 @@ import { blockPointersProblem } from '@legion/contracts';
 import type { Node as ProseMirrorNode, NodeType } from '@milkdown/kit/prose/model';
 import type { EditorState, Transaction } from '@milkdown/kit/prose/state';
 
-import { askReferenceProblem, blockPointerRefusal, findBlock, otherIssueRefusal } from './block-pointers.js';
-import { creatable, creatableValue, type BlockAttributeSchema, type BlockSchema, type BlockTypeSchema } from './block-schema.js';
+import { askReferenceProblem, blockPointerRefusal, findBlock, otherIssueRefusal, parentProblem } from './block-pointers.js';
+import { creatable, creatableValue, minutesValueProblem, type BlockAttributeSchema, type BlockSchema, type BlockTypeSchema } from './block-schema.js';
 import { BLOCK_ID_ATTR, blockIdOf } from './editor/schema/block-ids.js';
 
 export type TypedBlockAttributeValue = string | boolean | readonly string[];
@@ -66,6 +66,11 @@ function validateValue(typeName: string, name: string, attribute: BlockAttribute
     case 'timestamp':
       if (typeof value !== 'string') throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)} must be a string`);
       return;
+    case 'minutes': {
+      const problem = typeof value === 'string' ? minutesValueProblem(value) : 'must be a duration in minutes';
+      if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
+      return;
+    }
     case 'ask': {
       const problem = typeof value === 'string' ? askReferenceProblem(value) : 'must be an ask reference';
       if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
@@ -88,7 +93,7 @@ function validateValue(typeName: string, name: string, attribute: BlockAttribute
       if (!Array.isArray(value) || value.some((item) => typeof item !== 'string')) {
         throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)} must be an array of block references`);
       }
-      const problem = blockPointersProblem(value as readonly string[]);
+      const problem = blockPointersProblem(value as readonly string[], attribute.items) ?? parentProblem(name, value as readonly string[]);
       if (problem !== undefined) throw new Error(`typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`);
     }
   }

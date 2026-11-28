@@ -26,9 +26,11 @@ type HeadingDecision struct {
 // DecisionHeading reads the section that the heading block blockID opens in document artifactID,
 // through q, and reports whether there is one. The document must be a decisions document that
 // stands (decisions_documents()). The section is cut by the decisions step's section reader
-// (decisionSectionsOf) from the document as this server holds it. A retired document, another
-// document, a block that opens no section, and a section under `## Replaced` each answer found
-// false.
+// (decisionSectionsOf) from the document as this server holds it, its own fragment of the room it
+// is edited in, the room read through q as every other read here (roomOf): a Keep reads it inside
+// the transaction that writes the Keep, whose request holds no second connection of the pool. A
+// retired document, another document, a block that opens no section, and a section under
+// `## Replaced` each answer found false.
 //
 // kept for one release: heading-keep
 func (s *Service) DecisionHeading(ctx context.Context, q graphstore.Queryer, artifactID, blockID string) (HeadingDecision, bool, error) {
@@ -40,7 +42,11 @@ func (s *Service) DecisionHeading(ctx context.Context, q graphstore.Queryer, art
 	if !standing {
 		return HeadingDecision{}, false, nil
 	}
-	tree, _, err := s.loadTree(ctx, artifactID)
+	room, err := roomOf(ctx, q, artifactID)
+	if err != nil {
+		return HeadingDecision{}, false, err
+	}
+	tree, _, err := s.loadTree(ctx, room, []string{fragmentOf(room, artifactID)})
 	if err != nil || tree == nil {
 		return HeadingDecision{}, false, err
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"slices"
 )
 
 // documentRemovedStatement reads whether a document's artifacts row has gone.
@@ -29,15 +30,34 @@ func (st *settlement) documentRemoved(ctx context.Context) bool {
 }
 
 // readLocked is what the settlement reads once its transaction holds the document's owner lock: the
-// latest version, the document's cursor lock, the catch-up that brings the room's instance to the
-// document's durable head, the tree it reconciles and the rendering of that tree, and whom its
-// version credits.
+// layout of an issue room, read again, the latest version, the document's cursor lock, the
+// catch-up that brings the room's instance to the document's durable head, the tree it reconciles
+// and the rendering of that tree, and whom its version credits.
 //
 // It is given both of the settlement's contexts: ctx carries this settlement's ledger, cursor and
 // transaction, and is what every read here runs under; parent is the lifetime the reload of a room
 // whose stored history was replaced is given, once this transaction has been rolled back.
 func (st *settlement) readLocked(ctx context.Context, parent context.Context) (settleStep, settleOutcome) {
 	s, room, state, tx := st.service, st.room, st.state, st.tx
+	// An issue room is settled over the fragments its instance loaded (layout), and those are the
+	// room's only while no document has joined it since: the join's transaction takes the issue's
+	// row before it writes its document_rooms row, so the room's documents read here, under that
+	// row, stand until this settlement commits. A join whose notice did not reach this process
+	// (AnnounceDocumentRooms) leaves the instance on fragments that are not the room's, and a
+	// settlement over them would read no edit of the joined fragment and its pass would remove the
+	// joined document's blocks. So such a room writes nothing: the transaction rolls back and the
+	// room is closed for a load that reads the room's layout, as a room on a replaced history is
+	// (reloadReplacedRoom). A room that is its own document holds no layout and reads none.
+	if st.owner.Kind == "tree" {
+		layout, err := readRoomLayout(ctx, tx, room)
+		if err != nil {
+			return settleDone, st.stoppedShort(err)
+		}
+		if !slices.Equal(layout, st.layout) {
+			return st.reloadRefused(ctx, parent, fmt.Errorf("%w: room %s loaded the fragments of %d documents, and its %d documents now are not those",
+				errRoomLayoutMoved, room, len(st.layout), len(layout)))
+		}
+	}
 	latest, err := latestVersion(ctx, tx, room)
 	if err != nil {
 		return settleDone, st.stoppedShort(err)
@@ -105,14 +125,12 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 		case outcome == catchUpReplaced:
 			// The rollback releases the document's advisory lock, which the room's close needs: a
 			// close flushes the room's persistence, whose appends take that lock.
-			_ = tx.Rollback(ctx)
-			refusal := fmt.Errorf("%w: room %s holds the document through update %d, and the stored history was replaced under it (head %d)",
-				ErrRoomBehindHead, room, st.cursor.heldThrough(), head)
-			if parent.Err() != nil {
-				return settleDone, st.stoppedShort(refusal)
-			}
-			s.reloadReplacedRoom(parent, room, state, st.generation, st.doc, refusal)
-			return settleDone, settleOutcome{next: settleReloaded}
+			return st.reloadRefused(ctx, parent, fmt.Errorf("%w: room %s holds the document through update %d, and the stored history was replaced under it (head %d)",
+				ErrRoomBehindHead, room, st.cursor.heldThrough(), head))
+		case outcome == catchUpMoved:
+			// A room whose document moved into its issue's room takes nothing more, and is closed
+			// the same way.
+			return st.reloadRefused(ctx, parent, fmt.Errorf("%w: room %s's document is edited in its issue's room", ErrRoomMoved, room))
 		}
 		if through := st.cursor.heldThrough(); through != head {
 			return settleDone, st.stoppedShort(fmt.Errorf("%w: room %s holds the document through update %d after its catch-up, the stored document stands at %d",
@@ -133,7 +151,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	// credited at its commit and published after the read; the supersession check in applyStamp
 	// then writes no version, since the write still holds its slot or its publish moved the
 	// generation.
-	first, err := s.readSettlementTree(state, st.doc, room, s.afterSettleAuthorsTake, false)
+	first, err := s.readSettlementTree(state, st.doc, room, st.layout, s.afterSettleAuthorsTake, false)
 	if err != nil {
 		if skipUnreadableSettlement(room, err) {
 			return settleDone, settleOutcome{}
@@ -150,7 +168,7 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 	// pending-settlement row, which each append writes (updateOwedStatement), in every transaction
 	// (lockProjectCopies). Its version's authors are taken again once it has stored the room's
 	// updates it holds (settlementCredit).
-	credit, err := settlementCredit(ctx, tx, state, room, first)
+	credit, err := settlementCredit(ctx, tx, state, room, st.layout, first)
 	if err != nil {
 		return settleDone, st.stoppedShort(err)
 	}
@@ -163,4 +181,17 @@ func (st *settlement) readLocked(ctx context.Context, parent context.Context) (s
 		s.afterSettleRead(room)
 	}
 	return settleOn, settleOutcome{}
+}
+
+// reloadRefused ends a settlement that refusal refuses before it writes anything: the transaction
+// rolls back, which keeps doc_settlements_pending and releases the document's advisory lock the
+// room's close needs, and the room is closed and reloaded under parent (reloadReplacedRoom), or,
+// once parent has ended, the settlement stops short with refusal.
+func (st *settlement) reloadRefused(ctx, parent context.Context, refusal error) (settleStep, settleOutcome) {
+	_ = st.tx.Rollback(ctx)
+	if parent.Err() != nil {
+		return settleDone, st.stoppedShort(refusal)
+	}
+	st.service.reloadReplacedRoom(parent, st.room, st.state, st.generation, st.doc, refusal)
+	return settleDone, settleOutcome{next: settleReloaded}
 }

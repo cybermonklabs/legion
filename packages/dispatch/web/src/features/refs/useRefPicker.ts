@@ -42,9 +42,9 @@ import { agentArtifactsQuery, architectureQuery } from "./reference-target";
 import {
   buildDispatchReference,
   documentRoute,
-  nodeRouteFromHref,
   parseNodeReference,
   partyOfAddress,
+  searchHitRoute,
   shortForm,
 } from "./routes";
 import { textSourceKind, textSourceOf } from "./text-references";
@@ -138,12 +138,14 @@ function hitLabel(hit: SearchResult): Pick<RefPickerRow, "label" | "prose"> {
     : { label, prose: { markdown, source, tree: hit.snippet_tree } };
 }
 
-/** The rows the search answered. A hit whose `href` names no address is left out, which is how
- *  a message with no issue - no address, and none for its blocks either - is never offered. An
- *  issue holds no blocks of its own; its spec document does. */
+/** The rows the search answered, each the node its hit is (`searchHitRoute`): a document hit is
+ *  its document, whose blocks its row opens, whatever block of it the hit matched. A hit whose
+ *  `href` names no address is left out, which is how a message with no issue - no address, and
+ *  none for its blocks either - is never offered. An issue holds no blocks of its own; its spec
+ *  document does. */
 function searchRows(hits: readonly SearchResult[]): RefPickerRow[] {
   return hits.flatMap((hit) => {
-    const route = nodeRouteFromHref(hit.href);
+    const route = searchHitRoute(hit);
     // The route table carries a hit's `kind` as a plain string; the five kinds the route ranks
     // are all the picker asked for (`searchResultKind`, the one narrowing every surface reads
     // a hit's kind through), so a hit of any other kind is no row of its.

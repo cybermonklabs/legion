@@ -44,9 +44,9 @@ func storedSuggestionKind(t *testing.T, database *store.Store, id string) (strin
 
 // retypeSuggestedWords stands in for a browser editor that retypes part of the words a suggestion
 // mark wraps: from becomes to in the text under markID, which keeps the mark.
-func retypeSuggestedWords(t *testing.T, documentService *docs.Service, artifactID, markID, from, to string) {
+func retypeSuggestedWords(t *testing.T, handler http.Handler, documentService *docs.Service, artifactID, markID, from, to string) {
 	t.Helper()
-	peer := connectBrowserPeer(t, documentService, artifactID)
+	peer := connectBrowserPeer(t, handler, documentService, artifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		retyped := false
@@ -73,7 +73,7 @@ func retypeSuggestedWords(t *testing.T, documentService *docs.Service, artifactI
 // the quote the anchor then stores: "zarquonrevised ", no longer the suggestion's replace_with.
 func retypeSuggestedWordsAndRefresh(t *testing.T, documentService *docs.Service, handler http.Handler, artifactID string) string {
 	t.Helper()
-	retypeSuggestedWords(t, documentService, artifactID, "m-insert", "suggested", "revised")
+	retypeSuggestedWords(t, handler, documentService, artifactID, "m-insert", "suggested", "revised")
 	if response := editDocument(t, handler, artifactID, map[string]any{
 		"ops": []map[string]any{{"op": "replace", "find": "fox", "with": "dog"}},
 	}); response.Code != http.StatusOK {
@@ -142,7 +142,7 @@ func orphanedInsertSuggestion(t *testing.T, retyped, legacy bool) suggestionToDe
 	if legacy {
 		takeStoredKindOff(t, database, comment.ID)
 	}
-	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, "The brown dog\n")
+	writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, "The brown dog\n")
 	return suggestionToDelete{handler: handler, database: database, issueKey: issue.Key, comment: comment, quote: quote}
 }
 
@@ -226,7 +226,7 @@ func TestDeletingAnOrphanedReplaceSuggestionKeepsItsQuote(t *testing.T) {
 		"suggestion": map[string]string{"replace_with": "quick"},
 	}, "alice")
 	// A browser edit takes the mark out of the document and leaves its text.
-	writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, "The quick brown dog\n")
+	writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, "The quick brown dog\n")
 	if _, err := documentService.VerifyMark(context.Background(), issue.PrimaryArtifactID, docs.MarkSuggestion, comment.Anchor.MarkID); !errors.Is(err, docs.ErrAnchorMissing) {
 		t.Fatalf("the suggestion's mark after the browser edit = %v, want it gone", err)
 	}

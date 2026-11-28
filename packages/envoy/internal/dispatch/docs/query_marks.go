@@ -1,0 +1,587 @@
+package docs
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log/slog"
+	"slices"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+)
+
+// The queries a write left owed (R7 of the issue-tree spec). A write that moves the record of a
+// query of a converted issue writes no version of that query in its own transaction: in its batch
+// it marks the issue's queries owed (QueueQueryMark, migration 20261125090000_issue_tree_query_marks),
+// and the drain writes the versions once the write has committed (DrainOwedQueries), in a
+// transaction of its own whose window is its reads, then one batch and its COMMIT. The block-index
+// tick drains each mark a request left (drainOwedQueryMarks).
+
+// QueryDrainActor is the writer the versions the block-index tick's drain writes name, and their
+// artifact.version (tickDrain), whichever writers marked the issue, and the writer a request's
+// drain names where neither a tuple at the mark's greatest_seq nor the event at its greatest_event
+// names the writer that marked it (queryMarkReadStatement): a system actor of the drain's own, as
+// SettlementActor is a settlement's.
+var QueryDrainActor = model.Actor{Kind: "system", ID: "query-drain"}
+
+// queryDrain is which drain runs a mark (drainMark), and so which writer the versions it writes
+// name, and their artifact.version (R7 of the issue-tree spec).
+type queryDrain int
+
+const (
+	// requestDrain is the drain a request runs once the write that marked the issue has committed
+	// (DrainOwedQueries): its versions name the writer that marked the issue, the writer of the
+	// tuple at the mark's greatest_seq, else the actor of the event at its greatest_event
+	// (queryMarkReadStatement), and QueryDrainActor where neither stands.
+	requestDrain queryDrain = iota
+	// tickDrain is the block-index tick's drain of a mark a request left (drainOwedQueryMarks): its
+	// versions name QueryDrainActor, never a writer that marked the issue.
+	tickDrain
+)
+
+// queryMarkBatch is the most marks one tick of the block-index reconciliation drains.
+const queryMarkBatch = 100
+
+// queryMarkStatementOf is the statement that marks the queries of the issue $1 owed where the issue
+// has converted - an issue_trees row holds its tree - and marks nothing for any other issue. The
+// mark's causes are the greatest of each the marks of the issue hold: the event cause, an SQL
+// expression, null for a write no event records, and the newest tuple sequence this session drew
+// (latestTupleSeq), which is the sequence of the last tuple the write appended, since the write
+// queues the mark after its own appends in the same batch. That tuple's writer (graph_tuples.who)
+// is the writer a request's drain names (requestDrain).
+func queryMarkStatementOf(cause string) string {
+	return queryMarkUpsertOf(cause, latestTupleSeq, `issue_trees t where t.issue_key = $1`)
+}
+
+// latestTupleSeq is the newest tuple sequence this session drew, the graph_tuples seq sequence's
+// currval, as store.LatestEventID is the newest event id.
+const latestTupleSeq = `(select currval(pg_get_serial_sequence('graph_tuples', 'seq')))`
+
+// queryMarkUpsertOf marks owed the queries of the converted issue whose issue_trees row, aliased
+// t, from finds, with the causes cause and sequence, two SQL expressions, each kept as the greatest
+// of the marks of the issue.
+func queryMarkUpsertOf(cause, sequence, from string) string {
+	return `
+	insert into issue_query_marks (issue_key, greatest_event, greatest_seq)
+	select t.issue_key, ` + cause + `, ` + sequence + `
+	from ` + from + `
+	on conflict (issue_key) do update set
+		greatest_event = greatest(issue_query_marks.greatest_event, excluded.greatest_event),
+		greatest_seq = greatest(issue_query_marks.greatest_seq, excluded.greatest_seq)`
+}
+
+// The two forms of the mark (queryMarkStatementOf): with its event named as $2, null for none, and
+// with the latest event this session appended, the id sequence's currval (store.LatestEventID), for
+// a write that queues the mark after its own events in the same batch, whose ids it does not know
+// while it builds that batch.
+var (
+	queryMarkStatement            = queryMarkStatementOf("$2::bigint")
+	queryMarkLatestEventStatement = queryMarkStatementOf(store.LatestEventID)
+)
+
+// queryMarkReadStatement reads the mark of the issue $1: its two causes, and the writer that marked
+// it - the writer of the tuple at its greatest_seq (graph_tuples.who, read through the tuple's
+// primary key), and where no tuple stands there, the actor of the event at its greatest_event (read
+// through its primary key), which a mark that names no tuple of its own writer names instead
+// (askQueryMarkStatement) - null where neither stands.
+const queryMarkReadStatement = `
+	select m.greatest_event, m.greatest_seq, g.who
+	from issue_query_marks m
+	left join lateral (
+		select coalesce(
+			(select t.who from graph_tuples t where t.seq = m.greatest_seq),
+			(select e.actor from events e where e.id = m.greatest_event)) as who
+	) g on true
+	where m.issue_key = $1`
+
+// queryMarkClearStatement clears the mark of the issue $1 only where it still holds the causes the
+// drain read, $2 and $3, so a mark a later write raised stays for the next drain.
+const queryMarkClearStatement = `
+	delete from issue_query_marks
+	where issue_key = $1 and greatest_event is not distinct from $2::bigint and greatest_seq = $3`
+
+// queryMarksStatement lists the issues whose queries a mark holds owed, the oldest mark first by
+// the tuple sequence that marked it, at most $1 of them.
+const queryMarksStatement = `select issue_key from issue_query_marks order by greatest_seq, issue_key limit $1`
+
+// QueueQueryMark queues on b the mark of the queries of the issue issueKey owed a version
+// (queryMarkStatementOf), by a write that moved the record of one of them and writes no version of
+// it: event is the event the write appended, graphstore.NoEvent for a write no event records, and
+// graphstore.LatestEvent for the latest one this session appended, which a settlement's write phase
+// names. The write queues it after the tuples it appends, in the same batch, so it adds no
+// statement to the write's window, and only where it appended one: the mark's sequence is the last
+// one this session drew, whose tuple names the write's writer. Once the batch has run, marked says
+// whether the issue has converted and so took the mark, and the write's caller runs the drain after
+// its COMMIT (DrainOwedQueries) only then.
+func QueueQueryMark(b *store.WriteBatch, issueKey string, event int64, marked *bool) {
+	what := "mark the queries of " + issueKey + " owed"
+	var queued store.Queued
+	switch event {
+	case graphstore.LatestEvent:
+		queued = b.Queue(what, queryMarkLatestEventStatement, issueKey)
+	case graphstore.NoEvent:
+		queued = b.Queue(what, queryMarkStatement, issueKey, nil)
+	default:
+		queued = b.Queue(what, queryMarkStatement, issueKey, event)
+	}
+	queued.Exec(func(tag pgconn.CommandTag) error {
+		*marked = tag.RowsAffected() > 0
+		return nil
+	})
+}
+
+// treeQueryMarkStatementOf is the statement that marks owed the queries of the converted issue
+// whose issue_trees row, aliased t, from finds, with the causes cause and sequence, two SQL
+// expressions, each the greatest of the marks of the issue (queryMarkUpsertOf), and answers the
+// issue's key. from finds one row at most, so the insert never meets one issue twice.
+func treeQueryMarkStatementOf(cause, sequence, from string) string {
+	return queryMarkUpsertOf(cause, sequence, from) + `
+	returning issue_key`
+}
+
+var (
+	// roomQueryMarkStatement marks the queries of the issue whose tree is the room $1, for a pass
+	// that stated nodes and no tuple. Its causes are none for the event - the write that queues it
+	// in a document's operation does not know whether its caller appends one, as a node route's
+	// mark names none (QueueQueryMark with graphstore.NoEvent) - and, for the sequence, the newest
+	// tuple the transaction sees as the statement runs, read off the log's primary key. A sequence
+	// this session never drew is no error here, as currval's would be.
+	roomQueryMarkStatement = treeQueryMarkStatementOf(`null::bigint`,
+		`coalesce((select seq from graph_tuples order by seq desc limit 1), 0)`, `issue_trees t where t.artifact_id = $1`)
+	// roomTupleQueryMarkStatement is roomQueryMarkStatement for a pass that stated tuples, which its
+	// writer appends under its own event in this batch before the mark (writeLast): the sequence
+	// is the newest one this session drew (queryMarkStatementOf's), the write's own last tuple,
+	// whose writer a request's drain names its versions after (requestDrain). The newest tuple the
+	// transaction sees would be another writer's where that writer committed a later tuple between
+	// this write's append and its mark.
+	roomTupleQueryMarkStatement = treeQueryMarkStatementOf(`null::bigint`, latestTupleSeq,
+		`issue_trees t where t.artifact_id = $1`)
+	// askQueryMarkStatement marks the queries of the issue of the ask $1 where it is a question
+	// (questionAsk) of a converted issue: the decisions query takes such an ask by its node
+	// (decisionsTakes), and a request of a document's approval, an ask on a project document and
+	// an ask of an issue that has not converted mark nothing. Every write that queues it appends an
+	// event of its own before it in the same batch - the ask's event, or the follow's - but not
+	// always a tuple: a reword states nothing on the ask's node. So its event is the latest one
+	// this session appended (store.LatestEventID), and it names no tuple (sequence 0): a request's
+	// drain names its versions after that event's actor, the write's own writer
+	// (queryMarkReadStatement), where no later write's tuple raised the mark, and never after
+	// whoever wrote the newest tuple of the store before this write.
+	askQueryMarkStatement = treeQueryMarkStatementOf(store.LatestEventID, `0`, `asks k join issue_trees t on t.issue_key = k.issue_key
+	where k.id = $1::uuid and k.kind = '`+questionAsk+`'`)
+)
+
+// markRoomQueries marks owed, at the end of the write phase of the transaction ctx joined
+// (writeLast), the queries of the issue whose room is room, where a write of one of the room's
+// documents ran the room's pass outside the room's settlement (indexDocumentInRoom) and that pass
+// stated a node or a tuple (stated): R14 has each accepted write of the room append a version of
+// each query whose answer changed, and such a pass can move the record of a query whose document
+// the write writes no version of - a requirement written into the plan moves the spec's. The
+// issue's queries are drained once the transaction has committed (Ledger.Commit, drainOwed), as a
+// settlement's are (queueSettledQueryMark), so the drain writes those versions, R7's fill of an
+// owed digest first. It marks once a transaction for a room, and nothing for a room the
+// transaction creates, whose issue holds no approval yet, nor where no ledger the caller joined
+// queues tx's writes: a background pass's ledger commits with no drain after it, and the
+// decisions step's ledger writes at once.
+func markRoomQueries(ctx context.Context, tx pgx.Tx, room string, stated graphstore.Uncaused) error {
+	ledger := queueFor(ctx, tx)
+	if ledger == nil || ledger.tx == nil || len(stated.Nodes)+stated.Len() == 0 || slices.Contains(ledger.markedRooms, room) {
+		return nil
+	}
+	if _, created := pendingArtifact(ctx, room); created {
+		return nil
+	}
+	ledger.markedRooms = append(ledger.markedRooms, room)
+	statement := roomQueryMarkStatement
+	if stated.Len() > 0 {
+		statement = roomTupleQueryMarkStatement
+	}
+	return writeLast(ctx, tx, ledger.markStep("mark the queries of the issue of room "+room+" owed", statement, room))
+}
+
+// MarkAskQueries marks owed, at the end of the write phase (the ledger's closing steps, as
+// writeLast queues them), the queries of the issue of ask, a question of a converted issue whose
+// row or node this transaction writes: its create, a change of its words, which the decisions
+// query's rendering prints, and every change of its answer state, which PlanSettle marks for it.
+// The decisions query takes the ask by its node (decisionsTakes), and its record holds every value
+// and every relation out of that node, so R14 owes that query a version, which the drain writes
+// once the transaction has committed (Ledger.Commit, drainOwed). It marks once a transaction for an
+// issue, and nothing for a request of a document's approval, which no query takes, for an ask on no
+// issue, nor where no ledger the caller joined queues the writes: a settlement's own mark covers
+// the asks it settles (queueSettledQueryMark), and the statement itself marks nothing for an issue
+// that has not converted (askQueryMarkStatement). The step is not one the write phase drops with a
+// carry (droppable): a mark the write did not need costs a drain that finds no query moved.
+func (l *Ledger) MarkAskQueries(ask model.Ask) {
+	if l == nil || l.tx == nil || l.sealed || ask.Kind != questionAsk || ask.IssueKey == nil || slices.Contains(l.markedIssues, *ask.IssueKey) {
+		return
+	}
+	l.markedIssues = append(l.markedIssues, *ask.IssueKey)
+	l.closing = append(l.closing, l.markStep("mark the queries of the issue of ask "+ask.ID+" owed", askQueryMarkStatement, ask.ID))
+}
+
+// markStep is the write step of one of the marks above: statement over arg, each issue it marks
+// recorded once among the ledger's marks, which Commit drains.
+func (l *Ledger) markStep(what, statement, arg string) WriteStep {
+	return func(b *store.WriteBatch) error {
+		b.Queue(what, statement, arg).Query(func(rows pgx.Rows) error {
+			for rows.Next() {
+				var issue string
+				if err := rows.Scan(&issue); err != nil {
+					return err
+				}
+				if !slices.Contains(l.marks, issue) {
+					l.marks = append(l.marks, issue)
+				}
+			}
+			return rows.Err()
+		})
+		return nil
+	}
+}
+
+// QueueAskQueryMark queues on b the mark of the queries of the issue of the ask askID owed, where
+// it is a question of a converted issue (askQueryMarkStatement), for a write that changes the ask's
+// node in a transaction no ledger queues: the follow and the unfollow of an ask, whose followed_by
+// is a relation of the node the decisions query's record holds. The write queues it after the
+// tuples it appends, in the same batch, so it adds no statement to its window. Once the batch has
+// run, marked holds the issue it marked, "" for none, and the write's caller drains that issue's
+// queries after its COMMIT (DrainOwedQueries).
+func QueueAskQueryMark(b *store.WriteBatch, askID string, marked *string) {
+	b.Queue("mark the queries of the issue of ask "+askID+" owed", askQueryMarkStatement, askID).Query(func(rows pgx.Rows) error {
+		for rows.Next() {
+			if err := rows.Scan(marked); err != nil {
+				return err
+			}
+		}
+		return rows.Err()
+	})
+}
+
+// takeMarks is each issue whose queries the ledger's committed write phase marked owed
+// (markRoomQueries, MarkAskQueries), once: the caller that drains them takes them.
+func (l *Ledger) takeMarks() []string {
+	marks := l.marks
+	l.marks = nil
+	return marks
+}
+
+// drainOwed drains the queries of each of issues (DrainOwedQueries), each issue's fill and drain in
+// transactions of their own, once the write that marked them has committed, and answers the events
+// they appended, in order, for the write's caller to publish after its own. A caller still holding
+// a pooled connection drains nothing, as it fills nothing (fillOwed), and the block-index tick
+// drains those marks (drainOwedQueryMarks).
+func (s *Service) drainOwed(ctx context.Context, issues []string) []model.Event {
+	if len(issues) == 0 || store.HoldsPooledConnection(ctx) {
+		return nil
+	}
+	var appended []model.Event
+	for _, issue := range issues {
+		appended = append(appended, s.DrainOwedQueries(ctx, issue)...)
+	}
+	return appended
+}
+
+// queryMark is one issue's mark as the drain reads it (queryMarkReadStatement): its two causes and
+// the writer that marked it, nil where neither a tuple nor an event names one.
+type queryMark struct {
+	event  *int64
+	seq    int64
+	writer *model.Actor
+}
+
+// DrainOwedQueries is the drain a request runs once the write that marked the queries of the issue
+// issueKey owed has committed, and before the server publishes that write's events (api's publish):
+// it fills each record digest a version of the issue owes, then writes a version of each query
+// whose record moved and clears the mark (drainQueryMark, requestDrain), named after the writer
+// that marked it: the writer of the newest tuple a marking write appended, else its event's actor,
+// and QueryDrainActor where neither names one. It answers the events the fill and the drain
+// appended, for the caller to publish after its own, which they follow in the event log. A drain
+// that fails is logged (drainLogLevel) and leaves the mark, which the block-index tick drains
+// (drainOwedQueryMarks); the write it follows stands committed either way, and so does a fill that
+// committed before the drain failed.
+//
+// Its fill and its drain each wait for a lock at most afterCommitWait (boundLockWaits): the write
+// has committed, so a longer wait for the issue's owner lock, behind a settlement or a stuck
+// transaction, gains its caller nothing and holds the caller's answer. A drain that meets the
+// bound rolls back whatever its transaction took, leaves the mark (and a fill that met it leaves
+// the digests owed), and is logged at Warn naming the issue and the bound; the tick drains it.
+func (s *Service) DrainOwedQueries(ctx context.Context, issueKey string) []model.Event {
+	wait := s.afterCommitWait()
+	appended, _, err := s.drainQueryMark(ctx, issueKey, requestDrain, wait)
+	switch {
+	case err == nil:
+	case lockWaitRanOut(err):
+		slog.Warn("dispatch: the drain of an issue's queries waited past its bound for a lock and left them owed to the block-index tick",
+			"issue", issueKey, "bound", wait, "error", err)
+	default:
+		slog.Log(ctx, drainLogLevel(err), "dispatch: drain the queries an issue owes", "issue", issueKey, "error", err)
+	}
+	return appended
+}
+
+// drainLogLevel is the level a drain that failed with err is logged at. A drain refused while a
+// query version of the issue owes its record digest (errQueryDigestOwed) is no failure: another
+// write of the issue committed that version between this drain's fill and its read, as the room's
+// settlement an answer schedules does beside the answer's own drain, and that write's own fill,
+// then its drain where it marked the issue, else the block-index tick's, takes the mark that
+// stays. It is logged at Info, and every other failure at Error.
+func drainLogLevel(err error) slog.Level {
+	if errors.Is(err, errQueryDigestOwed) {
+		return slog.LevelInfo
+	}
+	return slog.LevelError
+}
+
+// afterCommitLockWait bounds each lock wait of the fill and the drain a write's caller runs after
+// the write's COMMIT (fillOwed, DrainOwedQueries), the issue's owner lock first among them. The
+// write has committed, so the wait gains its caller nothing, and the block-index tick drains a mark
+// a drain leaves (drainOwedQueryMarks), as it fills the digests a fill leaves (fillLostDigests).
+// Without a bound the caller's answer waits as long as whatever holds the owner lock - a
+// settlement, a stuck transaction - with only the request's context to end it.
+//
+// It is set above the hold of the owner lock a settlement makes, the holder an edit's drain meets
+// most, so a drain behind a settlement waits it out and writes its versions before the answer, as
+// R7 has it. Measured on INFRA-1253's test Job (4 CPUs, no race detector), from the settlement's
+// hold of the lock to the moment a transaction queued on it took it, with an ask block written and
+// settled: a spec of 8 bytes, 20 runs, median 39 ms and max 157 ms; of 42 KB, 10 runs, median 99 ms
+// and max 128 ms; of 213 KB, 5 runs, median 197 ms and max 214 ms. A 1 MiB document's settlement
+// took 4.5 s at load 90 (TestShutdownThatCutsASettlementShortLeavesItToTheNextLoad). Five seconds
+// is past all of these, and is the bound the store already gives a statement that waits on a lock
+// a request holds (artifactRemovalLockTimeout, pgmigrate.LockTimeout). Past it, a holder is no
+// settlement of a document of that size, and the tick takes the work.
+const afterCommitLockWait = 5 * time.Second
+
+// afterCommitWait is the bound of each lock wait of the fill and the drain a write's caller runs
+// after its COMMIT: afterCommitLockWait, or the value a test set (SetAfterCommitLockWaitForTest),
+// where a negative one is no bound (0).
+func (s *Service) afterCommitWait() time.Duration {
+	switch set := time.Duration(s.afterCommitLockWaitForTest.Load()); {
+	case set < 0:
+		return 0
+	case set > 0:
+		return set
+	}
+	return afterCommitLockWait
+}
+
+// boundLockWaits sets lock_timeout to wait for the rest of tx, local to it (set_config's local
+// flag, as SET LOCAL), so the transaction's every lock wait past wait fails its statement with
+// lock_not_available (55P03, lockWaitRanOut), and the transaction rolls back; the setting ends
+// with the transaction, so nothing of it reaches the pooled connection's next holder. A wait of
+// zero, the tick's, sets nothing. It runs before the owner lock, in the read phase, and is a read:
+// it gives tx no transaction id, so no transaction window grows by it.
+func boundLockWaits(ctx context.Context, tx pgx.Tx, wait time.Duration) error {
+	if wait <= 0 {
+		return nil
+	}
+	if _, err := tx.Exec(ctx, `select set_config('lock_timeout', $1, true)`, fmt.Sprintf("%dms", wait.Milliseconds())); err != nil {
+		return fmt.Errorf("bound the lock waits of the transaction at %s: %w", wait, err)
+	}
+	return nil
+}
+
+// lockWaitRanOut reports whether err is a lock wait that ran past the bound boundLockWaits set:
+// Postgres's lock_not_available (SQLSTATE 55P03). Every other error is a failure of its own.
+func lockWaitRanOut(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "55P03"
+}
+
+// HoldDrains sets hold to run at the start of every drain of an issue's query mark (drainMark),
+// once the fill before it has committed and before the drain's transaction begins, and nil takes
+// it off again. A test takes the issue's owner lock there, to hold the drain past its bound.
+func (s *Service) HoldDrains(hold func(issueKey string)) {
+	if hold == nil {
+		s.drainHold.Store(nil)
+		return
+	}
+	s.drainHold.Store(&hold)
+}
+
+// SetAfterCommitLockWaitForTest sets the bound of each lock wait of the fill and the drain a
+// write's caller runs after its COMMIT (afterCommitWait) to wait: a test shortens it to meet it
+// quickly, and a negative wait takes the bound out, as a control does.
+func (s *Service) SetAfterCommitLockWaitForTest(wait time.Duration) {
+	s.afterCommitLockWaitForTest.Store(int64(wait))
+}
+
+// drainQueryMark runs, for the issue issueKey, two transactions in order and never one inside the
+// other (R7): the fill of each record digest a version of the issue's queries owes
+// (fillOwedDigests), which commits first, and then the drain of the issue's mark, where one stands
+// (drainMark), run as drain, which decides the writer the versions it writes name (requestDrain,
+// tickDrain). It answers the events both appended, the fill's first, and whether it found a mark
+// to drain. A fill that fails runs no drain, so no mark is cleared while a digest is owed; a fill
+// that committed is answered whatever the drain does. Each of the two waits for a lock at most
+// wait (boundLockWaits): a request's drain is bounded (DrainOwedQueries), the tick's is not (0).
+func (s *Service) drainQueryMark(ctx context.Context, issueKey string, drain queryDrain, wait time.Duration) ([]model.Event, bool, error) {
+	filled, err := s.fillOwedDigests(ctx, issueKey, wait)
+	if err != nil {
+		return nil, false, err
+	}
+	drained, found, err := s.drainMark(ctx, issueKey, drain, wait)
+	return append(filled, drained...), found, err
+}
+
+// drainMark drains the mark of the issue issueKey, where one stands, in a transaction of its own,
+// and answers the events it appended and whether it found a mark to drain. It takes the issue's
+// owner lock (store.LockOwner), then the lock of the issue's query rooms (LockQueryRooms), and
+// reads the mark under them, with the writer that marked it (queryMarkReadStatement); none of the
+// three gives the transaction an id. drain decides the writer the versions it writes name, and
+// their artifact.version: for a request's drain (requestDrain) the writer that marked the issue,
+// and QueryDrainActor where neither a tuple nor an event names one; for the block-index tick's
+// (tickDrain) QueryDrainActor, whoever marked the issue. Under the drain's own ledger
+// (queueWrites) it reads what each version is decided on (planRevisions), which refuses while a
+// query version of the issue still owes its record digest, so the mark is never cleared then, and
+// queues each version (writeRevisions): its row, its node and its version_renders row holding its
+// record's digest, read before the batch, and the stand of its block index where no block pass is
+// owed it - a version of the decisions query, or one whose bytes are the version before it's
+// (queueRevisionStand) - with the delete of the rows of the re-index queue its insert made for the
+// document (restoreReindexQueue). For each version it then queues what an edit route's version
+// writes beside it (finishRevision): the move of the document's open approval request, the
+// version's artifact.version and, after it, its artifact.digest, which writes no carried review
+// (R14's hash gate). Last it queues the clear of the mark, only where it still holds the causes
+// read, and then what the versions state, caused by the mark's greatest_event or at the sentinel
+// where it holds none, with their head rows, the last rows the write takes. The write phase is one
+// batch, and the COMMIT follows it: the transaction's window is that batch and its COMMIT. A
+// failure rolls back everything, the clear of the mark with it. Each lock wait of the transaction
+// lasts at most wait, where wait is not zero (boundLockWaits), set before the owner lock.
+func (s *Service) drainMark(ctx context.Context, issueKey string, drain queryDrain, wait time.Duration) ([]model.Event, bool, error) {
+	if hold := s.drainHold.Load(); hold != nil {
+		(*hold)(issueKey)
+	}
+	tx, err := s.store.Pool.Begin(ctx)
+	if err != nil {
+		return nil, false, fmt.Errorf("begin the drain of %s: %w", issueKey, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := boundLockWaits(ctx, tx, wait); err != nil {
+		return nil, false, err
+	}
+	if err := store.LockOwner(ctx, tx, store.IssueOwner(issueKey)); err != nil {
+		return nil, false, err
+	}
+	if err := LockQueryRooms(ctx, tx, issueKey); err != nil {
+		return nil, false, err
+	}
+	var mark queryMark
+	if err := tx.QueryRow(ctx, queryMarkReadStatement, issueKey).Scan(&mark.event, &mark.seq, &mark.writer); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil, false, nil
+		}
+		return nil, false, fmt.Errorf("read the query mark of %s: %w", issueKey, err)
+	}
+	who := QueryDrainActor
+	if drain == requestDrain && mark.writer != nil {
+		who = *mark.writer
+	}
+	ctx, ledger := queueWrites(ctx, tx)
+	revisions, err := planRevisions(ctx, tx, issueKey)
+	if err != nil {
+		return nil, false, err
+	}
+	if err := s.writeRevisions(ctx, tx, revisions, who); err != nil {
+		return nil, false, err
+	}
+	nodes := make([]graphstore.Uncaused, 0, len(revisions))
+	for _, revised := range revisions {
+		if err := s.finishRevision(ctx, tx, issueKey, revised, who); err != nil {
+			return nil, false, err
+		}
+		nodes = append(nodes, revised.node)
+	}
+	cause := graphstore.NoEvent
+	if mark.event != nil {
+		cause = *mark.event
+	}
+	stated := graphstore.Joined(nodes...)
+	if err := write(ctx, tx, func(b *store.WriteBatch) error {
+		b.Queue("clear the query mark of "+issueKey, queryMarkClearStatement, issueKey, mark.event, mark.seq)
+		graphstore.QueueCaused(b, stated, cause)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(stated))
+		return nil
+	}); err != nil {
+		return nil, false, err
+	}
+	if err := ledger.runQueue(ctx, nil); err != nil {
+		return nil, false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return nil, false, fmt.Errorf("commit the drain of %s: %w", issueKey, err)
+	}
+	return ledger.events, true, nil
+}
+
+// finishRevision queues, in the drain's transaction, what an edit route's version writes beside
+// the version revised: the move of the document's open approval request to it, in writer's name,
+// as a route's version moves one (moveApprovalAsk, versionWrite.settlement unset), so a person's
+// approval of the version before reads changed since where its record moved; the version's
+// artifact.version, in writer's name, which every version the drain writes appends, with the
+// record's digest the drain read, which is no longer owed; and then the version's artifact.digest
+// (queueDigestEvent), which says whether the document's newest approval stands at that digest.
+// The drain carries no approval (R14's hash gate): a version whose record did not move keeps the
+// approval standing by its digest, and one whose record moved leaves it stale.
+func (s *Service) finishRevision(ctx context.Context, tx pgx.Tx, issueKey string, revised queryRevision, writer model.Actor) error {
+	id, version := revised.document.id, revised.version
+	if err := moveApprovalAsk(ctx, tx, s.events, id, version, revised.markdown, nil, writer, nil, false, s.serverURL); err != nil {
+		return err
+	}
+	sink := eventSink(ctx)
+	event := model.Event{
+		IssueKey: &issueKey, Type: "artifact.version", Actor: writer,
+		Payload: ArtifactVersionEventPayload(id, revised.document.name, version, nil, model.ReferenceChanges{},
+			VersionDigest{ContentSHA256: revised.record.Digest}),
+	}
+	if err := write(ctx, tx, func(b *store.WriteBatch) error {
+		return s.events.QueueAppend(b, event, sink)
+	}); err != nil {
+		return err
+	}
+	return s.queueDigestEvent(ctx, tx, issueKey, id, revised.document.name, version.Number, revised.record.Digest, nil)
+}
+
+// drainOwedQueryMarks is the block-index tick's pass over what requests left owed: first the fills
+// a request lost (fillLostDigests), then the marks (issue_query_marks). It drains up to
+// queryMarkBatch marks, oldest first by the tuple sequence that marked each, each issue's fill and
+// drain in transactions of their own (drainQueryMark), as the tick's drain (tickDrain): the
+// versions it writes, and their artifact.version, name QueryDrainActor, not any writer that marked
+// the issue. It publishes what each appended once it has committed, a fill that committed before
+// its drain failed included, and counts the issues it drained in tick.Queries. A mark it cannot
+// drain is logged (drainLogLevel) and left for the next tick. It reports whether the batch was
+// full. Its fills and drains wait for their locks with no bound of their own (wait 0): no caller's
+// answer waits on them, and they are what a request's drain that met its bound leaves its work to
+// (DrainOwedQueries).
+func (s *Service) drainOwedQueryMarks(ctx context.Context, tick *BlockIndexTick) (bool, error) {
+	if err := s.fillLostDigests(ctx); err != nil {
+		return false, err
+	}
+	rows, err := s.store.Pool.Query(ctx, queryMarksStatement, queryMarkBatch)
+	if err != nil {
+		return false, fmt.Errorf("list the issues whose queries are owed: %w", err)
+	}
+	issues, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return false, fmt.Errorf("list the issues whose queries are owed: %w", err)
+	}
+	for _, issue := range issues {
+		appended, drained, err := s.drainQueryMark(ctx, issue, tickDrain, 0)
+		for _, event := range appended {
+			s.events.Publish(event)
+		}
+		if err != nil {
+			if ctx.Err() != nil {
+				return false, ctx.Err()
+			}
+			slog.Log(ctx, drainLogLevel(err), "dispatch: block index could not drain the queries an issue owes", "issue", issue, "error", err)
+			continue
+		}
+		if drained {
+			tick.Queries++
+		}
+	}
+	return len(issues) == queryMarkBatch, nil
+}

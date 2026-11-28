@@ -1,0 +1,24 @@
+-- pgmigrate:non-transactional
+-- 20261122230407_graph_nodes_interaction_live_index.up.sql — the index the sweep's read of the
+-- runs whose row is gone takes.
+--
+-- A run of the command bar is readable for one hour; then the sweep states its interaction node
+-- gone and removes its rows, and the node, its words and its frames stay in the store (api/going.go,
+-- sweepGoingRequests). The sweep also states gone, once a minute, each interaction node of a run
+-- that is not gone, more than an hour old, and whose going_requests row is no longer there, which
+-- a process of the release before leaves when it deletes a run's rows an hour old during a roll or
+-- after a rollback (goingRowlessRuns). The gone nodes grow with every run asked, so a read of the
+-- interaction nodes by kind and state would walk every run ever written. This index holds the
+-- runs that read wants alone: it is partial on the interaction kind, on every state but `gone`,
+-- and on `source` `going_requests` (graphstore.AttributeSource), the literals the read binds, so a
+-- node leaves it when the sweep or the backfill states it gone, and it holds about an hour of runs.
+-- It is keyed on made_at, the moment the run was asked, which no write moves while the node is
+-- live, so the read's bound of an hour back is that index's range and its order by made_at the
+-- index's own.
+--
+-- It is a performance index: no constraint and no later migration depends on it, and a build of
+-- the release before reads and writes graph_nodes as it did. A failed concurrent build leaves an
+-- INVALID index of this name, which the runner drops with DROP INDEX CONCURRENTLY and builds again
+-- on the next attempt.
+create index concurrently if not exists graph_nodes_interaction_live
+    on graph_nodes (made_at) where kind = 'interaction' and state <> 'gone' and attributes->>'source' = 'going_requests';

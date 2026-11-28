@@ -255,15 +255,18 @@ func (s *server) brokerTokenActor(r *http.Request) (model.Actor, bool, error) {
 	actor := model.Actor{
 		Kind: "session",
 		ID:   caller.Session,
-		// The broker proved this session, so the credential already names the agent behind the
-		// request and no request body has to name it, and the actor is Proven. A read-only token
-		// is marked as one, with the cut it reads at, which are what refuseReadOnlyToken reads, an
-		// approve-only token as one, which is all refuseApproveOnlyToken reads, and the project scope
-		// and the list are carried as the broker answered them, the scope as its base word
-		// (ciphertoken.Caller.ProjectScope), which is what writeNeedsASignedInPerson reads of a
-		// caller naming a service and no person: a job's token and an account entry's token naming
-		// no person write, and a machine's nobody signed in on does not. The principal is the one the
-		// listener records a registration on this token as, which a successor's reply is held to.
+		// The broker proved this session, with or without a person behind it, so the credential
+		// already names the agent behind the request and no request body has to name it, and the
+		// actor is Proven: on the credential that acts and on every actor recorded from it
+		// (bearerSessionActor), so the one author rule tells it from a session a body named. A
+		// read-only token is marked as one, with the cut it reads at, which are what
+		// refuseReadOnlyToken reads, an approve-only token as one, which is all
+		// refuseApproveOnlyToken reads, and the project scope and the list are carried as the
+		// broker answered them, the scope as its base word (ciphertoken.Caller.ProjectScope),
+		// which is what writeNeedsASignedInPerson reads of a caller naming a service and no person:
+		// a job's token and an account entry's token naming no person write, and a machine's nobody
+		// signed in on does not. The principal is the one the listener records a registration on
+		// this token as, which a successor's reply is held to.
 		Credential: &model.Credential{
 			Scopes:       scopes,
 			Session:      caller.Session,

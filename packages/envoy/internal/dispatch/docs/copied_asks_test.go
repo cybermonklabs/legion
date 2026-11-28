@@ -3,6 +3,7 @@ package docs
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -189,10 +190,7 @@ func TestACopysSourceDocumentIsTheSourceAsksPartOf(t *testing.T) {
 	ctx := context.Background()
 	source := copiedAskSource(t, service, original)["copy-open"]
 	elsewhere := createIssueDocument(t, service.store, 1, "# Elsewhere")
-	var elsewhereKey string
-	if err := service.store.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, elsewhere).Scan(&elsewhereKey); err != nil {
-		t.Fatalf("read the other document's address: %v", err)
-	}
+	elsewhereKey := refKeyOf(t, service.store, elsewhere)
 	arms, params, err := graphstore.WriteArms(1, nil, nil, []graphstore.Claim{{
 		FromKind: graphstore.KindAsk, FromID: source, Kind: graphstore.TuplePartOf,
 		ToKind: graphstore.KindArtifact, ToID: elsewhereKey,
@@ -360,6 +358,52 @@ func TestTheCopiesOfAnAskAreFoundByItsBlockIDAsWritten(t *testing.T) {
 				t.Fatalf("copies of the ask under %q = %v, want only %s", id, found, copied)
 			}
 		})
+	}
+}
+
+// A document of an issue room holds its own ask under its blocks' ids, keyed by the room's tree
+// (createAskBlock), so it is no copy of another document's ask under the same id: the spec of a
+// converted issue holding the ask of its block #shared is not among the copies of an ask under
+// #shared that another document of the issue holds, while a third document of the issue holding
+// that block with no ask of its own is.
+func TestARoomDocumentHoldingItsOwnAskIsNoCopyOfAnotherDocumentsAsk(t *testing.T) {
+	database := storetest.Open(t)
+	room := createIssueRoom(t, database, 1)
+	ctx := context.Background()
+	id := "shared"
+	block := ":::ask{" + pmdoc.TypedBlockIDAttribute(id) + " urgency=\"med\" multiple=\"false\"}\nWhich region?\n:::\n"
+	if _, err := database.Pool.Exec(ctx, `
+		with version as (
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1::uuid, 2, $3, '[{"kind":"user","id":"alice"}]')
+		), held as (
+			insert into issue_room_blocks (tree_artifact_id, block_id, document_id) values ($2::uuid, $4, $1::uuid)
+		)
+		insert into asks (issue_key, author, question, block_id, block_artifact_id)
+		values ($5, '{"kind":"user","id":"alice"}', 'Which region?', $4, $2::uuid)
+	`, room.spec, room.tree, "Context\n\n"+block, id, room.issue); err != nil {
+		t.Fatalf("write the spec's ask block and its ask, keyed by the issue room: %v", err)
+	}
+	source := createIssueDocument(t, database, 1, "Source\n\n"+block)
+	if _, err := database.Pool.Exec(ctx, `
+		insert into asks (issue_key, author, question, block_id, block_artifact_id)
+		values ($1, '{"kind":"user","id":"alice"}', 'Which region?', $2, $3::uuid)
+	`, room.issue, id, source); err != nil {
+		t.Fatalf("write the source document's own ask: %v", err)
+	}
+	copied := createIssueDocument(t, database, 1, "Copy\n\n"+block)
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	found, err := copiesOf(ctx, tx, documentAsks{artifactID: source, owner: artifactOwner{IssueKey: &room.issue}, asks: []model.Ask{{BlockID: &id}}})
+	if err != nil {
+		t.Fatalf("copiesOf: %v", err)
+	}
+	if !slices.Equal(found, []string{copied}) {
+		t.Fatalf("copies of the source's ask under %q = %v, want only the copy %s and not the spec %s, which holds the room's own ask of that block",
+			id, found, copied, room.spec)
 	}
 }
 
@@ -615,18 +659,32 @@ func askEditsOf(t *testing.T, service *Service, ask string) int {
 // A decided ask's wording is fixed. A document edit or an upload that rewords an answered or
 // resolved ask's block leaves its row as it was decided, appends no ask.edited, and settlement
 // writes the decided wording back into the block beside its decision, logging that it did.
+//
+// An answered ask is a person's decision, whose words no agent's write changes (R32 of the
+// issue-tree spec): an agent's upload rewording it is refused (ErrAnsweredAskKept), so the upload
+// that rewords it is a person's own, which R32 takes. A resolved ask is no person's decision, and
+// an agent's upload rewords it.
 func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testing.T) {
 	// Not parallel: it swaps the default logger (logtest.SetDefault).
 	logs := &storetest.LockedLog{}
 	logtest.SetDefault(t, slog.NewTextHandler(logs, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	writes := map[string]func(t *testing.T, service *Service, document string){
-		"live edit": func(t *testing.T, service *Service, document string) {
+	writes := map[string]func(t *testing.T, service *Service, document, closing string){
+		"live edit": func(t *testing.T, service *Service, document, _ string) {
 			editLiveTree(t, service, document, func(tree *pmdoc.Node) *pmdoc.Node {
 				return replaceRun("Yes: Monday.", "Tuesday: Ship it.")(replaceRun("Ship on Monday?", "Ship on Tuesday?")(tree))
 			})
 		},
-		"upload": func(t *testing.T, service *Service, document string) {
-			if _, err := joinedReplaceText(service, document, "Context\n\n"+tuesdayBlock, model.Actor{Kind: "session", ID: "uploader"}); err != nil {
+		"upload": func(t *testing.T, service *Service, document, closing string) {
+			uploader := model.Actor{Kind: "session", ID: "uploader"}
+			if closing == "answered" {
+				var kept *ErrAnsweredAskKept
+				if _, err := joinedReplaceText(service, document, "Context\n\n"+tuesdayBlock, uploader); !errors.As(err, &kept) ||
+					len(kept.Asks) != 1 || kept.Asks[0].Question != "Ship on Monday?" || !kept.Asks[0].Reworded {
+					t.Fatalf("the agent's upload rewording the answered ask = %v, want it refused as the answered ask kept, reworded", err)
+				}
+				uploader = model.Actor{Kind: "user", ID: "alice"}
+			}
+			if _, err := joinedReplaceText(service, document, "Context\n\n"+tuesdayBlock, uploader); err != nil {
 				t.Fatalf("upload the reworded document: %v", err)
 			}
 		},
@@ -643,7 +701,7 @@ func TestADocumentEditOfADecidedAsksWordingIsWrittenBackAndLeavesItsRow(t *testi
 				if err := closeSource(context.Background(), service, original, "ship", source, answer, nil); err != nil {
 					t.Fatal(err)
 				}
-				write(t, service, original)
+				write(t, service, original, closing)
 				settleCurrentGeneration(t, service, original)
 
 				decided := blockAskOn(t, service, original, "ship")
@@ -1528,7 +1586,7 @@ func closeSource(ctx context.Context, service *Service, original, blockID string
 		eventType = "ask.answered"
 		change := asks.Answered(*answer)
 		change.Who, change.At, change.Held = alice, answer.At, &held
-		settled, err := ledger.PlanSettle(closing, source.ID, change)
+		settled, err := ledger.PlanSettle(closing, source, change)
 		if err != nil {
 			return fmt.Errorf("plan the source's answer: %w", err)
 		}

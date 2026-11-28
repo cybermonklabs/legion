@@ -2391,6 +2391,16 @@ const COMMAND_OF: Partial<Record<ClientMethod, string>> = {
   retractResult: "result",
   recordDeploy: "deploy",
   writeHandoff: "handoff-write",
+  // The writes of the reasoning commands (reasoning.ts); `dispatch premortem-convert`'s dry run
+  // sends the conversion's own request.
+  invokeLens: "lens",
+  addLensFinding: "finding",
+  writeRisk: "risk",
+  writeConstraint: "constraint",
+  writePointer: "pointer",
+  writeNodeState: "state",
+  settleNode: "settle",
+  convertPremortem: "premortem-convert",
   createProject: "project",
   turnOnProvenSessions: "project-update",
   turnOffProvenSessions: "project-update",

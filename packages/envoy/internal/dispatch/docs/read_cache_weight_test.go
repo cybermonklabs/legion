@@ -88,7 +88,7 @@ func buildTestDocumentRead(t *testing.T, markdown string) *documentRead {
 	if err := crdt.ApplyUpdateV1(doc, state, nil); err != nil {
 		t.Fatalf("decode the stored state: %v", err)
 	}
-	fold, err := foldLoaded("artifact", LoadedDocument{Doc: doc, Stamp: DocumentStamp{Version: 1, Row: "1"}})
+	fold, err := foldLoaded("artifact", fragmentName, LoadedDocument{Doc: doc, Stamp: DocumentStamp{Version: 1, Row: "1"}})
 	if fold.treeErr != nil {
 		t.Fatalf("read the tree: %v", fold.treeErr)
 	}

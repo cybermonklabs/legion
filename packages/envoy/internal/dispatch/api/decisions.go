@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"log/slog"
 	"net/http"
+	"slices"
+	"strings"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -36,8 +38,10 @@ import (
 // decision's own words differ from those at the version the tie was written in and from those at
 // the version that stood when the spec node last changed, as the page of the release before reads
 // it too - and its changed_since_tie is R5's, the spec node's text changed after the tie.
-// entries and open_questions stay. document and decisions go once no page of the release before
-// reads them (compat-objects).
+// entries and open_questions are the route's own, and the whole route is kept for one release
+// for a page of the release before (decisions-route): a page of this release reads the tree's
+// decisions view, which answers the same nodes (R21 of the issue-tree spec). document and
+// decisions go once no page of the release before reads them (compat-objects).
 type issueDecisions struct {
 	Entries []decisionEntry `json:"entries"`
 	// kept for one release: compat-objects
@@ -47,6 +51,7 @@ type issueDecisions struct {
 	Decisions []model.Decision `json:"decisions"`
 }
 
+// kept for one release: decisions-route
 func (s *server) getIssueDecisions(w http.ResponseWriter, r *http.Request) {
 	who, ok := s.actingReader(w, r)
 	if !ok {
@@ -134,54 +139,81 @@ func artifactMissing(err error) bool {
 	return apiErr.code == "ARTIFACT_NOT_FOUND" || apiErr.code == "ARTIFACT_REFERENCE_AMBIGUOUS"
 }
 
-// specOpenQuestions are the issue's open asks whose block is in its spec, oldest first, in the
-// shape every ask read has (askReadColumns, with the newest reply beside the row). An ask is open
-// as its node holds it (asks.NodeAnswer.ApplyTo), which every read of an answer reads (R3), so the
-// statement reads each of the spec's asks and the scan keeps the open ones. An ask's block is in
-// the spec where the spec's block index holds an ask block under its block id (document_blocks): a
-// row that names the spec and a block it no longer holds - one a reopen restored with no block to
-// write, which a later settlement retracts - is no question of it. An ask a stored value of which
-// does not decode - one its node holds, or its row's author, options, anchor, answer, resolution
-// or approval, or its newest reply's author (docs.UndecodableAskError) - is left out and logged
-// with its id, as decisionEntries leaves out its entry, and the read goes on (R4); a failure of
-// the query or of the scan, a column pgx cannot scan among them, fails the read. reader is the
-// answer's own, and each row registers its texts with it once the slice has stopped growing: a
-// shaping registers a pointer into the row, and an append that moved the backing array would
-// leave the reader filling trees into memory the answer no longer holds.
+// specOpenQuestions are the issue's open asks whose block is in its spec (refs.AsksOfDocumentSQL),
+// oldest first, in the shape every ask read has (askReadColumns, with the newest reply beside the
+// row). An ask is open as its node holds it (asks.NodeAnswer.ApplyTo), which every read of an
+// answer reads (R3), so the statement reads each of the spec's asks and the scan keeps the open
+// ones. An ask's block is in the spec where the spec's block index holds an ask block under its
+// block id (document_blocks, keyed as the ask is): a row that names the spec and a block it no
+// longer holds - one a reopen restored with no block to write, which a later settlement retracts -
+// is no question of it. An ask a stored value of which does not decode - one its node holds, or
+// its row's author, options, anchor, answer, resolution or approval, or its newest reply's author
+// (docs.UndecodableAskError) - is left out and logged with its id, as decisionEntries leaves out
+// its entry, and the read goes on (R4, scanOpenQuestions); a failure of the query or of the scan, a
+// column pgx cannot scan among them, fails the read.
+//
+// That index cannot say so while the spec owes it - while the spec is among the documents the
+// coverage read names as owing their block index (queueOwedDocuments), read in the same batch: a
+// version above the bound leaves its blocks to the block-index reconciliation, so an ask block it
+// added is in no document_blocks row yet, and for a spec converted into its issue's room no row
+// says yet which fragment holds the block (refs.AskBlockDocumentSQL). Then the spec's asks are the
+// asks rows of the ask blocks its fragment holds as a read of the document reads it, out of the
+// issue's room for a converted spec (docs.API.Blocks), found by the room and those block ids
+// (refs.AsksOfFragmentBlocksSQL), whether or not the index holds them: a question a person can
+// see does not drop out of the read because the index has not caught up, and no ask whose block
+// the spec no longer holds is listed from an index that is behind. The block ids are all that read
+// answers: it decodes no ask's answer, as the text routes' read (docs.API.TextWithAsks) does and
+// fails on a node that holds a value that does not parse, so such an ask reaches the scan, which
+// leaves it out. Once the index states the spec's version, its rows decide again. Either way one
+// statement reads each ask once, so none is listed twice. reader is the answer's own, and each row
+// registers its texts with it once the slice has stopped growing: a shaping registers a pointer
+// into the row, and an append that moved the backing array would leave the reader filling trees
+// into memory the answer no longer holds.
 func (s *server) specOpenQuestions(
 	ctx context.Context, who model.Actor, key, specID string, reader *displayTreeReader,
 ) ([]issueAskRow, error) {
-	rows, err := s.deps.Store.Pool.Query(ctx, `
+	var owed []model.OwedDocument
+	questions := []issueAskRow{}
+	batch := &pgx.Batch{}
+	queueOwedDocuments(batch, key, &owed)
+	batch.Queue(`
 		select `+askReadColumns+` `+askReadFrom+`
-		where a.issue_key = $1 and a.block_artifact_id = $2::uuid
+		where a.issue_key = $1 and `+refs.AsksOfDocumentSQL("a", "$2::uuid")+`
 		  and exists (
 			select 1 from document_blocks d
 			where d.artifact_id = a.block_artifact_id and d.block_id = a.block_id and d.type = 'ask')
 		order by a.created_at, a.id
-	`, key, specID)
-	if err != nil {
+	`, key, specID).Query(func(rows pgx.Rows) error {
+		return scanOpenQuestions(rows, key, &questions)
+	})
+	if err := s.deps.Store.Pool.SendBatch(ctx, batch).Close(); err != nil {
 		return nil, err
 	}
-	questions := []issueAskRow{}
-	for rows.Next() {
-		ask, reply, err := scanAskRead(rows)
-		if undecodable, ok := errors.AsType[*docs.UndecodableAskError](err); ok {
-			slog.Warn("dispatch: an ask whose stored value does not decode is left out of the issue's open questions",
-				"ask", undecodable.AskID, "issue", key, "err", err)
-			continue
-		}
+	if slices.ContainsFunc(owed, func(document model.OwedDocument) bool { return document.ArtifactID == specID }) {
+		held, err := s.deps.Docs.Blocks(ctx, specID)
 		if err != nil {
-			rows.Close()
+			return nil, fmt.Errorf("read the ask blocks of the spec %s, which owes its block index: %w", specID, err)
+		}
+		blocks := make([]string, 0, len(held))
+		for _, block := range held {
+			if block.Type == "ask" && block.ID != "" {
+				blocks = append(blocks, block.ID)
+			}
+		}
+		rows, err := s.deps.Store.Pool.Query(ctx, `
+			select `+askReadColumns+` `+askReadFrom+`
+			where a.issue_key = $1 and `+refs.AsksOfFragmentBlocksSQL("a", "$2::uuid", "$3::text[]")+`
+			order by a.created_at, a.id
+		`, key, specID, blocks)
+		if err != nil {
 			return nil, err
 		}
-		if ask.State != "open" {
-			continue
+		questions = questions[:0]
+		err = scanOpenQuestions(rows, key, &questions)
+		rows.Close()
+		if err != nil {
+			return nil, err
 		}
-		questions = append(questions, issueAskRow{Ask: ask, LastReply: reply})
-	}
-	rows.Close()
-	if err := rows.Err(); err != nil {
-		return nil, err
 	}
 	listed := make([]*model.Ask, len(questions))
 	for index := range questions {
@@ -197,6 +229,28 @@ func (s *server) specOpenQuestions(
 		questions[index].shape(reader)
 	}
 	return questions, nil
+}
+
+// scanOpenQuestions appends to questions each ask rows reads (askReadColumns) that is open as its
+// node holds it, in the order rows reads them. An ask of issue key a stored value of which does
+// not decode (scanAskRead's docs.UndecodableAskError) is left out and logged with its id, and the
+// scan goes on; any other failure of the scan, a column pgx cannot scan among them, fails it.
+func scanOpenQuestions(rows pgx.Rows, key string, questions *[]issueAskRow) error {
+	for rows.Next() {
+		ask, reply, err := scanAskRead(rows)
+		if undecodable, ok := errors.AsType[*docs.UndecodableAskError](err); ok {
+			slog.Warn("dispatch: an ask whose stored value does not decode is left out of the issue's open questions",
+				"ask", undecodable.AskID, "issue", key, "err", err)
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if ask.State == "open" {
+			*questions = append(*questions, issueAskRow{Ask: ask, LastReply: reply})
+		}
+	}
+	return rows.Err()
 }
 
 // keepDecisionInput is the body of POST /api/v1/artifacts/{id}/blocks/{block_id}/keep.
@@ -255,8 +309,9 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 	defer tx.Rollback(r.Context())
 	var keep model.DecisionKeep
 	var event model.Event
+	marked := false
 	if onNode {
-		keep, event, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
+		keep, event, marked, err = s.keepDecisionNode(r.Context(), tx, actor, document, decision)
 	} else {
 		// kept for one release: heading-keep
 		keep, event, err = s.keepDecisionHeading(r.Context(), tx, actor, document, decision)
@@ -269,7 +324,11 @@ func (s *server) keepDecision(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), event)
+	published := []model.Event{event}
+	if marked {
+		published = append(published, s.deps.Docs.DrainOwedQueries(r.Context(), *document.IssueKey)...)
+	}
+	s.publish(r.Context(), published...)
 	WriteJSON(w, http.StatusOK, keep)
 }
 
@@ -333,10 +392,13 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // It writes as the store's writers do: the issue's owner lock first, under which it reads the
 // decision again and the node's current keepers, and then one write-phase batch (store.RunWrite),
 // so the transaction holds its id only for that batch: the person's node (one the store already
-// holds moves nothing), the projection row, the decision.kept event, and last the tuples, under
-// that event (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent). The
-// event's changed_version is the one the row is written with, which no statement of the batch
-// reads back.
+// holds moves nothing), the projection row, the decision.kept event, the tuples, under that event
+// (graphstore.QueueNodes, graphstore.QueueCaused over graphstore.LatestEvent), and then the mark
+// of the issue's queries owed (docs.QueueQueryMark): the decisions query takes the decision, and
+// its record holds the kept_by and the kept_text_sum out of its node, so R14 owes that query a
+// version, which the route drains once the batch has committed. marked says whether the issue has
+// converted and took the mark. The event's changed_version is the one the row is written with,
+// which no statement of the batch reads back.
 //
 // keepDecision read decision on the pool, holding no lock, and an agent's write of the document
 // takes the same owner lock: one that committed while the Keep waited for it would leave the Keep
@@ -344,30 +406,31 @@ func (s *server) keepDecisionHeading(ctx context.Context, tx pgx.Tx, actor model
 // is read again under the lock, as keepDecisionHeading reads its section: one the store no longer
 // holds, or holds replaced, is 404 TARGET_NOT_FOUND, and one whose text sum is no longer the one
 // it was read at is 409 DECISION_CHANGED, each with nothing written.
-func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, error) {
+func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Actor, document model.Artifact, decision model.Decision) (model.DecisionKeep, model.Event, bool, error) {
 	own := issueOwner(*document.IssueKey)
 	if err := s.deps.Events.LockOwners(ctx, tx, own.event("", actor, nil)); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
 	current, found, err := s.readDecisionNode(ctx, tx, actor, document, decision.BlockID)
 	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
 	if !found || current.Replaced {
-		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", decision.BlockID, document.Name)
+		return model.DecisionKeep{}, model.Event{}, false, errorf(http.StatusNotFound, "TARGET_NOT_FOUND", "no decision %q in %s", decision.BlockID, document.Name)
 	}
 	if current.TextSHA256 != decision.TextSHA256 {
-		return model.DecisionKeep{}, model.Event{}, errorf(http.StatusConflict, "DECISION_CHANGED",
+		return model.DecisionKeep{}, model.Event{}, false, errorf(http.StatusConflict, "DECISION_CHANGED",
 			"the decision changed since it was read; read it again and keep what it says now")
 	}
 	decision = current
 	login := model.CanonicalLogin(actor.ID)
-	address := refs.BlockAddress(document.RefKey, decision.BlockID)
+	// The node readDecisionNode read the decision at under the lock (decisionNodeAddress).
+	address := decision.NodeID
 	// The tuple's time is the projection row's, to the microsecond a timestamptz holds.
 	at := time.Now().UTC().Truncate(time.Microsecond)
 	earlier, err := graphstore.CurrentOut(ctx, tx, refs.BlockNodeKind, address, []string{refs.TupleKeptBy})
 	if err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
 	var tuples []graphstore.Tuple
 	for _, kept := range earlier {
@@ -391,6 +454,7 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 	held := graphstore.PlanUncaused([]graphstore.Node{graphstore.PersonNode(login, actor, at, graphstore.NoEvent)}, tuples)
 	keep := model.DecisionKeep{ArtifactID: document.ID}
 	var event model.Event
+	marked := false
 	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, held)
 		b.Queue("", `
@@ -411,11 +475,13 @@ func (s *server) keepDecisionNode(ctx context.Context, tx pgx.Tx, actor model.Ac
 			return err
 		}
 		graphstore.QueueCaused(b, held, graphstore.LatestEvent)
+		docs.QueueQueryMark(b, *document.IssueKey, graphstore.LatestEvent, &marked)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(held))
 		return nil
 	}); err != nil {
-		return model.DecisionKeep{}, model.Event{}, err
+		return model.DecisionKeep{}, model.Event{}, false, err
 	}
-	return keep, event, nil
+	return keep, event, marked, nil
 }
 
 // keptDecision is the decision Keep acts on at blockID of document, and whether it is a node's:
@@ -453,19 +519,48 @@ func (s *server) keptDecision(ctx context.Context, who model.Actor, document mod
 	}, false, nil
 }
 
+// decisionNodeAddress is the address of the node of block blockID of document, as the block
+// index keys it (refs.BlockAddress), read through q: under the document's ref_key for a document
+// that is its own room, and for a document converted into its issue's room (model.Artifact.Room,
+// refs.DocumentRoomSQL) under the ref_key of the room's tree, where the room's index records the
+// block in this document's fragment (issue_room_blocks). A U+0000 reads as U+FFFD, as the
+// rendering writes it. found is false for a block the room records in no fragment of document.
+func decisionNodeAddress(ctx context.Context, q queryer, document model.Artifact, blockID string) (string, bool, error) {
+	if document.Room == "" || document.Room == document.ID {
+		return refs.BlockAddress(document.RefKey, blockID), true, nil
+	}
+	var key string
+	err := q.QueryRow(ctx, `
+		select room.ref_key from issue_room_blocks b join artifacts room on room.id = b.tree_artifact_id
+		where b.tree_artifact_id = $1::uuid and block_id_key(b.block_id) = block_id_key($2::text) and b.block_id = $2
+		  and b.document_id = $3::uuid
+	`, document.Room, strings.ReplaceAll(blockID, "\x00", "\uFFFD"), document.ID).Scan(&key)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, fmt.Errorf("read the node of block %q of %s: %w", blockID, document.ID, err)
+	}
+	return refs.BlockAddress(key, blockID), true, nil
+}
+
 // readDecisionNode is the agent's decision whose node is block blockID of document, a document
-// of an issue, as who reads it, and whether the store holds such a node: a live node of the
-// `decision` supertag at that block's address. It is read through decisionread.Decisions, the one
-// reader every read of a decision node answers from, so the Keep compares a posted sum with the
-// sum the Decisions read served, and writes the version its words last changed in: its words
-// are its own (refs.DecisionWords), and no reading it closes with moves its text, its sum or that
-// version.
+// of an issue, as who reads it, and whether the store holds such a node: a node of the `decision`
+// supertag at that block's address (decisionNodeAddress), at any state but gone. It is read
+// through decisionread.Decisions, the one reader every read of a decision node answers from, so
+// the Keep compares a posted sum with the sum the Decisions read served, and writes the version
+// its words last changed in: its words are its own (refs.DecisionWords), and no reading it closes
+// with moves its text, its sum or that version. The answer names the node (NodeID), which the
+// Keep appends on.
 func (s *server) readDecisionNode(ctx context.Context, q queryer, who model.Actor, document model.Artifact, blockID string) (model.Decision, bool, error) {
 	if document.IssueKey == nil || document.Kind != "doc" {
 		return model.Decision{}, false, nil
 	}
-	decisions, err := decisionread.Decisions(ctx, q, who,
-		[]decisionread.Node{{Kind: refs.BlockNodeKind, ID: refs.BlockAddress(document.RefKey, blockID)}})
+	address, found, err := decisionNodeAddress(ctx, q, document, blockID)
+	if err != nil || !found {
+		return model.Decision{}, false, err
+	}
+	decisions, err := decisionread.Decisions(ctx, q, who, []decisionread.Node{{Kind: refs.BlockNodeKind, ID: address}})
 	if err != nil || len(decisions) == 0 || decisions[0].Kind != "agent" {
 		return model.Decision{}, false, err
 	}

@@ -342,6 +342,8 @@ agents using it stop working at once.
   the document the spec's requirements are listed, each flagged with what it lacks: a requirement
   no check serves reads `has no check`, and one no plan task serves reads `has no plan task` once
   the issue has a plan document.
+  While a document of the issue is still being indexed, no requirement is flagged, and the list
+  says instead which document and which version Dispatch is still indexing.
 - **Verification** is the issue's Verification document and, under it, each check the document
   marks, with every result recorded against that check, newest first. Each check says whether a
   pass stands and from which roles, and names what Dispatch compared the results with: each head

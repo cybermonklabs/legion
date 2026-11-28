@@ -130,8 +130,11 @@ func requireTheObjectBatchLockOrder(t *testing.T) {
 				want.document.refKey, nodeState, nodeProject, cause, stated, want.project, want.cause)
 		}
 	}
-	if done := reportedKind(t, report, graphstore.KindArtifact); done.Rows != 3 || done.Nodes != 3 || done.Tuples != 9 || !done.Complete {
-		t.Errorf("the backfill reports %#v for documents, want 3 rows, 3 nodes, 9 tuples (visibility, state and project of each) and the cutover complete", done)
+	// Each document states its visibility, state and project, and each of the two an issue owns
+	// (ACME-1's spec, CORE-1's spec) its part_of that issue (graphstore.ArtifactPartOf); ZED's
+	// project document hangs under none.
+	if done := reportedKind(t, report, graphstore.KindArtifact); done.Rows != 3 || done.Nodes != 3 || done.Tuples != 11 || !done.Complete {
+		t.Errorf("the backfill reports %#v for documents, want 3 rows, 3 nodes, 11 tuples (visibility, state and project of each, and the part_of of the two issues' specs) and the cutover complete", done)
 	}
 }
 
@@ -219,9 +222,11 @@ func requireTheBlockScopeBatchLockOrder(t *testing.T) {
 			Statement: "select 1 from graph_nodes held",
 		}, `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`, refs.BlockNodeKind, address)
 	}
+	// The fill moves the node rows and appends their project tuples in one statement
+	// (graphstore.FillScopes), so that statement is the one that takes the tuple step.
 	tuple := holdWrite(t, database, &lockstep.Hold{
 		Name: addresses[0] + "'s project tuple", Step: lockstep.StepTuple, Taken: true,
-		Statement: "insert into graph_tuples (",
+		Statement: "with filled as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: refs.BlockNodeKind, FromID: addresses[0], Kind: graphstore.AttributeProject,
 		ToKind: graphstore.KindValue, ToID: "CORE",
@@ -297,7 +302,7 @@ func requireTheCommentScopeBatchLockOrder(t *testing.T) {
 	}, `select 1 from graph_nodes where kind = $1 and id = $2 for no key update`, graphstore.KindComment, comment)
 	tuple := holdWrite(t, database, &lockstep.Hold{
 		Name: "the comment's project tuple", Step: lockstep.StepTuple, Taken: true,
-		Statement: "insert into graph_tuples (",
+		Statement: "with filled as (",
 	}, nil, []graphstore.Tuple{{
 		FromKind: graphstore.KindComment, FromID: comment, Kind: graphstore.AttributeProject,
 		ToKind: graphstore.KindValue, ToID: "SCOP",

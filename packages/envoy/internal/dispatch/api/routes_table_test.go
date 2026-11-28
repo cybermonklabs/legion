@@ -170,6 +170,8 @@ var testHookRoutes = []string{
 	"POST /api/v1/writes/_test/slow",
 	"POST /api/v1/settings/new-issue/_test",
 	"GET /api/v1/messages/_test/queued",
+	"PUT /api/v1/_test/holds/neighbourhood-read",
+	"PUT /api/v1/_test/holds/related-search",
 }
 
 // requireRouteNames fails t naming each route of want that got, the routes what names, does not
@@ -693,9 +695,9 @@ func TestEveryRouteThatWasABrowsersAloneNamesThePersonScope(t *testing.T) {
 	browserOnly := []string{
 		"GET /api/v1/settings/project-default-assignees",
 		"PUT /api/v1/projects/{key}/default-assignee",
-		// Turning a project's proven-sessions setting off is INFRA-4764's own row, and the
-		// person's as the default assignee above is: it weakens a check, which no credential the
-		// deployment configured may do.
+		// Turning a project's proven-sessions setting off is the spec-writer spec's own row, and
+		// the person's as the default assignee above is: it weakens a check, which no credential
+		// the deployment configured may do.
 		"DELETE /api/v1/projects/{key}/proven-sessions",
 		"GET /api/v1/me/agent-tokens",
 		"POST /api/v1/me/agent-tokens",

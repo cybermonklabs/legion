@@ -16,6 +16,7 @@ import type {
   ReferenceTarget,
 } from "../../api/types";
 import { compareTimestamps, isTimestamp } from "../../lib/timestamps";
+import { declaredPointerItems } from "../doc/schema";
 import { isDecisionEntry, personDecisionAsk } from "../issue/decision-entries";
 import { type AgentText, actorLabelText } from "../refs/AgentName";
 import { deletedLineText, type PostDeletion, postDeletion } from "../refs/post-marks";
@@ -48,6 +49,7 @@ import {
   blockAttributeLabel,
   type CheckState,
   coverageGapKind,
+  coverageNotes,
   type DecisionState,
   type GapKind,
   NODE_STATE_WORDS,
@@ -101,6 +103,9 @@ export interface Draft {
   /** What the coverage read counts for a requirement it holds (`addRequirements`); absent on
    *  every other draft, a statement of the spec drawn before that read answers among them. */
   counts?: NodeCounts;
+  /** The coverage read's own lines a requirement it holds draws in its body
+   *  (`TreeNode.coverageNotes`); absent where the read holds none, and on every other draft. */
+  coverageNotes?: string[];
   /** When its author deleted this comment or message (`TreeNode.deletedAt`). */
   deletedAt?: string;
   /** Who deleted it, where the read names them (`TreeNode.deletedBy`). */
@@ -480,10 +485,10 @@ function documentReading(
  * say it (`node-row-chip.ts`'s `documentWord`).
  *
  * Which document plays which part is the issue read's answer and nothing else: the id it names
- * for each (`primary_artifact_id`, `plan_artifact_id`, `verification_artifact_id`), read by
- * `primarySpec` and `roleDocument`, the rule the tree reads the documents' blocks by
- * (`useIssueTree.ts`). Where the issue names no id for a part - none (`""`), or a Dispatch older
- * than that part (absent) - no document plays it, and a document flagged `primary` or carrying
+ * for each (`primary_artifact_id`, and the artifact of its plan and of its verification query in
+ * `queries`), read by `primarySpec` and `roleDocument`, the rule the tree reads the documents'
+ * blocks by (`useIssueTree.ts`). Where the issue names no id for a part - none (`""`), or no
+ * query of that name - no document plays it, and a document flagged `primary` or carrying
  * that part's `role` is named by the page's word for a document: a chip naming "Spec" or "Plan"
  * opens a document whose blocks the tree reads as that part. A decisions document plays no part:
  * a decision is a `decision` block of the spec or of another document, and a decisions document
@@ -721,10 +726,17 @@ function addDocumentBlocks(
         kind: "artifact",
         slug,
       });
+      // Each `block[]` attribute read under the item kinds it declares (`declaredPointerItems`):
+      // read under none, a plan task's needs naming an issue, or a parent naming a comment,
+      // parses to nothing and the tree would drop the whole value.
       const pointers: Record<string, readonly string[]> = {};
       for (const attribute of block.attributes ?? []) {
         if (attribute.kind === "block[]") {
-          pointers[attribute.name] = parseBlockPointerValue(attribute.value) ?? [];
+          pointers[attribute.name] =
+            parseBlockPointerValue(
+              attribute.value,
+              declaredPointerItems(block.type, attribute.name)
+            ) ?? [];
         }
       }
       // The document's rank, and the block's place inside it as a fraction of one, so no two
@@ -1086,8 +1098,7 @@ function addDecisions(
       linked.set(ref, { ...context.chipOf(ref), stale });
     }
     if (decision.kind === "person") {
-      // Two sections of the release before can cite one ask (`personDecisionAsk`): its node
-      // carries each target once, stale where any of its links is.
+      // Carry each target once on the ask's node, stale where any of its links is.
       const ask = drafts.get(id);
       if (ask === undefined) return;
       const chips = new Map(ask.chips.map((chip) => [chip.ref, chip]));
@@ -1146,7 +1157,7 @@ function addDecisions(
  * `addRequirements` reads each one's `shaped` edge from it, so the two name one node.
  */
 function decisionNodeId(
-  decision: Pick<DecisionEntry, "from_ask" | "kind" | "node" | "ref">,
+  decision: Pick<DecisionEntry, "kind" | "node" | "ref">,
   context: TreeContext,
   asks: ReadonlyMap<string, string>
 ): string | undefined {
@@ -1264,6 +1275,10 @@ function addRequirements(
   }
   // The spec, which a statement's words are a block of and its references resolve against.
   const specId = primarySpec(reads.issue)?.id;
+  // The coverage read's own lines, which name no requirement's gap: while a document of the issue
+  // is still being indexed, its line, which the server writes in place of every missing check
+  // (`coverageNotes`). Each requirement draws them, since its counts wait on that document too.
+  const notes = coverageNotes(reads.coverage);
   (reads.coverage?.requirements ?? []).forEach((requirement, index) => {
     const id = blockNodeId(context.specSlug, requirement.block_id);
     const held = drafts.get(id);
@@ -1273,6 +1288,7 @@ function addRequirements(
     const draft = add(drafts, blank(id, "requirement", ROOT_ORDER.requirement + index));
     draft.chips = held?.chips ?? [];
     draft.counts = { checks: requirement.checks, planTasks: requirement.plan_tasks };
+    if (notes.length > 0) draft.coverageNotes = notes;
     draft.gaps = requirementGaps(requirement.gaps ?? [], origin, shapers.get(id));
     draft.parents = origin === undefined || drafts.get(origin)?.type === "decision" ? [] : [origin];
     draft.pointers = held?.pointers ?? {};

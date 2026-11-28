@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -466,10 +467,12 @@ func readyResultRecord(t *testing.T, base routeFixture, heldOnTheChecksIssue boo
 		return write
 	}
 	write.meanwhile = func(t *testing.T, holder pgx.Tx) {
+		// The check's row is where the block index keys it: under the issue room's tree
+		// artifact for an issue born converted (refs.DocumentRoomBlocksSQL).
 		if err := holder.QueryRow(context.Background(), `
-			update document_blocks set changed_version = changed_version + 1
-			where artifact_id = $1::uuid and block_id = 'k1' and type = 'check'
-			returning changed_version
+			update document_blocks d set changed_version = d.changed_version + 1
+			where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` and d.block_id = 'k1' and d.type = 'check'
+			returning d.changed_version
 		`, verification.Artifact.ID).Scan(&reworded); err != nil {
 			t.Fatalf("move the check's indexed version: %v", err)
 		}

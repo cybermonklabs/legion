@@ -18,9 +18,16 @@ import {
   isDocumentSchemaError,
   isDocumentUnloadable,
 } from "../../api/client";
-import { artifactBlocksQuery } from "../../api/queries";
+import { artifactBlocksQuery, issueAsksQuery, issueViewOfQuery } from "../../api/queries";
 import { replaceQueryData } from "../../api/query-client";
-import type { Artifact, Ask, AskWithTrees, AuthenticatedUser, Version } from "../../api/types";
+import type {
+  Artifact,
+  Ask,
+  AskWithTrees,
+  AuthenticatedUser,
+  BlockSchema,
+  Version,
+} from "../../api/types";
 import { TruncatedText } from "../../components/TruncatedText";
 import { useTooltips } from "../../components/tooltips";
 import { copyText } from "../../lib/clipboard";
@@ -47,7 +54,6 @@ import {
   CLOSED_ISSUE_UPLOAD_REFUSAL,
   useArtifactUpload,
 } from "../artifacts/ArtifactUpload";
-import { issueAsksQuery } from "../issue-page/useIssueTree";
 import { useMargin } from "../margin/margin-context";
 import type { MarginOwner } from "../margin/useMarginItems";
 import { blockFragment } from "../refs/block-reference";
@@ -87,9 +93,9 @@ import type { PendingState } from "./pending-sync";
 import { createPendingWaiter } from "./pending-waiter";
 import { quoteAnchor } from "./quote-anchor";
 import { refocusWhenSettled } from "./refocus-when-settled";
-import { FRAGMENT_NAME } from "./roots";
+import { carriesFragment, fragmentOf } from "./roots";
 import { DocumentRuntime } from "./runtime";
-import { compiledBlockSchema, compiledSchemaCreatable } from "./schema";
+import { compiledBlockSchema, compiledSchemaCreatable, editorBlockSchema } from "./schema";
 import { readLineText, useSpecMarks } from "./spec-marks";
 import { type AskBlockHost, type ServedAsk, servedAskOfBlock } from "./typed-block-drawing";
 import { VersionView } from "./VersionView";
@@ -146,12 +152,18 @@ interface AdmissionBlock {
   readonly message: string;
 }
 
-function admissionBlock(error: unknown): AdmissionBlock {
+/** The block `error` leaves an admission in. A tree outside the Proof schema is offered a repair,
+ *  and a history that cannot load a rebuild, only where `writable`, on a document: the rebuild
+ *  route answers a document alone (`rebuildArtifact` in api/artifact_rebuild.go), and the repair's
+ *  upload under the artifact's name finds an issue's tree artifact by that name and is refused
+ *  `400 ARTIFACT_KIND_MISMATCH` (`storeArtifact` in api/artifacts.go). Elsewhere either fails the
+ *  load as any other failure does. */
+function admissionBlock(error: unknown, writable: boolean): AdmissionBlock {
   const message = error instanceof Error ? error.message : String(error);
-  if (isDocumentSchemaError(error)) {
+  if (writable && isDocumentSchemaError(error)) {
     return { kind: "repair", message };
   }
-  if (isDocumentUnloadable(error)) {
+  if (writable && isDocumentUnloadable(error)) {
     return { kind: "rebuild", message };
   }
   if (isDocumentNewerContent(error)) {
@@ -159,6 +171,12 @@ function admissionBlock(error: unknown): AdmissionBlock {
   }
   return { kind: "failed", message };
 }
+
+/** What an admission's read of the document's issue gives it: the schema its editor is made with,
+ * or, where that read failed, the block that fails the load. */
+type EditorSchemaRead =
+  | { readonly block?: undefined; readonly blockSchema: BlockSchema }
+  | { readonly block: AdmissionBlock; readonly blockSchema?: undefined };
 
 /** How long a socket the server refused as outside the Proof schema, or a read that found content
  * this build cannot read, waits before its admission reads `/text` again, by how many refusals in
@@ -198,7 +216,10 @@ export interface DocumentToolbar {
   connection: ConnectionState;
   pending: PendingState | undefined;
   isNamingVersion: boolean;
-  requestNamedVersion(): void;
+  /** Opens the dialog that names a version of the document. Absent where the named-version route
+   *  refuses the artifact (`createNamedVersion` in api/artifacts.go answers a document alone), as
+   *  an issue's tree artifact is: a host draws no control to name one there. */
+  requestNamedVersion?(): void;
   copyBlockLink(): Promise<boolean>;
   versions: Version[];
 }
@@ -216,6 +237,8 @@ export interface ProofDocumentProps {
     readonly children: ReactNode;
     readonly markId: string | null;
   };
+  /** The document, as the read that listed it answers it: where that answer carries `fragment`,
+   *  the page connects at once; otherwise it waits for its own artifact read. */
   artifact: Artifact;
   highlight: Highlight | undefined;
   highlightTerm?: string;
@@ -372,7 +395,24 @@ export function ProofDocument({
     queryKey: ["artifact", artifact.id],
     queryFn: () => api.getArtifact(artifact.id),
   });
-  const liveTextQuery = useQuery(liveTextQueryOptions(artifact.id));
+  // The editor's tree: the fragment of its room an answer about this artifact names. An issue's
+  // room holds one fragment per document, so the page connects only once it knows which: at once
+  // where the artifact it was handed carries `fragment`, else once its own artifact read answers,
+  // taking that answer's (`prosemirror` from a server that names none). Until then nothing
+  // connects, so nothing typed lands in a fragment that is not this document's; a read that
+  // fails is the document's load failure.
+  const fragmentName = carriesFragment(artifact)
+    ? fragmentOf(artifact)
+    : artifactQuery.data === undefined
+      ? undefined
+      : fragmentOf(artifactQuery.data);
+  const fragmentReadError = fragmentName === undefined ? artifactQuery.error : null;
+  // The text is read once the page knows its fragment, beside the admission's own fresh read of
+  // it (`admit`), so the two are one request; read before it, the admission would read it again.
+  const liveTextQuery = useQuery({
+    ...liveTextQueryOptions(artifact.id),
+    enabled: fragmentName !== undefined,
+  });
   // The repair replaces this document, so it uploads under the document's own name whatever the
   // picked file is called; a closed issue takes none.
   const repairUpload = useArtifactUpload(
@@ -425,9 +465,16 @@ export function ProofDocument({
   const admissionHidesEditor =
     repairError !== undefined || rebuildError !== undefined || newerContent;
   const shownLoadError = admission?.kind === "failed" ? admission.message : loadError;
+  // An issue's tree artifact, whose room holds the issue's own nodes, reads and edits as a
+  // document does (`readsAsDocument` in api/artifacts.go), and every other route of a document
+  // refuses it `400 NOT_DOCUMENT`: its blocks, a named version and a rebuild; the repair's upload
+  // is refused it too (`admissionBlock`). So the editor of a tree sends none of those and offers no
+  // control that would.
+  const isDocument = artifact.kind === "doc";
+  // The live blocks the reference gutter counts.
   const blockReferencesQuery = useQuery({
     ...artifactBlocksQuery(artifact.id),
-    enabled: version === undefined,
+    enabled: version === undefined && isDocument,
   });
   const versionQuery = useQuery({
     enabled: version !== undefined,
@@ -708,13 +755,14 @@ export function ProofDocument({
       pending,
       copyBlockLink,
       isNamingVersion: nameVersion.isPending,
-      requestNamedVersion,
+      requestNamedVersion: isDocument ? requestNamedVersion : undefined,
       versions,
     });
   }, [
     connection,
     pending,
     copyBlockLink,
+    isDocument,
     nameVersion.isPending,
     onToolbarChange,
     page,
@@ -767,6 +815,14 @@ export function ProofDocument({
       setConnection("failed");
       setLoadError(error instanceof Error ? error.message : String(error));
     };
+    if (fragmentName === undefined) {
+      if (fragmentReadError !== null) {
+        reportLoadFailure(fragmentReadError);
+      }
+      return () => {
+        mounted = false;
+      };
+    }
     const teardown = () => {
       disposeEditorBindings?.();
       editor?.destroy();
@@ -826,7 +882,7 @@ export function ProofDocument({
         });
       }
       const unbindRemoteMarks = bindRemoteMarks(connection.doc, handle);
-      const fragment = connection.doc.getXmlFragment(FRAGMENT_NAME);
+      const fragment = connection.doc.getXmlFragment(fragmentName);
       let searchFrame = 0;
       const refreshSearchHighlights = () => {
         cancelAnimationFrame(searchFrame);
@@ -877,7 +933,8 @@ export function ProofDocument({
     };
     // Each admission - this mount, a socket the server refused as outside the Proof schema, and a
     // blocked admission's re-admission - opens a connection only once its own fresh `/text` read
-    // succeeds, and that read alone decides: a browser editor normalizes a tree it cannot
+    // and its read of the document's issue (`schemaRead`) succeed. The text read alone decides
+    // whether the stored tree can be opened: a browser editor normalizes a tree it cannot
     // represent and writes the result back. A read that fails closes nothing already open, since
     // only an admission opens anything, so a later refetch that fails - an outage during an
     // artifact event's invalidation, say - leaves a connected editor and its unsent edits alone.
@@ -903,11 +960,31 @@ export function ProofDocument({
                 );
               }
             }
-            return admissionBlock(error);
+            return admissionBlock(error, isDocument);
           }
         );
-      void Promise.all([textRead, loadTransport()])
-        .then(([block, connect]) => {
+      // The schema the editor is made with. An issue that is a view on its ancestor's spec gets,
+      // for each editor of its documents, a schema that creates no requirement
+      // (`editorBlockSchema`); every other editor gets the compiled manifest. The admission waits
+      // for this read beside the text read, so no editor of a view is ever made with the full
+      // schema. The read sends nothing for an issue the page holds under no parent, which is no
+      // view (`issueViewOfQuery`), and a document that names no issue reads nothing. A failed
+      // read fails the load, as a failed text read does.
+      const issueKey = artifact.issue_key;
+      const schemaRead: Promise<EditorSchemaRead> =
+        issueKey === null
+          ? Promise.resolve({ blockSchema: compiledBlockSchema })
+          : queryClient.fetchQuery(issueViewOfQuery(issueKey)).then(
+              (viewOf): EditorSchemaRead => ({ blockSchema: editorBlockSchema(viewOf) }),
+              (error: unknown): EditorSchemaRead => ({
+                block: {
+                  kind: "failed",
+                  message: error instanceof Error ? error.message : String(error),
+                },
+              })
+            );
+      void Promise.all([textRead, schemaRead, loadTransport()])
+        .then(([block, schema, connect]) => {
           if (!mounted) {
             return;
           }
@@ -938,9 +1015,20 @@ export function ProofDocument({
             };
             return;
           }
+          // A failed read of the issue fails the load as a failed text read does. It does not
+          // wait for the next successful text read (`readmitRef`), as a blocked text read does:
+          // this admission's own text read succeeded, and its answer would admit the document
+          // again at once, and every admission after it the same, in a loop.
+          if (schema.block !== undefined) {
+            setConnection("failed");
+            setAdmission(schema.block);
+            return;
+          }
+          const { blockSchema } = schema;
           newerReads = 0;
           setAdmission(undefined);
           const connection = connect(artifact.id, {
+            fragment: fragmentName,
             schemaCreatable: compiledSchemaCreatable,
             schemaVersion: compiledBlockSchema.version,
             onAdmission: (readOnly) => {
@@ -1045,7 +1133,7 @@ export function ProofDocument({
                   color: colorForLogin(userRef.current.login),
                   name: userRef.current.login,
                 },
-                blockSchema: compiledBlockSchema,
+                blockSchema,
                 watchPicture: (route, onPicture) => watchPicturePath(queryClient, route, onPicture),
                 // The block the pane's thread hangs under: the node view it names publishes the
                 // host slot this page portals the thread into. A document's own page anchors no
@@ -1058,6 +1146,7 @@ export function ProofDocument({
                 // of the document by it, so the editor refuses one to a block of a type the
                 // pointer's attribute does not allow.
                 documentRef,
+                fragment: fragmentName,
                 ydoc: connection.doc,
               })
                 .then((handle) => {
@@ -1092,10 +1181,14 @@ export function ProofDocument({
   }, [
     anchoredBlockId,
     artifact.id,
+    artifact.issue_key,
     createEditor,
     documentRef,
     focusInEditor,
     followBlockHash,
+    fragmentName,
+    fragmentReadError,
+    isDocument,
     loadTransport,
     page,
     pendingWaiter,

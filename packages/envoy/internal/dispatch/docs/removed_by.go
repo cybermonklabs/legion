@@ -12,6 +12,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -57,38 +58,39 @@ type heldRemoval struct {
 	at     time.Time
 }
 
-// answerDroppedAnsweredAsks answers the answered asks of document artifactID whose block a write
-// loses (lost; after is the tree the write leaves). A write that is not a person's own is refused
-// for them (refuseDroppedAnsweredAsks). A person's own write is taken, and holds each as that
-// person's removal on the transaction's ledger, which the version the write leaves states on the
+// answerDroppedAnsweredAsks answers the answered asks of holder (documentAsksOf, roomAsksOf) whose
+// block a write loses (lost). A person's own write is taken, and holds each as that person's
+// removal on the transaction's ledger, under the document holding the ask's block
+// (refs.AskBlockDocumentSQL), which the version the write leaves of that document states on the
 // ask's node (removalsOf); a removal the transaction holds already stays as the write that held it
-// first held it. standing narrows the removals, and the refusal, to the asks whose block
-// the document's block index holds as an ask block, for a write that replaces the document whole
-// and so has no tree of its own to say what the document held before it: an ask whose block an
-// earlier write took out - a person's removal, or an agent's drop the restore still owes - is lost
-// to no write of this one.
-func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, artifactID string, after *pmdoc.Node, lost func(blockID string) bool, by dropper, standing bool) error {
+// first held it. A write that is not a person's own holds none: each text path refuses it on its own
+// where it changes a person's decision, an answered ask's block among them
+// (refuseDroppedAnsweredAsks). standing narrows the removals to the asks whose block the block
+// index holds as an ask block, for a write that replaces the document whole and so has no tree of
+// its own to say what the document held before it: an ask whose block an earlier write took out -
+// a person's removal, or an agent's drop the restore still owes - is lost to no write of this one.
+func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, holder askHolder, lost func(blockID string) bool, by dropper, standing bool) error {
 	if !by.person {
-		return refuseDroppedAnsweredAsks(ctx, q, artifactID, after, lost, standing)
+		return nil
 	}
 	ledger := ledgerFrom(ctx)
 	if by.remover == "" || !graphstore.AddressFits(by.remover) || ledger == nil {
 		return nil
 	}
 	rows, err := q.Query(ctx, `
-		select k.id::text, k.block_id from asks k
-		where k.block_artifact_id = $1 and k.state = 'answered' and k.block_id is not null
+		select k.id::text, k.block_id, `+refs.AskBlockDocumentSQL("k")+`::text from asks k
+		where `+holder.predicate("k", "$1::uuid")+` and k.state = 'answered' and k.block_id is not null
 		  and (not $2 or exists (
 			select 1 from document_blocks d
 			where d.artifact_id = k.block_artifact_id and d.block_id = k.block_id and d.type = 'ask'))
 		order by k.block_id
-	`, artifactID, standing)
+	`, holder.id, standing)
 	if err != nil {
 		return fmt.Errorf("read the answered asks a person's write removes: %w", err)
 	}
-	asks, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([2]string, error) {
-		var ask [2]string
-		err := row.Scan(&ask[0], &ask[1])
+	asks, err := pgx.CollectRows(rows, func(row pgx.CollectableRow) ([3]string, error) {
+		var ask [3]string
+		err := row.Scan(&ask[0], &ask[1], &ask[2])
 		return ask, err
 	})
 	if err != nil {
@@ -99,16 +101,17 @@ func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, artifactID string
 		if !lost(ask[1]) {
 			continue
 		}
-		if _, held := ledger.removals[artifactID][ask[0]]; held {
+		document := ask[2]
+		if _, held := ledger.removals[document][ask[0]]; held {
 			continue
 		}
 		if ledger.removals == nil {
 			ledger.removals = map[string]map[string]heldRemoval{}
 		}
-		if ledger.removals[artifactID] == nil {
-			ledger.removals[artifactID] = map[string]heldRemoval{}
+		if ledger.removals[document] == nil {
+			ledger.removals[document] = map[string]heldRemoval{}
 		}
-		ledger.removals[artifactID][ask[0]] = heldRemoval{person: by.remover, actor: by.actor.Recorded(), at: at}
+		ledger.removals[document][ask[0]] = heldRemoval{person: by.remover, actor: by.actor.Recorded(), at: at}
 	}
 	return nil
 }
@@ -132,9 +135,10 @@ func answerDroppedAnsweredAsks(ctx context.Context, q Queryer, artifactID string
 // (answerersVersion) - an answer writes the ask's state into its block in her name
 // (KeepAskBlockInStep), so her deletion settled into that version is hers as well - and would
 // write the block back. live is the room as it stood before the transaction's own operations
-// (roomReadTree): what those took out is theirs to hold or refuse (answerDroppedAnsweredAsks), and
-// a nil live, a room no read of the transaction's records, holds nothing. Authors that name no
-// person hold none, and a removal the transaction holds already stays as its write held it.
+// (roomReadTree): what those took out is theirs to hold (answerDroppedAnsweredAsks) or refuse
+// (refuseDroppedAnsweredAsks), and a nil live, a room no read of the transaction's records, holds
+// nothing. Authors that name no person hold none, and a removal the transaction holds already stays
+// as its write held it.
 func holdRoomRemovals(ctx context.Context, q Queryer, artifactID string, live *pmdoc.Node, authors []model.Actor) error {
 	if live == nil {
 		return nil
@@ -144,10 +148,7 @@ func holdRoomRemovals(ctx context.Context, q Queryer, artifactID string, live *p
 		return nil
 	}
 	held := openAskBlockIDs(live)
-	return answerDroppedAnsweredAsks(ctx, q, artifactID, live, func(blockID string) bool {
-		_, kept := held[blockID]
-		return !kept
-	}, dropper{person: true, remover: person, actor: author}, true)
+	return answerDroppedAnsweredAsks(ctx, q, documentAsksOf(artifactID), keptOutOf(held), dropper{person: true, remover: person, actor: author}, true)
 }
 
 // roomReadTree is the room a version of artifactID takes, as holdRoomRemovals compares it with the
@@ -205,7 +206,7 @@ func removalsOf(ctx context.Context, artifactID string) graphstore.Uncaused {
 // (graphstore.QueueCaused).
 func queueRemovals(ctx context.Context, tx pgx.Tx, artifactID string) (graphstore.Uncaused, error) {
 	removals := removalsOf(ctx, artifactID)
-	if len(removals.Nodes) == 0 && len(removals.Tuples) == 0 {
+	if len(removals.Nodes) == 0 && removals.Len() == 0 {
 		return graphstore.Uncaused{}, nil
 	}
 	if err := write(ctx, tx, func(b *store.WriteBatch) error {

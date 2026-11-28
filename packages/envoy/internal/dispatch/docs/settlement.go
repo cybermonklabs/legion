@@ -42,10 +42,14 @@ const (
 // reports a stop short. The stages hand each other everything here; what one stage alone uses
 // stays a local of that stage.
 type settlement struct {
-	service    *Service
-	room       string
-	state      *roomState
-	doc        *crdt.Doc
+	service *Service
+	room    string
+	state   *roomState
+	doc     *crdt.Doc
+	// layout is the room's layout as the instance it settles loaded it (layoutOf): the fragments
+	// an issue room's tree is read, repaired and rendered over, each block of its version indexed as
+	// its fragment's document's (commitVersion). Empty for a room that is its own document.
+	layout     roomLayout
 	generation uint64
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room (settleRoomWithin).
@@ -91,10 +95,13 @@ type settlement struct {
 	carried map[string]model.Actor
 	// reconciled is the tree the ask blocks are reconciled on, the stamp's when it stamped ids;
 	// versioned is the one the version is rendered from, read again after the repairs when the
-	// settlement wrote any.
-	reconciled     *pmdoc.Node
-	versioned      *pmdoc.Node
-	reconciliation settlementReconciliation
+	// settlement wrote any. Each count is how many top-level blocks each fragment of an issue room
+	// holds of its tree (settlementRead.counts).
+	reconciled       *pmdoc.Node
+	reconciledCounts []int
+	versioned        *pmdoc.Node
+	versionedCounts  []int
+	reconciliation   settlementReconciliation
 	// readHead is the head of the document's stored history this settlement read under the
 	// document's lock, before it stored anything (readLocked). snapshotCursor is the head the
 	// version records (doc_update_version), through which every one of the room's updates it holds
@@ -103,6 +110,10 @@ type settlement struct {
 	snapshotCursor int64
 	// published are the events this settlement appended, published once its transaction commits.
 	published []model.Event
+	// roomTuples says the pass over an issue room's versions states tuples in this settlement's
+	// write phase (commitRoomVersions), read where it queues the mark of the issue's queries owed
+	// (queueSettledQueryMark).
+	roomTuples bool
 }
 
 // savedNothing reports whether this settlement wrote nothing that a later move of an approval
@@ -185,7 +196,25 @@ func skipUnreadableSettlement(room string, err error) bool {
 // reconciles the ask blocks (planRepairs), writes the repairs into the room and stores what it
 // wrote (commitRepairs), and commits, with the document's version when the document reads
 // differently from the latest one (commitVersion).
+//
+// A settlement is made for no run of the command bar (store.WithRun): it saves what the room's
+// writers left in it, whoever they were, so it carries no run even when a request's context starts
+// it - an issue's close settles its documents first on the closer's (api's
+// settleIssueBeforeClose) - and none of its writes appends a changed_by_run tuple, as the room
+// timer's settlement on a background context appends none: its write phase's batch is built for
+// that context (store.NewWriteBatch), which carries no run.
 func (s *Service) settleRoomWithin(parent context.Context, room string, generation uint64, mayLoad bool) settleOutcome {
+	parent = store.WithRun(parent, "")
+	// A room entry point that takes a document's id resolves it first: a document converted into
+	// its issue's room settles as that room, whose settlement this one arms - outside a shutdown,
+	// which has stopped every timer and arms none (Shutdown) - and its own room's rows stay as they
+	// stood (R5 of the issue-tree spec).
+	if resolved, err := roomOf(parent, s.store.Pool, room); err == nil && resolved != room {
+		if !s.shuttingDown(room) {
+			s.scheduleSettle(resolved)
+		}
+		return settleOutcome{}
+	}
 	settle := &settlement{service: s, room: room, generation: generation}
 	// stoppedShort is the outcome of a settlement that stopped short with err having written
 	// nothing into the room: a retry, unless parent has ended, the document has been removed or
@@ -245,6 +274,9 @@ func (s *Service) settleRoomWithin(parent context.Context, room string, generati
 		return settle.stoppedShort(fmt.Errorf("begin document transaction: %w", err))
 	}
 	defer tx.Rollback(ctx)
+	if err := graphstore.PlanAtCurrentSizes(ctx, tx); err != nil {
+		return settle.stoppedShort(err)
+	}
 	// Settlement decides everything before it writes anything: every write of the stages below
 	// goes through write and queues on this ledger, and the queue runs back to back right before
 	// the commit, so the transaction holds a transaction id only for those statements, not while
@@ -361,7 +393,7 @@ func (st *settlement) take(parent context.Context, mayLoad bool) (settleStep, se
 	if doc == nil {
 		return settleDone, st.stoppedShort(fmt.Errorf("hold the room to settle: %w", errRoomReplaced))
 	}
-	st.doc = doc
+	st.doc, st.layout = doc, s.layoutOf(doc)
 	// The settlement waits for none of the room's updates to reach its persistence: it stores
 	// every update of the room through the point it reads the room at itself, under the document's
 	// advisory lock (readSettlementTree), and an update the room commits after that point is no
@@ -475,11 +507,19 @@ func (st *settlement) commitFailed(advanced bool, err error) settleOutcome {
 // nothing after it; any other goes on holding the ask blocks' sources read under that state.
 func (st *settlement) applyStamp(ctx context.Context) (settleStep, settleOutcome) {
 	s, room, state := st.service, st.room, st.state
-	st.reconciled = st.read
-	if pmdoc.BlockIDRepairCount(st.read) > 0 {
+	st.reconciled, st.reconciledCounts = st.read, st.first.counts
+	if pmdoc.SettlementBlockIDRepairCount(st.read) > 0 {
+		// An id a browser's edit put into one fragment of an issue room while another fragment
+		// holds it stays with the block that held it when the room was last indexed, and the
+		// newcomer takes a fresh one: no write but the conversion renames another document's
+		// unchanged block (R13 of the issue-tree spec).
+		keepers, err := roomIDKeepers(ctx, st.tx, room, st.layout, st.read, st.first.counts)
+		if err != nil {
+			return settleDone, st.abandon(err)
+		}
 		slot, update, err := s.applySuppressed(ctx, room, st.doc, func(doc *crdt.Doc, origin any) error {
 			var stampErr error
-			st.reconciled, _, st.renamed, stampErr = stampBlockIDs(doc, origin)
+			st.reconciled, st.reconciledCounts, _, st.renamed, stampErr = stampSettlementBlockIDs(doc, st.layout, origin, keepers)
 			return stampErr
 		})
 		st.keep(slot, update)
@@ -587,6 +627,7 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 	// against the document as settlement read it, before any other repair is planned on it.
 	// kept for one release: roll-window-attributes
 	reconciliation.withholdAnswersWithoutRoom(st.room, st.reconciled, st.markdown)
+	reconciliation.reconcileControlCharacters(st.room, st.owner, st.reconciled, st.credit.actor)
 	if err := reconciliation.reconcileCICheckBlocks(ctx, st.tx, st.room, st.owner, st.reconciled, st.credit.actor); err != nil {
 		return settleDone, st.abandon(err)
 	}
@@ -598,6 +639,7 @@ func (st *settlement) planRepairs(ctx context.Context) (settleStep, settleOutcom
 			reconciliation.events[index].Actor = SettlementActor
 		}
 	}
+	reconciliation.layout = st.layout
 	st.reconciliation = reconciliation
 	if s.afterSettleReconcile != nil {
 		s.afterSettleReconcile(st.room)
@@ -637,7 +679,7 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 		}
 	}
 
-	st.versioned = st.reconciled
+	st.versioned, st.versionedCounts = st.reconciled, st.reconciledCounts
 	versionRead := st.first
 	if len(st.slots) > 0 {
 		update, err := mergeUpdates(st.updates)
@@ -652,19 +694,19 @@ func (st *settlement) commitRepairs(ctx context.Context) (settleStep, settleOutc
 		// before them: a peer's edit made since is in the room, its browsers and, stored here, its
 		// stored updates, and a version rendered from the earlier tree would leave it out. An edit
 		// made after this read is in neither the version nor its authors.
-		if versionRead, err = s.readSettlementTree(st.state, st.doc, room, s.afterSettleAuthorsTake, true); err != nil {
+		if versionRead, err = s.readSettlementTree(st.state, st.doc, room, st.layout, s.afterSettleAuthorsTake, true); err != nil {
 			return settleDone, st.abandon(err)
 		}
 		if err := ledger.flushThrough(ctx, tx, room, versionRead.point); err != nil {
 			return settleDone, st.abandon(fmt.Errorf("store the room's updates through the settlement's version read: %w", err))
 		}
-		st.versioned = versionRead.tree
+		st.versioned, st.versionedCounts = versionRead.tree, versionRead.counts
 	}
 	// The version's authors, taken once the room's updates it holds are stored, and the head it
 	// records (doc_update_version), through which every one of them is stored. The head counts
 	// what this transaction has queued and not yet written (transactionHead): the settlement's
 	// appends are among them.
-	credit, err := settlementCredit(ctx, tx, st.state, room, versionRead)
+	credit, err := settlementCredit(ctx, tx, st.state, room, st.layout, versionRead)
 	if err != nil {
 		return settleDone, st.abandon(err)
 	}
@@ -712,6 +754,7 @@ func (st *settlement) appendEvents(ctx context.Context, events []model.Event, ca
 			}
 			for _, stated := range caused[index] {
 				graphstore.QueueCaused(b, *stated, graphstore.LatestEvent)
+				graphstore.QueueHeads(b, graphstore.HeldHeads(*stated))
 			}
 		}
 		return nil

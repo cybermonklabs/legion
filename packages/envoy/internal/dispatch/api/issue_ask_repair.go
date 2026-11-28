@@ -158,8 +158,10 @@ func (s *server) repairIssueAsksOnTick(ctx context.Context, markedSince *time.Ti
 // is decided again under its row. The withdrawals and restorations come first, so a pass cut
 // short by its time spends it on them rather than on the sweeps. A closed issue is swept when one
 // of its documents owes a settlement marked after $1, or at all when $1 is null or the issue is
-// one of $2, the issues the last pass did not repair. It also answers the database's clock as the
-// list was read.
+// one of $2, the issues the last pass did not repair. A pending settlement row is keyed by the
+// room its document is edited in - the document itself, or its issue room's tree artifact
+// (refs.DocumentRoomSQL) - so the rows are read among the issue's documents and its tree alike,
+// as reopenOwedAskDocuments reads them. It also answers the database's clock as the list was read.
 const issueAskRepairCandidates = `
 	select statement_timestamp(), array(
 		select key from (
@@ -178,7 +180,7 @@ const issueAskRepairCandidates = `
 			where i.closed_at is not null
 				and exists (
 					select 1 from artifacts d join doc_settlements_pending p on p.artifact_id = d.id
-					where d.issue_key = i.key and d.kind = 'doc'
+					where d.issue_key = i.key and d.kind in ('doc', 'tree')
 						and ($1::timestamptz is null or p.marked_at > $1 or i.key = any($2::text[]))
 				)
 		) candidates
@@ -254,7 +256,7 @@ func (s *server) repairIssueAsksOf(ctx context.Context, issueKey string) (IssueA
 			count(*) filter (where `+withdrawnAsk+`),
 			exists (
 				select 1 from artifacts d join doc_settlements_pending p on p.artifact_id = d.id
-				where d.issue_key = $1 and d.kind = 'doc'
+				where d.issue_key = $1 and d.kind in ('doc', 'tree')
 			)
 		from asks a where a.issue_key = $1
 	`, issueKey).Scan(&open, &withdrawn, &owesSettlement); err != nil {

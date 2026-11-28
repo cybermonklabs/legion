@@ -137,13 +137,14 @@ func versionCreatedAt(t *testing.T, database *store.Store, artifactID string, nu
 	return at
 }
 
-// rowChangedVersion is the changed_version of the block's document_blocks row: the version its
+// rowChangedVersion is the changed_version of the block's document_blocks row, keyed by the
+// artifact the document's blocks are keyed under (its room): the version of the document its
 // whole text, readings included, last changed in.
 func rowChangedVersion(t *testing.T, database *store.Store, document decisionDocument, block string) int {
 	t.Helper()
 	var changed int
 	if err := database.Pool.QueryRow(context.Background(),
-		`select changed_version from document_blocks where artifact_id = $1::uuid and block_id = $2`, document.id, block).Scan(&changed); err != nil {
+		`select changed_version from document_blocks where artifact_id = $1::uuid and block_id = $2`, document.room, block).Scan(&changed); err != nil {
 		t.Fatalf("read the row of %s: %v", document.address(block), err)
 	}
 	return changed
@@ -187,8 +188,12 @@ func requireEntriesReadOwnDocuments(t *testing.T, database *store.Store, key str
 			t.Fatalf("turn %s off: %v", setting, err)
 		}
 	}
+	kinds, ids, err := decisionEntryTargets(ctx, tx, key)
+	if err != nil {
+		t.Fatalf("select the decisions query's nodes: %v", err)
+	}
 	rows, err := tx.Query(ctx, `explain (costs off) `+decisionEntriesRead(), key,
-		refs.VisibilityArg(model.Actor{Kind: "user", ID: "alice"}), entryFactKinds)
+		refs.VisibilityArg(model.Actor{Kind: "user", ID: "alice"}), entryFactKinds, kinds, ids)
 	if err != nil {
 		t.Fatalf("read the plan of the entries statement: %v", err)
 	}
@@ -557,9 +562,10 @@ func TestTheDecisionsReadAnswersEveryDecisionInOrder(t *testing.T) {
 	if blocks := decodeBody[artifactText](t, text).Blocks; blocks == nil || len(*blocks) != blocksOverTheBound {
 		t.Fatalf("the heavy spec holds %v blocks, want %d, one over the bound", blocks, blocksOverTheBound)
 	}
+	// The issue is born converted, so the spec's blocks would be rows of its room, keyed by the tree.
 	var rows int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from document_blocks where artifact_id = $1::uuid`, heavySpec.id).Scan(&rows); err != nil || rows != 0 {
-		t.Fatalf("document_blocks holds %d rows of the heavy spec (%v), want none: its block index is owed", rows, err)
+	if err := database.Pool.QueryRow(ctx, `select count(*) from document_blocks where artifact_id = $1::uuid`, heavySpec.room).Scan(&rows); err != nil || rows != 0 {
+		t.Fatalf("document_blocks holds %d rows of the heavy spec's room (%v), want none: its block index is owed", rows, err)
 	}
 	if indexed := blockIndexVersion(t, database, heavySpec.id); indexed != nil {
 		t.Fatalf("the heavy spec's blocks are indexed at version %d, want them owed", *indexed)
@@ -821,8 +827,11 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read what the reading states: %v", err)
 	}
+	// The reading's text_parent (refs.TupleTextParent) names the decision too, since its text sits
+	// in the decision's: that tuple is its place in the text, which no walk of the tree reads, and
+	// the part_of alone carries the tie.
 	for _, tuple := range out {
-		if tuple.ToID == d1 && tuple.Kind != graphstore.TuplePartOf {
+		if tuple.ToID == d1 && tuple.Kind != graphstore.TuplePartOf && tuple.Kind != refs.TupleTextParent {
 			t.Errorf("the reading points at the decision through %s as well as its part_of: the part_of carries the tie", tuple.Kind)
 		}
 		if tuple.Kind == graphstore.TupleDecidedBy {
@@ -900,7 +909,9 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 		t.Errorf("the refused reading wrote version %d of asks.md, which stood at version %d", after, asksVersion)
 	}
 
-	// The reading is in no document of its own: the issue holds the documents the fixture made.
+	// The reading is in no document of its own: the issue lists the documents the fixture made,
+	// and neither its tree nor the decisions query its create made, which no list of its
+	// documents holds (issueArtifactsStatement).
 	listed := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+issue.Key+"/artifacts", nil, "alice")
 	var slugs []string
 	for _, artifact := range decodeBody[[]artifactRead](t, listed) {
@@ -961,7 +972,9 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 	// test's own server, the agent inserts a reading into a person's answered ask of a spec a person
 	// approved, with the insert whose into names the ask's block. The write is taken, the Decisions
 	// read answers the reading under the ask with the agent as its author, and the spec's approval
-	// still reads approved at the version the write stored.
+	// still reads approved at the version alice approved: the spec query takes no reading, so the
+	// write leaves the digest she approved where it stands, and under R14's hash gate it carries no
+	// approval to the version it stored.
 	approvedIssue := createSpecIssue(t, handler, "CORE", "An approved spec.\n\n"+
 		":::ask{#s1 urgency=\"med\" multiple=\"false\"}\nWhich store holds the queue?\n\n- Postgres: The one we run\n- Redis: The faster one\n:::\n")
 	settleIssue(t, documents, approvedIssue.Key)
@@ -991,10 +1004,14 @@ func TestAReadingIsAChildNodeOfTheDecisionItReads(t *testing.T) {
 	if held, want := readingsOf(underAsk), []string{g5 + "<-" + graphstore.KindSession + ":" + decidingSession}; !slices.Equal(held, want) {
 		t.Errorf("the answered ask %s answers the readings %v after the CLI's insert, want %v, by the agent", storeAskRef, held, want)
 	}
-	if got := readApproval(t, handler, spec.id).Approval; got == nil || got.State != "approved" || got.Version == nil ||
-		*got.Version != got.LatestVersion || got.LatestVersion != approval.Version+1 {
-		t.Errorf("GET /api/v1/artifacts/%s answers the approval %s after the CLI's insert, want it approved at version %d, the latest, carried from alice's approval of version %d",
-			spec.id, entryJSON(t, got), approval.Version+1, approval.Version)
+	read := decodeBody[struct {
+		Approval *model.ArtifactApproval `json:"approval"`
+	}](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+spec.id, nil, "alice"))
+	if got := read.Approval; got == nil || got.State != "approved" || got.Version == nil || *got.Version != approval.Version ||
+		got.LatestVersion != approval.Version+1 || got.DigestOwed == nil || *got.DigestOwed ||
+		got.ContentSHA256 == nil || got.CurrentSHA256 == nil || *got.CurrentSHA256 != *got.ContentSHA256 {
+		t.Errorf("GET /api/v1/artifacts/%s answers the approval %s after the CLI's insert, want it approved at version %d, the one alice approved, with latest_version %d, digest_owed false and current_sha256 the content_sha256 she approved",
+			spec.id, entryJSON(t, got), approval.Version, approval.Version+1)
 	}
 }
 
@@ -1215,8 +1232,9 @@ func TestADecisionsWordsAndVersionAreReadPastWhereTheBlockIndexStands(t *testing
 	read("a document no pass ever indexed", heavy, after, 2)
 }
 
-// An answered ask whose block left its document keeps its row, which still names that document,
-// and its entry names no document: no block of it holds the ask.
+// An answered ask whose block left its document keeps its row, which still names the room that
+// document is edited in (the document itself, or its issue's room for a converted one), and its
+// entry names no document: no block of it holds the ask.
 func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -1236,8 +1254,8 @@ func TestAnAnsweredAskWhoseBlockLeftItsDocumentNamesNoDocument(t *testing.T) {
 	settleIssue(t, documents, issue.Key)
 	var rowDocument *string
 	if err := database.Pool.QueryRow(context.Background(), `select block_artifact_id::text from asks where id = $1::uuid`, askID).Scan(&rowDocument); err != nil ||
-		rowDocument == nil || *rowDocument != asks.id {
-		t.Fatalf("the ask's row names the document %v (%v), want asks.md, %s, whose block it left", rowDocument, err, asks.id)
+		rowDocument == nil || *rowDocument != asks.room {
+		t.Fatalf("the ask's row names the document %v (%v), want asks.md's room, %s, whose block it left", rowDocument, err, asks.room)
 	}
 	left := requireEntry(t, readEntries(t, handler, issue.Key), "the answered ask", graphstore.KindAsk+":"+askID)
 	if left.Document != nil || left.AnswerState == nil || *left.AnswerState != "answered" {
@@ -1369,9 +1387,9 @@ func TestTheTextOfADocumentWithNoAskBlockAnswersNoAsksMember(t *testing.T) {
 
 // Above the deferral bound no block index runs in the write, and the typed-node pass states each
 // decision and reading of the document that the version no longer holds gone in that write's own
-// transaction: a version that removes a decision and the reading under another leaves both out
-// of the Decisions read, and one that holds no typed block at all leaves the last decision out,
-// before any block-index reconciliation.
+// transaction, deleting their document_blocks and block_refs rows in it: a version that removes a
+// decision and the reading under another leaves both out of the Decisions read, and one that holds
+// no typed block at all leaves the last decision out, before any block-index reconciliation.
 func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -1418,6 +1436,15 @@ func TestADecisionADeferredVersionRemovesIsGoneBeforeTheBlockIndexRuns(t *testin
 	notListed("the version that removed d2", d2)
 	if kept := requireEntry(t, readEntries(t, handler, issue.Key), "the kept decision", d1); len(kept.Readings) != 0 {
 		t.Errorf("the kept decision answers the readings %v after the version that removed g1, want none", readingsOf(kept))
+	}
+	var rows, links int
+	if err := database.Pool.QueryRow(ctx, `
+		select (select count(*) from document_blocks where artifact_id = $1 and block_id in ('d2', 'g1')),
+		       (select count(*) from block_refs where artifact_id = $1 and block_id in ('d2', 'g1'))`, doc.id).Scan(&rows, &links); err != nil {
+		t.Fatal(err)
+	}
+	if rows != 0 || links != 0 {
+		t.Errorf("the version that removed d2 and g1 left %d document_blocks rows and %d block_refs rows of them, want none: the write that states them gone deletes them", rows, links)
 	}
 
 	agentUploadAs(t, handler, issue.Key, "big.md", big("A paragraph and no decision.\n"), nil)

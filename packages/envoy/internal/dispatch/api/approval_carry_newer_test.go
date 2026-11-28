@@ -172,7 +172,7 @@ func TestAVersionWhoseApprovedVersionHoldsNewerContentIsWrittenByABuildThatReads
 	newer, service := newerBuildDocuments(t, database, 20*time.Millisecond)
 	// The newer build's editor keeps the attribute on the live block, as the approved version
 	// shows it.
-	setLiveBlockAttributes(t, service, issue.PrimaryArtifactID, "region", map[string]any{newerAskAttribute: "first"})
+	setLiveBlockAttributes(t, handler, service, issue.PrimaryArtifactID, "region", map[string]any{newerAskAttribute: "first"})
 	leases := storetest.Leases(t, database.Pool)
 	resumption, stop := context.WithCancel(ctx)
 	resumed := make(chan struct{})

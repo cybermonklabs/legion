@@ -80,9 +80,18 @@ the issue's status back to Dispatch as the work moves (In Progress, Testing, Nee
 
 Two decisions stay with people:
 
-- **The design gate.** Before implementation starts, a person approves the root issue's spec at a
-  specific version in Dispatch. A later version of the spec closes the gate again until someone
-  approves it.
+- **The design gate.** Before implementation starts, a person approves the root issue's spec in
+  Dispatch, and Dispatch judges whether that approval still stands at each later version; Legion
+  follows its verdict.
+  On an issue Dispatch has converted to one tree, an approval covers the digest of the document's
+  query: the spec's memo callout and its criterion and requirement nodes, and the Verification
+  document's check nodes.
+  A later version that changes one of them, or their relations, closes the gate again until
+  someone approves it.
+  One that leaves the digest equal keeps the approval and the gate open: a prose edit, an answer to
+  an ask block, a reading, a restore of the approved text or a recorded result.
+  On an issue Dispatch has not converted yet, a later version of the spec closes the gate again
+  until someone approves it, unless Dispatch carries the approval to it, as follows.
   A person's answer to an ask block in the spec writes one version, which changes only the block's
   `state`, answerer and time.
   Dispatch carries an approval that already stands: an answer never approves a spec that is not

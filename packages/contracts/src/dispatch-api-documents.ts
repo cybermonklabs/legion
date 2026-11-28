@@ -22,6 +22,12 @@ export const versionFields = {
   mime: z.string().optional(),
   /** The stored bytes' hash; present on a document version read as well as a file version. */
   sha256: z.string().optional(),
+  /** What an approval of a document's version covers, and a review's `content_sha256` pins: the
+   *  digest of its query's record where the pass that stated the version recorded one, else the
+   *  sha256 of its stored markdown. Present on a document version read and on each document
+   *  version of the artifact read; absent from every other version and from a server that
+   *  predates it. */
+  digest: z.string().optional(),
   /** A file's or an image's version token, `sha256:` and the SHA-256 of its bytes: what an upload
    *  replacing that version names as its precondition's `document`, and what `dispatch doc-read`
    *  prints for it. Absent on a document's version, whose token is its live tree's (`/text`), and
@@ -96,6 +102,26 @@ export const ArtifactApprovalSchema = z
     /** The latest review's kind, so a reader can say an approval is a plan review's rather than a
      *  person's; absent while no review stands, and from a Dispatch older than review kinds. */
     kind: ArtifactReviewKindSchema.optional(),
+    /** The version a carried approval was carried from (`artifact_review_carries`), and `null`
+     *  for a person's own approval, for a plan review's approval, and where no review stands.
+     *  Absent only from a Dispatch older than the carry record during a roll. A carried person's
+     *  approval reads `kind: person` with the person as its actor, so this member is how a reader
+     *  tells the carry from the person's own act. */
+    carried_from_version: z.number().int().nullable().optional(),
+    /** The digest of the document's latest version, the one an approval stands against (the
+     *  version's `digest`, R14's hash gate): the record's digest of the query that covers it, or its
+     *  stored markdown's while that record's digest is owed (`digest_owed`). The artifact read
+     *  (`GET /api/v1/artifacts/{id}`) answers it for converted query documents. An unconverted
+     *  or non-query document omits the hash-gate fields. */
+    current_sha256: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/)
+      .nullable()
+      .optional(),
+    /** Whether the latest version still owes its record's digest, which Dispatch fills right after
+     *  that version's write commits and announces in an `artifact.digest`: while it does, no gate
+     *  reads the version approved. Answered beside `current_sha256`. */
+    digest_owed: z.boolean().optional(),
     /** Every document the open request covers, each at the version the request names, this one
      *  included; absent when it covers this document alone. It is the request's own list
      *  (`AskApprovalDocument`), so each entry carries the `requested_version` the request records
@@ -129,6 +155,13 @@ export const artifactFields = {
   role: DocumentRoleSchema.optional(),
   created_by: ActorSchema,
   created_at: z.string(),
+  /** The id of the room the document is edited in: its issue's tree artifact for a document of an
+   *  issue room, its own id otherwise. Absent from a Dispatch older than the issue room. */
+  room: z.string().optional(),
+  /** The fragment of that room's Yjs document that holds the document, which an editor binds: the
+   *  document's own id in an issue room, `prosemirror` otherwise. Absent from a Dispatch older than
+   *  the issue room, and for an issue's decisions query, which no room holds. */
+  fragment: z.string().optional(),
   versions: z.array(VersionSchema),
   /** Document approval, derived from version-pinned reviews; absent for non-document artifacts. */
   approval: ArtifactApprovalSchema.optional(),
@@ -177,6 +210,14 @@ export const artifactVersionEventPayloadFields = {
   name: z.string(),
   version: VersionSchema,
   diff: z.string().optional(),
+  /** The digest an approval of this version covers as its write commits (R14's hash gate): the
+   *  sha256 of its stored markdown while `digest_owed`, the record's digest of its query otherwise;
+   *  absent on versions of unconverted or non-query documents, and from older Dispatch. */
+  content_sha256: z.string().optional(),
+  /** Whether a query's record covers this version and its digest is not known yet: an
+   *  `artifact.digest` for the version follows once Dispatch records it, and until then no gate
+   *  reads the version approved. Absent on versions of unconverted or non-query documents. */
+  digest_owed: z.boolean().optional(),
 };
 
 export const WrittenArtifactVersionEventPayloadSchema = z
@@ -195,6 +236,8 @@ export const ArtifactVersionEventPayloadSchema = z.object({
     .object({ number: versionFields.number.optional(), summary: versionFields.summary.optional() })
     .optional(),
   diff: artifactVersionEventPayloadFields.diff,
+  content_sha256: artifactVersionEventPayloadFields.content_sha256,
+  digest_owed: artifactVersionEventPayloadFields.digest_owed,
 });
 
 /** `artifact.human_edited`: a person's browser edits of a document, sent once the document has
@@ -234,22 +277,67 @@ export const ArtifactHumanEditedEventPayloadSchema = z.object({
   diff_truncated: artifactHumanEditedEventPayloadFields.diff_truncated.optional(),
 });
 
+/** `artifact.indexed`: the block-index reconciliation committed the block index of documents of
+ *  the issue whose versions their writes left owed one, each version announced already by its own
+ *  `artifact.version`. `artifact_ids` names each document whose owed index it cleared, sorted: the
+ *  coverage read's `owed_documents` and gaps, the tree read, the decisions read, the indexed checks
+ *  of a Verification document and a document's blocks answer from the index from then on. It is
+ *  quiet: it wakes nobody. A reader that does not know the type refreshes what it holds, as for any
+ *  event it cannot read. */
+export const ArtifactIndexedEventPayloadSchema = z
+  .strictObject({ artifact_ids: z.array(z.string()).readonly() })
+  .readonly();
+
+export type ArtifactIndexedEventPayload = z.output<typeof ArtifactIndexedEventPayloadSchema>;
+
+/** `artifact.digest`: Dispatch recorded the record digest of a query document's version (the fill
+ *  of a digest a write left owed, the first pass that states a deferred or repaired version, or
+ *  the drain of the issue's queries) and states whether the document's newest review stands as an
+ *  approval at that digest (R14's hash gate). It is quiet: it wakes nobody. */
+export const artifactDigestEventPayloadFields = {
+  artifact_id: z.string(),
+  name: z.string(),
+  version: z.number().int(),
+  content_sha256: z.string(),
+  approval_current: z.boolean(),
+  approved_version: z.number().int().optional(),
+  approved_sha256: z.string().optional(),
+};
+
+export const WrittenArtifactDigestEventPayloadSchema = z
+  .strictObject(artifactDigestEventPayloadFields)
+  .readonly();
+
+export type ArtifactDigestEventPayload = z.output<typeof WrittenArtifactDigestEventPayloadSchema>;
+
+/** What a reader of the bus makes of an `artifact.digest` payload: every field optional, because a
+ *  frame is untrusted and a missing one must not discard the event. */
+export const ArtifactDigestEventPayloadSchema = z.object({
+  artifact_id: artifactDigestEventPayloadFields.artifact_id.optional(),
+  name: artifactDigestEventPayloadFields.name.optional(),
+  version: artifactDigestEventPayloadFields.version.optional(),
+  content_sha256: artifactDigestEventPayloadFields.content_sha256.optional(),
+  approval_current: artifactDigestEventPayloadFields.approval_current.optional(),
+  approved_version: artifactDigestEventPayloadFields.approved_version,
+  approved_sha256: artifactDigestEventPayloadFields.approved_sha256,
+});
+
 /** `artifact.approved` and `artifact.changes_requested`: a human review of a document,
  *  pinned to `version`; `reason` is required for changes requested; `ask_id` names the
  *  approval ask the review answered, null when given from the document header with no
  *  approval ask open at that version. A third provenance is the carry: Dispatch records an
- *  `artifact.approved` in a human's name at a later version whose change since the version he
- *  approved is one the carry takes - a version whose text is byte for byte the approved
- *  version's with no ask block in it decided since, among others. A person's answer, resolve or
- *  decline of an ask writes one version. When the answer, resolve or decline is that version's
- *  whole change, the version changes only the server-owned attributes of the ask's block, and the
- *  carry takes it. The version carries an approval only when the person's answer, resolve or
- *  decline is its whole change. If text that a person was editing in the browser is settled into
- *  the same version, the approval does not carry, and the request goes back to its agent. A closed
- *  issue's settlement carries nothing, so the version an issue's close writes carries no approval.
- *  Its `reason` names the carry and the version it
- *  follows, and its `ask_id` is null unless a request was open at the carry, which it answers
- *  (see `ArtifactReview`). */
+ *  `artifact.approved` in a human's name at a later version whose change since the version they
+ *  approved is one the carry takes, such as restoring the exact text when no ask block in it has
+ *  been decided since. Its `reason` names the carry and the version it follows, and its `ask_id`
+ *  is null unless a request was open at the carry, which it answers (see `ArtifactReview`).
+ *  This text carry runs on unconverted documents and documents no query covers. There a person's
+ *  answer, resolution or decline of an ask can carry an approval if the only change is to the
+ *  server-owned attributes of the ask block. If the same version includes a person's browser
+ *  edits as well, the approval does not carry, and the request goes back to its agent. A closed
+ *  issue's settlement carries nothing.
+ *  On a converted issue's spec, Verification document or plan, only the cutover carries an
+ *  approval across versions. After cutover a matching query digest keeps the existing approval
+ *  current, as `artifact.digest` reports, without a synthetic `artifact.approved`. */
 export const artifactReviewEventPayloadFields = {
   artifact_id: z.string(),
   name: z.string(),
@@ -261,6 +349,13 @@ export const artifactReviewEventPayloadFields = {
   kind: ArtifactReviewKindSchema.optional(),
   content_sha256: z.string().optional(),
   content_sha256_source: z.enum(["insert", "backfill"]).optional(),
+  /** The version a carried approval was carried from (`artifact_review_carries`), and `null` for a
+   *  person's own review or a plan review's; absent only from a Dispatch older than the carry
+   *  record during a roll. */
+  carried_from_version: z.number().int().nullable().optional(),
+  /** Whether the review stands as an approval of its document once written (R14's hash gate);
+   *  false for a request for changes, absent from a Dispatch before the hash gate. */
+  approval_current: z.boolean().optional(),
 };
 
 export const WrittenArtifactReviewEventPayloadSchema = z
@@ -281,6 +376,8 @@ export const ArtifactReviewEventPayloadSchema = z.object({
   ask_id: artifactReviewEventPayloadFields.ask_id.optional(),
   content_sha256: artifactReviewEventPayloadFields.content_sha256,
   content_sha256_source: artifactReviewEventPayloadFields.content_sha256_source,
+  carried_from_version: artifactReviewEventPayloadFields.carried_from_version,
+  approval_current: artifactReviewEventPayloadFields.approval_current,
 });
 
 /** A server-owned typed-block attribute was restored from its indexed row. */

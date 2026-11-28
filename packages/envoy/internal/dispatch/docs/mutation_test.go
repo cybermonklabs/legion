@@ -953,8 +953,8 @@ func TestAJoinedWriteWhoseTransactionChangesNothingAppendsNoUpdateAndKeepsItsSet
 			return err
 		}},
 		{name: "a rewrite whose edit changes nothing", answers: ygws.ErrNoChanges, write: func(ctx context.Context) error {
-			return service.applyLive(ctx, artifactID, closer, func(doc *crdt.Doc, _ pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
-				_, err := rewriteLive(doc, nil, func(*pmdoc.Node) bool { return false })
+			return service.applyLive(ctx, artifactID, closer, func(doc liveDoc, _ pmdoc.ValidDocument, _ func(func(*crdt.Transaction))) error {
+				_, err := doc.rewrite(func(*pmdoc.Node) bool { return false })
 				return err
 			})
 		}},

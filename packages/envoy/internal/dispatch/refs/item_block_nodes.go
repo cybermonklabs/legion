@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -53,6 +54,13 @@ type itemBlockNode struct {
 // edited before blocks were recorded) and changed at its changed revision's time. It belongs to
 // its item at that revision. A block of a comment carries its comment's EditedAt and delete mark
 // (ItemKind.postMarkColumns), as the comment's own node does; a part of an ask carries neither.
+// A part of an ask whose maker is no actor, or of an ask whose stored options are no list of
+// options (decodeAskOptions), is left out and logged, as loadAskNodes leaves out such an ask; a
+// block of a comment whose author is none fails the read, as its comment's node does.
+//
+// Its predicate and its stored state and visibility are read in one probe of its `graph_nodes`
+// row rather than two (visibleStoredKind), as the block loader reads a document's blocks: the
+// graph read hands it every block of the kind at the ends of the edges it answers at once.
 //
 // Only a kind that records its revisions is read here: a message records none, since it keeps no
 // per-revision block text and has no document of its own, and its blocks are resolved by
@@ -65,25 +73,31 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 	if !tables.revisions() {
 		return nil, fmt.Errorf("read the block nodes of a %q: its revisions are not recorded", string(kind))
 	}
-	maker := "t.author"
+	maker, options := "t.author", "null::jsonb"
 	if tables.makers {
 		maker = "coalesce(b.made_by, t.author)"
 	}
+	if kind == ItemAsk {
+		options = "t.options"
+	}
+	storedJoin, storedColumns, seen := visibleStoredKind(kind.BlockKind(), "b.node_id", "$3")
 	rows, err := q.Query(ctx, `
 		select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_revision, b.changed_at, b.removed_at,
-		       t.id::text, t.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), `+maker+`,
-		       `+kind.postMarkColumns("t")+`
+		       t.id::text, t.issue_key, coalesce(i.project_key, a.project_key, ''), coalesce(a.slug, ''), `+maker+`, `+options+`,
+		       `+storedColumns+`, `+kind.postMarkColumns("t")+`
 		from `+tables.blocks+` b
 		join `+tables.items+` t on t.id = b.`+tables.item+`
 		left join issues i on i.key = t.issue_key
 		left join artifacts a on a.id = t.artifact_id
+		`+storedJoin+`
 		where b.node_id = any($1) and ($2 or b.position is not null)
-		and `+VisibleKind(kind.BlockKind(), "b.node_id", "$3"), ids, includeRemoved, VisibilityArg(who))
+		and `+seen, ids, includeRemoved, VisibilityArg(who))
 	if err != nil {
 		return nil, fmt.Errorf("load %s block nodes: %w", string(kind), err)
 	}
 	defer rows.Close()
 	blocks := []itemBlockNode{}
+	var askOptions []model.AskOption
 	for rows.Next() {
 		var block itemBlockNode
 		var nodeID, blockID, itemID, project, slug string
@@ -91,13 +105,24 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 		var madeAt *time.Time
 		var changedAt time.Time
 		var changedRevision int
-		var author []byte
+		var author, storedOptions []byte
+		var stored StoredNode
 		var marks postMarks
 		if err := rows.Scan(append([]any{&nodeID, &blockID, &block.excerpt, &madeAt, &changedRevision, &changedAt, &block.removedAt,
-			&itemID, &issueKey, &project, &slug, &author}, marks.targets()...)...); err != nil {
+			&itemID, &issueKey, &project, &slug, &author, &storedOptions, &stored.State, &stored.Visibility}, marks.targets()...)...); err != nil {
 			return nil, fmt.Errorf("scan %s block node: %w", string(kind), err)
 		}
 		authors, err := storedActor(author)
+		if err == nil && kind == ItemAsk {
+			err = decodeAskOptions(storedOptions, &askOptions, itemID)
+		}
+		if err != nil && kind == ItemAsk {
+			// A part of an ask whose maker is no actor, or whose ask's options are no list of
+			// options, is left out and logged, as such an ask is (loadAskNodes).
+			slog.Warn("dispatch: a part of an ask whose stored value does not parse is left out of the read",
+				"block", nodeID, "err", err)
+			continue
+		}
 		if err != nil {
 			return nil, fmt.Errorf("decode the author of block %s: %w", nodeID, err)
 		}
@@ -120,6 +145,7 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 		if block.node.DeletedAt, block.node.DeletedBy, err = marks.deleted(); err != nil {
 			return nil, fmt.Errorf("block node %s: %w", nodeID, err)
 		}
+		setStored(&block.node, stored)
 		blocks = append(blocks, block)
 	}
 	return blocks, rows.Err()
@@ -141,15 +167,21 @@ func itemBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind ItemKi
 // blocks resolve to no node: no reference names one, and an edge at one is omitted as at any
 // node that does not exist;
 // GET /api/v1/messages/{id}/blocks reads them under the conversation's read rule.
+//
+// Its predicate and its stored state and visibility are read in one probe of its `graph_nodes`
+// row rather than two (visibleStoredKind), as itemBlockNodes reads a comment's blocks.
 func loadMessageBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind string, _ bool, ids []string, nodes map[[2]string]resolvedNode) error {
+	storedJoin, storedColumns, seen := visibleStoredKind("message_block", "b.node_id", "$2")
 	rows, err := q.Query(ctx, `
 		select b.node_id, b.block_id, b.excerpt, b.made_at, b.changed_at,
-		       m.id::text, m.issue_key, coalesce(i.project_key, ''), m.author, `+ItemMessage.postMarkColumns("m")+`
+		       m.id::text, m.issue_key, coalesce(i.project_key, ''), m.author, `+storedColumns+`,
+		       `+ItemMessage.postMarkColumns("m")+`
 		from message_blocks b
 		join messages m on m.id = b.message_id
 		left join issues i on i.key = m.issue_key
+		`+storedJoin+`
 		where b.node_id = any($1) and b.position is not null and m.issue_key is not null
-		and `+VisibleKind("message_block", "b.node_id", "$2"), ids, VisibilityArg(who))
+		and `+seen, ids, VisibilityArg(who))
 	if err != nil {
 		return fmt.Errorf("load message block nodes: %w", err)
 	}
@@ -159,8 +191,10 @@ func loadMessageBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind
 		var issueKey *string
 		var author []byte
 		var madeAt, changedAt time.Time
+		var stored StoredNode
 		var marks postMarks
-		if err := rows.Scan(append([]any{&nodeID, &blockID, &excerpt, &madeAt, &changedAt, &messageID, &issueKey, &project, &author}, marks.targets()...)...); err != nil {
+		if err := rows.Scan(append([]any{&nodeID, &blockID, &excerpt, &madeAt, &changedAt, &messageID, &issueKey, &project, &author,
+			&stored.State, &stored.Visibility}, marks.targets()...)...); err != nil {
 			return fmt.Errorf("scan message block node: %w", err)
 		}
 		authors, err := storedActor(author)
@@ -184,6 +218,7 @@ func loadMessageBlockNodes(ctx context.Context, q Queryer, who model.Actor, kind
 		if node.DeletedAt, node.DeletedBy, err = marks.deleted(); err != nil {
 			return fmt.Errorf("message block node %s: %w", nodeID, err)
 		}
+		setStored(&node, stored)
 		nodes[[2]string{kind, nodeID}] = resolvedNode{GraphNode: node, text: excerpt}
 	}
 	return rows.Err()
@@ -282,7 +317,7 @@ func ItemBlockAt(ctx context.Context, q Queryer, kind ItemKind, itemID, blockID 
 		select coalesce((select s.revision from `+tables.state+` s where s.`+tables.item+` = $1::uuid), 0),
 		       (select t.text from `+tables.texts+` t where t.`+tables.item+` = $1::uuid and t.block_id = $2 and t.revision <= $3::bigint
 		        order by t.revision desc limit 1),
-		       (select max(t.revision) from `+tables.texts+` t where t.`+tables.item+` = $1::uuid and t.block_id = $2 and t.text is null)
+		       `+itemRemovedAtSQL(tables, "$1::uuid", "$2")+`
 	`, itemID, blockID, revision).Scan(&read.Current, &read.Text, &removed); err != nil {
 		return ItemBlockRevision{}, fmt.Errorf("read block %q of %s %s at revision %d: %w", blockID, string(kind), itemID, revision, err)
 	}
@@ -290,6 +325,15 @@ func ItemBlockAt(ctx context.Context, q Queryer, kind ItemKind, itemID, blockID 
 		read.RemovedRevision = *removed
 	}
 	return read, nil
+}
+
+// itemRemovedAtSQL is the latest revision of the item whose uuid is the SQL item that recorded its
+// block block removed, over the kind's tables, as a scalar expression over the SQL item and block,
+// null where none did: ItemBlockRevision's RemovedRevision, and the revision above the one a lens on
+// a block no current revision holds names it at (pinnedParentSQL), as removedAtSQL is a document's.
+func itemRemovedAtSQL(tables itemTables, item, block string) string {
+	return `(select max(removal.revision) from ` + tables.texts + ` removal
+		where removal.` + tables.item + ` = ` + item + ` and removal.block_id = ` + block + ` and removal.text is null)`
 }
 
 // RemovedItemBlockNode is the node of block nodeID of an item of kind — a block of a comment, a

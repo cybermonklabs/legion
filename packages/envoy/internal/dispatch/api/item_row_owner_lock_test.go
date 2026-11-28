@@ -218,9 +218,12 @@ var itemRowLockTable = []itemRowLockCase{
 		ready:    readySessionReply,
 	},
 	{
+		// The backfill pins a comment's anchor in its one transaction of the row
+		// (backfillAnchorBlock), through pinCommentAnchorBlock, the statement this row's comment
+		// takes.
 		name:     "the anchor-block backfill",
 		file:     "internal/dispatch/docs/anchor_blocks.go",
-		function: "backfillAnchorBlock",
+		function: "pinCommentAnchorBlock",
 		ready:    readyAnchorBlockBackfill,
 	},
 }

@@ -103,7 +103,12 @@ func closureRefKeys(t *testing.T, handler http.Handler, key string) []string {
 // and each resolver answers them as an address nobody holds: 404, no link, no member. A chain that
 // ends at an ask node - a section's heading whose answered ask a person removed - ends there: the
 // reference names the ask's node, the block link names the ask, and the closure holds the
-// document the ask's row names, the spec.
+// document the ask's block stands in, the spec.
+//
+// The issue is born converted, so its spec's blocks are its room's nodes, `<tree ref_key>#<block>`,
+// and each chain to a block ends at the spec's own address of its block: the resolution takes the
+// moves first and then the room (T17 of the issue-tree plan), so each resolver reaches the room's
+// node, and the closure the spec, whose fragment of the room holds it.
 func TestEachResolverFollowsAMove(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
@@ -127,6 +132,10 @@ func TestEachResolverFollowsAMove(t *testing.T) {
 	cycleA, cycleB := notes.RefKey+"#cycle-a", notes.RefKey+"#cycle-b"
 	nineFrom, eightFrom := notes.RefKey+"#nine-0", notes.RefKey+"#eight-0"
 	shipItKey, holdItKey := specKey+"#ship_it", specKey+"#hold-it"
+	// The spec of an issue born converted is a fragment of its tree's room, whose ref_key keys its
+	// blocks' nodes.
+	treeKey := blockKeyOf(t, database, issue.PrimaryArtifactID)
+	roomShipIt, roomHoldIt := treeKey+"#ship_it", treeKey+"#hold-it"
 	pairs := [][2]string{{oldOne, notes.RefKey + "#hop-two"}, {notes.RefKey + "#hop-two", shipItKey}, {cycleA, cycleB}, {cycleB, cycleA}}
 	pairs = append(pairs, movedChain(notes.RefKey, "nine-", nineFrom, holdItKey, 8)...)
 	pairs = append(pairs, movedChain(notes.RefKey, "eight-", eightFrom, holdItKey, 7)...)
@@ -164,7 +173,7 @@ func TestEachResolverFollowsAMove(t *testing.T) {
 		from, want, ask string
 		moved           bool
 	}{
-		{oldOne, shipItKey, "", true}, {eightFrom, holdItKey, "", true}, {shipItKey, shipItKey, "", true},
+		{oldOne, roomShipIt, "", true}, {eightFrom, roomHoldIt, "", true}, {shipItKey, roomShipIt, "", true},
 		{toAsk, askAddress, askID, true},
 		{cycleA, "", "", false}, {nineFrom, "", "", false},
 	} {
@@ -185,8 +194,8 @@ func TestEachResolverFollowsAMove(t *testing.T) {
 	shipItText := textAt("dispatch://" + issue.Key + "/spec#b-ship%5Fit")
 	holdItText := textAt("dispatch://" + issue.Key + "/spec#b-hold-it")
 	for _, resolved := range []struct{ block, wantID, wantBlock, wantText string }{
-		{"old-one", shipItKey, "ship_it", shipItText},
-		{"eight-0", holdItKey, "hold-it", holdItText},
+		{"old-one", roomShipIt, "ship_it", shipItText},
+		{"eight-0", roomHoldIt, "hold-it", holdItText},
 	} {
 		response := dispatchReferences(t, handler, cite(resolved.block), "alice")
 		if response.Code != http.StatusOK {
@@ -223,13 +232,13 @@ func TestEachResolverFollowsAMove(t *testing.T) {
 	for _, link := range links {
 		reached[link.To.Kind+":"+link.To.ID] = true
 	}
-	if len(links) != 3 || !reached["block:"+shipItKey] || !reached["block:"+holdItKey] || !reached[graphstore.KindAsk+":"+askID] {
+	if len(links) != 3 || !reached["block:"+roomShipIt] || !reached["block:"+roomHoldIt] || !reached[graphstore.KindAsk+":"+askID] {
 		t.Fatalf("the block links from %s to the spec are %#v, want one to %s, one to %s and one to the ask %s, and none through the cycle or the chain of nine",
-			citingRef, links, shipItKey, holdItKey, askID)
+			citingRef, links, roomShipIt, roomHoldIt, askID)
 	}
 
 	// GET /api/v1/issues/{key}/references, each issue's comment citing one old address: the chain
-	// to the ask reaches the document the ask's row names, the spec.
+	// to the ask reaches the document the ask's block stands in, the spec.
 	for block, wantSpec := range map[string]bool{"old-one": true, "eight-0": true, "to-ask-0": true, "cycle-a": false, "nine-0": false} {
 		members := closureRefKeys(t, handler, commented[block])
 		holds := len(members) == 1 && members[0] == specKey

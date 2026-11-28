@@ -77,17 +77,21 @@ function drawnAttributes(
     ) {
       return [];
     }
-    if (type?.attributes[name]?.kind !== "block[]") {
+    const declared = type?.attributes[name];
+    if (declared?.kind !== "block[]") {
       return [{ children: [attributeValue(value)], name }];
     }
     // The node's value is the array the editor's own parser made of the attribute as markdown
     // wrote it (`parseAttribute`, `@legion/proof-editor`), and markdown and HTML carry those
     // same references joined by exactly one space, so reading the joined value serves either
-    // shape through the parser the editor, the document service and the Plan tab share, and
-    // accepts exactly the values a writer is allowed to store. One it refuses, which no stored
-    // block holds, points at nothing.
+    // shape through the parser the editor, the document service and the Plan tab share, under
+    // the item kinds the attribute declares, and accepts exactly the values a writer is allowed
+    // to store. One it refuses, which no stored block holds, points at nothing.
     const pointers =
-      parseBlockPointerValue(Array.isArray(value) ? value.join(" ") : String(value)) ?? [];
+      parseBlockPointerValue(
+        Array.isArray(value) ? value.join(" ") : String(value),
+        declared.items
+      ) ?? [];
     return pointers.length === 0
       ? []
       : [

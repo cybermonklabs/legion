@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  The issue read (`GET /api/v1/issues/{key}`) answers `queries`: the issue's queries in the order
+  spec, verification, plan, decisions, each `{query, artifact_id, takes, subtree}`. On a converted
+  issue each names its query node. On an issue that has not converted, spec, verification and plan
+  name the issue's role documents, and decisions is absent. `verification_artifact_id` and
+  `plan_artifact_id` name the same artifacts, kept for one release for a page or a client of the
+  release before.
+
+  The Decisions read (`GET /api/v1/issues/{key}/decisions`) answers from the decisions query, the
+  same nodes as the tree read's `?view=decisions`, and is kept for one release. The decisions query
+  takes an ask only where its kind is `question`: a request of a document's approval is no node of
+  it, and no tree read gives an answered request a `decision` member.
+
+  The issue page's Decisions tab and the spec's decision marks read `?view=decisions`, and the
+  Verification and Plan tabs find their documents through `queries`.
+time: 2026-11-26T01:46:54Z
+custom:
+    Issue: INFRA-1253

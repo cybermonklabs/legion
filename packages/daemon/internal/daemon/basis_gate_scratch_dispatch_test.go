@@ -262,6 +262,21 @@ func catchUpGate(t *testing.T, notice record.Notice) record.CatchUpGate {
 // Where it records parent in none, it waits only for the daemon to apply the link: that the link
 // told nobody is read once root's step has opened (untoldAtTheLink).
 func (r *personHandoverRig) linkUnder(root, parent scratchIssue, live bool) {
+	r.t.Helper()
+	r.link(root, parent, live, 0)
+}
+
+// linkUnderWithin is linkUnder of root under parent in a live tree, where the daemon must tell R1's
+// path within bound rather than by the test binary's deadline: a daemon that never tells it fails
+// the test there, naming what it waited for, and leaves the deadline to the tests after it.
+func (r *personHandoverRig) linkUnderWithin(root, parent scratchIssue, bound time.Duration) {
+	r.t.Helper()
+	r.link(root, parent, true, bound)
+}
+
+// link is linkUnder, whose wait for the daemon's words ends at bound where bound is above zero
+// (linkUnderWithin) and at the test binary's deadline otherwise.
+func (r *personHandoverRig) link(root, parent scratchIssue, live bool, bound time.Duration) {
 	t := r.t
 	t.Helper()
 	r.patch(root.Key, asPerson, map[string]any{"parent": parent.Key})
@@ -274,9 +289,13 @@ func (r *personHandoverRig) linkUnder(root, parent scratchIssue, live bool) {
 		return strings.Contains(words, path) && strings.Contains(words, "with register_gate's basis.") &&
 			!strings.Contains(words, "only through that tree's own issues")
 	}
-	testwait.Eventually(t, "the daemon to tell "+root.Key+" that it can be written as a view on "+parent.Key, func() bool {
-		return slices.ContainsFunc(r.messages(root.Key), names)
-	})
+	what := "the daemon to tell " + root.Key + " that it can be written as a view on " + parent.Key
+	told := func() bool { return slices.ContainsFunc(r.messages(root.Key), names) }
+	if bound > 0 {
+		testwait.WithinPolling(t, bound, testwait.Poll, what, told)
+	} else {
+		testwait.Eventually(t, what, told)
+	}
 	if notices := childStatusNotices(t, r.pool, parent.Key); !slices.ContainsFunc(notices, names) {
 		t.Fatalf("the child-status notices to the architect of %s = %q, want one naming R1's path (%q)", parent.Key, notices, path)
 	}
@@ -636,9 +655,38 @@ func (d *consumerDrop) count() int {
 }
 
 // insertParagraph is the edit that appends one paragraph to a document: a new version that changes
-// no block.
+// no block. A paragraph is no node the Spec query takes, so under R14 Dispatch carries an approval
+// of the version before it to the version of a spec this edit writes; a proof that needs a version
+// of a spec the person has not approved changes a requirement's words (amendRequirement) or the
+// memo's (memoSpec) instead.
 func insertParagraph(text string) map[string]string {
 	return insertAtEnd(text + "\n")
+}
+
+// amendRequirement is the edit that adds words to the sentence of the requirement block id, as
+// requirementBlock writes it, and keeps its id: it changes a node the Spec query takes, so no
+// approval of the version before it covers the version it writes (R14).
+func amendRequirement(id, words string) map[string]string {
+	sentence := requirementSentence(id)
+	return map[string]string{"op": "replace", "find": sentence, "with": sentence + " " + words}
+}
+
+// memoSpec is a root's primary document that opens with the memo callout holding words, then
+// personHandoverSpec's text. The memo is the one node the Spec query takes of a view's spec (R14,
+// R23), so a version that changes its words (revise) is one no approval of the version before it
+// covers, whether the root stands as a view or as a root of its own.
+func memoSpec(words string) string {
+	return ":::callout{#memo}\n" + words + "\n:::\n\n" + personHandoverSpec
+}
+
+// latestVersion is the latest version of artifactID as the daemon's design gate reads it
+// (gateApproval), the version a registration of it names. A write that moves the record of a
+// query of the issue without a version of that query's document, as a requirement written into
+// another document of an issue whose spec is its own does, has Dispatch append one before the
+// write answers (R14), so no edit of the document answered its number.
+func (r *personHandoverRig) latestVersion(artifactID string) int {
+	r.t.Helper()
+	return r.gateApproval(artifactID).LatestVersion
 }
 
 // insertAtEnd is the edit that appends markdown, as written, to the end of a document.
@@ -672,7 +720,8 @@ func insertAtEnd(markdown string) map[string]string {
 //     R's document. The seed then runs and leaves the step open.
 //  8. R is taken to done: P's architect is told again, and P's first phase starts.
 //  9. The repeats, each read as steps 7 and 8 read the first case (readAncestorOpening): P's
-//     approval carried by Dispatch in the person's name; P labelled and on the backlog, no live
+//     approval standing at a later version by Dispatch's digest verdict, with no carried review;
+//     P labelled and on the backlog, no live
 //     tree while R opens, so the link of R under P posts no message on R and queues no notice to
 //     an architect of P's tree, no resting-root row is queued and no architect of P catches up
 //     until P is admitted, whose start task then names R; and R holding the person's approval of
@@ -717,8 +766,9 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	p2 := specBlock(parent.Key, "p2")
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}))
 
-	// 4. The negative control: P's latest version is one the person has not approved.
-	stale := r.editDocument(parent.PrimaryArtifactID, insertParagraph("A later paragraph nobody approved."))
+	// 4. The negative control: P's latest version is one the person has not approved. A paragraph's
+	// version would carry the person's approval (R14), so the version adds words to P3.
+	stale := r.editDocument(parent.PrimaryArtifactID, amendRequirement("p3", "A later sentence nobody approved."))
 	r.quiet(root.Key, parent.Key)
 	messages := len(r.messages(root.Key))
 	status, refusal := r.gateCall(basisCall(rootGrant(), root, 1, parent.PrimaryArtifactID, stale, reason))
@@ -783,20 +833,29 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 			t.Logf("%s's gate seed ran after the opening and left the step open on %s's approval", root.Key, parent.Key)
 		}})
 
-	// 9a. P's approval carried by Dispatch in the person's name.
+	// 9a. P's approval standing at a later version by Dispatch's digest verdict: the person's answer
+	// writes one version, which changes only the server-owned attributes of the ask's block, and
+	// Dispatch keeps the approval of the version before it standing there, with no digest owed and
+	// no carried review written (standingApproval). P's gate and R's basis register on that later
+	// version, and the basis names the person's approval as Dispatch recorded it.
 	carriedRoot := r.create(asSession, "Harbor crane scheduler", labelled)
 	carriedGrant := r.admit(carriedRoot.Key)
 	carriedParent := r.create(asSession, "Shipping manifest platform", parentOf("Shipping", personHandoverBlock))
 	ask := r.blockAsk(carriedParent.Key, "wave")
 	before := r.approve(carriedParent.PrimaryArtifactID)
 	r.answerBlock(ask, personHandoverAnswer)
-	carried := r.carriedReview(carriedParent.PrimaryArtifactID, before.Version)
+	standing := r.standingApproval(carriedParent.PrimaryArtifactID, before.Version, before.Version+1)
+	carried := scratchReview{Version: standing.LatestVersion, State: "approved", Actor: before.Actor, CreatedAt: before.CreatedAt}
 	carriedParentGrant := r.admit(carriedParent.Key)
-	r.linkUnder(carriedRoot, carriedParent, true)
+	// A daemon that reads no digest verdict (dispatch.Approval.Stands, dispatch://INFRA-6065) tells R
+	// nothing here, since the person approved an older version of P than its latest, so the link's
+	// wait has a bound of its own: on such a daemon the test fails by name within minutes and leaves
+	// the binary's deadline to the tests after it.
+	r.linkUnderWithin(carriedRoot, carriedParent, 3*time.Minute)
 	r.writeDocument(carriedRoot.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{specBlock(carriedParent.Key, "p2")}}))
 	r.registerApprovedGate(carriedParent.Key, carriedParent.PrimaryArtifactID, carried.Version, carriedParentGrant)
 	r.registerBasis(carriedGrant(), carriedRoot, 1, carriedParent, carried.Version, reason)
-	t.Logf("Dispatch carried the person's approval of version %d of %s to version %d, and %s registered on it", before.Version, carriedParent.Key, carried.Version, carriedRoot.Key)
+	t.Logf("Dispatch keeps the person's approval of version %d of %s standing at version %d, and %s registered on it", before.Version, carriedParent.Key, carried.Version, carriedRoot.Key)
 	r.readAncestorOpening(ancestorOpening{root: carriedRoot, parent: carriedParent, rootVersion: 1, approval: carried, reason: reason, parentLive: true})
 
 	// 9b. P labelled and on the backlog: no live tree while R opens, so the link posts no message
@@ -816,14 +875,17 @@ func TestBasisGateOpensOnAnAncestorApproval(t *testing.T) {
 	r.registerBasis(backlogGrant(), backlogRoot, 1, backlogParent, backlogApproval.Version, reason)
 	r.readAncestorOpening(ancestorOpening{root: backlogRoot, parent: backlogParent, rootVersion: 1, approval: backlogApproval, reason: reason})
 
-	// 9c. R holding the person's approval of v2 of its own document while at v4.
-	olderRoot := r.create(asSession, "Violin tuning assistant", labelled)
+	// 9c. R holding the person's approval of v2 of its own document while at v4. A paragraph's
+	// version would carry that approval (R14), and so would any version of a view's spec that leaves
+	// its memo (R23), so R opens with a memo and v3 changes the memo's words.
+	olderMemo := "The assistant tunes by ear."
+	olderRoot := r.create(asSession, "Violin tuning assistant", map[string]any{"labels": []string{"legion"}, "spec": memoSpec(olderMemo)})
 	olderGrant := r.admit(olderRoot.Key)
 	second := r.editDocument(olderRoot.PrimaryArtifactID, insertParagraph("The assistant listens before it tunes."))
 	if approved := r.approve(olderRoot.PrimaryArtifactID); approved.Version != second {
 		t.Fatalf("the person approved %s's spec at version %d, want %d", olderRoot.Key, approved.Version, second)
 	}
-	r.editDocument(olderRoot.PrimaryArtifactID, insertParagraph("It tunes one string at a time."))
+	r.revise(olderRoot.PrimaryArtifactID, olderMemo, "The assistant tunes by ear, one string at a time.")
 	fourth := r.editDocument(olderRoot.PrimaryArtifactID, insertParagraph("It stops when the string holds."))
 	olderParent := r.create(asSession, "Orchestra rehearsal planner", parentOf("Rehearsals", ""))
 	olderApproval := r.approve(olderParent.PrimaryArtifactID)
@@ -887,13 +949,66 @@ func (r *personHandoverRig) dispatchRowsDone(key string) {
 	})
 }
 
+// digestsFilled waits until no document of key owes Dispatch its digest: Dispatch's artifact read
+// of each (GET /api/v1/artifacts/{id}) answers no approval.digest_owed true, and a document with no
+// approval, or whose digest_owed is null or absent (no query covers it), owes none. The fill after
+// a version's write gives the version's digest and its artifact.digest, from which a daemon that
+// reads Dispatch's verdict (dispatch://INFRA-6065) records the verdict on the root's gate row.
+func (r *personHandoverRig) digestsFilled(key string) {
+	t := r.t
+	t.Helper()
+	testwait.Eventually(t, "Dispatch to fill the digest of every document of "+key, func() bool {
+		var documents []struct {
+			ID string `json:"id"`
+		}
+		dispatchCall(t, r.baseURL, http.MethodGet, "/api/v1/issues/"+key+"/artifacts", nil, &documents)
+		for _, document := range documents {
+			var shown struct {
+				Approval *scratchVerdict `json:"approval"`
+			}
+			dispatchCallAs(t, r.baseURL, http.MethodGet, "/api/v1/artifacts/"+document.ID, nil, &shown, asSession)
+			if shown.Approval != nil && shown.Approval.DigestOwed != nil && *shown.Approval.DigestOwed {
+				return false
+			}
+		}
+		return true
+	})
+}
+
+// digestsTaken waits until no design-gate row of key owes Dispatch's digest (design_gates.digest_owed:
+// the verdict the row holds is for a version below its latest), so the daemon has applied the
+// artifact.digest of every version it applied; quiet waits for no such event, since a daemon that
+// reads no verdict never applies one. The row is read whole as JSON: the schema of such a daemon
+// has no digest_owed column, and each of its rows owes none.
+func (r *personHandoverRig) digestsTaken(key string) {
+	t := r.t
+	t.Helper()
+	testwait.Eventually(t, "the daemon to take Dispatch's digest of each version it applied of "+key, func() bool {
+		var owed int
+		if err := r.pool.QueryRow(t.Context(), `select count(*) from design_gates g where g.issue = $1 and coalesce((to_jsonb(g) ->> 'digest_owed')::boolean, false)`,
+			key).Scan(&owed); err != nil {
+			t.Fatalf("count the design gates of %s that owe Dispatch's digest: %v", key, err)
+		}
+		return owed == 0
+	})
+}
+
 func (c basisCases) refused(name string, call map[string]any, status int, code string, says ...string) {
 	t := c.r.t
 	t.Helper()
-	// The daemon's own writes to Dispatch for the root run first, so nothing of them lands
-	// between the two snapshots.
+	// Dispatch's digest of every version of the root's documents is filled; the daemon applies the
+	// newest event and digest of each ancestor document a step of the root stands on
+	// (basisDigestsTaken); then the daemon's own writes to Dispatch for the root run and the root's
+	// digests are taken. So neither a write nor a late digest, the root's or the ancestor's, moves
+	// the root's record or its gate between the two snapshots. The waits on the ancestor come before
+	// those on the root's rows: a daemon that reads Dispatch's verdict closes a step open on an
+	// ancestor's approval at the ancestor's digest that says it no longer stands, and that close
+	// queues the root's writes.
+	c.r.digestsFilled(c.root.Key)
+	c.r.basisDigestsTaken(c.root.Key)
 	c.r.dispatchRowsDone(c.root.Key)
 	c.r.quiet(c.root.Key)
+	c.r.digestsTaken(c.root.Key)
 	before := c.r.snapshot(c.root.Key)
 	got, failure := c.r.gateCall(call)
 	if got != status || failure.Code != code {
@@ -972,13 +1087,17 @@ func TestBasisGateRefusals(t *testing.T) {
 	r.boot()
 	labelled := map[string]any{"labels": []string{"legion"}}
 
-	// R, a root that ran.
-	root := r.create(asSession, "Lighthouse beacon controller", labelled)
+	// R, a root that ran. Its spec opens with a memo, whose words R's versions below change where the
+	// person's approval must stand on an older version (memoSpec).
+	rootMemo := "The beacon guides ships at night."
+	root := r.create(asSession, "Lighthouse beacon controller", map[string]any{"labels": []string{"legion"}, "spec": memoSpec(rootMemo)})
 	grant := r.admit(root.Key)
 
 	// P: labelled by a session and in progress, so the daemon records nothing of it; its primary
 	// document at version 2 marks P1 to P3, P:4, PN and PGONE, and the person approved it. Its
-	// Verification document serves its own P1, and its notes document, of no role, marks D1.
+	// Verification document serves its own P1, and another document of it, notes.md, marks D1:
+	// Dispatch refuses a new decisions.md (409 DECISIONS_ARE_NODES), and the daemon reads no
+	// decisions document, as the merge with main left internal/api's TestBasisGateRefusals.
 	parent := r.create(asSession, "Coastal navigation program", map[string]any{"labels": []string{"legion"},
 		"spec": requirementsMarkdown("Navigation", "p1", "p2", "p3", "p:4", "pn", "pgone")})
 	r.setStatus(parent.Key, "in_progress")
@@ -987,8 +1106,12 @@ func TestBasisGateRefusals(t *testing.T) {
 	r.editDocument(parent.PrimaryArtifactID, insertParagraph("The program keeps its old charts."))
 	pv := r.approve(parent.PrimaryArtifactID).Version
 
-	// S, R's sibling under P, marking S1.
-	sibling := r.create(asPerson, "Tidal gauge calibration", map[string]any{"parent": parent.Key, "spec": requirementsMarkdown("Gauges", "s1")})
+	// S, R's sibling under P, marking S1. Dispatch refuses a requirement written on an issue born
+	// under P, which is a view on P's spec (R23 of the issue tree's spec, 409
+	// REQUIREMENT_BELONGS_TO_ANCESTOR), so S is filed as a root, whose spec S1 makes its own, and
+	// then set under P.
+	sibling := r.create(asPerson, "Tidal gauge calibration", map[string]any{"spec": requirementsMarkdown("Gauges", "s1")})
+	r.patch(sibling.Key, asPerson, map[string]any{"parent": parent.Key})
 
 	// R under P, its one check serving P2.
 	r.patch(root.Key, asPerson, map[string]any{"parent": parent.Key})
@@ -1024,13 +1147,19 @@ func TestBasisGateRefusals(t *testing.T) {
 	cases.refused("P's latest review a changes request", call(), http.StatusConflict, "BASIS_NOT_APPROVED",
 		fmt.Sprintf("a changes request on version %d by user:smoke", pv))
 	r.approve(parent.PrimaryArtifactID)
-	newer := r.editDocument(parent.PrimaryArtifactID, insertParagraph("The charts move to the new datum."))
+	// A paragraph's version would carry that approval (R14), so P's newer version adds words to P3.
+	newer := r.editDocument(parent.PrimaryArtifactID, amendRequirement("p3", "The charts move to the new datum."))
 	cases.refused("the person's approval of a version older than P's latest", with(call(), "basisVersion", newer), http.StatusConflict, "BASIS_NOT_APPROVED",
 		fmt.Sprintf("an approval of version %d by user:smoke, older than its latest version %d", pv, newer))
 	pv = r.approve(parent.PrimaryArtifactID).Version
 
-	// R's own documents.
+	// R's own documents. R under P is a view on P's spec, on which Dispatch refuses a requirement
+	// (R23, 409 REQUIREMENT_BELONGS_TO_ANCESTOR), so R's first requirement is written while R stands
+	// under no issue, which makes R's spec its own in Dispatch and lets the later one through; R
+	// stands under P again before each call, and the daemon judges the view by R's documents alone.
+	r.patch(root.Key, asPerson, map[string]any{"parent": nil})
 	rv = r.editDocument(root.PrimaryArtifactID, insertAtEnd(":::requirement{#r1}\n**R1.** The beacon's own requirement.\n:::\n"))
+	r.patch(root.Key, asPerson, map[string]any{"parent": parent.Key})
 	cases.refused("R's primary document holding a requirement block", call(), http.StatusConflict, "VIEW_HOLDS_REQUIREMENT",
 		root.Key+"'s primary document", "holds requirement block r1")
 	cases.refused("a version of R's document below its latest", with(call(), "version", rv-1), http.StatusConflict, "ROOT_VERSION_NOT_LATEST",
@@ -1040,10 +1169,31 @@ func TestBasisGateRefusals(t *testing.T) {
 	cases.refused("a check block in R's primary document that serves P2", call(), http.StatusConflict, "VIEW_CHECK_OUTSIDE_VERIFICATION",
 		root.Key+"'s primary document", "holds check block ks")
 	rv = r.editDocument(root.PrimaryArtifactID, map[string]string{"op": "delete", "block": "ks"})
+	// main's case of a requirement block in R's decisions document is gone, as it is from
+	// internal/api's TestBasisGateRefusals: decisions are nodes of the spec, so the daemon reads only
+	// R's primary and Verification documents (documentPart), and Dispatch refuses the decisions
+	// document itself, which leaves R, and so any view, no decisions document to hold a requirement.
+	status, answer := dispatchAnswerAs(t, r.baseURL, http.MethodPost, "/api/v1/issues/"+root.Key+"/artifacts",
+		map[string]any{"name": "decisions.md", "content": requirementsMarkdown("Decisions", "rd1")}, asPerson)
+	var decisionsRefusal struct {
+		Code string `json:"code"`
+	}
+	if err := json.Unmarshal(answer, &decisionsRefusal); err != nil || status != http.StatusConflict || decisionsRefusal.Code != "DECISIONS_ARE_NODES" {
+		t.Fatalf("Dispatch answered R's decisions.md holding requirement block rd1 with %d %s, want 409 DECISIONS_ARE_NODES", status, answer)
+	}
+	if token := r.documentToken(root.Key, "decisions.md"); token != "" {
+		t.Fatalf("after the refusal %s holds a decisions.md at the token %s, want none", root.Key, token)
+	}
+	t.Logf("Dispatch refused R's decisions.md holding requirement block rd1: %s", answer)
+	// RV1 is a requirement of R's spec, which is R's own, so its upload moves the Spec query's
+	// record, and Dispatch appends a version of R's primary document (R14), which the call names;
+	// so does the upload that takes RV1 away.
 	r.writeDocument(root.Key, "verification.md", onlyP2+":::requirement{#rv1}\n**RV1.** The beacon's own requirement.\n:::\n")
+	rv = r.latestVersion(root.PrimaryArtifactID)
 	cases.refused("a requirement block in R's Verification document", call(), http.StatusConflict, "VIEW_HOLDS_REQUIREMENT",
 		root.Key+"'s Verification document", "holds requirement block rv1")
 	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}, verificationCheck{id: "k2"}))
+	rv = r.latestVersion(root.PrimaryArtifactID)
 	cases.refused("a check of R that serves nothing", call(), http.StatusConflict, "VIEW_CHECK_SERVES_NOTHING", "check k2 of "+root.Key)
 
 	// Checks Dispatch would refuse under P: S's requirement is written while R stands under S.
@@ -1121,7 +1271,10 @@ func TestBasisGateRefusals(t *testing.T) {
 	cases.opens("R's latest version approved by the person, with a basis named as well", call(), func(gate record.DesignGate) bool {
 		return gate.Basis == nil && gate.ApprovedVersion != nil && *gate.ApprovedVersion == rv
 	})
-	rv = r.editDocument(root.PrimaryArtifactID, insertParagraph("The beacon dims at dawn."))
+	// A paragraph's version would carry the person's approval (R14), so each version of R that must
+	// leave it on an older version changes the memo's words.
+	dimmed := "The beacon guides ships at night and dims at dawn."
+	rv = r.revise(root.PrimaryArtifactID, rootMemo, dimmed)
 	cases.opens("R holding the person's approval of an older version of its own document", call(), func(gate record.DesignGate) bool {
 		kept := gate.ApprovedByPerson()
 		return onBasis(parent.Key, pv, pinned("p2"))(gate) && kept != nil && kept.Version == rv-1 && *gate.ApprovedVersion == rv
@@ -1134,7 +1287,7 @@ func TestBasisGateRefusals(t *testing.T) {
 	cases.refused("a changes request on R's last version followed by a version with an open approval request", call(), http.StatusConflict,
 		"ROOT_CHANGES_REQUESTED", fmt.Sprintf("changes request on version %d by user:smoke", rv-1), "whatever its approval shows")
 	r.approve(root.PrimaryArtifactID)
-	rv = r.editDocument(root.PrimaryArtifactID, insertParagraph("The old lamp is tested weekly."))
+	rv = r.revise(root.PrimaryArtifactID, dimmed, "The beacon guides ships at night, dims at dawn, and its old lamp is tested weekly.")
 	cases.opens("a changes request on one version followed by the person's approval of the next, with R one past it", call(), func(gate record.DesignGate) bool {
 		kept := gate.ApprovedByPerson()
 		return onBasis(parent.Key, pv, pinned("p2"))(gate) && kept != nil && kept.Version == rv-1
@@ -1196,4 +1349,36 @@ func TestBasisGateRefusals(t *testing.T) {
 		GitHubRepo: "acme/widgets", Tree: parent.Key, Project: r.cfg.Project, Title: parent.Key, Phase: phase.Merging, Generation: 1,
 		Status: "in_progress", DispatchStatus: "in_progress", HandedOver: true, Rank: "U"})
 	cases.refused("P recorded by the daemon in merging", call(), http.StatusConflict, "BASIS_ACCEPTED", "the daemon records "+parent.Key+" in merging")
+}
+
+// A basis on an ancestor whose newest version changed its prose alone (R14 of the issue-tree
+// spec, and INFRA-1098's architect's decision of 2026-11-26,
+// dispatch://INFRA-1253/comment/dfd12b58-03ff-4f84-aa01-3020f8e7651b). P, labelled and in
+// progress, marks P1 to P3 and the person approves its latest version; then the person adds a
+// paragraph, which is no node the Spec query takes, so P's new version holds the record the person
+// approved: Dispatch keeps the approval of the older version standing at the new one, with no
+// digest owed and no carried review written (standingApproval). R, a root that ran, set under P
+// with one check serving P2, registers its spec step on that new version, and the step opens on
+// it: the daemon reads that verdict as the approval standing for P's latest version
+// (dispatch.Approval.Stands), and no person approved R's own document. A daemon that asks for an
+// approval of the latest version itself refuses BASIS_NOT_APPROVED, naming both versions as they
+// are (approvalShown).
+func TestBasisGateOpensOnAnAncestorWhoseProseMoved(t *testing.T) {
+	r := newPersonHandoverRig(t, 3)
+	r.boot()
+	root := r.create(asSession, "Weather station calibrator", map[string]any{"labels": []string{"legion"}})
+	grant := r.admit(root.Key)
+	parent := r.create(asSession, "Regional forecast overhaul", map[string]any{"labels": []string{"legion"},
+		"spec": requirementsMarkdown("Forecasts", "p1", "p2", "p3")})
+	r.setStatus(parent.Key, "in_progress")
+	approval := r.approve(parent.PrimaryArtifactID)
+	newer := r.editDocument(parent.PrimaryArtifactID, insertParagraph("The forecast reaches the coast."))
+	r.linkUnder(root, parent, false)
+	p2 := specBlock(parent.Key, "p2")
+	r.writeDocument(root.Key, "verification.md", checksMarkdown(verificationCheck{id: "k1", serves: []string{p2}}))
+	cases := basisCases{r: r, root: root}
+	cases.opens("P's prose changed after the person's approval", basisCall(grant(), root, 1, parent.PrimaryArtifactID, newer, basisReasonOf(400)),
+		onBasis(parent.Key, newer, fmt.Sprintf("%s@v%d", p2, newer)))
+	r.standingApproval(parent.PrimaryArtifactID, approval.Version, newer)
+	t.Logf("%s opened on version %d of %s, where Dispatch keeps the person's approval of version %d standing with no digest owed", root.Key, newer, parent.Key, approval.Version)
 }

@@ -53,6 +53,7 @@ var subcommands = []subcommand{
 	{"convert-decisions", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
 		return runDecisionsStep(ctx, "convert-decisions", true, args, env, stdout, stderr)
 	}},
+	{"convert-issues", convertIssues},
 	{"rebuild-refs", func(ctx context.Context, _ []string, env settingValues, stdout, _ io.Writer) int {
 		return rebuildRefs(ctx, env.get("DATABASE_URL"), loadServerURL(env), stdout)
 	}},
@@ -67,6 +68,12 @@ var subcommands = []subcommand{
 	}},
 	{"backfill-files", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return backfillFiles(ctx, args, env.get("DATABASE_URL"), strings.TrimSpace(env.get("DISPATCH_FILE_STORE_BUCKET")), stdout)
+	}},
+	{"lens-kind-add", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return lensKindAdd(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
+	}},
+	{"premortem-convert", func(ctx context.Context, args []string, env settingValues, stdout, stderr io.Writer) int {
+		return premortemConvert(ctx, args, env.get("DATABASE_URL"), stdout, stderr)
 	}},
 	{"stored-order", func(ctx context.Context, args []string, env settingValues, stdout, _ io.Writer) int {
 		return storedOrder(ctx, args, env.get("DATABASE_URL"), stdout)
@@ -321,10 +328,13 @@ func backfillBlockIDs(ctx context.Context, databaseURL string, out io.Writer) in
 // tuples of every comment, document block and block reference written before the node and
 // tuple store existed, the node of every issue, document, ask and message written before its
 // kind's writer wrote one, and the project of every comment and block node written before a node
-// named its project, in batches, one transaction each (graphcensus.Backfill). It appends no
-// event of its own: a fact whose row's own event cannot be found carries the store's sentinel
-// as its cause. It is safe to run again: a row that already names its node is left alone, so a
-// run interrupted anywhere carries on from where it stopped.
+// named its project, in batches, one transaction each (graphcensus.Backfill). It also retracts
+// each prevented_by a process of the release before left asserted at a check it dropped or at a
+// check of a document it retired, which this build retracts when it drops or retires one, and
+// prints how many on its `kind=prevented_by_retracted` line. It appends no event of its own: a
+// fact whose row's own event cannot be found carries the store's sentinel as its cause. It is safe
+// to run again: a row that already names its node is left alone, and a tuple already retracted is
+// read no more, so a run interrupted anywhere carries on from where it stopped.
 //
 // A block's parent is left to the block index: the run marks each document it touched owed
 // one, and `census --store` reads a difference on every backfilled block until that
@@ -380,43 +390,21 @@ func backfillGraphStore(ctx context.Context, databaseURL string, out io.Writer) 
 //
 // kept for one release: decisions-step
 func runDecisionsStep(ctx context.Context, name string, convert bool, args []string, env settingValues, stdout, stderr io.Writer) int {
-	flags := flag.NewFlagSet(name, flag.ContinueOnError)
-	flags.SetOutput(stderr)
-	project := flags.String("project", "", "the key of the project whose issues the step runs over (required)")
-	dryRun := flags.Bool("dry-run", false, "print what the step would do and write nothing; refused while a migration or the step's first phase is owed")
-	if err := flags.Parse(args); err != nil {
-		return 2
-	}
-	if flags.NArg() > 0 || strings.TrimSpace(*project) == "" {
-		fmt.Fprintf(stderr, "%s: usage: envoy-dispatch %s --project <KEY> [--dry-run]\n", name, name)
-		return 2
-	}
-	open := openMigrated
-	if *dryRun {
-		open = openUnmigrated
-	}
-	database, ok := open(ctx, name, env.get("DATABASE_URL"), stdout)
-	if !ok {
-		return 1
+	database, key, dryRun, code := openProjectRun(ctx, name,
+		"the key of the project whose issues the step runs over (required)",
+		"print what the step would do and write nothing; refused while a migration or the step's first phase is owed",
+		args, env, stdout, stderr)
+	if code != 0 {
+		return code
 	}
 	defer database.Pool.Close()
-	key := strings.TrimSpace(*project)
-	var known bool
-	if err := database.Pool.QueryRow(ctx, `select exists(select 1 from projects where key = $1)`, key).Scan(&known); err != nil {
-		fmt.Fprintf(stdout, "%s: read the project %q: %v\n", name, key, err)
-		return 1
-	}
-	if !known {
-		fmt.Fprintf(stderr, "%s: the database holds no project %q; --project takes a project's key as the projects table holds it\n", name, key)
-		return 2
-	}
 	documents := docs.New(docs.Deps{Store: database, Events: events.NewBroker(), ServerURL: loadServerURL(env)})
 	defer documents.Shutdown(context.Background())
 	step := docs.NewDecisionStep(database, buildCommit, slog.New(slog.NewTextHandler(stderr, nil)))
 	step.UseDocuments(documents)
-	pass, err := step.RunByHand(ctx, key, convert, *dryRun)
+	pass, err := step.RunByHand(ctx, key, convert, dryRun)
 	for _, issue := range pass.Done {
-		writeDecisionIssue(stdout, name, issue, *dryRun)
+		writeDecisionIssue(stdout, name, issue, dryRun)
 	}
 	for _, left := range pass.Left {
 		fmt.Fprintf(stdout, "%s: issue=%s left: %v\n", name, left.Issue, left.Reason)
@@ -432,7 +420,7 @@ func runDecisionsStep(ctx context.Context, name string, convert bool, args []str
 		return 1
 	}
 	if len(pass.Done) == 0 {
-		fmt.Fprintf(stdout, "%s: issues=0 project=%s dry_run=%t\n", name, key, *dryRun)
+		fmt.Fprintf(stdout, "%s: issues=0 project=%s dry_run=%t\n", name, key, dryRun)
 	}
 	return 0
 }

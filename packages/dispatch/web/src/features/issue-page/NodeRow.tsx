@@ -600,6 +600,11 @@ function toneOf(node: Pick<TreeNode, "statement" | "type">, author: AuthorKind):
     case "comment":
     case "message":
       return author === "person" ? "person" : "agent";
+    // A criterion is what a person wants to be able to do, in their own words (`page-words`): it
+    // is one of the spec's statements, beside the requirements under it, and takes the
+    // statements' colour (INFRA-1196, part T's R8 and part Y's R1).
+    case "criterion":
+      return "statement";
     case "decision":
       return "decision";
     // A reading is an agent's reading of a person's answer, inside the ask or the decision it
@@ -1360,7 +1365,9 @@ function Chip({
 /**
  * What the focused node's body adds to its row (R6): who made it where the row draws no author
  * - "Author unknown", with its own shape, where the model holds none (R9, ruling 5) - the facts
- * of a check and of a result (`NodeFacts.tsx`), the gaps said in full, the two counts the
+ * of a check and of a result (`NodeFacts.tsx`), the gaps said in full, the coverage read's own
+ * lines a requirement draws in their place while a document of the issue is still being indexed
+ * (`TreeNode.coverageNotes`, in the server's words, which name the document), the two counts the
  * coverage read carries for a requirement, what a reader does with a decision
  * (`DecisionActions.tsx`), and the control that keeps the body open once the focus leaves it.
  * The node's words are the row's own, drawn whole there with the rest of a cut text once the
@@ -1394,6 +1401,11 @@ function NodeBody({
       {node.gaps.map((gap) => (
         <p className={`text-xs ${pageQuietText}`} key={gap} {...pageChrome}>
           {GAP_LINES[gap]}
+        </p>
+      ))}
+      {(node.coverageNotes ?? []).map((words) => (
+        <p className={`text-xs ${pageQuietText}`} data-coverage-note="" key={words} {...authorText}>
+          {words}
         </p>
       ))}
       {node.counts === undefined ? null : (

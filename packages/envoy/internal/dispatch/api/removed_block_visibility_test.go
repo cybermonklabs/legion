@@ -10,7 +10,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
-	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
@@ -27,9 +27,10 @@ import (
 // each pinned address and is answered its text, the current block as unchanged and the deleted
 // one as removed at version 2.
 //
-// No route writes an author-private node yet (TestNoReadAnswersANodeTheActingPersonMayNotSee says
-// why), so the blocks' rows and nodes are written the way that test writes its own: the rows by
-// hand, the nodes through the store's own writer.
+// The store's writer refuses a block of a document reserved for its author, since not every read
+// of a block binds the predicate (graphstore.ErrVisibilityNotAdmitted), so the blocks' rows are
+// written by hand and their nodes seeded straight into the store, as
+// TestNoReadAnswersANodeTheActingPersonMayNotSee seeds its own (graphseedtest.SeedAuthorOnly).
 func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing.T) {
 	t.Parallel()
 	handler, database := blockIndexHandler(t)
@@ -37,11 +38,11 @@ func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing
 	issue := createInteractionIssue(t, handler, "PRIV", "Private blocks with a recorded text", "# Spec\n\nA public passage.\n")
 	editSpec(t, handler, issue.Key, []map[string]any{{"op": "insert", "after": "end", "markdown": "A second public passage."}})
 	requireIndexedAt(t, database, issue.PrimaryArtifactID, 2)
-	var refKey string
-	if err := database.Pool.QueryRow(ctx,
-		`select ref_key from artifacts where id = $1::uuid`, issue.PrimaryArtifactID).Scan(&refKey); err != nil {
-		t.Fatalf("read the spec's address: %v", err)
-	}
+	// The spec is a document of its issue's room: its blocks' rows, their recorded texts and their
+	// nodes are the room's, keyed by the room's tree artifact, and the room records which of its
+	// documents holds each block (issue_room_blocks).
+	spec := readDecisionDocument(t, database, issue.Key, "spec")
+	refKey := spec.refKey
 	read := func(reference, login string) *httptest.ResponseRecorder {
 		return dispatchRequest(t, handler, http.MethodGet, "/api/v1/references?to="+url.QueryEscape(reference), nil, login)
 	}
@@ -64,30 +65,29 @@ func TestAPinnedReadOfABlockHiddenFromTheReaderAnswersWhatNobodyHolds(t *testing
 	}
 
 	author := model.Actor{Kind: "user", ID: "alice"}
-	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(author))
-	if err != nil {
-		t.Fatalf("reserve the blocks for their author: %v", err)
-	}
 	seedExec(t, database, "the private block's row", `
 		insert into document_blocks (artifact_id, block_id, node_id, type, text_sha256, excerpt, changed_version, changed_at)
 		values ($1::uuid, 'private', $2, 'paragraph', '', $3, 1, now())
-	`, issue.PrimaryArtifactID, refKey+"#private", privateText)
+	`, spec.room, spec.address("private"), privateText)
+	seedExec(t, database, "the room's record of the private block's document", `
+		insert into issue_room_blocks (tree_artifact_id, block_id, document_id) values ($1::uuid, 'private', $2::uuid)
+	`, spec.room, spec.id)
 	seedExec(t, database, "the blocks' recorded texts", `
 		insert into document_block_texts (artifact_id, block_id, version, text) values
 			($1::uuid, 'private', 1, $2), ($1::uuid, 'gone', 1, $3), ($1::uuid, 'gone', 2, null)
-	`, issue.PrimaryArtifactID, privateText, goneText)
+	`, spec.room, privateText, goneText)
 	tx, err := database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the private nodes' write: %v", err)
 	}
 	defer tx.Rollback(ctx)
 	madeAt := time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC)
-	if err := graphstore.Write(ctx, tx, []graphstore.Node{
-		{Kind: "block", ID: refKey + "#gone", Supertag: "block", Visibility: visibility, State: graphstore.StateGone,
+	if err := graphseedtest.SeedAuthorOnly(ctx, tx,
+		graphstore.Node{Kind: "block", ID: spec.address("gone"), Supertag: "block", State: graphstore.StateGone,
 			MadeAt: madeAt, MadeBy: author, SourceEvent: graphstore.NoEvent},
-		{Kind: "block", ID: refKey + "#private", Supertag: "block", Visibility: visibility, State: graphstore.StateLive,
+		graphstore.Node{Kind: "block", ID: spec.address("private"), Supertag: "block", State: graphstore.StateLive,
 			MadeAt: madeAt, MadeBy: author, SourceEvent: graphstore.NoEvent},
-	}, nil); err != nil {
+	); err != nil {
 		t.Fatalf("write the private nodes: %v", err)
 	}
 	if err := tx.Commit(ctx); err != nil {

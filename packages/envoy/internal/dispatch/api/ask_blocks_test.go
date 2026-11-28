@@ -14,6 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -39,8 +40,10 @@ func TestAnAnsweredBlockAskReadsAnsweredInTheAsksOfItsDocumentsText(t *testing.T
 		t.Fatalf("create indexed ask: status=%d body=%s", created.Code, created.Body.String())
 	}
 	askID := decodeBody[model.Ask](t, created).ID
+	// An indexed ask is keyed by the room its block's document is edited in: the issue's tree for a
+	// converted spec (refs.DocumentRoomSQL).
 	if _, err := database.Pool.Exec(context.Background(), `
-		update asks set block_id = 'ask-1', block_artifact_id = $2 where id = $1
+		update asks set block_id = 'ask-1', block_artifact_id = `+refs.DocumentRoomSQL("$2::uuid")+` where id = $1
 	`, askID, issue.PrimaryArtifactID); err != nil {
 		t.Fatalf("attach indexed ask to block: %v", err)
 	}
@@ -362,7 +365,7 @@ func TestDocumentEditRejectsInvalidAskBlockAtomically(t *testing.T) {
 	waitUntil(t, "the typed ask block to settle into an ask", func() bool {
 		return database.Pool.QueryRow(context.Background(), `
 			select id::text, question, options from asks
-			where block_artifact_id = $1 and block_id = 'agent-ask'
+			where `+refs.AsksOfDocumentSQL("asks", "$1::uuid")+` and block_id = 'agent-ask'
 		`, issue.PrimaryArtifactID).Scan(&askID, &question, &optionsJSON) == nil
 	})
 	var versionsBefore int
@@ -860,14 +863,17 @@ func TestAnAnswerToACopysSourceAfterItsRewordingOpensTheCopysOwnAsk(t *testing.T
 	}
 }
 
-// A decided ask's wording is fixed on every write path, not only PATCH's (ASK_NOT_OPEN). An upload
-// of the spec that rewords its answered ask leaves the ask as it was decided, and the spec's block
-// gets back the wording the answer was given on. A copy then uploaded with the reworded text holds
-// a question no decision answered and opens its own ask.
+// A decided ask's wording is fixed on every write path, not only PATCH's (ASK_NOT_OPEN). An
+// answered ask is a person's decision, so the agent's upload of the spec that rewords it is refused
+// 409 ANSWERED_ASK_KEPT and stores no version (R32: "An agent's write is refused `409
+// ANSWERED_ASK_KEPT` where it would do one of these to a person's decision: change its words or
+// retype it, on any path"). A person's upload of the same text is taken: it leaves the ask as it
+// was decided, and the spec's block gets back the wording the answer was given on. A copy then
+// uploaded with the reworded text holds a question no decision answered and opens its own ask.
 func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t *testing.T) {
 	t.Parallel()
 	var documentService *docs.Service
-	handler, _ := newInteractionHandler(t, func(database *store.Store) docs.API {
+	handler, database := newInteractionHandler(t, func(database *store.Store) docs.API {
 		documentService = docs.New(docs.Deps{Store: database, Settle: 20 * time.Millisecond})
 		t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
 		return documentService
@@ -887,11 +893,20 @@ func TestAnUploadRewordingAnAnsweredAskLeavesItDecidedAndItsCopyOpensItsOwnAsk(t
 	}, "alice"); answered.Code != http.StatusOK {
 		t.Fatalf("answer the ask: status=%d body=%s", answered.Code, answered.Body.String())
 	}
-	if uploaded := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", map[string]any{
+	// The answer writes one version, the block's kept state alone (R3); both uploads are read
+	// against the document as that version left it.
+	decided := requireStateVersionsPast(t, handler, database, issue.PrimaryArtifactID, 1, 1)
+	reword := map[string]any{
 		"actor": sessionActor(), "name": "spec.md", "content": tuesday,
 		"precondition": uploadBase(t, handler, issue.PrimaryArtifactID),
-	}); uploaded.Code != http.StatusCreated {
-		t.Fatalf("upload the reworded spec: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	if refused := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", reword); refused.Code != http.StatusConflict ||
+		decodeBody[errorBody](t, refused).Code != codeAnsweredAskKept {
+		t.Fatalf("the agent's upload of the reworded spec: status=%d body=%s, want 409 %s", refused.Code, refused.Body.String(), codeAnsweredAskKept)
+	}
+	requireNoVersionPast(t, handler, database, issue.PrimaryArtifactID, decided)
+	if uploaded := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/artifacts", reword, "alice"); uploaded.Code != http.StatusCreated {
+		t.Fatalf("alice uploads the reworded spec: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
 	awaitDocumentText(t, handler, issue.PrimaryArtifactID, "the decided wording written back",
 		contains("Ship on Monday?", "- Yes: Monday."), nil)

@@ -227,13 +227,13 @@ func browserDocumentServer(t testing.TB) (*docs.Service, http.Handler, *store.St
 // markdown's tree. A browser's update is not held to the checks the server's own writes run, which
 // is how a document comes to hold what no route writes, such as a malformed ask. The peer stays
 // connected for the rest of the test, as an open editor does, so the room stays resident.
-func writeBrowserDocument(t *testing.T, documentService *docs.Service, artifactID, markdown string) {
+func writeBrowserDocument(t *testing.T, handler http.Handler, documentService *docs.Service, artifactID, markdown string) {
 	t.Helper()
 	written, err := pmdoc.Parse(markdown)
 	if err != nil {
 		t.Fatalf("parse the browser's document: %v", err)
 	}
-	peer := connectBrowserPeer(t, documentService, artifactID)
+	peer := connectBrowserPeer(t, handler, documentService, artifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = written.Children
@@ -271,7 +271,7 @@ func TestSuggestionActionsAreRefusedOnlyForAnAskAnAcceptBroke(t *testing.T) {
 			documentService, handler, database := browserDocumentService(t)
 			issue := createInteractionIssue(t, handler, "TEST", "Beside a malformed ask", test.seed)
 			if test.browser != "" {
-				writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, test.browser)
+				writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, test.browser)
 			}
 			anchor := map[string]any{"artifact": "spec", "quote": test.quote}
 			if test.browserInsert {
@@ -644,7 +644,7 @@ func TestSuggestionAcceptRefusals(t *testing.T) {
 			documentService, handler, _ := browserDocumentService(t)
 			issue := createInteractionIssue(t, handler, "TEST", "A refused accept", test.spec)
 			if test.browser != "" {
-				writeBrowserDocument(t, documentService, issue.PrimaryArtifactID, test.browser)
+				writeBrowserDocument(t, handler, documentService, issue.PrimaryArtifactID, test.browser)
 			}
 			before, err := documentService.Text(context.Background(), issue.PrimaryArtifactID)
 			if err != nil {

@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -164,14 +165,15 @@ func writeVersionThroughTheRealPath(t *testing.T, service *Service, artifactID, 
 // writeVersion is the version write a request runs, in tx: NamedVersion in a transaction joined
 // to the document service, after ApplyOps of ops where there are any, as api's editArtifact runs
 // an edit that names its version (createNamedVersion runs NamedVersion alone); the version's own
-// event after it; and what the block index stated appended under that event, as api's
-// commitArtifactVersionEvent does; then the commit. The routes take the owner's lock before those
-// calls (requireOpenOwner, requireOpenOwnerStatus); writeVersion takes none, so the owner's lock
-// its transaction holds is the one the document service's calls take themselves: ApplyOps'
-// joinLiveWrite, or with no ops joinRead under NamedVersion's capture, and NamedVersion's own. The
-// event is appended at once (documentEvent), where the route queues it for its write phase. It
-// answers the version and that event, and an error rather than failing the test, so a write run
-// off the test's goroutine can write a version too.
+// event after it; and what the block index stated appended under that event, with the head rows
+// of the nodes it names, as api's commitArtifactVersionEvent queues both; then the commit. The
+// routes take the owner's lock before those calls (requireOpenOwner, requireOpenOwnerStatus);
+// writeVersion takes none, so the owner's lock its transaction holds is the one the document
+// service's calls take themselves: ApplyOps' joinLiveWrite, or with no ops joinRead under
+// NamedVersion's capture, and NamedVersion's own. The event is appended at once (documentEvent),
+// where the route queues it for its write phase. It answers the version and that event, and an
+// error rather than failing the test, so a write run off the test's goroutine can write a version
+// too.
 func writeVersion(ctx context.Context, service *Service, tx pgx.Tx, artifactID string, ops []model.EditOp, summary string) (VersionResult, int64, error) {
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	joined, ledger := service.Join(ctx, tx)
@@ -199,7 +201,11 @@ func writeVersion(ctx context.Context, service *Service, tx pgx.Tx, artifactID s
 	if err != nil {
 		return VersionResult{}, 0, err
 	}
-	if err := causeInWritePhase(joined, tx, result.Blocks, event); err != nil {
+	if err := write(joined, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, result.Blocks, event)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(result.Blocks))
+		return nil
+	}); err != nil {
 		return VersionResult{}, 0, fmt.Errorf("append what the version's block index stated: %w", err)
 	}
 	if err := ledger.Commit(ctx); err != nil {
@@ -398,7 +404,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	// The stale pass runs on to its commit, and the fence refuses it.
 	const staleVersion = 1
 	before := highestTuple(t, database)
-	_, won, write, err := refs.IndexBlocks(ctx, staleTx, document, staleVersion, time.Now(), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
+	_, won, write, _, err := refs.IndexBlocks(ctx, staleTx, document, refs.OneVersion(document, staleVersion, time.Now()), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the stale pass: %v", err)
 	}
@@ -437,7 +443,7 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 		t.Fatalf("begin the control pass: %v", err)
 	}
 	defer controlTx.Rollback(ctx)
-	_, won, write, err = refs.IndexBlocks(ctx, controlTx, document, third, time.Now(), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
+	_, won, write, _, err = refs.IndexBlocks(ctx, controlTx, document, refs.OneVersion(document, third, time.Now()), staleMarkdown, staleBlocks, nil, nil, "", refs.TypedFacts{})
 	if err != nil {
 		t.Fatalf("run the control pass: %v", err)
 	}
@@ -472,6 +478,211 @@ func TestAStaleWriteCannotAssertAParentANewerEditReplaced(t *testing.T) {
 	requireTheTickIsFenced(t, database, service, earlierBuildRace)
 	requireOnlyTheFenceWritesTheOwedRow(t)
 	requireNoRevisionTestOutsideTheFence(t)
+}
+
+// A document listed owed with no markdown version stays owed when a version is written after the
+// tick listed it, or after the tick's re-read under the owner lock found none, and one that never
+// gains a version has its marks cleared and is stated (R16's fourth statement that writes the
+// stated columns). The tick's pass over such a document clears its marks and states it only under
+// the document owner's lock, once its re-read under that lock answers the document's row with no
+// markdown version, in one statement that tests again that no markdown version stands
+// (indexOwedDocument). A clear decided from the listing, or from the re-read alone, would take the
+// mark of a version the release before this one writes and indexes in between: that release states
+// nothing in the store and never sets the mark again, and no pass of this build would reach the
+// version.
+//
+// Documents D (written), E (raced) and F (untouched) of issue CORE-1 hold no version, and each
+// one's document_block_versions row is as the backfill of rule 2 leaves it: store_owed_at set,
+// store_owed_rule 2, and stated_version and stated_rule null. A tick lists the three at version 0
+// and is held there (afterOwedDocumentsListed). While it is held, D's first version is written
+// through the real version write (writeFirstVersion, as the upload route writes a version), with
+// more blocks than deferBlockIndexBlocks, so the write leaves D's index to the reconciliation and
+// marks D owed; then the tick is released. The tick is held again at beforeNoVersionClear once its
+// re-read under the owner lock has found no markdown version of E, and E's first markdown version
+// is inserted by SQL on a connection that takes no owner lock, whose trigger
+// (document_block_versions_owe) sets E's version null; then the tick is released. F stays without
+// a markdown version, and no hook holds the tick at it. Each wait for the tick to reach a hook is
+// bounded by fenceWait, past which the test fails and releases every tick it holds.
+//
+// After that tick D and E each keep their null version and their own mark, of the time it held,
+// stated by no pass (a clear and a later re-mark would leave a mark of another time and the
+// clear's stated columns), and F holds no mark, its version 0, its stated_version 0 and its
+// stated_rule 2. The next tick indexes the versions of D and
+// E: each row stands at its version, stated at it by rule 2 with no mark, and each block of D's
+// version holds its node; and the owed count then reads 0.
+func TestAVersionWrittenAfterTheTickListedItsDocumentStaysOwed(t *testing.T) {
+	ctx := context.Background()
+	database, service := blockIndexService(t)
+	awaitedBlockIndexTick(t, service)
+	documents := map[string]string{}
+	for _, slug := range []string{"written", "raced", "untouched"} {
+		var document string
+		if err := database.Pool.QueryRow(ctx, `
+			with document as (
+				insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+				values ('CORE-1', 'CORE', $1, $1 || '.md', 'doc', false, '{"kind":"user","id":"alice"}')
+				returning id
+			), marked as (
+				insert into document_block_versions (artifact_id, store_owed_at, store_owed_rule) select id, now(), $2::integer from document
+			)
+			select id::text from document
+		`, slug, refs.BlockIndexMarkingRule).Scan(&document); err != nil {
+			t.Fatalf("create the document %s, marked as the backfill of rule 2 marks one no pass of this build's rule stated: %v", slug, err)
+		}
+		documents[slug] = document
+	}
+	written, raced, untouched := documents["written"], documents["raced"], documents["untouched"]
+	// The mark each document holds, by its time: a pass that leaves a document owed keeps it, and a
+	// mark the document takes again after a clear is another, of a later time (oweDocumentIndex).
+	marks := map[string]string{}
+	for slug, document := range documents {
+		row := artifactsInTreeReadRow(t, database, document)
+		if row.version != "null" || row.owedAt == "null" || row.owedRule != strconv.Itoa(refs.BlockIndexMarkingRule) ||
+			row.statedVersion != "null" || row.statedRule != "null" {
+			t.Fatalf("the document %s (%s) reads %s, want the backfill of rule 2's mark and no stated column: this test proves nothing", slug, document, row)
+		}
+		marks[document] = row.owedAt
+	}
+
+	listed := make(chan []owedDocument, 1)
+	atClear := make(chan struct{}, 1)
+	listing, clearing := newArtifactsInTreeHold(), newArtifactsInTreeHold()
+	defer listing.open()
+	defer clearing.open()
+	service.afterOwedDocumentsListed = func(owed []owedDocument) error {
+		listed <- owed
+		return listing.wait("afterOwedDocumentsListed")
+	}
+	cleared := make(chan string, len(documents))
+	service.beforeNoVersionClear = func(artifactID string) error {
+		cleared <- artifactID
+		if artifactID != raced {
+			return nil
+		}
+		atClear <- struct{}{}
+		return clearing.wait("beforeNoVersionClear")
+	}
+	defer func() { service.afterOwedDocumentsListed, service.beforeNoVersionClear = nil, nil }()
+
+	ticked := make(chan error, 1)
+	go func() {
+		_, err := service.ReconcileBlockIndex(ctx, BlockIndexCursors{}, liveAheadDocuments{})
+		ticked <- err
+	}()
+	var owed []owedDocument
+	select {
+	case owed = <-listed:
+	case <-time.After(fenceWait):
+		listing.open()
+		clearing.open()
+		t.Fatalf("the tick never reached afterOwedDocumentsListed within %d s", artifactsInTreeHookBound)
+	}
+	for slug, document := range documents {
+		found := slices.IndexFunc(owed, func(listed owedDocument) bool { return listed.id == document })
+		if found < 0 || owed[found].version != 0 {
+			t.Errorf("the tick listed %+v, want %s (%s) among them at version 0", owed, slug, document)
+		}
+	}
+	// D's first version, through the real version write, past the bound a write indexes in its own
+	// request: the write leaves D's blocks to the reconciliation and marks D owed.
+	var writtenKey string
+	if err := database.Pool.QueryRow(ctx, `select ref_key from artifacts where id = $1`, written).Scan(&writtenKey); err != nil {
+		t.Fatalf("read the ref_key of %s: %v", written, err)
+	}
+	writeFirstVersion(t, database, service, written, writtenKey, deferredList(deferredItems), func(seeded string) string { return seeded })
+	settle(t, database, written)
+	if rows, _ := artifactsInTreeBlockNodes(t, database, written); rows != 0 {
+		t.Fatalf("the version write of %s indexed %d blocks in its own request, want none: past deferBlockIndexBlocks it leaves them to the reconciliation, so this test proves nothing", written, rows)
+	}
+	if row := artifactsInTreeReadRow(t, database, written); !row.keeps(marks[written]) {
+		t.Fatalf("the version write left %s reading %s, want it owed its index and holding its mark of %s: this test proves nothing", written, row, marks[written])
+	}
+	listing.open()
+	racedWait := ""
+	select {
+	case <-atClear:
+		inserted, cancel := context.WithTimeout(ctx, fenceWait)
+		_, err := database.Pool.Exec(inserted, `
+			insert into artifact_versions (artifact_id, number, markdown, authors)
+			values ($1::uuid, 1, 'Words written while the tick is held before its clear.', '[{"kind":"user","id":"alice"}]')
+		`, raced)
+		cancel()
+		if err != nil {
+			clearing.open()
+			t.Fatalf("insert the first markdown version of %s by SQL, on a connection that takes no owner lock, while the tick is held before its clear: %v", raced, err)
+		}
+	case <-time.After(fenceWait):
+		racedWait = fmt.Sprintf("the tick never reached beforeNoVersionClear within %d s", artifactsInTreeHookBound)
+	}
+	clearing.open()
+	select {
+	case err := <-ticked:
+		if err != nil {
+			t.Fatalf("the tick: %v", err)
+		}
+	case <-time.After(fenceWait):
+		t.Fatalf("the tick did not finish within %s of its release", fenceWait)
+	}
+	service.afterOwedDocumentsListed, service.beforeNoVersionClear = nil, nil
+	close(cleared)
+	var reached []string
+	for document := range cleared {
+		reached = append(reached, document)
+	}
+	t.Run("a version written after the listing", func(t *testing.T) {
+		if slices.Contains(reached, written) {
+			t.Errorf("the document %s reached the clear of a document holding no markdown version (reached: %v), want it kept from that clear: its version committed after the listing",
+				written, reached)
+		}
+		if row := artifactsInTreeReadRow(t, database, written); !row.keeps(marks[written]) {
+			t.Errorf("the tick that listed %s at version 0 cleared the mark of version %d, written while it was held: its row reads %s, want version null and its mark of %s, stated by no pass",
+				written, artifactsInTreeNewestVersion(t, database, written), row, marks[written])
+		}
+	})
+	t.Run("a version written while the tick is held before its clear", func(t *testing.T) {
+		if racedWait != "" {
+			t.Error(racedWait)
+			return
+		}
+		if row := artifactsInTreeReadRow(t, database, raced); !row.keeps(marks[raced]) {
+			t.Errorf("the statement that clears a document with no version cleared %s, which holds version %d: its row reads %s, want version null and its mark of %s, stated by no pass",
+				raced, artifactsInTreeNewestVersion(t, database, raced), row, marks[raced])
+		}
+	})
+	t.Run("a document that never gains a version", func(t *testing.T) {
+		if !slices.Contains(reached, untouched) {
+			t.Errorf("the document %s did not reach the clear of a document holding no markdown version (reached: %v), want it cleared", untouched, reached)
+		}
+		if row := artifactsInTreeReadRow(t, database, untouched); row.owedAt != "null" || row.version != "0" || row.statedVersion != "0" ||
+			row.statedRule != strconv.Itoa(refs.BlockIndexMarkingRule) {
+			t.Errorf("the tick left %s, which holds no markdown version, marked: version %s, stated_version %s, stated_rule %s (store_owed_at %s)",
+				untouched, row.version, row.statedVersion, row.statedRule, row.owedAt)
+		}
+	})
+
+	// The next tick indexes the versions written after the listing and before the clear.
+	awaitedBlockIndexTick(t, service)
+	indexed := []string{written}
+	if racedWait == "" {
+		indexed = append(indexed, raced)
+	}
+	t.Run("the next tick indexes each version written while the tick was held", func(t *testing.T) {
+		for _, document := range indexed {
+			version := artifactsInTreeNewestVersion(t, database, document)
+			if row := artifactsInTreeReadRow(t, database, document); version == 0 || !row.statedAt(version) {
+				t.Errorf("the next tick left version %d of %s unindexed: its row reads %s", version, document, row)
+			}
+		}
+		if rows, named := artifactsInTreeBlockNodes(t, database, written); rows != deferredBlocks || named != rows {
+			t.Errorf("the next tick left version %d of %s unindexed: %d of its %d block rows hold their node, want each of the version's %d blocks holding its node",
+				artifactsInTreeNewestVersion(t, database, written), written, named, rows, deferredBlocks)
+		}
+	})
+	t.Run("no document owes its block index after the next tick", func(t *testing.T) {
+		if count, owed := artifactsInTreeOwed(t, database); count != 0 {
+			t.Errorf("%d documents still owe their block index after every tick, want 0: %v", count, owed)
+		}
+	})
 }
 
 // A mark of a higher marking rule that a writer taking no owner lock commits between a lower-rule
@@ -538,7 +749,7 @@ func TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand(t *testing
 		if err != nil {
 			t.Fatal(err)
 		}
-		record, err := refs.ReadIndexedVersion(ctx, pass, document, version)
+		record, err := refs.ReadIndexedVersion(ctx, pass, document, document, version)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -549,7 +760,7 @@ func TestAHigherRulesMarkWrittenDuringALowerRulesPassSurvivesItsStand(t *testing
 			t.Fatalf("read version %d of %s: %v", version, document, err)
 		}
 		indexing, err := refs.PlanBlocks(ctx, pass, index, v, now, refs.VersionBlocks{
-			ArtifactID: document, Record: record, Number: version, At: versionAt, Markdown: markdown, Blocks: blocks,
+			ArtifactID: document, Record: record, Versions: refs.OneVersion(document, version, versionAt), Markdown: markdown, Blocks: blocks,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -1060,32 +1271,57 @@ func requireTheBackfillIsFenced(t *testing.T, database *store.Store) {
 	}
 }
 
-// fenceWriter names where a statement that writes document_block_versions may live: the one
-// fenced writer, the block index's record of the version it indexes on its write phase
-// (BlockIndexing.queueStand), which the plan queues only where it won the fence. A statement that
-// only owes a document an index writes no revision at all, so it is told apart by what it sets
-// rather than by where it is.
-const (
-	fenceWriterFile     = "refs/block_stand.go"
-	fenceWriterFunction = "func (b BlockIndexing) queueStand("
-)
+// fencedWriters names where a statement that writes a revision into document_block_versions may
+// live: the fenced writers, each by its file and its `func` line. A statement that only owes a
+// document an index writes no revision at all, so it is told apart by what it sets rather than by
+// where it is.
+//
+// The fence is the block index's record of the version it indexes on its write phase
+// (BlockIndexing.queueStand), which the plan queues only where it won the fence: of one
+// document's version, or of the version of each document an issue room's pass covers, under the
+// tree artifact's owner row (T12a of the issue-tree plan). The room's pass (stateRoom) adds one:
+// under that row, in the pass's transaction, it clears the mark of each artifact of the room the
+// pass covers no version of. It runs in the reconciliation of the room (indexOwedRoom) and in the
+// repair of a version of the room marked tree_mismatch (repairRoomMismatch), each of which takes
+// that row (lockArtifactOwner on the tree artifact) before it reads what the pass writes. The
+// reconciliation of one document (indexOwedDocument) adds another: under the document's owner
+// lock, where the document holds no markdown version to index, it clears the document's marks and
+// states it at the version it leaves. The drain of a query mark (queueRevisionStand) sends the
+// fence's own statement, by its name: under the issue's owner lock, in the drain's batch, it stands
+// the index of a version that stores the bytes of the version before it at the new version, where
+// it stood at that one.
+var fencedWriters = []struct{ file, function string }{
+	{"refs/block_stand.go", "func (b BlockIndexing) queueStand("},
+	{"docs/block_index.go", "func (s *Service) stateRoom("},
+	{"docs/block_index.go", "func (s *Service) indexOwedDocument("},
+	{"docs/version_render.go", "func queueRevisionStand("},
+}
 
 // owedRowWrite matches one statement of a Go source file that writes document_block_versions,
 // up to the backtick that ends it.
 var owedRowWrite = regexp.MustCompile("(?is)(insert into|update)\\s+document_block_versions\\b[^`]*")
 
+// fenceStatementSend matches one use of the revision fence's statement by its name
+// (refs.RevisionFenceStatement), which writes a revision into document_block_versions wherever it
+// is sent, though the file that sends it holds none of its text. Its declaration is no send.
+var fenceStatementSend = regexp.MustCompile(`\bRevisionFenceStatement\b`)
+
 // requireOnlyTheFenceWritesTheOwedRow reads the source tree and fails on any statement that
-// writes a revision into document_block_versions outside the fenced writer. Each part of a
+// writes a revision into document_block_versions outside the fenced writers. Each part of a
 // statement is held on its own (writesTheRevision): an insert's column list, and the assignments
 // of an update's set or of an insert's `on conflict ... do update set`; the statement writes a
 // revision where any part does. A set that assigns the revision null owes the document an index
 // and asserts nothing, so it is allowed wherever it is, and it excuses no other part of its
 // statement: an insert whose column list names `version` is the fence's alone even where its
-// conflict arm sets `version = null`. A backfill or a repair that wrote one would be caught here
-// rather than in production.
+// conflict arm sets `version = null`. A send of the fence's own statement by its name
+// (refs.RevisionFenceStatement, fenceStatementSend) is held to the same writers, so a new caller
+// of it fails here until it is named. A backfill or a repair that wrote one would be caught here
+// rather than in production. Each fenced writer must hold such a statement or such a send, so the
+// list names no writer that is gone.
 func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 	t.Helper()
 	found := 0
+	wrote := make([]bool, len(fencedWriters))
 	for _, file := range dispatchSourceFiles(t) {
 		body, err := os.ReadFile(file)
 		if err != nil {
@@ -1103,20 +1339,50 @@ func requireOnlyTheFenceWritesTheOwedRow(t *testing.T) {
 				continue
 			}
 			found++
-			enclosing := enclosingFunction(text, match[0])
-			if !strings.HasSuffix(filepath.ToSlash(file), fenceWriterFile) || !strings.HasPrefix(enclosing, fenceWriterFunction) {
-				t.Errorf("%s writes a revision into document_block_versions in %q, outside the fenced writer %s in %s:\n%s",
-					file, enclosing, fenceWriterFunction, fenceWriterFile, statement)
+			if enclosing := enclosingFunction(text, match[0]); !heldToTheFence(file, enclosing, wrote) {
+				t.Errorf("%s writes a revision into document_block_versions in %q, outside the fenced writers %+v:\n%s",
+					file, enclosing, fencedWriters, statement)
+			}
+		}
+		// A send of the fence's statement by its name writes the same revision as its text: each
+		// is held to the fenced writers too, read off the code alone, so a comment naming the
+		// statement sends nothing.
+		code := goLineComment.ReplaceAllString(text, "")
+		for _, match := range fenceStatementSend.FindAllStringIndex(code, -1) {
+			if strings.HasSuffix(code[:match[0]], "var ") {
+				continue
+			}
+			found++
+			if enclosing := enclosingFunction(code, match[0]); !heldToTheFence(file, enclosing, wrote) {
+				t.Errorf("%s sends the revision fence's statement (refs.RevisionFenceStatement) in %q, outside the fenced writers %+v",
+					file, enclosing, fencedWriters)
 			}
 		}
 	}
 	if found == 0 {
 		t.Errorf("the source read found no statement writing a revision into document_block_versions, so it proves nothing")
 	}
+	for index, writer := range fencedWriters {
+		if !wrote[index] {
+			t.Errorf("%s %s writes no revision into document_block_versions: the fenced writer this test names is not where it looks", writer.file, writer.function)
+		}
+	}
+}
+
+// heldToTheFence reports whether the function enclosing, of file, is one of fencedWriters, and
+// marks it in wrote where it is.
+func heldToTheFence(file, enclosing string, wrote []bool) bool {
+	fenced := false
+	for index, writer := range fencedWriters {
+		if strings.HasSuffix(filepath.ToSlash(file), writer.file) && strings.HasPrefix(enclosing, writer.function) {
+			fenced, wrote[index] = true, true
+		}
+	}
+	return fenced
 }
 
 // outsideTheFence is the writer R23 reads as outside the fence: the item block pass, which writes
-// no store row in this child. It is named by its file and its `func` line.
+// no store row in this build. It is named by its file and its `func` line.
 var outsideTheFence = []struct{ file, function string }{
 	{"refs/item_blocks.go", "func IndexOwedItemBlocks("},
 }

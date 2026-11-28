@@ -104,6 +104,8 @@ var unchangingTypes = map[string]string{
 	"artifact.renamed":                          "an issue's primary document is refused a rename (ARTIFACT_PRIMARY), and a name is no text the search reads",
 	"artifact.removed":                          "it changes no issue's title or primary document version",
 	"artifact.human_edited":                     "it changes no issue's title or primary document version",
+	"artifact.indexed":                          "it changes no issue's title or primary document version: the version it indexed rode its own artifact.version",
+	"artifact.digest":                           "it changes no issue's title or primary document version: the version it digests rode its own artifact.version",
 	"artifact.approved":                         "it changes no issue's title or primary document version",
 	"artifact.changes_requested":                "it changes no issue's title or primary document version",
 	"document.retired":                          "a retirement writes no version of the document, so it changes no issue's title or primary document version",

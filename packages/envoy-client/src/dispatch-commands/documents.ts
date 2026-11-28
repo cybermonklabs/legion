@@ -4,6 +4,7 @@ import type {
   ArtifactBlock,
   EditOp,
   EditPrecondition,
+  IssueDetails,
   UploadPrecondition,
 } from "@legion/contracts";
 import { goBlankPattern } from "@legion/contracts/go-blank";
@@ -423,7 +424,9 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
   const approval = approvalLine(resolved.artifact, typeof resolved.issue?.closed_at === "string");
   // A live read's markdown holds no ask's state or answer: each answered ask is named beside the
   // token, and each resolved one, from the text's asks (liveTextAsks). A version read prints the
-  // stored bytes, which are the record a person approved, and names none.
+  // stored bytes, which are the record a person approved, and names none. It names the version's
+  // digest under its bytes' hash: what an approval of the version covers, which the approval line's
+  // content sha256 is compared with. A server that predates it answers none.
   const settled = version === undefined ? settledAskLines(liveTextAsks(document)) : [];
   const trailer = [
     ...("token" in document && document.token !== undefined
@@ -432,6 +435,9 @@ export async function docReadCommand(context: CommandContext): Promise<DispatchT
     ...settled,
     ...("sha256" in document && document.sha256 !== undefined
       ? [`Content: sha256:${document.sha256}`]
+      : []),
+    ...("digest" in document && document.digest !== undefined
+      ? [`Digest: sha256:${document.digest}`]
       : []),
     ...(approval === undefined ? [] : [approval]),
   ];
@@ -502,7 +508,7 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
   if (result.ask === null) {
     return {
       text: [
-        `${resolved.artifact.name} (document id ${resolved.artifact.id}) is already approved at version ${result.version} by ${result.approval.by?.id ?? "unknown"}; no new request was opened. A change outside the ask blocks after approval makes it stale, so request again only for such a version, once the human has agreed to every point in it, with a --summary naming what changed since version ${result.version}. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when, and the approval carries across it. The version carries the approval only when the person's answer, resolve or decline is its whole change. If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.`,
+        `${resolved.artifact.name} (document id ${resolved.artifact.id}) is already approved at version ${result.version} by ${result.approval.by?.id ?? "unknown"}; no new request was opened. Dispatch judges whether that approval stands at a later version: on an issue it has converted to one tree, a version that changes a requirement, a criterion, a check, the memo or their relations makes it stale, and on any other document a change outside the ask blocks does, so request again only for such a version, once the human has agreed to every point in it, with a --summary naming what changed since version ${result.version}. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when, and the approval stands across it. If text that a person was editing in the browser is settled into the same version, the request goes back to its agent, and the approval stands only on a converted issue's document whose digest that text leaves equal.`,
         ...coverageLines,
       ].join("\n"),
       details: {
@@ -525,11 +531,23 @@ export async function requestApprovalCommand(context: CommandContext): Promise<D
   const waitsOn = waitsOnPerson(result.ask);
   return {
     text: [
-      `${outcome}${waitsOn === undefined ? "" : ` It waits on ${waitsOn}.`} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and a change outside the ask blocks after approval makes the approval stale: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when: an approval carries across it, and this request stays with whoever holds its turn. The version carries an approval only when the person's answer, resolve or decline is its whole change. If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.`,
+      `${outcome}${waitsOn === undefined ? "" : ` It waits on ${waitsOn}.`} The human's Inbox asks: ${JSON.stringify(result.ask.question)}. The answer arrives as artifact.approved or artifact.changes_requested. An edit before the answer moves this request to the new version and leaves it waiting on you, and after approval a version that makes the approval stale (on an issue Dispatch has converted to one tree, one that changes a requirement, a criterion, a check, the memo or their relations; on any other document, a change outside the ask blocks) needs a new request: either way, request again for the new version once the human has agreed to every point in it, which hands this request back or opens a new one, with a --summary naming what changed since the earlier approval. A human's answer to an ask block, or its resolve or decline, writes one version. When the answer, resolve or decline is that version's whole change, the version changes only the block's state, and who answered and when: an approval stands across it, and this request stays with whoever holds its turn. If text that a person was editing in the browser is settled into the same version, the request goes back to its agent, and the approval stands only on a converted issue's document whose digest that text leaves equal.`,
       ...coverageLines,
     ].join("\n"),
     details: { ...details, artifact: resolved.artifact.id, version: result.version },
   };
+}
+
+/**
+ * The id of the artifact the issue names for its plan, "" where it names none: the artifact of
+ * its plan query, where the issue read carries `queries`.
+ */
+function planArtifactId(issue: IssueDetails): string {
+  // A server of the release before answers the issue read with no `queries`, and names the plan
+  // in `plan_artifact_id`.
+  // kept for one release: role-artifact-ids
+  if (issue.queries === undefined) return issue.plan_artifact_id ?? "";
+  return issue.queries.find(({ query }) => query === "plan")?.artifact_id ?? "";
 }
 
 /** `dispatch plan-approve`: record the plan review's approval of an issue's plan. */
@@ -537,12 +555,11 @@ export async function planApproveCommand(context: CommandContext): Promise<Dispa
   const { args, client, actor, documentOwner, resolveDocument } = context;
   const planOwner = documentOwner();
   const named = optionalString(args, "artifact");
-  // The server resolves a plan by its role and the dashboard by the issue's
-  // plan_artifact_id, precisely because a hand-renamed document must not displace the Plan
-  // tab; the filename is only what an issue whose detail names no plan falls back on.
+  // The issue names the artifact that answers its plan query. Use its id even if its filename
+  // differs from plan.md, the fallback when the issue detail names no plan.
   const byRole =
     named === undefined && planOwner.kind === "issue"
-      ? ((await client.getIssue(planOwner.issue)).plan_artifact_id ?? "")
+      ? planArtifactId(await client.getIssue(planOwner.issue))
       : "";
   const resolved = await resolveDocument(planOwner, named ?? (byRole || "plan.md"));
   const version = numberArg(args, "version");

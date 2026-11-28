@@ -209,12 +209,12 @@ func shotReadPaths(c shotCorpus) map[string]string {
 		"/api/v1/issues/{key}/asks":                   "/api/v1/issues/" + c.issue + "/asks?thread=1",
 		"/api/v1/issues/{key}/comments":               "/api/v1/issues/" + c.issue + "/comments",
 		"/api/v1/issues/{key}/coverage":               "/api/v1/issues/" + c.issue + "/coverage",
-		"/api/v1/issues/{key}/decisions":              "/api/v1/issues/" + c.issue + "/decisions",
 		"/api/v1/issues/{key}/events":                 "/api/v1/issues/" + c.issue + "/events",
 		"/api/v1/issues/{key}/references":             "/api/v1/issues/" + c.issue + "/references?versions=latest",
 		"/api/v1/issues/{key}/results":                "/api/v1/issues/" + c.issue + "/results",
 		"/api/v1/issues/{key}/subscribers":            "/api/v1/issues/" + c.issue + "/subscribers",
 		"/api/v1/issues/{key}/summary":                "/api/v1/issues/" + c.issue + "/summary",
+		"/api/v1/issues/{key}/tree":                   "/api/v1/issues/" + c.issue + "/tree?view=decisions",
 		"/api/v1/me/agent-tokens":                     "/api/v1/me/agent-tokens",
 		"/api/v1/me/agents/state":                     "/api/v1/me/agents/state",
 		"/api/v1/me/answers":                          "/api/v1/me/answers",
@@ -615,10 +615,13 @@ func TestTheVisualShotReadsWriteOnlyTheirCaches(t *testing.T) {
 	sockets := &servedSockets{finished: make(map[string]chan struct{})}
 	roomServer := httptest.NewServer(sockets.serve(documents.ServeHTTP))
 	t.Cleanup(roomServer.Close)
+	// The page binds the fragment the artifact read answers for the spec, as the page does: the
+	// spec's own fragment of its issue's room, since an issue is born converted (connectBrowserPeer).
+	fragment := artifactFragment(t, asShotPerson(t, handler, cookie), corpus.spec)
 	statements.watch()
 	page := &syncedPeer{
 		wsURL: "ws" + strings.TrimPrefix(roomServer.URL, "http") + "/ws/doc/" + corpus.spec, sockets: sockets,
-		headers: http.Header{"Cookie": {cookie.String()}}, artifactID: corpus.spec, doc: crdt.New(),
+		headers: http.Header{"Cookie": {cookie.String()}}, artifactID: corpus.spec, fragment: fragment, doc: crdt.New(),
 	}
 	page.connect(t)
 	page.closeAndWait(t)

@@ -680,7 +680,9 @@ done"""
 MEMORY_STEP = "Memory tests of the Dispatch server"
 MEMORY_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} memory ./cmd/dispatch)
-go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch"""
+go test -tags memory -count=1 -timeout 60m -v -run "$pattern" ./cmd/dispatch
+pattern=$(../../{TAGGED_TESTS} memory ./internal/dispatch/docs)
+go test -tags memory -count=1 -timeout 30m -v -run "$pattern" ./internal/dispatch/docs"""
 DISPATCH_MP_STEP = "Two-process tests of the Dispatch server"
 DISPATCH_MP_SCRIPT = f"""\
 pattern=$(../../{TAGGED_TESTS} multiprocess ./cmd/dispatch)
@@ -723,9 +725,12 @@ AIRLOCK_AXIOMS_SCRIPT = f"{ENVOY}/scripts/airlock-lean-axioms.sh"
 # Go's cleanup detector: at each collection the runtime reports a cleanup or a finalizer whose
 # closure or argument reaches the object it is attached to. internal/dispatch/docs is the only
 # package of the repository that registers a cleanup (runtime.AddCleanup in roomcursor.go and
-# tree.go), so every run of its tests runs under it: envoy-go-race-docs' race run below, and the
-# plain run of what the race build cannot run (race_impossible_script), and no job runs the
-# package a third time for the detector alone.
+# tree.go), so every run of its untagged tests runs under it: envoy-go-race-docs' race run below,
+# and the plain run of what the race build cannot run (race_impossible_script), and no job runs
+# those a third time for the detector alone. The memory step's run of the package's `memory`
+# tests (MEMORY_SCRIPT) runs without it: the one test that tag adds there,
+# TestThePassLockTimeGrowsLinearlyWithTheRoom, holds a pass's lock time to a ratio between two
+# room sizes, and the detector adds its own work to each collection inside the times it compares.
 CLEANUP_DETECTOR = "GODEBUG=checkfinalizers=1"
 CLEANUP_DETECTOR_PACKAGES = ("internal/dispatch/docs",)
 # The document service's race step runs under .github/scripts/race_memory.py, which fails it with
@@ -2243,18 +2248,20 @@ def race_impossible_script(packages) -> str:
 # `//go:build !race` or behind raceEnabled changes this text and ci.yaml stops matching it. Its
 # rows that measure time need a runner nothing else loads, and run in envoy-go-alone
 # (RACE_IMPOSSIBLE_ALONE_*): every xid window test, which judges the statement-free gaps of a
-# window against a bound; the xid rig's own tests (internal/dispatch/store/storetest), which read
-# the thread clocks those gaps come from; the API's 200 ms bound on the issue list
-# (TestAPriorityListAnswersWithinItsBoundOnEveryPlan); and the auth service's restart storm, whose
-# five hundred connections must all be admitted within the callout's deadline. The rest, the bus's
-# allocation count and the documents package's memory bounds and render storms, measure no time
-# and run in envoy-go-race-impossible.
+# window against a bound (the TestXidWindow rows, and the hash gate's
+# TestHashGateEmitsDigestAndDropsSyntheticCarries, which holds each write it measures, and the
+# fill after it, to the batched window); the xid rig's own tests
+# (internal/dispatch/store/storetest), which read the thread clocks those gaps come from; the
+# API's 200 ms bound on the issue list (TestAPriorityListAnswersWithinItsBoundOnEveryPlan); and
+# the auth service's restart storm, whose five hundred connections must all be admitted within the
+# callout's deadline. The rest, the bus's allocation count and the documents package's memory
+# bounds and render storms, measure no time and run in envoy-go-race-impossible.
 RACE_IMPOSSIBLE_STEP = "Test what the race build cannot run at all or at full size"
 RACE_IMPOSSIBLE_ALONE_STEP = "Test the xid window rows, the API's issue-list bound and the auth service's storm, alone"
 RACE_IMPOSSIBLE_ALONE_PREFIX = "TestXidWindow"
 RACE_IMPOSSIBLE_ALONE_PACKAGES = ("internal/dispatch/store/storetest",)
 RACE_IMPOSSIBLE_ALONE_TESTS = {
-    "internal/dispatch/api": {"TestAPriorityListAnswersWithinItsBoundOnEveryPlan"},
+    "internal/dispatch/api": {"TestAPriorityListAnswersWithinItsBoundOnEveryPlan", "TestHashGateEmitsDigestAndDropsSyntheticCarries"},
     "internal/cipher/natscallout": {"TestACalloutStormAfterAServerRestartAdmitsEveryConnection"},
 }
 

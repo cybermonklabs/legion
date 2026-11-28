@@ -72,14 +72,15 @@ func versionWrittenBy(t *testing.T, database *store.Store, artifactID string, nu
 }
 
 // textChangedAt is the text-change time of a spec node: the event that wrote the version in which
-// the block's text last changed (document_blocks.changed_version), with that version's created_at.
-// No field of the node says whether its text changed since anything.
+// the block's text last changed (document_blocks.changed_version, a version of the block's own
+// document on the row its room keys), with that version's created_at. No field of the node says
+// whether its text changed since anything.
 func textChangedAt(t *testing.T, database *store.Store, document decisionDocument, block string) tieTime {
 	t.Helper()
 	var changed int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select changed_version from document_blocks where artifact_id = $1::uuid and block_id = $2
-	`, document.id, block).Scan(&changed); err != nil {
+	`, document.room, block).Scan(&changed); err != nil {
 		t.Fatalf("read the version %s's text last changed in: %v", document.address(block), err)
 	}
 	return versionWrittenBy(t, database, document.id, changed)
@@ -168,8 +169,8 @@ func requireShapedBacklinks(t *testing.T, handler http.Handler, what, reference 
 }
 
 // textAtTheTie is the text the store held for the block of document when the tuple was written:
-// the latest document_block_texts row of the block at or before the newest version whose writing
-// event is no later than the tuple's own.
+// the latest document_block_texts row of the block, on the rows its room keys, at or before the
+// newest version of the document whose writing event is no later than the tuple's own.
 func textAtTheTie(t *testing.T, database *store.Store, document decisionDocument, block string, tuple graphstore.Tuple) string {
 	t.Helper()
 	ctx := context.Background()
@@ -195,7 +196,7 @@ func textAtTheTie(t *testing.T, database *store.Store, document decisionDocument
 		select text from document_block_texts
 		where artifact_id = $1::uuid and block_id = $2 and version <= $3
 		order by version desc limit 1
-	`, document.id, block, held).Scan(&text)
+	`, document.room, block, held).Scan(&text)
 	if errors.Is(err, pgx.ErrNoRows) || text == nil {
 		t.Fatalf("the store holds no text of %s at version %d, the version the tuple %d was written at", document.address(block), held, tuple.SourceEvent)
 	}

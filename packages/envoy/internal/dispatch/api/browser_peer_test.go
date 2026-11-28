@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"reflect"
 	"strconv"
 	"strings"
@@ -17,6 +16,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/docs/docstest"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
@@ -51,12 +51,16 @@ func (s *servedSockets) done(id string) <-chan struct{} {
 }
 
 // syncedPeer is a writable document connection that behaves as the SPA's provider does: it
-// applies every update the room sends, and reconnects with the document it kept.
+// applies every update the room sends, and reconnects with the document it kept. It edits the
+// fragment the artifact read answers for its document (model.Artifact.Fragment), as the page binds
+// it: the document's own fragment of its issue's room for a converted document, the room's own
+// fragment otherwise (R5 of the issue-tree spec, D3 of its plan).
 type syncedPeer struct {
 	wsURL      string
 	sockets    *servedSockets
 	headers    http.Header
 	artifactID string
+	fragment   string
 	doc        *crdt.Doc
 
 	mu       sync.Mutex
@@ -65,18 +69,32 @@ type syncedPeer struct {
 }
 
 // connectBrowserPeer connects alice's browser to artifactID's room, through a document server of
-// its own over documentService.
-func connectBrowserPeer(t *testing.T, documentService *docs.Service, artifactID string) *syncedPeer {
+// its own over documentService, binding the fragment the artifact read through handler answers
+// (connectPeerAs).
+func connectBrowserPeer(t *testing.T, handler http.Handler, documentService *docs.Service, artifactID string) *syncedPeer {
 	t.Helper()
-	sockets := &servedSockets{finished: make(map[string]chan struct{})}
-	server := httptest.NewServer(sockets.serve(documentService.ServeHTTP))
-	t.Cleanup(server.Close)
-	peer := &syncedPeer{
-		wsURL: "ws" + strings.TrimPrefix(server.URL, "http") + "/ws/doc/" + artifactID, sockets: sockets,
-		headers: http.Header{"X-Dispatch-User": []string{"alice"}}, artifactID: artifactID, doc: crdt.New(),
+	return connectPeerAs(t, handler, documentService, artifactID, "alice")
+}
+
+// artifactFragment is the fragment GET /api/v1/artifacts/{id} answers for artifactID, the room's
+// own where it answers none, as the page's fragmentOf reads it.
+func artifactFragment(t *testing.T, handler http.Handler, artifactID string) string {
+	t.Helper()
+	if fragment := readDocument(t, handler, artifactID).Fragment; fragment != "" {
+		return fragment
 	}
-	peer.connect(t)
-	return peer
+	return model.ArtifactFragmentOwn
+}
+
+// artifactRoom is the room the artifact read answers for artifactID: the issue room a converted
+// document is edited in, whose settlement saves it, or the document itself where it is its own
+// room.
+func artifactRoom(t *testing.T, handler http.Handler, artifactID string) string {
+	t.Helper()
+	if room := readDocument(t, handler, artifactID).Room; room != "" {
+		return room
+	}
+	return artifactID
 }
 
 func (p *syncedPeer) connect(t *testing.T) {
@@ -199,7 +217,7 @@ func (p *syncedPeer) edit(t *testing.T, change func(*pmdoc.Node) error) {
 // what no server route would, as a crafted client can.
 func (p *syncedPeer) transact(t *testing.T, change func(*crdt.Transaction, *crdt.YXmlFragment) error) {
 	t.Helper()
-	fragment := p.doc.GetXmlFragment("prosemirror")
+	fragment := p.doc.GetXmlFragment(p.fragment)
 	var changeErr error
 	update := docstest.Transact(p.doc, func(txn *crdt.Transaction) {
 		changeErr = change(txn, fragment)
@@ -212,6 +230,8 @@ func (p *syncedPeer) transact(t *testing.T, change func(*crdt.Transaction, *crdt
 	}
 }
 
+// appendParagraph appends the blocks text, as markdown, parses to at the end of the peer's
+// document in one edit, as a paste does.
 func (p *syncedPeer) appendParagraph(t *testing.T, text string) {
 	t.Helper()
 	typed, err := pmdoc.Parse(text)
@@ -248,7 +268,7 @@ func (p *syncedPeer) assertProjection(t *testing.T, markID string, want map[stri
 
 func (p *syncedPeer) assertTextLacks(t *testing.T, text string) {
 	t.Helper()
-	if got := renderDocument(t, p.doc); strings.Contains(got, text) {
+	if got := renderFragment(t, p.doc, p.fragment); strings.Contains(got, text) {
 		t.Fatalf("browser peer document = %q, holds %q", got, text)
 	}
 }

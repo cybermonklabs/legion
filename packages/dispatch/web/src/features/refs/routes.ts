@@ -11,10 +11,11 @@ import {
 import { matchPath } from "react-router-dom";
 
 import type { ArtifactOwner } from "../../api/client";
-import type { Artifact } from "../../api/types";
+import type { Artifact, SearchResult } from "../../api/types";
 import { issueProject } from "../../lib/issue-key";
 import { INBOX_ROW_TYPES } from "../inbox/list-row";
 import { EVERYONE_FILTER_VALUE } from "../inbox/sections";
+import { artifactSlugPattern } from "./artifact-slug";
 import {
   type BlockTarget,
   blockFragment,
@@ -206,8 +207,6 @@ const issueKeyOnlyPattern = new RegExp(`^${issueKeyPattern}$`);
 const projectKeyOnlyPattern = new RegExp(`^${projectKeyPattern}$`);
 const issuePathPattern = new RegExp(`^/issues/(${issueKeyPattern})(?:/(.*))?$`);
 const projectPathPattern = new RegExp(`^/projects/(${projectKeyPattern})(?:/(.*))?$`);
-/** The slug Dispatch gives a document, the one a reference can name. */
-const artifactSlugPattern = "[a-z0-9]+(?:-[a-z0-9]+)*";
 const artifactSlugOnlyPattern = new RegExp(`^${artifactSlugPattern}$`);
 const issueArtifactReferencePattern = new RegExp(
   `^artifact/(${artifactSlugPattern})(?:@v([1-9]\\d*))?$`
@@ -640,6 +639,21 @@ export function nodeRouteFromHref(
   }
   const routes = pageRoutes(href, appOrigin);
   return routes?.block ?? routes?.page;
+}
+
+/** The node a search hit is, which a row that writes the hit as a reference names and opens the
+ * parts of (`useRefPicker`'s `searchRows`): the node its `href` names (`nodeRouteFromHref`), but
+ * a document hit is its document whatever block of it the hit matched. The server names that
+ * block in a document hit's `#b-` fragment so its reader lands on the passage (`searchHref`,
+ * `api/search.go`): where to land, not what was found. An ask's fragment names the block the ask
+ * is typed on, which is the ask's own node, and stays. */
+export function searchHitRoute(
+  hit: Pick<SearchResult, "href" | "kind">,
+  appOrigin: string = window.location.origin
+): DispatchReferenceRoute | undefined {
+  return hit.kind === "document"
+    ? pageRoutes(hit.href, appOrigin)?.page
+    : nodeRouteFromHref(hit.href, appOrigin);
 }
 
 /** What a same-origin dashboard path names, as the server's `text` reads the page: `page`, and

@@ -1,0 +1,10 @@
+{
+  "type": "artifact.version",
+  "payload": {
+    "artifact_id": "00000000-0000-4000-8000-000000000001",
+    "name": "spec.md",
+    "version": { "number": 2 },
+    "content_sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "digest_owed": false
+  }
+}

@@ -239,7 +239,9 @@ type IssueSummary struct {
 	// nearest ancestor's, else its project's default; empty when it resolves to none.
 	ResolvedRepo string
 	// BlockedBy is the keys of the issues that this issue waits on, in the order Dispatch lists
-	// them; none when it waits on nothing. A key may belong to another project.
+	// them; none when it waits on nothing. A key may belong to another project. It is read from
+	// the answer's needs, and from its blocked_by where a Dispatch of the release before answers
+	// that alone (WaitsOf).
 	BlockedBy []string
 	// ClaimedBy is who Dispatch shows holding the issue's claim, as Claim.Holder writes it, or
 	// empty for nobody. ClaimUnread says Dispatch showed a claim naming no actor: neither nobody
@@ -275,7 +277,9 @@ type Issue struct {
 	HandedOver        bool
 	PrimaryArtifactID string
 	// VerificationArtifactID is the issue's Verification document (Approval.Role
-	// ArtifactRoleVerification), empty when the issue holds none.
+	// ArtifactRoleVerification), empty when the issue holds none: the artifact of the issue read's
+	// verification query, or, where the answer carries no queries (a Dispatch of the release
+	// before), its verification_artifact_id (issueResponse.verificationArtifact in wire.go).
 	VerificationArtifactID string
 	LastSeq                int64
 	// Priority is IssueSummary.Priority.

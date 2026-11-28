@@ -131,7 +131,7 @@ func (c *HTTPClient) ListIssues(ctx context.Context, project string, statuses []
 			Labels:       issue.Labels,
 			LastSeq:      issue.LastSeq,
 			ResolvedRepo: deref(issue.ResolvedRepo),
-			BlockedBy:    issue.BlockedBy,
+			BlockedBy:    WaitsOf(issue.Needs, issue.BlockedBy),
 			ClaimedBy:    issue.Claim.holder(),
 			ClaimUnread:  issue.Claim.unread(),
 		})

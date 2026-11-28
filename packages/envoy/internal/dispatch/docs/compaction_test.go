@@ -246,7 +246,7 @@ func TestACompactionDropsItsFoldWhenARebuildRunsInsideIt(t *testing.T) {
 		if err := lockDocumentRoom(ctx, tx, artifactID); err != nil {
 			t.Fatalf("lock the document: %v", err)
 		}
-		head, err := versioned.head(ctx, tx, artifactID)
+		head, err := roomHead(ctx, tx, artifactID)
 		if err != nil {
 			t.Fatalf("read the head the rebuild replaces: %v", err)
 		}

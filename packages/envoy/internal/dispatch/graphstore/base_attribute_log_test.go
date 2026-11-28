@@ -30,13 +30,23 @@ import (
 // and its event in, so that half drives the real comment create path and reads the event out of
 // `events`.
 
+// authorOnlyTestKind is a node kind this package's tests admit as one that takes a node reserved
+// for its author, through the hand-off the read registry's init calls (AdmitAuthorOnly). The
+// store takes such a node of no kind the registry does not flag, and this package's tests load no
+// registry, so a test that proves how the writer moves a node's visibility writes a node of this
+// kind rather than of a kind the store refuses `author` on.
+const authorOnlyTestKind = "graphstore_author_only_test"
+
+func init() { AdmitAuthorOnly(authorOnlyTestKind) }
+
 func TestABaseAttributeThatMovesIsStatedInTheLog(t *testing.T) {
 	database := storetest.Open(t)
 	ctx := context.Background()
+	seedSupertags(t, ctx, database, authorOnlyTestKind)
 	at := time.Date(2026, 11, 12, 0, 0, 0, 0, time.UTC)
 	who := model.Actor{Kind: "user", ID: "alice"}
 	node := Node{
-		Kind: KindPerson, ID: "base-attribute-move", Supertag: "person",
+		Kind: authorOnlyTestKind, ID: "base-attribute-move", Supertag: authorOnlyTestKind,
 		Visibility: VisibilityProject, State: StateLive,
 		MadeAt: at, MadeBy: who, SourceEvent: NoEvent,
 	}

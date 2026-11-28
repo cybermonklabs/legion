@@ -26,8 +26,8 @@ const maintenanceLease = "suggestion-outcomes"
 
 // RunMaintenanceSweep deletes every Idempotency-Key past its window (sweepRequestKeys) and every
 // spent DPoP proof past its acceptance window (store.DPoPProofs.Sweep), ends every answer run
-// past its window that stored no terminal event and deletes every run past its TTL
-// (sweepGoingRequests), and then sends every delivery a process that died left owed
+// past its window that stored no terminal event, states gone every run past the hour and removes
+// its rows (sweepGoingRequests), and then sends every delivery a process that died left owed
 // (resumeDeliveries, the server's resumeOwedDeliveries). resumeDeliveries is nil where nothing
 // delivers. It stops when ctx is done.
 //

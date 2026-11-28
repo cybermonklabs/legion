@@ -17,8 +17,11 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5"
+
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphseedtest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -742,7 +745,7 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementTheUploadStores(t
 	documentService, handler, _ := browserDocumentService(t)
 	issue := createInteractionIssue(t, handler, "TEST", "A replacement over a browser's ask", "The spec.\n")
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "notes.md", "Intro.\n")
-	writeBrowserDocument(t, documentService, artifactID, "Intro.\n\n"+askAfterOptions)
+	writeBrowserDocument(t, handler, documentService, artifactID, "Intro.\n\n"+askAfterOptions)
 	// The client reads the document's text as every reader of this build reads it, under
 	// `Dispatch-Asks: 1` (textRead): markdown with none of an ask block's server-owned attributes,
 	// which an upload takes back unchanged. A reader without the header is served the form kept for
@@ -818,7 +821,7 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersAReplacementOverARepeatedBloc
 		t.Fatalf("parse the browser's document: %v", err)
 	}
 	repeated.Children[1].Attrs[pmdoc.BlockIDAttr] = "c1"
-	peer := connectBrowserPeer(t, documentService, artifactID)
+	peer := connectBrowserPeer(t, handler, documentService, artifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		tree.Children = repeated.Children
@@ -884,13 +887,23 @@ func TestMarkdownRoundTripWithoutNewDocumentAnswersTheRenderingOfAnElementThisBu
 	}
 	t.Cleanup(restore)
 	handler, database, broken := newBrokenTestServer(t)
+	// The build that introduces staged ships the type migration that writes its supertag node, as
+	// every type of the installed schema is a node of the store (R26 of the issue-tree spec), and the
+	// store takes no node of a type it holds no supertag node of (graphstore.ErrSupertagNotHeld): the
+	// test seeds that node as the migration would, so the replacement that respells the block can
+	// write its node.
+	if err := pgx.BeginFunc(context.Background(), database.Pool, func(tx pgx.Tx) error {
+		return graphseedtest.SeedSupertags(context.Background(), tx, "staged")
+	}); err != nil {
+		t.Fatalf("seed the type staged the staged schema declares: %v", err)
+	}
 	issue := createArtifactIssue(t, handler)
 	const kept = "before\n\n:::staged{#staged-1}\nBody.\n:::\n"
 	artifactID := seedUploadedDocument(t, handler, issue.Key, "staged.md", "before\n")
 	if _, err := database.Pool.Exec(context.Background(), `update artifact_versions set markdown = $2 where artifact_id = $1`, artifactID, kept); err != nil {
 		t.Fatalf("store the latest version: %v", err)
 	}
-	broken.failNextLoad(artifactID)
+	broken.failNextLoad(t, artifactID)
 	if rebuilt := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/rebuild", map[string]any{}, "alice"); rebuilt.Code != http.StatusOK {
 		t.Fatalf("rebuild from the version holding the staged block: status=%d body=%s", rebuilt.Code, rebuilt.Body.String())
 	}

@@ -3,6 +3,7 @@ package graphcensus
 import (
 	"context"
 	"io"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -132,7 +133,7 @@ func storeCensusOf(t *testing.T, database *store.Store) *StoreReport {
 // tie kinds of decisions, readings and asks (KindReport.EmptyAgrees) are none of them: the fixture
 // writes no decision and no ask, and those kinds read empty on both sides, which is no refusal.
 var seededKinds = []string{"comment", "block", "block_ref", graphstore.KindPerson, graphstore.KindSession,
-	graphstore.KindRole, graphstore.KindPage}
+	graphstore.KindRole, graphstore.KindPage, "artifact", graphstore.KindVersion}
 
 // requireTheCensusAgrees fails the test unless the census read no difference in either direction
 // over any kind, read rows and live nodes of every kind the fixture seeded, and passes.
@@ -141,9 +142,6 @@ func requireTheCensusAgrees(t *testing.T, what string, report *StoreReport) {
 	for _, kind := range report.Kinds {
 		t.Logf("%s: kind=%s rows=%d nodes=%d row differences=%d node differences=%d",
 			what, kind.Kind, kind.Rows, kind.Nodes, kind.RowDifferences, kind.NodeDifferences)
-		for _, difference := range append(append([]Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {
-			t.Errorf("%s reads a difference of kind %s at %s: %s", what, kind.Kind, difference.At, difference.Cause)
-		}
 	}
 	for _, name := range seededKinds {
 		if kind := censusKind(t, report, name); kind.Rows == 0 || kind.Nodes == 0 {
@@ -151,9 +149,7 @@ func requireTheCensusAgrees(t *testing.T, what string, report *StoreReport) {
 				what, kind.Rows, kind.Nodes, name)
 		}
 	}
-	if report.Differences() != 0 || report.Refused() {
-		t.Fatalf("%s read %d difference(s) and refused=%t, want none and a pass", what, report.Differences(), report.Refused())
-	}
+	requireNoCensusDifference(t, what, report)
 }
 
 // censusKind is the report's line for one kind.
@@ -168,6 +164,20 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 	return KindReport{}
 }
 
+// differencesOf is every difference kind reports, its rows' and then its nodes'.
+func differencesOf(kind KindReport) []Difference {
+	return slices.Concat(kind.ReportedRows, kind.ReportedNodes)
+}
+
+// censusDifferences is the census kind name as the store census reads it over database: how many
+// differences it reads, in both directions together, the ones it reports and how many rows it
+// checked.
+func censusDifferences(t *testing.T, database *store.Store, name string) (found int64, reported []Difference, rows int64) {
+	t.Helper()
+	kind := censusKind(t, storeCensusOf(t, database), name)
+	return kind.RowDifferences + kind.NodeDifferences, differencesOf(kind), kind.Rows
+}
+
 // The census passes only where it checked more than zero rows of every kind it covers and found
 // zero differences (R19): a total over the kinds is no such proof, because two empty sides of one
 // kind agree. The census of the agreeing store, which checked rows of every earlier kind,
@@ -175,8 +185,9 @@ func censusKind(t *testing.T, report *StoreReport, name string) KindReport {
 // out, which still reads zero differences and still holds rows of every other kind, must refuse
 // and name that kind in its verdict. A tie kind of decisions, readings and asks is a kind a
 // deployment holds none of until somebody writes one, and the agreeing store holds none: no row
-// and no node of it
-// is no refusal, and the report says so on that kind's own line.
+// and no node of it is no refusal, and the report says so on that kind's own line. So is a kind a
+// deployment may hold none of (the runs, the frames and the visibility and state of the
+// reasoning kinds), which must pass and say on its own line that it checked no row.
 func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	database := storetest.Open(t)
 	seedAgreeingStore(t, database)
@@ -184,6 +195,7 @@ func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 	if report.Refused() {
 		t.Fatalf("the census of the agreeing store refuses, so taking a kind out of it would prove nothing")
 	}
+	optional := 0
 	for index, held := range report.Kinds {
 		emptied := *report
 		emptied.Kinds = append([]KindReport{}, report.Kinds...)
@@ -202,11 +214,23 @@ func TestTheStoreCensusRefusesAKindThatCheckedNoRow(t *testing.T) {
 			}
 			continue
 		}
+		if held.MayBeEmpty {
+			optional++
+			line := "census: store kind=" + held.Kind + " checked no row, so the census proves nothing of it; a deployment may hold none, so it refuses nothing\n"
+			if emptied.Refused() || !strings.Contains(printed.String(), line) || !strings.HasSuffix(printed.String(), "census: store ok\n") {
+				t.Errorf("a census that checked no %s row, a kind a deployment may hold none of, reads refused=%t, want a pass that prints %q:\n%s",
+					held.Kind, emptied.Refused(), line, printed.String())
+			}
+			continue
+		}
 		verdict := "census: store REFUSED (kind(s) " + held.Kind + " checked no row, so the census proves nothing of them)\n"
 		if !emptied.Refused() || emptied.Rows() == 0 || !strings.HasSuffix(printed.String(), verdict) {
 			t.Errorf("a census that checked no %s row but %d rows of the other kinds reads refused=%t, want a refusal ending %q:\n%s",
 				held.Kind, emptied.Rows(), emptied.Refused(), verdict, printed.String())
 		}
+	}
+	if optional != 8 {
+		t.Errorf("the census reads %d kinds a deployment may hold none of, want 8: the interaction, its frames, and the visibility and state of a run, a lens, a finding, a risk, a constraint and a lens kind", optional)
 	}
 }
 

@@ -19,10 +19,12 @@
 #       Drops the database URL names and creates it empty again, so that the base release's own
 #       Store.Migrate writes its schema and the corpus is the database's only content. Each driver
 #       calls it before baseline_start, since a second run over a database the first one seeded
-#       would count both corpora. It drops only a database on this machine (127.0.0.1, localhost or
-#       ::1) whose name begins `infra_1150_`, the databases these drivers alone use, and refuses
-#       every other with status 2: never the shared legion_test, never a deployment's. It connects
-#       to the `postgres` database of the same server, with the same role, to drop and create.
+#       would count both corpora. It drops only a database on this machine, a URL that names one
+#       loopback postgres database (127.0.0.1, localhost or ::1) with no connection override libpq
+#       would connect by instead (lib.sh's loopback_database_url), whose name begins `infra_1150_`,
+#       the databases these drivers alone use, and refuses every other with status 2: never the
+#       shared legion_test, never a deployment's. It connects to the `postgres` database of the
+#       same server, with the same role, to drop and create.
 #
 #   seed_decisions
 #       Writes the corpus. It reads baseline_url, baseline_token and baseline_database_url, which
@@ -195,24 +197,17 @@ seed_refuse() {
 
 # seed_reset_database URL: the head comment above is its contract.
 seed_reset_database() {
-  local url="$1" scheme authority name query host
+  local url="$1" scheme authority name query
   [[ -n "$work" ]] || seed_refuse "seed_reset_database writes its log under \$work: call lib.sh's work_dir first"
+  loopback_database_url "$url" ||
+    seed_refuse "the database URL names no single loopback postgres database with no connection override: this seed drops and creates only this pod's own test databases"
+  # Read after loopback_database_url, whose own match replaces BASH_REMATCH.
   [[ "$url" =~ ^(postgres(ql)?://)([^/?]*)/([^/?]+)(\?.*)?$ ]] ||
     seed_refuse "the database URL is no postgres:// URL naming a database"
   scheme="${BASH_REMATCH[1]}"
   authority="${BASH_REMATCH[3]}"
   name="${BASH_REMATCH[4]}"
   query="${BASH_REMATCH[5]}"
-  host="${authority##*@}"
-  if [[ "$host" == \[* ]]; then
-    host="${host%%]*}]"
-  else
-    host="${host%%:*}"
-  fi
-  case "$host" in
-    127.0.0.1 | localhost | '[::1]') ;;
-    *) seed_refuse "the database is on $host, not this machine: this seed drops and creates only this pod's own test databases" ;;
-  esac
   [[ "$name" =~ ^infra_1150_[a-z0-9_]+$ ]] ||
     seed_refuse "the database is $name: this seed drops and creates only a database whose name begins infra_1150_, one of this child's drivers' own"
   baseline_psql "${scheme}${authority}/postgres${query}" -q \

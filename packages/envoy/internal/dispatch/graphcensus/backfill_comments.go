@@ -18,7 +18,7 @@ import (
 // between a party graphstore.PartiesValue refuses is skipped (partiesRefused).
 func backfillComments(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: graphstore.KindComment}
-	after := "00000000-0000-0000-0000-000000000000"
+	after := zeroUUID
 	for {
 		ids, causes, refused, err := readCommentRows(ctx, database, after)
 		if err != nil {

@@ -175,6 +175,9 @@ type QuoteFinder struct {
 	prepared bool
 	err      error
 	text     flattenedText
+	// blocks is the range of each block of the document by its block id (blockRange), read
+	// whole at the first call that asks for one, nil before.
+	blocks map[string]Range
 }
 
 // NewQuoteFinder returns a finder over doc. It reads nothing of doc until its first Find.
@@ -196,6 +199,147 @@ func (f *QuoteFinder) Find(quote string, occurrence, near *int) (Range, error) {
 		return Range{}, err
 	}
 	return f.choose(quote, matches, occurrence, near)
+}
+
+// QuoteBlockError is a quote asked for inside one block (QuoteFinder.FindInBlock) where the
+// document holds no block of that id (Held false), or the block it holds matches the quote nowhere
+// (Held true). It is a miss of the quote, so it answers ErrTargetNotFound too.
+type QuoteBlockError struct {
+	BlockID string
+	Held    bool
+}
+
+func (e *QuoteBlockError) Error() string {
+	if !e.Held {
+		return fmt.Sprintf("%s: the document holds no block %q", ErrTargetNotFound, e.BlockID)
+	}
+	return fmt.Sprintf("%s: block %q does not hold the quote", ErrTargetNotFound, e.BlockID)
+}
+
+func (e *QuoteBlockError) Unwrap() error { return ErrTargetNotFound }
+
+// FindInBlock is Find over the matches of quote that lie inside the block carrying blockID alone,
+// filtered to that block's range before it chooses among them: occurrence counts those matches in
+// document order, and with no occurrence the one match inside the block is taken however many the
+// rest of the document holds, so text written above the block moves nothing. A document with no
+// block of that id, or whose block matches the quote nowhere, is a QuoteBlockError; an occurrence
+// past the block's matches is Find's miss, counting the block's matches.
+func (f *QuoteFinder) FindInBlock(quote, blockID string, occurrence *int) (Range, error) {
+	inside, _, held, err := f.matchesInBlock(quote, blockID)
+	if err != nil {
+		return Range{}, err
+	}
+	if !held {
+		return Range{}, &QuoteBlockError{BlockID: blockID}
+	}
+	if len(inside) == 0 {
+		return Range{}, &QuoteBlockError{BlockID: blockID, Held: true}
+	}
+	return f.choose(quote, inside, occurrence, nil)
+}
+
+// OccurrenceInBlock is the occurrence FindInBlock takes for a match of quote that starts at from
+// inside the block carrying blockID: the number of that block's matches of quote, as FindInBlock
+// filters them, that start before from. held is false where the document holds no block of that
+// id or from lies outside it, where no occurrence of the block places the match.
+func (f *QuoteFinder) OccurrenceInBlock(quote, blockID string, from int) (occurrence int, held bool, err error) {
+	inside, block, found, err := f.matchesInBlock(quote, blockID)
+	if err != nil {
+		return 0, false, err
+	}
+	if !found || from < block.From || from >= block.To {
+		return 0, false, nil
+	}
+	for _, match := range inside {
+		if match.From < from {
+			occurrence++
+		}
+	}
+	return occurrence, true, nil
+}
+
+// matchesInBlock is the matches of quote that lie inside the block carrying blockID, in document
+// order, with that block's range, and held false where the document holds no block of that id.
+//
+// It searches the block's own text first (exactMatchesWithin): where the quote is there word for
+// word, the whole text holds an exact match, so the matcher cascade answers exact matches
+// (quoteMatches), and those that lie inside the block are the ones the block's text holds. So a
+// finder asked for many anchors, each in its own block, reads each block's text once rather than
+// the whole document's once an anchor (the tree read's anchorOccurrences, of a page of 200
+// comments on a spec of 2,786 blocks). A heading's quote, and a quote the block holds no exact
+// match of, are matched over the whole text.
+func (f *QuoteFinder) matchesInBlock(quote, blockID string) (inside []quoteMatch, block Range, held bool, err error) {
+	if err := f.prepare(); err != nil {
+		return nil, Range{}, false, err
+	}
+	if block, held = f.blockRange(blockID); !held {
+		return nil, Range{}, false, nil
+	}
+	if marker := atxHeadingMarker.FindString(quote); marker == "" || marker == quote {
+		if inside := exactMatchesWithin(f.text, quote, block); len(inside) > 0 {
+			return inside, block, true, nil
+		}
+	}
+	matches, err := f.matches(quote)
+	if err != nil {
+		return nil, Range{}, false, err
+	}
+	inside = matches[:0]
+	for _, match := range matches {
+		if match.From >= block.From && match.To <= block.To {
+			inside = append(inside, match)
+		}
+	}
+	return inside, block, true, nil
+}
+
+// exactMatchesWithin is each exact match of quote (exactQuoteMatches) that lies inside within: a
+// match whose every unit stands at a position within holds. The positions of the text's units
+// never decrease, so those units are one run of them, and findAll answers overlapping matches, so
+// the run's own matches are exactly the whole text's that lie inside within.
+func exactMatchesWithin(text flattenedText, quote string, within Range) []quoteMatch {
+	low := sort.SearchInts(text.positions, within.From)
+	high := sort.SearchInts(text.positions, within.To)
+	if low >= high {
+		return nil
+	}
+	needle := utf16.Encode([]rune(quote))
+	var matches []quoteMatch
+	for _, offset := range findAllUnits(text.units16()[low:high], needle) {
+		start := low + offset
+		matches = append(matches, quoteMatch{
+			Range: Range{
+				From: text.positions[start],
+				To:   text.positions[start+len(needle)-1] + 1,
+			},
+			textFrom: start,
+			textTo:   start + len(needle),
+		})
+	}
+	return matches
+}
+
+// blockRange is the range of the block carrying blockID, as findBlock finds it: the first in
+// document order that carries it. The finder reads the range of every block in one walk at its
+// first call and keeps them, since its document does not change while it is in use, so a write
+// that places many anchors walks the tree once rather than once an anchor.
+func (f *QuoteFinder) blockRange(blockID string) (Range, bool) {
+	if f.blocks == nil {
+		f.blocks = map[string]Range{}
+		walk(f.doc, func(node *Node, _ []int, pos, end int) bool {
+			if node.Type == "doc" || isInlineNodeType(node.Type) {
+				return true
+			}
+			if id, ok := node.Attrs[BlockIDAttr].(string); ok {
+				if _, again := f.blocks[id]; !again {
+					f.blocks[id] = Range{From: pos, To: end}
+				}
+			}
+			return true
+		})
+	}
+	block, held := f.blocks[blockID]
+	return block, held
 }
 
 // FindPlain finds quote in the document's plain text exactly, as a reply's quote of a block names

@@ -52,6 +52,11 @@ function documentRead(artifactId: string): RegExp {
 // The document every row approves, and the three questions asked about it.
 // ---------------------------------------------------------------------------
 
+/** The words the edit after the approval rewords, the body of the spec's one requirement. An
+ *  approval covers the record of the Spec query - the spec's memo, criteria and requirements -
+ *  and not its paragraphs (R14), so as a paragraph the reword would carry alice's approval of
+ *  version 1 to version 2. As the requirement's body it is a change of that record, which version
+ *  2 is marked with against the approved version 1. */
 const WORDS_BEFORE = "The retry budget is three attempts per lease.";
 const WORDS_AFTER = "The retry budget is seven attempts per lease.";
 const REMOVED_WORD = "three";
@@ -61,7 +66,9 @@ const SPEC = [
   "",
   "The mirror replays what the ledger wrote while it was away.",
   "",
+  ":::requirement{#r-retry-budget}",
   WORDS_BEFORE,
+  ":::",
   "",
 ].join("\n");
 
@@ -130,8 +137,8 @@ async function seedApproval(summary: string): Promise<Seed> {
 
 /**
  * The same issue with a Verification document beside its spec, the spec approved at version 1 and
- * edited since, and one request - opened with `include_verification` - to approve version 2 of the
- * spec and version 1 of the Verification document together.
+ * its requirement reworded since, and one request - opened with `include_verification` - to
+ * approve version 2 of the spec and version 1 of the Verification document together.
  */
 async function seedTwoDocuments(): Promise<Seed> {
   await createProject({ key: PROJECT, name: "Mirror rollout" });

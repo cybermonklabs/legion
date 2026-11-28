@@ -117,12 +117,13 @@ func versionNewsNamesCheck(text, check string) bool {
 }
 
 // Step A2. A tree registers its spec alone, and its gate opens on the setup approval of version 1.
-// A new version that changes `## Design` closes it, and while the reviewer is in a turn the person
-// approves it. The reviewer's task waits behind that turn, the daemon sending its connection
-// nothing, and once the driver ends the turn the task arrives naming `Design` and the two versions,
-// and not the `Summary` that did not change. The issue stays in reviewing until the reviewer's
-// request_backward_move, which moves it to implementing. The in-run negative: a second tree whose
-// gate the approval did not move was sent nothing, in the window the reviewer's task arrived in.
+// A new version that changes `## Design`, the words of the requirement it holds, closes it, and
+// while the reviewer is in a turn the person approves it. The reviewer's task waits behind that
+// turn, the daemon sending its connection nothing, and once the driver ends the turn the task
+// arrives naming `Design` and the two versions, and not the `Summary` that did not change. The
+// issue stays in reviewing until the reviewer's request_backward_move, which moves it to
+// implementing. The in-run negative: a second tree whose gate the approval did not move was sent
+// nothing, in the window the reviewer's task arrived in.
 //
 // The first five checks hold on a daemon from before the change as well; the sixth, the task
 // queued behind the turn, is the run's first one-approval check, where the negative control fails.
@@ -252,7 +253,7 @@ func (r *versionNewsLive) a3() {
 		view := views[record.DesignStepSpec]
 		return view.CurrentVersion == 2 && view.Status == api.GatedStepApproved
 	})
-	r.held("the answer to the ask block wrote version 2 of %s's spec, which Dispatch approved by carrying the person's approval, and the gate stands open at it", key)
+	r.held("the answer to the ask block wrote version 2 of %s's spec, and the gate stands open at it", key)
 
 	r.newVersion(accepting, record.DesignStepCriteria, versionNewsCheck, versionNewsCheckAgain, 2)
 	r.approve(accepting.verification, 2)

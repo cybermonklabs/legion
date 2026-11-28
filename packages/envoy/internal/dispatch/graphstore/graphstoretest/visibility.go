@@ -22,9 +22,10 @@ var ErrAuthorNamesNobody = errors.New(
 		"credentials compare as one credential, so write it project-visible or write it under a " +
 		"credential that names a session, a person or a workload")
 
-// VisibilityFor is the visibility a test's write of a node gets for what it asked for. No route
-// lets a write ask for one yet, so a test that reserves a node for its author writes it through
-// the store's own writer with the visibility this answers, as such a route would. A write that
+// VisibilityFor is the visibility a test's write of a node gets for what it asked for, as the
+// store's own rule answers it (graphstore.VisibilityFor), for a test of graphstore itself, which
+// may not import a package that imports graphstore: a test that reserves a node for its author
+// writes it through the store's own writer with the visibility this answers. A write that
 // asks for nothing is project-visible, which is what every node Dispatch writes today is; a write
 // that asks to reserve a node for its author gets that only on a credential that proves one, and
 // is refused with ErrAuthorNamesNobody otherwise. proves is whether the writing credential proves

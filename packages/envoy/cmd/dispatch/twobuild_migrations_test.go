@@ -150,7 +150,7 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 		options.Binary = binary
 		p := startDispatchProcessWith(t, b.databaseURL(t), options)
 		p.waitHealthy(t)
-		stop(t, p)
+		stopProcess(t, p)
 		t.Logf("%s booted and stopped", which)
 	}
 	name, checksum, applied := recorded()
@@ -167,7 +167,7 @@ func TestTheReleaseBeforeBootsOverADatabaseTheNextReleaseBootedWithAReplacedFile
 	options.Binary, options.WebDist = b.build.path("envoy-dispatch"), b.build.path("web")
 	previous := startDispatchProcessWith(t, b.databaseURL(t), options)
 	previous.waitHealthy(t)
-	stop(t, previous)
+	stopProcess(t, previous)
 	t.Logf("the %s booted and stopped", b.previousName())
 
 	// Control: the row as the earlier design moved it.
@@ -198,7 +198,7 @@ func TestTheReleaseBeforeBootsOverTheLaneDatabaseOfAPullRequestThatEditsAShipped
 	options.Binary = b.binary
 	release := startDispatchProcessWith(t, databaseURLOf(t, lane), options)
 	release.waitHealthy(t)
-	stop(t, release)
+	stopProcess(t, release)
 	t.Logf("release N booted over the lane's database (laneDatabase), which N migrated from empty and N+1, editing %s and %s, migrated forward", editedMigration, attributionRule)
 
 	old := storetest.Empty(t)

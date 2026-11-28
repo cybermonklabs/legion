@@ -503,10 +503,15 @@ const edgesWholeDocumentRead = "whole document"
 // resolves, whose first arm carries the probe for every kind, and the whole-document read, which
 // carries none. The kinds case compares it with nodeKinds first, so a kind a later build resolves
 // fails it until it is listed here, and the fixture writes a node of each. The store's own kinds
-// (graphstore.KindPerson and its three siblings) are read as an issue is, by the node's address.
+// (graphstore.KindPerson and its three siblings) are read as an issue is, by the node's address,
+// and so are the kinds of a lens and what stands under it (graphstore.KindInteraction and the
+// kinds beside it), which no read of blocks covers.
 var edgesProbeCarryingReads = []string{
-	"artifact", "ask", "ask_block", "block", "comment", "comment_block", "component", "issue",
-	"message", "message_block", "page", "person", "role", "session", edgesWholeDocumentRead,
+	graphstore.KindArtifact, graphstore.KindAsk, ItemAsk.BlockKind(), BlockNodeKind, graphstore.KindComment,
+	graphstore.KindCommentBlock, graphstore.KindComponent, graphstore.KindConstraint, graphstore.KindInteraction,
+	graphstore.KindIssue, graphstore.KindLens, graphstore.KindLensBlock, graphstore.KindLensKind, graphstore.KindMessage,
+	ItemMessage.BlockKind(), graphstore.KindPage, graphstore.KindPerson, graphstore.KindRisk, graphstore.KindRole,
+	graphstore.KindSession, edgesWholeDocumentRead,
 }
 
 // edgesPlanSettings are the two settings each plan is read under: sequential scans off, which
@@ -561,50 +566,98 @@ func (a edgesBlockArm) String() string {
 }
 
 // edgesBlockArms is the list "The arms that can end at a block" of the plan of this change: the
-// arms of graph_edges whose to_kind is a column or one of blockNodeKinds. They are refs;
-// block_refs, whose typed pointer is listed only where block_ref_listed allows its target, over
-// the rows that name no node; comment_block_refs, message_block_refs and ask_block_refs, each
-// joined to its source block, which must hold a position; a comment's reply to a comment's block
-// and to an ask's part, told apart by the ask/ that starts an ask part's node id; a message's
-// reply to a message's block; and the store's own arm over graph_tuples (migration
-// 20261125163554), which answers the links of the block_refs rows that name their node, a block's
-// link and an answered ask's shaped among them (keyedTupleArm). refs.Edges' in read reads each of
-// them by the node's block ids, and the fixture writes a link of each into each read node's
-// blocks. The arms case holds the view to this list, so an arm a later migration adds fails it
-// until it is listed here, read by block ids and written in the fixture.
+// arms of graph_edges whose to_kind is a column or one of blockNodeKinds. They are refs, over the
+// rows the store states no tuple of (store.ReferenceNotStated); block_refs, whose typed pointer is
+// listed only where block_ref_listed allows its target, over the rows that name no node;
+// comment_block_refs, message_block_refs and ask_block_refs, each joined to its source block,
+// which must hold a position; a comment's reply to a comment's block and to an ask's part, told
+// apart by the ask/ that starts an ask part's node id; a message's reply to a message's block; the
+// store's own arm over graph_tuples (migrations 20261125163554 and
+// 20261126050006_issue_tree_graph_edges_after_tuple_arm_filter, restated by
+// 20261126050009_issue_tree_graph_edges_block_node_listed to test a pointer's target through
+// block_node_listed, R26 of the issue-tree spec), which answers the links of the block_refs rows
+// that name their node, a block's link and an answered ask's shaped among them (keyedTupleArm), a
+// document's mention where the document's row names its node (keyedMentionArm), and the relations
+// it answers from the tuples alone (keyedStoreArm); and its arm over the tuples of a lens's
+// findings (keyedFindingArm). refs.Edges' in read reads each of them by the node's block ids, and
+// the fixture writes a link of each into each read node's blocks. The arms case holds the view to
+// this list, so an arm a later migration adds fails it until it is listed here, read by block ids
+// and written in the fixture.
 var edgesBlockArms = []edgesBlockArm{
-	{arm: graphViewArm{table: "refs"}, from: "FROM refs"},
+	{
+		arm: graphViewArm{table: "refs"},
+		from: "FROM refs r WHERE r.from_kind <> 'artifact'::text OR octet_length(r.to_id) > 1024 OR NOT (EXISTS ( SELECT 1 FROM artifacts mentioning " +
+			"WHERE mentioning.id::text = r.from_id AND mentioning.node_kind IS NOT NULL OFFSET 0))",
+	},
 	{
 		arm:  graphViewArm{table: "block_refs", fromKind: "block"},
 		from: "FROM block_refs WHERE (block_refs.to_types IS NULL OR block_ref_listed(block_refs.to_types, block_refs.to_id)) AND block_refs.node_kind IS NULL",
 	},
 	{
 		arm: graphViewArm{table: "graph_tuples"},
-		from: `FROM ( SELECT DISTINCT ON (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id) tuple.from_kind, tuple.from_id, ` +
-			`CASE WHEN tuple.kind = 'in_document'::text THEN 'part_of'::text ELSE tuple.kind END AS kind, tuple.to_kind, tuple.to_id, ` +
-			`tuple.at AS created_at, tuple.legacy_source_seq AS source_seq, tuple.kind AS stated, tuple.asserted, ` +
-			`CASE WHEN tuple.from_kind = 'block'::text AND tuple.kind = 'in_document'::text THEN 'block'::text ` +
-			`WHEN tuple.from_kind = 'block'::text AND tuple.kind <> 'part_of'::text THEN 'block_ref'::text ` +
-			`WHEN tuple.from_kind = 'comment'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) THEN 'comment'::text ` +
-			`WHEN tuple.from_kind = 'ask'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) THEN 'ask'::text ` +
-			`WHEN tuple.from_kind = 'ask'::text AND tuple.kind = 'followed_by'::text THEN 'ask_follower'::text ` +
-			`WHEN tuple.from_kind = 'ask'::text AND tuple.kind = 'shaped'::text THEN 'block_ref'::text ELSE NULL::text END AS projects ` +
-			`FROM graph_tuples tuple WHERE tuple.to_kind <> 'value'::text AND (tuple.from_kind = 'block'::text AND tuple.kind = 'in_document'::text ` +
-			`OR tuple.from_kind = 'block'::text AND tuple.kind <> 'part_of'::text ` +
-			`OR tuple.from_kind = 'comment'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) ` +
-			`OR tuple.from_kind = 'ask'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) ` +
-			`OR tuple.from_kind = 'ask'::text AND tuple.kind = 'followed_by'::text OR tuple.from_kind = 'ask'::text AND tuple.kind = 'shaped'::text) ` +
-			`ORDER BY tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq DESC) edge ` +
-			`JOIN graph_nodes node ON node.kind = edge.from_kind AND node.id = edge.from_id ` +
-			`WHERE edge.asserted AND node.state <> 'gone'::text AND (edge.projects <> 'block_ref'::text OR edge.stated = 'mentions'::text ` +
-			`OR block_ref_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id)) AND CASE edge.projects ` +
-			`WHEN 'block'::text THEN (EXISTS ( SELECT 1 FROM document_blocks projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) ` +
-			`WHEN 'block_ref'::text THEN (EXISTS ( SELECT 1 FROM block_refs projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id ` +
-			`AND projected.kind = edge.stated AND projected.to_kind = edge.to_kind AND projected.to_id = edge.to_id OFFSET 0)) ` +
-			`WHEN 'comment'::text THEN (EXISTS ( SELECT 1 FROM comments projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) ` +
-			`WHEN 'ask'::text THEN (EXISTS ( SELECT 1 FROM asks projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) ` +
-			`WHEN 'ask_follower'::text THEN (EXISTS ( SELECT 1 FROM ask_followers projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id ` +
-			`AND projected.session_id = edge.to_id OFFSET 0)) ELSE NULL::boolean END`,
+		from: `FROM ( SELECT DISTINCT ON (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id) tuple.from_kind, tuple.from_id, tuple.node_id, CASE` +
+			` WHEN tuple.kind = 'in_document'::text THEN 'part_of'::text WHEN tuple.from_kind = 'issue'::text AND tuple.kind = 'needs'::text AND tuple.to_kind = 'i` +
+			`ssue'::text THEN 'blocked_by'::text ELSE tuple.kind END AS kind, tuple.to_kind, tuple.to_id, tuple.at AS created_at, tuple.legacy_source_seq AS source` +
+			`_seq, tuple.kind AS stated, tuple.asserted, CASE WHEN tuple.from_kind = 'block'::text AND tuple.kind = 'in_document'::text THEN 'block'::text WHEN NOT` +
+			` (tuple.from_kind = 'block'::text AND tuple.from_id ~~ 'lens/%'::text) AND ((tuple.kind = ANY (ARRAY['changed_by_run'::text, 'has_kind'::text, 'trigge` +
+			`red_by'::text, 'constrained_by'::text, 'prevented_by'::text])) OR (tuple.kind = ANY (ARRAY['part_of'::text, 'authored_by'::text])) AND (tuple.from_kin` +
+			`d = ANY (ARRAY['interaction'::text, 'lens'::text, 'risk'::text, 'constraint'::text]))) THEN 'store'::text WHEN tuple.from_kind = 'issue'::text AND (tu` +
+			`ple.kind = ANY (ARRAY['duplicate_of'::text, 'filed_from'::text])) THEN 'store'::text WHEN tuple.from_kind = 'issue'::text AND tuple.kind = 'child_of':` +
+			`:text AND tuple.to_kind = 'issue'::text THEN 'issue_parent'::text WHEN tuple.from_kind = 'issue'::text AND tuple.kind = 'needs'::text AND tuple.to_kin` +
+			`d = 'issue'::text THEN 'issue_link'::text WHEN tuple.from_kind = 'component'::text AND tuple.kind = 'part_of'::text AND tuple.to_kind = 'component'::t` +
+			`ext THEN 'component_parent'::text WHEN tuple.from_kind = 'component'::text AND tuple.kind = 'depends_on'::text AND tuple.to_kind = 'component'::text T` +
+			`HEN 'component_depends'::text WHEN tuple.from_kind = 'issue'::text AND tuple.kind = 'affects'::text AND tuple.to_kind = 'component'::text THEN 'compon` +
+			`ent_member'::text WHEN tuple.from_kind = 'artifact'::text AND tuple.kind = 'mentions'::text THEN 'artifact_ref'::text WHEN tuple.from_kind = 'block'::` +
+			`text AND tuple.kind <> 'part_of'::text THEN 'block_ref'::text WHEN tuple.from_kind = 'comment'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text,` +
+			` 'owned_by'::text])) THEN 'comment'::text WHEN tuple.from_kind = 'ask'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) THE` +
+			`N 'ask'::text WHEN tuple.from_kind = 'ask'::text AND tuple.kind = 'followed_by'::text THEN 'ask_follower'::text WHEN tuple.from_kind = 'ask'::text AND` +
+			` tuple.kind = 'shaped'::text THEN 'block_ref'::text ELSE NULL::text END AS projects FROM ( SELECT tuple_1.from_kind, tuple_1.from_id, tuple_1.from_id ` +
+			`AS node_id, tuple_1.kind, tuple_1.to_kind, tuple_1.to_id, tuple_1.at, tuple_1.legacy_source_seq, tuple_1.asserted, tuple_1.seq FROM graph_tuples tuple` +
+			`_1 WHERE tuple_1.from_kind <> 'artifact'::text OR tuple_1.kind <> 'mentions'::text UNION ALL SELECT 'artifact'::text, mentioning.id::text AS id, tuple` +
+			`_1.from_id, tuple_1.kind, tuple_1.to_kind, tuple_1.to_id, projected.created_at, projected.source_seq, tuple_1.asserted, tuple_1.seq FROM graph_tuples ` +
+			`tuple_1 JOIN artifacts mentioning ON mentioning.ref_key = tuple_1.from_id AND mentioning.node_kind IS NOT NULL CROSS JOIN LATERAL ( SELECT stated.crea` +
+			`ted_at, stated.source_seq FROM refs stated WHERE stated.from_kind = tuple_1.from_kind AND stated.from_id = mentioning.id::text AND stated.to_kind = tu` +
+			`ple_1.to_kind AND stated.to_id = tuple_1.to_id OFFSET 0) projected WHERE tuple_1.from_kind = 'artifact'::text AND tuple_1.kind = 'mentions'::text) tup` +
+			`le WHERE tuple.to_kind <> 'value'::text AND (tuple.from_kind = 'block'::text AND tuple.kind = 'in_document'::text OR NOT (tuple.from_kind = 'block'::t` +
+			`ext AND tuple.from_id ~~ 'lens/%'::text) AND ((tuple.kind = ANY (ARRAY['changed_by_run'::text, 'has_kind'::text, 'triggered_by'::text, 'constrained_by` +
+			`'::text, 'prevented_by'::text])) OR (tuple.kind = ANY (ARRAY['part_of'::text, 'authored_by'::text])) AND (tuple.from_kind = ANY (ARRAY['interaction'::` +
+			`text, 'lens'::text, 'risk'::text, 'constraint'::text]))) OR tuple.from_kind = 'issue'::text AND (tuple.kind = ANY (ARRAY['duplicate_of'::text, 'filed_` +
+			`from'::text])) OR tuple.from_kind = 'issue'::text AND tuple.kind = 'child_of'::text AND tuple.to_kind = 'issue'::text OR tuple.from_kind = 'issue'::te` +
+			`xt AND tuple.kind = 'needs'::text AND tuple.to_kind = 'issue'::text OR tuple.from_kind = 'component'::text AND tuple.kind = 'part_of'::text AND tuple.` +
+			`to_kind = 'component'::text OR tuple.from_kind = 'component'::text AND tuple.kind = 'depends_on'::text AND tuple.to_kind = 'component'::text OR tuple.` +
+			`from_kind = 'issue'::text AND tuple.kind = 'affects'::text AND tuple.to_kind = 'component'::text OR tuple.from_kind = 'artifact'::text AND tuple.kind ` +
+			`= 'mentions'::text OR tuple.from_kind = 'block'::text AND tuple.kind <> 'part_of'::text OR tuple.from_kind = 'comment'::text AND (tuple.kind = ANY (AR` +
+			`RAY['anchored_to'::text, 'owned_by'::text])) OR tuple.from_kind = 'ask'::text AND (tuple.kind = ANY (ARRAY['anchored_to'::text, 'owned_by'::text])) OR` +
+			` tuple.from_kind = 'ask'::text AND tuple.kind = 'followed_by'::text OR tuple.from_kind = 'ask'::text AND tuple.kind = 'shaped'::text) ORDER BY tuple.t` +
+			`o_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id, tuple.seq DESC) edge JOIN graph_nodes node ON node.kind = edge.from_kind AND node.id ` +
+			`= edge.node_id WHERE edge.asserted AND node.state <> 'gone'::text AND (edge.projects <> 'block_ref'::text OR edge.stated = 'mentions'::text OR block_n` +
+			`ode_listed(block_pointer_targets(edge.from_id, edge.stated), edge.to_id)) AND CASE edge.projects WHEN 'store'::text THEN true WHEN 'block'::text THEN (` +
+			`EXISTS ( SELECT 1 FROM document_blocks projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) WHEN ` +
+			`'issue_parent'::text THEN (EXISTS ( SELECT 1 FROM issues projected WHERE projected.key = edge.from_id AND projected.node_kind = edge.from_kind AND pro` +
+			`jected.node_address = edge.from_id AND projected.parent_key = edge.to_id OFFSET 0)) WHEN 'issue_link'::text THEN (EXISTS ( SELECT 1 FROM issue_links p` +
+			`rojected WHERE projected.issue_key = edge.from_id AND projected.kind = 'blocked_by'::text AND projected.target_key = edge.to_id AND projected.node_kin` +
+			`d = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) WHEN 'component_parent'::text THEN (EXISTS ( SELECT 1 FROM components projecte` +
+			`d WHERE ((projected.project_key || '/'::text) || projected.id) = edge.from_id AND projected.node_kind = edge.from_kind AND projected.node_address = ed` +
+			`ge.from_id AND ((projected.project_key || '/'::text) || projected.parent) = edge.to_id OFFSET 0)) WHEN 'component_depends'::text THEN (EXISTS ( SELECT` +
+			` 1 FROM component_depends projected WHERE ((projected.project_key || '/'::text) || projected.from_id) = edge.from_id AND ((projected.project_key || '/` +
+			`'::text) || projected.to_id) = edge.to_id AND projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) WHEN 'componen` +
+			`t_member'::text THEN (EXISTS ( SELECT 1 FROM issue_component_members projected WHERE projected.issue_key = edge.from_id AND ((projected.project_key ||` +
+			` '/'::text) || projected.component_id) = edge.to_id AND projected.node_kind = edge.from_kind AND projected.node_address = edge.from_id OFFSET 0)) WHEN` +
+			` 'artifact_ref'::text THEN true WHEN 'block_ref'::text THEN (EXISTS ( SELECT 1 FROM block_refs projected WHERE projected.node_kind = edge.from_kind AN` +
+			`D projected.node_address = edge.from_id AND projected.kind = edge.stated AND projected.to_kind = edge.to_kind AND projected.to_id = edge.to_id OFFSET ` +
+			`0)) WHEN 'comment'::text THEN (EXISTS ( SELECT 1 FROM comments projected WHERE projected.node_kind = edge.from_kind AND projected.node_address = edge.` +
+			`from_id OFFSET 0)) WHEN 'ask'::text THEN (EXISTS ( SELECT 1 FROM asks projected WHERE projected.node_kind = edge.from_kind AND projected.node_address ` +
+			`= edge.from_id OFFSET 0)) WHEN 'ask_follower'::text THEN (EXISTS ( SELECT 1 FROM ask_followers projected WHERE projected.node_kind = edge.from_kind AN` +
+			`D projected.node_address = edge.from_id AND projected.session_id = edge.to_id OFFSET 0)) ELSE NULL::boolean END`,
+	},
+	{
+		arm: graphViewArm{table: "graph_tuples", fromKind: graphstore.KindLensBlock},
+		from: `FROM ( SELECT DISTINCT ON (tuple.to_kind, tuple.to_id, tuple.kind, tuple.from_kind, tuple.from_id) tuple.from_kind, tuple.from_id, tuple.kind, tuple.t` +
+			`o_kind, tuple.to_id, tuple.at AS created_at, tuple.legacy_source_seq AS source_seq, tuple.asserted FROM graph_tuples tuple WHERE tuple.from_kind = 'bl` +
+			`ock'::text AND tuple.from_id ~~ 'lens/%'::text AND (tuple.kind = ANY (ARRAY['part_of'::text, 'authored_by'::text, 'changed_by_run'::text, 'has_kind'::` +
+			`text, 'triggered_by'::text, 'constrained_by'::text, 'prevented_by'::text])) AND tuple.to_kind <> 'value'::text ORDER BY tuple.to_kind, tuple.to_id, tu` +
+			`ple.kind, tuple.from_kind, tuple.from_id, tuple.seq DESC) finding JOIN graph_nodes node ON node.kind = finding.from_kind AND node.id = finding.from_id` +
+			` WHERE finding.asserted AND node.state <> 'gone'::text`,
 	},
 	{
 		arm:  graphViewArm{table: "comment_block_refs", fromKind: "comment_block"},
@@ -1328,7 +1381,10 @@ var edgesFixtureTables = []copyTable{
 	{name: "issue_links", columns: []string{"issue_key", "kind", "target_key", "created_at"}},
 	{name: "issue_components", columns: []string{"issue_key", "mode", "created_at", "updated_at"}},
 	{name: "issue_component_members", columns: []string{"issue_key", "project_key", "component_id"}},
-	{name: "artifacts", columns: []string{"id", "issue_key", "project_key", "slug", "name", "kind", "ref_key", "created_by", "created_at"}},
+	{name: "artifacts", columns: []string{"id", "issue_key", "project_key", "slug", "name", "kind", "ref_key", "created_by", "created_at", "node_kind", "node_address"}},
+	{name: "issue_trees", columns: []string{"issue_key", "artifact_id"}},
+	{name: "document_rooms", columns: []string{"artifact_id", "room"}},
+	{name: "issue_room_blocks", columns: []string{"tree_artifact_id", "block_id", "document_id"}},
 	{name: "asks", columns: []string{"id", "issue_key", "artifact_id", "anchor", "author", "question", "created_at"}},
 	{name: "ask_followers", columns: []string{"ask_id", "session_id", "since"}},
 	{name: "comments", columns: []string{"id", "issue_key", "artifact_id", "anchor", "author", "body", "reply_to", "answers", "ask_id", "replies_to_block", "created_at"}},
@@ -1432,8 +1488,36 @@ func (w *edgesFixtureWriter) document(issue *string, project, slug string) edges
 		owner = *issue
 	}
 	document := edgesDocument{id: w.uuid(), refKey: owner + "/" + slug}
-	w.add("artifacts", document.id, issue, project, slug, slug, "doc", document.refKey, edgesFixtureActor, w.at())
+	w.add("artifacts", document.id, issue, project, slug, slug, "doc", document.refKey, edgesFixtureActor, w.at(), nil, nil)
 	return document
+}
+
+// markedDocument writes a document whose row names its node, as this build writes one, and the
+// node: the store answers the document's mentions from the mentions tuples out of that node
+// while the refs row of each stands (store.GraphEdgesArtifactRefs), and graph_edges' arm over
+// refs leaves its rows out (store.ReferenceNotStated).
+func (w *edgesFixtureWriter) markedDocument(issue *string, project, slug string) edgesDocument {
+	owner := project
+	if issue != nil {
+		owner = *issue
+	}
+	document := edgesDocument{id: w.uuid(), refKey: owner + "/" + slug}
+	w.add("artifacts", document.id, issue, project, slug, slug, "doc", document.refKey, edgesFixtureActor, w.at(),
+		graphstore.KindArtifact, document.refKey)
+	w.storeNode(graphstore.KindArtifact, document.refKey, graphstore.SupertagDocument, graphstore.StateLive)
+	return document
+}
+
+// roomOf writes the issue room of issue key and puts document in it, as a conversion records one:
+// the room's tree artifact, its issue_trees row, the document's document_rooms row, and the
+// issue_room_blocks row of the document's block blockID. It writes no block under the tree, so
+// the room adds no edge any read lists; it gives the tables a read of a room reads their size.
+func (w *edgesFixtureWriter) roomOf(key, project string, document edgesDocument, blockID string) {
+	tree := w.uuid()
+	w.add("artifacts", tree, key, project, "tree", "tree", "tree", key+"/tree", edgesFixtureActor, w.at(), nil, nil)
+	w.add("issue_trees", key, tree)
+	w.add("document_rooms", document.id, tree)
+	w.add("issue_room_blocks", tree, blockID, document.id)
 }
 
 // documentBlock writes a block of document that its current version holds, and answers its node
@@ -1565,6 +1649,8 @@ func (w *edgesFixtureWriter) itemBlockRef(kind ItemKind, itemID, blockID string,
 // reads hold as many rows. A document's block's link is one this build's block index writes, its
 // row naming the block's node beside the node and its tuple (tupleLink), so graph_nodes and
 // graph_tuples, which the reads' predicates and graph_edges' tuple arm read, hold as many rows.
+// Each document is in its issue's room (roomOf), so issue_trees, document_rooms and
+// issue_room_blocks, which a document's read reads to find its room, hold as many rows too.
 func (w *edgesFixtureWriter) outsideGraph() {
 	const n = edgesOutsideNodes
 	documents := make([]edgesDocument, n)
@@ -1574,6 +1660,7 @@ func (w *edgesFixtureWriter) outsideGraph() {
 		w.issue(key, "OUT", index+1)
 		documents[index] = w.document(new(key), "OUT", "outside-md")
 		w.documentBlock(documents[index], "b1", "paragraph")
+		w.roomOf(key, "OUT", documents[index], "b1")
 		asks[index], _ = w.item(ItemAsk, edgesItem{issue: new(key)})
 		w.itemBlock(ItemAsk, asks[index], "b1", new(0))
 		comment := edgesItem{issue: new(key)}
@@ -1786,6 +1873,44 @@ func (w *edgesFixtureWriter) cite(subject, whole *edgesSubject) {
 	node, at = w.tupleLink(stored, "b3", subject.block(1), graphstore.StateLive, true)
 	subject.hidden = append(subject.hidden, edgeAt("mentions", "block", node, subject.blocks[1], at))
 	whole.hidden = append(whole.hidden, edgeAt("mentions", "block", node, subject.blocks[1], at))
+
+	// The arms of graph_edges over the store that end at a block (edgesBlockArms). A document whose
+	// row names its node mentions the first current block, which the view answers from the mentions
+	// tuple out of that node, dated as the refs row of the pair, while that row stands
+	// (keyedMentionArm); a whole-document read lists the document by its own mention. And the
+	// relations the store holds with no projection row behind them, which the view answers from the
+	// tuples alone (keyedStoreArm): a risk whose check the first current block is, by its
+	// prevented_by, and a lens invoked on that block, by its part_of; and a finding of a lens tied to
+	// it, which the arm over a lens's findings answers (keyedFindingArm). None of these is listed: a
+	// gone risk's prevented_by at the second block, a risk's prevented_by a later tuple retracts, and
+	// a lens invoked on the gone block. A whole-document read lists none of the store's relations,
+	// since it reads mentions alone.
+	marked := w.markedDocument(nil, "CORE", w.slug("marked"))
+	at = w.ref("artifact", marked.id, subject.block(0))
+	w.storeTuple(graphstore.KindArtifact, marked.refKey, "mentions", subject.block(0), at, true)
+	mention := edgeAt("mentions", "artifact", marked.id, subject.blocks[0], at)
+	subject.listed = append(subject.listed, mention)
+	whole.listed = append(whole.listed, mention)
+	stand := func(kind, id, state, relation string, to Target, retracted bool) edgeKey {
+		stored := StoredKindOf(kind)
+		w.storeNode(stored, id, stored, state)
+		at := w.at()
+		w.storeTuple(stored, id, relation, to, at, true)
+		if retracted {
+			w.storeTuple(stored, id, relation, to, w.at(), false)
+		}
+		key := edgeAt(relation, kind, id, to.ID, at)
+		whole.hidden = append(whole.hidden, key)
+		return key
+	}
+	subject.listed = append(subject.listed,
+		stand(graphstore.KindRisk, w.uuid(), graphstore.StateLive, graphstore.TuplePreventedBy, subject.block(0), false),
+		stand(graphstore.KindLensBlock, graphstore.KindLens+"/"+w.uuid()+"#f1", graphstore.StateLive, graphstore.TupleConstrainedBy, subject.block(0), false),
+		stand(graphstore.KindLens, w.uuid(), graphstore.StateLive, graphstore.TuplePartOf, subject.block(0), false))
+	subject.hidden = append(subject.hidden,
+		stand(graphstore.KindRisk, w.uuid(), graphstore.StateGone, graphstore.TuplePreventedBy, subject.block(1), false),
+		stand(graphstore.KindRisk, w.uuid(), graphstore.StateLive, graphstore.TuplePreventedBy, subject.block(1), true),
+		stand(graphstore.KindLens, w.uuid(), graphstore.StateLive, graphstore.TuplePartOf, gone, false))
 }
 
 // subjectDocument writes the document of the two document reads, of CORE-1, with two current
@@ -1937,7 +2062,7 @@ func (w *edgesFixtureWriter) kindsComponent() Target {
 // block of n in the same two ways. Each read is the Query GET /api/v1/references?to=<n> sends with
 // no ?kind= (api.parseReferencesQuery), a session's, which no reference names, with no filter, and
 // the whole-document read as refs.ReferencedBy sends it. Each is held to main's statement for that
-// Query: mainEdgesInIssue with n's kind bound as $1 for the seven kinds with no arm over blocks,
+// Query: mainEdgesInIssue with n's kind bound as $1 for each kind with no arm over blocks,
 // and the held text of its read for a document, an ask, a comment, a message and the whole
 // document. Main lists E's mentions and those of D's block, and hides D's own behind its block's,
 // which a probe of D's block links found; the whole-document read lists D and E by their own
@@ -1962,12 +2087,16 @@ func (w *edgesFixtureWriter) kindsMembers(t *testing.T) []edgesRead {
 			node, blocks = Target{Kind: string(kind), ID: id}, []Target{{Kind: kind.BlockKind(), ID: block}}
 		case "component":
 			node = w.kindsComponent()
-		case graphstore.KindSession, graphstore.KindPerson, graphstore.KindRole, graphstore.KindPage:
+		case graphstore.KindSession, graphstore.KindPerson, graphstore.KindRole, graphstore.KindPage,
+			graphstore.KindConstraint, graphstore.KindInteraction, graphstore.KindLens, graphstore.KindLensKind, graphstore.KindRisk:
 			node = Target{Kind: name, ID: name + "-kinds"}
+		case graphstore.KindLensBlock:
+			// A finding is addressed by its lens and its block id (graphstore.ParseFindingID).
+			node = Target{Kind: name, ID: graphstore.KindLens + "/" + w.uuid() + "#b-kinds"}
 		default:
 			t.Fatalf("the kinds case writes no node for the read %q", name)
 		}
-		if strings.HasSuffix(name, "block") {
+		if len(blocks) > 0 && strings.HasSuffix(name, "block") {
 			// The member is the block itself, which has no blocks of its own.
 			node, blocks = blocks[0], nil
 		}

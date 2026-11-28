@@ -86,6 +86,7 @@ var askRowsLock = `
 var askRowsRead = `
 	select k.id::text, k.author, k.created_at, k.state, k.answer, k.resolution,
 	       coalesce(anchor.ref_key, ''), coalesce(owner.ref_key, ''), coalesce(document.ref_key, ''),
+	       coalesce(k.block_id, ''),
 	       coalesce((select e.id from events e
 	                 where e.payload->>'id' = k.id::text and e.type = 'ask.opened'
 	                 order by e.id limit 1), $2),
@@ -95,14 +96,26 @@ var askRowsRead = `
 	  and k.id = any($1::uuid[])
 	order by k.id`
 
-// askBatchRow is one row of a batch the asks or the follower pass read without a lock
-// (askBatchRead, askFollowerBatchRead): the ask, the session that follows it for a follower row,
-// and the ask's owner - its issue, or the document an ask on no issue belongs to - which is the
-// owner a follower row stands under too.
+// askBatchRow is one row of a batch an ask pass reads without a lock (scanAskBatchRow): the asks
+// pass's (askBatchRead), the asked_on pass's (owedAskBlocksStatement), the approvals pass's
+// (owedApprovesRowsStatement) or the follower pass's (askFollowerBatchRead). It holds the ask, the
+// session that follows it for a follower row and none for any other, and the ask's owner - its
+// issue, or the document an ask on no issue belongs to - which is the owner a follower row stands
+// under too.
 type askBatchRow struct {
 	askID, session  string
 	issue, document string
 }
+
+// scanAskBatchRow reads one askBatchRow, its four columns in the order of the type's fields.
+func scanAskBatchRow(row pgx.CollectableRow) (askBatchRow, error) {
+	var batched askBatchRow
+	err := row.Scan(&batched.askID, &batched.session, &batched.issue, &batched.document)
+	return batched, err
+}
+
+// askBatchKey is the key a walk of the asks (walkBatches) starts its next batch past: the ask.
+func askBatchKey(row askBatchRow) string { return row.askID }
 
 // readAskBatch runs read, a pass's read of one batch that locks nothing, on the pool with args.
 func readAskBatch(ctx context.Context, database *store.Store, read string, args ...any) ([]askBatchRow, error) {
@@ -110,11 +123,7 @@ func readAskBatch(ctx context.Context, database *store.Store, read string, args 
 	if err != nil {
 		return nil, err
 	}
-	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (askBatchRow, error) {
-		var batched askBatchRow
-		err := row.Scan(&batched.askID, &batched.session, &batched.issue, &batched.document)
-		return batched, err
-	})
+	return pgx.CollectRows(rows, scanAskBatchRow)
 }
 
 // lockAskOwners takes the owner row of every ask of batch, each once, in ascending owner key
@@ -139,26 +148,17 @@ func lockAskOwners(ctx context.Context, tx pgx.Tx, batch []askBatchRow) error {
 // it (backfillObjectNodes), which runs before this.
 func backfillAsks(ctx context.Context, database *store.Store) (KindBackfill, error) {
 	done := KindBackfill{Kind: "asks"}
-	after := zeroUUID
-	for {
-		batch, err := readAskBatch(ctx, database, askBatchRead, after, backfillBatch)
-		if err != nil {
-			return done, fmt.Errorf("read the asks naming no node: %w", err)
-		}
-		if len(batch) == 0 {
-			break
-		}
-		after = batch[len(batch)-1].askID
+	if err := walkBatches(ctx, database, askBatchRead, "the asks naming no node", zeroUUID, scanAskBatchRow, askBatchKey, func(batch []askBatchRow) error {
 		rows, nodes, tuples, err := writeAskBatch(ctx, database, batch)
 		if err != nil {
-			return done, err
+			return err
 		}
 		done.Rows += rows
 		done.Nodes += nodes
 		done.Tuples += tuples
-		if len(batch) < backfillBatch {
-			break
-		}
+		return nil
+	}); err != nil {
+		return done, err
 	}
 	if err := database.Pool.QueryRow(ctx, `select count(*) `+askRowsOwed).Scan(&done.Remaining); err != nil {
 		return done, fmt.Errorf("count the asks still naming no node: %w", err)
@@ -207,13 +207,13 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 		}
 	}
 	for rows.Next() {
-		var id, state string
+		var id, state, blockID string
 		var authorJSON, answerJSON, resolutionJSON []byte
 		var createdAt time.Time
 		var places graphstore.AskPlaces
 		var opened, settled int64
 		if err := rows.Scan(&id, &authorJSON, &createdAt, &state, &answerJSON, &resolutionJSON,
-			&places.Anchor, &places.Owner, &places.Document, &opened, &settled); err != nil {
+			&places.Anchor, &places.Owner, &places.Document, &blockID, &opened, &settled); err != nil {
 			rows.Close()
 			return 0, 0, 0, fmt.Errorf("read an ask naming no node: %w", err)
 		}
@@ -239,7 +239,7 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 			}
 		}
 		// The ask's node is the object pass's, written already; its facts are what this states.
-		askNodes, facts, _ := graphstore.AskFacts(id, "", nil, author, createdAt, opened, places)
+		askNodes, facts, _ := graphstore.AskFacts(id, "", nil, author, createdAt, opened, places.On(blockID))
 		addNodes(askNodes[1:])
 		tuples = append(tuples, facts...)
 		who, at := backfillActor, createdAt
@@ -265,14 +265,16 @@ func writeAskBatch(ctx context.Context, database *store.Store, batch []askBatchR
 	if len(ids) == 0 {
 		return 0, 0, 0, nil
 	}
-	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nodes, tuples)
+		b.Queue("name the nodes of an ask batch on their rows", `
+			update asks set node_kind = $2, node_address = id::text
+			where id = any($1::uuid[]) and node_kind is null
+		`, ids, graphstore.KindAsk)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+		return nil
+	}); err != nil {
 		return 0, 0, 0, fmt.Errorf("state a batch of asks: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		update asks set node_kind = $2, node_address = id::text
-		where id = any($1::uuid[]) and node_kind is null
-	`, ids, graphstore.KindAsk); err != nil {
-		return 0, 0, 0, fmt.Errorf("name the nodes of an ask batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, 0, fmt.Errorf("commit an ask batch: %w", err)
@@ -394,25 +396,23 @@ func writeAskFollowerBatch(ctx context.Context, database *store.Store, batch []a
 	if len(askIDs) == 0 {
 		return 0, 0, 0, nil
 	}
-	if err := graphstore.Write(ctx, tx, nodes, tuples); err != nil {
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		graphstore.QueueWrite(b, nodes, tuples)
+		b.Queue("name the nodes of an ask follower batch on their rows", `
+			update ask_followers f set node_kind = $3, node_address = p.ask_id
+			from unnest($1::text[], $2::text[]) as p (ask_id, session_id)
+			where f.ask_id = p.ask_id::uuid and f.session_id = p.session_id and f.node_kind is null
+		`, askIDs, sessions, graphstore.KindAsk)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nodes, tuples))
+		return nil
+	}); err != nil {
 		return 0, 0, 0, fmt.Errorf("state a batch of ask followers: %w", err)
-	}
-	if _, err := tx.Exec(ctx, `
-		update ask_followers f set node_kind = $3, node_address = p.ask_id
-		from unnest($1::text[], $2::text[]) as p (ask_id, session_id)
-		where f.ask_id = p.ask_id::uuid and f.session_id = p.session_id and f.node_kind is null
-	`, askIDs, sessions, graphstore.KindAsk); err != nil {
-		return 0, 0, 0, fmt.Errorf("name the nodes of an ask follower batch on their rows: %w", err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		return 0, 0, 0, fmt.Errorf("commit an ask follower batch: %w", err)
 	}
 	return int64(len(askIDs)), int64(len(nodes)), int64(len(tuples)) + 2*int64(len(nodes)), nil
 }
-
-// askPasses are the asks pass and the follower pass, in the order Backfill and BackfillAsks both
-// run them.
-var askPasses = []func(context.Context, *store.Store) (KindBackfill, error){backfillAsks, backfillAskFollowers}
 
 // AsksBackfill is what one run of BackfillAsks did: what each of its passes did (Kinds), and
 // every row its object pass left because the store holds the row's node in another project
@@ -438,15 +438,16 @@ type AsksBackfill struct {
 func BackfillAsks(ctx context.Context, database *store.Store) (AsksBackfill, error) {
 	objects, err := backfillObjectNodes(ctx, database)
 	done := AsksBackfill{Kinds: objects}
+	_, onlyMoved := OnlyProjectMoved(err)
 	switch {
-	case onlyProjectMoved(err):
+	case onlyMoved:
 		done.Moved = err
 	case err != nil:
 		return done, err
 	}
-	for _, write := range askPasses {
+	for _, write := range decisionBackfills {
 		report, err := write(ctx, database)
-		done.Kinds = append(done.Kinds, report)
+		done.Kinds = append(done.Kinds, report...)
 		if err != nil {
 			return done, err
 		}

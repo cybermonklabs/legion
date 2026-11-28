@@ -460,7 +460,14 @@ func TestTheThreeDefectsOfTheFirstFilingAreGoneFromTheModel(t *testing.T) {
 	t.Logf("the assertion of defect 1 holds: GET %s answers %s, one entry for each decision %s holds", run.path(), read.answered(), run.issue)
 
 	// ───── defect 2: the tie appears on the first read after the write that ties it ─────
-	r1 := refs.BlockNodeKind + ":" + run.issue + "/spec#r1"
+	// r1's node is keyed by the room the spec is edited in, its issue's tree: the issue is born
+	// converted (refs.DocumentRoomSQL).
+	var specRoom string
+	if err := database.QueryRow(ctx, `select room.ref_key from artifacts room where room.id = `+refs.DocumentRoomSQL("$1::uuid"),
+		run.specID).Scan(&specRoom); err != nil {
+		t.Fatalf("read the room of %s's spec: %v", run.issue, err)
+	}
+	r1 := refs.BlockNodeKind + ":" + specRoom + "#r1"
 	pointer := "dispatch://" + run.issue + "/spec#b-r1"
 	if before, _ := read.entry(ask); before.shapes(r1) {
 		t.Fatalf("setting up the tie failed: before any write ties the ask, GET %s answers %s on the entry of %s, so no read can show that write tying it",

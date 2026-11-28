@@ -134,7 +134,7 @@ func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAns
 		select k.id::text, `+asks.NodeStateOf("k")+`,
 		       k.issue_key, a.project_key, coalesce(a.slug, ''),
 		       k.node_kind is not null and k.node_address is not null
-		from asks k join artifacts a on a.id = k.block_artifact_id
+		from asks k join artifacts a on a.id = `+refs.AskBlockDocumentSQL("k")+`
 		where k.id = any($1::uuid[])
 	`, ids)
 	if err != nil {
@@ -174,7 +174,7 @@ func askAnswers(ctx context.Context, tx pgx.Tx, ids []string) (map[string]askAns
 func asksOfBlocks(ctx context.Context, tx pgx.Tx, artifactID string, blockIDs []string) (map[string]model.Ask, error) {
 	rows, err := tx.Query(ctx, `
 		select `+AskColumns+`
-		from asks a where a.block_artifact_id = $1 and a.block_id = any($2::text[])
+		from asks a where `+refs.AsksOfFragmentBlocksSQL("a", "$1::uuid", "$2::text[]")+`
 	`, artifactID, blockIDs)
 	if err != nil {
 		return nil, fmt.Errorf("read the asks of document %s: %w", artifactID, err)

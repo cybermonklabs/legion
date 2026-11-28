@@ -296,21 +296,16 @@ function checkLines(check: CheckBlock, brief: boolean, repository?: string): str
   ];
 }
 
-/** What `dispatch results` prints: each check of the issue's Verification document, what Dispatch
- *  compared its results with, whether a pass of it stands, its own words once, and every result
- *  recorded against it in the order the API serves them. A check CI proves prints its derived
- *  result, or why it has none, as one line, then whether a pass of it stands (`ciCheckLines`). A
- *  check with no result says so, and an issue with no Verification document says that instead of
- *  printing an empty list: Dispatch answers `verification_artifact_id` "" for such an issue, never
- *  null, so that is what is compared. */
+/** What `dispatch results` prints for an issue with a Verification document: each check of it,
+ *  what Dispatch compared its results with, whether a pass of it stands, its own words once, and
+ *  every result recorded against it in the order the API serves them. A check CI proves prints its
+ *  derived result, or why it has none, as one line, then whether a pass of it stands
+ *  (`ciCheckLines`). A check with no result says so. */
 export function formatCheckResults(
   results: IssueCheckResults,
   brief = false,
   repositories?: Readonly<Record<string, string>>
 ): string {
-  if (results.verification_artifact_id === "") {
-    return `${results.issue} has no Verification document, so it has no checks. Write one (verification.md) with a check block per thing that must be proved.`;
-  }
   const checks = results.checks ?? [];
   if (checks.length === 0) {
     return `${results.issue}'s Verification document holds no check blocks.`;

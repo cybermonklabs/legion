@@ -10,14 +10,23 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
-// Member is a document of an issue's Links, one its own content links to, with that row's via.
-// The read reads one hop, so Depth is always 1; the answer's members field keeps it for the
-// clients that print it.
+// Member is a document of an issue's Links, one its own content links to, with that row's via,
+// or the lens of Links a linked document's address moved to. The read reads one hop, so Depth is
+// always 1; the answer's members field keeps it for the clients that print it.
 type Member struct {
+	// Kind is the member's kind: graphstore.KindArtifact for a document, or graphstore.KindLens for
+	// the lens a link to a document reaches where the document's address moved to it, as the
+	// pre-mortem conversion moves the address of the document it retires (api.ConvertPremortem).
+	Kind string
+	// Address is the member's dispatch:// address: the document's (ArtifactRef) or the lens's.
+	Address string
+	// RefKey is the ref_key of the document the link reaches: the member itself, or, for a lens,
+	// the retired document whose address moved to it.
 	RefKey string
 	Depth  int
 	Via    model.ReferenceVia
@@ -32,54 +41,82 @@ type References struct {
 	Links, LinkedFrom []model.ReferenceLink
 }
 
-// documentTarget is true of a link row r whose target is a document, or a block a current
-// version of its document holds, or a block address that no longer stands whose moved_to tuples
-// reach one (graphstore.MovedTo) or reach an ask whose row stands; documentOfTarget is that
-// document's ref_key, which never holds a '#', and r's own target for any other kind: for a block
-// target, the document of the block the target resolved to, so a citation of a block that moved
-// reaches the document it moved into (R8), and the document the row of an ask a move ends at
-// names, so a citation of the heading of a section that cites an answered ask a person removed
-// reaches the document that ask was decided in. documentBlockHeld is the join that answers what a
-// block target resolves to (movedTarget), block_target, and documentTarget reads its answer rather
-// than an `exists` probe of its own: under an OR the probe is no semijoin, so the planner may plan
-// it as a hashed subplan and read all of document_blocks to build the hash. A lateral whose probe
-// stops at its first row is a nested loop keyed through document_blocks_node_id, the hash index on
-// exactly node_id, and it runs at all only for a block target, because its own to_kind test is a
-// one-time filter the planner re-reads on each loop. Only a target that probe finds no row for is
-// followed through moved_to_reach, the SQL function every resolver reads a move through, so a
-// block that stands costs the probe alone.
+// documentTarget is true of a link row r whose target is a document, or a block address that
+// resolves to a block a current version of its document holds (ResolvedBlockSQL: its moved_to
+// tuples first, then its document's room, then the address itself), or a block address whose
+// moved_to tuples reach an ask whose row stands instead; documentOfTarget is that document's
+// ref_key, which never holds a '#', and r's own target for any other kind: for a block target, the
+// document holding the block the target resolved to, so a citation of a block that moved reaches
+// the document it moved into (R8), and a citation of a block of a document converted into its
+// issue's room, at the document's own address, reaches that document, whose fragment of the room
+// holds the block, never the room's tree, whose ref_key the node's own address carries; and the
+// document the row of an ask a move ends at names, so a citation of the heading of a section that
+// cites an answered ask a person removed reaches the document that ask was decided in.
+// documentBlockHeld is the join that answers what a block target resolves to (movedTarget),
+// block_target, and documentTarget reads its answer rather than an `exists` probe of its own:
+// under an OR the probe is no semijoin, so the planner may plan it as a hashed subplan and read
+// all of document_blocks to build the hash. A lateral whose probe stops at its first row is a
+// nested loop keyed through document_blocks_node_id, the hash index on exactly node_id, and it
+// runs at all only for a block target, because its own to_kind test is a one-time filter the
+// planner re-reads on each loop. Only a target that probe does not answer is resolved through
+// block_moved_to, and only one that resolves to no block through moved_to_reach, so a block that
+// stands costs the probe alone.
 var (
 	documentBlockHeld = `left join lateral (` + movedTarget(`r.to_id`) + `
 				where r.to_kind = 'block'
 			) block_target on true`
 	documentTarget   = `(r.to_kind in ('artifact', 'block') and (r.to_kind = 'artifact' or block_target.node_id is not null or block_target.ask_document is not null))`
-	documentOfTarget = `case when r.to_kind = 'block' then coalesce(split_part(block_target.node_id, '#', 1), block_target.ask_document) else r.to_id end`
+	documentOfTarget = `case when r.to_kind = 'block' then coalesce(block_target.ref_key, block_target.ask_document) else r.to_id end`
 )
 
-// heldDocumentOfTarget is documentOfTarget for a link row r whose block target is one a current
-// version of its document holds, as every target of the in statement is (linksInQuery): that
-// document's ref_key, the block's address before its '#', with no join to resolve it, and r's own
-// target for any other kind.
-const heldDocumentOfTarget = `case when r.to_kind = 'block' then split_part(r.to_id, '#', 1) else r.to_id end`
+// documentMovedTo is the join that answers, for a link row r whose target is a document, the lens
+// the document's address moved to (block_moved_to, which reads from a document's address the
+// moved_to the pre-mortem conversion appends to the lens it retires the document into), where
+// the acting person, bound at param, may see that lens: moved_document.lens_id, null for every
+// other row. A document whose lens the reader may not see stays the document, as it reads to a
+// reader who sees no move, so the read says nothing of that lens. Like documentBlockHeld's, its
+// to_kind test is a one-time filter, so the function runs for a document target alone.
+func documentMovedTo(param string) string {
+	return `left join lateral (
+				select moved.lens_id from block_moved_to(r.to_id) as moved (lens_id)
+				where r.to_kind = 'artifact' and moved.lens_id is not null
+				  and ` + VisibleKind(graphstore.KindLens, `moved.lens_id`, param) + `
+			) moved_document on true`
+}
+
+// heldBlockDocument is the ref_key of the document holding the current block whose node id the
+// SQL expression node names: the document whose fragment of an issue room holds it
+// (issue_room_blocks), for a block of an issue room, whose node's address carries the room's tree,
+// else the document its node's address names before its '#'.
+func heldBlockDocument(node string) string {
+	return `coalesce(
+					(select owner.ref_key from document_blocks held
+					 join issue_room_blocks room_block on room_block.tree_artifact_id = held.artifact_id
+					   and block_id_key(room_block.block_id) = block_id_key(held.block_id) and room_block.block_id = held.block_id
+					 join artifacts owner on owner.id = room_block.document_id
+					 where held.node_id = ` + node + ` limit 1),
+					split_part(` + node + `, '#', 1))`
+}
 
 // movedTarget is the select list and FROM of what the block address toID resolves to, as
-// (node_id, ask_id, ask_document): node_id is the block a document_blocks row holds at toID, else
-// the block its moved_to tuples reach; where they reach an ask whose row stands instead, ask_id is
-// that ask's id and ask_document the ref_key of the document its row names. Each is null where
-// it resolves to none. The probe of document_blocks comes first, and moved_to_reach runs only
-// where it found no row: its subquery's own test of the probe is a one-time filter, kept one by
-// `offset 0`, which stops the planner pulling the subquery up into the join.
+// (node_id, ref_key, ask_id, ask_document): node_id is the block the address resolves to
+// (ResolvedBlockSQL) and ref_key the document holding it (heldBlockDocument); where the address
+// resolves to no block and its moved_to tuples reach an ask whose row stands instead
+// (moved_to_reach), ask_id is that ask's id and ask_document the ref_key of the document holding
+// the ask's block (AskBlockDocumentSQL). Each is null where it resolves to none. moved_to_reach
+// runs only where the resolution found no block: its subquery's own test of that is a one-time
+// filter, kept one by `offset 0`, which stops the planner pulling the subquery up into the join.
 func movedTarget(toID string) string {
 	return `
-				select coalesce(probe.node_id, case when moved.kind = 'block' then moved.id end) as node_id,
+				select resolved.node_id, ` + heldBlockDocument(`resolved.node_id`) + ` as ref_key,
 				       case when moved.kind = 'ask' then moved.id end as ask_id,
 				       case when moved.kind = 'ask' then (
 				           select asked_in.ref_key from asks moved_ask
-				           join artifacts asked_in on asked_in.id = moved_ask.block_artifact_id
+				           join artifacts asked_in on asked_in.id = ` + AskBlockDocumentSQL("moved_ask") + `
 				           where moved_ask.id = moved.id::uuid) end as ask_document
-				from (select (select d.node_id from document_blocks d where d.node_id = ` + toID + ` limit 1) as node_id) probe
+				from (select ` + ResolvedBlockSQL(toID) + ` as node_id) resolved
 				left join lateral (
-					select reach.kind, reach.id from moved_to_reach(` + toID + `) reach where probe.node_id is null offset 0
+					select reach.kind, reach.id from moved_to_reach(` + toID + `) reach where resolved.node_id is null offset 0
 				) moved on true`
 }
 
@@ -103,20 +140,34 @@ var itemBlockHeld = func() string {
 			) item_block (kind, id) on true`
 }()
 
+// itemBlockEnds is every kind of node a block of an item is: the kinds the target of a link row
+// that itemBlockHeld reduces to its item can be, none of them a standing kind.
+var itemBlockEnds = func() NodeKinds {
+	kinds := make([]string, len(itemKinds))
+	for index, item := range itemKinds {
+		kinds[index] = item.BlockKind()
+	}
+	return KindsOf(kinds...)
+}()
+
 // targetNode is the kind and the id of the node the target of a link row r counts as, beside
-// itemBlockHeld: a document's block is its document, by the ref_key document names
-// (documentOfTarget beside documentBlockHeld, or heldDocumentOfTarget), and a block of an item its
-// item; any other target is itself.
-func targetNode(document string) string {
-	return `coalesce(item_block.kind, case when r.to_kind = 'block' then 'artifact' else r.to_kind end),
-				       coalesce(item_block.id, ` + document + `)`
+// itemBlockHeld: a document whose address moved to a lens, the lens whose id the SQL expression
+// lens names (null where none: documentMovedTo), is that lens; a document's block is its
+// document, by the ref_key document names (documentOfTarget beside documentBlockHeld, or the
+// in statement's heldBlockDocument), and a block of an item its item; any other target is itself.
+func targetNode(document, lens string) string {
+	return `case when ` + lens + ` is not null then '` + graphstore.KindLens + `'
+				         else coalesce(item_block.kind, case when r.to_kind = 'block' then 'artifact' else r.to_kind end) end,
+				       coalesce(` + lens + `, item_block.id, ` + document + `)`
 }
 
 // oneRowPerNode ends both statements of the read. far holds a row for each link: the node at its
-// far end (node_kind, node_id), its kind, and its via at the near end. It leaves out the issue and
-// its own content, the rows of own, the relation that holds them as (kind, id), and keeps one row
-// for each other node: the distinct kinds of its links in order, and its lowest via, the least
-// pair of via kind and via id as arrays compare, element by element in the database's order.
+// far end (node_kind, node_id), its kind, its via at the near end, and moved_from, the ref_key of
+// the document whose address moved to a lens at the far end, null for every other row. It leaves
+// out the issue and its own content, the rows of own, the relation that holds them as (kind, id),
+// and keeps one row for each other node: the distinct kinds of its links in order, its lowest via,
+// the least pair of via kind and via id as arrays compare, element by element in the database's
+// order, and the least of its moved_from.
 //
 // It leaves them out by an anti-join, `not exists` over own, and not, as the read did before, by a
 // test of each row against an array of own's rows,
@@ -136,7 +187,7 @@ func targetNode(document string) string {
 func oneRowPerNode(own string) string {
 	return `
 		select f.node_kind, f.node_id, array_agg(distinct f.kind order by f.kind),
-		       (min(array[f.via_kind, f.via_id]))[1], (min(array[f.via_kind, f.via_id]))[2]
+		       (min(array[f.via_kind, f.via_id]))[1], (min(array[f.via_kind, f.via_id]))[2], min(f.moved_from)
 		from far f
 		where not exists (select 1 from ` + own + ` x where x.kind = f.node_kind and x.id = f.node_id)
 		group by f.node_kind, f.node_id`
@@ -184,7 +235,9 @@ func blockRefLinked(alias string) string {
 // join, it could be planned as a hash or a merge join over a whole read of its table. Each item
 // kind's items are read once by the issue's key (own_<its items table>), for its sources and for
 // the read of its block links alike. A row of block_refs is listed as blockRefLinked lists it,
-// whether or not it names its node.
+// whether or not it names its node. The blocks of an issue room are keyed by its tree artifact, a
+// document of the issue, so its block links are read under the tree, and none under a document
+// converted into the room, whose own rows are none of its blocks (documentBlockIDs).
 //
 // heldByABlock probes block_refs by the mention's target and its document's id as text
 // (`artifact_id::text = from_id`), which block_refs_to_source keys by its three columns, to_kind,
@@ -196,14 +249,16 @@ func blockRefLinked(alias string) string {
 // targets the issue's documents link, it removed 342 rows a probe, and the read's statements
 // read 6,338.98 rows of the link tables against the 1,730 the test allows.
 //
-// The far end of a link is reduced to its node (targetNode): a document's block to its document
-// while a current version holds the block, or to the document of the block or the ask its moved_to
-// tuples reach (documentTarget), and a block of an ask, a comment or a message to its item while
-// the block is current (itemBlockHeld); a link to a block neither holds names nothing. A document
-// is named by its ref_key, which a link stores. The issue and its own content are left out (own):
-// the issue by its key, a document by its ref_key and every other source as sources names it. Its
-// rows are one for each node, with the kinds of its links and its lowest via: a document of the
-// issue by its uuid, the id its links are written under, an item by its uuid (oneRowPerNode).
+// The far end of a link is reduced to its node (targetNode): a document's block to the document
+// holding the block a current version holds that the target resolves to, or to the document of
+// the block or the ask its moved_to tuples reach (documentTarget), a block of an ask, a comment or
+// a message to its item while the block is current (itemBlockHeld), and a document whose address
+// moved to a lens the reader may see to that lens (documentMovedTo), whose row names the document
+// as moved_from; a link to a block neither holds names nothing. A document is named by its
+// ref_key, which a link stores. The issue and its own content are left out (own): the issue by
+// its key, a document by its ref_key and every other source as sources names it. Its rows are one
+// for each node, with the kinds of its links and its lowest via: a document of the issue by its
+// uuid, the id its links are written under, an item by its uuid (oneRowPerNode).
 //
 // A link is read only where the acting person, whose credential is bound at $2 (closureSeen), may
 // see its source and the block it is read at, as refs.Edges' out read binds them: a source is a
@@ -231,7 +286,7 @@ var linksOutQuery = sync.OnceValue(func() string {
 				  and ` + VisibleKind(BlockNodeKind, `r.from_node`, closureSeen) + `
 				offset 0
 			) r
-			where o.visible`}
+			where o.visible and not exists (select 1 from document_rooms moved where moved.artifact_id = o.id)`}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
 		own := `own_` + tables.items
@@ -283,26 +338,28 @@ var linksOutQuery = sync.OnceValue(func() string {
 			union all
 			`) + `
 		),
-		far (node_kind, node_id, kind, via_kind, via_id) as (
-			select ` + targetNode(documentOfTarget) + `, r.kind, r.via_kind, r.via_id
+		far (node_kind, node_id, kind, via_kind, via_id, moved_from) as (
+			select ` + targetNode(documentOfTarget, `moved_document.lens_id`) + `, r.kind, r.via_kind, r.via_id,
+			       case when moved_document.lens_id is not null then r.to_id end
 			from links r
 			` + documentBlockHeld + `
+			` + documentMovedTo(closureSeen) + `
 			` + itemBlockHeld + `
 			where (` + documentTarget + ` or r.to_kind not in ('artifact', 'block'))
 			  and (r.to_kind not in ` + itemBlockKinds + ` or item_block.id is not null)
 			  and (r.to_kind <> 'block' or ` + VisibleKind(BlockNodeKind, `block_target.node_id`, closureSeen) +
 		` and ` + VisibleKind(string(ItemAsk), `block_target.ask_id`, closureSeen) + `)
-			  and (r.to_kind not in ` + itemBlockKinds + ` or ` + VisibleEnd(`r.to_kind`, `r.to_id`, true, closureSeen) + `)
+			  and (r.to_kind not in ` + itemBlockKinds + ` or ` + VisibleEnd(itemBlockEnds, `r.to_kind`, `r.to_id`, true, closureSeen) + `)
 		)` + oneRowPerNode(`own`)
 })
 
 // linksInQuery is the in statement of the references read of the issue whose key is $1: every
 // node that links to the issue or to its own content, read from the links into them by their
 // target. It reads the issue's own targets once (targets): the issue node by its key, its
-// documents by ref_key and their current blocks (document_blocks, by its primary key's document),
-// and its asks, comments and messages by the issue's key and their current blocks
-// (itemBlockCurrent). Then it reads each link table once for each kind of target, `to_kind =
-// <kind> and to_id = any(<the ids of that kind>)` (keys), through the table's index of targets
+// documents by ref_key and their current blocks (own_blocks: document_blocks, by its primary
+// key's document), and its asks, comments and messages by the issue's key and their current
+// blocks (itemBlockCurrent). Then it reads each link table once for each kind of target, `to_kind
+// = <kind> and to_id = any(<the ids of that kind>)` (keys), through the table's index of targets
 // (refs_to, block_refs_to_source, ask_block_refs_to, comment_block_refs_to,
 // message_block_refs_to), in a lateral that `offset 0` keeps a nested loop keyed by the kind, as
 // the out statement keeps its reads: a source block of an item while it is current
@@ -310,12 +367,22 @@ var linksOutQuery = sync.OnceValue(func() string {
 // block_ref_listed lists it (blockRefLinked), and an item's own mention of a target
 // that a block of that item holds as that block's link alone (heldByABlock).
 //
-// Each link's source is reduced to its node: a document's block to its document and a block of
-// an item to the item. A source document, or a source block's document, is named by its ref_key,
-// read from artifacts by its id in a lateral that stops at its first row, as the out statement
-// names a document, so one naming pass serves both. Each link's target is reduced to the node it
-// counts as (targetNode, heldDocumentOfTarget), its via: the id a link to that node stores, the
-// issue's key, a document's ref_key or an item's uuid. The issue and its own content are left out
+// The blocks of an issue room are keyed by its tree artifact, a document of the issue, so they
+// are read under the tree, and none under a document converted into the room, whose own rows are
+// none of its blocks (documentBlockIDs). A reference to a block of a converted document is
+// written at that document's own address (`<ref_key>#<block id>`), which is no node id but
+// resolves to the room's node (ResolvedBlockSQL), so every such address of a block of the room,
+// at each document edited in it, is a target too (room_addresses, as documentRoomBlockAddresses
+// spells one document's), and a link to one counts as a link to the block it resolves to, while
+// that block is one of own_blocks (addressed).
+//
+// Each link's source is reduced to its node: a document's block to its document, the one holding
+// it for a block of an issue room (BlockDocumentSQL), and a block of an item to the item. A source
+// document, or a source block's document, is named by its ref_key, read from artifacts by its id
+// in a lateral that stops at its first row, as the out statement names a document, so one naming
+// pass serves both. Each link's target is reduced to the node it counts as (targetNode), its via:
+// the id a link to that node stores, the issue's key, a document's ref_key, the document holding a
+// block (heldBlockDocument), or an item's uuid. The issue and its own content are left out
 // (targets). Its rows are one for each node, with the kinds of its links and its lowest via
 // (oneRowPerNode).
 //
@@ -331,8 +398,8 @@ var linksInQuery = sync.OnceValue(func() string {
 	targets := []string{
 		`select 'issue', $1::text where ` + VisibleKind("issue", `$1::text`, closureSeen),
 		`select 'artifact', o.ref_key from own_documents o where ` + visibleDocument,
-		`select 'block', d.node_id from own_documents o join document_blocks d on d.artifact_id = o.id
-			where ` + visibleDocument + ` and ` + VisibleKind(BlockNodeKind, `d.node_id`, closureSeen),
+		`select 'block', b.node_id from own_blocks b`,
+		`select 'block', a.address from room_addresses a`,
 	}
 	for _, item := range itemKinds {
 		tables, _ := item.tables()
@@ -366,7 +433,7 @@ var linksInQuery = sync.OnceValue(func() string {
 			`not `+heldByABlock("r")),
 		byTarget(`'artifact', src.ref_key, r.kind, r.to_kind, r.to_id`,
 			`block_refs r
-				cross join lateral (select a.ref_key from artifacts a where a.id = r.artifact_id limit 1) src`,
+				cross join lateral (select a.ref_key from artifacts a where a.id = `+BlockDocumentSQL("r")+` limit 1) src`,
 			blockRefLinked("r")+` and `+VisibleKind(BlockNodeKind, `r.from_node`, closureSeen)),
 	}
 	for _, item := range itemKinds {
@@ -377,6 +444,18 @@ var linksInQuery = sync.OnceValue(func() string {
 	return `
 		with own_documents as (
 			select a.id, a.ref_key from artifacts a where a.issue_key = $1
+		),
+		own_blocks (node_id) as (
+			select d.node_id from own_documents o join document_blocks d on d.artifact_id = o.id
+			where ` + visibleDocument + ` and ` + VisibleKind(BlockNodeKind, `d.node_id`, closureSeen) + `
+			  and not exists (select 1 from document_rooms moved where moved.artifact_id = o.id)
+		),
+		room_addresses (address) as (
+			select joined_document.ref_key || '#' || room_block.block_id
+			from own_documents o
+			join issue_room_blocks room_block on room_block.tree_artifact_id = o.id
+			join document_rooms joined on joined.room = o.id
+			join artifacts joined_document on joined_document.id = joined.artifact_id
 		),
 		targets (kind, id) as (
 			` + strings.Join(targets, `
@@ -391,11 +470,20 @@ var linksInQuery = sync.OnceValue(func() string {
 			union all
 			`) + `
 		),
-		far (node_kind, node_id, kind, via_kind, via_id) as (
-			select r.node_kind, r.node_id, r.kind, ` + targetNode(heldDocumentOfTarget) + `
+		far (node_kind, node_id, kind, via_kind, via_id, moved_from) as (
+			select r.node_kind, r.node_id, r.kind,
+			       ` + targetNode(`case when r.to_kind = 'block' then `+heldBlockDocument(`coalesce(addressed.node_id, r.to_id)`)+` else r.to_id end`, `null::text`) + `,
+			       null::text
 			from links r
+			cross join (select array(select b.node_id from own_blocks b) as ids) own_block
+			left join lateral (
+				select ` + ResolvedBlockSQL(`r.to_id`) + ` as node_id
+				where r.to_kind = 'block' and not (r.to_id = any(own_block.ids))
+				offset 0
+			) addressed on true
 			` + itemBlockHeld + `
 			where r.node_id is not null
+			  and (r.to_kind <> 'block' or coalesce(addressed.node_id, r.to_id) = any(own_block.ids))
 		)` + oneRowPerNode(`targets`)
 })
 
@@ -417,11 +505,13 @@ func (q taggedQueryer) QueryRow(ctx context.Context, sql string, args ...any) pg
 }
 
 // linkRow is one row of the out or the in statement: the node at the far end, as resolveNodes
-// addresses it with byRefKey (a document by its ref_key), the kinds of its links and its via.
+// addresses it with byRefKey (a document by its ref_key), the kinds of its links, its via, and,
+// for a lens a linked document's address moved to, that document's ref_key (movedFrom).
 type linkRow struct {
-	kind, id string
-	kinds    []string
-	via      model.ReferenceVia
+	kind, id  string
+	kinds     []string
+	via       model.ReferenceVia
+	movedFrom *string
 }
 
 // Closure reads the references of the issue whose key is issueKey, one hop in each direction:
@@ -431,17 +521,24 @@ type linkRow struct {
 // read names its nodes with, at most one statement for each kind of node. A row whose node
 // resolveNodes does not name, a node gone since or of a kind this build does not know, is left
 // out, as Edges leaves such an edge out. Each list is in the order of the node's kind, then its
-// id. Members are the documents of Links, each at depth 1 with its row's via, by ref_key: a
-// link to a block reaches the block's document while a current version of the document holds
-// that block, and a link to a block that moved reaches the document of the block its moved_to
-// tuples reach (graphstore.MovedTo), or, where a move ends at an ask, the document the ask's row
-// names, the document it was decided in. A retired document's address names its issue
-// (loadArtifactNodes), which each list holds in its place, once however many of its rows name it
-// (related), so it is no member. Every statement it sends, through q, starts with ClosureTag. A
-// link is a mention, or a typed block's pointer of a kind the installed schema declares while the
-// graph read lists it (blockRefLinked): a decision's decided_by and from_ask, which block_refs
-// holds beside them, are neither and are no link. serverURL is the deployment whose dashboard URLs
-// are references, which a node's name is cut around (resolvedNode.name).
+// id. Every statement it sends, through q, starts with ClosureTag. A link is a mention, or a typed
+// block's pointer of a kind the installed schema declares while the graph read lists it
+// (blockRefLinked): a decision's decided_by and from_ask, which block_refs holds beside them, are
+// neither and are no link. serverURL is the deployment whose dashboard URLs are references, which
+// a node's name is cut around (resolvedNode.name).
+//
+// Members are the documents of Links, each at depth 1 with its row's via, by ref_key, then by
+// kind: a link to a block reaches the document holding the block while a current version of the
+// document holds that block, and a link to a block that moved reaches the document of the block
+// its moved_to tuples reach (graphstore.MovedTo), or, where a move ends at an ask, the document
+// the ask's row names, the document it was decided in. A link to a document whose own address
+// moved to a lens - the pre-mortem conversion retires a document into one and moves its address
+// there (api.ConvertPremortem) - reaches that lens, which Links lists, and the member is of kind
+// lens at the lens's address, with the retired document's ref_key. A link to a block of that
+// document is no link to its address, and still reaches the document itself, so one document can
+// stand for two members, the lens and itself. A retired document whose address moved to no lens
+// the reader may see names its issue (loadArtifactNodes), which each list holds in its place, once
+// however many of its rows name it (related), so it is no member.
 //
 // It answers for who: a link whose source, or the block it is read at, who may not see is no
 // link of the read, and a node who may not see is neither listed nor named as a via, so a node
@@ -470,11 +567,18 @@ func Closure(ctx context.Context, q Queryer, who model.Actor, issueKey, serverUR
 	}
 	members := []Member{}
 	for _, row := range out {
-		if node, found := nodes[[2]string{row.kind, row.id}]; found && node.Kind == "artifact" {
-			members = append(members, Member{RefKey: node.refKey, Depth: 1, Via: row.via})
+		node, found := nodes[[2]string{row.kind, row.id}]
+		switch {
+		case !found:
+		case node.Kind == graphstore.KindArtifact:
+			members = append(members, Member{Kind: graphstore.KindArtifact, Address: node.Ref, RefKey: node.refKey, Depth: 1, Via: row.via})
+		case node.Kind == graphstore.KindLens && row.movedFrom != nil:
+			members = append(members, Member{Kind: graphstore.KindLens, Address: node.Ref, RefKey: *row.movedFrom, Depth: 1, Via: row.via})
 		}
 	}
-	slices.SortFunc(members, func(left, right Member) int { return strings.Compare(left.RefKey, right.RefKey) })
+	slices.SortFunc(members, func(left, right Member) int {
+		return cmp.Or(strings.Compare(left.RefKey, right.RefKey), strings.Compare(left.Kind, right.Kind))
+	})
 	return References{
 		Members:    members,
 		Links:      related(out, nodes, serverURL),
@@ -498,7 +602,7 @@ func readLinkRows(ctx context.Context, q Queryer, statement string, args []any) 
 	}
 	return pgx.CollectRows(rows, func(row pgx.CollectableRow) (linkRow, error) {
 		var link linkRow
-		err := row.Scan(&link.kind, &link.id, &link.kinds, &link.via.Kind, &link.via.ID)
+		err := row.Scan(&link.kind, &link.id, &link.kinds, &link.via.Kind, &link.via.ID, &link.movedFrom)
 		return link, err
 	})
 }

@@ -124,18 +124,6 @@ func awaitBackfill(t *testing.T, answered <-chan backfillAnswer) BackfillReport 
 	return BackfillReport{}
 }
 
-// blockKind is the block kind's line of a backfill report.
-func blockKind(t *testing.T, report BackfillReport) KindBackfill {
-	t.Helper()
-	for _, done := range report.Kinds {
-		if done.Kind == refs.BlockNodeKind {
-			return done
-		}
-	}
-	t.Fatalf("the backfill reports no %s kind: %#v", refs.BlockNodeKind, report)
-	return KindBackfill{}
-}
-
 // R23: the backfill is one of the three writers that obey the revision fence, so it takes a
 // document's owner lock, then its document_block_versions row, before it writes a node for any
 // block of that document, and it writes only the rows still there once it holds them.
@@ -219,7 +207,7 @@ func TestTheBackfillWritesNoNodeForABlockAVersionDeletedWhileItWaited(t *testing
 	// The report counts what the run wrote: one row, one node, its in_document tuple and the
 	// three base attributes its insert stated - visibility, state and the document's project -
 	// and one document owed a block index.
-	if blocks := blockKind(t, report); blocks.Rows != 1 || blocks.Nodes != 1 || blocks.Tuples != 4 ||
+	if blocks := reportedKind(t, report, refs.BlockNodeKind); blocks.Rows != 1 || blocks.Nodes != 1 || blocks.Tuples != 4 ||
 		blocks.Owed != 1 || !blocks.Complete {
 		t.Errorf("the backfill reports %#v for blocks, want 1 row, 1 node, 4 tuples, 1 document owed and the cutover complete", blocks)
 	}
@@ -267,7 +255,7 @@ func TestTheBackfillHoldsTheOwnerRowWhileItWaitsForTheOwedRow(t *testing.T) {
 	if err := holder.Commit(ctx); err != nil {
 		t.Fatalf("release the owed row: %v", err)
 	}
-	if blocks := blockKind(t, awaitBackfill(t, answered)); blocks.Rows != 1 || blocks.Nodes != 1 {
+	if blocks := reportedKind(t, awaitBackfill(t, answered), refs.BlockNodeKind); blocks.Rows != 1 || blocks.Nodes != 1 {
 		t.Errorf("the backfill reports %#v for blocks once the owed row was released, want the one block written", blocks)
 	}
 }

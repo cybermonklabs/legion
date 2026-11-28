@@ -10,6 +10,7 @@ import { nextFrame } from "../../../__tests__/frames";
 import { api } from "../../../api/client";
 import {
   artifactBlocksQuery,
+  issueAsksQuery,
   issueCoverageQuery,
   issueResultsQuery,
   whoAmIQuery,
@@ -53,7 +54,6 @@ import { ProvidersSlot } from "../slots/providers";
 import { ViewStage } from "../slots/stage";
 import { ViewPlanSlot } from "../slots/view-plan";
 import { blockNodeId, treeContext } from "../tree-drafts";
-import { issueAsksQuery } from "../useIssueTree";
 import { PlanFilterBody, type PlanRead, type PlanReads } from "./PlanFilterBody";
 
 /**
@@ -989,6 +989,24 @@ function issueRead(verification?: Artifact): IssueDetails {
     plan_artifact_id: PLAN_ARTIFACT,
     primary_artifact_id: SPEC_ARTIFACT,
     verification_artifact_id: verification?.id ?? "",
+    queries: [
+      ...(verification === undefined
+        ? []
+        : [
+            {
+              query: "verification" as const,
+              artifact_id: verification.id,
+              takes: ["check", "result"],
+              subtree: `issue:${KEY}`,
+            },
+          ]),
+      {
+        query: "plan",
+        artifact_id: PLAN_ARTIFACT,
+        takes: ["plan_task", "plan_role"],
+        subtree: `issue:${KEY}`,
+      },
+    ],
   };
 }
 

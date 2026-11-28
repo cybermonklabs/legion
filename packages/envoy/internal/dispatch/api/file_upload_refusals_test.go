@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -76,6 +77,42 @@ func TestAFileNamedDecisionsMdOnAnIssueIsRefusedBeforeItsObjectIsWritten(t *test
 		}
 		if memory != nil && memory.Len() != 0 {
 			t.Errorf("the file store holds %d objects after the refused upload of decisions.md, want none: no row names them", memory.Len())
+		}
+	})
+}
+
+// A file upload under the name of the issue's decisions query is refused as the upload route's
+// words say, 409 DECISIONS_QUERY ("An upload under the name or slug of the issue's decisions
+// query, which renders the issue's decisions and takes no text, is 409 DECISIONS_QUERY and writes
+// nothing", POST /api/v1/issues/{key}/artifacts in api/routes_table.go), whether its bytes go to a
+// row or to a file store: it writes no version of the query and leaves no object in the store.
+// storeArtifact's transaction reads the decisions query before the kind, so with no store the
+// upload answers DECISIONS_QUERY and not ARTIFACT_KIND_MISMATCH; the check before the object must
+// too.
+func TestAFileUploadUnderTheDecisionsQuerysNameIsRefusedAsTheQueryWithOrWithoutAFileStore(t *testing.T) {
+	t.Parallel()
+	forEachFileStore(t, func(t *testing.T, handler http.Handler, database *store.Store, issueKey string, memory *filestest.Memory) {
+		var id, name string
+		if err := database.Pool.QueryRow(t.Context(),
+			`select a.id::text, a.name from artifacts a where a.issue_key = $1 and `+refs.DecisionsQuerySQL("a"), issueKey,
+		).Scan(&id, &name); err != nil {
+			t.Fatalf("read the decisions query of %s, which an issue born converted holds: %v", issueKey, err)
+		}
+		refused := multipartRequest(t, handler, "/api/v1/issues/"+issueKey+"/artifacts",
+			map[string]string{"name": name}, name, "text/plain", []byte("plain text\n"), "alice")
+		if refused.Code != http.StatusConflict || responseCode(t, refused) != codeDecisionsQuery {
+			t.Errorf("a file upload under the name of %s's decisions query %q: status=%d body=%s, want 409 %s, as the upload route's words say",
+				issueKey, name, refused.Code, refused.Body.String(), codeDecisionsQuery)
+		}
+		var versions int
+		if err := database.Pool.QueryRow(t.Context(), `select count(*) from artifact_versions where artifact_id = $1::uuid`, id).Scan(&versions); err != nil {
+			t.Fatalf("count the versions of the decisions query: %v", err)
+		}
+		if versions != 1 {
+			t.Errorf("the decisions query holds %d versions after the refused upload, want its version 1 alone", versions)
+		}
+		if memory != nil && memory.Len() != 0 {
+			t.Errorf("the file store holds %d objects after the refused upload, want none", memory.Len())
 		}
 	})
 }

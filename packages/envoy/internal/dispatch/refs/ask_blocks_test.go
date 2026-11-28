@@ -89,11 +89,17 @@ func writeAskAnswer(t *testing.T, tx pgx.Tx, ask *model.Ask, user string, select
 }
 
 // indexAskPartsAt plans the ask's parts at the index-th second of a fixed clock, so each indexing
-// of one test has a time of its own, and writes them as a batch of their own.
+// of one test has a time of its own, and writes them as a batch of their own (indexAskParts).
 func indexAskPartsAt(t *testing.T, tx pgx.Tx, ask model.Ask, index int) []Target {
 	t.Helper()
+	return indexAskParts(t, tx, ask, time.Date(2026, 10, 30, 12, 0, index, 0, time.UTC))
+}
+
+// indexAskParts plans the ask's parts at at and writes them as a batch of their own, and returns
+// the targets the write moved.
+func indexAskParts(t *testing.T, tx pgx.Tx, ask model.Ask, at time.Time) []Target {
+	t.Helper()
 	ctx := context.Background()
-	at := time.Date(2026, 10, 30, 12, 0, index, 0, time.UTC)
 	stored, err := ReadItemIndex(ctx, tx, ItemAsk, ask.ID)
 	if err != nil {
 		t.Fatalf("read the part index of ask %s: %v", ask.ID, err)

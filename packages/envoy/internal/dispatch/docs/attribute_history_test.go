@@ -245,7 +245,10 @@ func TestAnAttributeHistoryWrittenByTheBlockIndexReadsBackAsARelationHistoryDoes
 		requireStatedBy(t, "state value "+want.value+" of "+subject, value, want.cause)
 	}
 	// The relation's history: the document asserted by version 1, then retracted and holder
-	// asserted by version 4, which moved the block.
+	// asserted by version 4, which moved the block. A part_of is dated by the pass that states it,
+	// at the clock it reads once it holds the owner row and the fence, at or after its version's
+	// own time (D2 of the issue-tree plan), so the move's retraction and assertion share
+	// one time; the writer and the event are the version's.
 	for index, want := range []struct {
 		toKind, toID string
 		asserted     bool
@@ -260,7 +263,13 @@ func TestAnAttributeHistoryWrittenByTheBlockIndexReadsBackAsARelationHistoryDoes
 			t.Errorf("part_of tuple %d of %s is %s/%s (asserted %t), want %s/%s (asserted %t)",
 				index+1, subject, far.ToKind, far.ToID, far.Asserted, want.toKind, want.toID, want.asserted)
 		}
-		requireStatedBy(t, "part_of tuple of "+subject+" to "+want.toKind+"/"+want.toID, far, want.cause)
+		if far.At.Before(want.cause.at) || !far.Who.SameAs(want.cause.writer) || far.SourceEvent != want.cause.event {
+			t.Errorf("part_of tuple of %s to %s/%s was stated at %s by %+v under event %d, want at or after version %d's time %s, by %+v under event %d",
+				subject, want.toKind, want.toID, far.At, far.Who, far.SourceEvent, want.cause.number, want.cause.at, want.cause.writer, want.cause.event)
+		}
+	}
+	if !relation[1].At.Equal(relation[2].At) {
+		t.Errorf("version 4's retraction of %s's part_of is dated %s and its assertion %s, want one pass's one time", subject, relation[1].At, relation[2].At)
 	}
 	// The two reads are one read: row for row, the same node, the same fields set, in log
 	// order and in time order alike.

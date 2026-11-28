@@ -13,7 +13,7 @@ import (
 func TestAnAskAttributeNamesOneAskOfAnIssue(t *testing.T) {
 	attr := BlockAttributeSchema{Kind: BlockAttributeAsk}
 	const ask = "dispatch://CORE-1/ask/0b6f4c0e-3d1a-4f5e-9a7b-2c8d1e0f3a4b"
-	if err := validateAttributeValue(attr, ask); err != nil {
+	if err := validateAttributeValue("from_ask", attr, ask); err != nil {
 		t.Fatalf("an ask of an issue %q is refused: %v", ask, err)
 	}
 	for value, reason := range map[string]string{
@@ -26,12 +26,12 @@ func TestAnAskAttributeNamesOneAskOfAnIssue(t *testing.T) {
 		"see " + ask:                        "is not an ask of an issue",
 		"":                                  "is not an ask of an issue",
 	} {
-		err := validateAttributeValue(attr, value)
+		err := validateAttributeValue("from_ask", attr, value)
 		if err == nil || !strings.Contains(err.Error(), reason) {
 			t.Errorf("the ask attribute value %q = %v, want it refused as one that %s", value, err, reason)
 		}
 	}
-	if err := validateAttributeValue(attr, true); err == nil {
+	if err := validateAttributeValue("from_ask", attr, true); err == nil {
 		t.Errorf("an ask attribute holding a bool is accepted")
 	}
 

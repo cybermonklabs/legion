@@ -627,13 +627,25 @@ func (r *stepRecordsRig) heldRequest(c *stepClaimant, model, path string, body a
 }
 
 // seedChildInReviewing records a child of the walk's root, created in Dispatch and held by the
-// daemon's store in reviewing at generation 1, on an open pull request of its own at
-// stepRecordsHead that GitHub reports clean, and answers its key and its pull request's number.
+// daemon's store in reviewing at generation 1, at the sequence Dispatch reads it at, on an open pull
+// request of its own at stepRecordsHead that GitHub reports clean, and answers its key and its pull
+// request's number.
+//
+// The record's sequence is the one a read of the child answers after its create, and not the one
+// the create answered: the create answers the sequence of its own issue.created, and the fill after
+// its COMMIT appends an artifact.digest past it for version 1 of the child's spec and of its
+// decisions query (R14's hash gate). The record's status is not Dispatch's, which shows the child in
+// triage with no parent, so a record held behind those events would read a boot's listing of the
+// child, which answers the newer sequence, as a person's move to triage while the daemon was down.
 func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 	t := r.t
 	t.Helper()
 	var created createdIssue
 	r.person(http.MethodPost, "/api/v1/issues", map[string]string{"project": r.cfg.Project, "title": "A child in the walk's tree"}, http.StatusCreated, &created)
+	var shown createdIssue
+	if err := r.personRead("/api/v1/issues/"+created.Key, &shown); err != nil {
+		t.Fatalf("read %s after its create: %v", created.Key, err)
+	}
 	number := r.number + 1
 	parent := r.key
 	ctx := context.Background()
@@ -641,7 +653,7 @@ func (r *stepRecordsRig) seedChildInReviewing() (string, int) {
 		if err := r.records.PutIssue(ctx, tx, record.Issue{
 			Key: created.Key, Repo: liveRepo, DefaultBranch: "main", GitHubRepo: liveRepo, Tree: r.key, Parent: &parent, Project: r.cfg.Project,
 			Title: "A child in the walk's tree", Phase: phase.Reviewing, Generation: 1, Status: "needs_review", DispatchStatus: "needs_review",
-			Rank: created.Rank, LastDispatchSeq: created.LastSeq, HandedOver: true,
+			Rank: shown.Rank, LastDispatchSeq: shown.LastSeq, HandedOver: true,
 		}); err != nil {
 			return err
 		}

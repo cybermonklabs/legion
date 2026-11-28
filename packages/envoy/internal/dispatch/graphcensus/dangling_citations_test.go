@@ -341,3 +341,67 @@ func TestTheDanglingCounterReadsBothSetsAroundAMove(t *testing.T) {
 		t.Fatalf("after the move and the return the counter reads moved %v and returning %v, want none of either", moved, returning)
 	}
 }
+
+// A born-converted issue's spec stands in its issue room: its blocks' rows are keyed by the room's
+// tree artifact, `<tree ref_key>#<block id>`, while a citation names the spec's own address. The
+// counter reads each target through moved_to_reach alone, so the room step is that function's own
+// (migration 20261118165901), after the target's moved_to tuples and before the address itself.
+// The decisions document's ask block moves into the spec's fragment of the room with a moved_to to
+// the spec's address of the block, and the citation resolves through the room to the tree's node.
+// The moved set is the addresses a moved_to was ever stated from, so once that tuple is retracted
+// the citation of the old address dangles (the control), and asserted again it resolves. The
+// returning ask's old spec address dangles until its block stands in the room again, and then
+// resolves by the room step alone.
+func TestTheDanglingCounterReadsAMoveIntoAnIssueRoom(t *testing.T) {
+	database := storetest.Open(t)
+	ctx := context.Background()
+	fixture := seedRestoreFixture(t, database)
+	var tree testDocument
+	tree.id, tree.refKey = censusDocument(t, database, "tree", "tree", false)
+	joinIssueRoom(t, database, tree.id, fixture.spec.id)
+	oldAddress := fixture.decisions.refKey + "#ask-b"
+	specAddress := fixture.spec.refKey + "#ask-b"
+	returningAddress := fixture.spec.refKey + "#ask-a"
+	moving, returningComment := "33333333-3333-4333-8333-333333333333", "44444444-4444-4444-8444-444444444444"
+	citeFromComment(t, database, moving, oldAddress)
+	citeFromComment(t, database, returningComment, returningAddress)
+	wantReturning := []string{"comment:" + returningComment + " -> " + returningAddress}
+	if moved, returning := danglingOf(t, database, declining()); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
+		t.Fatalf("before the move the counter reads moved %v and returning %v, want none and %v", moved, returning, wantReturning)
+	}
+
+	// The move into the room, as the restore makes it: the block leaves the decisions document and
+	// stands in the spec's fragment of the room, and the old address takes its moved_to to the
+	// spec's address of the block.
+	if _, err := database.Pool.Exec(ctx, `
+		delete from document_blocks where artifact_id = $1::uuid and block_id = 'ask-b'
+	`, fixture.decisions.id); err != nil {
+		t.Fatalf("move the ask block out of the decisions document: %v", err)
+	}
+	insertTestBlock(t, database, tree, "ask-b", "ask")
+	move := graphstore.Tuple{FromKind: refs.BlockNodeKind, FromID: oldAddress, Kind: graphstore.TupleMovedTo, ToKind: refs.BlockNodeKind, ToID: specAddress, Asserted: true}
+	appendTuple(t, database, move)
+	if moved, returning := danglingOf(t, database, declining()); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
+		t.Fatalf("with the moved_to to %s, whose block the room holds at %s#ask-b, the counter reads moved %v and returning %v, want none and %v",
+			specAddress, tree.refKey, moved, returning, wantReturning)
+	}
+
+	// The move's tuple retracted: the citation of the old address dangles.
+	move.Asserted = false
+	appendTuple(t, database, move)
+	wantMoved := []string{"comment:" + moving + " -> " + oldAddress}
+	if moved, _ := danglingOf(t, database, declining()); !reflect.DeepEqual(moved, wantMoved) {
+		t.Fatalf("a move into the room whose moved_to is retracted reads the moved set %v, want its citation %v", moved, wantMoved)
+	}
+
+	move.Asserted = true
+	appendTuple(t, database, move)
+	if moved, returning := danglingOf(t, database, declining()); len(moved) != 0 || !reflect.DeepEqual(returning, wantReturning) {
+		t.Fatalf("with the moved_to asserted again the counter reads moved %v and returning %v, want none and %v", moved, returning, wantReturning)
+	}
+
+	insertTestBlock(t, database, tree, "ask-a", "ask")
+	if moved, returning := danglingOf(t, database, declining()); len(moved) != 0 || len(returning) != 0 {
+		t.Fatalf("with the returning ask's block back in the room the counter reads moved %v and returning %v, want none of either", moved, returning)
+	}
+}

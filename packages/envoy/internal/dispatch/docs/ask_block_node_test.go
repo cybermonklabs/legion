@@ -2,6 +2,7 @@ package docs
 
 import (
 	"context"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -95,6 +96,13 @@ func TestAnAnsweredAskBlockIndexesAsALiveNodeAndTheCensusAgrees(t *testing.T) {
 		t.Errorf("the ask block's node states no base state at all")
 	}
 
+	// The fixture's issue, document and first version are written by SQL (createIssueDocument), as
+	// a build before their nodes wrote them (the issue-tree spec): the backfill gives each its
+	// node and names no block, every one of which the block index named, so the census below
+	// reads the blocks as the index left them.
+	if _, err := graphcensus.Backfill(ctx, database, io.Discard); err != nil {
+		t.Fatalf("backfill the fixture's document: %v", err)
+	}
 	census := takeStoreCensus(t, database)
 	for _, kind := range census.Kinds {
 		for _, difference := range append(append([]graphcensus.Difference{}, kind.ReportedRows...), kind.ReportedNodes...) {

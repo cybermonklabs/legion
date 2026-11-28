@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  An older comment page of the tree read with no view and no kind
+  (`GET /api/v1/issues/{key}/tree?comments_before=...`) no longer answers each comment's own blocks
+  beside the comment, which repeated every comment's words and their reading; the comment answers
+  them whole. A node a person placed under a comment, such as a criterion, still stands under it,
+  and beside a view or a kind the page still answers each comment with every node under it.
+time: 2026-11-27T17:22:20Z
+custom:
+    Issue: INFRA-1253

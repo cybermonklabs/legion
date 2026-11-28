@@ -476,7 +476,9 @@ start it by hand. Without `answeredAt`, check, in order:
 1. **The question is still with the person.** `dispatch read <KEY>` shows the root's asks. A
    person's answer, resolution or reply on any ask of the root wakes it, whichever ask the wait
    names, and so does their approval or changes request of the spec, or the spec's gate standing
-   open (`designGate.approvedVersion` equal to `currentVersion`) on the next admission pass. A
+   open (its step reading `approved`, with `designGate.approvedVersion` equal to `currentVersion`,
+   or below it where Dispatch reports that approval standing at the latest version) on the next
+   admission pass. A
    question Dispatch retracted or a session closed, or one a session handed back to the agent's
    turn, wakes it once nothing else is with the person. An agent's answer or resolution of another
    ask never wakes it, nor does a person's act from before the wait began.
@@ -510,10 +512,15 @@ It keeps its slot there,
 unless its gate has opened once and it waits on another issue
 ([Admission and the `legion` label](/legion/legion/concepts/#admission-and-the-legion-label)).
 A root waiting on its gate at a daemon's deploy
-is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until a person approves the
-spec at its current version; `designGate.approvedVersion` is `null`, or lower than `currentVersion`,
-until someone approves the latest version from the document's header or the Inbox. An approval of an
-earlier version does not count: the spec changed since. The gate holds the tree's start and its
+is recorded as waiting at that daemon's first boot, keeping its slot. The gate stays closed until
+Dispatch reports a person's approval standing at the spec's current version. On an issue Dispatch
+has converted to one tree, an approval of an earlier version stands while no later version changed
+a requirement, a criterion, the memo or their relations, and the step then reads `approved` with
+`designGate.approvedVersion` below `currentVersion`. On an issue it has not converted,
+`designGate.approvedVersion` is `null`, or lower than `currentVersion`, until someone approves the
+latest version from the document's header or the Inbox, or Dispatch carries the approval to it by
+its text: an approval of an earlier version does not count, since the spec changed. The gate holds
+the tree's start and its
 merger's start, and work already in flight goes on. `gatedSteps` carries one entry for each step
 that holds the tree, each with its own `artifactId`, `currentVersion`, `approvedVersion` and
 `status` (`unregistered`, `waiting`, `approved`, `changes_requested`, `open_on_basis` or

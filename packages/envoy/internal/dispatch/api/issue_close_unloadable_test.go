@@ -38,8 +38,10 @@ func TestClosingAnIssueWithAnUnloadableDocumentWithdrawsItsAsksAndReopeningResto
 	}](t, uploaded).Artifact.ID
 	plainAsk := createSessionAsk(t, f.handler, issue.Key, "Which region?")
 
-	if corrupted := makeDocumentUnloadable(t, f, notes); corrupted != 1 {
-		t.Fatalf("the notes hold %d stored updates, want the upload's one", corrupted)
+	// The notes are a fragment of the issue's room, so the history that does not load is the
+	// room's: every stored update of it, the upload's among them.
+	if corrupted := makeDocumentUnloadable(t, f, notes); corrupted < 1 {
+		t.Fatalf("the notes' room holds %d stored updates, want the upload's among them", corrupted)
 	}
 
 	closed := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "done"}, "alice")
@@ -259,24 +261,26 @@ func requireAskAttributesInStep(t *testing.T, markdown, blockID string, ask mode
 	}
 }
 
-// makeDocumentUnloadable replaces every stored update of document with bytes that do not decode,
-// with no room holding the document and no settlement owed that the close's own settlement would
-// load it for, and returns how many stored updates it replaced, so a test can check it corrupted
-// the history it expects.
+// makeDocumentUnloadable replaces every stored update of the room document is edited in
+// (documentRoomOf: its issue room, or the document itself) with bytes that do not decode, with no
+// room holding the document and no settlement owed that the close's own settlement would load it
+// for, and returns how many stored updates it replaced, so a test can check it corrupted the
+// history it expects.
 func makeDocumentUnloadable(t *testing.T, f repairFixture, document string) int64 {
 	t.Helper()
 	ctx := context.Background()
-	if err := f.documents.Evict(ctx, document); err != nil {
-		t.Fatalf("evict the notes: %v", err)
+	room, _ := documentRoomOf(t, f.database.Pool, document)
+	if err := f.documents.Evict(ctx, room); err != nil {
+		t.Fatalf("evict the notes' room: %v", err)
 	}
-	if _, err := f.database.Pool.Exec(ctx, `delete from doc_settlements_pending where artifact_id = $1`, document); err != nil {
+	if _, err := f.database.Pool.Exec(ctx, `delete from doc_settlements_pending where artifact_id = any($1::uuid[])`, []string{document, room}); err != nil {
 		t.Fatalf("clear the notes' owed settlement: %v", err)
 	}
-	corrupted, err := f.database.Pool.Exec(ctx, `update doc_updates set update = '\xff'::bytea where artifact_id = $1`, document)
+	corrupted, err := f.database.Pool.Exec(ctx, `update doc_updates set update = '\xff'::bytea where artifact_id = $1`, room)
 	if err != nil {
 		t.Fatalf("corrupt the notes' history: %v", err)
 	}
-	if _, err := docs.NewPgVersioned(f.database).LoadDocument(ctx, document); !errors.Is(err, docs.ErrDocumentUnloadable) {
+	if _, err := docs.NewPgVersioned(f.database).LoadDocument(ctx, room); !errors.Is(err, docs.ErrDocumentUnloadable) {
 		t.Fatalf("load the corrupted notes: %v, want ErrDocumentUnloadable", err)
 	}
 	return corrupted.RowsAffected()

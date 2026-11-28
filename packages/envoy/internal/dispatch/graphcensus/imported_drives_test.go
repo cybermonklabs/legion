@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/api"
 	"github.com/sjawhar/envoy/internal/dispatch/auth"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
@@ -180,6 +183,24 @@ func newWritersRig(t *testing.T) *writersRig {
 // answer is want, and answers the body.
 func (r *writersRig) request(t *testing.T, method, target string, body any, login string, want int) []byte {
 	t.Helper()
+	return r.requestForRun(t, "", method, target, body, login, want)
+}
+
+// requestForRun is request made for run, which it names in contracts.GoingRunHeader as a write
+// made for that run sends it (api's GoingCaller.Do); with no run it names none.
+func (r *writersRig) requestForRun(t *testing.T, run, method, target string, body any, login string, want int) []byte {
+	t.Helper()
+	var headers map[string]string
+	if run != "" {
+		headers = map[string]string{contracts.GoingRunHeader: run}
+	}
+	return r.requestWith(t, headers, method, target, body, login, want)
+}
+
+// requestWith is request sending headers beside the rig's own: a run's header (requestForRun), or
+// the If-Match a node's move names.
+func (r *writersRig) requestWith(t *testing.T, headers map[string]string, method, target string, body any, login string, want int) []byte {
+	t.Helper()
 	encoded, err := json.Marshal(body)
 	if err != nil {
 		t.Fatalf("encode %s %s: %v", method, target, err)
@@ -191,12 +212,31 @@ func (r *writersRig) request(t *testing.T, method, target string, body any, logi
 	} else {
 		request.Header.Set("Authorization", "Bearer agent-token")
 	}
+	for name, value := range headers {
+		request.Header.Set(name, value)
+	}
 	response := httptest.NewRecorder()
 	r.handler.ServeHTTP(response, request)
 	if response.Code != want {
 		t.Fatalf("%s %s: status=%d body=%s, want %d", method, target, response.Code, response.Body.String(), want)
 	}
 	return response.Body.Bytes()
+}
+
+// askRun asks a question of the command bar as alice under the issue's project and answers the
+// run's id once the run's one frame has landed: the rig holds no model, so the answer the POST
+// starts stores the no-model error as the run's terminal frame, after the POST has answered. The
+// run is live for contracts.GoingRunWindow from its POST, the window a write made for it has.
+func (r *writersRig) askRun(t *testing.T, words string) string {
+	t.Helper()
+	run := decoded[struct {
+		ID string `json:"id"`
+	}](t, r.request(t, http.MethodPost, "/api/v1/going/requests", map[string]any{"words": words, "project": "SIZE"},
+		"alice", http.StatusCreated)).ID
+	r.awaitTrue(t, "run "+run+"'s answer storing its frame", `
+		select exists (select 1 from going_events where request_id = $1::uuid)
+	`, run)
+	return run
 }
 
 // uploadBase is the token an upload replacing the document artifact names, the one it carries
@@ -246,6 +286,24 @@ func (r *writersRig) awaitTrue(t *testing.T, what, query string, args ...any) {
 	}
 }
 
+// sweepUntil runs api.RunMaintenanceSweep, with a pass every 50 ms rather than a deployment's one
+// a minute, until query answers true (awaitTrue), and then stops it and waits until it has stopped.
+func (r *writersRig) sweepUntil(t *testing.T, what, query string, args ...any) {
+	t.Helper()
+	leases := storetest.Leases(t, r.database.Pool)
+	sweeping, stop := context.WithCancel(context.Background())
+	stopped := make(chan struct{})
+	go func() {
+		defer close(stopped)
+		api.RunMaintenanceSweep(sweeping, r.database.Pool, 50*time.Millisecond, leases, nil)
+	}()
+	defer func() {
+		stop()
+		<-stopped
+	}()
+	r.awaitTrue(t, what, query, args...)
+}
+
 // settledAttempts waits until no attempt of the comment is pending and one of them is in state.
 func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 	t.Helper()
@@ -264,10 +322,22 @@ func (r *writersRig) settledAttempts(t *testing.T, comment, state string) {
 // document mentioning a session whose send is held, that send's settle, a reply to a mention whose
 // send was refused, a targeted message's delivery, an ask a session opens, a follow of it, the
 // spec's approval request renewed on a retry and handed back, a settlement opening an ask a
-// session wrote as a block, and the tick indexing a version a build without the block index
-// wrote. The comment path's drives name the sites the path runs in turn (comment): the path
+// session wrote as a block, the tick indexing a version a build without the block index wrote, a
+// run of the command bar alice asks, a run an older pod recorded that a pass of the maintenance
+// sweep ends, a run an hour old the maintenance sweep states gone, the issue's title, the question
+// of an ask alice opens and a comment of alice's each written for a run she asked, a lens with a
+// finding, a finding, a risk and a constraint, a pointer appended and one retargeted, and the
+// lens's state. The comment path's drives name the sites the path runs in turn (comment): the path
 // itself, which writes the comment's node before its row (queueCommentRow) and its tuples under its
 // event (queueCommentCreated), and who wrote it.
+//
+// The drives of a run's writes and of the reasoning kinds run right after the tick's, in this
+// order: a run of the command bar alice asks, a run an older pod recorded that a pass of the
+// maintenance sweep ends, a run an hour old the maintenance sweep states gone, the issue's title,
+// the question of an ask alice opens and a comment of alice's each written for a run she asked,
+// a message of alice's edited, a comment of hers deleted and a message of hers deleted, each for
+// a run she asked, a lens with a finding, a finding, a risk and a constraint, a pointer appended
+// and one retargeted, and the lens's state.
 func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	t.Helper()
 	r := newWritersRig(t)
@@ -275,9 +345,19 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 	comment := func(name string, sites ...string) []string {
 		return append([]string{name, "graphstore/people.go#QueueAuthored"}, sites...)
 	}
+	// What the drives of a run's writes and of the reasoning kinds leave for the drives after them:
+	// the run the sweep states gone, the run a write is made for, the ask and the comment the run
+	// rewords, the message the run edits, the comment and the message it deletes, the trade-off
+	// lens on the spec, the pre-mortem a risk stands under, the issue whose spec holds a
+	// requirement, the constraint under that issue, and the issue a node's move moves a block of.
+	var swept, run, reworded, edited, correctedMessage, deletedComment, deletedMessage, lens, premortem, requiring, constraint, moving string
+	type addressed struct {
+		Address string `json:"address"`
+	}
 	return append([]graphcensus.StoreDrive{{
 		Name: "api/issue_create.go#createIssue", Database: r.database,
-		Sites: []string{"api/issue_create.go#createIssue", "refs/blocks.go#Queue"},
+		Sites: []string{"api/issue_create.go#createIssue", "api/artifacts.go#createIssueTree", "api/issue_create.go#createDecisionsQuery",
+			"docs/mutation.go#WriteVersionNode", "refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			created := decoded[struct {
 				Key     string `json:"key"`
@@ -287,10 +367,18 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}, "alice", http.StatusCreated))
 			r.issue, r.spec = created.Key, created.Primary
 		},
-		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindIssue), objectNodeCounted(graphstore.KindArtifact)),
+		// An issue born converted, as a fleet that serves the issue room creates every issue: the
+		// issue's node; its spec's node, its part_of and its query values, the spec's blocks with
+		// their values and their authors, alice, whom those first record, and the spec's first
+		// version, a query version with its definition_version; and the issue's room, its tree
+		// artifact and its decisions query with the query's values, and the two's first versions.
+		Counts: merged(newBlockCounted, blockValuesCounted, roomBlockCounted, objectNodeCounted(graphstore.KindIssue),
+			objectNodeCounted(graphstore.KindArtifact), documentPartOfCounted, versionCounted, personNodeCounted, issueRoomCounted,
+			queryNodeCounted, queryVersionCounted),
 	}, {
 		Name: "api/artifacts.go#storeArtifact", Database: r.database,
-		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "refs/blocks.go#Queue"},
+		Sites: []string{"api/artifacts.go#storeArtifact", "api/artifacts.go#queueNewArtifact", "docs/mutation.go#WriteVersionNode",
+			"refs/blocks.go#Queue"},
 		Drive: func(t *testing.T) {
 			notes := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -299,7 +387,10 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			}, "alice", http.StatusCreated)).Artifact
 			r.notes, r.notesSlug = notes.ID, notes.Slug
 		},
-		Counts: merged(newBlockCounted, objectNodeCounted(graphstore.KindArtifact)),
+		// The notes' node and its part_of the issue, its blocks with their values, and its first
+		// version.
+		Counts: merged(newBlockCounted, blockValuesCounted, objectNodeCounted(graphstore.KindArtifact), documentPartOfCounted,
+			versionCounted),
 	}, {
 		Name: "api/artifacts.go#commitArtifactVersionEvent", Database: r.database,
 		Sites: []string{"api/artifacts.go#commitArtifactVersionEvent", "refs/blocks.go#Queue"},
@@ -308,7 +399,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				"ops": []map[string]any{{"op": "insert", "after": "end", "markdown": "A paragraph the edit adds."}},
 			}, "alice", http.StatusOK)
 		},
-		Counts: newBlockCounted,
+		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted),
 	}, {
 		Name: "api/comment_create.go#createCommentFor, on an issue", Database: r.database,
 		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated"),
@@ -316,20 +407,18 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
 				map[string]any{"body": "A remark on the issue."}, "alice", http.StatusCreated)
 		},
-		// The comment, the first alice writes, and alice: her node is made by the write that first
-		// records her.
+		// The comment. alice's node stands from the issue's spec, whose blocks first record her.
 		Counts: map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
 			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
-			{graphstore.KindPerson, graphstore.AttributeVisibility}:  {graphstore.KindPerson},
-			{graphstore.KindPerson, graphstore.AttributeState}:       {graphstore.KindPerson},
 		},
 	}, {
 		// A comment anchored to the notes, whose mention resolves to the held session: the
 		// listener holds that send, so what the comment's create appends is read before its settle
-		// runs.
+		// runs. It answers nothing, so beside its anchored_in it states its part_of to the same
+		// block (graphstore.AnchorTuples), which the term anchor_block counts with it.
 		Name: "api/comment_create.go#createCommentFor, anchored to a document, mentioning a session", Database: r.database,
 		Sites: comment("api/comment_create.go#queueCommentRow", "api/comment_create.go#queueCommentCreated"),
 		Drive: func(t *testing.T) {
@@ -343,13 +432,13 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				t.Fatalf("the mention of %s sent nothing to the listener within 30s", heldSession)
 			}
 		},
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: merged(map[graphcensus.StoredKind][]string{
 			{graphstore.KindComment, graphstore.AttributeVisibility}: {"comment"},
 			{graphstore.KindComment, graphstore.AttributeState}:      {"comment"},
 			{graphstore.KindComment, graphstore.AttributeProject}:    {"comment"},
 			{graphstore.KindComment, graphstore.TupleAuthoredBy}:     {graphstore.TupleAuthoredBy},
 			{graphstore.KindComment, graphstore.TupleAnchoredTo}:     {graphstore.TupleAnchoredTo},
-		},
+		}, anchorBlockCounted),
 	}, {
 		Name: "api/comment_delivery.go#completeCommentDelivery", Database: r.database,
 		Sites: []string{"api/comment_delivery.go#completeCommentDelivery", "graphstore/people.go#QueueReached",
@@ -433,40 +522,62 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 		},
 	}, {
 		// A session's ask on the issue: the ask's node, in the issue's project, who asked it, and
-		// the asker's follow, planned in the create's read phase (asks.PlanFollowNewAsk).
+		// the asker's follow, planned in the create's read phase (asks.PlanFollowNewAsk). The issue
+		// is born converted and the ask is a question, which the decisions query takes, so the
+		// create's write phase marks the issue's queries owed and the drain the route runs once it
+		// has committed appends a version of the decisions query (drainMark): the version's node, a
+		// query version with its definition_version.
 		Name: "api/asks.go#createAskFor", Database: r.database,
-		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#Queue", "asks/followers.go#queueFollow"},
+		Sites: []string{"api/asks.go#createAskFor", "asks/followers.go#Queue", "asks/followers.go#queueFollow",
+			"docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.ask = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks", map[string]any{
 				"question": "Which store do the writers take?", "actor": sessionActor("ses_asker"),
 			}, "", http.StatusCreated)).ID
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted,
+			versionCounted, queryVersionCounted),
 	}, {
-		// The removal of an untouched document of the issue, made just before by typing a title:
-		// its node stated gone, which the term artifact_removed counts.
-		Name: "api/artifact_removal.go#removeArtifact", Database: r.database,
-		Sites: []string{"api/artifact_removal.go#removeArtifact", "api/server.go#appendCausingEvent"},
+		// The removal of an untouched document of the issue, made just before by typing a title,
+		// with alice's trade-off lens on it: its node stated gone, which the term artifact_removed
+		// counts, and the node of its one version stated gone, which the term version_removed counts,
+		// by removedDocumentNodes in the request's transaction and under its artifact.removed in the
+		// event's batch; and the lens, stale once the row it recorded is deleted, stated gone in the
+		// removal's own write of the stale lenses on the document (removeArtifact, refs.StaleLensesOn),
+		// whose state tuple the term lens counts.
+		Name: "api/artifact_removal.go#removedDocumentNodes", Database: r.database,
+		Sites: []string{"api/artifact_removal.go#removedDocumentNodes", "api/artifact_removal.go#removeArtifact", "api/server.go#appendCausingEvent"},
 		Ready: func(t *testing.T) {
-			r.removable = decoded[struct {
+			removable := decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
 			}](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/artifacts",
-				map[string]any{"name": "scratch.md"}, "alice", http.StatusCreated)).Artifact.ID
+				map[string]any{"name": "scratch.md"}, "alice", http.StatusCreated)).Artifact
+			r.removable = removable.ID
+			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/lenses", map[string]any{
+				"on": "dispatch://" + r.issue + "/artifact/" + removable.Slug, "kind": "trade-off",
+			}, "alice", http.StatusCreated)
 		},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodDelete, "/api/v1/artifacts/"+r.removable, nil, "alice", http.StatusNoContent)
 		},
-		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"}},
+		Counts: map[graphcensus.StoredKind][]string{
+			{graphstore.KindArtifact, graphstore.AttributeState}: {"artifact_removed"},
+			{graphstore.KindVersion, graphstore.AttributeState}:  {"version_removed"},
+			{graphstore.KindLens, graphstore.AttributeState}:     {graphstore.KindLens},
+		},
 	}, {
 		// The follower route's follow of that ask (asks.Follow), whose node it moves onto the
-		// event it appends after it.
+		// event it appends after it. The decisions query's record holds the question's followed_by,
+		// so the follow's batch marks the issue's queries owed and the drain the route runs once it
+		// has committed appends a version of the decisions query (drainMark).
 		Name: "api/server.go#appendCausingEvent", Database: r.database,
-		Sites: []string{"api/server.go#appendCausingEvent", "asks/followers.go#Follow", "asks/followers.go#queueFollow"},
+		Sites: []string{"api/server.go#appendCausingEvent", "asks/followers.go#Follow", "asks/followers.go#queueFollow",
+			"docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPut, "/api/v1/asks/"+r.ask+"/followers/ses_follower",
 				map[string]any{"actor": sessionActor("ses_follower")}, "", http.StatusNoContent)
 		},
-		Counts: merged(sessionNodeCounted, followCounted),
+		Counts: merged(sessionNodeCounted, followCounted, versionCounted, queryVersionCounted),
 	}, {
 		// The spec's approval request, which a session opens: the request's node, in the spec's
 		// project, and the requester's follow.
@@ -476,7 +587,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+r.spec+"/approval-requests",
 				map[string]any{"actor": sessionActor("ses_requester")}, "", http.StatusCreated)
 		},
-		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, followCounted),
+		Counts: merged(sessionNodeCounted, objectNodeCounted(graphstore.KindAsk), askAuthorCounted, approvalRequestCounted, followCounted),
 	}, {
 		// That request renewed by another session while it waits on the person: a retry, which
 		// appends no event.
@@ -526,6 +637,7 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 			map[graphcensus.StoredKind][]string{
 				{graphstore.KindAsk, graphstore.TupleAnchoredTo}: {"ask_opened"},
 				{graphstore.KindAsk, graphstore.TuplePartOf}:     {"ask_opened"},
+				{graphstore.KindAsk, graphstore.TupleAskedOn}:    {"ask_opened"},
 			}),
 	}, {
 		// A person's live edit of the notes, which a build without the block index then wrote as a
@@ -573,15 +685,314 @@ func importedDrives(t *testing.T) []graphcensus.StoreDrive {
 				t.Fatalf("the tick indexed %d document(s) (%d live ahead), want the notes alone", tick.Documents, tick.LiveAhead)
 			}
 		},
-		Counts: newBlockCounted,
-	}}, askDrives(t, r)...)
+		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted),
+	}, {
+		// A run of the command bar alice asks under the issue's project: its interaction node,
+		// written before its going_requests row, and its one frame, the no-model error the answer
+		// stores once the POST has answered.
+		Name: "api/going.go#recordGoingRequest", Database: r.database,
+		Sites:  []string{"api/going.go#recordGoingRequest", "api/going.go#appendGoingEvent"},
+		Drive:  func(t *testing.T) { r.askRun(t, "What do the writers write?") },
+		Counts: runNodeCounted,
+	}, {
+		// A run a process of the release before recorded with no node and left past its window
+		// with no terminal frame: a pass of the maintenance sweep ends it with the deadline's error,
+		// and that frame's write gives the run its node from its row first (lockGoingRun,
+		// graphstore.WriteRun).
+		Name: "api/going.go#lockGoingRun, a run an older pod recorded", Database: r.database,
+		Sites: []string{"api/going.go#lockGoingRun", "graphstore/interaction.go#WriteRun", "api/going.go#appendGoingEvent"},
+		Ready: func(t *testing.T) {
+			if _, err := r.database.Pool.Exec(ctx, `
+				insert into going_requests (author, project, words, created_at, ends_at)
+				values ('{"kind":"user","id":"alice"}', 'SIZE', 'Who answered this?', now() - interval '1 minute', now() - interval '30 seconds')
+			`); err != nil {
+				t.Fatalf("record a run as an older pod does, with no node: %v", err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			r.sweepUntil(t, "the maintenance sweep ending the older pod's run", `
+				select exists (select 1 from going_events e join going_requests q on q.id = e.request_id
+				               where q.words = 'Who answered this?')
+			`)
+		},
+		Counts: runNodeCounted,
+	}, {
+		// A run alice asked an hour and a minute ago, ended with the no-model error: a pass of the
+		// maintenance sweep states its interaction node gone and removes its rows (goRunGone, under
+		// its node's row, which lockGoingRun takes), which appends the node's state tuple alone.
+		Name: "api/going.go#goRunGone, a run an hour old", Database: r.database,
+		Sites: []string{"api/going.go#goRunGone", "api/going.go#lockGoingRun"},
+		Ready: func(t *testing.T) {
+			swept = r.askRun(t, "Which run goes after an hour?")
+			if _, err := r.database.Pool.Exec(ctx, `
+				update going_requests set created_at = now() - interval '61 minutes', ends_at = now() - interval '60 minutes'
+				where id = $1::uuid
+			`, swept); err != nil {
+				t.Fatalf("date run %s an hour and a minute back: %v", swept, err)
+			}
+		},
+		Drive: func(t *testing.T) {
+			r.sweepUntil(t, "the maintenance sweep stating run "+swept+" gone and removing its rows", `
+				select exists (select 1 from graph_nodes where kind = $1 and id = $2 and state = $3)
+				   and not exists (select 1 from going_requests where id = $2::uuid)
+			`, graphstore.KindInteraction, swept, graphstore.StateGone)
+		},
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindInteraction, graphstore.AttributeState}: {graphstore.KindInteraction}},
+	}, {
+		// An issue's title written for a run alice asked: the issue's node named changed by it.
+		Name: "api/issue_patch.go#writeIssue, made for a run", Database: r.database,
+		Sites: []string{"api/issue_patch.go#writeIssue"},
+		Ready: func(t *testing.T) { run = r.askRun(t, "Retitle the issue.") },
+		Drive: func(t *testing.T) {
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/issues/"+r.issue,
+				map[string]any{"title": "What the writers write, run by run"}, "alice", http.StatusOK)
+		},
+		Counts: changedByRunCounted(graphstore.KindIssue),
+	}, {
+		// An ask alice opens on the issue, its question reworded for a run she asked: the ask's node
+		// named changed by it. The ask is one of its own, so the ask ses_asker opened keeps the
+		// question alice's answer of it confirms (askDrives). The decisions query prints the
+		// question's words, so the reword marks the issue's queries owed and the drain the route runs
+		// once it has committed appends a version of the decisions query (drainMark).
+		Name: "api/asks.go#editAsk, made for a run", Database: r.database,
+		Sites: []string{"api/asks.go#editAsk", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
+		Ready: func(t *testing.T) {
+			reworded = decoded[model.Ask](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/asks",
+				map[string]any{"question": "Which store does a run reword?"}, "alice", http.StatusCreated)).ID
+			run = r.askRun(t, "Reword the ask.")
+		},
+		Drive: func(t *testing.T) {
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/asks/"+reworded,
+				map[string]any{"question": "Which store does a run reword, run by run?"}, "alice", http.StatusOK)
+		},
+		Counts: merged(changedByRunCounted(graphstore.KindAsk), versionCounted, queryVersionCounted),
+	}, {
+		// A comment of alice's reworded for a run she asked: the comment's node named changed by it.
+		Name: "api/comment_actions.go#editComment, made for a run", Database: r.database,
+		Sites: []string{"api/comment_actions.go#editComment"},
+		Ready: func(t *testing.T) {
+			edited = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
+				map[string]any{"body": "A remark a run rewords."}, "alice", http.StatusCreated)).ID
+			run = r.askRun(t, "Reword the remark.")
+		},
+		Drive: func(t *testing.T) {
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/comments/"+edited,
+				map[string]any{"body": "A remark a run reworded."}, "alice", http.StatusOK)
+		},
+		Counts: changedByRunCounted(graphstore.KindComment),
+	}, {
+		// A message of alice's on the issue, its words edited for a run she asked: the message's
+		// node named changed by it.
+		Name: "api/message_corrections.go#editMessage, made for a run", Database: r.database,
+		Sites: []string{"api/message_corrections.go#editMessage"},
+		Ready: func(t *testing.T) {
+			correctedMessage = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages",
+				map[string]any{"body": "A message a run edits."}, "alice", http.StatusCreated)).ID
+			run = r.askRun(t, "Edit the message.")
+		},
+		Drive: func(t *testing.T) {
+			r.requestForRun(t, run, http.MethodPatch, "/api/v1/messages/"+correctedMessage,
+				map[string]any{"body": "A message a run edited."}, "alice", http.StatusOK)
+		},
+		Counts: changedByRunCounted(graphstore.KindMessage),
+	}, {
+		// A comment of alice's on the issue deleted for a run she asked: the comment's node named
+		// changed by it.
+		Name: "api/comment_delete.go#deleteComment, made for a run", Database: r.database,
+		Sites: []string{"api/comment_delete.go#deleteComment"},
+		Ready: func(t *testing.T) {
+			deletedComment = decoded[model.Comment](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/comments",
+				map[string]any{"body": "A remark a run deletes."}, "alice", http.StatusCreated)).ID
+			run = r.askRun(t, "Delete the remark.")
+		},
+		Drive: func(t *testing.T) {
+			r.requestForRun(t, run, http.MethodDelete, "/api/v1/comments/"+deletedComment, nil, "alice", http.StatusOK)
+		},
+		Counts: changedByRunCounted(graphstore.KindComment),
+	}, {
+		// A message of alice's on the issue deleted for a run she asked: the message's node named
+		// changed by it.
+		Name: "api/message_corrections.go#deleteMessage, made for a run", Database: r.database,
+		Sites: []string{"api/message_corrections.go#deleteMessage"},
+		Ready: func(t *testing.T) {
+			deletedMessage = decoded[model.Message](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/messages",
+				map[string]any{"body": "A message a run deletes."}, "alice", http.StatusCreated)).ID
+			run = r.askRun(t, "Delete the message.")
+		},
+		Drive: func(t *testing.T) {
+			r.requestForRun(t, run, http.MethodDelete, "/api/v1/messages/"+deletedMessage, nil, "alice", http.StatusOK)
+		},
+		Counts: changedByRunCounted(graphstore.KindMessage),
+	}, {
+		// A trade-off lens on the spec with its verdict and one finding, as alice invokes it.
+		Name: "api/reasoning_write.go#writeReasoningNodes, a lens and its finding", Database: r.database,
+		Sites: []string{"api/reasoning_write.go#writeReasoningNodes"},
+		Drive: func(t *testing.T) {
+			lens = decoded[addressed](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/lenses", map[string]any{
+				"on": "dispatch://" + r.issue + "/spec", "kind": "trade-off", "verdict": "Keep one store.",
+				"findings": []string{"One store halves the writes."},
+			}, "alice", http.StatusCreated)).Address
+		},
+		Counts: merged(lensCounted, findingCounted),
+	}, {
+		// A finding added to that lens on its own.
+		Name: "api/reasoning_write.go#writeReasoningNodes, a finding", Database: r.database,
+		Sites: []string{"api/reasoning_write.go#writeReasoningNodes"},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, nodeRoute(r.issue, lens, "findings"),
+				map[string]any{"text": "Two stores double the reads."}, "alice", http.StatusCreated)
+		},
+		Counts: findingCounted,
+	}, {
+		// A risk under a pre-mortem lens of the spec.
+		Name: "api/reasoning_write.go#writeReasoningNodes, a risk", Database: r.database,
+		Sites: []string{"api/reasoning_write.go#writeReasoningNodes"},
+		Ready: func(t *testing.T) {
+			premortem = decoded[addressed](t, r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/lenses", map[string]any{
+				"on": "dispatch://" + r.issue + "/spec", "kind": graphstore.LensKindPreMortem,
+			}, "alice", http.StatusCreated)).Address
+		},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, "/api/v1/issues/"+r.issue+"/risks", map[string]any{
+				"lens": premortem, "heading": "The store outgrows its disk.", "early_warning": "The disk alarm fires.",
+				"prevention": "Size the store before it ships.",
+			}, "alice", http.StatusCreated)
+		},
+		Counts: map[graphcensus.StoredKind][]string{
+			{graphstore.KindRisk, graphstore.AttributeVisibility}:   {graphstore.KindRisk},
+			{graphstore.KindRisk, graphstore.AttributeState}:        {graphstore.KindRisk},
+			{graphstore.KindRisk, graphstore.AttributeProject}:      {graphstore.KindRisk},
+			{graphstore.KindRisk, graphstore.TuplePartOf}:           {graphstore.KindRisk},
+			{graphstore.KindRisk, graphstore.AttributeHeading}:      {graphstore.KindRisk},
+			{graphstore.KindRisk, graphstore.AttributeEarlyWarning}: {graphstore.KindRisk},
+			{graphstore.KindRisk, graphstore.AttributePrevention}:   {graphstore.KindRisk},
+			{graphstore.KindRisk, graphstore.TupleAuthoredBy}:       {graphstore.KindRisk},
+		},
+	}, {
+		// A constraint under an issue whose spec holds a requirement, which the drive after this
+		// one points at it.
+		Name: "api/reasoning_write.go#writeReasoningNodes, a constraint", Database: r.database,
+		Sites: []string{"api/reasoning_write.go#writeReasoningNodes"},
+		Ready: func(t *testing.T) {
+			requiring = decoded[struct {
+				Key string `json:"key"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "SIZE", "title": "What forces the writers",
+				"spec": "An opening paragraph.\n\n:::requirement{#r1}\nEvery write is idempotent.\n:::\n",
+			}, "alice", http.StatusCreated)).Key
+		},
+		Drive: func(t *testing.T) {
+			constraint = decoded[addressed](t, r.request(t, http.MethodPost, "/api/v1/issues/"+requiring+"/constraints",
+				map[string]any{"standard": "RFC 9110", "reference": "section 9.2.2"}, "alice", http.StatusCreated)).Address
+		},
+		Counts: map[graphcensus.StoredKind][]string{
+			{graphstore.KindConstraint, graphstore.AttributeVisibility}: {graphstore.KindConstraint},
+			{graphstore.KindConstraint, graphstore.AttributeState}:      {graphstore.KindConstraint},
+			{graphstore.KindConstraint, graphstore.AttributeProject}:    {graphstore.KindConstraint},
+			{graphstore.KindConstraint, graphstore.TuplePartOf}:         {graphstore.KindConstraint},
+			{graphstore.KindConstraint, graphstore.AttributeStandard}:   {graphstore.KindConstraint},
+			{graphstore.KindConstraint, graphstore.AttributeReference}:  {graphstore.KindConstraint},
+			{graphstore.KindConstraint, graphstore.TupleAuthoredBy}:     {graphstore.KindConstraint},
+		},
+	}, {
+		// The requirement's constrained_by appended to that constraint.
+		Name: "api/reasoning_write.go#writeReasoningPointer, an append", Database: r.database,
+		Sites: []string{"api/reasoning_write.go#writeReasoningPointer"},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, nodeRoute(requiring, refs.BlockRef("dispatch://"+requiring+"/spec", "r1"), "pointers"), map[string]any{
+				"kind": graphstore.TupleConstrainedBy, "action": "append", "to": constraint,
+			}, "alice", http.StatusOK)
+		},
+		Counts: map[graphcensus.StoredKind][]string{{refs.BlockNodeKind, graphstore.TupleConstrainedBy}: {graphstore.KindConstraint}},
+	}, {
+		// The trade-off lens's has_kind moved to another kind of the catalogue (graphstore.Retarget).
+		Name: "api/reasoning_write.go#writeReasoningPointer, a retarget", Database: r.database,
+		Sites: []string{"api/reasoning_write.go#writeReasoningPointer", "graphstore/reasoning.go#Retarget"},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, nodeRoute(r.issue, lens, "pointers"), map[string]any{
+				"kind": graphstore.TupleHasKind, "action": "retarget", "from": "trade-off", "to": "botec",
+			}, "alice", http.StatusOK)
+		},
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindLens, graphstore.TupleHasKind}: {graphstore.KindLens}},
+	}, {
+		// The trade-off lens taken to overtaken.
+		Name: "api/reasoning_write.go#writeNodeState", Database: r.database,
+		Sites: []string{"api/reasoning_write.go#writeNodeState"},
+		Drive: func(t *testing.T) {
+			r.request(t, http.MethodPost, nodeRoute(r.issue, lens, "state"),
+				map[string]any{"state": graphstore.StateOvertaken}, "alice", http.StatusOK)
+		},
+		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindLens, graphstore.AttributeState}: {graphstore.KindLens}},
+	}, {
+		// A paragraph of an issue's spec moved under the heading above it (PATCH
+		// /api/v1/issues/{key}/nodes/{id}), a place Markdown cannot show, so the move writes its
+		// tuples alone: one part_of appended and one retracted, the block's new rank and its
+		// placement stored, which the terms block and block_values count. The issue is one of the
+		// drive's own; a paragraph is no node any of its queries takes, so the move changes no
+		// query's record and the drain writes no version.
+		Name: "api/node_move.go#queueNodeMove", Database: r.database,
+		Sites: []string{"api/node_move.go#queueNodeMove"},
+		Ready: func(t *testing.T) {
+			moving = decoded[struct {
+				Key string `json:"key"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "SIZE", "title": "What a move writes", "spec": "# Moves\n\nA paragraph the move places.\n",
+			}, "alice", http.StatusCreated)).Key
+		},
+		Drive: func(t *testing.T) {
+			heading, paragraph := r.blockNode(t, moving, "heading"), r.blockNode(t, moving, "paragraph")
+			r.requestWith(t, map[string]string{"If-Match": `"` + strconv.FormatInt(paragraph.PlacementSeq, 10) + `"`},
+				http.MethodPatch, "/api/v1/issues/"+moving+"/nodes/"+url.PathEscape(paragraph.ID),
+				map[string]any{"parent": heading.ID}, "alice", http.StatusOK)
+		},
+		Counts: map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.TuplePartOf}:  {"block"},
+			{refs.BlockNodeKind, refs.AttributeRank}:      {"block_values"},
+			{refs.BlockNodeKind, refs.AttributePlacement}: {"block_values"},
+		},
+	}}, slices.Concat(askDrives(t, r), externalDrives(t, r))...)
+}
+
+// treeNode is a block of an issue as a drive reads it: its node's id and its placement_seq, the
+// seq of its current part_of, the If-Match a move of it names.
+type treeNode struct {
+	ID           string
+	PlacementSeq int64
+}
+
+// blockNode is the block of type typ of the issue key's documents, with its placement_seq, read
+// from the store, failing the test where the issue holds none.
+func (r *writersRig) blockNode(t *testing.T, key, typ string) treeNode {
+	t.Helper()
+	var node treeNode
+	if err := r.database.Pool.QueryRow(context.Background(), `
+		select d.node_address, (
+			select max(t.seq) from graph_tuples t
+			where t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = 'part_of' and t.asserted)
+		from document_blocks d join artifacts a on a.id = d.artifact_id
+		where a.issue_key = $1 and d.type = $2 and d.node_address is not null
+		order by d.block_id limit 1
+	`, key, typ).Scan(&node.ID, &node.PlacementSeq); err != nil {
+		t.Fatalf("read the %s block of %s: %v", typ, key, err)
+	}
+	return node
 }
 
 // The terms that count what several drives here append: a block a version states afresh, with its
-// two base attributes, its in_document and its part_of, which the term block counts; a session's
-// node with its two base attributes, made by the first write that records the session, which the
-// term session counts; who asked an ask, which the term ask_opened counts beside the ask's other
-// facts its create states; and a session's follow of an ask, which the term ask_follower counts.
+// two base attributes, its in_document and its part_of, which the term block counts, the rank, the
+// placement, the text_parent and the text_rank its first row takes and its text value, which
+// block_values and block_text count, and the authored_by a block of an issue's room takes, which
+// block_author counts; a version's node, which the term version counts, and the
+// definition_version of a version of a query, which query_version counts; a document's part_of its
+// issue, which document_part_of counts; a person's node and a session's, each with its two base
+// attributes, made by the first write that records the person or the session, which the terms
+// person and session count; the room an issue is born with and a query node's values, which
+// issue_room and query_node count; a run's interaction node, with its base attributes, its words,
+// ends_at and source values and its authored_by, which the term interaction counts, and the one
+// frame value of the run's terminal frame, which the term frame counts; a lens of alice's with its
+// verdict and a finding under it, which the terms lens and lens_finding count; who asked an ask,
+// which the term ask_opened counts beside the ask's other facts its create states; and a session's
+// follow of an ask, which the term ask_follower counts.
 var (
 	newBlockCounted = map[graphcensus.StoredKind][]string{
 		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
@@ -590,12 +1001,89 @@ var (
 		{refs.BlockNodeKind, refs.TupleInDocument}:           {"block"},
 		{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"block"},
 	}
+	blockValuesCounted = map[graphcensus.StoredKind][]string{
+		{refs.BlockNodeKind, refs.AttributeRank}:       {"block_values"},
+		{refs.BlockNodeKind, refs.AttributePlacement}:  {"block_values"},
+		{refs.BlockNodeKind, refs.TupleTextParent}:     {"block_values"},
+		{refs.BlockNodeKind, refs.AttributeTextRank}:   {"block_values"},
+		{refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
+	}
+	roomBlockCounted = map[graphcensus.StoredKind][]string{
+		{refs.BlockNodeKind, graphstore.TupleAuthoredBy}: {"block_author"},
+	}
+	versionCounted      = graphcensus.VersionNodeCounted(graphstore.KindVersion)
+	queryVersionCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindVersion, graphstore.AttributeDefinitionVersion}: {"query_version"},
+	}
+	documentPartOfCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindArtifact, graphstore.TuplePartOf}: {"document_part_of"},
+	}
+	personNodeCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
+		{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
+	}
+	// The tree artifact's node and the decisions query's, each with its base attributes and its
+	// part_of the issue, and the nodes of their first versions, the decisions query's with its
+	// definition_version.
+	issueRoomCounted = merged(map[graphcensus.StoredKind][]string{
+		{graphstore.KindArtifact, graphstore.AttributeVisibility}:       {"issue_room"},
+		{graphstore.KindArtifact, graphstore.AttributeState}:            {"issue_room"},
+		{graphstore.KindArtifact, graphstore.AttributeProject}:          {"issue_room"},
+		{graphstore.KindArtifact, graphstore.TuplePartOf}:               {"issue_room"},
+		{graphstore.KindVersion, graphstore.AttributeDefinitionVersion}: {"issue_room"},
+	}, graphcensus.VersionNodeCounted("issue_room"))
+	queryNodeCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindArtifact, graphstore.AttributeQuery}:             {"query_node"},
+		{graphstore.KindArtifact, graphstore.AttributeTakes}:             {"query_node"},
+		{graphstore.KindArtifact, graphstore.AttributeSubtree}:           {"query_node"},
+		{graphstore.KindArtifact, graphstore.AttributeDefinitionVersion}: {"query_node"},
+	}
 	sessionNodeCounted = map[graphcensus.StoredKind][]string{
 		{graphstore.KindSession, graphstore.AttributeVisibility}: {graphstore.KindSession},
 		{graphstore.KindSession, graphstore.AttributeState}:      {graphstore.KindSession},
 	}
+	runNodeCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindInteraction, graphstore.AttributeVisibility}: {graphstore.KindInteraction},
+		{graphstore.KindInteraction, graphstore.AttributeState}:      {graphstore.KindInteraction},
+		{graphstore.KindInteraction, graphstore.AttributeProject}:    {graphstore.KindInteraction},
+		{graphstore.KindInteraction, graphstore.AttributeWords}:      {graphstore.KindInteraction},
+		{graphstore.KindInteraction, graphstore.AttributeEndsAt}:     {graphstore.KindInteraction},
+		{graphstore.KindInteraction, graphstore.AttributeSource}:     {graphstore.KindInteraction},
+		{graphstore.KindInteraction, graphstore.TupleAuthoredBy}:     {graphstore.KindInteraction},
+		{graphstore.KindInteraction, graphstore.AttributeFrame}:      {graphstore.AttributeFrame},
+	}
+	lensCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindLens, graphstore.AttributeVisibility}: {graphstore.KindLens},
+		{graphstore.KindLens, graphstore.AttributeState}:      {graphstore.KindLens},
+		{graphstore.KindLens, graphstore.AttributeProject}:    {graphstore.KindLens},
+		{graphstore.KindLens, graphstore.TuplePartOf}:         {graphstore.KindLens},
+		{graphstore.KindLens, graphstore.TupleHasKind}:        {graphstore.KindLens},
+		{graphstore.KindLens, graphstore.AttributeVerdict}:    {graphstore.KindLens},
+		{graphstore.KindLens, graphstore.AttributeArtifactID}: {graphstore.KindLens},
+		{graphstore.KindLens, graphstore.TupleAuthoredBy}:     {graphstore.KindLens},
+	}
+	findingCounted = map[graphcensus.StoredKind][]string{
+		{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"lens_finding"},
+		{refs.BlockNodeKind, graphstore.AttributeState}:      {"lens_finding"},
+		{refs.BlockNodeKind, graphstore.AttributeProject}:    {"lens_finding"},
+		{refs.BlockNodeKind, graphstore.TuplePartOf}:         {"lens_finding"},
+		{refs.BlockNodeKind, graphstore.AttributeText}:       {"lens_finding"},
+		{refs.BlockNodeKind, graphstore.TupleAuthoredBy}:     {"lens_finding"},
+	}
 	askAuthorCounted = map[graphcensus.StoredKind][]string{
 		{graphstore.KindAsk, graphstore.TupleAuthoredBy}: {"ask_opened"},
+	}
+	// What an approval request states on its node beyond an ask's own (R14): one approves tuple to
+	// each query version node it names and the store revision it was taken at, which the term
+	// ask_opened counts; and, where a version of a document it names moves the request, the
+	// retraction of the approves it leaves and the assertion of the one it moves to, which the term
+	// ask_edit counts.
+	approvalRequestCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindAsk, graphcensus.TupleApproves}:           {"ask_opened"},
+		{graphstore.KindAsk, graphcensus.AttributeRequestReadSeq}: {"ask_opened"},
+	}
+	approvalMoveCounted = map[graphcensus.StoredKind][]string{
+		{graphstore.KindAsk, graphcensus.TupleApproves}: {"ask_edit"},
 	}
 	followCounted = map[graphcensus.StoredKind][]string{
 		{graphstore.KindAsk, graphstore.TupleFollowedBy}: {"ask_follower"},
@@ -625,6 +1113,12 @@ func objectNodeCounted(kind string) map[graphcensus.StoredKind][]string {
 		{kind, graphstore.AttributeState}:      {kind},
 		{kind, graphstore.AttributeProject}:    {kind},
 	}
+}
+
+// nodeRoute is the route path of one of the own routes of the node at address under issue, its
+// store address one escaped segment.
+func nodeRoute(issue, address, route string) string {
+	return "/api/v1/issues/" + issue + "/nodes/" + url.PathEscape(address) + "/" + route
 }
 
 // merged is every kind each of counts holds, its terms joined where two hold one kind.

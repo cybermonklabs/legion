@@ -1,7 +1,7 @@
 import { expect, test } from "bun:test";
 
 import type { BlockElementVersions, BlockSchema } from "../../api/types";
-import { compiledBlockSchema } from "./schema";
+import { compiledBlockSchema, editorBlockSchema } from "./schema";
 import { schemaCreatable } from "./schema-creatable";
 
 /** The compiled manifest as the build that introduces one more typed block, "future", declares
@@ -49,6 +49,38 @@ function withoutAttributes(schema: BlockSchema, type: string, names: string[]): 
   };
 }
 
+/** The manifest without the elements this build introduces, those read from its own version: the
+ *  issue tree's criterion block, the attributes the tree adds to the requirement, the plan task and
+ *  the check, and the issue item of a plan task's `needs`. */
+function withoutTheTreeElements(schema: BlockSchema): BlockSchema {
+  const older = (element: BlockElementVersions | undefined) =>
+    (element?.since ?? 1) < compiledBlockSchema.version;
+  return {
+    ...schema,
+    types: schema.types.filter(older).map((type) => ({
+      ...type,
+      attributes: Object.fromEntries(
+        Object.entries(type.attributes)
+          .filter(([, attribute]) => older(attribute))
+          .map(
+            ([name, attribute]) =>
+              [
+                name,
+                attribute.items === undefined
+                  ? attribute
+                  : {
+                      ...attribute,
+                      items: attribute.items.filter((item) =>
+                        older(attribute.item_versions?.[item])
+                      ),
+                    },
+              ] as const
+          )
+      ),
+    })),
+  };
+}
+
 // The page presents the manifest it was built with: its version V, and R, the highest `since`
 // among the elements it may create (`creatable_since` V or less), as Go's `pmdoc.SchemaCreatable`
 // computes it. Today's manifest creates every element it reads but the check block's `subject`
@@ -68,6 +100,7 @@ test("the compiled manifest is the page's own, and it creates everything it read
         .flatMap((attribute) => [
           attribute,
           ...(attribute.choices ?? []).map((choice) => attribute.choice_versions?.[choice]),
+          ...(attribute.items ?? []).map((item) => attribute.item_versions?.[item]),
         ]),
     ]),
   ];
@@ -79,13 +112,17 @@ test("the compiled manifest is the page's own, and it creates everything it read
   );
 });
 
-// Decisions, readings and shaped pointers are read from version 7 and created from version 8:
-// this build's manifest is version 8, so it creates them and its R is 7, the version they were
-// introduced in. The build of version 7, slice 2's, the one that reads them first, reads them
-// and creates none: the same manifest at version 7 leaves them out of R, which stands where the
-// same manifest without them has it. The check block's `subject` and `program` are read from
-// version 6 and created from version 9, one above this build's: this manifest reads them and
-// creates neither, so they count toward no R below 9, and the manifest raised to 9 counts them.
+// Decisions, readings and shaped pointers are read from version 7 and created from version 8;
+// the issue tree's criterion block, its `parent`, `serves`, `size`, `skills` and `docs`
+// attributes and the issue item kind of a plan task's `needs` are read and created from version
+// 9. This build's manifest is version 9, so it creates all of them and its R is 9. The build of
+// version 8 creates decisions, readings and shaped pointers and none of version 9's elements: the
+// same manifest at version 8 has R 7, the version they were introduced in. The build of version
+// 7, slice 2's, the one that reads them first, reads them and creates none: the same manifest at
+// version 7 leaves them out of R, which stands where the same manifest without them has it, and
+// at version 6 R is 5 as well. The check block's `subject` and `program` are read from version 6
+// and created from version 10, one above this build's: this manifest reads them and creates
+// neither, so they count toward no R below 10, and the manifest raised to 10 counts them.
 test("the compiled manifest reads the new blocks before it creates them, and reads check.subject and check.program without creating them", () => {
   expect(compiledBlockSchema.nodes?.map(({ name }) => name)).toContain("paragraph");
   expect(compiledBlockSchema.types.map(({ name }) => name)).toEqual([
@@ -96,12 +133,16 @@ test("the compiled manifest reads the new blocks before it creates them, and rea
     "check",
     "decision",
     "reading",
+    "criterion",
   ]);
-  expect(compiledBlockSchema.version).toBe(8);
-  expect(schemaCreatable(compiledBlockSchema)).toBe(7);
+  expect(compiledBlockSchema.version).toBe(9);
+  expect(schemaCreatable(compiledBlockSchema)).toBe(9);
+  expect(schemaCreatable({ ...compiledBlockSchema, version: 8 })).toBe(7);
   expect(schemaCreatable({ ...compiledBlockSchema, version: 7 })).toBe(5);
+  expect(schemaCreatable({ ...compiledBlockSchema, version: 6 })).toBe(5);
   const version = compiledBlockSchema.version;
-  const readsFirst: BlockSchema = { ...compiledBlockSchema, version: version - 1 };
+  const createsFirst: BlockSchema = { ...compiledBlockSchema, version: version - 1 };
+  const readsFirst: BlockSchema = { ...compiledBlockSchema, version: version - 2 };
   const ask = compiledBlockSchema.types.find(({ name }) => name === "ask");
   const decision = compiledBlockSchema.types.find(({ name }) => name === "decision");
   const reading = compiledBlockSchema.types.find(({ name }) => name === "reading");
@@ -112,8 +153,8 @@ test("the compiled manifest reads the new blocks before it creates them, and rea
     );
   }
   for (const element of [decision, reading, shaped]) {
-    expect(element.since).toBe(version - 1);
-    expect(element.creatable_since).toBe(version);
+    expect(element.since).toBe(readsFirst.version);
+    expect(element.creatable_since).toBe(createsFirst.version);
   }
   const withoutTheNewBlocks = (schema: BlockSchema): BlockSchema => {
     const withoutShaped = withoutAttributes(schema, "ask", ["shaped"]);
@@ -122,10 +163,10 @@ test("the compiled manifest reads the new blocks before it creates them, and rea
       types: withoutShaped.types.filter(({ name }) => name !== "decision" && name !== "reading"),
     };
   };
-  expect(schemaCreatable(compiledBlockSchema)).toBe(version - 1);
-  expect(schemaCreatable(withoutTheNewBlocks(compiledBlockSchema))).toBeLessThan(version - 1);
+  expect(schemaCreatable(createsFirst)).toBe(readsFirst.version);
+  expect(schemaCreatable(withoutTheNewBlocks(createsFirst))).toBeLessThan(readsFirst.version);
   expect(schemaCreatable(readsFirst)).toBe(schemaCreatable(withoutTheNewBlocks(readsFirst)));
-  expect(schemaCreatable(readsFirst)).toBeLessThan(version - 1);
+  expect(schemaCreatable(readsFirst)).toBeLessThan(readsFirst.version);
 
   const check = compiledBlockSchema.types.find(({ name }) => name === "check");
   const subject = check?.attributes.subject;
@@ -134,7 +175,7 @@ test("the compiled manifest reads the new blocks before it creates them, and rea
     throw new Error("the compiled manifest declares the check block's subject and program");
   }
   for (const attribute of [subject, program]) {
-    expect(attribute.since).toBe(version - 2);
+    expect(attribute.since).toBe(6);
     expect(attribute.creatable_since).toBe(version + 1);
   }
   const withoutTheMarks = (schema: BlockSchema): BlockSchema =>
@@ -143,11 +184,13 @@ test("the compiled manifest reads the new blocks before it creates them, and rea
     schemaCreatable(withoutTheMarks(compiledBlockSchema))
   );
   expect(schemaCreatable(readsFirst)).toBe(schemaCreatable(withoutTheMarks(readsFirst)));
-  expect(schemaCreatable(readsFirst)).toBeLessThan(version - 2);
+  expect(schemaCreatable(readsFirst)).toBeLessThan(6);
   const raised = raisedByOne(compiledBlockSchema);
-  expect(schemaCreatable(raised)).toBe(version - 1);
-  expect(schemaCreatable(withoutTheMarks(withoutTheNewBlocks(raised)))).toBeLessThan(
-    schemaCreatable(withoutTheNewBlocks(raised))
+  expect(schemaCreatable(raised)).toBe(version);
+  // Only once every element read from a later version than the marks is gone does R show them.
+  const beforeTheNewBlocks = withoutTheNewBlocks(withoutTheTreeElements(raised));
+  expect(schemaCreatable(withoutTheMarks(beforeTheNewBlocks))).toBeLessThan(
+    schemaCreatable(beforeTheNewBlocks)
   );
 });
 
@@ -210,4 +253,27 @@ test("nodes, marks, attributes and enum choices each count toward the creatable 
       })
     )
   ).toBe(version);
+});
+
+// A document of an issue whose tree read answers `view_of` is edited under a schema in which a
+// requirement may not be created, by the type's own `creatable_since`, and nothing else differs;
+// every other document is edited under the compiled manifest itself.
+test("a view's document gets a schema that may not create a requirement, every other document the compiled one", () => {
+  const view = editorBlockSchema("CORE-1");
+  const requirement = view.types.find(({ name }) => name === "requirement");
+  const compiled = compiledBlockSchema.types.find(({ name }) => name === "requirement");
+  expect(requirement).toBeDefined();
+  expect(requirement?.creatable_since ?? 1).toBeGreaterThan(view.version);
+  expect(compiled?.creatable_since ?? 1).toBeLessThanOrEqual(compiledBlockSchema.version);
+  expect({ ...requirement, creatable_since: undefined }).toEqual({
+    ...compiled,
+    creatable_since: undefined,
+  });
+  expect(view.types.filter(({ name }) => name !== "requirement")).toEqual(
+    compiledBlockSchema.types.filter(({ name }) => name !== "requirement")
+  );
+  expect({ ...view, types: [] }).toEqual({ ...compiledBlockSchema, types: [] });
+  for (const viewOf of [null, undefined, ""]) {
+    expect(editorBlockSchema(viewOf)).toBe(compiledBlockSchema);
+  }
 });

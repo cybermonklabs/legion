@@ -315,7 +315,7 @@ func TestARebuildOfARetiredDocumentIsRefusedAndWritesNothing(t *testing.T) {
 	handler, database, deps := newTestServer(t, testServerOptions{
 		settle: time.Hour,
 		persistence: func(database *store.Store) docs.VersionedStore {
-			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
+			broken = newInvalidLoadOnceStore(database)
 			return broken
 		},
 	})
@@ -328,7 +328,7 @@ func TestARebuildOfARetiredDocumentIsRefusedAndWritesNothing(t *testing.T) {
 	}
 
 	spec := "dispatch://" + issue.Key + "/spec"
-	failLoad := func(document string) func() { return func() { broken.failNextLoad(document) } }
+	failLoad := func(document string) func() { return func() { broken.failNextLoad(t, document) } }
 	supplied := map[string]any{"markdown": "Rebuilt once the document was retired.\n"}
 	refusedOnRetired(t, handler, database, []retiredRefusal{
 		{what: "a rebuild of the retired notes.md from its latest version", route: "/api/v1/artifacts/" + notes.ID + "/rebuild", body: map[string]any{}, document: notes.ID, code: "DOCUMENT_RETIRED", names: notes.ID, beforeRequest: failLoad(notes.ID)},

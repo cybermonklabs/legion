@@ -151,8 +151,9 @@ func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.
 	for _, tuple := range []graphstore.Tuple{keptBy[0], keptSum[0]} {
 		requireCaused(t, tuple.Kind+" of d1", tuple, "alice", events[0])
 	}
+	// d1's row is keyed by the room choices.md is edited in (its issue's room for a converted one).
 	var changed int
-	if err := database.Pool.QueryRow(ctx, `select changed_version from document_blocks where artifact_id = $1::uuid and block_id = 'd1'`, choices.id).Scan(&changed); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select changed_version from document_blocks where artifact_id = $1::uuid and block_id = 'd1'`, choices.room).Scan(&changed); err != nil {
 		t.Fatalf("read d1's changed version: %v", err)
 	}
 	kept := row()
@@ -186,7 +187,7 @@ func TestAKeepIsTwoAppendsOnTheDecisionNodeThatDecisionKeepsProjects(t *testing.
 	// Keep after it records the version the words last changed in, the one alice kept it at, on
 	// the row and in its decision.kept, and not the version the reading's edit wrote.
 	var moved int
-	if err := database.Pool.QueryRow(ctx, `select changed_version from document_blocks where artifact_id = $1::uuid and block_id = 'd1'`, choices.id).Scan(&moved); err != nil {
+	if err := database.Pool.QueryRow(ctx, `select changed_version from document_blocks where artifact_id = $1::uuid and block_id = 'd1'`, choices.room).Scan(&moved); err != nil {
 		t.Fatalf("read d1's row after its reading's edit: %v", err)
 	}
 	if moved == changed {

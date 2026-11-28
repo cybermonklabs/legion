@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -223,11 +224,16 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// transaction id, and counts the ask.opened this ask appends (writeAdvice). This write opens
 	// a question, so it hears about the asks of this issue a person declined to answer, and the
 	// same question is not put to them again.
+	// An advice savepoint that could not be rolled back left tx aborted: the route answers that
+	// failure, rather than sending its write phase on tx (adviceTxError).
 	var advice *writeAdvice
 	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
+		if advice, err = s.writeAdvice(
 			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
-		)
+		); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)
 	if err != nil {
@@ -273,6 +279,9 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		return
 	}
 	nodes, facts, marked := graphstore.AskFacts(rowID, project, parties, actor, ask.CreatedAt, graphstore.NoEvent, places)
+	// The ask is the node this create makes, first of the nodes AskFacts answers
+	// (graphstore.Created).
+	nodes[0] = graphstore.Created(nodes[0])
 	askNode := graphstore.PlanUncaused(nodes, facts)
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueNodes(b, askNode)
@@ -322,6 +331,11 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
+	// A question of a converted issue is a node the decisions query takes, so its create moves that
+	// query's record and owes it a version (R14): the write phase marks the issue's queries owed last,
+	// after the ask's facts, and Commit drains the mark, writing that version before this route
+	// publishes (docs.Ledger.MarkAskQueries).
+	ledger.MarkAskQueries(ask)
 	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
 	// bare keys, `#id`s and short ids they write are stored as the ask's edges, and the index's
 	// statements follow the row's insert, queued above, which the rows of a part reference. The
@@ -333,7 +347,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	}
 	appended := []*model.Event{}
 	if snapshot != nil {
-		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
+		snapshotEvent, err := s.commitArtifactVersionEvent(r.Context(), tx, ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -353,6 +367,7 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	if err := ledger.Queue(func(b *store.WriteBatch) error {
 		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
 		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, slices.Concat(graphstore.HeldHeads(askNode), graphstore.HeldHeads(followed)))
 		return nil
 	}); err != nil {
 		s.writeHandlerError(w, err)
@@ -366,20 +381,26 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 	// The review the issue's specification already carries, reported beside the advice above.
 	// It is read here, in the read phase after every write of this ask is queued, so it answers
 	// for the specification as this write leaves it: a version the anchor's snapshot queued of
-	// that document, and a review that version's carry queued, come off the ledger, and the rest
-	// from the table. It is about the document rather than about this session, so it is read for
-	// a person's question as for an agent's, and it rides the advice the write already answers
-	// rather than a read of its own. A question on a project document has no issue and so no
-	// specification, and a write whose advice read failed carries nothing to hang it on; both
-	// report no review.
+	// that document is its newest, off the ledger, and the review that version's carry writes,
+	// which the write phase keeps or drops as only it decides (a restore's carry), is set over the
+	// stored newest one once Commit has returned, with no statement. It is about the document
+	// rather than about this session, so it is read for a person's question as for an agent's,
+	// and it rides the advice the write already answers rather than a read of its own. A question
+	// on a project document has no issue and so no specification, and a write whose advice read
+	// failed carries nothing to hang it on; both report no review.
+	var standing standingSpecRead
 	if advice != nil && owner.IssueKey != nil {
-		advice.StandingReview = s.standingReviewAdvice(
-			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
-		)
+		if standing, err = s.standingReviewAdvice(r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	if advice != nil {
+		advice.StandingReview = standing.asWritten(ledger)
 	}
 	ask.OpenedEventID = &event.ID
 	s.publish(r.Context(), appendedEvents(appended...)...)
@@ -640,12 +661,64 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
+	// The decisions query's rendering prints each question it takes, so an edit of a question's
+	// words owes that query a version (R14, R15), drained once Commit has run the write phase
+	// (docs.Ledger.MarkAskQueries); an edit of its urgency or of multiple alone changes no words and
+	// no fact of its node, and an approval request, which no query takes, was refused above.
+	wordsChanged := askWordsChanged(previous, ask)
+	if wordsChanged {
+		ledger.MarkAskQueries(ask)
+	}
+	// An edit of an ask's words made for a run (store.WithRun, which withinGoingRun puts on a
+	// request naming its run) names the ask as changed by that run where it changed them
+	// (spec requirement r-interaction): its question, or the words of an option
+	// (askWordsChanged); an edit of its urgency or of multiple alone changes no fact the store
+	// holds of the ask and no words of it, and names no change. Nothing else this route writes
+	// reaches the ask's node, so it writes that node as the create and the backfill write it
+	// (graphstore.AskNode): in the project, or between the parties, of what it is asked on
+	// (graphstore.ScopeOf, read here in the read phase), made by its asker at its created_at, and
+	// names it changed at its edited_at by its writer (graphstore.PlanChangedForRun, which reads
+	// and plans nothing for no run). The node write is queued after the row's update and the
+	// parts the edit queued above, and what it states right after ask.edited
+	// (graphstore.QueueCaused over graphstore.LatestEvent), as an issue's own field write does
+	// (writeIssue).
+	var askNode graphstore.Uncaused
+	if wordsChanged {
+		askNode, err = graphstore.PlanChangedForRun(documentCtx, editedAt, actor, func() (graphstore.Node, error) {
+			project, parties, err := graphstore.ScopeOf(documentCtx, tx, ask.IssueKey, ask.ArtifactID)
+			if err != nil {
+				return graphstore.Node{}, err
+			}
+			return graphstore.AskNode(ask.ID, project, parties, ask.Author, ask.CreatedAt), nil
+		})
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		if err := ledger.Queue(func(b *store.WriteBatch) error {
+			graphstore.QueueNodes(b, askNode)
+			return nil
+		}); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
 	event, err := s.queueStampedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.edited",
 		actor,
 		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
 	), "ask", ask.ID)
 	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The stamp queueStampedEvent queues with the event appends no event, so the id sequence
+	// still names ask.edited here.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(askNode))
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -669,6 +742,17 @@ func blockArtifactOf(ask model.Ask) (string, error) {
 		return "", fmt.Errorf("ask %q has block id without block artifact", ask.ID)
 	}
 	return *ask.BlockArtifactID, nil
+}
+
+// askWordsChanged is whether an edit changed the words of the ask, as the row now stores them
+// against what it held before: its question, or the label or the description of an option, an
+// option added or an option dropped. An option's block id is no word of it, and multiple and
+// urgency are none either. It is what an edit made for a run names the ask's node changed by
+// (editAsk).
+func askWordsChanged(previous model.AskEditPrevious, ask model.Ask) bool {
+	return previous.Question != ask.Question || !slices.EqualFunc(previous.Options, ask.Options, func(was, now model.AskOption) bool {
+		return was.Label == now.Label && was.Description == now.Description
+	})
 }
 
 func timestampPtr(value *time.Time) *string {

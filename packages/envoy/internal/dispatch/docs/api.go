@@ -13,6 +13,8 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // API is the live document operation surface used by Dispatch's HTTP handlers.
@@ -26,6 +28,7 @@ type API interface {
 	Text(ctx context.Context, artifactID string) (string, error)
 	TextWithToken(ctx context.Context, artifactID string) (string, string, error)
 	Blocks(ctx context.Context, artifactID string) ([]model.ArtifactBlock, error)
+	BlockCount(ctx context.Context, artifactID string) (int, error)
 	TextWithBlocks(ctx context.Context, artifactID string) (string, []model.ArtifactBlock, error)
 	TextWithTokenAndBlocks(ctx context.Context, artifactID string) (string, string, []model.ArtifactBlock, error)
 	BlockPath(ctx context.Context, artifactID, blockID string) (model.BlockPath, error)
@@ -49,8 +52,10 @@ type API interface {
 	ScheduleSettlement(artifactID string)
 	SettleCopiesOf(ctx context.Context, ask model.Ask) error
 	CopiesOf(ctx context.Context, ask model.Ask) ([]string, error)
-	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, occurrence *int) (Anchored, error)
+	MarkQuote(ctx context.Context, artifactID string, mark MarkSpec, quote string, scope *QuoteScope) (Anchored, error)
 	VerifyMark(ctx context.Context, artifactID string, kind MarkKind, id string) (Anchored, error)
+	AnchorOccurrences(ctx context.Context, artifactID string, anchors []CommentAnchorInBlock) (map[int]int, error)
+	BlocksAndAnchorOccurrences(ctx context.Context, artifactID string, anchors []CommentAnchorInBlock) ([]model.ArtifactBlock, map[int]int, error)
 	BlockForQuote(ctx context.Context, artifactID, quote string) (string, error)
 	SuggestionKind(ctx context.Context, artifactID, id string) (string, error)
 	AcceptSuggestion(ctx context.Context, artifactID, id, replaceWith string, actor model.Actor) error
@@ -60,6 +65,12 @@ type API interface {
 	Join(ctx context.Context, tx pgx.Tx) (context.Context, *Ledger)
 	JoinWrite(ctx context.Context, artifactID string) error
 	NamedVersion(ctx context.Context, artifactID, summary string, actor model.Actor) (VersionResult, error)
+	DrainOwedQueries(ctx context.Context, issueKey string) []model.Event
+	FillReviewedDigests(ctx context.Context, tx pgx.Tx, documents []model.AskApprovalDocument) error
+	MoveBlockText(ctx context.Context, artifactID string, move pmdoc.NodeTextMove, actor model.Actor) (bool, error)
+	DeleteBlocksText(ctx context.Context, taken map[string][]string, actor model.Actor) ([]string, error)
+	PlanDeleteBlocksText(ctx context.Context, taken map[string][]string) error
+	HoldStoredBlock(ctx context.Context, address string, block refs.StoredBlock) error
 	Evict(ctx context.Context, artifactID string) error
 	Quiesce(ctx context.Context) error
 }
@@ -74,12 +85,14 @@ type API interface {
 // Blocks is what the version's block index stated in the node and tuple store. The index runs
 // before the event that records the version exists, and no tuple may be updated afterwards, so
 // the facts travel here and the caller appends them under that event, in the same transaction
-// (graphstore.Caused).
+// (graphstore.Caused). Digest is what the version's artifact.version says of the digest an
+// approval of it covers (VersionDigest, ArtifactVersionEventPayload).
 type VersionResult struct {
 	Version model.Version
 	Wrote   bool
 	Changes model.ReferenceChanges
 	Blocks  graphstore.Uncaused
+	Digest  VersionDigest
 }
 
 // EditOutcome is what one batch of document edit operations did. Changed compares the document's

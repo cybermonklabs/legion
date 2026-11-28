@@ -12,5 +12,6 @@ package refstest
 // own (docs.TestGraphEdgesLosesEveryArmOverAMovedKind).
 func BacklinkKinds() []string {
 	return []string{"artifact", "ask", "ask_block", "block", "comment", "comment_block", "component",
-		"issue", "message", "message_block", "page", "person", "role", "session"}
+		"constraint", "interaction", "issue", "lens", "lens_block", "lens_kind", "message", "message_block",
+		"page", "person", "risk", "role", "session"}
 }

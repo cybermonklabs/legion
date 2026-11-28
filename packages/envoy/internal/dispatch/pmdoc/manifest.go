@@ -28,10 +28,14 @@ const (
 	TypedBlockElement ElementKind = "typed block"
 	AttributeElement  ElementKind = "attribute"
 	ChoiceElement     ElementKind = "value"
+	// ItemElement is a kind of item a `block[]` attribute's items admit
+	// (BlockAttributeSchema.Items), whose versions are the attribute's ItemVersions.
+	ItemElement ElementKind = "item"
 )
 
 // Element names one element of the manifest. Name is its own name. Block is the typed block of an
-// attribute or of a choice, and Attribute is the enum attribute of a choice.
+// attribute, of a choice or of an item kind, and Attribute is the enum attribute of a choice or the
+// `block[]` attribute of an item kind.
 type Element struct {
 	Kind      ElementKind
 	Block     string
@@ -40,12 +44,13 @@ type Element struct {
 }
 
 // String names e as a refusal names it: `typed block "ask"`, `attribute "urgency" of typed block
-// "ask"`, `value "low" of attribute "urgency" of typed block "ask"`.
+// "ask"`, `value "low" of attribute "urgency" of typed block "ask"`, `item "issue" of attribute
+// "needs" of typed block "plan_task"`.
 func (e Element) String() string {
 	switch e.Kind {
 	case AttributeElement:
 		return fmt.Sprintf("%s %q of typed block %q", e.Kind, e.Name, e.Block)
-	case ChoiceElement:
+	case ChoiceElement, ItemElement:
 		return fmt.Sprintf("%s %q of attribute %q of typed block %q", e.Kind, e.Name, e.Attribute, e.Block)
 	default:
 		return fmt.Sprintf("%s %q", e.Kind, e.Name)
@@ -70,6 +75,9 @@ type compiledManifest struct {
 	versions    map[Element]BlockElementVersions
 	uncreatable map[Element]bool
 	creatable   int
+	// typedBlockNames is the name of every typed block the manifest declares, sorted
+	// (TypedBlockNames).
+	typedBlockNames []string
 	// linkKinds is the edge kinds the manifest's `block[]` attributes make, sorted (LinkKinds),
 	// and pointerAttributes maps each typed block declaring such an attribute to those
 	// attributes' names, sorted.
@@ -226,6 +234,23 @@ func asOfVersion(value BlockSchema, version int) BlockSchema {
 			if attr.Kind == BlockAttributeEnum {
 				attr.Default = enumDefaultThisBuildReads(typ.Name, attribute.Name, attr)
 			}
+			// An item kind read from a later version goes as a choice does; the attribute keeps the
+			// blocks of documents it points at whatever items it is left with.
+			if len(attr.ItemVersions) > 0 {
+				attr.Items = slices.DeleteFunc(slices.Clone(attr.Items), func(item BlockItemKind) bool {
+					return !reads(attr.ItemVersions[string(item)].Since)
+				})
+				versions := make(map[string]BlockElementVersions, len(attr.ItemVersions))
+				for _, item := range attr.Items {
+					if held, given := attr.ItemVersions[string(item)]; given {
+						versions[string(item)] = held
+					}
+				}
+				attr.ItemVersions = versions
+				if len(attr.Items) == 0 {
+					attr.Items, attr.ItemVersions = nil, nil
+				}
+			}
 			if len(attr.Targets) > 0 {
 				attr.Targets = slices.DeleteFunc(slices.Clone(attr.Targets), func(target string) bool { return dropped[target] })
 				if len(attr.Targets) == 0 {
@@ -297,6 +322,7 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 	compiled := &compiledManifest{
 		schema:                   value,
 		types:                    make(map[string]BlockTypeSchema, len(value.Types)),
+		typedBlockNames:          make([]string, 0, len(value.Types)),
 		nodes:                    make(map[string]bool, len(value.Nodes)),
 		marks:                    make(map[string]bool, len(value.Marks)),
 		versions:                 make(map[Element]BlockElementVersions),
@@ -351,6 +377,7 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 			return nil, err
 		}
 		compiled.types[typ.Name] = typ
+		compiled.typedBlockNames = append(compiled.typedBlockNames, typ.Name)
 		for _, parent := range typ.Parents {
 			if compiled.admitted[parent] == nil {
 				compiled.admitted[parent] = map[string]bool{}
@@ -384,6 +411,16 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 					return nil, err
 				}
 			}
+			for item := range attr.ItemVersions {
+				if !slices.Contains(attr.Items, BlockItemKind(item)) {
+					return nil, fmt.Errorf("invalid: type %q attribute %q gives versions to the item %q, which is not one of its items", typ.Name, name, item)
+				}
+			}
+			for _, item := range attr.Items {
+				if err := declare(Element{Kind: ItemElement, Block: typ.Name, Attribute: name, Name: string(item)}, attr.ItemVersions[string(item)]); err != nil {
+					return nil, err
+				}
+			}
 			// A write gives a new block an attribute's default (defaultAttributes), so a default
 			// value a build may not create would be created with every block that takes it.
 			if fallback, ok := attr.Default.(string); ok && attr.Kind == BlockAttributeEnum && attr.ChoiceVersions[fallback].CreatableSince > attr.CreatableSince {
@@ -402,6 +439,7 @@ func compileManifest(raw []byte) (*compiledManifest, error) {
 		}
 	}
 	compiled.linkKinds = slices.Sorted(maps.Keys(linkKinds))
+	slices.Sort(compiled.typedBlockNames)
 	if len(compiled.nodes) == 0 {
 		return nil, fmt.Errorf("invalid: must declare its nodes")
 	}
@@ -433,6 +471,20 @@ func normalizeVersions(value *BlockSchema) {
 		for attrIndex := range typ.Attributes {
 			attr := &typ.Attributes[attrIndex]
 			one(&attr.Since, &attr.CreatableSince)
+			if len(attr.Items) > 0 {
+				items := make(map[string]BlockElementVersions, len(attr.Items))
+				for _, item := range attr.Items {
+					versions := attr.ItemVersions[string(item)]
+					one(&versions.Since, &versions.CreatableSince)
+					items[string(item)] = versions
+				}
+				for item, versions := range attr.ItemVersions {
+					if _, listed := items[item]; !listed {
+						items[item] = versions
+					}
+				}
+				attr.ItemVersions = items
+			}
 			if len(attr.Choices) == 0 {
 				continue
 			}
@@ -507,7 +559,8 @@ func DocumentSince(doc *Node) int {
 
 // eachElement calls yield with each element of m that nodes hold, in document order, until yield
 // returns false: each node, mark and typed block, each attribute a typed block holds a value for,
-// and each enum attribute's value. It reports whether yield never returned false.
+// each enum attribute's value, and the kind of each item a `block[]` attribute's pointers name. It
+// reports whether yield never returned false.
 func (m *compiledManifest) eachElement(nodes []*Node, yield func(Element) bool) bool {
 	for _, node := range nodes {
 		if node == nil {
@@ -524,8 +577,19 @@ func (m *compiledManifest) eachElement(nodes []*Node, yield func(Element) bool) 
 				if !yield(Element{Kind: AttributeElement, Block: node.Type, Name: name}) {
 					return false
 				}
-				if choice, ok := value.(string); ok && typ.Attributes.Get(name).Kind == BlockAttributeEnum {
+				declared := typ.Attributes.Get(name)
+				if choice, ok := value.(string); ok && declared.Kind == BlockAttributeEnum {
 					if !yield(Element{Kind: ChoiceElement, Block: node.Type, Attribute: name, Name: choice}) {
+						return false
+					}
+				}
+				if declared.Kind != BlockAttributeBlockList || len(declared.Items) == 0 {
+					continue
+				}
+				pointers, _ := stringSlice(value)
+				for _, pointer := range pointers {
+					if item, named := pointerItem(pointer, declared.Items); named &&
+						!yield(Element{Kind: ItemElement, Block: node.Type, Attribute: name, Name: string(item)}) {
 						return false
 					}
 				}
@@ -604,8 +668,15 @@ func refuseUncreatable(nodes []*Node, held func() *Node) error {
 	}
 	for _, element := range made {
 		if !present[element] {
-			return fmt.Errorf("%w: this Dispatch build reads %s but cannot write it yet. Remove it from your markdown, or write it again after the next release", ErrSchema, element)
+			return fmt.Errorf("%w: %s", ErrSchema, notCreatableYet(element))
 		}
 	}
 	return nil
+}
+
+// notCreatableYet is the refusal of a write that creates element before it may: refuseUncreatable's,
+// and CheckBlockPointers' for a pointer at an item of a kind not every process serving the database
+// reads yet.
+func notCreatableYet(element Element) string {
+	return fmt.Sprintf("this Dispatch build reads %s but cannot write it yet. Remove it from your markdown, or write it again after the next release", element)
 }

@@ -72,7 +72,7 @@ func appendUpdates(t *testing.T, versioned *PgVersioned, artifactID string, upda
 
 func readStamp(t *testing.T, versioned *PgVersioned, artifactID string) DocumentStamp {
 	t.Helper()
-	stamp, err := versioned.DocumentStamp(context.Background(), artifactID)
+	_, stamp, err := versioned.DocumentStamp(context.Background(), artifactID)
 	if err != nil {
 		t.Fatalf("read the document's stamp: %v", err)
 	}

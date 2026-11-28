@@ -37,9 +37,14 @@ import (
 // advisory lock and a key-share lock on its artifact row, neither of which the caller holds. A
 // caller holding the advisory lock is a mistake in the lock order the flush depends on; the query
 // reads that from the database and skips the flush rather than wait out every member
-// (roomQueries.ask).
+// (roomQueries.ask). The flush is of the room artifactID's document is edited in (roomOf), the
+// issue's room for a document converted into it, which is the room every process holds of it.
 func (s *Service) flushOtherRooms(ctx context.Context, tx Queryer, artifactID string) error {
-	_, _, err := s.roomQueries.ask(ctx, tx, artifactID, roomQueryFlush)
+	room, err := roomOf(ctx, tx, artifactID)
+	if err != nil {
+		return err
+	}
+	_, _, err = s.roomQueries.ask(ctx, tx, room, roomQueryFlush)
 	return err
 }
 

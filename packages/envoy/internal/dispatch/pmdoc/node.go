@@ -336,7 +336,7 @@ func validateTypedBlock(n *Node, typ BlockTypeSchema) error {
 		if nullReadsAbsent(typ, BlockAttribute{Name: name, BlockAttributeSchema: definition}, value) {
 			continue
 		}
-		if err := validateAttributeValue(definition, value); err != nil {
+		if err := validateAttributeValue(name, definition, value); err != nil {
 			return fmt.Errorf("%w: typed block %q attribute %q: %w", ErrSchema, n.Type, name, err)
 		}
 	}

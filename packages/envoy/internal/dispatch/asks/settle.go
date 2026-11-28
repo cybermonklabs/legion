@@ -105,6 +105,11 @@ func Recorded(state string, answer *model.AskAnswer, resolution *model.AskResolu
 // that backfill, which reads the row this writes. A marked row's node is the one its foreign key
 // names, so it always exists.
 //
+// Every fact it states goes out of the ask's node and changes it (graphstore.Tuple's Changes), so
+// a settle made for a run of the command bar - an answer, a resolution, a decline, an issue's
+// close or reopen - names the ask as changed by that run (store.WithRun); the person node of
+// whoever answered is never marked.
+//
 // Settle runs the write at once, for a transaction that queues no write phase: it locks the ask's
 // row first, refuses a change whose From the row no longer holds (ErrStateMoved) before it writes
 // anything, plans the change as PlanSettle does, and runs its statements (Settled.Queue) as a
@@ -207,6 +212,9 @@ func planSettle(askID string, change Change, held heldAnswer) (Settled, error) {
 		if nodes, tuples, err = answerFacts(askID, change, held); err != nil {
 			return Settled{}, err
 		}
+		for index := range tuples {
+			tuples[index].Changes = true
+		}
 		settled.Held = graphstore.PlanUncaused(nodes, tuples)
 	}
 	settled.leaves = leftBy(held, settled.Ask, tuples)
@@ -262,10 +270,11 @@ func leftBy(held heldAnswer, ask model.Ask, tuples []graphstore.Tuple) heldAnswe
 
 // Queue puts the change's statements on b (store.WriteBatch), in Settle's order: the node write
 // of what it states on the ask's node, then, where the change names its cause rather than holding
-// its facts for a later event, those facts under that cause, then the asks row. The row's update
-// names the state the change answers from where it names one (Change.From), and a row no longer
-// in it is refused with ErrStateMoved as the batch reads the update's result, which stops the
-// write phase there.
+// its facts for a later event, those facts under that cause, then the asks row, and last, beside
+// those facts, the ask node's head rows (graphstore.QueueHeads), the last rows a write takes. The
+// row's update names the state the change answers from where it names one (Change.From), and a
+// row no longer in it is refused with ErrStateMoved as the batch reads the update's result, which
+// stops the write phase there.
 func (s Settled) Queue(b *store.WriteBatch) error {
 	graphstore.QueueNodes(b, s.Held)
 	if s.change.Held == nil {
@@ -286,6 +295,9 @@ func (s Settled) Queue(b *store.WriteBatch) error {
 		}
 		return fmt.Errorf("settle ask %s: no such ask", s.askID)
 	})
+	if s.change.Held == nil {
+		graphstore.QueueHeads(b, graphstore.HeldHeads(s.Held))
+	}
 	return nil
 }
 

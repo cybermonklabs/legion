@@ -70,16 +70,17 @@ func (s *server) putUploadedFile(w http.ResponseWriter, r *http.Request, writer 
 // refuseUploadBeforeItsObject answers, from the pool and locking nothing, the refusal
 // storeArtifact's transaction would make of a file or image upload by writer to target under
 // name, in that transaction's order: a project that does not exist; for an artifact the name or
-// slug finds, a retired one (readRetiredDocumentRefusal), then one whose kind is not kind; for a
-// new artifact, a name past its bound, a name on an issue that is a decisions document's
-// (decisionsAreNodes), or a reference key past its bound; then the check of who writes an issue's
-// spec or Verification document (refuseSpecWriterOfDocument), which passes a row of no issue
-// without a read; and last a first upload naming a token (namesToken), which storeArtifact's one
-// statement of that rule refuses (uploadNoTokenRefusal). The writer check judges the row the
-// upload would store or replace as the transaction does: the row the name or slug finds, or a new
-// row with the slug nextArtifactSlug gives it and no role, since only a document takes a role
-// (documentRole) and a document writes no object (putUploadedFile). A file is the issue's
-// Verification document only by its slug (specWriterDocumentName), so a file named
+// slug finds, a retired one (readRetiredDocumentRefusal), then the issue's decisions query
+// (decisionsQueryRefusal), then one whose kind is not kind; for a new artifact, a name past its
+// bound, a name on an issue that is a decisions document's (decisionsAreNodes), or a reference
+// key past its bound; then the check of who writes an issue's spec or Verification document
+// (refuseSpecWriterOfDocument), which passes a row of no issue without a read; and last a first
+// upload naming a token (namesToken), which storeArtifact's one statement of that rule refuses
+// (uploadNoTokenRefusal). The writer check judges the row the upload would store or replace as
+// the transaction does: the row the name or slug finds, or a new row with the slug
+// nextArtifactSlug gives it and no role, since only a document takes a role (documentRole) and a
+// document writes no object (putUploadedFile). A file is the issue's Verification document only
+// by its slug (specWriterDocumentName), so a file named
 // verification.md, whose slug reads as that document's, is refused here before its object is
 // written. It reads as that transaction reads, so the two refuse alike whenever nothing writes the
 // owner's artifacts, or the issue's chain and its role holders, between them; the transaction's
@@ -99,6 +100,9 @@ func (s *server) refuseUploadBeforeItsObject(ctx context.Context, target artifac
 	case err == nil:
 		if artifact.Retired {
 			return "", readRetiredDocumentRefusal(ctx, pool, artifact, name)
+		}
+		if artifact.DecisionsQuery {
+			return "", decisionsQueryRefusal(artifact)
 		}
 		if artifact.Kind != kind {
 			return "", artifactKindMismatch(name, artifact, kind)

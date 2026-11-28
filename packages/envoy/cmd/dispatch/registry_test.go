@@ -110,8 +110,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionExitsCleanly(t *testing.T) {
 
 	waiting := startDispatchProcessWith(t, database.Pool.Config().ConnString(), dispatchOptions{SigningKey: "a-key-the-peer-does-not-share"})
 	waiting.WaitForOutput(t, "a live server process refuses this one's signing keys; waiting for its heartbeat to lapse")
-	waiting.Terminate(t)
-	waiting.WaitExit(t, "SIGTERM")
+	stopProcess(t, waiting)
 
 	output := waiting.Output.String()
 	if code := waiting.Cmd.ProcessState.ExitCode(); code != 0 {

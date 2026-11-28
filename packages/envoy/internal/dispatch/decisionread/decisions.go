@@ -10,10 +10,12 @@
 //   - the Keep (api's keepDecision), which compares the posted `text_sha256` with TextSum of the
 //     words this package reads, so a Keep holds the sum the read served;
 //   - the Decisions read's old `decisions` member once it answers from the store;
-//   - the tree read a later change adds, which calls Decisions for each decision node it draws.
+//   - the tree read a later change adds, which calls Decisions for each decision node it draws;
+//   - the backfill's Keep pass and its census kind (graphcensus' keep_shaped_sum), which read the
+//     same words through WordSumsOf.
 //
 // It is a package of its own because api's readers are unexported and neither docs nor refs may
-// import api. It imports graphstore, refs and model, and neither api nor docs.
+// import api. It imports graphstore, refs and model, and neither api, docs nor graphcensus.
 package decisionread
 
 import (
@@ -37,8 +39,11 @@ import (
 
 // Node names one node Decisions reads: Kind and ID as graph_nodes keys it. A `decision` block
 // node is {refs.BlockNodeKind, "<ref_key>#<block id>"}, and an ask's node is
-// {graphstore.KindAsk, "<ask id>"}.
-type Node struct{ Kind, ID string }
+// {graphstore.KindAsk, "<ask id>"}. Document, where the caller found a block's node in a document
+// of an issue room that owes its block index (api's decisionEntriesRead), is that document, read
+// as the one holding the block while no issue_room_blocks row names it (refs.BlockDocumentOrSQL);
+// "" leaves the block to its row, else to the artifact keying it.
+type Node struct{ Kind, ID, Document string }
 
 // TextSum is a decision's text sum: the sha256, in hex, of its words. A Keep records it as the
 // node's kept_text_sum and posts it back as `text_sha256`, and an agent's decision waits for review
@@ -55,11 +60,12 @@ func TextSum(text string) string {
 // node a decision shaped, that who may not see is absent. Each answer names its node in NodeKind
 // and NodeID, which no wire shape carries, so a caller that asked for several finds each one.
 //
-// A node is read as a decision when it is a live block node of the `decision` supertag, or an ask
-// node with an `asks` row. A caller lists as decisions the asks a person answered; an ask in any
-// other answer state reads the same way, and the Decisions read takes the links of an open and a
-// declined ask from here too. Any other node, and a node the store does not hold, is left out
-// with no log (isDecision): the Keep reads the node at whatever block it was posted for.
+// A node is read as a decision when it is a block node of the `decision` supertag the store holds
+// present, at any state but gone (the spec's R12), or an ask node with an `asks` row.
+// A caller lists as decisions the asks a person answered; an ask in any other answer state reads
+// the same way, and the Decisions read takes the links of an open and a declined ask from here
+// too. Any other node, and a node the store does not hold, is left out with no log (isDecision):
+// the Keep reads the node at whatever block it was posted for.
 //
 // Each decision answers:
 //
@@ -109,11 +115,8 @@ func Decisions(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes
 	if len(nodes) == 0 {
 		return decisions, nil
 	}
-	kinds, ids := make([]string, len(nodes)), make([]string, len(nodes))
-	for index, node := range nodes {
-		kinds[index], ids[index] = node.Kind, node.ID
-	}
-	held, err := readNodes(ctx, q, who, kinds, ids)
+	kinds, ids, documents := nodeColumns(nodes)
+	held, err := readNodes(ctx, q, who, kinds, ids, documents)
 	if err != nil {
 		return nil, err
 	}
@@ -241,6 +244,65 @@ func markStale(ctx context.Context, q graphstore.Queryer, versions *walker, deci
 	return versions.err
 }
 
+// WordSums is what WordSumsOf answers of one agent's decision: Sum, the sum of its words as every
+// read of it answers them (TextSum over refs.DecisionWords, Decision.TextSHA256), and Shaped, the
+// sum of the same block rendered with its `shaped` attribute among its words, as
+// refs.DecisionWords rendered a decision before it left that attribute out (R32 of
+// the issue-tree spec). The two are one sum for a decision that carries no `shaped`.
+type WordSums struct{ Sum, Shaped string }
+
+// WordSumsOf answers WordSums for each of nodes the store holds as an agent's decision (a block
+// node of the `decision` supertag at any state but gone, isDecision), keyed by its index among
+// nodes, reading for who. It reads each decision's block as Decisions does, through the same walk
+// (walker.changed), so Sum is the TextSHA256 Decisions answers for it. A node that is no such
+// decision, one whose document holds no such block now and one whose block does not read back are
+// left out, with no log: no Keep can match a sum of words the reads answer none of. A failure of
+// the store fails the read. It is the read of the backfill's Keep pass (graphcensus), which
+// rewrites a Keep a release before this change summed over the words with `shaped`, and of the
+// census kind that counts what that pass still owes.
+func WordSumsOf(ctx context.Context, q graphstore.Queryer, who model.Actor, nodes []Node) (map[int]WordSums, error) {
+	sums := map[int]WordSums{}
+	if len(nodes) == 0 {
+		return sums, nil
+	}
+	kinds, ids, documents := nodeColumns(nodes)
+	held, err := readNodes(ctx, q, who, kinds, ids, documents)
+	if err != nil {
+		return nil, err
+	}
+	versions := &walker{q: q, versions: map[versionKey]versionRead{}}
+	for index := range nodes {
+		node, found := held[index]
+		if !found || node.kind != refs.BlockNodeKind || !node.isDecision() {
+			continue
+		}
+		changed, err := versions.changed(ctx, node, refs.DecisionSupertag)
+		if versions.err != nil {
+			return nil, versions.err
+		}
+		if err != nil || changed.block == nil {
+			continue
+		}
+		shaped, err := shapedWords(changed.block)
+		if err != nil {
+			continue
+		}
+		sums[index] = WordSums{Sum: TextSum(changed.words), Shaped: TextSum(shaped)}
+	}
+	return sums, nil
+}
+
+// shapedWords is a decision's words as refs.DecisionWords rendered them before it left the
+// decision's `shaped` attribute out: block rendered alone, with the readings it closes with left
+// out and every attribute it carries. Its server attributes are no part of them either way, since
+// markdown carries none (pmdoc.BlockAttributeSchema.InMarkdown). Only WordSumsOf reads it.
+func shapedWords(block *pmdoc.Node) (string, error) {
+	content, _ := pmdoc.TypedContent(block)
+	own := *block
+	own.Children = content
+	return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{&own}})
+}
+
 // heldNode is what the store holds of one node Decisions reads: the node row, the document that
 // holds its block, an ask's row, its Keep's version, and what tells the version its words last
 // changed in (walker.changed): its block's document_blocks row, every text the block index
@@ -265,11 +327,17 @@ type heldNode struct {
 
 // nodesRead reads each named node, with the document holding its block and that block's rows,
 // in one statement, for the person or session bound at $3, each table read by its own key. A
-// block node's document is the one whose ref_key opens its address (a ref_key holds no '#'), and
-// an ask's the document holding its block (asks.block_artifact_id). The block's texts are every
-// text the block index recorded of it (document_block_texts), newest first, each beside its
-// version's created_at; the document's indexed versions are document_indexed_versions', newest
-// first; and the document owes its block index where document_block_versions holds no version.
+// block's rows are keyed by the artifact whose ref_key opens a block node's address (a ref_key
+// holds no '#'), and an ask's by its block_artifact_id: the document itself, or for a block of an
+// issue room the room's tree artifact. The document holding the block is the one
+// refs.BlockDocumentSQL names for that key and block - the document whose fragment of the room
+// holds it, else the key itself - so a decision or an ask of a converted document answers that
+// document, as one of a document that is its own room does; a block no issue_room_blocks row
+// names yet is in the document its caller found its node in ($4, Node.Document), where it names
+// one (refs.BlockDocumentOrSQL). The block's texts are every text the block index recorded of it
+// under its key (document_block_texts), newest first, each beside the created_at of that version
+// of its document; the document's indexed versions are document_indexed_versions', newest first;
+// and the document owes its block index where document_block_versions holds no version of it.
 func nodesRead() string {
 	return `
 	select w.n, g.kind, g.id, g.supertag, g.state,
@@ -279,23 +347,23 @@ func nodesRead() string {
 	       row.changed_version,
 	       (select json_agg(json_build_object('version', x.version, 'text', x.text, 'at', v.created_at) order by x.version desc)
 	        from document_block_texts x
-	        left join artifact_versions v on v.artifact_id = x.artifact_id and v.number = x.version
-	        where x.artifact_id = doc.id and x.block_id = place.block_id),
+	        left join artifact_versions v on v.artifact_id = doc.id and v.number = x.version
+	        where x.artifact_id = place.artifact_id and x.block_id = place.block_id),
 	       (select array_agg(i.version order by i.version desc) from document_indexed_versions i where i.artifact_id = doc.id),
 	       coalesce((select max(v.number) from artifact_versions v where v.artifact_id = doc.id), 0),
 	       doc.id is not null and not exists (
 	         select 1 from document_block_versions b where b.artifact_id = doc.id and b.version is not null),
 	       (select k.changed_version from decision_keeps k
 	        where g.kind = '` + refs.BlockNodeKind + `' and k.artifact_id = doc.id and k.block_id = place.block_id)
-	from unnest($1::text[], $2::text[]) with ordinality as w (kind, id, n)
+	from unnest($1::text[], $2::text[], $4::text[]) with ordinality as w (kind, id, document, n)
 	join graph_nodes g on g.kind = w.kind and g.id = w.id and ` + refs.VisibleRow("g", "$3") + `
 	left join asks q on g.kind = '` + graphstore.KindAsk + `'
 		and q.id = case when g.id ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' then g.id::uuid end
 	left join lateral (
-		select a.* from artifacts a where g.kind = '` + graphstore.KindAsk + `' and a.id = q.block_artifact_id
+		select a.id, a.ref_key from artifacts a where g.kind = '` + graphstore.KindAsk + `' and a.id = q.block_artifact_id
 		union all
-		select a.* from artifacts a where g.kind = '` + refs.BlockNodeKind + `' and a.ref_key = split_part(g.id, '#', 1)
-	) doc on true
+		select a.id, a.ref_key from artifacts a where g.kind = '` + refs.BlockNodeKind + `' and a.ref_key = split_part(g.id, '#', 1)
+	) keyed on true
 	left join lateral (
 		select b.artifact_id, b.block_id, b.changed_version from document_blocks b
 		where g.kind = '` + refs.BlockNodeKind + `' and b.node_kind = '` + refs.BlockNodeKind + `' and b.node_address = g.id
@@ -304,9 +372,11 @@ func nodesRead() string {
 		where g.kind = '` + graphstore.KindAsk + `' and b.artifact_id = q.block_artifact_id and b.block_id = q.block_id and b.type = 'ask'
 	) row on true
 	left join lateral (
-		select coalesce(row.block_id, case when g.kind = '` + graphstore.KindAsk + `' then q.block_id
-		                                   else substr(g.id, length(doc.ref_key) + 2) end) as block_id
-	) place on doc.id is not null
+		select keyed.id as artifact_id,
+		       coalesce(row.block_id, case when g.kind = '` + graphstore.KindAsk + `' then q.block_id
+		                                   else substr(g.id, length(keyed.ref_key) + 2) end) as block_id
+	) place on keyed.id is not null
+	left join artifacts doc on doc.id = ` + refs.BlockDocumentOrSQL("place", "coalesce(nullif(w.document, '')::uuid, place.artifact_id)") + `
 	order by w.n`
 }
 
@@ -318,9 +388,20 @@ type storedText struct {
 	At      *time.Time `json:"at"`
 }
 
-// readNodes reads each node of the two arrays (nodesRead), keyed by its index among them, for who.
-func readNodes(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds, ids []string) (map[int]heldNode, error) {
-	rows, err := q.Query(ctx, nodesRead(), kinds, ids, refs.VisibilityArg(who))
+// nodeColumns is nodes as the arrays the reads bind them as, by index: their kinds, their ids and
+// the documents each was found in.
+func nodeColumns(nodes []Node) (kinds, ids, documents []string) {
+	kinds, ids, documents = make([]string, len(nodes)), make([]string, len(nodes)), make([]string, len(nodes))
+	for index, node := range nodes {
+		kinds[index], ids[index], documents[index] = node.Kind, node.ID, node.Document
+	}
+	return kinds, ids, documents
+}
+
+// readNodes reads each node of the arrays (nodesRead), keyed by its index among them, for who:
+// kinds and ids name the nodes, and documents the document each was found in, "" for none.
+func readNodes(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds, ids, documents []string) (map[int]heldNode, error) {
+	rows, err := q.Query(ctx, nodesRead(), kinds, ids, refs.VisibilityArg(who), documents)
 	if err != nil {
 		return nil, fmt.Errorf("read the decision nodes: %w", err)
 	}
@@ -396,7 +477,19 @@ func readFacts(ctx context.Context, q graphstore.Queryer, kinds, ids []string) (
 // last changed in (versionEventRead). A target whose document holds no row for it - one that still
 // owes its block index - has no such version. It sets each link's ChangedSinceTie; its Stale waits
 // on the decision's own change, which the walk answers (markStale).
+//
+// A tuple's far end is the address its pointer spells, `<ref_key>#<block>` of the document it
+// names. The target's row is the one at that address, or, for a document converted into its
+// issue's room, whose blocks the room's tree artifact keys, the row of the room
+// (refs.DocumentRoomSQL) under that block id whose document is the one named
+// (refs.BlockDocumentSQL). Its document is the one whose fragment holds the row's block, else the
+// one named, and the link answers that document, its ref and the far end's own address, so a
+// decision of a converted issue links its spec's blocks as one of an issue of one-document rooms
+// does. Each far end answers the state and the visibility the store holds of its node, read in the
+// same statement (refs.StoredNodeJoin), live and project where the store holds no row of it
+// (refs.StoredStateAndVisibility), as every loader of a node answers them.
 func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds, ids []string) (map[int][]model.DecisionLink, error) {
+	storedJoin, storedColumns := refs.StoredNodeJoin(`'`+refs.StoredKindOf(refs.BlockNodeKind)+`'`, "s.to_id")
 	rows, err := q.Query(ctx, `
 		select w.n, s.to_id, s.at, s.source_event,
 		       coalesce(target.block_id, ''), coalesce(target.excerpt, ''), target.changed_version, target_version.created_at,
@@ -406,16 +499,26 @@ func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds
 		       coalesce((select r.created_version from block_refs r
 		                 where r.node_kind = w.kind and r.node_address = w.id and r.kind = '`+refs.TupleShaped+`'
 		                   and r.to_kind = '`+refs.BlockNodeKind+`' and r.to_id = s.to_id
-		                 order by r.created_version limit 1), 0)
+		                 order by r.created_version limit 1), 0),
+		       `+storedColumns+`
 		from unnest($1::text[], $2::text[]) with ordinality as w (kind, id, n)
 		cross join lateral (`+graphstore.CurrentTupleRead(`t.to_kind, t.to_id`,
 		`t.to_kind, t.to_id, t.at, t.source_event, t.asserted`,
 		`t.from_kind = w.kind and t.from_id = w.id and t.kind = '`+refs.TupleShaped+`' and t.to_kind <> '`+graphstore.KindValue+`'`)+`
 		) s
-		left join artifacts doc on doc.ref_key = split_part(s.to_id, '#', 1)
-		left join document_blocks target on target.node_kind = '`+refs.BlockNodeKind+`' and target.node_address = s.to_id
-		left join artifact_versions target_version on target_version.artifact_id = target.artifact_id
+		left join artifacts pointed on pointed.ref_key = split_part(s.to_id, '#', 1)
+		left join lateral (
+			select b.artifact_id, b.block_id, b.excerpt, b.changed_version from document_blocks b
+			where b.node_kind = '`+refs.BlockNodeKind+`' and b.node_address = s.to_id
+			union all
+			select b.artifact_id, b.block_id, b.excerpt, b.changed_version from document_blocks b
+			where b.artifact_id = `+refs.DocumentRoomSQL("pointed.id")+` and b.artifact_id <> pointed.id
+			  and b.block_id = substr(s.to_id, length(pointed.ref_key) + 2) and `+refs.BlockDocumentSQL("b")+` = pointed.id
+		) target on true
+		left join artifacts doc on doc.id = coalesce(`+refs.BlockDocumentSQL("target")+`, pointed.id)
+		left join artifact_versions target_version on target_version.artifact_id = doc.id
 			and target_version.number = target.changed_version
+		`+storedJoin+`
 		where s.asserted and s.to_kind = '`+refs.BlockNodeKind+`' and `+refs.VisibleKind(refs.BlockNodeKind, "s.to_id", "$3")+`
 		order by w.n, s.to_id
 	`, kinds, ids, refs.VisibilityArg(who))
@@ -435,13 +538,15 @@ func readLinks(ctx context.Context, q graphstore.Queryer, who model.Actor, kinds
 		var refKey, slug, artifactKind string
 		var issueKey, project, session *string
 		var primary bool
+		var stored refs.StoredNode
 		if err := rows.Scan(&n, &address, &link.CreatedAt, &event,
 			&link.To.BlockID, &link.To.Text, &changedVersion, &link.TextChangedAt, &changedEvent,
 			&document, &refKey, &slug, &artifactKind, &issueKey, &project, &session, &primary,
-			&link.CreatedVersion); err != nil {
+			&link.CreatedVersion, &stored.State, &stored.Visibility); err != nil {
 			return nil, fmt.Errorf("read a decision node's shaped link: %w", err)
 		}
 		link.To.Kind, link.To.ID = refs.BlockNodeKind, address
+		link.To.State, link.To.Visibility = refs.StoredStateAndVisibility(stored)
 		if link.To.BlockID == "" && document {
 			link.To.BlockID = strings.TrimPrefix(address, refKey+"#")
 		}
@@ -494,11 +599,11 @@ func textChangedAfterTie(link model.DecisionLink) bool {
 	return link.TextChangedAt.After(link.CreatedAt)
 }
 
-// isDecision reports whether node is read as a decision: an ask node with an `asks` row, or a live
-// block node of the `decision` supertag.
+// isDecision reports whether node is read as a decision: an ask node with an `asks` row, or a block
+// node of the `decision` supertag present at any state but gone (the spec's R12).
 func (node heldNode) isDecision() bool {
 	return node.kind == graphstore.KindAsk && node.question != nil ||
-		node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state == graphstore.StateLive
+		node.kind == refs.BlockNodeKind && node.supertag == refs.DecisionSupertag && node.state != graphstore.StateGone
 }
 
 // decision is node, a decision (isDecision), in model.Decision's shape, with the values it holds
@@ -710,8 +815,8 @@ type changedWords struct {
 
 // changed is the walk that answers node's block - a decision, or the ask block of an ask (typ) -
 // as it stands: its own words (ownWords) and the version of its document that last changed them,
-// which a reading written, edited or removed under it, and for an ask a write of its block's
-// attributes alone - the server's, or the `shaped` pointers - never moves.
+// which a reading written, edited or removed under it never moves, nor a write of the `shaped`
+// pointers alone, a decision's or an ask's, nor, for an ask, a write of its server's attributes.
 //
 // It reads the document as the block index left it and as it stands past that index. A document
 // that owes its block index (document_block_versions holds no version) stands at its newest
@@ -859,29 +964,19 @@ func blockWords(tree *pmdoc.Node, typ, blockID string) (string, *pmdoc.Node, boo
 }
 
 // ownWords is a typed block's own words. An ask's are its question and its options (plan v17,
-// T8): the blocks of its content rendered alone, with no attribute of the block at all - neither
-// the server's state, answered_by, answered_at, selected, answer, copied_from and
+// T8), refs.AskWords': the blocks of its content rendered alone, with no attribute of the block at
+// all - neither the server's state, answered_by, answered_at, selected, answer, copied_from and
 // copied_from_document, which the roll window and the first write on one build write or drop, nor
 // the `shaped` pointers the conversion gives it, nor its urgency - and none of the readings it
 // closes with. So a version that changes none of those words changes no ask's words. A decision's
-// are the block rendered alone with the readings it closes with left out (refs.DecisionWords); its
-// markdown carries none of its server attributes (decided_by, kept_by and kept_text_sum are
-// `markdown: false`), so they are the words a Keep sums.
+// are refs.DecisionWords': the block rendered alone with the readings it closes with, its `shaped`
+// attribute and its server attributes left out, so a write of `shaped` alone changes no
+// decision's words, and they are the words a Keep sums.
 func ownWords(block *pmdoc.Node) (string, error) {
 	if block.Type == askType {
-		content, _ := pmdoc.TypedContent(block)
-		return pmdoc.Render(&pmdoc.Node{Type: "doc", Children: content})
+		return refs.AskWords(block)
 	}
-	attributes, _ := pmdoc.BlockTypeAttributes(block.Type)
-	own := *block
-	own.Attrs = make(pmdoc.Attrs, len(block.Attrs))
-	for name, value := range block.Attrs {
-		if attribute := attributes.Get(name); attribute.Server && attribute.InMarkdown() {
-			continue
-		}
-		own.Attrs[name] = value
-	}
-	return refs.DecisionWords(&own)
+	return refs.DecisionWords(block)
 }
 
 // plainText is the text node holds, its children's included, with its lines joined by a space.

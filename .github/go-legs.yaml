@@ -326,6 +326,7 @@ packages/envoy:
       - internal/dispatch/files/filestest
       - internal/dispatch/graphcensus/censustest
       - internal/dispatch/graphstore/graphstoretest
+      - internal/dispatch/graphstore/graphseedtest
       - internal/dispatch/pmdoc/pmdoctest
       - internal/dispatch/refs/refstest
       - internal/dispatch/textversions/textversionstest

@@ -14,14 +14,15 @@ import (
 	"github.com/reearth/ygo/encoding"
 )
 
-// NestedLinkUpdate marks every character of the first text in doc's prosemirror fragment with a
-// link whose "nested" attribute is nested, and returns the update a crafted client sends for that
+// NestedLinkUpdate marks every character of the first text in doc's fragment named fragment (a
+// one-document room's prosemirror, or a document's own fragment of its issue's room) with a link
+// whose "nested" attribute is nested, and returns the update a crafted client sends for that
 // change. ygo's own writers refuse a mark nested past the 100 levels YText takes, so the change is
 // made with a placeholder and the update rewritten: a V1 update carries a mark's attributes as JSON
 // text, which ygo reads back as deep as encoding/json does. doc keeps the placeholder, so it is a
 // copy the caller throws away.
-func NestedLinkUpdate(doc *crdt.Doc, nested any) ([]byte, error) {
-	text := FirstText(doc.GetXmlFragment("prosemirror"))
+func NestedLinkUpdate(doc *crdt.Doc, fragment string, nested any) ([]byte, error) {
+	text := FirstText(doc.GetXmlFragment(fragment))
 	if text == nil {
 		return nil, errors.New("the document holds no text to link")
 	}

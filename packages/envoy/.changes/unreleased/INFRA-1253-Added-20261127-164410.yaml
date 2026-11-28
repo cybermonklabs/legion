@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  Each decision node of the tree read (`GET /api/v1/issues/{key}/tree`) answers `waiting_change`
+  on its `decision` member: `{comment_id, created_at}` of the newest Change the decision waits on,
+  a comment a person wrote under it after its words last changed and after its last Keep that its
+  author has not deleted and the read's comment pages answer, or `null` where none waits. It is
+  answered whatever comment page holds the Change, so a page no longer reads older comment pages
+  to learn it.
+time: 2026-11-27T16:44:10Z
+custom:
+    Issue: INFRA-1253

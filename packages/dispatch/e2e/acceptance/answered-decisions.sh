@@ -6,8 +6,9 @@
 # It drops and creates the database DATABASE_URL names (seed_reset_database: a database on this
 # machine whose name begins infra_1150_), boots the base release on it through lib-baseline.sh
 # (BASELINE_BINARY, default $TMPDIR/base-dispatch, the stamped build of BASELINE_SHA), with the dev
-# sign-in, the pinned agent bearer e2e-token and the hold setting (DISPATCH_TEST_HOOKS=1 and
-# DISPATCH_TEST_HOLD_DECISIONS_STEP=1, through BASELINE_EXTRA_ENV), and has seed-decisions.sh
+# sign-in, the pinned agent bearer e2e-token and the hold settings (DISPATCH_TEST_HOOKS=1,
+# DISPATCH_TEST_HOLD_DECISIONS_STEP=1 and DISPATCH_TEST_HOLD_BOOT_BACKFILL=1, through
+# BASELINE_EXTRA_ENV), and has seed-decisions.sh
 # write the corpus through that server's own API. Through the same server it gives issue D a
 # questions.md holding an ask the person answers, and has an agent put a copy of that ask's block
 # into spec D, which the base settles as a copy no row names; then it closes issue D, so one issue
@@ -32,7 +33,8 @@
 # them the citation of an issue the seed writes in each one's question, and it fails when an ask
 # holds none. It then stops that server and boots this head, HEAD_BINARY (default
 # $TMPDIR/bin/envoy-dispatch, built stamped as the Verification preamble builds it), over the same
-# database with the hold setting, so the commands below and not the boot make the first move.
+# database with the hold settings, so the commands below and not the boot make the first move:
+# neither the decisions step nor the boot's run of the backfill states a row before them.
 #
 # It runs `envoy-dispatch backfill-graph-store` (the step's first phase, which the census and the
 # restore read an answer from) and the store census (`envoy-dispatch census --store`), which must
@@ -88,7 +90,7 @@
 # an agent's session, with no act of a person, drops from its spec. It stops the base and boots
 # this head held again, runs the step's first phase, and, as the person, puts a paragraph in place
 # of the answered ask's block of the PERSON spec, a write that leaves one removed_by tuple to the
-# person. It restarts this head without the hold setting, so the step runs on its own tick, and
+# person. It restarts this head without the hold settings, so the step runs on its own tick, and
 # waits three tick intervals (docs.BlockIndexReconcileInterval, read from its source) after the
 # first tick's report line. Out of the store and the report lines of every tick it reads the PERSON
 # spec holding no block of that ask, its newest version the person's, and no restore of it in any
@@ -589,10 +591,11 @@ held_cte() {
 # The base release writes the corpus.
 # ---------------------------------------------------------------------------------------------
 seed_reset_database "$database_url"
-# The pinned agent bearer the e2e harness gives its own server, and the hold setting: the base
-# reads neither hook, and this head holds its step.
+# The pinned agent bearer the e2e harness gives its own server, and the hold settings: the base
+# reads neither hook, nor DISPATCH_TEST_HOLD_BOOT_BACKFILL, which its build lacks, and this head
+# holds its step and its boot's run of the backfill.
 DISPATCH_TOKEN=e2e-token
-BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1'
+BASELINE_EXTRA_ENV=$'DISPATCH_TEST_HOOKS=1\nDISPATCH_TEST_HOLD_DECISIONS_STEP=1\nDISPATCH_TEST_HOLD_BOOT_BACKFILL=1'
 baseline_start
 unset DISPATCH_TOKEN DATABASE_URL BASELINE_EXTRA_ENV
 printf 'Authorization: Bearer %s\n' "$baseline_token" >"$work/auth"
@@ -1365,7 +1368,7 @@ pass removal "the person's version $person_version of $spec_p puts a paragraph i
 baseline_stop_pid "$head_pid"
 head_pid=""
 
-# This head without the hold setting, alone, so its step's first tick runs the restore and the
+# This head without the hold settings, alone, so its step's first tick runs the restore and the
 # conversion: the window of 15 s is processes.LiveWindow.
 waited=0
 while true; do

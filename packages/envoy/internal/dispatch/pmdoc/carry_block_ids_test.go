@@ -20,9 +20,8 @@ import (
 // it; an ask keeping its id is what keeps the row holding a person's answer on the question it
 // answers. Only the changed block itself takes a fresh id, and an untyped container holding it
 // keeps its own, whose identity is its place in the tree (carryKept); an id never moves onto
-// other content (a swapped, retyped, moved or replaced block), a typed block whose markdown
-// names an id holds the one it names, and a repeat live carries is kept for its first holder
-// alone.
+// other content (a retyped or replaced block), a typed block whose markdown names an id holds the
+// one it names, and a repeat live carries is kept for its first holder alone.
 func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 	t.Parallel()
 	spec, _, _ := docstest.LoadSpec(rand.New(rand.NewPCG(715, 1)), "LOAD-1", 25_000)
@@ -134,37 +133,6 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 			if after.Children[index].Type != "ask" || got != want {
 				t.Errorf("block %d after the upload is a %s with id %q, want the ask holding live's %q; the document's ids are now %q, live's were %q", index, after.Children[index].Type, got, want, blockIDsOf(after), blockIDsOf(live))
 			}
-		}
-	})
-
-	t.Run("an unchanged ask the upload moves", func(t *testing.T) {
-		parsed, err := Parse("Opening paragraph.\n\n" + ask + "\nClosing paragraph.\n")
-		if err != nil {
-			t.Fatal(err)
-		}
-		doc, frag, live := writeLiveDocument(t, parsed)
-		markdown, err := Render(live)
-		if err != nil {
-			t.Fatal(err)
-		}
-		start := strings.Index(markdown, ":::ask{")
-		if start < 0 {
-			t.Fatalf("the rendered document holds no ask block:\n%s", markdown)
-		}
-		end := strings.Index(markdown[start:], "\n:::\n")
-		if end < 0 {
-			t.Fatalf("the ask block of the rendered document does not close:\n%s", markdown)
-		}
-		block := markdown[start : start+end+len("\n:::\n")]
-		moved := strings.Replace(markdown, block, "", 1) + "\n" + strings.Replace(block, "{#ask-1 ", "{", 1)
-		after, diff := uploadOver(t, doc, frag, live, moved)
-		t.Logf("diff update %d bytes", diff)
-		last := after.Children[len(after.Children)-1]
-		if last.Type != "ask" {
-			t.Fatalf("the last block after the upload is a %s, want the ask the upload moved there", last.Type)
-		}
-		if id, _ := storedBlockID(last); slices.Contains(blockIDsOf(live), id) {
-			t.Fatalf("the moved ask has id %q, a live block's; want a fresh one, since live's ids are %q", id, blockIDsOf(live))
 		}
 	})
 
@@ -308,36 +276,6 @@ func TestAnUploadKeepsTheIDsOfTheBlocksItLeavesUnchanged(t *testing.T) {
 		}
 		if err := RepeatedBlockID(nil, after, after); err != nil {
 			t.Fatal(err)
-		}
-	})
-
-	t.Run("two swapped paragraphs", func(t *testing.T) {
-		parsed, err := Parse("Opening paragraph.\n\nAlpha paragraph.\n\nBeta paragraph.\n\nClosing paragraph.\n")
-		if err != nil {
-			t.Fatal(err)
-		}
-		doc, frag, live := writeLiveDocument(t, parsed)
-		markdown, err := Render(live)
-		if err != nil {
-			t.Fatal(err)
-		}
-		swapped := strings.Replace(markdown, "Alpha paragraph.\n\nBeta paragraph.", "Beta paragraph.\n\nAlpha paragraph.", 1)
-		if swapped == markdown {
-			t.Fatalf("the rendered document does not hold the two paragraphs in order:\n%s", markdown)
-		}
-		after, diff := uploadOver(t, doc, frag, live, swapped)
-		t.Logf("diff update %d bytes", diff)
-		liveIDs := blockIDsOf(live)
-		for _, index := range []int{1, 2} {
-			if id, _ := storedBlockID(after.Children[index]); slices.Contains(liveIDs, id) {
-				t.Errorf("swapped paragraph %d (%q) has live id %q, want a fresh one", index, TextContent(after.Children[index]), id)
-			}
-		}
-		for _, index := range []int{0, 3} {
-			got, _ := storedBlockID(after.Children[index])
-			if want, _ := storedBlockID(live.Children[index]); got != want {
-				t.Errorf("unchanged paragraph %d (%q) has id %q, want live's %q", index, TextContent(after.Children[index]), got, want)
-			}
 		}
 	})
 

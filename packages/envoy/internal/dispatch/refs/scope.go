@@ -15,8 +15,10 @@ import (
 )
 
 // askScope is the document an ask (aliased k) belongs to: the one its block is on, the one it is
-// anchored to, or the one that owns it, else its issue's spec (ks, askScopeJoin).
-const askScope = `coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid, k.artifact_id, ks.id)`
+// anchored to, or the one that owns it, else its issue's spec (ks, askScopeJoin). The document a
+// block is on is the one whose fragment holds it in an issue room, whose tree artifact keys the
+// ask's row (AskBlockDocumentSQL), never the tree.
+var askScope = `coalesce(` + AskBlockDocumentSQL("k") + `, (k.anchor->>'artifact_id')::uuid, k.artifact_id, ks.id)`
 
 const askScopeJoin = `left join artifacts ks on ks.issue_key = k.issue_key and ks.is_primary`
 
@@ -24,7 +26,7 @@ const askScopeJoin = `left join artifacts ks on ks.issue_key = k.issue_key and k
 // the one that owns it, or, for a reply to an ask, that ask's scope (commentOwnScopeJoin). A
 // comment naming none is in its parent's scope when it is a reply in a thread, else in its issue's
 // spec.
-const commentOwnScope = `coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id, ` + askScope + `)`
+var commentOwnScope = `coalesce((c.anchor->>'artifact_id')::uuid, c.artifact_id, ` + askScope + `)`
 
 const commentOwnScopeJoin = `left join asks k on k.id = c.ask_id ` + askScopeJoin
 
@@ -32,7 +34,7 @@ const commentOwnScopeJoin = `left join asks k on k.id = c.ask_id ` + askScopeJoi
 // from (scopeStep): the document it names itself, the comment it replies to, and its issue's
 // spec (cs, commentSpecJoin). A comment's row and a pending comment's fields are read through
 // this one select, so the rules are stated once (pendingScope).
-const commentScopeSelect = `select ` + commentOwnScope + `::text, c.reply_to::text, cs.id::text`
+var commentScopeSelect = `select ` + commentOwnScope + `::text, c.reply_to::text, cs.id::text`
 
 const commentSpecJoin = `left join artifacts cs on cs.issue_key = c.issue_key and cs.is_primary`
 
@@ -198,8 +200,12 @@ type PendingSource struct {
 	ArtifactID *string
 	// AnchorArtifactID is the document the row is anchored to (anchor->>'artifact_id').
 	AnchorArtifactID *string
-	// BlockArtifactID is the document an ask's block is on (block_artifact_id).
+	// BlockArtifactID is the document an ask's block is on (block_artifact_id): for an ask of an
+	// issue room, the room's tree artifact, whose block BlockID names (AskBlockDocumentSQL).
 	BlockArtifactID *string
+	// BlockID is the block an ask is the ask of (block_id), which names the document whose
+	// fragment of an issue room holds it.
+	BlockID *string
 	// AskID is the ask a comment replies to (ask_id), whose own scope a reply to an ask takes.
 	AskID *string
 	// ReplyTo is the comment a comment replies to (reply_to), whose scope a reply in a thread
@@ -209,10 +215,11 @@ type PendingSource struct {
 
 // pendingAskScopeQuery is askScope over the fields a queued ask row will hold rather than over
 // the row: the same expression and the same join of its issue's spec, so the order an ask's
-// scope coalesces in is stated once (askScope).
-const pendingAskScopeQuery = `
-	with k (block_artifact_id, anchor, artifact_id, issue_key) as (
-		select $1::uuid, jsonb_build_object('artifact_id', $2::text), $3::uuid, $4::text
+// scope coalesces in is stated once (askScope). Its block id is among them, since the document an
+// ask's block is on, in an issue room, is read off it (AskBlockDocumentSQL).
+var pendingAskScopeQuery = `
+	with k (block_artifact_id, block_id, anchor, artifact_id, issue_key) as (
+		select $1::uuid, $5::text, jsonb_build_object('artifact_id', $2::text), $3::uuid, $4::text
 	)
 	select ` + askScope + `::text from k ` + askScopeJoin
 
@@ -220,7 +227,7 @@ const pendingAskScopeQuery = `
 // the document it names itself, the comment it replies to and its issue's spec, read as a stored
 // comment's are (commentScopeRow), with the ask of a reply to an ask joined from the asks table,
 // which holds it.
-const pendingCommentScopeQuery = `
+var pendingCommentScopeQuery = `
 	with c (anchor, artifact_id, ask_id, reply_to, issue_key) as (
 		select jsonb_build_object('artifact_id', $1::text), $2::uuid, $3::uuid, $4::uuid, $5::text
 	)
@@ -249,7 +256,7 @@ func pendingScope(ctx context.Context, q Queryer, kind string, source PendingSou
 	switch kind {
 	case "ask":
 		return scopeRow(q.QueryRow(ctx, pendingAskScopeQuery,
-			source.BlockArtifactID, source.AnchorArtifactID, source.ArtifactID, source.IssueKey))
+			source.BlockArtifactID, source.AnchorArtifactID, source.ArtifactID, source.IssueKey, source.BlockID))
 	case "comment":
 		var own, parent, spec *string
 		if err := q.QueryRow(ctx, pendingCommentScopeQuery,
@@ -301,6 +308,7 @@ func PendingAskDocument(ask model.Ask) *PendingDocument {
 		IssueKey:        ask.IssueKey,
 		ArtifactID:      ask.ArtifactID,
 		BlockArtifactID: ask.BlockArtifactID,
+		BlockID:         ask.BlockID,
 	}
 	if ask.Anchor != nil {
 		source.AnchorArtifactID = &ask.Anchor.ArtifactID
@@ -334,8 +342,21 @@ const commentSeedJoins = commentOwnScopeJoin + `
 // thread root of the issue whose spec the document is. It is scopeStep's rule written as one
 // predicate, over the same three things that rule reads. An arm narrows which comments are read,
 // never which of the read ones are answered.
-const commentSeedScope = `(` + commentOwnScope + ` = $1
+var commentSeedScope = `(` + commentOwnScope + ` = $1
 		       or (` + commentOwnScope + ` is null and c.reply_to is null and cs.id = $1))`
+
+// scopedAsksTerm is scopeSourcesQuery's scoped_asks, every ask whose scope (askScope) is the
+// document $1: read from the asks whose block is keyed by $1 or by the issue room $1 is edited in
+// (DocumentRoomSQL), the asks anchored to it or owning it, and those of the issue whose spec it
+// is (spec), each then held to its scope.
+var scopedAsksTerm = `
+	scoped_asks as (
+		select k.id from asks k ` + askScopeJoin + `
+		where (coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) in ($1, ` + DocumentRoomSQL("$1") + `)
+		       or k.artifact_id = $1
+		       or k.issue_key in (select issue_key from spec))
+		  and ` + askScope + ` = $1
+	),`
 
 // scopeSourcesQuery lists, by kind and id, every reference source whose ScopeOf is the document $1.
 // The comments are found from the thread roots and the comments that name the document
@@ -368,18 +389,11 @@ const commentSeedScope = `(` + commentOwnScope + ` = $1
 // recursing on it again. That is why the walk down the replies cannot loop or repeat either: a
 // comment has one parent (comments.reply_to), and a cycle of replies naming no document reaches a
 // comment already answered, where the iteration stops with an empty working table.
-const scopeSourcesQuery = `
+var scopeSourcesQuery = `
 	with recursive
 	spec as (
 		select issue_key from artifacts where id = $1 and is_primary
-	),
-	scoped_asks as (
-		select k.id from asks k ` + askScopeJoin + `
-		where (coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid) = $1
-		       or k.artifact_id = $1
-		       or k.issue_key in (select issue_key from spec))
-		  and ` + askScope + ` = $1
-	),
+	),` + scopedAsksTerm + `
 	scoped_comments(id) as (
 		select c.id from comments c ` + commentSeedJoins + `
 		where (c.anchor->>'artifact_id')::uuid = $1 and ` + commentSeedScope + `
@@ -443,7 +457,9 @@ func ScopeSources(ctx context.Context, q Queryer, doc string) ([]Target, error) 
 // written, or one whose ask the same transaction opens - settlement makes the ask of every new
 // question block of an edit in one transaction - resolves to the ask it will name once the write
 // phase has run, and so does a copy whose opening line in that version names its source: the
-// line comes before its node's copied_from tuple, which the same write phase claims after.
+// line comes before its node's copied_from tuple, which the same write phase claims after. An ask
+// of a block of an issue room is queued under the room's key, its block_artifact_id, so the asks
+// queued under the room doc is edited in are read beside doc's own (pendingQuestionAsks).
 //
 // It answers for who. A document who may not see has no question, as one no row holds has none,
 // so not even its block ids are answered, and an ask who may not see is no question of it, nor is
@@ -495,7 +511,11 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	}
 	queuedBlocks, queuedAsks, queuedIssues := []string{}, []string{}, []*string{}
 	if pending != nil {
-		for _, ask := range pending.PendingBlockAsks(doc) {
+		asks, err := pendingQuestionAsks(ctx, q, pending, doc)
+		if err != nil {
+			return nil, err
+		}
+		for _, ask := range asks {
 			queuedBlocks = append(queuedBlocks, ask.BlockID)
 			queuedAsks = append(queuedAsks, ask.ID)
 			queuedIssues = append(queuedIssues, ask.IssueKey)
@@ -513,7 +533,7 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 		select b.block_id, b.id::text, b.issue_key, a.project_key, a.slug
 		from (
 			select k.block_id, k.id, k.issue_key from asks k
-			where k.block_artifact_id = $1 and k.block_id = any($2::text[])
+			where ` + AsksOfDocumentSQL("k", "$1::uuid") + ` and k.block_id = any($2::text[])
 			  and k.block_id not in (select block_id from queued)` + settled.andVisible(who, "ask", `k.id::text`) + `
 			union all
 			select q.block_id, q.id, q.issue_key from queued q where q.block_id = any($2::text[])
@@ -573,7 +593,7 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	query = `
 		select k.id::text, k.id::text, k.issue_key, a.project_key, coalesce(a.slug, '')
 		from asks k
-		left join artifacts a on a.id = coalesce(k.block_artifact_id, (k.anchor->>'artifact_id')::uuid, k.artifact_id)
+		left join artifacts a on a.id = coalesce(` + AskBlockDocumentSQL("k") + `, (k.anchor->>'artifact_id')::uuid, k.artifact_id)
 		where k.id = any(` + copiedArgs.param(sources) + `::uuid[])` +
 		copiedArgs.andVisible(who, "ask", `k.id::text`) + copiedArgs.andVisible(who, "artifact", `a.ref_key`)
 	copied, err := scanQuestions(q.Query(ctx, query, copiedArgs.values...))
@@ -588,6 +608,34 @@ func questionMap(ctx context.Context, q Queryer, who *model.Actor, doc string) (
 	return questions, nil
 }
 
+// pendingQuestionAsks is the block asks the reading transaction has queued that doc's question
+// map reads beside the stored ones (Pending.PendingBlockAsks): those queued under doc itself, and
+// those queued under the issue room doc is edited in (DocumentRoomSQL), the room's own key, which
+// every ask of a block of the room is queued under, its block_artifact_id (docs' recordAskBlock).
+// The room's block ids are unique across its fragments, and the read the map makes keeps the asks
+// of doc's own question blocks alone. A document that is its own room reads its room in the same
+// statement and nothing beside its own.
+func pendingQuestionAsks(ctx context.Context, q Queryer, pending Pending, doc string) ([]PendingBlockAsk, error) {
+	asks := pending.PendingBlockAsks(doc)
+	var room string
+	if err := q.QueryRow(ctx, `select (`+DocumentRoomSQL("$1::uuid")+`)::text`, doc).Scan(&room); err != nil {
+		return nil, fmt.Errorf("read the room document %s is edited in: %w", doc, err)
+	}
+	if room == doc {
+		return asks, nil
+	}
+	own := make(map[string]struct{}, len(asks))
+	for _, ask := range asks {
+		own[ask.BlockID] = struct{}{}
+	}
+	for _, ask := range pending.PendingBlockAsks(room) {
+		if _, held := own[ask.BlockID]; !held {
+			asks = append(asks, ask)
+		}
+	}
+	return asks, nil
+}
+
 // BlockCopiedFrom is the copied_from a block's node holds as it stands now: the node the
 // document's block index names for the block (document_blocks.node_address), and the ask that
 // node's copied_from tuple names.
@@ -595,31 +643,36 @@ type BlockCopiedFrom struct {
 	Node, Ask string
 }
 
-// copiedFromTuples is, for each of blocks, block ids of document doc, whose block node the
-// document's block index holds (document_blocks), the copied_from that node holds as it stands now
-// (readCopiedFrom), keyed by block id. A node that holds no standing copied_from is absent, so a
-// version the release before wrote, whose copy no settlement of this build has claimed, is read
-// from its line instead (questionMap).
+// copiedFromTuples is, for each of blocks, block ids of document doc, whose block node the block
+// index of the room doc is edited in holds (DocumentRoomSQL: doc itself, or the tree artifact of
+// the issue room that keys the rows of every fragment's blocks, whose ids are unique across the
+// room), the copied_from that node holds as it stands now (readCopiedFrom), keyed by block id. A
+// node that holds no standing copied_from is absent, so a version the release before wrote, whose
+// copy no settlement of this build has claimed, is read from its line instead (questionMap).
 func copiedFromTuples(ctx context.Context, q Queryer, doc string, blocks []string) (map[string]BlockCopiedFrom, error) {
-	return readCopiedFrom(ctx, q, doc, ` and d.block_id = any($2::text[])`, blocks)
+	return readCopiedFrom(ctx, q, doc, DocumentRoomSQL("$1::uuid"), ` and d.block_id = any($2::text[])`, blocks)
 }
 
-// DocumentCopiedFrom is copiedFromTuples for every block of document doc whose row in the
-// document's block index names a node, whatever the block's type now: the copied_from each such
-// node holds as it stands now, keyed by block id, with the node the row names. Settlement reads it
-// once, in its read phase, before its own block index is written, to retract the copied_from of
-// each block that is no longer an ask block (docs' claimCopies): one a person retyped. A block a
-// version drops has its row deleted and its copied_from retracted by the index pass of that
-// version (heldCopiedFrom), so it needs no read of the rows.
+// DocumentCopiedFrom is copiedFromTuples for every block of the room doc, a document that is its
+// own room or an issue room's tree artifact, whose row in the room's block index names a node,
+// whatever the block's type now: the copied_from each such node holds as it stands now, keyed by
+// block id, with the node the row names. Settlement reads it once, in its read phase, before its
+// own block index is written, to retract the copied_from of each block that is no longer an ask
+// block (docs' claimCopies): one a person retyped. A block a version drops has its row deleted and
+// its copied_from retracted by the index pass of that version (heldCopiedFrom), so it needs no
+// read of the rows. A block of a retired document of an issue room is left out: its fragment left
+// the room, so no settlement claims it, and every pass over the room keeps its row and its node as
+// the retirement left them (BlockIndexing.retained).
 func DocumentCopiedFrom(ctx context.Context, q Queryer, doc string) (map[string]BlockCopiedFrom, error) {
-	return readCopiedFrom(ctx, q, doc, "")
+	return readCopiedFrom(ctx, q, doc, "$1::uuid", ` and not `+retiredDocumentSQL(graphstore.RoomBlockRowSQL("d.artifact_id", "d.block_id")))
 }
 
 // readCopiedFrom is the one read of copiedFromTuples and DocumentCopiedFrom: each document_blocks
-// row d of document doc that names a node, cut by narrow, a further condition on d that binds args
-// from $2 on, with the node it names and the ask that node's newest copied_from tuple names while
-// that tuple asserts (graphstore.TupleCopiedFrom, graphstore.CurrentTupleRead), keyed by block id.
-func readCopiedFrom(ctx context.Context, q Queryer, doc, narrow string, args ...any) (map[string]BlockCopiedFrom, error) {
+// row d keyed by keyed, the artifact SQL over doc at $1, that names a node, cut by narrow, a
+// further condition on d that binds args from $2 on, with the node it names and the ask that
+// node's newest copied_from tuple names while that tuple asserts (graphstore.TupleCopiedFrom,
+// graphstore.CurrentTupleRead), keyed by block id.
+func readCopiedFrom(ctx context.Context, q Queryer, doc, keyed, narrow string, args ...any) (map[string]BlockCopiedFrom, error) {
 	rows, err := q.Query(ctx, `
 		select d.block_id, d.node_address, c.to_id
 		from document_blocks d
@@ -627,7 +680,7 @@ func readCopiedFrom(ctx context.Context, q Queryer, doc, narrow string, args ...
 		`t.from_kind = d.node_kind and t.from_id = d.node_address and t.kind = '`+graphstore.TupleCopiedFrom+`'
 			  and t.to_kind = '`+graphstore.KindAsk+`'`)+`
 		) c
-		where d.artifact_id = $1::uuid and d.node_address is not null and c.asserted`+narrow+`
+		where d.artifact_id = `+keyed+` and d.node_address is not null and c.asserted`+narrow+`
 	`, append([]any{doc}, args...)...)
 	if err != nil {
 		return nil, err
@@ -698,4 +751,11 @@ func canonicalUUID(id string) (string, bool) {
 		return "", false
 	}
 	return parsed.String(), true
+}
+
+// isCanonicalUUID says id is a uuid in its canonical spelling (canonicalUUID): one a uuid column
+// reads, and one no other spelling of the same uuid shadows.
+func isCanonicalUUID(id string) bool {
+	canonical, held := canonicalUUID(id)
+	return held && canonical == id
 }

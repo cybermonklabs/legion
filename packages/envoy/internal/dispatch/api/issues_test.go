@@ -704,6 +704,13 @@ func TestListIssuesReportsLastSequenceAfterEvent(t *testing.T) {
 		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
 	}
 	issue := decodeBody[model.Issue](t, created)
+	// The create answers the sequence of its issue.created, and its fill appends the artifact.digest
+	// of version 1 of the spec and of the decisions query past it (R14's hash gate), so the message
+	// is measured from the sequence a read of the issue answers.
+	before := readIssueDetail(t, handler, issue.Key).LastSeq
+	if before != issue.LastSeq+2 {
+		t.Fatalf("a read of %s answers last_seq %d, want %d: its create's issue.created and the two artifact.digest events its fill appended", issue.Key, before, issue.LastSeq+2)
+	}
 	if message := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/messages", map[string]string{
 		"body": "An event advances the sequence.",
 	}, "alice"); message.Code != http.StatusCreated {
@@ -718,7 +725,7 @@ func TestListIssuesReportsLastSequenceAfterEvent(t *testing.T) {
 	if len(summaries) != 1 {
 		t.Fatalf("listed issues = %#v, want one summary", summaries)
 	}
-	if got, want := summaries[0].LastSeq, issue.LastSeq+1; got != want {
+	if got, want := summaries[0].LastSeq, before+1; got != want {
 		t.Fatalf("list last_seq = %d, want %d after creating a message", got, want)
 	}
 }
@@ -1530,8 +1537,12 @@ func TestIssueChildrenSubtreeRollup(t *testing.T) {
 	if leafRow.SubtreeDone != 0 || leafRow.SubtreeTotal != 1 {
 		t.Fatalf("leaf rollup = %d/%d, want 0/1", leafRow.SubtreeDone, leafRow.SubtreeTotal)
 	}
-	if !leafRow.ActiveAt.Equal(leaf.UpdatedAt) {
-		t.Fatalf("leaf active_at = %s, want its own %s", leafRow.ActiveAt, leaf.UpdatedAt)
+	// The leaf's own updated_at is read back: its create answered the moment of its write, and the
+	// two artifact.digest events its fill appended after the COMMIT (R14's hash gate) moved the
+	// column past it, as every event on an issue does (events.Broker.QueueAppend).
+	own := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+leaf.Key, nil, "alice"))
+	if !leafRow.ActiveAt.Equal(own.UpdatedAt) {
+		t.Fatalf("leaf active_at = %s, want its own %s", leafRow.ActiveAt, own.UpdatedAt)
 	}
 	if len(leafRow.ExternalLinks) != 0 {
 		t.Fatalf("leaf external links = %#v, want none", leafRow.ExternalLinks)

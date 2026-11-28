@@ -109,7 +109,7 @@ func TestAReopenMovesNoApprovalRequestOntoTheClosedVersionOfARetiredDocument(t *
 	request := requestApproval(t, handler, notes.ID)
 	named := request.Approval.Version
 
-	f.peer = connectBrowserPeer(t, documentService, notes.ID)
+	f.peer = connectBrowserPeer(t, handler, documentService, notes.ID)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	awaitSettled(t, database, notes.ID)
 	closed := settleClosedEdit(t, f, replaceFirstParagraph("Context", "Context, edited in the margin"))
@@ -276,7 +276,7 @@ func TestSettlingAnIssuesDocumentsSettlesARetiredOneWithNoErrorAndNoVersion(t *t
 	settleIssue(t, documentService, issue.Key)
 	before := latestVersion(t, database, notes.ID).Number
 
-	peer := connectBrowserPeer(t, documentService, notes.ID)
+	peer := connectBrowserPeer(t, handler, documentService, notes.ID)
 	stored := storedUpdateCount(t, database, notes.ID)
 	peer.edit(t, replaceFirstParagraph("Context", "Context, typed before the retirement"))
 	peer.barrier(t)

@@ -1533,9 +1533,12 @@ function AlsoUnder({
 }
 
 /** Each gap the node carries, said in full where the picture draws "No check proves this": a
- *  statement no check serves, and a check whose `serves` names no statement. */
+ *  statement no check serves, and a check whose `serves` names no statement; then each line of
+ *  the coverage read a statement draws in their place while a document of the issue is still
+ *  being indexed (`TreeNode.coverageNotes`), in the server's words, which name the document. */
 function Gaps({ node }: { node: TreeNode }): ReactNode {
-  if (node.gaps.length === 0) return null;
+  const notes = node.coverageNotes ?? [];
+  if (node.gaps.length === 0 && notes.length === 0) return null;
   return (
     <>
       {node.gaps.map((gap) => (
@@ -1547,6 +1550,16 @@ function Gaps({ node }: { node: TreeNode }): ReactNode {
           {...pageChrome}
         >
           {GAP_LINES[gap]}
+        </p>
+      ))}
+      {notes.map((words) => (
+        <p
+          className={`mt-1 min-w-0 text-xs leading-[18px] ${pageQuietText}`}
+          data-coverage-note=""
+          key={words}
+          {...authorText}
+        >
+          {words}
         </p>
       ))}
     </>

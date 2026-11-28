@@ -1,0 +1,12 @@
+kind: Changed
+body: |-
+  The role prompts say that Dispatch judges whether an approval still stands at a later version,
+  where they said that any new version closes it. A root architect reads a carried gate as opening
+  once Dispatch shows a person's approval of the old document standing at the carried version or a
+  later one. The planner records a plan review again only for a plan version that changes what the
+  approval covers, and a worker reads a bare `approved v<n>` on `plan.md` as covering every newer
+  version. A worker's reason for leaving ask blocks to the architect is that a change to an
+  approved root spec can close the tree's design gate.
+time: 2026-11-27T18:49:25Z
+custom:
+    Issue: INFRA-1253

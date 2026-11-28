@@ -36,8 +36,8 @@ func registerTwoBuilds(t *testing.T, database *store.Store) {
 
 // baseSchemaVersion and baseSchemaCreatable are the schema numbers a process of the release
 // before registers: the base release's pmdoc/schema/blocks.json is version 6, below this build's
-// 8, and creates nothing past version 5. So a fleet holding one drives the fleet guard at the real
-// boundary, version 6 against this build's 8.
+// 9, and creates nothing past version 5. So a fleet holding one drives the fleet guard at the real
+// boundary, version 6 against this build's 9.
 const (
 	baseSchemaVersion   = 6
 	baseSchemaCreatable = 5

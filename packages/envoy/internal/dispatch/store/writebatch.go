@@ -23,12 +23,46 @@ import (
 // id sequence's currval), never read back in Go between them. A value the caller needs once the
 // batch has run - an event's id, a returned timestamp - is read by the statement's callback (Exec,
 // QueryRow, Query), which runs as Send reads that statement's result, in statement order.
+//
+// A batch is built for the context its transaction serves (NewWriteBatch) and carries the run of
+// the command bar that context names (Run), so a writer that queues on it reads the run off the
+// batch rather than off a context of its own: every statement of one write phase is made for one
+// run, or for none. The zero WriteBatch is made for no run.
 type WriteBatch struct {
 	batch pgx.Batch
 	// builds holds, beside each statement queued, the function that builds its arguments when
 	// Send reaches it (QueueBuilt), and nil for a statement queued with its arguments.
 	builds []func() ([]any, error)
+	run    string
 }
+
+// runKey is the context key WithRun carries a run under.
+type runKey struct{}
+
+// WithRun is ctx carrying run, the uuid of a run of the command bar - its interaction node's id,
+// in the lowercase form Postgres writes a uuid as text - for which every write made on that
+// context is made: a batch built for it carries the run (NewWriteBatch), and the graph store's
+// writers name each node such a write changes as changed by it. It is the one way a run reaches
+// a write. Its caller has proved the run live and the caller's own (api's withinGoingRun); nothing
+// here asks either again. The empty run is no run, so WithRun(ctx, "") takes a run off ctx.
+func WithRun(ctx context.Context, run string) context.Context {
+	return context.WithValue(ctx, runKey{}, run)
+}
+
+// RunOf is the run ctx carries (WithRun), and the empty string where it carries none.
+func RunOf(ctx context.Context) string {
+	run, _ := ctx.Value(runKey{}).(string)
+	return run
+}
+
+// NewWriteBatch is an empty write phase built for ctx: its writes are made for the run ctx
+// carries (RunOf), which the batch keeps for every statement queued on it (Run).
+func NewWriteBatch(ctx context.Context) WriteBatch {
+	return WriteBatch{run: RunOf(ctx)}
+}
+
+// Run is the run of the command bar the batch's writes are made for, the empty string for none.
+func (b *WriteBatch) Run() string { return b.run }
 
 // LatestEventID is the SQL expression for the id of the event this session appended last: the
 // events id sequence's currval, which the event's insert set (events.Broker.QueueAppend). A
@@ -286,10 +320,10 @@ func valueBytes(value reflect.Value) int {
 	}
 }
 
-// RunWrite runs write's statements in tx at once, as a batch of their own (Send): what a write
-// step does in a transaction that queues no write phase.
+// RunWrite runs write's statements in tx at once, as a batch of their own (Send) built for ctx
+// (NewWriteBatch): what a write step does in a transaction that queues no write phase.
 func RunWrite(ctx context.Context, tx pgx.Tx, write func(*WriteBatch) error) error {
-	var batch WriteBatch
+	batch := NewWriteBatch(ctx)
 	if err := write(&batch); err != nil {
 		return batch.SendFailed(ctx, tx, err)
 	}

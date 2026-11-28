@@ -50,13 +50,15 @@ func requireTheCensusAgreesOver(t *testing.T, database *store.Store, what string
 }
 
 // requireReadingParent fails unless the document_blocks row of the reading names the block want
-// as its parent: the ask block holding it, which its part_of to the ask's node projects.
+// as its parent: the ask block holding it, which its part_of to the ask's node projects. The row is
+// keyed by the artifact the document's blocks are keyed under, its issue room's tree for a
+// converted document (decisionDocument.room).
 func requireReadingParent(t *testing.T, database *store.Store, document decisionDocument, reading, want string) {
 	t.Helper()
 	var parent *string
 	if err := database.Pool.QueryRow(context.Background(), `
 		select parent_block_id from document_blocks where artifact_id = $1 and block_id = $2
-	`, document.id, reading).Scan(&parent); err != nil {
+	`, document.room, reading).Scan(&parent); err != nil {
 		t.Fatalf("read the row of the reading %s: %v", document.address(reading), err)
 	}
 	if parent == nil || *parent != want {

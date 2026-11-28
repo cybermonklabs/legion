@@ -97,13 +97,13 @@ func (g *gatedMarkQuote) MarkQuote(
 	artifactID string,
 	mark docs.MarkSpec,
 	quote string,
-	occurrence *int,
+	scope *docs.QuoteScope,
 ) (docs.Anchored, error) {
 	g.once.Do(func() {
 		close(g.entered)
 		<-g.release
 	})
-	return g.API.MarkQuote(ctx, artifactID, mark, quote, occurrence)
+	return g.API.MarkQuote(ctx, artifactID, mark, quote, scope)
 }
 
 // The other holders that wait are the document settlements: each opens its own transaction and

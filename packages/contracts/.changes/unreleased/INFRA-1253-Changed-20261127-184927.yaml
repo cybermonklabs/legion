@@ -1,0 +1,11 @@
+kind: Changed
+body: |-
+  `dispatch request-approval --help`, `dispatch plan-approve --help` and `dispatch edit-ask --help`
+  say that Dispatch judges whether an approval stands at a later version. On the spec,
+  Verification document or plan of an issue Dispatch has converted to one tree, an approval covers
+  the digest of the document's query, and a version that leaves that digest equal keeps it; on any
+  other document an approval carries to a later version only by its text, as before. A Legion root
+  spec's design gate follows that verdict, where the help said that any new version closes it.
+time: 2026-11-27T18:49:27Z
+custom:
+    Issue: INFRA-1253

@@ -8,6 +8,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 )
 
 // unsetIssue is the issue an issue.created's changed list is measured from: no field holds a
@@ -39,7 +40,11 @@ func issueChangedFields(before, after model.Issue) []string {
 	add("repo", !stringPointersEqual(before.Repo, after.Repo) || !stringPointersEqual(before.ResolvedRepo, after.ResolvedRepo))
 	add("components", !issueComponentsEqual(before.Components, after.Components))
 	add("advances", !slices.Equal(before.Advances, after.Advances))
+	// The issue's waits under both spellings, one relation answered by both (model.Issue.Needs).
 	add("blocked_by", !slices.Equal(before.BlockedBy, after.BlockedBy))
+	add("needs", !slices.Equal(before.Needs, after.Needs))
+	add("duplicate_of", !stringPointersEqual(before.DuplicateOf, after.DuplicateOf))
+	add("filed_from", !stringPointersEqual(before.FiledFrom, after.FiledFrom))
 	add("external_links", !slices.Equal(before.ExternalLinks, after.ExternalLinks))
 	return changed
 }
@@ -85,15 +90,16 @@ func newIssueEventPayload(ctx context.Context, tx pgx.Tx, issue model.Issue, cha
 	return payload, nil
 }
 
-// issueEdgeChanges names the issues whose reads an issue write moves through the issue's own
-// child_of and blocked_by edges. A retitle (retitled) names its parent and the issues it is blocked
-// by: the graph keeps those edges, but the excerpt they show (refs.Edges cuts it from an issue's
-// title) moves. Every issue the write added to or removed from blocked_by is named too, since its
-// referenced_by_count counts the edge. A create passes unsetIssue as before, which names every
-// blocker the new issue holds. CountedChanges names each target once, so a blocker both reasons
-// name appears once.
+// issueEdgeChanges names the nodes whose reads an issue write moves through the issue's own
+// child_of, needs, duplicate_of and filed_from edges. A retitle (retitled) names its parent and the
+// issues it waits on: the graph keeps those edges, but the excerpt they show (refs.Edges cuts it
+// from an issue's title) moves. Every issue the write added to or removed from its waits is named
+// too, since its referenced_by_count counts the edge, and so are the issue a duplicate_of moved
+// off or onto and the item a filed_from moved off or onto. A create passes unsetIssue as before,
+// which names every target the new issue holds. CountedChanges names each target once, so a
+// target several reasons name appears once.
 func issueEdgeChanges(ctx context.Context, tx pgx.Tx, before, after model.Issue, retitled bool) (model.ReferenceChanges, error) {
-	targets := make([]refs.Target, 0, len(before.BlockedBy)+2*len(after.BlockedBy)+1)
+	targets := make([]refs.Target, 0, len(before.Needs)+2*len(after.Needs)+5)
 	name := func(key string) {
 		targets = append(targets, refs.Target{Kind: "issue", ID: key})
 	}
@@ -101,18 +107,35 @@ func issueEdgeChanges(ctx context.Context, tx pgx.Tx, before, after model.Issue,
 		if after.Parent != nil {
 			name(*after.Parent)
 		}
-		for _, blocker := range after.BlockedBy {
-			name(blocker)
+		for _, target := range after.Needs {
+			name(target)
 		}
 	}
-	for _, blocker := range before.BlockedBy {
-		if !slices.Contains(after.BlockedBy, blocker) {
-			name(blocker)
+	for _, target := range before.Needs {
+		if !slices.Contains(after.Needs, target) {
+			name(target)
 		}
 	}
-	for _, blocker := range after.BlockedBy {
-		if !slices.Contains(before.BlockedBy, blocker) {
-			name(blocker)
+	for _, target := range after.Needs {
+		if !slices.Contains(before.Needs, target) {
+			name(target)
+		}
+	}
+	if !stringPointersEqual(before.DuplicateOf, after.DuplicateOf) {
+		for _, key := range []*string{before.DuplicateOf, after.DuplicateOf} {
+			if key != nil {
+				name(*key)
+			}
+		}
+	}
+	if !stringPointersEqual(before.FiledFrom, after.FiledFrom) {
+		for _, reference := range []*string{before.FiledFrom, after.FiledFrom} {
+			if reference == nil {
+				continue
+			}
+			if item, ok := text.ParseRef(*reference, ""); ok {
+				targets = append(targets, refs.Target{Kind: item.Kind, ID: item.ID})
+			}
 		}
 	}
 	return refs.CountedChanges(ctx, tx, targets)

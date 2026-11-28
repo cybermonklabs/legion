@@ -29,6 +29,7 @@ import (
 	"github.com/sjawhar/envoy/internal/ciphertoken"
 	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/clock/clocktest"
+	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/agentstream"
 	"github.com/sjawhar/envoy/internal/dispatch/api/apitest"
@@ -69,14 +70,16 @@ const apiTestParallelism = 8
 
 // TestMain runs the package's tests through the Dispatch harness's Main, which drops their
 // databases and their templates, inside the broker harness's Run, which then drops the database
-// brokerstoretest.URL made the contract rows' broker schemas in. Both waits end at the bound
-// testdb.TeardownDeadline gives the test binary, and the broker's, which begins where the Dispatch
-// harness's may have reached that bound, still waits testdb's floor for its own drop.
+// brokerstoretest.URL made the contract rows' broker schemas in, and both inside cmdtest.Run, which
+// makes the directory the two dispatch binaries tree_read_skeleton_bound_test.go builds are written
+// into and removes it once the tests end. Both waits end at the bound testdb.TeardownDeadline gives
+// the test binary, and the broker's, which begins where the Dispatch harness's may have reached that
+// bound, still waits testdb's floor for its own drop.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(apiTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
-	os.Exit(brokerstoretest.Run(func() int { return storetest.Main(m) }))
+	os.Exit(cmdtest.Run(func() int { return brokerstoretest.Run(func() int { return storetest.Main(m) }) }))
 }
 
 // sharedAgentTokens is a DISPATCH_AGENT_TOKEN setting parsed as the server parses it at boot.
@@ -275,6 +278,10 @@ type testServerOptions struct {
 	// list asks the listener and stores no copy, as the browser suite's server runs
 	// (DISPATCH_TEST_ROSTER_UNCACHED=1, e2e/run-server.sh). False is the deployment's stored copy.
 	listenerRosterUncached bool
+	// issueTreePageSize is Deps.IssueTreePageSize, the most nodes one page of the tree read
+	// answers; zero keeps issueTreePageSize, as every deployment does. A test of paging sets a
+	// few, so a small issue reads several pages.
+	issueTreePageSize int
 }
 
 // testTakeoverWindow is the listener take-over window of a test server that sets none. A send to
@@ -453,6 +460,7 @@ func newRegisteredTestServer(t testing.TB, options testServerOptions) (http.Hand
 		t.Fatalf("new API dependencies: %v", err)
 	}
 	deps.LiveSocketAge = options.liveSocketAge
+	deps.IssueTreePageSize = options.issueTreePageSize
 	deps.LiveSocketClock = options.liveSocketClock
 	mux := http.NewServeMux()
 	served := register(mux, lifetime, deps)
@@ -655,16 +663,22 @@ func databaseFingerprint(t *testing.T, database *store.Store) map[string]string 
 	}
 	fingerprint := make(map[string]string, len(tables))
 	for _, table := range tables {
-		var digest string
-		if err := database.Pool.QueryRow(ctx, fmt.Sprintf(
-			`select count(*) || ':' || coalesce(md5(string_agg(t::text, ',' order by t::text)), '') from %s t`,
-			pgx.Identifier{table}.Sanitize(),
-		)).Scan(&digest); err != nil {
-			t.Fatalf("fingerprint %s: %v", table, err)
-		}
-		fingerprint[table] = digest
+		fingerprint[table] = tableFingerprint(t, database, table)
 	}
 	return fingerprint
+}
+
+// tableFingerprint hashes every row of table: its row count and the md5 of its rows in order.
+func tableFingerprint(t *testing.T, database *store.Store, table string) string {
+	t.Helper()
+	var digest string
+	if err := database.Pool.QueryRow(context.Background(), fmt.Sprintf(
+		`select count(*) || ':' || coalesce(md5(string_agg(t::text, ',' order by t::text)), '') from %s t`,
+		pgx.Identifier{table}.Sanitize(),
+	)).Scan(&digest); err != nil {
+		t.Fatalf("fingerprint %s: %v", table, err)
+	}
+	return digest
 }
 
 // assertUnchanged fails for each table whose rows differ between two fingerprints of one database.
@@ -926,34 +940,19 @@ func TestCreateIssueRejectsASpecLineTheBrowserReadsAsBlockHTML(t *testing.T) {
 	}
 }
 
+// A document whose store cannot be read answers its text and blocks 503 DOC_SERVICE_UNAVAILABLE.
+// The issue is made through a server whose store works, since an issue is born converted and its
+// create writes the spec's fragment into the issue room it seeds; the reads go through a second
+// server on the same database whose store fails every read (readingServer).
 func TestDocumentTextReportsUnavailableService(t *testing.T) {
 	t.Parallel()
-	database := storetest.Open(t)
-	broker := events.NewBroker()
-	documentService := docs.New(docs.Deps{
-		Store:       database,
-		Persistence: failingLoadStore{VersionedStore: docs.NewPgVersioned(database)},
-		Events:      broker,
-	})
-	t.Cleanup(func() { _ = documentService.Shutdown(context.Background()) })
-	deps, err := NewDeps(DepsInput{
-		Store:    database,
-		Identity: headerIdentity(database),
-		Docs:     documentService,
-		Events:   broker,
-	})
-	if err != nil {
-		t.Fatalf("new API dependencies: %v", err)
-	}
-	mux := http.NewServeMux()
-	t.Cleanup(Register(mux, t.Context(), deps).Wait)
-
-	if response := dispatchRequest(t, mux, http.MethodPost, "/api/v1/projects", map[string]string{
+	writer, database, _ := newTestServer(t, testServerOptions{})
+	if response := dispatchRequest(t, writer, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "Test project",
 	}, "alice"); response.Code != http.StatusCreated {
 		t.Fatalf("create project: status=%d body=%s", response.Code, response.Body.String())
 	}
-	issueResponse := dispatchRequest(t, mux, http.MethodPost, "/api/v1/issues", map[string]string{
+	issueResponse := dispatchRequest(t, writer, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "TEST", "title": "Issue", "spec": "before",
 	}, "alice")
 	if issueResponse.Code != http.StatusCreated {
@@ -962,6 +961,7 @@ func TestDocumentTextReportsUnavailableService(t *testing.T) {
 	issue := decodeBody[struct {
 		PrimaryArtifactID string `json:"primary_artifact_id"`
 	}](t, issueResponse)
+	mux := readingServer(t, database, failingLoadStore{VersionedStore: docs.NewPgVersioned(database)}, nil)
 
 	response := dispatchRequest(t, mux, http.MethodGet, "/api/v1/artifacts/"+issue.PrimaryArtifactID+"/text", nil, "alice")
 	if response.Code != http.StatusServiceUnavailable || !strings.Contains(response.Body.String(), `"code":"DOC_SERVICE_UNAVAILABLE"`) {
@@ -984,8 +984,8 @@ func (failingLoadStore) Load(context.Context, string) (persistence.LoadResult, e
 	return persistence.LoadResult{}, errors.New("persistence unavailable")
 }
 
-func (failingLoadStore) DocumentStamp(context.Context, string) (docs.DocumentStamp, error) {
-	return docs.DocumentStamp{}, errors.New("persistence unavailable")
+func (failingLoadStore) DocumentStamp(context.Context, string) (string, docs.DocumentStamp, error) {
+	return "", docs.DocumentStamp{}, errors.New("persistence unavailable")
 }
 
 func (failingLoadStore) LoadDocument(context.Context, string) (docs.LoadedDocument, error) {
@@ -1469,28 +1469,39 @@ func TestIssueRouteVersionEventsAndChildStatus(t *testing.T) {
 	if err := json.NewDecoder(childEvents.Body).Decode(&childLog); err != nil {
 		t.Fatalf("decode child events: %v", err)
 	}
-	if len(childLog) != 5 {
-		t.Fatalf("child events: got %#v, want five events", childLog)
+	// The create's fill appends the quiet artifact.digest of version 1 of the child's spec and of
+	// its decisions query after its issue.created, and each named version of the spec its own
+	// artifact.digest after its artifact.version (R14's hash gate), in the order the fill runs, after
+	// the write's COMMIT: the person's named version notifies, the session's does not.
+	type loggedEvent struct {
+		Type   string
+		Notify bool
+	}
+	wantChild := []loggedEvent{
+		{"issue.created", true}, {"artifact.digest", false}, {"artifact.digest", false},
+		{"issue.updated", true}, {"issue.updated", true},
+		{"artifact.version", true}, {"artifact.digest", false},
+		{"artifact.version", false}, {"artifact.digest", false},
+	}
+	if len(childLog) != len(wantChild) {
+		t.Fatalf("child events: got %#v, want %v", childLog, wantChild)
 	}
 	for index, event := range childLog {
 		if event.Seq != index+1 {
 			t.Fatalf("child event %d sequence: got %d, want %d", index, event.Seq, index+1)
 		}
-	}
-	if !childLog[3].Notify || childLog[4].Notify {
-		t.Fatalf("named version notifications: got user=%t session=%t", childLog[3].Notify, childLog[4].Notify)
+		if got := (loggedEvent{event.Type, event.Notify}); got != wantChild[index] {
+			t.Fatalf("child event %d: got %+v, want %+v of %v", index, got, wantChild[index], wantChild)
+		}
 	}
 
 	parentEvents := dispatchRequest(t, handler, http.MethodGet, "/api/v1/issues/"+parent.Key+"/events", nil, "alice")
-	var parentLog []struct {
-		Type   string `json:"type"`
-		Notify bool   `json:"notify"`
-	}
+	var parentLog []loggedEvent
 	if err := json.NewDecoder(parentEvents.Body).Decode(&parentLog); err != nil {
 		t.Fatalf("decode parent events: %v", err)
 	}
-	if len(parentLog) != 2 || parentLog[1].Type != "child.status" || !parentLog[1].Notify {
-		t.Fatalf("parent events: got %#v, want child.status notification", parentLog)
+	if want := []loggedEvent{{"issue.created", true}, {"artifact.digest", false}, {"artifact.digest", false}, {"child.status", true}}; !slices.Equal(parentLog, want) {
+		t.Fatalf("parent events: got %#v, want %v: its create's two quiet artifact.digest events, then the child.status notification", parentLog, want)
 	}
 }
 
@@ -1519,8 +1530,12 @@ func TestListIssueEventsSupportsNewestCursorAndIDLookup(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	broker := events.NewBroker()
-	eventIDs := make(map[int]int64, 249)
-	for wantSeq := 2; wantSeq <= 250; wantSeq++ {
+	// The issue holds its issue.created at 1 and, at 2 and 3, the artifact.digest of version 1 of
+	// its spec and of its decisions query, which its create's fill appended (R14's hash gate): the
+	// seed takes the sequences after them, up to 250.
+	const firstSeeded = 4
+	eventIDs := make(map[int]int64, 250-firstSeeded+1)
+	for wantSeq := firstSeeded; wantSeq <= 250; wantSeq++ {
 		event, err := broker.Append(ctx, tx, model.Event{
 			IssueKey: new(issue.Key),
 			Type:     "test.seeded",
@@ -1572,15 +1587,15 @@ func TestListIssueEventsSupportsNewestCursorAndIDLookup(t *testing.T) {
 	}
 
 	ids := dispatchRequest(t, handler, http.MethodGet,
-		"/api/v1/issues/"+issue.Key+"/events?ids="+fmt.Sprintf("%d,%d,%d", eventIDs[250], eventIDs[2], eventIDs[100]),
+		"/api/v1/issues/"+issue.Key+"/events?ids="+fmt.Sprintf("%d,%d,%d", eventIDs[250], eventIDs[firstSeeded], eventIDs[100]),
 		nil, "alice")
 	if ids.Code != http.StatusOK {
 		t.Fatalf("list event IDs: status=%d body=%s", ids.Code, ids.Body.String())
 	}
 	idLog := decodeBody[[]listedEvent](t, ids)
-	for index, want := range []int{2, 100, 250} {
+	for index, want := range []int{firstSeeded, 100, 250} {
 		if len(idLog) != 3 || idLog[index].Seq != want {
-			t.Fatalf("events by ID: got %#v, want sequences [2 100 250]", idLog)
+			t.Fatalf("events by ID: got %#v, want sequences [%d 100 250]", idLog, firstSeeded)
 		}
 	}
 
@@ -2172,10 +2187,12 @@ func TestDocumentUploadIndexesDispatchReferences(t *testing.T) {
 	if uploaded.Code != http.StatusCreated {
 		t.Fatalf("upload document: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
+	// A document of an issue room is indexed by the room's pass, whose references are keyed by the
+	// room's tree artifact (docs.IndexDocumentReferences).
 	var references int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from refs
-		where from_kind = 'artifact' and from_id = $1 and to_kind = 'artifact' and to_id = 'TEST-1/spec'
+		where from_kind = 'artifact' and from_id = (`+refs.DocumentRoomSQL("$1::uuid")+`)::text and to_kind = 'artifact' and to_id = 'TEST-1/spec'
 	`, artifact.Artifact.ID).Scan(&references); err != nil {
 		t.Fatalf("count uploaded document references: %v", err)
 	}
@@ -2201,10 +2218,12 @@ func TestIssueDocumentCreationIndexesDispatchReferences(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create issue: status=%d body=%s", created.Code, created.Body.String())
 	}
+	// The spec is a fragment of the issue room it is born in, whose references are keyed by the
+	// room's tree artifact (docs.IndexDocumentReferences).
 	var references int
 	if err := database.Pool.QueryRow(context.Background(), `
 		select count(*) from refs
-		where from_kind = 'artifact' and from_id = $1 and to_kind = 'artifact' and to_id = 'TEST-1/spec'
+		where from_kind = 'artifact' and from_id = (`+refs.DocumentRoomSQL("$1::uuid")+`)::text and to_kind = 'artifact' and to_id = 'TEST-1/spec'
 	`, issue.PrimaryArtifactID).Scan(&references); err != nil {
 		t.Fatalf("count created document references: %v", err)
 	}

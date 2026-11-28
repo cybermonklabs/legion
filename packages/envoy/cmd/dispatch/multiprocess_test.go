@@ -2752,8 +2752,7 @@ func TestAProcessStoppedWhileWaitingForAdmissionReleasesItsDurables(t *testing.T
 	default:
 	}
 
-	waiting.Terminate(t)
-	waiting.WaitExit(t, "SIGTERM")
+	stopProcess(t, waiting)
 	stopped := time.Now()
 	if code := waiting.Cmd.ProcessState.ExitCode(); code != 0 {
 		t.Fatalf("a process stopped while waiting for admission exited %d, want 0:\n%s", code, waiting.Output.String())
@@ -3786,9 +3785,10 @@ func TestADocumentWriteOnOneProcessReachesTheOpenEditorOnTheOther(t *testing.T) 
 // storedHead is the version of the document's latest durable update.
 func storedHead(t *testing.T, pair *dispatchPair, artifactID string) int64 {
 	t.Helper()
+	room := documentRoom(t, pair.database, artifactID)
 	var head int64
 	if err := pair.database.Pool.QueryRow(context.Background(),
-		`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, artifactID).Scan(&head); err != nil {
+		`select coalesce(max(version), 0) from doc_updates where artifact_id = $1`, room).Scan(&head); err != nil {
 		t.Fatalf("read the stored head of %s: %v", artifactID, err)
 	}
 	return head
@@ -3866,10 +3866,11 @@ func (p *dispatchPair) openMarkedEditor(t *testing.T, process *dispatchProcess, 
 	if err != nil {
 		t.Fatalf("send %s's sync marker: %v", login, err)
 	}
+	room := documentRoom(t, p.database, artifactID)
 	for deadline := time.Now().Add(20 * time.Second); ; time.Sleep(10 * time.Millisecond) {
 		var stored bool
 		if err := p.database.Pool.QueryRow(context.Background(),
-			`select exists(select 1 from doc_updates where artifact_id = $1 and update = $2)`, artifactID, update).Scan(&stored); err != nil {
+			`select exists(select 1 from doc_updates where artifact_id = $1 and update = $2)`, room, update).Scan(&stored); err != nil {
 			t.Fatalf("read %s's stored sync marker: %v", login, err)
 		}
 		if stored {
@@ -4062,13 +4063,40 @@ func waitForPassBehind(
 	}
 }
 
-// The first statement of each pass this test waits for, as pg_stat_activity shows it: the
-// reference-excerpt pass's write (refs.MarkStaleExcerpts) and the block-index pass's read of the
-// documents owed an index (docs' owedDocuments), which reads each of its two partial indexes in a
-// branch of its own and holds this text in both.
+// databaseSessions is every other session of the test's database as pg_stat_activity shows it
+// now, one line each: its pid, its application, its state, what it waits on, the sessions it
+// waits behind (pg_blocking_pids) and the first 400 bytes of its statement. A wait for a pass
+// that never reached its gate fails with it, since the processes' output names no statement: it
+// says where the pass that holds the lease stands instead.
+func databaseSessions(database *store.Store) string {
+	rows, err := database.Pool.Query(context.Background(), `
+		select format('pid=%s app=%s state=%s wait=%s/%s blocked_by=%s query=%s',
+		              pid, application_name, state, wait_event_type, wait_event,
+		              pg_blocking_pids(pid), left(regexp_replace(query, '\s+', ' ', 'g'), 400))
+		from pg_stat_activity
+		where datname = current_database() and pid <> pg_backend_pid()
+		order by pid`)
+	if err != nil {
+		return fmt.Sprintf("(the sessions could not be read: %v)", err)
+	}
+	lines, err := pgx.CollectRows(rows, pgx.RowTo[string])
+	if err != nil {
+		return fmt.Sprintf("(the sessions could not be read: %v)", err)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// The statement of each pass this test waits for, as pg_stat_activity shows it: the
+// reference-excerpt pass's write (refs.MarkStaleExcerpts), its first statement, and the block-index
+// pass's read of the documents owed an index (docs' owedDocuments), its first read of a table the
+// block gate holds. Each is named by text from its opening: pg_stat_activity keeps only the first
+// track_activity_query_size bytes of a statement (1024 by default), and owedDocuments reads
+// document_block_versions from byte 1155 on, past its select list's reads of an issue room's
+// revision and of the Decisions query (R15), so a session reading it there shows no text of that
+// read and a wait named by it finds no pass.
 const (
 	referenceExcerptPassStatement = "update refs r set excerpt_version = null"
-	blockIndexPassStatement       = "select artifact_id from document_block_versions"
+	blockIndexPassStatement       = "select b.artifact_id::text, coalesce(room.id::text, '')"
 )
 
 // Every leased maintenance loop takes a named lease for the length of its pass, so the second
@@ -4139,8 +4167,8 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	pair.start(t, githubAppEnv(t, fake.URL()))
 
 	if !waitForPassBehind(t, pair.database, gate, referenceExcerptPassStatement, 60*time.Second) {
-		t.Fatalf("no reference-excerpt pass reached the refs lock, so neither process took the lease:\nA:\n%s\nB:\n%s",
-			pair.a.Output.String(), pair.b.Output.String())
+		t.Fatalf("no reference-excerpt pass reached the refs lock, so neither process took the lease:\nsessions:\n%s\nA:\n%s\nB:\n%s",
+			databaseSessions(pair.database), pair.a.Output.String(), pair.b.Output.String())
 	}
 	waitForLease(t, pair, leaseSkipped, "reference-excerpts", 60*time.Second)
 	if ran := countLease(pair.a, leaseRan, "reference-excerpts") + countLease(pair.b, leaseRan, "reference-excerpts"); ran != 0 {
@@ -4152,8 +4180,8 @@ func TestALeasedLoopsPassesNeverOverlapAcrossBothProcesses(t *testing.T) {
 	}
 
 	if !waitForPassBehind(t, pair.database, blockGate, blockIndexPassStatement, 60*time.Second) {
-		t.Fatalf("no block-index pass reached the document_block_versions lock, so neither process took the lease:\nA:\n%s\nB:\n%s",
-			pair.a.Output.String(), pair.b.Output.String())
+		t.Fatalf("no block-index pass reached the document_block_versions lock, so neither process took the lease:\nsessions:\n%s\nA:\n%s\nB:\n%s",
+			databaseSessions(pair.database), pair.a.Output.String(), pair.b.Output.String())
 	}
 	waitForLease(t, pair, leaseSkipped, "block-index", 60*time.Second)
 	if ran := countLease(pair.a, leaseRan, "block-index") + countLease(pair.b, leaseRan, "block-index"); ran != 0 {
@@ -5085,10 +5113,16 @@ func (p *dispatchProcess) textAndToken(t *testing.T, artifactID string) (string,
 	return document.Markdown, document.Token
 }
 
-// holdsRoom reports whether the process holds a room of the document now (the rooms test hook).
+// holdsRoom reports whether the process holds now the room the document is edited in, as the
+// process's artifact read names it (room): its issue's room for a role document of a converted
+// issue, the document itself otherwise. The rooms test hook lists rooms by their names.
 func (p *dispatchProcess) holdsRoom(t *testing.T, artifactID string) bool {
 	t.Helper()
-	return slices.Contains(p.residentRooms(t), artifactID)
+	var artifact model.Artifact
+	if answer := p.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID, "", http.StatusOK); json.Unmarshal(answer, &artifact) != nil || artifact.Room == "" {
+		t.Fatalf("the artifact read of %s names no room: %s", artifactID, answer)
+	}
+	return slices.Contains(p.residentRooms(t), artifact.Room)
 }
 
 // roomCloses names what the room-counters hook counted for the document on either process so far
@@ -5145,9 +5179,9 @@ func (t lenientT) Fatalf(format string, args ...any) {
 	panic(dialRefused{fmt.Errorf(format, args...)})
 }
 
-// dialEditor connects login's tab to the document's socket at url, answering a refusal as an
-// error.
-func dialEditor(t *testing.T, url, login, artifactID string) (editor *docstest.Peer, err error) {
+// dialEditor connects login's tab to the document's socket at url, bound to fragment of its room
+// (dispatchProcess.artifactFragment), answering a refusal as an error.
+func dialEditor(t *testing.T, url, login, artifactID, fragment string) (editor *docstest.Peer, err error) {
 	defer func() {
 		if recovered := recover(); recovered != nil {
 			refused, ok := recovered.(dialRefused)
@@ -5157,7 +5191,9 @@ func dialEditor(t *testing.T, url, login, artifactID string) (editor *docstest.P
 			err = refused.err
 		}
 	}()
-	return docstest.Dial(lenientT{t}, url, asUser(login), artifactID, crdt.New()), nil
+	editor = docstest.Dial(lenientT{t}, url, asUser(login), artifactID, crdt.New())
+	editor.Fragment = fragment
+	return editor, nil
 }
 
 // awaitDocument asks the room for its document until the editor's copy renders one.
@@ -5186,9 +5222,10 @@ func awaitDocument(editor *docstest.Peer, within time.Duration) error {
 // can report what it counted.
 func (p *dispatchProcess) reconnectEditor(t *testing.T, login, artifactID string) (*docstest.Peer, error) {
 	t.Helper()
+	fragment := p.artifactFragment(t, artifactID)
 	var last error
 	for range 20 {
-		editor, err := dialEditor(t, p.documentURL(artifactID), login, artifactID)
+		editor, err := dialEditor(t, p.documentURL(artifactID), login, artifactID, fragment)
 		if err == nil {
 			if err = awaitDocument(editor, 10*time.Second); err == nil {
 				return editor, nil
@@ -5231,12 +5268,14 @@ func (p *dispatchPair) waitStoredPast(t *testing.T, artifactID string, head int6
 	}
 }
 
-// storedText renders the document the store holds: its updates folded in order, which is what
-// every reload of it reads, whatever any room holds.
+// storedText renders the document the store holds: its room's updates folded in order, which is
+// what every reload of it reads, whatever any room holds, read through the document's own fragment
+// (storedRoomOf).
 func storedText(t *testing.T, pair *dispatchPair, artifactID string) string {
 	t.Helper()
+	room, fragment := storedRoomOf(t, pair, artifactID)
 	rows, err := pair.database.Pool.Query(context.Background(),
-		`select update from doc_updates where artifact_id = $1 order by version`, artifactID)
+		`select update from doc_updates where artifact_id = $1 order by version`, room)
 	if err != nil {
 		t.Fatalf("read the stored history of %s: %v", artifactID, err)
 	}
@@ -5254,7 +5293,20 @@ func storedText(t *testing.T, pair *dispatchPair, artifactID string) string {
 	if err := rows.Err(); err != nil {
 		t.Fatalf("read the stored history of %s: %v", artifactID, err)
 	}
-	return renderDocument(document)
+	return renderDocument(document, fragment)
+}
+
+// storedRoomOf is the room artifactID's document is edited in (docs.DocumentRoomOfStatement),
+// whose stored history holds the document, and the document's fragment of it, as the artifact
+// read answers both: the issue's room and the document's own fragment for a converted document,
+// the document and the room's own fragment otherwise.
+func storedRoomOf(t *testing.T, pair *dispatchPair, artifactID string) (room, fragment string) {
+	t.Helper()
+	room = documentRoom(t, pair.database, artifactID)
+	if room == artifactID {
+		return room, model.ArtifactFragmentOwn
+	}
+	return room, artifactID
 }
 
 // storedCaughtUpWith waits up to within for the stored document to read as the editor's copy
@@ -5299,7 +5351,7 @@ func (p *dispatchPair) waitStoredHolds(t *testing.T, artifactID, want string, wi
 // typeAtEnd types text at the end of the editor's first paragraph in one keystroke's transaction,
 // on the paragraph's own Yjs text as ProseMirror's binding does, and sends the room the update.
 func typeAtEnd(editor *docstest.Peer, text string) error {
-	fragment := editor.Doc.GetXmlFragment("prosemirror")
+	fragment := editor.Doc.GetXmlFragment(editorFragment(editor))
 	missing := false
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		paragraph := crafted.FirstText(fragment)
@@ -5320,7 +5372,7 @@ func typeAtEnd(editor *docstest.Peer, text string) error {
 // rewriteDocument changes the editor's document as one transaction - change edits the tree it
 // reads, and pmdoc writes the difference back - and sends the room the update.
 func rewriteDocument(editor *docstest.Peer, change func(*pmdoc.Node) error) error {
-	fragment := editor.Doc.GetXmlFragment("prosemirror")
+	fragment := editor.Doc.GetXmlFragment(editorFragment(editor))
 	var changeErr error
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		tree, err := pmdoc.ReadInTransaction(txn, fragment)
@@ -5375,7 +5427,7 @@ func appendMarkdown(t *testing.T, editor *docstest.Peer, markdown string) {
 // dashboard does before it posts the comment that mark anchors.
 func placeMark(t *testing.T, editor *docstest.Peer, login, quote, id string) {
 	t.Helper()
-	fragment := editor.Doc.GetXmlFragment("prosemirror")
+	fragment := editor.Doc.GetXmlFragment(editorFragment(editor))
 	var markErr error
 	if _, err := editor.Send(func(txn *crdt.Transaction) {
 		tree, err := pmdoc.ReadInTransaction(txn, fragment)
@@ -5417,7 +5469,7 @@ func roomRendering(editor *docstest.Peer, within time.Duration) (string, error) 
 		if err := crdt.ApplyUpdateV1(doc, state, nil); err != nil {
 			return "", fmt.Errorf("apply the room's document: %w", err)
 		}
-		return renderDocument(doc), nil
+		return renderDocument(doc, editorFragment(editor)), nil
 	case <-editor.Ended:
 		return "", fmt.Errorf("the connection closed (code %d) before the room sent its document", editor.CloseCode())
 	case <-time.After(within):
@@ -6232,8 +6284,8 @@ func TestAnAskBlockKeepsItsAuthorWhenAnotherProcessSettlesIt(t *testing.T) {
 	pair.b.kill(t)
 
 	backdated, err := pair.database.Pool.Exec(context.Background(), `
-		update doc_settlements_pending set marked_at = now() - interval '2 minutes' where artifact_id = $1
-	`, artifactID)
+		update doc_settlements_pending set marked_at = now() - interval '2 minutes' where artifact_id = `+refs.DocumentRoomSQL("$1::uuid"),
+		artifactID)
 	if err != nil {
 		t.Fatalf("age the document's pending settlement: %v", err)
 	}
@@ -6550,11 +6602,13 @@ func TestAReadOnTheOtherProcessIsNeverOlderThanTheStore(t *testing.T) {
 	})
 }
 
-// corruptHistory makes the document's stored history one update ygo cannot decode, at the head
-// it stood at, so a rebuild has something to rebuild and no room's cursor moves.
+// corruptHistory makes the stored history of the room the document is edited in (documentRoom)
+// one update ygo cannot decode, at the head it stood at, so a rebuild has something to rebuild and
+// no room's cursor moves.
 func corruptHistory(t *testing.T, pair *dispatchPair, artifactID string) {
 	t.Helper()
 	ctx := context.Background()
+	room := documentRoom(t, pair.database, artifactID)
 	tx, err := pair.database.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin the corruption: %v", err)
@@ -6565,7 +6619,7 @@ func corruptHistory(t *testing.T, pair *dispatchPair, artifactID string) {
 		`delete from doc_updates where artifact_id = $1 and version < (select max(version) from doc_updates where artifact_id = $1)`,
 		`update doc_updates set update = decode('deadbeef', 'hex') where artifact_id = $1`,
 	} {
-		if _, err := tx.Exec(ctx, statement, artifactID); err != nil {
+		if _, err := tx.Exec(ctx, statement, room); err != nil {
 			t.Fatalf("corrupt the document's history: %s: %v", statement, err)
 		}
 	}
@@ -6654,8 +6708,8 @@ func TestRebuildResumptionQueueAndColdWritesHoldAcrossProcesses(t *testing.T) {
 		pair.a.call(t, http.MethodPost, editPath(artifactID), editBody(t, "before", "after", "", false), http.StatusOK)
 		waitForSettlementOwed(t, pair.database, artifactID, true)
 		if _, err := pair.database.Pool.Exec(context.Background(), `
-			update doc_settlements_pending set marked_at = now() - interval '2 minutes' where artifact_id = $1
-		`, artifactID); err != nil {
+			update doc_settlements_pending set marked_at = now() - interval '2 minutes' where artifact_id = `+refs.DocumentRoomSQL("$1::uuid"),
+			artifactID); err != nil {
 			t.Fatalf("age the document's pending settlement: %v", err)
 		}
 		// A period is a bucket of the clock (duty.Exclusive, migration 0115), and the row is owed
@@ -8602,8 +8656,7 @@ func TestDashboardRestartOnTheSameBuildWritesNoAssetBytes(t *testing.T) {
 		return at
 	}
 	rowsBefore, startedBefore := assetRows(), lastStarted()
-	first.Terminate(t)
-	first.WaitExit(t, "SIGTERM")
+	stopProcess(t, first)
 
 	restarted := startOnBuild(t, database, build)
 
@@ -8660,8 +8713,7 @@ func TestDashboardBuildsAnswersTheBuildsTheLiveProcessesServe(t *testing.T) {
 		}
 	}
 
-	b.Terminate(t)
-	b.WaitExit(t, "SIGTERM")
+	stopProcess(t, b)
 	if serving, live := dashboardBuildsOf(t, a); serving != entryA || !slices.Equal(live, []string{entryA}) {
 		t.Fatalf("after B shut down: serving %q, live %q; want %q alone", serving, live, entryA)
 	}

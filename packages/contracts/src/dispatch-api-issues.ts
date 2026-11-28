@@ -112,8 +112,21 @@ export const issueFields = {
   rank: z.string(),
   labels: z.array(z.string()),
   parent: z.string().nullable(),
-  /** Issue keys this issue waits on, of any project, sorted. */
+  /** Issue keys this issue waits on, of any project, sorted: the same list as `needs`, under the
+   *  spelling a reader of the release before reads. */
   blocked_by: z.array(z.string()),
+  /** Issue keys this issue waits on, of any project, sorted: its `needs` relation, one relation
+   *  with a plan node's wait. Absent from a Dispatch older than the issue tree, which answers
+   *  `blocked_by` alone. */
+  needs: z.array(z.string()).optional(),
+  /** The key of the issue of this issue's project it repeats; null when it names none. Absent
+   *  from a Dispatch older than the issue tree. */
+  duplicate_of: z.string().nullable().optional(),
+  /** The canonical reference of the public ask, comment or message of this issue's project it was
+   *  filed out of, `dispatch://<KEY>/<ask|comment|message>/<uuid>` or
+   *  `dispatch://<PROJECT>/artifact/<slug>/<ask|comment>/<uuid>`; null when it names none. Absent
+   *  from a Dispatch older than the issue tree. */
+  filed_from: z.string().nullable().optional(),
   /** Every priority this issue advances: the ones it states itself and, marked `inherited`, the
    *  ones an issue above it states. Absent from a Dispatch older than priorities. */
   advances: z
@@ -208,8 +221,9 @@ export type CollaboratorReason = NonNullable<IssueCollaboratorPerson["reasons"]>
 export const issueEventChangesFields = {
   /** Each field whose value the write moved, of `title`, `status`, `closed_at` (for a close or a
    *  reopen), `rank`, `priority`, `assignee`, `parent`, `labels`, `route`, `repo`, `components`,
-   *  `advances`, `blocked_by` and `external_links`; for `issue.created`, every field the new
-   *  issue holds a value in. */
+   *  `advances`, `blocked_by` and `needs` (one relation under both spellings), `duplicate_of`,
+   *  `filed_from` and `external_links`; for `issue.created`, every field the new issue holds a
+   *  value in. */
   changed: z.array(z.string()).optional(),
   /** The issue's parent chain after the write, parent first up to the root; `[]` for a root. */
   ancestors: z.array(z.string()).optional(),

@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,22 +13,6 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
-
-// lastIssueEventPayload reads the payload of the issue's newest event.
-func lastIssueEventPayload(t *testing.T, database *store.Store, key string) map[string]any {
-	t.Helper()
-	var raw []byte
-	if err := database.Pool.QueryRow(context.Background(), `
-		select payload from events where issue_key = $1 order by id desc limit 1
-	`, key).Scan(&raw); err != nil {
-		t.Fatalf("read %s's newest event: %v", key, err)
-	}
-	var payload map[string]any
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		t.Fatalf("decode %s's newest event: %v", key, err)
-	}
-	return payload
-}
 
 // An issue's repository: its own when set, else its nearest ancestor's, else the project's default,
 // else none; every list row, the detail and every issue event carry both the own field and the
@@ -45,7 +28,7 @@ func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 	if root.Repo != nil || root.ResolvedRepo == nil || *root.ResolvedRepo != "acme/widgets" {
 		t.Fatalf("root repo=%v resolved=%v, want none and the project default acme/widgets", root.Repo, root.ResolvedRepo)
 	}
-	created := lastIssueEventPayload(t, database, root.Key) // the issue.created the create wrote
+	created := newestEventPayload[map[string]any](t, database, "issue.created", root.Key)
 	if created["repo"] != nil || created["resolved_repo"] != "acme/widgets" {
 		t.Fatalf("issue.created payload repo=%v resolved_repo=%v, want null and acme/widgets", created["repo"], created["resolved_repo"])
 	}
@@ -86,7 +69,7 @@ func TestIssueRepoResolvesThroughParentsThenTheProjectDefault(t *testing.T) {
 	if cleared.Code != http.StatusOK || decodeBody[model.Issue](t, cleared).Repo != nil {
 		t.Fatalf("clear the leaf's own repo: status=%d body=%s", cleared.Code, cleared.Body.String())
 	}
-	payload := lastIssueEventPayload(t, database, leaf.Key) // the issue.updated the clear wrote
+	payload := newestEventPayload[map[string]any](t, database, "issue.updated", leaf.Key) // the issue.updated the clear wrote
 	if payload["repo"] != nil || payload["resolved_repo"] != "acme/gadgets" {
 		t.Fatalf("issue.updated payload repo=%v resolved_repo=%v, want null and acme/gadgets", payload["repo"], payload["resolved_repo"])
 	}
@@ -141,7 +124,7 @@ func TestIssueRepoResolvesToNoneWithoutADefault(t *testing.T) {
 	if !strings.Contains(listed.Body.String(), `"repo":null`) || !strings.Contains(listed.Body.String(), `"resolved_repo":null`) {
 		t.Fatalf("listed issue = %s, want repo and resolved_repo both null", listed.Body.String())
 	}
-	payload := lastIssueEventPayload(t, database, issue.Key)
+	payload := newestEventPayload[map[string]any](t, database, "issue.created", issue.Key)
 	if value, ok := payload["resolved_repo"]; !ok || value != nil {
 		t.Fatalf("issue.created payload resolved_repo=%v (present %t), want null", value, ok)
 	}
@@ -186,7 +169,7 @@ func TestIssueCreateRefusesAParentPastTheDepthCap(t *testing.T) {
 		if row := listed[key]; row.ResolvedRepo == nil || *row.ResolvedRepo != "acme/gadgets" {
 			t.Errorf("depth %d list row resolved_repo=%v, want acme/gadgets", depth, row.ResolvedRepo)
 		}
-		if created := lastIssueEventPayload(t, database, key); created["resolved_repo"] != "acme/gadgets" {
+		if created := newestEventPayload[map[string]any](t, database, "issue.created", key); created["resolved_repo"] != "acme/gadgets" {
 			t.Errorf("depth %d issue.created resolved_repo=%v, want acme/gadgets", depth, created["resolved_repo"])
 		}
 	}
@@ -352,13 +335,13 @@ func TestIssueRepoRidesTheClaimEvents(t *testing.T) {
 	createTestProject(t, handler, "CORE")
 	setDefaultRepository(t, handler, "CORE", "acme/widgets")
 	issue := decodeBody[model.Issue](t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]any{"project": "CORE", "title": "Claimed"}, "alice"))
-	for _, method := range []string{http.MethodPost, http.MethodDelete} {
-		if response := dispatchRequest(t, handler, method, "/api/v1/issues/"+issue.Key+"/claim", map[string]any{}, "alice"); response.Code != http.StatusOK {
-			t.Fatalf("%s claim: status=%d body=%s", method, response.Code, response.Body.String())
+	for _, claim := range []struct{ method, event string }{{http.MethodPost, "issue.claimed"}, {http.MethodDelete, "issue.released"}} {
+		if response := dispatchRequest(t, handler, claim.method, "/api/v1/issues/"+issue.Key+"/claim", map[string]any{}, "alice"); response.Code != http.StatusOK {
+			t.Fatalf("%s claim: status=%d body=%s", claim.method, response.Code, response.Body.String())
 		}
-		payload := lastIssueEventPayload(t, database, issue.Key)
+		payload := newestEventPayload[map[string]any](t, database, claim.event, issue.Key)
 		if value, ok := payload["repo"]; !ok || value != nil || payload["resolved_repo"] != "acme/widgets" {
-			t.Fatalf("%s claim event payload = %v, want repo null and resolved_repo acme/widgets", method, payload)
+			t.Fatalf("%s claim's %s payload = %v, want repo null and resolved_repo acme/widgets", claim.method, claim.event, payload)
 		}
 	}
 }

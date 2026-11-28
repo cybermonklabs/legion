@@ -2,6 +2,7 @@
 GATE = gate("dispatch_memory", "dispatch-memory", runs=[ceiling_run("dispatch-memory")], exact=[
     pinned_step("dispatch-memory", MEMORY_STEP, ENVOY, MEMORY_SCRIPT, [
         (ENVOY, ["./cmd/dispatch"], "go test -tags memory ./cmd/dispatch", {"tags": "memory"}),
+        (ENVOY, ["./internal/dispatch/docs"], "go test -tags memory ./internal/dispatch/docs", {"tags": "memory"}),
     ]),
 ], reads=reads(
     (TAGGED_TESTS, f"{at('dispatch-memory', MEMORY_STEP)} takes its -run from it"),

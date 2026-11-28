@@ -354,7 +354,8 @@ func planMessageNode(
 	default:
 		parties = graphstore.ThreadParties(author, target)
 	}
-	return graphstore.PlanUncaused([]graphstore.Node{graphstore.MessageNode(id, project, parties, author, at)}, nil), nil
+	// The message is the node this write makes (graphstore.Created).
+	return graphstore.PlanUncaused([]graphstore.Node{graphstore.Created(graphstore.MessageNode(id, project, parties, author, at))}, nil), nil
 }
 
 // createStoredMessage writes one message in a single transaction, with it the keyed request's
@@ -465,9 +466,13 @@ func (s *server) createStoredMessage(
 			return model.Message{}, nil, err
 		}
 		logins = events.ThreadLoginsOf(root)
-		advice = s.writeAdvice(
+		// An advice savepoint that could not be rolled back left tx aborted: the write answers
+		// that failure, rather than sending its insert on tx (adviceTxError).
+		if advice, err = s.writeAdvice(
 			ctx, tx, "POST /api/v1/issues/{key}/messages", *issueKey, actor, adviceAsks{}, status, eventType, false,
-		)
+		); err != nil {
+			return model.Message{}, nil, err
+		}
 	}
 	message, err := insertedMessage(messageID, issueKey, author, input, createdAt)
 	if err != nil {
@@ -538,6 +543,7 @@ func (s *server) createStoredMessage(
 			return err
 		}
 		graphstore.QueueCaused(b, messageNode, graphstore.LatestEvent)
+		graphstore.QueueHeads(b, graphstore.HeldHeads(messageNode))
 		// A targeted message's attempt 1 is queued here, with the writes of the transaction that
 		// stores the message, unclaimed and naming no session yet, as writeBroadcast opens each
 		// recipient's: a process that dies, or a request whose connection is cut, between this

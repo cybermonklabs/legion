@@ -777,6 +777,70 @@ func TestExtractParsesAgentArtifactReferences(t *testing.T) {
 	}
 }
 
+// A node the store addresses by its own id carries no issue key in its address (D7 of the
+// plan): `dispatch://interaction/<uuid>`, `dispatch://lens/<uuid>`,
+// `dispatch://risk/<uuid>` and `dispatch://constraint/<uuid>`, the uuid as the store writes it,
+// `dispatch://lens_kind/<slug>`, and a finding of a lens, `dispatch://lens/<uuid>#b-<id>`, which no
+// pin names. A request (ParseRef) and text (Extract) read each the same way, and each target id is
+// the one the store keys the node by: the uuid or the slug, and a finding's `lens/<uuid>#<id>`.
+// Anything else after the kind names nothing.
+func TestParseRefReadsTheStoreAddresses(t *testing.T) {
+	const server = "https://dispatch.example"
+	const lens = "7c1e0000-0000-4000-8000-000000000002"
+	for _, test := range []struct {
+		reference string
+		want      Ref
+		target    string
+	}{
+		{"dispatch://interaction/7c1e0000-0000-4000-8000-000000000001",
+			Ref{Kind: "interaction", ID: "7c1e0000-0000-4000-8000-000000000001"}, "7c1e0000-0000-4000-8000-000000000001"},
+		{"dispatch://lens/" + lens, Ref{Kind: "lens", ID: lens}, lens},
+		{"dispatch://risk/7c1e0000-0000-4000-8000-000000000003",
+			Ref{Kind: "risk", ID: "7c1e0000-0000-4000-8000-000000000003"}, "7c1e0000-0000-4000-8000-000000000003"},
+		{"dispatch://constraint/7c1e0000-0000-4000-8000-000000000004",
+			Ref{Kind: "constraint", ID: "7c1e0000-0000-4000-8000-000000000004"}, "7c1e0000-0000-4000-8000-000000000004"},
+		{"dispatch://lens_kind/pre-mortem", Ref{Kind: "lens_kind", ID: "pre-mortem"}, "pre-mortem"},
+		{"dispatch://lens/" + lens + "#b-f%C3%A9-1", Ref{Kind: "block", Item: "lens", ID: lens, Block: "fé-1"}, "lens/" + lens + "#fé-1"},
+	} {
+		t.Run(test.reference, func(t *testing.T) {
+			got, ok := ParseRef(test.reference, server)
+			if !ok || got != test.want {
+				t.Fatalf("ParseRef(%q) = %#v, %t; want %#v", test.reference, got, ok, test.want)
+			}
+			if cited := Extract("See "+test.reference+".", server); len(cited) != 1 || cited[0] != test.want {
+				t.Fatalf("Extract() of %q cites %#v; want %#v", test.reference, cited, test.want)
+			}
+			if target := TargetID(got); target != test.target {
+				t.Fatalf("TargetID(%#v) = %q; want %q", got, target, test.target)
+			}
+		})
+	}
+	for _, reference := range []string{
+		"dispatch://lens/" + lens + "#b-x@v1",
+		"dispatch://lens/7C1E0000-0000-4000-8000-000000000002",
+		"dispatch://lens/7c1e0000",
+		"dispatch://lens/{" + lens + "}",
+		"dispatch://risk/7c1e0000-0000-4000-8000-000000000003/x",
+		"dispatch://risk/7c1e0000-0000-4000-8000-000000000003#b-x",
+		"dispatch://interaction/",
+		"dispatch://interaction",
+		"dispatch://lens_kind/Pre-mortem",
+		"dispatch://lens_kind/pre_mortem",
+		"dispatch://lens_kind/pre-mortem#b-x",
+		"dispatch://CORE-1/lens/" + lens,
+		"dispatch://CORE/lens/" + lens,
+	} {
+		if got, ok := ParseRef(reference, server); ok {
+			t.Errorf("ParseRef(%q) = %#v; want no reference", reference, got)
+		}
+		for _, ref := range Extract("See "+reference+".", server) {
+			if ref.Kind != "url" {
+				t.Errorf("Extract() of %q cites %#v; want nothing", reference, ref)
+			}
+		}
+	}
+}
+
 // A party names a reader of the record rather than a record: the three kinds a reference names
 // one by answer IsParty and no other kind does. It is what keeps the graph from keying a node
 // for a party (refs.TargetOf) and what a comment reads its delivering parties by

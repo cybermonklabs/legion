@@ -557,6 +557,24 @@ test("a statement no check serves carries its gap in full", () => {
   }
 });
 
+// While a document of the issue is still being indexed no statement is drawn as lacking a check:
+// where its gap would be, the statement draws that document's line, in the server's own words.
+test("a statement whose coverage waits on a document still being indexed draws its line and no gap", () => {
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  const view = drawBody(
+    [{ ...statementNode("r1", "The page waits for the index.", []), coverageNotes: [owed] }],
+    []
+  );
+  try {
+    expect(view.container.querySelector("[data-gap]")).toBeNull();
+    expect(
+      [...view.container.querySelectorAll("[data-coverage-note]")].map((note) => note.textContent)
+    ).toEqual([owed]);
+  } finally {
+    view.unmount();
+  }
+});
+
 // Where the coverage read counts more checks for a statement than the view with no query draws
 // under it, the rest serve it from an issue under this one. The statement is covered, carries no
 // gap, and draws one line after its checks with how many. A words query that leaves out the

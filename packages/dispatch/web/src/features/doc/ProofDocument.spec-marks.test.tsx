@@ -1,4 +1,5 @@
 import { beforeAll, expect, jest, spyOn, test } from "bun:test";
+import type { IssueTreeRead } from "@legion/contracts";
 import { act, cleanup, waitFor, within } from "@testing-library/react";
 import { realClock, settle, tick } from "../../__tests__/fake-clock";
 import { graphNode } from "../../__tests__/graph-fixture";
@@ -13,14 +14,12 @@ import { api, type WriteBounds } from "../../api/client";
 import type {
   Artifact,
   ArtifactBlock,
-  DecisionLink,
   DocumentRead,
   GraphReferences,
   IssueDecisions,
   Version,
 } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
-import type { DecisionsRead } from "../issue/decision-entries";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { STALE_BLOCK_TITLE } from "./spec-marks";
 
@@ -97,7 +96,13 @@ const decisions: IssueDecisions = {
           from_block: "d-1",
           stale: true,
           text_changed_event: 9,
-          to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
+          // A block of the issue room: the room's node, the spec named as the document holding it.
+          to: graphNode({
+            block_id: "p-plan",
+            document: "dispatch://CORE-1/spec",
+            id: "CORE-1/tree#p-plan",
+            kind: "block",
+          }),
         },
       ],
       text: ":::decision{#d-1}\nShip it in two steps.\n:::\n",
@@ -163,9 +168,9 @@ function readOf(version: number | null): DocumentRead {
   };
 }
 
-function stubReads(readVersion: number | null, decisionsRead: IssueDecisions = decisions) {
+function stubReads(readVersion: number | null) {
   const getArtifact = spyOn(api, "getArtifact").mockResolvedValue(spec);
-  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisionsRead);
+  const getIssueDecisions = spyOn(api, "getIssueDecisions").mockResolvedValue(decisions);
   const getDocumentRead = spyOn(api, "getDocumentRead").mockResolvedValue(readOf(readVersion));
   const getReferences = spyOn(api, "getReferences").mockResolvedValue(parts);
   const getArtifactBlocks = spyOn(api, "getArtifactBlocks").mockResolvedValue(blocks);
@@ -274,43 +279,54 @@ test("with no read version the Spec tab shows no line and marks no changed block
   }
 });
 
-// A server of the release before answers the Decisions read with no `entries`: its decisions are
-// the sections of the issue's decisions document, each with the links it shaped and the server's
-// own `stale`, whose meaning this build keeps, and no `changed_since_tie`. A page of this build
-// that reaches it during a roll still marks the block a decision's link went out of date on,
-// rather than marking nothing.
-test("a Decisions read of the release before, with no entries, still marks the stale block", async () => {
-  const before: DecisionsRead = {
-    decisions: [
+test("the Decisions tree view marks the blocks named by stale links", async () => {
+  const read: IssueTreeRead = {
+    converted: true,
+    cursor: null,
+    documents: null,
+    issue: "CORE-1",
+    nodes: [
       {
-        asks: [],
-        block_id: "h-two-steps",
-        changed_at: "2026-10-04T00:00:00Z",
-        changed_version: 3,
-        heading: "Ship it in two steps",
-        kept: null,
-        kind: "agent",
-        links: [
-          {
-            created_at: "2026-10-01T00:00:00Z",
-            created_version: 1,
-            from_block: "h-two-steps",
-            stale: true,
-            to: graphNode({ block_id: "p-plan", id: "CORE-1/spec#p-plan", kind: "block" }),
-          } as DecisionLink,
-        ],
-        ref: "dispatch://CORE-1/artifact/decisions-md#b-h-two-steps",
-        replaced: false,
-        text: "## Ship it in two steps\n\nThe flag goes first.",
-        text_sha256: "sum-two-steps",
-        unsure: false,
-        waiting_review: true,
+        attributes: {},
+        author: [],
+        block_id: "d-two-steps",
+        decision: {
+          asks: [],
+          block_id: "d-two-steps",
+          changed_at: "2026-10-04T00:00:00Z",
+          changed_version: 3,
+          heading: "Ship it in two steps",
+          kept: null,
+          kind: "agent",
+          links: decisions.entries?.[0]?.shaped ?? [],
+          ref: "dispatch://CORE-1/spec#b-d-two-steps",
+          replaced: false,
+          text: "The flag goes first.",
+          text_sha256: "sum-two-steps",
+          unsure: false,
+          waiting_review: true,
+        },
+        id: "CORE-1/spec#d-two-steps",
+        kind: "block",
+        made_at: "2026-10-04T00:00:00Z",
+        parent: null,
+        rank: null,
+        role: "query",
+        state: "live",
+        supertag: "decision",
+        text: "The flag goes first.",
+        visibility: "project",
       },
     ],
-    document: "dispatch://CORE-1/artifact/decisions-md",
-    open_questions: [],
+    tree: "tree-1",
+    tuples: [],
+    version: null,
+    view: "decisions",
+    view_of: null,
   };
-  const reads = stubReads(null, before as IssueDecisions);
+  const reads = stubReads(null);
+  reads.getIssueDecisions.mockRestore();
+  const getIssueTree = spyOn(api, "getIssueTree").mockResolvedValue(read);
   const { editors, sync } = renderProofDocument({
     document: spec,
     queryClient: createQueryClient(),
@@ -323,6 +339,7 @@ test("a Decisions read of the release before, with no entries, still marks the s
     if (editor === undefined) throw new Error("editor missing");
 
     await waitFor(() => expect(reads.putRead).toHaveBeenCalledTimes(1));
+    expect(getIssueTree).toHaveBeenCalledWith("CORE-1", { view: "decisions" });
     await waitFor(() =>
       expect(editor.blockMarks.at(-1)).toEqual([
         { blockId: "p-plan", className: staleBlockMark, title: STALE_BLOCK_TITLE },
@@ -330,6 +347,7 @@ test("a Decisions read of the release before, with no entries, still marks the s
     );
   } finally {
     cleanup();
+    getIssueTree.mockRestore();
     reads.restore();
   }
 });

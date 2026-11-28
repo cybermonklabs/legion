@@ -28,10 +28,12 @@ function block(id: string, type: string, from: number): ArtifactBlock {
   };
 }
 
-/** A `shaped` link to block `to` of the spec, stale or not. Its other fact and its events say the
- *  opposite - a stale link's block has not changed since the tie, and a fresh one's has, by its
- *  events too - so a reader of anything but `stale` marks the wrong blocks. */
-function link(to: string, stale: boolean, document = "CORE-1/spec"): DecisionLink {
+/** A `shaped` link to block `to` of the document at `document`, stale or not. Its other fact and
+ *  its events say the opposite - a stale link's block has not changed since the tie, and a fresh
+ *  one's has, by its events too - so a reader of anything but `stale` marks the wrong blocks. Its
+ *  node is the issue room's (`CORE-1/tree#<id>`), and the document holding the block is named on
+ *  the link, as the server answers a block of an issue room. */
+function link(to: string, stale: boolean, document = "dispatch://CORE-1/spec"): DecisionLink {
   return {
     changed_since_tie: !stale,
     created_at: "2026-10-01T00:00:00Z",
@@ -40,7 +42,7 @@ function link(to: string, stale: boolean, document = "CORE-1/spec"): DecisionLin
     from_block: "d-1",
     stale,
     text_changed_event: stale ? 9 : 11,
-    to: graphNode({ block_id: to, id: `${document}#${to}`, kind: "block" }),
+    to: graphNode({ block_id: to, document, id: `CORE-1/tree#${to}`, kind: "block" }),
   };
 }
 
@@ -92,7 +94,11 @@ const decisions: IssueDecisions = {
     entry("d-1", [link("p-plan", true), link("p-scope", false)]),
     entry(
       "d-2",
-      [link("p-plan", true), link("p-rollout", true), link("p-notes", true, "CORE-1/notes-md")],
+      [
+        link("p-plan", true),
+        link("p-rollout", true),
+        link("p-notes", true, "dispatch://CORE-1/artifact/notes-md"),
+      ],
       true
     ),
   ],
@@ -100,10 +106,10 @@ const decisions: IssueDecisions = {
 };
 
 test("every spec block a stale link names is stale, each once, in the order the read names them", () => {
-  expect(staleSpecBlocks(decisions, "CORE-1/spec")).toEqual(["p-plan", "p-rollout"]);
+  expect(staleSpecBlocks(decisions, "dispatch://CORE-1/spec")).toEqual(["p-plan", "p-rollout"]);
   expect(staleSpecBlocks(decisions)).toEqual(["p-plan", "p-rollout", "p-notes"]);
-  expect(staleSpecBlocks(undefined, "CORE-1/spec")).toEqual([]);
-  expect(staleSpecBlocks({ ...decisions, entries: [] }, "CORE-1/spec")).toEqual([]);
+  expect(staleSpecBlocks(undefined, "dispatch://CORE-1/spec")).toEqual([]);
+  expect(staleSpecBlocks({ ...decisions, entries: [] }, "dispatch://CORE-1/spec")).toEqual([]);
 });
 
 test("an open and a declined ask mark nothing stale, and an answered one does", () => {
@@ -125,7 +131,7 @@ test("an open and a declined ask mark nothing stale, and an answered one does", 
       ask("answered-ask", "answered", "p-answered"),
     ],
   };
-  expect(staleSpecBlocks(asks, "CORE-1/spec")).toEqual(["p-answered"]);
+  expect(staleSpecBlocks(asks, "dispatch://CORE-1/spec")).toEqual(["p-answered"]);
 });
 
 // A block whose own text changed after the tie, the decision unchanged since, is not stale: the
@@ -136,7 +142,7 @@ test("a block is marked by its link's stale alone, never by its own change since
     ...decisions,
     entries: [entry("d-1", [link("p-plan", false), link("p-scope", false)])],
   };
-  expect(staleSpecBlocks(changedSinceTie, "CORE-1/spec")).toEqual([]);
+  expect(staleSpecBlocks(changedSinceTie, "dispatch://CORE-1/spec")).toEqual([]);
 });
 
 const references: GraphReferences = {

@@ -43,7 +43,7 @@ func renderTypedVersion(t *testing.T, markdown string) typedVersion {
 }
 
 // renderTypedTree renders tree as a version write renders it (pmdoc.RenderWithBlockOffsets), and
-// reads its pointers off the tree, as docs.blockPointers does.
+// reads its pointers off the tree (PointersOf), as docs.blockPointers does.
 func renderTypedTree(t *testing.T, tree *pmdoc.Node) typedVersion {
 	t.Helper()
 	rendered, offsets, err := pmdoc.RenderWithBlockOffsets(tree)
@@ -54,31 +54,31 @@ func renderTypedTree(t *testing.T, tree *pmdoc.Node) typedVersion {
 	for _, offset := range offsets {
 		version.blocks = append(version.blocks, model.ArtifactBlock{ID: offset.ID, Type: offset.Type, From: offset.From, To: offset.To})
 	}
-	for _, pointer := range pmdoc.BlockPointers(tree) {
-		version.pointers = append(version.pointers, Pointer{Block: pointer.Block, BlockType: pointer.BlockType, Kind: pointer.Attribute, Target: pointer.Target, Targets: pointer.Targets})
-	}
+	version.pointers = PointersOf(tree)
 	return version
 }
 
-// versionFacts is what DecisionFacts reads of version number of the document artifact, as a
-// version write reads it: against what the version's own row says of it (ReadIndexedVersion).
-func versionFacts(ctx context.Context, tx pgx.Tx, artifact string, number int, version typedVersion, sources TypedSources) (TypedFacts, error) {
-	record, err := ReadIndexedVersion(ctx, tx, artifact, number)
+// versionFacts is what DecisionFacts reads of version number of the document artifact, written at
+// at, as a version write reads it: against what the version's own row says of it
+// (ReadIndexedVersion), and dated at that one version (OneVersion).
+func versionFacts(ctx context.Context, tx pgx.Tx, artifact string, number int, at time.Time, version typedVersion, sources TypedSources) (TypedFacts, error) {
+	record, err := ReadIndexedVersion(ctx, tx, artifact, artifact, number)
 	if err != nil {
 		return TypedFacts{}, err
 	}
-	return DecisionFacts(ctx, tx, artifact, record, version.blocks, version.tree, version.pointers, sources)
+	return DecisionFacts(ctx, tx, artifact, record, OneVersion(artifact, number, at), version.blocks, version.tree, version.pointers, sources)
 }
 
-// indexTypedAlone runs the typed-node pass on its own over version number of the document
-// artifact, as a write above the deferral bound runs it: planned against the document's block
-// index (PlanDecisionNodes) and written as a batch of its own. It answers what the pass stated.
-func indexTypedAlone(ctx context.Context, tx pgx.Tx, artifact string, number int, at time.Time, facts TypedFacts) (graphstore.Uncaused, error) {
+// indexTypedAlone runs the typed-node pass on its own over the version facts were read of, of the
+// document artifact, as a write above the deferral bound runs it: planned against the document's
+// block index (PlanDecisionNodes) and written as a batch of its own. It answers what the pass
+// stated.
+func indexTypedAlone(ctx context.Context, tx pgx.Tx, artifact string, facts TypedFacts) (graphstore.Uncaused, error) {
 	index, err := ReadBlockIndex(ctx, tx, artifact)
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
-	plan, err := PlanDecisionNodes(ctx, tx, index, artifact, number, at, facts, graphstore.Uncaused{})
+	plan, err := PlanDecisionNodes(ctx, tx, index, artifact, facts, graphstore.Uncaused{}, "")
 	if err != nil {
 		return graphstore.Uncaused{}, err
 	}
@@ -226,11 +226,11 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	first := renderTypedVersion(t, ":::requirement{#r1}\nA requirement.\n:::\n\nSee dispatch://"+document.issue+".\n")
 	firstRecord := document.writeVersion(t, 1, first.markdown, alice)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := versionFacts(ctx, tx, document.artifact, 1, first, writerSources(tx, document.artifact, alice))
+		facts, err := versionFacts(ctx, tx, document.artifact, 1, firstRecord.at, first, writerSources(tx, document.artifact, alice))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, _, write, err := IndexBlocks(ctx, tx, document.artifact, 1, firstRecord.at, first.markdown, first.blocks, first.located, first.pointers, "", facts)
+		_, _, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, firstRecord.at), first.markdown, first.blocks, first.located, first.pointers, "", facts)
 		return write, err
 	}, firstRecord.event)
 	if got := mentionRows(t, database.Pool, document.artifact); got != 1 {
@@ -251,11 +251,11 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	// The typed pass alone, as a write above the deferral bound runs it.
 	before := document.highestTuple(t)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := versionFacts(ctx, tx, document.artifact, 2, second, writerSources(tx, document.artifact, alice))
+		facts, err := versionFacts(ctx, tx, document.artifact, 2, secondRecord.at, second, writerSources(tx, document.artifact, alice))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		return indexTypedAlone(ctx, tx, document.artifact, 2, secondRecord.at, facts)
+		return indexTypedAlone(ctx, tx, document.artifact, facts)
 	}, secondRecord.event)
 	typed := typedRows(t, database.Pool, document.artifact)
 	want := []string{
@@ -292,7 +292,7 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 	// The reconciler over the same version, as the block-index tick runs it.
 	before = document.highestTuple(t)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := versionFacts(ctx, tx, document.artifact, 2, second, writerSources(tx, document.artifact, alice))
+		facts, err := versionFacts(ctx, tx, document.artifact, 2, secondRecord.at, second, writerSources(tx, document.artifact, alice))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
@@ -306,12 +306,16 @@ func TestTheReconcilerMovesNoRowTheTypedPassWrote(t *testing.T) {
 				full = append(full, pair)
 			}
 		}
-		if own, all := pairKeys(facts.typedPairs()), pairKeys(full); !reflect.DeepEqual(own, all) {
+		ownPairs, err := facts.typedPairs(ctx, tx, document.artifact)
+		if err != nil {
+			return graphstore.Uncaused{}, err
+		}
+		if own, all := pairKeys(ownPairs), pairKeys(full); !reflect.DeepEqual(own, all) {
 			t.Fatalf("the typed pass's pairs\n\t%v\ndiffer from the reconciler's typed pairs\n\t%v", own, all)
 		}
 		// The block index plans the typed-node pass's own facts of the version into its one
 		// write (TypedFacts.indexedFacts), as the reconciler indexes it.
-		_, won, write, err := IndexBlocks(ctx, tx, document.artifact, 2, secondRecord.at, second.markdown, second.blocks, second.located, second.pointers, "", facts)
+		_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 2, secondRecord.at), second.markdown, second.blocks, second.located, second.pointers, "", facts)
 		if err == nil && !won {
 			err = fmt.Errorf("the reconciler lost the revision fence over version 2")
 		}
@@ -351,14 +355,14 @@ func TestAOneWordEditWritesOnlyTheNodesOfTheBlocksItMoved(t *testing.T) {
 	firstRecord := document.writeVersion(t, 1, first.markdown, alice)
 	index := func(version typedVersion, number int, record versionRecord) (blocks, typed []string) {
 		commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-			facts, err := versionFacts(ctx, tx, document.artifact, number, version, writerSources(tx, document.artifact, alice))
+			facts, err := versionFacts(ctx, tx, document.artifact, number, record.at, version, writerSources(tx, document.artifact, alice))
 			if err != nil {
 				return graphstore.Uncaused{}, err
 			}
 			// The typed-node pass's own nodes, as the block index plans them beside its own, and
 			// every node the one write of the index writes.
-			own, _ := facts.indexedFacts(record.at, nil)
-			_, won, write, err := IndexBlocks(ctx, tx, document.artifact, number, record.at, version.markdown, version.blocks, version.located, version.pointers, "", facts)
+			own, _ := facts.indexedFacts(nil)
+			_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, "", facts)
 			if err == nil && !won {
 				err = fmt.Errorf("version %d lost the revision fence", number)
 			}
@@ -437,11 +441,11 @@ func indexWhole(t *testing.T, database *store.Store, document parentDocument, nu
 	t.Helper()
 	ctx := context.Background()
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		facts, err := versionFacts(ctx, tx, document.artifact, number, version, writerSources(tx, document.artifact, record.writer))
+		facts, err := versionFacts(ctx, tx, document.artifact, number, record.at, version, writerSources(tx, document.artifact, record.writer))
 		if err != nil {
 			return graphstore.Uncaused{}, err
 		}
-		_, won, write, err := IndexBlocks(ctx, tx, document.artifact, number, record.at, version.markdown, version.blocks, version.located, version.pointers, "", facts)
+		_, won, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, number, record.at), version.markdown, version.blocks, version.located, version.pointers, "", facts)
 		if err == nil && !won {
 			err = fmt.Errorf("version %d lost the revision fence", number)
 		}
@@ -662,11 +666,11 @@ func TestADeferredVersionDropsTheTiesOfTheTypedBlocksItRemoved(t *testing.T) {
 			removed := renderTypedVersion(t, markdown)
 			second := document.writeVersion(t, 2, removed.markdown, alice)
 			commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-				facts, err := versionFacts(ctx, tx, document.artifact, 2, removed, writerSources(tx, document.artifact, alice))
+				facts, err := versionFacts(ctx, tx, document.artifact, 2, second.at, removed, writerSources(tx, document.artifact, alice))
 				if err != nil {
 					return graphstore.Uncaused{}, err
 				}
-				return indexTypedAlone(ctx, tx, document.artifact, 2, second.at, facts)
+				return indexTypedAlone(ctx, tx, document.artifact, facts)
 			}, second.event)
 			if got := typedRowsOf(t, database.Pool, document.artifact); !slices.Equal(got, want) {
 				t.Errorf("the typed pass of version 2 left the typed rows %v, want %v", got, want)

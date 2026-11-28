@@ -105,7 +105,7 @@ func TestAReadPointOfARecoveringReplicaIsExact(t *testing.T) {
 	live := service.srv.GetDoc(artifactID)
 	replica := replicaFor(t, service, live)
 	replica.lockForUpdate()
-	replica.recover(artifactID, nil, func(crdt.LoggedUpdate, bool, func() map[string]struct{}) {})
+	replica.recover(artifactID, nil, func(crdt.LoggedUpdate, bool, func() map[string]struct{}, []string) {})
 	stopped := replica.seq
 	replica.mu.Unlock()
 

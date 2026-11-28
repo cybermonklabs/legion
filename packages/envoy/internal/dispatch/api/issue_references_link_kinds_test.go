@@ -9,6 +9,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // GET /api/v1/issues/{key}/references lists a link only where it is a mention, or a typed
@@ -27,7 +28,8 @@ func TestTheIssueReferencesRouteListsNoDecidedBy(t *testing.T) {
 
 	var decided int
 	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from block_refs where artifact_id = $1::uuid and kind = $2 and to_kind = $3 and to_id = 'alice'
+		select count(*) from block_refs r
+		where `+refs.DocumentRoomBlocksSQL("r", "$1::uuid")+` and r.kind = $2 and r.to_kind = $3 and r.to_id = 'alice'
 	`, issue.PrimaryArtifactID, graphstore.TupleDecidedBy, graphstore.KindPerson).Scan(&decided); err != nil {
 		t.Fatalf("count the decided_by rows of %s's document: %v", issue.Key, err)
 	}

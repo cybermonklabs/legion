@@ -12,7 +12,7 @@
 //
 //   - foreignDependencyTargets refuses a parent and a blocked_by target before the reads under
 //     the locks. TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey calls each of those
-//     reads directly, readCreateParent, validateIssueParent and writeBlockedBy, and so holds the
+//     reads directly, readCreateParent, validateIssueParent and writeIssueNeeds, and so holds the
 //     branch of each.
 //   - resolveCheck leaves out a check of a private project before readResultRequest asks about
 //     the check's issue (refuseUncoveredCheck). The project check of a retraction asks about the
@@ -266,7 +266,7 @@ func TestAPrivateProjectsObjectAnswersAsAMissingObjectToAnotherProjectsToken(t *
 //     write under the locks would refuse 409 ISSUE_CHANGED, gets the same 400 for both keys.
 //   - A create that names the parent, a PATCH that sets the parent, and a create that names the
 //     target, the writes whose reads under the locks are readCreateParent, validateIssueParent and
-//     writeBlockedBy. foreignDependencyTargets refuses each key first, so these cases hold the
+//     writeIssueNeeds. foreignDependencyTargets refuses each key first, so these cases hold the
 //     answer and that nothing is written. The create's cases also send no title, which the create
 //     judges after foreignDependencyTargets.
 //
@@ -359,10 +359,10 @@ func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsT
 		}
 	})
 
-	// writeBlockedBy is reached only where foreignDependencyTargets passes the key. This HTTP case
+	// writeIssueNeeds is reached only where foreignDependencyTargets passes the key. This HTTP case
 	// holds the answer and that nothing is written, and
-	// TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey holds writeBlockedBy's own branch.
-	t.Run("writeBlockedBy: a create blocked by the private issue", func(t *testing.T) {
+	// TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey holds writeIssueNeeds's own branch.
+	t.Run("writeIssueNeeds: a create blocked by the private issue", func(t *testing.T) {
 		create := func(token, target, title string) func() *httptest.ResponseRecorder {
 			return func() *httptest.ResponseRecorder {
 				return rig.send(t, token, http.MethodPost, "/api/v1/issues", map[string]any{
@@ -381,9 +381,10 @@ func TestAPrivateParentOrBlockedByTargetAnswersAsAMissingIssueToAnotherProjectsT
 }
 
 // TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey: readCreateParent, validateIssueParent
-// and writeBlockedBy, the reads under the locks of a create's parent, of a PATCH's parent and of a
-// blocked_by target, each answer a parent or a target of a private project that the caller does
-// not name with the error of a key that no issue holds, parentNotFound and blockedByNotFound, in
+// and writeIssueNeeds, the reads under the locks of a create's parent, of a PATCH's parent and of a
+// wait's target (a blocked_by target here), each answer a parent or a target of a private project
+// that the caller does not name with the error of a key that no issue holds, parentNotFound and
+// waitNotFound, in
 // status, code and message. Through HTTP, foreignDependencyTargets refuses such a key before each
 // read, so this test calls each one directly, in a transaction of the test database that it rolls
 // back, and so holds the branch of each. With a caller that names the private project, each takes
@@ -408,8 +409,13 @@ func TestTheReadsUnderTheLocksAnswerAPrivateKeyAsAMissingKey(t *testing.T) {
 		{"validateIssueParent", "PARENT_INPUT", func(tx pgx.Tx, caller, key string) error {
 			return validateIssueParent(ctx, tx, own, caller, key)
 		}},
-		{"writeBlockedBy", "BLOCKED_BY_INPUT", func(tx pgx.Tx, caller, key string) error {
-			return writeBlockedBy(ctx, tx, own, brokerTestProject, caller, []string{key})
+		{"writeIssueNeeds", "BLOCKED_BY_INPUT", func(tx pgx.Tx, caller, key string) error {
+			waits, _, err := resolveIssueWaits(nil, &[]string{key})
+			if err != nil {
+				return err
+			}
+			_, err = writeIssueNeeds(ctx, tx, own, brokerTestProject, caller, waits, heldIssueNeeds{}, time.Now())
+			return err
 		}},
 	} {
 		t.Run(site.name, func(t *testing.T) {

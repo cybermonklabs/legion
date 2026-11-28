@@ -383,8 +383,7 @@ func requireTheRule(t *testing.T, process *dispatchProcess, on bool) {
 // stopFixBoot stops the process as a deploy does, and fails t unless it exits 0.
 func stopFixBoot(t *testing.T, process *dispatchProcess) {
 	t.Helper()
-	process.Terminate(t)
-	process.WaitExit(t, "SIGTERM")
+	stopProcess(t, process)
 	if code := process.Cmd.ProcessState.ExitCode(); code != 0 {
 		t.Errorf("Dispatch exited %d after SIGTERM, want 0", code)
 	}

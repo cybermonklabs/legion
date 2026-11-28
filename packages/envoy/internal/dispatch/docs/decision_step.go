@@ -42,14 +42,13 @@ import (
 //     documents.
 //
 // It runs at boot, before the server serves, where only phase 1 runs and a failure stops the boot
-// (Boot), as FillDocumentSearch does: the readers of this release that take an ask's answer from
-// its node alone - a reading's check of its ask (askAnswers), this step's own count, and the
-// approval carry's agreement of each ask block with its ask's node (asksAgreeWithTheirNodes,
-// onItsNode) - read an ask phase 1 has not stated yet as holding no answer, and the release before
-// keeps serving through a roll until this process serves. The boot reads only what phase 1 needs -
-// whether a row stands unmarked
-// (graphcensus.AsksOwed), and the rows the backfill states - and nothing else: a table no phase 1
-// statement reads, held by another transaction, must not keep the process from serving. It then
+// (Boot). Readers that check an ask's node - a reading's check (askAnswers), this step's own
+// count, and approval carry (asksAgreeWithTheirNodes) - can only use the facts the store holds.
+// Boot states the older rows before this process serves; readers such as onItsNode fall back to
+// the row for an ask that still names no node. The boot reads only what phase 1 needs - whether
+// a row stands unmarked (graphcensus.AsksOwed), and the rows the backfill states - and nothing
+// else: a table no phase 1 statement reads, held by another transaction, must not keep the process
+// from serving. It then
 // runs on a tick of its own (Run) every BlockIndexReconcileInterval for as long as the process
 // runs: a process of another build can go live after a tick found nothing to do - a rollback, or a
 // process of the release before that starts late - so the tick never stops for want of work.

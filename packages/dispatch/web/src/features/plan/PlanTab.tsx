@@ -8,17 +8,22 @@ import { EmptyState } from "../../components/EmptyState";
 import { card, dangerText, textMutedOnCanvas, textMutedOnSurface } from "../../theme/classes";
 import { ReplacingUploadNote } from "../artifacts/ArtifactUpload";
 import { ApprovalChip } from "../doc/ApprovalChip";
+import { declaredPointerItems } from "../doc/schema";
 import { withBlock } from "../refs/block-reference";
 import { BlockReferences } from "../refs/ReferencedBy";
 import { ReferenceLink } from "../refs/ReferenceLink";
 import { useReferenceLabel, useReferenceTarget } from "../refs/reference-target";
 import { buildDispatchReference, documentRoute, parseNodeReference } from "../refs/routes";
 
-/** The `block[]` attribute `name` of `block` as the pointers it holds; empty for a block that
- *  carries none and for a value the server would refuse, which no stored block holds. */
+/** The `block[]` attribute `name` of the plan task `block` as the pointers it holds, read under
+ *  the item kinds the attribute declares (`declaredPointerItems`: `needs` names an issue under the
+ *  plan's issue beside the plan tasks it waits on); empty for a block that carries none and for a
+ *  value the server would refuse, which no stored block holds. */
 function pointers(block: ArtifactBlock, name: string): readonly string[] {
   const value = block.attributes?.find((attribute) => attribute.name === name)?.value;
-  return value === undefined ? [] : (parseBlockPointerValue(value) ?? []);
+  return value === undefined
+    ? []
+    : (parseBlockPointerValue(value, declaredPointerItems("plan_task", name)) ?? []);
 }
 
 /** A block a pointer names, drawn as its own words once the graph answers them and as the

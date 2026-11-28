@@ -35,9 +35,11 @@
  * - from `../refs/actor`, `ASK_RESOLUTION_WORDS`, the words a closed question is drawn in, and
  *   `isViewer`, whether an actor is the signed-in person;
  * - from `../refs/post-marks`, `POST_MARK_WORDS`, the words a deleted post's line and an edited
- *   post's mark say on every surface.
+ *   post's mark say on every surface;
+ * - from `../issue/owed-coverage-line`, `OWED_COVERAGE_LINE`, the test of the coverage read's
+ *   line for a document still being indexed, which today's Spec tab reads too.
  *
- * The last three are the module's links to files today's pages use.
+ * The last four are the module's links to files today's pages use.
  *
  * Each table here is joined with the words of each open part of the page. A part keeps its new
  * words in its own file, `page-words-<letter>.ts`. `joinWords` from `./page-words-parts` makes
@@ -67,7 +69,8 @@ import {
   type ResultCommitStands,
 } from "@legion/contracts";
 
-import type { Actor } from "../../api/types";
+import type { Actor, IssueCoverage } from "../../api/types";
+import { OWED_COVERAGE_LINE } from "../issue/owed-coverage-line";
 import { issueStatuses, statusLabel, statusText } from "../project/board-model";
 import { ASK_RESOLUTION_WORDS, isViewer } from "../refs/actor";
 import { POST_MARK_WORDS } from "../refs/post-marks";
@@ -99,16 +102,17 @@ function keysOf<T extends object>(value: T): readonly (keyof T)[] {
 
 /**
  * A plain name for every kind of node the page draws, which is every kind the model holds: the
- * issue, the documents and images it carries, the five typed blocks of those documents, the
+ * issue, the documents and images it carries, the eight typed blocks of those documents, the
  * decisions and asks, the conversation, the results recorded against a check, and the child
  * issues.
  *
  * A key is the model's own token for the kind, so the page needs no second table to read a
- * node: `callout`, `ask`, `requirement`, `plan_task` and `check` are the block type names in
- * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`, `comment` and
- * `message` are the item kinds of a `dispatch://` reference. A name is lowercase because the
- * page draws it inside its own sentences and rows, where a capital would read as a proper noun;
- * `sentenceCase` supplies the capital where a name opens a sentence or a heading.
+ * node: `callout`, `ask`, `requirement`, `plan_task`, `check`, `decision`, `reading` and
+ * `criterion` are the block type names in
+ * `packages/envoy/internal/dispatch/pmdoc/schema/blocks.json`, and `ask`,
+ * `comment` and `message` are the item kinds of a `dispatch://` reference. A name is lowercase
+ * because the page draws it inside its own sentences and rows, where a capital would read as a
+ * proper noun; `sentenceCase` supplies the capital where a name opens a sentence or a heading.
  */
 export const NODE_TYPE_NAMES = joinWords("NODE_TYPE_NAMES", {
   /** An `ask`: the word the approved pictures draw on its tag, "question" (R34). */
@@ -119,6 +123,9 @@ export const NODE_TYPE_NAMES = joinWords("NODE_TYPE_NAMES", {
   check: "check",
   child_issue: "child issue",
   comment: "comment",
+  /** A `criterion` block: what a person wants to be able to do, in their own words, which a
+   *  statement answers. The schema's own word is a plain one, so the page draws it. */
+  criterion: "criterion",
   decision: "decision",
   document: "document",
   handoff: "handoff",
@@ -126,7 +133,8 @@ export const NODE_TYPE_NAMES = joinWords("NODE_TYPE_NAMES", {
   issue: "issue",
   message: "message",
   plan_task: "plan task",
-  /** A `reading`: an agent's reading of a person's answer, inside the ask it reads. */
+  /** A `reading` block: an agent's reading of a decision, or of a question a person answered,
+   *  written at the end of the block it reads. */
   reading: "reading",
   /** A `requirement` block, drawn by his word for it (R22, the Design's "The words"): a
    *  sentence that must be true of the software. */
@@ -622,10 +630,38 @@ export const GAP_WORDS = joinWords("GAP_WORDS", {
  * (`RequirementCoverage.gaps`), which name a block by its id; every surface of the page reads
  * the line through this and draws `GAP_WORDS` or `GAP_LINES` instead, so no identifier and no
  * server phrasing is drawn where a name belongs (R22). A requirement no plan task serves is no
- * gap the page draws (R10), so that line answers nothing.
+ * gap the page draws (R10), so that line answers nothing, and so does the line of a document
+ * still being indexed (`coverageLineWords`), which names no gap of any requirement.
  */
 export function coverageGapKind(line: string): GapKind | undefined {
   return line.endsWith("has no check") ? "no_check" : undefined;
+}
+
+/**
+ * What the page draws for one line of the coverage read (`IssueCoverage.gaps`), where it draws
+ * one: the sentence of the gap the line names (`coverageGapKind`, `GAP_LINES`), and for the line
+ * of a document still being indexed, the line's own words. While a document owes its block
+ * index the server names no requirement as lacking a check, so the page draws none as lacking
+ * one either, and says instead which document's coverage waits and at which version; that line
+ * names a file, which the server's words name and no word of the page could. Any other line
+ * draws nothing.
+ */
+export function coverageLineWords(line: string): string | undefined {
+  const kind = coverageGapKind(line);
+  if (kind !== undefined) return GAP_LINES[kind];
+  return OWED_COVERAGE_LINE.test(line) ? line : undefined;
+}
+
+/**
+ * What the page draws for the coverage read's own lines (`IssueCoverage.gaps`) that name no gap of
+ * a requirement - a requirement's gap is drawn on the requirement, from its own gaps - each in the
+ * words `coverageLineWords` draws it in, where it draws any. Today that is the line of each
+ * document still being indexed (`OWED_COVERAGE_LINE`), drawn in its own words, which says why no
+ * requirement is drawn as lacking a check: the outline draws these in the body of each statement
+ * (`TreeNode.coverageNotes`), and today's Spec tab draws the same lines (`SpecRequirements`).
+ */
+export function coverageNotes(coverage: IssueCoverage | undefined): string[] {
+  return (coverage?.gaps ?? []).filter((line) => OWED_COVERAGE_LINE.test(line));
 }
 
 /** The noun a progress count is written with: `1/1 item`, `3/7 items` of the spec's checklist
@@ -1228,6 +1264,8 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   copied_from_document: "copied from document",
   /** The author of a decision, which the server writes from who wrote the block. */
   decided_by: "decided by",
+  /** The repository paths a plan task's implementer should read. */
+  docs: "docs to read",
   /** The question an agent's decision settles. An ask is drawn as a question (R34). */
   from_ask: "from question",
   /** Why the block cannot be answered as written; "invalid" names a verdict, not the reason. */
@@ -1241,6 +1279,9 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   multiple: "more than one answer",
   needs: "needs",
   negative_control: "negative control",
+  /** The question, comment or message a statement, a criterion, a check or a plan task hangs
+   *  under, by the plain word the page's own parent controls use. */
+  parent: "parent",
   program: "program",
   /** Whether a newer decision stands in this one's place. */
   replaced: "replaced",
@@ -1250,6 +1291,11 @@ export const BLOCK_ATTRIBUTE_LABELS = joinWords("BLOCK_ATTRIBUTE_LABELS", {
   serves: "serves",
   /** The spec blocks a decision, or the answer of an ask, shaped. */
   shaped: "shaped",
+  /** How long a plan task takes, in minutes, which the plan's chart draws as its bar's length;
+   *  the chart's own word for a task that holds none is `PLAN_WORDS.no_size`. */
+  size: "size",
+  /** The skills a plan task's implementer should read. */
+  skills: "skills to read",
   state: "state",
   /** The steps of Legion a plan task runs, in their order. */
   steps: "steps",
@@ -1412,6 +1458,7 @@ export const GLYPH_TOKENS = joinWords("GLYPH_TOKENS", {
     check: "check",
     child_issue: "child-issue",
     comment: "comment",
+    criterion: "criterion",
     decision: "decision",
     document: "document",
     handoff: "handoff",

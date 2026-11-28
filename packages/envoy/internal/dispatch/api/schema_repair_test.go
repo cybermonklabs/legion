@@ -19,10 +19,12 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
-// loadStoredDocument is the document artifactID's stored history decodes to.
-func loadStoredDocument(t *testing.T, database *store.Store, artifactID string) *crdt.Doc {
+// loadStoredDocument is the document the stored history of the room artifactID's document is
+// edited in decodes to, and the document's fragment of it (documentRoomOf).
+func loadStoredDocument(t *testing.T, database *store.Store, artifactID string) (*crdt.Doc, string) {
 	t.Helper()
-	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), artifactID)
+	room, fragment := documentRoomOf(t, database.Pool, artifactID)
+	loaded, err := docs.NewPgVersioned(database).Load(context.Background(), room)
 	if err != nil {
 		t.Fatalf("load stored document: %v", err)
 	}
@@ -30,7 +32,7 @@ func loadStoredDocument(t *testing.T, database *store.Store, artifactID string) 
 	if err := crdt.ApplyUpdateV1(doc, loaded.Update, nil); err != nil {
 		t.Fatalf("decode stored document: %v", err)
 	}
-	return doc
+	return doc, fragment
 }
 
 // appendStringEmbed persists an embed holding a string at the start of the document's first text,
@@ -62,7 +64,8 @@ func appendDeepChain(textLevel int) func(context.Context, *store.Store, string) 
 // carries one: the paragraph "before" the document was created with.
 func storedBlockID(t *testing.T, database *store.Store, artifactID string) string {
 	t.Helper()
-	for _, child := range loadStoredDocument(t, database, artifactID).GetXmlFragment("prosemirror").Children() {
+	stored, fragment := loadStoredDocument(t, database, artifactID)
+	for _, child := range stored.GetXmlFragment(fragment).Children() {
 		if element, ok := child.(*crdt.YXmlElement); ok {
 			if id, ok := element.GetAttribute(pmdoc.BlockIDAttr); ok && id != "" {
 				return id

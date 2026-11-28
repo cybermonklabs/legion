@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
@@ -106,10 +107,13 @@ func duplicateNamesAnotherIssue(newTitle string) string {
                  where candidate.key = named.key))`
 }
 
-// duplicateGateRollback bounds the gate's own rollback, which runs after the read whatever
-// happened to it. It is not the read's bound: it ends a rollback the database will not take,
-// so the handler is never held by one.
-const duplicateGateRollback = 2 * time.Second
+// readRollbackBound bounds the rollback of a read transaction that is rolled back on a context of
+// its own, after the read whatever happened to it: the near-copy gate's read
+// (readDuplicateCandidates), whose context is expired exactly when its bound ended the read, and
+// each read inJITOffRead runs - the issue references read, whose context can have expired at its
+// bound, and the references list read. It is not the bound of any of those reads: it ends a
+// rollback the database will not take, so the handler is never held by one.
+const readRollbackBound = 2 * time.Second
 
 // duplicateKeyLexemesQuery is what the issues trigger makes of a key of project $1
 // (0057_issues_search_trigger): the compound lexeme, the project's own word and the number.
@@ -144,13 +148,16 @@ func duplicateKeyLexemes(ctx context.Context, q queryer, project string) (map[st
 
 // duplicateScoreQuery scores the project's open issues against the new text's picked rarest
 // words: the share of the picked weight that a candidate's title vector and its primary
-// document's latest vector hold together.
+// document's whole-text vector hold together.
 //
 // The statement drives from term_weights, one row per picked lexeme and its idf, into
-// issues.search and into document_search (migration 20261101182447, one row per document holding
-// its latest version's vector), so each term is one probe of a GIN index and no candidate's spec
-// vector is read more than once per term. project_key, the status and the ancestors are filters
-// on the rows those index scans produced, never the driving predicate.
+// issues.search and into node_search's document rows (node_kind = 'artifact', migration
+// 20261125160000_issue_tree_node_search, one row per live document holding its newest markdown
+// version's vector under node_search_document_vector), so each term is one probe of a GIN index
+// and no candidate's spec is read more than once per term, as main read document_search. Document
+// rows already carry search_document_text's vector (ask blocks stripped), so no ask-block walk is
+// needed here. The document, its issue and the issue's project, status and ancestors are filters on
+// the rows those index scans produced, never the driving predicate.
 //
 // Not the obvious shape - one tsquery to find the candidates, then relatedCoordinationRank's
 // per-candidate `sum(idf) from term_weights where search @@ tq` - because that tests each
@@ -184,8 +191,8 @@ hits as (
   union
   select i.key, w.lexeme, w.idf
     from term_weights w
-    join document_search d on d.search @@ w.tq
-    join artifacts a on a.id = d.artifact_id and a.kind = 'doc' and a.is_primary
+    join node_search s on s.node_kind = '` + graphstore.KindArtifact + `' and s.search @@ w.tq
+    join artifacts a on a.ref_key = s.node_address and a.kind = 'doc' and a.is_primary
     join issues i on i.key = a.issue_key
    where i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
 ),
@@ -215,20 +222,20 @@ select s.key, i.title, i.status, s.shared, s.score,
 // would answer on a difference in construction rather than in words. A title's are
 // title_lexemes() (migration 0088), the function the issues trigger writes issues.title_lexemes
 // with. A spec's are the document vector artifact_versions_search() builds, which 0058's trigger
-// writes on every version and 20261101182454's trigger copies into document_search for the
-// primary document's latest version: search_vector, with an empty head, over
-// search_document_text of the stored markdown, its ask blocks removed and then search_text
-// (20261121060636; 0058 built the same vector with to_tsvector, which search_vector only leaves
-// for text too long to hold in one tsvector). The spec this side reads is the new one as Dispatch
-// would store it, rendered by storedMarkdown, because the stored vector is of the rendering and
-// not of the request's markdown. tsvector_to_array answers a vector's lexemes sorted and each
-// once, as title_lexemes does, so array equality is set equality here.
+// writes on every version and QueueDocumentSearch copies into node_search's document row
+// (node_kind = 'artifact'): search_vector, with an empty head, over search_document_text of the
+// stored markdown, its ask blocks removed and then search_text (20261121060636; 0058 built the same
+// vector with to_tsvector, which search_vector only leaves for text too long to hold in one
+// tsvector). The spec this side reads is the new one as Dispatch would store it, rendered by
+// storedMarkdown, because the stored vector is of the rendering and not of the request's markdown.
+// tsvector_to_array answers a vector's lexemes sorted and each once, as title_lexemes does, so
+// array equality is set equality here.
 //
 // A spec is compared whether or not either side has one, which covers the architect's rule for
 // both: with no spec on either side the two empty sets are equal and the titles decide, and with
 // one on either side the specs must hold the same lexemes too. An issue whose primary document
-// has no vector - a file upload, a document of ask blocks alone - is read as the empty set, which
-// is what document_search holds for it.
+// has no vector - a file upload, a document of ask blocks alone - is read as the empty set, as
+// is one with no version that holds markdown.
 //
 // A title that yields no lexemes at all, every word of it a stopword, matches nothing: there is
 // no text to be a copy of. Without that guard it would name every other such issue in the
@@ -251,7 +258,7 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
     on i.project_key = $1 and i.status <> 'done' and i.key <> all($4::text[])
    and i.title_lexemes = n.title_lex
   left join artifacts a on a.issue_key = i.key and a.kind = 'doc' and a.is_primary
-  left join document_search d on d.artifact_id = a.id
+  left join node_search d on d.node_kind = '` + graphstore.KindArtifact + `' and d.node_address = a.ref_key
  where cardinality(n.title_lex) > 0
    and coalesce(tsvector_to_array(d.search), '{}') = n.spec_lex
  order by i.updated_at desc
@@ -263,11 +270,12 @@ select i.key, i.title, i.status, cardinality(n.title_lex)::int as shared, 1::flo
 // document, taken as an upload is taken, then pmdoc.Render), without writing anything. Nothing
 // else of those writes is run here, since nothing else of them changes the markdown.
 //
-// The near-copy gate reads it (duplicateEqualLexemesQuery): it compares a new spec with
-// document_search.search, the vector of the markdown the seed stored, and a rendering differs from
-// the text it was parsed from wherever the renderer normalises one: an ordered list is renumbered,
-// and Postgres keeps a list's numbers as lexemes, so `1.` `1.` is stored as `1.` `2.` and an exact
-// copy of that spec would hold different lexemes from the row it copies.
+// The near-copy gate reads it (duplicateEqualLexemesQuery): it compares a new spec with the
+// vector of the primary document's latest version, the vector of the markdown the seed stored,
+// and a rendering differs from the text it was parsed from wherever the renderer normalises one:
+// an ordered list is renumbered, and Postgres keeps a list's numbers as lexemes, so `1.` `1.` is
+// stored as `1.` `2.` and an exact copy of that spec would hold different lexemes from the row it
+// copies.
 //
 // An empty answer is what a create seeds for a spec of spaces, tabs, carriage returns and line
 // feeds alone; the seed keeps the other characters strings.TrimSpace empties, which this answers
@@ -461,7 +469,7 @@ func (s *server) readDuplicateCandidates(
 	// for as long as the server lives. A read held past the bound is the ordinary case here, not
 	// the rare one, since the bound is what ends a slow one.
 	defer func() {
-		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), duplicateGateRollback)
+		rollback, cancel := context.WithTimeout(context.WithoutCancel(ctx), readRollbackBound)
 		defer cancel()
 		_ = tx.Rollback(rollback)
 	}()

@@ -1,0 +1,7 @@
+kind: Added
+body: |-
+  Issue creates return up to five issues from the same project that share graph targets with the new issue.
+  The graph read and text search start after the create commits and share a five-second limit.
+time: 2026-11-25T21:46:30Z
+custom:
+    Issue: INFRA-1253

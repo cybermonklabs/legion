@@ -154,6 +154,15 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 	if err := pool.QueryRow(ctx, issueBlocksStatement, issue.Key).Scan(&blocks); err != nil {
 		t.Fatalf("read the issues it blocks: %v", err)
 	}
+	queryRows, err := pool.Query(ctx, issueQueriesStatement, issue.Key)
+	if err != nil {
+		t.Fatalf("query the queries: %v", err)
+	}
+	queries, err := scanIssueQueries(queryRows, issue.Key)
+	queryRows.Close()
+	if err != nil {
+		t.Fatalf("load the queries: %v", err)
+	}
 	artifacts, err := served.loadArtifacts(ctx, pool, issue.Key)
 	if err != nil {
 		t.Fatalf("load the artifacts: %v", err)
@@ -194,6 +203,7 @@ func sequentialIssueRead(t *testing.T, deps Deps, key string) []byte {
 		Blocks:            blocks,
 		Progress:          progress,
 		CommentCount:      comments,
+		Queries:           queries,
 		Artifacts:         artifactReads(artifacts, nil),
 		OpenAsks:          issueOpenAsksOf(asks, replies, nil),
 		Children:          children,
@@ -480,13 +490,19 @@ func TestIssueReadCostsTwoRoundTrips(t *testing.T) {
 	// Every issue is created with its empty spec, and the route that removes a document is not
 	// one the API serves, so the issue whose read needs no second batch is made by taking its
 	// artifacts out from under it - once the document service has closed its rooms, so nothing
-	// settles what is no longer there. The delete runs on the untraced pool, outside the count.
+	// settles what is no longer there - with the rows of its issue room that name them: an issue
+	// born converted holds its tree in issue_trees, each document's room in document_rooms and
+	// the room's blocks in issue_room_blocks. The delete runs on the untraced pool, outside the
+	// count.
 	if err := deps.Docs.Quiesce(context.Background()); err != nil {
 		t.Fatalf("quiesce the documents: %v", err)
 	}
 	for _, statement := range []string{
 		`delete from artifact_versions where artifact_id in (select id from artifacts where issue_key = $1)`,
 		`delete from doc_updates where artifact_id in (select id from artifacts where issue_key = $1)`,
+		`delete from issue_room_blocks where tree_artifact_id in (select id from artifacts where issue_key = $1)`,
+		`delete from document_rooms where artifact_id in (select id from artifacts where issue_key = $1)`,
+		`delete from issue_trees where issue_key = $1`,
 		`delete from artifacts where issue_key = $1`,
 	} {
 		if _, err := database.Pool.Exec(context.Background(), statement, bareKey); err != nil {

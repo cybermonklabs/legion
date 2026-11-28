@@ -23,7 +23,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
-	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
@@ -649,9 +648,14 @@ func requirementBlocks(ids ...string) string {
 	return text.String()
 }
 
-// requirementBlock is the requirement block id, with a sentence of its own.
+// requirementBlock is the requirement block id, with a sentence of its own (requirementSentence).
 func requirementBlock(id string) string {
-	return fmt.Sprintf(":::requirement{#%s}\n**%s.** The change delivers %s.\n:::\n", id, id, id)
+	return fmt.Sprintf(":::requirement{#%s}\n**%s.** %s\n:::\n", id, id, requirementSentence(id))
+}
+
+// requirementSentence is the sentence requirementBlock writes in the requirement block id.
+func requirementSentence(id string) string {
+	return fmt.Sprintf("The change delivers %s.", id)
 }
 
 // verificationCheck is one check of a Verification document: its id and the blocks its `serves` names, in
@@ -921,37 +925,59 @@ func (r *personHandoverRig) addReading(key, artifactID, blockID, reading string)
 	return uploaded.Version.Number
 }
 
-// approvedLatest is the version at which artifactID reads approved as its latest version, through
-// the read the daemon's design gate makes (dispatch.HTTPClient.Approval, Approval.ApprovedLatest),
-// and 0 where its latest version is not approved.
-func (r *personHandoverRig) approvedLatest(artifactID string) int {
+// gateApproval is artifactID's approval as the daemon's design gate reads it
+// (dispatch.HTTPClient.Approval).
+func (r *personHandoverRig) gateApproval(artifactID string) dispatch.Approval {
 	r.t.Helper()
 	approval, err := dispatch.New(r.baseURL, dispatch.BearerTransport(scratchAgentToken, nil)).Approval(r.t.Context(), artifactID)
 	if err != nil {
 		r.t.Fatalf("read the approval of %s as the daemon's design gate reads it: %v", artifactID, err)
 	}
-	return approval.ApprovedLatest()
+	return approval
 }
 
-// carriedReview waits for Dispatch to record its carry of the person's approval of version from on
-// artifactID — the newest review, approved in the person's name at a later version with the
-// carry's reason (intake.CarriedApprovalReasonPrefix) — and answers it.
-func (r *personHandoverRig) carriedReview(artifactID string, from int) scratchReview {
+// scratchVerdict is a document's approval as Dispatch's artifact read answers it, with its hash-gate
+// verdict on the latest version (R14 of the issue-tree spec): the version approved, the latest
+// version, the digest the approval pinned (content_sha256), the latest version's digest
+// (current_sha256, null while owed) and whether Dispatch still owes it (digest_owed), which the
+// daemon's design gate reads as whether the approval stands for the latest version.
+type scratchVerdict struct {
+	State         string  `json:"state"`
+	Version       *int    `json:"version"`
+	LatestVersion int     `json:"latest_version"`
+	ContentSHA256 string  `json:"content_sha256"`
+	CurrentSHA256 *string `json:"current_sha256"`
+	DigestOwed    *bool   `json:"digest_owed"`
+}
+
+// standingApproval waits for Dispatch's verdict on artifactID at version latest or past it - the
+// latest version's digest, no longer owed - and holds it to the person's approval of version
+// approved standing there: approved, of that version, with latest the latest version, and the
+// person's review of approved still the newest review. A version that moves nothing of the record
+// the approval covers (a paragraph, an answer's ask attributes) keeps the approval standing on a
+// converted query document, where Dispatch writes no carried review (docs.textCarries); the
+// daemon's design gate reads that verdict, approved with no digest owed, as the approval standing
+// for the latest version (dispatch.Approval.Stands where the daemon reads digest_owed).
+func (r *personHandoverRig) standingApproval(artifactID string, approved, latest int) scratchVerdict {
 	r.t.Helper()
-	var newest scratchReview
-	testwait.Eventually(r.t, fmt.Sprintf("Dispatch to carry the approval of version %d of %s forward", from, artifactID), func() bool {
-		reviews := r.reviews(artifactID)
-		if len(reviews) == 0 {
-			return false
-		}
-		newest = reviews[0]
-		return newest.Version > from && newest.Reason != nil && strings.HasPrefix(*newest.Reason, intake.CarriedApprovalReasonPrefix)
-	})
-	wantPrefix := fmt.Sprintf("%s %d:", intake.CarriedApprovalReasonPrefix, from)
-	if newest.State != "approved" || newest.Actor != (scratchActor{Kind: "user", ID: "smoke"}) || !strings.HasPrefix(*newest.Reason, wantPrefix) {
-		r.t.Fatalf("the carried review of %s = %+v (reason %q); want approved in the person's name with a reason opening %q", artifactID, newest, *newest.Reason, wantPrefix)
+	var shown struct {
+		Approval *scratchVerdict `json:"approval"`
 	}
-	return newest
+	testwait.Eventually(r.t, fmt.Sprintf("Dispatch's digest verdict on version %d of %s", latest, artifactID), func() bool {
+		shown.Approval = nil
+		dispatchCallAs(r.t, r.baseURL, http.MethodGet, "/api/v1/artifacts/"+artifactID, nil, &shown, asSession)
+		return shown.Approval != nil && shown.Approval.LatestVersion >= latest && shown.Approval.DigestOwed != nil && !*shown.Approval.DigestOwed
+	})
+	verdict := *shown.Approval
+	if verdict.State != "approved" || verdict.Version == nil || *verdict.Version != approved || verdict.LatestVersion != latest {
+		r.t.Fatalf("Dispatch's approval of %s = %+v; want the person's approval of version %d standing at its latest version %d with no digest owed",
+			artifactID, verdict, approved, latest)
+	}
+	if reviews := r.reviews(artifactID); len(reviews) == 0 || reviews[0].Version != approved || reviews[0].State != "approved" ||
+		reviews[0].Actor != (scratchActor{Kind: "user", ID: "smoke"}) {
+		r.t.Fatalf("the newest review of %s = %+v; want the person's approval of version %d, with no review written for a later version", artifactID, reviews, approved)
+	}
+	return verdict
 }
 
 // issueEvents is key's whole Dispatch event log, oldest first, read with the agent token.
@@ -1417,10 +1443,11 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	t.Logf("the person's approval of the running root %s's registered gate document opened its gate and queued no handover:\n%s", running.Key, body)
 
 	// 7. The carried case: the person's answer writes one version, which changes only the
-	// server-owned attributes of the ask's block - its state, who answered and when - and Dispatch
-	// carries the person's approval across it; a reading of the answer inside the answered block
-	// carries it on to the version the reading writes. The daemon applies each carried approval
-	// writing nothing.
+	// server-owned attributes of the ask's block - its state, who answered and when - and the
+	// person's approval stands across it; a reading of the answer inside the answered block keeps it
+	// standing at the version the reading writes. On a converted query document Dispatch judges that
+	// by the digest of the record the approval covers and writes no carried review
+	// (standingApproval). The daemon applies each version writing nothing.
 	carried := r.create(asSession, "Regional wave decision pending", labelled)
 	r.setStatus(carried.Key, "backlog")
 	blockVersion := r.editDocument(carried.PrimaryArtifactID, insertAtEnd(personHandoverBlock))
@@ -1434,26 +1461,18 @@ func TestAPersonsApprovalOfAParkedRootsSpecIsQueuedByTheDaemonAgainstScratchDisp
 	reparked := r.setStatus(carried.Key, "backlog")
 	r.applied(r.newestEvent(carried.Key, "issue.updated", func(e scratchEvent) bool { return e.Seq == reparked.LastSeq }))
 	r.answerBlock(askID, personHandoverAnswer)
-	answerCarry := r.carriedReview(carried.PrimaryArtifactID, approved.Version)
-	if latest := r.approvedLatest(carried.PrimaryArtifactID); answerCarry.Version != approved.Version+1 || latest != answerCarry.Version {
-		t.Fatalf("after the person's answer, Dispatch carried the approval of %s's spec to version %d and reads it approved at its latest version %d (0: not approved); want both %d, the one version the answer wrote",
-			carried.Key, answerCarry.Version, latest, approved.Version+1)
-	}
-	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == answerCarry.Version }))
+	answered := r.standingApproval(carried.PrimaryArtifactID, approved.Version, approved.Version+1)
+	r.applied(r.newestEvent(carried.Key, "artifact.version", nil))
 	readingVersion := r.addReading(carried.Key, carried.PrimaryArtifactID, "wave", personHandoverReading)
-	if readingVersion != answerCarry.Version+1 {
+	if readingVersion != answered.LatestVersion+1 {
 		t.Fatalf("the reading wrote version %d of %s's spec; want %d, the version after the one the answer wrote",
-			readingVersion, carried.Key, answerCarry.Version+1)
+			readingVersion, carried.Key, answered.LatestVersion+1)
 	}
-	carry := r.carriedReview(carried.PrimaryArtifactID, approved.Version)
-	if latest := r.approvedLatest(carried.PrimaryArtifactID); carry.Version != readingVersion || latest != readingVersion {
-		t.Fatalf("Dispatch carried the person's approval of %s's spec to version %d and reads it approved at its latest version %d (0: not approved); want both %d, the version the reading wrote",
-			carried.Key, carry.Version, latest, readingVersion)
-	}
-	r.applied(r.newestEvent(carried.Key, "artifact.approved", func(e scratchEvent) bool { return e.version() == carry.Version }))
+	r.standingApproval(carried.PrimaryArtifactID, approved.Version, readingVersion)
+	r.applied(r.newestEvent(carried.Key, "artifact.version", nil))
 	r.notQueued(carried.Key, "backlog", 1)
-	t.Logf("the person's answer to the ask block of %s wrote version %d, which carried their approval of version %d (%q), and the reading inside it carried it on to version %d (%q); the daemon queued nothing for either",
-		carried.Key, answerCarry.Version, approved.Version, *answerCarry.Reason, carry.Version, *carry.Reason)
+	t.Logf("the person's answer to the ask block of %s wrote version %d and the reading inside it version %d; Dispatch keeps their approval of version %d standing at each with no digest owed, and the daemon queued nothing for either",
+		carried.Key, answered.LatestVersion, readingVersion, approved.Version)
 
 	// 8. The recorded parked root with a gate from its earlier run, approved at a new version.
 	revised := r.revise(recorded.PrimaryArtifactID, "behind a flag", "behind a flag, in two waves")

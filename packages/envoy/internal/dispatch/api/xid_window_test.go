@@ -406,15 +406,17 @@ func xidWindowUploadReplace(t *testing.T, f *xidFixture) {
 	})
 }
 
-// An upload of the text a person approved carries his approval to the version it writes
-// (docs.CarryUploadedApproval). Everything that carry is decided on - the document's newest
-// review, the approved version's text, its decision blocks' rows and the open approval request -
-// is read in the route's read phase, and what it writes - the request's answer, when one is open,
-// and the review - is queued with the route's own writes, so the window is that one batch and the
-// commit ending it.
+// An upload of the text a person approved, on a converted issue, writes no carry (R14's hash gate):
+// its version commits in main's batched window, storetest.XidBatchedWindow, the write phase's one
+// batch and its COMMIT, as every other write of a converted query document does, and owes its
+// record's digest to the fill after the COMMIT. The spec's revision token stands in a requirement
+// (revisionRequirementSpec), so the upload that bumps it moves the spec's record and stales the
+// approval, and the measured restore gives the approval its digest back: it stands again by that
+// digest, with no carried review beside alice's own.
 func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 	// Not parallel: the xid rig measures only in a test that runs alone in the process.
-	f := newXidFixture(t, testServerOptions{}, "")
+	spec, _ := xidSpec(1)
+	f := newXidFixture(t, testServerOptions{}, revisionRequirementSpec(t, spec))
 	approval := reviewDocument(t, f.handler, f.specID, "alice", "approved", "")
 	approved := versionMarkdown(t, f.handler, f.specID, approval.Version)
 	f.revise()
@@ -425,6 +427,7 @@ func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 		t.Fatalf("stale the approval before the restore: status=%d body=%s", uploaded.Code, uploaded.Body.String())
 	}
 	waitForArtifactVersion(t, f.handler, f.specID, approval.Version+1)
+	requireNoCarry(t, f.handler, f.specID, 1, "stale")
 	// The restore names the token of the version it replaces, read before the measured request.
 	base := uploadBase(t, f.handler, f.specID)
 	f.measureBatched(t, http.StatusCreated, func(h http.Handler) *httptest.ResponseRecorder {
@@ -432,10 +435,13 @@ func TestXidWindowUploadRestoringTheApprovedText(t *testing.T) {
 			"name": "spec.md", "content": approved, "actor": sessionActor(), "precondition": base,
 		})
 	})
-	// The measured request is the restore only while it carries the approval: a window measured
-	// over a route that carried nothing would report a window this write path never ran in.
+	// The measured request is the restore only while it wrote the approved text again, which the
+	// version's digest, once its fill has run, shows by standing where alice approved it.
 	waitForArtifactVersion(t, f.handler, f.specID, approval.Version+2)
-	requireReviewCarriedWith(t, f.handler, f.specID, approval.Version+2, approval.Version, restoreSentence(approval.Version), nil)
+	requireNoCarry(t, f.handler, f.specID, 1, "approved")
+	if got := readApproval(t, f.handler, f.specID).Approval; got == nil || got.Version == nil || *got.Version != approval.Version {
+		t.Fatalf("the approval after the restore reads %#v, want alice's own approval of version %d standing by its digest", got, approval.Version)
+	}
 }
 
 // A named version of a document changed since its last version captures and renders the live
@@ -463,14 +469,16 @@ func TestXidWindowDocumentRebuild(t *testing.T) {
 	var broken *invalidLoadOnceStore
 	f := newXidFixture(t, testServerOptions{
 		persistence: func(database *store.Store) docs.VersionedStore {
-			broken = &invalidLoadOnceStore{VersionedStore: docs.NewPgVersioned(database), invalid: make(map[string]bool)}
+			broken = newInvalidLoadOnceStore(database)
 			return broken
 		},
 	}, "")
-	if err := f.deps.Docs.(*docs.Service).Evict(context.Background(), f.specID); err != nil {
-		t.Fatalf("evict the spec: %v", err)
+	// The spec is edited in its issue's room, which the fixture's run of anchored writes loads.
+	room, _ := documentRoomOf(t, f.database.Pool, f.specID)
+	if err := f.deps.Docs.(*docs.Service).Evict(context.Background(), room); err != nil {
+		t.Fatalf("evict the spec's room: %v", err)
 	}
-	broken.failNextLoad(f.specID)
+	broken.failNextLoad(t, f.specID)
 	f.revise()
 	f.measure(t, http.StatusOK, storetest.XidBatchedWindow, func(h http.Handler) *httptest.ResponseRecorder {
 		return dispatchRequest(t, h, http.MethodPost, "/api/v1/artifacts/"+f.specID+"/rebuild", map[string]any{"markdown": f.spec}, "alice")

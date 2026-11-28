@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  Document writes now refuse any newly introduced typed block id, directive attribute value or
+  `ci_check` name that holds a control character (C0 U+0000 to U+001F, C1 U+0080 to U+009F,
+  U+2028 or U+2029) after decoding, answering `400 INVALID_MARKDOWN` naming the block and field,
+  and room settlement repairs control characters written through browser CRDT updates while stored
+  historical versions keep reading.
+time: 2026-11-27T17:00:47Z
+custom:
+    Issue: INFRA-1253

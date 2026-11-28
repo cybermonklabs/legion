@@ -110,6 +110,20 @@ export const WRITE_ROUTES: readonly WriteRoute[] = [
   { method: "POST", pattern: "/api/v1/results/{id}/retract", commands: ["result"] },
   { method: "POST", pattern: "/api/v1/deploys", commands: ["deploy"] },
   { method: "POST", pattern: "/api/v1/issues/{key}/handoffs/{phase}", commands: ["handoff-write"] },
+  // The writes of the reasoning commands (reasoning.ts). premortem-convert's dry run, which writes
+  // nothing, sends the same route.
+  { method: "POST", pattern: "/api/v1/issues/{key}/lenses", commands: ["lens"] },
+  { method: "POST", pattern: "/api/v1/issues/{key}/nodes/{id}/findings", commands: ["finding"] },
+  { method: "POST", pattern: "/api/v1/issues/{key}/risks", commands: ["risk"] },
+  { method: "POST", pattern: "/api/v1/issues/{key}/constraints", commands: ["constraint"] },
+  { method: "POST", pattern: "/api/v1/issues/{key}/nodes/{id}/pointers", commands: ["pointer"] },
+  { method: "POST", pattern: "/api/v1/issues/{key}/nodes/{id}/state", commands: ["state"] },
+  { method: "POST", pattern: "/api/v1/issues/{key}/nodes/{id}/settle", commands: ["settle"] },
+  {
+    method: "POST",
+    pattern: "/api/v1/issues/{key}/artifacts/{slug}/premortem-convert",
+    commands: ["premortem-convert"],
+  },
   // The first two also carry the pictures of a comment, an ask or a message (`postWithPictures`,
   // command-context.ts).
   { method: "POST", pattern: "/api/v1/issues/{key}/artifacts", commands: ["artifact"] },

@@ -83,8 +83,8 @@ For each gated step, once every child is filed:
 - A version you write moves the request to your turn, and the person stops seeing it: once they
   agree, run `dispatch request-approval` again.
   Their answer, resolve or decline writes one version, which leaves the request with whoever held its turn.
-  The version carries an approval only when the person's answer, resolve or decline is its whole change.
-  If text that a person was editing in the browser is settled into the same version, the approval does not carry, and the request goes back to its agent.
+  An approval stands across that version when the answer, resolve or decline is its whole change.
+  If text that a person was editing in the browser is settled into the same version, the request goes back to its agent, and the approval stands only if that text changes nothing it covers.
 - `already approved at version <N>`: still `register_gate` that id and version.
 - A view (no requirement block of its own; each check `serves` the nearest reviewed ancestor's spec
   at its latest version) skips steps 4 and 6: register with `basis` (that ancestor's document for
@@ -99,24 +99,23 @@ For each gated step, once every child is filed:
 
 ## After approval
 
-An approval is pinned to its version: any new version closes that step. The daemon tells the
-architect and every phase holder when the gate closes. Four keep it: a version whose only change
-is the approver's answer to an ask block, given after the approval at a browser or under a
-credential with the approve scope, a block added since the approval included; one equal to the
-approved text (an accidental edit undone exactly) with no ask block in it decided since; one whose
-every change is a reading added, changed or removed in a decision or an answered ask, a
-server-owned ask attribute or the decisions step's `## Decisions` write; and, after a close and a
-reopen, the approved text with only the questions the close withdrew open again. A close's own
-version keeps none, so the approval reads stale until the reopen's. For each, Dispatch records an
-`approved` review, the daemon sends `design-approved`, and you request nothing. Where the step
-reads `waiting` at such a version (`gatedSteps` in `read_record`), request approval as after any
+Dispatch judges whether an approval stands at a later version, and the daemon follows its verdict
+(`gatedSteps` in `read_record`) and tells you and every phase holder when the gate closes. On an
+issue Dispatch has converted to one tree, an approval covers the digest of its document's query:
+the spec's memo callout, criteria and requirements, or the Verification document's checks. A
+version that changes a requirement, a criterion, a check, the memo or their relations closes the
+step until a person approves it. One that leaves the digest equal keeps the step open: a prose
+edit, an ask's attributes (its answer, resolve or decline), a reading, the approved text restored
+or a recorded result. On an unconverted issue, any new version closes the step unless Dispatch
+carries the approval to it by its text (`dispatch request-approval --help`). Request nothing for
+a version that keeps the approval; where a step reads `waiting`, request approval as after any
 change.
 
 Edit an approved spec only where its Summary, a requirement, a check, the scope or a settled
 decision changes: put the problem to the person as an ask block at the end of the section it
-changes. When their answer changes text outside the block, rewrite it and repeat steps 4 and 5,
-with a `--summary` sentence naming what changed. Work in flight goes on; release no further child
-until the next `design-approved`.
+changes. When their answer changes text outside the block, rewrite it; where the rewrite closes the
+step, repeat steps 4 and 5, with a `--summary` sentence naming what changed. Work in flight goes
+on; while the step is closed, release no further child until the next `design-approved`.
 
 A change that keeps all five goes in the plan (`plan.md`), never the spec. A plan overturns a
 settled decision only with evidence the person did not weigh, put to them as an ask block. A

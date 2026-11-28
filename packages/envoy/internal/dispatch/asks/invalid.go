@@ -79,6 +79,7 @@ func PlanInvalidReasons(ctx context.Context, q Queryer, invalid map[string]strin
 			tuples[index].SourceEvent = cause
 		}
 		graphstore.QueueWrite(b, nil, tuples)
+		graphstore.QueueHeads(b, graphstore.HeadsOf(nil, tuples))
 		return nil
 	}, nil
 }

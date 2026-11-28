@@ -271,8 +271,7 @@ export function decisionsParts({
   const kept = view === undefined ? undefined : idsOf(view);
   const decided = (decisions?.entries ?? []).filter(isDecisionEntry);
   const rows = new Map(decided.map((row) => [row.ref, row]));
-  // Each person's decision by the ask it is (`personDecisionAsk`): the ask's own entry, or a
-  // section of the release before that cites it, whose address is no ask's.
+  // Each person's decision by the ask it is (`personDecisionAsk`).
   const personal = new Map<string, ReadEntry[]>();
   for (const row of decided) {
     const ask = personDecisionAsk(row);

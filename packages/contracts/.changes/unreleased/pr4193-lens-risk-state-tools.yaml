@@ -1,0 +1,12 @@
+kind: Added
+body: |-
+  The Dispatch tool specs add `dispatch_lens`, `dispatch_lenses`, `dispatch_finding`,
+  `dispatch_risk`, `dispatch_constraint`, `dispatch_constraints`, `dispatch_pointer`,
+  `dispatch_state`, `dispatch_proposed`, `dispatch_settle` and `dispatch_premortem_convert`, with
+  the lists their arguments take (`NODE_VISIBILITIES`, `POINTER_KINDS`, `POINTER_ACTIONS` and
+  `WRITABLE_NODE_STATES`), and the OpenAPI document gives a graph node its `state`, its
+  `visibility` and the new node kinds (`interaction`, `lens`, `lens_block`, `lens_kind`, `risk` and
+  `constraint`). `GraphNode.kind`, a string before, is now a closed enum of the node kinds Dispatch
+  answers, so a consumer that switches on it learns of a new kind at its type check. Each member
+  added to an existing response schema is optional, among them the `kind` and `address` a member of
+  an issue's reference closure now carries.

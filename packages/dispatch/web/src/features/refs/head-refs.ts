@@ -3,6 +3,7 @@ import { referenceSpans } from "@legion/contracts";
 import { type CodeRange, codeRanges } from "./code-ranges";
 import { type InlineLink, inlineLinks } from "./party-references";
 import { buildDispatchReference, referenceRouteFromHref } from "./routes";
+import { storeAddressReference } from "./store-address";
 import { readTextReferences } from "./text-references";
 
 /** One reference a text writes, as a cut reads it (the server's `cutReference`): where a reader
@@ -303,11 +304,13 @@ function linkStart(link: InlineLink): number {
 
 /** Every reference of `text` as a cut reads it (`headRefs`), none of them resolved against what
  *  Dispatch holds, since a cut that splits a reference changes what the text says whether or not
- *  its target exists: each span the shared span reader finds that is an address of Dispatch or of
- *  the dashboard at `origin`, read as that reader reads it - a link's address ended at the link's
- *  `)` and trimmed as any span is - and each bare key and `#id` the shared reader finds, each
- *  widened over the inline link that holds it and named as `Extent` says. The link that holds one
- *  is the first to open, as the server's link reader lists them. */
+ *  its target exists: each span the shared span reader finds that is an address of Dispatch - one
+ *  of a node the store addresses by its own id included (`storeAddressReference`), which has no
+ *  route, as the server's `parseDispatch` reads it - or of the dashboard at `origin`, read as that
+ *  reader reads it - a link's address ended at the link's `)` and trimmed as any span is - and each
+ *  bare key and `#id` the shared reader finds, each widened over the inline link that holds it and
+ *  named as `Extent` says. The link that holds one is the first to open, as the server's link
+ *  reader lists them. */
 function referenceExtents(text: string, origin: string): Extent[] {
   const links = [...inlineLinks(text)].sort((one, other) => linkStart(one) - linkStart(other));
   const extents: Extent[] = [];
@@ -320,10 +323,11 @@ function referenceExtents(text: string, origin: string): Extent[] {
     );
   };
   for (const span of referenceSpans(text)) {
-    const route = span.value === "" ? undefined : referenceRouteFromHref(span.value, origin);
-    if (route !== undefined) {
-      add(span.start, span.start + span.value.length, buildDispatchReference(route));
-    }
+    if (span.value === "") continue;
+    const route = referenceRouteFromHref(span.value, origin);
+    const names =
+      route === undefined ? storeAddressReference(span.value) : buildDispatchReference(route);
+    if (names !== undefined) add(span.start, span.start + span.value.length, names);
   }
   for (const reference of readTextReferences(text, { origin }).references) {
     if (reference.form === "key") {

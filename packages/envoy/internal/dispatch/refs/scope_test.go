@@ -89,8 +89,24 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 	spec := insertScopeDocument(t, tx, "ACME-1", "spec", true)
 	notes := insertScopeDocument(t, tx, "ACME-1", "notes", false)
 	project, _ := createReferenceArtifact(t, tx, "", "ACME", "handbook")
+	// An issue room: the plan is edited in it, and its block q2 is a fragment block of the plan,
+	// whose ask the room's settlement keys by the room's tree artifact (AskBlockDocumentSQL).
+	plan := insertScopeDocument(t, tx, "ACME-1", "plan", false)
+	room := insertScopeRow(t, tx, "the issue's tree", `
+		insert into artifacts (issue_key, project_key, slug, name, kind, is_primary, created_by)
+		values ('ACME-1', 'ACME', 'tree', 'tree', 'tree', false, '{"kind":"user","id":"alice"}')
+		returning id::text
+	`)
+	if _, err := tx.Exec(ctx, `insert into document_rooms (artifact_id, room) values ($1, $2)`, plan, room); err != nil {
+		t.Fatalf("put the plan in the issue's room: %v", err)
+	}
+	if _, err := tx.Exec(ctx, `insert into issue_room_blocks (tree_artifact_id, block_id, document_id) values ($1, 'q2', $2)`,
+		room, plan); err != nil {
+		t.Fatalf("place the plan's block in the room: %v", err)
+	}
 
 	blockAsk := insertScopeBlockAsk(t, tx, "ACME-1", notes, "q1")
+	roomBlockAsk := insertScopeBlockAsk(t, tx, "ACME-1", room, "q2")
 	anchoredAsk := insertScopeAsk(t, tx, "ACME-1", "anchor", notes)
 	issueAsk := insertScopeAsk(t, tx, "ACME-1", "", nil)
 	projectAsk := insertScopeAsk(t, tx, nil, "artifact_id", project)
@@ -146,7 +162,10 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 		{"the spec's version", Target{"artifact", spec}, spec},
 		{"another document's version", Target{"artifact", notes}, notes},
 		{"a project document's version", Target{"artifact", project}, project},
+		{"a version of a document edited in an issue room", Target{"artifact", plan}, plan},
+		{"the issue room's tree's version", Target{"artifact", room}, room},
 		{"a block ask", Target{"ask", blockAsk}, notes},
+		{"a block ask of an issue room's fragment", Target{"ask", roomBlockAsk}, plan},
 		{"an anchored ask", Target{"ask", anchoredAsk}, notes},
 		{"an issue ask", Target{"ask", issueAsk}, spec},
 		{"a project document's ask", Target{"ask", projectAsk}, project},
@@ -162,7 +181,7 @@ func TestScopeOfAndScopeSourcesAgree(t *testing.T) {
 		{"an issue message", Target{"message", issueMessage}, spec},
 		{"a direct message", Target{"message", directMessage}, ""},
 	}
-	want := map[string][]Target{spec: {}, notes: {}, project: {}}
+	want := map[string][]Target{spec: {}, notes: {}, project: {}, plan: {}, room: {}}
 	for _, shape := range shapes {
 		got, err := ScopeOf(ctx, tx, model.Actor{}, shape.Kind, shape.ID)
 		if err != nil {
@@ -454,8 +473,13 @@ type queuedVersion struct{ artifact, markdown string }
 
 func (v queuedVersion) PendingIssue(string) bool                      { return false }
 func (v queuedVersion) PendingArtifact(string) (string, string, bool) { return "", "", false }
-func (v queuedVersion) PendingBlockAsks(string) []PendingBlockAsk     { return nil }
-func (v queuedVersion) PendingAsk(string) (PendingBlockAsk, bool)     { return PendingBlockAsk{}, false }
+func (v queuedVersion) PendingDocument(string) (DocumentAddress, bool) {
+	return DocumentAddress{}, false
+}
+func (v queuedVersion) PendingRoom(string) (string, bool)                { return "", false }
+func (v queuedVersion) PendingAuthors(string, int) ([]model.Actor, bool) { return nil, false }
+func (v queuedVersion) PendingBlockAsks(string) []PendingBlockAsk        { return nil }
+func (v queuedVersion) PendingAsk(string) (PendingBlockAsk, bool)        { return PendingBlockAsk{}, false }
 func (v queuedVersion) PendingMarkdown(artifactID string) (string, bool) {
 	return v.markdown, artifactID == v.artifact
 }
@@ -486,9 +510,9 @@ func TestAQueuedVersionsCopyResolvesToTheSourceItsLineNames(t *testing.T) {
 	version := renderTypedVersion(t, markdown)
 	record := document.writeVersion(t, 1, version.markdown, alice)
 	commitIndex(t, database.Pool, func(tx pgx.Tx) (graphstore.Uncaused, error) {
-		_, _, write, err := IndexBlocks(ctx, tx, document.artifact, 1, record.at, version.markdown, version.blocks, version.located, version.pointers, "", TypedFacts{})
+		_, _, write, _, err := IndexBlocks(ctx, tx, document.artifact, OneVersion(document.artifact, 1, record.at), version.markdown, version.blocks, version.located, version.pointers, "", TypedFacts{})
 		for _, block := range []string{"c", "d"} {
-			write.Tuples = append(write.Tuples, graphstore.UncausedTuple{Tuple: graphstore.Tuple{
+			write.State(graphstore.UncausedTuple{Tuple: graphstore.Tuple{
 				FromKind: BlockNodeKind, FromID: document.address(block), Kind: graphstore.TupleCopiedFrom,
 				ToKind: graphstore.KindAsk, ToID: first, At: record.at, Who: alice, Asserted: true,
 			}})

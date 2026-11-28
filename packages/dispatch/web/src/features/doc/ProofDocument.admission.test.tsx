@@ -10,6 +10,7 @@ import { answerRequests } from "../../__tests__/network";
 import {
   answerTextReadsWithTheSeededText,
   artifact,
+  artifactRecordHandler,
   createQueryClient,
   documentSurfaceHandlers,
   flushLoadFailure,
@@ -129,6 +130,9 @@ test("ProofDocument removes locally saved edits only when its artifact is gone",
 
 test("ProofDocument keeps locally saved edits when another 404 blocks admission", async () => {
   const document = { ...artifact, id: "artifact-404-keeps-edits" };
+  // The document is there, so its record reads, which names the fragment the page binds; only its
+  // text read is answered 404, by something other than Dispatch's artifact routes.
+  answerRequests(artifactRecordHandler((id) => (id === document.id ? document : undefined)));
   const stored = await openPendingEdits(document.id, 1);
   if (stored === undefined) {
     throw new Error("fake-indexeddb refused to open");
@@ -552,10 +556,13 @@ test("a transport that fails to load is reported instead of connecting forever",
   const { toolbar, view } = renderProofDocument({ fake });
 
   try {
-    await flushLoadFailure(rejection);
-    const alert = within(view.container).getByRole("alert");
+    // The admission starts only once the artifact read names the document's fragment (this
+    // file's artifact names none), so the transport's failure reaches the page a read after the
+    // render: the row waits for the alert, and then for the toolbar's report of it, which a
+    // passive effect makes a commit later (`flushLoadFailure` in `__tests__/proof-document.tsx`).
+    const alert = await within(view.container).findByRole("alert");
     expect(alert.textContent).toBe("This document could not load: Failed to fetch");
-    expect(toolbar.current?.connection).toBe("failed");
+    await waitFor(() => expect(toolbar.current?.connection).toBe("failed"));
   } finally {
     view.unmount();
   }

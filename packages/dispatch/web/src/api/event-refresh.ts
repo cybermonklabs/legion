@@ -7,6 +7,7 @@ import { issueProject } from "../lib/issue-key";
 import {
   agentMessagesQuery,
   architectureSourcesQuery,
+  artifactBlocksQuery,
   inboxQuery,
   inboxThreadsKey,
   myRepliesKey,
@@ -702,7 +703,9 @@ function changesReferenceGraph(event: DispatchEvent): boolean {
       const changes = issueChanges(event);
       return (
         changes === undefined ||
-        ["parent", "blocked_by", "components", "title"].some((field) => changes.has(field))
+        ISSUE_RELATION_FIELDS.some((field) => changes.has(field)) ||
+        changes.has("components") ||
+        changes.has("title")
       );
     }
     default:
@@ -817,29 +820,55 @@ function issueWriteTargets(
     targets.push({ queryKey: ["priorities"] }, { queryKey: ["issues", "advances"] });
   }
 
-  // A `child_of` edge into the parent and a `blocked_by` edge into each blocker are rows of their
-  // backlink panels: the new parent and blockers are the payload's, the old ones are the panels
-  // that still list an edge from this issue.
-  if (moved("parent") || moved("blocked_by")) {
+  // A `child_of` edge into the parent, a `needs` edge into each issue it waits on, a
+  // `duplicate_of` edge into the issue it repeats and a `filed_from` edge into the item it was
+  // filed out of are rows of their backlink panels: the new far ends are the payload's, the old
+  // ones are the panels that still list an edge from this issue. A Dispatch of the release before
+  // writes `blocked_by` alone, which is read where the payload holds no `needs`, and names the
+  // edge blocked_by.
+  if (ISSUE_RELATION_FIELDS.some((field) => moved(field))) {
     const parent = payloadString(event, "parent");
-    const blockers = payloadStrings(event, "blocked_by") ?? [];
+    const waits = payloadStrings(event, "needs") ?? payloadStrings(event, "blocked_by") ?? [];
+    const duplicate = payloadString(event, "duplicate_of");
+    const filed = payloadString(event, "filed_from")?.split("/").pop();
     targets.push(
       referencePanels(
         ({ edges, node }) =>
-          node.kind === "issue" &&
-          (node.id === parent ||
-            blockers.includes(node.id) ||
-            (edges ?? []).some(
-              (edge) =>
-                edge.node.kind === "issue" &&
-                edge.node.id === key &&
-                (edge.kind === "child_of" || edge.kind === "blocked_by")
-            ))
+          (node.kind === "issue" &&
+            (node.id === parent || node.id === duplicate || waits.includes(node.id))) ||
+          (filed !== undefined && node.id === filed) ||
+          (edges ?? []).some(
+            (edge) =>
+              edge.node.kind === "issue" &&
+              edge.node.id === key &&
+              ISSUE_RELATION_KINDS[edge.kind] === true
+          )
       )
     );
   }
   return targets;
 }
+
+/** The fields of an issue's write that move an edge its node states (ISSUE_RELATION_KINDS): its
+ *  parent, its waits under both spellings, the issue it repeats and the item it was filed out of. */
+const ISSUE_RELATION_FIELDS = [
+  "parent",
+  "needs",
+  "blocked_by",
+  "duplicate_of",
+  "filed_from",
+] as const;
+
+/** The kinds of edge an issue states out of its own node: its parent, its waits under both the
+ *  spelling this Dispatch answers and the one a Dispatch of the release before answers, the
+ *  issue it repeats and the item it was filed out of. */
+const ISSUE_RELATION_KINDS: Partial<Record<string, true>> = {
+  child_of: true,
+  needs: true,
+  blocked_by: true,
+  duplicate_of: true,
+  filed_from: true,
+};
 
 /**
  * What one write of priority `id` changes, by which of the three writes it was. Every one moves
@@ -1259,6 +1288,36 @@ function ownerTargets(event: DispatchEvent, viewer: string | undefined): Refresh
   if (event.type === "role.undelivered") {
     // The outbox's report that an event's copy for a role reached no session: a line in the
     // issue's log and nothing more.
+    return targets;
+  }
+  if (event.type === "artifact.indexed") {
+    // The block index caught up on documents of the issue that a write left owing it, each of
+    // whose versions already sent its own `artifact.version`. What moves is what the server reads
+    // from the index: the coverage read, which drew a "still being indexed" line in place of every
+    // missing check and plan task (`owed_documents`), the Decisions view, the Verification tab's
+    // indexed checks, and the blocks of each document the event names - the reads the issue's tree
+    // is built from (`useIssueTree`). No document's text, name or version moves, so its own read,
+    // the issue's document list, its comments and its summary stand.
+    targets.push(
+      { exact: true, queryKey: ["issue", key, "coverage"] },
+      { exact: true, queryKey: ["issue", key, "results"] },
+      { exact: true, queryKey: ["decisions", key] },
+      ...event.payload.artifact_ids.map((id) => ({ queryKey: artifactBlocksQuery(id).queryKey }))
+    );
+    return targets;
+  }
+  if (event.type === "artifact.digest") {
+    // Dispatch filled the record digest of a query document's version and evaluated whether its
+    // approval stands. What moves is that approval alone - the `approval` the document's own read
+    // carries (`current_sha256`, `digest_owed`, and whether it stands) and each row of the issue's
+    // document list, whose chip draws it - so those two reads, by their exact keys. The version's
+    // own `artifact.version` refreshed its text, blocks, asks and the issue's coverage already, and
+    // the reads under the document's key (`["artifact", id, ...]`: its text, blocks, asks and each
+    // version) hold nothing a digest changes.
+    targets.push(
+      { exact: true, queryKey: ["artifacts", key] },
+      { exact: true, queryKey: ["artifact", event.payload.artifact_id] }
+    );
     return targets;
   }
   if (event.type === "artifact.created" || event.type === "artifact.version") {
@@ -1802,7 +1861,9 @@ function namesReadsNaming(event: DispatchEvent): RefreshTarget {
  * A document's creation (`artifact.created`) gives words to an address a page cited before the
  * document existed, its rename (`artifact.renamed`) moves the name the read answers for an
  * address to the document, and its removal (`artifact.removed`) makes every address to it and to
- * its blocks name nothing (`gone`), so each refreshes them too.
+ * its blocks name nothing (`gone`), so each refreshes them too. A block index that caught up on
+ * documents a write left owing it (`artifact.indexed`) gives the words of their new version to the
+ * addresses of their blocks, which the reads naming the issue's addresses then read again.
  *
  * Of the names reads the app holds, each event refreshes those whose key holds an address it can
  * change: one of the issue or the project document it is on (`eventAddresses`), and, for a
@@ -1864,6 +1925,7 @@ function referenceNameTargets(event: DispatchEvent): RefreshTarget[] {
     case "artifact.removed":
     case "artifact.renamed":
     case "artifact.version":
+    case "artifact.indexed":
     case "document.retired":
     case "ask.edited":
     case "comment.edited":

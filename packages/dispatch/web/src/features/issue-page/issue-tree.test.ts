@@ -16,6 +16,7 @@ import type {
   CommentWithTrees,
   Decision,
   DecisionEntry,
+  DecisionLink,
   DisplayTree,
   IssueCheckResults,
   IssueChild,
@@ -27,7 +28,6 @@ import type {
   ReferenceTarget,
   RequirementCoverage,
 } from "../../api/types";
-import { withEntries } from "../issue/decision-entries";
 import { askResolutionBadge } from "../refs/actor";
 import { warmMarkdownRenderer } from "../refs/markdown-engine";
 import { usePlainHeadline } from "../refs/plain-text";
@@ -396,7 +396,7 @@ function decisions(made: readonly Decision[]): IssueDecisions {
 }
 
 /** A link of decision `d1`'s to `ref`, which is a chip of the decision's and places nothing. */
-function linkTo(ref: string, kind: string): NonNullable<Decision["links"]>[number] {
+function linkTo(ref: string, kind: DecisionLink["to"]["kind"]): DecisionLink {
   return {
     changed_since_tie: false,
     created_at: "2026-11-05T00:00:00Z",
@@ -579,6 +579,27 @@ test("a requirement no decision shaped sits under the issue as a node nothing ex
   expect(nodeOf(root, blockNodeId(SPEC, "r1"))?.gaps).toEqual(["no_check"]);
   const settled = blockNodeId(SPEC, "d1");
   expect(placementsOf(root, settled).map((one) => one.parent)).toEqual([KEY]);
+});
+
+// While a document of the issue is still being indexed the coverage read names no requirement as
+// lacking a check, and writes that document's line among its own gaps in their place: each
+// statement carries no gap and that line, in its own words, to draw where its gaps are.
+test("a statement whose coverage waits on a document still being indexed carries its line and no gap", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const owed = "spec.md version 12 is still being indexed; its coverage shows once that ends.";
+  const root = buildIssueTree({
+    coverage: {
+      ...coverage([requirement("r1", "The page waits for the index.")]),
+      gaps: [owed],
+      owed_documents: [{ artifact_id: spec.id, version: 12 }],
+    },
+    documents: [{ artifactId: spec.id, blocks: [block("r1", "requirement")] }],
+    issue: issueDetails([spec]),
+  });
+
+  const statement = nodeOf(root, blockNodeId(SPEC, "r1"));
+  expect(statement?.gaps).toEqual([]);
+  expect(statement?.coverageNotes).toEqual([owed]);
 });
 
 // R9: a decision the model marks unsure carries the mark its row says in one word, and one the
@@ -955,6 +976,37 @@ test("a needs chip of a block the read sent no words for is named by its kind's 
     { answered: true, gone: false, label: "needs", name: NODE_TYPE_NAMES.plan_task, ref: ruled },
     { answered: true, gone: false, label: "needs", name: "", ref: foreign },
     { answered: false, gone: false, label: "needs", name: "", ref: unread },
+  ]);
+});
+
+// R10: a plan task's `needs` names an issue beside the tasks it waits on, an item kind the
+// attribute declares (`items: ["issue"]` in `pmdoc/schema/blocks.json`). The tree reads each
+// `block[]` value under the item kinds its attribute declares, as the Plan tab and the document's
+// drawing read it: read under none, a value naming an issue is no value the server holds, it
+// parses to nothing, and the task drew no needs chip at all, the task's as well as the issue's.
+test("a needs that names an issue draws a needs chip of the issue beside the task's", () => {
+  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
+  const plan = artifact("artifact-plan", "plan-md", "plan.md");
+  const task = `dispatch://${KEY}/artifact/plan-md#b-t0`;
+  const issue = "dispatch://CORE-2";
+  const root = buildIssueTree({
+    documents: [
+      {
+        artifactId: plan.id,
+        blocks: [block("t0", "plan_task"), block("t1", "plan_task", { needs: `${task} ${issue}` })],
+      },
+    ],
+    issue: issueDetails([spec, plan]),
+  });
+
+  expect(
+    nodeOf(root, blockNodeId("plan-md", "t1"))?.chips.map((chip) => ({
+      label: chip.label,
+      ref: chip.ref,
+    }))
+  ).toEqual([
+    { label: "needs", ref: task },
+    { label: "needs", ref: issue },
   ]);
 });
 
@@ -1810,6 +1862,14 @@ test("a document chip names a part only where the issue read names that document
       ...issueDetails([flagged, made, plan]),
       decisions_artifact_id: made.id,
       plan_artifact_id: plan.id,
+      queries: [
+        {
+          query: "plan",
+          artifact_id: plan.id,
+          takes: ["plan_task", "plan_role"],
+          subtree: `issue:${KEY}`,
+        },
+      ],
       primary_artifact_id: "",
     },
   });
@@ -1860,96 +1920,6 @@ test("a decision sits under the ask it answers, and one that answers none under 
   expect(nodeOf(root, blockNodeId(SPEC, "d3"))?.chips.map((chip) => chip.ref)).toEqual([
     `dispatch://${KEY}/ask/ask-elsewhere`,
   ]);
-});
-
-// A server of the release before answers the Decisions read with no `entries`: its decisions are
-// the sections of the issue's decisions document, each with the asks it cites. A page of this
-// build that reaches it during a roll reads them as entries (`withEntries`), so the tree still
-// draws each agent's section as a decision under the question it settles, with what it shaped.
-test("a Decisions read of the release before, with no entries, still places its decisions", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const section = decision("h-store", "Answers the issue's own question.", ["r1"]);
-  const read = withEntries(
-    {
-      decisions: [
-        {
-          ...section,
-          asks: ["ask-own"],
-          ref: `dispatch://${KEY}/artifact/decisions-md#b-h-store`,
-          text: "## Answers the issue's own question.\n\nThe words of the section.",
-        },
-      ],
-      document: `dispatch://${KEY}/artifact/decisions-md`,
-      open_questions: [],
-    },
-    KEY
-  );
-  const root = buildIssueTree({
-    asks: [question("ask-own", { state: "answered" })],
-    decisions: read,
-    issue: issueDetails([spec]),
-  });
-
-  const id = blockNodeId("decisions-md", "h-store");
-  expect(nodeOf(root, id)?.type).toBe("decision");
-  expect(placementsOf(root, id).map((one) => one.parent)).toEqual(["ask-own"]);
-  expect(nodeOf(root, id)?.chips.map((chip) => chip.ref)).toEqual([`dispatch://${KEY}/spec#b-r1`]);
-});
-
-// The release before answers a person's decision as a section that cites the answered ask, and
-// addresses it by the section's heading block, which names no ask. A page of this build reads it
-// at the first ask it cites (`personDecisionAsk`), as it reads this build's person's decision at
-// its ask: the ask's node carries what the section shaped, the requirement it shaped reads that
-// edge from the ask, and no decision node stands for the section, so the person's decision is
-// drawn once. Two sections that cite one ask and link one statement give the ask one chip for
-// it, stale where either link is.
-test("a person's section of the release before stands at the ask it cites, with what it shaped", () => {
-  const spec = artifact("artifact-spec", SPEC, "spec.md", true);
-  const answer = { at: "2026-11-06T00:00:00Z", selected: [], text: "One read.", user: "alice" };
-  const section = (block: string, stale: boolean): Decision => {
-    const made = decision(block, "The person chose one read.", ["r-shaped"]);
-    return {
-      ...made,
-      asks: ["ask-own"],
-      kind: "person",
-      links: made.links.map((link) => ({ ...link, stale })),
-      ref: `dispatch://${KEY}/artifact/decisions-md#b-${block}`,
-      text: "## The person chose one read\n\nOne read keeps it simple.",
-    };
-  };
-  const read = withEntries(
-    {
-      decisions: [section("h-one", false), section("h-two", true)],
-      document: `dispatch://${KEY}/artifact/decisions-md`,
-      open_questions: [],
-    },
-    KEY
-  );
-  const root = buildIssueTree({
-    asks: [question("ask-own", { answer, state: "answered" })],
-    coverage: coverage([
-      requirement("r-origin", "The requirement the other one came from."),
-      requirement("r-shaped", "The requirement the person's section claims."),
-    ]),
-    decisions: read,
-    documents: [
-      {
-        artifactId: spec.id,
-        blocks: [
-          block("r-origin", "requirement"),
-          block("r-shaped", "requirement", { from: `dispatch://${KEY}/spec#b-r-origin` }),
-        ],
-      },
-    ],
-    issue: issueDetails([spec]),
-  });
-
-  expect(nodeOf(root, "ask-own")?.chips.map(({ ref, stale }) => ({ ref, stale }))).toEqual([
-    { ref: `dispatch://${KEY}/spec#b-r-shaped`, stale: true },
-  ]);
-  expect(nodesInOrder(root).filter((node) => node.type === "decision")).toEqual([]);
-  expect(nodeOf(root, blockNodeId(SPEC, "r-shaped"))?.gaps).toEqual(["shaped_disagreement"]);
-  expect(decisionBehind(root, blockNodeId(SPEC, "r-shaped"))?.id).toBe("ask-own");
 });
 
 // A read of the release before built a decision's asks and links paragraph by paragraph and
@@ -3422,6 +3392,20 @@ test("a requirement block outside the spec is no statement, and the spec's are, 
         ...issueDetails([spec, plan, checks]),
         plan_artifact_id: plan.id,
         verification_artifact_id: checks.id,
+        queries: [
+          {
+            query: "verification",
+            artifact_id: checks.id,
+            takes: ["check", "result"],
+            subtree: `issue:${KEY}`,
+          },
+          {
+            query: "plan",
+            artifact_id: plan.id,
+            takes: ["plan_task", "plan_role"],
+            subtree: `issue:${KEY}`,
+          },
+        ],
       },
     });
 
@@ -3491,6 +3475,20 @@ test("a check block outside the Verification document draws no state and is coun
         ...issueDetails([spec, plan, checks]),
         plan_artifact_id: plan.id,
         verification_artifact_id: checks.id,
+        queries: [
+          {
+            query: "verification",
+            artifact_id: checks.id,
+            takes: ["check", "result"],
+            subtree: `issue:${KEY}`,
+          },
+          {
+            query: "plan",
+            artifact_id: plan.id,
+            takes: ["plan_task", "plan_role"],
+            subtree: `issue:${KEY}`,
+          },
+        ],
       },
       ...(answered ? { results } : {}),
     });

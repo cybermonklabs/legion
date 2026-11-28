@@ -25,11 +25,15 @@ func TestReadEventsKeepsNonAskPayloadRaw(t *testing.T) {
 		{"message.created", `{"body":"preserve","target":{"kind":"session","id":"other"}}`},
 		{"message.answered", `{"body":"separate","target":{"kind":"session","id":"another"}}`},
 	}
-	for index, fixture := range fixtures {
+	// Each fixture takes the issue's next sequence and moves its last_seq there, as an append
+	// does: the create's issue.created and the two artifact.digest events its fill appended (R14's
+	// hash gate) hold the sequences before them.
+	for _, fixture := range fixtures {
 		if _, err := database.Pool.Exec(context.Background(), `
+			with next as (update issues set last_seq = last_seq + 1 where key = $1 returning last_seq)
 			insert into events (issue_key, seq, type, actor, payload, notify)
-			values ($1, $2, $3, '{"kind":"session","id":"session-0123456789abcdef"}'::jsonb, $4::jsonb, false)
-		`, issue.Key, index+2, fixture.eventType, fixture.payload); err != nil {
+			select $1, next.last_seq, $2, '{"kind":"session","id":"session-0123456789abcdef"}'::jsonb, $3::jsonb, false from next
+		`, issue.Key, fixture.eventType, fixture.payload); err != nil {
 			t.Fatalf("insert %s event: %v", fixture.eventType, err)
 		}
 	}
@@ -381,8 +385,11 @@ func TestIssueEventsNameTheBlockersTheyMove(t *testing.T) {
 		}
 		return newestEventPayload[issueEventFields](t, database, "issue.updated", dependent.Key)
 	}
-	if updated := patch(map[string]any{"blocked_by": []string{kept.Key, added.Key}}); !slices.Equal(updated.Changed, []string{"blocked_by"}) {
-		t.Fatalf("a blocked_by-only PATCH's changed = %v, want [blocked_by]", updated.Changed)
+	// An issue's waits are one relation the issue read answers under both spellings, blocked_by
+	// and needs (model.Issue.Needs, R10 of the issue-tree spec), so a PATCH of either moves both fields,
+	// and changed names each field whose value differs: both, and no other.
+	if updated := patch(map[string]any{"blocked_by": []string{kept.Key, added.Key}}); !slices.Equal(updated.Changed, []string{"blocked_by", "needs"}) {
+		t.Fatalf("a blocked_by-only PATCH's changed = %v, want [blocked_by needs]", updated.Changed)
 	}
 	if got, want := named("issue.updated", dependent.Key), sorted(dropped.Key, added.Key); !slices.Equal(got, want) {
 		t.Errorf("a blocked_by-only PATCH names %v, want the removed and the added blocker %v", got, want)

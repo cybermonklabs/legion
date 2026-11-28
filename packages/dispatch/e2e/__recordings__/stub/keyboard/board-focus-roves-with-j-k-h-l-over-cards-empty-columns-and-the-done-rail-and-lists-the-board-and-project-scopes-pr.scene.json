@@ -10,6 +10,9 @@
     "labels": [],
     "parent": null,
     "blocked_by": [],
+    "needs": [],
+    "duplicate_of": null,
+    "filed_from": null,
     "advances": [],
     "advances_revision": 0,
     "assignee": "alice",
@@ -30,10 +33,10 @@
       "id": "alice",
       "proven": true
     },
-    "created_at": "2026-11-24T12:02:00.898059Z",
-    "updated_at": "2026-11-24T12:02:00.898059Z",
+    "created_at": "2026-11-26T05:19:59.424836Z",
+    "updated_at": "2026-11-26T05:19:59.424836Z",
     "closed_at": null,
-    "primary_artifact_id": "3dcc5796-ef5c-488b-80bb-20ccfca36b35",
+    "primary_artifact_id": "9e0466f4-886e-4fba-a5f0-c159f5f19ade",
     "verification_artifact_id": "",
     "plan_artifact_id": "",
     "decisions_artifact_id": "",
@@ -46,7 +49,10 @@
         "outcome": "none",
         "search": "keywords_only",
         "search_note": "meaning search is off on this server",
-        "related": []
+        "related": [],
+        "neighbourhood": {
+          "outcome": "none"
+        }
       }
     }
   },
@@ -61,6 +67,9 @@
     "labels": [],
     "parent": null,
     "blocked_by": [],
+    "needs": [],
+    "duplicate_of": null,
+    "filed_from": null,
     "advances": [],
     "advances_revision": 0,
     "assignee": "alice",
@@ -81,10 +90,10 @@
       "id": "alice",
       "proven": true
     },
-    "created_at": "2026-11-24T12:02:00.919105Z",
-    "updated_at": "2026-11-24T12:02:00.919105Z",
+    "created_at": "2026-11-26T05:19:59.46299Z",
+    "updated_at": "2026-11-26T05:19:59.46299Z",
     "closed_at": null,
-    "primary_artifact_id": "9fa96f82-be0e-4655-aa3f-8715f7baa639",
+    "primary_artifact_id": "ad6c0e0f-d636-4e85-ba20-ec8442c120f5",
     "verification_artifact_id": "",
     "plan_artifact_id": "",
     "decisions_artifact_id": "",
@@ -97,7 +106,10 @@
         "outcome": "none",
         "search": "keywords_only",
         "search_note": "meaning search is off on this server",
-        "related": []
+        "related": [],
+        "neighbourhood": {
+          "outcome": "none"
+        }
       }
     }
   },
@@ -112,6 +124,9 @@
     "labels": [],
     "parent": null,
     "blocked_by": [],
+    "needs": [],
+    "duplicate_of": null,
+    "filed_from": null,
     "advances": [],
     "advances_revision": 0,
     "assignee": "alice",
@@ -132,10 +147,10 @@
       "id": "alice",
       "proven": true
     },
-    "created_at": "2026-11-24T12:02:00.937164Z",
-    "updated_at": "2026-11-24T12:02:00.937164Z",
+    "created_at": "2026-11-26T05:19:59.534922Z",
+    "updated_at": "2026-11-26T05:19:59.534922Z",
     "closed_at": null,
-    "primary_artifact_id": "31bac8df-8ca7-4279-b838-4cc693bf947c",
+    "primary_artifact_id": "40e906dc-4060-4978-bbee-cff4092acfa1",
     "verification_artifact_id": "",
     "plan_artifact_id": "",
     "decisions_artifact_id": "",
@@ -148,7 +163,10 @@
         "outcome": "none",
         "search": "keywords_only",
         "search_note": "meaning search is off on this server",
-        "related": []
+        "related": [],
+        "neighbourhood": {
+          "outcome": "none"
+        }
       }
     }
   },
@@ -163,6 +181,9 @@
     "labels": [],
     "parent": null,
     "blocked_by": [],
+    "needs": [],
+    "duplicate_of": null,
+    "filed_from": null,
     "advances": [],
     "advances_revision": 0,
     "assignee": "alice",
@@ -183,10 +204,10 @@
       "id": "alice",
       "proven": true
     },
-    "created_at": "2026-11-24T12:02:00.957093Z",
-    "updated_at": "2026-11-24T12:02:00.957093Z",
+    "created_at": "2026-11-26T05:19:59.570084Z",
+    "updated_at": "2026-11-26T05:19:59.570084Z",
     "closed_at": null,
-    "primary_artifact_id": "7ee637e5-5a37-47f4-a490-2c4e81bc5065",
+    "primary_artifact_id": "88c53421-a7c9-4437-97a7-6f5b4bb4cc96",
     "verification_artifact_id": "",
     "plan_artifact_id": "",
     "decisions_artifact_id": "",
@@ -199,7 +220,10 @@
         "outcome": "none",
         "search": "keywords_only",
         "search_note": "meaning search is off on this server",
-        "related": []
+        "related": [],
+        "neighbourhood": {
+          "outcome": "none"
+        }
       }
     }
   },
@@ -214,6 +238,9 @@
     "labels": [],
     "parent": null,
     "blocked_by": [],
+    "needs": [],
+    "duplicate_of": null,
+    "filed_from": null,
     "advances": [],
     "advances_revision": 0,
     "assignee": "alice",
@@ -234,10 +261,10 @@
       "id": "alice",
       "proven": true
     },
-    "created_at": "2026-11-24T12:02:00.974448Z",
-    "updated_at": "2026-11-24T12:02:00.974448Z",
+    "created_at": "2026-11-26T05:19:59.609112Z",
+    "updated_at": "2026-11-26T05:19:59.609112Z",
     "closed_at": null,
-    "primary_artifact_id": "2f6b243c-0ddc-4a1b-a0e1-5f4ffec0c94a",
+    "primary_artifact_id": "2103ae54-5d98-4c6c-a0ac-50242bbb2dc1",
     "verification_artifact_id": "",
     "plan_artifact_id": "",
     "decisions_artifact_id": "",
@@ -250,7 +277,10 @@
         "outcome": "none",
         "search": "keywords_only",
         "search_note": "meaning search is off on this server",
-        "related": []
+        "related": [],
+        "neighbourhood": {
+          "outcome": "none"
+        }
       }
     }
   },
@@ -265,6 +295,9 @@
     "labels": [],
     "parent": null,
     "blocked_by": [],
+    "needs": [],
+    "duplicate_of": null,
+    "filed_from": null,
     "advances": [],
     "advances_revision": 0,
     "assignee": "alice",
@@ -285,10 +318,10 @@
       "id": "alice",
       "proven": true
     },
-    "created_at": "2026-11-24T12:02:00.990344Z",
-    "updated_at": "2026-11-24T12:02:00.990344Z",
+    "created_at": "2026-11-26T05:19:59.648617Z",
+    "updated_at": "2026-11-26T05:19:59.648617Z",
     "closed_at": null,
-    "primary_artifact_id": "5d437eb9-b252-42a1-b544-c24d748fe87c",
+    "primary_artifact_id": "45ef5810-28a1-4a0b-afb3-fd35be78e2ba",
     "verification_artifact_id": "",
     "plan_artifact_id": "",
     "decisions_artifact_id": "",
@@ -301,7 +334,10 @@
         "outcome": "none",
         "search": "keywords_only",
         "search_note": "meaning search is off on this server",
-        "related": []
+        "related": [],
+        "neighbourhood": {
+          "outcome": "none"
+        }
       }
     }
   }

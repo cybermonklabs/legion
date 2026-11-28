@@ -20,15 +20,26 @@ const verificationDoc: Artifact = {
   role: "verification",
 };
 
-/** A root issue on a Dispatch older than document roles: it answers no Verification document id
- *  at all, the way an older server leaves the field off the wire. */
-const { verification_artifact_id: _unroled, ...unroledFixture } = fixture;
-const olderRoot = {
-  ...unroledFixture,
+/** A root issue as a server of the release before answers it: no `queries`, and the Verification
+ *  document named in `verification_artifact_id`. */
+const before: IssueDetails = {
+  ...fixture,
   artifacts: [specArtifact, verificationDoc],
-} as IssueDetails;
+  verification_artifact_id: verificationDoc.id,
+};
 
-const root: IssueDetails = { ...olderRoot, verification_artifact_id: "artifact-3" };
+/** The same issue as this build answers it: its verification query names the document. */
+const root: IssueDetails = {
+  ...before,
+  queries: [
+    {
+      query: "verification",
+      artifact_id: verificationDoc.id,
+      takes: ["check", "result"],
+      subtree: `issue:${fixture.key}`,
+    },
+  ],
+};
 
 const ungated: Project = {
   key: "CORE",
@@ -87,18 +98,25 @@ test("each step names its own document, the Verification document among them", (
   ]);
 });
 
+// The queries decide alone where the issue read carries them: an issue with no verification
+// query has no Verification document, whatever `verification_artifact_id` names.
 test("a step the issue holds no document for is drawn with no document", () => {
-  const none: IssueDetails = { ...root, verification_artifact_id: "" };
+  const none: IssueDetails = { ...root, queries: [] };
 
   expect(gatedStepEntries(gating("criteria"), none)).toEqual([
     { step: "criteria", label: "Verification", document: undefined },
   ]);
 });
 
-test("a step an older server answers no id for at all is drawn with no document", () => {
-  expect(gatedStepEntries(gating("criteria"), olderRoot)).toEqual([
-    { step: "criteria", label: "Verification", document: undefined },
+// During a roll or after a rollback a server of the release before answers the issue read: it
+// carries no `queries`, and the step still names the document `verification_artifact_id` names.
+test("a step of an issue read with no queries names the document its kept id names", () => {
+  expect(gatedStepEntries(gating("criteria"), before)).toEqual([
+    { step: "criteria", label: "Verification", document: verificationDoc },
   ]);
+  expect(gatedStepEntries(gating("criteria"), { ...before, verification_artifact_id: "" })).toEqual(
+    [{ step: "criteria", label: "Verification", document: undefined }]
+  );
 });
 
 test("a step word this build has no name for is left out and the rest keep their order", () => {

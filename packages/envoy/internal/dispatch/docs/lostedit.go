@@ -51,6 +51,9 @@ type lossCheck struct {
 	// inserted is the text this write's update inserted and left live, by the block holding it,
 	// restricted to the blocks some operation claims.
 	inserted pmdoc.AuthoredText
+	// fragment names the fragment of the room the write inserted into (liveDoc.fragment): the
+	// room's own, or its document's fragment of an issue room, which the lost verdict reads.
+	fragment string
 	// suggestion names the accepted comment when the write is a suggestion accept rather than a
 	// batch of operations, which has one implicit operation and reports no index.
 	suggestion string
@@ -87,11 +90,13 @@ func authoredClock(ctx context.Context, artifactID string, doc *crdt.Doc) uint64
 }
 
 // recordInsertedText runs write, the Yjs update one batch of operations makes, and records on the
-// calling transaction's live write what that update inserted and where. since is the clock that
-// write had reached beforehand (authoredClock, taken outside the Yjs transaction), and suggestion
-// names the accepted comment when the write is an accept rather than a batch, which has one
-// implicit operation. Outside a transaction there is no fork and no window: the mutation reaches
-// the room inside its own apply, with no later merge to survive, so there is nothing to record.
+// calling transaction's live write what that update inserted and where. fragment is the fragment
+// the batch writes, taken before any Yjs transaction, and name its name (liveDoc.fragment). since
+// is the clock that write had reached beforehand (authoredClock, taken outside the Yjs
+// transaction), and suggestion names the accepted comment when the write is an accept rather than
+// a batch, which has one implicit operation. Outside a transaction there is no fork and no window:
+// the mutation reaches the room inside its own apply, with no later merge to survive, so there is
+// nothing to record.
 //
 // The Yjs update decides which blocks are in play, and only then does blocks say which operation
 // wrote each of them - a batch that inserted nothing asks nothing of the tree at all. The walk is
@@ -101,6 +106,7 @@ func recordInsertedText(
 	ctx context.Context,
 	artifactID, suggestion string,
 	fragment *crdt.YXmlFragment,
+	name string,
 	since uint64,
 	blocks func(candidates map[string]struct{}) []map[string]struct{},
 	write func() error,
@@ -125,6 +131,7 @@ func recordInsertedText(
 	}
 	if check := newLossCheck(live.clientID, since, blocks(candidates), inserted); check != nil {
 		check.suggestion = suggestion
+		check.fragment = name
 		live.loss = check
 	}
 	return nil
@@ -252,7 +259,7 @@ func (c *lossCheck) lost(doc *crdt.Doc) ([]int, error) {
 	for block := range c.inserted {
 		written[block] = struct{}{}
 	}
-	held, err := pmdoc.AuthoredTextRuns(doc.GetXmlFragment(fragmentName), c.client, c.since, written)
+	held, err := pmdoc.AuthoredTextRuns(doc.GetXmlFragment(c.fragment), c.client, c.since, written)
 	if err != nil {
 		return nil, documentSchemaError(err)
 	}

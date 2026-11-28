@@ -6,7 +6,8 @@ import { api, documentReadRequest } from "../../api/client";
 import { replaceQueryData } from "../../api/query-client";
 import type { Artifact, ArtifactBlock, GraphReferences, IssueDecisions } from "../../api/types";
 import { changedSinceReadMark, staleBlockMark } from "../../theme/classes";
-import { isDecisionEntry, withEntries } from "../issue/decision-entries";
+import { isDecisionEntry } from "../issue/decision-entries";
+import { buildDispatchReference } from "../refs/routes";
 import { useSendMarkOnce } from "../writes/useSendMarkOnce";
 
 /** What a stale block says when the reader rests on it. */
@@ -28,29 +29,33 @@ export interface ChangedSinceRead {
   readonly version: number;
 }
 
-/** The decisions view, which the margin's decision cards, the issue page and the Decisions tab read
- *  under the same key: the read with its `entries`, whichever release's server answered it
- *  (`withEntries`). */
+/** The Decisions query's nodes, in the entry shape shared by the margin, page and Decisions tab. */
 export const issueDecisionsQuery = (issueKey: string, enabled: boolean) => ({
   enabled,
-  queryFn: async (): Promise<IssueDecisions> =>
-    // kept for one release: compat-objects
-    withEntries(await api.getIssueDecisions(issueKey), issueKey),
+  queryFn: () => api.getIssueDecisions(issueKey),
   queryKey: ["decisions", issueKey] as const,
 });
+
+/** The address of issue `issueKey`'s spec as the server names a document (`dispatch://<KEY>/spec`),
+ *  which a `shaped` link's `to.document` holds for a block of the spec. */
+export function issueSpecAddress(issueKey: string): string {
+  return buildDispatchReference({ key: issueKey, kind: "spec" });
+}
 
 /** Every spec block a stale link of any decision names, each once, in the order the read names
  *  them: the `shaped` links of the Decisions read's decisions (isDecisionEntry). A link is stale
  *  when its decision changed after it first linked the block and the block has not changed since
- *  (`DecisionLink.stale`). With `refKey`, only the blocks of that document, whose node ids open
- *  `<refKey>#`. */
-export function staleSpecBlocks(decisions: IssueDecisions | undefined, refKey?: string): string[] {
+ *  (`DecisionLink.stale`). With `address`, only the blocks of the document at that address, the
+ *  document the link names as holding the block (`to.document`). The node id is no test of it: a
+ *  block of a document converted into its issue's room is the room's node, `<KEY>/tree#<id>`,
+ *  whichever of the room's documents holds it. */
+export function staleSpecBlocks(decisions: IssueDecisions | undefined, address?: string): string[] {
   const stale: string[] = [];
   for (const entry of decisions?.entries ?? []) {
     if (!isDecisionEntry(entry)) continue;
     for (const link of entry.shaped ?? []) {
       const blockId = link.to.block_id;
-      if (refKey !== undefined && !link.to.id.startsWith(`${refKey}#`)) continue;
+      if (address !== undefined && link.to.document !== address) continue;
       if (link.stale && blockId !== undefined && !stale.includes(blockId)) stale.push(blockId);
     }
   }
@@ -153,7 +158,7 @@ export function useSpecMarks({
     setOpened({ artifactId: artifact.id, version: read.data.version });
   }
   const readVersion = readAtOpen?.version ?? null;
-  const specReference = `dispatch://${issueKey}/spec`;
+  const specReference = issueSpecAddress(issueKey);
   const parts = useQuery({
     enabled: enabled && readVersion !== null,
     queryFn: () => api.getReferences(specReference, { kind: "part_of" }),
@@ -173,12 +178,12 @@ export function useSpecMarks({
   );
   const marks = useMemo(() => {
     if (!enabled) return NO_MARKS;
-    const stale = staleSpecBlocks(decisions.data, artifact.ref_key);
+    const stale = staleSpecBlocks(decisions.data, specReference);
     const changedIds = changed?.blockIds ?? [];
     return stale.length === 0 && changedIds.length === 0
       ? NO_MARKS
       : specBlockMarks(stale, changedIds);
-  }, [artifact.ref_key, changed, decisions.data, enabled]);
+  }, [changed, decisions.data, enabled, specReference]);
   useSendMarkOnce({
     mark:
       enabled && readAtOpen !== undefined && shownVersion !== undefined

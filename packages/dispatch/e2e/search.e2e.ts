@@ -69,8 +69,9 @@ test("Ctrl+K and Cmd+K open the palette, grouped results navigate a document to 
     await expect(search).toHaveAttribute("aria-activedescendant", documentID as string);
     await search.press("Enter");
 
+    // A document hit's link names the block that matched (R17), so the page opens at that block.
     await expect(page).toHaveURL(
-      new RegExp(`/issues/${fixture.firstIssueKey}/spec\\?q=${searchTerm}$`)
+      new RegExp(`/issues/${fixture.firstIssueKey}/spec\\?q=${searchTerm}#b-[^\\s#]+$`)
     );
     const editor = documentEditor(page);
     await expect(editor).toContainText(searchTerm);
@@ -623,7 +624,7 @@ test("a project-document hit is grouped under the document and opens it; a messa
     await page.getByRole("combobox", { name: "Search" }).fill("sextant");
     await dialog.getByRole("option", { name: /^doc / }).click();
     await expect(page).toHaveURL(
-      new RegExp(`/projects/CORE/documents/${document.artifact.slug}\\?q=sextant$`)
+      new RegExp(`/projects/CORE/documents/${document.artifact.slug}\\?q=sextant#b-[^\\s#]+$`)
     );
     await expect(documentEditor(page)).toContainText("sextant");
   } finally {

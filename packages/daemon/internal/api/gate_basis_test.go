@@ -317,6 +317,12 @@ func TestBasisGateRefusals(t *testing.T) {
 		{name: "the person's approval of a version older than P's latest", change: func(world *statusRecorder, _ map[string]any) {
 			world.approvals[pSpec] = dispatch.Approval{State: "stale", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 21}
 		}, status: http.StatusConflict, code: "BASIS_NOT_APPROVED", says: []string{"an approval of version 3 by user:alice, older than its latest version 4"}},
+		// Dispatch reads an approval of an older version approved at the latest one where the record
+		// the approval covers is still the latest version's and no write carried it there (R14), and
+		// the refusal names the version approved and the latest version as they are.
+		{name: "the person's approval of an older version Dispatch reads as standing at P's latest", change: func(world *statusRecorder, _ map[string]any) {
+			world.approvals[pSpec] = dispatch.Approval{State: "approved", LatestVersion: 4, Version: new(3), By: basisAlice, Seq: 21}
+		}, status: http.StatusConflict, code: "BASIS_NOT_APPROVED", says: []string{"an approval of version 3 by user:alice, which Dispatch reads as standing at its latest version 4"}},
 		{name: "a session's approval", change: func(world *statusRecorder, _ map[string]any) {
 			session := dispatch.Actor{Kind: "session", ID: "ses-outsider"}
 			world.approvals[pSpec] = dispatch.Approval{State: "approved", LatestVersion: 3, Version: new(3), By: session, Seq: 21}

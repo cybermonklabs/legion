@@ -19,7 +19,9 @@ import type {
 } from "./dispatch-api-core";
 import type {
   ArtifactCreatedEventPayload,
+  ArtifactDigestEventPayload,
   ArtifactHumanEditedEventPayload,
+  ArtifactIndexedEventPayload,
   ArtifactRemovedEventPayload,
   ArtifactRenamedEventPayload,
   ArtifactReviewEventPayload,
@@ -208,6 +210,19 @@ export type DispatchEvent =
       readonly type: "artifact.human_edited";
       readonly payload: ArtifactHumanEditedEventPayload;
     })
+  /** The block index caught up on documents of the issue a write left owed one: written by the
+   *  block-index reconciliation as a system actor, after the documents' own `artifact.version`,
+   *  and quiet. */
+  | (DispatchEventBase & {
+      readonly type: "artifact.indexed";
+      readonly payload: ArtifactIndexedEventPayload;
+    })
+  /** Dispatch recorded the record digest of a query document's version and evaluated whether the
+   *  document's newest review stands as an approval at it (R14's hash gate), quiet. */
+  | (DispatchEventBase & {
+      readonly type: "artifact.digest";
+      readonly payload: ArtifactDigestEventPayload;
+    })
   | (DispatchEventBase & {
       readonly type: "artifact.approved";
       readonly payload: ArtifactReviewEventPayload;
@@ -393,7 +408,9 @@ const EVENT_TYPE_MEMBERS: Record<EventType, true> = {
   "artifact.approved": true,
   "artifact.changes_requested": true,
   "artifact.created": true,
+  "artifact.digest": true,
   "artifact.human_edited": true,
+  "artifact.indexed": true,
   "artifact.removed": true,
   "artifact.renamed": true,
   "artifact.version": true,

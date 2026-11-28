@@ -298,9 +298,11 @@ func TestDocumentSocketClosesOnceItsPersonNoLongerResolves(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			m := startStallMeter(t)
 			rig := newDocumentSocketRig(t, heartbeat)
+			_, fragment := documentRoomOf(t, rig.database.Pool, rig.artifactID)
 			peer := &syncedPeer{
 				wsURL: "ws" + strings.TrimPrefix(rig.server.URL, "http") + "/ws/doc/" + rig.artifactID, sockets: rig.sockets,
-				headers: http.Header{"Cookie": []string{rig.cookie.Name + "=" + rig.cookie.Value}}, artifactID: rig.artifactID, doc: crdt.New(),
+				headers:    http.Header{"Cookie": []string{rig.cookie.Name + "=" + rig.cookie.Value}},
+				artifactID: rig.artifactID, fragment: fragment, doc: crdt.New(),
 			}
 			before := rig.lookups.count()
 			socketConn := acceptedConns(rig.spans)

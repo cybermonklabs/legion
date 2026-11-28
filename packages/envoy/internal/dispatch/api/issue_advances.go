@@ -38,7 +38,7 @@ const (
 )
 
 // normalizeIssueAdvances bounds and deduplicates the priority ids of one write, before any row
-// lock is taken, as normalizeIssueBlockers does for blocked_by. The cap counts the issue's own
+// lock is taken, as resolveIssueWaits does for needs and blocked_by. The cap counts the issue's own
 // relations alone: inheritance is read-side, so counting what an issue inherits would let an
 // issue five deep pass the cap without writing anything.
 func normalizeIssueAdvances(ids []string) ([]string, error) {

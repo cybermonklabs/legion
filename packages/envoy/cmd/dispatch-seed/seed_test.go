@@ -175,6 +175,86 @@ func TestSeedCommentsOnTheSchemaBeforeAnswers(t *testing.T) {
 	}
 }
 
+// The seed writes issues, documents and versions as the server of the schema it fills writes them
+// (the issue-tree spec): on this release's, each issue's and document's row names its node, each
+// document an issue owns hangs under that issue through its part_of, and each version is the
+// projection of a version node hanging under its document. On the schema before the marker
+// migration (20261116092210), the release before this one's, which the measurement protocol seeds
+// with --no-migrate, the rows are written without the columns that schema lacks and nothing of the
+// tree is written, as that release's server writes none, so the backfill this release runs over the
+// data set is what writes it. On that schema graph_edges is as the node-visibility spec's one
+// statement of it states it (20261126050002, the view the release before this one carries, which
+// re-states the arms the migrations before the markers gave the view, the asks' among them), and
+// it reads neither column: of the markers it reads the asks' and their followers', which the test
+// leaves. The view of this release reads issues' and artifacts' node_kind, so the test states the
+// older view again before it drops them, and the seed's report reads graph_edges through it.
+func TestSeedWritesTheIssueTreeMarkersWhereTheSchemaCarriesThem(t *testing.T) {
+	ctx := context.Background()
+	for _, schema := range []struct {
+		name   string
+		before bool
+	}{{"the schema of this release", false}, {"the schema before the markers", true}} {
+		t.Run(schema.name, func(t *testing.T) {
+			database := storetest.Open(t)
+			if schema.before {
+				view, err := os.ReadFile("../../internal/dispatch/store/migrations/20261126050002_graph_edges_asks_and_store_class.up.sql")
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := database.Pool.Exec(ctx, string(view)+`
+					alter table issues drop column node_kind, drop column node_address;
+					alter table artifacts drop column node_kind, drop column node_address;
+				`); err != nil {
+					t.Fatalf("restore the schema before the markers: %v", err)
+				}
+			}
+			if _, err := seed(ctx, database, testScale, io.Discard); err != nil {
+				t.Fatalf("seed on %s: %v", schema.name, err)
+			}
+			var documents, issueDocuments, hanging, unhung, versions, versionNodes int
+			if err := database.Pool.QueryRow(ctx, `
+				select count(*), count(*) filter (where a.issue_key is not null),
+				       count(*) filter (where exists (
+				         select 1 from graph_tuples t where t.from_kind = 'artifact' and t.from_id = a.ref_key
+				           and t.kind = 'part_of' and t.to_kind = 'issue' and t.to_id = a.issue_key and t.asserted)),
+				       count(*) filter (where a.issue_key is null and exists (
+				         select 1 from graph_tuples t where t.from_kind = 'artifact' and t.from_id = a.ref_key and t.kind = 'part_of')),
+				       (select count(*) from artifact_versions),
+				       (select count(*) from artifact_versions v join artifacts owner on owner.id = v.artifact_id
+				        join graph_nodes n on n.kind = 'version' and n.id = owner.ref_key || '@v' || v.number
+				        where n.made_at = v.created_at and exists (
+				          select 1 from graph_tuples t where t.from_kind = 'version' and t.from_id = n.id
+				            and t.kind = 'part_of' and t.to_kind = 'artifact' and t.to_id = owner.ref_key and t.asserted))
+				from artifacts a
+			`).Scan(&documents, &issueDocuments, &hanging, &unhung, &versions, &versionNodes); err != nil {
+				t.Fatalf("read the seeded documents' and versions' tree: %v", err)
+			}
+			wantHanging, wantVersionNodes := issueDocuments, versions
+			if schema.before {
+				wantHanging, wantVersionNodes = 0, 0
+			}
+			if issueDocuments == 0 || versions == 0 || hanging != wantHanging || unhung != 0 || versionNodes != wantVersionNodes {
+				t.Errorf("on %s, %d of the %d documents of an issue hang under it, %d documents of no issue hang under one, and %d of the %d versions are the projection of a version node; want %d, none and %d",
+					schema.name, hanging, issueDocuments, unhung, versionNodes, versions, wantHanging, wantVersionNodes)
+			}
+			if schema.before {
+				return
+			}
+			var issues, issuesNamed, documentsNamed int
+			if err := database.Pool.QueryRow(ctx, `
+				select (select count(*) from issues),
+				       (select count(*) from issues where node_kind = 'issue' and node_address = key),
+				       (select count(*) from artifacts where node_kind = 'artifact' and node_address = ref_key)
+			`).Scan(&issues, &issuesNamed, &documentsNamed); err != nil {
+				t.Fatalf("read the seeded rows' markers: %v", err)
+			}
+			if issues == 0 || issuesNamed != issues || documentsNamed != documents {
+				t.Errorf("%d of %d issues and %d of %d documents name their node, want every one", issuesNamed, issues, documentsNamed, documents)
+			}
+		})
+	}
+}
+
 func TestSeedReplyPlansInheritTheirOwnersAndAskThreads(t *testing.T) {
 	t.Parallel()
 	plan := newPlan(newSizes(testScale))
@@ -726,12 +806,26 @@ func assertStoreCensusAgrees(t *testing.T, database *store.Store) {
 // graphArmCount guards that the census reads every arm. It is the arm list of
 // 20261109215947_graph_edges_tuples: the 27 arms 20261105014808 restated it with, the comment
 // answers arm among them, and the one arm over the store's current tuples that migration adds.
-// 20261125163554_graph_edges_asks_and_tuple_arm_filter, the last migration to restate
-// graph_edges, keeps that list, with 20261125163553's tests on the asks and ask_followers arms
-// and 20261120122700's filter of the tuple arm. Each of the seven arms over a kind the store now
-// writes answers only the rows of its table that name no node, and the seed names the node of
-// every row it writes, so those seven answer nothing here (armGatedPerRow).
-const graphArmCount = 28
+// 20261125163553_graph_edges_asks keeps that list arm for arm and adds its tests on the asks and
+// ask_followers arms, and 20261125163554_graph_edges_asks_and_tuple_arm_filter keeps it with
+// 20261120122700's filter of the tuple arm; 20261126050001_issue_tree_graph_edges_both_arms and
+// 20261126050002_graph_edges_asks_and_store_class each keep that list, widen what the tuple arm
+// answers and add one arm over the same tuples, answering the relations out of a finding of a lens
+// as a lens_block (armOfAFinding); and 20261126050003_issue_tree_relations adds one arm over the
+// artifacts that carry their node, answering each one's attached_to from its part_of tuple.
+// 20261126050004_issue_tree_components and 20261126050005_issue_tree_artifact_refs keep that list
+// arm for arm; the second has the tuple arm read a document's mentions through a union of its own
+// beside the log's other tuples, which is one arm (topLevelUnion).
+// 20261126050006_issue_tree_graph_edges_after_tuple_arm_filter keeps that list arm for arm with
+// 20261120122700's filter of the tuple arm; 20261126050007_graph_edges_store_class_last restates
+// the view from 29 arms of its own, 20261125163554's with 20261126050002's class `store` and
+// `lens_block` arm, and 20261126050008_issue_tree_graph_edges_after_store_class_last states
+// 20261126050006's list again. 20261126050009_issue_tree_graph_edges_block_node_listed, the last
+// migration to restate graph_edges, keeps that list arm for arm and changes only how the tuple arm
+// tests a pointer's target (block_node_listed). Each of the arms over a kind the store now writes
+// answers only the rows of its table that name no node, and the seed names the node of every row
+// it writes, so those arms answer nothing here (armGatedPerRow).
+const graphArmCount = 30
 
 var (
 	armKindLiteral   = regexp.MustCompile(`'([a-z_]+)'::text AS kind`)
@@ -741,6 +835,17 @@ var (
 // armGatedPerRow matches one of the seven arms over a kind the node and tuple store writes: the
 // test that keeps it to the rows of its own table that name no node.
 var armGatedPerRow = regexp.MustCompile(`node_kind IS NULL`)
+
+// topLevelUnion is the UNION ALL that joins two arms of graph_edges in pg_get_viewdef's pretty
+// form, which puts every top-level one on a line of its own (docs' readGraphEdgesArms reads the
+// view so as well). A union inside an arm's sub-select is indented under it and is part of that
+// arm.
+const topLevelUnion = "\nUNION ALL\n"
+
+// armOfAFinding matches the arm that answers the relations out of a finding of a lens, which it
+// names by the literal from_kind lens_block. The seed writes no lens and so no finding, the work
+// of a person or an agent reasoning about an issue, so that arm holds no row here.
+var armOfAFinding = regexp.MustCompile(`'lens_block'::text AS from_kind`)
 
 // assertEveryGraphArmHoldsRows runs each arm of graph_edges as its own query and holds it to at
 // least one row, and holds each (kind, to_kind) pair the view's literals define to a non-zero
@@ -756,9 +861,9 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 	if err := database.Pool.QueryRow(ctx, `select pg_get_viewdef('graph_edges', true)`).Scan(&definition); err != nil {
 		t.Fatalf("read the graph_edges definition: %v", err)
 	}
-	arms := strings.Split(definition, "UNION ALL")
+	arms := strings.Split(definition, topLevelUnion)
 	if len(arms) != graphArmCount {
-		t.Fatalf("graph_edges has %d arms, not the %d migration 20261109215947 restates it with; read the view and update the test",
+		t.Fatalf("graph_edges has %d arms, not the %d that 20261126050009_issue_tree_graph_edges_block_node_listed, the last migration to restate it, states it with; read the view and update the test",
 			len(arms), graphArmCount)
 	}
 	pairs := map[[2]string]bool{}
@@ -772,6 +877,9 @@ func assertEveryGraphArmHoldsRows(t *testing.T, database *store.Store) {
 		case rows > 0:
 		case armGatedPerRow.MatchString(arm):
 			t.Logf("arm %d of graph_edges answers no row: it answers the rows of its table that name no node, and every row the seed writes names one, so the store's own arm answers them:\n%s",
+				index+1, arm)
+		case armOfAFinding.MatchString(arm):
+			t.Logf("arm %d of graph_edges answers no row: it answers the relations out of a finding of a lens, and the seed writes no lens:\n%s",
 				index+1, arm)
 		default:
 			t.Errorf("arm %d of graph_edges holds no row:\n%s", index+1, arm)

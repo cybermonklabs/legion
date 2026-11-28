@@ -261,3 +261,44 @@ func TestACommentsMarkOnARetiredDocumentIsRefusedAsItsEditIs(t *testing.T) {
 		t.Fatalf("the retired document reads version %d after the refused mark, want 1", versions.Number)
 	}
 }
+
+// The same refusal holds for a document of an issue room: an issue born converted, whose spec and
+// uploaded Verification document are fragments of the issue's room, has the Verification document
+// retired. A comment's mark on a quote of it reaches the document service's write to the room,
+// which reads the document's own retirement under the issue's owner lock (docs' joinLiveWrite) and
+// refuses it 409 DOCUMENT_RETIRED naming the Verification document, not the room, with no version
+// written. A comment's mark on the spec, the room's document that stands, lands.
+func TestACommentsMarkOnARetiredDocumentOfAnIssueRoomIsRefusedAndTheSpecsLands(t *testing.T) {
+	handler, database := blockIndexHandler(t)
+	createReferenceAPIProject(t, handler, "CORE")
+	issue := createSpecIssue(t, handler, "CORE", "The spec's words.\n")
+	verification := uploadIssueDocument(t, handler, issue.Key, "verification.md", "The check the retirement keeps.\n")
+	var rooms []string
+	for _, document := range []string{issue.PrimaryArtifactID, verification.ID} {
+		room, _ := documentRoomOf(t, database.Pool, document)
+		rooms = append(rooms, room)
+	}
+	if rooms[0] != rooms[1] {
+		t.Fatalf("the spec is edited in room %s and the Verification document in %s, want one issue room", rooms[0], rooms[1])
+	}
+	retireTestDocument(t, database, verification.ID)
+
+	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Keep it.", "anchor": map[string]string{"artifact": verification.ID, "quote": "check"},
+	}, "alice")
+	body := response.Body.String()
+	if response.Code != http.StatusConflict || responseCode(t, response) != "DOCUMENT_RETIRED" || !strings.Contains(body, verification.ID) || strings.Contains(body, rooms[0]) {
+		t.Fatalf("a comment's mark on the retired Verification document %s of the issue room %s: status=%d body=%s, want 409 DOCUMENT_RETIRED naming the document",
+			verification.ID, rooms[0], response.Code, body)
+	}
+	if versions := latestVersion(t, database, verification.ID); versions.Number != 1 {
+		t.Fatalf("the retired Verification document reads version %d after the refused mark, want 1", versions.Number)
+	}
+
+	spec := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue.Key+"/comments", map[string]any{
+		"body": "Agreed.", "anchor": map[string]string{"artifact": issue.PrimaryArtifactID, "quote": "words"},
+	}, "alice")
+	if spec.Code != http.StatusCreated {
+		t.Fatalf("a comment's mark on the spec of the same issue room: status=%d body=%s, want 201", spec.Code, spec.Body.String())
+	}
+}

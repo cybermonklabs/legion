@@ -1,0 +1,19 @@
+kind: Added
+body: |-
+  Dispatch is the one evaluator of whether an approval of a converted issue's spec, Verification
+  document or plan stands. A document write on such an issue commits in `main`'s batched window,
+  appends `artifact.version` with `digest_owed: true` and writes no carried approval for prose, ask
+  attributes, readings, a restore of the approved text or appended results. The fill after the
+  commit records the version's record digest at its saved cut and appends one `artifact.digest`
+  (`artifact_id`, `name`, `version`, `content_sha256`, `approval_current`, `approved_version`,
+  `approved_sha256`), durable through the reconciliation tick. `GET /api/v1/artifacts/{id}` answers
+  `current_sha256` and `digest_owed` on `approval`, and `POST /reviews`, an ask's answer and a plan
+  review fill a version's owed digest before they record, so a person's approval pins the record's
+  digest. Review events carry `approval_current`. The Verification record covers `check` nodes
+  alone: recording, changing or retracting a result leaves its digest where it stands. An
+  `expected_sequence` fence passes over `artifact.digest`, as it passes over the decisions query's
+  drained versions, so a write fenced at the sequence an issue create, a close or a reopen answered
+  is not refused by the digests appended after that write committed.
+time: 2026-11-27T17:30:00Z
+custom:
+    Issue: INFRA-1253

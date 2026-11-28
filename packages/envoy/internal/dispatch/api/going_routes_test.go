@@ -324,11 +324,11 @@ func TestGoingStreamReplaysStoredFramesAndResumes(t *testing.T) {
 	}
 	ctx := context.Background()
 	for _, frame := range []going.Event{going.Text("Nobody "), going.Text("has.")} {
-		if _, err := rig.server.appendGoingEvent(ctx, run.ID, frame); err != nil {
+		if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, frame); err != nil {
 			t.Fatalf("append %s: %v", frame.Name, err)
 		}
 	}
-	if _, err := rig.server.endGoingRun(ctx, run.ID, going.End(2, 0)); err != nil {
+	if _, err := endGoingRun(ctx, rig.database.Pool, run.ID, going.End(2, 0)); err != nil {
 		t.Fatalf("end the run: %v", err)
 	}
 
@@ -418,7 +418,7 @@ func TestGoingStreamCarriesAnEndingStoredBetweenItsTwoReads(t *testing.T) {
 		t.Fatalf("record the run: %v", err)
 	}
 	for _, frame := range []going.Event{going.Text("Nobody "), going.Text("has.")} {
-		if _, err := rig.server.appendGoingEvent(ctx, run.ID, frame); err != nil {
+		if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, frame); err != nil {
 			t.Fatalf("append %s: %v", frame.Name, err)
 		}
 	}
@@ -528,7 +528,7 @@ func TestGoingStreamEndsARunWhosePodIsGone(t *testing.T) {
 	if response.Body.String() != want {
 		t.Fatalf("the stream wrote %q, want the deadline's error %q", response.Body.String(), want)
 	}
-	stored, err := rig.server.readGoingTerminalEvent(context.Background(), id)
+	stored, err := readGoingTerminalEvent(context.Background(), rig.database.Pool, id)
 	if err != nil {
 		t.Fatalf("read the stored ending: %v", err)
 	}
@@ -734,10 +734,10 @@ func TestGoingStreamReadsAResumePointPastTheSequenceColumnAsNone(t *testing.T) {
 	if err != nil {
 		t.Fatalf("record the run: %v", err)
 	}
-	if _, err := rig.server.appendGoingEvent(ctx, run.ID, going.Text("Nobody has.")); err != nil {
+	if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, going.Text("Nobody has.")); err != nil {
 		t.Fatalf("append the answer: %v", err)
 	}
-	if _, err := rig.server.endGoingRun(ctx, run.ID, going.End(2, 0)); err != nil {
+	if _, err := endGoingRun(ctx, rig.database.Pool, run.ID, going.End(2, 0)); err != nil {
 		t.Fatalf("end the run: %v", err)
 	}
 

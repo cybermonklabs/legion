@@ -13,8 +13,10 @@
  */
 
 import {
+  type BlockItemKind,
   blockPointerValueProblem,
   hasControlCharacter,
+  PARENT_ATTRIBUTE,
   PROJECT_KEY_PATTERN,
   parseBlockPointerValue,
   parseCanonicalBlockReference,
@@ -100,18 +102,38 @@ export function findBlock(
 }
 
 /**
- * The pointers the typed block `typeName`'s `block[]` attribute `name` holds when markdown or a
- * pasted block writes it as `value`: none for the empty string, else canonical block references
- * joined by exactly one space. Any other value is refused, never normalised.
+ * The pointers the typed block `typeName`'s `block[]` attribute `name`, declaring the item kinds
+ * `items`, holds when markdown or a pasted block writes it as `value`: none for the empty string,
+ * else canonical references joined by exactly one space. Any other value is refused, never
+ * normalised, and so is a parent holding more than one (`parentProblem`).
  */
-export function parseBlockPointers(typeName: string, name: string, value: string): string[] {
-  const pointers = parseBlockPointerValue(value);
-  if (pointers === undefined) {
+export function parseBlockPointers(
+  typeName: string,
+  name: string,
+  value: string,
+  items?: readonly BlockItemKind[]
+): string[] {
+  const pointers = parseBlockPointerValue(value, items);
+  const problem =
+    pointers === undefined ? blockPointerValueProblem(value, items) : parentProblem(name, pointers);
+  if (problem !== undefined || pointers === undefined) {
     throw new Error(
-      `typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${blockPointerValueProblem(value)}`
+      `typed block ${JSON.stringify(typeName)} attribute ${JSON.stringify(name)}: ${problem}`
     );
   }
   return pointers;
+}
+
+/**
+ * Why `pointers`, the references attribute `name` holds, are no value of it, in the document
+ * service's wording (pmdoc `validateAttributeValue`): the parent (PARENT_ATTRIBUTE) holds at most
+ * one, because a block has one parent. Undefined for every other attribute and for one parent.
+ */
+export function parentProblem(name: string, pointers: readonly string[]): string | undefined {
+  if (name !== PARENT_ATTRIBUTE || pointers.length <= 1) {
+    return undefined;
+  }
+  return `holds ${pointers.length} references; a block has one parent, so it holds at most one`;
 }
 
 /**
@@ -175,11 +197,13 @@ export function blockPointerRefusal(
  * that takes markdown - an upload, an editor operation, an issue's first document, a rebuild -
  * quoting the attribute and the value (pmdoc.CheckIssueTies); a browser's write it never refuses,
  * and settlement stores the block with no tuple and no row for the tie to the other issue, while
- * a tie of the same block inside the issue stands. A `block[]` attribute with no `targets` (a
- * decision's or an ask's `shaped`) points at a block of any document of the document's own issue,
- * and an `ask` attribute (a decision's `from_ask`) names an ask of that issue. A command and a
- * paste are both held to it, so neither builds a document the service refuses or a tie it drops.
- * Without `documentRef`, or for a document no issue owns, nothing is refused here.
+ * a tie of the same block inside the issue stands. A `block[]` attribute with no `targets` and no
+ * `items` (a decision's or an ask's `shaped`) points at a block of any document of the document's
+ * own issue, and an `ask` attribute (a decision's `from_ask`) names an ask of that issue. One
+ * declaring `targets` or `items` (a parent) points at a block of an issue above as well, which
+ * only the document service can read, so nothing here refuses it. A command and a paste are both
+ * held to it, so neither builds a document the service refuses or a tie it drops. Without
+ * `documentRef`, or for a document no issue owns, nothing is refused here.
  */
 export function otherIssueRefusal(
   type: BlockTypeSchema,
@@ -203,6 +227,7 @@ export function otherIssueRefusal(
     if (
       attribute?.kind !== "block[]" ||
       (attribute.targets?.length ?? 0) > 0 ||
+      (attribute.items?.length ?? 0) > 0 ||
       !Array.isArray(value)
     ) {
       continue;

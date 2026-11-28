@@ -8,6 +8,7 @@ import (
 	"net/http/httptest"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -42,9 +43,11 @@ const (
 // decision in a document of more blocks than a write indexes in its own request, which writes the
 // decision through the typed-node pass on its own; the settlement of a copy of the notes' ask block
 // on a document of its own; the settlement of an ask block whose question a person's edit emptied;
-// the settlement that carries a person's approval onto an approval request a session opened; a
-// person's edit that takes the block of an answered ask out of its document; an upload that changes
-// nothing, whose version no index pass plans; the settlement of a person's upload that writes the
+// the settlement that carries a person's approval onto an approval request a session opened; the
+// fill of the record digest of an upload that writes a spec back to the text a person approved,
+// which retracts the approval request a session opened over the edit before it; a person's edit
+// that takes the block of an answered ask out of its document; an upload that changes nothing,
+// whose version no index pass plans; the settlement of a person's upload that writes the
 // answered ask's block back, which retracts that person's removal; the decisions step's conversion
 // of an issue whose decisions document holds one section a session wrote and a person kept; and
 // the step's catch-up of an unfollow a build before this one recorded.
@@ -55,9 +58,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	// What each drive's Ready writes for the drive and its check: the issue the close and the
 	// reopen take, the document the Keep keeps a decision of and the decision's sum, the copy, the
 	// document whose ask block is emptied and that ask, the document the carry settles and its
-	// approval request, the document whose answered ask a person removes and that ask, the document
-	// an upload leaves as it was, and the project the decisions step converts.
-	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, removal, removedAsk, unchanged string
+	// approval request, the issue whose spec's approval request the digest fill retracts and that
+	// request, the document whose answered ask a person removes and that ask, the document an
+	// upload leaves as it was, and the project the decisions step converts.
+	var closing, choices, choiceSum, copied, invalid, invalidAsk, carried, request, satisfied, satisfiedRequest, removal, removedAsk, unchanged string
 	// The token of the version same.md's replacement replaces, read before its drive.
 	var unchangedBase map[string]string
 	const decided = "DECIDE"
@@ -65,20 +69,25 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 	const removalText = "# Removal\n\nContext.\n\n:::ask{#" + removedBlock + "}\nWhich block does a person remove?\n:::\n"
 	return []graphcensus.StoreDrive{{
 		// alice answers the ask ses_asker opened (closeAskTx), through the one writer of an ask's
-		// answer state (asks.Settled.Queue).
+		// answer state (asks.Settled.Queue). The issue is born converted, so the answer moves the
+		// decisions query's record: its write phase marks the issue's queries owed, and the drain the
+		// route runs once it has committed appends a version of the decisions query (drainMark): the
+		// version's node, a query version with its definition_version.
 		Name: "api/ask_transitions.go#closeAskTx, answering", Database: r.database,
-		Sites: []string{"api/ask_transitions.go#closeAskTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/ask_transitions.go#closeAskTx", "asks/settle.go#Queue", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPost, "/api/v1/asks/"+r.ask+"/answer",
 				map[string]any{"text": "The node store.", "expected_edited_at": nil}, "alice", http.StatusOK)
 		},
 		// The answer's text, selection, time, answerer as answered_by and as decided_by, and the
 		// ask's answer_state. alice's node stands from her first comment.
-		Counts: answerCounted,
+		Counts: merged(answerCounted, versionCounted, queryVersionCounted),
 	}, {
-		// The close of an issue of its own holding an open ask, which withdraws the ask.
+		// The close of an issue of its own holding an open ask, which withdraws the ask, and the
+		// version of that issue's decisions query its drain appends once the close has committed
+		// (drainMark), since the withdrawal moves the query's record.
 		Name: "api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", Database: r.database,
-		Sites: []string{"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/issue_ask_lifecycle.go#recordWithdrawnAsksTx", "asks/settle.go#Queue", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			closing = decoded[model.Issue](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
 				"project": "SIZE", "title": "What a close withdraws", "force": true,
@@ -94,25 +103,28 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPatch, "/api/v1/issues/"+closing, map[string]any{"status": "done"}, "alice", http.StatusOK)
 		},
-		Counts: resolutionCounted,
+		Counts: merged(resolutionCounted, versionCounted, queryVersionCounted),
 	}, {
-		// The reopen of that issue, which restores the ask its close withdrew.
+		// The reopen of that issue, which restores the ask its close withdrew, and the version of
+		// the decisions query its drain appends (drainMark), as the close's does.
 		Name: "api/issue_ask_lifecycle.go#recordRestoredAsksTx", Database: r.database,
-		Sites: []string{"api/issue_ask_lifecycle.go#recordRestoredAsksTx", "asks/settle.go#Queue"},
+		Sites: []string{"api/issue_ask_lifecycle.go#recordRestoredAsksTx", "asks/settle.go#Queue", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Drive: func(t *testing.T) {
 			r.request(t, http.MethodPatch, "/api/v1/issues/"+closing, map[string]any{"status": "todo"}, "alice", http.StatusOK)
 		},
 		// The restore appends the ask's ask.opened, under which its answer_state is open again, and
 		// the retraction of the resolution its close stated.
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: merged(map[graphcensus.StoredKind][]string{
 			{graphstore.KindAsk, graphstore.TupleAnswerState}: {"ask_opened"},
 			{graphstore.KindAsk, graphstore.TupleResolution}:  {"ask_resolved"},
-		},
+		}, versionCounted, queryVersionCounted),
 	}, {
 		// alice's Keep of a decision a session uploaded (keepDecisionNode), at the text_sha256 the
-		// issue's decisions read serves.
+		// issue's decisions read serves. The decisions query takes the decision, and its record
+		// holds the kept_by and the kept_text_sum the Keep states, so the drain the route runs once
+		// the Keep has committed appends a version of the decisions query (drainMark).
 		Name: "api/decisions.go#keepDecisionNode", Database: r.database,
-		Sites: []string{"api/decisions.go#keepDecisionNode"},
+		Sites: []string{"api/decisions.go#keepDecisionNode", "docs/query_marks.go#drainMark", "docs/mutation.go#WriteVersionNode"},
 		Ready: func(t *testing.T) {
 			choices = decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -142,10 +154,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 			r.request(t, http.MethodPost, "/api/v1/artifacts/"+choices+"/blocks/"+choiceBlock+"/keep",
 				map[string]any{"text_sha256": choiceSum}, "alice", http.StatusOK)
 		},
-		Counts: map[graphcensus.StoredKind][]string{
+		Counts: merged(map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, refs.TupleKeptBy}:      {"keep"},
 			{refs.BlockNodeKind, refs.ValueKeptTextSum}: {"keep"},
-		},
+		}, versionCounted, queryVersionCounted),
 	}, {
 		// A session's upload of a decision at the end of a document of more blocks than a write
 		// indexes in its own request: the write leaves the blocks to the block-index tick and
@@ -159,9 +171,10 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 					"::::decision{#" + longBlock + "}\nThe long document takes the node store.\n::::\n",
 			}, "", http.StatusCreated)
 		},
-		// The new document's node, and the decision's node, placed in it, with its decided_by and
-		// the node of the session that wrote it; its in_document waits for the block-index tick.
-		Counts: merged(objectNodeCounted(graphstore.KindArtifact), sessionNodeCounted, map[graphcensus.StoredKind][]string{
+		// The new document's node and its part_of the issue, its first version's node, and the
+		// decision's node, placed in it, with its decided_by and the node of the session that wrote
+		// it; its in_document waits for the block-index tick.
+		Counts: merged(objectNodeCounted(graphstore.KindArtifact), documentPartOfCounted, versionCounted, sessionNodeCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeVisibility}: {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeState}:      {"block"},
 			{refs.BlockNodeKind, graphstore.AttributeProject}:    {"block"},
@@ -173,7 +186,8 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 		// ask is open: the copy opens none, and the settlement claims the copy's copied_from. The
 		// version it writes keeps the copy's source on the block's opener (docs' keptAskState), whose
 		// copied_from_document is a dispatch:// address the block index reads as the block's mention
-		// of the notes, as it read the same opener the release before stored.
+		// of the notes, as it read the same opener the release before stored, and the document's own
+		// mention of the notes beside it. That version states its node, and the block's text value.
 		Name: "docs/ask_blocks.go#claimCopies", Database: r.database,
 		Sites: []string{"docs/ask_blocks.go#claimCopies"},
 		Ready: func(t *testing.T) {
@@ -191,16 +205,20 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 					where d.artifact_id = $1::uuid and d.block_id = 'sizing-ask' and t.kind = $2)
 			`, copied, graphstore.TupleCopiedFrom)
 		},
-		Counts: map[graphcensus.StoredKind][]string{
-			{refs.BlockNodeKind, graphstore.TupleCopiedFrom}: {"ask_copy"},
-			{refs.BlockNodeKind, "mentions"}:                 {"block_ref"},
-		},
+		Counts: merged(versionCounted, map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.TupleCopiedFrom}:    {"ask_copy"},
+			{refs.BlockNodeKind, "mentions"}:                    {"block_ref"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:      {"block_text"},
+			{graphstore.KindArtifact, graphstore.TupleMentions}: {"document_ref"},
+		}),
 	}, {
 		// The settlement of a document whose ask block, opened by an earlier settlement, a person's
 		// own editor left with no question: the block fails the strict read, and the settlement
 		// states the reason on the ask's node (asks.PlanInvalidReasons, from docs'
-		// stateCopiesAndReadability). No server write takes such a block (the edits route refuses
-		// it, INVALID_ASK_BLOCK), so alice's browser writes it.
+		// stateCopiesAndReadability), beside the version it writes of the emptied block, the new text
+		// values of the block and of the paragraph it holds, and the version's node. No server write
+		// takes such a block (the edits route refuses it, INVALID_ASK_BLOCK), so alice's browser
+		// writes it.
 		Name: "asks/invalid.go#PlanInvalidReasons", Database: r.database,
 		Sites: []string{"asks/invalid.go#PlanInvalidReasons"},
 		Ready: func(t *testing.T) {
@@ -219,14 +237,17 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from graph_tuples where from_kind = $1 and from_id = $2 and kind = 'invalid' and asserted)
 			`, graphstore.KindAsk, invalidAsk)
 		},
-		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindAsk, "invalid"}: {"ask_invalid"}},
+		Counts: merged(versionCounted, map[graphcensus.StoredKind][]string{
+			{graphstore.KindAsk, "invalid"}:                {"ask_invalid"},
+			{refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
+		}),
 	}, {
 		// The settlement of a document whose live text holds again, byte for byte, the version a
 		// person approved, while an approval request a session opened over the version that changed
 		// it is open: the settlement versions it and carries the approval, whose answer of the
 		// request goes through the one writer of an ask's answer state (answerApprovalAsk).
 		Name: "docs/approval_carry.go#answerApprovalAsk", Database: r.database,
-		Sites: []string{"docs/approval_carry.go#answerApprovalAsk", "asks/settle.go#Queue", "docs/settlement.go#appendEvents", "refs/blocks.go#Queue"},
+		Sites: []string{"docs/approval_carry.go#answerApprovalAsk", "docs/approval_ask.go#rewriteApprovalAsk", "asks/settle.go#Queue", "docs/settlement.go#appendEvents", "refs/blocks.go#Queue"},
 		Ready: func(t *testing.T) {
 			carried = decoded[struct {
 				Artifact model.Artifact `json:"artifact"`
@@ -271,11 +292,105 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from asks where id = $1::uuid and state = 'answered')
 			`, request)
 		},
-		// The carry's answer of the request, and the node of pat, the person who approved.
-		Counts: merged(answerCounted, map[graphcensus.StoredKind][]string{
-			{graphstore.KindPerson, graphstore.AttributeVisibility}: {graphstore.KindPerson},
-			{graphstore.KindPerson, graphstore.AttributeState}:      {graphstore.KindPerson},
+		// The carry's answer of the request, the node of pat, the person who approved, the version
+		// the settlement writes - the text value of the paragraph it gives back and the version's
+		// node - and the move of the request to that version: the retraction of the approves it
+		// leaves and the assertion of the one it moves to.
+		Counts: merged(answerCounted, personNodeCounted, versionCounted, approvalMoveCounted, map[graphcensus.StoredKind][]string{
+			{refs.BlockNodeKind, graphstore.AttributeText}: {"block_text"},
 		}),
+	}, {
+		// The fill of the record digest an upload left owed that writes a converted issue's spec
+		// back to the text alice approved (R14's hash gate): the approval stands again by the
+		// version's digest, so the fill retracts the approval request a session opened over the
+		// edit before the upload (closeSatisfiedApprovalRequests), through the one writer of an
+		// ask's answer state, under the request's own ask.resolved. The upload is the Ready's, its
+		// fill held off by the issue's owner lock, which a transaction of the Ready's own takes at
+		// the start of that fill (docs.Service.HoldFills) and holds past the fill's bound
+		// (SetAfterCommitLockWaitForTest), so the digest stays owed and the request open; the drive
+		// is the drain a request runs once its write has committed (DrainOwedQueries), whose fill
+		// comes first. Its drain finds no query the upload moved past the version the upload wrote.
+		Name: "docs/version_render.go#closeSatisfiedApprovalRequests", Database: r.database,
+		Sites: []string{"docs/version_render.go#closeSatisfiedApprovalRequests", "asks/settle.go#Queue", "docs/query_marks.go#drainMark"},
+		Ready: func(t *testing.T) {
+			const requirement = "An urgent ask comes first."
+			created := decoded[struct {
+				Key     string `json:"key"`
+				Primary string `json:"primary_artifact_id"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/issues", map[string]any{
+				"project": "SIZE", "title": "What the digest fill retracts", "force": true,
+				"spec": ":::criterion{#sized-urgent-list}\nI want the urgent list.\n:::\n\n:::requirement{#sized-urgent-first}\n" + requirement + "\n:::\n",
+			}, "alice", http.StatusCreated))
+			spec := created.Primary
+			satisfied = created.Key
+			approved := decoded[model.ArtifactReview](t, r.request(t, http.MethodPost, "/api/v1/artifacts/"+spec+"/reviews",
+				map[string]any{"state": "approved"}, "alice", http.StatusCreated))
+			approvedText := decoded[struct {
+				Markdown string `json:"markdown"`
+			}](t, r.request(t, http.MethodGet, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d", spec, approved.Version), nil, "alice", http.StatusOK)).Markdown
+			// alice's edit moves the requirement, so her approval no longer stands, and a session
+			// asks for the approval of the version it wrote.
+			r.request(t, http.MethodPost, "/api/v1/artifacts/"+spec+"/edits", map[string]any{
+				"ops": []map[string]any{{"op": "replace", "find": requirement, "with": "An urgent ask comes second."}},
+			}, "alice", http.StatusOK)
+			satisfiedRequest = decoded[struct {
+				Ask struct {
+					ID string `json:"id"`
+				} `json:"ask"`
+			}](t, r.request(t, http.MethodPost, "/api/v1/artifacts/"+spec+"/approval-requests",
+				map[string]any{"actor": sessionActor("ses_satisfied")}, "", http.StatusCreated)).Ask.ID
+			var name string
+			if err := r.database.Pool.QueryRow(ctx, `select name from artifacts where id = $1::uuid`, spec).Scan(&name); err != nil {
+				t.Fatalf("read the name of the spec %s: %v", spec, err)
+			}
+			base := r.uploadBase(t, spec)
+			var (
+				holding sync.Mutex
+				holder  pgx.Tx
+				held    error
+			)
+			r.documents.SetAfterCommitLockWaitForTest(100 * time.Millisecond)
+			defer r.documents.SetAfterCommitLockWaitForTest(0)
+			r.documents.HoldFills(func(issue string) {
+				holding.Lock()
+				defer holding.Unlock()
+				if issue != satisfied || holder != nil || held != nil {
+					return
+				}
+				if holder, held = r.database.Pool.Begin(ctx); held == nil {
+					held = store.LockOwner(ctx, holder, store.IssueOwner(issue))
+				}
+			})
+			defer r.documents.HoldFills(nil)
+			defer func() {
+				holding.Lock()
+				defer holding.Unlock()
+				if holder != nil {
+					_ = holder.Rollback(ctx)
+				}
+			}()
+			r.request(t, http.MethodPost, "/api/v1/issues/"+satisfied+"/artifacts", map[string]any{
+				"name": name, "content": approvedText, "precondition": base,
+			}, "alice", http.StatusCreated)
+			holding.Lock()
+			took, err := holder != nil, held
+			holding.Unlock()
+			if !took || err != nil {
+				t.Fatalf("take the owner lock of %s at the start of the upload's fill (taken %v): %v", satisfied, took, err)
+			}
+			r.awaitTrue(t, "the upload leaving its version's digest owed and the approval request open", `
+				select exists (select 1 from version_renders where artifact_id::text = $1 and digest_owed)
+				   and exists (select 1 from asks where id = $2::uuid and state = 'open')
+			`, spec, satisfiedRequest)
+		},
+		Drive: func(t *testing.T) {
+			r.documents.DrainOwedQueries(ctx, satisfied)
+			r.awaitTrue(t, "the fill retracting the approval request the upload satisfied", `
+				select exists (select 1 from asks where id = $1::uuid and state = 'resolved')
+			`, satisfiedRequest)
+		},
+		// The request's retraction: its answer_state and its resolution.
+		Counts: resolutionCounted,
 	}, {
 		// alice's edit that takes the block of an answered ask out of its document: the version's
 		// index pass plans her removal into its own write (refs.PlanBlocks), and the edit appends
@@ -297,19 +412,19 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				"ops": []map[string]any{{"op": "delete", "block": removedBlock}},
 			}, "alice", http.StatusOK)
 		},
-		// The removed block's node and its paragraph's stated gone, and alice's removed_by on the
-		// answered ask's node.
-		Counts: map[graphcensus.StoredKind][]string{
+		// The removed block's node and its paragraph's stated gone, alice's removed_by on the
+		// answered ask's node, and the edit's version's node.
+		Counts: merged(versionCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeState}: {"block_gone"},
 			{graphstore.KindAsk, graphstore.TupleRemovedBy}: {"ask_removal"},
-		},
+		}),
 	}, {
 		// An upload that writes a document's text over with the text it holds: the replacement
 		// changes nothing and writes no tree, so the version's index pass runs on no rendering and
 		// the removals it carries are queued on their own (queueRemovals) - none, since the write
-		// took no block out, and so it appends nothing. The removal it would append is the one
-		// the drive before appends through the planned path, the same person's node and the same
-		// removed_by.
+		// took no block out, and so it appends the version's node alone. The removal it would
+		// append is the one the drive before appends through the planned path, the same person's
+		// node and the same removed_by.
 		Name: "docs/removed_by.go#queueRemovals", Database: r.database,
 		Sites: []string{"docs/removed_by.go#queueRemovals", "api/artifacts.go#storeArtifact"},
 		Ready: func(t *testing.T) {
@@ -328,7 +443,7 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				select exists (select 1 from artifact_versions where artifact_id = $1::uuid and number = 2)
 			`, unchanged)
 		},
-		Counts: map[graphcensus.StoredKind][]string{},
+		Counts: versionCounted,
 	}, {
 		// The settlement of removal.md once alice's upload has written the answered ask's block
 		// back: the block stands in the document its ask's row names again, so the settlement
@@ -351,8 +466,12 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				order by t.seq desc limit 1
 			`, graphstore.KindAsk, removedAsk, graphstore.TupleRemovedBy)
 		},
-		// The retraction of alice's removed_by on the answered ask's node.
-		Counts: map[graphcensus.StoredKind][]string{{graphstore.KindAsk, graphstore.TupleRemovedBy}: {"ask_removal"}},
+		// The retraction of alice's removed_by on the answered ask's node, and the version node and
+		// the block text that this branch's settlement writes beside it.
+		Counts: merged(versionCounted, map[graphcensus.StoredKind][]string{
+			{graphstore.KindAsk, graphstore.TupleRemovedBy}: {"ask_removal"},
+			{refs.BlockNodeKind, graphstore.AttributeText}:  {"block_text"},
+		}),
 	}, {
 		// The decisions step's catch-up (a tick of docs.DecisionStep) of an unfollow a build before
 		// this one recorded: that build deleted the follower row of the follower route's follow and
@@ -461,11 +580,12 @@ func askDrives(t *testing.T, r *writersRig) []graphcensus.StoreDrive {
 				t.Fatalf("the decisions step did %+v, want one section a decision and its decisions document retired", done)
 			}
 		},
-		// The versions' blocks - the spec's new decision, and the decisions document's section
-		// stated gone - the decision's decided_by, which names the session that wrote its section
-		// (docs' creditSectionAuthors), the section's move, the Keep it carries with the keeper's
-		// node, and the retired document's node stated gone.
-		Counts: merged(newBlockCounted, map[graphcensus.StoredKind][]string{
+		// The versions' blocks - the spec's new decision with its values, and the decisions
+		// document's section stated gone - the two versions' nodes, the spec's a query version with
+		// its definition_version, the decision's decided_by, which names the session that wrote its
+		// section (docs' creditSectionAuthors), the section's move, the Keep it carries with the
+		// keeper's node, and the retired document's node stated gone.
+		Counts: merged(newBlockCounted, blockValuesCounted, versionCounted, queryVersionCounted, map[graphcensus.StoredKind][]string{
 			{refs.BlockNodeKind, graphstore.AttributeState}:         {"block", "block_gone"},
 			{refs.BlockNodeKind, graphstore.TupleDecidedBy}:         {"decision"},
 			{refs.BlockNodeKind, graphstore.TupleMovedTo}:           {"block_move"},

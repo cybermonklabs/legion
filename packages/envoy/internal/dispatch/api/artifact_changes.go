@@ -2,13 +2,16 @@ package api
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"slices"
 	"sort"
 	"strings"
 
+	"github.com/jackc/pgx/v5"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
@@ -35,17 +38,18 @@ const (
 )
 
 // artifactChanges is the body of GET /api/v1/artifacts/{id}/changes: what changed in a document
-// between two of its stored versions, read off their markdown. It names what it compared - the
-// document and the two versions - so a caller that keeps it can check what it holds.
+// between two of its versions, read off the markdown the one renderer answers for each
+// (twoVersionsMarkdown). It names what it compared - the document and the two versions - so a
+// caller that keeps it can check what it holds.
 //
 // Both versions are compared with their ask blocks cut out (docs.WithoutAskBlocks), so an
 // answer a person gave, or an ask added, reworded or moved, changes no section and no block.
 //
 // Exactly one of three things is true of a change set, and compareVersions decides which in one
-// place. DecisionOnly says the cut is the whole change: the two stored texts differ, and they cut
-// to the same text. Unchanged says the two versions differ in nothing any unit or block holds:
-// their stored texts are the same, or they cut to texts that name no unit and no block and are
-// not decision-only. Otherwise Sections or Blocks names at least one item. So a change set that
+// place. DecisionOnly says the cut is the whole change: the two texts differ, and they cut to the
+// same text. Unchanged says the two versions differ in nothing any unit or block holds: their
+// texts are the same, or they cut to texts that name no unit and no block and are not
+// decision-only. Otherwise Sections or Blocks names at least one item. So a change set that
 // names nothing always says which of the two it is, and one that says neither always names what
 // changed: a version that only puts its sections in another order names the sections it moved.
 type artifactChanges struct {
@@ -104,11 +108,15 @@ type artifactBlockChange struct {
 // holds, as each route's ID says it does. Both numbers must be version numbers a document can have
 // (parseVersionNumber) and from below to (400 INVALID_VERSION).
 //
-// It reads the two versions' stored markdown and parses it, never the block index, so it answers
-// for a large document as soon as both versions are stored, without waiting for the index's
-// deferred pass over its blocks (deferBlockIndexBlocks).
+// It reads each of the two versions as the one renderer answers it for the caller
+// (twoVersionsMarkdown), the text GET …/versions/{number} answers, and parses it, never the block
+// index, so it answers for a large document as soon as both versions are stored, without waiting
+// for the index's deferred pass over its blocks (deferBlockIndexBlocks): a version whose pass is
+// deferred holds no version_renders row yet, and the renderer answers its stored bytes.
 func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
-	if !s.requireAuthenticated(w, r) {
+	reader, _, err := s.optionalActor(r)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
 		return
 	}
 	artifact, err := loadArtifactRowByID(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
@@ -131,13 +139,21 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 		writeError(w, "INVALID_VERSION", http.StatusBadRequest, fmt.Sprintf("from (%d) must be below to (%d)", from, to))
 		return
 	}
-	before, after, err := s.twoVersionsMarkdown(r.Context(), artifact.ID, from, to)
+	before, after, err := s.twoVersionsMarkdown(r.Context(), reader, artifact.ID, from, to)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	changes, err := compareVersions(before, after)
 	if err != nil {
+		var unreadable *changeVersionParseError
+		if errors.As(err, &unreadable) {
+			number := from
+			if unreadable.later {
+				number = to
+			}
+			err = &docs.OutsideSchemaError{Cause: fmt.Errorf("version %d: %v", number, unreadable.cause)}
+		}
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -145,20 +161,27 @@ func (s *server) getArtifactChanges(w http.ResponseWriter, r *http.Request) {
 	WriteJSON(w, http.StatusOK, changes)
 }
 
-// twoVersionsMarkdown is the stored markdown of versions from and to of one document, in one
-// read (versionsMarkdown). A version the document does not have is the 404 NOT_FOUND GET
-// …/versions/{number} answers for it, naming the version.
-func (s *server) twoVersionsMarkdown(ctx context.Context, artifactID string, from, to int) (string, string, error) {
-	markdown, err := s.versionsMarkdown(ctx, artifactID, []int{from, to})
-	if err != nil {
-		return "", "", err
-	}
-	for _, number := range []int{from, to} {
-		if _, held := markdown[number]; !held {
+// twoVersionsMarkdown is versions from and to of one document as the one renderer answers each
+// for reader (docs.RenderVersion), as GET …/versions/{number} reads it: a version rendered from
+// the tree is its render as of the version's time, and every other version its stored markdown
+// byte for byte. A version that stores no markdown (docs.NoBytes) is the empty text: the change
+// set compared it as that when it read the stored column, a null coalesced to the empty string,
+// and the renderer answers it with an empty Markdown, which is the same text. A version the
+// document does not have is the 404 NOT_FOUND GET …/versions/{number} answers for it, naming the
+// version, from before to.
+func (s *server) twoVersionsMarkdown(ctx context.Context, reader model.Actor, artifactID string, from, to int) (string, string, error) {
+	var markdown [2]string
+	for index, number := range []int{from, to} {
+		rendering, err := docs.RenderVersion(ctx, s.deps.Store.Pool, reader, artifactID, number)
+		if errors.Is(err, pgx.ErrNoRows) {
 			return "", "", errorf(http.StatusNotFound, "NOT_FOUND", "the document has no version %d", number)
 		}
+		if err != nil {
+			return "", "", err
+		}
+		markdown[index] = rendering.Markdown
 	}
-	return markdown[from], markdown[to], nil
+	return markdown[0], markdown[1], nil
 }
 
 // cutVersion is one stored version as a change set compares it: the text it cuts to once its
@@ -232,23 +255,38 @@ type cutBlock struct {
 	node *pmdoc.Node
 }
 
-// compareVersions is the change set from the stored markdown before to the stored markdown after
+// changeVersionParseError distinguishes source Markdown the parser refuses from a failure
+// to render the cut. The handler uses later to name the version the parser refused.
+type changeVersionParseError struct {
+	cause error
+	later bool
+}
+
+func (e *changeVersionParseError) Error() string { return e.cause.Error() }
+
+// compareVersions is the change set from the markdown before to the markdown after
 // (artifactChanges), its document and version numbers left for the caller to fill in.
 //
 // It names what differs first (nameChanges), and then says whether the change set is unchanged,
 // here and in no other place: one that is not decision-only and names no unit and no block is
 // unchanged, whatever its two texts were. So no pair of texts can answer a change that names
-// nothing. Two stored texts that are the same are never parsed, since they cut to one text and
-// name nothing, and the same line makes them unchanged.
+// nothing. Identical texts need one parse to verify that they can be read, but no cut.
 func compareVersions(before, after string) (artifactChanges, error) {
 	changes := artifactChanges{Sections: []artifactSectionChange{}, Blocks: []artifactBlockChange{}}
-	if before != after {
+	if before == after {
+		if _, err := pmdoc.ParseRendering(before); err != nil {
+			return artifactChanges{}, &changeVersionParseError{cause: err}
+		}
+	} else {
 		earlier, err := readCutVersion(before)
 		if err != nil {
 			return artifactChanges{}, err
 		}
 		later, err := readCutVersion(after)
 		if err != nil {
+			if unreadable, ok := err.(*changeVersionParseError); ok {
+				unreadable.later = true
+			}
 			return artifactChanges{}, err
 		}
 		if earlier.text == later.text {
@@ -347,7 +385,7 @@ func keyRuns(earlier, later []cutUnit) {
 func readCutVersion(markdown string) (cutVersion, error) {
 	tree, err := pmdoc.ParseRendering(markdown)
 	if err != nil {
-		return cutVersion{}, err
+		return cutVersion{}, &changeVersionParseError{cause: err}
 	}
 	cut := docs.WithoutAskBlocks(tree)
 	text, offsets, err := pmdoc.RenderWithBlockOffsets(cut)

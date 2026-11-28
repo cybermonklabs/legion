@@ -22,10 +22,13 @@ type indexedBlock struct {
 }
 
 // indexedBlocks is each block row the index holds for document artifactID, by id, read in the
-// caller's transaction, which holds the document's owner lock.
+// caller's transaction, which holds the document's owner lock. The rows are read where the block
+// index keeps them, in the room the document is edited in (refs.DocumentRoomBlocksSQL): an issue
+// born converted keys its documents' rows under its tree artifact.
 func indexedBlocks(ctx context.Context, tx pgx.Tx, artifactID string) ([]indexedBlock, error) {
 	rows, err := tx.Query(ctx, `
-		select block_id, type, text_sha256 from document_blocks where artifact_id = $1 order by block_id
+		select d.block_id, d.type, d.text_sha256 from document_blocks d
+		where `+refs.DocumentRoomBlocksSQL("d", "$1::uuid")+` order by d.block_id
 	`, artifactID)
 	if err != nil {
 		return nil, fmt.Errorf("read the indexed blocks of %s: %w", artifactID, err)

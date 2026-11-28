@@ -106,7 +106,9 @@ func createDesignGateChild(t *testing.T, handler http.Handler, project, parent, 
 
 // supersededByEdit edits the document as a session, the way an agent's `dispatch doc-edit` reaches
 // that route, and answers the approval that edit superseded. Every row below is about what rides
-// that report, so a write that superseded nothing fails here rather than further down.
+// that report, so a write that superseded nothing fails here rather than further down. Each row's
+// markdown is a block its document's query takes (queryBlockMarkdown): R14's record carry carries
+// an approval across a sentence of prose, which no query takes, and that write supersedes nothing.
 func supersededByEdit(t *testing.T, handler http.Handler, artifactID, markdown string, approved int) *supersededApproval {
 	t.Helper()
 	superseded := editAdviceDocument(t, handler, artifactID, markdown).SupersededApproval
@@ -307,7 +309,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		verification := uploadDocument(t, handler, "/api/v1/issues/"+issue.Key, "verification.md", "# Verification\n\nOne check.\n")
 		approved := approveAdviceDocument(t, handler, verification.Artifact.ID)
 
-		superseded := supersededByEdit(t, handler, verification.Artifact.ID, "One more check.", approved)
+		superseded := supersededByEdit(t, handler, verification.Artifact.ID, queryBlockMarkdown("check", "k-more", "One more check."), approved)
 		requireNoDesignGates(t, superseded, "a Verification document no gate records")
 	})
 
@@ -320,7 +322,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 			t.Fatalf("record the plan review: status=%d body=%s", recorded.Code, recorded.Body.String())
 		}
 
-		superseded := supersededByEdit(t, handler, plan.Artifact.ID, "One more task.", plan.Version.Number)
+		superseded := supersededByEdit(t, handler, plan.Artifact.ID, queryBlockMarkdown("plan_task", "t-more", "One more task."), plan.Version.Number)
 		requireNoDesignGates(t, superseded, "a plan a plan review approved")
 	})
 
@@ -329,7 +331,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		child := createDesignGateChild(t, handler, "DGATE", parent.Key, "Child with its own spec")
 		approved := approveAdviceDocument(t, handler, child.PrimaryArtifactID)
 
-		superseded := supersededByEdit(t, handler, child.PrimaryArtifactID, "A sentence the child gained.", approved)
+		superseded := supersededByEdit(t, handler, child.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-gained", "A requirement the child gained."), approved)
 		requireNoDesignGates(t, superseded, "a child issue's primary document")
 	})
 
@@ -340,7 +342,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		})
 		approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
 
-		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence the gate had not seen.", approved)
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-unseen", "A requirement the gate had not seen."), approved)
 		want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepSpec}}
 		if !slices.Equal(superseded.DesignGates, want) {
 			t.Fatalf("design_gates = %#v, want %#v: the write reopened that issue's spec gate", superseded.DesignGates, want)
@@ -364,7 +366,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		})
 		approved := approveAdviceDocument(t, handler, owner.PrimaryArtifactID)
 
-		superseded := supersededByEdit(t, handler, owner.PrimaryArtifactID, "A sentence neither gate had seen.", approved)
+		superseded := supersededByEdit(t, handler, owner.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-unseen", "A requirement neither gate had seen."), approved)
 		want := []supersededApprovalGate{
 			{Issue: owner.Key, Step: model.GatedStepSpec},
 			{Issue: other.Key, Step: model.GatedStepCriteria},
@@ -386,7 +388,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		closeIssue(t, handler, closed.Key)
 		approved := approveAdviceDocument(t, handler, live.PrimaryArtifactID)
 
-		superseded := supersededByEdit(t, handler, live.PrimaryArtifactID, "A sentence the open gate had not seen.", approved)
+		superseded := supersededByEdit(t, handler, live.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-open", "A requirement the open gate had not seen."), approved)
 		want := []supersededApprovalGate{{Issue: live.Key, Step: model.GatedStepSpec}}
 		if !slices.Equal(superseded.DesignGates, want) {
 			t.Fatalf("design_gates = %#v, want %#v: a gate on a done issue holds no READY back", superseded.DesignGates, want)
@@ -411,7 +413,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 				setIssueStatus(t, handler, parked.Key, status)
 				approved := approveAdviceDocument(t, handler, live.PrimaryArtifactID)
 
-				superseded := supersededByEdit(t, handler, live.PrimaryArtifactID, "A sentence only the open gate waits on.", approved)
+				superseded := supersededByEdit(t, handler, live.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-open", "A requirement only the open gate waits on."), approved)
 				want := []supersededApprovalGate{{Issue: live.Key, Step: model.GatedStepSpec}}
 				if !slices.Equal(superseded.DesignGates, want) {
 					t.Fatalf("design_gates = %#v, want %#v: a gate on an issue in %s holds no READY back",
@@ -430,7 +432,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		closeIssue(t, handler, closed.Key)
 		approved := approveAdviceDocument(t, handler, live.PrimaryArtifactID)
 
-		superseded := supersededByEdit(t, handler, live.PrimaryArtifactID, "A sentence no open gate waits on.", approved)
+		superseded := supersededByEdit(t, handler, live.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-unwaited", "A requirement no open gate waits on."), approved)
 		requireNoDesignGates(t, superseded, "a document only a done issue's gate records")
 	})
 
@@ -442,7 +444,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		publishDesignGates(t, handler, issue.Key, []issueDesignGate{})
 		approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
 
-		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence written after the gate went.", approved)
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-after", "A requirement written after the gate went."), approved)
 		requireNoDesignGates(t, superseded, "a document whose gate record the daemon cleared")
 	})
 
@@ -460,7 +462,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		})
 		approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
 
-		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence the spec gate had not seen.", approved)
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-spec", "A requirement the spec gate had not seen."), approved)
 		want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepSpec}}
 		if !slices.Equal(superseded.DesignGates, want) {
 			t.Fatalf("design_gates = %#v, want %#v: the criteria gate of a deployment that gates the spec alone holds no READY back",
@@ -489,7 +491,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		}
 		approved := approveAdviceDocument(t, handler, verification.Artifact.ID)
 
-		superseded := supersededByEdit(t, handler, verification.Artifact.ID, "One more check.", approved)
+		superseded := supersededByEdit(t, handler, verification.Artifact.ID, queryBlockMarkdown("check", "k-more", "One more check."), approved)
 		want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepCriteria}}
 		if !slices.Equal(superseded.DesignGates, want) {
 			t.Fatalf("design_gates = %#v, want %#v: the write reopened the criteria gate that holds this tree",
@@ -509,7 +511,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		})
 		approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
 
-		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence no gate waits on.", approved)
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-free", "A requirement no gate waits on."), approved)
 		requireNoDesignGates(t, superseded, "a document whose one gate row the daemon says holds nothing")
 	})
 
@@ -545,14 +547,14 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		}
 
 		approvedSpec := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
-		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence the spec gate had not seen.", approvedSpec)
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-spec", "A requirement the spec gate had not seen."), approvedSpec)
 		want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepSpec}}
 		if !slices.Equal(superseded.DesignGates, want) {
 			t.Fatalf("design_gates = %#v, want %#v: the list names the spec of a row that says nothing of it",
 				superseded.DesignGates, want)
 		}
 		approvedVerification := approveAdviceDocument(t, handler, verification.Artifact.ID)
-		superseded = supersededByEdit(t, handler, verification.Artifact.ID, "One more check.", approvedVerification)
+		superseded = supersededByEdit(t, handler, verification.Artifact.ID, queryBlockMarkdown("check", "k-more", "One more check."), approvedVerification)
 		requireNoDesignGates(t, superseded, "a Verification document whose criteria row says nothing of holding its tree")
 	})
 
@@ -566,7 +568,7 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 		})
 		approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
 
-		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence no gate waits on.", approved)
+		superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-none", "A requirement no gate waits on."), approved)
 		requireNoDesignGates(t, superseded, "a document a gate of a deployment that gates nothing records")
 	})
 
@@ -590,8 +592,10 @@ func TestDesignGateRecordDecidesTheSupersededApprovalAdvice(t *testing.T) {
 			t.Fatalf("lock design_gates: %v", err)
 		}
 		// The edit runs on a goroutine of its own so the lock's holder can watch the gate read
-		// queue behind it while the write is still open.
-		request := designGateEditRequest(t, issue.PrimaryArtifactID, "A sentence written while the gate read is locked out.")
+		// queue behind it while the write is still open. It writes a requirement, as supersededByEdit's
+		// rows do, so the approval goes stale.
+		request := designGateEditRequest(t, issue.PrimaryArtifactID,
+			queryBlockMarkdown("requirement", "r-locked", "A requirement written while the gate read is locked out."))
 		answered := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
 			response := httptest.NewRecorder()
@@ -706,7 +710,8 @@ func TestTwoDesignGatePublishesOfOneIssueAtOnceLeaveOneWholeSet(t *testing.T) {
 // superseded-approval advice, which name the `spec` step alone, and no read deletes it. The
 // project's stored list of that step alone reads as [spec], so the spec gate still names its
 // clause. A publish of a set holding the step, which a daemon of the release before still sends,
-// is taken: the step is dropped, and that publish's own rule takes the issue's row of it away.
+// is taken: the step is dropped, and that publish's own rule takes the issue's row of it away. The
+// edit writes a requirement: R14's record carry carries the spec's approval across prose.
 func TestADesignGateRowOfTheDecisionsStepIsIgnored(t *testing.T) {
 	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
@@ -736,7 +741,7 @@ func TestADesignGateRowOfTheDecisionsStepIsIgnored(t *testing.T) {
 		t.Fatalf("%s records %#v beside a row of the decisions step, want the spec's row alone %#v", issue.Key, got, specOnly)
 	}
 	approved := approveAdviceDocument(t, handler, issue.PrimaryArtifactID)
-	superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, "A sentence the gate had not seen.", approved)
+	superseded := supersededByEdit(t, handler, issue.PrimaryArtifactID, queryBlockMarkdown("requirement", "r-unseen", "A requirement the gate had not seen."), approved)
 	if want := []supersededApprovalGate{{Issue: issue.Key, Step: model.GatedStepSpec}}; !slices.Equal(superseded.DesignGates, want) {
 		t.Fatalf("the superseded-approval advice names %#v, want %#v: the spec step alone, on a list of the decisions step alone read as [spec]",
 			superseded.DesignGates, want)

@@ -106,11 +106,13 @@ func askOptionText(option model.AskOption) model.AskOption {
 	return option
 }
 
+// documentMarkdown is the head render of the document artifactID: the canonical markdown
+// GET /api/v1/artifacts/{id}/text answers alice.
 func documentMarkdown(t *testing.T, handler http.Handler, artifactID string) string {
 	t.Helper()
 	text := dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", nil, "alice")
 	if text.Code != http.StatusOK {
-		t.Fatalf("read document text: status=%d body=%s", text.Code, text.Body.String())
+		t.Fatalf("read the text of %s: status=%d body=%s", artifactID, text.Code, text.Body.String())
 	}
 	return decodeBody[struct {
 		Markdown string `json:"markdown"`
@@ -612,9 +614,9 @@ func TestResolveBlockAskRefusesTheSettlementReason(t *testing.T) {
 // block an open ask points at: the edits route refuses a batch whose result drops one (R5 of
 // dispatch://INFRA-1520), and so does an upload. The peer stays connected for the rest of the
 // test, as an open editor does.
-func removeBlockAsABrowserDoes(t *testing.T, documentService *docs.Service, artifactID, blockID string) {
+func removeBlockAsABrowserDoes(t *testing.T, handler http.Handler, documentService *docs.Service, artifactID, blockID string) {
 	t.Helper()
-	peer := connectBrowserPeer(t, documentService, artifactID)
+	peer := connectBrowserPeer(t, handler, documentService, artifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		kept := make([]*pmdoc.Node, 0, len(tree.Children))
@@ -643,7 +645,7 @@ func TestBlockRemovedFromTheDocumentRetractsAsTheSystemActorAndUndoRestores(t *t
 	handler, _, documentService := blockAskHandlerWithDocuments(t)
 	issue, askID := seedBlockAsk(t, handler, "Block ask deletion", "decision", transportAsk, "Which transport?")
 
-	removeBlockAsABrowserDoes(t, documentService, issue.PrimaryArtifactID, "decision")
+	removeBlockAsABrowserDoes(t, handler, documentService, issue.PrimaryArtifactID, "decision")
 	settleDocument(t, handler, issue.PrimaryArtifactID, issue.Key, "after-delete")
 
 	ask := readBlockAsk(t, handler, askID)
@@ -1085,7 +1087,7 @@ func TestEditOfAnAskWhoseBlockHoldsASecondListKeepsTheRowsOptions(t *testing.T) 
 	if err != nil {
 		t.Fatalf("parse the second list: %v", err)
 	}
-	peer := connectBrowserPeer(t, documentService, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, documentService, issue.PrimaryArtifactID)
 	t.Cleanup(peer.close)
 	peer.edit(t, func(tree *pmdoc.Node) error {
 		for _, child := range tree.Children {

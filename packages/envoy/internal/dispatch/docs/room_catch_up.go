@@ -49,6 +49,10 @@ const (
 	// catchUpReplaced: the stored history is no longer the one the room holds a prefix of
 	// (historyReplaced), so no row can bring it up to date: the room is closed and reloaded.
 	catchUpReplaced
+	// catchUpMoved: the room's document moved into its issue's room (document_rooms), so the room
+	// takes nothing more (ErrRoomMoved): it is closed, and its browsers connect again, which
+	// resolves the document to the issue's room.
+	catchUpMoved
 	// catchUpGone: the room no longer holds the instance asked about, or none at all.
 	catchUpGone
 )
@@ -57,14 +61,16 @@ const (
 // history - its lowest version and its head (a prune's checkpoint ceiling while one stands, as
 // headVersion has it) - and every row past $2, the version the room's instance holds every update
 // through, up to that head. The bounds come back on every row, and on a row of their own with no
-// version when there is nothing past $2.
+// version when there is nothing past $2, beside the room the document's document_rooms row names,
+// null for a document that is its own room.
 const catchUpStatement = `
 	with bounds as (
 		select coalesce(min(version), 0) as low,
-		       coalesce((select ceiling from doc_checkpoints where artifact_id = $1), max(version), 0) as high
+		       coalesce((select ceiling from doc_checkpoints where artifact_id = $1), max(version), 0) as high,
+		       ` + movedRoomSQL + ` as moved
 		from doc_updates where artifact_id = $1
 	)
-	select bounds.low, bounds.high, stored.version, stored.update
+	select bounds.low, bounds.high, bounds.moved, stored.version, stored.update
 	from bounds
 	left join doc_updates stored
 		on stored.artifact_id = $1 and stored.version > $2 and stored.version <= bounds.high
@@ -77,27 +83,30 @@ type storedRow struct {
 }
 
 // readCatchUp is catchUpStatement through q: the lowest stored version and the head (0 for none),
-// and the rows past through in version order.
-func readCatchUp(ctx context.Context, q Queryer, room string, through int64) (low, high int64, rows []storedRow, err error) {
+// the rows past through in version order, and whether room's document moved into its issue's room
+// (document_rooms).
+func readCatchUp(ctx context.Context, q Queryer, room string, through int64) (low, high int64, rows []storedRow, moved bool, err error) {
 	result, err := q.Query(ctx, catchUpStatement, room, through)
 	if err != nil {
-		return 0, 0, nil, fmt.Errorf("read the document's stored updates past its room: %w", err)
+		return 0, 0, nil, false, fmt.Errorf("read the document's stored updates past its room: %w", err)
 	}
 	defer result.Close()
 	for result.Next() {
 		var version *int64
 		var update []byte
-		if err := result.Scan(&low, &high, &version, &update); err != nil {
-			return 0, 0, nil, fmt.Errorf("read the document's stored updates past its room: %w", err)
+		var to *string
+		if err := result.Scan(&low, &high, &to, &version, &update); err != nil {
+			return 0, 0, nil, false, fmt.Errorf("read the document's stored updates past its room: %w", err)
 		}
+		moved = to != nil
 		if version != nil {
 			rows = append(rows, storedRow{version: *version, update: update})
 		}
 	}
 	if err := result.Err(); err != nil {
-		return 0, 0, nil, fmt.Errorf("read the document's stored updates past its room: %w", err)
+		return 0, 0, nil, false, fmt.Errorf("read the document's stored updates past its room: %w", err)
 	}
-	return low, high, rows, nil
+	return low, high, rows, moved, nil
 }
 
 // catchUpRoom brings live, room's resident instance, up to the stored head: it reads the stored
@@ -119,9 +128,10 @@ func readCatchUp(ctx context.Context, q Queryer, room string, through int64) (lo
 // instance runs at a time (roomInstance.catchUp); the caller holds the document's advisory lock
 // only when it already did (a settlement, reading through its own transaction), and the follower
 // (roomCatchUps) never takes it while it holds that mutex. A history that is no longer the one the
-// instance holds a prefix of is reported, not applied (catchUpReplaced): the caller closes the
-// room. A batch that cannot be merged, applied or broadcast fails the room, which reloads from
-// the store, and is returned as the error.
+// instance holds a prefix of is reported, not applied (catchUpReplaced), and so is a document that
+// moved into its issue's room (catchUpMoved): the caller closes the room. A batch that cannot be
+// merged, applied or broadcast fails the room, which reloads from the store, and is returned as
+// the error.
 //
 // After a batch the document must have nothing pending: every row past the cursor was applied,
 // and each depends only on rows before it, so an item left waiting for a missing dependency is a
@@ -138,12 +148,15 @@ func (s *Service) catchUpRoom(ctx context.Context, q Queryer, room string, live 
 		return catchUpGone, nil
 	}
 	through, above := instance.cursor.held()
-	low, high, rows, err := readCatchUp(ctx, q, room, through)
+	low, high, rows, moved, err := readCatchUp(ctx, q, room, through)
 	if s.catchUps.afterRead != nil {
 		s.catchUps.afterRead(room)
 	}
 	if err != nil {
 		return 0, err
+	}
+	if moved {
+		return catchUpMoved, nil
 	}
 	if storedHistoryReplaced(through, low, high) {
 		return catchUpReplaced, nil
@@ -284,7 +297,8 @@ func catchUpRetryBackoff(attempt int) time.Duration {
 }
 
 // catchUpLoadingWait is how often, and catchUpLoadingTimeout for how long, a catch-up scheduled for
-// a room still loading (keepInstance) looks again for ygo to publish it.
+// a room still loading (keepInstance) looks again for ygo to publish it. A join's commit waits for
+// a load of its room under way by the same two (awaitRoomLoad).
 const (
 	catchUpLoadingWait    = 10 * time.Millisecond
 	catchUpLoadingTimeout = 5 * time.Second
@@ -457,9 +471,10 @@ func (c *roomCatchUps) woke(ctx context.Context) {
 }
 
 // catchUp is one catch-up of room's resident instance on the lane (catchUpRoom, read through the
-// pool), and what follows from it: a replaced history closes the room (closeReplaced), and a
-// catch-up that reached no verdict is tried again later (armRetry). A room with no instance
-// resident has nothing to catch up, but one still loading is looked for again shortly.
+// pool), and what follows from it: a replaced history closes the room (closeReplaced), and so does
+// a document that moved into its issue's room (closeMovedRoom), and a catch-up that reached no
+// verdict is tried again later (armRetry). A room with no instance resident has nothing to catch
+// up, but one still loading is looked for again shortly.
 func (c *roomCatchUps) catchUp(ctx context.Context, room string) {
 	service := c.service
 	live := service.srv.GetDoc(room)
@@ -479,6 +494,13 @@ func (c *roomCatchUps) catchUp(ctx context.Context, room string) {
 		c.armRetry(room)
 	case outcome == catchUpReplaced:
 		c.closeReplaced(ctx, room, live)
+	case outcome == catchUpMoved:
+		// A document_rooms row, once written, is never moved or removed (targetOf), so the verdict
+		// needs no read under the document's lock, as a replaced history's does (closeReplaced):
+		// the room is closed as the move's own notice closes it (documentRoomsMoved), and a room
+		// whose close fails is read again after the next LISTEN (recheckMovedRooms).
+		c.settled(room)
+		service.closeMovedRoom(ctx, room)
 	default:
 		c.settled(room)
 	}

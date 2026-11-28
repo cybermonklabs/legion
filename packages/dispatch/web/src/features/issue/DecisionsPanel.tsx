@@ -35,7 +35,7 @@ import { buildIssuePath, parseDispatchReference, referenceHref } from "../refs/r
 import { textSourceOf } from "../refs/text-references";
 import { SendStoppedError, stoppedWriteNote } from "../writes/keyed-write";
 import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { isPersonDecision } from "./decision-entries";
+import { entryTextSource, isPersonDecision } from "./decision-entries";
 import { decisionHeading, useDecisionHeadingWords } from "./decision-heading";
 import {
   isPlainTitleBlock,
@@ -396,12 +396,16 @@ function DecisionCard({
    *  that also quotes the first of them its text holds (`entryBlocks`). */
   blocks: readonly DecisionBlock[];
   decision: DrawnDecision;
-  /** The document the decision is written in, the one its node stands in, which its `#id`s name
-   *  a question block of; undefined for an ask on the issue itself. */
+  /** The document the decision's block is written in (`decisionDocumentId`): what a Keep and a
+   *  Change are written against, and the record a `decision` block's words are, whoever decided
+   *  it, whose `#id`s name a question block of it. An ask's words are the ask's own record
+   *  (`entryTextSource`). Undefined where the read names no document and the address names no
+   *  block of a document the issue read lists: an ask, and a block of a document not listed
+   *  yet. */
   documentId: string | undefined;
   issueKey: string;
 }): ReactNode {
-  const source = textSourceOf("artifact", documentId, issueKey);
+  const source = entryTextSource(decision.entry, documentId, issueKey);
   // The name links the node that holds the decision, which is not always the spec.
   const path = nodePath(decision.ref);
   // The heading's plain words word its link (the reading list's `decision-heading-words`); the
@@ -500,7 +504,7 @@ function WaitingDecision({
   // and a form's name hold no markup (the reading list's `decision-heading-words`).
   const { reads, words: name } = useDecisionHeadingWords(
     decision.entry,
-    textSourceOf("artifact", documentId, issueKey)
+    entryTextSource(decision.entry, documentId, issueKey)
   );
   const keep = useKeyedWrite({
     inline: true,
@@ -617,8 +621,8 @@ function OpenQuestion({ entry, issueKey }: { entry: DecisionEntry; issueKey: str
 
 /** The issue's Decisions tab: its open questions, the agent's decisions waiting for a person's
  *  review (with Keep and Change), the person's own decisions, and the replaced ones, read from
- *  the entries of `GET /api/v1/issues/{key}/decisions`. Each decision links the node that holds
- *  it and the nodes it shaped. */
+ *  the nodes of `GET /api/v1/issues/{key}/tree?view=decisions`. Each decision links the node
+ *  that holds it and the nodes it shaped. */
 export function DecisionsPanel({
   artifacts,
   isClosed,
@@ -635,8 +639,9 @@ export function DecisionsPanel({
   // a new object only when the decisions were read again and a repaint of the tab repaints no
   // body it already drew. The three lists below are this one reading filtered, never three
   // readings of it. An ask is a decision once a person answered it; an open one is a question,
-  // and a declined one decided nothing. Each is written in the document the read names for it
-  // (`decisionDocumentId`).
+  // and a declined one decided nothing. Each is written in the document the read names for it,
+  // or, where it names none, the one its own address names a block of (`decisionDocumentId`);
+  // an ask's words are the ask's own record (`entryTextSource`).
   const rows = useMemo(() => {
     const documents = { artifacts, key: issueKey, primary_artifact_id: spec?.id ?? "" };
     return (view.data?.entries ?? [])

@@ -15,6 +15,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc/pmdoctest"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -83,6 +84,7 @@ func TestAWriteRefusesABlockPointerToADisallowedType(t *testing.T) {
 	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
+	seedBlockPointerClaim(t, database)
 	issue, paragraph := pointerSpec(t, handler)
 	spec := "dispatch://" + issue.Key + "/spec"
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
@@ -143,6 +145,7 @@ func TestANewDocumentIsRefusedAPointerToItsOwnDisallowedBlock(t *testing.T) {
 	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
 
@@ -163,7 +166,8 @@ func TestANewDocumentIsRefusedAPointerToItsOwnDisallowedBlock(t *testing.T) {
 func TestAnUnchangedPointerIsNotRefusedWhenItsTargetIsRetyped(t *testing.T) {
 	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
-	handler, _ := blockIndexHandler(t)
+	handler, database := blockIndexHandler(t)
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	r1 := "dispatch://" + issue.Key + "/spec#b-r1"
 	if response := uploadChecks(t, handler, issue.Key, claimMarkdown("c1", r1)); response.Code != http.StatusCreated {
@@ -190,13 +194,14 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database, broken := newBrokenTestServer(t)
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	if response := uploadChecks(t, handler, issue.Key, "Before.\n"); response.Code != http.StatusCreated {
 		t.Fatalf("upload checks.md: status=%d body=%s, want 201", response.Code, response.Body.String())
 	}
 	saved := readChecks(t, database, issue.Key)
 	rebuild := func(markdown string) *httptest.ResponseRecorder {
-		broken.failNextLoad(saved.ID)
+		broken.failNextLoad(t, saved.ID)
 		return dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+saved.ID+"/rebuild", map[string]any{"markdown": markdown}, "alice")
 	}
 
@@ -213,19 +218,23 @@ func TestARebuildFromMarkdownRefusesABlockPointerToADisallowedType(t *testing.T)
 }
 
 // A pointer names a block of the writing document's own issue or of an issue above it; one in a
-// sibling tree is refused, as is a needs naming a plan task of another document, and a document
-// its project holds points only inside itself. Every refusal names the reference and writes
-// nothing.
+// sibling tree is refused, a needs naming a plan task of a sibling tree among them, and a document
+// its project holds points only inside itself. A needs names a plan task of another document of
+// its own issue or of an issue above it (R10 of the issue-tree spec). Every refusal names the
+// reference and writes nothing. The issues below the root each hold a requirement of their own,
+// so they are created unconverted, as the release before writes a child: a child born converted
+// under an issue whose requirements stand is a view, and its create with a requirement is refused.
 func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	handler, database := blockIndexHandler(t)
+	seedBlockPointerClaim(t, database)
 	createReferenceAPIProject(t, handler, "CORE")
 	requirement := ":::requirement{#r1}\nA requirement.\n:::\n"
 	root := createSpecIssue(t, handler, "CORE", requirement)
-	middle := createChildIssue(t, handler, "CORE", root.Key, requirement)
-	issue := createChildIssue(t, handler, "CORE", middle.Key, requirement+"\n:::plan_task{#t9}\nTheirs.\n:::\n")
-	sibling := createChildIssue(t, handler, "CORE", middle.Key, requirement)
+	middle := createDigestChild(t, handler, database, "CORE", "The middle", requirement+"\n:::plan_task{#m9}\nAbove.\n:::\n", root.Key, true)
+	issue := createDigestChild(t, handler, database, "CORE", "The issue", requirement+"\n:::plan_task{#t9}\nTheirs.\n:::\n", middle.Key, true)
+	sibling := createDigestChild(t, handler, database, "CORE", "The sibling", requirement+"\n:::plan_task{#s9}\nA sibling's.\n:::\n", middle.Key, true)
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"
 
 	// A requirement of the issue's own spec, of its parent's and of its root's is named.
@@ -239,18 +248,21 @@ func TestAWriteRefusesABlockPointerOutsideItsIssueOrDocument(t *testing.T) {
 	siblingR1 := "dispatch://" + sibling.Key + "/spec#b-r1"
 	expectRefusal(t, "a pointer into a sibling tree", uploadChecks(t, handler, issue.Key, claimMarkdown("c1", siblingR1)), http.StatusBadRequest,
 		"INVALID_MARKDOWN", `"serves"`, siblingR1, sibling.Key, issue.Key)
-	theirTask := "dispatch://" + issue.Key + "/spec#b-t9"
 	ourTask := ":::plan_task{#t1}\nOurs.\n:::\n"
-	expectRefusal(t, "a needs naming a plan task of another document",
-		uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+theirTask+"\"}\nAfter theirs.\n:::\n"),
-		http.StatusBadRequest, "INVALID_MARKDOWN", `"needs"`, theirTask, "its own document")
+	siblingTask := "dispatch://" + sibling.Key + "/spec#b-s9"
+	expectRefusal(t, "a needs naming a plan task of a sibling tree",
+		uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+siblingTask+"\"}\nAfter theirs.\n:::\n"),
+		http.StatusBadRequest, "INVALID_MARKDOWN", `"needs"`, siblingTask, sibling.Key, issue.Key)
 	if after := readChecks(t, database, issue.Key); !reflect.DeepEqual(after, saved) {
 		t.Fatalf("checks.md after refused writes = %+v, want %+v unchanged", after, saved)
 	}
 
-	// The control: a needs naming a plan task of the same document is written.
-	if response := uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+checks+"#b-t1\"}\nAfter ours.\n:::\n"); response.Code != http.StatusCreated {
-		t.Fatalf("a needs naming a plan task of the same document: status=%d body=%s, want 201", response.Code, response.Body.String())
+	// The controls: a needs naming a plan task of the same document, of another document of its
+	// issue and of the issue above is written.
+	for _, task := range []string{checks + "#b-t1", "dispatch://" + issue.Key + "/spec#b-t9", "dispatch://" + middle.Key + "/spec#b-m9"} {
+		if response := uploadChecks(t, handler, issue.Key, ourTask+"\n:::plan_task{#t2 needs=\""+task+"\"}\nAfter it.\n:::\n"); response.Code != http.StatusCreated {
+			t.Fatalf("a needs naming %s: status=%d body=%s, want 201", task, response.Code, response.Body.String())
+		}
 	}
 
 	// A document its project holds, and no issue does, points only at a block of itself.
@@ -315,15 +327,25 @@ func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
 		t.Fatalf("block_refs of the seeded spec = %#v, want t1's serves edge at %s", rows, target)
 	}
 	rootR1 := "dispatch://" + root.Key + "/spec#b-r1"
+	// The node the requirement's address names now: the root is born converted, so its spec is a
+	// fragment of its issue room and r1's node is the room's block, at the tree artifact's address
+	// (T12a and T17 of the issue-tree plan), which the pointer resolves to as it is indexed.
+	rootR1Node, err := refs.NamedBlock(context.Background(), database.Pool, root.Key+"/spec#r1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootR1Node == root.Key+"/spec#r1" {
+		t.Fatalf("%s names the node at its own address, want the block of %s's issue room", rootR1, root.Key)
+	}
 
 	t.Run("a requirement of its parent's spec", func(t *testing.T) {
-		requireSeededServes(t, seed("A seeded child spec pointing into its parent", root.Key, rootR1), root.Key+"/spec#r1")
+		requireSeededServes(t, seed("A seeded child spec pointing into its parent", root.Key, rootR1), rootR1Node)
 	})
 
 	// The grandchild's parent is the pending one, so the root is reached only by the walk above
 	// it: this is the case that fails when that walk is dropped.
 	t.Run("a requirement of its grandparent's spec", func(t *testing.T) {
-		requireSeededServes(t, seed("Grandchild plan serving the oldest requirement", middle.Key, rootR1), root.Key+"/spec#r1")
+		requireSeededServes(t, seed("Grandchild plan serving the oldest requirement", middle.Key, rootR1), rootR1Node)
 	})
 
 	t.Run("a block no document holds", func(t *testing.T) {
@@ -343,11 +365,13 @@ func TestASeededSpecPointsIntoItsParentsSpec(t *testing.T) {
 
 // A browser's write is never refused: a settled browser tree whose pointer names a block no
 // document holds writes its version and stores the pointer, which stays an unresolved reference,
-// as any citation of an absent block is.
+// as any citation of an absent block is. checks.md plays no role, so it is a room of its own
+// (documentJoinsIssueRoom), whose settlement, and the row that says it is owed, are keyed by it.
 func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) {
 	// Not parallel: it swaps pmdoc's block schema for the whole process (pmdoctest.UseBlockSchema).
 	pmdoctest.UseBlockSchema(t, pmdoctest.BlockPointerSchema(nil))
 	documents, handler, database := browserDocumentService(t)
+	seedBlockPointerClaim(t, database)
 	issue, _ := pointerSpec(t, handler)
 	if response := uploadChecks(t, handler, issue.Key, "Before.\n"); response.Code != http.StatusCreated {
 		t.Fatalf("upload checks.md: status=%d body=%s, want 201", response.Code, response.Body.String())
@@ -355,18 +379,14 @@ func TestABrowserWritePointingAtAMissingBlockIsSavedAndUnresolved(t *testing.T) 
 	checks := readChecks(t, database, issue.Key)
 	missing := "dispatch://" + issue.Key + "/spec#b-nowhere"
 
-	writeBrowserDocument(t, documents, checks.ID, claimMarkdown("c1", missing))
+	writeBrowserDocument(t, handler, documents, checks.ID, claimMarkdown("c1", missing))
 	// Settled on this goroutine, not through SettleNow's timer, which the browser's update can
 	// outrun: the room arms the settlement that update owes, at the hour-long settle window, as it
 	// drains the update, which can come after the text is live. That arming replaces SettleNow's
 	// timer before it fires or moves the generation under its settlement, which then writes
 	// nothing. SettleIssueDocuments runs the owed settlement itself, and again when a write
 	// supersedes it. The upload's live write already owes it, so the call cannot find none owed.
-	var owed bool
-	if err := database.Pool.QueryRow(context.Background(), `select exists(select 1 from doc_settlements_pending where artifact_id = $1)`, checks.ID).Scan(&owed); err != nil {
-		t.Fatalf("read checks.md's pending settlement: %v", err)
-	}
-	if !owed {
+	if !documentOwesSettlement(t, database, checks.ID) {
 		t.Fatal("checks.md owes no settlement, want the upload's still owed")
 	}
 	if err := documents.SettleIssueDocuments(context.Background(), issue.Key); err != nil {
@@ -417,6 +437,7 @@ func TestALiveRoomWriteRefusesABlockPointerItMayNotHold(t *testing.T) {
 	// dependencies', the very one the handlers write through. Its documents never settle during
 	// the test, as blockIndexHandler's do not.
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	seedBlockPointerClaim(t, database)
 	issue, paragraph := pointerSpec(t, handler)
 	spec := "dispatch://" + issue.Key + "/spec"
 	checks := "dispatch://" + issue.Key + "/artifact/checks-md"

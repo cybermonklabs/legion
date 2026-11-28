@@ -46,7 +46,7 @@ func (s *server) blockLinksDocument(r *http.Request, who model.Actor, param stri
 	if !ok || ref.Kind != "artifact" || ref.Session != "" {
 		return model.GraphNode{}, errorf(http.StatusBadRequest, "INVALID_REFERENCE", "%s must name a document: dispatch://KEY/spec, dispatch://KEY/artifact/<slug> or dispatch://PROJECT/artifact/<slug>", param)
 	}
-	document, found, err := s.documentAtAddress(r.Context(), who, text.TargetID(ref))
+	document, found, err := documentAtAddress(r.Context(), s.deps.Store.Pool, who, text.TargetID(ref))
 	if err != nil {
 		return model.GraphNode{}, err
 	}

@@ -8,6 +8,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/embed"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -50,8 +51,8 @@ import (
 // (asks.NodeAnswerColumn), and its cosine score.
 var relatedOtherProjectsSQL = `with candidates as (
   select k.id, k.issue_key, k.state, k.answer, k.node_kind,
-         case when k.issue_key is null then coalesce(k.artifact_id, k.block_artifact_id) end as owner_artifact_id,
-         coalesce(k.artifact_id, k.block_artifact_id, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `) as artifact_id,
+         case when k.issue_key is null then coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `) end as owner_artifact_id,
+         coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `, ` + store.CastableUUID(`k.anchor->>'artifact_id'`) + `) as artifact_id,
          ` + askBlockNodeSQL + ` as block_id,
          i.title as issue_title, i.status as issue_status,
          coalesce(i.project_key, a.project_key) as project,
@@ -61,7 +62,7 @@ var relatedOtherProjectsSQL = `with candidates as (
     from embeddings e
     join asks k on k.id = ` + windowItemUUID + `
     left join issues i on i.key = k.issue_key
-    left join artifacts a on a.id = coalesce(k.artifact_id, k.block_artifact_id)
+    left join artifacts a on a.id = coalesce(k.artifact_id, ` + refs.AskBlockDocumentSQL("k") + `)
    where e.kind = 'ask_part' and e.embedding is not null and e.model = $3
      and k.kind = 'question' and ` + asks.NodeStateOf("k") + ` = '` + asks.StateAnswered + `'
      and btrim(coalesce(` + asks.NodeAnswerTextOf("k") + `, '')) <> ''

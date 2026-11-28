@@ -13,11 +13,12 @@ import (
 
 // Text a caller writes reaches the document with line feeds alone: a CR LF and a lone carriage
 // return are each written as a line feed wherever text enters a document - a spec seeding it, an
-// upload making a new document or a new version, an edit's insert (a block, or rows into a table),
-// replace (in text and in code) and retype (its attributes), an accepted suggestion, a block ask's
-// edited text, and an answer written into its ask block. Each stores the document the same text
-// written with line feeds stores, so the browser editor, which reads both line endings as a line
-// feed, reads it the same way.
+// upload making a new document or a new version, an edit's insert (a block, or rows into a table)
+// and replace (in text and in code), an accepted suggestion, a block ask's edited text, and an
+// answer written into its ask block. Each stores the document the same text written with line
+// feeds stores, so the browser editor, which reads both line endings as a line feed, reads it the
+// same way. A retype's attributes are no such text: a line ending in a typed block's attribute is
+// a control character, which the server refuses (its row asserts the refusal).
 func TestWrittenTextReachesTheDocumentWithLineFeeds(t *testing.T) {
 	t.Parallel()
 	handler, _ := blockAskHandler(t)
@@ -100,11 +101,19 @@ func TestWrittenTextReachesTheDocumentWithLineFeeds(t *testing.T) {
 			return documentMarkdown(t, handler, artifactID)
 		}},
 		{"a retype's attributes", func(t *testing.T, eol func(string) string) string {
+			// A control character in a typed block's attribute, a line ending included, is refused
+			// (pmdoc.ControlCharacters): the retype is answered 400 INVALID_MARKDOWN naming the
+			// block and its `title` for each line ending, and the document stays as it was, the
+			// same text for the three.
 			_, artifactID := issue(t, "Question here\n")
 			blocks := decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/blocks", nil, "alice"))
-			ok(t, dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
+			response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/edits", map[string]any{
 				"ops": []map[string]any{{"op": "retype", "block": blocks[0].ID, "type": "callout", "attributes": map[string]any{"kind": "note", "title": eol("One\ntwo")}}},
-			}, "alice"), "retype")
+			}, "alice")
+			expectControlCharRefusal(t, "retype", response.Code, response.Body.Bytes(), "title", "U+000A")
+			if !strings.Contains(response.Body.String(), "callout block") || !strings.Contains(response.Body.String(), blocks[0].ID) {
+				t.Fatalf("retype refusal = %s, want it to name the callout block %s", response.Body.String(), blocks[0].ID)
+			}
 			return strings.ReplaceAll(documentMarkdown(t, handler, artifactID), blocks[0].ID, "block")
 		}},
 		{"an answer written into its ask block", func(t *testing.T, eol func(string) string) string {

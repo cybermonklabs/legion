@@ -67,7 +67,9 @@ type ChangedDecision = Pick<
 >;
 
 /** The fields of the issue read a decision's document is found by, where the decisions read names
- *  none (`decisionDocumentId`): its key, its documents and which of them is its spec. */
+ *  none (`decisionDocumentId`): its key, its documents and which of them is its spec. Every view
+ *  that finds a decision's document hands it the issue read it already holds: the Decisions tab,
+ *  the tree, the header's count, the Decisions filter and the margin's decision cards. */
 export type DecisionDocuments = Pick<IssueDetails, "key" | "primary_artifact_id"> & {
   readonly artifacts?: readonly Pick<Artifact, "id" | "slug">[] | null;
 };
@@ -118,13 +120,18 @@ export function decisionContent(decision: Pick<DecisionEntry, "text" | "text_tre
 }
 
 /**
- * The id of the document whose block `decision` is: the document the decisions read names for
- * it (`DecisionEntry.document`), the spec or another of the issue's documents, whether or not the
- * issue read has listed the issue's documents yet. A Change's anchor names the document it is
- * anchored in by that id (`Anchor.artifact_id`). Undefined for an entry that names none and whose
- * address names no block of the issue's documents: an ask on the issue itself, an address of
- * another issue. Undefined too for an entry that names none while `issue` is undefined, where the
- * caller's issue read has not answered.
+ * The id of the document whose block `decision` is. The Decisions view of the issue's tree names
+ * it (`DecisionEntry.document`) only for a typed block of a role document - the spec, the plan,
+ * the Verification document - whether or not the issue read has listed the issue's documents
+ * yet; for a decision of any other document it names none, and the decision's own address
+ * (`DecisionEntry.ref`, `artifact/<slug>#b-…`) names the document, found among the issue's
+ * documents once the issue read lists them. A Change's anchor names the document it is anchored
+ * in by that id (`Anchor.artifact_id`), a Keep is written against it, and an agent's decision's
+ * words are its record (`decision-entries.ts`'s `entryTextSource`). Undefined for an entry that
+ * names none and whose address names no block of the issue's documents: an ask, whose address
+ * names the ask and no block (its words are the ask's own record), a block of a document the
+ * issue read does not list yet, and an address of another issue. Undefined too for an entry that
+ * names none while `issue` is undefined, where the caller's issue read has not answered.
  */
 export function decisionDocumentId(
   issue: DecisionDocuments | undefined,
@@ -132,10 +139,7 @@ export function decisionDocumentId(
 ): string | undefined {
   const named = decision.document?.artifact_id;
   if (named !== undefined) return named;
-  // A decision a server of the release before answered names no document (`withEntries`): its
-  // address is its section's heading block, `artifact/<slug>#b-…` of the issue's document that
-  // held it, found among the issue's documents once the issue read lists them.
-  // kept for one release: compat-objects
+  // The view named no document: read the one the decision's own address names.
   if (issue === undefined) return undefined;
   const route = parseNodeReference(decision.ref);
   if (route === undefined || !("key" in route) || route.key !== issue.key) return undefined;
@@ -151,12 +155,10 @@ export function decisionDocumentId(
  * Each of the issue's decisions a Change can be asked of, by the document its block stands in
  * (`decisionDocumentId`), replaced ones included: their blocks hold blocks too, and a comment
  * anchored in one changes no other decision. Those are the decisions an agent made: an agent's
- * `decision` block and an agent's section of the release before. A person's decision
- * (`isPersonDecision`) is none - an answered ask, though the read names the document its block
- * stands in, a `decision` block whose `decided_by` names a person, and a section of the release
- * before that cites an ask - since what a person decided is theirs and every view places it as
- * its decider's, and no Change is written on it. Nor is an ask that is open or declined, which
- * decided nothing.
+ * `decision` block. A person's decision (`isPersonDecision`) is none - an answered ask, whatever
+ * document its block stands in, and a `decision` block whose `decided_by` names a person - since
+ * what a person decided is theirs and every view places it as its decider's, and no Change is
+ * written on it. Nor is an ask that is open or declined, which decided nothing.
  */
 function changeableByDocument(
   issue: DecisionDocuments,
@@ -196,10 +198,9 @@ export function decisionBlockId(
   decision: Pick<DecisionEntry, "document" | "ref">
 ): string | undefined {
   if (decision.document !== null) return decision.document.block_id;
-  // A decision a server of the release before answered names no document (`withEntries`): its
-  // address is its section's heading block in the decisions document, and that block is the one
-  // a Keep is written against and a Change is placed by.
-  // kept for one release: compat-objects
+  // The tree read names a document only on a typed block of a role document, so the entry of a
+  // decision of any other document names none (`api/decisions-tree.ts`): its own address names
+  // the block a Keep is written against and a Change is placed by.
   const route = parseNodeReference(decision.ref);
   return route !== undefined && "block" in route ? route.block?.id : undefined;
 }

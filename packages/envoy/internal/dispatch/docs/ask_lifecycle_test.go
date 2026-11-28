@@ -712,7 +712,7 @@ func requireSettledAtLatestVersion(t *testing.T, service *Service, artifactID st
 // serves them: one of the release before, with the schema numbers a process of it registers
 // (baseSchemaVersion, baseSchemaCreatable), and one of this build, with its own; each at the owner
 // lock protocol both builds register (store.OwnerLockProtocol). The fleet guard reads a process
-// below this build's schema version as a build whose pages read an ask's state from its block
+// below answersLeftTheMarkdown as a build whose pages read an ask's state from its block
 // (anotherBuildServes), so the document service then keeps the server-owned attributes of each
 // ask block in step with its asks row (rollWindowAskAttributes) and writes an issue's close and
 // reopen into its asks' blocks (WriteIssueAskStates). A test's editor presents no
@@ -733,7 +733,8 @@ func serveTwoBuilds(t *testing.T, database *store.Store) {
 // still reads answers off block attributes registers: that release's pmdoc/schema/blocks.json is
 // version 6, one below the version at which answers left the markdown (answersLeftTheMarkdown, 7),
 // and creates nothing past version 5. So a fleet holding one drives the fleet guard at the real
-// boundary, version 6 against 7; this build, at version 8, is past it as the release at 7 is.
+// boundary, version 6 against 7; this build, at version 9, is past it as the releases at 7 and 8
+// are.
 const (
 	baseSchemaVersion   = 6
 	baseSchemaCreatable = 5

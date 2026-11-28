@@ -109,9 +109,15 @@ func seedDecisionsDocument(t *testing.T, database *store.Store, service *docs.Se
 // the person's approval by the reading case and the conversion's (conversionCase). The same
 // pointers written by an agent's upload, which is no conversion, carry nothing by the conversion's
 // case, and that upload supersedes the approval.
+//
+// Its subject is the unconverted path itself: a decisions document is a legacy one, which the
+// decisions step converts on an issue that has not been converted into its room, since an issue
+// born converted refuses a decisions document (decisionsAreNodes) and the step's reads take each
+// document as its own room. The issue is held unconverted (holdIssuesUnconverted).
 func TestTheConversionCarriesTheApprovalAcrossTheShapedPointersItGivesAnAsk(t *testing.T) {
 	t.Parallel()
 	handler, database, service := settlingCarryDocuments(t, 20*time.Millisecond)
+	holdIssuesUnconverted(t, database)
 	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{
 		"key": "TEST", "name": "TEST project",
 	}, "alice"); response.Code != http.StatusCreated {

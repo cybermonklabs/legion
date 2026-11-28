@@ -10,9 +10,9 @@ import (
 )
 
 // openAsksQueryText is the statement the dropped-ask refusals read the open asks with
-// (docs.openAskBlocks), by a run of its text no other statement holds, so a counter says whether a
-// batch read the open asks of a document at all.
-const openAsksQueryText = "block_artifact_id = $1 and state = 'open'"
+// (docs.openAskBlocksIn), by a run of its text no other statement holds, so a counter says whether
+// a batch read the open asks of a document at all.
+const openAsksQueryText = "and k.state = 'open' and k.block_id is not null"
 
 // refuseEdit sends ops to the document and returns the refusal's body, failing the test when the
 // route took the edit instead.

@@ -5,14 +5,19 @@ package api
 // every read of that run's stream from before the run's ending gives none of its frames, no text
 // and no item among them, and ends on the withdrawal in the place of the run's ending, and a read
 // resumed at or past that ending is written nothing (goingWithdrawal). A run given only posts that
-// stand streams as it did before.
+// stand streams as it did before. The read of the run's own address, dispatch://interaction/<uuid>,
+// answers the frames the stream answers, before the delete and after it (refs' interactionFrames).
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"reflect"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -21,6 +26,8 @@ import (
 
 	"github.com/sjawhar/envoy/going"
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/testwait"
 )
 
@@ -280,7 +287,7 @@ func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 	}
 	testwait.Receive(t, "the end of the open stream after the delete", served)
 
-	ending, err := rig.server.readGoingTerminalEvent(ctx, run.ID)
+	ending, err := readGoingTerminalEvent(ctx, rig.server.deps.Store.Pool, run.ID)
 	if err != nil {
 		t.Fatalf("read the run's ending: %v", err)
 	}
@@ -289,5 +296,232 @@ func TestGoingRunStillAnsweringAtTheDeleteSlipsNoFramePastIt(t *testing.T) {
 	}
 	if later := rig.readStream(t, run.ID, ""); later != withdrawnGoingStream(ending.Sequence) {
 		t.Fatalf("a reader after the run ended was written\n%q\nwant the withdrawal alone\n%q", later, withdrawnGoingStream(ending.Sequence))
+	}
+}
+
+// graphFrameOf is one frame as a graph read of its run answers it (model.GraphFrame): its
+// sequence, its name, and data, its payload's JSON, decoded as that read's JSON decodes a frame's,
+// so two views of one frame compare as decoded values.
+func graphFrameOf(t *testing.T, sequence int, name string, data []byte) model.GraphFrame {
+	t.Helper()
+	frame := model.GraphFrame{Sequence: sequence, Name: name}
+	if err := json.Unmarshal(data, &frame.Data); err != nil {
+		t.Fatalf("decode the data %s of frame %d %s: %v", data, sequence, name, err)
+	}
+	return frame
+}
+
+// streamedFrames is every frame a run's stream wrote, in the order written, each its id as the
+// sequence, its event as the name and its data decoded as graphFrameOf decodes it.
+func streamedFrames(t *testing.T, stream string) []model.GraphFrame {
+	t.Helper()
+	var frames []model.GraphFrame
+	for written := range strings.SplitSeq(stream, "\n\n") {
+		if written == "" {
+			continue
+		}
+		var sequence int
+		var name, data string
+		for line := range strings.SplitSeq(written, "\n") {
+			field, value, _ := strings.Cut(line, ": ")
+			switch field {
+			case "id":
+				parsed, err := strconv.Atoi(value)
+				if err != nil {
+					t.Fatalf("the stream wrote the id %q, which is no sequence: %q", value, stream)
+				}
+				sequence = parsed
+			case "event":
+				name = value
+			case "data":
+				data = value
+			default:
+				t.Fatalf("the stream wrote the line %q, which no frame holds: %q", line, stream)
+			}
+		}
+		frames = append(frames, graphFrameOf(t, sequence, name, []byte(data)))
+	}
+	return frames
+}
+
+// storedFrames is every frame the run stored, as its going_events rows hold them: the base's
+// goingRig.frames reads them as a reader of the stream does, and each `<sequence> <name> <data>`
+// line it answers is decoded as graphFrameOf decodes a frame.
+func (rig goingRoutesRig) storedFrames(t *testing.T, id string) []model.GraphFrame {
+	t.Helper()
+	lines := goingRig{server: rig.server, database: rig.database}.frames(t, id)
+	frames := make([]model.GraphFrame, 0, len(lines))
+	for _, line := range lines {
+		sequence, rest, _ := strings.Cut(line, " ")
+		name, data, _ := strings.Cut(rest, " ")
+		parsed, err := strconv.Atoi(sequence)
+		if err != nil {
+			t.Fatalf("run %s stored the frame %q, which names no sequence", id, line)
+		}
+		frames = append(frames, graphFrameOf(t, parsed, name, []byte(data)))
+	}
+	return frames
+}
+
+// graphFrames is the frames alice reads at the run's own address, dispatch://interaction/<uuid>,
+// through GET /api/v1/references?from=, which answers them as the node's frames (refs.Node).
+func (rig goingRoutesRig) graphFrames(t *testing.T, id string) []model.GraphFrame {
+	t.Helper()
+	address := "dispatch://" + graphstore.KindInteraction + "/" + id
+	read := graphEdges(t, rig.handler, url.Values{"from": {address}})
+	if read.Node.Ref != address {
+		t.Fatalf("alice's ?from=%s answers the node %+v, want her run", address, read.Node)
+	}
+	return read.Node.Frames
+}
+
+// requireTheGraphReadAnswersTheStream reads the run's stream from the start as alice, and then the
+// run's own address, and fails unless the address answers exactly the frames the stream wrote: the
+// same sequences, names and data, compared as decoded values. A failure names the first frame the
+// graph read answers past what the stream answers, or the first the stream wrote that the graph
+// read leaves out. It answers the frames the two answer.
+func (rig goingRoutesRig) requireTheGraphReadAnswersTheStream(t *testing.T, id, when string) []model.GraphFrame {
+	t.Helper()
+	streamed := streamedFrames(t, rig.readStream(t, id, ""))
+	read := rig.graphFrames(t, id)
+	for index, frame := range read {
+		if index >= len(streamed) || !reflect.DeepEqual(frame, streamed[index]) {
+			t.Fatalf("%s, the graph read of run %s answers frame %d %s %v past what its stream answers: the stream wrote %+v, and the graph read answers %+v",
+				when, id, frame.Sequence, frame.Name, frame.Data, streamed, read)
+		}
+	}
+	if len(streamed) > len(read) {
+		left := streamed[len(read)]
+		t.Fatalf("%s, the stream of run %s wrote frame %d %s %v, which the graph read leaves out: the stream wrote %+v, and the graph read answers %+v",
+			when, id, left.Sequence, left.Name, left.Data, streamed, read)
+	}
+	return streamed
+}
+
+// Row 6: the read of the run's own address is a second view of the frames its stream answers,
+// and answers what the stream answers. Before the delete of the comment the run read, both answer
+// every frame the run stored, alike; after it, both answer the withdrawal alone, under the sequence
+// of the run's ending, and none of the frames the run stored, no text carrying the comment's words
+// and no item naming it.
+func TestTheGraphReadOfAWithdrawnRunAnswersWhatItsStreamAnswers(t *testing.T) {
+	t.Parallel()
+	answerer := &fakeAnswerer{}
+	rig := newGoingRoutesRig(t, answerer)
+	issue := createInteractionIssue(t, rig.handler, "GWG", "Where the answer reads", "The issue the comment is on.")
+	const phrase = "zarquongraphreadcomment"
+	comment := createThreadComment(t, rig.handler, issue.Key, map[string]any{"body": "The " + phrase + " drifted."}, "alice")
+	run := askQuotingPost(t, rig, answerer, "GWG", "comment", comment.ID, phrase)
+
+	stored := rig.storedFrames(t, run.ID)
+	if len(stored) != 3 {
+		t.Fatalf("run %s stored %+v, want the three frames it answered", run.ID, stored)
+	}
+	if before := rig.requireTheGraphReadAnswersTheStream(t, run.ID, "before the delete"); !reflect.DeepEqual(before, stored) {
+		t.Fatalf("before the delete the stream and the graph read answer %+v, want every frame the run stored, %+v", before, stored)
+	}
+	deleteThreadComment(t, rig.handler, comment.ID, "alice")
+
+	want := streamedFrames(t, withdrawnGoingStream(3))
+	if after := rig.requireTheGraphReadAnswersTheStream(t, run.ID, "after the delete"); !reflect.DeepEqual(after, want) {
+		t.Fatalf("after the delete the stream and the graph read answer %+v, want the withdrawal alone, %+v", after, want)
+	}
+}
+
+// Row 7: a run withdrawn before it stored its ending. The read of its own address answers the
+// withdrawal under the sequence the stream's ending of the run then takes, the one past its last
+// frame, and writes nothing: the run still holds the one frame it stored, and no ending. The stream
+// read after it stores that ending and writes the same one frame, and the address answers it as
+// before.
+func TestTheGraphReadOfARunWithdrawnBeforeItsEndingAnswersWhatItsStreamWillAnswer(t *testing.T) {
+	t.Parallel()
+	rig := newGoingRoutesRig(t, nil)
+	ctx := context.Background()
+	issue := createInteractionIssue(t, rig.handler, "GWE", "Where the answer reads", "The issue the comment is on.")
+	const phrase = "zarquonunendedcomment"
+	body := "The " + phrase + " drifted."
+	comment := createThreadComment(t, rig.handler, issue.Key, map[string]any{"body": body}, "alice")
+	run, err := rig.server.recordGoingRequest(ctx, goingAsker, "GWE", "what does the note say about "+phrase+"?")
+	if err != nil {
+		t.Fatalf("record the run: %v", err)
+	}
+	// What a run does before it stores a frame of the text it read: it records the post it is given
+	// (goingBodies), and then stores the frame.
+	given := going.Hit{Kind: "comment", ID: comment.ID}
+	if err := rig.server.recordGoingPosts(ctx, run.ID, []going.Hit{given}, map[string]string{given.Key(): body}); err != nil {
+		t.Fatalf("record the comment as given to run %s: %v", run.ID, err)
+	}
+	if _, err := appendGoingEvent(ctx, rig.database.Pool, run.ID, going.Text("The note says "+phrase+".")); err != nil {
+		t.Fatalf("store the frame of run %s: %v", run.ID, err)
+	}
+	stored := rig.storedFrames(t, run.ID)
+	deleteThreadComment(t, rig.handler, comment.ID, "alice")
+
+	want := streamedFrames(t, withdrawnGoingStream(2))
+	if read := rig.graphFrames(t, run.ID); !reflect.DeepEqual(read, want) {
+		t.Fatalf("the graph read of run %s, withdrawn with no ending stored, answers %+v, want the withdrawal alone where its ending goes, %+v", run.ID, read, want)
+	}
+	if held := rig.storedFrames(t, run.ID); !reflect.DeepEqual(held, stored) {
+		t.Fatalf("after the graph read run %s holds %+v, want the frame it stored and no ending, %+v: the read writes nothing", run.ID, held, stored)
+	}
+	if streamed := rig.requireTheGraphReadAnswersTheStream(t, run.ID, "once the stream ended the run"); !reflect.DeepEqual(streamed, want) {
+		t.Fatalf("the stream of run %s, withdrawn with no ending stored, and its graph read after it answer %+v, want the withdrawal alone, %+v", run.ID, streamed, want)
+	}
+}
+
+// Row 8: a withdrawn run whose rows a process of the release before deleted. During a roll and
+// after a rollback such a process deletes the going_requests row of every run an hour old, which
+// takes its going_request_posts and going_events rows with it, and marks no node gone (this
+// change's spec, its interaction and one-truth requirements). The run's node stays live until a
+// maintenance pass of this build reads it as rowless (goingRowlessRuns). The builds share one
+// maintenance lease, and a pass takes at most goingGoneBatch such nodes, so that can come later
+// than the next pass. In that time the stream answers 404, and the read of the run's own address
+// must still give no part of a deleted post's body, as no read that quotes the post may: with the
+// posts rows gone, the withdrawal test (graphstore.RunWithdrawnSQL) no longer finds the deleted
+// post, so a read that trusts it answers the frames the run stored, which quote it.
+func TestTheGraphReadOfAWithdrawnRunWhoseRowsAnOlderBuildDeletedQuotesNoDeletedPost(t *testing.T) {
+	t.Parallel()
+	answerer := &fakeAnswerer{}
+	rig := newGoingRoutesRig(t, answerer)
+	issue := createInteractionIssue(t, rig.handler, "GWO", "Where the answer reads", "The issue the comment is on.")
+	const phrase = "zarquonolderbuilddeletedrows"
+	comment := createThreadComment(t, rig.handler, issue.Key, map[string]any{"body": "The " + phrase + " drifted."}, "alice")
+	run := askQuotingPost(t, rig, answerer, "GWO", "comment", comment.ID, phrase)
+	deleteThreadComment(t, rig.handler, comment.ID, "alice")
+	want := streamedFrames(t, withdrawnGoingStream(3))
+	if after := rig.requireTheGraphReadAnswersTheStream(t, run.ID, "after the delete"); !reflect.DeepEqual(after, want) {
+		t.Fatalf("after the delete the stream and the graph read answer %+v, want the withdrawal alone, %+v", after, want)
+	}
+
+	ctx := context.Background()
+	if _, err := rig.database.Pool.Exec(ctx, `delete from going_requests where id = $1::uuid`, run.ID); err != nil {
+		t.Fatalf("delete the going_requests row of run %s as a process of the release before does: %v", run.ID, err)
+	}
+	var posts int
+	var state string
+	if err := rig.database.Pool.QueryRow(ctx, `
+		select (select count(*) from going_request_posts where request_id = $1::uuid),
+		       (select state from graph_nodes where kind = $2 and id = $3)`,
+		run.ID, graphstore.KindInteraction, run.ID).Scan(&posts, &state); err != nil {
+		t.Fatalf("read the rows of run %s after the delete of its row: %v", run.ID, err)
+	}
+	if posts != 0 || state == graphstore.StateGone {
+		t.Fatalf("after the delete of its row run %s holds %d going_request_posts rows and its node is %s, want none and a node not yet gone, as the release before leaves it", run.ID, posts, state)
+	}
+	if stream := rig.stream(t, run.ID, "alice", ""); stream.Code != http.StatusNotFound || decodeBody[refusalAnswer](t, stream).Code != codeGoingRequestNotFound {
+		t.Fatalf("after the delete of its row the stream of run %s answers %d %s, want 404 %s", run.ID, stream.Code, stream.Body.String(), codeGoingRequestNotFound)
+	}
+
+	address := "dispatch://" + graphstore.KindInteraction + "/" + run.ID
+	response := graphRequest(t, rig.handler, url.Values{"from": {address}})
+	if response.Code == http.StatusNotFound {
+		return
+	}
+	if response.Code != http.StatusOK {
+		t.Fatalf("after the delete of its row alice's ?from=%s answers %d %s, want 404 or the run with no part of the deleted post", address, response.Code, response.Body.String())
+	}
+	for _, frame := range decodeBody[model.GraphReferences](t, response).Node.Frames {
+		if data, _ := json.Marshal(frame.Data); strings.Contains(string(data), phrase) {
+			t.Fatalf("the comment %s is deleted and run %s withdrawn, and once a process of the release before deleted the run's rows, before this build's sweep took its node gone, the run's own address answers its author frame %d %s %s, which quotes the deleted comment: want no part of its body", comment.ID, run.ID, frame.Sequence, frame.Name, data)
+		}
 	}
 }

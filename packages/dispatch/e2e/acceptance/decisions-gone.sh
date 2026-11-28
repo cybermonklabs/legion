@@ -42,32 +42,34 @@
 # its text, never a whole file, and only a line that serves what R11 keeps: the Decisions view, its
 # tab, its dispatch://KEY/decisions route and its query key; GATED_STEPS and DocumentRoleSchema,
 # which keep the value for one release as a value they read; and the generated step types, since
-# the gated-steps write still admits it. The query key is admitted in any file in its two forms, a
-# `queryKey: [<the word>, …]` member and the key a react-query cache call takes first
-# (`setQueryData([<the word>, …])`, `getQueryData<T>([<the word>, …])`), and only where every
-# spelling of the word on the line is such a key; a line holding the word in an array beside the
-# word query is no key by that alone. Any other line is admitted by its file and its text. A line
-# that is the word alone, in a list or a union, is admitted by the declaration it stands in as well
-# (PRESET_ORDER, PLAIN_ISSUE_TABS and IssueTab, and a test's TreeRead and TREE_READS). A test's line
-# is admitted only where it exercises one of those, or feeds the client a stored step or a document
-# role GATED_STEPS or DocumentRoleSchema still reads, or the role a document.retired event reports
-# of the decisions document it retired, and so is the base release's gated steps seed-decisions.sh
-# publishes, which must still hold the step. It prints each admitted line with what it serves, and
-# fails on any other: gated-steps.ts, or a step list of gated-step-approvals.e2e.ts, among them.
-# Before it reads the checkout it reads a planted instance through the same search and the same
-# admission, as the first sweep does: a scratch git repository under the run's own directory
-# holding a copy of gated-steps.ts, of each file it admits lines of the view, its tab or its route
-# from (DecisionsPanel.tsx, issue-tab-list.ts, IssuePage.tsx, page-words.ts and routes.ts) and of a
-# web test (gated-steps.test.ts), each with one line sending the step added; a copy of
-# event-refresh.ts, whose four query keys it admits, with two lines added, one holding the word in
-# an array beside the word query and one holding a query key beside a step list; and a scratch file
-# no admission names, holding the text of each line admitted by its file and its exact text alone
-# (in event-feed-socket.test.tsx, event-feed.test.ts, routes.ts, DecisionsPanel.tsx,
-# DecisionsPanel.test.tsx and DecisionsFilterBody.drawn.test.tsx). Each added line is printed as
-# `planted hit …` and must be reported as a hit, and the copy of event-refresh.ts must read no other
-# hit. It then reads the daemon's
-# contract, which narrows now: legionDesignStep in packages/contracts/src/legion-api.ts (through
-# the two schemas that export it, LegionGateRegisterRequest's step and
+# the gated-steps write still admits it. The page reads the Decisions view from the tree read's
+# decisions view (`?view=decisions`, #4180), which answers the issue's decisions query, so a line
+# that reads that view, or names that query among the issue's queries, serves the view. The query
+# key is admitted in any file in its two forms, a `queryKey: [<the word>, …]` member and the key a
+# react-query cache call takes first (`setQueryData([<the word>, …])`,
+# `getQueryData<T>([<the word>, …])`), and only where every spelling of the word on the line is
+# such a key; a line holding the word in an array beside the word query is no key by that alone.
+# Any other line is admitted by its file and its text. A line that is the word alone, in a list or
+# a union, is admitted by the declaration it stands in as well (PRESET_ORDER and IssueTab, and a
+# test's TreeRead and TREE_READS). A test's line is admitted only where it exercises one of those,
+# or feeds the client a stored step or a document role GATED_STEPS or DocumentRoleSchema still
+# reads, or the role a document.retired event reports of the decisions document it retired, and so
+# is the base release's gated steps seed-decisions.sh publishes, which must still hold the step. It
+# prints each admitted line with what it serves, and fails on any other: gated-steps.ts, or a step
+# list of gated-step-approvals.e2e.ts, among them. Before it reads the checkout it reads a planted
+# instance through the same search and the same admission, as the first sweep does: a scratch git
+# repository under the run's own directory holding a copy of gated-steps.ts, of each file it admits
+# lines of the view, its tab or its route from (DecisionsPanel.tsx, issue-tab-list.ts,
+# IssuePage.tsx, page-words.ts, routes.ts and client.ts) and of a web test (gated-steps.test.ts),
+# each with one line sending the step added; a copy of event-refresh.ts, whose five query keys it
+# admits, with two lines added, one holding the word in an array beside the word query and one
+# holding a query key beside a step list; and a scratch file no admission names, holding the text
+# of each line admitted by its file and its exact text alone (in event-feed-socket.test.tsx,
+# event-feed.test.ts, routes.ts, DecisionsPanel.tsx, DecisionsPanel.test.tsx and
+# DecisionsFilterBody.drawn.test.tsx). Each added line is printed as `planted hit …` and must be
+# reported as a hit, and the copy of event-refresh.ts must read no other hit. It then reads the
+# daemon's contract, which narrows now: legionDesignStep in packages/contracts/src/legion-api.ts
+# (through the two schemas that export it, LegionGateRegisterRequest's step and
 # LegionControllerSecretResponse's designGateSteps, which bun parses) and the `register_gate` step
 # in packages/pi-legion/src/tools.ts must refuse `decisions`; a planted `spec` is taken by both
 # schemas, so a refusal of everything fails too.
@@ -458,8 +460,6 @@ step_admission() {
         printf 'the dispatch://KEY/decisions route (IssueRoute)'
       elif [[ "$bare" == "| ${quoted_word}" && "$declaration" == IssueTab ]]; then
         printf 'the Decisions tab the dispatch://KEY/decisions route opens (IssueTab)'
-      elif [[ "$bare" == "${quoted_word}," && "$declaration" == PLAIN_ISSUE_TABS ]]; then
-        printf 'the dispatch://KEY/decisions route (PLAIN_ISSUE_TABS)'
       # The tabs whose whole route is the tab, the plain ones and the Decisions tab the product keeps
       # (883651223053).
       elif [[ "$bare" == "const ISSUE_TAB_ROUTES = [...PLAIN_ISSUE_TABS, ${quoted_word}] as const;" ]]; then
@@ -469,21 +469,18 @@ step_admission() {
     packages/dispatch/web/src/features/refs/routes.test.ts)
       [[ "$text" != *"kind: ${quoted_word} as const"* && "$text" != *"issueTabForRoute(route, undefined)).toBe(${quoted_word})"* ]] ||
         printf 'test material: the dispatch://KEY/decisions route' ;;
+    # The row reads the cache's state of the view's key, a call no key member names.
     packages/dispatch/web/src/features/issue/DecisionsPanel.test.tsx)
-      if [[ "$text" == *"DecisionsRead[${quoted_word}]"* ]]; then
-        printf 'test material: the old decisions member of the Decisions view'"'"'s read, kept for one release (compat-objects)'
-      # The row reads the cache's state of the view's key, a call no key member names.
-      elif [[ "$bare" == "expect(queryClient.getQueryState([${quoted_word}, ${dq}CORE-1${dq}])?.fetchStatus).toBe(${dq}idle${dq})" ]]; then
-        printf 'test material: the query key of the Decisions view'
-      fi
-      ;;
+      [[ "$bare" != "expect(queryClient.getQueryState([${quoted_word}, ${dq}CORE-1${dq}])?.fetchStatus).toBe(${dq}idle${dq})" ]] ||
+        printf 'test material: the query key of the Decisions view' ;;
     # The view's write replaces its read in the cache through the app's own helper, whose key is its
     # second argument.
     packages/dispatch/web/src/features/issue/DecisionsPanel.tsx)
       [[ "$bare" != "replaceQueryData<IssueDecisions>(queryClient, [${quoted_word}, issueKey], (view) =>" ]] ||
         printf 'the query key of the Decisions view' ;;
     packages/dispatch/web/src/__tests__/event-feed.test.ts)
-      if [[ "$text" == *"decisions: { key: [${quoted_word}, "* || "$text" == *"spares: [${quoted_word}],"* ]]; then
+      if [[ "$text" == *"decisions: { key: [${quoted_word}, "* || "$text" == *"spares: [${quoted_word}],"* ||
+        "$text" =~ refreshes:\ \[.*${dq}decisions${dq} || "$bare" == "[${quoted_word}, ${dq}CORE-1${dq}]," ]]; then
         printf 'test material: the query key of the Decisions view'
       # The document.retired event of a decisions document reports the role it retired (8b18a22d56b).
       elif [[ "$bare" == "role: ${quoted_word}," ]]; then
@@ -500,6 +497,22 @@ step_admission() {
         printf 'test material: the role a document.retired event reports of the decisions document it retired'
       fi
       ;;
+    # This branch's Decisions view (#4180): the client reads it from the tree read's decisions
+    # view, its tests answer and expect that read, and an e2e driver reads the decisions query that
+    # view answers among the issue's query nodes. Each is admitted by its text, so any other line of
+    # these files that spells the word is still a hit.
+    packages/dispatch/web/src/api/client.ts)
+      [[ "$text" != *"getIssueTree(key, { view: ${quoted_word}"* ]] ||
+        printf 'the Decisions view, read from the tree read'"'"'s decisions view' ;;
+    packages/dispatch/web/src/features/doc/ProofDocument.spec-marks.test.tsx)
+      [[ "$bare" != "view: ${quoted_word}," && "$text" != *"toHaveBeenCalledWith(${dq}CORE-1${dq}, { view: ${quoted_word} })"* ]] ||
+        printf 'test material: the Decisions view, read from the tree read'"'"'s decisions view' ;;
+    packages/dispatch/web/src/features/doc/ProofDocument.test.tsx)
+      [[ "$text" != *"url.searchParams.get(${dq}view${dq}) === ${quoted_word}"* ]] ||
+        printf 'test material: the Decisions view, read from the tree read'"'"'s decisions view' ;;
+    packages/dispatch/e2e/acceptance/issue-relations-read.sh)
+      [[ "$text" != *"(keys | sort) == [${quoted_word}, ${dq}plan${dq}, ${dq}spec${dq}, ${dq}verification${dq}]"* ]] ||
+        printf 'test material: the decisions query, which the Decisions view answers' ;;
     packages/dispatch/web/src/features/issue-page/IssuePresets.test.tsx)
       [[ ! "$bare" =~ ^\[${dq}\{[A-Za-z]+\}${dq},\ ${dq}decisions${dq}\],$ ]] ||
         printf 'test material: the Decisions tab of the filter row' ;;
@@ -572,6 +585,7 @@ readonly -a planted_step_paths=(
   packages/dispatch/web/src/features/issue/IssuePage.tsx
   packages/dispatch/web/src/features/issue-page/page-words.ts
   packages/dispatch/web/src/features/refs/routes.ts
+  packages/dispatch/web/src/api/client.ts
   packages/dispatch/web/src/features/issue/gated-steps.test.ts
 )
 readonly planted_word="${dq}decisions${dq}"
@@ -599,7 +613,7 @@ for planted_step_path in "${planted_step_paths[@]}"; do
     fail step "read $planted_step_path to plant the step in" "the checkout holds no such file"
   plant_step "$planted_step_path" "export const plantedStep = $planted_word;"
 done
-# The query key is admitted by its own form, in any file: a line of event-refresh.ts, whose four
+# The query key is admitted by its own form, in any file: a line of event-refresh.ts, whose five
 # keys the sweep admits, that holds the word in an array beside the word query, or a key beside a
 # step list, must be a hit, and the copy's own keys still admitted.
 readonly query_key_file=packages/dispatch/web/src/api/event-refresh.ts

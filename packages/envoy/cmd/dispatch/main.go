@@ -10,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -46,6 +47,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/files"
 	"github.com/sjawhar/envoy/internal/dispatch/githubreads"
+	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
 	"github.com/sjawhar/envoy/internal/dispatch/legion"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/outbox"
@@ -212,6 +214,30 @@ type bootConfig struct {
 	// first move; only DISPATCH_TEST_HOLD_DECISIONS_STEP=1, under the test hooks, sets it.
 	// kept for one release: decisions-step
 	HoldDecisionsStep bool
+	// HoldIssueRoomStep keeps the server from starting the issue room step
+	// (docs.IssueRoomStep), at boot or on its tick, so a test driver's own command
+	// (`envoy-dispatch convert-issues`), and not the boot, makes the first move; only
+	// DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP=1, under the test hooks, sets it.
+	HoldIssueRoomStep bool
+	// HoldBlockIndex keeps the server from starting the block-index reconciliation
+	// (docs.Service.RunBlockIndexReconciliation), its tick and its pass, and the reference forms
+	// drain (docs.Service.RunRefsFormsReconciliation), which indexes a document through the block
+	// index's own index (drainFormsDocument), and holds back nothing else, so a test driver can let
+	// a build of an earlier rule of the block index reach a document this build's backfill marked
+	// first; only DISPATCH_TEST_HOLD_BLOCK_INDEX=1, under the test hooks, sets it.
+	HoldBlockIndex bool
+	// HoldBootBackfill holds the passes of the boot's run of the graph store's backfill
+	// (runBootBackfill) once its horizon is recorded, until the process stops, and holds back
+	// nothing else, so a test can read the process while the passes wait, and read rows that name
+	// no node before its own backfill-graph-store; only DISPATCH_TEST_HOLD_BOOT_BACKFILL=1, under
+	// the test hooks, sets it.
+	HoldBootBackfill bool
+	// BootBackfillHorizonWait is how long the boot's record of the backfill's horizon waits on the
+	// writers of the event log before the boot skips its run of the backfill, zero for
+	// graphcensus.BackfillHorizonWaitBound's 30 s (bootBackfillHorizonBound); only
+	// DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT, under the test hooks, sets it, so a test can hold a
+	// writer open past the bound inside its own wait.
+	BootBackfillHorizonWait time.Duration
 	// ArchitectureImportAtStart makes the architecture import run one pass as it starts rather than
 	// only after its jittered first tick; only DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START=1, under
 	// the test hooks, sets it.
@@ -436,6 +462,14 @@ func main() {
 		slog.Error("dispatch: open database", "error", err)
 		os.Exit(1)
 	}
+	// Whether this boot creates the database from empty, read before the migrations make it: R26's
+	// step (graphcensus.RunTypedBlockSupertagsStep) restates the reads of a block's type on such a
+	// database with no fleet to wait for, since every block it will hold is written by this build.
+	migrated, err := store.Census(ctx, boot.DatabaseURL)
+	if err != nil {
+		slog.Error("dispatch: read whether the database is empty before its migrations", "error", err)
+		os.Exit(1)
+	}
 	if err := database.Migrate(ctx); err != nil {
 		slog.Error("dispatch: migrate database", "error", explainMigrateError(err))
 		os.Exit(1)
@@ -469,34 +503,16 @@ func main() {
 	renames := refs.NewRenames(renamePairs)
 	attributor := delivery.NewAttributor(renames)
 
-	// document_search (migration 20261101182447) holds each document's latest search vector,
-	// 20261101182454's trigger keeps it in step from the deploy on, and this fills it for the
-	// documents stored before that. It runs here, in committed batches, rather than as migration
-	// 20261101182501: one transaction over artifact_versions measured 35.5 s on a
-	// production-shaped database, and 20261101182454's trigger makes every concurrent version
-	// write to a document the pass has already written wait that whole transaction out
-	// (20261101182501's comment holds the measurement).
-	//
-	// A failure stops the boot, unlike the count below: this release's search reads
-	// document_search alone, so a process that served with the table unfilled would answer a
-	// search with documents missing. The rolling deploy keeps that correct - the release
-	// before this one serves every request until this process has filled the table and begins
-	// serving.
-	if filled, err := database.FillDocumentSearch(ctx); err != nil {
-		slog.Error("dispatch: fill document_search for the documents stored before this release", "error", err)
-		os.Exit(1)
-	} else if filled > 0 {
-		slog.Info("dispatch: filled document_search for the documents stored before this release", "rows", filled)
-	}
-
 	// session_titles (migration 20261117100008) holds each session's newest stamped title,
 	// 20261117100015's trigger keeps it in step from the deploy on, and this fills it for the
-	// events stored before that, in committed batches, for document_search's reason above
-	// (20261117100016's comment). Production runs two replicas under `strategy: RollingUpdate`.
-	// This pod listens only after the fill, so the old pods serve while it migrates and fills.
-	// The old build reads titles from events, and the trigger stores the titles the old pods write.
-	// A failed fill exits this pod, stops the rollout and leaves the old pods serving: with the
-	// table unfilled, delivery.ResolveSessionTitles would name every earlier session by its id.
+	// events stored before that, in committed batches rather than as a migration, whose one
+	// transaction would hold every concurrent write of a session it had already written waiting
+	// out the whole statement (20261117100016's comment). Production runs two replicas under
+	// `strategy: RollingUpdate`. This pod listens only after the fill, so the old pods serve while
+	// it migrates and fills. The old build reads titles from events, and the trigger stores the
+	// titles the old pods write. A failed fill exits this pod, stops the rollout and leaves the old
+	// pods serving: with the table unfilled, delivery.ResolveSessionTitles would name every earlier
+	// session by its id.
 	if filled, err := database.FillSessionTitles(ctx); err != nil {
 		slog.Error("dispatch: fill session_titles for the events stored before this release", "error", err)
 		os.Exit(1)
@@ -506,8 +522,8 @@ func main() {
 
 	// The decisions step's first phase (docs.DecisionStep): every asks and ask_followers row the
 	// release before wrote is stated on its ask's node and marked, in committed batches, before
-	// this process serves, as document_search is filled above. A reading's check of its ask takes
-	// the answer from the node, which reads an ask the backfill has not stated as open, so a
+	// this process serves. A reading's check of its ask takes the answer from the node, which
+	// reads an ask the backfill has not stated as open, so a
 	// failure stops the boot, and the release before keeps serving in a roll until this process
 	// can. The process waits here for the step's lock only while the first phase owes a row, so a
 	// process that holds the lock, stalled or not, keeps no boot waiting when nothing is owed. Its
@@ -603,6 +619,10 @@ func main() {
 	// documents, on the step's tick below.
 	// kept for one release: decisions-step
 	decisionStep.UseDocuments(documentService)
+	// R2's daemon-thread step (docs.DaemonThreadStep): it re-places under its issue each node a
+	// release before left under a message of a thread the Legion daemon's session began, once
+	// after this process listens and then on each tick of the block index below.
+	daemonThreadStep := docs.NewDaemonThreadStep(documentService, nil)
 	restoreDecidedWordings(ctx, documentService, decidedWordingRestoreTimeout)
 	// The asks a close or a reopen by a release older than the withdrawal left: at boot, then on an
 	// interval below. It appends events and takes no copy lock, so it runs after
@@ -1059,7 +1079,7 @@ func main() {
 	// functions set it from the deploy on, and this labels the rows stored before it, in
 	// committed batches of its own (20261109120100 holds the cursor it records its place in).
 	//
-	// In the background, where the document_search fill above blocks the boot: a label costs
+	// In the background, and not on the boot's path: a label costs
 	// about 253 bytes of heap and 4.9 KiB of growth in the vector index, and the pass is one to
 	// two hours on a deployment of a million rows (INFRA-988, store.EmbeddingProjectKeyBatch), so
 	// a boot that waited for it would outlast any rollout. What waiting would buy is nothing a
@@ -1069,8 +1089,8 @@ func main() {
 	// (api/search.go, meaningProjectScope), and every batch moves rows onto the faster predicate
 	// the pass exists for. A failure is logged and the process serves on, for the same reason.
 	//
-	// Here, among the loops, and not beside the document_search fill above, because it needs the
-	// lease pool, which is opened below that: one process of a roll fills and the other skips,
+	// Here, among the loops, because it needs the lease pool, which the boot opens before this:
+	// one process of a roll fills and the other skips,
 	// since two of them would each pay the same hours for one result. The process that skipped
 	// tries again every five minutes until the labelling is over, so a holder killed mid-pass
 	// costs the fill that wait rather than lasting until something next boots
@@ -1125,20 +1145,49 @@ func main() {
 	// is woken by the trigger that announces each notice given a due time, and waits for the
 	// earliest one.
 	go documentService.RunEditNotices(ctx, editNoticesLeases, editNoticesWake)
+	// Whether graph_edges still holds the four arms the graph-store spec moved, read from the
+	// database before this process serves, so the backlink counts read the arm set the view holds
+	// from the first request (refs.SetFourArmsDeleted), whichever process's step deleted them; read
+	// again about every minute for the life of the process (graphcensus.FollowViewArms), and set
+	// once more by this boot's own step below, which deletes them where it may.
+	armsGone, err := graphcensus.ViewArmsGone(ctx, database.Pool)
+	if err != nil {
+		slog.Error("dispatch: read whether graph_edges holds its four old arms", "error", err)
+		os.Exit(1)
+	}
+	refs.SetFourArmsDeleted(armsGone)
+	go graphcensus.FollowViewArms(ctx, database.Pool, slog.Default())
+	// Every boot runs the graph store's backfill once (graphcensus.Backfill), whatever it finds owed,
+	// off the boot's path. The boot records the backfill's horizon of the event log here, before it
+	// starts the block-index reconciliation below, so, where the record completes, that
+	// reconciliation's first tick finds the horizon of its own rule. The record waits only on the
+	// writers of the event log, and for at most bootBackfillHorizonBound; past it the boot logs the
+	// oldest writer, skips the run and goes on, as it does where the record fails. The passes then
+	// run on a goroutine of their own, as the embedding fill's do, so no pod's readiness waits for
+	// them (startBootBackfill, runBootBackfill). Two processes that boot together each run it, which
+	// the backfill allows.
+	startBootBackfill(ctx, database, boot, migrated.Fresh)
 	// The block index: each document version no block-aware write indexed - every document at
 	// migration 0121, each version a build without the block index writes during a roll, and each
 	// rebuild-refs marks - and each comment, ask and issue message citing a block (`#b-`) that such
-	// a build indexed without the block grammar.
-	go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases)
-	// The reference forms drain: each comment, ask, issue message and document a build that
-	// predates an issue's tab addresses and a document's dashboard URLs indexed without them
-	// (refs_forms_owed), and each one the release before settled that reads an issue's Decisions
-	// page as no more than its document (refs_decisions_forms_owed, and refs_decisions_forms_seed_owed
-	// for the text stored before it). A loop of its own under a
-	// lease of its own, on the block index's interval: a period a process of the previous release
-	// served under the block index's lease would otherwise drain none of it, and a document's row
-	// is settled only by this build's own index of the document.
-	go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
+	// a build indexed without the block grammar. Then the reference forms drain: each comment, ask,
+	// issue message and document a build that predates an issue's tab addresses and a document's
+	// dashboard URLs indexed without them (refs_forms_owed), and each one the release before
+	// settled that reads an issue's Decisions page as no more than its document
+	// (refs_decisions_forms_owed, and refs_decisions_forms_seed_owed for the text stored before
+	// it), each queue drained in turn by the one loop (docs.Service.RunRefsFormsReconciliation).
+	// The drain is a loop of its own under a lease of its own, on the block index's interval: a
+	// period a process of the previous release served under the block index's lease would
+	// otherwise drain none of it, and a document's row is settled only by this build's own index
+	// of the document. DISPATCH_TEST_HOLD_BLOCK_INDEX, under the test hooks, holds both loops -
+	// the block index, its tick and its pass, and the drain of every one of its queues, which
+	// indexes a document through the block index's own index (drainFormsDocument), so a hold of
+	// the block index alone would see a document it left owed indexed anyway - and nothing else.
+	// Each loop's lease is reserved above whether or not it starts.
+	if !boot.HoldBlockIndex {
+		go documentService.RunBlockIndexReconciliation(ctx, blockIndexLeases, daemonThreadStep.Tick)
+		go documentService.RunRefsFormsReconciliation(ctx, refsFormsLeases)
+	}
 	// The decisions step's tick, for as long as the process runs: the backfill while a row the
 	// release before wrote stands unmarked, the catch-up of what a process of another build
 	// writes while one lives, and, once the fleet is this one build, the restore of the answered
@@ -1446,6 +1495,13 @@ func main() {
 	// The CI reconcile loop started before this, so it has been reading the holder and finding
 	// nothing; from here each of its passes records its counts under this process's row.
 	ciInstance.set(registration.ID)
+	// The issue room step (docs.IssueRoomStep), once the registry has admitted this process, so it
+	// never runs in a process whose registration was refused: it converts the issues in flight into
+	// their rooms while every live process announces the issue room, on a tick of its own for as
+	// long as the process runs.
+	if !boot.HoldIssueRoomStep {
+		go docs.NewIssueRoomStep(documentService, database, nil).Run(ctx)
+	}
 	// The registry admitted this process, so it serves: the keyword fill starts (above).
 	close(serving)
 	// The importer's flights outlive the ticker's context, so they are closed inside the
@@ -1458,7 +1514,7 @@ func main() {
 		waitFill()
 	}
 	if err := serveUntilStopped(ctx, cancel, server, listener, documentService, database.Pool, waitBackground, waitIntakes,
-		deregisterAfterDrain(registration), registration.Lost(), outboxStopped); err != nil {
+		deregisterAfterDrain(registration), registration.Lost(), outboxStopped, daemonThreadStep.AfterListen); err != nil {
 		slog.Error("dispatch: serve", "error", err)
 		os.Exit(1)
 	}
@@ -1748,6 +1804,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_DELIVERY_RECONCILE_INTERVAL", &boot.DeliveryReconcileInterval},
 		{"DISPATCH_TEST_MAINTENANCE_SWEEP_INTERVAL", &boot.MaintenanceSweepInterval},
 		{"DISPATCH_TEST_PROCESS_HEARTBEAT", &boot.ProcessHeartbeat},
+		{"DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT", &boot.BootBackfillHorizonWait},
 	} {
 		if err := testHookDuration(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
 			return bootConfig{}, err
@@ -1768,6 +1825,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_RECONCILE_AT_START", &boot.ReconcileAtStart},
 		// kept for one release: decisions-step
 		{"DISPATCH_TEST_HOLD_DECISIONS_STEP", &boot.HoldDecisionsStep},
+		{"DISPATCH_TEST_HOLD_ISSUE_ROOM_STEP", &boot.HoldIssueRoomStep},
+		{"DISPATCH_TEST_HOLD_BLOCK_INDEX", &boot.HoldBlockIndex},
+		{"DISPATCH_TEST_HOLD_BOOT_BACKFILL", &boot.HoldBootBackfill},
 		{"DISPATCH_TEST_ARCHITECTURE_IMPORT_AT_START", &boot.ArchitectureImportAtStart},
 	} {
 		if err := testHookBool(env, setting.name, boot.TestHooksEnabled, setting.target); err != nil {
@@ -2800,6 +2860,127 @@ func healthzHandler(database *store.Store, natsClient *bus.Client, publisher *ou
 			DecisionsStepOwed: decisions.OwedTotal(),
 		})
 	}
+}
+
+// The lines the boot's run of the backfill logs once it has ended (runBootBackfill): done, which
+// lib-tree.sh's tree_backfill_end waits for, and skipped, where its record of the horizon reached
+// its bound.
+const (
+	bootBackfillDoneLine    = "dispatch: boot backfill done"
+	bootBackfillSkippedLine = "dispatch: boot backfill skipped"
+)
+
+// bootBackfillHorizonBound is how long the boot's record of the backfill's horizon waits on the
+// writers of the event log: graphcensus.BackfillHorizonWaitBound, or a test's own
+// (DISPATCH_TEST_BOOT_BACKFILL_HORIZON_WAIT).
+func bootBackfillHorizonBound(boot bootConfig) time.Duration {
+	if boot.BootBackfillHorizonWait > 0 {
+		return boot.BootBackfillHorizonWait
+	}
+	return graphcensus.BackfillHorizonWaitBound
+}
+
+// startBootBackfill starts the boot's run of the graph store's backfill (runBootBackfill) on a
+// goroutine of its own, and returns once its record of the horizon has ended: recorded, with the
+// passes going on on that goroutine, or skipped at its bound or failed, with that goroutine having
+// logged which and ended. So the record, and the line a skip or a failure logs, come before
+// anything the boot does after this call, and nothing of the boot waits for the passes.
+// DISPATCH_TEST_HOLD_BOOT_BACKFILL, under the test hooks, holds the passes once the horizon is
+// recorded, until the process stops. Once the run has logged that it is done, the same goroutine
+// runs the step that deletes the four old arms of graph_edges (graphcensus.RunViewArmsStep) and then
+// R26's step (graphcensus.RunTypedBlockSupertagsStep), neither of which a run that logged no done
+// line ever reaches; fresh says this boot created the database from empty.
+func startBootBackfill(ctx context.Context, database *store.Store, boot bootConfig, fresh bool) {
+	var run graphcensus.BackfillRun
+	record := func(ctx context.Context) error {
+		var err error
+		run, err = graphcensus.StartBackfill(ctx, database, io.Discard, bootBackfillHorizonBound(boot))
+		return err
+	}
+	recorded, ended := make(chan struct{}), make(chan struct{})
+	go func() {
+		defer close(ended)
+		runBootBackfill(ctx, slog.Default(), record, func(ctx context.Context) error {
+			close(recorded)
+			if boot.HoldBootBackfill {
+				<-ctx.Done()
+				return ctx.Err()
+			}
+			_, err := run.Passes(ctx, io.Discard)
+			return err
+		}, func(ctx context.Context) {
+			gone, err := graphcensus.RunViewArmsStep(ctx, database, buildCommit, fresh, slog.Default())
+			if err != nil {
+				slog.Error(graphcensus.ViewArmsStepLine+" failed", "error", err)
+			}
+			if gone {
+				refs.SetFourArmsDeleted(true)
+			}
+			if err := graphcensus.RunTypedBlockSupertagsStep(ctx, database, buildCommit, fresh, slog.Default()); err != nil {
+				slog.Error("dispatch: the typed block supertags step failed", "error", err)
+			}
+		})
+	}()
+	select {
+	case <-recorded:
+	case <-ended:
+	}
+}
+
+// runBootBackfill is the boot's run of the graph store's backfill: record, which records the run's
+// horizon of the event log (graphcensus.StartBackfill), then run, its passes
+// (graphcensus.BackfillRun.Passes). It logs what came of them and answers its caller nothing, so
+// the process serves on whatever the backfill answered:
+//   - a record that reached its bound (graphcensus.HorizonBoundError): the skip line, naming the
+//     oldest writer of the event log by its pid and its age (bootBackfillSkipped), and no run;
+//   - a record that failed otherwise: its error, and no run;
+//   - a run with no error: the done line;
+//   - a run whose error holds only rows whose node the store holds in another project
+//     (graphcensus.OnlyProjectMoved), which no later run writes: the done line, with their count
+//     beside it as a finding;
+//   - any other error of the run, one beside such rows included: that error and no done line, so
+//     what waits for the backfill's end waits for the next boot's run.
+//
+// afterDone, where it is not nil, runs right after each done line, on the same goroutine.
+func runBootBackfill(ctx context.Context, logger *slog.Logger, record func(context.Context) error, run func(context.Context) error, afterDone func(context.Context)) {
+	if err := record(ctx); err != nil {
+		var bound *graphcensus.HorizonBoundError
+		if errors.As(err, &bound) {
+			logger.Warn(bootBackfillSkippedLine, bootBackfillSkipped(bound.Pid, bound.Age)...)
+			return
+		}
+		logger.Error("dispatch: boot backfill failed to record its horizon of the event log", "error", err)
+		return
+	}
+	err := run(ctx)
+	if err == nil {
+		logger.Info(bootBackfillDoneLine)
+		if afterDone != nil {
+			afterDone(ctx)
+		}
+		return
+	}
+	if moved, only := graphcensus.OnlyProjectMoved(err); only {
+		logger.Warn(bootBackfillDoneLine, "project_moved", moved,
+			"finding", "rows whose node the store holds in another project, which no run of the backfill writes")
+		if afterDone != nil {
+			afterDone(ctx)
+		}
+		return
+	}
+	logger.Error("dispatch: boot backfill failed", "error", err)
+}
+
+// bootBackfillSkipped is the skip line's attributes (runBootBackfill): the oldest writer of the
+// event log, the transaction the record of the horizon waited on past its bound, as a backend and
+// its pid, or as a prepared transaction and pid 0, as events.StallHolderSQL reports one, and how
+// long its transaction had been open.
+func bootBackfillSkipped(pid int32, age time.Duration) []any {
+	writer := "backend"
+	if pid == 0 {
+		writer = "prepared transaction"
+	}
+	return []any{"writer", writer, "pid", pid, "age", age}
 }
 
 // testHookDuration reads the test-only duration setting name into target, leaving target as it

@@ -1,5 +1,5 @@
 {
-  "version": 8,
+  "version": 9,
   "nodes": [
     { "name": "doc" },
     { "name": "paragraph" },
@@ -113,7 +113,20 @@
       "name": "requirement",
       "content": "paragraph+",
       "render": "host",
-      "attributes": {},
+      "attributes": {
+        "serves": {
+          "kind": "block[]",
+          "targets": ["criterion", "requirement"],
+          "since": 9,
+          "creatable_since": 9
+        },
+        "parent": {
+          "kind": "block[]",
+          "items": ["ask", "comment", "message"],
+          "since": 9,
+          "creatable_since": 9
+        }
+      },
       "since": 3,
       "creatable_since": 3
     },
@@ -129,12 +142,34 @@
         "needs": {
           "kind": "block[]",
           "targets": ["plan_task"],
-          "scope": "document"
+          "items": ["issue"],
+          "item_versions": { "issue": { "since": 9, "creatable_since": 9 } }
         },
         "steps": {
           "kind": "string",
           "since": 5,
           "creatable_since": 5
+        },
+        "size": {
+          "kind": "minutes",
+          "since": 9,
+          "creatable_since": 9
+        },
+        "skills": {
+          "kind": "string[]",
+          "since": 9,
+          "creatable_since": 9
+        },
+        "docs": {
+          "kind": "string[]",
+          "since": 9,
+          "creatable_since": 9
+        },
+        "parent": {
+          "kind": "block[]",
+          "items": ["ask", "comment", "message"],
+          "since": 9,
+          "creatable_since": 9
         }
       },
       "since": 3,
@@ -173,11 +208,17 @@
           "kind": "enum",
           "choices": ["code", "production", "graph"],
           "since": 6,
-          "creatable_since": 9
+          "creatable_since": 10
         },
         "program": {
           "kind": "string",
           "since": 6,
+          "creatable_since": 10
+        },
+        "parent": {
+          "kind": "block[]",
+          "items": ["ask", "comment", "message"],
+          "since": 9,
           "creatable_since": 9
         }
       },
@@ -249,6 +290,21 @@
       "parents": ["decision", "ask"],
       "since": 7,
       "creatable_since": 8
+    },
+    {
+      "name": "criterion",
+      "content": "paragraph+",
+      "render": "host",
+      "attributes": {
+        "parent": {
+          "kind": "block[]",
+          "items": ["ask", "comment", "message"],
+          "since": 9,
+          "creatable_since": 9
+        }
+      },
+      "since": 9,
+      "creatable_since": 9
     }
   ]
 }

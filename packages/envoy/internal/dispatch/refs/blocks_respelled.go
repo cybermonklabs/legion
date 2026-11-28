@@ -11,10 +11,12 @@ import (
 
 // respellCandidate is a block the document's index holds whose text's sum a version moved, and
 // whose stored changed version, storedAt, another renderer version stored or none stamped
-// (pmdoc.OtherRenderer): the block, with its text at this version (markdown[From:To]), that text's
-// sha256 and its excerpt (BlockExcerptRunes).
+// (pmdoc.OtherRenderer): the block, with the document it is a block of, whose version storedAt is
+// (the indexed document, or the one whose fragment of an issue room holds it), its text at this
+// version (markdown[From:To]), that text's sha256 and its excerpt (BlockExcerptRunes).
 type respellCandidate struct {
 	block              model.ArtifactBlock
+	document           string
 	body, sum, excerpt string
 	storedAt           int
 }
@@ -28,23 +30,42 @@ type respellCandidate struct {
 // takes the version whose sum moved; so does every block such a container encloses, however deep,
 // a typed block inside it included, since the container's prefix stands on that block's lines too.
 //
+// A list item is a block of its own (R7 of the issue-tree spec: the renderer records each item's
+// offset, renderer.list in pmdoc/render.go), and its list writes no prefix on the item's lines: the
+// item's slice runs from its own marker, and the content indent of its later lines is its own
+// text. So an item stands where its list stands and reads alone as a list of that one item: it is
+// kept where only its own list and typed blocks enclose it, as a list of one item, whose slice is
+// its item's, is kept. A list encloses nothing but its items, so every other block inside it is
+// inside an item and is dropped by that item.
+//
 // blocks are the version's rendered blocks in document order, each parent before its children,
 // and candidates are in that order too. A block encloses the blocks that start after it and at or
 // before its end: an empty block at the end of its container starts where the container ends. So
 // a block that is not typed encloses a candidate exactly when it starts before the candidate and
 // ends at or after the candidate's start, and one pass over blocks keeps the furthest end of the
-// blocks not typed that start before each candidate: the candidate is kept when it starts after
-// that end. It filters candidates in place.
+// blocks not typed that start before each candidate, and of those that are no list either: the
+// candidate is kept when it starts after the first end, or for a list item after the second. A
+// list and its first item start at one offset, so the list is no block before that item. It
+// filters candidates in place.
 func aloneCandidates(blocks []model.ArtifactBlock, candidates []respellCandidate) []respellCandidate {
 	kept := candidates[:0]
-	untypedEnd, next := -1, 0
+	untypedEnd, unlistedEnd, next := -1, -1, 0
 	for _, candidate := range candidates {
 		for ; next < len(blocks) && blocks[next].From < candidate.block.From; next++ {
-			if blocks[next].To > untypedEnd && !pmdoc.IsTypedBlock(blocks[next].Type) {
-				untypedEnd = blocks[next].To
+			block := blocks[next]
+			if pmdoc.IsTypedBlock(block.Type) {
+				continue
+			}
+			untypedEnd = max(untypedEnd, block.To)
+			if block.Type != "bullet_list" && block.Type != "ordered_list" {
+				unlistedEnd = max(unlistedEnd, block.To)
 			}
 		}
-		if candidate.block.From > untypedEnd {
+		end := untypedEnd
+		if candidate.block.Type == "list_item" {
+			end = unlistedEnd
+		}
+		if candidate.block.From > end {
 			kept = append(kept, candidate)
 		}
 	}
@@ -60,10 +81,11 @@ func aloneCandidates(blocks []model.ArtifactBlock, candidates []respellCandidate
 // It returns the candidates it keeps, and writes nothing: each such block's row takes the new
 // text's sha256 and excerpt and keeps its changed version and time in the write phase
 // (BlockIndexing.Queue). One query reads the recorded text of every candidate, and one the stored
-// markdown of each distinct version the candidates whose text reads alone name; neither runs when
-// it has nothing to read, so a version with no candidate reads nothing here. The candidates'
-// changed versions are stored ones, written before the transaction that indexes this version, so
-// both reads see them as they stand. It filters candidates in place.
+// markdown of each distinct version the candidates whose text reads alone name, each a version of
+// the candidate's own document (respellCandidate.document); neither runs when it has nothing to
+// read, so a version with no candidate reads nothing here. The candidates' changed versions are
+// stored ones, written before the transaction that indexes this version, so both reads see them
+// as they stand. It filters candidates in place.
 func respelledBlocks(ctx context.Context, q Queryer, artifactID string, candidates []respellCandidate) ([]respellCandidate, error) {
 	if len(candidates) == 0 {
 		return nil, nil
@@ -96,35 +118,42 @@ func respelledBlocks(ctx context.Context, q Queryer, artifactID string, candidat
 	}
 	rows.Close()
 	readsAlone := candidates[:0]
-	var numbers []int
-	markdowns := make(map[int]string)
+	var storedVersions []documentVersion
+	markdowns := make(map[documentVersion]string)
 	for _, candidate := range candidates {
 		if body, held := recorded[candidate.block.ID]; held && pmdoc.FragmentReadsAs(body, candidate.body) {
 			readsAlone = append(readsAlone, candidate)
-			if _, named := markdowns[candidate.storedAt]; !named {
-				markdowns[candidate.storedAt] = ""
-				numbers = append(numbers, candidate.storedAt)
+			stored := documentVersion{document: candidate.document, number: candidate.storedAt}
+			if _, named := markdowns[stored]; !named {
+				markdowns[stored] = ""
+				storedVersions = append(storedVersions, stored)
 			}
 		}
 	}
 	if len(readsAlone) == 0 {
 		return nil, nil
 	}
+	documents, numbers := make([]string, len(storedVersions)), make([]int, len(storedVersions))
+	for index, stored := range storedVersions {
+		documents[index], numbers[index] = stored.document, stored.number
+	}
 	rows, err = q.Query(ctx, `
-		select number, markdown from artifact_versions
-		where artifact_id = $1 and number = any($2::integer[]) and markdown is not null
-	`, artifactID, numbers)
+		select c.position, v.markdown
+		from unnest($1::uuid[], $2::integer[]) with ordinality as c (document, number, position)
+		join artifact_versions v on v.artifact_id = c.document and v.number = c.number
+		where v.markdown is not null
+	`, documents, numbers)
 	if err != nil {
 		return nil, fmt.Errorf("read the stored markdown of the versions of %s its blocks were recorded at: %w", artifactID, err)
 	}
 	defer rows.Close()
 	for rows.Next() {
-		var number int
+		var position int
 		var markdown string
-		if err := rows.Scan(&number, &markdown); err != nil {
+		if err := rows.Scan(&position, &markdown); err != nil {
 			return nil, fmt.Errorf("scan a stored version of %s: %w", artifactID, err)
 		}
-		markdowns[number] = markdown
+		markdowns[storedVersions[position-1]] = markdown
 	}
 	if err := rows.Err(); err != nil {
 		return nil, fmt.Errorf("read the stored markdown of the versions of %s its blocks were recorded at: %w", artifactID, err)
@@ -132,7 +161,7 @@ func respelledBlocks(ctx context.Context, q Queryer, artifactID string, candidat
 	rows.Close()
 	kept := readsAlone[:0]
 	for _, candidate := range readsAlone {
-		if startsLinesOnly(markdowns[candidate.storedAt], recorded[candidate.block.ID]) {
+		if startsLinesOnly(markdowns[documentVersion{document: candidate.document, number: candidate.storedAt}], recorded[candidate.block.ID]) {
 			kept = append(kept, candidate)
 		}
 	}

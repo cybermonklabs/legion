@@ -20,7 +20,7 @@ import { compareTimestamps } from "../../lib/timestamps";
 import type { ComposerOwner } from "../conversation/composer-model";
 import { rootOf } from "../conversation/conversation-model";
 import type { CarriedBlockIds } from "../conversation/send-request";
-import { issueDecisionsQuery } from "../doc/spec-marks";
+import { issueDecisionsQuery, issueSpecAddress } from "../doc/spec-marks";
 import { useProjectArtifact } from "../document/useProjectArtifact";
 import { isDecisionEntry } from "../issue/decision-entries";
 import {
@@ -78,14 +78,15 @@ export type MarginItemAction = CommentAction;
 export interface DecisionMarginItem {
   readonly blockId: string;
   readonly decision: DecisionEntry;
-  /** The artifact id of the document the decision is written in (`decisionDocumentId`), the
-   *  record its text is, which a `#id` in that text names a question block of: the one the entry
-   *  names (`DecisionEntry.document`), or, for an entry of a server of the release before, which
-   *  names none, the issue's document its address names. Undefined for an entry that names no
-   *  document and whose document the issue read has not listed. */
+  /** The artifact id of the document the decision is written in (`decisionDocumentId`): the one
+   *  the Decisions view names for it, else the one its own address names among the issue read's
+   *  documents, the record an agent's decision's words are, whose `#id`s name a question block of
+   *  it (`entryTextSource`). Undefined for an ask, whose words are the ask's own record, and for a
+   *  block of a document the issue read does not list yet. */
   readonly documentId: string | undefined;
-  /** `decision:<node id>:<spec node id>`: the node that holds the entry, and the spec node it
-   *  shaped, so two documents' decisions under one block id are two items. */
+  /** `decision:<node id>:<KEY>/spec#<block id>`: the node that holds the entry, and the spec
+   *  block it shaped by the spec's own address, so two documents' decisions under one block id
+   *  are two items. */
   readonly id: string;
   readonly kind: "decision";
 }
@@ -322,6 +323,7 @@ function byPlacementThenNewest(left: Placed, right: Placed): number {
 
 const NO_THREADS: ReadonlySet<string> = new Set();
 const NO_PLACEMENTS: ReadonlyMap<string, boolean> = new Map();
+const NO_DECISIONS: readonly DecisionMarginItem[] = [];
 
 export function useMarginItems(
   owner: MarginOwner | undefined,
@@ -343,10 +345,9 @@ export function useMarginItems(
      *  in the list it was in, open or resolved, whoever resolves or reopens it meanwhile: moving
      *  it between them would remount its card, and the composer and what it holds with it. */
     readonly held?: ReadonlySet<string>;
-    /** The fields of the margin's issue read by which `decisionDocumentId` finds the document of
-     *  a decision the Decisions read names none for, as only a server of the release before
-     *  answers one; undefined until the read answers. */
-    // kept for one release: compat-objects
+    /** The issue read the page holds, among whose documents a decision the Decisions view names
+     *  no document for is found by its own address (`decisionDocumentId`); absent until it
+     *  answers, and for a margin of no issue. */
     readonly issue?: DecisionDocuments;
   } = {}
 ) {
@@ -527,32 +528,58 @@ export function useMarginItems(
     ...issueDecisionsQuery(issueKey ?? "", showsDecisions),
     ...freshness,
   });
-  const specRefKey = visibleArtifact?.ref_key;
-  const decisions = useMemo<DecisionMarginItem[]>(() => {
-    if (!showsDecisions) return [];
+  // What decisionDocumentId reads of the issue read, each its own dependency: an issue event moves
+  // the read's sequence and nothing of these, and rebuilds no decision item.
+  const documentsKey = issue?.key;
+  const primaryArtifactId = issue?.primary_artifact_id;
+  const issueArtifacts = issue?.artifacts;
+  const decisions = useMemo<readonly DecisionMarginItem[]>(() => {
+    if (!showsDecisions) return NO_DECISIONS;
+    // Until the issue read answers, a decision is found only where the view names its document.
+    const documents =
+      documentsKey === undefined
+        ? undefined
+        : {
+            artifacts: issueArtifacts,
+            key: documentsKey,
+            primary_artifact_id: primaryArtifactId ?? "",
+          };
+    const specAddress = issueSpecAddress(issueKey ?? "");
+    // The spec's own address as a node id spells it, `<KEY>/spec`, under which an item names the
+    // spec block it stands beside.
+    const specNode = `${issueKey ?? ""}/spec`;
     const decisionItems = (decisionsView.data?.entries ?? []).flatMap((decision) => {
       if (decision.replaced || !isDecisionEntry(decision)) return [];
-      // The spec nodes this entry shaped, each once: a node of the spec on screen, by its id.
-      const nodes = new Map<string, string>();
+      // The spec blocks this entry shaped, each once: a block the link names the spec on screen
+      // as holding (`to.document`), named by its id in the spec, and kept by the margin's block
+      // filter. The link's node is no name for it: a block of a spec converted into its issue's
+      // room is the room's node, `<KEY>/tree#<id>`, which belongs to no one document of the room.
+      const blocks = new Set<string>();
       for (const link of decision.shaped ?? []) {
         const blockId = link.to.block_id;
-        if (blockId !== undefined && link.to.id.startsWith(`${specRefKey}#`)) {
-          nodes.set(link.to.id, blockId);
+        if (
+          blockId !== undefined &&
+          link.to.document === specAddress &&
+          (blockFilterId === undefined || blockId === blockFilterId)
+        ) {
+          blocks.add(blockId);
         }
       }
-      // `issue` finds the document of an entry a server of the release before names none for.
-      // kept for one release: compat-objects
-      const documentId = decisionDocumentId(issue, decision);
-      return [...nodes]
-        .filter(([, blockId]) => blockFilterId === undefined || blockId === blockFilterId)
-        .map(([node, blockId]) => ({
-          blockId,
-          decision,
-          documentId,
-          id: `decision:${decision.node.id}:${node}`,
-          kind: "decision" as const,
-        }));
+      if (blocks.size === 0) return [];
+      // A decision the view names no document for - one of a document that plays no role - is
+      // found by its own address among the issue read's documents, as the Decisions tab finds it.
+      const documentId = decisionDocumentId(documents, decision);
+      return [...blocks].map((blockId) => ({
+        blockId,
+        decision,
+        documentId,
+        id: `decision:${decision.node.id}:${specNode}#${blockId}`,
+        kind: "decision" as const,
+      }));
     });
+    // No decision beside the spec answers the shared empty list, so the items built from it keep
+    // their identity while the view's read or the issue's documents move.
+    if (decisionItems.length === 0) return NO_DECISIONS;
     return decisionItems.sort((left, right) =>
       byPlacementThenNewest(
         placedItem(left, markPlacements, blockPlacements),
@@ -563,10 +590,12 @@ export function useMarginItems(
     blockFilterId,
     blockPlacements,
     decisionsView.data,
-    issue,
+    documentsKey,
+    issueArtifacts,
+    issueKey,
     markPlacements,
+    primaryArtifactId,
     showsDecisions,
-    specRefKey,
   ]);
   const items = useMemo<MarginItem[]>(() => {
     const commentItems = sortedThreads.map(({ root }) => ({

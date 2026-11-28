@@ -15,7 +15,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
 
@@ -112,11 +114,11 @@ func normalizeAt(t *testing.T, what string, at **time.Time, want *time.Time) {
 	*at = want
 }
 
-// requireFactKeys fails unless the node JSON node carries all six facts, made_by and changed_by
-// as arrays even when empty.
+// requireFactKeys fails unless the node JSON node carries all eight facts, made_by and changed_by
+// as arrays even when empty, and state and visibility as one of the values the store holds.
 func requireFactKeys(t *testing.T, what string, node map[string]json.RawMessage) {
 	t.Helper()
-	for _, key := range []string{"made_by", "made_at", "changed_by", "changed_at", "parent", "parent_version"} {
+	for _, key := range []string{"made_by", "made_at", "changed_by", "changed_at", "parent", "parent_version", "state", "visibility"} {
 		value, present := node[key]
 		if !present {
 			t.Fatalf("%s node has no %s: %v", what, key, node)
@@ -124,11 +126,22 @@ func requireFactKeys(t *testing.T, what string, node map[string]json.RawMessage)
 		if (key == "made_by" || key == "changed_by") && !strings.HasPrefix(string(value), "[") {
 			t.Fatalf("%s node's %s = %s, want an array", what, key, value)
 		}
+		var stored string
+		switch key {
+		case "state":
+			if err := json.Unmarshal(value, &stored); err != nil || !slices.Contains(graphstore.NodeStates(), stored) {
+				t.Fatalf("%s node's state = %s, want one of %v", what, value, graphstore.NodeStates())
+			}
+		case "visibility":
+			if err := json.Unmarshal(value, &stored); err != nil || (stored != graphstore.VisibilityProject && stored != graphstore.VisibilityAuthor) {
+				t.Fatalf("%s node's visibility = %s, want %s or %s", what, value, graphstore.VisibilityProject, graphstore.VisibilityAuthor)
+			}
+		}
 	}
 }
 
 // readGraph is GET /api/v1/references?query, failing unless its node and every edge's node and
-// block carry all six facts on the wire.
+// block carry all eight facts on the wire.
 func readGraph(t *testing.T, handler http.Handler, query url.Values) model.GraphReferences {
 	t.Helper()
 	response := graphRequest(t, handler, query)
@@ -336,6 +349,9 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 	specChangedAt := versionOf(t, database, child.PrimaryArtifactID, specV2.Number).CreatedAt
 	designChangedAt := versionOf(t, database, design.ID, 2).CreatedAt
 	ofHead := &model.NodeParent{Kind: "comment", ID: anchored.ID, Ref: childRef + "/comment/" + anchored.ID}
+	// A reply to a reply hangs under the comment it answers, and a reply to the head under the head
+	// (R8's reply-parent rule).
+	ofReply := &model.NodeParent{Kind: "comment", ID: reply.ID, Ref: childRef + "/comment/" + reply.ID}
 	ofDesign := &model.NodeParent{Kind: "artifact", ID: design.ID, Ref: designRef}
 	itemRef := func(kind, id string) string { return childRef + "/" + kind + "/" + id }
 	unchanged := func(by []string, at time.Time, parent *model.NodeParent, version *int) nodeFacts {
@@ -354,7 +370,7 @@ func TestEveryNodeKindCarriesItsFacts(t *testing.T) {
 		{"C's spec", specRef, nodeFacts{MadeBy: alice, MadeAt: &specMadeAt, ChangedBy: alice, ChangedAt: &specChangedAt, Parent: ofChild}},
 		{"the anchored comment", itemRef("comment", anchored.ID), unchanged(alice, anchored.CreatedAt, ofSpec, new(1))},
 		{"the reply", itemRef("comment", reply.ID), unchanged(alice, reply.CreatedAt, ofHead, nil)},
-		{"the reply to the reply", itemRef("comment", replyToReply.ID), unchanged(alice, replyToReply.CreatedAt, ofHead, nil)},
+		{"the reply to the reply", itemRef("comment", replyToReply.ID), unchanged(alice, replyToReply.CreatedAt, ofReply, nil)},
 		{"the ask on C", itemRef("ask", ask.ID), unchanged(session, ask.CreatedAt, ofChild, nil)},
 		{"the comment in the ask's thread", itemRef("comment", inThread.ID), unchanged(alice, inThread.CreatedAt, &model.NodeParent{Kind: "ask", ID: ask.ID, Ref: itemRef("ask", ask.ID)}, nil)},
 		{"the anchored ask", itemRef("ask", anchoredAsk.ID), unchanged(alice, anchoredAsk.CreatedAt, ofSpec, new(1))},
@@ -673,9 +689,15 @@ func TestAnEditedPostsNodeAndItsBlocksCarryTheEditTime(t *testing.T) {
 // rewrote the first paragraph and version 3 the second, so one pass indexing version 3 dates the
 // first to version 2, by alice, and the second to version 3, by bob. A block a later version adds
 // names that version's author as its maker.
+//
+// Its subject is the unconverted path itself: a document written before blocks shipped is no
+// fragment of an issue room, since every issue room came after blocks did and each block of one
+// records its authors from its first write (refs.RecordsAuthorsSQL), so no room block is ever
+// first seen without its maker. The issue is held unconverted (holdIssuesUnconverted).
 func TestABlockSeenFirstAtItsDocumentsFirstIndexingHasNoMaker(t *testing.T) {
 	t.Parallel()
 	handler, database, deps := newTestServer(t, testServerOptions{settle: time.Hour})
+	holdIssuesUnconverted(t, database)
 	ctx := context.Background()
 	createReferenceAPIProject(t, handler, "CORE")
 	issue := createSpecIssue(t, handler, "CORE", "First paragraph.\n\nSecond paragraph.\n")
@@ -795,11 +817,16 @@ func TestABlockAskBelongsToTheVersionThatAddedIt(t *testing.T) {
 	}})
 	awaitIndexedAskBlock(t, handler, spec, "decide", "Ship the decision?")
 	var askID string
-	if err := database.Pool.QueryRow(ctx, `select id::text from asks where block_artifact_id = $1 and block_id = 'decide'`, spec).Scan(&askID); err != nil {
+	// The ask is keyed by the room the spec is edited in, under the block of the spec's fragment
+	// (refs.AsksOfDocumentSQL).
+	if err := database.Pool.QueryRow(ctx, `select id::text from asks k where `+refs.AsksOfDocumentSQL("k", "$1::uuid")+` and k.block_id = 'decide'`, spec).Scan(&askID); err != nil {
 		t.Fatalf("read the block ask: %v", err)
 	}
 	askRef := "dispatch://" + issue.Key + "/ask/" + askID
-	blockRef := specRef + "#b-decide"
+	// The block is a node of the issue's room, keyed under its tree artifact, which the spec's own
+	// reference reaches (T17 of the issue-tree plan: an address resolves through its document's
+	// room).
+	blockRef := "dispatch://" + issue.Key + "/spec#b-decide"
 	want := func(what string) {
 		t.Helper()
 		node := readNode(t, handler, askRef)

@@ -15,6 +15,7 @@ import {
   textPrimaryOnSurface,
 } from "../../theme/classes";
 import { BlockReferences } from "../refs/ReferencedBy";
+import { OWED_COVERAGE_LINE } from "./owed-coverage-line";
 
 /** One requirement of the spec. Its head line's groups, in this order: its words, which wrap
  *  inside themselves, then what it lacks, one pill per gap, each pill whole; when the line is too
@@ -55,7 +56,10 @@ function Requirement({ requirement }: { requirement: RequirementCoverage }): Rea
  * The requirements of the issue's spec, each flagged with what it lacks
  * (`GET /api/v1/issues/{key}/coverage`). It sits under the spec on the Spec tab, where the
  * document itself draws the requirement's words: here they carry the flag and the Referenced-by
- * list, which the document's own drawing has nowhere to put.
+ * list, which the document's own drawing has nowhere to put. Over the list it draws each line of
+ * the coverage's own gaps that says a document of the issue is still being indexed
+ * (`OWED_COVERAGE_LINE`): while one is, the server flags no requirement as lacking a check and
+ * writes that line per such document in their place.
  */
 export function SpecRequirements({ issueKey }: { issueKey: string }): ReactNode {
   const coverage = useQuery(issueCoverageQuery(issueKey));
@@ -83,9 +87,20 @@ export function SpecRequirements({ issueKey }: { issueKey: string }): ReactNode 
     );
   }
 
+  const notes = (coverage.data.gaps ?? []).filter((line) => OWED_COVERAGE_LINE.test(line));
+
   return (
     <section className="space-y-2" data-testid="spec-requirements">
       <h2 className={`text-sm font-semibold ${textMutedOnSurface}`}>Requirements</h2>
+      {notes.map((words) => (
+        <p
+          className={`text-sm ${textMutedOnSurface}`}
+          data-testid="spec-requirements-note"
+          key={words}
+        >
+          {words}
+        </p>
+      ))}
       <ul aria-label="Requirements" className="space-y-3">
         {requirements.map((requirement) => (
           <Requirement key={requirement.block_id} requirement={requirement} />

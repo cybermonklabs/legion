@@ -476,7 +476,9 @@ func ciRunOf(id int64, name string, object map[string]any) *ciRun {
 
 // ciAnswerOf decides one check CI proves from run, the run named name at head, nil where head
 // carries none: the `ci` member, which names head and, for a pass or a fail, the id of the result
-// derived from run, and that derived result, nil for every other case. recorded says that the
+// derived from run, and that derived result, nil for every other case. The result names the room
+// the check's document is edited in (RowArtifactID), which keys the check's block row and a
+// recorded result of it, whether the index holds that row yet or not. recorded says that the
 // check's CI job recorded a result of its own for the check at head (jobAtHeadRecorded): a run
 // that passed or failed there is then the case job_recorded and derives nothing, since its
 // conclusion is the whole job's. words is the rule the pull-request body line keeps the run's name
@@ -508,7 +510,7 @@ func ciAnswerOf(check model.CheckBlock, name string, head delivery.NewestHead, r
 	result := model.CheckResult{
 		ID:       ciResultIDPrefix + strconv.FormatInt(run.id, 10),
 		IssueKey: check.IssueKey, CheckIssueKey: check.IssueKey,
-		CheckArtifactID: check.ArtifactID, CheckBlockID: check.BlockID,
+		CheckArtifactID: check.RowArtifactID, CheckBlockID: check.BlockID,
 		CheckVersion: check.Version, CheckSHA256: check.SHA256,
 		Role: ciResultRole, Surface: check.Surface, Run: run.name, Observed: ciObserved(*run),
 		CommitSHA: head.HeadSHA, NegativeControl: check.NegativeControl, Verdict: verdict,

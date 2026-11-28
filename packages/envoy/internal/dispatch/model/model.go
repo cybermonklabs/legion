@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 	"unicode/utf16"
@@ -214,7 +215,8 @@ type Actor struct {
 	// derives it presented: an approval a new version carries (docs.writeCarriedReview) and the
 	// answer it gives the open approval request name the person whose review it carries, proven
 	// when that review's credential proved them, even when the request that wrote the version
-	// proved nobody.
+	// proved nobody. The author rule reads it (graphstore's provedAuthor and AuthorIsSQL): a
+	// session that names no person is its own author only where its actor is Proven.
 	Proven bool `json:"proven,omitempty"`
 	// Credential is what authenticated the request: the OAuth scopes it holds and how it names
 	// the agent behind it. It is a fact of the request and never of the record, so it is not
@@ -460,15 +462,29 @@ func DeletedPostMark(at *time.Time, by []byte) (*time.Time, *Actor, error) {
 	return &deleted, &actor, nil
 }
 
-// AnchorInput selects document text by quote or identifies a browser-owned mark.
+// AnchorInput selects document text by quote or identifies a browser-owned mark, or, for a
+// comment's write, selects the text of a node by quote.
 type AnchorInput struct {
-	// Artifact is required: an anchor naming no document is refused (400 INVALID_ANCHOR,
-	// api.resolveAnchor). The tag is read by the OpenAPI emitter, which requires a field of a
-	// request body only where the handler refuses a body without it (api/openapi.go).
-	Artifact   string  `json:"artifact" required:"true"`
+	// Artifact is the document the anchor is on. An anchor naming neither it nor Node is refused
+	// (400 INVALID_ANCHOR, api.resolveAnchor), and so is one naming both.
+	Artifact string `json:"artifact,omitempty"`
+	// Node, in place of Artifact, is the node of a comment's issue whose text the anchor quotes -
+	// a lens, a finding, a risk, a constraint or a result - by its store address, as
+	// /nodes/{id} takes it, or its dispatch:// address (R31 of the issue-tree spec). Quote is then
+	// required, and Occurrence counts the quote's matches in the node's text. A mark_id or a
+	// block_id beside it, a node of another kind, one the caller may not see under the issue, one
+	// reserved for its author, a gone one, and a quote the node's text does not hold at that
+	// occurrence are each refused 400 INVALID_ANCHOR naming the field (api.resolveNodeAnchor). An
+	// ask takes no node.
+	Node       string  `json:"node,omitempty"`
 	Quote      *string `json:"quote,omitempty"`
 	Occurrence *int    `json:"occurrence,omitempty"`
 	MarkID     *string `json:"mark_id,omitempty"`
+	// BlockID, beside a quote, is the block of the document the quote is found inside: the server
+	// finds it there alone and counts Occurrence within it. A block the document does not hold, a
+	// block that does not hold the quote, and a block_id beside a mark_id are refused 400
+	// INVALID_ANCHOR naming block_id (api.resolveAnchor).
+	BlockID *string `json:"block_id,omitempty"`
 }
 
 // Project groups native issues under a short key.
@@ -944,16 +960,27 @@ type IssueAdvance struct {
 
 // Issue is the complete native issue record.
 type Issue struct {
-	Key       string   `json:"key"`
-	Project   string   `json:"project"`
-	Number    int      `json:"number"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Priority  *int     `json:"priority"`
-	Rank      string   `json:"rank"`
-	Labels    []string `json:"labels"`
-	Parent    *string  `json:"parent"`
+	Key      string   `json:"key"`
+	Project  string   `json:"project"`
+	Number   int      `json:"number"`
+	Title    string   `json:"title"`
+	Status   string   `json:"status"`
+	Priority *int     `json:"priority"`
+	Rank     string   `json:"rank"`
+	Labels   []string `json:"labels"`
+	Parent   *string  `json:"parent"`
+	// BlockedBy and Needs are the issue keys this issue waits on, of any project, sorted: one
+	// relation, the needs tuples of the issue (R10 of the issue-tree spec), answered by the
+	// issue_links rows that project them, under both spellings through this release, since a
+	// reader of the release before reads blocked_by.
 	BlockedBy []string `json:"blocked_by"`
+	Needs     []string `json:"needs" required:"false"`
+	// DuplicateOf is the key of the issue of this issue's project it repeats, and FiledFrom the
+	// canonical reference of the ask, comment or message it was filed out of
+	// (R9 of the issue-tree spec), each the far end of the issue's duplicate_of or filed_from tuple
+	// and null where it holds none.
+	DuplicateOf *string `json:"duplicate_of" required:"false"`
+	FiledFrom   *string `json:"filed_from" required:"false"`
 	// Advances is the priorities this issue advances, its own relations and the ones it
 	// inherits, and AdvancesRevision the seq of the newest tuple the store holds for its own
 	// `advances` relations, 0 when it holds none. A whole-set write carries the revision the
@@ -977,9 +1004,11 @@ type Issue struct {
 	UpdatedAt         time.Time  `json:"updated_at"`
 	ClosedAt          *time.Time `json:"closed_at"`
 	PrimaryArtifactID string     `json:"primary_artifact_id"`
-	// VerificationArtifactID and PlanArtifactID are the issue's documents by role
-	// (Artifact.Role): the one created as verification.md and the one created as plan.md, each ""
-	// when the issue holds none. They are resolved on read, as PrimaryArtifactID is.
+	// VerificationArtifactID and PlanArtifactID are kept for clients of the previous release.
+	// Each names its query node's artifact, or its role document on an unconverted issue, and
+	// is empty when the issue has neither. New callers use the issue read's queries instead.
+	//
+	// kept for one release: role-artifact-ids
 	VerificationArtifactID string `json:"verification_artifact_id"`
 	PlanArtifactID         string `json:"plan_artifact_id"`
 	// DecisionsArtifactID is the id of the issue's decisions document while it stands
@@ -1056,14 +1085,16 @@ type IssueClaimLiveness struct {
 
 // IssueSummary is the lightweight issue listing representation.
 type IssueSummary struct {
-	Key       string   `json:"key"`
-	Title     string   `json:"title"`
-	Status    string   `json:"status"`
-	Priority  *int     `json:"priority"`
-	Rank      string   `json:"rank"`
-	Labels    []string `json:"labels"`
-	Parent    *string  `json:"parent"`
+	Key      string   `json:"key"`
+	Title    string   `json:"title"`
+	Status   string   `json:"status"`
+	Priority *int     `json:"priority"`
+	Rank     string   `json:"rank"`
+	Labels   []string `json:"labels"`
+	Parent   *string  `json:"parent"`
+	// BlockedBy and Needs are Issue's: one relation under both spellings.
 	BlockedBy []string `json:"blocked_by"`
+	Needs     []string `json:"needs" required:"false"`
 	// Advances and AdvancesRevision are Issue's: every listing row answers the same entries and
 	// the same revision the issue's own read answers.
 	Advances         []IssueAdvance `json:"advances"`
@@ -1172,10 +1203,11 @@ type SearchResult struct {
 	Artifact *SearchArtifact `json:"artifact,omitempty"`
 	ID       string          `json:"id"`
 	// BlockID is the block of the hit whose own text matched, read from the window of blocks the
-	// meaning leg found (INFRA-370): for a document the block of the document, for a comment or
-	// a message a block of its body, for an ask the part of its question, options or answer. It
-	// is nil on an issue hit, which has no blocks, and on a hit only the keyword list found,
-	// which matched the item's whole text rather than one of its windows.
+	// meaning leg found (#2679), or for a document from the blocks whose nodes the keyword
+	// list found (node_search): for a document the block of the document, for a comment or a
+	// message a block of its body, for an ask the part of its question, options or answer. It is
+	// nil on an issue hit, which has no blocks, and on a comment, an ask or a message only the
+	// keyword list found, which matched the item's whole text rather than one of its windows.
 	BlockID *string `json:"block_id,omitempty"`
 	Snippet string  `json:"snippet"`
 	// SnippetTree is the ProseMirror tree the snippet is shown as, with the match marked
@@ -1371,6 +1403,11 @@ type WriteSuggestion struct {
 // questions of the other projects that stand closest to it in meaning. Each item is one such
 // answered question, and its Owner.Project names the project that holds it. Every other write
 // leaves it empty.
+//
+// Neighbours and Neighbourhood ride an issue create's check alone, beside the text search and not
+// in its place (R24 of the issue-tree spec): Neighbours is the closest existing issues of the new
+// issue's project by its graph neighbourhood, at most five, and Neighbourhood says how that read
+// went. Every other write, and a server built before the read, leaves both absent.
 type Suggestions struct {
 	Outcome         string               `json:"outcome"`
 	Search          string               `json:"search,omitempty"`
@@ -1382,6 +1419,29 @@ type Suggestions struct {
 	TitleMatches    []DuplicateCandidate `json:"title_matches,omitempty"`
 	LikelyDuplicate *DuplicateCandidate  `json:"likely_duplicate,omitempty"`
 	NearCopyCheck   string               `json:"near_copy_check,omitempty"`
+	Neighbours      []IssueNeighbour     `json:"neighbours,omitempty"`
+	Neighbourhood   *NeighbourhoodCheck  `json:"neighbourhood,omitempty"`
+}
+
+// IssueNeighbour is one issue the graph neighbourhood read names beside a newly created issue
+// (refs.IssueNeighbours): an issue of the same project that shares at least one graph target with
+// it, by its key, status and title, with Shares, the dispatch:// reference of each target the two
+// share, and Href, the issue's link.
+type IssueNeighbour struct {
+	Key    string   `json:"key"`
+	Status string   `json:"status"`
+	Title  string   `json:"title"`
+	Shares []string `json:"shares"`
+	Href   string   `json:"href"`
+}
+
+// NeighbourhoodCheck is how the graph neighbourhood read of a new issue went: Outcome is "made"
+// where it named at least one neighbour (Suggestions.Neighbours), "none" where it found no issue
+// that shares a target, and "not_made" where it did not answer, Missing then saying why, as
+// Suggestions.Missing says it of the related search.
+type NeighbourhoodCheck struct {
+	Outcome string `json:"outcome" enum:"made,none,not_made"`
+	Missing string `json:"missing,omitempty"`
 }
 
 // RelatedChecksReport is GET /api/v1/related-checks: how the related-item checks recorded in
@@ -1634,16 +1694,37 @@ type Artifact struct {
 	// "" for every other document. It is set from the document's slug when the row is created, as
 	// Primary is, and no request field sets it; the one write that clears it is the document's
 	// retirement. A decisions document an earlier release stored answers its stored role,
-	// `decisions`, until the decisions step retires it.
+	// `decisions`, until the decisions step retires it. A document of
+	// an issue born converted carries no role in its row: its role is projected from the query
+	// value of its node (graphstore.QueryNode), `verification`, `plan` or `decisions`, the spec's
+	// `spec` projecting none (R8 of the issue-tree spec, decision 2 of its plan).
 	Role      string    `json:"role,omitempty"`
 	CreatedBy Actor     `json:"created_by"`
 	CreatedAt time.Time `json:"created_at"`
+	// Room is the artifact id of the room the document is edited in, which a socket opened on the
+	// document's own id is admitted to: its document_rooms row's room, the issue's tree artifact,
+	// for a document of an issue room, and its own id otherwise (R5 of the issue-tree spec, D3 of
+	// its plan). Fragment is the fragment of that room's Yjs document that holds the document,
+	// which the page's editor binds: the document's own id for a document of an issue room, and
+	// ArtifactFragmentOwn otherwise, the tree artifact itself included. Every artifact this build
+	// reads answers both (scanArtifact) but an issue's decisions query, which no fragment of any
+	// room holds and which answers no Fragment (DecisionsQuery); they are optional on the wire
+	// because a server of the release before the issue room answers neither, and a reader then
+	// binds ArtifactFragmentOwn of the document's own room, as the page does (packages/dispatch's
+	// fragmentOf).
+	Room     string `json:"room,omitempty"`
+	Fragment string `json:"fragment,omitempty"`
 	// Retired is whether the document was retired (artifacts.retired_at, docs.RetireDocument): it
 	// is in no list of its issue's or its project's documents, plays no role, and its approval no
 	// longer stands, while its row, its versions and its address stay readable. No response
 	// carries it.
-	Retired  bool      `json:"-"`
-	Versions []Version `json:"versions"`
+	Retired bool `json:"-"`
+	// DecisionsQuery is whether the document is its issue's decisions query node, whose versions
+	// render the issue's decisions and which no fragment of any room holds
+	// (refs.DecisionsQuerySQL): it answers no Fragment, and no upload, edit or socket writes it. No
+	// response carries it.
+	DecisionsQuery bool      `json:"-"`
+	Versions       []Version `json:"versions"`
 	// Approval is the document's approval as of its latest version, derived from
 	// version-pinned reviews and any open approval ask; nil for non-documents.
 	Approval *ArtifactApproval `json:"approval,omitempty"`
@@ -1655,6 +1736,51 @@ const (
 	ArtifactRoleVerification = "verification"
 	ArtifactRolePlan         = "plan"
 )
+
+// ArtifactFragmentOwn is the fragment of a room's Yjs document that holds the room's own document
+// (docs' fragmentName): every document that is its own room, and an issue's tree artifact, whose
+// own fragment holds the nodes written into the issue rather than into a document.
+const ArtifactFragmentOwn = "prosemirror"
+
+// ArtifactSlugVerification and ArtifactSlugPlan are the slugs that name an issue's Verification
+// and Plan documents: a document whose row a rolling deploy left with no role, or whose role the
+// issue room's conversion cleared, plays the part its slug names (api's roleSlugs, and the band
+// a block's rank stands in, refs.DocumentBandSQL).
+const (
+	ArtifactSlugVerification = "verification-md"
+	ArtifactSlugPlan         = "plan-md"
+)
+
+// CarriedReviewReasonPrefix starts the legacy reason that records the approval's source
+// version. Dispatch still writes it for older readers, including the Legion daemon.
+const CarriedReviewReasonPrefix = "Carried forward from the approval of version "
+
+// CarriedFromVersion reads a source version from the legacy carry reason. The API fallback and
+// the store census share this parser, so they agree on which historical reasons mark a carry.
+func CarriedFromVersion(reason string) (int, bool) {
+	rest, found := strings.CutPrefix(reason, CarriedReviewReasonPrefix)
+	if !found {
+		return 0, false
+	}
+	digits, _, found := strings.Cut(rest, ":")
+	if !found {
+		return 0, false
+	}
+	version, err := strconv.Atoi(digits)
+	if err != nil || version < 1 {
+		return 0, false
+	}
+	return version, true
+}
+
+// ReviewOrder is the SQL order of artifact reviews, newest first. A sequence orders reviews of
+// one document by their events' commit order. A review from before migration 0120 has no
+// sequence and sorts after all sequenced reviews, by its time and UUID. Qualifying the UUID
+// keeps ORDER BY on the UUID itself when the select list casts id to text.
+const ReviewOrder = ReviewEventOrder + `, created_at desc, artifact_reviews.id desc`
+
+// ReviewEventOrder is the leading SQL sort key of ReviewOrder.
+const ReviewEventOrder = `event_seq desc nulls last`
 
 // ArtifactReview is one human review of a document, pinned to the version it was
 // given on: an approval, or a request for changes with a reason. EventSeq is the
@@ -1676,7 +1802,14 @@ type ArtifactReview struct {
 	CreatedAt           time.Time `json:"created_at"`
 	ContentSHA256       *string   `json:"content_sha256"`
 	ContentSHA256Source *string   `json:"content_sha256_source"`
-	EventSeq            *int64    `json:"-"`
+	// CarriedFromVersion is the version whose approval Dispatch carried forward to this review
+	// (artifact_review_carries, else the version its carried reason names), and null on a review a
+	// person or a plan review gave itself: every answer of this build writes the member, null
+	// included, so a reader never takes its absence for a person's own act. Under the rolling-deploy
+	// rule (api/openapi.go's openAPIOlderServersOmit), a server of the release before answers the
+	// review without it during a roll, so OpenAPI marks it optional (`required:"false"`).
+	CarriedFromVersion *int   `json:"carried_from_version" required:"false"`
+	EventSeq           *int64 `json:"-"`
 }
 
 // ArtifactApproval is a document's approval state as of its latest version:
@@ -1692,7 +1825,13 @@ type ArtifactReview struct {
 // a rollout or a rollback, so a missing Seq does not prove an older review: the
 // owner's row lock orders its events as they commit, so Seq places the review
 // among them where At, its transaction's start, cannot. Seq orders; Version, not
-// Seq, says which version the review covers.
+// Seq, says which version the review covers. CarriedFromVersion is the latest
+// review's (ArtifactReview.CarriedFromVersion): the version whose approval Dispatch
+// carried forward to it, and null where that review is a person's or a plan review's
+// own act or where no review stands. Every answer of this build writes it, null
+// included; under the rolling-deploy rule (api/openapi.go's openAPIOlderServersOmit),
+// a server of the release before answers without it during a roll, so OpenAPI marks it
+// optional (`required:"false"`).
 type ArtifactApproval struct {
 	State               string  `json:"state"`
 	LatestVersion       int     `json:"latest_version"`
@@ -1704,8 +1843,19 @@ type ArtifactApproval struct {
 	AskID               *string `json:"ask_id,omitempty"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
-	RequestedBy         *Actor  `json:"requested_by,omitempty"`
-	WaitingOn           string  `json:"waiting_on,omitempty"`
+	CarriedFromVersion  *int    `json:"carried_from_version" required:"false"`
+	// CurrentSHA256 is the digest of the document's latest version, the value
+	// artifact_version_text_sha256 answers for it (Version.Digest), which an approval stands
+	// against (R14's hash gate), and DigestOwed whether that version's version_renders row still
+	// owes its record's digest, which the fill after its write's COMMIT records: while it does,
+	// CurrentSHA256 is the digest of the version's stored markdown, and the approval of a query
+	// document whose record moved reads stale until the fill. The artifact read answers both (GET
+	// /api/v1/artifacts/{id}); every other read of an approval, and a Dispatch before the hash
+	// gate, answers neither.
+	CurrentSHA256 *string `json:"current_sha256,omitempty"`
+	DigestOwed    *bool   `json:"digest_owed,omitempty"`
+	RequestedBy   *Actor  `json:"requested_by,omitempty"`
+	WaitingOn     string  `json:"waiting_on,omitempty"`
 	// Kind is the latest review's Kind, so a reader can say an approval is a plan review's
 	// rather than a person's; empty while no review stands.
 	Kind string `json:"kind,omitempty"`
@@ -1719,7 +1869,14 @@ type ArtifactApproval struct {
 // ArtifactReviewEventPayload is the payload of artifact.approved and
 // artifact.changes_requested: the review pinned to its version, and the approval
 // ask it answered (nil when given from the document header with no request open at
-// that version).
+// that version). CarriedFromVersion is the review's (ArtifactReview.CarriedFromVersion),
+// written on every payload of this build: the version a carry came from, and null for a
+// person's or a plan review's own act. Under the rolling-deploy rule (api/openapi.go's
+// openAPIOlderServersOmit), a payload the release before wrote holds none, so the schema
+// marks it optional (`required:"false"`). ApprovalCurrent is whether the review stands as an
+// approval of its document once it is written, as a gate reads the document's newest review
+// beside its latest version (docs' ApprovalStand.Approves, R14's hash gate): false for a request
+// for changes; absent from a payload a Dispatch before the hash gate wrote.
 type ArtifactReviewEventPayload struct {
 	ArtifactID          string  `json:"artifact_id"`
 	Name                string  `json:"name"`
@@ -1730,6 +1887,30 @@ type ArtifactReviewEventPayload struct {
 	AskID               *string `json:"ask_id"`
 	ContentSHA256       *string `json:"content_sha256,omitempty"`
 	ContentSHA256Source *string `json:"content_sha256_source,omitempty"`
+	CarriedFromVersion  *int    `json:"carried_from_version" required:"false"`
+	ApprovalCurrent     *bool   `json:"approval_current,omitempty"`
+}
+
+// ArtifactDigestEventType is the event Dispatch appends on a query document's issue once a
+// version's record digest stands (R14's hash gate): the fill of a digest a write left owed (docs'
+// fillOwedDigests), the first pass that states a deferred or repaired version, and the drain of
+// the issue's queries after the version it writes. It wakes nobody.
+const ArtifactDigestEventType = "artifact.digest"
+
+// ArtifactDigestEventPayload is the payload of artifact.digest: the version of the document,
+// ContentSHA256 the digest of its query's record (the one an approval of it covers, which
+// artifact_version_text_sha256 answers from then on), and ApprovalCurrent whether the document's
+// newest review stands as an approval at that digest (docs' ApprovalStand.Approves).
+// ApprovedVersion and ApprovedSHA256 are that review's version and the digest it stands on, where
+// the newest review is an approval, and absent otherwise.
+type ArtifactDigestEventPayload struct {
+	ArtifactID      string  `json:"artifact_id"`
+	Name            string  `json:"name"`
+	Version         int     `json:"version"`
+	ContentSHA256   string  `json:"content_sha256"`
+	ApprovalCurrent bool    `json:"approval_current"`
+	ApprovedVersion *int    `json:"approved_version,omitempty"`
+	ApprovedSHA256  *string `json:"approved_sha256,omitempty"`
 }
 
 // DocumentRetiredEventType is the event docs.RetireDocument appends, once, for the document it
@@ -1955,13 +2136,15 @@ type CheckResultRetracted struct {
 
 // CheckResult is one result recorded against a `check` block of an issue's Verification
 // document (check_results). IssueKey is the issue it was recorded on, which may be a descendant
-// of CheckIssueKey, the issue whose Verification document holds the check. CheckVersion and
-// CheckSHA256 are the block's changed_version and text_sha256 when the result was recorded, so
-// a read can tell a result whose check has been reworded since: one whose check's digest and
-// version both moved, since a block respelled by another renderer version takes a new digest
-// and keeps its changed version (refs.BlockIndexing.KeepRespelled). CommitStands,
-// CheckWordsMoved and Retracted are read when the results are read and are absent from the
-// record's own answer.
+// of CheckIssueKey, the issue whose Verification document holds the check. CheckArtifactID is the
+// artifact the check's document_blocks row is keyed by, which keys the result's row too: the tree
+// artifact of an issue room, else the Verification document. A result CI derives (api's
+// results_ci.go) names the same one. CheckVersion and CheckSHA256 are the block's changed_version
+// and text_sha256 when the result was recorded, so a read can tell a result whose check has been
+// reworded since: one whose check's digest and version both moved, since a block respelled by
+// another renderer version takes a new digest and keeps its changed version
+// (refs.BlockIndexing.KeepRespelled). CommitStands, CheckWordsMoved and Retracted are read when
+// the results are read and are absent from the record's own answer.
 type CheckResult struct {
 	ID              string    `json:"id"`
 	IssueKey        string    `json:"issue_key"`
@@ -2039,21 +2222,26 @@ type CheckResultRetraction struct {
 
 // CheckBlock is one `check` block of a Verification document as a result read shows it: where it
 // lives, its attributes, the version its words last changed in and their digest, and every
-// result recorded against it from any issue, newest first. CICheck is the block's `ci_check` as
-// stored, spaces included. A blank value is served as stored, not as "", so CICheck is "" only
-// where the block stores no `ci_check` or an empty one. CI is what Dispatch read of the run that
-// `ci_check` names, set only for a check CI proves, and CI.Run is that run's name. Such a check's
-// one result is the one derived from that run. Text is the block's words with every link and
-// dispatch:// reference dropped (the pull-request line reads them); TextTree is the block's own
-// content whole, links and references kept, as the reader is shown it, present only for a
-// caller that sent `Dispatch-Trees: 1`. Subject is what the check reads, its `subject` as stored:
-// code, production or graph, and "" where the block names none, which reads as code. Program is
-// the deployed program it reads, its `program` as stored, "" where it names none.
+// result recorded against it from any issue, newest first. ArtifactID is the Verification
+// document, and RowArtifactID the room it is edited in (api's checkBlocksOf), which keys the
+// check's document_blocks row: the tree artifact of an issue room, else ArtifactID, whether the
+// index holds that row yet or not. A result of the check names RowArtifactID as its
+// CheckArtifactID; no response carries it. CICheck is the block's `ci_check` as stored, spaces
+// included. A blank value is served as stored, not as "", so CICheck is "" only where the block
+// stores no `ci_check` or an empty one. CI is what Dispatch read of the run that `ci_check`
+// names, set only for a check CI proves, and CI.Run is that run's name. Such a check's one result
+// is the one derived from that run. Text is the block's words with every link and dispatch://
+// reference dropped (the pull-request line reads them); TextTree is the block's own content
+// whole, links and references kept, as the reader is shown it, present only for a caller that
+// sent `Dispatch-Trees: 1`. Subject is what the check reads, its `subject` as stored: code,
+// production or graph, and "" where the block names none, which reads as code. Program is the
+// deployed program it reads, its `program` as stored, "" where it names none.
 type CheckBlock struct {
 	BlockID         string        `json:"block_id"`
 	Ref             string        `json:"ref"`
 	IssueKey        string        `json:"issue_key"`
 	ArtifactID      string        `json:"artifact_id"`
+	RowArtifactID   string        `json:"-"`
 	Text            string        `json:"text"`
 	TextTree        DisplayTree   `json:"text_tree,omitempty"`
 	When            string        `json:"when"`
@@ -2118,34 +2306,82 @@ type CheckCI struct {
 // marks, in document order, and one Gaps line per gap, which `dispatch read --issue` prints
 // after `Coverage: `. HasPlan says whether the issue has a plan document; before it has one, a
 // requirement with no plan task is no gap, since the plan comes after the spec's approval.
-// Nothing is ever refused for a gap.
+// Nothing is ever refused for a gap. OwedDocuments names each document of the issue that owes its
+// block index (OwedDocument), absent where none does: a check or a requirement of such a document
+// may not be counted yet, so the read drops none of them in silence.
 type IssueCoverage struct {
 	Issue          string                `json:"issue"`
 	SpecArtifactID string                `json:"spec_artifact_id"`
 	HasPlan        bool                  `json:"has_plan"`
 	Requirements   []RequirementCoverage `json:"requirements"`
 	Gaps           []string              `json:"gaps"`
+	OwedDocuments  []OwedDocument        `json:"owed_documents,omitempty"`
+}
+
+// OwedDocument is one document of an issue that owes its block index, by either mark the
+// block-index reconciliation lists a document by: its document_block_versions.version null, as
+// every version's insert leaves it until a pass indexes it, or store_owed_at set, this build's own
+// mark. ArtifactID is the document, and Version its newest version, whose blocks wait: a document
+// of an issue room, or the room's tree artifact, waits for the pass over the whole room. The
+// coverage read and the tree read each name every such document of the issue, so a check or a
+// requirement the block index has not reached yet is never dropped in
+// silence: an upload or a create whose written tree does not render as its version's markdown,
+// and a write to an issue room whose own fragment reads otherwise than its version, write no node
+// of them until the reconciliation indexes the document.
+type OwedDocument struct {
+	ArtifactID string `json:"artifact_id"`
+	Version    int    `json:"version"`
 }
 
 // RequirementCoverage is one `requirement` block of an issue's spec and what serves it: the
 // `check` and `plan_task` blocks of any document of that issue or of any descendant issue, at
-// any status, that name it in `serves`. Gaps is this requirement's own gap lines, the ones
+// any status, that name it in `serves`, but for a block at node state proposed, a question still
+// open, or overtaken: each serves nothing. A live check counts whatever state a node above it
+// holds. Gaps is this requirement's own gap lines, the ones
 // IssueCoverage.Gaps carries for it, so a reader draws them beside the requirement without
 // parsing the sentence back. Text and TextTree are the requirement's words as a CheckBlock's
-// are: the words with no link or reference, and the block's whole content as a tree.
+// are: the words with no link or reference, and the block's whole content as a tree. State is
+// the node state the store holds for the requirement's block (graphstore.NodeStates), live where
+// it holds no row: a requirement at proposed is a question still open, which raises no gap (spec
+// requirement r-proposed). A server of the release before answers no State during a roll, so the
+// OpenAPI document marks it optional (`required:"false"`) and a reader takes a requirement that
+// carries none as live. Coverage and Proof are the coverage read over the tuples' own answer
+// (api's issueCoverageOverTuples), and absent from the read that walks the spec's markdown:
+// Coverage is `gap` for a requirement no check serves, `unproven` for one no check of which holds
+// a passing result against the words it holds now, `proved` for one a check of which does,
+// `proposed` for a requirement still a question, which raises no gap, and `closed` for one whose
+// node or a node above it is overtaken, which lists no gap and no proof row and still counts the
+// checks and plan tasks that serve it; Proof is each check that serves a requirement that is not
+// closed, once, with where its newest result that stands leaves it.
 type RequirementCoverage struct {
-	BlockID   string      `json:"block_id"`
-	Ref       string      `json:"ref"`
-	Text      string      `json:"text"`
-	TextTree  DisplayTree `json:"text_tree,omitempty"`
-	Checks    int         `json:"checks"`
-	PlanTasks int         `json:"plan_tasks"`
-	Gaps      []string    `json:"gaps"`
+	BlockID   string             `json:"block_id"`
+	Ref       string             `json:"ref"`
+	Text      string             `json:"text"`
+	TextTree  DisplayTree        `json:"text_tree,omitempty"`
+	State     string             `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
+	Checks    int                `json:"checks"`
+	PlanTasks int                `json:"plan_tasks"`
+	Gaps      []string           `json:"gaps"`
+	Coverage  string             `json:"coverage,omitempty" enum:"gap,unproven,proved,proposed,closed"`
+	Proof     []RequirementProof `json:"proof,omitempty"`
+}
+
+// RequirementProof is one check serving a requirement, as the coverage read over the tuples
+// answers it: the check's store id and its issue, and Proves, where its newest result that stands
+// leaves it: `none` where it holds no result or only retracted ones, `fail` where that result
+// failed, `reworded` where it passed against a text sum the check no longer holds, and `pass`
+// where it passed against the words the check holds now.
+type RequirementProof struct {
+	Check  string `json:"check"`
+	Issue  string `json:"issue"`
+	Proves string `json:"proves" enum:"none,fail,reworded,pass"`
 }
 
 // CheckResultEventPayload is the payload of result.recorded, appended on the check's issue: the
 // result, the issue it was recorded on (Issue, which is the check's issue only when the result
-// was recorded there) and the check it proves.
+// was recorded there) and the check it proves. CheckArtifactID is the artifact the check's
+// document_blocks row is keyed by, as the result's row names it (CheckResult): the tree artifact
+// of an issue room, else the Verification document.
 type CheckResultEventPayload struct {
 	ResultID        string `json:"result_id"`
 	Issue           string `json:"issue"`
@@ -2231,12 +2467,29 @@ type ArtifactHumanEditedEventPayload struct {
 	DiffTruncated bool     `json:"diff_truncated"`
 }
 
+// ArtifactIndexedEventPayload is the payload of artifact.indexed, which the block-index
+// reconciliation appends on an issue once a pass of it has committed the block index of documents
+// of that issue that owed one (docs' queueIndexedEvent): ArtifactIDs names each document whose
+// owed index the pass cleared, the issue's tree artifact among them where it owed one, sorted. Each
+// read that answers otherwise while a document owes its index - the coverage read's
+// owed_documents and gaps, the tree read, the decisions read, a Verification document's indexed
+// checks and a document's blocks - answers from the index from then on.
+type ArtifactIndexedEventPayload struct {
+	ArtifactIDs []string `json:"artifact_ids"`
+}
+
 // ArtifactBlock is an addressable document block and its byte range in canonical markdown. Table
 // lists a table block's rows and cells; nil for every other block. Attributes is a typed block's
 // attributes in the order its type declares them, which is the order its opening line writes
 // them; a block of no declared type carries none. Embedding is where meaning search stands on
 // the block (BlockEmbedded, BlockEmbeddingPending, BlockNotEmbedded), which the blocks route
-// sets and nothing that only indexes blocks does.
+// sets and nothing that only indexes blocks does. Document is, for a block of an issue room
+// indexed under the issue's tree artifact, the artifact id of the document whose fragment of the
+// room holds it (R5 of the issue-tree spec), which the block index states as the block's
+// in_document; "" for a block of the indexed document itself. No route answers it. TextTree is
+// the display tree of the block's whole slice of the markdown (From to To), the text the block
+// index stores for it, which the blocks routes answer only to a caller that sent
+// `Dispatch-Trees: 1`, and which the tree read answers for the same block.
 type ArtifactBlock struct {
 	ID            string                `json:"id"`
 	Type          string                `json:"type"`
@@ -2247,7 +2500,9 @@ type ArtifactBlock struct {
 	Attributes    []BlockAttributeValue `json:"attributes,omitempty"`
 	Table         *BlockTable           `json:"table,omitempty"`
 	Embedding     string                `json:"embedding,omitempty"`
+	TextTree      DisplayTree           `json:"text_tree,omitempty"`
 	DescendantIDs []string              `json:"-"`
+	Document      string                `json:"-"`
 }
 
 // TextAsk is one entry of the asks member the text routes answer (GET
@@ -2381,6 +2636,18 @@ type Version struct {
 	Size   *int    `json:"size,omitempty"`
 	MIME   *string `json:"mime,omitempty"`
 	SHA256 *string `json:"sha256,omitempty"`
+	// Digest is what an approval of a document's version covers, the value
+	// artifact_version_text_sha256 answers for it and a review's content_sha256 pins: the digest of
+	// the record of its query where the pass that stated the version recorded one on its
+	// version_renders row, and else the sha256 of its stored markdown, so a version of a document no
+	// query covers answers its markdown's. The version read and the artifact read's version list
+	// answer it; every other read of a version, and a file's or an image's version, answers none.
+	Digest *string `json:"digest,omitempty"`
+	// DigestOwed is whether the version's version_renders row still owes its record's digest
+	// (R15), read beside Digest by the artifact read alone, which answers it on the document's
+	// approval for its latest version (ArtifactApproval.DigestOwed); no version is answered with
+	// it.
+	DigestOwed *bool `json:"-"`
 	// Token is a file's or an image's version token (FileVersionToken): what an upload replacing
 	// that version names as its precondition's document token, and what `dispatch doc-read`
 	// prints for it. Every read of a version row states it (StateFileTokens). A document's version
@@ -2667,7 +2934,8 @@ type AskAnsweredEventPayload struct {
 // issue.created, issue.updated and issue.closed also say what the write changed, read in its own
 // transaction: Changed names each field whose value the write moved (title, status, closed_at
 // for a close or a reopen, rank, priority, assignee, parent, labels, route, repo, components,
-// blocked_by, external_links; for issue.created every field the new issue holds a value in),
+// advances, blocked_by and needs together, duplicate_of, filed_from, external_links; for
+// issue.created every field the new issue holds a value in),
 // Ancestors the issue's parent chain,
 // parent first up to the root ([] for a root), and ThreadLogins, only when the status or the
 // assignee moved, whose Inbox rows the write can move (api/issue_patch.go): for a close
@@ -3605,6 +3873,38 @@ type Comment struct {
 	// RepliesToBlock is the node id comments.replies_to_block stores, null for a comment that
 	// names no block; ReplyBlock is read from it, and only for a comment that names one.
 	RepliesToBlock *string `json:"-"`
+	// NodeAnchor is the anchor comments.node_anchor stores for a comment on the text of a node
+	// (R31 of the issue-tree spec), nil for every other comment; Anchor is nil on such a comment. No
+	// read of a comment answers it under this name and no event carries it: a deployed client
+	// parses a comment with the strict CommentSchema, so only a read asked with
+	// ?node_anchor=true answers the member node_anchor (CommentNodeAnchor).
+	NodeAnchor *NodeAnchor `json:"-"`
+}
+
+// NodeAnchor is a comment's anchor on the text of a node that is no block of a document - a lens,
+// a finding, a risk, a constraint or a result (R31 of the issue-tree spec) - as comments.node_anchor
+// stores it: the node as graph_nodes keys it (a finding is kind block, id lens/<uuid>#<block id>),
+// the words it quotes, the zero-based match of those words in the node's text it names, as a
+// quote beside block_id counts its matches in one block, and whether a write of the node's text
+// dropped that match or a DELETE took the node gone.
+type NodeAnchor struct {
+	NodeKind   string `json:"node_kind"`
+	NodeID     string `json:"node_id"`
+	Quote      string `json:"quote"`
+	Occurrence int    `json:"occurrence"`
+	Orphaned   bool   `json:"orphaned"`
+}
+
+// CommentNodeAnchor is the member node_anchor a comments read asked with ?node_anchor=true answers
+// on each comment whose anchor names a node or a block (R31): that node by its store kind and id,
+// with its node state, gone for a node deleted since; the quote; the occurrence, null for a
+// document anchor, which stores none; and the orphaned mark as stored. A reader tells a deleted
+// node from the node's own state, since orphaned says only that the quoted words left its text.
+type CommentNodeAnchor struct {
+	Node       IssueTreeAnchorNode `json:"node"`
+	Quote      string              `json:"quote"`
+	Occurrence *int                `json:"occurrence"`
+	Orphaned   bool                `json:"orphaned"`
 }
 
 // ReplyBlock is the block a reply answers: its node id ('<item kind>/<item id>#<block id>') and
@@ -4259,10 +4559,19 @@ type ReferenceVia struct {
 	ID   string `json:"id"`
 }
 
-// ReferenceMember is one document of an issue's references read: a document its own content
-// links to, always at depth 1. It stays for the clients that read members, beside Links.
+// ReferenceMember is one member of an issue's references read, always at depth 1: Artifact is a
+// document its own content links to, through Via, and Kind and Address are the member's own kind
+// and dispatch:// address - `artifact` and that document's address, or `lens` and the lens's
+// address where the link names the address of a document that moved to a lens, as the pre-mortem
+// conversion moves the address of the document it retires to the lens it writes in its place.
+// Artifact is then that retired document, whose versions stay readable. It stays for the clients
+// that read members, beside Links. A server of the release before answers neither Kind nor
+// Address during a roll, so the OpenAPI document marks them optional (`required:"false"`) and a
+// reader takes a member that carries neither as the document Artifact names.
 type ReferenceMember struct {
 	Artifact Artifact     `json:"artifact"`
+	Kind     string       `json:"kind" enum:"artifact,lens" required:"false"`
+	Address  string       `json:"address" required:"false"`
 	Depth    int          `json:"depth"`
 	Via      ReferenceVia `json:"via"`
 }
@@ -4312,17 +4621,38 @@ type ArtifactReferences struct {
 // the kinds beside it, which that doc names the id of). The edges into and out of a node are the
 // reads `?to=` and `?from=` of its Ref.
 //
-// Every node carries six facts, whatever its kind: MadeBy and MadeAt, who made it and when;
+// Kind is one of the node kinds a read of the graph answers - the kinds the read registry holds a
+// loader for (refs.ResolvableKinds) - and the OpenAPI document closes it over them: a kind a later
+// build resolves is a member that build adds, and api's TestTheGraphNodeKindEnumIsTheRegistrysKinds
+// holds the tag to the registry. A kind the registry holds a predicate for and no loader, a
+// supertag or an attribute of the block schema, is the kind of no node an answer carries, so the
+// enum leaves it out. A reader that meets a kind it does not know skips that node rather than
+// failing on it.
+//
+// Every node carries eight facts, whatever its kind: MadeBy and MadeAt, who made it and when;
 // ChangedBy and ChangedAt, who last changed its own text or fields and when (its maker while
-// nothing has changed it since); Parent, the node it belongs to; and ParentVersion, the version of
-// the parent it belongs to. A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then
-// `[]`, never null, and the others null.
+// nothing has changed it since); Parent, the node it belongs to; ParentVersion, the version of
+// the parent it belongs to; and State and Visibility, the node state and the visibility the node
+// and tuple store holds for it (graphstore.NodeStates; graphstore.VisibilityProject or
+// VisibilityAuthor), which are live and project for a node the store holds no row of. A node
+// reserved for its author reaches that author alone, so only its author reads Visibility author.
+// Every answer of this build carries both, but a server of the release before answers the same
+// reads without them during a roll, so the OpenAPI document marks them optional
+// (`required:"false"`) and a reader takes a node that carries neither as live and project.
+// A fact Dispatch never recorded is empty: MadeBy and ChangedBy are then `[]`, never null, and
+// MadeAt, ChangedAt, Parent and ParentVersion null; State and Visibility always hold a value.
 //
 // A block node (kind `block`, id `<document ref_key>#<block id>`) also carries BlockID, its
 // document's reference as Document, and ChangedVersion, the document version in which its text
-// last changed (ChangedAt is that version's time). Text and Pin are set only on the node a
-// reference read names: Text is the block's whole current text, and Pin answers a reference pinned
-// to a version.
+// last changed (ChangedAt is that version's time). A finding of a lens (kind `lens_block`, id
+// `lens/<uuid>#<block id>`) carries BlockID and no Document, and its parent is its lens. A run of
+// the command bar (kind `interaction`, id the run's uuid) stands under no issue, so it carries no
+// IssueKey and no Parent, and reaches the credential that asked it alone; the read of its own
+// address carries Frames, every frame of its stream in sequence, which no other read and no other
+// kind carries, so the member is absent from every other node and from a run at an edge's far
+// end. Text and Pin are set only on the node a reference read names: Text is a block's
+// whole current text, or a run's whole words, which an edge at the run shows only the head of as
+// its excerpt, and Pin answers a reference pinned to a version.
 //
 // DeletedAt and DeletedBy mark a comment or a message its author deleted, as the reads of the
 // post itself carry them (Comment, Message): the body is cleared, so the node carries no text and
@@ -4332,7 +4662,7 @@ type ArtifactReferences struct {
 // every node of another kind. A block of a comment or a message carries its post's EditedAt and
 // mark too, so a block quoted from a corrected post says so.
 type GraphNode struct {
-	Kind           string      `json:"kind"`
+	Kind           string      `json:"kind" enum:"artifact,ask,ask_block,block,comment,comment_block,component,constraint,interaction,issue,lens,lens_block,lens_kind,message,message_block,page,person,risk,role,session"`
 	ID             string      `json:"id"`
 	BlockID        string      `json:"block_id,omitempty"`
 	IssueKey       *string     `json:"issue_key,omitempty"`
@@ -4349,8 +4679,27 @@ type GraphNode struct {
 	DeletedBy      *Actor      `json:"deleted_by,omitempty"`
 	Parent         *NodeParent `json:"parent"`
 	ParentVersion  *int        `json:"parent_version"`
+	State          string      `json:"state" enum:"live,gone,proposed,settled,overtaken" required:"false"`
+	Visibility     string      `json:"visibility" enum:"project,author" required:"false"`
 	Text           string      `json:"text,omitempty"`
 	Pin            *BlockPin   `json:"pin,omitempty"`
+	// Frames is an interaction's frames, each one `frame` value of its node, in sequence, on the
+	// read of the run's own address (refs.Node), and absent for a run that holds none, for a run
+	// at an edge's far end and for every other kind. A run whose answer is withdrawn - a comment
+	// or an issue message it gave its model has since been deleted - answers the one frame its
+	// stream then writes, the withdrawal at the sequence of its ending, and none of its own (api's
+	// goingWithdrawal). A server of the release before never sends it, and `omitempty` keeps every
+	// other node's answer byte for byte as it was.
+	Frames []GraphFrame `json:"frames,omitempty"`
+}
+
+// GraphFrame is one frame of a run's stream as the run's interaction node holds it, one `frame`
+// value tuple (graphstore.FrameTuple): its sequence in the run, its name (contracts.GoingEvent*)
+// and its payload, the data the stream writes under that name.
+type GraphFrame struct {
+	Sequence int            `json:"sequence"`
+	Name     string         `json:"name"`
+	Data     map[string]any `json:"data"`
 }
 
 // NodeParent names the node a graph node belongs to: its kind and its node id (an artifact's
@@ -4381,10 +4730,26 @@ type GraphExcerpt struct {
 	Text    string `json:"text"`
 }
 
-// GraphEdgeKinds is every structural edge kind graph_edges emits. A typed block's `block[]`
-// attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds), which is never one of
-// these: a schema name equal to one would merge silently with it in every reader.
-var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects"}
+// GraphEdgeKinds is every structural edge kind the reference graph answers: the kinds graph_edges'
+// arms over the projections write, the six the node and tuple store states with no projection row
+// behind them (graphstore.TupleChangedByRun and the four beside it, and graphstore.TupleAuthoredBy
+// of an interaction, a lens, a finding, a risk and a constraint), which the view answers from the
+// tuples alone, and an issue's duplicate_of and filed_from, which the store holds alone too
+// (R9 of the issue-tree spec). blocked_by is the kind graph_edges names an issue's wait on an issue
+// by through this release, in its old arm and its tuple arm alike, the kind a process of the
+// release before reads that wait by; this build's references read answers the same wait as needs
+// (EdgeKindNeeds) and takes either spelling in its kind filter (R10). A typed block's `block[]`
+// attribute makes edges of a kind named by the attribute (pmdoc.LinkKinds), which is none of these
+// but needs: a schema name equal to one would merge silently with it in every reader, and needs is
+// the one relation the two families share, since an issue and a plan node wait by one relation.
+var GraphEdgeKinds = []string{"mentions", "child_of", "blocked_by", "attached_to", "anchored_to", "owned_by", "replies_to", "answers", "followed_by", "part_of", "depends_on", "affects",
+	"changed_by_run", "has_kind", "triggered_by", "constrained_by", "prevented_by", "authored_by",
+	EdgeKindNeeds, "duplicate_of", "filed_from"}
+
+// EdgeKindNeeds is the kind of a wait, an issue's on an issue and a plan node's on a plan node
+// alike (R10 of the issue-tree spec): a structural kind of GraphEdgeKinds and the name of the
+// plan_task's `block[]` attribute, the one name both families of edge hold.
+const EdgeKindNeeds = "needs"
 
 // GraphEdge is one typed, timestamped edge of graph_edges seen from the queried node: Node is
 // the other end, Direction is "in" for edges pointing at the queried node and "out" for edges

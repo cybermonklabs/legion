@@ -9,7 +9,9 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/files/filestest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // issueRoleDocuments is what an issue read names by role: its spec, and its document of each
@@ -137,13 +139,20 @@ func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t 
 	if project := uploadDocument(t, handler, "/api/v1/projects/DEC", "decisions.md", "# Decisions\n\nOne.\n"); project.Artifact.Role != "" {
 		t.Fatalf("project document = %#v, want it taken with no role: the refusal is an issue's", project.Artifact)
 	}
+	// The issue's decisions query (refs.DecisionsQuerySQL), a doc row slugged decisions that every
+	// issue born converted holds, is no stored decisions document.
 	var stored int
-	if err := database.Pool.QueryRow(ctx, `select count(*) from artifacts where issue_key = $1 and slug like 'decisions%'`, issue.Key).Scan(&stored); err != nil || stored != 0 {
+	if err := database.Pool.QueryRow(ctx, `
+		select count(*) from artifacts a where a.issue_key = $1 and a.slug like 'decisions%' and not `+refs.DecisionsQuerySQL("a"),
+		issue.Key).Scan(&stored); err != nil || stored != 0 {
 		t.Fatalf("the refused writes stored %d decisions documents on %s (%v), want none", stored, issue.Key, err)
 	}
 
 	// An issue that still holds a decisions document the release before stored, whose role a
-	// build older than the role left null: an upload of its name is its next version.
+	// build older than the role left null: an upload of its name is its next version. Such an
+	// issue is one that release created, of one-document rooms, so it is created unconverted:
+	// an issue born converted never holds a decisions document a release before stored.
+	holdIssuesUnconverted(t, database)
 	created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
 		"project": "DEC", "title": "Decided before the release", "spec": "Another spec\n",
 	}, "alice")
@@ -170,4 +179,129 @@ func TestADecisionsDocumentIsRefusedByNameAndOneThatStandsTakesItsNextVersion(t 
 		"/api/v1/artifacts/"+standing+"/edits", ops, "alice"))
 	refused("an edit of the retired decisions document by its slug", dispatchRequest(t, handler, http.MethodPost,
 		"/api/v1/issues/"+other.Key+"/artifacts/decisions-md/edits", ops, "alice"))
+}
+
+// Both readers of a document's role - documentRolePredicate, which every query that finds an
+// issue's document by its role holds a row to, and documentPlays, which the routes ask of a row
+// already read - give a role to an issue's markdown document alone. A role-less row falls back to
+// its slug only when it is a `doc`, the row a rolling deploy leaves, so a file uploaded as plan.md,
+// which carries no role and whose slug is plan-md, plays no role in either reader, nor does a
+// picture stored under that slug. A row whose role is set plays that role. No row plays the role
+// decisions any more (R11 of the decisions-tree spec): a role-less doc slugged decisions-md plays
+// none, and the issue read names it as the decisions document the release before reads only through
+// decisions_documents(). Both readers are asked about the same rows and answer the same about each
+// one, which is the role it plays or none.
+func TestBothRoleReadersGiveAFileNamedLikeARoleDocumentNoRole(t *testing.T) {
+	handler, database, _ := newTestServer(t, testServerOptions{files: filestest.NewMemory()})
+	ctx := context.Background()
+	uploads := createInteractionIssue(t, handler, "ROLE", "Files named like role documents", "A spec\n").Key
+	createIssue := func(title string) string {
+		t.Helper()
+		created := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", map[string]string{
+			"project": "ROLE", "title": title, "spec": "A spec\n",
+		}, "alice")
+		if created.Code != http.StatusCreated {
+			t.Fatalf("create the issue %q: status=%d body=%s", title, created.Code, created.Body.String())
+		}
+		return decodeBody[struct {
+			Key string `json:"key"`
+		}](t, created).Key
+	}
+	rolling := createIssue("Documents a rolling deploy left with no role")
+	stamped := createIssue("Documents that carry their role")
+	pictures := createIssue("Pictures named like role documents")
+
+	// The upload route stores bytes that are not markdown, under the name plan.md, as a file with
+	// no role and the slug plan-md.
+	uploaded := multipartRequest(t, handler, "/api/v1/issues/"+uploads+"/artifacts", map[string]string{"name": "plan.md"},
+		"plan.md", "application/octet-stream", []byte("\x00\x01 not markdown \x02"), "alice")
+	if uploaded.Code != http.StatusCreated {
+		t.Fatalf("upload a file named plan.md: status=%d body=%s", uploaded.Code, uploaded.Body.String())
+	}
+	file := decodeBody[uploadedArtifact](t, uploaded).Artifact
+	if file.Kind != "file" || file.Role != "" || file.Slug != "plan-md" {
+		t.Fatalf("the upload named plan.md = kind %q role %q slug %q, want a file with no role and the slug plan-md",
+			file.Kind, file.Role, file.Slug)
+	}
+
+	// The rows the release before this one stores, written by SQL: no role, whatever the slug.
+	insertRoleless := func(issueKey, name, slug, kind string) string {
+		t.Helper()
+		var id string
+		if err := database.Pool.QueryRow(ctx, `
+			insert into artifacts (issue_key, project_key, slug, name, kind, created_by)
+			values ($1, 'ROLE', $2, $3, $4, '{"kind":"user","id":"alice"}')
+			returning id::text
+		`, issueKey, slug, name, kind).Scan(&id); err != nil {
+			t.Fatalf("store the %s %s on %s: %v", kind, slug, issueKey, err)
+		}
+		return id
+	}
+
+	rollingPlan := insertRoleless(rolling, "plan.md", "plan-md", "doc")
+	rollingVerification := insertRoleless(rolling, "verification.md", "verification-md", "doc")
+	rollingDecisions := insertRoleless(rolling, "decisions.md", "decisions-md", "doc")
+
+	rows := []struct {
+		what  string
+		id    string
+		plays string
+	}{
+		{"a role-less file uploaded as plan.md", file.ID, ""},
+		{"a role-less file stored as verification.md", insertRoleless(uploads, "verification.md", "verification-md", "file"), ""},
+		{"a role-less file stored as decisions.md", insertRoleless(uploads, "decisions.md", "decisions-md", "file"), ""},
+		{"a role-less picture stored under the slug plan-md", insertRoleless(pictures, "plan.md", "plan-md", "image"), ""},
+		{"a role-less doc with the slug plan-md", rollingPlan, model.ArtifactRolePlan},
+		{"a role-less doc with the slug verification-md", rollingVerification, model.ArtifactRoleVerification},
+		{"a role-less doc with the slug decisions-md", rollingDecisions, ""},
+		{"a role-less doc whose slug names no role", insertRoleless(rolling, "notes.md", "notes-md", "doc"), ""},
+		{"a plan whose role is set", uploadDocument(t, handler, "/api/v1/issues/"+stamped, "plan.md", "# Plan\n\nOne.\n").Artifact.ID, model.ArtifactRolePlan},
+		{"a Verification document whose role is set", uploadDocument(t, handler, "/api/v1/issues/"+stamped, "verification.md", "# Verification\n\nOne.\n").Artifact.ID, model.ArtifactRoleVerification},
+		{"a project's document named plan.md", uploadDocument(t, handler, "/api/v1/projects/ROLE", "plan.md", "# Plan\n\nOne.\n").Artifact.ID, ""},
+	}
+	for _, row := range rows {
+		artifact, err := loadArtifactRowByID(ctx, database.Pool, row.id)
+		if err != nil {
+			t.Fatalf("read %s: %v", row.what, err)
+		}
+		for role := range roleSlugs {
+			want := role == row.plays
+			// The predicate is asked as every query asks it, in a where clause, aliased and not.
+			for _, alias := range []string{"a", ""} {
+				table := "artifacts"
+				if alias != "" {
+					table += " " + alias
+				}
+				var held bool
+				if err := database.Pool.QueryRow(ctx,
+					`select exists (select 1 from `+table+` where id = $1 and `+documentRolePredicate(alias, role)+`)`,
+					row.id).Scan(&held); err != nil {
+					t.Fatalf("ask documentRolePredicate(%q, %q) of %s: %v", alias, role, row.what, err)
+				}
+				if held != want {
+					t.Errorf("documentRolePredicate(%q, %q) holds %s (kind %q role %q slug %q) = %v, want %v",
+						alias, role, row.what, artifact.Kind, artifact.Role, artifact.Slug, held, want)
+				}
+			}
+			if plays := documentPlays(artifact, role); plays != want {
+				t.Errorf("documentPlays(%s (kind %q role %q slug %q), %q) = %v, want %v",
+					row.what, artifact.Kind, artifact.Role, artifact.Slug, role, plays, want)
+			}
+		}
+		if role := documentRoleOf(artifact); role != row.plays {
+			t.Errorf("documentRoleOf(%s) = %q, want %q", row.what, role, row.plays)
+		}
+	}
+
+	// The issue read finds each document by the predicate: it names none of the files, and it
+	// names the rolling deploy's rows by their slug.
+	if named := readIssueRoleDocuments(t, handler, uploads); named.PlanArtifactID != "" ||
+		named.VerificationArtifactID != "" || named.DecisionsArtifactID != "" {
+		t.Errorf("issue read of the issue holding files named like role documents = %#v, want no role document named", named)
+	}
+	if named := readIssueRoleDocuments(t, handler, rolling); named.PlanArtifactID != rollingPlan ||
+		named.VerificationArtifactID != rollingVerification || named.DecisionsArtifactID != rollingDecisions {
+		t.Errorf("issue read of the issue holding role-less docs = %#v, want plan %s, verification %s and decisions %s",
+			named, rollingPlan, rollingVerification, rollingDecisions)
+	}
 }

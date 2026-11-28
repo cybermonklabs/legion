@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+  The hash gate's wire shapes, all optional so a deployed Dispatch, client or daemon parses what it
+  already read: `ArtifactApprovalSchema` gains `current_sha256` (nullable hex) and `digest_owed`;
+  the `artifact.version` payload gains `digest_owed` and `content_sha256`; the `artifact.approved`
+  and `artifact.changes_requested` payloads gain `approval_current`; and the new event type
+  `artifact.digest` (`WrittenArtifactDigestEventPayloadSchema`: `artifact_id`, `name`, `version`,
+  `content_sha256`, `approval_current`, optional `approved_version` and `approved_sha256`).
+time: 2026-11-27T17:30:01Z
+custom:
+    Issue: INFRA-1253

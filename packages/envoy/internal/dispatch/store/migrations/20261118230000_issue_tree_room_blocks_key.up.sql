@@ -1,0 +1,21 @@
+-- 20261118230000_issue_tree_room_blocks_key.up.sql — issue_room_blocks holds every block of an
+-- issue room, a block whose id is past text.MaxBlockIDBytes included.
+--
+-- issue_room_blocks (20261117045607_issue_tree_rooms) names the document whose fragment of an
+-- issue room holds each block, and it is the one record of that: refs.BlockDocumentSQL and
+-- refs.AskBlockDocumentSQL read it. Its primary key, (tree_artifact_id, block_id), keys the id
+-- itself, and a B-tree entry holds at most 2704 bytes, so the room's index wrote no row for a block
+-- whose id is past the bound, which a browser's edit can make any length: an ask of such a block,
+-- keyed by the room's tree, read the tree as its document, which the issue read leaves out. The key
+-- is rebuilt over block_id_key, the id's SHA-256 (0127), 32 bytes at any length, as asks' and
+-- doc_ask_block_authors' are, and the room's index writes the row of a block past the bound too
+-- (refs' reconcileRoomBlocks). A unique index stands in for the primary key, which takes no
+-- expression; two ids under one key would be a SHA-256 collision. Every reader that reads a row of
+-- the table by its block id reads it through block_id_key(block_id) as well, so its plan keeps the
+-- index.
+--
+-- Rolling deploy. The table is this branch's own: the release before this one names it nowhere,
+-- and this release writes it with on conflict over the new index alone. Rolling back past this
+-- migration is an image rollback alone: the release before reads nothing of the table.
+alter table issue_room_blocks drop constraint issue_room_blocks_pkey;
+create unique index issue_room_blocks_block on issue_room_blocks (tree_artifact_id, block_id_key(block_id));

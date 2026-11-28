@@ -170,7 +170,7 @@ func TestAKeystrokeWaitingOnASlowClosesDocumentLockIsStored(t *testing.T) {
 	other := docs.New(docs.Deps{Store: second, Identity: headerIdentity(second), Settle: time.Hour})
 	t.Cleanup(func() { _ = other.Shutdown(context.Background()) })
 	runDocumentRoomSync(t, second, other)
-	peer := connectBrowserPeer(t, other, issue.PrimaryArtifactID)
+	peer := connectBrowserPeer(t, handler, other, issue.PrimaryArtifactID)
 	wrapper.insert = func() {
 		// The close's transaction began before its withdrawal wrote the block, so the keystroke
 		// is typed more than closeMargin after that start.
@@ -224,10 +224,12 @@ func waitForDocumentLockWaiter(t *testing.T, database *store.Store) {
 	})
 }
 
-// storedDocumentText renders every stored update of artifactID, as a room loading it would hold it.
+// storedDocumentText renders every stored update of the room artifactID's document is edited in,
+// as a room loading it would hold it, through the document's own fragment (documentRoomOf).
 func storedDocumentText(t *testing.T, database *store.Store, artifactID string) string {
 	t.Helper()
-	rows, err := database.Pool.Query(context.Background(), `select update from doc_updates where artifact_id = $1 order by version`, artifactID)
+	room, fragment := documentRoomOf(t, database.Pool, artifactID)
+	rows, err := database.Pool.Query(context.Background(), `select update from doc_updates where artifact_id = $1 order by version`, room)
 	if err != nil {
 		t.Fatalf("read the stored document updates: %v", err)
 	}
@@ -241,7 +243,7 @@ func storedDocumentText(t *testing.T, database *store.Store, artifactID string) 
 			t.Fatalf("apply a stored document update: %v", err)
 		}
 	}
-	return renderDocument(t, document)
+	return renderFragment(t, document, fragment)
 }
 
 // waitForDocumentConnectionClose waits for the server to close a connected client's connection.

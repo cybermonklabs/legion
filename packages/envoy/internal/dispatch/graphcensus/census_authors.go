@@ -19,29 +19,27 @@ import (
 // empty where it names nobody. It reads `asks k`.
 const answerer = `coalesce(user_threads_login(k.answer->>'user'), '')`
 
-// actorAuthor is the node graphstore.AuthorOf reads off a stored actor, the SQL expression actor,
-// as one value: an array of two, the node's kind and its id, or null for an actor that names
-// nobody. The login an actor of kind user carries is a person, and so is the owner a personal
-// token's actor carries, each canonicalised the way user_threads_login canonicalises a login
-// (migration 0095, which is model.CanonicalLogin in SQL); a session's id is the session. It is
-// spelled once here for the readings of who wrote a comment: the far end of the authored_by a row
-// states (commentAuthor), the people a comment names (commentWriterPeople) and the person whose
-// aliases the sizing counts (sizingWritesWith).
-func actorAuthor(actor string) string {
+// authorNode is the far end of the authored_by tuple a row whose author is the jsonb actor states,
+// written kind:id: the node graphstore.AuthorOf reads off the actor the row stored - the session
+// it names, else the person authorLogin reads, a login canonicalised as commentWriterPeople
+// canonicalises one - and null for an actor that names nobody, whose row states no authored_by at
+// all.
+func authorNode(actor string) string {
 	return `case
-			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> ''
-				then array['` + graphstore.KindPerson + `', user_threads_login(` + actor + `->>'id')]
 			when ` + actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> ''
-				then array['` + graphstore.KindSession + `', ` + actor + `->>'id']
-			when coalesce(` + actor + `->>'owner', '') <> ''
-				then array['` + graphstore.KindPerson + `', user_threads_login(` + actor + `->>'owner')]
+				then '` + graphstore.KindSession + `:' || (` + actor + `->>'id')
+			else '` + graphstore.KindPerson + `:' || user_threads_login(` + authorLogin(actor) + `)
 		end`
 }
 
-// commentAuthor is the far end of the authored_by tuple a comment row states, written kind:id:
-// the node graphstore.AuthorOf reads off the actor the row stored (actorAuthor), and null for an
-// actor that names nobody, whose comment states no authored_by at all.
-var commentAuthor = `array_to_string(` + actorAuthor("c.author") + `, ':')`
+// authoredLink is the authored_by link a row whose author is the jsonb actor states, as
+// statedLinks takes one: kind>to_kind:to_id, null for an actor naming nobody and for a session
+// past the store's bound, of whom the writer states nothing (graphstore.AuthorFacts).
+func authoredLink(actor string) string {
+	return `case when ` + actor + `->>'kind' <> '` + graphstore.KindSession + `'
+		           or octet_length(coalesce(` + actor + `->>'id', '')) <= ` + addressBound + `
+		      then '` + graphstore.TupleAuthoredBy + `>' || ` + authorNode(actor) + ` end`
+}
 
 // commentWriters are the comments the store holds, each as the actor that wrote it and the time it
 // was written: every comments row the store holds (refs.CommentInTheStore). It is who wrote a
@@ -51,16 +49,16 @@ var commentWriters = `
 	from comments c` + refs.CommentStoreJoins + `
 	where ` + refs.CommentInTheStore
 
-// commentWriterPeople is each person a comment the store holds names as its writer
+// commentWriterPeople is each person a comment the store holds or held names as its writer
 // (commentWriters), one row for each such comment and person, with the time the comment was
-// written. It reads an actor as graphstore.AuthorOf does (actorAuthor): the login an actor of kind
-// user carries, or the owner a personal token's actor carries, each canonicalised the way
-// user_threads_login canonicalises a login (migration 0095, which is model.CanonicalLogin in SQL).
-// Beside them are the owners of the sessions the server proved that wrote a comment: the
-// comment's author is the session, whose act names that same session and whose owner is the
-// person it belongs to, and the write that ties the two with an alias_of tuple makes the owner's
-// node with it (graphstore.AuthorFacts), except for a session past the store's bound, of which
-// nothing is written.
+// written and the event that stored it (null for a row). It reads an actor as graphstore.AuthorOf
+// does (authorLogin): the login an actor of kind user carries, or the owner a personal token's
+// actor carries, each canonicalised the way user_threads_login canonicalises a login (migration
+// 0095, which is model.CanonicalLogin in SQL). Beside them are the owners of the sessions the
+// server proved that wrote a comment: the comment's author is the session, whose act names that
+// same session and whose owner is the person it belongs to, and the write that ties the two with
+// an alias_of tuple makes the owner's node with it (graphstore.AuthorFacts), except for a session
+// past the store's bound, of which nothing is written.
 //
 // Only the comments the store holds name anybody here (refs.CommentInTheStore): a comment
 // anchored to or owned by a document whose address is past the bound is left whole out of the
@@ -74,22 +72,17 @@ var commentWriters = `
 var commentWriterPeople = `
 	select user_threads_login(author.login) as login, written.at
 	from (` + commentWriters + `) written
-	cross join lateral (
-		select authored.node[2] from (select ` + actorAuthor("written.actor") + `) authored (node)
-		where authored.node[1] = '` + graphstore.KindPerson + `'
-		union all
-		select written.actor->>'owner'
-		where ` + provedSessionOwner("written.actor") + `
-	) author (login)
+	cross join lateral (values (` + authorLogin("written.actor") + `),
+		(case when ` + provedSessionOwner("written.actor") + ` then written.actor->>'owner' end)) author (login)
 	where author.login is not null and user_threads_login(author.login) <> ''`
 
 // provedSessionOwner is true of a stored actor, the SQL expression actor, that is a session the
-// server proved: the actor is the session, its act names that same session, and the session is
-// within the store's bound. Its `owner`, where it names one, is then the person the session
-// belongs to, whom the write that stored the actor ties to the session by an alias_of tuple and
-// makes a node of (graphstore.AuthorFacts). It is commentWriterPeople's second arm, spelled once
-// here so that commentWriterPeople and the sizing's count of a comment's aliases
-// (sizingWritesWith) read one rule.
+// server proved its owner's (graphstore's provedOwner): the actor is the session, its act names
+// that same session, and the session is within the store's bound. Its `owner`, where it names one,
+// is then the person the session belongs to, whom the write that stored the actor ties to the
+// session by an alias_of tuple and makes a node of (graphstore.AuthorFacts). It is
+// commentWriterPeople's second arm, spelled once here so that commentWriterPeople and the sizing's
+// count of a comment's aliases (sizingWritesWith) read one rule.
 func provedSessionOwner(actor string) string {
 	return actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> ''
 		  and ` + actor + `->'act'->>'session' = ` + actor + `->>'id'
@@ -117,10 +110,15 @@ func provedSessionOwner(actor string) string {
 // join, so the planner keys the index rather than reading the table whole.
 //
 // Who wrote each decision, reading and ask the store holds an authored_by or decided_by of names
-// people too, and so does every person an ask's answer ever named (storedAuthors, read as the
-// relation authors names: censusAuthors where the census binds what it read once, inlineAuthors
-// where a statement reads it itself), and so does the owner the server proved of each such writer
-// that is a session (storedOwners).
+// people too, and so does every person an ask's answer ever named, and every author of a lens, a
+// finding, a risk or a constraint and of a run whose row is gone (storedAuthors, read as
+// the relation authors names: censusAuthors where the census binds what it read once,
+// inlineAuthors where a statement reads it itself), and so does the owner the server proved of
+// each such writer that is a session (storedOwners).
+//
+// The authors of the runs going_requests holds are read off each row's author by the same two
+// rules as a comment's, since the run's writer (graphstore.InteractionFacts) states its author
+// through graphstore.AuthorFacts as the comment path does.
 func commentPeople(authors string) string {
 	return `
 	select distinct user_threads_login(author.login) as login
@@ -128,20 +126,18 @@ func commentPeople(authors string) string {
 		select named.login
 		from (` + commentWriterPeople + `) named
 		union all
-		select case
-			when k.author->>'kind' = 'user' and coalesce(k.author->>'id', '') <> '' then k.author->>'id'
-			when k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> '' then null
-			when coalesce(k.author->>'owner', '') <> '' then k.author->>'owner'
-		end
-		from asks k where k.node_kind is not null
-		union all
-		select k.author->>'owner'
+		select asker.login
 		from asks k
-		where k.node_kind is not null and k.author->>'kind' = 'session' and coalesce(k.author->>'id', '') <> ''
-		  and k.author->'act'->>'session' = k.author->>'id'
-		  and octet_length(k.author->>'id') <= ` + addressBound + `
+		cross join lateral (values (` + authorLogin("k.author") + `),
+			(case when ` + provedSessionOwner("k.author") + ` then k.author->>'owner' end)) asker (login)
+		where k.node_kind is not null
 		union all
 		select k.answer->>'user' from asks k where k.node_kind is not null and k.answer is not null
+		union all
+		select runner.login
+		from going_requests r
+		cross join lateral (values (` + authorLogin("r.author") + `),
+			(case when ` + provedSessionOwner("r.author") + ` then r.author->>'owner' end)) runner (login)
 		union all
 		select stored.id from ` + authors + ` where stored.kind = '` + graphstore.KindPerson + `'
 		union all
@@ -155,9 +151,8 @@ func commentPeople(authors string) string {
 // writes beside the tie that names it (refs.PlanBlocks, refs.PlanDecisionNodes and
 // graphstore.AskFacts, through graphstore.AuthorFacts). A decision's author is the far end of its
 // decided_by, which its block_refs row projects, and that row is what is read for it. A reading's
-// author is the far end
-// of its authored_by, which no table projects (the tuple table), so the
-// row read for it is the tuple itself, the authored_by each live reading's node states now, as
+// author is the far end of its authored_by, which no table projects (the tuple table), so the row
+// read for it is the tuple itself, the authored_by each reading's node not gone states now, as
 // graph_edges' tuple arm would answer it. An ask's author is read the same way, off the
 // authored_by every ask node states now: an ask one of whose documents is past the store's bound
 // keeps a row that names no node (graphstore.AskPlaces.Fit), which the ask author arms of
@@ -165,6 +160,16 @@ func commentPeople(authors string) string {
 // author's node all the same. Each names a node the store must hold, so a writer that stated the
 // tie and not the node is a difference here. An ask a build before the store wrote states no
 // authored_by until the backfill marks its row, so it names no author here.
+//
+// The authors of blocks name people and sessions too (T7 of the issue-tree plan). They are read
+// for each block whose authors the block_author kind holds: an authored node or a block of an
+// issue room, of a document that owes no block index (blockVersionAuthors, blockAuthorsHeld). A
+// block that the issue conversion moved into its room takes the authors the conversion copied to
+// its node. Those are the authors its old node's authored_by names. Where that names none, they
+// are the authors of the first version of the old document that held the block, where Dispatch
+// knows that version. Every other block takes the authors of the version that first held it. The
+// block index and the conversion state each such authored_by through graphstore.AuthorFacts,
+// which writes the author's node. A copied authored_by names a node its first writer wrote.
 //
 // A node is history and never goes: a decision or a reading deleted or retyped since takes its
 // row and its current tie away and leaves its author's node standing, so every person and session
@@ -180,6 +185,10 @@ func commentPeople(authors string) string {
 // of the person and session kinds (censusAuthors), so its two reads of the log cost one statement
 // a census whatever plan the planner takes for them; the backfill's session pass reads it inside
 // its own statement (inlineAuthors).
+//
+// The authors of the reasoning nodes and of the runs whose row is gone (reasoningAuthored,
+// goneRunsAuthored) are read here too, so the person and session row sides read them bound as
+// well and read the log for them no more than for the rest.
 var storedAuthors = `
 	select r.to_kind as kind, r.to_id as id, r.created_at as at
 	from block_refs r
@@ -189,6 +198,12 @@ var storedAuthors = `
 	` + currentAuthors(`held.kind = '`+refs.BlockNodeKind+`' and held.supertag = '`+refs.ReadingSupertag+`'`) + `
 	union all
 	` + currentAuthors(`held.kind = '`+graphstore.KindAsk+`'`) + `
+	union all
+	` + blockVersionAuthors + `
+	union all
+	` + reasoningAuthored + `
+	union all
+	` + goneRunsAuthored + `
 	union all
 	` + writtenHistory + `
 	union all
@@ -266,6 +281,37 @@ func storedOwners(authors string) string {
 	where owner.asserted`
 }
 
+// authorLogin is the login of the person graphstore.AuthorOf names of the actor a jsonb column
+// holds, uncanonicalised, and null for an actor it names a session of or nobody.
+func authorLogin(actor string) string {
+	return `case
+			when ` + actor + `->>'kind' = 'user' and coalesce(` + actor + `->>'id', '') <> '' then ` + actor + `->>'id'
+			when ` + actor + `->>'kind' = 'session' and coalesce(` + actor + `->>'id', '') <> '' then null
+			when coalesce(` + actor + `->>'owner', '') <> '' then ` + actor + `->>'owner'
+		end`
+}
+
+// reasoningAuthored is the author every lens, finding of one (a block whose id names its lens,
+// lensBlock), risk and constraint states now, as (kind, id, at) (storedAuthors): the far end of
+// its current authored_by into a person or a session. Their one writer (api's writeReasoningNodes)
+// states that tuple to the writer graphstore.AuthorOf names of the node's made_by, and that
+// writer's own node beside it (graphstore.AuthorFacts), whatever the credential proved (spec v46
+// R12), so the far end is a person or a session the store owes a node, and the owner the server
+// proved of a session is read off its alias_of (storedOwners). A node written on the shared
+// bearer, or by a pod on a session its body names, names that session, which is so on both sides;
+// a node whose made_by names only a workload states none, and that workload is on neither.
+var reasoningAuthored = currentAuthors(`(` + kindIn("held.kind", []string{graphstore.KindLens, graphstore.KindRisk, graphstore.KindConstraint}) +
+	` or (held.kind = '` + refs.BlockNodeKind + `' and ` + graphstore.FindingIDSQL("held.id") + `))`)
+
+// goneRunsAuthored is the author every run whose row is gone states now - one the sweep stated gone
+// and removed the rows of an hour after it was asked (api's sweepGoingRequests), or one a process
+// of the release before deleted an hour old during a roll, whose interaction the sweep or the
+// backfill stated gone (backfillGoneRuns) - in the shape of reasoningAuthored. The row that named
+// the author went with the run, so the store's own record of the writer stands on the row side, as
+// it does for a reasoning node: an author's node is history and stays, and without this a person
+// whose one write was such a run would read as a node no row projects.
+var goneRunsAuthored = currentAuthors(`held.kind = '` + graphstore.KindInteraction + `' and held.state = '` + graphstore.StateGone + `'`)
+
 // recordedSessions are the sessions a row of the store names or an event of the log has named,
 // each once, with the first event that named it (null for a session only a row names) and the
 // earliest time a row or an event names it. They are every write R14 records a session from: a
@@ -300,6 +346,9 @@ func storedOwners(authors string) string {
 //
 // Only the comments the store holds name a session here (commentWriters), for the reason
 // commentWriterPeople binds the same: a comment left out of the store records no author at all.
+// The author of a run going_requests holds is a session here where the row's author is one, and
+// the author of a reasoning node, or of a run whose row is gone, where its authored_by names one
+// (storedAuthors).
 //
 // It is one definition read by two: the census's session row side and the backfill's session
 // pass (backfillSessions), so the sessions the backfill gives a node are exactly the sessions the
@@ -312,6 +361,9 @@ func recordedSessions(authors string) string {
 		select written.actor->>'id' as id, null::bigint as event, written.at
 		from (` + commentWriters + `) written
 		where written.actor->>'kind' = 'session' and coalesce(written.actor->>'id', '') <> ''
+		union all
+		select r.author->>'id', null, r.created_at from going_requests r
+		where r.author->>'kind' = 'session' and coalesce(r.author->>'id', '') <> ''
 		union all
 		select d.session_id, null, d.created_at from comment_deliveries d
 		where coalesce(d.session_id, '') <> '' and d.state in ` + model.DeliveryTakenStatesSQL + `

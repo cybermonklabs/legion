@@ -2,7 +2,6 @@ package api
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"slices"
 	"testing"
@@ -72,37 +71,35 @@ func TestTheSweepStatesAnOrphanGoneAsTheRemovalStatesIt(t *testing.T) {
 	requireProjectsComplete(t, database)
 }
 
-// removeAsTheReleaseBefore removes the untouched document as the release before this one does,
-// in one transaction: the document's owner lock first, then the rows removeArtifact clears, the
-// artifact row and an artifact.removed event naming it, as that release appends one, and no node
-// written or stated gone. It answers the event's id.
+// removeAsTheReleaseBefore removes the untouched document as the release before this one does, in
+// a transaction of its own (deleteAsTheReleaseBefore), with no node written or stated gone. It
+// answers the event's id.
 func removeAsTheReleaseBefore(t *testing.T, database *store.Store, artifact model.Artifact) int64 {
 	t.Helper()
-	ctx := context.Background()
-	payload, err := json.Marshal(map[string]any{"artifact": artifact})
-	if err != nil {
-		t.Fatal(err)
-	}
 	var removal int64
-	if err := pgx.BeginFunc(ctx, database.Pool, func(tx pgx.Tx) error {
-		owners := events.OwnerRows{}
-		owners.Add(*artifact.IssueKey, artifact.ID)
-		if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
-			return err
-		}
-		if err := deleteArtifactRows(ctx, tx, artifact); err != nil {
-			return err
-		}
-		return tx.QueryRow(ctx, `
-			insert into events (issue_key, seq, type, actor, payload, notify)
-			select $1, coalesce(max(seq), 0) + 1, 'artifact.removed', '{"kind":"user","id":"alice"}', $2::jsonb, false
-			from events where issue_key = $1
-			returning id
-		`, *artifact.IssueKey, payload).Scan(&removal)
+	if err := pgx.BeginFunc(context.Background(), database.Pool, func(tx pgx.Tx) (err error) {
+		removal, err = deleteAsTheReleaseBefore(context.Background(), tx, artifact)
+		return err
 	}); err != nil {
 		t.Fatalf("remove %s as the release before does: %v", artifact.ID, err)
 	}
 	return removal
+}
+
+// deleteAsTheReleaseBefore is, in tx, the release before this one's removal of the untouched
+// document: the document's owner lock first, then the rows removeArtifact clears, the artifact row
+// and an artifact.removed event naming it, as that release appends one (appendIssueEventDirectly).
+// It answers the event's id.
+func deleteAsTheReleaseBefore(ctx context.Context, tx pgx.Tx, artifact model.Artifact) (int64, error) {
+	owners := events.OwnerRows{}
+	owners.Add(*artifact.IssueKey, artifact.ID)
+	if err := events.LockOwnerRows(ctx, tx, owners); err != nil {
+		return 0, err
+	}
+	if err := deleteArtifactRows(ctx, tx, artifact); err != nil {
+		return 0, err
+	}
+	return appendIssueEventDirectly(ctx, tx, *artifact.IssueKey, "artifact.removed", artifact)
 }
 
 // readDocumentNode reads the document node at ref, which has to be there.

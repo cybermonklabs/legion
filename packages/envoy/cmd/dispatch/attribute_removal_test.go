@@ -30,9 +30,9 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
-	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
 // askOpener is the opening line of an ask block, at any depth and under any quote or list prefix.
@@ -174,13 +174,13 @@ func textHash(markdown string) string {
 }
 
 // versionHashOf is the digest the store takes now of the bytes the version number of document holds
-// (artifact_version_text_sha256), and the hash its newest review there holds (docs.ReviewOrder).
+// (artifact_version_text_sha256), and the hash its newest review there holds (model.ReviewOrder).
 func versionHashOf(t *testing.T, ctx context.Context, database *pgx.Conn, document string, number int) (stored, reviewed string) {
 	t.Helper()
 	if err := database.QueryRow(ctx, `
 		select coalesce(artifact_version_text_sha256($1::uuid, $2), ''),
 		       coalesce((select content_sha256 from artifact_reviews where artifact_id = $1::uuid and version = $2
-		                 order by `+docs.ReviewOrder+` limit 1), '')
+		                 order by `+model.ReviewOrder+` limit 1), '')
 	`, document, number).Scan(&stored, &reviewed); err != nil {
 		t.Fatalf("read the hashes of version %d of %s: %v", number, document, err)
 	}
@@ -300,8 +300,8 @@ func TestAnApprovalCarriesAcrossTheRemovalOfTheServerOwnedAskAttributes(t *testi
 	}
 	stopProcess(t, previous)
 
-	// This head writes a third document holding a reading inside an answered ask: at block schema
-	// version 8 it creates reading blocks.
+	// This head writes a third document holding a reading inside an answered ask: a build creates
+	// reading blocks from block schema version 8, and this head is at version 9.
 	current := startDispatchProcessWith(t, databaseURL, dispatchOptions{Binary: head, SigningKey: previousBuildSigningKey, SettleDelay: oneAnswerSettleDelay})
 	current.waitHealthy(t)
 	readingAsk := ":::ask{#read-it urgency=\"med\" multiple=\"false\"}\nRead it?\n\n- Yes: Now.\n- No: Later.\n:::\n"
@@ -741,12 +741,16 @@ func thirdDocumentHolds(t *testing.T, ctx context.Context, database *pgx.Conn, a
 // row of the block blockID on rowDocument, each value as the row holds it: the state; for an
 // answered ask, who answered, when, the options chosen and the words; and, where copied is the
 // address of rowDocument, the row's ask and that address, the block being a copy. It never holds
-// invalid, which no stored version holds.
+// invalid, which no stored version holds. The row is read as every read of a document's asks reads
+// it (refs.AsksOfDocumentSQL): keyed by the room rowDocument is edited in, the tree artifact of
+// its issue's room for a document converted into it, and naming a block rowDocument holds, so it
+// answers for a converted and an unconverted document alike.
 func requireBlockInStepWithRow(t *testing.T, ctx context.Context, database *pgx.Conn, markdown, blockID, rowDocument, copied string) {
 	t.Helper()
 	var askID, state string
 	var answer []byte
-	if err := database.QueryRow(ctx, `select id::text, state, answer from asks where block_artifact_id = $1::uuid and block_id = $2`,
+	if err := database.QueryRow(ctx, `select a.id::text, a.state, a.answer from asks a
+		where `+refs.AsksOfDocumentSQL("a", "$1::uuid")+` and a.block_id = $2`,
 		rowDocument, blockID).Scan(&askID, &state, &answer); err != nil {
 		t.Fatalf("read the ask row of the block %s: %v", blockID, err)
 	}

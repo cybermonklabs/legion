@@ -1,0 +1,5 @@
+kind: Added
+body: |-
+  The `dispatch` command adds `lens`, `lenses`, `finding`, `risk`, `constraint`, `constraints`,
+  `pointer`, `state`, `proposed`, `settle` and `premortem-convert`, one for each new Dispatch tool.
+  `premortem-convert --preview` asks for a dry run, which writes nothing.

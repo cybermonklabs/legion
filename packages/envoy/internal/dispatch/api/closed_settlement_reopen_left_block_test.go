@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"slices"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -31,17 +33,20 @@ const leavingDecisionSpec = "Context\n\n" +
 // issue's settlement retracts nothing. That settlement deletes the document's pending row, and the
 // reopen's ask-state write finds no block of the restored ask to write, so the reopen marks the
 // document owed itself, as the block document of an open ask (docs.MarkReopenOwedAskDocuments).
-// The resumption after the reopen settles it on the open issue.
+// The resumption after the reopen settles it on the open issue. Every settlement of the document
+// that takes its owner lock after the reopen waits there until the test has read what the reopen
+// left and run that resumption (holdSettlementsAfterReopen).
 func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.T) {
 	t.Parallel()
 	handler, database, documentService := newClosedSettlementHandler(t)
+	afterReopen := holdSettlementsAfterReopen(database, documentService)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An ask whose block leaves while closed", leavingDecisionSpec)
 	spec := issue.PrimaryArtifactID
 	awaitIndexedAskBlock(t, handler, spec, "leaving-decision", "Will it stay?")
 	ask := requireBlockAsk(t, handler, issue.Key, spec, "leaving-decision")
 	awaitSettled(t, database, spec)
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	requireWithdrawn(t, handler, issue.Key, ask, alice)
@@ -76,6 +81,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 		t.Fatalf("the closed issue's document reads:\n%s\nwant it without the deleted block", live)
 	}
 
+	afterReopen.hold(t, artifactRoom(t, handler, spec), issue.Key)
 	if reopened := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue.Key, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
 	}
@@ -94,6 +100,7 @@ func TestAWithdrawnAskWhoseBlockLeftWhileClosedIsRestoredAtTheReopen(t *testing.
 	if err := documentService.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
+	afterReopen.release(t)
 	retracted := testwait.UntilPolling(t, 20*time.Millisecond, fmt.Sprintf("the reopened issue's settlement to retract ask %s, whose block left its document (the ask)", ask), func() (model.Ask, bool) {
 		read := readBlockAsk(t, handler, ask)
 		return read, read.State != "open"
@@ -129,11 +136,14 @@ const rewordedDecisionSpec = "Context\n\n" +
 // on the open issue, which takes the block's question into the open ask, as settlement takes the
 // rewording of any open ask's block. The newest version holds the person's question and, as every
 // version written on a fleet of one build, none of the ask's state,
-// which the text an agent reads shows open.
+// which the text an agent reads shows open. Every settlement of the document that takes its owner
+// lock after the reopen waits there until the test has read the pending row the reopen left and
+// run that resumption (holdSettlementsAfterReopen).
 func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen(t *testing.T) {
 	t.Parallel()
 	f := rewordWithdrawnDecisionWhileClosed(t)
 	ctx := context.Background()
+	f.afterReopen.hold(t, artifactRoom(t, f.handler, f.spec), f.issue)
 	if reopened := dispatchRequest(t, f.handler, http.MethodPatch, "/api/v1/issues/"+f.issue, map[string]string{"status": "todo"}, "alice"); reopened.Code != http.StatusOK {
 		t.Fatalf("reopen: status=%d body=%s", reopened.Code, reopened.Body.String())
 	}
@@ -143,6 +153,7 @@ func TestAWithdrawnAsksBlockRewordedInsideTheCloseMarginRewordsItsAskAtTheReopen
 	if err := f.documents.ResumeOwedSettlementsForTest(ctx, 0); err != nil {
 		t.Fatalf("resume the reopened issue's owed settlements: %v", err)
 	}
+	f.afterReopen.release(t)
 	awaitRewordedAsk(t, f)
 	version := awaitSettledVersionHolding(t, f.handler, f.database, f.spec, rewordedQuestion)
 	if strings.Contains(version, askedQuestion) {
@@ -194,14 +205,16 @@ const askedQuestion, rewordedQuestion = "Ship it on Friday?", "Ship it on Monday
 
 // rewordedWhileClosed is an issue whose spec holds rewordedDecisionSpec's decision, closed through
 // PATCH, whose ask block alice's browser reworded once the close had withdrawn its ask, and
-// whose document a settlement saved on the closed issue.
+// whose document a settlement saved on the closed issue. afterReopen is the hold installed on its
+// document service, which holds nothing until a test calls hold.
 type rewordedWhileClosed struct {
-	handler   http.Handler
-	database  *store.Store
-	documents *docs.Service
-	issue     string
-	spec      string
-	ask       string
+	handler     http.Handler
+	database    *store.Store
+	documents   *docs.Service
+	afterReopen *settlementsAfterReopen
+	issue       string
+	spec        string
+	ask         string
 }
 
 // rewordWithdrawnDecisionWhileClosed builds rewordedWhileClosed. alice's browser, connected before
@@ -211,13 +224,14 @@ type rewordedWhileClosed struct {
 func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 	t.Helper()
 	handler, database, documentService := newClosedSettlementHandler(t)
+	afterReopen := holdSettlementsAfterReopen(database, documentService)
 	ctx := context.Background()
 	issue := createInteractionIssue(t, handler, "TEST", "An ask whose block is reworded while closed", rewordedDecisionSpec)
 	spec := issue.PrimaryArtifactID
 	awaitIndexedAskBlock(t, handler, spec, "rewording-decision", askedQuestion)
 	ask := requireBlockAsk(t, handler, issue.Key, spec, "rewording-decision")
 	awaitSettled(t, database, spec)
-	peer := connectBrowserPeer(t, documentService, spec)
+	peer := connectBrowserPeer(t, handler, documentService, spec)
 	closeIssueThroughPatch(t, handler, database, issue.Key)
 	alice := model.Actor{Kind: "user", ID: "alice", Proven: true}
 	requireWithdrawn(t, handler, issue.Key, ask, alice)
@@ -256,7 +270,7 @@ func rewordWithdrawnDecisionWhileClosed(t *testing.T) rewordedWhileClosed {
 	if got := readBlockAsk(t, handler, ask); got.Question != askedQuestion {
 		t.Fatalf("the withdrawn ask asks %q on the closed issue, want %q, the question it was asked", got.Question, askedQuestion)
 	}
-	return rewordedWhileClosed{handler: handler, database: database, documents: documentService, issue: issue.Key, spec: spec, ask: ask}
+	return rewordedWhileClosed{handler: handler, database: database, documents: documentService, afterReopen: afterReopen, issue: issue.Key, spec: spec, ask: ask}
 }
 
 // awaitRewordedAsk waits until the settlement after f's reopen has taken the block's question into
@@ -292,4 +306,79 @@ func openAskListsHolding(t *testing.T, handler http.Handler, issue, ask string) 
 		}
 	}
 	return lists
+}
+
+// settlementsAfterReopen holds every settlement of one room that takes the room's owner lock once
+// the room's issue has reopened, at that lock, until release (holdSettlementsAfterReopen).
+type settlementsAfterReopen struct {
+	target   atomic.Pointer[reopeningRoom]
+	released chan struct{}
+	once     sync.Once
+	// failed is the hook's failed read of whether the issue has reopened, after which it held
+	// nothing.
+	failed atomic.Pointer[error]
+}
+
+// reopeningRoom is the room whose settlements a settlementsAfterReopen holds, and its issue.
+type reopeningRoom struct{ room, issue string }
+
+// holdSettlementsAfterReopen installs on documentService, before the service settles anything as
+// AfterSettleLockForTest asks, the hook of a settlementsAfterReopen, which holds nothing until hold
+// names a room. A test holds the settlements after an issue's reopen to read what the reopen left
+// before a settlement it does not run itself changes it. The reopen can arm one itself: its
+// ask-state write opens a live write on the document even where it finds nothing to write
+// (docs.WriteIssueAskStates), and opening it takes over a settlement of the document still armed
+// or running, which finishing it arms again (docs' openLiveWrite and finishLiveWrite). The closed
+// issue's settlement the test ran is such a settlement when the reopen comes after its commit,
+// which the test waits for, and before it has returned. On the open issue the settlement that
+// write arms retracts a restored ask whose block left the document.
+//
+// The hook reads whether the issue has reopened as the settlement reads it, under the owner lock
+// the settlement holds when the hook runs (lockArtifactOwner), which the reopen takes too. A
+// settlement that reads the issue closed took the lock before the reopen and goes on, so the
+// reopen, which waits for that lock, never waits on the hold; one that reads it open took the
+// lock after the reopen committed, and is held.
+func holdSettlementsAfterReopen(database *store.Store, documentService *docs.Service) *settlementsAfterReopen {
+	h := &settlementsAfterReopen{released: make(chan struct{})}
+	documentService.AfterSettleLockForTest(func(room string) {
+		target := h.target.Load()
+		if target == nil || target.room != room {
+			return
+		}
+		var reopened bool
+		if err := database.Pool.QueryRow(context.Background(), `select closed_at is null from issues where key = $1`, target.issue).Scan(&reopened); err != nil {
+			h.failed.Store(&err)
+			return
+		}
+		if reopened {
+			<-h.released
+		}
+	})
+	return h
+}
+
+// hold holds the settlements of room, the room a document of issue is edited in, from now until
+// release or the end of t, which releases them before the document service's shutdown,
+// registered earlier, waits for every settlement.
+func (h *settlementsAfterReopen) hold(t *testing.T, room, issue string) {
+	t.Helper()
+	h.target.Store(&reopeningRoom{room: room, issue: issue})
+	t.Cleanup(h.open)
+}
+
+// release lets every held settlement go on and holds no other; a failed read of the issue's
+// state, which held nothing, fails t.
+func (h *settlementsAfterReopen) release(t *testing.T) {
+	t.Helper()
+	h.open()
+	if err := h.failed.Load(); err != nil {
+		t.Fatalf("read whether the issue has reopened, to hold a settlement after the reopen: %v", *err)
+	}
+}
+
+func (h *settlementsAfterReopen) open() {
+	h.once.Do(func() {
+		h.target.Store(nil)
+		close(h.released)
+	})
 }

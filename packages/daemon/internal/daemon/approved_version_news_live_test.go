@@ -124,7 +124,11 @@ const versionNewsPerson = "smoke"
 const versionNewsWait = 2 * time.Minute
 
 // The words each document is written with and then changed to. A spec's `## Summary` stays as it
-// was, so a task that names it names a section that did not change; a spec's `## Design` changes.
+// was, so a task that names it names a section that did not change; a spec's `## Design` changes,
+// through the words of the one requirement block it holds (versionNewsSpec). A requirement is a
+// node the spec's query reads, so the version moves the digest an approval covers, and the gate
+// closes under a daemon that follows Dispatch's verdict (dispatch://INFRA-6065) as it does under
+// one that closes on any new version; a change of prose alone moves no digest, and would not.
 const (
 	versionNewsDesign      = "The reader takes one page at a time."
 	versionNewsDesignAgain = "The reader takes two pages at a time, and keeps the second for the next read."
@@ -433,10 +437,11 @@ func (r *versionNewsLive) tree(name string, verification, decision bool, members
 	r.note("tree %s on Dispatch: %s; spec %s, Verification document %q", name, strings.Join(keys, ", "), tree.spec, tree.verification)
 }
 
-// versionNewsSpec is the root spec of tree, its `## Design` reading design, and its open ask
-// block in a `## Decisions` section of its own when decision says so.
+// versionNewsSpec is the root spec of tree, its `## Design` one requirement block whose words are
+// design, and its open ask block in a `## Decisions` section of its own when decision says so.
 func versionNewsSpec(tree, design string, decision bool) string {
-	spec := "# The " + tree + " tree\n\n## Summary\n\nWhat the " + tree + " tree of the approved version news proof builds.\n\n## Design\n\n" + design + "\n"
+	spec := "# The " + tree + " tree\n\n## Summary\n\nWhat the " + tree + " tree of the approved version news proof builds.\n\n## Design\n\n" +
+		":::requirement{#r-read}\n**R1.** " + design + "\n:::\n"
 	if decision {
 		spec += "\n## Decisions\n\n" + versionNewsAsk
 	}

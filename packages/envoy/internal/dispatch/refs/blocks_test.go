@@ -36,6 +36,17 @@ func documentOf(parts []part) (string, []model.ArtifactBlock) {
 	return markdown.String(), blocks
 }
 
+// storedAddress is where the stored document artifactID sits, as docs' addressOfDocument reads a
+// stored row for BlockTargets: its ref_key and its issue.
+func storedAddress(t *testing.T, q Queryer, artifactID string) DocumentAddress {
+	t.Helper()
+	var address DocumentAddress
+	if err := q.QueryRow(context.Background(), `select coalesce(ref_key, ''), coalesce(issue_key, '') from artifacts where id = $1::uuid`, artifactID).Scan(&address.RefKey, &address.IssueKey); err != nil {
+		t.Fatalf("read the address of document %s: %v", artifactID, err)
+	}
+	return address
+}
+
 // windowRow is one embeddings window row as its owner's indexer wrote it: the blocks it covers,
 // the text it embeds, the hash of that text and xmin, which any write of the row moves, so an
 // unchanged xmin proves the row was not rewritten.
@@ -102,7 +113,7 @@ func windowFixture(t *testing.T) pgx.Tx {
 func indexVersionAndWindow(t *testing.T, tx pgx.Tx, artifact string, version int, markdown string, blocks []model.ArtifactBlock, what string) {
 	t.Helper()
 	ctx := context.Background()
-	if _, _, _, err := IndexBlocks(ctx, tx, artifact, version, time.Now(), markdown, blocks, nil, nil, "", TypedFacts{}); err != nil {
+	if _, _, _, _, err := IndexBlocks(ctx, tx, artifact, OneVersion(artifact, version, time.Now()), markdown, blocks, nil, nil, "", TypedFacts{}); err != nil {
 		t.Fatalf("index %s: %v", what, err)
 	}
 	if err := WriteDocumentWindows(ctx, tx, artifact, markdown, blocks); err != nil {
@@ -298,19 +309,27 @@ func TestADeletedBlockTakesItsWindowRow(t *testing.T) {
 // list and a quote holding one, each with a blank line between its last two items alone, where
 // a build writes the same blank line between every two. respelledDocumentBlocks is each of its
 // blocks in document order, with its type and its slice of the document as that renderer's build
-// indexed it.
+// indexed it. The tree holds a block of each list item (R7 of the issue-tree spec: the renderer
+// records each item's offset), from its marker to the end of its content, so a list of n items is
+// 2n+1 blocks: the list, each item and each item's paragraph.
 const respelledDocument = "Opening paragraph.\n\n- first\n- second\n\n- third\n\n> - alpha\n> - bravo\n>\n> - charlie\n\nClosing paragraph.\n"
 
 var respelledDocumentBlocks = []struct{ nodeType, text string }{
 	{"paragraph", "Opening paragraph."},
 	{"bullet_list", "- first\n- second\n\n- third"},
+	{"list_item", "- first"},
 	{"paragraph", "first"},
+	{"list_item", "- second"},
 	{"paragraph", "second"},
+	{"list_item", "- third"},
 	{"paragraph", "third"},
 	{"blockquote", "> - alpha\n> - bravo\n>\n> - charlie"},
 	{"bullet_list", "- alpha\n> - bravo\n>\n> - charlie"},
+	{"list_item", "- alpha"},
 	{"paragraph", "alpha"},
+	{"list_item", "- bravo"},
 	{"paragraph", "bravo"},
+	{"list_item", "- charlie"},
 	{"paragraph", "charlie"},
 	{"paragraph", "Closing paragraph."},
 }
@@ -369,7 +388,7 @@ func indexOtherRendererVersionOne(t *testing.T, tx pgx.Tx, artifact, markdown st
 	}
 	stored := respelledVersionBlocks(t, tree, markdown, cuts)
 	insertRenderedVersion(t, tx, artifact, 1, markdown, pmdoc.RendererVersion-1, versionOneAt)
-	if _, won, _, err := IndexBlocks(context.Background(), tx, artifact, 1, versionOneAt, markdown, stored, nil, nil, "", TypedFacts{}); err != nil || !won {
+	if _, won, _, _, err := IndexBlocks(context.Background(), tx, artifact, OneVersion(artifact, 1, versionOneAt), markdown, stored, nil, nil, "", TypedFacts{}); err != nil || !won {
 		t.Fatalf("index version 1 (won %v): %v", won, err)
 	}
 	return tree, stored
@@ -382,7 +401,7 @@ func indexVersionTwo(t *testing.T, tx pgx.Tx, artifact, markdown string, blocks 
 	t.Helper()
 	versionTwoAt := versionOneAt.Add(time.Hour)
 	insertRenderedVersion(t, tx, artifact, 2, markdown, pmdoc.RendererVersion, versionTwoAt)
-	moved, won, _, err := IndexBlocks(context.Background(), tx, artifact, 2, versionTwoAt, markdown, blocks, nil, nil, "", TypedFacts{})
+	moved, won, _, _, err := IndexBlocks(context.Background(), tx, artifact, OneVersion(artifact, 2, versionTwoAt), markdown, blocks, nil, nil, "", TypedFacts{})
 	if err != nil || !won {
 		t.Fatalf("index version 2 (won %v): %v", won, err)
 	}
@@ -392,12 +411,14 @@ func indexVersionTwo(t *testing.T, tx pgx.Tx, artifact, markdown string, blocks 
 // checkKeptAcrossRenderers stores document as version 1 of a document artifact named slug, as
 // another renderer version stored it, its blocks cut by cuts (indexOtherRendererVersionOne), and
 // its tree with the closing paragraph reworded as version 2, as this build writes it
-// (indexVersionTwo). The test needs this build to write every block but a paragraph otherwise
-// than version 1 recorded it, and each block markers names with its marker at its start. It
-// checks that each block takesVersionTwo names takes changed version 2 and its time, with its
-// text recorded at version 2, and every other block keeps changed version 1 and its time with no
-// text recorded at version 2, each with the sum of its text now. markers and takesVersionTwo name
-// blocks by their index in version 1's blocks.
+// (indexVersionTwo). The test needs this build to write every block but a paragraph and a list item
+// otherwise than version 1 recorded it, and each block markers names with its marker at its start:
+// a list item (R7 of the issue-tree spec) holding one paragraph is written as version 1 wrote it,
+// since the blank lines between items are its list's, and one holding more may be written either
+// way. It checks that each block takesVersionTwo names takes changed version 2 and its time, with
+// its text recorded at version 2, and every other block keeps changed version 1 and its time with
+// no text recorded at version 2, each with the sum of its text now. markers and takesVersionTwo
+// name blocks by their index in version 1's blocks.
 func checkKeptAcrossRenderers(t *testing.T, slug, document string, cuts []struct{ nodeType, text string }, markers map[int]string, takesVersionTwo ...int) {
 	t.Helper()
 	tx := windowFixture(t)
@@ -425,7 +446,7 @@ func checkKeptAcrossRenderers(t *testing.T, slug, document string, cuts []struct
 	markdown, blocks := renderedBlocks(t, tree)
 	for _, block := range blocks {
 		body := markdown[block.From:block.To]
-		if block.Type != "paragraph" && body == recorded[block.ID] {
+		if block.Type != "paragraph" && block.Type != "list_item" && body == recorded[block.ID] {
 			t.Fatalf("this build writes %s %s as version 1 recorded it, %q; the test needs another spelling", block.Type, block.ID, body)
 		}
 		if marker, named := markerOf[block.ID]; named && !strings.HasPrefix(body, marker) {
@@ -458,7 +479,10 @@ func checkKeptAcrossRenderers(t *testing.T, slug, document string, cuts []struct
 // top-level list and the quote - and gives each the new text's sum and excerpt with no text
 // recorded at version 2, so a citation of the list is not counted as moved. The list inside the
 // quote, a block inside a container, whose text read alone loses the quote's prefix, takes
-// version 2, as does the reworded paragraph, and a citation of it is counted.
+// version 2, as does the reworded paragraph, and a citation of it is counted. Each list item (R7
+// of the issue-tree spec) keeps version 1 with its paragraph: its slice, from its marker to the
+// end of its paragraph, is the same in both spellings, since the blank lines between the items
+// are its list's.
 func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -469,7 +493,7 @@ func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T
 	for _, block := range stored {
 		recorded[block.ID] = respelledDocument[block.From:block.To]
 	}
-	list, quote, quotedList, closing := stored[1].ID, stored[5].ID, stored[6].ID, stored[10].ID
+	list, quote, quotedList, closing := stored[1].ID, stored[8].ID, stored[9].ID, stored[16].ID
 	citing := createReferenceComment(t, tx, "WIND-1")
 	insertReference(t, tx, "comment", citing, "block", refKey+"#"+list)
 	insertReference(t, tx, "comment", citing, "block", refKey+"#"+quotedList)
@@ -552,21 +576,30 @@ func TestABlockKeepsItsChangedVersionAcrossAnotherRenderersSpelling(t *testing.T
 // second one it writes with `N)`, so each pair reads back as two lists, and a closing paragraph.
 // Each list is loose in renderer version 1's spelling, two blank lines between its items, where
 // this build writes one. otherMarkerDocumentBlocks is each of its blocks in document order, with
-// its type and its slice of the document as that renderer's build indexed it.
+// its type and its slice of the document as that renderer's build indexed it, each list item (R7
+// of the issue-tree spec) from its marker to the end of its paragraph.
 const otherMarkerDocument = "- first\n\n\n- second\n\n* third\n\n\n* fourth\n\n1. fifth\n\n\n2. sixth\n\n1) seventh\n\n\n2) eighth\n\nClosing paragraph.\n"
 
 var otherMarkerDocumentBlocks = []struct{ nodeType, text string }{
 	{"bullet_list", "- first\n\n\n- second"},
+	{"list_item", "- first"},
 	{"paragraph", "first"},
+	{"list_item", "- second"},
 	{"paragraph", "second"},
 	{"bullet_list", "* third\n\n\n* fourth"},
+	{"list_item", "* third"},
 	{"paragraph", "third"},
+	{"list_item", "* fourth"},
 	{"paragraph", "fourth"},
 	{"ordered_list", "1. fifth\n\n\n2. sixth"},
+	{"list_item", "1. fifth"},
 	{"paragraph", "fifth"},
+	{"list_item", "2. sixth"},
 	{"paragraph", "sixth"},
 	{"ordered_list", "1) seventh\n\n\n2) eighth"},
+	{"list_item", "1) seventh"},
 	{"paragraph", "seventh"},
+	{"list_item", "2) eighth"},
 	{"paragraph", "eighth"},
 	{"paragraph", "Closing paragraph."},
 }
@@ -578,12 +611,13 @@ var otherMarkerDocumentBlocks = []struct{ nodeType, text string }{
 // closing paragraph. Every list keeps changed version 1 and its time, and takes the new text's
 // sum with no text recorded at version 2: the second list of each pair as well, whose recorded
 // text read alone renders with `-` or `N.` while its text now keeps the other marker, since its
-// text now read alone renders so too. The reworded paragraph takes version 2.
+// text now read alone renders so too. The reworded paragraph takes version 2. Each list item (R7 of
+// the issue-tree spec) keeps version 1: its slice is the same in both spellings.
 func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
 	t.Parallel()
-	// Blocks 3 and 9 are the second list of each pair, with the marker this build writes each
-	// with; block 12 is the reworded paragraph.
-	checkKeptAcrossRenderers(t, "other-marker-md", otherMarkerDocument, otherMarkerDocumentBlocks, map[int]string{3: "* ", 9: "1) "}, 12)
+	// Blocks 5 and 15 are the second list of each pair, with the marker this build writes each
+	// with; block 20 is the reworded paragraph.
+	checkKeptAcrossRenderers(t, "other-marker-md", otherMarkerDocument, otherMarkerDocumentBlocks, map[int]string{5: "* ", 15: "1) "}, 20)
 }
 
 // typedDocument is version 1 of a document as another renderer version stored it, the text
@@ -594,9 +628,12 @@ func TestAListWrittenWithTheOtherMarkerKeepsItsChangedVersion(t *testing.T) {
 // paragraph. Each list of two items is loose, and version 1 wrote the blank line between its items
 // as two lines: first the list's prefix as it stands (`> ` in the quote, two spaces in each list a
 // list item holds, nothing elsewhere), then that prefix with its trailing spaces trimmed, the one
-// line this build writes there. So this build spells every block but a paragraph otherwise.
-// typedDocumentBlocks is each of its blocks in document order, with its type and its slice of the
-// document as that renderer's build indexed it.
+// line this build writes there. So this build spells every block but a paragraph otherwise, and
+// every list item (R7 of the issue-tree spec) that holds a list or a callout: an item holding one
+// paragraph is spelled as version 1 spelled it. typedDocumentBlocks is each of its blocks in
+// document order, with its type and its slice of the document as that renderer's build indexed
+// it, each list item from its marker to the end of its content: the item of a list of one item is
+// that list's slice.
 const typedDocument = "- top\n\n\n- level\n\n" +
 	":::callout{#t1 kind=\"note\" title=\"T\"}\n- one\n\n\n- two\n\n* three\n\n\n* four\n:::\n\n" +
 	":::callout{#t2 kind=\"note\" title=\"T\"}\n- outer\n\n  - five\n  \n\n  - six\n:::\n\n" +
@@ -606,34 +643,50 @@ const typedDocument = "- top\n\n\n- level\n\n" +
 
 var typedDocumentBlocks = []struct{ nodeType, text string }{
 	{"bullet_list", "- top\n\n\n- level"},
+	{"list_item", "- top"},
 	{"paragraph", "top"},
+	{"list_item", "- level"},
 	{"paragraph", "level"},
 	{"callout", ":::callout{#t1 kind=\"note\" title=\"T\"}\n- one\n\n\n- two\n\n* three\n\n\n* four\n:::"},
 	{"bullet_list", "- one\n\n\n- two"},
+	{"list_item", "- one"},
 	{"paragraph", "one"},
+	{"list_item", "- two"},
 	{"paragraph", "two"},
 	{"bullet_list", "* three\n\n\n* four"},
+	{"list_item", "* three"},
 	{"paragraph", "three"},
+	{"list_item", "* four"},
 	{"paragraph", "four"},
 	{"callout", ":::callout{#t2 kind=\"note\" title=\"T\"}\n- outer\n\n  - five\n  \n\n  - six\n:::"},
 	{"bullet_list", "- outer\n\n  - five\n  \n\n  - six"},
+	{"list_item", "- outer\n\n  - five\n  \n\n  - six"},
 	{"paragraph", "outer"},
 	{"bullet_list", "- five\n  \n\n  - six"},
+	{"list_item", "- five"},
 	{"paragraph", "five"},
+	{"list_item", "- six"},
 	{"paragraph", "six"},
 	{"bullet_list", "- item\n\n  :::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n  \n\n  - eight\n  :::"},
+	{"list_item", "- item\n\n  :::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n  \n\n  - eight\n  :::"},
 	{"paragraph", "item"},
 	{"callout", ":::callout{#t3 kind=\"note\" title=\"T\"}\n  - seven\n  \n\n  - eight\n  :::"},
 	{"bullet_list", "- seven\n  \n\n  - eight"},
+	{"list_item", "- seven"},
 	{"paragraph", "seven"},
+	{"list_item", "- eight"},
 	{"paragraph", "eight"},
 	{"blockquote", "> - alpha\n> \n>\n> - bravo\n>\n> :::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n> \n>\n> - delta\n> :::"},
 	{"bullet_list", "- alpha\n> \n>\n> - bravo"},
+	{"list_item", "- alpha"},
 	{"paragraph", "alpha"},
+	{"list_item", "- bravo"},
 	{"paragraph", "bravo"},
 	{"callout", ":::callout{#t4 kind=\"note\" title=\"T\"}\n> - charlie\n> \n>\n> - delta\n> :::"},
 	{"bullet_list", "- charlie\n> \n>\n> - delta"},
+	{"list_item", "- charlie"},
 	{"paragraph", "charlie"},
+	{"list_item", "- delta"},
 	{"paragraph", "delta"},
 	{"paragraph", "Closing paragraph."},
 }
@@ -654,13 +707,17 @@ var typedDocumentBlocks = []struct{ nodeType, text string }{
 // quote. Each such block that a list item or a quote encloses takes version 2, as does the
 // reworded paragraph, and each has its text recorded at version 2: the list in the item of the
 // second callout's list, the callout in the list item and the list in that callout, and the list
-// in the quote, the callout in the quote and the list in that callout.
+// in the quote, the callout in the quote and the list in that callout. A list item (R7 of the
+// issue-tree spec) stands where its list stands, its list writing no prefix on its lines: the item
+// of the second callout's list and the item of the list whose item holds a callout, each its
+// list's only item and spelled as its list is, keep version 1 with their lists, and every other
+// item keeps it with its unchanged slice.
 func TestABlockInsideATypedBlockKeepsItsChangedVersion(t *testing.T) {
 	t.Parallel()
-	// Block 7 is the second list in the first callout, with the marker this build writes it with;
-	// blocks 13, 18, 19, 23, 26 and 27 are the lists and callouts a list item or a quote encloses,
-	// and block 30 is the reworded paragraph.
-	checkKeptAcrossRenderers(t, "typed-md", typedDocument, typedDocumentBlocks, map[int]string{7: "* "}, 13, 18, 19, 23, 26, 27, 30)
+	// Block 11 is the second list in the first callout, with the marker this build writes it with;
+	// blocks 20, 28, 29, 35, 40 and 41 are the lists and callouts a list item or a quote encloses,
+	// and block 46 is the reworded paragraph.
+	checkKeptAcrossRenderers(t, "typed-md", typedDocument, typedDocumentBlocks, map[int]string{11: "* "}, 20, 28, 29, 35, 40, 41, 46)
 }
 
 // footnotedDocument is version 1 of a document that defines the footnote 1, as another renderer
@@ -754,7 +811,10 @@ func renderedBlocks(t *testing.T, tree *pmdoc.Node) (string, []model.ArtifactBlo
 // `- a\n  - b\n  - c\n`, lifts c beside b. The inner list's slices, `- b\n    - c` and
 // `- b\n  - c`, read alone as one tree, c under b, though the two documents hold two trees: in
 // version 2 the prefix of c's line is also the content indent of b's `- ` item. So the inner list,
-// a block inside a list item, takes version 2, and its text is recorded at version 2.
+// a block inside a list item, takes version 2, and its text is recorded at version 2. Item a (R7
+// of the issue-tree spec: each list item is a block), which only its top-level list encloses,
+// stood at a line start, but its slices read alone as two trees, c under b and c beside b, so it
+// takes version 2 too.
 func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t *testing.T) {
 	t.Parallel()
 	tx := windowFixture(t)
@@ -762,13 +822,16 @@ func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t
 	const versionOne, versionTwo = "- a\n  - b\n    - c\n", "- a\n  - b\n  - c\n"
 	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, versionOne, []struct{ nodeType, text string }{
 		{"bullet_list", "- a\n  - b\n    - c"},
+		{"list_item", "- a\n  - b\n    - c"},
 		{"paragraph", "a"},
 		{"bullet_list", "- b\n    - c"},
+		{"list_item", "- b\n    - c"},
 		{"paragraph", "b"},
 		{"bullet_list", "- c"},
+		{"list_item", "- c"},
 		{"paragraph", "c"},
 	})
-	inner, recorded := stored[2].ID, versionOne[stored[2].From:stored[2].To]
+	itemA, inner, recorded := stored[1].ID, stored[3].ID, versionOne[stored[3].From:stored[3].To]
 
 	// c's item leaves the list under b and stands beside b in the inner list.
 	innerList := tree.Children[0].Children[0].Children[1]
@@ -779,10 +842,10 @@ func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t
 	markdown, blocks := renderedBlocks(t, tree)
 	// The two slices read alone as one tree, which is why a block inside a list item is no
 	// candidate (aloneCandidates).
-	if markdown != versionTwo || len(blocks) < 3 || blocks[2].ID != inner || markdown[blocks[2].From:blocks[2].To] != "- b\n  - c" {
-		t.Fatalf("version 2 = %q with blocks %+v; the test needs %q with list %s written %q", markdown, blocks, versionTwo, inner, "- b\n  - c")
+	if markdown != versionTwo || len(blocks) < 4 || blocks[1].ID != itemA || blocks[3].ID != inner || markdown[blocks[3].From:blocks[3].To] != "- b\n  - c" {
+		t.Fatalf("version 2 = %q with blocks %+v; the test needs %q with item %s and list %s written %q", markdown, blocks, versionTwo, itemA, inner, "- b\n  - c")
 	}
-	body := markdown[blocks[2].From:blocks[2].To]
+	body := markdown[blocks[3].From:blocks[3].To]
 	versionTwoAt, _ := indexVersionTwo(t, tx, artifact, markdown, blocks)
 
 	changedVersion, changedAt, sum, texts := indexedChange(t, tx, artifact, inner, 2)
@@ -792,6 +855,11 @@ func TestAListInsideAListItemTakesTheNewVersionThoughItsTextReadsAloneAsBefore(t
 	}
 	if !slices.Equal(texts, []string{body}) {
 		t.Errorf("version 2 records list %s as %q, want one text, %q", inner, texts, body)
+	}
+	itemBody := markdown[blocks[1].From:blocks[1].To]
+	if changedVersion, changedAt, _, texts := indexedChange(t, tx, artifact, itemA, 2); changedVersion != 2 || !changedAt.Equal(versionTwoAt) || !slices.Equal(texts, []string{itemBody}) {
+		t.Errorf("item a %s, recorded at version 1 as %q and written %q, changed at version %d (%s) with texts %q at version 2, want version 2 (%s) with its text",
+			itemA, versionOne[stored[1].From:stored[1].To], itemBody, changedVersion, changedAt.UTC(), texts, versionTwoAt)
 	}
 }
 
@@ -809,12 +877,15 @@ func TestABlockThatStoodInsideAListItemTakesTheNewVersionAtTheTopLevel(t *testin
 	const versionOne, versionTwo = "- a\n  * b\n  * c\n", "- b\n  - c\n"
 	tree, stored := indexOtherRendererVersionOne(t, tx, artifact, versionOne, []struct{ nodeType, text string }{
 		{"bullet_list", "- a\n  * b\n  * c"},
+		{"list_item", "- a\n  * b\n  * c"},
 		{"paragraph", "a"},
 		{"bullet_list", "* b\n  * c"},
+		{"list_item", "* b"},
 		{"paragraph", "b"},
+		{"list_item", "* c"},
 		{"paragraph", "c"},
 	})
-	list, recorded := stored[2].ID, versionOne[stored[2].From:stored[2].To]
+	list, recorded := stored[3].ID, versionOne[stored[3].From:stored[3].To]
 
 	// X keeps its id and stands alone at the top level, c's item in a new list under b.
 	x := tree.Children[0].Children[0].Children[1]
@@ -858,8 +929,10 @@ func TestInnermostBlocksPicksTheTightestRangeHoldingEachStart(t *testing.T) {
 // A candidate is kept when no block encloses it or only typed blocks do: a block encloses each
 // block that starts after it and at or before its end, so an empty block at the end of its
 // container is inside it. A block a quote, a list or a footnote definition encloses is dropped,
-// however deep, a typed block inside one and the blocks that typed block holds included. Each case
-// makes every block a candidate, and then its last block alone.
+// however deep, a typed block inside one and the blocks that typed block holds included. A list
+// item (R7 of the issue-tree spec) is kept where only its own list and typed blocks enclose it,
+// and dropped where a list item or a quote encloses its list. Each case makes every block a
+// candidate, and then its last block alone.
 func TestAloneCandidatesKeepsTheBlocksOnlyTypedBlocksEnclose(t *testing.T) {
 	t.Parallel()
 	block := func(id, nodeType string, from, to int) model.ArtifactBlock {
@@ -882,6 +955,20 @@ func TestAloneCandidatesKeepsTheBlocksOnlyTypedBlocksEnclose(t *testing.T) {
 		{"a block inside a bullet_list inside a callout",
 			[]model.ArtifactBlock{block("c", "callout", 0, 60), block("l", "bullet_list", 30, 50), block("p", "paragraph", 32, 50)},
 			[]string{"c", "l"}},
+		{"the items of a top-level list",
+			[]model.ArtifactBlock{block("l", "bullet_list", 0, 16), block("i1", "list_item", 0, 7), block("p1", "paragraph", 2, 7),
+				block("i2", "list_item", 9, 16)},
+			[]string{"l", "i1", "i2"}},
+		{"the item of an ordered_list inside a callout",
+			[]model.ArtifactBlock{block("c", "callout", 0, 60), block("l", "ordered_list", 30, 50), block("i", "list_item", 30, 50)},
+			[]string{"c", "l", "i"}},
+		{"the item of a bullet_list inside a list item",
+			[]model.ArtifactBlock{block("l", "bullet_list", 0, 20), block("i", "list_item", 0, 20), block("p", "paragraph", 2, 3),
+				block("l2", "bullet_list", 6, 20), block("i2", "list_item", 6, 20)},
+			[]string{"l", "i"}},
+		{"the item of a bullet_list inside a blockquote",
+			[]model.ArtifactBlock{block("q", "blockquote", 0, 20), block("l", "bullet_list", 2, 20), block("i", "list_item", 2, 20)},
+			[]string{"q"}},
 		{"an empty block whose From is its callout's To",
 			[]model.ArtifactBlock{block("c", "callout", 0, 40), block("p", "paragraph", 40, 40)}, []string{"c", "p"}},
 		{"an empty block whose From is its bullet_list's To",

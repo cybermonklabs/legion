@@ -11,10 +11,15 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/refs"
 )
 
-// AskColumns selects one ask row, aliased a, in the order ScanAsk reads it.
-const AskColumns = `a.id::text, a.issue_key, a.artifact_id::text, a.block_id, a.block_artifact_id::text, a.author, a.question, a.options, a.multiple, a.urgency,
+// AskColumns selects one ask row, aliased a, in the order ScanAsk reads it. Its block artifact is
+// the document holding the ask's block (refs.AskBlockDocumentSQL): for an ask of an issue room,
+// whose row is keyed by the room's tree, the document of the fragment that holds the block. Every
+// write into the block reaches that document's fragment through it, and every read names that
+// document.
+var AskColumns = `a.id::text, a.issue_key, a.artifact_id::text, a.block_id, (` + refs.AskBlockDocumentSQL("a") + `)::text, a.author, a.question, a.options, a.multiple, a.urgency,
 		a.anchor, a.state, a.answer, a.resolution, a.created_at, a.edited_at, a.kind, a.approval, a.asked_of, a.asked_of_by, a.asked_of_at`
 
 // UndecodableAskError is a value an ask stores that does not decode, read once its row has
@@ -132,7 +137,7 @@ func PlanAskResolution(ctx context.Context, tx pgx.Tx, ask model.Ask, kind, reas
 	}
 	change := asks.Resolved(resolution)
 	change.Who, change.At, change.Held = actor, resolution.At, held
-	settled, err := planSettle(ctx, tx, ask.ID, change)
+	settled, err := planSettle(ctx, tx, ask, change)
 	if err != nil {
 		return asks.Settled{}, model.Ask{}, fmt.Errorf("write ask resolution: %w", err)
 	}
@@ -167,7 +172,7 @@ func WriteRestoredAsks(ctx context.Context, tx pgx.Tx, restored []model.Ask, act
 		ids[index] = ask.ID
 		change := asks.Reopened()
 		change.Who, change.At, change.Held = actor, at, &held[index]
-		settled, err := planSettle(ctx, tx, ask.ID, change)
+		settled, err := planSettle(ctx, tx, ask, change)
 		if err != nil {
 			return fmt.Errorf("restore withdrawn ask: %w", err)
 		}

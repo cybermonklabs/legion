@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/graphcensus"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 )
@@ -89,7 +90,7 @@ func askOfBlock(t *testing.T, ctx context.Context, database *pgx.Conn, document,
 
 // documentState is what the test reads of a document to tell a restore that wrote from one rolled
 // back: how many versions and reviews it holds, its newest version, its approval state - its
-// newest review in docs.ReviewOrder, the order every approval read takes, with that review's state
+// newest review in model.ReviewOrder, the order every approval read takes, with that review's state
 // and the version it names - and the rows of the asks named. A rollback that leaves the counts as
 // they were and moves an approval still reads apart.
 type documentState struct {
@@ -106,7 +107,7 @@ func readDocumentState(t *testing.T, ctx context.Context, database *pgx.Conn, do
 		       (select coalesce(max(number), 0) from artifact_versions where artifact_id = $1::uuid),
 		       (select count(*) from artifact_reviews where artifact_id = $1::uuid),
 		       coalesce((select artifact_reviews.id::text || ' ' || artifact_reviews.state || ' of version ' || artifact_reviews.version
-		                 from artifact_reviews where artifact_id = $1::uuid order by `+docs.ReviewOrder+` limit 1), 'no review'),
+		                 from artifact_reviews where artifact_id = $1::uuid order by `+model.ReviewOrder+` limit 1), 'no review'),
 		       coalesce((select string_agg(k.id || '@' || k.block_artifact_id || '#' || k.block_id ||
 		                   '/tuples=' || (select count(*) from graph_tuples t where t.from_kind = 'ask' and t.from_id = k.id::text), ',' order by k.id)
 		                 from asks k where k.id::text = any($2::text[])), '')

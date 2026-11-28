@@ -1,0 +1,43 @@
+{
+  "head": "75c96d1b22fdc2baba6195d60431ff4bac44b2bd",
+  "jobs": [
+    "infra-1253-tree-bound-dq7wv",
+    "infra-1253-tree-bound-9klm5",
+    "infra-1253-tree-bound-spbcz"
+  ],
+  "source": "dispatch://INFRA-1253/comment/f3e1abb1-d4c7-4431-8c76-28ce45890f2e",
+  "medians": {
+    "largest-plan": {
+      "no-view": 33.943,
+      "kind": 24.774,
+      "spec": 3.415,
+      "verification": 4.174,
+      "plan": 20.779,
+      "decisions": 3.076
+    },
+    "most-comments": {
+      "no-view": 7.662,
+      "kind": 8.063,
+      "spec": 1.317,
+      "verification": 1.454,
+      "plan": 1.119,
+      "decisions": 1.832
+    },
+    "most-blocks": {
+      "no-view": 23.156,
+      "kind": 19.281,
+      "spec": 11.815,
+      "verification": 11.882,
+      "plan": 19.677,
+      "decisions": 11.373
+    },
+    "largest-spec": {
+      "no-view": 41.018,
+      "kind": 41.624,
+      "spec": 31.943,
+      "verification": 37.381,
+      "plan": 4.535,
+      "decisions": 5.155
+    }
+  }
+}

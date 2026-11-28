@@ -79,7 +79,7 @@ func (s *Service) SetAskBlockText(
 	actor model.Actor,
 ) (AskBlockText, error) {
 	var stored *AskBlockText
-	err := s.applyLive(ctx, artifactID, actor, func(doc *crdt.Doc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
+	err := s.applyLive(ctx, artifactID, actor, func(doc liveDoc, current pmdoc.ValidDocument, transact func(func(*crdt.Transaction))) error {
 		valid, err := startTree(current, doc)
 		if err != nil {
 			return err
@@ -164,7 +164,7 @@ func (s *Service) SetAskBlockText(
 		if next.EqualWithBlockIDs(tree) {
 			return nil
 		}
-		fragment := doc.GetXmlFragment(fragmentName)
+		fragment := doc.documentFragment()
 		var updateErr error
 		transact(func(transaction *crdt.Transaction) {
 			updateErr = pmdoc.Update(transaction, fragment, next)

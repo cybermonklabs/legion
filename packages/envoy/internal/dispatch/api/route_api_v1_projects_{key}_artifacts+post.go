@@ -8,7 +8,7 @@ var _ = declareRoute(routeDecl{
 	Method:      http.MethodPost,
 	Pattern:     "/api/v1/projects/{key}/artifacts",
 	Auth:        authAny,
-	Description: "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and leaves out or retypes the block of an answered ask is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing.",
+	Description: "Upload a project document or file (JSON or multipart); a file's kind is read from its bytes, and a new artifact's name held to its bound, as an issue upload's are. A new version that is not a person's own and would change a person's decision of the document - take an answered ask's block or a decision a person decided out of it, retype it, or change its words - is 409 ANSWERED_ASK_KEPT, as POST /api/v1/artifacts/{id}/edits answers it, and writes no version. An upload under the name or slug of a retired document, which takes no new text, is 409 DOCUMENT_RETIRED and writes nothing.",
 	Handler:     (*server).uploadProjectArtifact,
 	WriteClass:  scopeProject,
 	Shape: routeShape{
