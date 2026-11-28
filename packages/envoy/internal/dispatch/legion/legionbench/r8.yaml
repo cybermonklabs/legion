@@ -42,13 +42,13 @@ metadata:
     ${LABEL_DOMAIN}/omp-session: &omp-session "${OMP_SESSION}"
   annotations:
     ${LABEL_DOMAIN}/omp-session-title: &omp-session-title "${OMP_SESSION_TITLE}"
-    # About half an hour on 8 CPUs and 32 GiB of an on-demand machine of the class default, which
-    # tries E2 first, then C4D, then other families: two builds, two loads at ten times the run
-    # volume, two catch-ups and two 10-minute drives. The cost is an estimate of 32 minutes at
-    # C4D's rate, about twice E2's.
-    ${LABEL_DOMAIN}/cost-usd: "0.30"
-    ${LABEL_DOMAIN}/expected-cpu-hours: "5"
-    ${LABEL_DOMAIN}/expected-memory-gib-hours: "18"
+    # A run takes about 43 minutes on 8 CPUs and 32 GiB of an on-demand E2 machine, the first
+    # choice of the class default, which tries E2, then C4D, then other families: two builds, two
+    # loads at ten times the run volume, two catch-ups and two 10-minute drives. The cost is an
+    # estimate of that time at C4D's rate, about twice E2's.
+    ${LABEL_DOMAIN}/cost-usd: "0.39"
+    ${LABEL_DOMAIN}/expected-cpu-hours: "6"
+    ${LABEL_DOMAIN}/expected-memory-gib-hours: "23"
     ${LABEL_DOMAIN}/branch: "legion/INFRA-5577"
     ${LABEL_DOMAIN}/head: "${BENCH}"
 spec:
