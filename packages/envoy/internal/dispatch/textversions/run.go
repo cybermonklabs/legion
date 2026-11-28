@@ -94,23 +94,21 @@ type Config struct {
 	// Logger is where the fill logs; nil is slog.Default.
 	Logger *slog.Logger
 	// ReleaseTimeout bounds the holder's release of its hold as Run stops (runner.end): zero, as
-	// every deployment leaves it, is holdOptions.Renew, five seconds, and a larger value is cut to
-	// holdOptions.Renew, so it can only shorten the release (releaseBound). Only cmd/dispatch sets
-	// it, in a test process (DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT), since a test whose
-	// database stops answering at shutdown waits the release out before the process exits, and it
-	// refuses a value longer than MaxReleaseTimeout at boot.
+	// every deployment leaves it, is MaxReleaseTimeout, five seconds, and a larger value is cut to
+	// MaxReleaseTimeout, so it can only shorten the release (releaseBound). cmd/dispatch sets it in a
+	// test process (DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT), since a test whose database stops
+	// answering at shutdown waits the release out before the process exits, and it refuses a value
+	// longer than MaxReleaseTimeout at boot.
 	ReleaseTimeout time.Duration
 }
 
 // releaseBound is how long the holder's release of its hold may take (runner.end): one renewal
-// interval, holdOptions.Renew, or c.ReleaseTimeout where that is set and shorter. Only
-// cmd/dispatch sets c.ReleaseTimeout, and it refuses one longer than MaxReleaseTimeout; the min
-// holds the bound for any other caller of Config.
+// interval, MaxReleaseTimeout, or c.ReleaseTimeout where that is set and shorter.
 func (c Config) releaseBound() time.Duration {
 	if c.ReleaseTimeout > 0 {
-		return min(c.ReleaseTimeout, holdOptions.Renew)
+		return min(c.ReleaseTimeout, MaxReleaseTimeout)
 	}
-	return holdOptions.Renew
+	return MaxReleaseTimeout
 }
 
 // Run fills the keyword table in a serving process until ctx ends, under the fill's hold

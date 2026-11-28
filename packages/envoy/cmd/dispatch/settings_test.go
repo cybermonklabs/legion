@@ -2279,9 +2279,9 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			refusedWith(t, map[string]string{"DISPATCH_TEST_HTTP_DRAIN": "2s"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
 		"DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT": func(t *testing.T) {
-			production := silenceBounds{clock: clock.Real(), probeTimeout: store.HealthProbeTimeout(), pause: drainPollInterval}
+			production := silenceBounds{clock: clock.Real(), probeTimeout: store.HealthProbeTimeout, pause: drainPollInterval}
 			if boot := resolveWith(t, map[string]string{}); boot.ShutdownProbe != 0 || shutdownProbes(boot.ShutdownProbe) != production {
-				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT unset: ShutdownProbe = %v and the shutdown's probes %+v, want 0 and production's %+v (store.HealthProbeTimeout() and drainPollInterval between two, on the wall clock)",
+				t.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT unset: ShutdownProbe = %v and the shutdown's probes %+v, want 0 and production's %+v (store.HealthProbeTimeout and drainPollInterval between two, on the wall clock)",
 					boot.ShutdownProbe, shutdownProbes(boot.ShutdownProbe), production)
 			}
 			const quick = 120 * time.Millisecond

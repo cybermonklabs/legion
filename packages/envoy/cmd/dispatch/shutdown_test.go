@@ -994,10 +994,11 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 }
 
 // waitForRenameBehind waits for the title change's backend to queue behind holder's lock on the
-// issue, through testwait with no bound of its own; its give-up prints the backends it last read
-// waiting on an owner lock. The title change runs in the Dispatch process, so its backend is found
-// by its statement, the owner-lock statement a PATCH sends first (lockIssueOwners in
-// internal/dispatch/api/issue_parent.go). A settlement sends the same statement for the same lock
+// issue (storetest.WaitForStatementBehind, through testwait with no bound of its own; its give-up
+// names the backends it last read running the statement). The title change runs in the Dispatch
+// process, so its backend is found by its statement, the owner-lock statement a PATCH sends first
+// (lockIssueOwners in internal/dispatch/api/issue_parent.go). A settlement sends the same statement
+// for the same lock
 // before it takes its document's advisory lock (settleRoomWithin calls lockArtifactOwner before
 // readLocked takes lockSettlementCursor), so while it waits there it holds no advisory lock but
 // the owner lock's gate, which every write of this build takes shared in that same statement
@@ -1006,30 +1007,7 @@ func lockIssue(t *testing.T, database *store.Store, key string) pgx.Tx {
 // the backend waiting on the owner-lock statement behind holder is the title change's.
 func waitForRenameBehind(t *testing.T, database *store.Store, holder pgx.Tx) {
 	t.Helper()
-	ctx := context.Background()
-	testwait.Until(t, "the title change's backend to queue behind the issue lock (the backends last read waiting on an owner lock)", func() ([]uint32, bool) {
-		rows, err := database.Pool.Query(ctx, `
-			select pid from pg_stat_activity
-			where datname = current_database() and query = $1
-		`, store.OwnerLockStatement)
-		if err != nil {
-			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
-		}
-		pids, err := pgx.CollectRows(rows, pgx.RowTo[uint32])
-		if err != nil {
-			t.Fatalf("read the sessions waiting on an owner lock: %v", err)
-		}
-		for _, pid := range pids {
-			queued, err := storetest.QueuedBehind(ctx, holder, pid)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if queued {
-				return pids, true
-			}
-		}
-		return pids, false
-	})
+	storetest.WaitForStatementBehind(t, database, holder, store.OwnerLockStatement)
 }
 
 // renameIssue changes the issue's title as the test's login and returns the status Dispatch
@@ -1189,10 +1167,18 @@ func TestSIGTERMWithTheDatabaseUnansweringExitsWithinTheShutdownBudget(t *testin
 // and a probe's failure once the relay freezes is the freeze's. The pool pings every connection it
 // hands out, as pgxpool pings one idle for over a second, so a connection taken once the relay has
 // frozen is held by a ping the frozen database never answers, without the test waiting out that
-// second.
+// second. The pool closes when the test ends, after the relay has closed every connection through
+// it (cleanups run last registered first), so a probe still held by the frozen relay holds no
+// close; closing it again after closePool's row closed it does nothing.
 func relayedPool(t *testing.T) (*store.Pool, *databaseRelay) {
 	t.Helper()
 	database := storetest.Open(t)
+	var pool *store.Pool
+	t.Cleanup(func() {
+		if pool != nil {
+			pool.Close()
+		}
+	})
 	relay := startDatabaseRelay(t, database.Pool.Config().ConnString())
 	config, err := testpool.ParseConfig(relay.url)
 	if err != nil {
@@ -1203,7 +1189,7 @@ func relayedPool(t *testing.T) (*store.Pool, *databaseRelay) {
 	if err != nil {
 		t.Fatalf("open a pool through the relay: %v", err)
 	}
-	pool := store.NewPool(opened)
+	pool = store.NewPool(opened)
 	if _, err := pool.Healthy(context.Background()); err != nil {
 		t.Fatalf("health probe through the relay: %v", err)
 	}
@@ -1237,7 +1223,7 @@ func TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound(t
 		_, err := pool.HealthyOn(context.Background(), fake)
 		answered <- err
 	}()
-	bound := store.HealthProbeTimeout()
+	bound := store.HealthProbeTimeout
 	due := start.Add(bound)
 	fake.AwaitArmedAt(t, "the health probe's bound on the fake", due)
 	fake.Advance(bound - time.Nanosecond)
@@ -1267,9 +1253,9 @@ func TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound(t
 // each probe the store's bound, by the deadline each is armed for; that it had not returned after
 // the first and the second failed probe, read once the pause after each was armed, when closePool
 // waits on it; that it returned once the third failed; that the late taker's connection never came
-// back; and that its warning names the cause and the three failed probes. The store's own two
-// seconds still bound each probe underneath, on the wall clock (store.Pool.Healthy), and the
-// row ends each probe on the fake as soon as its timeout is armed, well inside them. The pool
+// back; and that its warning names the cause and the three failed probes. The store's own bound on
+// each probe is armed on the same fake at the same moment (store.Pool.HealthyOn), so no bound on
+// the wall clock can end a probe before the row moves the fake. The pool
 // (relayedPool) pings every connection it hands out, so the late taker is held by a ping the frozen
 // database never answers.
 func TestClosingThePoolGivesUpOnALateConnectionOnceTheDatabaseStopsAnswering(t *testing.T) {

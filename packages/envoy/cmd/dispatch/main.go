@@ -1888,9 +1888,9 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_HTTP_DRAIN")), httpDrainBeforeDocuments, stopGrace, documentShutdownTimeout)
 	}
-	if boot.ShutdownProbe > store.HealthProbeTimeout() {
+	if boot.ShutdownProbe > store.HealthProbeTimeout {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT=%q (expected at most %s, a deployment's probe: the store's own bound on a health probe, which bounds every probe whatever the setting)",
-			strings.TrimSpace(env.get("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT")), store.HealthProbeTimeout())
+			strings.TrimSpace(env.get("DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT")), store.HealthProbeTimeout)
 	}
 	if boot.SearchFillReleaseTimeout > textversions.MaxReleaseTimeout {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_RELEASE_TIMEOUT=%q (expected at most %s, a deployment's release: the keyword fill's hold renewal interval, which bounds every release whatever the setting)",

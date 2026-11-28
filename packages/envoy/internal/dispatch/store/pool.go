@@ -333,7 +333,7 @@ const healthProbeTimeout = 2 * time.Second
 // DISPATCH_TEST_SHUTDOWN_PROBE_TIMEOUT longer than it, and a row of its tests
 // (TestAHealthProbeOverAnOpenConnectionToAFrozenDatabaseEndsAtTheStoresBound) holds that it ends a
 // probe over an open connection, the warm case above.
-func HealthProbeTimeout() time.Duration { return healthProbeTimeout }
+const HealthProbeTimeout = healthProbeTimeout
 
 // ErrPoolClosed is a connection asked for after the pool was released.
 var ErrPoolClosed = errors.New("connection pool is closed")
