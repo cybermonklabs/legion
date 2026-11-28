@@ -369,6 +369,50 @@ test("a production check after the merge the server says has no result reads No 
   expect(rowReading(unrun)).toEqual({ state: "no-result", word: "No result" });
 });
 
+// Before the issue's pull request merges, the server compares a check run after the merge with
+// nothing (`not_merged`) and answers `no` for no result whatever results it holds
+// (`liveResultStands`), while the record route takes such a result before the merge. So the pass
+// here reads `commit_stands` `other_commit`, as the server's `commitStands` answers every result
+// of a check that compares with nothing for `not_merged`, and no `not_counted`, since its program
+// has no deploy to bound it (`markNotCounted`). The row reads the result the view draws under it,
+// as a check with nothing standing at its basis does, and never No result over it.
+test("a production check after the merge of an unmerged issue with a pass recorded reads Out of date on that pass", () => {
+  const early = result({
+    check_block_id: LIVE,
+    commit_stands: { answer: "other_commit" },
+    id: "pass-unmerged",
+  });
+  const unmerged = liveCheck({
+    pass_stands: { answer: "no", reason: "no_result" },
+    results: [early],
+  });
+
+  expect(rowReading(unmerged)).toEqual({ state: "older", word: "Out of date" });
+  expect(checkStanding(unmerged)).toEqual({ stands: early, state: "older" });
+});
+
+// The same check with its only result withdrawn holds nothing that stands for it or against it,
+// so it reads Retracted, as any check whose every result was taken back does.
+test("a production check after the merge of an unmerged issue whose only result was retracted reads Retracted", () => {
+  const withdrawn = result({
+    check_block_id: LIVE,
+    commit_stands: { answer: "other_commit" },
+    id: "pass-withdrawn",
+    retracted: {
+      actor: { id: "tester", kind: "session" },
+      created_at: "2026-11-14T01:10:00Z",
+      reason: "Run was wrong.",
+    },
+  });
+  const unmerged = liveCheck({
+    pass_stands: { answer: "no", reason: "no_result" },
+    results: [withdrawn],
+  });
+
+  expect(rowReading(unmerged)).toEqual({ state: "retracted", word: "Retracted" });
+  expect(checkStanding(unmerged).stands).toBeUndefined();
+});
+
 test("a code check after the merge with no result reads No result", () => {
   const unrun = liveCheck({
     pass_stands: { answer: "no", reason: "no_result" },

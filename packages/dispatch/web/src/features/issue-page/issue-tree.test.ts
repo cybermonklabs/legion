@@ -3375,7 +3375,7 @@ test("a check reads one state whatever order the read sends its results in", () 
     ["oldest first", [failed, elsewhere]],
   ] as const) {
     expect(
-      checkStanding({ pass_stands: { answer: "no" }, results: [...results] }),
+      checkStanding({ pass_stands: { answer: "no" }, results: [...results], when: "before_merge" }),
       order
     ).toMatchObject({ stands: { id: "result-failed" }, state: "failed" });
     expect(stateOfOneCheck({ pass_stands: { answer: "no" } }, results), order).toBe("failed");
@@ -3403,7 +3403,9 @@ test("a pass and then a fail at the basis read Failed under a newer fail elsewhe
     recorded("result-passed", "Break it and it fails.", { created_at: "2026-11-05T00:00:00Z" }),
   ];
 
-  expect(checkStanding({ pass_stands: { answer: "yes" }, results })).toMatchObject({
+  expect(
+    checkStanding({ pass_stands: { answer: "yes" }, results, when: "before_merge" })
+  ).toMatchObject({
     stands: { id: "result-failed" },
     state: "failed",
   });
