@@ -1,15 +1,22 @@
 package specgraph
 
+//ci:builds packages/envoy/internal/dispatch/specgraph . TestEachHistoryOfThePackageIsAnInputType go list -deps -export .
+
 import (
 	"bytes"
+	"encoding/json/jsontext"
 	"encoding/json/v2"
+	"errors"
 	"fmt"
 	"go/ast"
 	"go/importer"
 	"go/parser"
 	"go/token"
 	"go/types"
+	"io"
 	"maps"
+	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
 	"slices"
@@ -108,8 +115,10 @@ var libraryInputTypes = []reflect.Type{reflect.TypeFor[Input](), reflect.TypeFor
 // TestEachHistoryOfThePackageIsAnInputType reads the non-test source of the package with go/types,
 // and fails for each exported type of it that implements History, by value or by pointer, that
 // libraryInputTypes does not name, and when it finds no such type at all, since it then read none.
-// A caller gives only an exported type; an unexported one, such as fixtureTrees, the judge's view of
-// a FixtureHistory, is built by the package from an input whose members the marks already read.
+// It reads each package that the source imports from the export data that go list -deps -export
+// writes for it, not from that package's source. A caller gives only an exported type; an
+// unexported one, such as fixtureTrees, the judge's view of a FixtureHistory, is built by the
+// package from an input whose members the marks already read.
 func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
 	t.Parallel()
 	dir, err := filepath.Abs(".")
@@ -131,7 +140,32 @@ func TestEachHistoryOfThePackageIsAnInputType(t *testing.T) {
 			files = append(files, f)
 		}
 	}
-	conf := types.Config{Importer: importer.ForCompiler(fset, "source", nil), IgnoreFuncBodies: true}
+	list := exec.Command("go", "list", "-deps", "-export", "-json=ImportPath,Export", ".")
+	list.Dir = dir
+	var stderr bytes.Buffer
+	list.Stderr = &stderr
+	out, err := list.Output()
+	if err != nil {
+		t.Fatalf("go %s in %s: %v\n%s", strings.Join(list.Args[1:], " "), dir, err, stderr.String())
+	}
+	exports := map[string]string{}
+	decoder := jsontext.NewDecoder(bytes.NewReader(out))
+	for {
+		var listed struct{ ImportPath, Export string }
+		if err := json.UnmarshalDecode(decoder, &listed); errors.Is(err, io.EOF) {
+			break
+		} else if err != nil {
+			t.Fatalf("read go list's answer in %s: %v", dir, err)
+		}
+		exports[listed.ImportPath] = listed.Export
+	}
+	lookup := func(path string) (io.ReadCloser, error) {
+		if exports[path] == "" {
+			return nil, fmt.Errorf("go list -deps -export in %s wrote no export data for %s, which the package imports", dir, path)
+		}
+		return os.Open(exports[path])
+	}
+	conf := types.Config{Importer: importer.ForCompiler(fset, "gc", lookup), IgnoreFuncBodies: true}
 	pkg, err := conf.Check("specgraph", fset, files, nil)
 	if err != nil {
 		t.Fatal(err)
