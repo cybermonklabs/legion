@@ -65,6 +65,8 @@ import (
 
 var _ runtime.Runtime = (*Runtime)(nil)
 
+var _ runtime.RepositoryCacheSweeper = (*Runtime)(nil)
+
 // apiTimeout bounds one call the runtime makes: each request of its requests' Kubernetes client,
 // from the moment the client's rate limiter lets it go (requestConfig), and any call its clients do
 // not bound whole (call).
@@ -1259,9 +1261,13 @@ func (r *Runtime) runningProcessConn(loc runtime.Locator) (runtime.Conn, error) 
 // next sweep judges it again. The image probe's Sandbox (labelled legion.dev/probe) is no claim's
 // and never an orphan: the probe deletes it, and its shutdown time has the controller delete it
 // otherwise (probe.go). A repository cache's Sandbox (labelled legion.dev/cache) is no claim's
-// either: the claim path passes over it, and sweepCaches keeps, repairs or retires it after the
-// claim path. known's located claims join the watch, unless it already holds a newer incarnation
-// of the claim, and are evaluated at once. Nothing here lists Secrets: each goes with its Sandbox.
+// either: the claim path passes over it, and this sweeps no cache at all. SweepRepositoryCaches
+// keeps, repairs or retires the caches, on a pass the daemon runs beside its claims and never on
+// its boot: inside this call, a pass that replaced every cache pod a release had drifted spent the
+// budget INFRA's boot of 2026-11-27 ran its reconciliation on, and the boot step after it failed
+// (dispatch://INFRA-4131/spec#b-r-boot-budget). known's located claims join the watch, unless it
+// already holds a newer incarnation of the claim, and are evaluated at once. Nothing here lists
+// Secrets: each goes with its Sandbox.
 // Each Sandbox whose pod runs an image other than the runtime's (imageDrift), or as a
 // ServiceAccount other than the configured one (accountDrift), is warned of, named with both
 // images or both accounts, at the boot reconciliation and at every sweep until the pod is
@@ -1308,7 +1314,6 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 			errs = append(errs, err)
 		}
 	}
-	r.sweepCaches(ctx)
 	return errors.Join(errs...)
 }
 
@@ -1323,7 +1328,7 @@ func (r *Runtime) ReconcileOrphans(ctx context.Context, known []runtime.Known, g
 // kind takes; the sweep names it instead. A same-named pod u does not own is an earlier Sandbox's,
 // on its way out, and is nothing of u's to warn about. No cache Sandbox is ever warned of, for the
 // account as for the image: ReconcileOrphans passes over it before the call, since its own sweep
-// replaces its pod for either drift without a relaunch to wait for.
+// (SweepRepositoryCaches) replaces its pod for either drift without a relaunch to wait for.
 func (r *Runtime) warnPodDrift(u *unstructured.Unstructured) {
 	pod := r.storedPod(u.GetName())
 	if !ownedBy(pod, u.GetUID()) {

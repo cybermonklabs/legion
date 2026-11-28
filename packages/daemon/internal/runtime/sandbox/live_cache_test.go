@@ -206,6 +206,11 @@ func (r *liveRig) checkCacheLostVolume() error {
 	if err := r.rt.ReconcileOrphans(r.ctx, r.known(c), time.Hour); err != nil {
 		return err
 	}
+	// The daemon passes over the caches as its orphan sweep begins, once the boot's reconciliation
+	// has run, and never inside it (SweepRepositoryCaches).
+	if err := r.rt.SweepRepositoryCaches(r.ctx); err != nil {
+		return err
+	}
 	if _, err := r.awaitCacheReady(); err != nil {
 		return err
 	}

@@ -126,6 +126,18 @@ const (
 	// periodic retry owns it until tmux can say the old pane was reaped or absent.
 	bootOrphanReconcileAttempts   = 3
 	bootOrphanReconcileRetryDelay = 100 * time.Millisecond
+	// bootOrphanReconcileBound is the boot's orphan reconciliation's own bound, inside the shared
+	// budget supervision.start runs its steps on (bootBudget), its retries included
+	// (reconcileBootOrphans). The reconciliation is the one step of that start which ends without
+	// failing the boot when its time runs out: it answers false, the unfinished launches stay
+	// uncertain, and the relaunch pass retries it at the orphan sweep's cadence
+	// (relaunchUnfinished). On the shared budget alone it could spend all of it and still let the
+	// boot go on, handing the step after it an expired context, as INFRA's boot of 2026-11-27
+	// did, whose sweep of the repository caches ran inside the reconciliation for 28 of its 30
+	// seconds (dispatch://INFRA-4131/spec#b-r-boot-budget). Half of bootTimeout is many times what a
+	// reconciliation takes that reads its stores and deletes a few orphans; one that waits longer
+	// ends there, and the steps after it get whatever the budget still holds.
+	bootOrphanReconcileBound = bootTimeout / 2
 	// launchBackoffFirst is the machines' first wait before a launch is tried again after a
 	// charged launch failure (supervise.Timeouts.LaunchBackoff), doubled for each one after it: a
 	// three-failure budget's tries span three seconds at least, never a moment one fault lasts.
@@ -198,6 +210,10 @@ type overrides struct {
 	// stopBudget is how long the daemon's stop waits for its own work once it begins; zero is
 	// stopBudget.
 	stopBudget time.Duration
+	// bootOrphanReconcile is the bound of the boot's orphan reconciliation (plan.bootOrphanReconcile);
+	// zero is bootOrphanReconcileBound. A test of the boot's budgets sets it at least bootTimeout,
+	// so a reconciliation that waits until its context ends spends the whole shared budget.
+	bootOrphanReconcile time.Duration
 	// controllerFirstWake is how soon after the workflow runtime starts it applies its first
 	// controller tick (workflowRuntime.controllerFirstWake); zero is firstControllerTick.
 	controllerFirstWake time.Duration
@@ -850,13 +866,23 @@ func run(ctx context.Context, cfg config.Config, log *slog.Logger, o overrides) 
 	defer halting()
 	failed := make(chan error, 1)
 	lived := make(chan error, 1)
-	// The replay runs on ctx with a budget per fact (replayTerminal), not on starting: the boot's
-	// budget would end it on the number of facts no daemon applied. It is one more of the boot's
-	// sequential steps, on start's goroutine after the restore, so its context carries a hold mark.
+	// The restore of the held catch-ups and the replay are the boot's steps after supervision's
+	// start has run its own on starting, and each fails the boot, so each runs on a budget of its
+	// own on ctx, never on what starting has left: the orphan reconciliation before them ends
+	// without failing the boot when the shared budget runs out (reconcileBootOrphans), and a
+	// restore on starting then failed the boot with `read held catch-ups: context deadline
+	// exceeded`, as INFRA's did on 2026-11-27 (dispatch://INFRA-4131/spec#b-r-boot-budget). The
+	// restore takes bootTimeout; the replay takes a budget per fact (replayTerminal), since one
+	// budget would end it on the number of facts no daemon applied. ctx ends at the signal, as
+	// starting does, and both are more of the boot's sequential steps, on start's goroutine, so
+	// their contexts carry a hold mark.
 	var settle func() error
 	if workflow != nil {
 		settle = func() error {
-			if err := workflow.catchUps.restore(starting, workflow.records, cfg.Project); err != nil {
+			restoring, endRestoring := context.WithTimeout(store.WithTransactionTracking(ctx), bootTimeout)
+			err := workflow.catchUps.restore(restoring, workflow.records, cfg.Project)
+			endRestoring()
+			if err != nil {
 				return err
 			}
 			return workflow.replayTerminal(store.WithTransactionTracking(ctx), s.claims, bootTimeout)
@@ -1395,6 +1421,9 @@ type plan struct {
 	modelFallback func(ctx context.Context) string
 	clock         supervise.Clock
 	orphanSweep   time.Duration
+	// bootOrphanReconcile is the bound of the boot's orphan reconciliation inside the boot's shared
+	// budget (bootOrphanReconcileBound, supervision.start).
+	bootOrphanReconcile time.Duration
 	// controllerRetry is the controller keeper's first wait before it retries a failed controller.
 	controllerRetry time.Duration
 	// stopBudget is how long the stop waits for the daemon's own work once it begins (stopBudget).
@@ -1580,6 +1609,10 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 	if controllerRetry == 0 {
 		controllerRetry = controllerRetryFirst
 	}
+	reconcileBound := o.bootOrphanReconcile
+	if reconcileBound == 0 {
+		reconcileBound = bootOrphanReconcileBound
+	}
 	stop := o.stopBudget
 	if stop == 0 {
 		stop = stopBudget
@@ -1594,7 +1627,7 @@ func prepare(cfg config.Config, log *slog.Logger, o overrides) (plan, error) {
 		repositories: newRepositories(cfg.Project, cfg.RepositoryRenames), installed: appauth.NewInstalled(), left: appauth.NewLeftOut(),
 		project: reads.project, operatorToken: reads.operatorToken, secrets: reads.secrets, privateNameRules: reads.privateNameRules, nats: reads.nats, instructions: instructions, instructionsCopies: copies,
 		dispatchToken: reads.dispatchToken, hookPrompts: reads.hookPrompts, prompts: composer, roleReferences: prompts.RoleReferences(),
-		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, controllerRetry: controllerRetry, stopBudget: stop,
+		tools: reads.tmux.tools, clock: clock, orphanSweep: orphanSweep, bootOrphanReconcile: reconcileBound, controllerRetry: controllerRetry, stopBudget: stop,
 		secretsEnroller: secretsEnroller, secretsRegistrar: secretsRegistrar, secretsLogin: secretsLogin, strandedReported: o.strandedReported,
 		beforeServingLatched: o.beforeServingLatched,
 		pluginRelaunchable:   pluginRelaunchable, plugins: plugins, pluginsSource: pluginsSource, checkLaunch: o.checkLaunch,
@@ -2610,8 +2643,10 @@ func (s sessionStop) send(session string, goneAt time.Time) {
 // round 9 of #4220). Then every claim recording a name it does not hold is suspended
 // (suspendSessionConflicts); a restored timer that fires between restore and that suspension
 // relaunches its claim into the hold's refusal, which holdRecorded refuses before anything starts
-// and charges one launch failure. The steps before the relaunches run on boot, settle on budgets
-// of its own, and the relaunches on the machines' context; the daemon's stop ends all three (run).
+// and charges one launch failure. The steps before the relaunches run on boot, the orphan
+// reconciliation among them on a bound of its own inside it (bootOrphanReconcileBound), settle on
+// budgets of its own, and the relaunches on the machines' context; the daemon's stop ends all of
+// them (run).
 //
 // The project's pause is read before any claim is restored (decision 18 of
 // dispatch://INFRA-3759): the flag holds the open pause before any machine exists, so every launch
@@ -2657,7 +2692,12 @@ func (s *supervision) start(boot context.Context, settle func() error) error {
 		return err
 	}
 	pruneAllBut(runtime.SecretsDir(s.cfg.StateDir), s.claims, s.log)
-	reconciled := s.reconcileBootOrphans(boot)
+	// The reconciliation ends without failing the boot when its time runs out, so it runs on a
+	// bound of its own inside boot (bootOrphanReconcileBound) and never spends more of boot than
+	// that bound (dispatch://INFRA-4131/spec#b-r-boot-budget).
+	reconciling, endReconciling := context.WithTimeout(boot, s.plan.bootOrphanReconcile)
+	reconciled := s.reconcileBootOrphans(reconciling)
+	endReconciling()
 	if !reconciled {
 		for _, token := range unfinished {
 			s.log.Warn("supervise: unrecorded launch remains uncertain; not relaunching", "claim", token)
@@ -3098,9 +3138,21 @@ func (s *supervision) reconcileBootOrphans(ctx context.Context) bool {
 // already reads every claim, rather than running a timer of their own; its minute is far below
 // the smallest backstop bound a configuration can hold, and far below the floor under
 // `worker_silence_minutes`.
+//
+// After each reconciliation, and once as the sweep begins, it passes over the runtime's
+// repository caches (sweepRepositoryCaches), a runtime that keeps none aside. The first pass runs
+// as the sweep begins, once the boot has settled, rather than at its first tick: it is the pass
+// that makes the cache of a repository of the cache set that has none, and replaces each cache pod
+// a release drifted, which no launch waits for, since each launch ensures its own repository's
+// cache. It ran on the boot inside the Sandbox runtime's ReconcileOrphans until that pass spent
+// INFRA's boot budget of 2026-11-27 (dispatch://INFRA-4131/spec#b-r-boot-budget).
 func (s *supervision) reconcileOrphans(ctx context.Context) {
 	ticker := time.NewTicker(s.plan.orphanSweep)
 	defer ticker.Stop()
+	caches, cached := s.runtime.(runtime.RepositoryCacheSweeper)
+	if cached {
+		s.sweepRepositoryCaches(ctx, caches)
+	}
 	for {
 		select {
 		case <-ctx.Done():
@@ -3117,10 +3169,30 @@ func (s *supervision) reconcileOrphans(ctx context.Context) {
 		if err := s.runtime.ReconcileOrphans(ctx, knownClaims(claims), orphanGrace); err != nil && ctx.Err() == nil {
 			s.log.Error("reconcile orphans", "error", err)
 		}
+		if cached {
+			s.sweepRepositoryCaches(ctx, caches)
+		}
 		s.refreshStalePlugins(claims, "sweep")
 		s.reconcilePodUpdates(ctx, claims)
 		s.backstopStalledTurns(ctx, claims)
 		s.tellSilentPhaseWorkers(ctx, claims)
+	}
+}
+
+// sweepRepositoryCaches runs one pass of caches, the runtime's repository caches
+// (runtime.RepositoryCacheSweeper), on a bound of its own, one sweep interval, as an update round's
+// replacement and its read of the pod's workspace have (replaceForRound, readPodWorkspace): a
+// release that drifted many cache pods has them replaced one after another, and the sweep's other
+// work, the stalled turns' backstop among it, waits for the pass. A pass the bound cuts short is
+// logged at ERROR, as the sweep's own failures are, naming the bound: the caches it did not reach
+// wait for the next pass, and nothing else tells the operator that the pass is falling behind. A
+// pass the daemon's stop ends logs nothing.
+func (s *supervision) sweepRepositoryCaches(ctx context.Context, caches runtime.RepositoryCacheSweeper) {
+	pass, done := context.WithTimeout(ctx, s.plan.orphanSweep)
+	defer done()
+	if err := caches.SweepRepositoryCaches(pass); err != nil && ctx.Err() == nil {
+		s.log.Error("reconcile orphans: the repository cache pass ran out of its bound; the caches it did not reach wait for the next pass",
+			"bound", s.plan.orphanSweep, "error", err)
 	}
 }
 
