@@ -2121,12 +2121,13 @@ type supervision struct {
 	// transaction each. The workflow sets it where it attaches, before supervision restores or
 	// launches any claim, as it sets the supervisor's durable-state callback there.
 	applySweepFacts func(ctx context.Context, facts []sweptFact) error
-	// gateRoots is the gate root each of issues stands under on the Dispatch chain now, by issue,
-	// for each one the workflow records in Legion's work (workflowRuntime.gateRoots); nil in a
-	// deployment with no workflow. It is what the boot's and every sweep's pass over the running
-	// architects reads (relaunchUnderGateRoots). The workflow sets it where it attaches, as it
-	// sets enqueue above.
-	gateRoots func(ctx context.Context, issues []string) (map[string]string, error)
+	// gateRoots is the gate root each of issues stands under on the Dispatch chain now, whether
+	// it holds its own design gate and whether its architect is its tree's root architect
+	// (issueLaunch), by issue, for each one the workflow records in Legion's work on a known
+	// chain (workflowRuntime.gateRoots); nil in a deployment with no workflow. It is what the
+	// boot's and every sweep's pass over the running architects reads (relaunchUnderGateRoots).
+	// The workflow sets it where it attaches, as it sets enqueue above.
+	gateRoots func(ctx context.Context, issues []string) (map[string]issueLaunch, error)
 	// backstopMu guards backstopOwed: the owner notices of turns the stall backstop ended that
 	// the store has refused, by claim, waiting for the next sweep to write them
 	// (stallBackstopped, tellStallsOwed). A mutex, because the machine's own goroutine records
@@ -2831,18 +2832,27 @@ func (s *supervision) endPluginRounds(claims []supervise.Claim) {
 }
 
 // relaunchUnderGateRoots is the pass that finds each architect claim whose process was launched
-// under another gate root than its issue stands under on the Dispatch chain now
-// (supervise.Claim.LaunchedTree, workflowRuntime.gateRoots) and posts it GateRootMoved, which
-// relaunches the process in its own session under that gate root, at the end of the turn it is
-// in (supervise's relaunchUnder): a change of parent, or an unlink of its children, that moved
-// the root of the gate above the issue reaches its running architect, whose plugin registers the
-// new gate root (R22 of dispatch://INFRA-3320, decision 13 of dispatch://INFRA-4730). It runs at
-// boot and at every sweep, so a relaunch a restart forgot, or one the lifecycle recheck refused,
-// is raised again; the machine decides nothing for a claim whose launch names the gate root
-// already, so the re-posts are free. Only an architect is relaunched, and only one whose process
-// holds its capability: a phase worker keeps the LEGION_TREE of its launch until its next one,
-// and a claim with no process takes the gate root at its next start. An issue the workflow does
-// not record in Legion's work is passed over, as an operator's claim is.
+// at another place than its issue stands at on the Dispatch chain now: under another gate root,
+// with another answer to whether its issue holds its own design gate, or with another answer to
+// whether it is its tree's root architect (supervise.Claim.LaunchedTree, HoldsGate and
+// LaunchedRoot, workflowRuntime.gateRoots). It posts each GateRootMoved, which relaunches the
+// process in its own session, at once where it is ready or idle and at the end of the turn it is
+// in otherwise (supervise's relaunchUnder): a change of parent, an unlink of its children, or the
+// departure from Legion's work of the issue above it reaches its running architect, whose plugin
+// registers the new gate root (R22 of dispatch://INFRA-3320, decision 13 of
+// dispatch://INFRA-4730), which is told the design gate steps of a gate its issue now holds, and
+// whose prompt is a root architect's exactly where the owner walk now ends at its own issue (R18
+// of dispatch://INFRA-3320: who acts on an issue is read from the Dispatch chain). No notice tells
+// it the last: a parent's departure tells the architect above that parent alone (workflow's
+// leave), and a change of parent tells it the new parent, not the prompt it now runs under
+// (reparentedWords). It runs at boot and at every sweep, so a relaunch a restart forgot, or one the
+// lifecycle recheck refused, is raised again; the machine decides nothing for a claim whose launch
+// names all three already, so the re-posts are free. Only an architect is relaunched, and only
+// one whose process holds its capability: a phase worker keeps the LEGION_TREE of its launch until
+// its next one, and a claim with no process takes them at its next start and launch. An issue the
+// workflow does not record in Legion's work is passed over, as an operator's claim is, and so is
+// one on a chain the copy cannot show to its top, whose architect goes on as it was launched until
+// the chain is known.
 func (s *supervision) relaunchUnderGateRoots(ctx context.Context, claims []supervise.Claim) {
 	if s.gateRoots == nil {
 		return
@@ -2867,8 +2877,9 @@ func (s *supervision) relaunchUnderGateRoots(ctx context.Context, claims []super
 		if c.Role != claim.RoleArchitect || !supervise.HoldsCapability(c.State) {
 			continue
 		}
-		if tree, recorded := roots[c.Issue]; recorded && tree != c.LaunchedTree() {
-			s.supervisor.post(c.Token, supervise.GateRootMoved{Claim: c.Token, Tree: tree})
+		if launch, recorded := roots[c.Issue]; recorded &&
+			(launch.tree != c.LaunchedTree() || launch.holdsGate != c.HoldsGate || launch.root != c.LaunchedRoot()) {
+			s.supervisor.post(c.Token, supervise.GateRootMoved{Claim: c.Token, Tree: launch.tree, HoldsGate: launch.holdsGate, Root: launch.root})
 		}
 	}
 }

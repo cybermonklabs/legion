@@ -642,19 +642,21 @@ func (s *memStore) history() []Claim {
 }
 
 // testSpecs answers every launch with the same environment, or with the error it was told to,
-// names the repository it was told every launch works (none, until names), and records the claim
-// each launch was built for.
+// names the repository it was told every launch works (none, until names) and the architect it
+// was told owns the claim's issue (none, until addresses), and records the claim each launch was
+// built for.
 type testSpecs struct {
 	err        error
 	mu         sync.Mutex
 	claims     []Claim
 	repository ghrepo.Repository
+	owner      claim.Token
 }
 
 func (s *testSpecs) SpawnSpec(_ context.Context, c Claim) (runtime.SpawnSpec, error) {
 	s.mu.Lock()
 	s.claims = append(s.claims, copyClaim(c))
-	repository := s.repository
+	repository, owner := s.repository, s.owner
 	s.mu.Unlock()
 	if s.err != nil {
 		return runtime.SpawnSpec{}, s.err
@@ -662,6 +664,7 @@ func (s *testSpecs) SpawnSpec(_ context.Context, c Claim) (runtime.SpawnSpec, er
 	return runtime.SpawnSpec{
 		Env:        map[string]string{"LEGION_ISSUE": c.Issue},
 		Repository: repository,
+		Owner:      owner,
 	}, nil
 }
 
@@ -672,6 +675,15 @@ func (s *testSpecs) names(repository ghrepo.Repository) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.repository = repository
+}
+
+// addresses is the owner walk's answer moving: every launch built from here on is addressed to
+// owner as the architect that owns the claim's issue, as the daemon's own spec builder addresses
+// the launch to the end of the owner walk at that launch.
+func (s *testSpecs) addresses(owner claim.Token) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.owner = owner
 }
 
 // last is the claim the latest launch was built for.

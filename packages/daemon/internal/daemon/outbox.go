@@ -3873,6 +3873,31 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 		if err != nil {
 			return err
 		}
+		// On a chain the copy cannot show to its top the start reads no gate root (launchOn), and
+		// the daemon starts nothing and makes no root there, while work under way goes on (R16 of
+		// dispatch://INFRA-3320). So a start that would make a claim, or launch one no start of
+		// this release has marked (Claim.LaunchTree "", which LaunchedTree reads as the tree the
+		// claim stores), waits on the outbox's backoff, noting its issue for R16's re-read as a
+		// notice that waits on its chain does; the re-read holds a noted key once, so a note at
+		// each attempt adds no Dispatch read. Once the chain is known, the row starts the claim
+		// under its gate root. Any other start goes on, and its claim keeps the gate root and the
+		// gate its last launch carried until the chain is known: the running architects' pass
+		// relaunches an architect then (supervision.relaunchUnderGateRoots), and a phase worker
+		// takes them at its next start.
+		if launch.tree == "" {
+			var held supervise.Claim
+			if found {
+				held = machine.Claim()
+			}
+			if !found || held.LaunchTree == "" && held.RunsNothing() {
+				if r.noteUnknownChain != nil {
+					r.noteUnknownChain(issue.Key)
+				}
+				return wait.Errorf("the start of the %s of %s waits for its Dispatch chain to be known: %w", payload.Role, issue.Key, record.ErrChainUnknown)
+			}
+			r.log.Info("outbox start on an unknown Dispatch chain; its claim keeps the gate root its last launch carried", "row", row.ID,
+				"issue", issue.Key, "role", payload.Role, "launch_tree", held.LaunchTree)
+		}
 		if !found {
 			if err := r.provisionWorkspace(ctx, issue); err != nil {
 				return err
@@ -3884,17 +3909,20 @@ func (r *outbox) supervise(ctx context.Context, row record.OutboxRow, payload re
 			if err != nil {
 				return fmt.Errorf("create claim %s: %w", token, err)
 			}
-		} else {
+		} else if launch.tree != "" {
 			if err := machine.MarkLaunch(ctx, launch.tree, launch.holdsGate); err != nil {
 				return fmt.Errorf("mark the launch of claim %s: %w", token, err)
 			}
-			// An architect whose process runs under another gate root is relaunched in its
-			// session under this one, at its turn's end, so its plugin registers that gate root;
-			// one with no process launches under it by the mark above (supervise.GateRootMoved,
-			// R22 of dispatch://INFRA-3320). A phase worker keeps the LEGION_TREE of its launch
-			// until its next one.
+			// An architect whose process runs under another gate root, with another answer to
+			// whether its issue holds its own gate, or with another answer to whether it is its
+			// tree's root architect, is relaunched in its session, at its turn's end, so its plugin
+			// registers that gate root, it is told the design gate steps of a gate it holds and its
+			// launch reads the owner walk again for its prompt; one with no process launches so by
+			// the mark above (supervise.GateRootMoved, R18 and R22 of dispatch://INFRA-3320). A
+			// phase worker keeps both until a start finds it with no process.
 			if payload.Role == claim.RoleArchitect {
-				if err := machine.Handle(ctx, supervise.GateRootMoved{Claim: token, Tree: launch.tree}); err != nil {
+				moved := supervise.GateRootMoved{Claim: token, Tree: launch.tree, HoldsGate: launch.holdsGate, Root: launch.root}
+				if err := machine.Handle(ctx, moved); err != nil {
 					return fmt.Errorf("relaunch claim %s under its gate root %s: %w", token, launch.tree, err)
 				}
 			}
@@ -5390,17 +5418,38 @@ func (r *outbox) reparentBasisVersion(ctx context.Context, parent string) (int, 
 	return version, nil
 }
 
-// issueLaunch is what a start reads of its issue on the Dispatch chain as the copy shows it now
-// (launchOf): tree, the gate root its launch names (record.Chains.StateTree: the issue's gate root
-// while it is in Legion's work, R22 of dispatch://INFRA-3320), and holdsGate, whether it holds its
-// own design gate (record.Chains.HoldsOwnGate, R15: a root, or an issue that ran as one and keeps
-// its gate under a parent in Legion's work).
+// issueLaunch is what a launch reads of its issue on the Dispatch chain as the copy shows it now
+// (launchOn): tree, the gate root its launch names (record.Chains.StateTree: the issue's gate root
+// while it is in Legion's work, R22 of dispatch://INFRA-3320), "" where the chain is unknown;
+// holdsGate, whether it holds its own design gate (record.Chains.HoldsOwnGate, R15: a root, or an
+// issue that ran as one and keeps its gate under a parent in Legion's work); and root, whether the
+// owner walk from its parent ends at the issue itself (record.OwningIssue), so that its architect
+// is its tree's root architect and is launched with a root's prompt (workerSpawnSpec, R18). A
+// start reads it (launchOf), and so does the running architects' pass (workflowRuntime.gateRoots).
 type issueLaunch struct {
 	tree      string
 	holdsGate bool
+	root      bool
 }
 
-// launchOf reads issue's launch (issueLaunch) in a read-only transaction of its own just before a
+// launchOn is key's issueLaunch over chains, and the zero issueLaunch, its tree "", on a chain the
+// copy cannot show to its top: an unknown chain makes no root (R16 of dispatch://INFRA-3320), and
+// StateTree there names key itself wherever the read reached no issue above it that holds its
+// gate, so nothing a launch names is read of it.
+//
+// root needs no reading of the architect claims the owner walk weighs: on a known chain the walk
+// from key's parent ends at an issue above key wherever one is in Legion's work (that issue, one
+// above it, or its gate root), and at key's own gate root, key itself where key holds its own gate,
+// where none is.
+func launchOn(chains *record.Chains, key string) issueLaunch {
+	if !chains.Chain(key).Known() {
+		return issueLaunch{}
+	}
+	tree := chains.StateTree(key)
+	return issueLaunch{tree: tree, holdsGate: chains.HoldsOwnGate(key), root: len(chains.Above(key)) == 0 && tree == key}
+}
+
+// launchOf reads issue's launch (launchOn) in a read-only transaction of its own just before a
 // start acts, as every fence of a row is.
 func (r *outbox) launchOf(ctx context.Context, issue record.Issue) (issueLaunch, error) {
 	var launch issueLaunch
@@ -5409,7 +5458,7 @@ func (r *outbox) launchOf(ctx context.Context, issue record.Issue) (issueLaunch,
 		if err != nil {
 			return err
 		}
-		launch = issueLaunch{tree: chains.StateTree(issue.Key), holdsGate: chains.HoldsOwnGate(issue.Key)}
+		launch = launchOn(chains, issue.Key)
 		return nil
 	}); err != nil {
 		return issueLaunch{}, fmt.Errorf("read the gate root of %s: %w", issue.Key, err)

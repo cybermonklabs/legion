@@ -1371,11 +1371,13 @@ func fillTable(t *builder) {
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
 
 	// A claim whose process was launched under another gate root than its issue stands under on
-	// the Dispatch chain now: relaunched in its session under the new one, at its turn's end. A
-	// held suspension ends it in a suspension rather than a relaunch (replaceProcess, endHeld).
-	t.row(onGateRootMoved, "the process was launched under another gate root: relaunch it in its session under its issue's gate root", relaunchUnderGateRoot,
+	// the Dispatch chain now, with another answer to whether its issue holds its own gate, or, for
+	// an architect, with another answer to whether it is its tree's root: relaunched in its session
+	// under the chain's answers, at its turn's end. A held suspension ends it in a suspension rather
+	// than a relaunch (replaceProcess, endHeld).
+	t.row(onGateRootMoved, "the process was launched at another place on its issue's Dispatch chain: relaunch it in its session", relaunchUnderGateRoot,
 		[]ClaimState{StateLaunching, StateFailed, StateSuspended}, StateRegistered, StateReady, StateWorking, StateIdle)
-	t.ignore(onGateRootMoved, "the claim holds no process to relaunch: its next start writes the gate root its launch names",
+	t.ignore(onGateRootMoved, "the claim holds no registered process to relaunch: one with none takes the gate root at its next start, and one still coming up is posted again once it registers",
 		StateQueued, StateLaunchUncertain, StateLaunching, StateShimConnected, StateSuspended, StateFailed, StateRetired)
 
 	// A restored claim whose stored record says its process died, at boot (RecordedDeath): the
@@ -2614,9 +2616,9 @@ func (m *Machine) afterTurn(ctx context.Context) error {
 			return err
 		}
 	}
-	if tree := m.retree; tree != "" {
-		m.retree = ""
-		if err := m.relaunchUnder(ctx, tree); err != nil {
+	if moved := m.retree; moved.Tree != "" {
+		m.retree = GateRootMoved{}
+		if err := m.relaunchUnder(ctx, moved); err != nil {
 			return err
 		}
 	}

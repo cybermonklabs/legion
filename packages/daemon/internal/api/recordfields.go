@@ -73,6 +73,8 @@ var ClaimRecordFields = []RecordFieldDecision{
 	{Field: "IssueEpoch", Column: ColumnWithheld, Reason: BookkeepingReason},
 	{Field: "HoldsGate", Column: ColumnWithheld,
 		Reason: "whether the claim's issue held its own design gate at the claim's last launch, which the daemon reads to tell a gate holder's architect from another's: its own mark, reaching no surface"},
+	{Field: "LaunchOwner", Column: ColumnWithheld,
+		Reason: "the architect the claim's last launch was addressed to, which that launch's addressing carried to the role itself and which a launch on an unknown Dispatch chain is addressed to again: the daemon's own record of the launch, reaching no surface"},
 	{Field: "Session", Column: ColumnAgents, Keys: []string{"session"},
 		Reason: "the session its agent registered, which is how a seat is addressed and how a transcript is found"},
 	{Field: "SessionFile", Column: ColumnOperator, Keys: []string{"sessionFile"},

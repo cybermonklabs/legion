@@ -51,7 +51,7 @@ var _ supervise.Store = (*Store)(nil)
 // The two cause columns are read beside held_for, which says whether a `provider_error` either of
 // them holds stands for `cyber_policy` (supervise.DecodeCause); upsertClaim writes the three
 // together (storedCause, heldFor).
-const claimSelect = `select c.token, c.project, c.tree, c.launch_tree, c.issue, c.role, c.generation, c.tree_epoch, c.issue_epoch, c.holds_gate, c.session,
+const claimSelect = `select c.token, c.project, c.tree, c.launch_tree, c.issue, c.role, c.generation, c.tree_epoch, c.issue_epoch, c.holds_gate, c.launch_owner, c.session,
 	c.session_file, c.locator, c.working_repository, c.working_repository_incarnation,
 	c.state, c.failure, c.pod_end, c.failure_cause, c.failed_at, c.pending_cause, c.held_for, c.leak_check_cause,
 	c.launch_failures, c.deaths, c.prompt_failures, c.prompt_retires,
@@ -559,15 +559,16 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		update_repository, update_repository_round,
 		working_repository, working_repository_incarnation,
 		last_death_at, last_start_failure_at, last_death_digest, last_start_failure_digest, session_run, held_for,
-		retired_at_write_mark, launch_tree, issue_epoch, holds_gate, published_since)
+		retired_at_write_mark, launch_tree, issue_epoch, holds_gate, published_since, launch_owner)
 		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22, $23, $24, $25, $26,
 		$27, $28, $29, $30, $31, $32, $33, $34, $35, $36, $37, $38, $39, $40, $41, $42, $43, $44, $45, $46, $47, $48, $49, $50, $51, $52, $53, $54,
 		$55, $56, $57, $58, $59, $60, $61, $62, $63, $64, $65, $66, $67, $68, $69,
 		case when $11 = 'retired' then nextval('outbox_write_mark_seq') else 0 end, $70, $71, $72,
-		case when ($11, $26) in (select * from unnest($73::text[], $74::text[])) then now() end)
+		case when ($11, $26) in (select * from unnest($73::text[], $74::text[])) then now() end, $75)
 		on conflict (token) do update set project = excluded.project, tree = excluded.tree,
 		issue = excluded.issue, role = excluded.role, generation = excluded.generation, tree_epoch = excluded.tree_epoch,
 		launch_tree = excluded.launch_tree, issue_epoch = excluded.issue_epoch, holds_gate = excluded.holds_gate,
+		launch_owner = excluded.launch_owner,
 		session = excluded.session, session_file = excluded.session_file,
 		locator = excluded.locator, state = excluded.state, failure = excluded.failure,
 		pod_end = excluded.pod_end,
@@ -675,7 +676,7 @@ func upsertClaim(ctx context.Context, tx pgx.Tx, c supervise.Claim) error {
 		instant(c.LastDeathAt), instant(c.LastStartFailureAt),
 		causeDigest(c.LastDeathCause, c.LastDeathAt), causeDigest(c.LastStartFailure, c.LastStartFailureAt), sessionRun,
 		heldFor(c),
-		c.LaunchTree, int64(c.IssueEpoch), c.HoldsGate, roleHoldingStates, roleHoldingSources,
+		c.LaunchTree, int64(c.IssueEpoch), c.HoldsGate, roleHoldingStates, roleHoldingSources, string(c.LaunchOwner),
 	)
 	if err != nil {
 		return fmt.Errorf("put claim %s: %w", c.Token, err)
@@ -986,6 +987,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 	var (
 		c                           supervise.Claim
 		token, role, state, by      string
+		launchOwner                 string
 		cause, pendingCause, held   string
 		failedAt                    *time.Time
 		generation, treeEpoch       int64
@@ -1038,7 +1040,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		reportedAt, reminderAt      *time.Time
 		kinds                       string
 	)
-	err := row.Scan(&token, &c.Project, &c.Tree, &c.LaunchTree, &c.Issue, &role, &generation, &treeEpoch, &issueEpoch, &c.HoldsGate, &c.Session,
+	err := row.Scan(&token, &c.Project, &c.Tree, &c.LaunchTree, &c.Issue, &role, &generation, &treeEpoch, &issueEpoch, &c.HoldsGate, &launchOwner, &c.Session,
 		&c.SessionFile, &locator, &working, &workingIncarnation,
 		&state, &c.Failure, &c.PodEnd, &cause, &failedAt, &pendingCause, &held, &c.LeakCheckCause,
 		&c.Budgets.LaunchFailures, &c.Budgets.Deaths, &c.Budgets.PromptFailures,
@@ -1073,6 +1075,7 @@ func scanClaim(row pgx.Row) (supervise.Claim, error) {
 		c.DeliveredRows = nil
 	}
 	c.Token, c.Role, c.State, c.SuspendedBy = claim.Token(token), claim.Role(role), supervise.ClaimState(state), supervise.SuspendSource(by)
+	c.LaunchOwner = claim.Token(launchOwner)
 	c.FailureCause, c.PendingCause = supervise.DecodeCause(cause, held), supervise.DecodeCause(pendingCause, held)
 	c.FailedAt = orZero(failedAt)
 	c.Generation, c.TreeEpoch, c.IssueEpoch, c.ServingGeneration = uint64(generation), uint64(treeEpoch), uint64(issueEpoch), uint64(servingGeneration)

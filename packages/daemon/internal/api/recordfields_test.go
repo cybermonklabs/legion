@@ -94,7 +94,7 @@ func claimWithEveryFieldSet(t *testing.T) supervise.Claim {
 	working := ghrepo.MustParse("acme/widgets")
 	current := supervise.Claim{
 		Token: token, Project: "OTHER", Tree: "LEGION-500", LaunchTree: "LEGION-400", Issue: "LEGION-500", Role: claim.RoleImplementer,
-		Generation: 3, TreeEpoch: 2, IssueEpoch: 4, HoldsGate: true,
+		Generation: 3, TreeEpoch: 2, IssueEpoch: 4, HoldsGate: true, LaunchOwner: "legion-legion-legion-400-architect",
 		Session: "ses_implementer_500", SessionFile: "/var/lib/legion/sessions/ses_implementer_500.jsonl",
 		ServingGeneration: 2, GivenEntry: 7, ServedEntry: 6,
 		Handshake:        supervise.EntryHandshake{Entry: 7, Generation: 3, QueuedAt: queuedAt, ConfirmedAt: openedAt},

@@ -134,9 +134,9 @@ func TestTheIssueFactsMigrationOpensEachLiveClaimsIssueAndTakesTheRetentionEnd(t
 	for _, c := range loaded {
 		// A claim on its tree's root holds its gate after the migration; the controller's, on no issue, does not.
 		wantGate := c.Issue != "" && claim.IsTreeRoot(c.Issue, c.Tree)
-		if c.IssueEpoch != wantEpochs[c.Token] || c.LaunchTree != "" || c.HoldsGate != wantGate {
-			t.Errorf("claim %s after the migration = issue epoch %d, launch tree %q, gate %t; want issue epoch %d, no launch tree and gate %t",
-				c.Token, c.IssueEpoch, c.LaunchTree, c.HoldsGate, wantEpochs[c.Token], wantGate)
+		if c.IssueEpoch != wantEpochs[c.Token] || c.LaunchTree != "" || c.HoldsGate != wantGate || c.LaunchOwner != "" {
+			t.Errorf("claim %s after the migration = issue epoch %d, launch tree %q, gate %t, launch owner %q; want issue epoch %d, no launch tree, gate %t and no launch owner",
+				c.Token, c.IssueEpoch, c.LaunchTree, c.HoldsGate, c.LaunchOwner, wantEpochs[c.Token], wantGate)
 		}
 		if c.IssueEpoch == 0 || c.State == supervise.StateRetired {
 			continue

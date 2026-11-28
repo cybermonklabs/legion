@@ -267,31 +267,35 @@ func (c Claim) RunsNothing() bool { return slices.Contains(runsNothing, c.State)
 // let go, so a project's pause has nothing of it to stop.
 func (c Claim) Gone() bool { return IsGone(c.State) }
 
-// MarkLaunch records on the claim what the Dispatch chain reads of its issue when the claim is
-// started: tree, the issue's gate root (record.Chains.StateTree), which the claim's next launch
-// carries as its spawn spec's Tree, so as the role's LEGION_TREE and the pod label of a pod that
-// launch makes (Claim.LaunchTree, decision 13 of dispatch://INFRA-4730), and holds, whether the
-// issue holds its own design gate (Claim.HoldsGate, record.Chains.HoldsOwnGate). The daemon's
-// outbox writes both at each start, so a change of parent that makes the issue a root, or takes a
-// root under a parent that holds the gate, reaches the claim's next launch. The mark is what the
-// machine reads a gate holder's architect by (Claim.treeRoot); a claim already marked so writes
-// nothing.
+// MarkLaunch records on a claim with no process of its own (Claim.RunsNothing) what the Dispatch
+// chain reads of its issue when the claim is started, for the launch that start makes: tree, the
+// issue's gate root (record.Chains.StateTree), which the launch carries as its spawn spec's Tree,
+// so as the role's LEGION_TREE and the pod label of a pod that launch makes (Claim.LaunchTree,
+// decision 13 of dispatch://INFRA-4730), and holds, whether the issue holds its own design gate
+// (Claim.HoldsGate, record.Chains.HoldsOwnGate). The daemon's outbox marks at each start on a
+// known chain, so a change of parent that makes the issue a root, or takes a root under a parent
+// that holds the gate, reaches the claim's next launch. The mark is what the machine reads a gate
+// holder's architect by (Claim.treeRoot); a claim already marked so writes nothing.
 //
-// LaunchTree stays the tree the claim's process was launched under while one runs (a state that
-// holds the process's capability). An architect's such claim is relaunched in its own session
-// under the new gate root by the GateRootMoved event the caller posts for architects alone
-// (relaunchUnder), so its plugin registers the gate root again (R22 of dispatch://INFRA-3320); a
-// phase worker keeps the tree of its launch until a start finds it with no process. A claim with
-// no process writes tree for the launch its start makes.
+// A claim whose process runs, or is starting, keeps both as its launch carried them, since that
+// process holds what its launch told it: its LEGION_TREE, and, for an architect whose issue holds
+// its own gate, the design gate steps. A change of either reaches such a process only with the
+// relaunch that tells it: an architect is relaunched in its own session under both by the
+// GateRootMoved event the caller posts for architects alone (relaunchUnder), so its plugin
+// registers the gate root again (R22 of dispatch://INFRA-3320), and a phase worker keeps both
+// until a start finds it with no process.
 func (m *Machine) MarkLaunch(ctx context.Context, tree string, holds bool) error {
 	m.mu.Lock()
 	defer m.unlock()
+	if !m.claim.RunsNothing() {
+		return nil
+	}
 	changed := m.claim.HoldsGate != holds
 	if changed {
 		m.log.Info("supervise: the claim's issue holds its own design gate", "holds_gate", holds)
 		m.claim.HoldsGate = holds
 	}
-	if !HoldsCapability(m.claim.State) && m.claim.LaunchTree != tree {
+	if m.claim.LaunchTree != tree {
 		m.claim.LaunchTree, changed = tree, true
 	}
 	if !changed {

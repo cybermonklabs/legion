@@ -218,6 +218,13 @@ type Claim struct {
 	// (record.Chains.HoldsOwnGate), set at each launch beside LaunchTree: what the machine reads
 	// an architect of a gate holder by.
 	HoldsGate bool
+	// LaunchOwner is the architect claim the claim's last launch was addressed to as the one that
+	// owns its issue (runtime.SpawnSpec.Owner, which internal/daemon's specs reads on the owner
+	// walk at each launch), written by every launch the machine builds (spawnSpec). It is the
+	// claim's own exactly where that launch had a root architect's prompt (LaunchedRoot), and a
+	// launch on a Dispatch chain the copy cannot show to its top is addressed to it again, so it
+	// launches as the last one did. "" for a claim no launch of this release has built.
+	LaunchOwner claim.Token
 	// Session and SessionFile are the agent's reported session id and absolute transcript path.
 	Session     string
 	SessionFile string
@@ -1882,12 +1889,13 @@ type Machine struct {
 	// a claim still stale (refreshStalePlugins in internal/daemon), so a restart that forgets this
 	// mark finds the same claim again, and letGo drops it with the process it was made for.
 	staleRelaunch *string
-	// retree is the gate root a relaunch in the claim's session waits for the agent's turn to end
-	// under (relaunchUnder, afterTurn); "" for none. It is memory only, as staleRelaunch is: the
-	// daemon's boot pass and every orphan sweep post GateRootMoved again for a claim whose launch
-	// still names another gate root (internal/daemon's relaunchUnderGateRoots), and letGo drops it
-	// with the process it was made for.
-	retree string
+	// retree is the place on the Dispatch chain a relaunch in the claim's session waits for the
+	// agent's turn to end under (GateRootMoved: the gate root, the gate and the root's answer;
+	// relaunchUnder, afterTurn); its Tree is "" for none. It is memory only, as staleRelaunch is:
+	// the daemon's boot pass and every orphan sweep post GateRootMoved again for a claim whose
+	// launch still names another place (internal/daemon's relaunchUnderGateRoots), and letGo drops
+	// it with the process it was made for.
+	retree GateRootMoved
 	// busyTurn is the claim recorded working by Oh My Pi's busy answer to a prompt of its pending
 	// task (recordBusyTurn): the agent said its session is in a prompt, preparing or running a
 	// turn, and no agent_start of that turn has been read yet. It arms the sweep's question
@@ -4300,6 +4308,10 @@ func (m *Machine) resumeByID(ctx context.Context, token string, spec runtime.Spa
 // recreated. The claim the machine keeps is marked only once that start has succeeded, after its
 // build, and each later try moves the generation before it builds, so no other build finds the
 // mark equal to the generation.
+//
+// What the build names as the architect that owns the claim's issue is the claim's own state: it
+// is written on the claim the machine keeps (Claim.LaunchOwner), which the launch's own write
+// persists, so the claim records whether its last launch had a root architect's prompt.
 func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (runtime.SpawnSpec, error) {
 	building := m.claim
 	building.SessionLost = m.lostCause
@@ -4310,6 +4322,7 @@ func (m *Machine) spawnSpec(ctx context.Context, token string, byAgent bool) (ru
 	if err != nil {
 		return runtime.SpawnSpec{}, fmt.Errorf("build the launch of %s: %w", m.claim.Token, err)
 	}
+	m.claim.LaunchOwner = spec.Owner
 	// The launch names the gate root the claim's issue stood under at its last start
 	// (Claim.LaunchedTree), never the tree the claim stores, which is the release before's.
 	spec.Claim, spec.Project, spec.Tree, spec.Issue, spec.Role = m.claim.Token, m.claim.Project, m.claim.LaunchedTree(), m.claim.Issue, m.claim.Role
@@ -5087,7 +5100,7 @@ func (m *Machine) letGo(ctx context.Context, cause string) {
 		m.unsaved = true
 	}
 	m.held, m.heldLaunch = nil, false
-	m.staleRelaunch, m.retree = nil, ""
+	m.staleRelaunch, m.retree = nil, GateRootMoved{}
 	m.busyTurn = false
 	m.turnsDelivery, m.cutTurnOf, m.carried = "", "", sentences{}
 	m.compacting, m.lostCompaction = nil, nil

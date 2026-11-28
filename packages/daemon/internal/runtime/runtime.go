@@ -807,7 +807,10 @@ func (k Known) Validate() error {
 // `commit_issue_trailer_repos` (which internal/daemon's specs reads); "" for a repository the
 // project does not name, for a launch with no repository, and for the controller, which works
 // neither. Backend is the harness the process runs (`worker_backends`,
-// Backends); "" is Oh My Pi (Of).
+// Backends); "" is Oh My Pi (Of). Owner is the architect claim the launch's addressing names as the
+// one that owns its issue (internal/daemon's specs reads it on the owner walk), which is the
+// claim's own exactly where the launch is a root architect's: supervise records it on the claim
+// (Claim.LaunchOwner), and no runtime reads it; "" for the controller's launch, which names none.
 type SpawnSpec struct {
 	Claim             claim.Token
 	Project           string
@@ -829,6 +832,7 @@ type SpawnSpec struct {
 	Variants          []Variant
 	IssueTrailer      string
 	Backend           Backend
+	Owner             claim.Token
 }
 
 // Variant is one arm of one declared experiment a launch runs in (SpawnSpec.Variants): the

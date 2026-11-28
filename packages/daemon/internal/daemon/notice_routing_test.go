@@ -949,7 +949,7 @@ func TestANoticeWaitsOrEndsByTheClaimsState(t *testing.T) {
 		records := record.NewStore()
 		putChainIssue(t, pool, records, routingIssue("LEGION-1", "LEGION-1", ""))
 		// LEGION-3's parent LEGION-2 is recorded, and the copy holds no row of it yet.
-		putOutboxIssue(t, pool, records, routingIssue("LEGION-2", "LEGION-1", "LEGION-1"))
+		putRecordOnly(t, pool, records, routingIssue("LEGION-2", "LEGION-1", "LEGION-1"))
 		putChainIssue(t, pool, records, routingIssue("LEGION-3", "LEGION-1", "LEGION-2"))
 		sup, _ := newOutboxSupervisor(t, "legion", t.TempDir())
 		architectClaim(t, sup, "LEGION-1", supervise.StateWorking)
@@ -1105,7 +1105,7 @@ func TestANoticeOnAnUnknownChainNotesItsIssueForTheReread(t *testing.T) {
 		records := record.NewStore()
 		putChainIssue(t, pool, records, routingIssue("LEGION-1", "LEGION-1", ""))
 		if recorded {
-			putOutboxIssue(t, pool, records, routingIssue("LEGION-2", "LEGION-1", "LEGION-1"))
+			putRecordOnly(t, pool, records, routingIssue("LEGION-2", "LEGION-1", "LEGION-1"))
 		}
 		closed := routingIssue("LEGION-3", "LEGION-1", "LEGION-2")
 		closed.Phase, closed.Status = phase.Done, "done"

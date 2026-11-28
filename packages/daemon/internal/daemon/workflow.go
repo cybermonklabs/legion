@@ -2339,21 +2339,27 @@ func (w *workflowRuntime) attach(supervision *supervision) {
 	w.workspaceHeld = workspaceHeldBy(supervision.supervisor.deps.Runtime, w.stateDir)
 }
 
-// gateRoots is the gate root each of issues stands under on the Dispatch chain as the copy holds
-// it now (record.Chains.StateTree), by issue, for each issue the workflow records in Legion's work
+// gateRoots is what a launch of each of issues reads on the Dispatch chain as the copy holds it
+// now, by issue (launchOn: the gate root it stands under, whether it holds its own design gate and
+// whether its architect is its tree's root), for each issue the workflow records in Legion's work
 // (record.InLegionsWork), read in one read-only transaction: the running architects' pass reads it
-// (supervision.relaunchUnderGateRoots). An issue out of work, or one the workflow records nothing
-// of, has no entry.
-func (w *workflowRuntime) gateRoots(ctx context.Context, issues []string) (map[string]string, error) {
-	roots := make(map[string]string, len(issues))
+// (supervision.relaunchUnderGateRoots). An issue out of work, one the workflow records nothing of,
+// and one whose chain is unknown have no entry, so an architect on an unknown chain goes on as it
+// was launched until the chain is known (R16 of dispatch://INFRA-3320: an unknown chain makes no
+// root, and work under way on one goes on).
+func (w *workflowRuntime) gateRoots(ctx context.Context, issues []string) (map[string]issueLaunch, error) {
+	roots := make(map[string]issueLaunch, len(issues))
 	err := store.TransactWith(ctx, w.pool, pgx.TxOptions{AccessMode: pgx.ReadOnly}, func(ctx context.Context, tx pgx.Tx) error {
 		chains, err := record.ReadChainsOf(ctx, tx, w.records, w.dispatchProject, issues)
 		if err != nil {
 			return err
 		}
 		for _, key := range issues {
-			if issue, recorded := chains.Record(key); recorded && record.InLegionsWork(issue) {
-				roots[key] = chains.StateTree(key)
+			if issue, recorded := chains.Record(key); !recorded || !record.InLegionsWork(issue) {
+				continue
+			}
+			if launch := launchOn(chains, key); launch.tree != "" {
+				roots[key] = launch
 			}
 		}
 		return nil

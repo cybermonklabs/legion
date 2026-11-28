@@ -20,9 +20,13 @@
 -- claim's issue stored, for the release before (supervise.Claim.LaunchTree, decision 13 of
 -- dispatch://INFRA-4730). issue_epoch is the epoch of the claim's issue's own lifecycle it bound
 -- to, and holds_gate whether the claim's issue held its own gate at its last launch
--- (supervise.Claim.IssueEpoch, HoldsGate). published_since is when the claim last began to hold
--- its role by its state and suspension source (supervise.HoldsRole), the rule the daemon
--- publishes its session as its role's holder by, and unpublished_since when it last stopped;
+-- (supervise.Claim.IssueEpoch, HoldsGate). launch_owner is the architect claim the claim's last
+-- launch was addressed to as the one that owns its issue, the claim's own token exactly where that
+-- launch had a root architect's prompt, which a launch on a Dispatch chain the copy cannot show to
+-- its top is addressed to again (supervise.Claim.LaunchOwner); '' for a claim no launch of this
+-- release built, which this migration leaves every claim. published_since is when the claim last
+-- began to hold its role by its state and suspension source (supervise.HoldsRole), the rule the
+-- daemon publishes its session as its role's holder by, and unpublished_since when it last stopped;
 -- internal/store's upsertClaim writes each on that crossing alone, and the repair reads them to
 -- judge a session's write at the time Dispatch recorded it (record.RoleHolderAt.PublishedAt,
 -- decision 24 of dispatch://INFRA-4730). Both are nullable with no default, so the release
@@ -235,6 +239,7 @@ alter table claims
     add column launch_tree text not null default '',
     add column issue_epoch bigint not null default 0 check (issue_epoch >= 0),
     add column holds_gate boolean not null default false,
+    add column launch_owner text not null default '',
     add column published_since timestamptz,
     add column unpublished_since timestamptz;
 

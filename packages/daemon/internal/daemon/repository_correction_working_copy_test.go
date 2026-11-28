@@ -72,6 +72,9 @@ func newWorkingCopyRig(t *testing.T, runtimeName string) *workingCopyRig {
 		if err := records.PutIssue(ctx, tx, issue); err != nil {
 			return err
 		}
+		if err := copyRecordedIssue(ctx, tx, issue); err != nil {
+			return err
+		}
 		return records.PutPlan(ctx, tx, version, []record.PlanTask{task}, steps)
 	}); err != nil {
 		t.Fatalf("seed %s with its plan: %v", issue.Key, err)

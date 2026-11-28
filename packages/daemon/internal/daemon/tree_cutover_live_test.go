@@ -594,6 +594,11 @@ func TestTheTreeCutoverLive(t *testing.T) {
 		if registered.Tree != a2 {
 			t.Fatalf("the relaunched architect of %s registered under the tree %s, want %s", a2, registered.Tree, a2)
 		}
+		// A2 holds its own gate now, so the relaunch carries the gate as well as the gate root
+		// (supervise.GateRootMoved.HoldsGate), and its architect is told the steps to register.
+		if !strings.Contains(relaunch.Prompt.Addressing, "Design gate steps") {
+			t.Fatalf("the relaunch of %s under %s was told %q, want its design gate steps: %s holds its own gate", architect, a2, relaunch.Prompt.Addressing, a2)
+		}
 		treeNote("%s, launched under %s by the release before, resumed its session %s with LEGION_TREE %s and registered under the tree %s",
 			architect, held.Tree, session, relaunch.Tree, registered.Tree)
 

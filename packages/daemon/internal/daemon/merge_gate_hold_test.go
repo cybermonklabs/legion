@@ -97,14 +97,15 @@ func TestAnIssueWaitsForEveryGateAboveIt(t *testing.T) {
 			t.Fatalf("the runtime spawned %d merger sessions while no row of the gate stood, want none", spawns)
 		}
 
-		// Its architect is relaunched in its session under its own key, and the catch-up its
-		// ready queues opens with the sentence of what the relaunch ended, then states the tree and
-		// names the step whose document the architect registers.
-		handleAll(t, machine, supervise.GateRootMoved{Claim: architect, Tree: key})
+		// Its architect is relaunched in its session under its own key, holding its own gate, as
+		// its tree's root, as the sweep's pass posts it (supervision.relaunchUnderGateRoots), and
+		// the catch-up its ready queues opens with the sentence of what the relaunch ended, then
+		// states the tree and names the step whose document the architect registers.
+		handleAll(t, machine, supervise.GateRootMoved{Claim: architect, Tree: key, HoldsGate: true, Root: true})
 		relaunched := machine.Claim()
-		if relaunched.LaunchedTree() != key || !relaunched.EndedWork.Tells() {
-			t.Fatalf("the relaunched architect of %s is launched under %q with the record %+v, want its own key and an untold record of the relaunch",
-				key, relaunched.LaunchedTree(), relaunched.EndedWork)
+		if relaunched.LaunchedTree() != key || !relaunched.HoldsGate || !relaunched.EndedWork.Tells() {
+			t.Fatalf("the relaunched architect of %s is launched under %q holding the gate %t with the record %+v, want its own key, its own gate and an untold record of the relaunch",
+				key, relaunched.LaunchedTree(), relaunched.HoldsGate, relaunched.EndedWork)
 		}
 		sentence := supervise.RelaunchSentence(relaunched.EndedWork)
 		bootClaim(t, machine, architect)
@@ -113,7 +114,7 @@ func TestAnIssueWaitsForEveryGateAboveIt(t *testing.T) {
 		if reasons := catchUpReasons(t, r.pool); len(reasons) != 1 || reasons[0] != want {
 			t.Fatalf("the outbox holds catch-ups %q, want the relaunch's one, %q", reasons, want)
 		}
-		if !strings.Contains(sentence, "its issue now stands under another gate root") {
+		if !strings.Contains(sentence, "its issue now stands elsewhere on its Dispatch chain") {
 			t.Errorf("the relaunch's sentence %q does not say why the process was started again", sentence)
 		}
 

@@ -2006,10 +2006,45 @@ func TestPhaseHoldsAnswersFromTheIssuesCurrentPhase(t *testing.T) {
 	}
 }
 
+// putOutboxIssue records issue and, where the daemon's copy of Dispatch holds no row of it, the
+// row Dispatch shows of it (copyRecordedIssue). A test whose copy must lack the issue's row
+// records it with putRecordOnly.
 func putOutboxIssue(t *testing.T, pool *store.Pool, records record.Store, issue record.Issue) {
 	t.Helper()
 	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
-		return records.PutIssue(context.Background(), tx, issue)
+		if err := records.PutIssue(ctx, tx, issue); err != nil {
+			return err
+		}
+		return copyRecordedIssue(ctx, tx, issue)
+	}); err != nil {
+		t.Fatalf("put workflow issue: %v", err)
+	}
+}
+
+// copyRecordedIssue writes in tx, where the daemon's copy of Dispatch holds no row of issue, the
+// row Dispatch shows of it: the parent the record names and the status Dispatch last showed it in
+// (DispatchStatus, else Status), each as no reading has written it yet (sequence 0), so any
+// reading the test makes later (putCopyRow, seedCopyRow, an event's fact) replaces it. Every
+// decision reads an issue's place on its chain from the copy (record.ReadChains), and on a chain
+// the copy cannot show to its top a start waits (R16 of dispatch://INFRA-3320), so a fixture that
+// records an issue states its place with it, as a real Dispatch holds every issue's row.
+func copyRecordedIssue(ctx context.Context, tx pgx.Tx, issue record.Issue) error {
+	var parent *string
+	if issue.Parent != nil && *issue.Parent != "" {
+		parent = issue.Parent
+	}
+	_, err := tx.Exec(ctx, `insert into dispatch_issues (key, project, status, parent, dispatch_seq) values ($1, $2, $3, $4, 0)
+		on conflict (key) do nothing`, issue.Key, projectOf(issue.Key), cmp.Or(issue.DispatchStatus, issue.Status), parent)
+	return err
+}
+
+// putRecordOnly records issue and writes no row of it into the daemon's copy of Dispatch, for a
+// test of a chain the copy cannot show to its top (R16 of dispatch://INFRA-3320): a row Dispatch's
+// event of the issue has not brought yet.
+func putRecordOnly(t *testing.T, pool *store.Pool, records record.Store, issue record.Issue) {
+	t.Helper()
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutIssue(ctx, tx, issue)
 	}); err != nil {
 		t.Fatalf("put workflow issue: %v", err)
 	}

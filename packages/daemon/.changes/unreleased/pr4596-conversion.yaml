@@ -9,9 +9,11 @@ body: |-
   `issue_lifecycles`, `tree_conversions`, the issue's `retained_until`, `carried_generation`,
   `carried_gate`, `pending_close`, `seen_seq` and `held_session_writes`, the claim's
   `launch_tree`, `issue_epoch`, `holds_gate` (set on each claim whose issue is its stored tree),
-  `published_since` and `unpublished_since`, the outbox's `attempt_key` and `attempt_body`, the
-  outbox kind `retention_end`, and the design-news reads keyed by an issue's gate root on the
-  Dispatch chain; it writes the outbox's kind check last, with every kind.
+  `launch_owner` (the architect the claim's last launch was addressed to, its own where that
+  launch had a root architect's prompt), `published_since` and `unpublished_since`, the outbox's
+  `attempt_key` and `attempt_body`, the outbox kind `retention_end`, and the design-news reads
+  keyed by an issue's gate root on the Dispatch chain; it writes the outbox's kind check last,
+  with every kind.
   `20261122154644_issue_holds_gate` adds `issues.holds_gate`. The old tree columns stay written,
   so the release before can run again: `docs/kubernetes.md`, "Rolling back the release that stores
   no tree", gives the step a rollback runs first.

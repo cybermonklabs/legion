@@ -234,7 +234,9 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	}
 	// An architect is a root's where the owner walk above its issue names no other architect
 	// (owningArchitect, R18 of dispatch://INFRA-3320): its prompt and its addressing say so, read
-	// on the Dispatch chain at this launch (ownerOf).
+	// on the Dispatch chain at this launch (ownerOf). The launch carries the architect it names
+	// (runtime.SpawnSpec.Owner), which the claim records (supervise.Claim.LaunchOwner), so a launch
+	// on a chain the copy cannot show to its top is addressed, and prompted, as this one was.
 	root := c.Role == claim.RoleArchitect && architect == c.Token
 	promptPaths, err := s.rolePromptPaths(c, root)
 	if err != nil {
@@ -243,6 +245,7 @@ func (s specs) workerSpawnSpec(ctx context.Context, c supervise.Claim) (runtime.
 	spec := runtime.SpawnSpec{
 		Env:     map[string]string{},
 		Secrets: maps.Clone(s.secrets),
+		Owner:   architect,
 	}
 	// One read of the record, for the repository the launch works, its default branch and the
 	// correction the next task names beside it (addressingFragment): the three are of one row,
@@ -398,13 +401,21 @@ func (s specs) ownerOf(ctx context.Context, c supervise.Claim) (claim.Token, err
 // at its issue, so it is the issue's own architect while that claim holds its role, else the
 // nearest one above it in Legion's work that does, else its gate root's; for the issue's own
 // architect it starts above the issue (record.NoticeStartsAtParent), which is the architect above
-// it, or the issue's own where none is. A walk that meets a chain the copy cannot show to its top
-// names the issue's own architect, where it starts (record.OwnerWalk.ArchitectOrOwn, in the walk's
-// claim project, which is project: the record this reads is of the daemon's own project,
-// projectRecords). An issue the workflow does not record, such as
-// an operator's claim, has no chain to walk, so its claim is its tree's architect's. project is the
-// claim project token every token of the launch is spelled in. It reads in a read-only
-// transaction of its own, as the supervisor's predicates read a record.
+// it, or the issue's own where none is. A phase worker's walk that meets a chain the copy cannot
+// show to its top names the issue's own architect, where it starts (record.OwnerWalk.ArchitectOrOwn,
+// in the walk's claim project, which is project: the record this reads is of the daemon's own
+// project, projectRecords). An architect's such walk names the architect its last launch was
+// addressed to (supervise.Claim.LaunchOwner), so it launches as that launch did, with a root's
+// prompt (workerSpawnSpec) exactly where that one had it: its issue's own architect, where its walk
+// starts, would make a root of an unknown chain (R16). A claim no launch of this release has built
+// records none, and is addressed by the rule decision 13 of dispatch://INFRA-4730 keeps for its
+// launch, to the architect of the gate root that launch named (LaunchedTree): for a claim no start
+// of this release has marked either, the tree it stores, so its prompt is a root's exactly where
+// that tree is its own issue, the release before's rule for a tree's root (claim.IsTreeRoot). An
+// issue the workflow does not record, such as an operator's claim, has no chain to walk, so its
+// claim is its tree's architect's. project is the claim project token every token of the launch
+// is spelled in. It reads in a read-only transaction of its own, as the supervisor's predicates
+// read a record.
 func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c supervise.Claim) (claim.Token, error) {
 	owner, err := claim.NewToken(project, c.Tree, claim.RoleArchitect)
 	if err != nil {
@@ -419,7 +430,18 @@ func (w *workflowRuntime) owningArchitect(ctx context.Context, project string, c
 		if err != nil {
 			return err
 		}
-		owner, err = walk.ArchitectOrOwn(issue.Key, c.Role == claim.RoleArchitect)
+		if c.Role != claim.RoleArchitect {
+			owner, err = walk.ArchitectOrOwn(issue.Key, false)
+			return err
+		}
+		owner, err = walk.Architect(issue.Key, true)
+		if errors.Is(err, record.ErrChainUnknown) {
+			if c.LaunchOwner != "" {
+				owner, err = c.LaunchOwner, nil
+			} else {
+				owner, err = claim.NewToken(project, c.LaunchedTree(), claim.RoleArchitect)
+			}
+		}
 		return err
 	}); err != nil {
 		return "", fmt.Errorf("read the architect that owns %s: %w", c.Token, err)

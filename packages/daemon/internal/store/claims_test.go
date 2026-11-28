@@ -449,11 +449,12 @@ func TestAClaimsPluginContractRoundTrips(t *testing.T) {
 	sameClaim(t, onlyClaim(t, store), want)
 }
 
-// The tree a claim last launched under, the epoch of its issue's own lifecycle it is bound to and
-// whether its issue held its own gate at that launch are columns of their own (decision 13 and 16
-// of dispatch://INFRA-4730), each read back as written beside the tree and the tree epoch the
-// release before reads, which they never overwrite: a restart builds every claim from this table,
-// and the spawn spec, the launch check and the machine's root reading take them from it.
+// The tree a claim last launched under, the epoch of its issue's own lifecycle it is bound to,
+// whether its issue held its own gate at that launch and the architect that launch was addressed
+// to are columns of their own (decision 13 and 16 of dispatch://INFRA-4730), each read back as
+// written beside the tree and the tree epoch the release before reads, which they never overwrite:
+// a restart builds every claim from this table, and the spawn spec, the launch check, the
+// machine's root reading and a launch on an unknown Dispatch chain take them from it.
 func TestAClaimsLaunchTreeIssueEpochAndGateMarkRoundTrip(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -462,22 +463,23 @@ func TestAClaimsLaunchTreeIssueEpochAndGateMarkRoundTrip(t *testing.T) {
 	if err := store.PutClaim(ctx, want); err != nil {
 		t.Fatalf("put claim: %v", err)
 	}
-	if got := onlyClaim(t, store); got.LaunchTree != "" || got.IssueEpoch != 0 || got.HoldsGate {
-		t.Fatalf("a claim no launch set them on read back launch tree %q, issue epoch %d, gate %t; want none", got.LaunchTree, got.IssueEpoch, got.HoldsGate)
+	if got := onlyClaim(t, store); got.LaunchTree != "" || got.IssueEpoch != 0 || got.HoldsGate || got.LaunchOwner != "" {
+		t.Fatalf("a claim no launch set them on read back launch tree %q, issue epoch %d, gate %t, owner %q; want none",
+			got.LaunchTree, got.IssueEpoch, got.HoldsGate, got.LaunchOwner)
 	}
 
-	want.LaunchTree, want.IssueEpoch, want.HoldsGate = "LEGION-100", 3, true
+	want.LaunchTree, want.IssueEpoch, want.HoldsGate, want.LaunchOwner = "LEGION-100", 3, true, "legion-LEGION-100-architect"
 	if err := store.PutClaim(ctx, want); err != nil {
 		t.Fatalf("put the launched claim: %v", err)
 	}
 	got := onlyClaim(t, store)
 	sameClaim(t, got, want)
-	if got.Tree != want.Tree || got.LaunchTree != "LEGION-100" || got.IssueEpoch != 3 || !got.HoldsGate {
-		t.Fatalf("launched claim read back tree %q, launch tree %q, issue epoch %d, gate %t; want %q, LEGION-100, 3, true",
-			got.Tree, got.LaunchTree, got.IssueEpoch, got.HoldsGate, want.Tree)
+	if got.Tree != want.Tree || got.LaunchTree != "LEGION-100" || got.IssueEpoch != 3 || !got.HoldsGate || got.LaunchOwner != "legion-LEGION-100-architect" {
+		t.Fatalf("launched claim read back tree %q, launch tree %q, issue epoch %d, gate %t, owner %q; want %q, LEGION-100, 3, true, legion-LEGION-100-architect",
+			got.Tree, got.LaunchTree, got.IssueEpoch, got.HoldsGate, got.LaunchOwner, want.Tree)
 	}
 
-	want.LaunchTree, want.IssueEpoch, want.HoldsGate = "LEGION-209", 4, false
+	want.LaunchTree, want.IssueEpoch, want.HoldsGate, want.LaunchOwner = "LEGION-209", 4, false, want.Token
 	if err := store.PutClaim(ctx, want); err != nil {
 		t.Fatalf("put the relaunched claim: %v", err)
 	}
