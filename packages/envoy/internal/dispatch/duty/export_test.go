@@ -24,6 +24,8 @@ const (
 	// RenewHold is a hold's renewal statement, so a test can pick it out among the statements
 	// a hold sends.
 	RenewHold = renewHold
+	// ReadPeriod is the SQL statement that reads whether a period has been served.
+	ReadPeriod = readPeriod
 )
 
 // ErrLockNotHeld is what FreeSessionLock answers when the unlock reports the session never held
