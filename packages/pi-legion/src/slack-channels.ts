@@ -1,14 +1,22 @@
 import { SLACK_CHANNEL_ID_PATTERN } from "@legion/contracts";
 
 /**
+ * Whether this process is a Legion controller of either launch form: the controller marker and no
+ * tree marker. It is `classifySession(env).kind === "controller"` for every environment that
+ * classifySession takes, and false for one it refuses, which session_start refuses, saying why.
+ */
+export function controllerProcess(env: NodeJS.ProcessEnv): boolean {
+  return env.LEGION_CONTROLLER === "1" && env.LEGION_TREE === undefined;
+}
+
+/**
  * Whether this process is the controller the daemon launched (`controller: daemon`): a controller
  * session carrying a boot token, which the daemon hands only the processes it launches and
  * `legion controller start` drops from what it inherits.
  */
 export function daemonLaunchedController(env: NodeJS.ProcessEnv): boolean {
   return (
-    env.LEGION_CONTROLLER === "1" &&
-    env.LEGION_TREE === undefined &&
+    controllerProcess(env) &&
     (env.LEGION_BOOT_TOKEN_FILE !== undefined || env.LEGION_BOOT_TOKEN !== undefined)
   );
 }

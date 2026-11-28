@@ -305,7 +305,7 @@ function claimRoleAtFirstTurn(
     host.recordClaimStep?.({ claimedBy: by, at: Date.now() });
     void (async () => {
       try {
-        await claimRoleAgainOnBusy(() => host.claimRole(role, replaces), role, {
+        await claimRoleAgainOnBusy(() => host.claimRole(role, replaces), roleClaimWords(role), {
           log: host.log,
           firstDelayMs: host.roleClaimRetryFirstDelayMs,
           signal: host.signal,
@@ -332,23 +332,40 @@ const ROLE_CLAIM_RETRY_FIRST_DELAY_MS = 1_000;
 const ROLE_CLAIM_RETRY_MAX_DELAY_MS = 30_000;
 
 /**
- * Makes `claim`, a claim of Envoy role `role`, and makes it again while the listener answers it
- * 503 (`listenerAskedToClaimAgain`) and asks for the claim again: it wrote no claim - every try of
+ * What `claimRoleAgainOnBusy`'s log line calls the call it makes again: `what` was answered 503,
+ * and `again` is how the line says it is made again (`claiming it again`).
+ */
+export interface AgainOnBusyWords {
+  readonly what: string;
+  readonly again: string;
+}
+
+/** The words of a claim of Envoy role `role` (`AgainOnBusyWords`). */
+export function roleClaimWords(role: string): AgainOnBusyWords {
+  return { what: `claim of Envoy role ${role}`, again: "claiming it again" };
+}
+
+/**
+ * Makes `claim`, a claim of an Envoy role, and makes it again while the listener answers it 503
+ * (`listenerAskedToClaimAgain`) and asks for the claim again: it wrote no claim - every try of
  * its write met a conflict, or the takeover record a claim writes first did not store - or the
  * claim landed and stands, and only the handover of the session it names as replaced was not
  * judged or its record did not store (`claimStandsWithoutHandover`), which the listener's answer
- * says. The wait starts at `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up
- * to `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the attempt the listener
+ * says. The same holds for any call the listener answers 503 and asks for again, such as a
+ * subscription an edge listener refuses while it cannot read the project's repositories: `words`
+ * names the call in the log line (`roleClaimWords` for a role claim). The wait starts at
+ * `firstDelayMs` (`ROLE_CLAIM_RETRY_FIRST_DELAY_MS` unset) and doubles up to
+ * `ROLE_CLAIM_RETRY_MAX_DELAY_MS`, with one `log` line per wait naming the attempt the listener
  * answered and its answer, and the 503 itself beside it, so a caller can say which of the two it
- * waits on; the timer is unref'd, so it holds no process open. Any other failure is thrown at once,
- * for the caller to stop on. An aborted `signal` - the host stopping - ends the
- * waiting with the last 503 thrown and claims no more, so no claim after a stop makes a session the
- * host ended live again. With `maxAttempts`, the 503 of the last attempt is thrown, for a claim a
- * person is waiting on to fail where they see it.
+ * waits on; the timer is unref'd, so it holds no process open. Any other failure is thrown at
+ * once, for the caller to stop on. An aborted `signal` - the host stopping - ends the
+ * waiting with the last 503 thrown and makes no more calls, so no claim after a stop makes a
+ * session the host ended live again. With `maxAttempts`, the 503 of the last attempt is thrown,
+ * for a claim a person is waiting on to fail where they see it.
  */
 export async function claimRoleAgainOnBusy(
   claim: () => Promise<void>,
-  role: string,
+  words: AgainOnBusyWords,
   options: {
     readonly log: (line: string, error: unknown) => void;
     readonly firstDelayMs?: number | undefined;
@@ -366,7 +383,7 @@ export async function claimRoleAgainOnBusy(
       if (!listenerAskedToClaimAgain(error) || options.signal?.aborted) throw error;
       if (options.maxAttempts !== undefined && attempt >= options.maxAttempts) throw error;
       options.log(
-        `claim of Envoy role ${role} was answered 503 at attempt ${attempt}; claiming it again in ${wait} ms: ${messageFor(error)}`,
+        `${words.what} was answered 503 at attempt ${attempt}; ${words.again} in ${wait} ms: ${messageFor(error)}`,
         error
       );
       const waited = Promise.withResolvers<void>();

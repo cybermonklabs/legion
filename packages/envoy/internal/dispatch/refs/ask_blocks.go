@@ -251,10 +251,10 @@ func askPartsSource(ask model.Ask, parts []itemblocks.Block, sum string, r *Read
 		answered = r.writtenBy(askAnswerer(*ask.Answer))
 	}
 	return itemBlockSource{
-		blocks:    parts,
-		bodySum:   sum,
-		serverURL: r.serverURL,
-		madeBy:    makers,
+		blocks:  parts,
+		bodySum: sum,
+		origins: r.origins,
+		madeBy:  makers,
 		ids: func(stored []itemblocks.Stored, next []itemblocks.Block, _, counter int) ([]string, int, error) {
 			ids, counter := itemblocks.Align(stored, next, counter, []string{AskAnswerPart})
 			return ids, counter, nil
@@ -317,7 +317,7 @@ func askForParts(ctx context.Context, q Queryer, askID string) (model.Ask, time.
 // (Replacement.SettlingForms). The question's and the options' short ids resolve for the ask's
 // author, whom its row records (NewReader), and the answer's for its answerer (askPartPairs).
 // The caller holds the ask's owner.
-func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (ItemRepair, error) {
+func planAskIfOwed(ctx context.Context, q Queryer, askID string, origins text.Origins) (ItemRepair, error) {
 	var stated, owed bool
 	var sum *string
 	var author []byte
@@ -343,7 +343,7 @@ func planAskIfOwed(ctx context.Context, q Queryer, askID, serverURL string) (Ite
 	if err != nil {
 		return ItemRepair{}, fmt.Errorf("read the author of ask %s: %w", askID, err)
 	}
-	resolve := NewReader(ctx, q, writer, string(ItemAsk), askID, serverURL)
+	resolve := NewReader(ctx, q, writer, string(ItemAsk), askID, origins)
 	if repair.indexing, err = planAskParts(index, ask, parts, partsSum, resolve, writtenAt); err != nil {
 		return ItemRepair{}, err
 	}

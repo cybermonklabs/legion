@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"github.com/sjawhar/envoy/lockwaittest"
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/pause"
@@ -497,13 +498,14 @@ func waitingOnThePauseLock(t *testing.T, pool *store.Pool, issue string) bool {
 }
 
 // waitingOnARowLock is whether a backend of this database waits for a lock another transaction
-// holds, as a resume does on the pause's row a stop transaction holds for share.
+// holds, as a resume does on the pause's row a stop transaction holds for share, read from
+// pg_locks (lockwaittest.Waiting, whose package comment says why not from the wait event).
 func waitingOnARowLock(t *testing.T, pool *store.Pool) bool {
 	t.Helper()
 	var waiting bool
 	if err := pool.QueryRow(context.Background(), `select exists (select 1 from pg_stat_activity
-		where datname = current_database() and wait_event_type = 'Lock')`).Scan(&waiting); err != nil {
-		t.Fatalf("read pg_stat_activity: %v", err)
+		where datname = current_database() and `+lockwaittest.Waiting+`)`).Scan(&waiting); err != nil {
+		t.Fatalf("read pg_stat_activity and pg_locks: %v", err)
 	}
 	return waiting
 }

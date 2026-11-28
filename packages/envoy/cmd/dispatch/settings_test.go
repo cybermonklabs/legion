@@ -18,6 +18,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
@@ -42,6 +43,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/routes"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/githubappjwt"
 	"github.com/sjawhar/envoy/internal/googleidentity"
 	"github.com/sjawhar/envoy/internal/logtest"
@@ -49,6 +51,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
@@ -219,7 +222,9 @@ func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) ht
 		t.Fatalf("build the router: %v", err)
 	}
 	handler, background := routes.New(appCtx)
-	t.Cleanup(background.Wait)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the router's background work (api.Background.Wait: detached work, sockets, hub, relay, mention sender) to end once the test's lifetime ended", background.Wait)
+	})
 	return handler
 }
 
@@ -245,7 +250,8 @@ func appContextFor(t testing.TB, boot bootConfig, built routes.AppContextOptions
 		if options.Events == nil {
 			options.Events = events.NewBroker()
 		}
-		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, ServerURL: options.ServerURL})
+		origins := documentDeps(boot, options.ServerURL, docs.Deps{}).Origins
+		documents := docs.New(docs.Deps{Store: options.Store, Events: options.Events, Identity: options.Identity, Origins: origins})
 		t.Cleanup(func() {
 			if err := documents.Shutdown(context.Background()); err != nil {
 				t.Errorf("shut the document service down: %v", err)
@@ -828,6 +834,26 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			if _, err := envoyJSON(t, map[string]string{"DISPATCH_SERVER_URL": ""}); err == nil || !strings.Contains(err.Error(), "DISPATCH_SERVER_URL") {
 				t.Errorf("set but empty: err = %v, want a refusal naming DISPATCH_SERVER_URL", err)
 			}
+		},
+		"DISPATCH_SERVED_ORIGINS": servedOriginsReachTheirReaders,
+		"DISPATCH_FORMER_ORIGINS": formerOriginsReachTheirReaders,
+		// Boot parses each entry, trimmed, as a CIDR, and the router is handed them as boot parsed
+		// them, under which it resolves every request's caller address
+		// (TestAConfiguredPeerIsReadSecondFromTheRight drives that end to end, and
+		// TestTheTrustedProxyRangesSettingRefusals each refusal).
+		"DISPATCH_TRUSTED_PROXY_RANGES": func(t *testing.T) {
+			boot := resolveWith(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": " 192.0.2.0/24 , 2001:db8:100::/48 "})
+			const want = "[192.0.2.0/24 2001:db8:100::/48]"
+			if got := fmt.Sprint(boot.TrustedProxyRanges); got != want {
+				t.Errorf("TrustedProxyRanges = %s, want %s", got, want)
+			}
+			if got := fmt.Sprint(appContextOptions(boot, routes.AppContextOptions{}).TrustedProxyRanges); got != want {
+				t.Errorf("appContextOptions hands the router TrustedProxyRanges %s, want %s", got, want)
+			}
+			if unset := resolveWith(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": " "}); unset.TrustedProxyRanges != nil {
+				t.Errorf("a value of whitespace: TrustedProxyRanges = %s, want none", unset.TrustedProxyRanges)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TRUSTED_PROXY_RANGES": "192.0.2.0/24,example.com"}, "DISPATCH_TRUSTED_PROXY_RANGES entry 2 of 2 must be a CIDR")
 		},
 		"NATS_URLS": func(t *testing.T) {
 			if cfg, err := envoyJSON(t, map[string]string{"NATS_URLS": "nats://one:4222, nats://two:4222"}); err != nil || !slices.Equal(cfg.Envoy.NatsURLs, []string{"nats://one:4222", "nats://two:4222"}) {
@@ -2185,6 +2211,32 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			}
 			refusedWith(t, map[string]string{"DISPATCH_TEST_PROCESS_HEARTBEAT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": func(t *testing.T) {
+			if boot := resolveWith(t, map[string]string{}); boot.SearchFillReadTimeout != 0 {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT unset: SearchFillReadTimeout = %v, want 0 (searchFillBounds' client deadline, four seconds past the statement timeout)", boot.SearchFillReadTimeout)
+			}
+			boot := resolveWith(t, map[string]string{
+				"DISPATCH_TEST_HOOKS":                    "1",
+				"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": stagedPastTheRun.String(),
+			})
+			if boot.SearchFillReadTimeout != stagedPastTheRun {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT: SearchFillReadTimeout = %v, want %v", boot.SearchFillReadTimeout, stagedPastTheRun)
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": invalid},
+					fmt.Sprintf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected a positive Go duration)", invalid))
+			}
+			// The floor: a deadline that is not past the statement timeout the lock timeout gives
+			// (searchFillBounds) would end a read before Postgres's own timeouts could.
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "6s"},
+				`DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT="6s" (expected longer than 6s`)
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "1.5s"},
+				`DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT="1.5s" (expected longer than 1.5s`)
+			if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", "DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms", "DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "2s"}); boot.SearchFillReadTimeout != 2*time.Second {
+				t.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=2s past a 1.5s statement timeout: SearchFillReadTimeout = %v, want 2s", boot.SearchFillReadTimeout)
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT": "1s"}, "DISPATCH_TEST_HOOKS=1 required")
+		},
 		"DISPATCH_TEST_COVERAGE_FILL_TIMEOUT": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.CoverageFillTimeout != 0 {
 				t.Errorf("DISPATCH_TEST_COVERAGE_FILL_TIMEOUT unset: CoverageFillTimeout = %v, want 0 (embedqueue's own)", boot.CoverageFillTimeout)
@@ -2347,7 +2399,7 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 			documents := docs.New(docs.Deps{Events: events.NewBroker()})
 			t.Cleanup(func() { _ = documents.Shutdown(context.Background()) })
 			refused := map[string]string{"DISPATCH_SPEC_ROOTS": "acme-1"}
-			if _, err := api.NewSpecForm(resolveWith(t, refused).SpecRoots, "", documents); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
+			if _, err := api.NewSpecForm(resolveWith(t, refused).SpecRoots, text.Origins{}, documents); err == nil || !strings.Contains(err.Error(), "DISPATCH_SPEC_ROOTS") {
 				t.Errorf("DISPATCH_SPEC_ROOTS=acme-1: build the form of The Spec = %v, want a refusal naming DISPATCH_SPEC_ROOTS", err)
 			}
 			refused["DATABASE_URL"] = storetest.Open(t).Pool.Config().ConnString()
@@ -2531,7 +2583,7 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 		MaxDocConnections: 16,
 		TestHooksEnabled:  true,
 	}
-	got := documentDeps(boot, docs.Deps{})
+	got := documentDeps(boot, "", docs.Deps{})
 	for _, field := range []struct {
 		name      string
 		got, want any
@@ -2550,6 +2602,39 @@ func TestDocumentDepsCarryEveryBootSetting(t *testing.T) {
 	}
 }
 
+// The document service reads dashboard links at the origins the API reads them at: from one boot,
+// with a served and a former address, the origins documentDeps gives the service are the ones
+// api.NewDeps builds (Deps.Origins) from what main hands the router (appContextOptions), whatever
+// the server URL ends in, and both read `/issues/ABC-1` under a server URL ending in `//`, one `/`
+// or none as an issue, and so at the served and the former address.
+func TestDocumentDepsReadLinksAsTheAPIDoes(t *testing.T) {
+	t.Parallel()
+	boot := bootConfig{ServedOrigins: []string{"https://b.example.test"}, FormerOrigins: []string{"https://old.example.test"}}
+	documents := docs.New(docs.Deps{})
+	t.Cleanup(func() {
+		if err := documents.Shutdown(context.Background()); err != nil {
+			t.Errorf("shut the document service down: %v", err)
+		}
+	})
+	for _, serverURL := range []string{"https://dispatch.example", "https://dispatch.example/", "https://dispatch.example//"} {
+		options := appContextOptions(boot, routes.AppContextOptions{ServerURL: serverURL})
+		apiDeps, err := api.NewDeps(api.DepsInput{ServerURL: options.ServerURL, ServedOrigins: options.ServedOrigins, FormerOrigins: options.FormerOrigins, Docs: documents})
+		if err != nil {
+			t.Fatalf("api.NewDeps: %v", err)
+		}
+		docOrigins := documentDeps(boot, serverURL, docs.Deps{}).Origins
+		if !reflect.DeepEqual(docOrigins, apiDeps.Origins) {
+			t.Errorf("server URL %q: the document service reads links at %q and the API at %q, want one list", serverURL, docOrigins.Hosts(), apiDeps.Origins.Hosts())
+		}
+		for _, page := range []string{"https://dispatch.example/issues/ABC-1", "https://b.example.test/issues/ABC-1", "https://old.example.test/issues/ABC-1"} {
+			apiRead, documentRead := text.Extract(page, apiDeps.Origins), text.Extract(page, docOrigins)
+			if len(apiRead) != 1 || apiRead[0].Kind != "issue" || len(documentRead) != 1 || documentRead[0].Kind != "issue" {
+				t.Errorf("server URL %q: the API reads %s as %+v and the document service as %+v, want the issue in both", serverURL, page, apiRead, documentRead)
+			}
+		}
+	}
+}
+
 // documentCapReachesTheService hands name, one of the document service's caps, to the service
 // main builds (newDocumentService) through the settings read alone, and reads back the cap it
 // sets (capOf of docs.Service.RoomCapsForTest): unset, the service's own default of 1,000; set,
@@ -2558,7 +2643,7 @@ func documentCapReachesTheService(t *testing.T, name string, capOf func(rooms, c
 	t.Helper()
 	for value, want := range map[string]int{"": 1000, " 25 ": 25} {
 		boot := resolveWith(t, map[string]string{name: value})
-		documents := newDocumentService(boot, docs.Deps{})
+		documents, _ := newDocumentService(boot, "", docs.Deps{})
 		t.Cleanup(func() {
 			if err := documents.Shutdown(context.Background()); err != nil {
 				t.Errorf("shut the document service down: %v", err)

@@ -21,10 +21,11 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 	"github.com/sjawhar/envoy/internal/cipher/store"
 	"github.com/sjawhar/envoy/internal/cipher/store/storetest"
 	"github.com/sjawhar/envoy/internal/testwait"
+	"github.com/sjawhar/envoy/lockwaittest"
 )
 
 const (
@@ -51,7 +52,7 @@ func newFixture(t *testing.T) *Service {
 	enr.Chain = enroll.NewChainVerifier(st, testAudience, time.Minute)
 
 	return &Service{
-		Store: st, Enroll: enr, Policy: policytest.Current(t, secrets.NewLocal()),
+		Store: st, Enroll: enr, Policy: policytest.Current(t, memory.New()),
 		Audience: testAudience, Skew: time.Minute, PendingTTL: 10 * time.Minute, CredentialLifetime: 24 * time.Hour,
 		Replay: enr.Replay,
 	}
@@ -738,7 +739,7 @@ func waitForLockWait(t *testing.T, ctx context.Context, st *store.Store, like st
 		}
 		var waiting int
 		if err := st.Pool.QueryRow(ctx, `select count(*) from pg_stat_activity
-			where datname = current_database() and wait_event_type = 'Lock' and query like $1`, like).Scan(&waiting); err != nil {
+			where datname = current_database() and `+lockwaittest.Waiting+` and query like $1`, like).Scan(&waiting); err != nil {
 			t.Fatalf("inspect database locks: %v", err)
 		}
 		return waiting > 0

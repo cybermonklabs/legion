@@ -9,11 +9,12 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cipher/policy"
 	"github.com/sjawhar/envoy/internal/cipher/policy/policytest"
-	"github.com/sjawhar/envoy/internal/cipher/secrets"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/aws"
+	"github.com/sjawhar/envoy/internal/cipher/secretstore/memory"
 )
 
 func TestARereadStartedAfterDetachedWaitBeganIsNotCounted(t *testing.T) {
-	local := secrets.NewLocal(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
+	local := memory.New(policytest.Secret("WORKER_TOKEN", policy.OwnerShared, policy.TierAgent, "v1"))
 	detached := &Detached{}
 	if err := detached.Wait(context.Background()); err != nil {
 		t.Fatalf("wait before a reread: %v", err)
@@ -22,9 +23,8 @@ func TestARereadStartedAfterDetachedWaitBeganIsNotCounted(t *testing.T) {
 	Register(mux, Deps{
 		Policy:        policytest.Current(t, local),
 		Detached:      detached,
-		SecretsStore:  secrets.StoreAWS,
+		SecretsStore:  aws.Name,
 		SecretsPrefix: policytest.Prefix,
-		SecretsKMSKey: policytest.KeyARN,
 	})
 	logged := policytest.CaptureLog(t)
 	recorder := httptest.NewRecorder()

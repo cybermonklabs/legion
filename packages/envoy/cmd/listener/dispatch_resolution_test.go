@@ -22,6 +22,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/identity"
 	dispatchstore "github.com/sjawhar/envoy/internal/dispatch/store"
 	dispatchstoretest "github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
 	"github.com/sjawhar/envoy/internal/id"
 	"github.com/sjawhar/envoy/internal/logging"
 	"github.com/sjawhar/envoy/internal/metrics"
@@ -250,11 +251,11 @@ func queueingDispatchMux(
 	// settlement, and a service nobody ended would still be warming that document after the
 	// database pool had closed.
 	documents := docs.New(docs.Deps{
-		Store:     database,
-		Events:    broker,
-		Identity:  caller,
-		ServerURL: "https://dispatch.example",
-		Settle:    20 * time.Millisecond,
+		Store:    database,
+		Events:   broker,
+		Identity: caller,
+		Origins:  text.NewOrigins("https://dispatch.example"),
+		Settle:   20 * time.Millisecond,
 	})
 	t.Cleanup(func() {
 		if err := documents.Shutdown(context.Background()); err != nil {
@@ -649,9 +650,10 @@ func TestDispatchRefusesABroadcastWhenASessionReadDoesNotAnswer(t *testing.T) {
 	if attempt.State != "failed" || attempt.Error == nil {
 		t.Fatalf("the mention's attempt = %#v, want it failed with a recorded cause", attempt)
 	}
-	// "no live session <id>" and anything starting with it alike: that prefix is the contract
-	// comment_delivery.go classifies a gone session on, and the dashboard prints verbatim.
-	if strings.HasPrefix(*attempt.Error, "no live session ") {
+	// "no live session <id>" (contracts.NoLiveSession, then the id) and anything starting with it
+	// alike: that prefix is the contract comment_delivery.go classifies a gone session on, and the
+	// dashboard prints verbatim.
+	if strings.HasPrefix(*attempt.Error, contracts.NoLiveSession+" ") {
 		t.Fatalf("the mention recorded %q, which Dispatch and the dashboard read as a session that has ended",
 			*attempt.Error)
 	}
