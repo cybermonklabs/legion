@@ -505,7 +505,7 @@ func TestDecodeCapturedProducerEnvelopes(t *testing.T) {
 			file:    "dispatch/issue-updated-resolved-only.json",
 			want: DispatchIssue{Key: "CAPTURE-12", Seq: 3, Type: "issue.updated", Status: "todo", Title: "Captured child issue", Parent: "CAPTURE-7", Rank: "f",
 				Resolved: record.Resolved{Priority: record.P0, From: "OTHER-5", Known: true}, ResolvedOnly: true, Labels: []string{}, ResolvedRepo: "sjawhar/legion",
-				Blockers: []string{}, ClaimKnown: true, PersonActor: "human"},
+				Blockers: []string{}, ClaimKnown: true, PersonActor: "alice"},
 		},
 		{
 			name:    "pull request opened",
