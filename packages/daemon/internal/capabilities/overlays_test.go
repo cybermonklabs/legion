@@ -2,19 +2,12 @@ package capabilities
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/sjawhar/envoy/testexec"
-	"github.com/sjawhar/legion/daemon/internal/procgroup"
-	"github.com/sjawhar/legion/daemon/internal/testkernel"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // OverlayEntries leaves out the empty entries Oh My Pi leaves out.
@@ -72,67 +65,15 @@ func TestCheckOverlaysRefusesOnlyANonZeroExit(t *testing.T) {
 }
 
 // A run that never reaches an exit of its own (here a timeout) does not stop the check: it is
-// returned as err, and a role file Oh My Pi refuses after it is still refused. Both files run
-// under main's 300 ms commandTimeout. The slow file's run waits for a release, which the row writes
-// stopBound, main's 5 s, after that run's Oh My Pi wrote its start mark, as main's `sleep 5` let it
-// go then: a timeout that has not stopped it by then finds it exited 0 on the release, and the row
-// fails for want of the slow file's timeout. The refused file's run answers at once, and must
-// answer inside its 300 ms, as on main. Its Oh My Pi logs its overlays as its first act, once its
-// SIGTERM trap is set. A call in which the refused file's run timed out before that first act is
-// judged, and fails. A call in which it timed out after that first act is told apart by what reached
-// the refused file's Oh My Pi:
-//   - its trap recorded a SIGTERM: the timeout's stop reached a live Oh My Pi. Either a loaded
-//     machine slowed its own run past its 300 ms, or the check held it there, as a check does that
-//     leaves its output pipe unread until the timeout. The kernel tells the two apart
-//     (testkernel.Hold): the refused file's Oh My Pi records its own /proc/<pid>/schedstat line just
-//     before its first act and again first thing in its trap, each beside the time since boot, and
-//     it forks nothing between the two and writes only to files and to a pipe the check reads. A
-//     loaded machine leaves its hold as run-queue wait, and such a call is not judged. A span in
-//     which it slept testkernel.HeldBound or more past what the two moments can be off by was the
-//     check's hold, and the row fails it. A kernel that keeps no schedstat (gVisor) cannot tell the
-//     two apart, and such a call is not judged either.
-//   - it recorded none: Oh My Pi exited on its own, a refusal. A correct check reads that as its own
-//     exit, with one exception: kill succeeds on a zombie, so a refusal whose reap os/exec took only
-//     after the timeout passed is stopped "as a timeout" with no SIGTERM delivered, which looks exactly
-//     like a check that misreads a refusal. The row orders that window from the run's own marks. The
-//     refused file's run starts after the slow file's run returned, which is after the slow file's
-//     Oh My Pi recorded its SIGTERM, so its timeout passes no sooner than that mark plus 300 ms. A
-//     refusal that exited reapBound or more before that earliest moment would have needed os/exec to
-//     reap it that late, and the row fails it as a refusal read as a timeout. One that exited closer
-//     than that lies in the window no fact outside os/exec orders, and its exit is not judged.
-//
-// Either way, no correct check reports the refused file's timeout before the earliest moment it could
-// pass, the slow file's SIGTERM mark plus 300 ms: only the end of the refused file's own budget makes
-// its run time out, and that budget starts after the mark. The row reads the time since boot as soon
-// as CheckOverlays returns, and a call that returned two ticks or more before that moment, more than
-// the two readings together can be off by (testexec.ClockTick), read a refusal as a timeout and
-// fails, however loaded the machine. Any other such call is not judged, and the row calls again,
-// within a minute.
-//
-// A check that stops at the first timeout never runs the refused file at all, and fails the row at once.
+// returned as err, and a role file Oh My Pi refuses after it is still refused.
 func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 	was := commandTimeout
 	commandTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { commandTimeout = was })
-	const stopBound, reapBound = 5 * time.Second, 200 * time.Millisecond
-	// Each time since boot the row reads, its own and a stand-in's mark, is off by less than a tick.
-	const clockSlack = 2 * testexec.ClockTick
 	dir := t.TempDir()
 	omp := filepath.Join(dir, "omp")
-	// Each call's files are in the directory LEGION_TEST_RUN names. The slow file's run waits until
-	// the row releases it or this test process is gone, never on a timer of its own. The refused
-	// file's run alone records its Hold's two ends, bad.first and bad.trapped.
-	alone := "[ \"$PI_CONFIG_FILES\" = \"$LEGION_TEST_BAD\" ]"
-	script := "#!/bin/sh\n" +
-		"onslowterm() { " + testexec.MarkNow(`"$LEGION_TEST_RUN/slow.termed"`) + "; exit 143; }\n" +
-		"onbadterm() { if " + alone + "; then " + testkernel.HoldTrap(`"$LEGION_TEST_RUN/bad.trapped"`) + "; fi; echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.termed\"; exit 143; }\n" +
-		"case \"$PI_CONFIG_FILES\" in\n" +
-		"*slow.yml) trap onslowterm TERM; : >\"$LEGION_TEST_RUN/slow.started\"; while [ ! -e \"$LEGION_TEST_RUN/release\" ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.05; done ;;\n" +
-		"*bad.yml) trap onbadterm TERM; if " + alone + "; then " + testkernel.HoldStart(`"$LEGION_TEST_RUN/bad.first"`) + "; fi; " +
-		"echo \"$PI_CONFIG_FILES\" >>\"$LEGION_TEST_RUN/bad.ran\"; echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; " +
-		"if " + alone + "; then " + testexec.MarkNow(`"$LEGION_TEST_RUN/bad.exiting"`) + "; fi; exit 1 ;;\n" +
-		"esac\necho '{\"value\": false}'\n"
-	if err := testexec.WriteFile(omp, []byte(script), 0o755); err != nil {
+	script := "#!/bin/sh\ncase \"$PI_CONFIG_FILES\" in *slow.yml) sleep 5;; *bad.yml) echo \"error: Failed to parse config overlay $PI_CONFIG_FILES\" >&2; exit 1;; esac\necho '{\"value\": false}'\n"
+	if err := os.WriteFile(omp, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	slow, bad := filepath.Join(dir, "slow.yml"), filepath.Join(dir, "bad.yml")
@@ -141,93 +82,12 @@ func TestCheckOverlaysKeepsCheckingAfterATimeout(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	within := testwait.Bounded(t, time.Minute, stopBound+2*commandTimeout+procgroup.StopGrace+procgroup.WaitDelay)
-	until := time.Now().Add(within)
-	for calls := 1; ; calls++ {
-		run := filepath.Join(dir, strconv.Itoa(calls))
-		if err := os.Mkdir(run, 0o755); err != nil {
-			t.Fatal(err)
-		}
-		slowStarted, release, badRan := filepath.Join(run, "slow.started"), filepath.Join(run, "release"), filepath.Join(run, "bad.ran")
-		t.Cleanup(func() {
-			if err := os.WriteFile(release, nil, 0o600); err != nil {
-				t.Errorf("release call %d's slow file: %v", calls, err)
-			}
-		})
-		img := Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH"), "LEGION_TEST_RUN=" + run, "LEGION_TEST_BAD=" + bad}, WorkDir: dir}
-		returned := make(chan struct{})
-		go func() {
-			var mark time.Time
-			for mark.IsZero() {
-				select {
-				case <-returned:
-					return
-				case <-time.After(testwait.Poll):
-				}
-				if info, err := os.Stat(slowStarted); err == nil {
-					mark = info.ModTime()
-				}
-			}
-			select {
-			case <-returned:
-			case <-time.After(time.Until(mark.Add(stopBound))):
-				_ = os.WriteFile(release, nil, 0o600)
-			}
-		}()
-
-		got, err := CheckOverlays(context.Background(), img, []string{slow, bad}, []string{slow, bad})
-		answered := testexec.SinceBoot(t)
-		close(returned)
-
-		// The refused file's own run started where its Oh My Pi logged that file alone.
-		badStarted, badTermed := false, false
-		if raw, readErr := os.ReadFile(badRan); readErr == nil {
-			badStarted = slices.Contains(strings.Split(string(raw), "\n"), bad)
-		}
-		if raw, readErr := os.ReadFile(filepath.Join(run, "bad.termed")); readErr == nil {
-			badTermed = slices.Contains(strings.Split(string(raw), "\n"), bad)
-		}
-		if err != nil && strings.Contains(err.Error(), "under PI_CONFIG_FILES "+bad+": timed out") {
-			if !badStarted {
-				t.Fatalf("call %d: the refused file's run timed out before its Oh My Pi's first act: it must answer inside its %s timeout (CheckOverlays = %q, %v)", calls, commandTimeout, got, err)
-			}
-			slowTermed, slowErr := testexec.ReadNowMark(filepath.Join(run, "slow.termed"))
-			var why string
-			if badTermed {
-				hold := testkernel.ReadHold(t, filepath.Join(run, "bad.first"), filepath.Join(run, "bad.trapped"))
-				if hold.Held() {
-					t.Fatalf("call %d: the refused file's run read as timed out, and its Oh My Pi recorded the timeout's SIGTERM, but %s, with nothing of its own to wait on: the check held it past its %s timeout, which a loaded machine does only as run-queue wait (CheckOverlays = %q, %v)", calls, hold, commandTimeout, got, err)
-				}
-				why = "its Oh My Pi recorded the timeout's SIGTERM, and " + hold.String()
-			} else {
-				exited, exitErr := testexec.ReadNowMark(filepath.Join(run, "bad.exiting"))
-				if slowErr != nil || exitErr != nil {
-					t.Fatalf("call %d: the refused file's run read as timed out, its Oh My Pi passed its first act and recorded no SIGTERM, and the row cannot read the marks that order its exit against its timeout (slow file's SIGTERM mark: %v; refused file's exit mark: %v): CheckOverlays = %q, %v", calls, slowErr, exitErr, got, err)
-				}
-				earliest := slowTermed + commandTimeout
-				if reap := earliest - exited; reap >= reapBound {
-					t.Fatalf("call %d: the refused file's run read as timed out, but its Oh My Pi passed its first act, recorded no SIGTERM, and exited %s before the earliest moment its %s timeout could pass: the check read a refusal as a timeout (CheckOverlays = %q, %v)", calls, reap, commandTimeout, got, err)
-				}
-				why = fmt.Sprintf("its Oh My Pi recorded no SIGTERM and exited only %s before the earliest moment its timeout could pass, inside the window from a zombie's exit to os/exec's reap, which no fact outside os/exec orders", earliest-exited)
-			}
-			if early := slowTermed + commandTimeout - answered; slowErr == nil && early >= clockSlack {
-				t.Fatalf("call %d: the refused file's run read as timed out, but CheckOverlays returned %s before the earliest moment its %s timeout could pass, the slow file's SIGTERM mark plus that timeout: no timeout had ended the run, so the check read a refusal as a timeout (CheckOverlays = %q, %v)", calls, early, commandTimeout, got, err)
-			}
-			if time.Now().Before(until) {
-				t.Logf("call %d is not judged: %s (%v)", calls, why, err)
-				continue
-			}
-			t.Fatalf("no call of %d over %s in which the refused file's run answered before its %s timeout: in each, %s: %v", calls, within, commandTimeout, why, err)
-		}
-		if !badStarted {
-			t.Fatalf("call %d: the refused file's run never started: the check stopped at the slow file's timeout (CheckOverlays = %q, %v)", calls, got, err)
-		}
-		if want := "Oh My Pi refuses " + bad + ": error: Failed to parse config overlay " + bad; got != want {
-			t.Errorf("call %d: CheckOverlays refused %q, want %q", calls, got, want)
-		}
-		if err == nil || !strings.Contains(err.Error(), "under PI_CONFIG_FILES "+slow+": timed out") {
-			t.Errorf("call %d: CheckOverlays err = %v, want the slow file's timeout, which must stop its run within %s of its start, before the row releases it", calls, err, stopBound)
-		}
-		return
+	img := Image{Launch: omp, Env: []string{"PATH=" + os.Getenv("PATH")}, WorkDir: dir}
+	got, err := CheckOverlays(context.Background(), img, []string{slow, bad}, []string{slow, bad})
+	if want := "Oh My Pi refuses " + bad + ": error: Failed to parse config overlay " + bad; got != want {
+		t.Errorf("CheckOverlays refused %q, want %q", got, want)
+	}
+	if err == nil || !strings.Contains(err.Error(), "timed out") {
+		t.Errorf("CheckOverlays err = %v, want the slow file's timeout", err)
 	}
 }

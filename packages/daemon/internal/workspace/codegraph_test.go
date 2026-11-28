@@ -175,9 +175,6 @@ esac
 	}
 }
 
-// waitFor waits for done until the test binary's deadline (testwait.Eventually): what each caller
-// waits for is a process or a heartbeat a loaded machine can make slow, and no caller's span is
-// what it tests.
 func waitFor(t *testing.T, done func() bool, what string) {
 	t.Helper()
 	testwait.Eventually(t, what, done)
@@ -391,11 +388,8 @@ esac
 
 	// A process actually named "codegraph" in its own argv, so codegraphLockHeldByLiveProcess's
 	// /proc/<pid>/cmdline check — the PID-reuse hardening — sees what a real builder's PID would.
-	// It runs until the test's cleanup kills it, or until this test process is gone, never for a
-	// span of its own: the lock names a live builder for as long as the warm-up takes to read it.
 	builderScript := filepath.Join(binDir, "codegraph-builder")
-	hold := "while kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do sleep 0.05; done"
-	if err := execfile.Write(builderScript, []byte("#!/bin/bash\nexec -a codegraph sh -c '"+hold+"'\n"), 0o700); err != nil {
+	if err := execfile.Write(builderScript, []byte("#!/bin/bash\nexec -a codegraph sleep 86400\n"), 0o700); err != nil {
 		t.Fatal(err)
 	}
 	builder := exec.Command(builderScript)

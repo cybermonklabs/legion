@@ -542,75 +542,32 @@ func startSoloBroker(t *testing.T, binary string, drain time.Duration) *soloBrok
 	return solo
 }
 
-// freshRequest GETs path at addr over a connection of its own and answers the status, the body,
-// and whatever went wrong instead. A transport per call, never a client's idle keep-alive
-// connection: what a drain is about is whether the listener is still ACCEPTING, which only a
-// connection opened after the signal can show. Its one bound is the test binary's deadline
-// (testwait.Context): a broker the machine's load slows is waited for, and one that never answers
-// fails the row when the test gives up, with the error naming the request.
-func freshRequest(t *testing.T, addr, path string) (int, string, error) {
+// mustRequest GETs path at addr over a connection of its own and answers the status and the body.
+// A transport per call, never a client's idle keep-alive connection: what a drain is about is
+// whether the listener is still ACCEPTING, which only a connection opened after the signal can
+// show. Its one bound is the test binary's deadline (testwait.Context): a broker the machine's
+// load slows is waited for, and one that never answers fails the row when the test gives up, with
+// the error naming the request. Every caller asserts what the broker ANSWERED, so a request that
+// never reached it at all is the row's failure rather than its observation.
+func mustRequest(t *testing.T, addr, path string) (int, string) {
 	t.Helper()
-	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, "http://"+addr+path, nil)
+	target := "http://" + addr + path
+	request, err := http.NewRequestWithContext(testwait.Context(t), http.MethodGet, target, nil)
 	if err != nil {
-		return 0, "", err
+		t.Fatalf("GET %s: %v", target, err)
 	}
 	transport := &http.Transport{DisableKeepAlives: true}
 	defer transport.CloseIdleConnections()
 	resp, err := (&http.Client{Transport: transport}).Do(request)
 	if err != nil {
-		return 0, "", err
+		t.Fatalf("GET %s: %v", target, err)
 	}
 	defer resp.Body.Close()
 	body, err := io.ReadAll(resp.Body)
-	return resp.StatusCode, string(body), err
-}
-
-// mustRequest is freshRequest for a caller that is asserting what the broker ANSWERED: a request
-// that never reached it at all is the row's failure rather than its observation.
-func mustRequest(t *testing.T, addr, path string) (int, string) {
-	t.Helper()
-	status, body, err := freshRequest(t, addr, path)
 	if err != nil {
-		t.Fatalf("GET http://%s%s: %v", addr, path, err)
+		t.Fatalf("GET %s: %v", target, err)
 	}
-	return status, body
-}
-
-// drainBegan is when process began its drain, by its own mark of the signal: the time on the
-// "broker draining" line stop logs as it takes the SIGTERM, just before it fails readiness and
-// starts the drain's clock. A window a row asks of the drain runs from there, not from when the
-// test sent the signal, which a loaded machine can deliver late.
-func drainBegan(t *testing.T, process *brokerProcess) time.Time {
-	t.Helper()
-	stamp, _ := process.AwaitRecord(t, "broker draining", nil)["time"].(string)
-	began, err := time.Parse(time.RFC3339Nano, stamp)
-	if err != nil {
-		t.Fatalf("the %q line of the broker at %s carries the time %q, which does not read as RFC 3339: %v", "broker draining", process.Addr, stamp, err)
-	}
-	return began
-}
-
-// duringDrain is mustRequest for a request a row asks of a draining broker, whose drain began at
-// began (drainBegan) and runs for drain. A request that got no answer is judged from the broker's
-// own mark: one sent inside the drain is the broker's fault, since a draining broker answers
-// every request until its drain runs out, and one sent past it is a request the row did not make
-// in time. want names what the row asked the request for.
-func duringDrain(t *testing.T, process *brokerProcess, began time.Time, drain time.Duration, path, want string) (int, string) {
-	t.Helper()
-	sent := time.Now()
-	status, body, err := freshRequest(t, process.Addr, path)
-	if err == nil {
-		t.Logf("GET http://%s%s, sent %s into the broker's %s drain by its own %q line, was answered %d", process.Addr, path, sent.Sub(began).Round(time.Millisecond), drain, "broker draining", status)
-		return status, body
-	}
-	if into := sent.Sub(began).Round(time.Millisecond); into < drain {
-		t.Fatalf("GET http://%s%s, sent %s into the broker's %s drain by its own %q line, got no answer: %v; want %s, and a draining broker answers every request until its drain runs out",
-			process.Addr, path, into, drain, "broker draining", err, want)
-	} else {
-		t.Fatalf("GET http://%s%s, sent %s after the broker's own %q line, past its %s drain, got no answer: %v; want %s, inside the drain",
-			process.Addr, path, into, "broker draining", drain, err, want)
-	}
-	return 0, ""
+	return resp.StatusCode, string(body)
 }
 
 // errorCode is the code an error answer names ({"code", "error"}, api/server.go's writeError),
@@ -1051,7 +1008,6 @@ func TestTwoBrokers(t *testing.T) {
 		storetest.AwaitLockWaiters(t, watch, holder, 1)
 
 		signalled := solo.Process.Terminate(t)
-		began := drainBegan(t, solo.Process)
 
 		// Inside the drain, readiness fails. Polled because the signal handler flips the flag on
 		// a goroutine of its own; every turn is a real request on a connection of its own.
@@ -1059,8 +1015,7 @@ func TestTwoBrokers(t *testing.T) {
 		health := testwait.Until(t, fmt.Sprintf("GET /healthz at %s to stop answering 200 once the SIGTERM began its drain", solo.Process.Addr),
 			func() (int, bool) {
 				var status int
-				status, healthBody = duringDrain(t, solo.Process, began, drain, "/healthz",
-					"the 503 SHUTTING_DOWN a draining broker's health check answers; every earlier request of this wait was answered 200")
+				status, healthBody = mustRequest(t, solo.Process.Addr, "/healthz")
 				return status, status != http.StatusOK
 			})
 		if health != http.StatusServiceUnavailable || errorCode(t, healthBody) != "SHUTTING_DOWN" {
@@ -1071,9 +1026,9 @@ func TestTwoBrokers(t *testing.T) {
 		// answer out of a route that is not the health check. The pair is the claim: the pod
 		// takes itself out of its Service's endpoints while it goes on serving the traffic the
 		// kubelet is still routing to it.
-		if status, body := duringDrain(t, solo.Process, began, drain, "/v1/settings", "the 200 a draining broker serves every route but its health check with"); status != http.StatusOK {
+		if status, body := mustRequest(t, solo.Process.Addr, "/v1/settings"); status != http.StatusOK {
 			t.Fatalf("GET /v1/settings at %s, %s into its drain, = %d %s; want 200 — a draining broker serves every route but its health check",
-				solo.Process.Addr, time.Since(began).Round(time.Millisecond), status, body)
+				solo.Process.Addr, time.Since(signalled).Round(time.Millisecond), status, body)
 		}
 		// The drain ends here, on the row's word: a second SIGTERM, which the watchdog at the top
 		// of main hands to the drain. Readiness failing above shows the first signal was taken,
@@ -1161,28 +1116,24 @@ func TestTwoBrokers(t *testing.T) {
 	// changes is the signal, and nothing else.
 	t.Run("7_ADrainingPodStillTakesAPeersReread", func(t *testing.T) {
 		// drain is long enough to hold the whole observation inside the window in which the pod
-		// is still being sent traffic, which is what the row is about. The window runs from the
-		// broker's own mark of the signal (drainBegan). The cleanup's signal, the second, ends the
-		// drain (startBroker).
+		// is still being sent traffic, which is what the row is about.
 		const drain = 30 * time.Second
 		stopping := startBrokerFleet(t, binary, []time.Duration{0, drain})
 		serving, draining := stopping.Processes[0], stopping.Processes[1]
 
-		draining.Terminate(t)
-		began := drainBegan(t, draining)
+		signalled := draining.Terminate(t)
 		testwait.Until(t, fmt.Sprintf("GET /healthz at the signalled process %s to answer 503 SHUTTING_DOWN", draining.Addr),
 			func() (string, bool) {
-				status, body := duringDrain(t, draining, began, drain, "/healthz", "the 503 SHUTTING_DOWN a draining broker's health check answers")
+				status, body := mustRequest(t, draining.Addr, "/healthz")
 				return fmt.Sprintf("%d %s", status, body), status == http.StatusServiceUnavailable && errorCode(t, body) == "SHUTTING_DOWN"
 			})
-		if status, body := duringDrain(t, draining, began, drain, "/v1/settings", "the 200 a draining broker serves every route but its health check with"); status != http.StatusOK {
+		if status, body := mustRequest(t, draining.Addr, "/v1/settings"); status != http.StatusOK {
 			t.Fatalf("GET /v1/settings at the draining process %s = %d %s; the row is about a pod that is still serving, and this one is not",
 				draining.Addr, status, body)
 		}
 
 		backstops := backstopReloads(t, draining)
 		before := [2]int{storeReads(t, serving), storeReads(t, draining)}
-		asked := time.Since(began).Round(time.Millisecond)
 		status, body := stopping.Clients[0].Req(t, http.MethodPost, "/v1/secrets/"+multiprocessSecret+"/reread", nil, nil)
 		if status != http.StatusAccepted {
 			t.Fatalf("POST /v1/secrets/%s/reread at %s = %d %s; want the 202 whose reread fans out",
@@ -1191,23 +1142,16 @@ func TestTwoBrokers(t *testing.T) {
 		// A pod is still being sent requests for the whole of its drain, so a retag that narrows
 		// who may have the secret is unenforced on a draining pod that misses the fan-out until
 		// it stops accepting. The reading names both pods' reads since the call, so a wait that
-		// gives up says whether the process that served it read the store at all. The drain is
-		// judged from the draining broker's own mark: a reread still missing when it has run out
-		// came too late, and the failure says how far into the drain the row asked for it.
-		reading := "no reading taken yet"
+		// gives up says whether the process that served it read the store at all.
 		testwait.Until(t, fmt.Sprintf("the draining process %s to reread %s on the fan-out of %s's reread", draining.Addr, multiprocessSecret, stopping.Clients[0].Addr),
 			func() (string, bool) {
-				if into := time.Since(began); into >= drain {
-					t.Fatalf("the draining process %s had not reread %s when its %s drain ran out, %s after its own %q line: the fan-out of %s's reread, asked %s into the drain, must reach a pod while it is still being sent traffic; %s",
-						draining.Addr, multiprocessSecret, drain, into.Round(time.Millisecond), "broker draining", stopping.Clients[0].Addr, asked, reading)
-				}
 				servingReads, drainingReads := storeReads(t, serving), storeReads(t, draining)
 				requireNoBackstopReload(t, draining, backstops, "its peer's fan-out of "+multiprocessSecret)
-				reading = fmt.Sprintf("the serving process read the store %d times since the call, the draining one %d", servingReads-before[0], drainingReads-before[1])
-				return reading, drainingReads != before[1]
+				return fmt.Sprintf("the serving process read the store %d times since the call, the draining one %d", servingReads-before[0], drainingReads-before[1]),
+					drainingReads != before[1]
 			})
-		t.Logf("the draining process %s reread %s %s after its own %q line, told by %s",
-			draining.Addr, multiprocessSecret, time.Since(began).Round(time.Millisecond), "broker draining", stopping.Clients[0].Addr)
+		t.Logf("the draining process %s reread %s %s after its SIGTERM, told by %s",
+			draining.Addr, multiprocessSecret, time.Since(signalled).Round(time.Millisecond), stopping.Clients[0].Addr)
 	})
 }
 

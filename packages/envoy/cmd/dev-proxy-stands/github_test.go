@@ -7,7 +7,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -24,8 +23,6 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/proxyrules/proxyrulestest"
-	"github.com/sjawhar/envoy/internal/testwait"
-	"github.com/sjawhar/envoy/testexec"
 )
 
 // TestTheInstallationPermissionsFlagSetsWhatAnInstallationHolds: --installation-permissions
@@ -70,10 +67,7 @@ func TestTheInstallationPermissionsFlagSetsWhatAnInstallationHolds(t *testing.T)
 
 // TestTheInstallationPermissionsFlagRefusesWhatItCannotRead: each malformed value, an owner
 // named twice, and an owner no --installation installs the App on are usage errors, exit 2, each
-// naming what it refuses, before any stand is served, within refusalLimit of when the kernel made
-// the command's process. The limit counts from that start, not from the call, so a loaded machine
-// that starts the binary late kills no run that would have refused on its own; a run still going
-// with 30 s left of the test binary's deadline is killed too.
+// naming what it refuses, before any stand is served.
 func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 	binary := buildStands(t)
 	for _, c := range []struct {
@@ -90,29 +84,20 @@ func TestTheInstallationPermissionsFlagRefusesWhatItCannotRead(t *testing.T) {
 		{"an owner the App is not installed on", []string{"--installation-permissions", "other-org=contents:read"}, "other-org, on which no --installation installs the App"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, 30*time.Second))
+			ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
 			defer cancel()
 			cmd := exec.CommandContext(ctx, binary, append([]string{"--dir", t.TempDir()}, c.args...)...)
-			var output bytes.Buffer
-			cmd.Stdout, cmd.Stderr = &output, &output
-			overran, err := testexec.RunFromStart(t, cmd, refusalLimit)
-			if overran {
-				t.Fatalf("the command did not exit within %s of when the kernel made its process and was killed; want exit %d\n%s", refusalLimit, exitUsageError, output.Bytes())
-			}
+			output, err := cmd.CombinedOutput()
 			var exit *exec.ExitError
 			if !errors.As(err, &exit) || exit.ExitCode() != exitUsageError {
-				t.Fatalf("the command exited %v; want exit %d\n%s", err, exitUsageError, output.Bytes())
+				t.Fatalf("the command exited %v; want exit %d\n%s", err, exitUsageError, output)
 			}
-			if !strings.Contains(output.String(), c.want) {
-				t.Errorf("the command said %q; want it to name %q", output.Bytes(), c.want)
+			if !strings.Contains(string(output), c.want) {
+				t.Errorf("the command said %q; want it to name %q", output, c.want)
 			}
 		})
 	}
 }
-
-// refusalLimit bounds a run that refuses its flags, from when the kernel made its process to its
-// exit: the command reads its flags before it serves any stand.
-const refusalLimit = 30 * time.Second
 
 // TestTheGitHubStandsServeOneStandInOverPlainAndTLS: a token minted at the plain github stand,
 // where the broker's minter mints, is spent at the github-tls stand, over TLS under the stands' own

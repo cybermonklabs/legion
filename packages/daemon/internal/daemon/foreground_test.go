@@ -4,15 +4,13 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 
-	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 	"github.com/sjawhar/legion/daemon/internal/testkernel"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // startsIgnoring is whether a shell run as wrap has it run - inside a probe attempt's script, or
@@ -203,48 +201,24 @@ func TestATerminalAttemptEndedByCtrlCIsInterrupted(t *testing.T) {
 // exits 0, as Oh My Pi does when the SIGINT lands late in `omp models`: the attempt's shell records
 // the signal rather than reading it from the launch's status. Without a Ctrl-C the launch's own
 // status comes through.
-//
-// Both ends of the Ctrl-C are facts of the run, not times: the SIGINT is sent once the launch has
-// marked that it ignores SIGINT, which it does after the attempt's shell has set its own trap, and
-// the launch exits only once the test writes its release, after the SIGINT was sent. A loaded
-// machine can hold the attempt's shell past any fixed span before its trap, and a SIGINT that lands
-// there ends the shell under the default disposition; it can hold the test past the launch's own
-// end, and a SIGINT then finds no one.
 func TestATerminalAttemptRecordsACtrlCTheLaunchExitsZeroOn(t *testing.T) {
 	t.Parallel()
 	job := &terminalJob{}
+	// The launch ignores SIGINT and finishes normally, exit 0: the case no exit status carries.
+	launch := `exec sh -c 'trap "" INT; sleep 1; exit 0'`
 	run := func(ctrlC bool) *os.ProcessState {
 		t.Helper()
-		dir := t.TempDir()
-		ready, release := filepath.Join(dir, "ready"), filepath.Join(dir, "release")
-		// The launch ignores SIGINT and finishes normally, exit 0: the case no exit status carries.
-		// It runs until the test writes its release, or until this test process is gone. Its paths
-		// reach it as arguments, quoted once (shellprefix.Literal).
-		launch := fmt.Sprintf(`exec sh -c 'trap "" INT; : >"$1"; while [ ! -e "$2" ] && kill -0 %d 2>/dev/null; do sleep 0.01; done; exit 0' sh %s %s`,
-			os.Getpid(), shellprefix.Literal(ready), shellprefix.Literal(release))
 		cmd := exec.Command("sh", "-c", job.script(launch))
 		cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 		if err := cmd.Start(); err != nil {
 			t.Fatal(err)
 		}
-		if !testwait.Holds(testwait.Remaining(t), testwait.Poll, func() bool {
-			_, err := os.Stat(ready)
-			return err == nil
-		}) {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			_ = cmd.Wait()
-			t.Fatalf("the launch never marked that it ignores SIGINT (%s)", ready)
-		}
 		if ctrlC {
+			time.Sleep(300 * time.Millisecond)
 			// The terminal's Ctrl-C reaches the whole foreground process group.
 			if err := syscall.Kill(-cmd.Process.Pid, syscall.SIGINT); err != nil {
 				t.Fatal(err)
 			}
-		}
-		if err := os.WriteFile(release, nil, 0o600); err != nil {
-			_ = syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
-			_ = cmd.Wait()
-			t.Fatalf("release the launch: %v", err)
 		}
 		_ = cmd.Wait()
 		return cmd.ProcessState

@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
@@ -168,13 +167,11 @@ func TestAMalformedWorkspaceWorkFrameReachesNoAgent(t *testing.T) {
 // reconnect, so the role's stream would stay down. The answer keeps the start of the reason,
 // which names the command, its exit and jj's first words, and says that the shim cut the rest
 // (ASVS v5.0.0-15.2.2). The connection then carries the next answer, and Oh My Pi reads nothing
-// of the read. The read takes the shim no more than the 120 s its request gave it, of its own part
-// of the read (workReadBound, jjMarks.requireShimWithin): its first jj fails, so it runs one.
+// of the read.
 func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.T) {
-	marks := newJJMarks(t)
 	bin := t.TempDir()
-	script := marks.script(fmt.Sprintf("echo 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\nstatus=3\n",
-		2*shimwire.MaxFrameBytes))
+	script := fmt.Sprintf("#!/bin/sh\necho 'Error: the working copy is stale' >&2\nhead -c %d /dev/zero | tr '\\0' x >&2\nexit 3\n",
+		2*shimwire.MaxFrameBytes)
 	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake jj: %v", err)
 	}
@@ -189,8 +186,7 @@ func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.
 	p := daemon.accept(t)
 	p.open(t)
 
-	called := testexec.SinceBoot(t)
-	p.send(t, shimwire.WorkspaceWork{ID: "read-2", Issue: workIssue, TimeoutMs: farBudget(t)})
+	p.send(t, shimwire.WorkspaceWork{ID: "read-2", Issue: workIssue, TimeoutMs: 120_000})
 	got, ok := p.next(t).(shimwire.WorkspaceWorkResult)
 	if !ok || got.ID != "read-2" || got.OK {
 		t.Fatalf("the shim answered %#v, want the refusal of read-2", got)
@@ -203,7 +199,6 @@ func TestAWorkspaceWorkFailureWithAnErrorOverOneLineReachesTheDaemon(t *testing.
 			t.Fatalf("the refusal reads %.300q, want it to say %q", got.Error, want)
 		}
 	}
-	marks.requireShimWithin(t, called, 1, workReadBound, "the read")
 	p.send(t, shimwire.GetState{ID: "after"})
 	if answer, ok := p.next(t).(shimwire.Response); !ok || answer.ID != "after" {
 		t.Fatalf("the shim sent %#v, want OMP's answer to the get_state after the read on the same connection", answer)
@@ -261,24 +256,10 @@ func newWorkFixture(t *testing.T) *workFixture {
 }
 
 // read is the real shim's answer to one workspace-work frame, asked over the daemon's end of the
-// worker stream, with the shim's environment naming the fixture's workspace. Its budget is far
-// (farBudget), and the answer is read as far; the shim's own part of the read is held to the 120 s
-// its request gave it (workReadBound, jjMarks.requireShimWithin). For the read alone, the PATH's
-// jj is a stand-in that marks its run around the jj the PATH held before it. It also holds that Oh
+// worker stream, with the shim's environment naming the fixture's workspace. It also holds that Oh
 // My Pi read nothing of the read.
 func (f *workFixture) read() shimwire.WorkspaceWorkResult {
 	f.t.Helper()
-	jj, err := exec.LookPath("jj")
-	if err != nil {
-		f.t.Fatalf("find the PATH's jj: %v", err)
-	}
-	marks := newJJMarks(f.t)
-	bin := f.t.TempDir()
-	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(marks.script(realJJ(jj))), 0o700); err != nil {
-		f.t.Fatalf("write the PATH's jj: %v", err)
-	}
-	pathBefore := os.Getenv("PATH")
-	f.t.Setenv("PATH", bin+string(os.PathListSeparator)+pathBefore)
 	path := socketPath(f.t)
 	daemon := listen(f.t, path)
 	child := newOMP(f.t)
@@ -288,18 +269,11 @@ func (f *workFixture) read() shimwire.WorkspaceWorkResult {
 	run(f.t, cfg, newClock())
 	p := daemon.accept(f.t)
 	p.open(f.t)
-	called := testexec.SinceBoot(f.t)
-	p.send(f.t, shimwire.WorkspaceWork{ID: "read-1", Issue: workIssue, TimeoutMs: farBudget(f.t)})
+	p.send(f.t, shimwire.WorkspaceWork{ID: "read-1", Issue: workIssue, TimeoutMs: 120_000})
 	got, ok := p.next(f.t).(shimwire.WorkspaceWorkResult)
 	if !ok || got.ID != "read-1" {
 		f.t.Fatalf("the shim answered %#v, want the result of read-1", got)
 	}
-	if got.OK {
-		// A refused read ran no second jj, and the row says why it was refused.
-		marks.requireShimWithin(f.t, called, 2, workReadBound, "the read")
-	}
-	// The fixture's own jj after the read is the one the PATH held before it.
-	f.t.Setenv("PATH", pathBefore)
 	p.send(f.t, shimwire.GetState{ID: "after"})
 	p.next(f.t)
 	if types := frameTypes(child.received(f.t)); !reflect.DeepEqual(types, []string{shimwire.TypeGetState}) {

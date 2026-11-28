@@ -41,7 +41,6 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
-	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
 )
 
 // plansAnswerEnv names the file a run keeps the answer of the person's plans read in, for a run
@@ -328,7 +327,7 @@ func (l *planRatingsLive) readScript(issue string) (string, int) {
 	if err := os.MkdirAll(bin, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if err := execfile.Write(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun "+shellprefix.Literal(cli)+" \"$@\"\n"), 0o700); err != nil {
+	if err := execfile.Write(filepath.Join(bin, "dispatch"), []byte("#!/bin/sh\nexec bun '"+cli+"' \"$@\"\n"), 0o700); err != nil {
 		t.Fatalf("write the dispatch command of the person's shell: %v", err)
 	}
 	out, code := l.personsShell().run([]string{"PATH=" + bin + string(os.PathListSeparator) + os.Getenv("PATH")},

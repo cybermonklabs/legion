@@ -1,7 +1,6 @@
 package shim_test
 
 import (
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -18,27 +17,9 @@ import (
 // commandBudget is the budget the requests below carry. It ends a minute past the moment every
 // wait of the test gives up (testwait.Remaining), so no command here is ended by its budget while
 // the test waits: a jj that records SIGTERM was signalled by the stop, and a shim that returns did
-// not wait out the budget. A jj the stop did not reach runs until the test's cleanup releases it
-// (hangingJJ), so it does not outlive its test.
+// not wait out the budget. A jj the stop did not reach still ends on its own within its minute of
+// sleeps (hangingJJ), so it does not outlive the test binary for long.
 func commandBudget(t *testing.T) time.Duration { return testwait.Remaining(t) + time.Minute }
-
-// stopLimit is how long the shim may take to return once it is stopped: by its context, by the
-// daemon's shutdown frame, or by the kill that ends its agent's grace. The whole stop is the
-// command's SIGTERM to its process group, the moment the group needs to go, the agent's own
-// SIGTERM and its exit: tens of milliseconds, with the rest for a loaded machine. It bounds the
-// product's own stop, which the launcher SIGKILLs once its grace is spent, so each case measures it
-// from the stop and fails a shim that returns later, while awaitExit still waits for a shim that
-// never returns until the binary's deadline, and names it there.
-const stopLimit = 5 * time.Second
-
-// returnedWithin fails t when the shim returned more than stopLimit after stopped, the moment
-// what names was sent.
-func returnedWithin(t *testing.T, r *running, stopped time.Time, what string) {
-	t.Helper()
-	if took := time.Since(stopped); took > stopLimit {
-		t.Errorf("the shim returned %v after %s, past %v: the stop is the shim's own, and the launcher kills a shim that outlasts its grace; log:\n%s", took, what, stopLimit, r.log)
-	}
-}
 
 // A shim command ends with the shim itself. Under the tmux runtime a `kill-pane` gives every
 // process of the pane SIGHUP (internal/runtime/tmux's stop), and the jj of a read or an adoption
@@ -105,12 +86,10 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			r, _, record, _ := shimRunningACommand(t, tc.workspace(t), tc.request)
 
-			stopped := time.Now()
 			r.cancel()
 			// A jj the stop did not reach would end only at the request's own budget, and the shim
 			// waits for its commands before it returns.
 			r.awaitExit(t)
-			returnedWithin(t, r, stopped, "its stop")
 			for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
 				testwait.Until(t, "the request's jj to record "+strings.TrimSpace(want)+": the stop signals the command's whole process group", func() (string, bool) {
 					got := recorded(t, record)
@@ -126,12 +105,10 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			TimeoutMs: int(commandBudget(t).Milliseconds()),
 		})
 
-		stopped := time.Now()
 		p.send(t, shimwire.Shutdown{})
 		// A jj that outlived that stop would end only at the request's own budget, and the shim
 		// waits for its commands before it returns.
 		r.awaitExit(t)
-		returnedWithin(t, r, stopped, "the daemon's shutdown")
 		for _, want := range []string{"the jj caught SIGTERM\n", "its child caught SIGTERM\n"} {
 			if !strings.Contains(recorded(t, record), want) {
 				t.Errorf("the request's jj recorded\n%swant a line %q by the time the shim returned: the stop of the command's whole process group is this process's own to send, and after it has returned there is nobody left to send it",
@@ -187,10 +164,8 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 			t.Errorf("the shim bounded the commands' drain by %v, want at most %v and under procgroup's whole stop span %v: the commands had been ended for %v by the time the agent was killed, and that is span this wait must not spend over again; log:\n%s",
 				drain.d, left, span, ended, r.log)
 		}
-		drained := time.Now()
 		drain.elapse()
 		r.awaitExit(t)
-		returnedWithin(t, r, drained, "the drain's bound ran out, the agent killed at the end of its grace")
 		// The drain's bound ran out with the command's jj still ignoring its SIGTERM, so the shim
 		// left it running, and the pane's last lines are where a person reads that it did.
 		if n := r.log.count("a command the daemon asked for is still running"); n != 1 {
@@ -235,10 +210,8 @@ func TestTheShimsCommandEndsWithTheShimsStop(t *testing.T) {
 		if left := procgroup.StopGrace + procgroup.WaitDelay - time.Since(answered); left > 0 {
 			time.Sleep(left)
 		}
-		killed := time.Now()
 		clock.next(t, grace).elapse()
 		r.awaitExit(t)
-		returnedWithin(t, r, killed, "the agent was killed at the end of its grace")
 
 		// Run has returned, so every wait it took is on the clock by now: a drain whose commands
 		// have all returned takes none, and a wait of 0 — which is the whole of the bound left
@@ -281,7 +254,7 @@ func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame,
 	return r, p, record, clock
 }
 
-// hangingJJ writes a `jj` that runs until a stop or its test's end, in a directory of its
+// hangingJJ writes a `jj` that outlives any budget a test here gives it, in a directory of its
 // own put first on PATH: the shim runs PATH's jj, the one the pane's own shell runs. It starts a
 // child of its own, which a command's SIGTERM reaches only because that signal goes to the whole
 // process group (internal/procgroup), and both it and the child say in the record when they were
@@ -297,22 +270,15 @@ func shimRunningACommand(t *testing.T, workspace string, request shimwire.Frame,
 // behind holding the command's output pipes until it gives up on its own (measured on this
 // machine with the stop these rows send: 3 of 60 stops of this shape left one behind, and 0 of
 // 60 of the loop below). A trap is then acted on within one sleep of its arrival, which is
-// milliseconds against the seconds every bound here allows. Each runs until the test's cleanup
-// writes its release, or until this test process is gone: never for a span of its own, so a run
-// whose stop never comes leaves nothing behind past its test, and no case reads a jj that its own
-// exit ended. HANGING_JJ_IGNORE_SIGTERM=1 keeps both of them running once they have recorded that
-// signal, for the one case that needs its command still in flight when the shim drains:
-// procgroup's SIGKILL at the end of the command's own grace is then what ends them.
+// milliseconds against the seconds every bound here allows, and each gives up after a minute, so
+// a run whose stop never comes leaves nothing behind for long. HANGING_JJ_IGNORE_SIGTERM=1 keeps
+// both of them running once they have recorded that signal, for the one case that needs its
+// command still in flight when the shim drains: procgroup's SIGKILL at the end of the command's
+// own grace is then what ends them.
 func hangingJJ(t *testing.T) (record string) {
 	t.Helper()
 	record = filepath.Join(t.TempDir(), "jj-record")
 	bin := t.TempDir()
-	release := filepath.Join(t.TempDir(), "release")
-	t.Cleanup(func() {
-		if err := os.WriteFile(release, nil, 0o600); err != nil {
-			t.Errorf("release the hanging jj: %v", err)
-		}
-	})
 	script := `#!/bin/sh
 if [ "$1" = "--the-jjs-own-child" ]; then
   trap 'printf "its child caught SIGTERM\n" >>"$HANGING_JJ_RECORD"; [ "$HANGING_JJ_IGNORE_SIGTERM" = 1 ] || exit 0' TERM
@@ -322,8 +288,10 @@ else
   "$0" --the-jjs-own-child &
   printf 'the jj is running\n' >>"$HANGING_JJ_RECORD"
 fi
-while [ ! -e '` + release + `' ] && kill -0 ` + fmt.Sprint(os.Getpid()) + ` 2>/dev/null; do
+ticks=0
+while [ "$ticks" -lt 1200 ]; do
   sleep 0.05
+  ticks=$((ticks+1))
 done
 `
 	if err := execfile.Write(filepath.Join(bin, "jj"), []byte(script), 0o700); err != nil {

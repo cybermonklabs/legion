@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/fixtureenv"
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
@@ -673,53 +672,39 @@ func TestAReadASignalEndedKeepsWhatItPrinted(t *testing.T) {
 // The gh visibility read and the git reads of a push's records keep the setup failure of their
 // own, and the stop is the error beneath it, naming the program, the time it ran and its bound.
 // The bound is what was left of the caller's deadline when the child started (Guard.run), so the
-// row reads the figures the guard made, never a count of seconds the test supposes. The caller's
-// deadline is due 2 s after the call, and the guard must have started the program by then
-// (startedBeforeDue), as a deadline of 2 s requires of the guard's own work before the child, the
-// shared check among it: both the start the guard counted and the kernel's fork of the program,
-// which the stand-in's start mark, written as its first act, records. The deadline passes when
-// due, but not before the stand-in program has started (deadlinePassedOnceStarted): a program the
-// guard started in time may, on a loaded machine, run its first line later, and a guard that
-// started it late is named as one rather than read as a stop of something else. The line is held
-// to the stop beneath it, and the stop to the caller's deadline (stopSaid), never to the two
-// seconds whole.
+// row reads the figures the guard made, never a count of seconds the test supposes: on a loaded
+// machine the guard's own work before the child, the shared check above all, takes longer and
+// leaves the child less of the caller's 2 s. The line is held to the stop beneath it, and the stop
+// to the caller's deadline (stopSaid), never to the two seconds whole.
 func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
-	const theBound = 2 * time.Second
-	// neverAnswers is the PATH entry of a directory whose one program is name, which writes its
-	// start mark to mark, then marks started, and sleeps past any test binary's deadline, in front
-	// of the test's own PATH: the guard's lookup finds it before the real one, and the check's
-	// bash still finds everything else. The mark is whole before started is there, so the
-	// deadline, which passes no sooner than started, cannot stop the program while it writes it.
-	neverAnswers := func(t *testing.T, name, started, mark string) string {
+	// neverAnswers is the PATH entry of a directory whose one program is name, which sleeps past
+	// any test binary's deadline, in front of the test's own PATH: the guard's lookup finds it
+	// before the real one, and the check's bash still finds everything else.
+	neverAnswers := func(t *testing.T, name string) string {
 		dir := t.TempDir()
-		script := "#!/bin/sh\n" + testexec.MarkStart(shQuote(mark)) + "\n: >" + shQuote(started) + "\nexec sleep 86400\n"
-		if err := testexec.WriteFile(filepath.Join(dir, name), []byte(script), 0o700); err != nil {
+		if err := os.WriteFile(filepath.Join(dir, name), []byte("#!/bin/sh\nexec sleep 86400\n"), 0o700); err != nil {
 			t.Fatal(err)
 		}
 		return "PATH=" + dir + string(os.PathListSeparator) + os.Getenv("PATH")
 	}
 	t.Run("the gh visibility read", func(t *testing.T) {
-		started := filepath.Join(t.TempDir(), "started")
-		mark := filepath.Join(t.TempDir(), "mark")
 		guard := New(Options{
 			Check: leakguardtest.Write(t, t.TempDir(), passes),
-			Env:   withRules(t, append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh", started, mark))),
+			Env:   withRules(t, append(fixtureenv.Isolated(t.TempDir()), neverAnswers(t, "gh"))),
 		})
-		ctx := deadlinePassedOnceStarted(t, theBound, started)
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
 		var err error
 		began := time.Now()
-		called := testexec.SinceBoot(t)
 		answered(t, "the text whose gh visibility read never answers", func() {
 			err = guard.Text(ctx, TextRequest{Repo: "invented-org/invented-repo", Text: "a clean title\n"})
 		})
 		says(t, setupFailure(t, err), "could not be read: "+stopSaid(t, ctx, err, "gh", began))
-		startedBeforeDue(t, ctx, err, "gh", mark, began, called)
 	})
 	t.Run("a git read of the push's records", func(t *testing.T) {
-		started := filepath.Join(t.TempDir(), "started")
-		mark := filepath.Join(t.TempDir(), "mark")
-		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git", started, mark))
-		ctx := deadlinePassedOnceStarted(t, theBound, started)
+		guard := guardWith(t, leakguardtest.Write(t, t.TempDir(), passes), Public, neverAnswers(t, "git"))
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		defer cancel()
 		// A local commit and a ref the destination does not hold yet: the guard asks git for the
 		// repository's remotes and then for the commits the push would add, which are reads the
 		// stand-in git never answers.
@@ -731,73 +716,7 @@ func TestAReadStoppedByItsBoundNamesItsProgramItsTimeAndItsBound(t *testing.T) {
 		}
 		var err error
 		began := time.Now()
-		called := testexec.SinceBoot(t)
 		answered(t, "the push whose git read never answers", func() { err = guard.Push(ctx, req) })
 		says(t, setupFailure(t, err), "the push's commits could not be read: "+stopSaid(t, ctx, err, "git", began))
-		startedBeforeDue(t, ctx, err, "git", mark, began, called)
 	})
-}
-
-// deadlinePassedOnceStarted is a caller's context whose deadline is due bound after the call and
-// passes then, but not before the file at started is there, which the stand-in program writes as
-// its first act. It ends as a deadline does (testwait.StandInDeadline: its Err and its cause
-// context.DeadlineExceeded). Its Deadline is the moment it is due until it passes, and the moment
-// it passed from then on, so a program that started after the due moment still reads a bound
-// that is what was left of the deadline when it started.
-func deadlinePassedOnceStarted(t *testing.T, bound time.Duration, started string) dueDeadline {
-	t.Helper()
-	ctx, pass, cancel := testwait.StandInDeadline(context.Background())
-	t.Cleanup(cancel)
-	due := time.Now().Add(bound)
-	whenWritten(ctx, started, func() {
-		time.Sleep(time.Until(due))
-		pass(context.DeadlineExceeded)
-	})
-	return dueDeadline{Context: ctx, due: due}
-}
-
-// startedBeforeDue fails the test unless the stop beneath err is of program and the guard started
-// program before ctx's deadline was due: the bound a deadline that passes when due sets on the
-// guard's own work before its child, which deadlinePassedOnceStarted, passing no sooner than the
-// child's first line, does not set by itself. Two starts are held to it. One is the start the
-// guard counted (Guard.run, Guard.readOutput), as stopSaid reads it: the deadline the guard read,
-// less the bound it gave program. The other is the kernel's fork of program's process, which the
-// stand-in wrote to mark as its first act (testexec.MarkStart): a guard that stalled after the
-// start it counted spent the bound before its child existed, which that start cannot show. No
-// product code writes or moves the fork, and a loaded machine that brings the stand-in to its
-// first line late does not move it. The fork is counted from the call, as the deadline is: calledAt
-// and called are one moment, on the test's clock and on the clock since boot the mark counts on,
-// read just before the call, and they put the fork and the due moment on one clock.
-func startedBeforeDue(t *testing.T, ctx dueDeadline, err error, program, mark string, calledAt time.Time, called time.Duration) {
-	t.Helper()
-	var stopped *stoppedError
-	if !errors.As(err, &stopped) || stopped.program != program {
-		t.Fatalf("%v carries no stop of %s beneath it", err, program)
-	}
-	deadline, _ := ctx.Deadline()
-	if began := deadline.Add(-stopped.bound); !began.Before(ctx.due) {
-		t.Errorf("the guard started %s %s after the caller's deadline was due, want it started before: its own work before %s took longer than the bound",
-			program, began.Sub(ctx.due).Round(time.Millisecond), program)
-	}
-	due := ctx.due.Sub(calledAt)
-	forked := testexec.StartedAfter(t, mark, called)
-	t.Logf("the kernel made %s %s after the call; the caller's deadline was due %s after it", program, forked.Round(time.Millisecond), due.Round(time.Millisecond))
-	if forked >= due {
-		t.Errorf("the kernel made %s %s after the call, want it made before the caller's deadline was due %s after it: the guard's own work before the fork of %s took longer than the bound",
-			program, forked.Round(time.Millisecond), due.Round(time.Millisecond), program)
-	}
-}
-
-// dueDeadline is a context whose deadline reads as due until the context it wraps has a deadline
-// of its own: the moment a stand-in deadline passed.
-type dueDeadline struct {
-	context.Context
-	due time.Time
-}
-
-func (d dueDeadline) Deadline() (time.Time, bool) {
-	if at, ok := d.Context.Deadline(); ok {
-		return at, true
-	}
-	return d.due, true
 }

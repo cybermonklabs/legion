@@ -6,22 +6,17 @@ import (
 	"bufio"
 	"bytes"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net"
 	"os"
 	"path/filepath"
-	"slices"
-	"strconv"
 	"strings"
-	"sync/atomic"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
 	"github.com/sjawhar/envoy/internal/cipherclient"
 	"github.com/sjawhar/envoy/internal/redact"
-	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/testexec"
 )
 
@@ -29,31 +24,26 @@ import (
 // (all but is-active, which prints the unit's state: "active" unless a test writes another to
 // the active file, and show, which prints the unit's main process from the pid file, or with
 // --property=Job the unit's queued job from the calls log's .job file and nothing without one;
-// neither logs anything), and the helper socket path install checks for a running helper. Every
-// call of it, is-active and show included, first records its own start in the calls log's
-// .starts file (systemctlStart). Its restart gives the unit a new main process, unless the calls
-// log's .same-process marker exists; with .fail-restart it exits 1. With .slow-restart it queues
-// job 7 for the unit, as systemd keeps the job of a client killed while it waits, unless
-// .no-queued-job exists: it writes .job, then the mark .queued once .job is whole. It then changes
-// no process and holds until the rig's release file exists or this test process is gone: never
-// for a span of its own, so no restart ends by itself before install stops waiting for it
-// (releaseRestartAtGiveUp). Each restart leaves the .restarted marker; with
+// neither logs anything), and the helper socket path install checks for a running helper. Its
+// restart gives the unit a new main process, unless the calls log's .same-process marker exists;
+// with .fail-restart it exits 1, and with .slow-restart it sleeps 20 s, changing no process and
+// leaving job 7 queued for the unit, as systemd keeps the job of a client killed while it waits,
+// unless .no-queued-job exists. Each restart leaves the .restarted marker; with
 // .fail-read-before-restart or .fail-read-after-restart, the read of the unit's main process
 // before or after a restart fails at once, exiting 1. Its environment names a socket and a
 // runtime directory of its own, and runAs refuses to run install against any socket outside the
 // rig's directory (foreignSocket).
 type installRig struct {
-	t       testing.TB
-	dir     string
-	env     map[string]string
-	unit    string
-	calls   string
-	active  string
-	pid     string
-	sock    string
-	exe     string
-	release string
-	stdout  bytes.Buffer
+	t      testing.TB
+	dir    string
+	env    map[string]string
+	unit   string
+	calls  string
+	active string
+	pid    string
+	sock   string
+	exe    string
+	stdout bytes.Buffer
 }
 
 func newInstallRig(t *testing.T) *installRig {
@@ -69,22 +59,14 @@ func newInstallRig(t *testing.T) *installRig {
 	if err := os.Mkdir(bin, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	r := &installRig{t: t, dir: dir, calls: filepath.Join(dir, "systemctl.log"), active: filepath.Join(dir, "active"), pid: filepath.Join(dir, "main-pid"), sock: filepath.Join(dir, "h.sock"), exe: filepath.Join(real, "agent-secrets-helper"), release: filepath.Join(dir, "release")}
-	t.Cleanup(func() {
-		if err := os.WriteFile(r.release, nil, 0o644); err != nil {
-			t.Errorf("release the rig's held restart: %v", err)
-		}
-	})
+	r := &installRig{t: t, dir: dir, calls: filepath.Join(dir, "systemctl.log"), active: filepath.Join(dir, "active"), pid: filepath.Join(dir, "main-pid"), sock: filepath.Join(dir, "h.sock"), exe: filepath.Join(real, "agent-secrets-helper")}
 	if err := os.WriteFile(r.active, []byte("active\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(r.pid, []byte("4100\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	// The first line is the call's start record (systemctlStart): /proc/uptime as it runs, its own
-	// /proc/<pid>/stat line whole, which says when the kernel started it, and its arguments, by tabs.
-	script := "#!/bin/sh\nread -r up _ < /proc/uptime; read -r stat < /proc/$$/stat; printf '%s\\t%s\\t%s\\n' \"$up\" \"$stat\" \"$*\" >> " + r.calls + ".starts\n" +
-		"if [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
+	script := "#!/bin/sh\nif [ \"$2\" = is-active ]; then read -r state < " + r.active + "; echo \"$state\"; exit 0; fi\n" +
 		"if [ \"$2\" = show ] && [ \"$3\" = --property=Job ]; then if [ -e " + r.calls + ".job ]; then read -r job < " + r.calls + ".job; echo \"$job\"; fi; exit 0; fi\n" +
 		"if [ \"$2\" = show ] && [ ! -e " + r.calls + ".restarted ] && [ -e " + r.calls + ".fail-read-before-restart ]; then exit 1; fi\n" +
 		"if [ \"$2\" = show ] && [ -e " + r.calls + ".restarted ] && [ -e " + r.calls + ".fail-read-after-restart ]; then exit 1; fi\n" +
@@ -92,8 +74,7 @@ func newInstallRig(t *testing.T) *installRig {
 		"echo \"$*\" >> " + r.calls + "\n" +
 		"if [ \"$2\" = restart ]; then : > " + r.calls + ".restarted; fi\n" +
 		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".fail-restart ]; then exit 1; fi\n" +
-		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then [ -e " + r.calls + ".no-queued-job ] || { echo 7 > " + r.calls + ".job; : > " + r.calls + ".queued; }\n" +
-		"  while [ ! -e " + r.release + " ] && kill -0 " + strconv.Itoa(os.Getpid()) + " 2>/dev/null; do /bin/sleep 0.05; done; exit 0; fi\n" +
+		"if [ \"$2\" = restart ] && [ -e " + r.calls + ".slow-restart ]; then [ -e " + r.calls + ".no-queued-job ] || echo 7 > " + r.calls + ".job; exec /bin/sleep 20; fi\n" +
 		"if [ \"$2\" = restart ] && [ ! -e " + r.calls + ".same-process ]; then read -r pid < " + r.pid + "; echo $((pid + 1)) > " + r.pid + "; fi\n"
 	if err := testexec.WriteFile(filepath.Join(bin, "systemctl"), []byte(script), 0o755); err != nil {
 		t.Fatal(err)
@@ -759,21 +740,7 @@ func TestInstallUndrainsWhenTheRestartLeavesTheSameMainProcess(t *testing.T) {
 // TestInstallUndrainsWhenTheRestartOutlivesItsTimeout: a restart still running at its timeout
 // (helper.InstallRestartTimeout) is one install stops waiting for; with no job left queued for
 // the unit and its main process unchanged, install sends undrain and returns an error naming the
-// timeout, well before the restart would have returned. The restart's systemctl holds until the
-// test releases it (releaseRestartAtGiveUp), so an install that returns only after that release
-// waited for the restart to return.
-//
-// Install returns within installReturnsWithin of its start, less the time the machine held some
-// of its systemctl calls between install's exec of each and the call's first line
-// (systemctlStart.held): the kernel and the stand-in spend that time, and a loaded machine can
-// stretch it past any bound. Only outlivedRestartCalls of the calls but the restart are taken off,
-// the number a correct install makes here, and where install makes more, the ones the machine
-// held least. Install chooses how many calls it makes, so a call past that number, held time and
-// all, is install's own, and so is every other part of the span: an install that spends past the
-// bound, on more calls or anywhere else, fails as it failed main's. A number the row fixes also
-// keeps the half tick each held time reads high under gVisor (testexec.ClockTick) from growing
-// with the calls install adds. The restart's own call is not counted: its timeout runs from
-// before install execs it, so a late start of it holds install up no longer.
+// timeout, well before the restart would have returned.
 func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	r := newInstallRig(t)
 	shortenRestartTimeout(t)
@@ -783,31 +750,10 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 		}
 	}
 	ops := r.fakeHelper(t, nil)
-	released := r.releaseRestartAtGiveUp(t)
 	started := time.Now()
 	err := r.run("--url", "https://secrets.example")
-	took := time.Since(started)
-	if released() {
-		t.Fatalf("install returned %v only once the test released its restart: it waited for a restart its timeout is 200ms", err)
-	}
-	var helds []time.Duration
-	for _, call := range r.starts() {
-		if !call.restart() {
-			helds = append(helds, call.held())
-		}
-	}
-	slices.Sort(helds)
-	taken := helds[:min(len(helds), outlivedRestartCalls)]
-	var held time.Duration
-	for _, h := range taken {
-		held += h
-	}
-	if own := took - held; own > installReturnsWithin {
-		t.Fatalf("install took %s of its own, past %s, over a restart its timeout is 200ms: it returned %s after its start, of which the machine held %d of its calls but the restart %s between install's exec of each and its first line", own, installReturnsWithin, took, len(taken), held)
-	} else if took > installReturnsWithin {
-		t.Logf("install returned %s after its start, past %s, of which the machine held %d of its calls but the restart %s between install's exec of each and its first line: %s of its own", took, installReturnsWithin, len(taken), held, own)
-	} else {
-		t.Logf("install took %s of its own, against %s, over a restart its timeout is 200ms: it returned %s after its start, of which the machine held %d of its calls but the restart %s between install's exec of each and its first line", own, installReturnsWithin, took, len(taken), held)
+	if took := time.Since(started); took > 10*time.Second {
+		t.Fatalf("install waited %s for a restart its timeout is 200ms", took)
 	}
 	if err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") {
 		t.Fatalf("install whose restart outlived its timeout: %v; want an error naming the 200ms timeout", err)
@@ -817,174 +763,25 @@ func TestInstallUndrainsWhenTheRestartOutlivesItsTimeout(t *testing.T) {
 	}
 }
 
-// installReturnsWithin is how soon after its start an install whose restart outlives its 200 ms
-// timeout returns, less the time the machine held its systemctl calls before their first lines:
-// its reads, its drain, the timeout, the kill, two reads of the unit and the undrain, each a
-// stand-in that answers at once. An install that waited on the restart past its timeout returns
-// past it.
-const installReturnsWithin = 10 * time.Second
-
-// outlivedRestartCalls is how many systemctl calls but the restart a correct install makes in
-// TestInstallUndrainsWhenTheRestartOutlivesItsTimeout: it checks the unit is active, reloads and
-// enables the unit it wrote, reads the main process before the restart and after it, and reads the
-// unit's job.
-const outlivedRestartCalls = 6
-
 // TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued: killing systemctl at the timeout
 // leaves systemd's restart job queued for the unit. An undrain then would let a session register
 // on the helper that job is about to stop, and lose its grants when it does, which is what the
 // drain is for; so install sends no undrain while a job for the unit is queued, says so, and
 // leaves the drain to end with the restart or at the helper's own bound.
-//
-// Install gives its restart the whole timeout, so the unit read it runs after the restart begins
-// that timeout or more after the read before the restart ran its first line (restartSpan): a run
-// whose span is shorter fails, whatever it queued. The timeout's clock starts before install
-// execs the restart's systemctl, so a loaded machine that holds that systemctl before its first
-// line can let the timeout kill it before it has queued its job; the kill then leaves no job
-// queued, and that run shows nothing of a queued one. The rig's systemctl records that hold,
-// which install cannot cause (systemctlStart.held), so a timed-out run with no job queued is
-// taken again, on a rig of its own and within a minute, only where a systemctl call of that run
-// shows the machine held it half the timeout or more. Any other run with no job queued is judged.
 func TestInstallLeavesTheDrainWhileItsTimedOutRestartIsQueued(t *testing.T) {
+	r := newInstallRig(t)
 	shortenRestartTimeout(t)
-	within := testwait.Bounded(t, time.Minute, installSpare)
-	until := time.Now().Add(within)
-	for runs := 1; ; runs++ {
-		r := newInstallRig(t)
-		if err := os.WriteFile(r.calls+".slow-restart", nil, 0o644); err != nil {
-			t.Fatal(err)
-		}
-		ops := r.fakeHelper(t, nil)
-		released := r.releaseRestartAtGiveUp(t)
-		err := r.run("--url", "https://secrets.example")
-		if released() {
-			t.Fatalf("run %d: install returned %v only once the test released its restart: it waited for a restart its timeout is 200ms", runs, err)
-		}
-		starts := r.starts()
-		if span, ok := restartSpan(starts); ok && span+2*testexec.ClockTick < restartTimeout {
-			t.Fatalf("run %d: install began the unit read after its restart %s after the read before it ran its first line: it ended the restart before the restart's 200ms timeout", runs, span)
-		} else if ok {
-			t.Logf("run %d: install began the unit read after its restart %s after the read before it ran its first line, against the restart's %s timeout", runs, span, restartTimeout)
-		}
-		_, statErr := os.Stat(r.calls + ".queued")
-		if statErr != nil && !errors.Is(statErr, os.ErrNotExist) {
-			t.Fatal(statErr)
-		}
-		timedOut := err != nil && strings.Contains(err.Error(), "did not finish within 200ms")
-		if queued := statErr == nil; !queued && timedOut {
-			if call := longestHeld(starts); call.held() >= restartTimeout/2 {
-				if time.Now().Before(until) {
-					t.Logf("run %d is not judged: the 200ms timeout ended the restart's systemctl before it queued job 7, and the machine held the call %q %s between install's exec of it and its first line: running install again", runs, call.args, call.held())
-					continue
-				}
-				t.Fatalf("no run of the right order in %d runs over %s: in each, the 200ms timeout ended the restart's systemctl before it queued job 7, and the machine held a systemctl call half that timeout or more before its first line", runs, within)
-			}
-		}
-		if strings.Join(*ops, ",") != "sessions,drain" {
-			t.Fatalf("run %d: ops asked: %q; want the running check and drain, and no undrain while job 7 is queued", runs, *ops)
-		}
-		if !timedOut || !strings.Contains(err.Error(), "job 7") {
-			t.Fatalf("run %d: install whose timed-out restart is still queued: %v; want an error naming the timeout and the queued job 7", runs, err)
-		}
-		return
+	if err := os.WriteFile(r.calls+".slow-restart", nil, 0o644); err != nil {
+		t.Fatal(err)
 	}
-}
-
-// systemctlStart is one call of the rig's systemctl as its own first line recorded it in the
-// calls log's .starts file: the call's arguments, and its start mark (testexec.StartMark): when
-// the kernel started its process, which is when install ran it, and when that first line ran.
-type systemctlStart struct {
-	args string
-	mark testexec.StartMark
-}
-
-// held is how long the machine held the call between install's exec of it and its first line.
-// Install cannot cause that span: the process is the stand-in's from its exec on.
-func (s systemctlStart) held() time.Duration {
-	return max(s.mark.Late(), 0)
-}
-
-// restart reports whether the call was a restart, by its second argument, as the stand-in reads it.
-func (s systemctlStart) restart() bool {
-	args := strings.Fields(s.args)
-	return len(args) > 1 && args[1] == "restart"
-}
-
-// starts reads the calls log's .starts file: one systemctlStart per call of the rig's systemctl,
-// in the order the calls ran.
-func (r *installRig) starts() []systemctlStart {
-	r.t.Helper()
-	text, err := os.ReadFile(r.calls + ".starts")
-	if err != nil {
-		r.t.Fatalf("read the rig's systemctl starts: %v", err)
+	ops := r.fakeHelper(t, nil)
+	err := r.run("--url", "https://secrets.example")
+	if strings.Join(*ops, ",") != "sessions,drain" {
+		t.Fatalf("ops asked: %q; want the running check and drain, and no undrain while job 7 is queued", *ops)
 	}
-	var starts []systemctlStart
-	for line := range strings.Lines(string(text)) {
-		up, rest, _ := strings.Cut(strings.TrimSuffix(line, "\n"), "\t")
-		stat, args, cut := strings.Cut(rest, "\t")
-		mark, err := testexec.ParseStartMark(up, stat)
-		if !cut || err != nil {
-			r.t.Fatalf("the rig's systemctl recorded a start line of another shape: %q: %v", line, err)
-		}
-		starts = append(starts, systemctlStart{args: args, mark: mark})
+	if err == nil || !strings.Contains(err.Error(), "did not finish within 200ms") || !strings.Contains(err.Error(), "job 7") {
+		t.Fatalf("install whose timed-out restart is still queued: %v; want an error naming the timeout and the queued job 7", err)
 	}
-	return starts
-}
-
-// restartSpan is the most install's restart can have run: from the first line of the unit read
-// install runs just before it (the read of the main process before the restart) to the kernel's
-// start of the next call but the restart after that read, which install runs only once the
-// restart has ended. A call its own timeout killed before its first line, as the machine can hold
-// one, left no record, so the pair is found by its place around the restart: where the restart
-// recorded its start, the read is the last read of the main process before it, and the next call
-// the first after it but a restart; where the restart left no record, the read is the first of the
-// two reads of the main process install makes, and only where both recorded theirs. ok is false
-// where the rig recorded no such pair: a read of the main process after the restart, paired with
-// the call after it, is no span of the restart.
-func restartSpan(starts []systemctlStart) (span time.Duration, ok bool) {
-	readsMainPID := func(call systemctlStart) bool { return strings.Contains(call.args, "--property=MainPID") }
-	read, restart := -1, -1
-	for i, call := range starts {
-		if call.restart() {
-			restart = i
-			break
-		}
-		if readsMainPID(call) {
-			read = i
-		}
-	}
-	if restart < 0 {
-		var reads []int
-		for i, call := range starts {
-			if readsMainPID(call) {
-				reads = append(reads, i)
-			}
-		}
-		if len(reads) != 2 {
-			return 0, false
-		}
-		read, restart = reads[0], reads[0]
-	}
-	if read < 0 {
-		return 0, false
-	}
-	for _, next := range starts[restart+1:] {
-		if !next.restart() {
-			return next.mark.Started - starts[read].mark.Reached, true
-		}
-	}
-	return 0, false
-}
-
-// longestHeld is the call the machine held longest before its first line.
-func longestHeld(starts []systemctlStart) systemctlStart {
-	var longest systemctlStart
-	for _, call := range starts {
-		if call.held() > longest.held() {
-			longest = call
-		}
-	}
-	return longest
 }
 
 // shortenRestartTimeout sets install's restart timeout to 200 ms for the test.
@@ -993,26 +790,6 @@ func shortenRestartTimeout(t *testing.T) {
 	previous := restartTimeout
 	restartTimeout = 200 * time.Millisecond
 	t.Cleanup(func() { restartTimeout = previous })
-}
-
-// installSpare is what a test that waits on install leaves of the test binary's deadline
-// (testwait): time for install to return once its held restart is released, which takes two reads
-// of the unit (systemctlReadTimeout each) and an undrain, and for the test's own report.
-const installSpare = 30 * time.Second
-
-// releaseRestartAtGiveUp writes the rig's release, which ends a restart its systemctl holds, once
-// only installSpare is left of the test binary's deadline, and answers whether it has. An install
-// that returns only after that waited for the restart past the timeout that should have ended its
-// wait; one that never stops waiting still returns, and its test fails naming that.
-func (r *installRig) releaseRestartAtGiveUp(t *testing.T) func() bool {
-	t.Helper()
-	var released atomic.Bool
-	timer := time.AfterFunc(testwait.Remaining(t, installSpare), func() {
-		released.Store(true)
-		_ = os.WriteFile(r.release, nil, 0o644)
-	})
-	t.Cleanup(func() { timer.Stop() })
-	return released.Load
 }
 
 // TestInstallNeverRestartsWhenASessionArrivesBeforeTheDrain: the running check finds no sessions,

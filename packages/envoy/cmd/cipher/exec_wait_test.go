@@ -16,7 +16,6 @@ import (
 
 	"github.com/sjawhar/envoy/cipheraddr"
 	"github.com/sjawhar/envoy/internal/cipher/record"
-	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // waitRequestID is the one request waitBroker serves, and waitValue the value its grant releases
@@ -319,19 +318,14 @@ func buildRecordingBackoff(t *testing.T) string {
 	return buildAgentSecrets(t)
 }
 
-// runWaiting runs `agent-secrets WAIT_ME --wait <wait> -- sh -c …` against b, built to record its
+// runWaiting runs `agent-secrets WAIT_ME --wait 1m -- sh -c …` against b, built to record its
 // backoff sleeps (buildRecordingBackoff), names it to b, and fails t unless the child ran with the
-// granted value. It answers the backoff sleeps the run asked for, in order. No row here is about
-// the --wait bound, whose end would leave the request pending and the child not run, so the wait
-// is what is left of the test binary's deadline less waitMargin, not a span a loaded machine can
-// spend on the reads before the grant: each read still asks a wait of its own, up to
-// record.MaxRequestWaitSeconds.
+// granted value. It answers the backoff sleeps the run asked for, in order.
 func runWaiting(t *testing.T, b *waitBroker, key *proofKey) []string {
 	t.Helper()
 	binary := buildRecordingBackoff(t)
 	backoffs := filepath.Join(t.TempDir(), "backoffs")
-	wait := testwait.Remaining(t, waitMargin).String()
-	cmd := exec.Command(binary, "WAIT_ME", "--wait", wait, "--", "sh", "-c", `test "$WAIT_ME" = `+waitValue+` && echo ran-the-child`)
+	cmd := exec.Command(binary, "WAIT_ME", "--wait", "1m", "--", "sh", "-c", `test "$WAIT_ME" = `+waitValue+` && echo ran-the-child`)
 	cmd.Env = append(append(os.Environ(), hostIsolation(t)...), "AGENT_SECRETS_URL="+b.URL, "AGENT_SECRETS_KEY_DIR="+key.keyDir, backoffLogEnv+"="+backoffs)
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr

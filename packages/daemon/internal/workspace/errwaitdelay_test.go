@@ -2,8 +2,6 @@ package workspace
 
 import (
 	"context"
-	"errors"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -14,210 +12,69 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
-	"github.com/sjawhar/legion/daemon/internal/runtime/shellprefix"
-	"github.com/sjawhar/legion/daemon/internal/testkernel"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // procgroup.Err is execRunner's one classification of a command's error: nil for an ordinary exit
 // or for exec.ErrWaitDelay (a clean exit whose I/O draining outlived WaitDelay), either way read
-// from cmd.ProcessState.ExitCode(). A fake git that exits 0 while a child it started keeps its
+// from cmd.ProcessState.ExitCode(). A fake git that exits 0 while a backgrounded child keeps its
 // stdout pipe open proves that wiring end to end: RunChecked must succeed with ExitCode 0, not
-// report the command's own clean exit as a failure. The child runs until the test's cleanup
-// releases it (heldChild), so every run holds the pipe past WaitDelay.
-//
-// The runner's budget is the rest of the test binary's deadline, so a loaded machine that slows
-// the fake git does not cut it off. Main's form gave the runner 5 s from before the git started,
-// and that bound stays (runBound), on the runner's own time and no stand-in's. The fake git
-// records when the kernel made its process (testexec.MarkStart) and the moment just before it
-// exits (testexec.MarkNow), and the span between the two is the git's own run. What is left of the
-// call is the runner's: from the call to that start, and from the git's exit to the return. Of the
-// second, procgroup.WaitDelay is not the runner's to spend: os/exec waits that long after the
-// git's reap for the child to close the pipe, and main's budget, which ended at that reap, never
-// counted it either. A runner that spends main's 5 s before it starts the git, or after the git
-// has exited, fails here.
+// report the command's own clean exit as a failure.
 func TestRunCheckedSucceedsWhenACommandExitsZeroWithAChildStillHoldingItsOutputOpen(t *testing.T) {
 	t.Parallel()
-	const runBound = 5 * time.Second
 	dir := t.TempDir()
-	fakeGit, mark, exited := filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-	script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho done\n" + heldChild(t, false) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 0\n"
-	if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+	pidFile := filepath.Join(dir, "sleep.pid")
+	fakeGit := filepath.Join(dir, "git")
+	script := "#!/bin/sh\necho done\nsleep 3 & echo $! >" + pidFile + "\nexit 0\n"
+	if err := execfile.Write(fakeGit, []byte(script), 0o700); err != nil {
 		t.Fatalf("write the fake git: %v", err)
 	}
-	run := NewRunner(testwait.Remaining(t), map[string]string{"git": fakeGit})
+	t.Cleanup(func() { killPIDFile(t, pidFile) })
 
-	called := testexec.SinceBoot(t)
-	started := time.Now()
+	run := NewRunner(5*time.Second, map[string]string{"git": fakeGit})
+
 	result, err := RunChecked(context.Background(), run, []string{"git"}, nil, dir)
-	returned := testexec.SinceBoot(t)
-	elapsed := time.Since(started)
 	if err != nil {
 		t.Fatalf("RunChecked = %v, want no error: the command exited 0 on its own", err)
 	}
-	if elapsed < procgroup.WaitDelay {
-		t.Fatalf("RunChecked returned after %s, inside WaitDelay: nothing held the pipe, so this run proves nothing", elapsed)
-	}
 	if result.ExitCode != 0 {
 		t.Errorf("ExitCode = %d, want 0", result.ExitCode)
-	}
-	began, after, held := testexec.StartedAfter(t, mark, called), returned-exitMark(t, exited), procgroup.WaitDelayNow()
-	if own := began + after - held; own > runBound {
-		t.Errorf("RunChecked spent %s of its own, past main's %s: %s from the call to the git's start, and %s from the git's exit to the return, less the %s os/exec holds the child's pipe (procgroup.WaitDelay)",
-			own, runBound, began, after, held)
-	} else {
-		t.Logf("RunChecked spent %s of its own, against main's %s: %s from the call to the git's start, and %s from the git's exit to the return, less the %s os/exec holds the child's pipe (procgroup.WaitDelay)",
-			own, runBound, began, after, held)
-	}
-}
-
-// A command that exits on its own inside its Timeout did not time out, however long
-// procgroup.WaitDelay then holds Run open for a child it left in its process group still holding
-// its output pipe: its exit is its answer. This is main's form: the child stays in the git's
-// group, and the Timeout is main's, 100 ms short of WaitDelay, so a run whose git exits inside it
-// returns past it. A Run that read TimedOut from the deadline having passed, or that, once its
-// Timeout had passed, read a group that still answers after the wait as a kill, would report this
-// git's own exit 128 as a timeout. The row whose child leaves the group
-// (TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline) cannot
-// see the second: its group is gone by then.
-//
-// Main's form judged every run, and a loaded machine can bring the git's reap, or Wait's read of
-// its context after the reap, past 900 ms. The Timeout then passes inside Wait,
-// procgroup.Configure's Cancel stops the group, the child takes its SIGTERM, and a correct Run
-// reports the kill it made. The git's exit mark (testexec.MarkNow) cannot order that window,
-// however far before the deadline it is, since the reap and Wait's read come after the exit. The
-// child in the group orders it (testkernel.Child): a run in which no SIGTERM reached it by the
-// run's return is judged as main judged it. Its deadline had passed by then: the runner sets it
-// before it starts the git, and the run returned more than the Timeout after the git's start
-// (testexec.MarkStart). A stop whose trap found the pipe closed came after the run, and one whose
-// trap ran before the Timeout could pass was no stop of the Timeout's: either fails the row
-// (judgeable). A stop that found the pipe open once the Timeout could have passed was the
-// Timeout's own, inside Wait. That run, a child the grace's SIGKILL ended before its trap wrote,
-// and a git stopped before its child was ready are not judged, and the row runs the git again
-// until a run is judged, within a minute; but only where the git ran its first act, Run reported
-// its Timeout's stop no sooner than the Timeout after the call, and a stop that found the git
-// before it had written its answer found it held by the machine, not slept by Run's own hold
-// (testkernel.Leader), since only the machine leaves such a run. A Run that never started the git,
-// held it, or reported anything else, fails as main's form failed it (judgeable).
-func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildInItsGroupHoldsItsOutputPastTheDeadline(t *testing.T) {
-	t.Parallel()
-	const timeout = procgroup.WaitDelay - 100*time.Millisecond
-	within := testwait.Bounded(t, time.Minute, cutRunMargin)
-	until := time.Now().Add(within)
-	for runs := 1; ; runs++ {
-		dir := t.TempDir()
-		fakeGit, exited := filepath.Join(dir, "git"), filepath.Join(dir, "exited")
-		child, leader := testkernel.NewChild(t), testkernel.NewLeader(t)
-		mark := leader.Mark()
-		script := "#!/bin/sh\n" + leader.Begin() + "\necho 'fatal: unable to access' >&2\n" + leader.Wrote() + "\n" + child.Start() + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
-		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
-			t.Fatalf("write the fake git: %v", err)
-		}
-		run := NewRunner(timeout, map[string]string{"git": fakeGit})
-
-		called := testexec.SinceBoot(t)
-		start := time.Now()
-		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
-		elapsed := time.Since(start)
-		returned := testexec.SinceBoot(t)
-
-		seen := child.After(t, returned, until)
-		// The run is read: its child is released, and killed in case the release does not reach it.
-		child.Release(t)
-		answer := fmt.Sprintf("Run = exit %d, TimedOut %t, error %v", result.ExitCode, result.TimedOut, err)
-		if !judgeable(t, aRun{runs: runs, seen: seen, called: called, returned: returned, elapsed: elapsed, budget: timeout, runner: "Run", answer: answer, leader: leader, stopped: err == nil && result.TimedOut}, within, until) {
-			continue
-		}
-		if err != nil {
-			t.Fatalf("run %d: Run = %v, want the command's own exit", runs, err)
-		}
-		began, exit := testexec.StartedAfter(t, mark, called), exitMark(t, exited)-called
-		if returned-called <= began+timeout+2*testexec.ClockTick {
-			t.Fatalf("run %d: Run returned %s after the call and %s after the git's start, before its %s Timeout, which the runner sets before that start, could have passed: nothing held the pipe past the deadline, so this run proves nothing (%s)",
-				runs, returned-called, returned-called-began, timeout, answer)
-		}
-		if result.TimedOut || result.ExitCode != 128 {
-			t.Errorf("run %d: %s; want exit 128, not timed out: git exited on its own %s after the call, its %s Timeout passed %s to %s after the call while the child the git left in its group held its output pipe, and no stop reached that child by the run's return, %s after the call",
-				runs, answer, exit, timeout, timeout, began+timeout, returned-called)
-		}
-		return
 	}
 }
 
 // A command that exits on its own inside its Timeout did not time out, however long
 // procgroup.WaitDelay then holds Run open for a child still holding its output pipe. The Timeout
-// is 100 ms short of WaitDelay, so a run whose git exits inside it returns past it: a Run that
-// read TimedOut from the deadline having passed, or from the time the run took, would report this
-// git's own exit 128 as a timeout, and a clone that failed transiently inside the last WaitDelay
-// of its budget, git-remote-https still holding the pipe, would read as timed out, which
-// transientCloneFailure never retries.
-//
-// The child leaves the git's process group (setsid) and writes its pid from inside its new session
-// before the git exits (heldChild, escaped), so the Timeout's stop, where os/exec still runs it
-// between Go's reap of the git and Wait's read of its context, finds no group left to signal.
-//
-// Only a run whose git was seen reaped before its Timeout could pass shows this: a run reaped
-// past it meets the Timeout's stop while Go has not reaped the git, and reports the timeout, as it
-// should. Main's form judged every run, and two things bring the reap past the Timeout: the git's
-// own run, which a loaded machine slows, and Run's own time, from the call to the git's start and
-// from the git's exit to its reap (watchReaped). The row tells them apart by facts of the run:
-// the git records when the kernel made its process (testexec.MarkStart) and the moment just before
-// it exits (testexec.MarkNow), and between the two is the git's own run, which nothing Run does
-// moves (ownBeforeReap). A run reaped inside the Timeout is judged as main judged it. A run reaped
-// past it holds Run's own time to main's Timeout: a Run that spent that long starting the git or
-// reaping it fails, as main's form failed it. Only where Run's own time stays inside the Timeout
-// did the git's own run carry the reap past it: that run is not judged, and the row runs the git
-// again until a run is judged, within a minute.
+// here is 100 ms short of WaitDelay, so every such run returns past its deadline, while git still
+// has 900 ms to exit under load: a Run that read TimedOut from the deadline having passed would
+// report this git's own exit 128 as a timeout, and a clone that failed transiently inside the
+// last WaitDelay of its budget, git-remote-https still holding the pipe, would read as timed out,
+// which transientCloneFailure never retries.
 func TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline(t *testing.T) {
 	t.Parallel()
-	const timeout = procgroup.WaitDelay - 100*time.Millisecond
-	within := testwait.Bounded(t, time.Minute, cutRunMargin)
-	until := time.Now().Add(within)
-	for runs := 1; ; runs++ {
-		dir := t.TempDir()
-		leader, fakeGit, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "git"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-		script := "#!/bin/sh\n" + testexec.MarkStart(shellprefix.Literal(mark)) + "\necho $$ >" + shellprefix.Literal(leader) + "\necho 'fatal: unable to access' >&2\n" + heldChild(t, true) + "\n" + testexec.MarkNow(shellprefix.Literal(exited)) + "\nexit 128\n"
-		if err := testexec.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
-			t.Fatalf("write the fake git: %v", err)
-		}
-		reaped := watchReaped(leader, within)
-		run := NewRunner(timeout, map[string]string{"git": fakeGit})
+	dir := t.TempDir()
+	pidFile := filepath.Join(dir, "sleep.pid")
+	fakeGit := filepath.Join(dir, "git")
+	script := "#!/bin/sh\necho 'fatal: unable to access' >&2\nsleep 30 & echo $! >" + pidFile + "\nexit 128\n"
+	if err := execfile.Write(fakeGit, []byte(script), 0o700); err != nil {
+		t.Fatalf("write the fake git: %v", err)
+	}
+	t.Cleanup(func() { killPIDFile(t, pidFile) })
+	timeout := procgroup.WaitDelay - 100*time.Millisecond
+	run := NewRunner(timeout, map[string]string{"git": fakeGit})
 
-		calledBoot := testexec.SinceBoot(t)
-		started := time.Now()
-		result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
-		elapsed := time.Since(started)
-		at := <-reaped
+	started := time.Now()
+	result, err := run.Run(context.Background(), Command{Dir: dir, Argv: []string{"git"}, Timeout: timeout})
+	elapsed := time.Since(started)
 
-		if at.IsZero() {
-			t.Fatalf("run %d: the git was not seen reaped within %s of the run's start (Run = exit %d, TimedOut %t, error %v after %s)",
-				runs, within, result.ExitCode, result.TimedOut, err, elapsed)
-		}
-		if !at.Before(started.Add(timeout)) {
-			own, began, ran := ownBeforeReap(t, calledBoot, started, at, mark, exited)
-			if own >= timeout {
-				t.Fatalf("run %d: Run spent %s of its own before the git's reap, at or past main's %s Timeout: %s from the call to the git's start, and %s from the git's exit to its reap, which the row saw %s after the call (Run = exit %d, TimedOut %t, error %v after %s)",
-					runs, own, timeout, began, own-began, at.Sub(started), result.ExitCode, result.TimedOut, err, elapsed)
-			}
-			if time.Now().Before(until) {
-				t.Logf("run %d is not judged: the git was seen reaped %s after the call, past its %s Timeout, with Run's own time %s inside it: the git's own run %s", runs, at.Sub(started), timeout, own, ran)
-				continue
-			}
-			t.Fatalf("no run judged in %d runs over %s: in each the git was seen reaped past its %s Timeout with Run's own time inside it; in the last, Run's own time was %s, and the git's own run %s", runs, within, timeout, own, ran)
-		}
-		if err != nil {
-			t.Fatalf("run %d: Run = %v, want the command's own exit", runs, err)
-		}
-		if elapsed < procgroup.WaitDelay {
-			t.Fatalf("run %d: Run returned after %s, inside WaitDelay: nothing held the pipe past the git's exit, so this run proves nothing", runs, elapsed)
-		}
-		if result.TimedOut || result.ExitCode != 128 {
-			t.Errorf("run %d: Run = exit %d, TimedOut %t after %s; want exit 128, not timed out: git failed on its own inside its %s Timeout", runs, result.ExitCode, result.TimedOut, elapsed, timeout)
-		}
-		return
+	if err != nil {
+		t.Fatalf("Run = %v, want the command's own exit", err)
+	}
+	if elapsed < timeout {
+		t.Fatalf("Run returned after %s, inside its %s Timeout: nothing held the pipe past the deadline, so this run proves nothing", elapsed, timeout)
+	}
+	if result.TimedOut || result.ExitCode != 128 {
+		t.Errorf("Run = exit %d, TimedOut %t after %s; want exit 128, not timed out: git failed on its own inside its %s Timeout", result.ExitCode, result.TimedOut, elapsed, timeout)
 	}
 }
 
@@ -249,53 +106,38 @@ func TestRunDoesNotReportACommandItsCallerStoppedAsTimedOut(t *testing.T) {
 	}
 }
 
-// A RunCommand command that exits on its own did not time out while a child it left in its
-// process group holds its output pipes past procgroup.WaitDelay: its exit is its answer. With exit
-// 3 the run must say jj's own exit and no timeout; with exit 0, a run that took exec.ErrWaitDelay
-// for a failure would report that success as an error. (Ported with RunCommand's own semantics
-// from the shim's runAdoptionCommand, which the adoption now reaches through RunCommand.)
-//
-// The budget is the rest of the test binary's deadline, so a loaded machine that slows the command
-// does not cut it off. Main's form gave the exit 0 a minute from before the command started, and
-// that bound stays (commandBound), on RunCommand's own time and no stand-in's, for both exits: the
-// command records when the kernel made its process (testexec.MarkStart) and the moment just before
-// it exits (testexec.MarkNow), and what is left of the call is RunCommand's, from the call to that
-// start and from that exit to the return, less the procgroup.WaitDelay os/exec holds the child's
-// pipes after the command's reap, which main's budget, ending at that reap, never counted.
-func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t *testing.T) {
+// A RunCommand command that exits on its own did not time out, however long procgroup.WaitDelay
+// then holds the run open for a child still holding its output pipes: its exit is its answer. In
+// the first case the budget is 100 ms short of procgroup.WaitDelay, so the run always returns past
+// it, while the command still has 900 ms to exit under load; a run that read a timeout from the
+// deadline having passed would report jj's own exit 3 as a timeout. In the second the command
+// exits 0 well inside its budget; a run that took exec.ErrWaitDelay for a failure would report
+// that success as an error. (Ported with RunCommand's own semantics from the shim's
+// runAdoptionCommand, which the adoption now reaches through RunCommand.)
+func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *testing.T) {
 	t.Parallel()
-	const commandBound = time.Minute
 	for name, testCase := range map[string]struct {
 		exit    int
+		budget  time.Duration
 		wantErr string
 	}{
-		"an exit 3": {3, "Command failed (exit 3)"},
-		"an exit 0": {0, ""},
+		"an exit 3, the pipes held past the budget": {3, procgroup.WaitDelay - 100*time.Millisecond, "Command failed (exit 3)"},
+		"an exit 0 inside the budget":               {0, time.Minute, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
-			budget := testwait.Remaining(t)
-			ctx, cancel := context.WithTimeout(context.Background(), budget)
-			defer cancel()
 			dir := t.TempDir()
-			mark, exited := filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-			script := testexec.MarkStart(`"$1"`) + "\necho answered; echo refused >&2\n" + heldChild(t, false) + "\n" + testexec.MarkNow(`"$2"`) + "\nexit " + strconv.Itoa(testCase.exit)
+			pidFile := filepath.Join(dir, "lingering.pid")
+			t.Cleanup(func() { killPIDFile(t, pidFile) })
+			ctx, cancel := context.WithTimeout(context.Background(), testCase.budget)
+			defer cancel()
+			script := `echo answered; echo refused >&2; sleep 30 & echo $! >"$1"; exit ` + strconv.Itoa(testCase.exit)
 
-			called := testexec.SinceBoot(t)
 			started := time.Now()
-			out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", mark, exited})
-			returned := testexec.SinceBoot(t)
+			out, err := RunCommand(ctx, procgroup.NoReaper, testCase.budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", pidFile})
 			elapsed := time.Since(started)
 
 			if elapsed < procgroup.WaitDelay {
 				t.Fatalf("the run returned after %s, inside procgroup.WaitDelay: nothing held the pipe, so this run proves nothing", elapsed)
-			}
-			began, after, held := testexec.StartedAfter(t, mark, called), returned-exitMark(t, exited), procgroup.WaitDelayNow()
-			if own := began + after - held; own > commandBound {
-				t.Errorf("RunCommand spent %s of its own, past main's %s: %s from the call to the command's start, and %s from the command's exit to the return, less the %s os/exec holds the child's pipes (procgroup.WaitDelay) (RunCommand = %q, %v)",
-					own, commandBound, began, after, held, out, err)
-			} else {
-				t.Logf("RunCommand spent %s of its own, against main's %s: %s from the call to the command's start, and %s from the command's exit to the return, less the %s os/exec holds the child's pipes (procgroup.WaitDelay)",
-					own, commandBound, began, after, held)
 			}
 			if testCase.wantErr == "" {
 				if err != nil || out != "answered" {
@@ -304,119 +146,10 @@ func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipes(t 
 				return
 			}
 			if err == nil || !strings.Contains(err.Error(), testCase.wantErr) || strings.Contains(err.Error(), "timed out") {
-				t.Errorf("RunCommand = %q, %v after %s; want an error naming %q and no timeout: the command exited on its own, its budget far away",
-					out, err, elapsed, testCase.wantErr)
+				t.Errorf("RunCommand = %q, %v after %s; want an error naming %q and no timeout: the command exited on its own inside its %s budget",
+					out, err, elapsed, testCase.wantErr, testCase.budget)
 			}
 		})
-	}
-}
-
-// A RunCommand command that exits on its own inside its budget did not time out, however long
-// procgroup.WaitDelay then holds the run open for a child still holding its output pipes. The
-// budget is 100 ms short of procgroup.WaitDelay, so a run whose command exits inside it returns
-// past it: a run that read a timeout from the deadline having passed, or from the time the run
-// took, would report jj's own exit 3 as a timeout. The child leaves the command's process group
-// before the command exits. A run whose command was seen reaped past its budget is judged as in
-// TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildHoldsItsOutputPastTheDeadline:
-// RunCommand's own time, from the call to the command's start and from the command's exit to its
-// reap, is held to main's budget, and only where it stays inside it did the command's own run
-// carry the reap past the budget, so that run alone is not judged.
-func TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt(t *testing.T) {
-	t.Parallel()
-	const budget = procgroup.WaitDelay - 100*time.Millisecond
-	within := testwait.Bounded(t, time.Minute, cutRunMargin)
-	until := time.Now().Add(within)
-	for runs := 1; ; runs++ {
-		dir := t.TempDir()
-		leader, mark, exited := filepath.Join(dir, "leader"), filepath.Join(dir, "started"), filepath.Join(dir, "exited")
-		reaped := watchReaped(leader, within)
-		script := testexec.MarkStart(`"$2"`) + "\n" + `echo $$ >"$1"; echo answered; echo refused >&2` + "\n" + heldChild(t, true) + "\n" + testexec.MarkNow(`"$3"`) + "\nexit 3"
-
-		calledBoot := testexec.SinceBoot(t)
-		started := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
-		out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", leader, mark, exited})
-		elapsed := time.Since(started)
-		cancel()
-		at := <-reaped
-
-		if at.IsZero() {
-			t.Fatalf("run %d: the command was not seen reaped within %s of the run's start (RunCommand = %q, %v after %s)", runs, within, out, err, elapsed)
-		}
-		if !at.Before(started.Add(budget)) {
-			own, began, ran := ownBeforeReap(t, calledBoot, started, at, mark, exited)
-			if own >= budget {
-				t.Fatalf("run %d: RunCommand spent %s of its own before the command's reap, at or past main's %s budget: %s from the call to the command's start, and %s from the command's exit to its reap, which the row saw %s after the call (RunCommand = %q, %v after %s)",
-					runs, own, budget, began, own-began, at.Sub(started), out, err, elapsed)
-			}
-			if time.Now().Before(until) {
-				t.Logf("run %d is not judged: the command was seen reaped %s after the call, past its %s budget, with RunCommand's own time %s inside it: the command's own run %s", runs, at.Sub(started), budget, own, ran)
-				continue
-			}
-			t.Fatalf("no run judged in %d runs over %s: in each the command was seen reaped past its %s budget with RunCommand's own time inside it; in the last, RunCommand's own time was %s, and the command's own run %s", runs, within, budget, own, ran)
-		}
-		if elapsed < procgroup.WaitDelay {
-			t.Fatalf("run %d: the run returned after %s, inside procgroup.WaitDelay: nothing held the pipe, so this run proves nothing", runs, elapsed)
-		}
-		if err == nil || !strings.Contains(err.Error(), "Command failed (exit 3)") || strings.Contains(err.Error(), "timed out") {
-			t.Errorf("run %d: RunCommand = %q, %v after %s; want an error naming \"Command failed (exit 3)\" and no timeout: the command exited on its own inside its %s budget",
-				runs, out, err, elapsed, budget)
-		}
-		return
-	}
-}
-
-// A RunCommand command that exits on its own inside its budget did not time out, however long
-// procgroup.WaitDelay then holds the run open for a child it left in its process group still
-// holding its output pipes: jj's own exit 3 is its answer. This is main's form: the child stays in
-// the command's group, and the budget is main's, 100 ms short of procgroup.WaitDelay. A run that
-// read a timeout from the deadline having passed, or that, once its budget had passed, read a
-// group that still answers after the wait as the budget's kill, would report jj's own exit 3 as a
-// timeout. The row whose child leaves the group
-// (TestRunCommandReportsTheCommandsOwnExitWhenAChildHoldsItsPipesPastIt) cannot see the second.
-// A run is judged, or not, by what the child in the group saw of a stop by the run's return, as in
-// TestRunReportsTheCommandsOwnFailureNotATimeoutWhenAChildInItsGroupHoldsItsOutputPastTheDeadline,
-// and only where the command ran its first act, RunCommand reported its budget's stop, and the
-// command was not held by RunCommand before its last write (judgeable); the row makes the budget's
-// deadline itself, before RunCommand starts the command.
-func TestRunCommandReportsTheCommandsOwnExitWhenAChildInItsGroupHoldsItsPipesPastIt(t *testing.T) {
-	t.Parallel()
-	const budget = procgroup.WaitDelay - 100*time.Millisecond
-	within := testwait.Bounded(t, time.Minute, cutRunMargin)
-	until := time.Now().Add(within)
-	for runs := 1; ; runs++ {
-		dir := t.TempDir()
-		exited := filepath.Join(dir, "exited")
-		child, leader := testkernel.NewChild(t), testkernel.NewLeader(t)
-		mark := leader.Mark()
-		script := leader.Begin() + "\necho answered; echo refused >&2\n" + leader.Wrote() + "\n" + child.Start() + "\n" + testexec.MarkNow(`"$1"`) + "\nexit 3"
-
-		called := testexec.SinceBoot(t)
-		started := time.Now()
-		ctx, cancel := context.WithTimeout(context.Background(), budget)
-		out, err := RunCommand(ctx, procgroup.NoReaper, budget, started, []string{"PATH=" + os.Getenv("PATH")}, dir, nil, []string{"sh", "-c", script, "sh", exited})
-		elapsed := time.Since(started)
-		returned := testexec.SinceBoot(t)
-		cancel()
-
-		seen := child.After(t, returned, until)
-		// The run is read: its child is released, and killed in case the release does not reach it.
-		child.Release(t)
-		answer := fmt.Sprintf("RunCommand = %q, %v", out, err)
-		stopped := err != nil && strings.HasPrefix(err.Error(), "Command timed out after ")
-		if !judgeable(t, aRun{runs: runs, seen: seen, called: called, returned: returned, elapsed: elapsed, budget: budget, runner: "RunCommand", answer: answer, leader: leader, stopped: stopped}, within, until) {
-			continue
-		}
-		began, exit := testexec.StartedAfter(t, mark, called), exitMark(t, exited)-called
-		if returned-called <= began+budget+2*testexec.ClockTick {
-			t.Fatalf("run %d: RunCommand returned %s after the call and %s after the command's start, before its %s budget, which the row set before that start, could have passed: nothing held the pipes past the deadline, so this run proves nothing (%s)",
-				runs, returned-called, returned-called-began, budget, answer)
-		}
-		if err == nil || !strings.Contains(err.Error(), "Command failed (exit 3)") || strings.Contains(err.Error(), "timed out") {
-			t.Errorf("run %d: %s; want an error naming \"Command failed (exit 3)\" and no timeout: the command exited on its own %s after the call, its %s budget passed %s to %s after the call while the child the command left in its group held its output pipes, and no stop reached that child by the run's return, %s after the call",
-				runs, answer, exit, budget, budget, began+budget, returned-called)
-		}
-		return
 	}
 }
 
@@ -598,184 +331,16 @@ func cancelOnceExists(ctx context.Context, cancel context.CancelFunc, path strin
 }
 
 // killPIDFile kills the process named by the PID pidFile holds, left running past a test's own
-// assertions by design (a child standing in for a command's own lingering child).
+// assertions by design (a backgrounded sleep standing in for a command's own lingering child).
 func killPIDFile(t *testing.T, pidFile string) {
 	t.Helper()
-	if pid := pidIn(pidFile); pid > 0 {
-		_ = syscall.Kill(pid, syscall.SIGKILL)
-	}
-}
-
-// heldChild is lines of a fake command's shell script that start a child holding the command's
-// output pipes, as git-remote-https can hold git's past git's exit, and go on once the child has
-// written its pid. The child runs until the test's cleanup writes its release, and kills it, or
-// until this test process is gone: never for a span of its own, so no run ends, and no assertion
-// holds, by the child's own exit. escaped starts the child under setsid, out of the command's
-// process group, so the group is gone once the command is; the child writes its pid from inside
-// its new session, so the command goes on only once the child has left the group. The child's
-// paths reach it as arguments, quoted once (shellprefix.Literal).
-func heldChild(t *testing.T, escaped bool) string {
-	t.Helper()
-	dir := t.TempDir()
-	pidFile, release, holder := filepath.Join(dir, "pid"), filepath.Join(dir, "release"), filepath.Join(dir, "hold")
-	t.Cleanup(func() {
-		if err := os.WriteFile(release, nil, 0o600); err != nil {
-			t.Errorf("release the held child: %v", err)
-		}
-		killPIDFile(t, pidFile)
-	})
-	script := fmt.Sprintf("echo $$ >\"$1.tmp\" && mv \"$1.tmp\" \"$1\"\nwhile [ ! -e \"$2\" ] && kill -0 %d 2>/dev/null; do sleep 0.05; done\n", os.Getpid())
-	if err := os.WriteFile(holder, []byte(script), 0o600); err != nil {
-		t.Fatalf("write the held child's script: %v", err)
-	}
-	start := "sh " + shellprefix.Literal(holder) + " " + shellprefix.Literal(pidFile) + " " + shellprefix.Literal(release) + " &"
-	if escaped {
-		start = "setsid " + start
-	}
-	return start + "\nwhile [ ! -s " + shellprefix.Literal(pidFile) + " ]; do sleep 0.01; done"
-}
-
-// aRun is what an in-group crossed-budget row read of one run of its command (judgeable): the
-// run's number; what the child the command left in its group saw of a stop (seen,
-// testkernel.Child.After); the moments the run was called and returned, as times since boot
-// (testexec.SinceBoot), and the span between, from just before the call to its return on the
-// monotonic clock (elapsed); the budget, which the runner sets after the call; what ran the
-// command (runner) and what it answered (answer); the command's own records (leader); and whether
-// the runner reported its budget's stop as its own and nothing else (stopped).
-type aRun struct {
-	runs                      int
-	seen                      testkernel.Stop
-	called, returned, elapsed time.Duration
-	budget                    time.Duration
-	runner, answer            string
-	leader                    *testkernel.Leader
-	stopped                   bool
-}
-
-// judgeable fails the row on a stop that no budget made, which the child of r's command saw: one
-// sent after the run, or one inside Wait whose trap ran before the budget could pass. It reports
-// whether the run is judged: true where no stop reached the child by the run's return, and false,
-// logged, for a run that is not judged while until, the end of the row's bound within, has not
-// passed, so the row runs again. Once until has passed, such a run fails the row.
-//
-// Every run the child cannot judge is one the budget's own stop reached: inside Wait, or by the
-// grace's SIGKILL, or before the child had set its traps, which the command waits for before it
-// exits, so nothing but a stop ends the command then. Main's form failed each of them, and a run is
-// not judged only where the machine, not the runner, explains it:
-//   - the command ran its first act, its start mark (testkernel.Leader.Mark). A runner that never
-//     started the command, or not until its budget had passed, leaves none; so does a machine that
-//     kept the command's shell from its first line for the whole budget, which main's form failed
-//     too.
-//   - the runner reported its budget's stop as its own and nothing else, no sooner than the budget
-//     after the call. One that answered with an error, an exit, or a timeout before its budget
-//     could pass did not report that stop.
-//   - where the stop found the command before its last write to its output pipes, the command did
-//     not sleep testkernel.HeldBound or more from its start mark to its SIGTERM trap
-//     (testkernel.Leader.HeldBeforeItWrote): it forks nothing there and writes only to pipes the
-//     runner reads, so such a sleep is the runner's hold of the command it started, an output pipe
-//     it left full and unread or a stop of its own, and a loaded machine holds it only as run-queue
-//     wait. A stop that found the command past its last write, starting its child and waiting for
-//     it, finds it where it sleeps on its own, and the hold there is not read.
-//
-// Anything else fails the row, as it failed main's.
-func judgeable(t *testing.T, r aRun, within time.Duration, until time.Time) bool {
-	t.Helper()
-	switch {
-	case r.seen.AfterRun:
-		t.Fatalf("run %d: %s stopped the command's process group after its run: the child the command left in its group took a SIGTERM (its trap ran %s from the run's return), and its write to the command's output pipe answered EPIPE: os/exec had already closed the pipe, which it does once WaitDelay runs out, and the budget's own stop comes only before that (%s)",
-			r.runs, r.runner, r.seen.At-r.returned, r.answer)
-	case r.seen.InWait && r.seen.At < r.called+r.budget-2*testexec.ClockTick:
-		t.Fatalf("run %d: %s stopped the command's process group before its %s budget could pass: the child the command left in its group took a SIGTERM whose trap ran %s after the call (%s)",
-			r.runs, r.runner, r.budget, r.seen.At-r.called, r.answer)
-	case r.seen.None:
-		return true
-	case !time.Now().Before(until):
-		t.Fatalf("no run of %d over %s was judged: in the last, %s (%s after %s)", r.runs, within, r.seen.Unjudged, r.answer, r.returned-r.called)
-	}
-	if _, err := testexec.ReadStartMark(r.leader.Mark()); err != nil {
-		t.Fatalf("run %d: the command never ran its first act (its start mark: %v): %s did not start it, or not before its %s budget had passed, or the machine kept its shell from its first line for that whole budget, which main's form failed too; so the run shows no budget's stop of a command that ran (%s; %s; after %s)",
-			r.runs, err, r.runner, r.budget, r.seen.Unjudged, r.answer, r.elapsed)
-	}
-	if !r.stopped || r.elapsed < r.budget {
-		t.Fatalf("run %d: %s after %s; want %s's budget's stop, reported as its own and nothing else, no sooner than its %s budget after the call: %s, and only that stop explains it",
-			r.runs, r.answer, r.elapsed, r.runner, r.budget, r.seen.Unjudged)
-	}
-	why := r.seen.Unjudged
-	if hold, ok := r.leader.HeldBeforeItWrote(t); ok {
-		if hold.Held() {
-			t.Fatalf("run %d: the budget's stop found the command before its last write to its output pipes, and %s, with nothing of its own to wait on: %s held the command it started, as a runner does that leaves its output pipe full and unread, which a loaded machine does only as run-queue wait (%s; %s)",
-				r.runs, hold, r.runner, r.seen.Unjudged, r.answer)
-		}
-		why += "; the stop found the command before its last write, and " + hold.String()
-	}
-	t.Logf("run %d is not judged: %s (%s after %s)", r.runs, why, r.answer, r.returned-r.called)
-	return false
-}
-
-// cutRunMargin is what the rows bounded by a minute leave of the test binary's deadline
-// (testwait.Bounded): the time a run the bound cuts takes to return, its stop's grace and
-// WaitDelay, and a second for the row to fail in.
-const cutRunMargin = procgroup.StopGrace + procgroup.WaitDelay + time.Second
-
-// watchReaped watches, from before the command starts, for the command that writes its own pid to
-// leader before anything of its own that can block, and answers once when it first saw that pid
-// answer ESRCH, which it does once Go has reaped the command (a zombie still answers), or the zero
-// time where it never did within bound. Each moment is read after the fact it stands for.
-func watchReaped(leader string, bound time.Duration) <-chan time.Time {
-	seen := make(chan time.Time, 1)
-	go func() {
-		var at time.Time
-		if testwait.Holds(bound, testwait.Poll, func() bool {
-			pid := pidIn(leader)
-			return pid > 0 && errors.Is(syscall.Kill(pid, 0), syscall.ESRCH)
-		}) {
-			at = time.Now()
-		}
-		seen <- at
-	}()
-	return seen
-}
-
-// exitMark is the moment, as a time since boot, a stand-in recorded at path just before it exited
-// (testexec.MarkNow). A stand-in that wrote none never reached its exit, and the row fails saying
-// so.
-func exitMark(t *testing.T, path string) time.Duration {
-	t.Helper()
-	at, err := testexec.ReadNowMark(path)
+	raw, err := os.ReadFile(pidFile)
 	if err != nil {
-		t.Fatalf("read the moment the command exited, which it records just before its exit: %v", err)
-	}
-	return at
-}
-
-// ownBeforeReap is the runner's own time before the reap, at (on the wall clock), of a command it
-// was called on at called (on the wall clock; calledBoot is the same moment as a time since boot),
-// and the stand-in's own run, for a row's log. The runner's time is from the call to the command's
-// start, the kernel's record of its process that the command wrote to mark as its first act
-// (testexec.MarkStart), and from the command's exit, the moment it wrote to exited just before it
-// (testexec.MarkNow), to the reap. Between the two is the command's own run, which a loaded machine
-// slows and which nothing the runner does moves. A command that wrote no exit mark was ended in its
-// own run by its budget's stop, and only the time to its start is the runner's.
-func ownBeforeReap(t *testing.T, calledBoot time.Duration, called, at time.Time, mark, exited string) (own, began time.Duration, ran string) {
-	t.Helper()
-	began = testexec.StartedAfter(t, mark, calledBoot)
-	own, ran = began, "never reached its exit mark: its budget's stop ended it in its own run"
-	if exit, unread := testexec.ReadNowMark(exited); unread == nil {
-		own += calledBoot + at.Sub(called) - exit
-		ran = fmt.Sprintf("took %s from its start to its exit", exit-calledBoot-began)
-	}
-	return own, began, ran
-}
-
-// pidIn is the pid a command's shell wrote to path, once the whole line is there, and 0 before.
-func pidIn(path string) int {
-	raw, err := os.ReadFile(path)
-	if err != nil || !strings.HasSuffix(string(raw), "\n") {
-		return 0
+		return
 	}
 	pid, err := strconv.Atoi(strings.TrimSpace(string(raw)))
-	if err != nil || pid <= 0 {
-		return 0
+	if err != nil {
+		return
 	}
-	return pid
+	_ = syscall.Kill(pid, syscall.SIGKILL)
 }

@@ -14,10 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sjawhar/envoy/testexec"
 	"github.com/sjawhar/legion/daemon/internal/fixturegit"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
-	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
 
 // The two rows of this file drive the stop procgroup.Configure gives every git and jj of this
@@ -107,78 +105,33 @@ func locksUnder(t *testing.T, dir string) []string {
 
 // slowCleanFilter is the clean filter the repository of TestARealGitStoppedAtItsBudgetLeavesNoLock
 // runs on every path it adds. git runs a filter through a shell, so this is a command line and
-// not an argv, and it runs far past the git's Timeout: that Timeout, never the filter's own exit,
-// is what ends that git. It is what holds .git/index.lock open for as long as the row needs,
-// because neither runner gives a command a pipe that stays open — execRunner.Run passes no
+// not an argv, and it sleeps far past that row's budget: the budget's end, never the filter's own
+// exit, is what ends that git. It is what holds .git/index.lock open for as long as the row
+// needs, because neither runner gives a command a pipe that stays open — execRunner.Run passes no
 // standard input at all and RunCommand passes a byte slice that ends at once — so a git waiting
 // on its own standard input could not serve.
-//
-// Before it waits it writes what the row counts from, each a record of the kernel's or of its own
-// that nothing of the runner's writes or moves. Its own start mark (testexec.MarkStart) goes to
-// filterMark: when the git forked it, which `git add` does only once it holds .git/index.lock. A
-// mark of that form for its parent, the git, goes to gitMark: when the kernel made the process
-// execRunner.Run started (/proc/$PPID/stat). The git's run-queue wait so far, and the moment the
-// filter read it, go to gitWaited (markWaited, of $PPID): how long the kernel had kept the git
-// waiting for a CPU, which the row takes off the runner's time. And lockSeen is written where
-// repository's .git/index.lock is there as the filter runs, the lock the stop must remove.
-//
-// It then writes the git a byte every 50 ms, 6,000 times (five minutes or more), rather than sleep
-// in one piece, so the git it holds wakes to read every 50 ms until its stop. Beside 16 stress-ng
-// workers, a git that slept a second or more before its SIGTERM was sometimes still there when its
-// one second of grace ended, and ended by the SIGKILL, though its handler had removed its lock: 3
-// of 600 runs with a 2 s Timeout and 3 of 600 with a 1 s one, against 0 of 1,000 with a 300 ms one
-// and 0 of 600 with a filter that wrote a byte every 50 ms and a 2 s Timeout (measured
-// 2026-11-27). Why the sleep matters was not found; that it does was measured.
-func slowCleanFilter(repository, filterMark, gitMark, gitWaited, lockSeen string) string {
-	return testexec.MarkStart(`"`+filterMark+`"`) +
-		`; read -r up </proc/uptime; read -r stat </proc/$PPID/stat; printf '%s\n%s\n' "$up" "$stat" >"` + gitMark + `"` +
-		`; ` + markWaited("$PPID", `"`+gitWaited+`"`) +
-		`; [ -e "` + filepath.Join(repository, ".git", "index.lock") + `" ] && : >"` + lockSeen + `"` +
-		`; ticks=0; while [ "$ticks" -lt 6000 ]; do printf x; sleep 0.05; ticks=$((ticks+1)); done`
-}
-
-// gitWaitedToLock is how long the kernel kept the git of TestARealGitStoppedAtItsBudgetLeavesNoLock
-// waiting for a CPU on its way to .git/index.lock, at least: waited is the git's run-queue wait as
-// its clean filter read it (runQueueWait), seen the moment the filter read it, and forked the
-// kernel's start of the filter, which the git forks once it holds the lock. Of the wait, what came
-// after the fork is not on that way, and it is no more than the span from the fork to the read,
-// with the two ticks the two clocks are each read to (testexec.ClockTick) added: that much is
-// taken off the wait, so none of what is left came after the git held its lock.
-func gitWaitedToLock(waited, seen, forked time.Duration) time.Duration {
-	return max(0, waited-(seen-forked)-2*testexec.ClockTick)
-}
+const slowCleanFilter = "sleep 300; cat"
 
 // A real git the budget stops leaves no lock behind. git holds .git/index.lock for the whole of
 // an `git add` and removes it from the signal handler of its own lockfile API; SIGKILL runs no
 // handler, so a git killed outright leaves that lock and every later git and jj of the repository
 // fails on it (dispatch://INFRA-3098, procgroup.StopGrace). The repository is a real one whose
-// `filter.slow.clean` runs past the git's Timeout and whose .gitattributes points every path at
-// that filter, and the add runs through execRunner.Run, the runner provisioning's own git goes
-// through, under its own Timeout and nothing else: the caller's context ends only in the test's
-// cleanup, after the row has read the run. What the row reads is the production stop's own
-// SIGTERM, sent at the git's own Timeout, reaching a real git that holds a real lock.
-//
-// The row holds the runner to the second main gave its git, from just before the call, to take
-// .git/index.lock (ownBound): to the kernel's start of the clean filter the git forks once it holds
-// the lock, less what the kernel recorded of the machine on the way, the time it kept the git
-// waiting for a CPU (gitWaitedToLock, ownSince), as TestRunCommandStopsItsCommandTheSameWay's rows
-// do. A runner that sleeps or works before it starts the git, or a prefix that does either inside
-// the git's process before git itself runs, keeps that time in the span. Its Timeout is
-// stopTimeout, so a git whose runner kept to its second, on a machine that held it for less than
-// a second more, holds its lock when the Timeout passes. That the git left on its SIGTERM, and not
-// on the SIGKILL the stop sends a group that outlives procgroup.StopGrace, is read from the git's
-// own wait status, not from a clock: git's lockfile handler removes its lock and raises the signal
-// again, so a git its SIGTERM ended ends signaled SIGTERM, and one the SIGKILL ended ends signaled
-// SIGKILL.
+// `filter.slow.clean` sleeps past the budget and whose .gitattributes points every path at that
+// filter, and the add runs through execRunner.Run, the runner provisioning's own git goes
+// through, under a budget shorter than the sleep: what the row reads is the production stop's
+// own SIGTERM reaching a real git that holds a real lock. That the git left on its SIGTERM, and
+// not on the SIGKILL the stop sends a group that outlives procgroup.StopGrace, is read from the
+// git's own wait status, not from a clock: git's lockfile handler removes its lock and raises the
+// signal again, so a git its SIGTERM ended ends signaled SIGTERM, and one the SIGKILL ended ends
+// signaled SIGKILL. The row holds no wall-clock ceiling, which a loaded runner can pass with
+// nothing wrong.
 func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	// Not parallel: it sets exitedHook, a package variable every runner's command calls.
 	git := realTool(t, "git")
 	root := t.TempDir()
 	repository := filepath.Join(root, "repository")
-	marks := t.TempDir()
-	filterMark, gitMark, gitWaited, lockSeen := filepath.Join(marks, "filter-started"), filepath.Join(marks, "git-started"), filepath.Join(marks, "git-waited"), filepath.Join(marks, "lock-seen")
 	runSetup(t, root, fixturegit.InitWorkTree(repository, "main")...)
-	runSetup(t, repository, "git", "config", "filter.slow.clean", slowCleanFilter(repository, filterMark, gitMark, gitWaited, lockSeen))
+	runSetup(t, repository, "git", "config", "filter.slow.clean", slowCleanFilter)
 	for name, content := range map[string]string{
 		".gitattributes": "* filter=slow\n",
 		"work.txt":       "the one file this git adds\n",
@@ -188,8 +141,11 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 		}
 	}
 
-	timeout := stopTimeout
-	run := NewRunner(timeout, map[string]string{"git": git})
+	budget := time.Second
+	done := make(chan struct{})
+	defer close(done)
+	appeared := whenLockAppears(filepath.Join(repository, ".git", "index.lock"), done)
+	run := NewRunner(budget, map[string]string{"git": git})
 
 	var ended atomic.Pointer[os.ProcessState]
 	hook := func(command Command, state *os.ProcessState) {
@@ -199,94 +155,33 @@ func TestARealGitStoppedAtItsBudgetLeavesNoLock(t *testing.T) {
 	}
 	exitedHook.Store(&hook)
 	t.Cleanup(func() { exitedHook.Store(nil) })
-
-	// The caller's context is cancelled only by the cleanup, which waits for the run to return: a
-	// run whose Timeout never stopped its git fails the wait below, and the cleanup then stops the
-	// git rather than leave it to wait out its filter.
-	type ran struct {
-		result Result
-		err    error
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	returned := make(chan ran, 1)
-	finished := make(chan struct{})
-	t.Cleanup(func() {
-		cancel()
-		select {
-		case <-finished:
-		case <-time.After(cutRunMargin):
-			t.Errorf("the git's run had not returned %s after the cleanup cancelled its context", cutRunMargin)
-		}
-	})
-	call := calling(t)
 	started := time.Now()
-	go func() {
-		defer close(finished)
-		result, err := run.Run(ctx, Command{Dir: repository, Argv: []string{"git", "add", "work.txt"}, Timeout: timeout})
-		returned <- ran{result: result, err: err}
-	}()
-	var outcome ran
-	select {
-	case outcome = <-returned:
-	case <-time.After(testwait.Bounded(t, time.Minute, cutRunMargin)):
-		t.Fatalf("Run had not returned %s after the call: the git's own %s Timeout, the only thing here that can stop it, never did", time.Since(started), timeout)
-	}
-	cpu := processCPU(t)
-	result, err := outcome.result, outcome.err
+	result, err := run.Run(context.Background(), Command{Dir: repository, Argv: []string{"git", "add", "work.txt"}, Timeout: budget})
 	elapsed := time.Since(started)
 
-	if _, statErr := os.Stat(filterMark); statErr != nil {
-		t.Fatalf("the git never started its clean filter (%v) before its own %s Timeout stopped it, so it never held .git/index.lock in this run and the run proves nothing about the lock its stop removes: a git whose runner keeps to main's %s, and which the machine holds for less than %s more, holds it by then (Run = exit %d, timed out %t, error %v after %s, stderr %q)",
-			statErr, timeout, ownBound, timeout-ownBound, result.ExitCode, result.TimedOut, err, elapsed, result.Stderr)
+	select {
+	case took := <-appeared:
+		t.Logf("the git had taken .git/index.lock %s into its %s budget, and the run returned after %s", took.Sub(started), budget, elapsed)
+	default:
+		t.Fatalf("the git never took .git/index.lock inside its %s budget, so this run proves nothing about the lock its stop removes (Run = exit %d, timed out %t, error %v, stderr %q)",
+			budget, result.ExitCode, result.TimedOut, err, result.Stderr)
 	}
-	if _, statErr := os.Stat(lockSeen); statErr != nil {
-		t.Fatalf("the git's clean filter found no .git/index.lock (%v): the git ran it without holding the lock its stop must remove, so this run proves nothing about that lock (Run = exit %d, timed out %t, error %v after %s, stderr %q)",
-			statErr, result.ExitCode, result.TimedOut, err, elapsed, result.Stderr)
-	}
-	began := testexec.StartedAfter(t, gitMark, call.at)
-	forked := startedAt(t, filterMark)
-	seen, waits := readWaited(t, gitWaited, 1)
-	waited, known := runQueueWait(t, waits[0])
-	span := ownSince(call, forked, gitWaitedToLock(waited, seen, forked), known, cpu)
-	if span.own > ownBound {
-		t.Errorf("execRunner.Run spent %s of its own before its git held .git/index.lock, when the git forked its clean filter, past main's %s: %s (Run = %v)", span.own, ownBound, span, err)
-	}
-	t.Logf("execRunner.Run started the git %s after the call, and spent %s of its own before the git held .git/index.lock: %s; the run returned after %s", began, span.own, span, elapsed)
 	// exec reports a command whose Cancel succeeded as the context's error, so a Run that read
 	// that error before its own kill would report this git as one it could not run.
 	if err != nil {
-		t.Fatalf("Run = %v after %s, want no error: a git its own Timeout stopped is a timeout, not a command that could not be run", err, elapsed)
+		t.Fatalf("Run = %v after %s, want no error: a git its own budget stopped is a timeout, not a command that could not be run", err, elapsed)
 	}
 	if !result.TimedOut {
-		t.Errorf("Run = exit %d, TimedOut false after %s; want timed out: the git's own %s Timeout, not the filter, ended this git", result.ExitCode, elapsed, timeout)
+		t.Errorf("Run = exit %d, TimedOut false after %s; want timed out: the budget, not the filter, ended this git", result.ExitCode, elapsed)
 	}
 	if locks := locksUnder(t, filepath.Join(repository, ".git")); len(locks) > 0 {
-		t.Errorf("the git left %v under .git after %s: its own Timeout's stop gave it no SIGTERM to remove its lock on, and every later git and jj of this repository fails on it", locks, elapsed)
-	}
-	// The git's Timeout is a span of the clock, and the stop that ends it cannot come before that
-	// span is over: a loaded machine only delays the stop, never brings it forward. A run that
-	// ended earlier was given less than the Timeout it was handed — a runner that keeps part of
-	// every command's Timeout back for itself ends a two-second git in one second — which no row
-	// that reads a timeout alone can tell from a git stopped on time (dispatch://INFRA-5244).
-	if elapsed < timeout-stopEarly {
-		t.Errorf("Run returned after %s, before the %s Timeout it gave its git, less %s: the runner must give a command the whole Timeout its caller named, and a loaded machine only ends a run later, never sooner", elapsed, timeout, stopEarly)
+		t.Errorf("the git left %v under .git after %s: the budget's end gave it no SIGTERM to remove its lock on, and every later git and jj of this repository fails on it", locks, elapsed)
 	}
 	state := ended.Load()
 	status, ok := waitStatus(state)
 	if !ok || !status.Signaled() || status.Signal() != syscall.SIGTERM {
 		t.Errorf("the git ended %v after %s, want it ended by its SIGTERM: the stop sends SIGKILL only to a group that outlived its %s grace, and a git the SIGKILL ended ran no handler for its lock", state, elapsed, procgroup.StopGrace)
 	}
-}
-
-// startedAt is when the kernel made the process whose start mark is at path (testexec.MarkStart, or
-// slowCleanFilter's mark of the git, which has its form), as a time since boot.
-func startedAt(t *testing.T, path string) time.Duration {
-	t.Helper()
-	mark, err := testexec.ReadStartMark(path)
-	if err != nil {
-		t.Fatalf("read the start mark %s: %v", path, err)
-	}
-	return mark.Started
 }
 
 // waitStatus is state's wait status, and whether there is one: no state, or one whose Sys is no

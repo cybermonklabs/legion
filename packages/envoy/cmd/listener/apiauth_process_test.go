@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"net/http"
@@ -14,49 +13,34 @@ import (
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/oidc/oidctest"
 	"github.com/sjawhar/envoy/internal/testnats"
-	"github.com/sjawhar/envoy/internal/testwait"
-	"github.com/sjawhar/envoy/testexec"
 )
 
 // A listener whose ENVOY_OIDC_ACCOUNTS names no account — a list emptied by mistake — refuses to
 // start, naming the setting, rather than reading it as unset and admitting every pod of the
-// cluster; the same listener with the setting empty starts, as one with it unset does. A refused
-// start ends within refusedStartLimit of when the kernel made its process. The limit counts from
-// that start, not from the call, so a loaded machine that starts the binary late kills no start
-// that would have refused on its own; a start still going with 30 s left of the test binary's
-// deadline is killed too.
+// cluster; the same listener with the setting empty starts, as one with it unset does.
 func TestTheListenerBinaryRefusesAnAccountListThatNamesNoAccount(t *testing.T) {
 	t.Parallel()
 	issuer := oidctest.New(t)
 	binary := cmdtest.Build(t, "envoy-listener")
 	uri := testnats.URL(t)
 	for _, value := range []string{"   ", ", ,"} {
-		ctx, cancel := context.WithTimeout(context.Background(), testwait.Remaining(t, 30*time.Second))
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		cmd := exec.CommandContext(ctx, binary)
 		cmd.Env = []string{
 			"PORT=0", "ENVOY_LISTEN_HOST=127.0.0.1", "ENVOY_MACHINE_ID=oidc-accounts-blank", "NATS_URLS=" + uri,
 			"ENVOY_OIDC_ISSUER=" + issuer.URL(), "ENVOY_OIDC_AUDIENCE=" + listenerTestAudience, "ENVOY_OIDC_ACCOUNTS=" + value,
 		}
-		var output bytes.Buffer
-		cmd.Stdout, cmd.Stderr = &output, &output
-		overran, err := testexec.RunFromStart(t, cmd, refusedStartLimit)
+		output, err := cmd.CombinedOutput()
 		cancel()
-		if overran {
-			t.Fatalf("ENVOY_OIDC_ACCOUNTS=%q: the start did not end within %s of when the kernel made its process and was killed, want exit 1 naming the setting:\n%s", value, refusedStartLimit, output.Bytes())
-		}
 		var exit *exec.ExitError
-		if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(output.String(), "ENVOY_OIDC_ACCOUNTS is set but names no account") {
-			t.Fatalf("ENVOY_OIDC_ACCOUNTS=%q: the start ended with %v, want exit 1 naming the setting:\n%s", value, err, output.Bytes())
+		if !errors.As(err, &exit) || exit.ExitCode() != 1 || !strings.Contains(string(output), "ENVOY_OIDC_ACCOUNTS is set but names no account") {
+			t.Fatalf("ENVOY_OIDC_ACCOUNTS=%q: the start ended with %v, want exit 1 naming the setting:\n%s", value, err, output)
 		}
 	}
 	listener := startListenerProcess(t, binary, uri, "oidc-accounts-empty",
 		"ENVOY_OIDC_ISSUER="+issuer.URL(), "ENVOY_OIDC_AUDIENCE="+listenerTestAudience, "ENVOY_OIDC_ACCOUNTS=")
 	listener.waitHealthy(t)
 }
-
-// refusedStartLimit bounds a start that refuses its settings, from when the kernel made the
-// listener's process to its exit: the listener reads its settings before it serves anything.
-const refusedStartLimit = 30 * time.Second
 
 // The settings reach the handler the listener binary serves, which the handler's own tests, each
 // building its configuration by hand, cannot show: started with ENVOY_OIDC_ACCOUNTS beside a

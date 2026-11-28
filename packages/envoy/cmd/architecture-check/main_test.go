@@ -22,8 +22,6 @@ import (
 
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/dispatch/architecture/notes"
-	"github.com/sjawhar/envoy/internal/testwait"
-	"github.com/sjawhar/envoy/testexec"
 )
 
 func TestMain(m *testing.M) { os.Exit(cmdtest.Main(m)) }
@@ -242,39 +240,28 @@ type result struct {
 	stderr string
 }
 
-// binaryLimit bounds one run of the built binary, which answers in milliseconds: from when the
-// kernel made its process (testexec.ProcStart) to its exit, not from the call, so a loaded machine
-// that holds the start itself, before the kernel makes the process, kills no run. A run that
-// blocks, as one that opens a named pipe nothing writes to does, or that takes that long of its
-// own anywhere else, is killed at the limit and fails its test then.
+// binaryLimit bounds one run of the built binary, which answers in milliseconds. A run that blocks,
+// as one that opens a named pipe nothing writes to does, is killed at the limit and fails its test
+// then, rather than holding it until go test's own deadline and outliving it.
 const binaryLimit = 20 * time.Second
 
-// binarySpare is what a run of the built binary leaves of the test binary's deadline (go test's
-// -timeout): a run still going then is killed and fails its test, rather than holding it until go
-// test's own deadline and outliving it.
-const binarySpare = 30 * time.Second
-
 // runBinary runs the built binary with args in the working directory dir, the test's own when
-// empty, and answers its exit status and output. A run still going binaryLimit after the kernel
-// made its process, or with binarySpare left of the test binary's deadline, is killed and fails
-// the test. The binary runs on one P (GOMAXPROCS=1): the parallel rows keep every run alive at
-// once, and a run left to size GOMAXPROCS to the host starts a thread for each P its collector's
-// idle mark workers take, about 80 on a 288-CPU host.
+// empty, and answers its exit status and output. A run past binaryLimit is killed and fails the
+// test. The binary runs on one P (GOMAXPROCS=1): the parallel rows keep every run alive at once,
+// and a run left to size GOMAXPROCS to the host starts a thread for each P its collector's idle
+// mark workers take, about 80 on a 288-CPU host.
 func runBinary(t *testing.T, binary, dir string, args ...string) result {
 	t.Helper()
-	ctx, cancel := context.WithTimeout(t.Context(), testwait.Remaining(t, binarySpare))
+	ctx, cancel := context.WithTimeout(t.Context(), binaryLimit)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, binary, args...)
 	cmd.Dir = dir
 	cmd.Env = append(os.Environ(), "GOMAXPROCS=1")
 	var stdout, stderr strings.Builder
 	cmd.Stdout, cmd.Stderr = &stdout, &stderr
-	overran, err := testexec.RunFromStart(t, cmd, binaryLimit)
-	if overran {
-		t.Fatalf("architecture-check %q did not exit within %s of when the kernel made its process and was killed: stdout %q, stderr %q", args, binaryLimit, stdout.String(), stderr.String())
-	}
+	err := cmd.Run()
 	if ctx.Err() != nil {
-		t.Fatalf("architecture-check %q did not finish with %s left of the test binary's deadline and was killed: stdout %q, stderr %q", args, binarySpare, stdout.String(), stderr.String())
+		t.Fatalf("architecture-check %q did not finish within %s and was killed: stdout %q, stderr %q", args, binaryLimit, stdout.String(), stderr.String())
 	}
 	var exitErr *exec.ExitError
 	if err != nil && !errors.As(err, &exitErr) {
