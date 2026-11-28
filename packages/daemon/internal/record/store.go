@@ -890,12 +890,14 @@ func utcOrNil(at *time.Time) *time.Time {
 // the issue's row in state merged replaces a snapshot of another pull request whatever its time:
 // every clear deletes the rows of the generation it leaves (clearPullRequests), so only the
 // current generation's pull request has such a row, and its merge is the issue's newest, though
-// the report of it may name no merged_at. A snapshot of that same pull request is kept, so a
-// clear's save of its merged row, which holds no merged_at, never erases the time the merge's own
-// report gave. It answers whether it wrote the snapshot, and refuses an issue with no record. Only
-// a written snapshot keeps the issue among those the transaction wrote (noteIssueWrite), and with
-// it the mark that runs the admission pass (RecordsWritten): a snapshot the stored one refuses
-// writes nothing.
+// the report of it may name no merged_at. The row is matched by the issue and the number alone:
+// pull_requests has one row per issue, and under a configured rename the merge names the
+// repository's new spelling while the row holds the old one. A snapshot of that same pull request
+// is kept, so a clear's save of its merged row, which holds no merged_at, never erases the time the
+// merge's own report gave. It answers whether it wrote the snapshot, and refuses an issue with no
+// record. Only a written snapshot keeps the issue among those the transaction wrote
+// (noteIssueWrite), and with it the mark that runs the admission pass (RecordsWritten): a snapshot
+// the stored one refuses writes nothing.
 func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string, merge Merge) (bool, error) {
 	if !merge.Merged() {
 		return false, fmt.Errorf("record the merge of %s: a merge names the pull request that merged", issue)
@@ -916,7 +918,7 @@ func (s *Postgres) PutMergeSnapshot(ctx context.Context, tx pgx.Tx, issue string
 		merge_base = nullif($5::text, ''), merge_repo = nullif($6::text, ''), merged_at = $7::timestamptz
 		where key = $1 and (merge_number is null or ($7::timestamptz is not null and (merged_at is null or merged_at < $7::timestamptz))
 			or (merge_number is distinct from $2 and exists (select 1 from pull_requests p
-				where p.issue = $1 and p.number = $2 and lower(p.repo) = lower($6) and p.state = 'merged')))`,
+				where p.issue = $1 and p.number = $2 and p.state = 'merged')))`,
 		issue, merge.Number, merge.Head, merge.SHA, merge.Base, merge.Repo, mergedAt)
 	if err != nil {
 		return false, fmt.Errorf("record the merge of %s: %w", issue, err)
