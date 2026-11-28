@@ -112,11 +112,11 @@ func TestTheApprovedSpecKeepsEachVersionOfANode(t *testing.T) {
 		t.Fatalf("build the approved spec: %v", err)
 	}
 	kept := approved.Nodes["a-bill-is-kept"]
-	if kept.Removed == nil || !*kept.Removed || len(kept.Versions) != 1 {
+	if !kept.Removed || len(kept.Versions) != 1 {
 		t.Errorf("a-bill-is-kept reads %+v, want removed with its one version", kept)
 	}
 	sent := approved.Nodes["a-bill-is-sent"]
-	if sent.Removed == nil || *sent.Removed || !strings.Contains(sent.Versions[1].Block, "A bill is sent once.") {
+	if sent.Removed || !strings.Contains(sent.Versions[1].Block, "A bill is sent once.") {
 		t.Errorf("a-bill-is-sent reads %+v, want version 2 current", sent)
 	}
 	if _, err := apply(database, issue(4), statement("a-bill-is-kept", "A bill is kept again.", "")); !refusedAsRetired(err) {

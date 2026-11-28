@@ -520,9 +520,10 @@ func TestImportLevelRepairChildListsTheHoldsOpenWhenItIsCreated(t *testing.T) {
 		t.Fatalf("begin the transaction that holds the clear of a hold: %v", err)
 	}
 	t.Cleanup(func() { _ = clearing.Rollback(context.Background()) })
-	// The backends waiting behind each transaction, directly or behind an earlier waiter.
-	behindOwner := func() int { return storetest.WaitForLockWaiters(t, owner, 0, 0) }
-	behindClearing := func() int { return storetest.WaitForLockWaiters(t, clearing, 0, 0) }
+	// The backends waiting behind each transaction, directly or behind an earlier waiter, as they
+	// stand now: a wait for zero of them answers the count at once.
+	behindOwner := func() int { return storetest.WaitForLockWaiters(t, owner, 0) }
+	behindClearing := func() int { return storetest.WaitForLockWaiters(t, clearing, 0) }
 	poll := func(what string, until func() bool) {
 		t.Helper()
 		deadline := time.Now().Add(30 * time.Second)

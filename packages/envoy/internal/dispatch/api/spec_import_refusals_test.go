@@ -194,7 +194,7 @@ func raceEachOpenOfTheRepairIssue(t *testing.T) *httptest.ResponseRecorder {
 	queued := func(what string, holder pgx.Tx, want int) {
 		t.Helper()
 		deadline := time.Now().Add(30 * time.Second)
-		for storetest.WaitForLockWaiters(t, holder, 0, 0) < want {
+		for storetest.WaitForLockWaiters(t, holder, 0) < want {
 			select {
 			case response := <-answered:
 				t.Fatalf("the import answered %d %.600s before %s", response.Code, response.Body.String(), what)

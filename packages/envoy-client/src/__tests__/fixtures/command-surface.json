@@ -1,5 +1,5 @@
 {
-  "commands": 56,
+  "commands": 58,
   "refusals": 31,
   "runs": [
     {
@@ -2479,6 +2479,83 @@
       "outcome": "result",
       "text": [
         "Settled block dispatch://DSP-1/spec#b-r-cache: proposed -> settled"
+      ]
+    },
+    {
+      "tool": "dispatch_spec_import_level",
+      "call": "valid",
+      "args": {
+        "issue": "<KEY>",
+        "notes": "notes.md"
+      },
+      "requests": [
+        {
+          "method": "POST",
+          "path": "/api/v1/issues/%3CKEY%3E/spec-import-level",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "notes": "notes.md"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "The import of <KEY> wrote 1 node into the approved spec of acme/app: billing.",
+        "It holds 1 statement until a change request supplies what each lacks:",
+        "- a-bill-has-no-owner lacks kind",
+        "Their repair issue is <CHILD>."
+      ]
+    },
+    {
+      "tool": "dispatch_spec_source",
+      "call": "valid",
+      "args": {
+        "action": "add",
+        "branch": "main",
+        "project": "CORE",
+        "repo": "acme/app"
+      },
+      "requests": [
+        {
+          "method": "PUT",
+          "path": "/api/v1/projects/CORE/spec-sources/acme/app",
+          "headers": {
+            "Accept": "application/json",
+            "Authorization": "Bearer secret",
+            "Content-Type": "application/json"
+          },
+          "body": {
+            "actor": {
+              "id": "session-1",
+              "kind": "session",
+              "origin": {
+                "cwd": "/workspace",
+                "host": "omp",
+                "machine": "test-machine",
+                "session_title": "Record the command surface"
+              }
+            },
+            "branch": "main"
+          }
+        }
+      ],
+      "outcome": "result",
+      "text": [
+        "CORE reads The Spec of acme/app@main: an approval of the spec of an issue of acme/app writes its change request into that repository's approved spec."
       ]
     },
     {

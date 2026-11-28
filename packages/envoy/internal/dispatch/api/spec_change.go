@@ -91,8 +91,9 @@ func issueSpecSource(ctx context.Context, q queryer, issue model.Issue) (string,
 	return repo, held, nil
 }
 
-// versionDigest is the digest a person's approval of version of the document artifactID covers.
-func versionDigest(ctx context.Context, q queryer, artifactID string, version int) (string, error) {
+// storedVersionDigest is the digest a person's approval of version of the document artifactID
+// covers (versionDigest, read for one version).
+func storedVersionDigest(ctx context.Context, q queryer, artifactID string, version int) (string, error) {
 	var digest *string
 	if err := q.QueryRow(ctx, `select artifact_version_text_sha256($1::uuid, $2)`, artifactID, version).Scan(&digest); err != nil {
 		return "", fmt.Errorf("read the digest of version %d of %s: %w", version, artifactID, err)
@@ -218,7 +219,7 @@ func specVersionText(ctx context.Context, q queryer, artifact model.Artifact, ve
 
 // specDocumentOf is version of artifact as an act of the approved spec names it, with its digest.
 func specDocumentOf(ctx context.Context, q queryer, artifact model.Artifact, version int) (*specstore.Document, error) {
-	digest, err := versionDigest(ctx, q, artifact.ID, version)
+	digest, err := storedVersionDigest(ctx, q, artifact.ID, version)
 	if err != nil {
 		return nil, err
 	}
@@ -297,7 +298,7 @@ func (s *server) specProvenanceRead(ctx context.Context, q queryer, provenance s
 		err := q.QueryRow(ctx, `
 			select id::text from artifact_reviews
 			where ask_id = $1::uuid and artifact_id = $2::uuid and version = $3 and state = 'approved'
-			order by `+docs.ReviewOrder+` limit 1
+			order by `+model.ReviewOrder+` limit 1
 		`, *provenance.Ask, provenance.Spec.ArtifactID, provenance.Spec.Version).Scan(&review)
 		switch {
 		case errors.Is(err, pgx.ErrNoRows):

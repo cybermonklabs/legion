@@ -231,8 +231,7 @@ func Approved(ctx context.Context, q graphstore.Queryer, project, repo string) (
 func (s State) Approved() (specgraph.Approved, error) {
 	approved := specgraph.Approved{Nodes: make(map[string]specgraph.ApprovedNode, len(s.Nodes))}
 	for id, history := range s.Nodes {
-		removed, partly := history.Removed(), false
-		node := specgraph.ApprovedNode{ID: id, Removed: &removed, PartlyChecked: &partly}
+		node := specgraph.ApprovedNode{ID: id, Removed: history.Removed()}
 		for _, version := range history.Versions {
 			block, err := version.Block()
 			if err != nil {

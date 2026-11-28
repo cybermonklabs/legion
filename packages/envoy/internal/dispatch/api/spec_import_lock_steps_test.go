@@ -65,7 +65,7 @@ func TestTheRepairIssueTakesTheStoreLockOrder(t *testing.T) {
 	}()
 	// The import's own transaction took the lock of the approved spec and committed: the create
 	// that opens the child now waits at its project's owner lock, and the spec's lock is free.
-	if answered, early := storetest.WaitForQueuedBehind(t, owner.Tx, pid, done, lockstep.Wait); early {
+	if answered, early := storetest.WaitForQueuedBehind(t, owner.Tx, pid, done); early {
 		t.Fatalf("the import answered before its create queued behind %s: %v", owner.Name, answered)
 	}
 	spec := &lockstep.Hold{

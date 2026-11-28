@@ -227,7 +227,7 @@ type Stale struct {
 func Classify(request Request, approved specgraph.Approved) (changes []Change, stale []Stale, problems []specgraph.Problem, err error) {
 	for _, proposal := range request.Proposals {
 		node, held := approved.Nodes[proposal.ID]
-		removed := held && node.Removed != nil && *node.Removed
+		removed := held && node.Removed
 		current := 0
 		if held && !removed {
 			current = node.Versions[len(node.Versions)-1].Version

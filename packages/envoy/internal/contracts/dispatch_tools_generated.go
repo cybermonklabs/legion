@@ -528,6 +528,26 @@ var DispatchTools = []DispatchTool{
 		Example: json.RawMessage("{\"project\":\"CORE\",\"repo\":\"acme/infra\"}"),
 	},
 	{
+		Name:        "dispatch_spec_source",
+		Description: "Name, list or remove the spec sources of a project: the repositories whose approved spec it holds. An issue of a spec source holds a change request, and a person's approval of its spec writes the statements, checks, components and interfaces it adds, changes or removes into that repository's approved spec, or is refused. action add names repo a spec source read from branch, or moves it to that branch; list prints each source; remove takes repo off the list, and its approved spec stays. 404 SOURCE_NOT_FOUND when remove names no source of the project.",
+		Arguments: []ToolField{
+			{Name: "action", Kind: ToolFieldEnum, Required: true, Description: "add, list or remove.", Values: []string{"add", "list", "remove"}},
+			{Name: "project", Kind: ToolFieldString, Required: true, Description: "Project key whose spec sources to change or list, such as CORE."},
+			{Name: "repo", Kind: ToolFieldString, Description: "The repository, owner/name, that add names or remove takes off; list takes none."},
+			{Name: "branch", Kind: ToolFieldString, Description: "The branch whose files The Spec of the repository is read from; add needs it."},
+		},
+		Example: json.RawMessage("{\"action\":\"add\",\"project\":\"CORE\",\"repo\":\"acme/app\",\"branch\":\"main\"}"),
+	},
+	{
+		Name:        "dispatch_spec_import_level",
+		Description: "Import the approved level of The Spec that an issue holds into the approved spec of the issue's repository, which must be a spec source of its project (409 SPEC_SOURCE_REQUIRED). The level is the issue's spec at the version of the person's newest approval of it (409 LEVEL_NOT_APPROVED where none); notes names its notes document, whose kinds, abouts and supports count only at a version a person's approval names: the version the level's approval request names, else the version of the person's newest approval of the notes document. With no such approval no statement takes a field from the notes. A field that a statement's note does not write is a field that the statement lacks. The import reads a field only from the first paragraph of a list item. That list must stand at the top of the note, or in an item of another such list. A field that the note writes twice, or writes in any other paragraph, is also a field that the statement lacks. The import reads no field from a code block or a heading. A Kind with no value is also a field that the statement lacks. An About or a Supports that names no id and is not none is also a field that the statement lacks. A value of commas, dots or backticks alone names no id. An About or a Supports of none is a relation to nothing. Each component and interface, and each statement whose kind, about, supports and parent resolve, is written with that approval as its provenance; each other statement is held with the fields it lacks, and the holds no repair issue names get one child issue of the level, assigned to its assignee, whose spec lists them, opened and named on them in one act. It answers 409 REPAIR_ISSUE_RACED when another writer names a repair issue on one of the holds, or clears a hold, during each of three opens of the child. Then run it again. A node already approved is left as it stands, so a second run writes only what the first could not. It refuses a level that the approved spec cannot hold, and writes nothing. It answers 409 SPEC_NODE_INVALID when the approved spec cannot hold a node of the level. The causes are a row of the Components table that is no component, one id on two nodes of the level, an id that is no id, an id longer than an address of the store, and a node that breaks a rule of its kind. A row is no component when it does not hold five cells or its first cell is empty. It is also no component when its second cell is not component or interface, or its last cell names no id and is not none. It answers 409 SPEC_PARENT_MISSING when a statement is under a statement of the level that the approved spec removed or holds as another kind of node. It answers 409 SPEC_LOOP when the parent and supports relations make a loop. It prints what it wrote, each hold, and the repair issue.",
+		Arguments: []ToolField{
+			{Name: "issue", Kind: ToolFieldString, Required: true, Description: "An issue is a native KEY or external owner/repo#n reference. An external reference addresses an existing Dispatch issue, including one linked to that GitHub pull request; only dispatch issue with --external creates a native issue."},
+			{Name: "notes", Kind: ToolFieldString, Required: true, Description: "The level's notes document, by its name or slug, such as notes.md."},
+		},
+		Example: json.RawMessage("{\"issue\":\"<KEY>\",\"notes\":\"notes.md\"}"),
+	},
+	{
 		Name:        "dispatch_open_asks",
 		Description: "List active unanswered asks, oldest first, with age and whose reply is needed. Omit project to see only this session's own authored asks (call before saying you are waiting for human input); supply project to see every open ask across that project's issues and documents, whoever authored them.",
 		Arguments: []ToolField{

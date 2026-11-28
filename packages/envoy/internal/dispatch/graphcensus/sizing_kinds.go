@@ -870,7 +870,7 @@ func reachesANode(topic string) string {
 // with whether the latest version up to that earlier one held it (null where none held the block),
 // whether the approved version holds it, and whether the two hold it with other texts. The
 // approval before it is the person's approval of the same document, of whatever version, that
-// committed last before it, in the order docs.ReviewOrder reads a document's reviews (the order
+// committed last before it, in the order model.ReviewOrder reads a document's reviews (the order
 // their events committed, since created_at is a transaction's start and id is random), and version
 // 0 where there is none; the order is spelled out with its table named
 // because docs' own tests import this package. An approval is a review a
