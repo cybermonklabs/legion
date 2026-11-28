@@ -22,10 +22,7 @@ const ownerFallback = "operator@example.com"
 func TestEveryProjectHasAnOwner(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	if err := store.migrate(ctx, migrationsThrough(t, projectAccessVersion-1)); err != nil {
-		t.Fatalf("migrate through %d: %v", projectAccessVersion-1, err)
-	}
+	store := openMigratedTestStore(t, projectAccessVersion-1)
 	if _, err := store.Pool.Exec(ctx, `insert into people (email) values ('carol@example.com'), ($1)`, ownerFallback); err != nil {
 		t.Fatalf("seed people before %d: %v", projectAccessVersion, err)
 	}
@@ -76,10 +73,7 @@ func TestTheBootNamesEveryProjectItCannotGiveAnOwner(t *testing.T) {
 		{"a setting that names a restricted member", "outsider@other.example"},
 	} {
 		t.Run(setting.name, func(t *testing.T) {
-			store := openEmptyTestStore(t)
-			if err := store.migrate(ctx, migrationsThrough(t, projectAccessVersion-1)); err != nil {
-				t.Fatalf("migrate through %d: %v", projectAccessVersion-1, err)
-			}
+			store := openMigratedTestStore(t, projectAccessVersion-1)
 			if _, err := store.Pool.Exec(ctx, `
 				insert into projects (key, name, default_assignee) values
 					('STRAY', 'Stray', 'gone@example.com'),

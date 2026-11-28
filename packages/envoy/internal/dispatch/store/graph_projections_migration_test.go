@@ -21,8 +21,7 @@ const graphProjectionsVersion = 20261109022248
 func TestMigrateGraphProjectionsGivesUpBeforeACommentWriteThatWritesBlocksDeadlocks(t *testing.T) {
 	// Not parallel: it swaps the default logger (captureLogs, logtest.SetDefault) to read the line pgmigrate logs when 20261109022248 gives up its first attempt.
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, graphStoreVersion)
+	store := openMigratedTestStore(t, graphStoreVersion)
 	logs := captureLogs(t)
 	var comment, artifact string
 	if _, err := store.Pool.Exec(ctx, `

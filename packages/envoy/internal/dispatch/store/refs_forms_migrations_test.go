@@ -68,8 +68,7 @@ func assertOwedForms(t *testing.T, store *Store, want ...owedSource) map[owedSou
 func TestTheRefsFormsSeedOwesTextStoredBeforeIt(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, beforeRefsForms)
+	store := openMigratedTestStore(t, beforeRefsForms)
 	seedCoreWithADefaultAssignee(t, store)
 	fixture := writeRefsGrammarFixture(t, store)
 
@@ -90,8 +89,7 @@ func TestTheRefsFormsSeedOwesTextStoredBeforeIt(t *testing.T) {
 func TestTheRefsFormsSeedKeepsWhatATriggerAlreadyOwed(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, lastRefsFormsTrigger)
+	store := openMigratedTestStore(t, lastRefsFormsTrigger)
 	seedCoreWithADefaultAssignee(t, store)
 	fixture := writeRefsGrammarFixture(t, store)
 	enqueued, ok := readOwedForms(t, store)[owedSource{"comment", fixture.comment}]

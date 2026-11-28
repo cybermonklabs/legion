@@ -339,14 +339,11 @@ func TestRetirePlainRefreshTokensLeavesATokenThePoolDidNotRevoke(t *testing.T) {
 func TestRetirePlainRefreshTokensRetiresATokenStoredAfterTheLastBoot(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	database := openEmptyTestStore(t)
+	database := openMigratedTestStore(t, latestVersion)
 	pool, flow := revokingPool(t)
 	people := NewPgPeopleStore(database.Pool, testSigningKey, flow)
 	boot := func() (retired, failed int) {
 		t.Helper()
-		if err := database.Migrate(ctx); err != nil {
-			t.Fatalf("migrate: %v", err)
-		}
 		retired, failed, err := people.RetirePlainRefreshTokens(ctx)
 		if err != nil {
 			t.Fatalf("RetirePlainRefreshTokens: %v", err)

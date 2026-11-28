@@ -203,8 +203,7 @@ func graphTuplesIndexState(t *testing.T, store *Store) (oid uint32, valid bool) 
 func TestAnIndexIsStillPossibleOnceTheLogPassesTheCensusLimit(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	store := openEmptyTestStore(t)
-	migrateThrough(t, store, graphStoreVersion)
+	store := openMigratedTestStore(t, graphStoreVersion)
 	if got := schemaVersion(t, store); got != graphStoreVersion {
 		t.Fatalf("schema version is %d, want the graph store's own %d", got, graphStoreVersion)
 	}
