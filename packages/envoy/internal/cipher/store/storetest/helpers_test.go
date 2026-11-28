@@ -69,7 +69,7 @@ func newLogin(t *testing.T, server url.URL, prefix string) url.URL {
 	}
 	admin, err := pgx.Connect(ctx, adminURL)
 	if err != nil {
-		t.Fatalf("connect to the test's own database on the %s server: %v", DatabaseURLEnv, err)
+		t.Fatalf("connect to the test's own database on the server: %v", err)
 	}
 	defer admin.Close(ctx)
 	if _, err := admin.Exec(ctx, "create role "+role+" login createdb password '"+password+"'"); err != nil {

@@ -156,13 +156,13 @@ func makeTemplate(raw string) (string, error) {
 	ctx := context.Background()
 	conn, err := pgx.Connect(ctx, testdb.DatabaseURL(*server, lockDatabase))
 	if err != nil {
-		return "", fmt.Errorf("connect to the %s database of %s: %w", lockDatabase, DatabaseURLEnv, err)
+		return "", fmt.Errorf("connect to the %s database of the template's server: %w", lockDatabase, err)
 	}
 	defer conn.Close(ctx)
 	// The login is the one every database made below is owned by, and every copy is made as.
 	var login string
 	if err := conn.QueryRow(ctx, "select current_user").Scan(&login); err != nil {
-		return "", fmt.Errorf("read the login of %s: %w", DatabaseURLEnv, err)
+		return "", fmt.Errorf("read the login of the template's server: %w", err)
 	}
 	key := loginKey(login)
 	name := "broker_template_" + digest[:16] + "_" + key

@@ -41,25 +41,26 @@ func TestATemplateServerURLThatDoesNotParseIsNeverPrinted(t *testing.T) {
 // advisory lock per database, so a lock taken in the database the URL names let two builders
 // naming different databases hold two locks, and either one's sweep of unfinished builds could drop
 // the other's build while it migrated. A lock taken where the URL points fails both rows: the first
-// sees the builder return while the holder holds, the second sees it wait. Each builder connects as
-// a login of its own (newLogin), whose template is not on the server, so it reaches the lock: a
-// builder finding its template there would return before it took the lock (template), and the
-// server URL's login's template is there once any test has asked for it.
+// sees the builder return while the holder holds, the second sees it wait.
+//
+// The test runs on a Postgres server of its own (ownServer) and reads neither serverURL nor
+// DatabaseURLEnv. The lock its first row holds is the one every broker test binary on a shared
+// server takes to build its template, so on the DatabaseURLEnv server that row would hold up every
+// other binary's build while it held the lock, and another binary's build would hold up this
+// test's builders. Each builder connects as a login of its own (newLogin), whose template is not on
+// the server, so it reaches the lock: a builder finding its template there would return before it
+// took the lock (template), and a login's template is there once a builder of that login has run,
+// so the second of two rows that shared a login would find it.
 func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
-	raw := serverURL(t)
-	server, err := url.Parse(raw)
-	if err != nil {
-		// url.Parse's error, and the error it wraps, can quote the URL's password, so none of it is printed.
-		t.Fatalf("%s does not parse", DatabaseURLEnv)
-	}
+	server := ownServer(t)
 	// builder is a URL naming a database of the test's own on the server, as a login of the
 	// test's own that has no template yet, whose connections carry an application_name of their
-	// own, so the waiters read are this builder's and no other binary's.
+	// own, so the waiters read are this builder's.
 	builder := func(t *testing.T) (string, string) {
 		t.Helper()
-		login := newLogin(t, *server, "broker_lock_test")
+		login := newLogin(t, server, "broker_lock_test")
 		app, err := testdb.NewDatabaseName("broker_lock_test")
 		if err != nil {
 			t.Fatal(err)
@@ -100,7 +101,7 @@ func TestTheTemplateLockIsTheServersWhateverDatabaseTheURLNames(t *testing.T) {
 
 	t.Run("a holder on the server's postgres database holds up a builder that names another", func(t *testing.T) {
 		databaseURL, app := builder(t)
-		holder := hold(t, testdb.DatabaseURL(*server, lockDatabase))
+		holder := hold(t, testdb.DatabaseURL(server, lockDatabase))
 		done := build(databaseURL)
 		testwait.Until(t, "the builder to wait behind the holder of the template lock, or to return", func() (bool, bool) {
 			select {
