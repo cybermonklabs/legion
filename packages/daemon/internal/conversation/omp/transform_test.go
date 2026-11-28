@@ -134,9 +134,11 @@ func TestTransformToolResultRules(t *testing.T) {
 	t.Run("parallel results and duplicate calls", func(t *testing.T) {
 		long := strings.Repeat("a", 64)
 		dup := long[:59] + "_dup1"
+		first, second := call(long, "read", `{}`), call(dup, "read", `{}`)
+		first.ItemID, second.ItemID = "fc_first", "fc_second"
 		run(t, []llmMessage{turn("toolUse", callBlock(long+"|fc_first"), callBlock(long+"|fc_second"), callBlock("peer")),
 			out("peer", "peer first"), out(long+"|fc_result", "first"), out(long, "second"), out(long, "duplicate output")},
-			assistant(call(long, "read", `{}`), call(dup, "read", `{}`), call("peer", "read", `{}`)),
+			assistant(first, second, call("peer", "read", `{}`)),
 			result("peer", "read", "peer first", false), result(long, "read", "first", false), result(dup, "read", "second", false))
 	})
 	t.Run("flush duplicate at end", func(t *testing.T) {

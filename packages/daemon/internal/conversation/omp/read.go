@@ -92,17 +92,18 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // request's effective thinking mode.
 //
 // Read returns the saved history before the caller's prompt. The sender validates attachments
-// in that prompt. If it sends a request with no new prompt and the history ends in an assistant
-// turn, it adds Continue. except for on-demand compaction.
+// in that prompt. For Anthropic Messages, the sender adds Continue. when it sends no new
+// prompt and history ends in an assistant turn, except for on-demand compaction.
 //
 // The sender groups adjacent Tool messages as one Anthropic user turn and puts any following
 // error-result attachment note and images at its end. It encodes empty successful tool output
 // as an empty string. It needs the endpoint and authentication policy to encode tool names
 // and to add the tool-result id alias where required. When an image is kept, Read refuses
 // blob-store, URL, and provider file references. The neutral model carries inline data only.
-// The sender needs the bytes, a file ID, or a URL for those images. It also needs the recorded
-// image detail and the target's detail support. The session does not record images.blockImages
-// or whether a route strips images while its model still advertises image input.
+// The sender needs the bytes, a file ID, or a URL for those images. For Responses, Read carries
+// the recorded detail. The sender defaults unrecorded detail to auto and clamps original to
+// auto if the resolved endpoint does not support original. The session does not record
+// images.blockImages or whether a route strips images while its model still advertises image input.
 //
 // On Responses the sender supplies system prompts and the endpoint policy for placing them
 // in input or in instructions. The reader represents saved developer content as user blocks.
@@ -113,6 +114,10 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 // choose between native items and blocks. An incremental assistant payload adds its items.
 // A snapshot replaces the earlier wire input. A user compaction payload uses its items in
 // place of the summary. Preserve the earlier blocks until the sender chooses the replay path.
+// Read carries the same-model Responses text phase and the saved message and tool item IDs
+// on blocks. The sender decides which IDs to keep, omit, or invent and hashes IDs over 64
+// characters. It needs the message-ID preservation option, the presence of replayable
+// reasoning after filtering, the message index, and the resolved tool item kind.
 //
 // The sender needs the resolved target identity and compatibility policy: image and computer
 // support, custom tool format, current tool declarations and wire names, and thinking mode.
@@ -140,10 +145,8 @@ func (s *Session) Answered(questionID string) bool { return s.answered[questionI
 //     history filter, which Read does not receive. The text fallback is the same when the
 //     target has no compatible reasoning slot, the lineage is not portable, the source ended
 //     in error, or the block is not explicitly a full trace (summary: false).
-//   - The neutral conversation stores an OpenAI tool's call_id, not its item ID. It preserves
-//     eligible native items and assistant text phases from same-model text signatures. The
-//     sender needs the phase for a Responses message. Block-only replay does not carry the
-//     original text item ID or a tool thought signature. Anthropic encodes neither field.
+//   - Block replay does not carry a tool thought signature. Neither supported encoder
+//     sends it.
 //   - The Anthropic encoder's default ID normalizer always returns a valid ID for a nonblank
 //     call. The fallback for a caller-supplied normalizer that returns an invalid ID is unused.
 //   - Read refuses a server tool on its original Anthropic Messages provider. It also refuses a

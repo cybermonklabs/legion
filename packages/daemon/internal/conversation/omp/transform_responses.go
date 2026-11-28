@@ -8,22 +8,23 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/conversation"
 )
 
-func responsesTextPhase(signature string) string {
+func responsesTextSignature(signature string) (id, phase string) {
 	if !strings.HasPrefix(signature, "{") {
-		return ""
+		return signature, ""
 	}
 	var parsed map[string]json.RawMessage
 	var version float64
-	var id *string
-	var phase string
-	if json.Unmarshal([]byte(signature), &parsed) == nil &&
-		json.Unmarshal(parsed["v"], &version) == nil && version == 1 &&
-		json.Unmarshal(parsed["id"], &id) == nil && id != nil &&
-		json.Unmarshal(parsed["phase"], &phase) == nil &&
-		(phase == "commentary" || phase == "final_answer") {
-		return phase
+	var savedID *string
+	if json.Unmarshal([]byte(signature), &parsed) != nil ||
+		json.Unmarshal(parsed["v"], &version) != nil || version != 1 ||
+		json.Unmarshal(parsed["id"], &savedID) != nil || savedID == nil {
+		return signature, ""
 	}
-	return ""
+	_ = json.Unmarshal(parsed["phase"], &phase)
+	if phase != "commentary" && phase != "final_answer" {
+		phase = ""
+	}
+	return *savedID, phase
 }
 
 func responsesReasoningSignature(signature string) bool {

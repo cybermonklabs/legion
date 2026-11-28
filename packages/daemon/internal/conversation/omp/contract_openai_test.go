@@ -451,9 +451,9 @@ func TestThePinnedOhMyPiShapesHandWrittenResponsesHistory(t *testing.T) {
 		}
 		found = true
 		want := []conversation.Block{
-			{Type: conversation.Text, Text: "Before the call.", Phase: "commentary"},
+			{Type: conversation.Text, Text: "Before the call.", Phase: "commentary", ItemID: "msg_before"},
 			text(" "), text("After the call."),
-			{Type: conversation.ToolCall, ToolCallID: "call_fixture", ToolName: "read", Arguments: json.RawMessage("null")},
+			{Type: conversation.ToolCall, ToolCallID: "call_fixture", ToolName: "read", ItemID: "fc_fixture", Arguments: json.RawMessage("null")},
 		}
 		if !reflect.DeepEqual(msg.Content, want) {
 			t.Errorf("reader blocks = %+v, want %+v", msg.Content, want)
@@ -487,6 +487,57 @@ func TestThePinnedOhMyPiShapesHandWrittenResponsesHistory(t *testing.T) {
 			t.Errorf("the pin replayed an item that should drop: %v", item)
 		}
 	}
+}
+
+const openAIStandInModel = "gpt-6.2-sol"
+
+func TestThePinnedOhMyPiReplaysSavedResponsesBlockItemIDs(t *testing.T) {
+	model := newOpenAIStandIn(t)
+	rig := newOMPRigForProviderModel(t, conversation.OpenAIResponses, "openai", openAIStandInModel, model)
+	rig.run(t, "", "Initial request.")
+	file := rig.sessionFile(t)
+	before, err := ReadFile(file, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	stamp := conversation.ISOTime(now)
+	const signature = `{"type":"reasoning","id":"rs_keep","summary":[],"encrypted_content":"opaque"}`
+	appendRaw(t, file, fmt.Sprintf(
+		`{"type":"message","id":"d6100001","parentId":%q,"timestamp":%q,"message":{"role":"assistant","api":%q,"provider":%q,"model":%q,"stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"thinking","thinking":"","thinkingSignature":%s},{"type":"text","text":"Calling.","textSignature":"{\"v\":1,\"id\":\"msg_keep\"}"},{"type":"toolCall","id":"call_k|fc_keep","name":"read","arguments":{}}]}}`+"\n"+
+			`{"type":"message","id":"d6100002","parentId":"d6100001","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_k|fc_keep","toolName":"read","content":[{"type":"text","text":"plum"}],"timestamp":%d}}`+"\n",
+		before.Leaf, stamp, conversation.OpenAIResponses, "openai", openAIStandInModel, handWrittenUsage, now.UnixMilli(), quote(signature), stamp, now.UnixMilli()))
+	rig.run(t, file, "Follow-up.")
+	content := sessionContent(t, file)
+	input := requestInput(t, model.last(t), content)
+	reason := itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return item["type"] == "reasoning" && item["id"] == "rs_keep"
+	}, "saved reasoning item")
+	msg := itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return messageText(item) == "Calling." && item["id"] == "msg_keep"
+	}, "saved message item")
+	tool := itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return item["type"] == "function_call" && item["call_id"] == "call_k" && item["id"] == "fc_keep"
+	}, "saved tool item")
+	if reason >= msg || msg >= tool {
+		t.Errorf("reasoning, text and call appeared at indexes %d, %d, %d", reason, msg, tool)
+	}
+	resumed := resumedSession(t, before, content, Options{}, "Follow-up.")
+	for _, m := range resumed.Messages {
+		if m.Role != conversation.Assistant || len(m.Content) == 0 || m.Content[0].Signature != signature {
+			continue
+		}
+		want := []conversation.Block{
+			thinking("", signature),
+			{Type: conversation.Text, Text: "Calling.", ItemID: "msg_keep"},
+			{Type: conversation.ToolCall, ToolCallID: "call_k", ToolName: "read", ItemID: "fc_keep", Arguments: json.RawMessage("{}")},
+		}
+		if m.Native != nil || !reflect.DeepEqual(m.Content, want) {
+			t.Fatalf("reader assistant = %+v, want block replay with %+v", m, want)
+		}
+		return
+	}
+	t.Fatal("reader did not retain the signed block turn")
 }
 
 const attachmentFixturePNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+X2rkAAAAASUVORK5CYII="
@@ -558,6 +609,62 @@ func TestThePinnedOhMyPiShapesResponsesAttachments(t *testing.T) {
 				t.Logf("Pinned Responses input: %s", wire)
 			}
 		})
+	}
+}
+
+func TestThePinnedOhMyPiCarriesRecordedResponsesImageDetails(t *testing.T) {
+	model := newOpenAIStandIn(t)
+	rig := newOMPRigForProviderModel(t, conversation.OpenAIResponses, "openai", openAIStandInModel, model)
+	setStandInModalities(t, rig, false)
+	rig.run(t, "", "Initial request.")
+	file := rig.sessionFile(t)
+	before, err := ReadFile(file, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now()
+	stamp := conversation.ISOTime(now)
+	const png = attachmentFixturePNG
+	appendRaw(t, file, fmt.Sprintf(
+		`{"type":"message","id":"d7100001","parentId":%q,"timestamp":%q,"message":{"role":"user","content":[{"type":"image","mimeType":"image/png","data":%q,"detail":"low"},{"type":"image","mimeType":"image/png","data":%q}],"timestamp":%d}}`+"\n"+
+			`{"type":"message","id":"d7100002","parentId":"d7100001","timestamp":%q,"message":{"role":"assistant","api":%q,"provider":"openai","model":%q,"stopReason":"toolUse","usage":%s,"timestamp":%d,"content":[{"type":"toolCall","id":"call_detail|fc_detail","name":"read","arguments":{"path":"note.txt"}}]}}`+"\n"+
+			`{"type":"message","id":"d7100003","parentId":"d7100002","timestamp":%q,"message":{"role":"toolResult","toolCallId":"call_detail|fc_detail","toolName":"read","content":[{"type":"image","mimeType":"image/png","data":%q,"detail":"high"}],"timestamp":%d}}`+"\n",
+		before.Leaf, stamp, png, png, now.UnixMilli(), stamp, conversation.OpenAIResponses, openAIStandInModel, handWrittenUsage, now.UnixMilli(), stamp, png, now.UnixMilli()))
+	before, err = ReadFile(file, Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rig.run(t, file, "Follow-up.")
+	content := sessionContent(t, file)
+	input := requestInput(t, model.last(t), content)
+	image := func(detail string) map[string]any {
+		return map[string]any{"type": "input_image", "image_url": "data:image/png;base64," + png, "detail": detail}
+	}
+	itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return item["role"] == "user" && reflect.DeepEqual(item["content"], []any{image("low"), image("auto")})
+	}, "prompt images with low and default detail")
+	itemCarriedOnce(t, input, func(item map[string]any) bool {
+		return item["type"] == "function_call_output" && item["call_id"] == "call_detail" &&
+			reflect.DeepEqual(item["output"], []any{image("high")})
+	}, "tool image with high detail")
+	resumed := resumedSession(t, before, content, Options{}, "Follow-up.")
+	var promptDetails, resultDetails []string
+	for _, msg := range resumed.Messages {
+		for _, b := range msg.Content {
+			switch {
+			case msg.Role == conversation.User && b.Type == conversation.Image:
+				promptDetails = append(promptDetails, b.Detail)
+			case b.Type == conversation.ToolResult && b.ToolCallID == "call_detail":
+				for _, part := range b.Content {
+					if part.Type == conversation.Image {
+						resultDetails = append(resultDetails, part.Detail)
+					}
+				}
+			}
+		}
+	}
+	if !reflect.DeepEqual(promptDetails, []string{"low", ""}) || !reflect.DeepEqual(resultDetails, []string{"high"}) {
+		t.Errorf("reader prompt image details = %q, result image details = %q; want [low, unrecorded] and [high]", promptDetails, resultDetails)
 	}
 }
 

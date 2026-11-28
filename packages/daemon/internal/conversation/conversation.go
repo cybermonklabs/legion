@@ -61,8 +61,13 @@ type Block struct {
 	Type BlockType
 	// Text is a Text block's text and a Thinking block's reasoning.
 	Text string
-	// Phase is a Text block's OpenAI Responses message phase, empty when unrecorded.
+	// Phase is a Text block's OpenAI Responses message phase, empty when unrecorded
+	// or from another model. Read fills it. Append refuses a block that sets it.
 	Phase string
+	// ItemID is the saved OpenAI Responses message ID of a Text block or the item
+	// half of a ToolCall block's ID. It is empty when unrecorded or from another
+	// model. Read fills it. Append refuses a block that sets it.
+	ItemID string
 	// Signature is a Thinking block's signature, empty when unsigned.
 	Signature string
 	// Data is a RedactedThinking block's opaque payload.
@@ -71,8 +76,11 @@ type Block struct {
 	ToolCallID string
 	// ToolName is the tool of a ToolCall or ToolResult block.
 	ToolName string
-	// Arguments is a ToolCall block's arguments, a JSON object byte for byte as the session holds
-	// it.
+	// Arguments is a ToolCall block's JSON arguments. The Claude reader preserves
+	// the recorded input. The Oh My Pi reader uses null for missing or null
+	// Responses arguments and escapes Harmony control tokens on gpt-oss targets.
+	// On Anthropic Messages it defaults missing or null arguments to {} and
+	// repairs lone surrogate escapes in string values.
 	Arguments json.RawMessage
 	// Content is a ToolResult block's output: Text and Image blocks.
 	Content []Block
@@ -81,6 +89,9 @@ type Block struct {
 	// MediaType and ImageData are an Image block's media type ("image/png") and base64 data.
 	MediaType string
 	ImageData string
+	// Detail is an Image block's detail as recorded by the session, empty when
+	// unrecorded. Read fills it. Append refuses a block that sets it.
+	Detail string
 }
 
 // NativeKind is the kind of provider-native history a message carries.
@@ -271,6 +282,9 @@ func (a Append) Validate() error {
 		}
 		var calls []Block
 		for _, block := range turn.Content {
+			if field := block.readOnlyField(); field != "" {
+				return fmt.Errorf("append: turn %d: a block sets read-only %s", i+1, field)
+			}
 			switch block.Type {
 			case Thinking, RedactedThinking, Text:
 			case ToolCall:
@@ -305,14 +319,33 @@ func (a Append) Validate() error {
 			if result.Type != ToolResult || result.ToolCallID != calls[j].ToolCallID {
 				return fmt.Errorf("append: turn %d: result %d is not the result of call %s", i+1, j+1, calls[j].ToolCallID)
 			}
+			if field := result.readOnlyField(); field != "" {
+				return fmt.Errorf("append: turn %d: result %d sets read-only %s", i+1, j+1, field)
+			}
 			for _, part := range result.Content {
 				if part.Type != Text && part.Type != Image {
 					return fmt.Errorf("append: turn %d: result %d holds a %s block", i+1, j+1, part.Type)
+				}
+				if field := part.readOnlyField(); field != "" {
+					return fmt.Errorf("append: turn %d: a block in result %d sets read-only %s", i+1, j+1, field)
 				}
 			}
 		}
 	}
 	return nil
+}
+
+func (b Block) readOnlyField() string {
+	switch {
+	case b.Phase != "":
+		return "Phase"
+	case b.Detail != "":
+		return "Detail"
+	case b.ItemID != "":
+		return "ItemID"
+	default:
+		return ""
+	}
 }
 
 // Delivery is a message for a stopped agent. An appender writes it as a user message without a

@@ -168,6 +168,11 @@ func newOMPRig(t *testing.T, api string, model *standIn, extraEnv ...string) *om
 
 func newOMPRigForModel(t *testing.T, api, modelID string, model *standIn, extraEnv ...string) *ompRig {
 	t.Helper()
+	return newOMPRigForProviderModel(t, api, standInProvider, modelID, model, extraEnv...)
+}
+
+func newOMPRigForProviderModel(t *testing.T, api, provider, modelID string, model *standIn, extraEnv ...string) *ompRig {
+	t.Helper()
 	omp := testbin.OMP(t)
 	dir := t.TempDir()
 	rig := &ompRig{omp: omp, home: filepath.Join(dir, "home"), work: filepath.Join(dir, "work"), sessions: filepath.Join(dir, "sessions")}
@@ -178,10 +183,10 @@ func newOMPRigForModel(t *testing.T, api, modelID string, model *standIn, extraE
 		baseURL += "/v1"
 	}
 	for path, content := range map[string]string{
-		filepath.Join(agent, "models.yml"): "providers:\n  " + standInProvider + ":\n    baseUrl: " + baseURL +
+		filepath.Join(agent, "models.yml"): "providers:\n  " + provider + ":\n    baseUrl: " + baseURL +
 			"\n    auth: apiKey\n    api: " + api + "\n    apiKey: unused\n    models:\n      - id: " + modelID +
 			"\n        name: Stand-in\n        reasoning: true\n",
-		filepath.Join(agent, "config.yml"):  "modelRoles:\n  default: " + standInProvider + "/" + modelID + "\n",
+		filepath.Join(agent, "config.yml"):  "modelRoles:\n  default: " + provider + "/" + modelID + "\n",
 		filepath.Join(rig.work, "note.txt"): "plum\n",
 	} {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {

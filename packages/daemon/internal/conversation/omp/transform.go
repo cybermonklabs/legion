@@ -148,7 +148,7 @@ func inputBlock(b block) (conversation.Block, bool, error) {
 		if b.URL != "" || b.ProviderFile.ID != "" {
 			return conversation.Block{}, false, conversation.Unknown("an image held at a URL or in a provider's file store")
 		}
-		return conversation.Block{Type: conversation.Image, MediaType: b.MimeType, ImageData: b.Data}, true, nil
+		return conversation.Block{Type: conversation.Image, MediaType: b.MimeType, ImageData: b.Data, Detail: b.Detail}, true, nil
 	}
 	return conversation.Block{}, false, nil
 }
@@ -223,7 +223,7 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 		case "text":
 			converted[i] = &conversation.Block{Type: conversation.Text, Text: b.Text}
 			if !anthropicTarget && sameModel {
-				converted[i].Phase = responsesTextPhase(b.TextSignature)
+				converted[i].ItemID, converted[i].Phase = responsesTextSignature(b.TextSignature)
 			}
 		case "anthropicServerTool":
 			if anthropicReplay && !crossProvider {
@@ -257,6 +257,9 @@ func assistantMessage(m llmMessage, t target, latest, rewritten bool, ids normal
 				arguments = json.RawMessage("null")
 			}
 			converted[i] = &conversation.Block{Type: conversation.ToolCall, ToolCallID: id, ToolName: b.Name, Arguments: arguments}
+			if !anthropicTarget && sameModel {
+				_, converted[i].ItemID = splitResponsesToolCallID(b.ID)
+			}
 		}
 	}
 	// Redacted thinking replays only on Anthropic, beside the turn's visible thinking.
@@ -440,13 +443,18 @@ func revisionComponents(tail string) (major, minor int) {
 	return major, minor
 }
 
-// responsesCallID is the Responses API's call_id of a "call_id|item_id" tool call id: the part
-// before the '|' (pi-ai utils.ts normalizeResponsesToolCallId).
-func responsesCallID(id string) string {
+// splitResponsesToolCallID separates the saved call and item IDs in
+// "call_id|item_id" (pi-ai utils.ts normalizeResponsesToolCallId).
+func splitResponsesToolCallID(id string) (callID, itemID string) {
 	if i := strings.IndexAny(id, "|\n"); i > 0 {
-		return id[:i]
+		return id[:i], id[i+1:]
 	}
-	return id
+	return id, ""
+}
+
+func responsesCallID(id string) string {
+	callID, _ := splitResponsesToolCallID(id)
+	return callID
 }
 
 func blank(s string) bool { return strings.TrimFunc(s, isJSSpace) == "" }

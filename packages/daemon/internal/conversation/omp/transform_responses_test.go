@@ -3,6 +3,7 @@ package omp
 import (
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/conversation"
@@ -36,9 +37,11 @@ func TestResponsesHistoryShaping(t *testing.T) {
 		textOnly := model
 		textOnly.textOnly = true
 		got := run(t, textOnly, prompt, tool, output)
+		wantCall := call("opaque", "read", "null")
+		wantCall.ItemID = "fc_a"
 		assertMessages(t, got, []conversation.Message{
 			promptWith(text(historyImageOmission), text("first"), text(historyImageOmission), text("last")),
-			{Role: conversation.Assistant, API: api, Provider: model.provider, Model: model.model, Content: []conversation.Block{call("opaque", "read", "null")}},
+			{Role: conversation.Assistant, API: api, Provider: model.provider, Model: model.model, Content: []conversation.Block{wantCall}},
 			result("opaque", "read", "a\n"+historyImageOmission+"\n\nb", false),
 		})
 	})
@@ -63,7 +66,9 @@ func TestResponsesHistoryShaping(t *testing.T) {
 		const signature = `{"type":"reasoning","id":"rs_fixture","encrypted_content":"opaque"}`
 		tool.blocks = append(tool.blocks[:1:1], block{Type: "thinking", ThinkingSignature: signature}, textBlock("after reasoning"))
 		got := run(t, model, tool, output)[0].Content
-		want := []conversation.Block{call("opaque", "read", "null"), thinking("", signature), text("after reasoning")}
+		wantCall := call("opaque", "read", "null")
+		wantCall.ItemID = "fc_a"
+		want := []conversation.Block{wantCall, thinking("", signature), text("after reasoning")}
 		if !reflect.DeepEqual(got, want) {
 			t.Fatalf("assistant blocks = %+v, want %+v", got, want)
 		}
@@ -78,9 +83,10 @@ func TestResponsesHistoryShaping(t *testing.T) {
 		if got := run(t, other, answer)[0].Content[0].Phase; got != "" {
 			t.Errorf("foreign Responses phase = %q, want empty", got)
 		}
-		other.api = conversation.AnthropicMessages
-		if got := run(t, other, answer)[0].Content[0].Phase; got != "" {
-			t.Errorf("Anthropic phase = %q, want empty", got)
+		other = target{api: conversation.AnthropicMessages, provider: "anthropic", model: "claude-test"}
+		answer.api, answer.provider, answer.model = other.api, other.provider, other.model
+		if got := run(t, other, answer)[0].Content[0]; got.Phase != "" || got.ItemID != "" {
+			t.Errorf("Anthropic text phase = %q, item ID = %q, want both empty", got.Phase, got.ItemID)
 		}
 	})
 	t.Run("Harmony escapes transport text and leaves reasoning opaque", func(t *testing.T) {
@@ -114,8 +120,12 @@ func TestNativeResponsesHistoryShaping(t *testing.T) {
 	}
 	for _, tc := range []struct{ name, input, want string }{
 		{"malformed call pairs positionally", `[{"type":"function_call","call_id":"id","name":"bad name"},{"type":"function_call","call_id":"id","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"id","output":"discard"},{"type":"function_call_output","call_id":"id","output":"keep"}]`, `[{"type":"function_call","call_id":"id","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"id","output":"keep"}]`},
+		{"129 character call name", `[{"type":"function_call","call_id":"id","name":"` + strings.Repeat("a", 129) + `"},{"type":"function_call_output","call_id":"id","output":"discard"},{"type":"message","role":"assistant","content":"keep"}]`, `[{"type":"message","role":"assistant","content":"keep"}]`},
+		{"call kinds share an ID", `[{"type":"function_call","call_id":"shared","name":"bad name"},{"type":"custom_tool_call","call_id":"shared","name":"edit","input":"patch"},{"type":"custom_tool_call_output","call_id":"shared","output":"keep"},{"type":"function_call_output","call_id":"shared","output":"discard"}]`, `[{"type":"custom_tool_call","call_id":"shared","name":"edit","input":"patch"},{"type":"custom_tool_call_output","call_id":"shared","output":"keep"}]`},
+		{"user message resets call window", `[{"type":"function_call","call_id":"id","name":"bad name"},{"type":"message","role":"user","content":"next"},{"type":"function_call","call_id":"id","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"id","output":"keep"}]`, `[{"type":"message","role":"user","content":"next"},{"type":"function_call","call_id":"id","name":"read","arguments":"{}"},{"type":"function_call_output","call_id":"id","output":"keep"}]`},
 		{"drop references and incomplete image generation", `[{"type":"item_reference","id":"stray"},{"type":"image_generation_call","id":"incomplete"},{"type":"image_generation_call","id":"ig_1","result":"data"}]`, `[{"type":"image_generation_call","id":"ig_1","result":"data"}]`},
 		{"remove blanks and dangling reasoning", `[{"type":"reasoning","encrypted_content":"keep"},{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"no"}]},{"type":"reasoning","encrypted_content":"discard"},{"type":"message","role":"assistant","content":[{"type":"output_text","text":" "}]}]`, `[{"type":"reasoning","encrypted_content":"keep"},{"type":"message","role":"assistant","content":[{"type":"refusal","refusal":"no"}]}]`},
+		{"new reasoning after a blank message", `[{"type":"reasoning","id":"A"},{"type":"message","role":"assistant","content":" "},{"type":"reasoning","id":"B"},{"type":"message","role":"assistant","content":"keep"}]`, `[{"type":"reasoning","id":"B"},{"type":"message","role":"assistant","content":"keep"}]`},
 		{"hidden only", `[{"type":"reasoning","encrypted_content":"discard"},{"type":"message","role":"assistant","content":" "}]`, `null`},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -124,6 +134,29 @@ func TestNativeResponsesHistoryShaping(t *testing.T) {
 				t.Fatalf("replay items = %s, want %s", got, want)
 			}
 		})
+	}
+}
+
+func TestResponsesUserCompactionPayloadShaping(t *testing.T) {
+	item := json.RawMessage(`{"type":"compaction_summary","summary":"keep"}`)
+	m := llmMessage{
+		role:   "user",
+		blocks: []block{{Type: "text", Text: "Summary."}},
+		native: &conversation.Native{
+			Kind: conversation.OpenAIResponsesHistory, Provider: "openai",
+			Items: []json.RawMessage{
+				item,
+				json.RawMessage(`{"type":"function_call","call_id":"id","name":"bad name"}`),
+				json.RawMessage(`{"type":"function_call_output","call_id":"id","output":"discard"}`),
+			},
+		},
+	}
+	got, err := toRequest([]llmMessage{m}, target{api: conversation.OpenAIResponses, provider: "openai", model: "gpt-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0].Native == nil || !reflect.DeepEqual(got[0].Native.Items, []json.RawMessage{item}) {
+		t.Fatalf("user replay = %+v, want only compaction summary in Native.Items", got)
 	}
 }
 

@@ -102,6 +102,7 @@ type block struct {
 	ThinkingSignature string `json:"thinkingSignature"`
 	Data              string `json:"data"`
 	MimeType          string `json:"mimeType"`
+	Detail            string `json:"detail"`
 	URL               string `json:"url"`
 	ProviderFile      struct {
 		Provider string `json:"provider"`
