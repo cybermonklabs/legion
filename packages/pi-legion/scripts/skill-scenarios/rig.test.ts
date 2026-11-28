@@ -11,6 +11,7 @@ import {
   realpathSync,
   rmSync,
   statSync,
+  symlinkSync,
   writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -3039,7 +3040,7 @@ const sentence = (id: string): string => {
 function plantScored(
   work: string,
   label: string,
-  owner: { kind: "root" | "child"; form: "B" | "D"; family: "claude" | "gpt" },
+  owner: { kind: "root" | "child"; form: "A" | "B" | "C" | "D"; family: "claude" | "gpt" },
   n: number,
   passes: Record<string, boolean>
 ): void {
@@ -3054,16 +3055,17 @@ function plantScored(
     issue: "issue.md",
     plansProject: "LWEVAL",
     plansKeys: ["LWEVAL-1"],
+    // B is the one unguided form planted here (UNGUIDED_FORMS); every other gets its file.
     guidance:
-      owner.form === "D"
-        ? {
+      owner.form === "B"
+        ? null
+        : {
             file: "guidance-first.md",
             implementerFamily: "claude",
             reviewerFamily: "gpt",
             implementerModel: "claude-model",
             reviewerModel: "gpt-model",
-          }
-        : null,
+          },
     questions: ["Would another family review the change?"],
   };
   writeFileSync(path.join(dir, "world.json"), `${JSON.stringify(world)}\n`);
@@ -3189,7 +3191,7 @@ esac
       String.raw`#!/usr/bin/env bash
 # run <scenario> <label> <n> <index> <start>
 dir=$SKILL_SCENARIOS_WORK/runs/$2-$SKILL_SCENARIOS_OWNER_WALK_CASE-$3-$4
-mkdir -p "$dir/home/.omp" "$dir/texts" "$dir/cwd" "$dir/secrets" "$dir/state/secrets"
+mkdir -p "$dir/home/.omp" "$dir/texts" "$dir/cwd" "$dir/secrets" "$dir/state/secrets" "$dir/state/home/.local"
 printf '%s\n' "$4" >>"$SKILL_SCENARIOS_WORK/launches"
 printf '{"launch":%s}\n' "$4" >"$dir/world.json"
 echo 'NATS_URLS=nats://user:secret@nats.invalid:4222' >"$dir/pane.env"
@@ -3199,6 +3201,7 @@ echo '{"project":"LWEVAL"}' >"$dir/texts/world-request.json"
 echo 'a profile' >"$dir/home/.omp/config.yml"
 echo 'a boot token' >"$dir/secrets/boot"
 echo 'an Envoy token' >"$dir/state/secrets/owner-envoy_token"
+echo '{"title":"the owner'"'"'s session"}' >"$dir/state/home/.local/title"
 ln -s /etc "$dir/cwd/link"
 mkfifo "$dir/rpc.in"
 echo 'one file' >"$dir/cwd/a"
@@ -3483,6 +3486,29 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         three: false,
       });
     }
+
+    // A pack whose own row.json is not the row stored beside it, with every sha256 as the store
+    // holds them: the pack passes its type check and its row names it, so the comparison of the
+    // two rows is the one rule that can refuse it. Without that comparison the pack's row, not
+    // the vouched one, would reach the cell.
+    const store = plantStore();
+    plantPack(
+      store.bucket,
+      3,
+      `mkdir -p "$1/${run(3)}" && printf '%s\n' '{"outcome":"scored","run":"${run(3)}","pass":true}' >"$1/${run(3)}/row.json" && printf '%s\n' '{"launch":3}' >"$1/${run(3)}/world.json" && tar -czf "$2" -C "$1" ${run(3)}`
+    );
+    const work = freshDir("restore-two-rows");
+    const differs = restore(work, store.bin);
+    expect({
+      rule: "restore-same-row",
+      code: differs.code,
+      stderr: differs.stderr.trim().split("\n").at(-1),
+    }).toEqual({
+      rule: "restore-same-row",
+      code: 1,
+      stderr: `skill-scenarios: runs/${run(3)}.tar.gz's row.json is not the row stored beside it`,
+    });
+    expect(existsSync(path.join(work, "runs", run(3)))).toBe(false);
   });
 
   // Catches: a download read as the pods stored it with nothing compared, so an object changed or
@@ -3513,6 +3539,8 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       change?.(dir);
       return dir;
     };
+    /** `rig.sh check-stored` of DIR against LOGS (the Job's log when none is given). Each case's
+     * count comes from the logs, so the Job's own cell line is part of every log planted here. */
     const check = (dir: string, ...logs: string[]) => {
       const result = childSpawn([
         "bash",
@@ -3524,6 +3552,10 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       const stdout = result.stdout.toString().trim().split("\n");
       return { code: result.exitCode, stdout, stderr: result.stderr.toString() };
     };
+    /** The cell line a Job prints for CASE at COUNT, which is where the counts come from. */
+    const cellLine = (name: string, count: number) =>
+      `scored-job owner-walk head ${name}, label head: ${count} runs, ${count} scored, 0 rig errors, count ${count}; verdict fail\n`;
+    appendFileSync(log, cellLine("root-B-claude", 2));
     const scored = (lines: string[]) => JSON.parse(lines.at(-1) ?? "{}").scored;
 
     const clean = download();
@@ -3548,9 +3580,11 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     );
     const fault = `runs/${run(2)}.row.json differs from the Job's log: logged ${logged}, downloaded ${sha256(at(changed, 2, "row.json"))}`;
     const differs = check(changed);
-    expect({ code: differs.code, line: differs.stdout[1] }).toEqual({
-      code: 0,
+    expect({ code: differs.code, line: differs.stdout[1], last: differs.stdout.at(-1) }).toEqual({
+      code: 1,
       line: `checked ${run(2)}: rig error: ${fault}`,
+      // Run 2 is in no cell, but run 1 of its case is, so the case is covered and no run counts here.
+      last: "check-stored: 1 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 cases the logs name no count for, 0 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
     });
     const row = JSON.parse(readFileSync(path.join(changed, "checked", run(2), "row.json"), "utf8"));
     expect(row).toEqual({
@@ -3563,7 +3597,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     });
     expect(RunRow.safeParse(row).success).toBe(true);
     expect(differs.stderr).toContain(`${run(2)}: no world.json, so it is in no cell`);
-    expect(scored(differs.stdout)).toBe(1);
+    expect(scored(differs.stdout.slice(0, -1))).toBe(1);
 
     // Run 1's pack in place of run 2's, as when two Jobs share a key: run 2's row names another.
     const swapped = download((dir) => cpSync(at(dir, 1, "tar.gz"), at(dir, 2, "tar.gz")));
@@ -3583,13 +3617,88 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       `checked ${run(1)}: rig error: runs/${run(1)}.row.json was stored with sha256 ${sha256(at(store.bucket, 1, "row.json"))} and later got with sha256 ${"0".repeat(64)}`
     );
 
-    const missing = check(download((dir) => rmSync(at(dir, 1, "tar.gz"))));
-    expect(missing.stdout[0]).toBe(
-      `checked ${run(1)}: rig error: runs/${run(1)}.tar.gz is not in the download`
-    );
+    // A later pod's log alone: each object it got, no log given stores. A run put into the store
+    // by anything but a pod reads the same way, and both are refused.
+    const gotOnly = path.join(pod, "got-only.log");
+    writeFileSync(gotOnly, readFileSync(log, "utf8").replace(/^stored /gm, "got "));
+    const alone = check(download(), gotOnly);
+    expect({ code: alone.code, first: alone.stdout[0] }).toEqual({
+      code: 1,
+      first: `checked ${run(1)}: rig error: runs/${run(1)}.row.json was got with sha256 ${sha256(at(store.bucket, 1, "row.json"))}, and no log given stores it: give every pod's log; runs/${run(1)}.tar.gz was got with sha256 ${sha256(at(store.bucket, 1, "tar.gz"))}, and no log given stores it: give every pod's log`,
+    });
 
-    // Packs whose links would write into run 1 or outside the download, each logged as stored.
+    // Run 1's row stored a second time, with another sha256, after it was stored once: a stored
+    // run is never stored again.
+    const twice = path.join(pod, "twice.log");
+    writeFileSync(
+      twice,
+      `${readFileSync(log, "utf8")}stored runs/${run(1)}.row.json sha256 ${"1".repeat(64)}\n`
+    );
+    expect(check(download(), twice).stdout[0]).toBe(
+      `checked ${run(1)}: rig error: runs/${run(1)}.row.json was stored again after its run's row was stored: first with sha256 ${sha256(at(store.bucket, 1, "row.json"))}, then with sha256 ${"1".repeat(64)}`
+    );
+    // A pack stored twice before its run's row, as when a pod stopped between the two puts and the
+    // next pod ran the run again: no fault.
+    const repacked = path.join(pod, "repacked.log");
+    writeFileSync(
+      repacked,
+      `stored runs/${run(2)}.tar.gz sha256 ${"2".repeat(64)}\n${readFileSync(log, "utf8")}`
+    );
+    const again = check(download(), repacked);
+    expect({ code: again.code, lines: again.stdout.slice(0, 2) }).toEqual({
+      code: 0,
+      lines: [`checked ${run(1)}: as stored`, `checked ${run(2)}: as stored`],
+    });
+
+    const missing = check(download((dir) => rmSync(at(dir, 1, "tar.gz"))));
+    expect({ code: missing.code, first: missing.stdout[0] }).toEqual({
+      code: 1,
+      first: `checked ${run(1)}: rig error: runs/${run(1)}.tar.gz is not in the download`,
+    });
+
+    // A whole run, row and pack, in the download that no log stores: the title rule of this
+    // change. Its row is well formed and names its pack, so nothing but the logs can refuse it.
+    const planted9 = download((dir) => {
+      const name = run(9);
+      const made = freshDir("planted-run-9");
+      mkdirSync(path.join(made, name));
+      const row = {
+        outcome: "scored",
+        run: name,
+        scenario: "owner-walk",
+        label: "head",
+        case: "root-B-claude",
+      };
+      writeFileSync(path.join(made, name, "row.json"), `${JSON.stringify(row)}\n`);
+      writeFileSync(
+        path.join(made, name, "world.json"),
+        readFileSync(path.join(pod, "runs", run(1), "world.json"))
+      );
+      const pack = path.join(dir, "runs", `${name}.tar.gz`);
+      expect(childSpawn(["tar", "-czf", pack, "-C", made, name]).exitCode).toBe(0);
+      writeFileSync(
+        path.join(dir, "runs", `${name}.row.json`),
+        `${JSON.stringify({ ...row, pack: sha256(pack) })}\n`
+      );
+    });
+    const unstored = check(planted9);
+    expect({
+      rule: "no-stored-line",
+      code: unstored.code,
+      said: unstored.stdout.filter((line) => line.startsWith(`checked ${run(9)}:`)),
+    }).toEqual({
+      rule: "no-stored-line",
+      code: 1,
+      said: [
+        `checked ${run(9)}: rig error: runs/${run(9)}.row.json has no stored line in the Job's logs`,
+      ],
+    });
+
+    // Packs whose links would write into run 1 or outside the download, each logged as stored. The
+    // file outside exists first: cp refuses a symlink that points nowhere, so without it a check
+    // that writes through links would pass for that reason.
     const outside = path.join(freshDir("outside"), "written-through-a-link");
+    writeFileSync(outside, "the outside file's own\n");
     const planted: [string, string, string][] = [
       [
         "a symlink to run 1, then a file under it",
@@ -3617,7 +3726,7 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       const checked = check(dir, plantedLog);
       expect({ what, code: checked.code, line: checked.stdout[2] }).toEqual({
         what,
-        code: 0,
+        code: 1,
         line: `checked ${run(3)}: rig error: runs/${run(3)}.tar.gz ${refusal}: a pack holds its run's regular files and directories alone`,
       });
       expect({
@@ -3627,7 +3736,10 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
         what,
         world: readFileSync(path.join(pod, "runs", run(1), "world.json"), "utf8"),
       });
-      expect({ what, outside: existsSync(outside) }).toEqual({ what, outside: false });
+      expect({ what, outside: readFileSync(outside, "utf8") }).toEqual({
+        what,
+        outside: "the outside file's own\n",
+      });
     }
 
     // A file of the download whose name holds a line break is no run's name.
@@ -3636,12 +3748,434 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
     );
     const odd = check(broken);
     expect({ code: odd.code, lines: odd.stdout.slice(0, 3) }).toEqual({
-      code: 0,
+      code: 1,
       lines: [
         `UNKNOWN: $'${run(1)}\\n${run(2)}.row.json' in ${broken}/runs is no run's object: it is left out`,
         `checked ${run(1)}: as stored`,
         `checked ${run(2)}: as stored`,
       ],
+    });
+
+    // Entries of runs/ that are no run's object: a text file, a dotfile and a directory are each
+    // named and left out, and the check exits 1 though every run is as stored.
+    const extra = download((dir) => {
+      writeFileSync(path.join(dir, "runs", "notes.txt"), "a note\n");
+      writeFileSync(path.join(dir, "runs", ".hidden"), "hidden\n");
+      mkdirSync(path.join(dir, "runs", "extra"));
+      // Named like a run's object, but no regular file: a symlink to run 1's row, and a directory.
+      // Taken as run 6's and run 7's objects, each would be a run whose other object is missing.
+      symlinkSync(at(dir, 1, "row.json"), at(dir, 6, "row.json"));
+      mkdirSync(at(dir, 7, "tar.gz"));
+    });
+    const leftOut = check(extra);
+    expect({
+      code: leftOut.code,
+      first: leftOut.stdout.slice(0, 5),
+      last: leftOut.stdout.at(-1),
+    }).toEqual({
+      code: 1,
+      first: [
+        `UNKNOWN: .hidden in ${extra}/runs is no run's object: it is left out`,
+        `UNKNOWN: extra in ${extra}/runs is no run's object: it is left out`,
+        `UNKNOWN: notes.txt in ${extra}/runs is no run's object: it is left out`,
+        `UNKNOWN: ${run(6)}.row.json in ${extra}/runs is no run's object: it is left out`,
+        `UNKNOWN: ${run(7)}.tar.gz in ${extra}/runs is no run's object: it is left out`,
+      ],
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 5 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 cases the logs name no count for, 0 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+    });
+
+    // A pack with no row beside it and no line in any log: its run is named by the pack, and is a
+    // rig error.
+    const packOnly = download((dir) => cpSync(at(dir, 1, "tar.gz"), at(dir, 5, "tar.gz")));
+    const lone = check(packOnly);
+    expect({ code: lone.code, line: lone.stdout[2] }).toEqual({
+      code: 1,
+      line: `checked ${run(5)}: rig error: runs/${run(5)}.row.json is not in the download`,
+    });
+
+    // The cells are at the count the Job's own logs name for each case: a log naming 3 for a cell
+    // of two runs reads UNKNOWN, and the caller passes no count at all.
+    const countLog = path.join(pod, "count-3.log");
+    writeFileSync(
+      countLog,
+      readFileSync(log, "utf8").replace(cellLine("root-B-claude", 2), cellLine("root-B-claude", 3))
+    );
+    const short = check(download(), countLog);
+    const shortCell = JSON.parse(short.stdout.at(-2) ?? "{}");
+    expect({
+      code: short.code,
+      cell: [shortCell.cell, shortCell.count, shortCell.scored, shortCell.verdict],
+    }).toEqual({
+      code: 1,
+      cell: ["guidance/root-B-claude", 3, 2, "UNKNOWN"],
+    });
+    expect(JSON.parse(kept.stdout.at(-1) ?? "{}").count).toBe(2);
+
+    // A case the logs name no count for is a fault: its cell would be measured against nothing.
+    const noCount = path.join(pod, "no-count.log");
+    writeFileSync(noCount, readFileSync(log, "utf8").replace(cellLine("root-B-claude", 2), ""));
+    const uncounted = check(download(), noCount);
+    // The reading is the message and the count of uncounted runs, never the exit: this download's
+    // B cell is UNKNOWN at its form's default of 3 as well, and that gives exit 1 by itself.
+    expect({
+      code: uncounted.code,
+      said: uncounted.stdout.filter((line) =>
+        line.startsWith("UNKNOWN: the Job's logs name no count")
+      ),
+      last: uncounted.stdout.at(-1),
+    }).toEqual({
+      code: 1,
+      said: [
+        "UNKNOWN: the Job's logs name no count for head root-B-claude, so its cell is measured against nothing",
+      ],
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 1 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 1 cases the logs name no count for, 0 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+    });
+
+    // Two logs naming different counts for one case: a contradiction, not a tie the order of the
+    // arguments breaks. Read either way round, the check must name both counts. The reading is the
+    // message, never the exit: an UNKNOWN cell gives exit 1 too, and a row that cannot tell the
+    // two apart holds neither rule.
+    const one = path.join(pod, "count-1.log");
+    writeFileSync(
+      one,
+      readFileSync(log, "utf8").replace(cellLine("root-B-claude", 2), cellLine("root-B-claude", 1))
+    );
+    const clash =
+      "UNKNOWN: head root-B-claude: the Job's logs name the counts 1 and 2 for it, so no count of its own decides it, and no cell of it is read";
+    // One download read both ways round, and the WHOLE of each reading compared: a row that
+    // compares a subset of the output cannot see a difference outside that subset, and the
+    // printed cell and the UNKNOWN count had been the last log's while the exit was not.
+    const both = download();
+    const orders = [
+      [one, log],
+      [log, one],
+    ].map((order) => check(both, ...order));
+    expect({ rule: "clash-order", code: orders[0]?.code, stderr: orders[0]?.stderr }).toEqual({
+      rule: "clash-order",
+      code: 1,
+      stderr: orders[1]?.stderr,
+    });
+    expect({ rule: "clash-order", stdout: orders[0]?.stdout }).toEqual({
+      rule: "clash-order",
+      stdout: orders[1]?.stdout ?? [],
+    });
+    // No cell of the disagreeing case is read, so no cell line is printed and none is UNKNOWN.
+    expect({
+      rule: "clash-read",
+      code: orders[0]?.code,
+      said: orders[0]?.stdout.filter((line) => line.startsWith("UNKNOWN:")),
+      cells: orders[0]?.stdout.filter((line) => line.startsWith("{")),
+      last: orders[0]?.stdout.at(-1),
+    }).toEqual({
+      rule: "clash-read",
+      code: 1,
+      said: [clash],
+      cells: [],
+      last: "check-stored: 0 of 2 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 0 runs are in no cell, 0 cases the logs name no count for, 1 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+    });
+
+    // Scored runs beyond the count: the cell takes its first `count` scored runs, so the rest
+    // would be dropped with nothing said, which is the fault the per-case count exists to stop.
+    // Named, not inferred from the exit.
+    const low = check(download(), one);
+    expect({
+      rule: "surplus",
+      code: low.code,
+      said: low.stdout.filter((line) => line.includes("would be dropped")),
+    }).toEqual({
+      rule: "surplus",
+      code: 1,
+      said: [
+        "UNKNOWN: head root-B-claude: the Job's logs name the count 1, and the store holds 2 scored runs of it, so 1 of them would be dropped",
+      ],
+    });
+
+    // A run the rig failed is stored too, and is no scored run: an honest count-1 Job whose first
+    // run is a rig error and whose second scores holds two runs of the case at count 1, and that
+    // is no fault. Only the scored runs are counted against the count.
+    const failedFirst = download((dir) => {
+      const made = freshDir("failed-run-1");
+      mkdirSync(path.join(made, run(1)));
+      writeFileSync(
+        path.join(made, run(1), "row.json"),
+        `${JSON.stringify({ outcome: "rig-error", run: run(1), scenario: "owner-walk", label: "head", case: "root-B-claude", error: "the launch failed" })}\n`
+      );
+      const pack = at(dir, 1, "tar.gz");
+      expect(childSpawn(["tar", "-czf", pack, "-C", made, run(1)]).exitCode).toBe(0);
+      writeFileSync(
+        at(dir, 1, "row.json"),
+        `${JSON.stringify({ outcome: "rig-error", run: run(1), scenario: "owner-walk", label: "head", case: "root-B-claude", error: "the launch failed", pack: sha256(pack) })}\n`
+      );
+    });
+    const oneScored = path.join(pod, "one-scored.log");
+    writeFileSync(
+      oneScored,
+      `${readFileSync(log, "utf8")
+        .replace(/^stored runs\/owner-walk-root-B-claude-head-1\..*\n/gm, "")
+        .replace(
+          cellLine("root-B-claude", 2),
+          cellLine("root-B-claude", 1)
+        )}${storedLines(failedFirst, 1)}`
+    );
+    const honest = check(failedFirst, oneScored);
+    expect({
+      rule: "scored-only",
+      code: honest.code,
+      said: honest.stdout.filter((line) => line.startsWith("UNKNOWN:")),
+      stderr: honest.stderr.includes(`${run(1)}: no world.json`),
+    }).toEqual({ rule: "scored-only", code: 0, said: [], stderr: true });
+
+    // A cell line naming a case no run of which is in the download or the logs: measured by
+    // nothing, and said so by name.
+    const absent = path.join(pod, "absent.log");
+    writeFileSync(absent, `${readFileSync(log, "utf8")}${cellLine("child-B-claude", 3)}`);
+    const unrun = check(download(), absent);
+    expect({
+      rule: "unrun",
+      code: unrun.code,
+      said: unrun.stdout.filter((line) => line.includes("no run of it is in")),
+    }).toEqual({
+      rule: "unrun",
+      code: 1,
+      said: [
+        "UNKNOWN: the Job's logs name the count 3 for head child-B-claude, and no run of it is in the download or the logs",
+      ],
+    });
+
+    // A cell line of another scenario names no count of owner-walk's.
+    const other = path.join(pod, "other-scenario.log");
+    writeFileSync(
+      other,
+      readFileSync(log, "utf8").replace(
+        cellLine("root-B-claude", 2),
+        "scored-job ask-on-message strict root-B-claude, label head: 1 runs, 1 scored, 0 rig errors, count 1; verdict fail\n"
+      )
+    );
+    const foreign = check(download(), other);
+    expect({
+      code: foreign.code,
+      said: foreign.stdout.filter((line) => line.includes("name no count for head root-B-claude")),
+    }).toEqual({
+      code: 1,
+      said: [
+        "UNKNOWN: the Job's logs name no count for head root-B-claude, so its cell is measured against nothing",
+      ],
+    });
+
+    // The row beside the pack is not the row inside it, with both sha256 as the log names them:
+    // only the comparison of the two rows can see it, so the row reads the rig error by name.
+    const threeLog = path.join(pod, "with-three.log");
+    const twoRows = download((dir) => {
+      plantPack(
+        dir,
+        3,
+        `mkdir -p "$1/${run(3)}" && printf '%s\n' '{"outcome":"scored","run":"${run(3)}","scenario":"owner-walk"}' >"$1/${run(3)}/row.json" && tar -czf "$2" -C "$1" ${run(3)}`
+      );
+    });
+    writeFileSync(threeLog, `${readFileSync(log, "utf8")}${storedLines(twoRows, 3)}`);
+    const notSame = check(twoRows, threeLog);
+    expect({
+      rule: "same-row",
+      code: notSame.code,
+      said: notSame.stdout.filter((line) => line.startsWith(`checked ${run(3)}:`)),
+    }).toEqual({
+      rule: "same-row",
+      code: 1,
+      said: [
+        `checked ${run(3)}: rig error: runs/${run(3)}.tar.gz's row.json is not the row stored beside it`,
+      ],
+    });
+
+    // The no-count rule on its own. The section above reads a B case, whose form runs three
+    // times, so its cell is UNKNOWN at 2 runs and the check exits 1 whether or not the uncounted
+    // case is in the exit. A C case runs once, so its cell is decided at its form's runs, and the
+    // only difference between these two readings is the cell line: the first exits 1, the second
+    // 0, so the exit belongs to the rule.
+    const cStore = plantStore();
+    const cPod = freshDir("check-pod-c");
+    const cName = "owner-walk-root-C-claude-head-1";
+    plantScored(cPod, "head", { kind: "root", form: "C", family: "claude" }, 1, {
+      read: true,
+      cites: true,
+    });
+    const cStored = bash(
+      `${defs("note", "fail", "store_scored_run")}\nwork=$1\nstore_scored_run "$2"`,
+      [cPod, cName],
+      { RT_STORE: cStore.bin }
+    );
+    expect({ code: cStored.code, stderr: cStored.stderr }).toEqual({ code: 0, stderr: "" });
+    const cDownload = freshDir("check-download-c");
+    cpSync(cStore.bucket, cDownload, { recursive: true });
+    const noLine = path.join(cPod, "no-cell-line.log");
+    writeFileSync(noLine, cStored.stdout);
+    const cUncounted = check(cDownload, noLine);
+    expect({
+      rule: "uncounted",
+      code: cUncounted.code,
+      said: cUncounted.stdout.filter((line) => line.startsWith("UNKNOWN:")),
+    }).toEqual({
+      rule: "uncounted",
+      code: 1,
+      said: [
+        "UNKNOWN: the Job's logs name no count for head root-C-claude, so its cell is measured against nothing",
+      ],
+    });
+    const withLine = path.join(cPod, "cell-line.log");
+    writeFileSync(withLine, `${cStored.stdout}${cellLine("root-C-claude", 1)}`);
+    const cNamed = check(cDownload, withLine);
+    expect({
+      rule: "uncounted",
+      code: cNamed.code,
+      first: cNamed.stdout[0],
+      stderr: cNamed.stderr,
+    }).toEqual({
+      rule: "uncounted",
+      code: 0,
+      first: `checked ${cName}: as stored`,
+      stderr: "",
+    });
+
+    // A Job whose cases ran to counts of their own, as a default Job's do (its head cases run A
+    // three times, B three times and C once). One count for the whole Job cannot read it: at 2 the
+    // one-run cell is short, and at 1 the two-run cell is decided on half its runs. Each case at
+    // the count its own cell line names reads every cell decided, and the check exits 0.
+    const mixed = freshDir("check-mixed");
+    mkdirSync(path.join(mixed, "runs"));
+    const mixedLog = path.join(mixed, "job.log");
+    let mixedLines = "";
+    for (const [name, kind, count] of [
+      ["root-B-claude", "root", 2],
+      ["child-B-claude", "child", 1],
+    ] as const) {
+      for (let n = 1; n <= count; n += 1) {
+        const runName = `owner-walk-${name}-head-${n}`;
+        const made = freshDir(`mixed-${runName}`);
+        plantScored(made, "head", { kind, form: "B", family: "claude" }, n, { read: true });
+        const pack = path.join(mixed, "runs", `${runName}.tar.gz`);
+        expect(
+          childSpawn(["tar", "-czf", pack, "-C", path.join(made, "runs"), runName]).exitCode
+        ).toBe(0);
+        const stored = path.join(mixed, "runs", `${runName}.row.json`);
+        writeFileSync(
+          stored,
+          `${JSON.stringify({ ...JSON.parse(readFileSync(path.join(made, "runs", runName, "row.json"), "utf8")), pack: sha256(pack) })}\n`
+        );
+        mixedLines += `stored runs/${runName}.tar.gz sha256 ${sha256(pack)}\nstored runs/${runName}.row.json sha256 ${sha256(stored)}\n`;
+      }
+      mixedLines += cellLine(name, count);
+    }
+    writeFileSync(mixedLog, mixedLines);
+    const defaulted = check(mixed, mixedLog);
+    expect({
+      code: defaulted.code,
+      cells: defaulted.stdout
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line))
+        .map(({ cell, count, scored, verdict }) => [cell, count, scored, verdict]),
+    }).toEqual({
+      code: 0,
+      cells: [
+        ["guidance/child-B-claude", 1, 1, "pass"],
+        ["guidance/root-B-claude", 2, 2, "pass"],
+      ],
+    });
+
+    // Runs that reach no cell: three rig-error rows as scored_rig_error writes them, with no
+    // world.json, beside the two whole runs. The cells cover root-B-claude and not child-B-claude,
+    // so the check says so and exits 1, where counting UNKNOWN cells alone reads it as clean.
+    const childRuns = [1, 2, 3].map((n) => `owner-walk-child-B-claude-head-${n}`);
+    let childLog = "";
+    const children = download((dir) => {
+      childLog = path.join(dir, "child.log");
+      let lines = readFileSync(log, "utf8");
+      for (const name of childRuns) {
+        const made = freshDir(`child-${name}`);
+        mkdirSync(path.join(made, name));
+        const row = {
+          outcome: "rig-error",
+          run: name,
+          scenario: "owner-walk",
+          label: "head",
+          case: "child-B-claude",
+          error: "the launch failed",
+        };
+        writeFileSync(path.join(made, name, "row.json"), `${JSON.stringify(row)}\n`);
+        const pack = path.join(dir, "runs", `${name}.tar.gz`);
+        expect(childSpawn(["tar", "-czf", pack, "-C", made, name]).exitCode).toBe(0);
+        const stored = path.join(dir, "runs", `${name}.row.json`);
+        writeFileSync(stored, `${JSON.stringify({ ...row, pack: sha256(pack) })}\n`);
+        lines += `stored runs/${name}.tar.gz sha256 ${sha256(pack)}\nstored runs/${name}.row.json sha256 ${sha256(stored)}\n`;
+      }
+      writeFileSync(childLog, `${lines}${cellLine("child-B-claude", 3)}`);
+    });
+    const uncovered = check(children, childLog);
+    expect({
+      code: uncovered.code,
+      covered: uncovered.stdout.filter((line) => line.startsWith("UNKNOWN: no cell covers")),
+      last: uncovered.stdout.at(-1),
+    }).toEqual({
+      code: 1,
+      covered: childRuns.map(
+        () =>
+          "UNKNOWN: no cell covers head child-B-claude: its runs are in none, so nothing was measured of it"
+      ),
+      last: "check-stored: 0 of 5 runs are rig errors of the store, 0 entries of the download were left out, 0 cells are UNKNOWN at the counts the Job ran, 3 runs are in no cell, 0 cases the logs name no count for, 0 cases whose logs name two counts, 0 cases hold scored runs beyond their count, and 0 cases a cell line names have no run",
+    });
+
+    // A control form's run is covered by its form's cell, not by a cell of its case: cells() keys
+    // ctl-d's cell `<stage>/D`, where the run's name holds root-D-claude. Its cell is UNKNOWN until
+    // all twelve owners are in, so the reading here is the cover line, which must not appear.
+    let controlLog = "";
+    const controlled = download((dir) => {
+      const name = "owner-walk-root-D-claude-ctl-d-1";
+      const made = freshDir("control-run");
+      plantScored(made, "ctl-d", { kind: "root", form: "D", family: "claude" }, 1, { read: true });
+      const pack = path.join(dir, "runs", `${name}.tar.gz`);
+      expect(childSpawn(["tar", "-czf", pack, "-C", path.join(made, "runs"), name]).exitCode).toBe(
+        0
+      );
+      const stored = path.join(dir, "runs", `${name}.row.json`);
+      writeFileSync(
+        stored,
+        `${JSON.stringify({ ...JSON.parse(readFileSync(path.join(made, "runs", name, "row.json"), "utf8")), pack: sha256(pack) })}\n`
+      );
+      controlLog = path.join(dir, "control.log");
+      writeFileSync(
+        controlLog,
+        `${readFileSync(log, "utf8")}stored runs/${name}.tar.gz sha256 ${sha256(pack)}\nstored runs/${name}.row.json sha256 ${sha256(stored)}\nscored-job owner-walk controls root-D-claude, label ctl-d: the control guidance/D over every owner: 1 runs, 1 scored, 0 rig errors, count 12, 3 of each case; verdict UNKNOWN\n`
+      );
+    });
+    const covered = check(controlled, controlLog);
+    expect({
+      rule: "control-cell",
+      code: covered.code,
+      uncovered: covered.stdout.filter((line) => line.startsWith("UNKNOWN: no cell covers")),
+      // A control's cell line ends its count with a comma, a case form's with a semicolon: both
+      // are counts, so neither case is uncounted here.
+      uncounted: covered.stdout.filter((line) =>
+        line.startsWith("UNKNOWN: the Job's logs name no count")
+      ),
+      cells: covered.stdout
+        .filter((line) => line.startsWith("{"))
+        .map((line) => JSON.parse(line))
+        .map(({ cell, count }) => [cell, count]),
+    }).toEqual({
+      rule: "control-cell",
+      code: 1,
+      uncovered: [],
+      uncounted: [],
+      cells: [
+        ["guidance/D", 12],
+        ["guidance/root-B-claude", 2],
+      ],
+    });
+
+    // A download with no runs/ at all, as an empty key gives: UNKNOWN, never a pass.
+    const bare = freshDir("check-bare");
+    expect(check(bare)).toEqual({
+      code: 1,
+      stdout: [`UNKNOWN: ${bare}/runs is no directory: nothing was checked`],
+      stderr: "",
     });
 
     // The store emptied before the check: UNKNOWN, never a pass, whatever the Job's log names.
@@ -3666,6 +4200,106 @@ writeFileSync(path.join(runs, name, "row.json"), JSON.stringify({ outcome: "scor
       ],
       stderr: "",
     });
+  });
+});
+
+describe("score.ts cells", () => {
+  // Catches: a counts argument that is no object of counts taken as none, so `cells <dir>
+  // <scenario> 3`, the form before the per-case map, and a list, null or a string value each read
+  // as a run with no counts at all and exit 0, where `score.ts cell` refuses a bad count with
+  // exit 2. check-stored's reading rests on those counts, so a silent no-op there measures every
+  // cell against its stage's runs instead of the Job's.
+  // The keys carry an escaped tab, never a literal one: a control character inside a JSON string
+  // is no JSON, so a key with a real tab is refused for being unparseable rather than for its
+  // value, and the row would pass for the wrong reason. That is why rig.sh builds the counts with
+  // jq rather than by hand.
+  test("score.ts cells refuses a counts argument that is no object of positive whole numbers", () => {
+    const runs = freshDir("counts-runs");
+    const name = "owner-walk-root-B-claude-head-1";
+    plantScored(runs, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
+    const cells = (...args: string[]) =>
+      childSpawn([
+        "bun",
+        path.join(scenarios, "score.ts"),
+        "cells",
+        path.join(runs, "runs"),
+        "owner-walk",
+        ...args,
+      ]);
+    for (const bad of [
+      "3",
+      "null",
+      "[1]",
+      '{"head\\troot-B-claude":"3"}',
+      '{"head\\troot-B-claude":0}',
+      '{"head\\troot-B-claude":1.5}',
+      // Whole numbers isInteger takes and CellLine's own safe-integer bound does not: refused
+      // here, rather than reaching the cell and failing its bound with a zod dump and exit 1.
+      '{"head\\troot-B-claude":1e300}',
+      '{"head\\troot-B-claude":9007199254740993}',
+      "not json",
+    ]) {
+      const refused = cells(bad);
+      expect({
+        bad,
+        code: refused.exitCode,
+        said: refused.stderr.toString().includes("no object of"),
+        out: refused.stdout.toString(),
+      }).toEqual({ bad, code: 2, said: true, out: "" });
+    }
+    const taken = cells('{"head\\troot-B-claude":1}');
+    expect({ code: taken.exitCode, stderr: taken.stderr.toString() }).toEqual({
+      code: 0,
+      stderr: "",
+    });
+    expect({
+      code: taken.exitCode,
+      cell: JSON.parse(taken.stdout.toString().trim()),
+    }).toEqual({
+      code: 0,
+      cell: {
+        scenario: "owner-walk",
+        label: "head",
+        cell: "guidance/root-B-claude",
+        count: 1,
+        scored: 1,
+        passes: 1,
+        pending: 0,
+        verdict: "pass",
+      },
+    });
+    expect({ name, code: cells().exitCode }).toEqual({ name, code: 0 });
+  });
+
+  // Catches: `runs`, `cells` and `cell`, siblings of one command line, disagreeing about whether
+  // a bad argument is an error: `runs` printed an empty table at exit 0 for a scenario it does
+  // not score, for a surplus argument and for `--run` with no name, each of which reads as a run
+  // of nothing rather than as the mistake it is.
+  test("score.ts runs refuses an unknown scenario, a surplus argument and --run with no name, as its siblings refuse a bad count", () => {
+    const runs = freshDir("runs-args");
+    plantScored(runs, "head", { kind: "root", form: "B", family: "claude" }, 1, { read: true });
+    const dir = path.join(runs, "runs");
+    const score = (...args: string[]) =>
+      childSpawn(["bun", path.join(scenarios, "score.ts"), "runs", ...args]);
+    for (const [args, says] of [
+      [[dir, "owner-walk"], "is no scenario score.ts scores"],
+      [[dir, "ask-on-messages"], "is no scenario score.ts scores"],
+      [[dir, "tester-proof", "extra"], "at most one scenario"],
+      [[dir, "--run"], "takes one run's name"],
+      [[dir, "--run", ""], "takes one run's name"],
+      [[dir, "--run", "a", "b"], "takes one run's name"],
+    ] as const) {
+      const refused = score(...args);
+      expect({
+        args,
+        code: refused.exitCode,
+        said: refused.stderr.toString().includes(says),
+        out: refused.stdout.toString(),
+      }).toEqual({ args, code: 2, said: true, out: "" });
+    }
+    // Its own scenario still reads, and so does the whole directory.
+    for (const args of [[dir], [dir, "tester-proof"]])
+      expect({ args, code: score(...args).exitCode }).toEqual({ args, code: 0 });
   });
 });
 
