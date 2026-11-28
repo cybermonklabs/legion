@@ -211,7 +211,7 @@ func TestCommentPayloadSuppressesResolvedRouteAndAuthorSessions(t *testing.T) {
 				Actor:     model.Actor{Kind: "user", ID: "alice"},
 				Payload:   tc.payload,
 				Notify:    true,
-				CreatedAt: time.Now(),
+				CreatedAt: fixtureTime,
 			}
 			err := publish(ctx, Deps{Store: database, Publisher: publisher}, event, "", routing{route: tc.route}, map[string]struct{}{})
 			if tc.wantErr == nil && err != nil {
@@ -238,7 +238,7 @@ func TestCommentRouteSuppressionAppliesOnlyToTheCreationRoute(t *testing.T) {
 		Type:      "comment.created",
 		Actor:     model.Actor{Kind: "user", ID: "alice"},
 		Notify:    true,
-		CreatedAt: time.Now(),
+		CreatedAt: fixtureTime,
 		Payload: map[string]any{
 			"id":                          "00000000-0000-0000-0000-000000000004",
 			"mentions":                    mentionsOf("old-holder"),
@@ -277,7 +277,7 @@ func TestCommentRouteSuppressionFollowsTheResolvedHolder(t *testing.T) {
 		Type:      "comment.created",
 		Actor:     model.Actor{Kind: "user", ID: "alice"},
 		Notify:    true,
-		CreatedAt: time.Now(),
+		CreatedAt: fixtureTime,
 		Payload: map[string]any{
 			"id":                          "00000000-0000-0000-0000-000000000005",
 			"mentions":                    mentionsOf("s1"),
@@ -355,7 +355,7 @@ func TestAnUnansweredSessionMentionHoldsTheCopiesOfTheSessionItNames(t *testing.
 			deps := withHeldRoles(Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()})
 			err := publish(ctx, deps, model.Event{
 				ID: 103, IssueKey: new("T-1"), Type: "comment.created", Actor: model.Actor{Kind: "user", ID: "alice"},
-				Payload: payload, Notify: true, CreatedAt: time.Now(),
+				Payload: payload, Notify: true, CreatedAt: fixtureTime,
 			}, "", routing{route: route}, map[string]struct{}{})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("publish returned %v, want %v", err, tc.wantErr)
@@ -414,7 +414,7 @@ func TestARouteSuppressedByAnUnansweredMentionsTargetFollowsThatMention(t *testi
 					"suppress_route":   true,
 					"suppressed_route": "role:reviewer",
 				},
-				Notify: true, CreatedAt: time.Now(),
+				Notify: true, CreatedAt: fixtureTime,
 			}, "", routing{route: new(tc.route)}, map[string]struct{}{})
 			if !errors.Is(err, tc.wantErr) {
 				t.Fatalf("publish returned %v, want %v", err, tc.wantErr)
@@ -438,11 +438,8 @@ func nextAttempt(t *testing.T, database *store.Store, eventID int64) (attempts i
 }
 
 // waitsFromScan reports whether due is mentionPendingDelay after a moment between before and
-// after, the times read either side of the scan that wrote it: recordBatch writes a blocked
-// event's next_attempt_at as least(now() + delay, until), now() is read inside the scan, and a
-// blocker that waits on a mention is written in the same statement. A bound read from the
-// test's clock after the scan instead moves with the time the test takes to reach the check,
-// which a loaded machine can stretch past the whole wait.
+// after. Callers get the bracket from databaseNow, on the same clock recordBatch uses for
+// next_attempt_at, or pass equal endpoints when the row freezes the database's moment.
 func waitsFromScan(due *time.Time, before, after time.Time) bool {
 	return due != nil && !due.Before(before.Add(mentionPendingDelay)) && !due.After(after.Add(mentionPendingDelay))
 }
@@ -487,9 +484,9 @@ func TestAScanDefersAClaimantCopyWhileItsMentionIsBeingSent(t *testing.T) {
 			publisher := &recordingPublisher{}
 			outbox := holding(t, Deps{Store: database, Publisher: publisher})
 
-			before := time.Now()
+			before := databaseNow(t, database)
 			outbox.scan(ctx, unfenced{})
-			after := time.Now()
+			after := databaseNow(t, database)
 			if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, []string{issueTopic}) {
 				t.Fatalf("topics while the mention is pending = %#v, want the issue topic alone", got)
 			}
@@ -567,9 +564,9 @@ func TestACreditedSessionsPendingMentionDefersTheEventOfAClaimedIssue(t *testing
 
 	publisher := &recordingPublisher{}
 	outbox := holding(t, Deps{Store: database, Publisher: publisher})
-	before := time.Now()
+	before := databaseNow(t, database)
 	outbox.scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, database)
 
 	want := []string{issueTopic, claimantTopic}
 	if got := topicsOf(publisher.all()); !reflect.DeepEqual(got, want) {
@@ -718,9 +715,9 @@ func TestAHeldBackClaimantCopyDefersNoAttemptThatFailedElsewhere(t *testing.T) {
 			seedMentionDelivery(t, database, commentID, "session-claimant", "pending")
 			publisher := &countingPublisher{failTopics: tc.failTopics}
 
-			before := time.Now()
+			before := databaseNow(t, database)
 			holding(t, withHeldRoles(Deps{Store: database, Publisher: publisher})).scan(ctx, unfenced{})
-			after := time.Now()
+			after := databaseNow(t, database)
 			if got := publisher.attempted(); !reflect.DeepEqual(got, []string{issueTopic, roleTopic, authorTopic}) {
 				t.Fatalf("topics sent = %#v, want every destination but the held-back claimant copy", got)
 			}
@@ -867,7 +864,7 @@ func TestAnAbandonedMentionIsSettledByTheOutboxOrLeftToTheClaimThatTookItFirst(t
 					"suppressed_route":            "session:s1",
 					"suppressed_route_session_id": "s1",
 				},
-				Notify: true, CreatedAt: time.Now(),
+				Notify: true, CreatedAt: fixtureTime,
 			}
 			publisher := &recordingPublisher{}
 			deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
@@ -1229,9 +1226,9 @@ func TestAFallbackCopyWhoseMentionIsStillBeingSentIsClaimedAgainOnlyOnceItsWaitH
 		t.Fatalf("put the mention back in flight: %v", err)
 	}
 
-	before := time.Now()
+	before := databaseNow(t, database)
 	publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-	after := time.Now()
+	after := databaseNow(t, database)
 	row := readHeldCopy(t, database, commentID, sessionTopic)
 	if row.attempts != 0 || row.settled || row.published || row.due == nil {
 		t.Fatalf("the held copy has attempts=%d settled=%v published=%v next_attempt_at=%v, want no attempt "+
@@ -1321,13 +1318,13 @@ func TestAFallbackCopyNATSDeniesIsRetriedPastTheDeadLetterThresholdUntilItIsPubl
 
 	denied := retry.DeadLetterAttempts + 2
 	for want := 1; want <= denied; want++ {
-		before := time.Now()
+		before := databaseNow(t, database)
 		if want == 1 {
 			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
 		} else {
 			pass()
 		}
-		after := time.Now()
+		after := databaseNow(t, database)
 		row := readHeldCopy(t, database, commentID, sessionTopic)
 		if row.attempts != want || row.settled || row.published || row.due == nil {
 			t.Fatalf("after %d denied passes the held copy has attempts=%d settled=%v published=%v next_attempt_at=%v, "+
@@ -1425,9 +1422,9 @@ func TestAFallbackCopyOutlivesANATSOutageLongerThanTheDeadLetterThreshold(t *tes
 
 	outage := retry.DeadLetterAttempts + 2
 	for down := 1; down <= outage; down++ {
-		before := time.Now()
+		before := databaseNow(t, database)
 		pass()
-		after := time.Now()
+		after := databaseNow(t, database)
 		row := readHeldCopy(t, database, commentID, sessionTopic)
 		if row.attempts != 0 || row.settled || row.published || row.due == nil {
 			t.Fatalf("after %d passes with NATS unreachable the held copy has attempts=%d settled=%v published=%v "+
@@ -1664,7 +1661,7 @@ func TestTheCopyOfAFailedMentionCarriesTheMentionsDedupeKey(t *testing.T) {
 			}
 			event := model.Event{
 				ID: 106, IssueKey: new("T-1"), Type: "comment.created", Actor: model.Actor{Kind: "user", ID: "alice"},
-				Payload: payload, Notify: true, CreatedAt: time.Now(),
+				Payload: payload, Notify: true, CreatedAt: fixtureTime,
 			}
 			publisher := &recordingPublisher{}
 			deps := Deps{Store: database, Publisher: publisher, Broker: events.NewBroker()}
@@ -1702,7 +1699,7 @@ func TestCommentEnvelopeCorrelatesRepliesUnlessTheyReplyToAnAsk(t *testing.T) {
 		{
 			name: "plain comment reply",
 			event: model.Event{
-				ID: 1, IssueKey: new("T-1"), Type: "comment.answered", CreatedAt: time.Now(),
+				ID: 1, IssueKey: new("T-1"), Type: "comment.answered", CreatedAt: fixtureTime,
 				Payload: map[string]any{"reply_to": "00000000-0000-0000-0000-000000000010"},
 			},
 			wantRef: "00000000-0000-0000-0000-000000000010",
@@ -1710,7 +1707,7 @@ func TestCommentEnvelopeCorrelatesRepliesUnlessTheyReplyToAnAsk(t *testing.T) {
 		{
 			name: "ask reply wins over comment parent",
 			event: model.Event{
-				ID: 2, IssueKey: new("T-1"), Type: "comment.created", CreatedAt: time.Now(),
+				ID: 2, IssueKey: new("T-1"), Type: "comment.created", CreatedAt: fixtureTime,
 				Payload: map[string]any{
 					"reply_to": "00000000-0000-0000-0000-000000000010", "ask_id": "00000000-0000-0000-0000-000000000020",
 				},

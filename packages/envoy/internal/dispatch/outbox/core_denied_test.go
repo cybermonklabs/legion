@@ -495,9 +495,9 @@ type holdPassingDuringAcknowledgement struct {
 
 func (h *holdPassingDuringAcknowledgement) Deadline() time.Time {
 	if h.passed.Load() {
-		return time.Now().Add(-time.Second)
+		return passedDeadline
 	}
-	return time.Now().Add(time.Hour)
+	return openDeadline
 }
 
 func (h *holdPassingDuringAcknowledgement) WindowUntil(deadline func() time.Time) bus.Sender {

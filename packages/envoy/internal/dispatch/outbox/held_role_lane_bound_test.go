@@ -31,7 +31,6 @@ const heldRoleLaneBound = 2 * model.DeliveryClaimLapse
 // the comment's copy has an earlier event to keep after; it owes nothing more, and holds nothing.
 func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *testing.T) {
 	t.Parallel()
-	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	const routed = "routed-role-of-the-issue"
 	const first = "first-unanswered-role"
 	const second = "second-unanswered-role"
@@ -87,10 +86,8 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 	agedUnnamedAttempts(t, rig.database, commentID, heldRoleLaneBound+time.Second)
 	dueNow(t, rig.database, held.ID)
 	dueNow(t, rig.database, later.ID)
-	passed := time.Now()
 	holding(t, rig.deps()).scan(ctx, unfenced{})
 	waitFor(t, "the later event at the holder past the bound", func() bool { return len(recv.received()) == 2 })
-	t.Logf("the later event reached %s %v after the scan past the bound", holder, time.Since(passed))
 	if got := recv.received(); got[1].SourceEventID != fmt.Sprint(later.ID) {
 		t.Fatalf("%s was sent %+v past the bound, want the earlier comment and then the later event (%d)", holder, got, later.ID)
 	}
@@ -121,7 +118,6 @@ func TestAHeldRoleLaneStarvesItsHolderNoLongerThanTheUnnamedForwardBound(t *test
 		ids = append(ids, item.SourceEventID)
 	}
 	t.Logf("%s received events %v (want %d, %d, %d)", holder, ids, earlier.ID, later.ID, held.ID)
-	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 	if !slices.Equal(ids, []string{fmt.Sprint(earlier.ID), fmt.Sprint(later.ID), fmt.Sprint(held.ID)}) {
 		t.Fatalf("%s received events %v, want the earlier comment, the later event and the comment, each once", holder, ids)
 	}

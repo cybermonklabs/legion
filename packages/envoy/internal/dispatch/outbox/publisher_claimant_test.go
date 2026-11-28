@@ -7,7 +7,6 @@ import (
 	"reflect"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -516,7 +515,7 @@ func TestClaimantRouteReachesTheSessionHoldingTheIssue(t *testing.T) {
 			}
 			event, slug := tc.arrange(t, database)
 			event.ID = 100
-			event.CreatedAt = time.Now()
+			event.CreatedAt = fixtureTime
 			event.Notify = tc.forceNotify || events.NewBroker().Notify(event)
 			raw, err := json.Marshal(event.Payload)
 			if err != nil {

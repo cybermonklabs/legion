@@ -48,15 +48,16 @@ func (heldRoles) RoleClaim(context.Context, string) (envoystore.RoleClaim, error
 	return envoystore.RoleClaim{HolderSessionID: roleHolder}, nil
 }
 
-func (heldRoles) Holder(context.Context, string) (session.SessionEntry, error) {
-	return session.SessionEntry{SelfSubscribed: true, UpdatedAt: time.Now().UnixMilli()}, nil
+func (r heldRoles) Holder(context.Context, string) (session.SessionEntry, error) {
+	return session.SessionEntry{SelfSubscribed: true, UpdatedAt: r.Now().UnixMilli()}, nil
 }
 
 func (heldRoles) LastSeen(string) int64 { return 0 }
 
 // withHeldRoles is deps whose role routes resolve to roleHolder (heldRoles).
 func withHeldRoles(deps Deps) Deps {
-	deps.RoleClaims, deps.Sessions = heldRoles{}, heldRoles{}
+	held := heldRoles{Windows: liveClaim(roleHolder).windows}
+	deps.RoleClaims, deps.Sessions = held, held
 	return deps
 }
 
@@ -129,6 +130,9 @@ func expireForwardAck(t *testing.T, ack *clocktest.Fake) {
 	ack.Set(deadline)
 }
 
+// roleRigNow dates and judges registrations on the same fixed clock.
+func roleRigNow() time.Time { return fixtureTime }
+
 // newRoleRigOn is a roleRig on the server at url, with client as the outbox's client and conn as
 // the test's own connection, which the registries write through.
 func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Conn, options ...session.SessionRegistryOption) *roleRig {
@@ -138,6 +142,7 @@ func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Con
 		t.Fatalf("open the role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
+	options = append([]session.SessionRegistryOption{session.WithSessionClock(roleRigNow)}, options...)
 	sessions, err := session.OpenSessionRegistry(t.Context(), conn, options...)
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
@@ -148,9 +153,8 @@ func newRoleRigOn(t *testing.T, url string, client *bus.Client, conn *natsgo.Con
 }
 
 // deps is the outbox's dependencies as cmd/dispatch wires them: role routes resolved through
-// roles.Buckets on the outbox's own client, judged by the package's own windows, which is what
-// a deployment that sets neither ENVOY_SESSION_LIVE_WINDOW nor ENVOY_SESSION_GONE_HORIZON
-// gives it, and that client the reader of a role's kept lane and its drain cursor, which a
+// roles.Buckets on the outbox's own client with the compiled window lengths and the rig's
+// fixed session clock. That client also reads a role's kept lane and its drain cursor, which a
 // keep's handover makes its pass over (Deps.KeptLanes).
 func (r *roleRig) deps() Deps {
 	return r.depsJudgedBy(roles.Windows{})
@@ -159,6 +163,9 @@ func (r *roleRig) deps() Deps {
 // depsJudgedBy is deps whose role-route holders are judged by windows, as cmd/dispatch judges
 // them by the two the deployment gave its listeners (roleHolderWindows, cmd/dispatch/main.go).
 func (r *roleRig) depsJudgedBy(windows roles.Windows) Deps {
+	if windows.Now == nil {
+		windows.Now = roleRigNow
+	}
 	holders := roles.NewBuckets(r.client, windows)
 	return Deps{Store: r.database, Publisher: r.client, Broker: r.broker, RoleClaims: holders, Sessions: holders,
 		KeptLanes: r.client}
@@ -183,7 +190,7 @@ func (r *roleRig) claimRegisteredAt(t *testing.T, role, holder string, age time.
 	if _, err := r.registry.SetRole(holder, "test-machine", role, false); err != nil {
 		t.Fatalf("claim %s for %s: %v", role, holder, err)
 	}
-	record, err := json.Marshal(session.SessionEntry{SelfSubscribed: true, UpdatedAt: time.Now().Add(-age).UnixMilli()})
+	record, err := json.Marshal(session.SessionEntry{SelfSubscribed: true, UpdatedAt: roleRigNow().Add(-age).UnixMilli()})
 	if err != nil {
 		t.Fatalf("encode the record of %s: %v", holder, err)
 	}
@@ -1694,9 +1701,9 @@ func TestACopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) {
 	t.Run("a live mention holds the keep until it settles", func(t *testing.T) {
 		database, publisher, commentID, event, deps := keptFor(t, "pending")
 
-		before := time.Now()
+		before := databaseNow(t, database)
 		holding(t, deps).scan(ctx, unfenced{})
-		after := time.Now()
+		after := databaseNow(t, database)
 
 		if kept := publisher.keeps(); len(kept) > 0 {
 			t.Fatalf("the outbox kept %d copies while the comment's mentions were still being sent, the first on %s under %q carrying mention_dedupe_keys %v, want none kept yet: a copy naming no mentioned session shows the comment a second time to whichever of them claims the role",
@@ -1796,9 +1803,9 @@ func TestALaterEventIsNotKeptBeforeACopyWaitingOnACommentsMentions(t *testing.T)
 		t.Fatalf("the later event does not notify, so it takes no role route and proves nothing: %#v", update)
 	}
 
-	before := time.Now()
+	before := databaseNow(t, database)
 	holding(t, deps).scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, database)
 
 	if kept := publisher.keeps(); len(kept) > 0 {
 		t.Fatalf("the outbox kept %d copies while the comment's copy waited on its mention, the first of event %s under %q, want none: the role's next holder would be handed the issue's later event first",
@@ -2479,9 +2486,9 @@ func TestAFallbackCopyKeptForARoleWaitsForTheCommentsLiveMentions(t *testing.T) 
 		ctx := store.WithTransactionTracking(context.Background())
 		database, publisher, deps, commentID := keptFor(ctx, t, "pending")
 
-		before := time.Now()
+		before := databaseNow(t, database)
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-		after := time.Now()
+		after := databaseNow(t, database)
 
 		if kept := publisher.keeps(); len(kept) > 0 {
 			t.Fatalf("the pass kept %d copies while the comment's mention of %s was still being sent, the first on %s under %q carrying mention_dedupe_keys %v, want none kept yet: a copy naming that session nowhere shows it the comment a second time when it claims the role",
@@ -2735,9 +2742,9 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 		deps, registry := rig.countingDeps(t)
 		commentID := seedHeldRoleFallbackCopy(ctx, t, deps, role)
 
-		before := time.Now()
+		before := databaseNow(t, rig.database)
 		publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, deps.Store))
-		after := time.Now()
+		after := databaseNow(t, rig.database)
 
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "has not heartbeated", before, after)
 		if claimed, err := rig.registry.RoleHolder(role); err != nil || claimed != holder {
@@ -2763,9 +2770,9 @@ func TestAFallbackCopyWhoseRoleHolderIsNotReachedStaysPendingUnderItsHolder(t *t
 		unreadable := deps
 		unreadable.RoleClaims = unreadableRoleClaims{}
 
-		before := time.Now()
+		before := databaseNow(t, rig.database)
 		publishFallbackCopies(ctx, unreadable, unfenced{}, holdingProcess(t, rig.database))
-		after := time.Now()
+		after := databaseNow(t, rig.database)
 
 		heldPendingCopy(t, rig, registry, &logged, commentID, roleTopic, "resolve the role's holder", before, after)
 	})

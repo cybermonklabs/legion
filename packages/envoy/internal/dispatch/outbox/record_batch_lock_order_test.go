@@ -4,7 +4,6 @@ import (
 	"context"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -64,7 +63,7 @@ func TestRecordBatchTakesAPrefixOfTheStoreLockOrder(t *testing.T) {
 	})
 	outbox := holding(t, deps)
 
-	at := time.Now()
+	at := fixtureTime
 	page := graphstore.PageNode(graphstore.RolePageID(role), graphWriter, at, event.ID)
 	roleNode := graphstore.RoleNode(role, graphWriter, at, event.ID)
 	if page.Kind >= roleNode.Kind {

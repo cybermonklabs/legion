@@ -92,11 +92,20 @@ func (w deadlineWindow) PublishStoredAsync(subject string, item contracts.Envelo
 	return w.Sender.PublishStoredAsync(subject, item, msgID)
 }
 
+// fixtureTime dates test data that does not need a live clock.
+var fixtureTime = time.Date(2026, time.January, 1, 0, 0, 0, 0, time.UTC)
+
+// Stub fences switch between these two deadlines without waiting for time to pass.
+var (
+	passedDeadline = time.Unix(0, 0).UTC()
+	openDeadline   = time.Date(9999, time.December, 31, 0, 0, 0, 0, time.UTC)
+)
+
 // unfenced is a publisher hold whose deadline never comes, for a test that scans without one. The
 // record's back-offs need the hold's row too (recordBatch): holding gives an outbox one.
 type unfenced struct{}
 
-func (unfenced) Deadline() time.Time { return time.Now().Add(time.Hour) }
+func (unfenced) Deadline() time.Time { return openDeadline }
 
 // errMentionPending is what publish returns when the event's destinations held a copy back for a
 // mention still being sent - a mentioned session's own (destinations.leftToMention), or a role
@@ -2138,7 +2147,7 @@ func seedAsk(t *testing.T, database *store.Store, issueKey string, author model.
 		return id
 	}
 	inFollowTransaction(t, database, func(tx pgx.Tx) error {
-		_, err := asks.Follow(context.Background(), tx, id, author.ID, author, time.Now(), graphstore.NoEvent)
+		_, err := asks.Follow(context.Background(), tx, id, author.ID, author, fixtureTime, graphstore.NoEvent)
 		return err
 	})
 	return id
@@ -2148,7 +2157,7 @@ func seedFollower(t *testing.T, database *store.Store, askID, sessionID string) 
 	t.Helper()
 	inFollowTransaction(t, database, func(tx pgx.Tx) error {
 		_, err := asks.Follow(context.Background(), tx, askID, sessionID,
-			model.Actor{Kind: "session", ID: sessionID}, time.Now(), graphstore.NoEvent)
+			model.Actor{Kind: "session", ID: sessionID}, fixtureTime, graphstore.NoEvent)
 		return err
 	})
 }

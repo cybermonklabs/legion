@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/google/uuid"
 
@@ -58,7 +57,6 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 			ctx := context.Background()
 			database := storetest.Open(t)
 			broker := events.NewBroker()
@@ -174,7 +172,6 @@ func TestARouteChangeKeepsAMentionCopyBehindAnEarlierEvent(t *testing.T) {
 			}
 			inOrder := []string{fmt.Sprint(earlier.ID), fmt.Sprint(comment.ID)}
 			t.Logf("s1 took events %v (earlier %d, comment %d)", got, earlier.ID, comment.ID)
-			t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 			switch {
 			case !tc.passes && !slices.Equal(got, inOrder):
 				t.Fatalf("s1 took %v, want the earlier event and then the comment %v", got, inOrder)
@@ -202,7 +199,6 @@ func TestARecordThatWritesNoOwedKeysLeavesAMentionCopyWaiting(t *testing.T) {
 	for _, tc := range recordsAfterARouteMove {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 			ctx := context.Background()
 			moved := recordAfterARouteMove(t, tc.record)
 			owed, _, _, _ := eventRecord(t, moved.database, moved.earlier)
@@ -220,7 +216,6 @@ func TestARecordThatWritesNoOwedKeysLeavesAMentionCopyWaiting(t *testing.T) {
 			if by, err := copyHolder(ctx, moved.deps, moved.comment, moved.s1, "s1"); err != nil || by != nil {
 				t.Fatalf("control: with the earlier event published, s1's copy waits behind %s (%v), want nothing", describeHolder(by), err)
 			}
-			t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 		})
 	}
 }

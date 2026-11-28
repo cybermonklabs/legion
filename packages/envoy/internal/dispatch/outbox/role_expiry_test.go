@@ -632,9 +632,9 @@ func TestAnUnavailableKeepIsCountedAndReleased(t *testing.T) {
 	deps, registry := rig.countingDeps(t)
 	deps.Publisher = failingKeeps{Client: rig.client, role: role, err: bus.ErrUnavailable}
 
-	before := time.Now()
+	before := databaseNow(t, rig.database)
 	holding(t, deps).passKeptExpiries(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, rig.database)
 
 	if body := failureReasons(t, registry); !strings.Contains(body, `envoy_dispatch_outbox_publish_failures_total{reason="failed"} 1`) {
 		t.Fatalf("/metrics body = %q, want the unavailable keep counted as failed once", body)

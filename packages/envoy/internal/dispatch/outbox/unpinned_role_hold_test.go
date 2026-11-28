@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -69,9 +68,9 @@ func TestARoleForwardWaitsForAnUnpinnedRoleMentionOfItsHolder(t *testing.T) {
 	// because only the sender's own resolution learns which session holds the role.
 	seedDelivery(t, rig.database, commentID, target, "", "pending")
 
-	before := time.Now()
+	before := databaseNow(t, rig.database)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, rig.database)
 
 	if forwards := recv.receivedNow(t, rig.client); len(forwards) > 0 {
 		t.Fatalf("the batch forwarded %s %d copies of the comment, the first under %q, while the mention of %s was live and pinned to no session yet, want none: that mention is on its way to the same host, so this copy shows it the comment twice",

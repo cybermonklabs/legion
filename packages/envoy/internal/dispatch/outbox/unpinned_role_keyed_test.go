@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -131,9 +130,9 @@ func TestTwoUnpinnedRoleMentionsHoldTheirCopiesAsBefore(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, firstTarget, "", "pending")
 	seedDelivery(t, rig.database, commentID, secondTarget, "", "pending")
 
-	before := time.Now()
+	before := databaseNow(t, rig.database)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, rig.database)
 
 	if forwards := recv.receivedNow(t, rig.client); len(forwards) != 0 {
 		t.Fatalf("%s was sent %+v while two mentions of the comment were live and pinned to no session, want nothing: one key serves one mention, so neither copy can carry the key the mention that reaches this host will repeat",

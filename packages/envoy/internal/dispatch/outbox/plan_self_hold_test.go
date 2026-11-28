@@ -6,7 +6,6 @@ import (
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -70,9 +69,9 @@ func TestAWaitingCopyHoldsNoCopyOfItsOwnEvent(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, first, "", "pending")
 	seedDelivery(t, rig.database, commentID, second, "", "pending")
 
-	before := time.Now()
+	before := databaseNow(t, rig.database)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	after := time.Now()
+	after := databaseNow(t, rig.database)
 
 	// The defect's own signature: an event held by a blocker carrying itself reads an outcome
 	// settleEvent has not written, whose zero state holdBack takes for a released one.

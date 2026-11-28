@@ -790,7 +790,6 @@ type moRow struct {
 	unobserved int
 	first      *moCounterexample
 	liveFirst  string
-	duration   time.Duration
 }
 
 // moFailBudget is how many sends of one run may fail: two with one publisher, and one with two
@@ -805,7 +804,6 @@ func moFailBudget(env moEnv) int8 {
 // moRun explores every scenario under v and env, the scenarios spread over at most 16 workers.
 func moRun(v moVariant, env moEnv, scenarios []moScenario) moRow {
 	row := moRow{variant: v, env: env, failBudget: moFailBudget(env), scenarios: len(scenarios)}
-	began := time.Now()
 	results := make([]moResult, len(scenarios))
 	work := make(chan int)
 	var workers sync.WaitGroup
@@ -841,14 +839,13 @@ func moRun(v moVariant, env moEnv, scenarios []moScenario) moRow {
 		}
 		row.steps = max(row.steps, result.maxSteps)
 	}
-	row.duration = time.Since(began)
 	return row
 }
 
 func (r moRow) String() string {
-	return fmt.Sprintf("| %s | %s | %d | %d | %d | %d (%d scenarios; %d in the window) | %d (longest fair run %d steps) | %s |",
+	return fmt.Sprintf("| %s | %s | %d | %d | %d | %d (%d scenarios; %d in the window) | %d (longest fair run %d steps) |",
 		r.variant.name, r.env.name, r.failBudget, r.scenarios, r.states, r.violations, r.counterexampleScenarios, r.inWindow,
-		r.liveFailures, r.steps, r.duration.Round(time.Millisecond))
+		r.liveFailures, r.steps)
 }
 
 // The model run: the rule that reads owed_keys alone must reproduce the reviewer's counterexample,
@@ -861,11 +858,10 @@ func TestTheMentionCopyOrderModel(t *testing.T) {
 	quiet := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() { slog.SetDefault(quiet) })
-	t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 	scenarios := moScenarios()
 	t.Logf("full model (ENVOY_MENTION_ORDER_MODEL=full): %v; %d scenarios", moFull(), len(scenarios))
-	t.Logf("| rule | publishers | failed sends | scenarios | states | copies that passed an earlier event | copies that never went | time |")
-	t.Logf("| --- | --- | --- | --- | --- | --- | --- | --- |")
+	t.Logf("| rule | publishers | failed sends | scenarios | states | copies that passed an earlier event | copies that never went |")
+	t.Logf("| --- | --- | --- | --- | --- | --- | --- |")
 	report := func(row moRow) moRow {
 		t.Logf("%s", row)
 		if row.unobserved != 0 {
@@ -915,5 +911,4 @@ func TestTheMentionCopyOrderModel(t *testing.T) {
 			t.Errorf("the rule as built left a copy that never goes (%s): %s", env.name, row.liveFirst)
 		}
 	}
-	t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 }

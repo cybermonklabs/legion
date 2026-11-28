@@ -1022,9 +1022,9 @@ func (p *fenceAfterFirstSend) PublishAsync(item contracts.Envelope) <-chan error
 
 func (p *fenceAfterFirstSend) Deadline() time.Time {
 	if p.passed.Load() {
-		return time.Now().Add(-time.Second)
+		return passedDeadline
 	}
-	return time.Now().Add(time.Hour)
+	return openDeadline
 }
 
 // A batch checks the publisher hold's deadline before every send: once a send has met it the

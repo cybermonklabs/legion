@@ -32,9 +32,9 @@ type deadlinePassingOnTopic struct {
 
 func (p *deadlinePassingOnTopic) Deadline() time.Time {
 	if p.passed.Load() {
-		return time.Now().Add(-time.Second)
+		return passedDeadline
 	}
-	return time.Now().Add(time.Hour)
+	return openDeadline
 }
 
 func (p *deadlinePassingOnTopic) WindowUntil(deadline func() time.Time) bus.Sender {
@@ -136,9 +136,9 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookRecordsNothing(t *testing.T) {
 				tc.lose(t, database)
 			}
 
-			before := time.Now()
+			before := databaseNow(t, database)
 			publishFallbackCopies(ctx, deps, unfenced{}, holdingProcess(t, database))
-			after := time.Now()
+			after := databaseNow(t, database)
 
 			if !lost.Load() {
 				t.Fatalf("the pass published no copy, so the hold was never taken from it and the test holds nothing; the pass logged:\n%s",
@@ -179,9 +179,9 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookBeforeItsClaimRecordsNothing(t 
 	// Another process takes the hold before this one claims a row of its own.
 	holdRow(t, database, uuid.New())
 
-	before := time.Now()
+	before := databaseNow(t, database)
 	publishFallbackCopies(ctx, deps, unfenced{}, stale)
-	after := time.Now()
+	after := databaseNow(t, database)
 
 	// The scan that seeded the row published the issue topic; the copy is the pass's one send.
 	if copies := topicsOf(publisher.all())[1:]; len(copies) != 1 || copies[0] != sessionTopic {
@@ -207,7 +207,7 @@ func TestAFallbackPassWhoseHoldAnotherProcessTookBeforeItsClaimRecordsNothing(t 
 // its last renewal bought it (publisherHoldOptions).
 type resumedPastTheDeadline struct{}
 
-func (resumedPastTheDeadline) Deadline() time.Time { return time.Now().Add(-time.Second) }
+func (resumedPastTheDeadline) Deadline() time.Time { return passedDeadline }
 
 // TestAFallbackPassResumedPastItsHoldsDeadlineClaimsNothing: a pass claims nothing once its
 // hold's deadline has passed, as a scan starts no batch past it (Outbox.scan). The process may
@@ -292,9 +292,9 @@ func TestAFallbackPassWhoseHoldLapsedBeforeItsClaimRecordsNothingBesideItsNextHo
 		holdRow(t, database, uuid.New())
 	}
 
-	before := time.Now()
+	before := databaseNow(t, database)
 	publishFallbackCopies(ctx, deps, unfenced{}, stale)
-	after := time.Now()
+	after := databaseNow(t, database)
 
 	if !took.Load() {
 		t.Fatalf("the pass published no copy, so nobody took the lapsed hold while it sent and the test holds "+

@@ -646,9 +646,7 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 		claimed <- rig.claimUnder(role, holder, session.SessionEntry{SelfSubscribed: true})
 	})
 
-	started := time.Now()
 	holding(t, rig.publisherOn(publisher)).scan(context.Background(), unfenced{})
-	scanned := time.Since(started)
 
 	if err := testwait.Receive(t, "the claim made under the first keep", claimed); err != nil {
 		t.Fatalf("the claim made under the first keep: %v", err)
@@ -685,7 +683,6 @@ func TestTwoCopiesKeptForOneRoleClaimedUnderTheFirstKeepReachTheHolderInOrder(t 
 		t.Fatalf("the stream holds %v on %s, want both handovers under the ids the drain's own forwards of them would carry: %v",
 			stored, subject, forwards)
 	}
-	t.Logf("the scan that kept both copies of the issue and handed both to the holder took %s; nothing drained the lane and nothing swept it.", scanned)
 }
 
 // Two events of one issue kept in one batch, with the role claimed by one session under the

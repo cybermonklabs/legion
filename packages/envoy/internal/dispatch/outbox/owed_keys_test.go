@@ -147,7 +147,6 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
-			t.Logf("start %s", time.Now().UTC().Format(time.RFC3339Nano))
 			ctx := context.Background()
 			rig := newRoleRig(t)
 			const role, stale, next = "reviewer", "ses_stale_holder", "ses_next_holder"
@@ -217,7 +216,6 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 					comment.ID, next, describeHolder(forNext), earlier.ID, next)
 			}
 			if tc.afterRecord {
-				t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 				return
 			}
 			if got := recv.receivedNow(t, rig.client); len(got) != 0 {
@@ -227,7 +225,6 @@ func TestARoleHolderChangeKeepsAMentionCopyBehindAnEarlierForward(t *testing.T) 
 			holding(t, rig.deps()).scan(ctx, unfenced{})
 			first := handedNow(t, recv, "the earlier event's retry")
 			t.Logf("%s first took event %s (earlier %d, comment %d)", next, first.SourceEventID, earlier.ID, comment.ID)
-			t.Logf("end %s", time.Now().UTC().Format(time.RFC3339Nano))
 			if first.SourceEventID != fmt.Sprint(earlier.ID) {
 				t.Fatalf("control: %s first took event %s, want the earlier event %d forwarded on its retry", next, first.SourceEventID, earlier.ID)
 			}
