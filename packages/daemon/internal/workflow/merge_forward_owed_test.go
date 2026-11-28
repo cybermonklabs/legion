@@ -35,9 +35,7 @@ func TestATesterStartedAfterAMergeableReadIsHeldWhileTheAskIsOwed(t *testing.T) 
 	if pr := recordedPR(t, pool, "LEGION-208"); pr.ConflictingHead != "" || pr.MergeForward == nil {
 		t.Fatalf("after the mergeable read the record holds conflicting head %q and ask %+v, want none and the implementer's ask", pr.ConflictingHead, pr.MergeForward)
 	}
-	applyRefusingNothing(t, pool, readsAfter(3*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
-		State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-		SubmittedAt: firstConflictRead.Add(3 * time.Minute)})
+	approvesAsTheReviewer(t, pool, readsAfter(3*time.Minute), 1, conflictHead, firstConflictRead.Add(3*time.Minute))
 	if got := issuePhase(t, pool); got != phase.Testing {
 		t.Fatalf("after the approval the issue is in %s, want testing", got)
 	}
@@ -388,9 +386,7 @@ func TestABranchBackAtTheHeadALandedMergeReplacedIsTheMergersToMergeForward(t *t
 	if got := issuePhase(t, pool); got != phase.Reviewing {
 		t.Fatalf("after the tester's pass at %s the issue is in %s, want reviewing", conflictHead, got)
 	}
-	applyRefusingNothing(t, pool, readsAfter(6*time.Minute), intake.PullRequestReview{Repo: "sjawhar/legion", Number: 42, ID: 1,
-		State: "approved", CommitID: conflictHead, HeadSHA: conflictHead, Author: "a-writer", AuthorCanWrite: true, Body: "ship it",
-		SubmittedAt: firstConflictRead.Add(6 * time.Minute)})
+	approvesAsTheReviewer(t, pool, readsAfter(6*time.Minute), 1, conflictHead, firstConflictRead.Add(6*time.Minute))
 	if got := issuePhase(t, pool); got != phase.Accepting {
 		t.Fatalf("after the reviewer's approval of %s the issue is in %s, want accepting", conflictHead, got)
 	}
