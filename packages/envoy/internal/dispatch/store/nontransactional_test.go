@@ -203,7 +203,7 @@ func TestACancelledMigrationEndsTheKeyWithItsSessionAndLogsNoError(t *testing.T)
 	go func() { migrated <- store.migrate(ctx, set) }()
 	waitForRunningStatement(t, store, "pg_sleep(30)")
 	cancel()
-	if err := <-migrated; !errors.Is(err, context.Canceled) {
+	if err := testwait.Receive(t, "the cancelled migration to return", migrated); !errors.Is(err, context.Canceled) {
 		t.Fatalf("migrate = %v, want the cancellation", err)
 	}
 	// The key goes with the session, and the session goes when the server reads the end of the
@@ -403,7 +403,7 @@ func TestABootCancelledWaitingForTheKeyClosesItsConnectionOutOfThePool(t *testin
 	go func() { migrated <- store.migrate(booting, set) }()
 	pid := waitForPollingBackend(t, store)
 	cancel()
-	if err := <-migrated; !errors.Is(err, context.Canceled) {
+	if err := testwait.Receive(t, "migrate to return once its boot, waiting for the key, was cancelled", migrated); !errors.Is(err, context.Canceled) {
 		t.Fatalf("migrate = %v, want the cancellation of a boot waiting for the key", err)
 	}
 	waitForGoneBackend(t, store, pid, "the connection of a boot whose wait for the key failed stayed in the pool, where its next caller gets a connection that may hold the key")
@@ -752,7 +752,9 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 	if err != nil {
 		t.Fatalf("open the second booting process's store: %v", err)
 	}
-	t.Cleanup(second.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the second runner's pool to come back, so the pool closes", second.Pool.Close)
+	})
 	// A session of the test's own, not one of the pools': it holds the key while both runners
 	// queue for it, and no pooled connection may be left holding a session-level key.
 	holder, err := pgx.Connect(ctx, databaseURL)
@@ -786,8 +788,9 @@ func TestABootAlreadyWaitingForTheKeyDoesNotDeadlockTheConcurrentBuild(t *testin
 		t.Fatalf("the records say %d runners were waiting for the key when it was released, want the 2 this test starts, each counted once (migrationKeyWaitingRunners)",
 			waiting)
 	}
-	for range 2 {
-		if err := <-applied; err != nil {
+	// Both runners answer on one channel, so each wait names how many had answered before it.
+	for returned := range 2 {
+		if err := testwait.Receive(t, fmt.Sprintf("a runner queued for the key to finish its migration (%d of the 2 had)", returned), applied); err != nil {
 			t.Errorf("a runner queued for the key before the build began: %v", err)
 		}
 	}

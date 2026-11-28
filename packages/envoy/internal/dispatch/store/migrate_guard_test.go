@@ -30,21 +30,26 @@ func TestMigrateFromSeveralProcessesAtOnceOnAnEmptyDatabase(t *testing.T) {
 		if err != nil {
 			t.Fatalf("open another process's store: %v", err)
 		}
-		t.Cleanup(another.Pool.Close)
+		t.Cleanup(func() {
+			testwait.Returns(t, "every connection of another process's pool to come back, so the pool closes", another.Pool.Close)
+		})
 		stores = append(stores, another)
 	}
 	set := fstest.MapFS{"migrations/0001_first.up.sql": {Data: []byte("create table guard_first (id integer)")}}
 	start := make(chan struct{})
-	errs := make(chan error, processes)
-	for _, process := range stores {
+	// Each process sends its answer on a channel of its own, so the wait for it names the process
+	// that has not returned.
+	errs := make([]chan error, len(stores))
+	for i, process := range stores {
+		errs[i] = make(chan error, 1)
 		go func() {
 			<-start
-			errs <- process.migrate(ctx, set)
+			errs[i] <- process.migrate(ctx, set)
 		}()
 	}
 	close(start)
-	for range processes {
-		if err := <-errs; err != nil {
+	for i := range processes {
+		if err := testwait.Receive(t, fmt.Sprintf("process %d of %d's migrate to return", i+1, processes), errs[i]); err != nil {
 			t.Errorf("a process migrating at the same moment failed: %v", err)
 		}
 	}

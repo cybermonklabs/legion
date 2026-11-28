@@ -31,6 +31,15 @@ func recordedMachineLoginRevocation(t *testing.T, database *Store, email string)
 	}
 }
 
+// openClaimWindow is the window a row gives Claim or Sendable where its verdict needs a claim the
+// product still judges inside that window. The product judges a claim's age on the database's
+// clock (tried_at against now() or clock_timestamp()), so a window of a minute, or of a pass's
+// 25 s, can pass on a loaded machine between the claim and the call that judges it. It is staged
+// state, not a wait: longer than any go test -timeout this package runs under, so the claim reads
+// inside it however long the machine takes, as liveProofAhead is for a DPoP proof's expiry. A
+// verdict that needs a claim past its window ages tried_at back on the database's clock instead.
+const openClaimWindow = 24 * time.Hour
+
 // TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim: a machine-login revocation recorded in a
 // removal's transaction is owed from its commit, claimed once within the retry window, and settled
 // only at the generation the claim read. A removal recorded again after the claim owes it anew, so
@@ -57,11 +66,14 @@ func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 		t.Fatalf("Owing(%s) before any removal = %t, %v; want nothing owed", email, owed, err)
 	}
 	record()
+	// The first claim's window does not decide it: the row was never tried (tried_at is null).
 	claimed, err := revocations.Claim(ctx, time.Minute, 5)
 	if err != nil || len(claimed) != 1 || claimed[0].Email != email {
 		t.Fatalf("Claim after the removal = %+v, %v; want %s's one revocation", claimed, err, email)
 	}
-	if again, err := revocations.Claim(ctx, time.Minute, 5); err != nil || len(again) != 0 {
+	// Inside the window: openClaimWindow, so the first claim is still inside it however long a
+	// loaded machine takes between the two claims.
+	if again, err := revocations.Claim(ctx, openClaimWindow, 5); err != nil || len(again) != 0 {
 		t.Fatalf("Claim inside the retry window = %+v, %v; want nothing", again, err)
 	}
 	if _, due, err := revocations.NextDue(ctx, time.Minute); err != nil || !due {
@@ -76,6 +88,8 @@ func TestARemovalRecordedAgainIsNotSettledByAnEarlierClaim(t *testing.T) {
 		t.Fatalf("Owing(%s) = %t at generation %d, %v; want owed at %d", email, owed, generation, err, claimed[0].Generation+1)
 	}
 
+	// Past the window: tried_at aged two minutes back on the database's clock, so a minute's window
+	// has passed whatever time the machine takes, and more time only ages it further.
 	if _, err := database.Pool.Exec(ctx, `update machine_login_revocations set tried_at = now() - interval '2 minutes'`); err != nil {
 		t.Fatal(err)
 	}

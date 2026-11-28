@@ -19,7 +19,9 @@ import (
 
 // A sign-in and a confirmation are each dated by the database's now(), and Membership answers the
 // confirmation's age by the database's clock: a row aged ninety minutes in SQL reads ninety minutes
-// old, and the confirmation that follows reads new again.
+// old, and the confirmation that follows reads new again. Each age is held to the span between two
+// readings of the database's clock around its write and its read (confirmedBetween), so no verdict
+// depends on how long the machine takes between them.
 func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -30,6 +32,7 @@ func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 	if _, found, err := people.Membership(ctx, email); err != nil || found {
 		t.Fatalf("membership before any sign-in: found=%t err=%v, want not found", found, err)
 	}
+	before := databaseNow(t, database.Pool)
 	if err := people.SignIn(ctx, email, "refresh-1"); err != nil {
 		t.Fatalf("sign in: %v", err)
 	}
@@ -38,23 +41,31 @@ func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 		t.Fatalf("record: %v", err)
 	}
 	membership, found, err := people.Membership(ctx, email)
-	if err != nil || !found || membership.RefreshToken != "refresh-1" || !confirmedJustNow(membership) {
-		t.Fatalf("membership after sign-in = %#v found=%t err=%v, want refresh-1 confirmed just now", membership, found, err)
+	after := databaseNow(t, database.Pool)
+	if err != nil || !found || membership.RefreshToken != "refresh-1" || !confirmedBetween(membership, 0, before, after) {
+		t.Fatalf("membership after sign-in = %#v found=%t err=%v, want refresh-1 confirmed by the sign-in, at most %s ago (the database's clock from before the sign-in to after the read)",
+			membership, found, err, after.Sub(before))
 	}
 
+	before = databaseNow(t, database.Pool)
 	if _, err := database.Pool.Exec(ctx, `update people set confirmed_at = now() - interval '90 minutes' where email = $1`, email); err != nil {
 		t.Fatalf("date the confirmation ninety minutes back: %v", err)
 	}
 	membership, _, err = people.Membership(ctx, email)
-	if err != nil || !membership.Confirmed || membership.ConfirmedAge < 90*time.Minute || membership.ConfirmedAge >= 91*time.Minute {
-		t.Fatalf("membership dated ninety minutes back = %#v err=%v, want confirmed ninety minutes ago", membership, err)
+	after = databaseNow(t, database.Pool)
+	if err != nil || !confirmedBetween(membership, 90*time.Minute, before, after) {
+		t.Fatalf("membership dated ninety minutes back = %#v err=%v, want confirmed ninety minutes ago and at most %s more (the database's clock from before the update to after the read)",
+			membership, err, after.Sub(before))
 	}
+	before = databaseNow(t, database.Pool)
 	if err := people.Confirm(ctx, email, "refresh-2"); err != nil {
 		t.Fatalf("confirm: %v", err)
 	}
 	membership, _, err = people.Membership(ctx, email)
-	if err != nil || membership.RefreshToken != "refresh-2" || !confirmedJustNow(membership) {
-		t.Fatalf("membership after confirm = %#v err=%v, want refresh-2 confirmed just now", membership, err)
+	after = databaseNow(t, database.Pool)
+	if err != nil || membership.RefreshToken != "refresh-2" || !confirmedBetween(membership, 0, before, after) {
+		t.Fatalf("membership after confirm = %#v err=%v, want refresh-2 confirmed by the confirmation, at most %s ago (the database's clock from before the confirmation to after the read)",
+			membership, err, after.Sub(before))
 	}
 
 	if err := people.End(ctx, email); err != nil {
@@ -66,10 +77,15 @@ func TestPgPeopleStoreKeepsEachPersonsMembership(t *testing.T) {
 	}
 }
 
-// confirmedJustNow reports whether membership holds a confirmation the database dates within the
-// last minute: one a write in this test just made.
-func confirmedJustNow(membership auth.PersonMembership) bool {
-	return membership.Confirmed && membership.ConfirmedAge >= 0 && membership.ConfirmedAge < time.Minute
+// confirmedBetween reports whether membership holds a confirmation whose age, as the database
+// answers it, is at least staged and at most staged plus the span from before to after. before and
+// after are readings of the database's clock (databaseNow): before ahead of the write that dated the
+// confirmation at its now() less staged, and after once the read that aged it at its own now() has
+// answered. Both of those now()s fall between the two readings, so an age the product reads right
+// lies in that range however long a loaded machine takes between the write and the read, and the
+// range is what the two readings saw rather than a span the test chose.
+func confirmedBetween(membership auth.PersonMembership, staged time.Duration, before, after time.Time) bool {
+	return membership.Confirmed && membership.ConfirmedAge >= staged && membership.ConfirmedAge <= staged+after.Sub(before)
 }
 
 // People are named by lowercase email; the table refuses any other spelling, so no writer can
@@ -150,6 +166,7 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 		{"confirmation", func(token string) error { return people.Confirm(ctx, email, token) }},
 	} {
 		token := "refresh-" + write.name + "-" + randomDatabaseSuffix(t)
+		before := databaseNow(t, database.Pool)
 		if err := write.write(token); err != nil {
 			t.Fatalf("%s: %v", write.name, err)
 		}
@@ -161,8 +178,10 @@ func TestPgPeopleStoreSealsTheRefreshTokenAtRest(t *testing.T) {
 			t.Fatalf("after the %s the row holds %q, want the token sealed in the v1: format", write.name, *stored)
 		}
 		membership, found, err := people.Membership(ctx, email)
-		if err != nil || !found || membership.RefreshToken != token || !confirmedJustNow(membership) {
-			t.Fatalf("membership after the %s = %#v found=%t err=%v, want %s confirmed just now", write.name, membership, found, err, token)
+		after := databaseNow(t, database.Pool)
+		if err != nil || !found || membership.RefreshToken != token || !confirmedBetween(membership, 0, before, after) {
+			t.Fatalf("membership after the %s = %#v found=%t err=%v, want %s confirmed by the %s, at most %s ago (the database's clock from before the %s to after the read)",
+				write.name, membership, found, err, token, write.name, after.Sub(before), write.name)
 		}
 	}
 }
@@ -655,11 +674,14 @@ func TestPgPeopleStoreConfirmKeepsTheRowOfAnotherGoogleAccount(t *testing.T) {
 	if got := membership(); got.RefreshToken != "refresh-2" || got.Subject != "subject-2" || got.ConfirmedAge < 90*time.Minute {
 		t.Fatalf("after subject-1's stale confirmation: %#v, want subject-2's refresh-2 confirmed ninety minutes ago", got)
 	}
+	before := databaseNow(t, database.Pool)
 	if err := people.ConfirmSubject(ctx, email, "subject-2", "refresh-3"); err != nil {
 		t.Fatal(err)
 	}
-	if got := membership(); got.RefreshToken != "refresh-3" || !confirmedJustNow(got) {
-		t.Fatalf("after subject-2's confirmation: %#v, want refresh-3 confirmed just now", got)
+	got := membership()
+	after := databaseNow(t, database.Pool)
+	if got.RefreshToken != "refresh-3" || !confirmedBetween(got, 0, before, after) {
+		t.Fatalf("after subject-2's confirmation: %#v, want refresh-3 confirmed by it, at most %s ago (the database's clock from before the confirmation to after the read)", got, after.Sub(before))
 	}
 	if err := people.Confirm(ctx, email, "refresh-4"); err != nil {
 		t.Fatal(err)

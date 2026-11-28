@@ -73,7 +73,9 @@ func TestHealthyOnEndsItsProbeAtTheBoundArmedOnItsClock(t *testing.T) {
 			// schema_migrations holds no other row, on a pool whose tracer the health pool copies.
 			read := &probeReadDeadline{seen: make(chan readDeadline, 1)}
 			database := openTestStoreWithPool(t, func(config *pgxpool.Config) { config.ConnConfig.Tracer = read })
-			t.Cleanup(database.Pool.Close)
+			t.Cleanup(func() {
+				testwait.Returns(t, "every connection of the traced store's pool to come back, so the pool closes", database.Pool.Close)
+			})
 			ctx := testwait.Context(t)
 			holder, err := database.Pool.Begin(ctx)
 			if err != nil {

@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The inputs of TestSessionTitlesBootScale, which only scripts/session-titles-scale.sh sets:
@@ -128,7 +129,9 @@ func runSessionTitlesBootScale(t *testing.T, admin url.URL, newest, floor, load 
 	if err != nil {
 		t.Fatalf("open %s: %v", name, err)
 	}
-	t.Cleanup(database.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of "+name+"'s pool to come back, so the pool closes", database.Pool.Close)
+	})
 
 	// 1. Every shipped migration but the four, in version order, as the runner applies them.
 	started := time.Now()

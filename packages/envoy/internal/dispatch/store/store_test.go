@@ -61,7 +61,9 @@ func openEmptyTestStore(t *testing.T) *Store {
 	if err != nil {
 		t.Fatalf("open isolated database: %v", err)
 	}
-	t.Cleanup(store.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the empty database's pool to come back, so the pool closes", store.Pool.Close)
+	})
 	return store
 }
 
@@ -95,7 +97,10 @@ func databaseNow(t *testing.T, pool *Pool) time.Time {
 // fires - and the last two wrong in the worse one, refusing to boot on a valid password.
 func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 	t.Parallel()
-	base := testDatabaseURL(t)
+	// An empty database of the test's own: the rows read only pgx's parse of the URL, and the
+	// last opens a pool and pings, which needs a database but no schema.
+	admin := adminDatabaseURL(t)
+	base := testdb.DatabaseOn(t, admin.String(), "dispatch_test")
 	withPoolSize, err := url.Parse(base)
 	if err != nil {
 		t.Fatalf("parse test database URL: %v", err)
@@ -124,7 +129,7 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			store, err := Open(context.Background(), tc.databaseURL)
 			if err == nil {
-				store.Pool.Close()
+				testwait.Returns(t, "every connection of the pool the parameter opened to come back, so the pool closes", store.Pool.Close)
 			}
 			refused := err != nil &&
 				strings.Contains(err.Error(), poolSizeParam) &&
@@ -147,7 +152,9 @@ func TestOpenRefusesAConnectionStringThatSetsThePoolSize(t *testing.T) {
 	if err != nil {
 		t.Fatalf("open without %s: %v", poolSizeParam, err)
 	}
-	t.Cleanup(store.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool opened without "+poolSizeParam+" to come back, so the pool closes", store.Pool.Close)
+	})
 }
 
 // Dispatch's timestamps are UTC whatever zone the host runs in, because a time.Time marshals
@@ -762,7 +769,9 @@ func storeWithPool(t *testing.T, databaseURL string, configure func(*pgxpool.Con
 	if err != nil {
 		t.Fatalf("open the isolated pool: %v", err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the isolated pool to come back, so the pool closes", pool.Close)
+	})
 	return &Store{Pool: NewPool(pool)}
 }
 
@@ -1208,12 +1217,17 @@ func openMigratedTestStore(t *testing.T, version int) *Store {
 }
 
 // adminDatabaseURL is DISPATCH_TEST_DATABASE_URL with its path set to the postgres database,
-// where create database and drop database run.
+// where create database and drop database run, and its connect_timeout set to the test binary's
+// deadline less testwait's margin (testdb.WithConnectDeadline), as on every URL testdb.DatabaseOn
+// hands out: so each admin connect of the template ladder and of each copy (execOnAdmin), and each
+// pool a template or a copy opens on a URL built from it (databaseOn), ends at the shared give-up
+// rather than after pgx's own two minutes or never.
 func adminDatabaseURL(t *testing.T) url.URL {
 	t.Helper()
-	admin, err := url.Parse(testDatabaseURL(t))
+	admin, err := url.Parse(testdb.WithConnectDeadline(t, testDatabaseURL(t)))
 	if err != nil {
-		t.Fatalf("parse test database URL: %v", err)
+		// url.Parse's own error quotes the URL it was given, so only the error it wraps is printed.
+		t.Fatalf("parse test database URL: %v", errors.Unwrap(err))
 	}
 	admin.Path = "/postgres"
 	return *admin
@@ -1322,7 +1336,9 @@ func openDatabaseCopy(t *testing.T, admin url.URL, name, template string) *Store
 	if err != nil {
 		t.Fatalf("open the copy of %s: %v", template, err)
 	}
-	t.Cleanup(store.Pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the pool on the copy of "+template+" to come back, so the pool closes", store.Pool.Close)
+	})
 	return store
 }
 
@@ -2058,14 +2074,17 @@ func askThreadShape(t *testing.T, store *Store) map[string]commentThreadRow {
 }
 
 // applyMigrationFile runs one migration's statements the way the runner does: one transaction,
-// so an `on commit drop` temporary table lives exactly that long.
+// so an `on commit drop` temporary table lives exactly that long. The transaction runs on
+// testwait.Context, so its one end is the shared give-up (the test binary's deadline less
+// testwait's margin): a statement that never ends fails the test there, naming the migration,
+// and one that is merely slow on a loaded server passes.
 func applyMigrationFile(t *testing.T, store *Store, name string) {
 	t.Helper()
 	statements, err := migrationFiles.ReadFile("migrations/" + name)
 	if err != nil {
 		t.Fatalf("read %s: %v", name, err)
 	}
-	ctx := context.Background()
+	ctx := testwait.Context(t)
 	tx, err := store.Pool.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin %s: %v", name, err)
@@ -2083,7 +2102,10 @@ func applyMigrationFile(t *testing.T, store *Store, name string) {
 // walk down the thread has to treat that as a visited row rather than spin: it runs inside the
 // transaction holding the migration advisory lock, so a spin means no Dispatch process boots.
 // The cyclic row seeds the walk (it carries the ask) and an ordinary reply hangs below it, so
-// the walk both loops and has real work to do.
+// the walk both loops and has real work to do. A walk that spins never returns, and the
+// migration's transaction then ends at the shared give-up (applyMigrationFile runs it on
+// testwait.Context), which fails the row with "apply <file>: ..." and the context's deadline; a
+// walk that ends, however slowly, passes on to the reads below.
 func TestAskReplyBackfillsTerminateOnACyclicReplyChain(t *testing.T) {
 	t.Parallel()
 	for _, backfill := range askReplyBackfills {
@@ -2109,24 +2131,9 @@ func TestAskReplyBackfillsTerminateOnACyclicReplyChain(t *testing.T) {
 			`); err != nil {
 				t.Fatalf("seed a cyclic ask thread: %v", err)
 			}
-			// A bound on the statement, so a walk that does spin fails the test in seconds
-			// instead of running until the test binary is killed. Database-level, because the
-			// migration takes its connection from the pool: only a session opened after this
-			// carries it.
-			if _, err := store.Pool.Exec(ctx,
-				"alter database "+store.Pool.Config().ConnConfig.Database+" set statement_timeout = '20s'",
-			); err != nil {
-				t.Fatalf("bound the migration statement: %v", err)
-			}
-			bounded, err := Open(ctx, store.Pool.Config().ConnString())
-			if err != nil {
-				t.Fatalf("reopen the bounded database: %v", err)
-			}
-			t.Cleanup(bounded.Pool.Close)
-
-			applyMigrationFile(t, bounded, backfill.file)
+			applyMigrationFile(t, store, backfill.file)
 			var movedAsk, movedReplyTo, movedTurn *string
-			if err := bounded.Pool.QueryRow(ctx, `
+			if err := store.Pool.QueryRow(ctx, `
 				select ask_id::text, reply_to::text, turn from comments where id = $1
 			`, replyID).Scan(&movedAsk, &movedReplyTo, &movedTurn); err != nil {
 				t.Fatalf("read the reply below the cycle: %v", err)

@@ -300,7 +300,9 @@ func TestCensusExemptsNoMigrationTheRunnerReadsAsOtherStatements(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(pool.Close)
+	t.Cleanup(func() {
+		testwait.Returns(t, "every connection of the runner's one-connection pool to come back, so the pool closes", pool.Close)
+	})
 	runner := &Store{Pool: NewPool(pool)}
 	if err := runner.migrate(ctx, set); err != nil {
 		t.Fatalf("migrate the set the census exempted: %v", err)
@@ -413,7 +415,9 @@ func TestCensusAndTheRunnerResolveNamesAlikeAfterStoredCodeChangesTheSession(t *
 				if err != nil {
 					t.Fatal(err)
 				}
-				t.Cleanup(pool.Close)
+				t.Cleanup(func() {
+					testwait.Returns(t, "every connection of the runner's one-connection pool to come back, so the pool closes", pool.Close)
+				})
 				return &Store{Pool: NewPool(pool)}
 			}
 			store, url := database()

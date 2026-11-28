@@ -13,6 +13,12 @@ import (
 // the claim, may send none.
 //
 // Control: Sendable without its claim's age, and the row with the old claim reads sendable, named.
+//
+// A verdict that needs the claim inside its window gives Sendable openClaimWindow, so the claim is
+// still younger than it when Sendable reads, however long a loaded machine takes after the claim,
+// and only the claim's generation can refuse the last one. The verdict that needs it past its
+// window ages tried_at 26 s back on the database's clock against a pass's 25 s window, which more
+// time only ages further.
 func TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow(t *testing.T) {
 	t.Parallel()
 	ctx := context.Background()
@@ -22,6 +28,7 @@ func TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow(t *testing.T) {
 	const email = "erin@other.example"
 	before := databaseNow(t, database.Pool)
 	record(email)
+	// The claim's window does not decide it: the row was never tried (tried_at is null).
 	claimed, err := revocations.Claim(ctx, time.Minute, 1)
 	if err != nil || len(claimed) != 1 {
 		t.Fatalf("Claim = %+v, %v; want erin's one revocation", claimed, err)
@@ -33,7 +40,7 @@ func TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow(t *testing.T) {
 	if !claimed[0].RecordedAt.Equal(recordedAt) || claimed[0].RecordedAt.Before(before) {
 		t.Fatalf("the claim's RecordedAt = %s, want the row's recorded_at %s, after %s", claimed[0].RecordedAt, recordedAt, before)
 	}
-	if sendable, err := revocations.Sendable(ctx, claimed[0], 25*time.Second); err != nil || !sendable {
+	if sendable, err := revocations.Sendable(ctx, claimed[0], openClaimWindow); err != nil || !sendable {
 		t.Fatalf("Sendable just after the claim = %t, %v; want sendable", sendable, err)
 	}
 
@@ -48,7 +55,7 @@ func TestAClaimedMachineLoginRevocationIsSendableWithinItsWindow(t *testing.T) {
 		t.Fatal(err)
 	}
 	record(email)
-	if sendable, err := revocations.Sendable(ctx, claimed[0], 25*time.Second); err != nil || sendable {
+	if sendable, err := revocations.Sendable(ctx, claimed[0], openClaimWindow); err != nil || sendable {
 		t.Errorf("Sendable under the claim's generation after a removal recorded it again = %t, %v; want not sendable", sendable, err)
 	}
 }
