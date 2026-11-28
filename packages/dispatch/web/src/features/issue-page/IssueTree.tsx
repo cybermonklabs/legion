@@ -648,11 +648,12 @@ export function IssueTree({
   // its last row. A press of the first two replaces it with what it drew and moves no focus
   // (`TreeRows.tsx`'s `PageControl`); a key's press, and any press of the last, leaves the focus
   // on the first row it drew (`drawnFrom`). A page of children names that row at once. A read
-  // names the rows drawn before the press, and the first row it draws after it that none of them
-  // is takes the focus, until the reader's next act (`olderActs`).
+  // claims the focus for the first row of the page it reads, and for no other row: while it is
+  // out no row is the page's, and once it answers the ids of the nodes it merged, the first row
+  // drawn of one of them takes the focus, until the reader's next act (`olderActs`).
   const olderAbove = older?.remain === true && zoomRoot === undefined ? older : undefined;
   const [drawnFrom, setDrawnFrom] = useState<
-    { readonly key: string } | { readonly before: ReadonlySet<string> }
+    { readonly key: string } | { readonly page: ReadonlySet<string> | undefined }
   >();
   const olderActs = useRef<AbortController | undefined>(undefined);
   useEffect(() => () => olderActs.current?.abort(), []);
@@ -663,38 +664,46 @@ export function IssueTree({
     const trail = [...page.trail, page.of.id];
     setDrawnFrom({ key: rowKeyOf({ kind: "node", level: page.level, node: next, trail }) });
   };
-  // The rows drawn now, so the first row a read draws after them takes the focus.
-  const focusFirstRead = (): void => {
+  // Claims the focus for the first row of the page `read` merges, and none while it is out, so a
+  // row an event adds meanwhile is not the page's. Where the read merges no page or is refused,
+  // the press ends its claim and its acts, each only where it is still this press's own: a later
+  // press, or the reader's act, may have replaced or ended it.
+  const focusFirstRead = (read: Promise<ReadonlySet<string> | undefined>): void => {
     olderActs.current?.abort();
-    olderActs.current = abortOnReaderAct(() => setDrawnFrom(undefined));
-    setDrawnFrom({
-      before: new Set(nodeRowKeys(rows)),
-    });
+    const acts = abortOnReaderAct(() => setDrawnFrom(undefined));
+    olderActs.current = acts;
+    const claim: { readonly page: undefined } = { page: undefined };
+    setDrawnFrom(claim);
+    const end = (): void => {
+      setDrawnFrom((held) => (held === claim ? undefined : held));
+      if (olderActs.current === acts) acts.abort();
+    };
+    read.then((page) => {
+      if (page === undefined) end();
+      else setDrawnFrom((held) => (held === claim ? { page } : held));
+    }, end);
   };
   const readOlder = (focus: boolean): void => {
     if (olderAbove === undefined) return;
-    if (focus) focusFirstRead();
     // A refused page leaves the answer as it was, and the control stays for another press
-    // (`readOlderComments`); the focus it was to give goes with the reader's next act.
-    olderAbove.read().catch(() => undefined);
+    // (`readOlderComments`).
+    const read = olderAbove.read();
+    if (focus) focusFirstRead(read);
+    else read.catch(() => undefined);
   };
   const readMore = (): void => {
     if (more === undefined) return;
-    focusFirstRead();
     // A refused page, or one that names a cursor the read asked for already, leaves the answer as
-    // it was (`readNextTreePage`); the focus it was to give goes with the reader's next act.
-    more.read().catch(() => undefined);
+    // it was (`readNextTreePage`), and the control stays for another press.
+    focusFirstRead(more.read());
   };
   useEffect(() => {
     if (drawnFrom === undefined) return;
-    const key =
-      "key" in drawnFrom
-        ? drawnFrom.key
-        : nodeRowKeys(rows).find((one) => !drawnFrom.before.has(one));
+    const key = "key" in drawnFrom ? drawnFrom.key : firstRowOf(rows, drawnFrom.page);
     const row =
       key === undefined ? null : body.current?.querySelector<HTMLElement>(rowSelectorOf(key));
-    // A page of children draws its first row in the render its press asked for; the older
-    // comments wait for the read that draws them.
+    // A page of children draws its first row in the render its press asked for; a read's page
+    // waits for the read to answer its nodes, and then for a row of them to be drawn.
     if (row == null && !("key" in drawnFrom)) return;
     setDrawnFrom(undefined);
     olderActs.current?.abort();
@@ -1380,6 +1389,17 @@ function sharedTree(was: TreeNode | undefined, now: TreeNode): TreeNode {
 /** The keys of the node rows, in drawing order. */
 function nodeRowKeys(rows: readonly DrawnRow[]): string[] {
   return rows.flatMap((row) => (row.kind === "node" ? [rowKeyOf(row)] : []));
+}
+
+/** The key of the first node row, in drawing order, of a node of `ids`; none where no row of one
+ *  is drawn, or where `ids` is undefined. */
+function firstRowOf(
+  rows: readonly DrawnRow[],
+  ids: ReadonlySet<string> | undefined
+): string | undefined {
+  if (ids === undefined) return undefined;
+  const row = rows.find((one) => one.kind === "node" && ids.has(one.node.id));
+  return row === undefined ? undefined : rowKeyOf(row);
 }
 
 /** What a crumb above a zoom says of a node other than the issue, which is named by its key:

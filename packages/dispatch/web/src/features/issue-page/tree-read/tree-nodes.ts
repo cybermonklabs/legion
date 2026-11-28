@@ -428,7 +428,7 @@ export function treeIdOf(answer: TreeAnswer, reads: TreeIdReads): (readId: strin
 
 /** `treeIdOfNode` for the issue `reads` names, each ask by the block the asks read names it was
  *  indexed from (`askNodeId`). */
-function nodeIdsIn(reads: TreeIdReads): (node: TreeAnswerNode) => string {
+export function nodeIdsIn(reads: TreeIdReads): (node: TreeAnswerNode) => string {
   const slugs = new Map(
     (reads.issue.artifacts ?? []).map((artifact) => [artifact.id, artifact.slug])
   );
