@@ -2,8 +2,9 @@
  *  writes, reloads, the keyboard, and the page a recording cannot answer - the Agents page, whose
  *  groups are a session's last-seen time against the clock. The rows are those of the pages that
  *  draw the shared controls: the Agents page, an issue's Artifacts tab and the search bar; and of
- *  the tables with no controls, which draw the shared table markup: Settings', the Pipeline
- *  page's, the Delivery page's measures table and an issue's Steps tab.
+ *  the tables with no controls, which draw the shared table markup: the tables on Settings,
+ *  Pipeline and Machine logins, the Delivery page's measures table and the one on an issue's
+ *  Steps tab.
  */
 
 import type { Locator, Route } from "@playwright/test";
@@ -48,7 +49,7 @@ import {
   TIMELINE_FIXTURE_QUERY,
 } from "./delivery-seed";
 import { documentEditor, placeCaret } from "./editor";
-import { setCredentialGrants, setSignIns } from "./fake-broker-helpers";
+import { setCredentialGrants, setLauncherCredentials, setSignIns } from "./fake-broker-helpers";
 import { seedFakeGithub } from "./fake-github-helpers";
 import { control, controlRow, openFilterPanel } from "./filters";
 import { focusHolder } from "./focus";
@@ -935,7 +936,7 @@ test("the search bar keeps its narrowings, its groups, its count, its recent ite
   ).toContain(`/issues/${seed.rollout}`);
 });
 
-// SLOW(>=2s): ten tables across four pages, each seeded and read.
+// SLOW(>=2s): eleven tables across five pages, each seeded and read.
 test("every table with no controls draws its rows in the shared markup and offers no search, filter or sort", async ({
   page,
 }) => {
@@ -973,6 +974,23 @@ test("every table with no controls draws its rows in the shared markup and offer
       listedFor: "alice",
       names: ["BILLING_KEY"],
       record_id: "bb22cc33dd44ee55ff6677889900aa11bb22cc33dd44ee55ff6677889900aa11",
+    },
+  ]);
+  // One service login listed for alice, so Machine logins draws a row rather than its empty line.
+  await setLauncherCredentials([
+    {
+      approved_by: "",
+      credential_id: "cred-daemon",
+      dispatch_scopes: null,
+      expired: false,
+      expires_at: "2026-11-18T13:00:00Z",
+      host: "legion-system/legion-daemon",
+      issued_at: "2026-11-18T12:00:00Z",
+      listedFor: "alice",
+      person: null,
+      reason: "",
+      service: "legion-daemon",
+      subject: "system:serviceaccount:legion-system:legion-daemon",
     },
   ]);
   // A daemon named for a project of its own, so the Legion daemons table draws a row of it
@@ -1047,6 +1065,10 @@ test("every table with no controls draws its rows in the shared markup and offer
 
   await page.goto(`/issues/${stepped.key}/steps`);
   await readPlainTable("Steps of task default");
+
+  await page.goto("/credentials/machine");
+  await expect(page.getByRole("region", { name: "Machine logins" })).toBeVisible();
+  await readPlainTable("Machine logins");
 });
 
 // SLOW(>=2s): the search bar and its Filter panel opened twice, for a typed date and a set one.
