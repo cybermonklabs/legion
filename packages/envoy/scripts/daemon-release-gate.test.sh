@@ -22,10 +22,11 @@
 set -euo pipefail
 
 # CPU seconds at main 8e248d6c, run 46127046034 (job 140924069070), longest first:
-# developer-box 32.4 (first 37 cases), short-reads 31.3, image-clients 27.5, vm-hub 26.4,
-# versions 19.4, listeners 17.1, developer-box-surfaces 16.4 (last 17 cases), daemons 6.5,
-# project-fields 2.1. Source: dispatch://INFRA-6359/artifact/case-cpu-at-main-tsv.
-readonly groups=(developer-box short-reads image-clients vm-hub versions listeners developer-box-surfaces daemons project-fields)
+# image-clients 27.5, vm-hub 26.4, versions 19.4, listeners 17.1,
+# developer-box-surfaces 16.4, developer-box-records 16.31, developer-box 16.09,
+# short-reads 15.58, short-reads-clients 14.99, daemons 6.5, project-fields 2.1.
+# Source: dispatch://INFRA-6359/artifact/case-cpu-at-main-tsv. Split group times sum the cases.
+readonly groups=(image-clients vm-hub versions listeners developer-box-surfaces developer-box-records developer-box short-reads short-reads-clients daemons project-fields)
 readonly lib="$(dirname "${BASH_SOURCE[0]}")/lib"
 
 is_group() {
@@ -68,7 +69,8 @@ readonly group=$1
 
 # Its developer-box rows hide a directory with `chmod 000` to show the gate's refusal of what it
 # cannot read, and root reads it anyway, so those rows fail as root for no fault of the gate's
-# (lib/daemon-release-gate-cases-developer-box.sh, "this user cannot search the hidden directory").
+# (lib/daemon-release-gate-cases-developer-box-records.sh and -surfaces.sh, "this user cannot
+# search the hidden directory").
 # Say so once, rather than as a dozen row failures.
 if [ "$(id -u)" = 0 ]; then
   echo "daemon-release-gate.test.sh: run it as a user other than root: its rows hide a directory with chmod 000, which root reads anyway" >&2

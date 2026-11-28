@@ -90,8 +90,9 @@ readonly envoy_behind_rev="ffffffffffffffffffffffffffffffffffffffff"
 readonly pi_envoy_ahead="pi-envoy 17.40.0 from pi-envoy-v17.40.0 at ${ahead_rev} (ahead of ${commit})"
 readonly claude_note="; the version legion-plugins serves for >=1.0.0"
 readonly claude_served="claude-envoy 4.0.0 from claude-envoy-v4.0.0 at ${identical_rev} (identical to ${commit})${claude_note}"
-# box_case <name>: for developer-box, developer-box-surfaces, short-reads and versions cases
-# whose checks read no line of SMOKE, INFRA or the sessions image. LINUX alone is enough.
+# box_case <name>: for the developer-box groups (developer-box, -records and -surfaces), the
+# short-reads groups (short-reads and -clients) and versions, whose cases' checks read no line of
+# SMOKE, INFRA or the sessions image. LINUX alone is enough.
 box_case() {
   new_case "$1"
   clients_fixture "$linux_fleet" "$lean_image"
