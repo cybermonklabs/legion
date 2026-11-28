@@ -26,6 +26,7 @@ import (
 	"github.com/sjawhar/envoy/internal/pgmigrate"
 	"github.com/sjawhar/envoy/internal/pgmigrate/pgmigratetest"
 	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 	"github.com/sjawhar/envoy/migrationid"
 )
 
@@ -1045,14 +1046,22 @@ func migrateThrough(t *testing.T, store *Store, maxVersion int) {
 }
 
 // migrateAbove applies, in order, the migrations of the shipped set numbered above after and up
-// to maxVersion, on a database the shipped migrations up to after have already been applied to.
-// The ones up to after are not judged again: each would be a transaction of its own that only
-// finds its version recorded (applyMigrationOnce's RecheckRecorded), one per migration of the
-// history every time a test moves a database forward.
+// to maxVersion, on a database the shipped migrations up to after have already been applied to
+// (applyAbove).
 func migrateAbove(t *testing.T, store *Store, after, maxVersion int) {
 	t.Helper()
+	applyAbove(t, store, shippedMigrations(t), after, maxVersion, nil)
+}
+
+// applyAbove applies, in order, the migrations of the set numbered above after and up to
+// maxVersion, on a database the set's migrations up to after have already been applied to, and
+// runs before, when it is not nil, just before it applies each of them. The ones up to after are
+// not judged again: each would be a transaction of its own that only finds its version recorded
+// (applyMigrationOnce's RecheckRecorded), one per migration of the history every time a test moves
+// a database forward.
+func applyAbove(t *testing.T, store *Store, migrations []pgmigrate.Migration, after, maxVersion int, before func(pgmigrate.Migration)) {
+	t.Helper()
 	ctx := context.Background()
-	migrations := shippedMigrations(t)
 	// The runner's own table (prepareVersionTable), bigint and identity columns included: a test
 	// that created the table as an integer would make the runner widen it, which is not what these
 	// tests are about.
@@ -1065,6 +1074,9 @@ func migrateAbove(t *testing.T, store *Store, after, maxVersion int) {
 		}
 		if migration.Version > maxVersion {
 			break
+		}
+		if before != nil {
+			before(migration)
 		}
 		if err := store.applyMigration(ctx, migrations, migration); err != nil {
 			t.Fatalf("apply %s: %v", migration.Name, err)
@@ -1093,17 +1105,63 @@ func shippedMigrations(t *testing.T) []pgmigrate.Migration {
 // latestVersion) is a database Migrate has brought up to date.
 const latestVersion = math.MaxInt
 
-// migratedTemplates are the databases this test binary migrated through one version each, by
-// version. openMigratedTestStore clones one for each test that starts from a migrated schema,
-// where the test used to create an empty database and apply the whole history to it itself:
-// 97 tests did, 63% of the package's time (a run on 4 CPUs, 2026-11-22). Each template is built
-// once, as a clone of the nearest template below it moved forward by the migrations between
-// (migrateAbove), so one run applies each migration about once. TestMain drops them all.
-var migratedTemplates = struct {
-	sync.Mutex
-	byVersion map[int]string
-	made      []string
-}{byVersion: map[int]string{}}
+// templateLadder builds the template databases a test clones (openMigratedTestStore): for each
+// version its tests ask for, an empty database with the ladder's migration set applied through
+// that version, closed to connections. It builds each version's template once per test binary, as
+// a file copy of the template of the largest version below it that has an entry, built or still
+// building, moved forward by the migrations between (applyAbove), so one run applies each
+// migration about once. An ask waits for the build of the template it answers and, when it builds
+// that template itself, for the build of the one it starts from, and for no other build: asks for
+// two versions with no entry between them build at once, and an ask for a template already built
+// answers at once. The ladder's mutex guards its entries, its list and its record, and is never
+// held through a build or a wait: with one lock held through every build, four of ten tests that
+// asked for a template already built waited 1.0 to 9.8 s behind builds of other versions, 49.6 s
+// of 131 s of test time blocked on that lock (a block profile in the pod, INFRA-6349).
+type templateLadder struct {
+	// migrations is the set the ladder applies: the shipped set for the package's ladder
+	// (migratedTemplates), a set of a test's own for a ladder that test builds.
+	migrations func(t *testing.T) []pgmigrate.Migration
+	// applying, when it is not nil, runs on the building test's goroutine just before a build
+	// applies each migration: a test's hook to hold a build open. The package's ladder has none.
+	applying func(t *testing.T, migration pgmigrate.Migration)
+
+	// mu guards the fields below and nothing else.
+	mu sync.Mutex
+	// rungs holds each version's entry from the moment the version's first ask makes it.
+	rungs map[int]*templateRung
+	// made names every template database the ladder created, published or not, for dropAll.
+	made []string
+	// census holds, by version, pgmigrate.CensusTables of each migration the ladder applied, as the
+	// first build that applied it read it on its template's database just before applying it.
+	census map[int][]pgmigrate.TouchedTable
+}
+
+// templateRung is a ladder's entry for one version.
+type templateRung struct {
+	version int
+	name    string
+	// built is closed when the build of the template ends, whether or not it succeeded.
+	built chan struct{}
+	// failed says the build ended without publishing the template. It is written under the
+	// ladder's mutex before built is closed, so an ask reads it under that mutex or once it has
+	// received built's close.
+	failed bool
+}
+
+// newTemplateLadder is a ladder over migrations, which has built nothing yet.
+func newTemplateLadder(migrations func(t *testing.T) []pgmigrate.Migration) *templateLadder {
+	return &templateLadder{
+		migrations: migrations,
+		rungs:      map[int]*templateRung{},
+		census:     map[int][]pgmigrate.TouchedTable{},
+	}
+}
+
+// migratedTemplates is the package's ladder, over the shipped set. openMigratedTestStore clones
+// one of its templates for each test that starts from a migrated schema, where the test used to
+// create an empty database and apply the whole history to it itself: 97 tests did, 63% of the
+// package's time (a run on 4 CPUs, 2026-11-22). TestMain drops its templates (dropAll).
+var migratedTemplates = newTemplateLadder(shippedMigrations)
 
 // openMigratedTestStore returns a store on a database of the test's own, dropped when the test
 // ends, carrying exactly the shipped migrations numbered up to version: what an empty database
@@ -1112,7 +1170,7 @@ var migratedTemplates = struct {
 func openMigratedTestStore(t *testing.T, version int) *Store {
 	t.Helper()
 	admin := adminDatabaseURL(t)
-	template := migratedTemplate(t, admin, version)
+	template := migratedTemplates.template(t, admin, version)
 	return openDatabaseCopy(t, admin, "dispatch_test_"+randomDatabaseSuffix(t), template)
 }
 
@@ -1128,45 +1186,130 @@ func adminDatabaseURL(t *testing.T) url.URL {
 	return *admin
 }
 
-// migratedTemplate is the name of the template migrated through version, which it builds when
-// this binary has none yet. It holds migratedTemplates' lock while it builds, so two tests never
-// build one twice and each build starts from every template built before it.
-func migratedTemplate(t *testing.T, admin url.URL, version int) string {
+// template is the name of the ladder's template migrated through version. When the version has an
+// entry, it waits for that entry's build alone and answers its name, or fails t when that build
+// failed. Otherwise it makes the version's entry, takes as its base the entry of the largest
+// version below it that has not failed, and builds the template itself on t's goroutine (build).
+func (l *templateLadder) template(t *testing.T, admin url.URL, version int) string {
 	t.Helper()
-	migratedTemplates.Lock()
-	defer migratedTemplates.Unlock()
-	if name, ok := migratedTemplates.byVersion[version]; ok {
-		return name
+	name := "dispatch_template_" + randomDatabaseSuffix(t)
+	l.mu.Lock()
+	if rung, ok := l.rungs[version]; ok {
+		l.mu.Unlock()
+		testwait.Receive(t, fmt.Sprintf("the build of the template migrated through version %d", version), rung.built)
+		if rung.failed {
+			t.Fatalf("the build of the template migrated through version %d failed in the test that started it", version)
+		}
+		return rung.name
 	}
-	base, baseVersion := "", 0
-	for built, name := range migratedTemplates.byVersion {
-		if built < version && built > baseVersion {
-			base, baseVersion = name, built
+	rung := &templateRung{version: version, name: name, built: make(chan struct{})}
+	l.rungs[version] = rung
+	var base *templateRung
+	for _, other := range l.rungs {
+		if other.version < version && !other.failed && (base == nil || other.version > base.version) {
+			base = other
 		}
 	}
-	name := "dispatch_template_" + randomDatabaseSuffix(t)
-	statement := "create database " + name + " strategy file_copy"
-	if base != "" {
-		statement = "create database " + name + " template " + base + " strategy file_copy"
+	l.mu.Unlock()
+	l.build(t, admin, rung, base)
+	return name
+}
+
+// build makes rung's template: once base's build has ended, a file copy of base's template (of an
+// empty database when base is nil), moved forward by the set's migrations above base's version up
+// to rung's, then closed to connections and published. A failure ends t (t.Fatalf), and the
+// deferred publish still ends the build, marked failed, so no ask waiting for it hangs.
+func (l *templateLadder) build(t *testing.T, admin url.URL, rung, base *templateRung) {
+	t.Helper()
+	published := false
+	defer func() { l.publish(rung, published) }()
+	from := 0
+	statement := "create database " + rung.name + " strategy file_copy"
+	if base != nil {
+		testwait.Receive(t, fmt.Sprintf("the build of the template migrated through version %d, which the build through version %d starts from", base.version, rung.version), base.built)
+		if base.failed {
+			t.Fatalf("build the template migrated through version %d: the build through version %d, which it starts from, failed", rung.version, base.version)
+		}
+		from = base.version
+		statement = "create database " + rung.name + " template " + base.name + " strategy file_copy"
 	}
 	adminExec(t, admin, statement)
-	migratedTemplates.made = append(migratedTemplates.made, name)
-	adminExec(t, admin, testdb.WithoutJIT(name))
+	l.mu.Lock()
+	l.made = append(l.made, rung.name)
+	l.mu.Unlock()
+	adminExec(t, admin, testdb.WithoutJIT(rung.name))
 	ctx := context.Background()
-	database, err := Open(ctx, databaseOn(admin, name))
+	database, err := Open(ctx, databaseOn(admin, rung.name))
 	if err != nil {
-		t.Fatalf("open template database %s: %v", name, err)
+		t.Fatalf("open template database %s: %v", rung.name, err)
 	}
 	// A migration that fails ends the test here; the deferred close still lets the pool go, so a
 	// failed build leaves no connections behind for the tests after it. Close is idempotent.
 	defer database.Pool.Close()
-	migrateAbove(t, database, baseVersion, version)
+	applyAbove(t, database, l.migrations(t), from, rung.version, func(migration pgmigrate.Migration) {
+		if l.applying != nil {
+			l.applying(t, migration)
+		}
+		l.recordCensusTables(t, ctx, database, migration)
+	})
 	// Postgres refuses to copy a database a session is connected to, so the template is left
 	// with none, and refuses connections from here on so a stray one cannot make a copy fail.
 	database.Pool.Close()
-	adminExec(t, admin, "alter database "+name+" with allow_connections false")
-	migratedTemplates.byVersion[version] = name
-	return name
+	adminExec(t, admin, "alter database "+rung.name+" with allow_connections false")
+	published = true
+}
+
+// publish ends rung's build: it records whether the build failed, then closes built, which each
+// ask waiting for the build receives.
+func (l *templateLadder) publish(rung *templateRung, published bool) {
+	l.mu.Lock()
+	rung.failed = !published
+	l.mu.Unlock()
+	close(rung.built)
+}
+
+// recordCensusTables records pgmigrate.CensusTables of migration, read on database, the template
+// a build is about to apply it to, at the schema just before it, when the ladder has no record of
+// it yet. Each migration up to the newest template a ladder built is applied by some build, so
+// once that template is built the record holds every one of them.
+func (l *templateLadder) recordCensusTables(t *testing.T, ctx context.Context, database *Store, migration pgmigrate.Migration) {
+	t.Helper()
+	if _, recorded := l.censusTables(migration.Version); recorded {
+		return
+	}
+	tables, err := pgmigrate.CensusTables(ctx, database.Pool, migration.SQL)
+	if err != nil {
+		t.Fatalf("read the census tables of %s on its template's database: %v", migration.Name, err)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if _, recorded := l.census[migration.Version]; !recorded {
+		l.census[migration.Version] = tables
+	}
+}
+
+// censusTables is the ladder's record of pgmigrate.CensusTables for the migration of version, and
+// whether it holds one (recordCensusTables).
+func (l *templateLadder) censusTables(version int) ([]pgmigrate.TouchedTable, bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	tables, recorded := l.census[version]
+	return tables, recorded
+}
+
+// dropAll drops every template database the ladder created, on the server admin names, and
+// returns an error that names each one it could not drop.
+func (l *templateLadder) dropAll(admin url.URL) error {
+	l.mu.Lock()
+	made := slices.Clone(l.made)
+	l.mu.Unlock()
+	var failures []error
+	for _, name := range made {
+		if err := execOnAdmin(admin, "drop database if exists "+name+" with (force)"); err != nil {
+			failures = append(failures, fmt.Errorf("drop template database %s: %w", name, err))
+		}
+	}
+	return errors.Join(failures...)
 }
 
 // openDatabaseCopy creates name as a copy of template's files (strategy file_copy, as
@@ -1225,26 +1368,20 @@ func execOnAdmin(admin url.URL, statement string) error {
 // go test parses its flags inside m.Run, so a -parallel on the command line still wins.
 const storeTestParallelism = 8
 
-// TestMain sets the package's default -parallel, runs its tests, then drops every template
-// openMigratedTestStore built.
+// TestMain sets the package's default -parallel, runs its tests, then drops every template the
+// package's ladder built (migratedTemplates.dropAll), and fails the run when a drop fails.
 func TestMain(m *testing.M) {
 	if err := flag.Set("test.parallel", strconv.Itoa(storeTestParallelism)); err != nil {
 		panic("set this package's default -parallel: " + err.Error())
 	}
 	code := m.Run()
-	migratedTemplates.Lock()
-	made := migratedTemplates.made
-	migratedTemplates.Unlock()
-	if len(made) > 0 {
-		if admin, err := url.Parse(os.Getenv("DISPATCH_TEST_DATABASE_URL")); err == nil {
-			admin.Path = "/postgres"
-			for _, name := range made {
-				if err := execOnAdmin(*admin, "drop database if exists "+name+" with (force)"); err != nil {
-					fmt.Fprintf(os.Stderr, "drop template database %s: %v\n", name, err)
-					if code == 0 {
-						code = 1
-					}
-				}
+	if admin, err := url.Parse(os.Getenv("DISPATCH_TEST_DATABASE_URL")); err == nil {
+		admin.Path = "/postgres"
+		// Each template the drop failed on is a line of its own.
+		if err := migratedTemplates.dropAll(*admin); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			if code == 0 {
+				code = 1
 			}
 		}
 	}
