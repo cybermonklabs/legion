@@ -10,6 +10,7 @@ name: CI job daemon-go
 # What runs here is the Go daemon's own tests — the plain step over every package of
 # packages/daemon but the five concurrent ones and the text checks, less the two pure table
 # pins of internal/supervise, which the text-check job runs by name and this step skips by name,
+# internal/ompsessions' left-setting test, which a step of its own runs by name with -v,
 # the shape gate of internal/api a second time, stamped with HEAD's merge order, the race step
 # over those five packages, the forced-order step over the daemon's TestForcedOrder
 # tests on a hooked nats-server, and the Stage 1 live proof, which builds ./cmd/legion
@@ -24,10 +25,11 @@ name: CI job daemon-go
 # and the `test` job's is what its remaining steps read.
 #
 # Each step runs in legs, all at the same time: daemon-go-legs runs the plain step, the race-
-# impossible step, the forced-order tests and Stage 1, and daemon-go-race-legs the race step. Each
-# leg runs its step over the packages .github/go-legs.yaml lists for it, with the step's one text,
-# so every leg of a kind runs in the same mode, and .github/scripts/go_legs.py fails the step when
-# that file does not run each package of the module exactly once. The two steps share no package,
+# impossible step, the session client's left-setting test, the forced-order tests and Stage 1,
+# and daemon-go-race-legs the race step. Each leg runs its step over the packages
+# .github/go-legs.yaml lists for it, with the step's one text, so every leg of a kind runs in the
+# same mode, and .github/scripts/go_legs.py fails the step when that file does not run each
+# package of the module exactly once. The two steps share no package,
 # so nothing orders the legs. The jobs daemon-go and daemon-go-race wait for their kind's legs and
 # pass only when every leg passed: they carry the check-run names, `daemon-go / daemon-go` and
 # `daemon-go / daemon-go-race`, that the two steps' jobs had before the legs.
@@ -42,7 +44,9 @@ name: CI job daemon-go
 #   * LEGION_RUN_FUZZ_ITERS in daemon-go-legs, read by classify's fuzz tests; and
 #     LEGION_KEPT_PROPERTY_RUNS in daemon-go-race-legs, read by internal/daemon's keptPropertyEnv;
 #   * tmux, jj and Oh My Pi in both, and uv in daemon-go-legs, each refused-without by a test the
-#     job runs (the comment on each step says which), and the NATS images those tests start;
+#     job runs (the comment on each step says which), and the images those tests start: NATS in
+#     both, PgBouncer in daemon-go-legs, and PostgreSQL 16 in leg 2 of daemon-go-legs, which runs
+#     the one test that starts it;
 #   * the user-namespace sysctl internal/launcher's role-namespace tests need, in
 #     daemon-go-race-legs, which runs them;
 #   * setup-go and the go-daemon cache restore in both, this module's build cache. The `test`
@@ -104,9 +108,11 @@ jobs:
     # link, under 1 minute (a whole blobless clone of this repository from GitHub took about 30 s
     # on 2026-11-24), and its 1-minute -timeout. That is under 45 minutes. The forced-order step
     # adds its compile of a hooked nats-server under the detector, up to 5 minutes, and
-    # forced-order.sh's 10-minute -timeout, so 60. A leg runs a share of the plain step, so no leg
+    # forced-order.sh's 10-minute -timeout, so 60. The session client's left-setting step adds its
+    # run, 2.7 minutes (161 s in run 46069045387, its first green run), its pull of PostgreSQL 16,
+    # 13 s there, and its 10-minute -timeout, so 73. A leg runs a share of the plain step, so no leg
     # needs more.
-    timeout-minutes: 60
+    timeout-minutes: 73
     services:
       postgres:
         # ghcr.io/cybermonklabs/legion/ci, the copy of pgvector/pgvector (.github/ci-images.yaml)
@@ -125,7 +131,7 @@ jobs:
           --health-timeout 5s
           --health-retries 5
     env:
-      JOB_TIMEOUT_MINUTES: 60 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
+      JOB_TIMEOUT_MINUTES: 73 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
       # One service for all three: the Go daemon's unit tests' Postgres, the broker rig its
       # cipher contract tests drive (ciphertest.NewRig skips without
       # BROKER_TEST_DATABASE_URL; internal/cipher runs in the plain step), and the Stage 1
@@ -195,7 +201,8 @@ jobs:
       # internal/workflow and the testnats package itself) start testnats.Image, the hub's 2.15.1,
       # and internal/ompsessions' TestEveryPoolPinsItsSearchPath starts PoolImage, PgBouncer
       # 1.25.2, with docker; each is pulled first for the reason the action gives. The two other
-      # NATS images the module's tests start are the race packages' (daemon-go-race-legs below).
+      # NATS images the module's tests start are the race packages' (daemon-go-race-legs below),
+      # and PostgreSQL 16 is pulled in leg 2 alone, by the step before the one test that starts it.
       - name: Pull the NATS and PgBouncer test container images
         uses: ./.github/actions/pull-test-images
         with:
@@ -226,10 +233,47 @@ jobs:
       # .github/scripts/ci_job_reads.py (SUPERVISE_TABLE_TESTS), which builds this step's text
       # and the other job's from the one list and holds each step to it, so the skip and the run
       # cannot come to name different tests.
+      #
+      # It skips internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting too, which the step
+      # "Test the session client under left settings" below runs by name: ci_job_reads.py's
+      # SESSION_CLIENT_LEFT_TESTS builds both steps' texts and joins its name and the two pins into
+      # this one -skip, sorted.
       - name: Test the Go daemon
         run: |
           set -o pipefail
-          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r ../../.github/scripts/go-test.sh go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+          python3 ../../.github/scripts/go_legs.py packages/daemon daemon-go ${{ matrix.leg }} ${{ strategy.job-total }} | xargs -r ../../.github/scripts/go-test.sh go test -count=1 -timeout 15m -skip '^(TestNoTwoEventTypesShareAKind|TestTheClientHoldsUnderEveryLeftSetting|TestTheTableHasARowOrANamedIgnoreForEveryEventInEveryState)$'
+        working-directory: packages/daemon
+
+      # internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting, which the next step runs,
+      # starts Postgres16Image, PostgreSQL 16.16, with docker, directly and behind PoolImage, which
+      # the pull step above pulled. No other test of the module starts it, so it is pulled here, in
+      # leg 2 alone, the leg that runs that step, for the reason the action gives.
+      - name: Pull the PostgreSQL 16 test container image
+        if: matrix.leg == 2
+        uses: ./.github/actions/pull-test-images
+        with:
+          consts: |
+            packages/daemon/internal/ompsessions/searchpath_test.go Postgres16Image
+
+      # internal/ompsessions' TestTheClientHoldsUnderEveryLeftSetting, by name: the session client
+      # under each setting another client can leave on a server connection, on a PostgreSQL 16
+      # server directly and through a PgBouncer in front of it, which the test starts itself with
+      # docker from the two images the pull steps above pulled, so the step needs none of the job's
+      # services. It is a step of its own for its log: the test's last log line, `left-setting
+      # summary …`, which counts each server's cases and the client's logged statements, is a line
+      # .github/scripts/go-test.sh's standard-verbose format prints for a passing test without -v,
+      # since gotestsum's go test -json runs the test binary verbose already (the step carries no
+      # -v, which go-test.sh refuses), and in a step of its own that line stands in this step's log
+      # rather than among the lines of every test of every package the plain step runs. The plain
+      # step skips the test by name, and .github/scripts/ci_job_reads.py builds both steps' texts
+      # from its SESSION_CLIENT_LEFT_TESTS, so the skip and the run cannot come to name different
+      # tests. It runs in leg 2 alone, the leg .github/go-legs.yaml lists internal/ompsessions in,
+      # so its build is the test build that leg's plain step compiled, and ci_job_reads.py refuses
+      # the list when that file moves the package out of leg 2. The 10-minute -timeout is Go's own
+      # default written out, so that the job's timeout-minutes counts it.
+      - name: Test the session client under left settings
+        if: matrix.leg == 2
+        run: ../../.github/scripts/go-test.sh go test -count=1 -timeout 10m -run '^(TestTheClientHoldsUnderEveryLeftSetting)$' ./internal/ompsessions/
         working-directory: packages/daemon
 
       # The shape gate of internal/api again, stamped with HEAD's contract entries in main's merge
