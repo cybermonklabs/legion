@@ -6303,6 +6303,25 @@ replace "$root/.github/workflows/results.yaml" "go test -json -v -count=1 -vet=o
   $'go -C mod test -json -count=1 \\\n            ./... -args -test.v=true'
 run_check "$root"
 check "fails with -test.v after -args on a continued line of go -C" "$(contains "$out" "which passes \`-test.v=true\`")"
+# go takes its -C off the command line in each of four spellings, before test or after it, so the
+# command after it is read the same; go written as a path is go too.
+for spelling in 'go -C=mod test' 'go --C mod test' 'go --C=mod test' 'go -C "$module" test' \
+  '/usr/local/go/bin/go -C mod test' 'go test -C mod' 'go test --C=mod'; do
+  replace "$root/.github/workflows/results.yaml" "go -C mod test -json" "$spelling -json"
+  run_check "$root"
+  check "fails with -test.v after -args of $spelling" "$(contains "$out" "which passes \`-test.v=true\`")"
+  replace "$root/.github/workflows/results.yaml" "$spelling -json" "go -C mod test -json"
+done
+# A word bash fills in where go stands can run any program, one where test stands can be test, and a
+# -C directory bash splits can hold more words than one: each is refused, naming it.
+for row in '"$GO" test|$GO' '$GO -C mod test|$GO' 'go -C $module test|$module' 'go "$verb"|$verb'; do
+  word=${row%|*} named=${row##*|}
+  replace "$root/.github/workflows/results.yaml" "go -C mod test -json" "$word -json"
+  run_check "$root"
+  check "fails with $word -json, naming $named" \
+    "$(contains "$out" "::error file=.github/workflows/results.yaml::.*, whose go test holds \"$named\", which this check cannot read past")"
+  replace "$root/.github/workflows/results.yaml" "$word -json" "go -C mod test -json"
+done
 replace "$root/.github/workflows/results.yaml" $'go -C mod test -json -count=1 \\\n            ./... -args -test.v=true' \
   "go run ./tools/make-report"
 run_check "$root"

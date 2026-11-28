@@ -43,6 +43,9 @@ REDIRECTION = re.compile(r"\d*(?:<|>|>>|>\||<>|<<|<<<|<&|>&|&>|&>>)")
 # A flag as go reads one (cmdflag.ParseOne, cmd/go/internal/cmdflag/flag.go, go1.27.3): one dash or
 # two, a name that starts with neither, and the value an = joins to it.
 FLAG = re.compile(r"--?([^-=][^=]*)(=.*)?", re.S)
+# go's -C as main's handleChdirFlag takes it off the command line, right after go or right after
+# test (cmd/go/main.go, go1.27.3): -C or --C, with its directory in the next word or after an =.
+CHDIR = re.compile(r"--?C(=.*)?", re.S)
 # The flags of go test that take a value: every flag of its flag set but the booleans
 # (cmd/go/internal/test/testflag.go's init, and the AddBuildFlags and AddCoverFlags it calls,
 # cmd/go/internal/work/build.go, go1.27.3). cmdflag.ParseOne gives such a flag the next word as its
@@ -223,16 +226,18 @@ def shell_tokens(line: str):
 def go_test_commands(script: str) -> list:
     """Each `go test` command of a run: script, as (its line, its arguments up to the end of the
     command, what this check could not read), with a line a backslash continues read as one line
-    and comments aside. The command ends at a pipe, a list operator or the ")" that closes it; a
+    and comments aside. go may be written as a path, with a -C before test in any of CHDIR's
+    spellings, and a word bash fills in where go or test stands, as "$GO" test, counts as a go test
+    command too. The command ends at a pipe, a list operator or the ")" that closes it; a
     redirection and its target are no arguments of it. What it could not read is None for a
     command whose every argument it read, or that holds a word bash fills in only as the value of a
     flag that takes one (go_test_reading's "value", or the value an = joins to such a flag); the
-    first word or operator it could not read past, for one that holds a word that splits (a $ or
-    a backtick outside double quotes, a GitHub expression, in any quotes or none, or in the target
-    of a redirection), a word that expands anywhere else, or an operator that opens a subshell or
-    a substitution, since any of them can carry a -v past
-    this check; and "" for a line that holds `go test` (RACE_TEST's spelling of one, -race or not)
-    and that shell_tokens cannot split."""
+    first word or operator it could not read past, for one whose go or test is a word bash fills
+    in, whose -C directory splits, or that holds a word that splits (a $ or a backtick outside
+    double quotes, a GitHub expression, in any quotes or none, or in the target of a redirection),
+    a word that expands anywhere else, or an operator that opens a subshell or a substitution,
+    since any of them can carry a -v past this check; and "" for a line that holds `go test`
+    (RACE_TEST's spelling of one, -race or not) and that shell_tokens cannot split."""
     commands = []
     for line in script_lines(script.replace("\\\n", " ")):
         tokens = shell_tokens(line)
@@ -240,20 +245,41 @@ def go_test_commands(script: str) -> list:
             if RACE_TEST.search(line):
                 commands.append((line, [], ""))
             continue
-        for i, (text, operator, expands, _) in enumerate(tokens):
-            if operator or expands or text.rsplit("/", 1)[-1] != "go":
+        # A token that a go test command read is no start of another: the -C directory of
+        # `go -C "$dir" test`, as a word bash fills in before test, would otherwise count again.
+        read_to = 0
+        for i, (text, operator, expands, splits) in enumerate(tokens):
+            if i < read_to or operator or not expands and text.rsplit("/", 1)[-1] != "go":
                 continue
-            rest = tokens[i + 3:] if tokens[i + 1:i + 2] == [("-C", False, False, False)] else tokens[i + 1:]
-            if rest[:1] != [("test", False, False, False)]:
+            # What it could not read before the arguments, the first of: a word bash fills in where
+            # go stands, as "$GO", which runs a program this check cannot name; the directory of
+            # go's -C, which main's handleChdirFlag takes off the command line, where it splits; and
+            # a word bash fills in where test stands, which can be test.
+            head, j = (text if expands else None), i + 1
+            chdir = CHDIR.fullmatch(tokens[j][0]) if j < len(tokens) and not tokens[j][1] else None
+            if chdir:
+                directory, j = (tokens[j], j + 1) if chdir[1] else ((tokens[j + 1:j + 2] or [None])[0], j + 2)
+                if directory is None or directory[1]:
+                    continue
+                if directory[3] and head is None:
+                    head = directory[0]
+            if j >= len(tokens) or tokens[j][1]:
                 continue
-            words, unread, after = [], None, iter(rest[1:])
-            for text, operator, expands, splits in after:
+            subcommand, j = tokens[j], j + 1
+            if subcommand[2] and not expands:
+                head = subcommand[0] if head is None else head
+            elif subcommand[0] != "test" or subcommand[2]:
+                continue
+            words, unread = [], None
+            while j < len(tokens):
+                text, operator, expands, splits = tokens[j]
                 if operator and (text in COMMAND_ENDS or text.startswith(")")):
                     break
+                j += 1
                 if operator and REDIRECTION.fullmatch(text):
                     # bash reads the target as one word, but a GitHub expression in it can end the
                     # word, and the value after it reads as words of the command.
-                    target = next(after, None)
+                    target, j = (tokens[j:j + 1] or [None])[0], j + 1
                     if target and "${{" in target[0]:
                         unread = target[0]
                         break
@@ -262,12 +288,13 @@ def go_test_commands(script: str) -> list:
                     unread = text
                     break
                 words.append((text, expands))
+            read_to = j
             arguments = [text for text, _ in words]
             for (text, expands), role in zip(words, go_test_reading(arguments)):
                 if expands and role != "value" and not (role == "go test" and takes_a_value(text) == "joined"):
                     unread = text
                     break
-            commands.append((line, arguments, unread))
+            commands.append((line, arguments, head if head is not None else unread))
     return commands
 
 

@@ -465,14 +465,17 @@
 #      test2json, false too), naming the file, the job, the step and the line; or a `go test`
 #      command whose flags it cannot read to the command's end - a line it cannot split into
 #      words, a word that bash or GitHub expands ($ before a name, a parameter, {, ( or [, a
-#      backtick, a ${{ }} expression), a subshell or a substitution, any of which can carry such a
-#      flag - naming what it stopped at; or that holds no `go test -json` command in a run: script
-#      of its own, since the flags of a report made elsewhere, in a script or in another job, are
-#      flags this rule cannot read. It reads a command to its end, a pipe, a list operator or the
-#      ) that closes it, since go test reads its flags after the package list too, and passes over
-#      each redirection and its target. One expanding word passes: one that bash fills in only
-#      inside double quotes, with no "$@", no ${ } that holds a quote, $ or @, and no ${{ }}, as
-#      the value of a go test flag that takes one, before -args (-run "$pattern",
+#      backtick, a ${{ }} expression in any quotes or none, a redirection's target among them), a
+#      subshell or a substitution, any of which can carry such a flag, a go or a test that is such
+#      a word ("$GO" test, go "$verb") and a -C directory that bash splits - naming what it
+#      stopped at; or that holds no `go test -json` command in a run: script of its own, since the
+#      flags of a report made elsewhere, in a script or in another job, are flags this rule cannot
+#      read. It reads go's -C in each spelling go takes off the command line (-C dir, --C dir,
+#      -C=dir, --C=dir, before test or after it), and a command to its end, a pipe, a list
+#      operator or the ) that closes it, since go test reads its flags after the package list too,
+#      and passes over each redirection and its target. One expanding word passes: one that bash
+#      fills in only inside double quotes, with no "$@", no ${ } that holds a quote, $ or @, and no
+#      ${{ }}, as the value of a go test flag that takes one, before -args (-run "$pattern",
 #      -run="$pattern"). bash neither splits that word nor matches it to file names, and go test
 #      gives the flag the word after it whatever it holds, so it is never a flag; for the same
 #      reason a -v that is such a value passes, and an -args that is one ends nothing. A $ that
