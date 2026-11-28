@@ -294,10 +294,14 @@ test("a box the fit moves on to the count's line draws no chip it hides when it 
   test.setTimeout(120_000);
   await phase(browser, seedHeader, async (page, seeded) => {
     await patchIssue(seeded.key, { labels: [...HEADER_LABELS] });
+    // An init script runs before the document holds its root element, so the rule goes in once
+    // the document is parsed: before the issue's read answers, so before any reading of the labels.
     await page.context().addInitScript((css) => {
-      const style = document.createElement("style");
-      style.textContent = css;
-      document.documentElement.append(style);
+      document.addEventListener("DOMContentLoaded", () => {
+        const style = document.createElement("style");
+        style.textContent = css;
+        document.documentElement.append(style);
+      });
     }, NARROWED_ONCE_DRAWN);
     await page.setViewportSize(viewportAt(1000));
     await gotoIssue(page, `/issues/${seeded.key}`);
@@ -310,7 +314,17 @@ test("a box the fit moves on to the count's line draws no chip it hides when it 
           properties.querySelectorAll('[data-testid="issue-header-labels"] > [data-header-label]')
             .length
       ),
+      maxWidth: await propertiesLine(page).evaluate((properties) => {
+        const box = properties.querySelector('[data-testid="issue-header-labels"]');
+        return box === null ? "no box" : getComputedStyle(box).maxWidth;
+      }),
     }));
+    // The rule holds the drawn box, so the row reads the narrowing it is about and not a line that
+    // never narrowed.
+    expect(
+      drawn.maxWidth,
+      `${where}: the narrowing rule does not hold the labels' box`
+    ).not.toMatch(/^(none|no box)$/);
     expect(drawn.cut, `${where}: the labels' box cuts a chip the line holds`).toEqual([]);
     expect(
       drawn.held,
