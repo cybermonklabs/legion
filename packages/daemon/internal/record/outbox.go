@@ -3511,8 +3511,8 @@ func validateOutboxPayload(issue string, payload OutboxPayload) error {
 // else the first rule they break. Nil answers state nothing and keep every rule. A pointer to a nil
 // list is refused: it is stored as null, which reads back as not known, so a step with no call
 // states an empty list. That rule is the daemon's own. The rest are Dispatch's, through
-// steprecord.CheckAnswers. A fault CheckAnswers names that this daemon does not know is refused by
-// its number.
+// CheckAnswers. A fault CheckAnswers names that this daemon does not know is refused by its
+// number.
 func answersHold(answers *[]ModelCalls) error {
 	if answers == nil {
 		return nil
@@ -3520,9 +3520,7 @@ func answersHold(answers *[]ModelCalls) error {
 	if *answers == nil {
 		return fmt.Errorf("a step record's answers point to no list: a step with no call states an empty list")
 	}
-	// Dispatch reads calls as int64. A count past its range wraps below 1, so it is refused, as
-	// Dispatch refuses it.
-	fault, at := steprecord.CheckAnswers(*answers, func(answer ModelCalls) (string, int64) { return answer.Model, int64(answer.Calls) })
+	fault, at := CheckAnswers(*answers)
 	switch fault {
 	case steprecord.AnswersHold:
 		return nil
@@ -3537,6 +3535,13 @@ func answersHold(answers *[]ModelCalls) error {
 	default:
 		return fmt.Errorf("a step record's answers break rule %d of a step record's answers, which this daemon does not know", fault)
 	}
+}
+
+// CheckAnswers is the first rule of a step record's answers that answers break, and the index of
+// the entry that breaks it (steprecord.CheckAnswers). Dispatch reads calls as int64. A count past
+// its range wraps below 1, so it is refused, as Dispatch refuses it.
+func CheckAnswers(answers []ModelCalls) (steprecord.AnswersFault, int) {
+	return steprecord.CheckAnswers(answers, func(answer ModelCalls) (string, int64) { return answer.Model, int64(answer.Calls) })
 }
 
 // carriesReview says whether n carries anything of a person's review of a design document:

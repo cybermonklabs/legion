@@ -194,21 +194,27 @@ func TestKeepFinalKeepsTheFirstFinal(t *testing.T) {
 // A step's end reads each launch of its agent from the generation its start read. AgentLaunches
 // answers the claim's generation now, whether the claim records a process now, and each launch
 // row of that claim from since on, in generation order, with its newest read and its final. A
-// launch of another claim is none of them, and a claim the store does not hold has none.
+// launch of another claim is none of them, and a claim the store does not hold has none. A step's
+// start reads the launch row of the claim's generation now alone (AgentLaunchNow): of a claim with
+// rows at several generations that one row, and of a claim with no row at its generation none.
 func TestAgentLaunchesReadsEachLaunchSinceAGeneration(t *testing.T) {
 	st := migratedStore(t)
 	store := NewStore()
-	const agent, other claim.Token = "legion-legion-legion-209-reviewer", "legion-legion-legion-210-reviewer"
+	const agent, other, unlaunched claim.Token = "legion-legion-legion-209-reviewer", "legion-legion-legion-210-reviewer",
+		"legion-legion-legion-211-reviewer"
 	at := time.Date(2026, 11, 24, 3, 0, 0, 0, time.UTC)
 	ended := launchRead(8, at, opus(11))
 	newest := launchRead(2, at.Add(time.Hour), opus(1))
 	inTx(t, st, func(tx pgx.Tx) {
 		putAgentClaim(t, tx, agentClaim{token: agent, issue: "LEGION-209", tree: "LEGION-208", role: claim.RoleReviewer, generation: 5, live: true})
 		putAgentClaim(t, tx, agentClaim{token: other, issue: "LEGION-210", tree: "LEGION-208", role: claim.RoleReviewer, generation: 3, live: true})
+		putAgentClaim(t, tx, agentClaim{token: unlaunched, issue: "LEGION-211", tree: "LEGION-208", role: claim.RoleReviewer, generation: 4})
 		for _, generation := range []uint64{2, 3, 5} {
 			putLaunch(t, tx, agent, generation)
 		}
 		putLaunch(t, tx, other, 3)
+		putLaunch(t, tx, unlaunched, 2)
+		putLaunch(t, tx, unlaunched, 3)
 		must(t, store.KeepFinal(t.Context(), tx, LaunchKey{Claim: agent, Generation: 3}, ended))
 		must(t, store.KeepRead(t.Context(), tx, LaunchKey{Claim: agent, Generation: 5}, newest))
 		must(t, store.KeepRead(t.Context(), tx, LaunchKey{Claim: other, Generation: 3}, newest))
@@ -220,7 +226,6 @@ func TestAgentLaunchesReadsEachLaunchSinceAGeneration(t *testing.T) {
 			{3, []Launch{{Generation: 3, Final: &ended}, {Generation: 5, Newest: &newest}}},
 			{4, []Launch{{Generation: 5, Newest: &newest}}},
 			{6, nil},
-			{SinceNow, []Launch{{Generation: 5, Newest: &newest}}},
 		} {
 			got, err := store.AgentLaunches(t.Context(), tx, agent, tc.since)
 			must(t, err)
@@ -229,6 +234,18 @@ func TestAgentLaunchesReadsEachLaunchSinceAGeneration(t *testing.T) {
 			}
 			assertLaunches(t, fmt.Sprintf("since %d", tc.since), got.Launches, tc.want...)
 		}
+		now, err := store.AgentLaunchNow(t.Context(), tx, agent)
+		must(t, err)
+		if now.Generation != 5 || !now.Live {
+			t.Fatalf("AgentLaunchNow = generation %d, live %t; want the claim's generation 5, live", now.Generation, now.Live)
+		}
+		assertLaunches(t, "AgentLaunchNow", now.Launches, Launch{Generation: 5, Newest: &newest})
+		bare, err := store.AgentLaunchNow(t.Context(), tx, unlaunched)
+		must(t, err)
+		if bare.Generation != 4 || bare.Live {
+			t.Fatalf("AgentLaunchNow of a claim with no row at its generation = generation %d, live %t; want generation 4, not live", bare.Generation, bare.Live)
+		}
+		assertLaunches(t, "AgentLaunchNow of a claim with no row at its generation", bare.Launches)
 		if _, err := tx.Exec(t.Context(), `update claims set locator = null, state = 'suspended' where token = $1`, string(agent)); err != nil {
 			t.Fatalf("let the claim's process go: %v", err)
 		}

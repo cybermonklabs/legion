@@ -155,15 +155,16 @@ func usedRead(reads FactReads, key record.LaunchKey, launch *record.Launch) *rec
 
 // keepStartTotals keeps what the start of the step at place on issue read of its agent. start is
 // the record the start wrote: its id, its agent, and the moment it started. It reads the agent's
-// generation and liveness now, and its launch rows from that generation on (record.SinceNow), the
-// one row the start reads. A live launch's read is the one usedRead gives, which is kept and
-// logged. A start with no agent, or an engine that reads no totals, keeps nothing.
+// generation and liveness now, and its launch row of that generation alone
+// (record.Store.AgentLaunchNow), the one row the start reads. A live launch's read is the one
+// usedRead gives, which is kept and logged. A start with no agent, or an engine that reads no
+// totals, keeps nothing.
 func (e *Engine) keepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place record.StepPlace, start *record.StepRecord) error {
 	agent := claim.Token(start.Agent)
 	if agent == "" || e.cfg.ReadTotals == nil {
 		return nil
 	}
-	launches, err := e.store.AgentLaunches(ctx, tx, agent, record.SinceNow)
+	launches, err := e.store.AgentLaunchNow(ctx, tx, agent)
 	if err != nil {
 		return err
 	}
@@ -271,7 +272,7 @@ func stepSpans(agent claim.Token, began record.StartTotals, now record.AgentLaun
 // The answers are each model's calls summed over the launches, without zeros, most calls first,
 // then by model. They are nil, not known, where a launch's start or end is not known, or its end
 // overflowed. They are nil too where a count outside the form changed, or a count fell. They are
-// nil where they break a rule of a step record's answers (steprecord.CheckAnswers): more than
+// nil where they break a rule of a step record's answers (record.CheckAnswers): more than
 // steprecord.AnswersMax models remain, a name is outside the form of a step's agent text, or a
 // count is past the most an int64 holds.
 func countStep(spans []launchSpan) (string, *[]record.ModelCalls) {
@@ -320,7 +321,7 @@ func countStep(spans []launchSpan) (string, *[]record.ModelCalls) {
 	slices.SortFunc(answers, func(a, b record.ModelCalls) int {
 		return cmp.Or(cmp.Compare(b.Calls, a.Calls), cmp.Compare(a.Model, b.Model))
 	})
-	if fault, _ := steprecord.CheckAnswers(answers, func(a record.ModelCalls) (string, int64) { return a.Model, int64(a.Calls) }); fault != steprecord.AnswersHold {
+	if fault, _ := record.CheckAnswers(answers); fault != steprecord.AnswersHold {
 		return setModel, nil
 	}
 	return setModel, &answers

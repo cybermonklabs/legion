@@ -135,6 +135,7 @@ func TestAFactOfAPullRequestNamesTheIssueItsHandlersApplyItTo(t *testing.T) {
 		engine := renamedEngine(renamedLegion)
 		for _, fact := range []intake.Fact{
 			intake.PullRequestReview{Repo: "cybermonklabs/legion", Number: 42},
+			intake.PullRequestMergeStateUnread{Repo: "cybermonklabs/legion", Number: 42, HeadSHA: headOne},
 			intake.Push{Repo: "cybermonklabs/legion", Branch: "legion/LEGION-209"},
 		} {
 			if got := issueOf(t, pool, engine, fact); got != "LEGION-209" {
@@ -154,6 +155,7 @@ func TestAFactOfAPullRequestNamesTheIssueItsHandlersApplyItTo(t *testing.T) {
 		engine := testEngine(config.DesignGateRootIssues, nil)
 		for _, fact := range []intake.Fact{
 			intake.PullRequestReview{Repo: "acme/other", Number: 42},
+			intake.PullRequestMergeStateUnread{Repo: "acme/other", Number: 42, HeadSHA: "head"},
 			intake.Push{Repo: "acme/other", Branch: "legion/LEGION-209"},
 		} {
 			if got := issueOf(t, pool, engine, fact); got != "" {

@@ -53,7 +53,8 @@ type AgentLaunches struct {
 	Generation uint64
 	// Live says the claim records a process now: its row holds a locator.
 	Live bool
-	// Launches is each launch row of the claim from the generation asked for on, by generation.
+	// Launches is each launch row of the claim the read asked for, by generation: from a generation
+	// on (Postgres.AgentLaunches), or at its generation now alone (Postgres.AgentLaunchNow).
 	Launches []Launch
 }
 
@@ -82,14 +83,42 @@ func (a AgentLaunches) StartTotals(used *LaunchRead) StartTotals {
 	return start
 }
 
-// SinceNow, given as AgentLaunches' since, reads the launch rows from the claim's own generation
-// on.
-const SinceNow uint64 = math.MaxUint64
-
 // AgentLaunches reads the claim agent: its generation now, whether its row records a process, and
-// each of its launch rows from the generation since on, or from its generation now for SinceNow. A
-// claim the store does not hold has generation 0, no process and no launch.
+// each of its launch rows from the generation since on. A claim the store does not hold has
+// generation 0, no process and no launch.
 func (s *Postgres) AgentLaunches(ctx context.Context, tx pgx.Tx, agent claim.Token, since uint64) (AgentLaunches, error) {
+	launches, err := agentNow(ctx, tx, agent)
+	if err != nil {
+		return AgentLaunches{}, err
+	}
+	if since > math.MaxInt64 {
+		return launches, nil
+	}
+	if launches.Launches, err = launchRows(ctx, tx, agent, int64(since), math.MaxInt64); err != nil {
+		return AgentLaunches{}, fmt.Errorf("read the launches of %s from %d: %w", agent, since, err)
+	}
+	return launches, nil
+}
+
+// AgentLaunchNow reads the claim agent as AgentLaunches does, with its launch row of its generation
+// now alone: the one row a step's start reads (AgentLaunches.StartTotals). Each launch adds a row,
+// and the start reads in its fact's transaction, so it reads no other. A claim with no row at its
+// generation has no launch, and a claim the store does not hold has generation 0 and no process.
+func (s *Postgres) AgentLaunchNow(ctx context.Context, tx pgx.Tx, agent claim.Token) (AgentLaunches, error) {
+	launches, err := agentNow(ctx, tx, agent)
+	if err != nil {
+		return AgentLaunches{}, err
+	}
+	generation := int64(launches.Generation)
+	if launches.Launches, err = launchRows(ctx, tx, agent, generation, generation); err != nil {
+		return AgentLaunches{}, fmt.Errorf("read the launch of %s at %d: %w", agent, generation, err)
+	}
+	return launches, nil
+}
+
+// agentNow is the claim agent's generation now and whether its row records a process, with no
+// launch row: generation 0 and no process for a claim the store does not hold.
+func agentNow(ctx context.Context, tx pgx.Tx, agent claim.Token) (AgentLaunches, error) {
 	var launches AgentLaunches
 	var generation int64
 	err := tx.QueryRow(ctx, `select generation, locator is not null from claims where token = $1`, string(agent)).Scan(&generation, &launches.Live)
@@ -97,36 +126,36 @@ func (s *Postgres) AgentLaunches(ctx context.Context, tx pgx.Tx, agent claim.Tok
 		return AgentLaunches{}, fmt.Errorf("read the claim %s: %w", agent, err)
 	}
 	launches.Generation = uint64(generation)
-	if since == SinceNow {
-		since = launches.Generation
-	}
-	if since > math.MaxInt64 {
-		return launches, nil
-	}
-	rows, err := tx.Query(ctx, `select generation, newest, final from claim_launches where claim = $1 and generation >= $2
-		order by generation`, string(agent), int64(since))
+	return launches, nil
+}
+
+// launchRows is each launch row of agent from generation from to generation to, by generation.
+func launchRows(ctx context.Context, tx pgx.Tx, agent claim.Token, from, to int64) ([]Launch, error) {
+	rows, err := tx.Query(ctx, `select generation, newest, final from claim_launches where claim = $1 and generation between $2 and $3
+		order by generation`, string(agent), from, to)
 	if err != nil {
-		return AgentLaunches{}, fmt.Errorf("read the launches of %s from %d: %w", agent, since, err)
+		return nil, err
 	}
 	defer rows.Close()
+	var launches []Launch
 	for rows.Next() {
 		var launch Launch
 		var launched int64
 		var newest, final []byte
 		if err := rows.Scan(&launched, &newest, &final); err != nil {
-			return AgentLaunches{}, fmt.Errorf("read a launch of %s: %w", agent, err)
+			return nil, fmt.Errorf("read a launch: %w", err)
 		}
 		launch.Generation = uint64(launched)
 		if launch.Newest, err = launchReadOf(newest); err != nil {
-			return AgentLaunches{}, fmt.Errorf("read the newest read of %s at %d: %w", agent, launch.Generation, err)
+			return nil, fmt.Errorf("read the newest read at %d: %w", launch.Generation, err)
 		}
 		if launch.Final, err = launchReadOf(final); err != nil {
-			return AgentLaunches{}, fmt.Errorf("read the final totals of %s at %d: %w", agent, launch.Generation, err)
+			return nil, fmt.Errorf("read the final totals at %d: %w", launch.Generation, err)
 		}
-		launches.Launches = append(launches.Launches, launch)
+		launches = append(launches, launch)
 	}
 	if err := rows.Err(); err != nil {
-		return AgentLaunches{}, fmt.Errorf("read the launches of %s from %d: %w", agent, since, err)
+		return nil, err
 	}
 	return launches, nil
 }

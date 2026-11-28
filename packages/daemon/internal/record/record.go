@@ -2972,9 +2972,12 @@ type Store interface {
 	// place's row, which the run's end reads with the start. The next start of the place clears it.
 	KeepStartTotals(ctx context.Context, tx pgx.Tx, issue string, place StepPlace, start StartTotals) error
 	// AgentLaunches is the claim agent's generation now, whether its row records a process, and
-	// each of its launch rows from the generation since on, or from its generation now for
-	// SinceNow (Postgres.AgentLaunches).
+	// each of its launch rows from the generation since on (Postgres.AgentLaunches).
 	AgentLaunches(ctx context.Context, tx pgx.Tx, agent claim.Token, since uint64) (AgentLaunches, error)
+	// AgentLaunchNow is the claim agent's generation now, whether its row records a process, and
+	// its launch row of that generation alone, the one row a step's start reads
+	// (Postgres.AgentLaunchNow).
+	AgentLaunchNow(ctx context.Context, tx pgx.Tx, agent claim.Token) (AgentLaunches, error)
 	// KeepRead keeps read as the newest read of the launch key where its Read is above the one the
 	// store holds. A launch with no row gets its row.
 	KeepRead(ctx context.Context, tx pgx.Tx, key LaunchKey, read LaunchRead) error
