@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/nats-io/nats.go"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
@@ -204,6 +205,7 @@ func writeRoleClaimUnreadable(w http.ResponseWriter, role string, err error) int
 // send that cannot read the bucket answer their 503 inside the deadline their own caller holds.
 func liveSessionEntry(
 	ctx context.Context,
+	clk clock.Clock,
 	sessions *session.SessionRegistry,
 	sessionID string,
 	bound time.Duration,
@@ -213,7 +215,7 @@ func liveSessionEntry(
 	if entry, state := sessions.Lookup(sessionID); accept(state) {
 		return entry, state, nil
 	}
-	readCtx, cancel := context.WithTimeout(ctx, bound)
+	readCtx, cancel := clock.WithShownTimeout(clk, ctx, bound)
 	defer cancel()
 	entry, err := read(readCtx, sessionID)
 	if err != nil {
@@ -413,9 +415,9 @@ func roleOwnSessionVerdict(registry *store.Registry, role string, claim store.Ro
 // session is gone, not a failure; every other read failure takes nothing from a holder. Both
 // reads are bounded by roleHolderReadTimeout within ctx, so the route answers inside the budget
 // its own caller holds.
-func roleSupersessionVerdict(ctx context.Context, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
+func roleSupersessionVerdict(ctx context.Context, clk clock.Clock, sessions *session.SessionRegistry, holder, previous, claimantInstanceID string) (roleSupersession, error) {
 	if previous == "" || holder != previous {
-		_, _, err := liveSessionEntry(ctx, sessions, holder, sendRequestBound(roleHolderReadTimeout), sessionIsLive, sessions.RefreshFromLeader)
+		_, _, err := liveSessionEntry(ctx, clk, sessions, holder, sendRequestBound(roleHolderReadTimeout), sessionIsLive, sessions.RefreshFromLeader)
 		switch {
 		case errors.Is(err, nats.ErrKeyNotFound):
 			return roleTakenFromHolder, nil

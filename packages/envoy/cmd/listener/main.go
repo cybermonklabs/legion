@@ -202,7 +202,7 @@ func listenerCaches(registry *store.Registry, sessions *session.SessionRegistry,
 // with roleHolderReadTimeout as its bound, the same bound each read of role delivery's resolution
 // waits.
 func sessionMayBeLive(sessions *session.SessionRegistry, sessionID string) (bool, error) {
-	_, _, err := liveSessionEntry(context.Background(), sessions, sessionID, roleHolderReadTimeout, notGone, sessions.RefreshFromLeader)
+	_, _, err := liveSessionEntry(context.Background(), clock.Real(), sessions, sessionID, roleHolderReadTimeout, notGone, sessions.RefreshFromLeader)
 	if errors.Is(err, nats.ErrKeyNotFound) {
 		return false, nil
 	}

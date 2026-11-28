@@ -157,7 +157,7 @@ func (h *legionHandoff) handOffToLegion(ctx context.Context, target legionHandof
 	// bucket leader's, as every read that takes something from a session on a miss is
 	// (liveSessionEntry): a copy that has not applied a registration made a moment ago would hand a
 	// live session's message to its daemon.
-	_, _, err = liveSessionEntry(ctx, h.sessions, agent.SessionID, roleHolderReadTimeout, notGone, h.sessions.RefreshFromLeader)
+	_, _, err = liveSessionEntry(ctx, clock.Real(), h.sessions, agent.SessionID, roleHolderReadTimeout, notGone, h.sessions.RefreshFromLeader)
 	switch {
 	case errors.Is(err, nats.ErrKeyNotFound):
 	case err != nil:

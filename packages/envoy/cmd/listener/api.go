@@ -937,7 +937,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// Every bus read and the publish below share one deadline derived from the caller's own, so
 		// a bus this listener cannot reach is answered as a named 503 inside the caller's attempt
 		// rather than left to that caller's timeout.
-		ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
+		ctx, cancel := clock.WithShownTimeout(d.clk(), r.Context(), listenerSendRequestBudget)
 		defer cancel()
 		var body listenerwire.MessageBody
 		var targetSession string
@@ -998,7 +998,7 @@ func sendHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// entry within the gone horizon is not gone to this route while the known-session store
 		// holds its record, which it answers from memory: only a session neither store knows is
 		// the 404 a sender routes around the pane on.
-		target, recipientState, err := liveSessionEntry(ctx, d.sessions, targetSession, sendRequestBound(sendSessionReadTimeout), notGone, d.sessions.Refresh)
+		target, recipientState, err := liveSessionEntry(ctx, d.clk(), d.sessions, targetSession, sendRequestBound(sendSessionReadTimeout), notGone, d.sessions.Refresh)
 		// At the edge a target is one only while the token that registered it lists one of the
 		// sender's projects and the stream's leader confirms that record is a writer's
 		// (edgeScope.showsConfirmed). Any other target, and one no entry stands for, whose record
@@ -1434,6 +1434,10 @@ var publisherLanes = []struct{ prefix, publisher string }{
 func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		arrived := time.Now()
+		// The topic publish's budget counts from its arrival on the route's clock (d.clk(), the
+		// real clock in production), which a test moves past the budget; a role publish's delivery
+		// (sendToRole) keeps its deadlines on the wall clock from arrived.
+		budgetArrived := d.clk().Now()
 		record := &requestRecord{logger: logger, line: "listener publish", laneKey: "topic"}
 		if r.Method != http.MethodPost {
 			record.refuse(w, http.StatusMethodNotAllowed, outcomeInvalidRequest, "method not allowed")
@@ -1610,7 +1614,9 @@ func publishHandler(d *listenerDeps, logger *logging.Logger) http.HandlerFunc {
 		// The sender stamp's read and the publish take this one deadline, derived from the
 		// caller's own context, so this route too answers a bus it cannot reach rather than
 		// spending the caller's attempt.
-		ctx, cancel := context.WithDeadline(r.Context(), arrived.Add(listenerSendRequestBudget))
+		budget, cancelBudget := d.clk().WithDeadline(r.Context(), budgetArrived.Add(listenerSendRequestBudget))
+		defer cancelBudget()
+		ctx, cancel := clock.WithShownDeadline(budget)
 		defer cancel()
 		item.Sender = senderStamp(ctx, d.clk(), d.registry, d.sessions, item.SourceSession)
 		if reportsPublishBusCalls() {
@@ -2062,7 +2068,7 @@ func sessionEntryHandler(d *listenerDeps) http.HandlerFunc {
 		}
 		ctx, cancel := context.WithTimeout(r.Context(), listenerSendRequestBudget)
 		defer cancel()
-		entry, state, err := liveSessionEntry(ctx, d.sessions, sessionID, sendRequestBound(roleHolderReadTimeout), accept, d.sessions.Refresh)
+		entry, state, err := liveSessionEntry(ctx, d.clk(), d.sessions, sessionID, sendRequestBound(roleHolderReadTimeout), accept, d.sessions.Refresh)
 		// At the edge a session of none of the token's projects is answered as one no listener
 		// has heard of, and a shown session's roles and topics are those projects' alone.
 		scope := edgeScopeOf(r, d.repositories)
@@ -2669,7 +2675,7 @@ func roleSetHandler(d *listenerDeps, machineID string, logger *logging.Logger) h
 				if claimantInstance == "" {
 					claimantInstance = registeredInstanceID
 				}
-				verdict, err = roleSupersessionVerdict(ctx, d.sessions, holder, previous, claimantInstance)
+				verdict, err = roleSupersessionVerdict(ctx, d.clk(), d.sessions, holder, previous, claimantInstance)
 			}
 			if verdict == roleTakenFromHolder || verdict == roleTakenFromUnidentifiedPredecessor {
 				supersedable = append(supersedable, holder)
