@@ -3181,10 +3181,10 @@ type Store interface {
 	// DesignNewsPending says whether a reconcile of tree's news (DesignNewsReconcile) is queued and
 	// has not begun to run at now (Postgres.DesignNewsPending).
 	DesignNewsPending(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
-	// DesignNewsWaiting is the reconcile of tree's news that has not begun to run at now, and
-	// whether there is one, held until tx ends so no lane claims it before tx commits
+	// DesignNewsWaiting says whether a reconcile of tree's news has not begun to run at now, and
+	// holds each such row until tx ends, so no lane claims it before tx commits
 	// (Postgres.DesignNewsWaiting).
-	DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (OutboxRow, bool, error)
+	DesignNewsWaiting(ctx context.Context, tx pgx.Tx, tree string, now time.Time) (bool, error)
 	// DesignChangesOf is the recorded change set of each of pairs that has one, by pair.
 	DesignChangesOf(ctx context.Context, tx pgx.Tx, pairs []VersionPair) (map[VersionPair]DesignChanges, error)
 	// PutDesignChanges records the change set of one pair; a pair already recorded read keeps
