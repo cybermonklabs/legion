@@ -946,8 +946,9 @@ export function windowFigure(
  *  only once the reader turns each chart to its table. */
 const LINKED_LEGION_CHARTS = ["legion-work-time", "legion-rework", "legion-phase-time"] as const;
 
-/** EVERY_SOURCE's tab with every group link drawn: the Legion headlines and the P0 card's link, and
- *  the per-day and phase rows of the linked Legion charts, each turned to its table. */
+/** EVERY_SOURCE's tab over its default window with every group link but the P0 card's drawn: the
+ *  Legion headlines, and the per-day and phase rows of the linked Legion charts, each turned to its
+ *  table. The P0 card draws its link over a window of its own (`showP0Link`). */
 export async function showGroupLinks(page: Page): Promise<void> {
   await openTab(page, EVERY_SOURCE);
   await paintedSection(page, "cards");
@@ -1058,12 +1059,45 @@ export async function groupLinks(page: Page, minimum: number): Promise<GroupLink
   return drawnLinks();
 }
 
-/** Presses `link` on the tab `showGroupLinks` drew, and holds that the issue table it opens lists
- *  exactly the issues the link counted (`only=`, plan D13). */
+/** Presses `link` on the tab `showGroupLinks` (or, for the P0 card's, `showP0Link`) drew, and holds
+ *  that the issue table it opens lists exactly the issues the link counted (`only=`, plan D13). */
 export async function openGroupLink(page: Page, link: GroupLink): Promise<void> {
   await page.locator(link.selector).click();
   await expect(page).toHaveURL(/\/issues\?(.*&)?only=/);
   await expect(page.locator("[data-issue-row]"), link.selector).toHaveCount(link.count);
+}
+
+/** The P0 card's group link, drawn on EVERY_SOURCE's tab over the days from unowned-p0's first day
+ *  to today, once that tab shows exactly one. unowned-p0 counts the P0 issues open with no owner
+ *  now, so the refresher writes its row for the day it runs, and on a freshly reset database its
+ *  input begins today: over the tab's default window, which starts 27 days before, the card reads
+ *  "no data before <that day>" and draws no link, as spec R18 says it must. The first day is the
+ *  one the evals answer names (`data_since`), read once the refresher has written it. */
+export async function showP0Link(page: Page): Promise<GroupLink> {
+  const today = new Date().toISOString().slice(0, 10);
+  const to = `${dayAfter(today, 1)}T00:00:00Z`;
+  const firstDay = async () => {
+    const listed = await listEvals(
+      EVERY_SOURCE,
+      { from: `${dayAfter(today, -27)}T00:00:00Z`, to },
+      "&kind=delivery"
+    );
+    const item = (listed.items ?? []).find((one) => one.definition.slug === "unowned-p0");
+    return item?.series?.find((one) => one.series === "issues")?.data_since ?? null;
+  };
+  await expect
+    .poll(firstDay, { message: "the refresher wrote unowned-p0's first day", timeout: 30_000 })
+    .not.toBeNull();
+  const since = await firstDay();
+  await openTab(page, EVERY_SOURCE, windowQuery({ from: `${since}T00:00:00Z`, to }));
+  const cards = await paintedSection(page, "cards");
+  await expect(cards.locator('[data-card="unowned-p0"] button[data-group-count]')).toHaveCount(1);
+  // Read after the P0 card's link is drawn above, so groupLinks finds it.
+  const link = (await groupLinks(page, 1)).find((one) =>
+    one.selector.startsWith('[data-card="unowned-p0"]')
+  );
+  if (link === undefined) throw new Error(`the P0 card drew no group link from ${since}`);
+  return link;
 }
 
 // ---------------------------------------------------------------------------------------------

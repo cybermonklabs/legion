@@ -59,6 +59,7 @@ import {
   seedRelations,
   showChart,
   showGroupLinks,
+  showP0Link,
   snapshotsOf,
   subscribedViews,
   TAB_QUERY,
@@ -415,7 +416,6 @@ test("the tab lists no issue, and each group number opens the issues it counts @
   // Read after groupLinks' own poll has seen at least ten links drawn, so each kind is found.
   const links = await groupLinks(page, 10);
   const kinds = [
-    links.find((link) => link.selector.startsWith('[data-card="unowned-p0"]')),
     links.find(
       (link) => link.selector === '[data-eval="legion-work-time"] > div > button[data-group-count]'
     ),
@@ -428,6 +428,8 @@ test("the tab lists no issue, and each group number opens the issues it counts @
     await showGroupLinks(page);
     await openGroupLink(page, link);
   }
+  // The P0 card's link, over the days from its input's first day (`showP0Link`).
+  await openGroupLink(page, await showP0Link(page));
 });
 
 // SLOW(>=2s): seeds every source and a logged eval, and opens its rows and its panel.
@@ -749,24 +751,14 @@ test("the drill-down's controls flag, restore and reject, and the failure measur
   page,
 }) => {
   const record = await seedDeployRecord(true);
-  const live = recordLive(page);
   // Seven days: the window starts after the failure measures' first day, so they read a value.
   const timeline = await openEvalsTimeline(page, "window=7d&mode=list", DEPLOY_RECORD);
   const cards = await paintedSection(page, "cards");
-  // The deploys with a counted failure, as the delivery view the card draws holds them: the card
-  // writes each figure of a series whose unit is a ratio as a share, so the count is read here.
-  const failed = () => {
-    const view = evalsViews(live, DEPLOY_RECORD)
-      .filter((one) => one.query.get("kind") === "delivery")
-      .at(-1);
-    return windowFigure(
-      evalsViewItems(live, view?.sub ?? ""),
-      "change-fail-rate",
-      "per_deploy",
-      "failed"
-    );
-  };
-  await expect.poll(failed).toBe(1);
+  // The deploys with a counted failure, as the change failure rate's card writes them.
+  const failed = cards.locator(
+    '[data-card="change-fail-rate"] [data-window-series="per_deploy"] [data-window-statistic="failed"]'
+  );
+  await expect(failed).toHaveText("1");
 
   // Flag: the pull request it shipped ticked, and a note; a person's failure, which counts.
   let details = await openDeployRun(timeline, page, record.flagRun);
@@ -779,7 +771,7 @@ test("the drill-down's controls flag, restore and reject, and the failure measur
   const person = failures.locator('li[data-signal="person"]');
   await expect(person).toHaveAttribute("data-state", "counted");
   await expect(person.locator("[data-note]")).toHaveText(`Note: ${FLAG_NOTE}`);
-  await expect.poll(failed).toBe(2);
+  await expect(failed).toHaveText("2");
 
   // Mark restored: the failure's restore, which the recovery time reads.
   await person.getByRole("button", { name: "Mark restored" }).click();
@@ -802,7 +794,7 @@ test("the drill-down's controls flag, restore and reject, and the failure measur
   await reject.getByRole("button", { name: "Reject this failure" }).click();
   await expect(check).toHaveAttribute("data-state", "rejected");
   await expect(check.locator("[data-rejected]")).toHaveText(`Rejected by alice: ${REJECT_REASON}`);
-  await expect.poll(failed).toBe(1);
+  await expect(failed).toHaveText("1");
 });
 
 /** The cards and the section charts that count DEFAULT_REPO's two pull requests of no issue. */

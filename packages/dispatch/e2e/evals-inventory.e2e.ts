@@ -22,6 +22,7 @@ import {
   seedRelations,
   showChart,
   showGroupLinks,
+  showP0Link,
   TAB_QUERY,
 } from "./evals-seed";
 import { openMergeTimeline, paintedSection } from "./evals-tab";
@@ -176,15 +177,16 @@ test("every group number opens a view with its count @evals", async ({ page }) =
   await expect(page.locator("[data-issue-row]")).toHaveCount(0);
   // Read after groupLinks' own poll has seen at least ten links drawn, so every link is walked.
   const links = await groupLinks(page, 10);
-  // The Legion headlines, each phase bar that holds hours (ledger item 13), the per-day rows and
-  // the P0 card.
+  // The Legion headlines, each phase bar that holds hours (ledger item 13) and the per-day rows,
+  // over the default window.
   const phaseBars = links.filter((link) => link.selector.includes('"legion-phase-time"'));
   expect(phaseBars.length).toBeGreaterThan(0);
-  expect(links.filter((link) => link.selector.includes('"unowned-p0"')).length).toBe(1);
   for (const link of links) {
     await showGroupLinks(page);
     await openGroupLink(page, link);
   }
+  // The P0 card's one link, over the days from its input's first day (`showP0Link`).
+  await openGroupLink(page, await showP0Link(page));
 });
 
 // SLOW(>=2s): seeds every source and a logged eval, and opens its rows, its reading and its panel.
