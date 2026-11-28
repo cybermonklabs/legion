@@ -135,6 +135,39 @@ func TestWorkspaceWorkReadsTheIssuePodLayout(t *testing.T) {
 	}
 }
 
+// A fix's working copy can be stale: a jj command in another workspace of the clone rewrote the
+// commit it stands on, and the copy's files on disk have not followed. An edit the fix's agent
+// made in that copy after its last jj command is then on the disk alone. The read must not move
+// it: bringing the stale copy up to date first (`jj workspace update-stale`) took the edit off the
+// disk into a divergent commit that no working copy reaches and the count does not hold, so a
+// release would delete it. The read takes no such step: it reads the stale copy, which jj refuses,
+// and the read is refused, so the pod is kept, as a stale issue copy already keeps it. The edit is
+// still on the disk afterwards, unchanged.
+func TestAStaleFixCopysUnrecordedEditStaysOnTheDisk(t *testing.T) {
+	f := newWorkFixture(t)
+	fix := f.ws + "-fix"
+	name := filepath.Base(fix)
+	f.jj(f.ws, "workspace", "add", "--name", name, "-r", "main", fix, "-R", f.ws)
+	// Another workspace rewrites the commit the fix's copy stands on: the copy is now stale.
+	f.jj(f.ws, "describe", "-r", name+"@", "-m", "moved under the fix", "-R", f.ws)
+	f.writeIn(fix, "fix-wip.txt")
+	wip := filepath.Join(fix, "fix-wip.txt")
+	before, err := os.ReadFile(wip)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	got := f.read()
+	after, err := os.ReadFile(wip)
+	if err != nil || string(after) != string(before) {
+		t.Fatalf("the read of a stale fix copy left fix-wip.txt %q (%v), want it on the disk as written, %q: the read moved an edit no jj command recorded (read %+v)",
+			after, err, before, got)
+	}
+	if got.OK && got.Count == 0 {
+		t.Fatalf("the read of a stale fix copy holding an unrecorded edit = %+v, want it refused or the edit counted: no work lets a release take the pod and the edit", got)
+	}
+}
+
 // A pod is released, or replaced by an update round, only once the workspace read finds no work,
 // and a fix works in a second working copy of the clone beside the issue's, workspace.FixDir. An
 // edit the fix's agent made after its last jj command is in no commit until a jj command run in
