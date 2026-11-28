@@ -50,6 +50,7 @@ func TestClaimsRetryFreshSessionStartsAStoppedClaimInANewSession(t *testing.T) {
 	if !strings.Contains(out, " launching ") {
 		t.Fatalf("retry --fresh-session stdout = %q, want the claim launching again", out)
 	}
+	d.startEnded(workerClaim)
 	if got := len(d.runtime.CallsOf("Resume")); got != resumes {
 		t.Fatalf("the runtime saw %d resumes, want the stopped session left alone", got-resumes)
 	}

@@ -415,6 +415,19 @@ func (d *operatorDaemon) ready(token legionclaim.Token) {
 	}, nil)
 }
 
+// startEnded waits for the start a route began to end: the operator's resume and retry answer
+// once the claim is written launching, while its start runs on (api's startUnderWay,
+// dispatch://INFRA-5649 R4), so the runtime's call can come after the answer. Machine.Claim takes
+// the machine's lock, which the decision running that start holds until it ends.
+func (d *operatorDaemon) startEnded(token legionclaim.Token) {
+	d.t.Helper()
+	m, ok := d.claimSupervisor.Machine(token)
+	if !ok {
+		d.t.Fatalf("the daemon supervises no %s", token)
+	}
+	m.Claim()
+}
+
 // spawnArgs is a valid spawn of the root architect of LEGION-208.
 func (d *operatorDaemon) spawnArgs(extra ...string) []string {
 	args := append([]string{"spawn"}, d.reach()...)
@@ -564,6 +577,7 @@ func TestClaimsSuspendResumeAndStopDriveTheClaim(t *testing.T) {
 		if out != step.want {
 			t.Fatalf("%s stdout = %q, want %q", step.action, out, step.want)
 		}
+		d.startEnded(step.claim)
 		if calls := d.runtime.CallsOf(step.method); len(calls) != 1 {
 			t.Fatalf("after %s the runtime saw %v, want one %s", step.action, d.runtime.Methods(), step.method)
 		}
@@ -609,6 +623,7 @@ func TestClaimsRetryPostsToTheClaimsRetryRoute(t *testing.T) {
 	if want := "legion-legion-legion-208-architect architect LEGION-208 launching - 4 0 - - - -\n"; out != want {
 		t.Fatalf("retry stdout = %q, want %q", out, want)
 	}
+	d.startEnded(architectClaim)
 	if spawns := d.runtime.CallsOf("Spawn"); len(spawns) != 4 {
 		t.Fatalf("the runtime saw %d spawns, want the retry's launch after the three refused", len(spawns))
 	}
