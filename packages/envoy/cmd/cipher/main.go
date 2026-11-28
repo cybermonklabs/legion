@@ -110,6 +110,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/proof"
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/redact"
 )
 
@@ -322,7 +323,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 	case "sign":
 		return cmdSign(args[1:], stdout, stderr)
 	case "identity":
-		return cmdIdentity(args[1:], stdout, stderr)
+		return cmdIdentity(clock.Real(), args[1:], stdout, stderr)
 	case "secret":
 		return cmdSecret(args[1:], stdout, stderr)
 	default:

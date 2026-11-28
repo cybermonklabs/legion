@@ -34,6 +34,7 @@ import (
 	"github.com/sjawhar/envoy/internal/cipher/record"
 	"github.com/sjawhar/envoy/internal/cipher/secrets"
 	"github.com/sjawhar/envoy/internal/cipherclient"
+	"github.com/sjawhar/envoy/internal/clock"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/testtmp"
 	"github.com/sjawhar/envoy/internal/testwait"
@@ -1308,8 +1309,15 @@ func runExecForm(t *testing.T, binary, broker, keyDir string, extraEnv ...string
 }
 
 // writePendingMarker writes the launcher's enrollment.pending into dir (created if absent), aged
-// by age.
+// by age on the wall clock.
 func writePendingMarker(t *testing.T, dir string, age time.Duration) string {
+	t.Helper()
+	return writePendingMarkerAt(t, dir, time.Now().Add(-age))
+}
+
+// writePendingMarkerAt writes the launcher's enrollment.pending into dir (created if absent) with
+// then as its mtime, for a row whose code reads the marker's age on a clock of the row's own.
+func writePendingMarkerAt(t *testing.T, dir string, then time.Time) string {
 	t.Helper()
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
@@ -1318,7 +1326,6 @@ func writePendingMarker(t *testing.T, dir string, age time.Duration) string {
 	if err := os.WriteFile(marker, nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	then := time.Now().Add(-age)
 	if err := os.Chtimes(marker, then, then); err != nil {
 		t.Fatal(err)
 	}
@@ -1477,7 +1484,7 @@ func TestEnrollWaitGivesUpAtItsBound(t *testing.T) {
 	if spanned < 1*time.Second {
 		t.Fatalf("the call ended %s after the row started it, under its 1s bound, though it says it waited %s: stderr = %q", spanned, waited, stderr)
 	}
-	if !freshMarker(keyDir) {
+	if !freshMarker(clock.Real(), keyDir) {
 		t.Fatalf("%s is no longer fresh, so the wait may have ended on the marker's age rather than its bound", marker)
 	}
 	if _, err := os.Stat(filepath.Join(keyDir, keyFile)); !errors.Is(err, os.ErrNotExist) {
@@ -1751,7 +1758,7 @@ func fakeLoginHelperAt(t *testing.T, code, verificationURI string, states []stri
 // confirmation code and, since AGENT_SECRETS_APPROVE_URL is unset, the generic Dispatch-page
 // line, then polls login-status through two pending answers before exiting 0 on "issued".
 func TestMachineLoginPrintsTheCodeAndWaits(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:1755).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:1762).
 	t.Setenv("AGENT_SECRETS_APPROVE_URL", "")
 	binary := buildAgentSecrets(t)
 	sock := fakeLoginHelper(t, "KQ7M-X4PZ", []string{"pending", "pending", "issued"})
@@ -2038,7 +2045,7 @@ func TestRequestAndExecFormSendSessionIDWithFallbackOrder(t *testing.T) {
 // TestRequestSessionIDCodex pins where CODEX_THREAD_ID stands: in Claude Code's place,
 // and, when both are set, the nearer of the two harness processes decides.
 func TestRequestSessionIDCodex(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2058); it sets a package variable the package's other tests read (nearestHarness set at main_test.go:2063).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2065); it sets a package variable the package's other tests read (nearestHarness set at main_test.go:2070).
 	cases := []struct {
 		name          string
 		claude, codex string
@@ -2070,7 +2077,7 @@ func TestRequestSessionIDCodex(t *testing.T) {
 }
 
 func TestRequestSessionIDFallbackOrder(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2087).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at main_test.go:2094).
 	cases := []struct {
 		name               string
 		omp, envoy, claude string

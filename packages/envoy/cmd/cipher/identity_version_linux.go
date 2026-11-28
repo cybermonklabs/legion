@@ -5,6 +5,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -13,6 +14,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // helperVersionSuffix is what identity --source adds after a `helper: <socket>` line: the release
@@ -21,12 +23,17 @@ import (
 // replaced while the old process still serves. A helper from before that op answers `unknown op
 // version`; the line then names the helper's binary by the pid it runs as, read as the socket's
 // peer (peerPID), so the running release can still be found without trusting the pin. An
-// unreachable or unparseable answer adds nothing.
-func helperVersionSuffix(sock string) string { return versionSuffix(sock, helper.PeerOf) }
+// unreachable or unparseable answer adds nothing. The dial gets identityDeadline on clk, and the
+// write and the read together get identityDeadline of their own after it.
+func helperVersionSuffix(clk clock.Clock, sock string) string {
+	return versionSuffix(clk, sock, helper.PeerOf)
+}
 
 // versionSuffix is helperVersionSuffix with the SO_PEERPIDFD pin a test can replace.
-func versionSuffix(sock string, pin func(*net.UnixConn) (*helper.Peer, error)) string {
-	conn, err := net.DialTimeout("unix", sock, identityDeadline)
+func versionSuffix(clk clock.Clock, sock string, pin func(*net.UnixConn) (*helper.Peer, error)) string {
+	dialing, cancel := clk.WithTimeout(context.Background(), identityDeadline)
+	conn, err := new(net.Dialer).DialContext(dialing, "unix", sock)
+	cancel()
 	if err != nil {
 		return ""
 	}
@@ -38,7 +45,12 @@ func versionSuffix(sock string, pin func(*net.UnixConn) (*helper.Peer, error)) s
 			pid = p
 		}
 	}
-	_ = conn.SetDeadline(time.Now().Add(identityDeadline))
+	// The end of asking sets a deadline already passed on conn, which ends the write or the read
+	// as a deadline at that moment would.
+	asking, cancel := clk.WithTimeout(context.Background(), identityDeadline)
+	defer cancel()
+	stop := context.AfterFunc(asking, func() { _ = conn.SetDeadline(time.Unix(1, 0)) })
+	defer stop()
 	if _, err := conn.Write([]byte(`{"op":"version"}` + "\n")); err != nil {
 		return ""
 	}

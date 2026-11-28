@@ -36,7 +36,7 @@ import (
 // enroll, recorded in enrollment.error. A file that holds a token enrols, and the renewal command
 // the enrolment prints names that file.
 func TestAPodTokenFileIsNamedByItsFlagNeverItsPath(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:55); it signals the test process or changes its signal handling (main.cmdRenew, signal.NotifyContext at main.go:891); it sets a package variable the package's other tests read (main.cmdRenew, main.renewContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at pod_redact_test.go:55); it signals the test process or changes its signal handling (main.cmdRenew, signal.NotifyContext at main.go:892); it sets a package variable the package's other tests read (main.cmdRenew, main.renewContext, main.chainSessionContext, main.buildChainSigner, main.selectSigner, main.signerChain, main.machineChainSource, main.registerMachine, main.registerMachineSession, (*Client).Token, (*Client).tradeHeld, (*Client).trade, (*ExternalAccountIdentity).Token, (gcloudToken).Token, main.runGcloud, main.runRecorded, runningGcloud set at secret_gcp.go:516).
 	const pasted = "hunter2pw-podtoken-7f3c91"
 	blankDir := filepath.Join(t.TempDir(), "hunter2pw-tokendir-0d4e55")
 	if err := os.MkdirAll(blankDir, 0o700); err != nil {

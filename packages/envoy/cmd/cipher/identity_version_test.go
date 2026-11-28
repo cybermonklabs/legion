@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/sjawhar/envoy/internal/cipher/helper"
+	"github.com/sjawhar/envoy/internal/clock"
 )
 
 // versionedHelper listens at a socket of the test's own and answers each connection by the op of
@@ -125,7 +126,7 @@ func TestAnOlderHelperIsNamedOnAKernelWithoutPeerPidfd(t *testing.T) {
 		return nil, fmt.Errorf("SO_PEERPIDFD: %w", syscall.ENOPROTOOPT)
 	}
 	want := fmt.Sprintf(" (a helper from before this release; its binary is /proc/%d/exe)", os.Getpid())
-	if got := versionSuffix(sock, noPidfd); got != want {
+	if got := versionSuffix(clock.Real(), sock, noPidfd); got != want {
 		t.Fatalf("versionSuffix with no SO_PEERPIDFD: %q, want %q", got, want)
 	}
 }
