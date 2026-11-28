@@ -427,15 +427,19 @@ func attributionEventsOn(t *testing.T, database *store.Store, issue string) int 
 
 // storeBacklog stores the backlog of step 5: backlogRows merged rows of backlogRepo, each with
 // current texts and its messages read. The branch of each names ACME-2 and its title names
-// ACME-1. Each results row stores ACME-1 from the title, as an older rule stored it. The stand-in
-// holds the same pull requests.
+// ACME-1. Each results row stores ACME-1 from the title, as an older rule stored it, and the merge
+// commit and time a read of GitHub stores for a merged row (merge_commit_sha, merged_at): the
+// previous build's results read asks GitHub again for a merged row with no time of merge whose rule
+// is below its AttributionRuleVersion (api's fillMergeTimes), and writes its own rule's answer
+// there, which no row a read wrote invites. The stand-in holds the same pull requests.
 func storeBacklog(t *testing.T, database *store.Store, fake *attributionFake) {
 	t.Helper()
 	ctx := context.Background()
 	if _, err := database.Pool.Exec(ctx, `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source, title, url, event_at, checked_at, github_read_at)
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source, title, url, event_at, checked_at, github_read_at, merge_commit_sha, merged_at)
 		select $1::text, n, pg_catalog.lpad(pg_catalog.to_hex(n), 40, '0'), 'legion/ACME-2', 'main', 'merged', 'ACME-1', 'title_body',
-			'ACME-1 the work', 'https://github.com/' || $1::text || '/pull/' || n, $4::timestamptz, now(), now()
+			'ACME-1 the work', 'https://github.com/' || $1::text || '/pull/' || n, $4::timestamptz, now(), now(),
+			pg_catalog.lpad(pg_catalog.to_hex(n), 40, 'e'), $4::timestamptz
 		from pg_catalog.generate_series($2::int, $2::int + $3::int - 1) n
 	`, backlogRepo, backlogFirst, backlogRows, backlogUpdate); err != nil {
 		t.Fatalf("store the backlog's results rows: %v", err)
@@ -454,15 +458,18 @@ func storeBacklog(t *testing.T, database *store.Store, fake *attributionFake) {
 }
 
 // storeLaterRows stores the rows of step 6: laterRows merged rows of backlogRepo with no texts, as
-// the release before stores a row. Each stores ACME-1, and its title names ACME-1, so a read of
-// its facts gives the issue it stores and queues no move. The stand-in holds the same pull
-// requests.
+// the release before stores a row, with the merge commit and time it stores for a merged row (see
+// storeBacklog: a results read of either build reads GitHub again for a merged row with neither,
+// and that read stores the texts the facts line is to read). Each stores ACME-1, and its title
+// names ACME-1, so a read of its facts gives the issue it stores and queues no move. The stand-in
+// holds the same pull requests.
 func storeLaterRows(t *testing.T, database *store.Store, fake *attributionFake) {
 	t.Helper()
 	if _, err := database.Pool.Exec(context.Background(), `
-		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source, title, url, event_at, checked_at)
+		insert into pull_request_heads (repo, number, head_sha, head_ref, base_ref, state, issue_key, attribution_source, title, url, event_at, checked_at, merge_commit_sha, merged_at)
 		select $1::text, n, pg_catalog.lpad(pg_catalog.to_hex(n), 40, '0'), 'work/no-key', 'main', 'merged', 'ACME-1', 'title_body',
-			'ACME-1: an older change', 'https://github.com/' || $1::text || '/pull/' || n, $4::timestamptz, now()
+			'ACME-1: an older change', 'https://github.com/' || $1::text || '/pull/' || n, $4::timestamptz, now(),
+			pg_catalog.lpad(pg_catalog.to_hex(n), 40, 'e'), $4::timestamptz
 		from pg_catalog.generate_series($2::int, $2::int + $3::int - 1) n
 	`, backlogRepo, laterFirst, laterRows, backlogUpdate); err != nil {
 		t.Fatalf("store the rows with no facts: %v", err)
