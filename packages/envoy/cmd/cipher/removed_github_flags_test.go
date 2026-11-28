@@ -12,6 +12,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/testexec"
 )
 
 // TestRemovedGitHubFlagsExit2NamingTheirReplacement: each of the four GitHub flags of an earlier
@@ -97,7 +99,7 @@ func TestTheRunFormsHelpSaysHowToReadAGitHubProfilesToken(t *testing.T) {
 		t.Fatalf("the help's command runs jq, which is not on PATH: %v", err)
 	}
 	bin := t.TempDir()
-	if err := os.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho \"gh ran with GH_TOKEN=$GH_TOKEN\"\n"), 0o755); err != nil {
+	if err := testexec.WriteFile(filepath.Join(bin, "gh"), []byte("#!/bin/sh\necho \"gh ran with GH_TOKEN=$GH_TOKEN\"\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
 	const release = `{"installations":{"acme":{"installation_id":7,"token":"ghs-fake7","expires_at":"2026-11-28T17:00:00Z"}}}`
