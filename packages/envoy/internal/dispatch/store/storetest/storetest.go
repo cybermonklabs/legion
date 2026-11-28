@@ -589,7 +589,13 @@ func openAdmin(raw string, end time.Time, bounded bool) error {
 // adminApplicationName is the application_name of this test binary's admin connections:
 // "storetest admin" and the binary's pid, which no other process on the machine holds.
 func adminApplicationName() string {
-	return "storetest admin " + strconv.Itoa(os.Getpid())
+	return adminApplicationNameOf(os.Getpid())
+}
+
+// adminApplicationNameOf is the application_name of the admin connections of the test binary
+// whose pid is pid, such as a child a row starts.
+func adminApplicationNameOf(pid int) string {
+	return "storetest admin " + strconv.Itoa(pid)
 }
 
 func databaseURL(server url.URL, database string) string {

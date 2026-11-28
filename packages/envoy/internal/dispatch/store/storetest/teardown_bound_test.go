@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -82,7 +81,7 @@ func TestTheDropsTakeABoundOfTheirOwnNotTheTests(t *testing.T) {
 	exited := make(chan error, 1)
 	go func() { exited <- child.Wait() }()
 	// The child's adminApplicationName: only a drop logs in under it once the child's hold is made.
-	admin := "storetest admin " + strconv.Itoa(child.Process.Pid)
+	admin := adminApplicationNameOf(child.Process.Pid)
 	held := testwait.Until(t, "a login of the child's admin pool held by its hold (waiting in pg_sleep, in pg_stat_activity)", func() (int, bool) {
 		select {
 		case err := <-exited:
