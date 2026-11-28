@@ -392,6 +392,9 @@ func productionTerm(f CloseFacts) string {
 		return ProductionOpening
 	}
 	if !sameCommit(check.MergeSHA, f.Merge.SHA) {
+		if check.Outcome == CheckRecorded {
+			return ""
+		}
 		return ProductionEarlierMerge
 	}
 	switch {
