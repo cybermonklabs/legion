@@ -30,6 +30,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // ───── the pair ─────────────────────────────────────────────────────────────
@@ -56,8 +58,12 @@ type dispatchPair struct {
 	// natsServer is the server nats names, for a row that reads the server's own connection
 	// listing rather than a client's view; nil for a pair started without one (startHookPair).
 	natsServer *testnats.Server
-	nats       string
-	proxies    map[*dispatchProcess]*testnats.Proxy
+	// monitorReads is the context a row reads natsServer's listings under: the shared wait's
+	// (testwait.Context) for the test that made the pair, made once, so a wait that reads them on
+	// every attempt makes no context of its own.
+	monitorReads context.Context
+	nats         string
+	proxies      map[*dispatchProcess]*testnats.Proxy
 }
 
 // newPair opens the database and takes the NATS server the pair will share, and starts nothing:
@@ -74,7 +80,10 @@ func newPair(t *testing.T) *dispatchPair {
 func newPairOn(t *testing.T, database *store.Store) *dispatchPair {
 	t.Helper()
 	server, url := multiprocessNATS(t)
-	return &dispatchPair{database: database, natsServer: server, nats: url, proxies: map[*dispatchProcess]*testnats.Proxy{}}
+	return &dispatchPair{
+		database: database, natsServer: server, monitorReads: testwait.Context(t), nats: url,
+		proxies: map[*dispatchProcess]*testnats.Proxy{},
+	}
 }
 
 // databaseURL is the connection string a process is started with: the database storetest cloned
@@ -88,7 +97,9 @@ func (p *dispatchPair) databaseURL(t *testing.T) string {
 // credential is written through url.UserPassword when the pool carries a password, since CI's
 // Postgres takes one (DISPATCH_TEST_DATABASE_URL) where a trust-authenticated development server
 // does not, and a URL built without it is refused with SQLSTATE 28P01 before the process can serve
-// anything.
+// anything. The child connects within the bound the test's own fixture gives its connects
+// (testdb.WithConnectDeadline: the binary's deadline), so a connect a loaded machine answers late
+// slows the child rather than failing it at pgx's two minutes.
 func databaseURLOf(t *testing.T, database *store.Store) string {
 	t.Helper()
 	config := database.Pool.Config().ConnConfig
@@ -96,8 +107,8 @@ func databaseURLOf(t *testing.T, database *store.Store) string {
 	if config.Password != "" {
 		credential = url.UserPassword(config.User, config.Password).String()
 	}
-	return fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=disable",
-		credential, config.Host, config.Port, config.Database)
+	return testdb.WithConnectDeadline(t, fmt.Sprintf("postgres://%s@%s:%d/%s?sslmode=disable",
+		credential, config.Host, config.Port, config.Database))
 }
 
 // other is the process of the pair that is not one.
@@ -114,6 +125,20 @@ func (p *dispatchPair) name(one *dispatchProcess) string {
 		return "A"
 	}
 	return "B"
+}
+
+// buffers is both processes' whole output, labelled, which a failure about the pair prints: which
+// process bound a durable or ran a pass, and why the other did not, is in the two logs read
+// together, and a message carrying one of them (waitForLog) leaves the job that failed without
+// the half saying what the other process was doing. It is read when it is printed, so a wait whose
+// reading carries it (testwait.Until, readWith) copies neither output on its attempts.
+func (p *dispatchPair) buffers() pairBuffers { return pairBuffers{p} }
+
+// pairBuffers is a pair's output as buffers gives it, read by String.
+type pairBuffers struct{ pair *dispatchPair }
+
+func (b pairBuffers) String() string {
+	return fmt.Sprintf("A:\n%s\nB:\n%s", b.pair.a.Output.String(), b.pair.b.Output.String())
 }
 
 // ───── the API a row drives ─────────────────────────────────────────────────
@@ -225,21 +250,19 @@ func streamHead(t *testing.T, js natsgo.JetStreamContext) uint64 {
 // ───── the delivery durables ────────────────────────────────────────────────
 
 // waitForDurableHolder waits for exactly one of the pair to log that it bound durable, and
-// answers which.
-func waitForDurableHolder(t *testing.T, pair *dispatchPair, durable string, within time.Duration) *dispatchProcess {
+// answers which. Its failure prints both processes' output.
+func waitForDurableHolder(t *testing.T, pair *dispatchPair, durable string) *dispatchProcess {
 	t.Helper()
 	bound := `msg="dispatch delivery: NATS consumer bound"`
-	deadline := time.Now().Add(within)
-	for {
+	var holder *dispatchProcess
+	testwait.Until(t, fmt.Sprintf("one of the pair to log that it bound %s", durable), func() (fmt.Stringer, bool) {
 		switch {
 		case pair.a.logged(bound, "name="+durable):
-			return pair.a
+			holder = pair.a
 		case pair.b.logged(bound, "name="+durable):
-			return pair.b
-		case time.Now().After(deadline):
-			t.Fatalf("neither process bound %s within %v:\nA:\n%s\nB:\n%s",
-				durable, within, pair.a.Output.String(), pair.b.Output.String())
+			holder = pair.b
 		}
-		time.Sleep(50 * time.Millisecond)
-	}
+		return pair.buffers(), holder != nil
+	})
+	return holder
 }

@@ -49,6 +49,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/testnats"
 	"github.com/sjawhar/envoy/internal/testsocks5"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestSettingsTableNamesEachVariableOnce(t *testing.T) {
@@ -219,7 +220,9 @@ func routerFor(t *testing.T, boot bootConfig, built routes.AppContextOptions) ht
 		t.Fatalf("build the router: %v", err)
 	}
 	handler, background := routes.New(appCtx)
-	t.Cleanup(background.Wait)
+	t.Cleanup(func() {
+		testwait.Returns(t, "the router's background work (api.Background.Wait: detached work, sockets, hub, relay, mention sender) to end once the test's lifetime ended", background.Wait)
+	})
 	return handler
 }
 

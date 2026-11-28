@@ -26,6 +26,7 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 
@@ -1373,7 +1374,7 @@ func TestHealthzReportsWhetherThisProcessPublishesTheOutbox(t *testing.T) {
 func TestHealthzReportsThatWritesTakeIdempotencyKeys(t *testing.T) {
 	t.Parallel()
 	closed := storetest.Open(t)
-	closed.Pool.Close()
+	testwait.Returns(t, "every connection of the closed database's pool to come back, so the pool closes", closed.Pool.Close)
 	for name, probe := range map[string]struct {
 		database *store.Store
 		status   int
@@ -2794,8 +2795,9 @@ func TestATableTheKeywordFillDeferralCannotReadDoesNotStopTheBoot(t *testing.T) 
 // then serves: it answers its health check and the registry of live server processes admits it,
 // and still no backend waits for the lock.
 func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break
-	// (requireTheServerEndsTheRead's 10 s over a 5 s lock timeout).
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 10 s
+	// deadline, searchFillTableReadTimeout, over a 5 s lock timeout, which requireTheServerEndsTheRead
+	// requires the server's to beat).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	holder, err := database.Pool.Begin(ctx)
@@ -2811,7 +2813,7 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
 		t.Errorf("under the lock, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
 	}
-	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03")
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "55P03", "lock timeout")
 	requireNoKeywordFillCursorLockWait(t, database, "after the reads returned")
 
 	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
@@ -2832,8 +2834,9 @@ func TestALockedKeywordFillTableEndsItsReadAtTheServerAndTheBootGoesOn(t *testin
 // process booted with DISPATCH_SEARCH_FILL=off on that database logs the same fields once, then
 // serves: it answers its health check and the registry of live server processes admits it.
 func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) {
-	// Not parallel: it holds a step to a wall-clock bound load could break
-	// (requireTheServerEndsTheRead's 10 s over a 6 s statement timeout).
+	// Not parallel: it holds a step to a wall-clock bound load could break (the client's 10 s
+	// deadline, searchFillTableReadTimeout, over a 6 s statement timeout, which
+	// requireTheServerEndsTheRead requires the server's to beat).
 	database := storetest.Open(t)
 	ctx := context.Background()
 	for _, statement := range []string{
@@ -2848,7 +2851,7 @@ func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) 
 	if got := deferralFields(searchFillTableRows(ctx, database.Pool)); got != fields {
 		t.Errorf("with a read that runs on, the deferral's fields are\n  %s\nwant\n  %s", got, fields)
 	}
-	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014")
+	requireTheServerEndsTheRead(t, database, "search_text_versions_fill", "57014", "statement timeout")
 
 	process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
 	process.waitHealthy(t)
@@ -2859,23 +2862,59 @@ func TestASlowKeywordFillTableReadEndsAtTheServerAndTheBootGoesOn(t *testing.T) 
 	}
 }
 
-// requireTheServerEndsTheRead reads table alone, as searchFillTableRows reads each table, and fails
-// the test unless Postgres itself ended the read: an error of the SQLSTATE code, before
-// searchFillTableReadTimeout, the client's own deadline, could end it. It judges the server's end
-// of the read by its error, not by a time that a slow box or a slow dial would stretch.
-func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code string) {
+// requireTheServerEndsTheRead reads table alone, as searchFillTableRows reads each table, on a
+// store of the database's own that traces the read (readBounds), and fails the test unless
+// Postgres itself ends the read before the client's own deadline (searchFillTableReadTimeout)
+// could. Two facts hold that. The setting of that timeout (lock_timeout, statement_timeout) the
+// read runs under, read in the read's own session as the read begins, is set and shorter than the
+// client's deadline, so the server's bound comes first. And the read ends with an error of the
+// SQLSTATE code whose message cancels the statement due to that timeout (lock timeout, statement
+// timeout): the client's deadline ending the read first is a cancel Postgres reports as due to
+// user request, or the context's own error, and fails it.
+func requireTheServerEndsTheRead(t *testing.T, database *store.Store, table, code, timeout string) {
 	t.Helper()
-	started := time.Now()
-	_, err := searchFillTableHoldsRow(context.Background(), database.Pool, table)
-	took := time.Since(started)
-	var pgErr *pgconn.PgError
-	if !errors.As(err, &pgErr) || pgErr.Code != code {
-		t.Errorf("the read of %s ended after %v with %v; want Postgres's own error %s", table, took.Round(time.Millisecond), err, code)
+	bounds := &readBounds{read: "select exists(select 1 from public." + table + ")", setting: strings.ReplaceAll(timeout, " ", "_")}
+	_, err := searchFillTableHoldsRow(context.Background(), storetest.TracedStore(t, database, bounds).Pool, table)
+	switch {
+	case !bounds.seen:
+		t.Errorf("the read of %s never sent %q; want the read searchFillTableHoldsRow sends", table, bounds.read)
+	case bounds.err != nil:
+		t.Errorf("read %s in the session of the read of %s: %v", bounds.setting, table, bounds.err)
+	case bounds.bound <= 0 || bounds.bound >= searchFillTableReadTimeout:
+		t.Errorf("the read of %s ran under %s = %q; want a bound above 0 and shorter than the client's deadline, %v, so that the server ends the read first",
+			table, bounds.setting, bounds.value, searchFillTableReadTimeout)
 	}
-	if took >= searchFillTableReadTimeout {
-		t.Errorf("the read of %s took %v; want less than the client's deadline, %v", table, took.Round(time.Millisecond), searchFillTableReadTimeout)
+	var pgErr *pgconn.PgError
+	if !errors.As(err, &pgErr) || pgErr.Code != code || !strings.Contains(pgErr.Message, "due to "+timeout) {
+		t.Errorf("the read of %s ended with %v; want Postgres's own error %s, canceling the statement due to %s", table, err, code, timeout)
 	}
 }
+
+// readBounds is a query tracer (storetest.TracedStore) that, as the statement read begins, reads
+// the setting it names in that statement's own session, on its connection and inside its
+// transaction: current_setting's text in value, and as a duration in bound. seen says the read
+// began, and err is the error of the setting's read. The tracer runs on the goroutine that sends
+// the statement.
+type readBounds struct {
+	read, setting string
+	seen          bool
+	value         string
+	bound         time.Duration
+	err           error
+}
+
+func (b *readBounds) TraceQueryStart(ctx context.Context, conn *pgx.Conn, data pgx.TraceQueryStartData) context.Context {
+	if b.seen || data.SQL != b.read {
+		return ctx
+	}
+	b.seen = true
+	var seconds float64
+	b.err = conn.QueryRow(ctx, `select current_setting($1), extract(epoch from current_setting($1)::interval)::float8`, b.setting).Scan(&b.value, &seconds)
+	b.bound = time.Duration(seconds * float64(time.Second))
+	return ctx
+}
+
+func (b *readBounds) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQueryEndData) {}
 
 // requireNoKeywordFillCursorLockWait fails the test when a backend of the database waits for a
 // lock on search_text_versions_fill. when says at which moment the test reads it.
@@ -2904,18 +2943,16 @@ func deferralFields(fields []any) string {
 	return strings.Join(pairs, " ")
 }
 
-// awaitRegistryAdmission waits up to 30 s for the registry of live server processes to hold a row,
-// which on a database no other process serves is the process's own: once it is admitted, the
-// process serves, and a keyword fill it started takes its hold.
+// awaitRegistryAdmission waits, through the shared wait, for the registry of live server processes
+// to hold a row, which on a database no other process serves is the process's own: once it is
+// admitted, the process serves, and a keyword fill it started takes its hold.
 func awaitRegistryAdmission(t *testing.T, database *store.Store, process *dispatchProcess) {
 	t.Helper()
-	if !testwait.Holds(30*time.Second, 50*time.Millisecond, func() bool {
+	testwait.Until(t, "the registry of live server processes to admit the process", func() (fmt.Stringer, bool) {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `select count(*) from server_processes`).Scan(&rows); err != nil {
 			t.Fatalf("read the registry of live server processes: %v", err)
 		}
-		return rows > 0
-	}) {
-		t.Fatalf("the registry of live server processes admitted no process within 30 s:\n%s", process.Output.String())
-	}
+		return process.Output, rows > 0
+	})
 }

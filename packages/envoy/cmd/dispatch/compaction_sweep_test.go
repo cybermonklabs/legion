@@ -5,13 +5,13 @@ import (
 	"encoding/json"
 	"net/http"
 	"testing"
-	"time"
 
 	"github.com/reearth/ygo/crdt"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // Dispatch run with DISPATCH_NATS_DISABLED=1 compacts the documents it never opened: a log whose
@@ -68,19 +68,17 @@ func TestTheCompactionSweepFoldsABackdatedLogWithNATSDisabled(t *testing.T) {
 	process := startDispatchProcess(t, database.Pool.Config().ConnString())
 	process.waitHealthy(t)
 	var rows, version int64
-	for deadline := time.Now().Add(45 * time.Second); ; time.Sleep(200 * time.Millisecond) {
+	testwait.Until(t, "the compaction sweep to fold the document into one row", func() (int64, bool) {
 		if err := database.Pool.QueryRow(ctx,
 			`select count(*), coalesce(max(version), 0) from doc_updates where artifact_id = $1`, artifactID,
 		).Scan(&rows, &version); err != nil {
 			t.Fatalf("count the document's rows: %v", err)
 		}
-		if rows == 1 || time.Now().After(deadline) {
-			break
-		}
-	}
-	if rows != 1 || version != head {
-		t.Fatalf("the document holds %d rows up to version %d after 45 s, want its log folded into the head %d alone:\n%s",
-			rows, version, head, process.Output.String())
+		return rows, rows == 1
+	})
+	if version != head {
+		t.Fatalf("the compaction sweep folded the document into one row at version %d, want its log folded into the head %d alone:\n%s",
+			version, head, process.Output.String())
 	}
 	answer := process.call(t, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/text", "", http.StatusOK)
 	var text struct {
