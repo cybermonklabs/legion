@@ -917,8 +917,9 @@ test("each row draws its kind, its first line, who is in it, its last activity a
 // Row 5
 // =============================================================================================
 
-// SLOW(>=2s): the whole seed, then every page of All drawn, four records opened, and one reply
-// sent from a record a reply with a quote begins, read back after a reload.
+// SLOW(>=2s): the whole seed, then every page of All drawn, four records opened, one reply sent
+// from a record a reply with a quote begins and read back after a reload, and three records'
+// links to their nodes followed.
 test("a reply with a quote begins its own record, and a thread on a deleted node keeps its row with a mark", async ({
   browser,
 }) => {
@@ -963,7 +964,24 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
 
     // Each record drawn opened: the quoting record with its quoted words above its root, the
     // post's without the quoting reply's entries, and the record on text with the reply that
-    // joined it.
+    // joined it. Each record on text links to its node, where a view draws that node (R8): the
+    // post and the message that a quoting reply answers, which Conversation's outline draws, and
+    // the spec, which draws the comment on its text. The post's own record is on no text and
+    // draws no link.
+    const nodeLinks = new Map([
+      [
+        comments.postQuote,
+        { href: `/issues/${key}/comments/${comments.post}`, words: "Open in Conversation" },
+      ],
+      [
+        messages.quotingReply,
+        { href: `/issues/${key}/messages/${messages.quoting}`, words: "Open in Conversation" },
+      ],
+      [
+        comments.text,
+        { href: `/issues/${key}/artifacts/spec?mark=${comments.text}`, words: "Open in document" },
+      ],
+    ]);
     for (const id of [comments.postQuote, comments.post, messages.quotingReply, comments.text]) {
       const known = records.get(id);
       if (known === undefined) continue;
@@ -974,6 +992,19 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
           openedRecord(page).locator(SELECTORS.quote),
           `the record on text ${id} draws no words it quotes above its root`
         ).toHaveText(known.record.quote);
+      }
+      const link = openedRecord(page).locator(SELECTORS.nodeLink);
+      const node = nodeLinks.get(id);
+      if (node === undefined) {
+        await expect(link, `the record ${id} on no text draws a link to a node`).toHaveCount(0);
+      } else {
+        await expect(link, `the record on text ${id} draws no link to its node`).toHaveText(
+          node.words
+        );
+        await expect(link, `the link of ${id} goes elsewhere than its node`).toHaveAttribute(
+          "href",
+          node.href
+        );
       }
       await page.goBack();
       await expect(openedRecord(page)).toHaveCount(0);
@@ -994,6 +1025,23 @@ test("a reply with a quote begins its own record, and a thread on a deleted node
     ).toBeVisible();
     const stored = (await getComment(comments.post)).replies?.find((one) => one.id === reply.id);
     expect(stored?.answers, "the reply is stored answering another entry").toBe(comments.postQuote);
+
+    // Each link opens the view that draws its node: Conversation's outline at the post and at the
+    // message, and the spec with the comment on its text marked beside it.
+    for (const [id, drawn] of [
+      [comments.postQuote, nodeRow(page, comments.post).first()],
+      [messages.quotingReply, nodeRow(page, messages.quoting).first()],
+    ] as const) {
+      await loadThreads(page, key, id);
+      await openedRecord(page).locator(SELECTORS.nodeLink).click();
+      await expect(drawn, `the link of ${id} opens no view that draws its node`).toBeVisible();
+    }
+    await loadThreads(page, key, comments.text);
+    await openedRecord(page).locator(SELECTORS.nodeLink).click();
+    await expect(
+      page.locator(`[data-margin-item="${comments.text}"]`).first(),
+      "the link of the comment on the spec's text opens no document with it marked"
+    ).toHaveAttribute("aria-current", "true");
   });
 });
 

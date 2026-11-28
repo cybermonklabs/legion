@@ -1,10 +1,11 @@
 import { useQuery } from "@tanstack/react-query";
 import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
+import { Link } from "react-router-dom";
 
 import { whoAmIQuery } from "../../../api/queries";
 import type { CommentWithTrees, IssueDetails, MessageWithTrees } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
-import { pageInkText, pageQuietText } from "../../../theme/classes";
+import { pageInkText, pageMutedText, pageQuietText } from "../../../theme/classes";
 import { newestAttempt } from "../../agents/exchange-delivery";
 import { deliveryMode } from "../../conversation/delivery";
 import { DashboardAskBody } from "../../dashboard/DashboardAskBody";
@@ -14,13 +15,13 @@ import { EVENT_FRESH } from "../../refs/reference-target";
 import { takesTypedText } from "../../shell/keymap";
 import { useMarkThreadRead } from "../../threads/useMarkThreadRead";
 import { authorText, pageChrome } from "../page-structure";
-import { CONTROL_LABELS } from "../page-words";
+import { CONTROL_LABELS, THREADS_WORDS } from "../page-words";
 import { CommentBox, CommentEditBox } from "./CommentBox";
 import { type MessageAddress, MessageBox } from "./MessageBox";
 import { depthStyle, ENTRY_CONTROL, ENTRY_INDENT, ReadMarkFoot, RecordEntry } from "./RecordEntry";
 import { useRowNames } from "./ThreadList";
 import { KindWords } from "./ThreadRow";
-import type { ThreadRecord } from "./thread-records";
+import { nodeLink, type ThreadRecord } from "./thread-records";
 import { nameOf, threadRow } from "./thread-row";
 
 /** A comment or a message of a record. */
@@ -85,8 +86,9 @@ type OpenBox = { readonly kind: "reply" | "edit"; readonly id: string };
 
 /**
  * The opened record (dispatch://INFRA-5704/spec#b-r-open, R9), in the main column: its kind as
- * its row names it, the words a record on text quotes above its root, then each entry whole in
- * R9's order (`placedEntries`), siblings at their depths, then the box at its foot.
+ * its row names it, the words a record on text quotes above its root and the link to its node
+ * where a view draws that node (R8, `nodeLink`), then each entry whole in R9's order
+ * (`placedEntries`), siblings at their depths, then the box at its foot.
  *
  * An ask is drawn by the ask body (`DashboardAskBody`, `rowText` as its renderer and its writes
  * from `ask-body/ask-writes.ts`) in the new page's palette (`palette="page"`), as Dashboard on the
@@ -154,6 +156,7 @@ export function OpenedRecord({
   const leave = () => setOpen(undefined);
   const askOpen = record.kind === "ask" && record.root.state === "open";
   const messageTarget = record.kind === "message" ? messageThread(record, thread) : undefined;
+  const link = nodeLink(record, issue);
 
   /** The box a reply control opens under `post`, at one depth more than it. */
   const replyBox = (post: Post, depth: number): ReactNode => (
@@ -276,6 +279,18 @@ export function OpenedRecord({
           {record.quote}
         </blockquote>
       ) : null}
+      {link === undefined ? null : (
+        <p>
+          <Link
+            className={`text-sm underline decoration-page-bullet underline-offset-[3px] ${pageMutedText}`}
+            data-thread-node-link=""
+            to={link.href}
+            {...pageChrome}
+          >
+            {THREADS_WORDS[link.label]}
+          </Link>
+        </p>
+      )}
       <ol className="min-w-0 space-y-3">
         {record.kind === "ask" ? (
           <li className="min-w-0 space-y-1" data-depth={0} data-thread-entry={record.root.id}>

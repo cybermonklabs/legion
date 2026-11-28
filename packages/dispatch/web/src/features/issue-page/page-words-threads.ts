@@ -24,9 +24,9 @@
 import { freeze } from "./page-structure";
 import type { PartWords } from "./page-words-parts";
 
-/** Threads' own words outside the text of an entry (R2, R7, R10): the choices over the list, the
- *  control under it, the kind of each record, who the Legion daemon is, and New thread's chooser
- *  and box. */
+/** Threads' own words outside the text of an entry (R2, R7, R8, R10): the choices over the list,
+ *  the control under it, the kind of each record, who the Legion daemon is, the link of a record
+ *  on text to its node, and New thread's chooser and box. */
 export const THREADS_WORDS = freeze({
   /** The four choices over the list, drawn in the order Mine, Waiting on me, All and Agents
    *  (R2). */
@@ -57,6 +57,11 @@ export const THREADS_WORDS = freeze({
   /** The Legion daemon's name, which the page draws for its session `legion-daemon:<PROJECT>`,
    *  with the project's key after it (R7). */
   daemon: "Legion daemon",
+  /** Under the words a record on text quotes: the link to its node where a view draws that node
+   *  (R8). A record that a reply with a quote begins links to the post that reply answers, which
+   *  Conversation draws, and a record whose root holds an anchor links to its document. */
+  open_in_conversation: "Open in Conversation",
+  open_in_document: "Open in document",
   /** New thread's chooser of the agent, and the placeholder of the field that filters it
    *  (R10). */
   chooser: "Agent",

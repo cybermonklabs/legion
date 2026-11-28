@@ -6,7 +6,8 @@
  *
  * A thread comes as a route answers it: a row of a page of `comments`, `messages` or `asks` with
  * `order=activity` (INFRA-5703), or the read of one thread by an id that R12's lookups send. The
- * function makes no request and reads no clock.
+ * function makes no request and reads no clock. Each record names the node it is on where a view
+ * draws that node (`node`), and `nodeLink` makes that the link the opened record draws (R8).
  */
 import type {
   AskThreadRow,
@@ -21,9 +22,12 @@ import type {
   AskRead,
   AskWithTrees,
   CommentWithTrees,
+  IssueDetails,
   MessageWithTrees,
 } from "../../../api/types";
 import { compareTimestamps } from "../../../lib/timestamps";
+import { buildIssuePath } from "../../refs/routes";
+import { agentsOnlyIds } from "../agents-only";
 
 /** One thread as a route answers it. A row of a page carries the thread's `last_activity_at`,
  *  and the read of one thread by its id carries none. */
@@ -44,6 +48,15 @@ export interface RecordWrite {
   readonly author: Actor;
 }
 
+/** The node a record on text is on, where a view draws that node (R8). A record that a reply
+ *  with a quote begins is on the entry that reply answers, which Conversation's outline draws as
+ *  the ask, the comment or the message it is, unless no person wrote in its thread
+ *  (`agents-only.ts`). A record whose root holds an anchor is on the document the anchor is in,
+ *  named by its artifact's id, which draws the root beside it, marked (`mark`). */
+export type RecordNode =
+  | { readonly kind: "ask" | "comment" | "message"; readonly id: string }
+  | { readonly kind: "document"; readonly artifact: string; readonly mark: string };
+
 interface RecordFields {
   /** The record's id, which its address `/threads/<id>` names (R12): the ask's id, the id of a
    *  comment thread's first comment or of a message thread's root, or the id of the reply with a
@@ -62,6 +75,9 @@ interface RecordFields {
   /** The words a record on text quotes above its root: its anchor's quote, or the quote of the
    *  reply that begins it. */
   readonly quote: string | undefined;
+  /** The node the record is on, where a view draws it, which the opened record links to
+   *  (`nodeLink`). Undefined for a record on no text, and for one whose node no view draws. */
+  readonly node: RecordNode | undefined;
   /** Every write of the record, oldest first. */
   readonly writes: readonly RecordWrite[];
   /** Each person the server keeps a read mark of the record's thread for, once, in the order of
@@ -110,6 +126,10 @@ interface Part<P extends Post> {
   readonly posts: P[];
   readonly onText: boolean;
   readonly quote: string | undefined;
+  /** The entry that the reply with a quote that begins the part answers, as the rule below
+   *  places that reply: the root, where the entry it names is not in the thread. Undefined for
+   *  the root's part. */
+  readonly answers: string | undefined;
 }
 
 /** The words a reply quotes of the block it answers, or undefined where it quotes none. */
@@ -139,10 +159,18 @@ function partsOf<P extends Post>(
     compareTimestamps(one.created_at, two.created_at)
   );
   for (const reply of oldestFirst) {
-    const parent = partOf.get(answered(reply)) ?? root;
+    const named = answered(reply);
+    const held = partOf.get(named);
+    const parent = held ?? root;
     const quote = quoteOf(reply);
     if (quote !== undefined && !parent.onText) {
-      const own: Part<P> = { id: reply.id, onText: true, posts: [reply], quote };
+      const own: Part<P> = {
+        answers: held === undefined ? root.id : named,
+        id: reply.id,
+        onText: true,
+        posts: [reply],
+        quote,
+      };
       parts.push(own);
       partOf.set(reply.id, own);
     } else {
@@ -180,10 +208,28 @@ interface ThreadFields {
   readonly whole: boolean;
 }
 
+/**
+ * The node `part` is on where a view draws it (R8). A part that a reply with a quote begins is
+ * on the entry that reply answers, which `entry` gives as its node, or as undefined where no view
+ * draws that entry. The root's part is on the document its root's anchor is in, with the root
+ * marked there, and on no node where the root holds no anchor.
+ */
+function nodeOf<P extends Post>(
+  part: Part<P>,
+  root: { readonly id: string; readonly anchor: { readonly artifact_id: string } | null },
+  entry: (id: string) => RecordNode | undefined
+): RecordNode | undefined {
+  if (part.answers !== undefined) return entry(part.answers);
+  return root.anchor === null
+    ? undefined
+    : { artifact: root.anchor.artifact_id, kind: "document", mark: root.id };
+}
+
 function fieldsOf<P extends Post>(
   part: Part<P>,
   writes: readonly RecordWrite[],
-  shared: ThreadFields
+  shared: ThreadFields,
+  node: RecordNode | undefined
 ): RecordFields {
   // Every record holds its root's write, so the newest of its writes is never asked of none.
   const newest = writes.reduce(
@@ -193,6 +239,7 @@ function fieldsOf<P extends Post>(
   return {
     id: part.id,
     lastActivity: shared.whole && shared.lastActivity !== undefined ? shared.lastActivity : newest,
+    node,
     onText: part.onText,
     quote: part.quote,
     thread: shared.thread,
@@ -204,12 +251,13 @@ function fieldsOf<P extends Post>(
 
 function commentRecord(
   part: Part<CommentWithTrees>,
-  shared: ThreadFields
+  shared: ThreadFields,
+  node: RecordNode | undefined
 ): ThreadRecord & { readonly kind: "comment" } {
   const [root, ...replies] = part.posts;
   if (root === undefined) throw new Error(`The record ${part.id} holds no comment.`);
   return {
-    ...fieldsOf(part, part.posts.map(postWrite), shared),
+    ...fieldsOf(part, part.posts.map(postWrite), shared, node),
     kind: "comment",
     replies,
     root,
@@ -224,6 +272,7 @@ function askRecords(
   const answerer: Actor | undefined =
     ask.answer === null ? undefined : { id: ask.answer.user, kind: "user" };
   const head: Part<CommentWithTrees> = {
+    answers: undefined,
     id: ask.id,
     onText: ask.anchor !== null,
     posts: [],
@@ -253,13 +302,24 @@ function askRecords(
       ? []
       : [{ at: ask.resolution.at, author: ask.resolution.actor, id: ask.id }]),
   ].sort((one, two) => compareTimestamps(one.at, two.at));
+  // The outline draws each question as a node and no approval request, and a comment under the
+  // ask where it draws that comment's thread (`agents-only.ts`).
+  const unseen = agentsOnlyIds(comments, undefined, [ask]);
+  const entry = (id: string): RecordNode | undefined =>
+    id === ask.id
+      ? ask.kind === "question"
+        ? { id, kind: "ask" }
+        : undefined
+      : unseen.has(id)
+        ? undefined
+        : { id, kind: "comment" };
   const record: ThreadRecord = {
-    ...fieldsOf(head, writes, shared),
+    ...fieldsOf(head, writes, shared, nodeOf(head, ask, entry)),
     kind: "ask",
     replies: head.posts,
     root: ask,
   };
-  return [record, ...quoted.map((part) => commentRecord(part, shared))];
+  return [record, ...quoted.map((part) => commentRecord(part, shared, nodeOf(part, ask, entry)))];
 }
 
 function commentRecords(
@@ -269,6 +329,7 @@ function commentRecords(
 ): ThreadRecord[] {
   const headQuote = quoteOf(head);
   const root: Part<CommentWithTrees> = {
+    answers: undefined,
     id: head.id,
     onText: head.anchor !== null || headQuote !== undefined,
     posts: [head],
@@ -283,7 +344,14 @@ function commentRecords(
     waitsOn: undefined,
     whole: parts.length === 1,
   };
-  return parts.map((part) => commentRecord(part, shared));
+  const unseen = agentsOnlyIds([head, ...replies], undefined, undefined);
+  return parts.map((part) =>
+    commentRecord(
+      part,
+      shared,
+      nodeOf(part, head, (id) => (unseen.has(id) ? undefined : { id, kind: "comment" }))
+    )
+  );
 }
 
 function messageRecords(
@@ -292,6 +360,7 @@ function messageRecords(
   lastActivity: string | undefined
 ): ThreadRecord[] {
   const root: Part<MessageWithTrees> = {
+    answers: undefined,
     id: first.id,
     onText: false,
     posts: [first],
@@ -305,11 +374,15 @@ function messageRecords(
     waitsOn: undefined,
     whole: parts.length === 1,
   };
+  const unseen = agentsOnlyIds(undefined, [{ message: first, replies: [...replies] }], undefined);
   return parts.map((part) => {
     const [own, ...rest] = part.posts;
     if (own === undefined) throw new Error(`The record ${part.id} holds no message.`);
+    const node = nodeOf(part, { anchor: null, id: first.id }, (id) =>
+      unseen.has(id) ? undefined : { id, kind: "message" }
+    );
     return {
-      ...fieldsOf(part, part.posts.map(postWrite), shared),
+      ...fieldsOf(part, part.posts.map(postWrite), shared, node),
       kind: "message",
       replies: rest,
       root: own,
@@ -348,4 +421,37 @@ export function threadRecords(source: ThreadSource): readonly ThreadRecord[] {
     (one, two) =>
       compareTimestamps(two.lastActivity, one.lastActivity) || (two.id > one.id ? 1 : -1)
   );
+}
+
+/** The link an opened record draws to its node (R8): where it goes, and the key of its words in
+ *  `THREADS_WORDS`. */
+export interface NodeLink {
+  readonly href: string;
+  readonly label: "open_in_conversation" | "open_in_document";
+}
+
+/**
+ * The link of `record` to the node it is on (R8), or undefined where it has none. An ask, a
+ * comment or a message opens at its own address, which lands on its node in Conversation's
+ * outline. A document opens at its own address with the record's root named by `?mark=`, which
+ * lands on the document with that root marked beside it (`issue-address.ts`'s `documentItem`).
+ * A document's address names its slug, which only `issue`'s list of documents gives, so a
+ * document that is not on that list gives no link.
+ */
+export function nodeLink(
+  record: ThreadRecord,
+  issue: Pick<IssueDetails, "artifacts" | "key">
+): NodeLink | undefined {
+  const { node } = record;
+  if (node === undefined) return undefined;
+  if (node.kind !== "document") {
+    return {
+      href: buildIssuePath({ id: node.id, key: issue.key, kind: node.kind }),
+      label: "open_in_conversation",
+    };
+  }
+  const artifact = issue.artifacts?.find((one) => one.id === node.artifact);
+  if (artifact === undefined) return undefined;
+  const document = buildIssuePath({ key: issue.key, kind: "artifact", slug: artifact.slug });
+  return { href: `${document}?mark=${encodeURIComponent(node.mark)}`, label: "open_in_document" };
 }

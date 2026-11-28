@@ -8,7 +8,8 @@ import type {
   MessageThreadRow,
 } from "@legion/contracts";
 
-import type { AskRead, CommentRead } from "../../../api/types";
+import type { Artifact, AskRead, CommentRead, IssueDetails } from "../../../api/types";
+import { artifact } from "../decisions-filter/decisions-fixtures";
 import askBody from "./fixtures/ask.json";
 import asksThreadBody from "./fixtures/asks-thread.json";
 import commentReplyToBody from "./fixtures/comment-reply-to.json";
@@ -16,7 +17,7 @@ import commentsInBody from "./fixtures/comments-in.json";
 import commentsInBeforeBody from "./fixtures/comments-in-before.json";
 import messagesInBody from "./fixtures/messages-in.json";
 import messagesNoneBody from "./fixtures/messages-none.json";
-import { type ThreadRecord, threadRecords } from "./thread-records";
+import { nodeLink, type ThreadRecord, threadRecords } from "./thread-records";
 
 // The pages the server answered at the stack base (fixtures/README.md).
 const COMMENT_ROWS = [
@@ -232,4 +233,140 @@ test("no entry of any page is in two records, and every entry is in one", () => 
           : (source.thread?.replies ?? []).map((reply) => reply.id);
     expect([...held].sort()).toEqual([...entries].sort());
   }
+});
+
+// R8: a record on text draws a link to its node, where a view draws that node.
+
+/** The issue the fixtures were read from (`fixtures/README.md`). */
+const KEY = "PDFD720CB-1";
+
+/** The issue as `nodeLink` reads it, holding `documents`. */
+function issueWith(...documents: readonly Artifact[]): Pick<IssueDetails, "artifacts" | "key"> {
+  return { artifacts: [...documents], key: KEY };
+}
+
+/** The record of `records` whose id begins with `prefix`. */
+function recordOf(records: readonly ThreadRecord[], prefix: string): ThreadRecord {
+  const record = records.find((one) => one.id.startsWith(prefix));
+  if (record === undefined) throw new Error(`No record's id begins with ${prefix}.`);
+  return record;
+}
+
+/** The block the planner's reply quotes of the post (`18ddeb81`), for a copy of another thread
+ *  whose reply quotes a block. */
+const QUOTED_BLOCK =
+  commentRow("18ddeb81").replies?.find((reply) => reply.id.startsWith("b6099daa"))?.reply_block ??
+  null;
+
+test("a record that a reply with a quote begins links to the post that reply answers, in Conversation", () => {
+  const post = commentRow("18ddeb81");
+  const quoting = recordOf(threadRecords(post), "b6099daa");
+  expect(quoting.node).toEqual({ id: post.comment.id, kind: "comment" });
+  expect(nodeLink(quoting, issueWith())).toEqual({
+    href: `/issues/${KEY}/comments/${post.comment.id}`,
+    label: "open_in_conversation",
+  });
+  const message = messageRow("0d7bfef6");
+  const quotingMessage = recordOf(threadRecords(message), "b788d337");
+  expect(quotingMessage.node).toEqual({ id: message.message.id, kind: "message" });
+  expect(nodeLink(quotingMessage, issueWith())).toEqual({
+    href: `/issues/${KEY}/messages/${message.message.id}`,
+    label: "open_in_conversation",
+  });
+  // The post's own record and the message's are on no text, so neither links to a node.
+  for (const root of [
+    recordOf(threadRecords(post), "18ddeb81"),
+    recordOf(threadRecords(message), "0d7bfef6"),
+  ]) {
+    expect(root.node, `${root.id} is on a node`).toBeUndefined();
+    expect(nodeLink(root, issueWith()), `${root.id} links to a node`).toBeUndefined();
+  }
+});
+
+test("a quoting reply's record links to the entry the reply answers, and to the root where the thread holds no such entry", () => {
+  const row = commentRow("18ddeb81");
+  const colleague = (row.replies ?? []).find((reply) => reply.id.startsWith("718e3e52"));
+  if (colleague === undefined) throw new Error("The post's thread holds no colleague's reply.");
+  const answering = (answers: string) => ({
+    ...row,
+    replies: (row.replies ?? []).map((reply) =>
+      reply.id.startsWith("b6099daa") ? { ...reply, answers } : reply
+    ),
+  });
+  expect(recordOf(threadRecords(answering(colleague.id)), "b6099daa").node).toEqual({
+    id: colleague.id,
+    kind: "comment",
+  });
+  expect(recordOf(threadRecords(answering("no-such-comment")), "b6099daa").node).toEqual({
+    id: row.comment.id,
+    kind: "comment",
+  });
+});
+
+test("a quoting reply's record in a thread no person wrote in links to no node, since Conversation draws none of it", () => {
+  const comments = commentRow("18ddeb81");
+  const planner = (comments.replies ?? []).find((reply) => reply.id.startsWith("b6099daa"))?.author;
+  if (planner === undefined) throw new Error("The post's thread holds no planner's reply.");
+  const agentsComments = {
+    ...comments,
+    comment: { ...comments.comment, author: planner },
+    replies: (comments.replies ?? []).map((reply) => ({ ...reply, author: planner })),
+  };
+  expect(recordOf(threadRecords(agentsComments), "b6099daa").node).toBeUndefined();
+  const messages = messageRow("0d7bfef6");
+  const agentsMessages = { ...messages, message: { ...messages.message, author: planner } };
+  expect(recordOf(threadRecords(agentsMessages), "b788d337").node).toBeUndefined();
+});
+
+test("a record whose root holds an anchor links to the document the anchor is in, with the root marked", () => {
+  const row = commentRow("c1d04870");
+  const spec = row.comment.anchor?.artifact_id ?? "";
+  const record = recordOf(threadRecords(row), "c1d04870");
+  expect(record.node).toEqual({ artifact: spec, kind: "document", mark: row.comment.id });
+  expect(nodeLink(record, issueWith(artifact(spec, "spec", true)))).toEqual({
+    href: `/issues/${KEY}/artifacts/spec?mark=${row.comment.id}`,
+    label: "open_in_document",
+  });
+  // A document's address names its slug, which only the issue's list of documents gives.
+  expect(nodeLink(record, issueWith(artifact("another-document", "notes")))).toBeUndefined();
+  // The document draws an agent's comment on its text as well, whoever wrote in its thread.
+  const agents = commentRow("b3ab4dfe");
+  expect(recordOf(threadRecords(agents), "b3ab4dfe").node).toEqual({
+    artifact: agents.comment.anchor?.artifact_id ?? "",
+    kind: "document",
+    mark: agents.comment.id,
+  });
+});
+
+test("under a question a quoting reply's record links to the entry it answers, and under an approval request only to a comment of a thread a person wrote in", () => {
+  const row = askRow("4b7efdcf");
+  const thread = row.thread;
+  const [reader, planner] = thread?.replies ?? [];
+  if (thread === undefined || thread === null || reader === undefined || planner === undefined) {
+    throw new Error("The open question holds no two replies.");
+  }
+  // A copy of the question whose planner's reply quotes a block of the entry it answers.
+  const quoting = (answers: string | null, kind = row.kind) =>
+    threadRecords({
+      ...row,
+      kind,
+      thread: {
+        ...thread,
+        replies: [reader, { ...planner, answers, reply_block: QUOTED_BLOCK }],
+      },
+    });
+  expect(recordOf(quoting(reader.id), planner.id.slice(0, 8)).node).toEqual({
+    id: reader.id,
+    kind: "comment",
+  });
+  const onAsk = recordOf(quoting(null), planner.id.slice(0, 8));
+  expect(onAsk.node).toEqual({ id: row.id, kind: "ask" });
+  expect(nodeLink(onAsk, issueWith())?.href).toBe(`/issues/${KEY}/asks/${row.id}`);
+  // The outline draws no approval request, and draws the comments under one where a person
+  // wrote among them: the reader did.
+  expect(recordOf(quoting(null, "approval"), planner.id.slice(0, 8)).node).toBeUndefined();
+  expect(recordOf(quoting(reader.id, "approval"), planner.id.slice(0, 8)).node).toEqual({
+    id: reader.id,
+    kind: "comment",
+  });
 });

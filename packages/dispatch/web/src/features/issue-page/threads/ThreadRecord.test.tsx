@@ -28,19 +28,27 @@ import {
 } from "../../../theme/classes";
 import { ASK_DECLINE_WORDS } from "../../ask-body/ask-body-words";
 import { warmMarkdownRenderer } from "../../refs/markdown-engine";
-import { ANSWER_LINES, CONTROL_LABELS } from "../page-words";
+import { ANSWER_LINES, CONTROL_LABELS, THREADS_WORDS } from "../page-words";
 import { publishedNames } from "../projection-fixture";
 import asksThreadBody from "./fixtures/asks-thread.json";
 import commentsInBody from "./fixtures/comments-in.json";
+import commentsInBeforeBody from "./fixtures/comments-in-before.json";
 import messageCreatedBody from "./fixtures/message-created.json";
 import messagesInBody from "./fixtures/messages-in.json";
 import { commentThreadsQuery } from "./thread-reads";
-import { answerThreads, drawThreads, KEY, stubWindow, threadsAt } from "./threads-view-fixture";
+import {
+  answerThreads,
+  drawThreads,
+  ISSUE,
+  KEY,
+  stubWindow,
+  threadsAt,
+} from "./threads-view-fixture";
 
 /**
  * The opened record of Threads (dispatch://INFRA-5704/spec#b-r-open, R9) over the server's answers
  * captured at the stack base (`fixtures/README.md`): the read mark, the boxes and the send (R11),
- * and the renderer its entries are drawn through.
+ * the renderer its entries are drawn through, and the link of a record on text to its node (R8).
  */
 
 const COMMENTS = (commentsInBody as unknown as CommentThreadPage).threads ?? [];
@@ -716,6 +724,123 @@ describe("the new page's palette (R9, root R42)", () => {
       );
     } finally {
       drawn.done();
+      window.restore();
+    }
+  });
+});
+
+/** The reader's post, whose second block the planner's reply quotes: a thread of the comment
+ *  route's second page. */
+const POST = ((commentsInBeforeBody as unknown as CommentThreadPage).threads ?? []).find((row) =>
+  row.comment.body.startsWith("The list reads three routes")
+);
+/** The reader's message, whose second block the tester's reply quotes. */
+const QUOTED_MESSAGE = MESSAGES.find((row) =>
+  row.message.body.startsWith("The row draws its first line")
+);
+
+/** The opened record's link to its node, where it draws one. */
+const nodeLinkOf = () =>
+  opened()?.querySelector<HTMLAnchorElement>("[data-thread-node-link]") ?? undefined;
+
+/** Waits for the opened record to draw its link to its node, and answers it. */
+function drawnNodeLink(record: string): Promise<HTMLAnchorElement> {
+  return waitFor(() => {
+    const link = nodeLinkOf();
+    expect(link, `the record ${record} draws no link to its node`).toBeDefined();
+    return link as HTMLAnchorElement;
+  });
+}
+
+describe("the link of a record on text to its node (R8)", () => {
+  test("a comment record that a reply with a quote begins links to the post, and a press follows it to the post's address", async () => {
+    const window = stubWindow(1440);
+    const quoting = POST?.replies?.find((reply) => (reply.reply_block?.quote ?? "") !== "");
+    if (POST === undefined || quoting === undefined) {
+      throw new Error("The fixtures hold no post with a quoting reply.");
+    }
+    // The post's thread stands on All's first page, so the record opens with no lookup.
+    answerThreads({ comments: () => ({ ...commentsInBody, threads: [...COMMENTS, POST] }) });
+    const user = userEvent.setup();
+    const drawn = drawThreads(threadsAt(quoting.id));
+    try {
+      const link = await drawnNodeLink(quoting.id);
+      const post = `/issues/${KEY}/comments/${POST.comment.id}`;
+      expect(link.textContent).toBe(THREADS_WORDS.open_in_conversation);
+      expect(link.getAttribute("href")).toBe(post);
+      expect(link, "the link is not drawn in the page's muted words").toHaveClass(pageMutedText);
+      await user.click(link);
+      expect(drawn.address(), "a press on the link moved the address elsewhere").toBe(post);
+    } finally {
+      drawn.done();
+      window.restore();
+    }
+  });
+
+  test("a message record that a reply with a quote begins links to the message it answers", async () => {
+    const window = stubWindow(1440);
+    const quoting = QUOTED_MESSAGE?.replies?.[0];
+    if (QUOTED_MESSAGE === undefined || quoting === undefined) {
+      throw new Error("The fixtures hold no message with a quoting reply.");
+    }
+    answerThreads();
+    const drawn = drawThreads(threadsAt(quoting.id));
+    try {
+      const link = await drawnNodeLink(quoting.id);
+      expect(link.textContent).toBe(THREADS_WORDS.open_in_conversation);
+      expect(link.getAttribute("href")).toBe(
+        `/issues/${KEY}/messages/${QUOTED_MESSAGE.message.id}`
+      );
+    } finally {
+      drawn.done();
+      window.restore();
+    }
+  });
+
+  test("a comment on the text of one of the issue's documents links to that document with the comment marked", async () => {
+    const window = stubWindow(1440);
+    const spec = ISSUE.artifacts?.find((one) => one.primary);
+    const anchor = TEXT.comment.anchor;
+    if (spec === undefined || anchor === null) throw new Error("No spec, or no anchored comment.");
+    // The captured comment is anchored in the seeded issue's spec, which the issue the view is
+    // drawn for does not list: the copy is anchored in that issue's own spec.
+    answerThreads({
+      comments: () => ({
+        ...commentsInBody,
+        threads: COMMENTS.map((row) =>
+          row.comment.id === TEXT.comment.id
+            ? { ...row, comment: { ...row.comment, anchor: { ...anchor, artifact_id: spec.id } } }
+            : row
+        ),
+      }),
+    });
+    const drawn = drawThreads(threadsAt(TEXT.comment.id));
+    try {
+      const link = await drawnNodeLink(TEXT.comment.id);
+      expect(link.textContent).toBe(THREADS_WORDS.open_in_document);
+      expect(link.getAttribute("href")).toBe(
+        `/issues/${KEY}/artifacts/${spec.slug}?mark=${TEXT.comment.id}`
+      );
+    } finally {
+      drawn.done();
+      window.restore();
+    }
+  });
+
+  test("a record on no text, and one on the text of a document the issue does not list, draw no link", async () => {
+    const window = stubWindow(1440);
+    answerThreads();
+    try {
+      for (const id of [REMARK.comment.id, TEXT.comment.id]) {
+        const drawn = drawThreads(threadsAt(id));
+        try {
+          await waitFor(() => expect(entry(id), `the record ${id} is not drawn`).toBeDefined());
+          expect(nodeLinkOf(), `the record ${id} draws a link to a node`).toBeUndefined();
+        } finally {
+          drawn.done();
+        }
+      }
+    } finally {
       window.restore();
     }
   });

@@ -241,8 +241,9 @@ export const SELECTORS = {
   box: "[data-thread-box]",
   /** New thread, in the main column, with its chooser and its box. */
   newThread: "[data-new-thread]",
-  /** A record on text's link to its node where a view draws that node. Owed until
-   *  dispatch://INFRA-1253's node anchor is on the base. */
+  /** A record on text's link to its node where a view draws it: for a quoting reply's record,
+   *  its quoted post in Conversation; for an anchored comment, its document (`?mark=<id>`). Its
+   *  words are "Open in Conversation" and "Open in document". */
   nodeLink: "[data-thread-node-link]",
 } as const;
 
