@@ -53,8 +53,8 @@ type Opened struct {
 	Close       func() error
 }
 
-// Backend is a store's entry in the registry (secretstore/backends): what cipherd and the CLI know
-// of a store beyond its Store. No code outside the store's own package and the registry names a
+// Backend is a store's entry in the registry (secretstore/backends): what cipherd knows of a store
+// beyond its Store. No code of cipherd's outside the store's own package and the registry names a
 // store; each reads it through this.
 type Backend interface {
 	// Name is the store's BROKER_SECRETS_STORE value and the store field of GET /v1/settings.
@@ -63,10 +63,6 @@ type Backend interface {
 	// build tag that leaves it out (cipher_no_<id>), and the subtest name of every test that runs
 	// on each store.
 	ID() string
-	// ServiceSDKs are the import path prefixes of the store's service SDK. Of the broker's
-	// packages only the store's own imports them; the agent-secrets CLI (cmd/cipher) imports them
-	// too, for its own reads and writes of the store.
-	ServiceSDKs() []string
 	// Development is true for a store that serves tests and local runs alone, with which cipherd
 	// accepts its development-only settings.
 	Development() bool

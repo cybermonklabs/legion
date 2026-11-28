@@ -29,7 +29,6 @@ type Backend struct{}
 
 func (Backend) Name() string                  { return Name }
 func (Backend) ID() string                    { return "memory" }
-func (Backend) ServiceSDKs() []string         { return nil }
 func (Backend) Development() bool             { return true }
 func (Backend) RereadBudget() ratelimit.Limit { return secretstore.DefaultRereadBudget }
 func (Backend) Variables() []string           { return []string{fileVariable} }

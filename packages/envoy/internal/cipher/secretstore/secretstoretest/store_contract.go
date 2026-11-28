@@ -1,5 +1,5 @@
 // Package secretstoretest holds what every secret store's tests share: StoreContract, the meaning
-// of each read the broker and the CLI make of a store, which each store runs against its fake and,
+// of each read the broker makes of a store, which each store runs against its fake and,
 // where it has a live tag, against its live service; and the wrappers a test of the policy or the
 // request machine puts around a store to count, hold or fail its calls.
 package secretstoretest

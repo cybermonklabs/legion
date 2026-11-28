@@ -39,13 +39,6 @@ type Backend struct{}
 
 func (Backend) Name() string { return Name }
 func (Backend) ID() string   { return "gcp" }
-
-// ServiceSDKs is Secret Manager's client, which agent-secrets and cipherd import for this store
-// alone.
-func (Backend) ServiceSDKs() []string {
-	return []string{"cloud.google.com/go/secretmanager"}
-}
-
 func (Backend) Development() bool             { return false }
 func (Backend) RereadBudget() ratelimit.Limit { return RereadBudget }
 func (Backend) Variables() []string           { return []string{keyVariable} }
