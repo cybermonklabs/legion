@@ -578,9 +578,9 @@ func withArticle(secretType string) string {
 	return "a " + secretType
 }
 
-// purgeWindowDays is the days from v's deletion to its EarliestPurge: the minimum recovery window
-// the store added to the deletion (secretstore.Listing.EarliestPurge), which the lines here name.
-func purgeWindowDays(v secretView) int {
+// purgeWindowDays is the days from v's deletion to its EarliestPurge, the store's minimum recovery
+// window; a method, since a function of this package that returns one int is an exit code.
+func (v secretView) purgeWindowDays() int {
 	return int(v.EarliestPurge.Sub(*v.Deleted) / (24 * time.Hour))
 }
 
@@ -1260,7 +1260,7 @@ func cmdSecretList(args []string, stdout, stderr io.Writer) int {
 	// that has one (EarliestPurge, AWS-only: GCP's expire_time is the exact purge moment, with
 	// no separate recovery window to explain).
 	if i := slices.IndexFunc(views, func(v secretView) bool { return v.EarliestPurge != nil }); i >= 0 {
-		fmt.Fprintf(stderr, "EARLIEST_PURGE is the deletion plus Secrets Manager's %d-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.\n", purgeWindowDays(views[i]))
+		fmt.Fprintf(stderr, "EARLIEST_PURGE is the deletion plus Secrets Manager's %d-day minimum recovery window: restore works at least until then; the window the delete chose may be longer.\n", views[i].purgeWindowDays())
 	}
 	return 0
 }
@@ -1313,7 +1313,7 @@ func cmdSecretShow(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case view.EarliestPurge != nil:
 		fmt.Fprintf(stdout, "deleted: %s\nearliest_purge: %s (the deletion plus Secrets Manager's %d-day minimum recovery window: restorable at least until then; the window the delete chose may be longer)\n",
-			formatTime(view.Deleted), formatTime(view.EarliestPurge), purgeWindowDays(view))
+			formatTime(view.Deleted), formatTime(view.EarliestPurge), view.purgeWindowDays())
 	case view.Deleted != nil:
 		fmt.Fprintf(stdout, "deleted: %s\n", formatTime(view.Deleted))
 	}

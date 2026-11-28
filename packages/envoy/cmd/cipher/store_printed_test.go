@@ -156,7 +156,7 @@ func TestAStoresRefusalPrintsItsCodeNeverItsMessage(t *testing.T) {
 // repeat the credential in any of them. Control: from a clean address each field prints, so the
 // check sees the field.
 func TestTheBrokersSettingsPrintOnlyAsItsAddressLetsThem(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at store_printed_test.go:180).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at store_printed_test.go:182).
 	planted := "hunter2pw-" + "settings-" + "0d3a"
 	for _, row := range []struct {
 		name     string
@@ -250,7 +250,7 @@ func TestTheMemoryStoresFilePrintsOnlyAsItsAddressLetsIt(t *testing.T) {
 // AGENT_SECRETS_URL that carries a credential neither prints: the write's lines name them as
 // cipheraddr.WordsNotPrinted. Control: beside a clean address both print as the broker wrote them.
 func TestTheBrokersRereadAnswerPrintsOnlyAsItsAddressLetsIt(t *testing.T) {
-	// Not parallel: it sets environment variables of the whole process (t.Setenv at store_printed_test.go:224); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
+	// Not parallel: it sets environment variables of the whole process (t.Setenv at store_printed_test.go:274); it sets a package variable the package's other tests read (main.useStdin, secretStdin set at secret_test.go:384).
 	planted := "hunter2pw-" + "reread-" + "7e5b"
 	for _, row := range []struct {
 		name   string
