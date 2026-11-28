@@ -1,13 +1,13 @@
 import { CONVERSATION_KINDS } from "../../../api/queries";
 import type { Anchor } from "../../../api/types";
 import { compareTimestamps, isTimestamp } from "../../../lib/timestamps";
-import { compiledBlockSchema } from "../../doc/schema";
 import type { Thread, ThreadComment } from "../../margin/useMarginItems";
 import { assemble, type IssueTreeReads, type TreeNode, treeWordsOf } from "../issue-tree";
 import type { Draft } from "../tree-drafts";
 import { treeDraftsFrom, treeIdOf } from "../tree-read/tree-nodes";
 import type { TreeAnswer, TreeAnswerNode } from "../tree-read/tree-read";
 import { GATES } from "./gates";
+import { nodeKindOf } from "./node-kind";
 import {
   commentAnchorOf,
   ITEM_KINDS,
@@ -99,36 +99,10 @@ export interface NodeThreads {
   readonly threads: readonly TextThread[];
 }
 
-/** The names of the schema's typed blocks (`pmdoc.IsTypedBlock`). */
-const TYPED_BLOCKS: ReadonlySet<string> = new Set(
-  compiledBlockSchema.types.map(({ name }) => name)
-);
-
-/**
- * `node`'s kind as Conversation's read names it (`NodeThreads.conversationKind`): a port of the
- * server's `issueTreeBuilder.nodeKind` (`api/issue_tree_kinds.go`), its branches in its order. A
- * node whose store kind is not `block` is of its store kind. A block whose id names its lens
- * (`lens/<uuid>#<block id>`, as `graphstore.ParseFindingID` reads it) is a finding, whatever its
- * supertag and its parent. A block whose supertag is a typed block of the schema
- * (`pmdoc.IsTypedBlock`; `compiledBlockSchema`, the manifest the server of the same build
- * embeds) is of that type: the tree read answers a block's supertag as `refs.TreeNodeType`, the
- * typed block its text opens. Every other block is prose, a `lens_block` whose id names no lens
- * among them. The one exception to the port is an ask's block, which the server gives no kind
- * and which is `ask` here. The kind counts where the filter names it (`CONVERSATION_KINDS`), and
- * the node is of none otherwise.
- */
+/** `node`'s kind (`nodeKindOf`) where Conversation's read's `kind` filter names it, else none. */
 function conversationKindOf(node: TreeAnswerNode): ConversationKind | undefined {
-  if (node.kind !== "block") return CONVERSATION_KINDS.find((kind) => kind === node.kind);
-  if (node.id.startsWith("lens/")) return "finding";
-  // The server gives an ask's block no kind, since `kind=ask` takes the ask's own node. The page
-  // draws an ask's block as the ask's own row (`draftAsk`; `treeIdOfNode` gives the ask its
-  // block's tree id, `tree-read/tree-nodes.ts:413`), so a comment on the question's words is a
-  // comment on the ask, and it keeps its fallback.
-  if (node.supertag === "ask") return "ask";
-  if (TYPED_BLOCKS.has(node.supertag)) {
-    return CONVERSATION_KINDS.find((kind) => kind === node.supertag);
-  }
-  return "prose";
+  const kind = nodeKindOf(node);
+  return CONVERSATION_KINDS.find((one) => one === kind);
 }
 
 /** A root of a thread, with where its words are. */

@@ -3,6 +3,7 @@ import type { ComposerAnchor, ReplyTarget } from "../../conversation/composer-mo
 import { blockIdOfNode } from "../decision-review";
 import type { TreeAnswerNode } from "../tree-read/tree-read";
 import { GATES, type GateName } from "./gates";
+import { nodeKindOf } from "./node-kind";
 
 /**
  * What a comment on selected words writes (R5): each node kind's write, by the place its node
@@ -158,18 +159,14 @@ function placeOf(node: Pick<TreeAnswerNode, "document" | "supertag">): Place {
 }
 
 /** `node` as `writeFor` asks for it on the page of the issue `page`: its kind, its place, its
- *  visibility and its own issue, which is the page's where the read names none. A block the tree
- *  read answers with the supertag `"block"` or `"lens_block"` is a finding under its lens
- *  (`lens-drafts.ts`), and prose anywhere else, as the page drafts a paragraph
- *  (`conversationKindOf` in `text-threads.ts`): a typed block reads with its type. */
+ *  visibility and its own issue, which is the page's where the read names none. The kind is the
+ *  server's (`nodeKindOf`), so a finding is a block whose id names its lens (`lens/<uuid>#<block>`)
+ *  whatever its supertag, and a paragraph moved under a lens keeps its own kind. */
 export function subjectOf(
-  node: Pick<TreeAnswerNode, "document" | "issue" | "supertag" | "visibility"> & {
-    readonly parent?: TreeAnswerNode["parent"];
-  },
+  node: Pick<TreeAnswerNode, "document" | "id" | "issue" | "kind" | "supertag" | "visibility">,
   page: string
 ): WriteSubject {
-  const plain = node.supertag === "block" || node.supertag === "lens_block";
-  const kind = !plain ? node.supertag : node.parent?.supertag === "lens" ? "finding" : "prose";
+  const kind = nodeKindOf(node);
   return {
     issue: node.issue ?? page,
     kind,

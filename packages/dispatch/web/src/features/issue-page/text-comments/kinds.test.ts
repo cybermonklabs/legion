@@ -193,8 +193,8 @@ test.skipIf(!GATES.OTHER_ISSUE_COMMENTS)(
   }
 );
 
-// R5 (G2): with `NODE_ANCHOR` on, a lens, a finding (whose tree-read supertag is `block` under a
-// lens), a risk, a constraint and a result take the control and build `anchor {node, quote,
+// R5 (G2): with `NODE_ANCHOR` on, a lens, a finding (a block whose read id names its lens,
+// `nodeKindOf`), a risk, a constraint and a result take the control and build `anchor {node, quote,
 // occurrence}` naming each node by the store address `POST /api/v1/issues/{key}/comments` takes.
 test("a lens, finding, risk, constraint and result take the control and address their node", () => {
   const cases = [
@@ -263,6 +263,7 @@ test("a block written in the room anchors in the issue's tree, and a criterion w
   const paragraph = {
     block_id: "p1",
     id: "CORE-1/tree#p1",
+    kind: "block",
     supertag: "block",
     visibility: "project" as const,
   };
@@ -286,6 +287,7 @@ test("a block written in the room anchors in the issue's tree, and a criterion w
     block_id: "p2",
     document: { artifact_id: "spec-1", position: 3, slug: "spec" },
     id: "CORE-1/spec#p2",
+    kind: "block",
     supertag: "block",
     visibility: "project" as const,
   };
@@ -298,6 +300,7 @@ test("a block written in the room anchors in the issue's tree, and a criterion w
   const criterion = {
     block_id: "k1",
     id: "CORE-1/tree#k1",
+    kind: "block",
     supertag: "criterion",
     visibility: "project" as const,
   };
