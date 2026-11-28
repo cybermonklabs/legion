@@ -33,8 +33,9 @@
 -- check_results, then ci_check_results. The drop of check_results' old truncate trigger takes
 -- ACCESS EXCLUSIVE on check_results and each create trigger takes SHARE ROW EXCLUSIVE on its table,
 -- each held to the commit: the migration reads no row, so it holds them only for its catalog
--- writes, and a read or a write of either table waits that long. A writer that holds one of the
--- two tables while it waits for the other closes a cycle with the migration; the lock_timeout
+-- writes, and a read or a write of check_results, and a write of ci_check_results, waits that long.
+-- SHARE ROW EXCLUSIVE does not block a read. A writer that holds one of the two tables while it
+-- waits for the other closes a cycle with the migration; the lock_timeout
 -- below, 500 ms, shorter than deadlock_timeout (1 s by default), has the migration give up first
 -- with 55P03 and nothing applied, and pgmigrate applies it again, up to
 -- pgmigrate.LockTimeoutAttempts times in the same boot, then at the next boot, as 20261124011834

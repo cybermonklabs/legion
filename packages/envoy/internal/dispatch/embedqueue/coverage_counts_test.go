@@ -843,9 +843,14 @@ func TestEveryWriteKeepsTheCounts(t *testing.T) {
 // TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff holds R7d: rows written with no trigger
 // firing - an issue's title, an issue's spec in place, a window row of embeddings inserted and
 // another deleted, and a row of each not-indexed table a count keeps (components,
-// artifact_versions, check_results, handoffs), each inside withTableTriggersOff, and an issue
-// written under session_replication_role = replica (withTriggersOff) - are in the counts after one
-// recount (recountCoverage), which the report's three sides then answer alike (requireMainsAnswerFor).
+// artifact_versions, check_results, ci_check_results, handoffs), each inside withTableTriggersOff,
+// and an issue written under session_replication_role = replica (withTriggersOff) - are in the
+// counts after one recount (recountCoverage). The result count is then the rows of check_results
+// and ci_check_results together (requireResultsKept), and the report's three sides answer alike
+// (requireMainsAnswerFor) once the CI job's result is deleted with its triggers on, which the
+// count follows as any delete. That delete is there because main's two statements count only
+// check_results as results (testdata/main_coverage_query.sql), so they cannot answer alike while
+// ci_check_results holds a row.
 // It runs once with an embedder configured, the queue having embedded every row it could with that
 // identity before the writes and the report read for it, and once with none, the report read for
 // no identity. Before the recount the counts miss the writes: the report counts one component fewer
@@ -897,6 +902,13 @@ func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 					values ('OFFT-1', 'OFFT-1', $1::uuid, 'k1', 1, 'a-check-sha', 'tester', repeat('a', 40), 'pass', '{"kind":"user","id":"alice"}'::jsonb)`,
 					document)
 			})
+			withTableTriggersOff(t, database, "ci_check_results", func(q querier) {
+				mustExec(t, q, `insert into ci_check_results (issue_key, check_issue_key, check_artifact_id, check_block_id,
+						check_version, check_sha256, run, commit_sha, branch, verdict, attestation, session, actor)
+					values ('OFFT-1', 'OFFT-1', $1::uuid, 'k1', 1, 'a-check-sha', 'go-checks', repeat('b', 40), 'legion/OFFT-1', 'pass',
+					        '{}'::jsonb, 'ci-job', '{"kind":"session","id":"ci-job"}'::jsonb)`,
+					document)
+			})
 			withTableTriggersOff(t, database, "handoffs", func(q querier) {
 				mustExec(t, q, `insert into handoffs (issue_key, phase, version, body, author)
 					values ('OFFT-1', 'implement', 1, '{}', '{"kind":"user","id":"alice"}'::jsonb)`)
@@ -921,7 +933,9 @@ func TestTheNextRecountFollowsEveryRowWrittenWithTriggersOff(t *testing.T) {
 			if err := recountCoverage(ctx, database); err != nil {
 				t.Fatalf("recount: %v", err)
 			}
-			requireMainsAnswerFor(t, database, "after one recount", configured.identity)
+			requireResultsKept(t, database, "after one recount", 1, 1)
+			mustExec(t, q, `delete from ci_check_results where issue_key = 'OFFT-1'`)
+			requireMainsAnswerFor(t, database, "after one recount and the CI job's result deleted", configured.identity)
 		})
 	}
 }
