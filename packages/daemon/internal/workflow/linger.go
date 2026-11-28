@@ -529,7 +529,7 @@ func (e *Engine) handOver(ctx context.Context, tx pgx.Tx, root, child record.Iss
 // lingers at a later generation, changes nothing.
 func (e *Engine) lingerExpired(ctx context.Context, tx pgx.Tx, fact intake.LingerExpired) (intake.Result, error) {
 	issue, err := e.store.Issue(ctx, tx, fact.Issue)
-	if err != nil || issue == nil || issue.Generation != fact.Generation || !issue.Lingers() {
+	if err != nil || issue == nil || issue.TreeGeneration != fact.Generation || !issue.Lingers() {
 		return intake.Result{}, err
 	}
 	open, err := e.store.OpenProductionChecksOfTree(ctx, tx, issue.Tree)
