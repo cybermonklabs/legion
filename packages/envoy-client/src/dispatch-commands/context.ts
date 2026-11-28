@@ -9,13 +9,19 @@ import type {
   IssuePriority,
   Sleep,
 } from "@legion/contracts";
+import { urlForText } from "@legion/contracts/log-text";
 import type { ActiveDispatchConfig } from "../dispatch-config";
 import type { DispatchHost, ExecFn } from "../dispatch-cwd";
-import { DispatchClient, type DispatchWriteRetry } from "../dispatch-http";
+import {
+  DISPATCH_WRITE_RETRY,
+  DispatchClient,
+  type DispatchClientOptions,
+  type DispatchWriteRetry,
+} from "../dispatch-http";
 import type { Owner, ParsedDispatchRef } from "../dispatch-owner";
 import type { AgentArtifactRef, LocalPicture } from "../dispatch-picture-tools";
 import type { ToolImage } from "../dispatch-pictures";
-import { withoutUserinfo } from "../errors";
+import { linkBaseOf } from "./links";
 
 /**
  * Tool arguments as the model supplied them. The tool's Zod schema validates
@@ -49,8 +55,10 @@ export interface ExecuteDispatchToolInput {
   readonly args: ToolArguments;
   readonly cwd: string;
   /**
-   * The bytes of an upload's `--path` file as the CLI already read them for AskGate's check, sent
-   * in place of a fresh read, so the upload sends exactly the bytes that check digested.
+   * The bytes of an upload's `--path` file the CLI already read, sent in place of a read: those
+   * AskGate's check digested where it read them, so the upload sends exactly those bytes, and
+   * otherwise those of a Markdown file as the CLI read and checked them once the flags were read
+   * (`documentFileRead`), so the call reads the file no second time.
    */
   readonly uploadBytes?: Uint8Array;
   readonly host: DispatchHost;
@@ -73,11 +81,21 @@ export interface ExecuteDispatchToolInput {
    *  off, or no answer from its listener); called only by a write that would name its owner as
    *  unsubscribed. A write names the owner the session is not subscribed to only from this. */
   readonly subscriptions?: () => Promise<readonly string[] | null>;
+  /** The CLI's `--dry-run` of a call whose dry run Dispatch answers (`dryRunAsksDispatch`): the
+   *  command asks Dispatch what its write would answer and writes nothing. No other call is run
+   *  with it (`executeDispatchTool`). */
+  readonly dryRun?: boolean;
 }
 
 export interface DispatchToolResult {
   readonly text: string;
   readonly details: Record<string, unknown>;
+  /** A body the dispatch CLI writes to standard output as it came, byte for byte, in place of
+   *  `text`, with no line of its own beside it there: `dispatch api`'s answer to a 2xx that is not
+   *  Dispatch's JSON: stored content (an attachment) whatever its type, a body that is not JSON,
+   *  or a bodiless 204's none. `text` then says what it is, and `details` records it without its
+   *  bytes. */
+  readonly body?: Uint8Array;
   /** Pictures the model is shown after the text, in the order the text names them. */
   readonly images?: readonly ToolImage[];
   /** What the caller should hear beside the result rather than in it: the dispatch CLI writes
@@ -90,6 +108,70 @@ export interface DispatchToolResult {
   readonly refused?: boolean;
 }
 
+/**
+ * What a command's dry-run step (`DispatchCommand.dryRun`, table.ts) is handed once the call's own
+ * argument check has passed: what the step needs to ask Dispatch what the call asks before it
+ * writes, under the dry run's deadline.
+ */
+export interface DryRunContext {
+  /** The command's tool name, which its refusals name. */
+  readonly tool: string;
+  /** The arguments as the call's check parsed them. */
+  readonly args: ToolArguments;
+  /** The directory the call resolves a relative file path against, as the call does. */
+  readonly cwd: string;
+  /** The bytes of the upload's Markdown `--path` file as the CLI read and checked them once the
+   *  flags were read (`documentFileRead`), which the step checks in place of a read. */
+  readonly uploadBytes?: Uint8Array<ArrayBuffer>;
+  /**
+   * The client the call builds, from the session's Dispatch as the call resolves it. It stops at
+   * `deadline`, and its own deadline is the same budget (`deadlineMs`), so a failure after the
+   * budget is the deadline's and a credential is given that budget less the request's reserve. It
+   * asks no request again that Dispatch answered with no route. It prints each warning of the
+   * session's configuration on stderr, and throws, naming why, when the session has no Dispatch.
+   * A step calls it only for arguments it asks Dispatch about, so a dry run of any other arguments
+   * builds no client here and prints no configuration warning. The one other dry run that sends a
+   * request is a `dispatch result` record's, which runs as the record does (`dryRunAsksDispatch`).
+   */
+  readonly client: () => DispatchClient;
+  /** Aborts once `deadlineMs` have passed, so a failure after it is the deadline's. */
+  readonly deadline: AbortSignal;
+  readonly deadlineMs: number;
+}
+
+/** How long a dry run waits on Dispatch for its step's answer (`DispatchCommand.dryRun`): well
+ *  inside the 20 s an AskGate older than DISPATCH_DRY_RUN_LOCAL gives a dry run, so a slow Dispatch
+ *  passes that gate's dry run with a warning rather than failing it. AskGate now sets the
+ *  variable, under which no step runs. The call of `dispatch artifact` asks its check of a
+ *  Markdown file within the same bound, through the same client options as its dry run
+ *  (`askOnceWithinDryRun`). */
+export const DRY_RUN_DEADLINE_MS = 5_000;
+
+/**
+ * The options of a client that asks Dispatch once within the dry run's bound, `deadlineMs`
+ * (DRY_RUN_DEADLINE_MS, or a shorter one a test sets): its own deadline is that bound, it asks no
+ * request again that Dispatch answered with no route, and it sends no second attempt after a
+ * failed one (no pauses), so no wait outlasts the bound. A fresh token is still presented once
+ * where Dispatch says the token is no longer live. The dry run's client and the client of the
+ * call's check of a Markdown file both take these, so the two ask alike. The pacing is
+ * DISPATCH_WRITE_RETRY's, its pauses removed: the dry run has no session pacing of its own, and the
+ * call's is DISPATCH_WRITE_RETRY wherever a test does not replace it.
+ */
+export function askOnceWithinDryRun(deadlineMs = DRY_RUN_DEADLINE_MS): DispatchClientOptions {
+  return { deadlineMs, retryNoRoute: false, writeRetry: { ...DISPATCH_WRITE_RETRY, pausesMs: [] } };
+}
+
+/**
+ * What a dry-run step found, which the dry run answers with the call's own output and exit code:
+ * - `refused`: the error the call throws for these arguments, which the dry run prints as
+ *   `messageFor` prints it, and exits 2 on where it is a `ToolInputError` and 1 on any other, as
+ *   the call does;
+ * - `passed`: a pass, with a warning for stderr when the step could not get its answer.
+ */
+export type DryRunVerdict =
+  | { readonly kind: "refused"; readonly refusal: Error }
+  | { readonly kind: "passed"; readonly warning?: string };
+
 export interface ResolvedArtifact {
   readonly owner: Owner;
   readonly issue?: IssueDetails;
@@ -101,12 +183,17 @@ export interface OwnerResolution {
   readonly owner: Owner | null;
   /** The conversation upload a `dispatch://agent/...` ref names; it has no issue or project. */
   readonly agentArtifact?: AgentArtifactRef;
+  /** Set when the call needed an owner and the resolution pushed that it found none: no issue and
+   *  no LEGION_ISSUE, a LEGION_ISSUE that is not an issue, or a bare number with no GitHub
+   *  repository in cwd. Unset whenever the call names its owner or rightly has none. */
+  readonly ownerMissing?: true;
 }
 export interface CheckedCall {
   /** Every problem the check found; the call is refused once, listing them all. */
   readonly problems: string[];
   readonly owner: OwnerResolution;
-  /** The arguments as the schema parsed them (the owner-resolved ones when it refused them). */
+  /** The arguments as the schema parsed them: the owner-resolved ones when it refused them, or
+   *  when it parsed them with the stand-in issue. */
   readonly args: ToolArguments;
   readonly pictures: LocalPicture[];
 }
@@ -154,6 +241,15 @@ export function optionalBoolean(args: Record<string, unknown>, name: string): bo
 export function optionalNumber(args: Record<string, unknown>, name: string): number | undefined {
   const value = args[name];
   return typeof value === "number" ? value : undefined;
+}
+
+/** The optimistic-concurrency guard a call carries, under whichever shape its tool takes: an
+ *  edit's `EditPrecondition`, an upload's `UploadPrecondition`. The tool's own schema already
+ *  held the value to that shape, so this only reads it off `args`, which carries an index
+ *  signature a package built with `noPropertyAccessFromIndexSignature` denies a dotted read of. */
+export function optionalPrecondition<Guard>(args: Record<string, unknown>): Guard | undefined {
+  const { precondition } = args;
+  return precondition as Guard | undefined;
 }
 
 /** One field of a call's input, or no field at all when the argument was absent. An input whose
@@ -217,9 +313,10 @@ export function asObject(value: unknown): Record<string, unknown> | null {
 }
 
 /**
- * What every command is handed: the call as `checkDispatchCall` left it, and the Dispatch this
- * session speaks to. A command that answers before the origin is resolved (`dispatch_open_asks`,
- * `dispatch_answers`, `dispatch_whoami`) takes this alone, so it starts no subprocess.
+ * What every spec command is handed: the call as `checkDispatchCall` left it, and the Dispatch
+ * this session speaks to. A command that answers before the origin is resolved
+ * (`dispatch_open_asks`, `dispatch_answers`, `dispatch_whoami`) takes this alone, so it starts no
+ * subprocess.
  */
 export interface SessionContext {
   readonly input: ExecuteDispatchToolInput;
@@ -229,22 +326,26 @@ export interface SessionContext {
   readonly ownerArguments: OwnerResolution;
   /** The pictures the call's `images` argument names, read from disk by the check. */
   readonly pictures: LocalPicture[];
-  /** The API's own address, which an unreachable server is named by: the configured URL without
-   *  its user and password, which only the requests carry. */
+  /** The API's own address, which an unreachable server is named by: the configured URL where it
+   *  is a plain http(s) URL, and otherwise its fixed phrase (`urlForText`). */
   readonly configUrl: string;
   /**
-   * Every link a command prints is to Dispatch's dashboard as people open it: the public URL when
-   * the session has one (a pod reaches Dispatch at an in-cluster address nobody else can open),
-   * and the API's URL otherwise, either without the user and password its URL may carry.
+   * The base of every link a command prints, to Dispatch's dashboard as people open it: the public
+   * URL when the session has one (a pod reaches Dispatch at an in-cluster address nobody else can
+   * open), and the API's URL otherwise; undefined where that URL is not a plain http(s) URL, and
+   * then every link prints as its `dispatch://` reference (`linkBaseOf`, `linkFor`).
    */
-  readonly linkBase: string;
+  readonly linkBase: string | undefined;
   /** This host's own session id, trimmed; a command that needs one refuses an empty one itself. */
   readonly hostSession: string | undefined;
   /**
    * A factory, not one instance: the constructor starts the request deadline, and the main path
-   * resolves the origin (a subprocess) before it needs a client.
+   * resolves the origin (a subprocess) before it needs a client. `options` are laid over the
+   * session's own (its signal, its write pacing and its sleep), for a request that runs under a
+   * budget of its own: the call of `dispatch artifact` asks its check of a Markdown file once,
+   * within DRY_RUN_DEADLINE_MS, as its dry run asks it (`askOnceWithinDryRun`).
    */
-  newClient(): DispatchClient;
+  newClient(options?: DispatchClientOptions): DispatchClient;
 }
 
 /**
@@ -286,46 +387,33 @@ export interface CommandContext extends SessionContext {
 export type DispatchCommand = (context: CommandContext) => Promise<DispatchToolResult>;
 
 /**
- * The context every command starts from, built from the checked call. The fetch it hands the
- * client names the configured server in a transport error, since a session whose Dispatch moved
- * reads that message and nothing else. That message and every link name the server without the
- * user and password its URL may carry; the client's requests go to the URL as configured.
+ * The context every spec command starts from, built from the checked call. The client names the
+ * configured server in a transport error (`DispatchClient`: its URL by `urlForText`, the failure
+ * by `errorClass`), since a session whose Dispatch moved reads that message and nothing else;
+ * every link is built on a clean base or printed as its reference (`linkBaseOf`). The client's
+ * requests go to the URL as configured.
  */
 export function sessionContext(
   input: ExecuteDispatchToolInput,
   checked: CheckedCall
 ): SessionContext {
   const { url, credential } = input.config;
-  const configUrl = withoutUserinfo(url);
-  const baseFetch = input.fetchImpl ?? fetch;
-  const fetchImpl = Object.assign(
-    async (...args: Parameters<typeof fetch>): Promise<Response> => {
-      try {
-        return await baseFetch(...args);
-      } catch (error) {
-        if (error instanceof TypeError) {
-          throw new Error(
-            `Dispatch at ${configUrl} is unreachable: ${error.message}. If the Dispatch URL changed, restart this agent process so it picks up the new configuration.`
-          );
-        }
-        throw error;
-      }
-    },
-    { preconnect: baseFetch.preconnect }
-  );
+  const configUrl = urlForText(url, "the configured Dispatch URL");
+  const fetchImpl = input.fetchImpl ?? fetch;
   return {
     input,
     args: checked.args,
     ownerArguments: checked.owner,
     pictures: checked.pictures,
     configUrl,
-    linkBase: withoutUserinfo(input.config.publicUrl ?? url),
+    linkBase: linkBaseOf(input.config.publicUrl ?? url),
     hostSession: input.sessionId?.trim(),
-    newClient: () =>
+    newClient: (options = {}) =>
       new DispatchClient(url, credential, fetchImpl, {
         signal: input.signal,
         writeRetry: input.writeRetry,
         sleep: input.sleep,
+        ...options,
       }),
   };
 }

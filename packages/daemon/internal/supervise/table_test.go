@@ -3,13 +3,10 @@ package supervise
 import (
 	"context"
 	"errors"
-	"fmt"
-	"go/ast"
 	"go/importer"
-	"go/parser"
 	"go/token"
 	"go/types"
-	"os"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,6 +15,7 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/runtime"
+	"github.com/sjawhar/legion/daemon/internal/testtypes"
 )
 
 // sealed reads the package's own source for what the table has to cover: every type that
@@ -26,24 +24,7 @@ import (
 // nobody gave rows to fails this test instead of passing it.
 func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerKind) {
 	t.Helper()
-	entries, err := os.ReadDir(".")
-	if err != nil {
-		t.Fatal(err)
-	}
-	files := token.NewFileSet()
-	var parsed []*ast.File
-	for _, entry := range entries {
-		name := entry.Name()
-		if !strings.HasSuffix(name, ".go") || strings.HasSuffix(name, "_test.go") {
-			continue
-		}
-		file, err := parser.ParseFile(files, name, nil, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		parsed = append(parsed, file)
-	}
-	set := sealedSet(t, files, parsed)
+	set := sealedSource(t)
 	for _, value := range set.states {
 		states = append(states, ClaimState(value))
 	}
@@ -57,50 +38,43 @@ func sealed(t *testing.T) (events []string, states []ClaimState, timers []TimerK
 	return events, states, timers
 }
 
-// sealedSet is what the compiler sees of this package: every type that implements Event, and the
-// value of every ClaimState and TimerKind constant. It is read as the compiler sees it rather
-// than as the source spells it — a type that inherits isEvent by embedding, or declares it on a
-// pointer receiver, is an event a scan of isEvent declarations would not see, and a state or
-// timer whose value is not a plain literal is one a scan of literals would not read. Either could
-// be mapped onto an existing kind and inherit every row that kind has.
-type sealedSets struct {
-	events []string
-	states []string
-	timers []string
-}
-
-func sealedSet(t *testing.T, files *token.FileSet, parsed []*ast.File) sealedSets {
+// sealedSource is the sealed set read from the package's own source as the build compiles it
+// (checkedSealedSet).
+func sealedSource(t *testing.T) sealedSets {
 	t.Helper()
-	set, err := checkedSealedSet(files, parsed)
+	set, err := checkedSealedSet()
 	if err != nil {
 		t.Fatal(err)
 	}
 	return set
 }
 
+// sealedSets is what the compiler sees of this package: every type that implements Event, and the
+// value of every ClaimState, TimerKind and SuspendSource constant. It is read as the compiler
+// sees it rather than as the source spells it — a type that inherits isEvent by embedding, or
+// declares it on a pointer receiver, is an event a scan of isEvent declarations would not see,
+// and a state or timer whose value is not a plain literal is one a scan of literals would not
+// read. Either could be mapped onto an existing kind and inherit every row that kind has.
+type sealedSets struct {
+	events  []string
+	states  []string
+	timers  []string
+	sources []string
+}
+
 // checkedSealedSet type-checks this package once per test binary — the check reads the standard
 // library from source, which is seconds, and five tests ask for the sealed set.
-var checkedSealedSet = func() func(*token.FileSet, []*ast.File) (sealedSets, error) {
-	once := sync.OnceValues(func() (sealedSets, error) {
-		return sealedSets{}, errors.New("the sealed set was asked for before any file was parsed")
-	})
-	var files *token.FileSet
-	var parsed []*ast.File
-	return func(f *token.FileSet, p []*ast.File) (sealedSets, error) {
-		if files == nil {
-			files, parsed = f, p
-			once = sync.OnceValues(func() (sealedSets, error) { return readSealedSet(files, parsed) })
-		}
-		return once()
-	}
-}()
+var checkedSealedSet = sync.OnceValues(readSealedSet)
 
-func readSealedSet(files *token.FileSet, parsed []*ast.File) (sealedSets, error) {
-	config := types.Config{Importer: importer.ForCompiler(files, "source", nil)}
-	pkg, err := config.Check("github.com/sjawhar/legion/daemon/internal/supervise", files, parsed, nil)
+// readSealedSet reads the sealed set from the package's own source as the build compiles it
+// (testtypes.CheckPackage).
+func readSealedSet() (sealedSets, error) {
+	files := token.NewFileSet()
+	checked, err := testtypes.CheckPackage(files, importer.ForCompiler(files, "source", nil), supervisePath, ".")
 	if err != nil {
-		return sealedSets{}, fmt.Errorf("type-check the package: %w", err)
+		return sealedSets{}, err
 	}
+	pkg := checked.Types
 	event, ok := pkg.Scope().Lookup("Event").Type().Underlying().(*types.Interface)
 	if !ok {
 		return sealedSets{}, errors.New("Event is not an interface")
@@ -129,6 +103,8 @@ func readSealedSet(files *token.FileSet, parsed []*ast.File) (sealedSets, error)
 				set.states = append(set.states, value)
 			case "TimerKind":
 				set.timers = append(set.timers, value)
+			case "SuspendSource":
+				set.sources = append(set.sources, value)
 			}
 		}
 	}
@@ -148,6 +124,7 @@ func samples(t *testing.T) map[string][]Event {
 		"IssueTurnEnded":       {IssueTurnEnded{}},
 		"StreamPromptResult":   {StreamPromptResult{}},
 		"StreamToolStep":       {StreamToolStep{}},
+		"StreamAnswered":       {StreamAnswered{}},
 		"StreamClosed":         {StreamClosed{}},
 		"StreamLateRefusal":    {StreamLateRefusal{}},
 		"PromptAcked":          {PromptAcked{}},
@@ -155,7 +132,9 @@ func samples(t *testing.T) map[string][]Event {
 		"PodUpdateOpen":        {PodUpdateOpen{}},
 		"PodUpdateEnded":       {PodUpdateEnded{}},
 		"StalePlugin":          {StalePlugin{}},
+		"RecordedDeath":        {RecordedDeath{}},
 		"StallBackstop":        {StallBackstop{}},
+		"TurnPastBound":        {TurnPastBound{}},
 		"PodUpdateSignalled":   {PodUpdateSignalled{}},
 		"RequestSpawn":         {RequestSpawn{}},
 		"RequestRegister":      {RequestRegister{}},
@@ -168,13 +147,15 @@ func samples(t *testing.T) map[string][]Event {
 		"RequestIssueClose":    {RequestIssueClose{}},
 		"RequestOperatorClose": {RequestOperatorClose{}},
 		"RequestRetry":         {RequestRetry{}},
-		"RequestOperatorRetry": {RequestOperatorRetry{}},
+		"RequestAskedRetry":    {RequestAskedRetry{}},
 		"RequestForgetSession": {RequestForgetSession{}},
 		"RequestDeliver":       {RequestDeliver{}},
 		"RequestExit":          {RequestExit{}},
 		"RequestTurnOutcome":   {RequestTurnOutcome{}},
 		"RequestCompact":       {RequestCompact{}},
+		"ResumePause":          {ResumePause{}},
 		"CompactEnded":         {CompactEnded{}},
+		"MessageMarked":        {MessageMarked{}},
 	}
 	for _, kind := range timers {
 		byType["Timer"] = append(byType["Timer"], Timer{Kind: kind})
@@ -241,6 +222,41 @@ func TestNoTwoEventTypesShareAKind(t *testing.T) {
 	}
 }
 
+// States is the one list of every state that a test outside this package walks, such as record's
+// test of the states the role-holder publication counts live. Those tests cannot read this
+// package's source, so this test holds the list to the ClaimState constants the compiler sees here
+// (sealed): a state added to the const block and left out of the list fails here, rather than
+// passing every walk of the list. Each state is in the list once.
+func TestStatesIsEveryDeclaredStateOnce(t *testing.T) {
+	_, declared, _ := sealed(t)
+	listed := States()
+	if got, want := slices.Sorted(slices.Values(listed)), slices.Sorted(slices.Values(declared)); !slices.Equal(got, want) {
+		t.Fatalf("States() = %v, want each declared ClaimState once: %v", listed, want)
+	}
+}
+
+// SuspendSources is the one list of every suspension source that a test outside this package
+// walks, such as internal/daemon's test that every claim shape is in both sets of an update round
+// or in neither. That test cannot read this package's source, so this test holds the list to the
+// SuspendSource constants the compiler sees here (sealedSource), as
+// TestStatesIsEveryDeclaredStateOnce holds States: a source added to the const block and left out
+// of the list fails here, rather than passing every walk of the list. Each source is in the list
+// once.
+func TestSuspendSourcesIsEveryDeclaredSourceOnce(t *testing.T) {
+	declared := sealedSource(t).sources
+	if len(declared) == 0 {
+		t.Fatal("read no SuspendSource constant from the source")
+	}
+	listed := SuspendSources()
+	got := make([]string, len(listed))
+	for i, source := range listed {
+		got[i] = string(source)
+	}
+	if got, want := slices.Sorted(slices.Values(got)), slices.Sorted(slices.Values(declared)); !slices.Equal(got, want) {
+		t.Fatalf("SuspendSources() = %v, want each declared SuspendSource once: %v", listed, want)
+	}
+}
+
 // fixture is a claim restored in state with everything an event needs to pass its fences: the
 // generation, a recorded session, a locator for the states that have a process, and a pending
 // delivery (confirmed while working, as a delivered turn leaves it).
@@ -297,6 +313,9 @@ func fenced(ev Event, c Claim) Event {
 	case StreamToolStep:
 		return StreamToolStep{Claim: c.Token, Tool: "bash", CallID: "toolu_turn1_0",
 			ArgsBytes: len(toolArgs), ArgsHash: toolArgsHash(toolArgs)}
+	case StreamAnswered:
+		// The stream stamps an answer with the generation of the launch whose connection read it.
+		return StreamAnswered{Claim: c.Token, Model: "anthropic/claude-sonnet-4-5", Generation: c.Generation}
 	case StreamLateRefusal:
 		return StreamLateRefusal{Claim: c.Token, DeliveryID: c.Pending.ID, Error: "busy"}
 	case PromptAcked:
@@ -307,8 +326,12 @@ func fenced(ev Event, c Claim) Event {
 		return Timer{Claim: c.Token, Kind: ev.Kind, Generation: c.Generation, Seq: 7777, DeliveryID: c.Pending.ID}
 	case StalePlugin:
 		return StalePlugin{Claim: c.Token}
+	case RecordedDeath:
+		return RecordedDeath{Claim: c.Token, Generation: c.Generation}
 	case StallBackstop:
 		return StallBackstop{Claim: c.Token, Bound: time.Hour, Deadline: epoch.Add(-time.Hour)}
+	case TurnPastBound:
+		return TurnPastBound{Claim: c.Token, Bound: time.Hour, TurnStart: c.LastTurnStart}
 	case PodUpdateSignalled:
 		return PodUpdateSignalled{Claim: c.Token, Generation: c.Generation, Session: session, Head: "deadbeef"}
 	case PodUpdateOpen:
@@ -324,21 +347,23 @@ func fenced(ev Event, c Claim) Event {
 	case RequestSuspend:
 		return RequestSuspend{Claim: c.Token, By: SuspendedByOperator}
 	case RequestResume:
-		return RequestResume{Claim: c.Token}
+		return RequestResume{Claim: c.Token, By: SuspendedByOperator}
 	case RequestRuleResume:
 		return RequestRuleResume{Claim: c.Token, Reason: "it owns its issue's phase"}
 	case RequestStop:
-		return RequestStop{Claim: c.Token}
+		return RequestStop{Claim: c.Token, By: SuspendedByOperator}
 	case RequestRetry:
 		return RequestRetry{Claim: c.Token}
-	case RequestOperatorRetry:
-		return RequestOperatorRetry{Claim: c.Token}
+	case RequestAskedRetry:
+		return RequestAskedRetry{Claim: c.Token, By: SuspendedByOperator}
 	case RequestForgetSession:
-		return RequestForgetSession{Claim: c.Token, Session: c.Session}
+		return RequestForgetSession{Claim: c.Token, Session: c.Session, By: SuspendedByOperator}
 	case RequestDeliver:
 		return RequestDeliver{Claim: c.Token, Task: "another task"}
 	case RequestExit:
 		return RequestExit{Claim: c.Token, Generation: c.Generation, Session: session, Reason: "done"}
+	case ResumePause:
+		return ResumePause{Claim: c.Token, Pause: 1}
 	case RequestTurnOutcome:
 		return RequestTurnOutcome{Claim: c.Token, Generation: c.Generation, Sequence: 1}
 	case RequestCompact:
@@ -399,6 +424,15 @@ func TestEveryNamedIgnoreChangesNothingAndRefusesARequest(t *testing.T) {
 					if after.State != before.State || after.Budgets != before.Budgets || after.Generation != before.Generation {
 						t.Errorf("claim moved: %+v -> %+v", before, after)
 					}
+					// An answer reaches its ignore, not the generation fence in front of it
+					// (Machine.fence): a stop at the fence changes nothing too, and would pass. A
+					// claim with no process stops an observation at its fence by design (fenced), so
+					// this holds of the answer alone.
+					if _, answer := ev.(StreamAnswered); answer {
+						if lines := h.logs.lines("dropped a stale event", "event=StreamAnswered"); len(lines) > 0 {
+							t.Errorf("the answer stopped at a fence, not at its ignore: %q", lines)
+						}
+					}
 					if calls := h.rt.Methods(); len(calls) > 0 {
 						t.Errorf("asked the runtime %v", calls)
 					}
@@ -453,7 +487,7 @@ func TestAnEventForAnotherClaimIsAnError(t *testing.T) {
 func wantsRefusal(ev Event) bool {
 	switch ev.(type) {
 	case RequestSpawn, RequestRegister, RequestReady, RequestSuspend, RequestResume, RequestStop,
-		RequestRetry, RequestOperatorRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
+		RequestRetry, RequestAskedRetry, RequestForgetSession, RequestDeliver, RequestExit, RequestCompact,
 		RequestTurnOutcome, PodUpdateSignalled:
 		return true
 	}

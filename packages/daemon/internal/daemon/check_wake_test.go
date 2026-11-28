@@ -72,16 +72,13 @@ func (g *checkWakeGitHub) read() []string {
 	return append([]string(nil), g.paths...)
 }
 
-// checkWakeDispatch is a Dispatch that maps sjawhar/legion to project as its default and lists no
-// issues; every other call is unavailable, as a Dispatch whose dependencies are down answers, and
-// is not what these tests are about.
-func checkWakeDispatch(t *testing.T, project string) string {
+// checkWakeDispatch is a Dispatch that lists no issues; every other call is unavailable, as a
+// Dispatch whose dependencies are down answers, and is not what these tests are about.
+func checkWakeDispatch(t *testing.T) string {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
-		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/settings/repo-projects":
-			_, _ = io.WriteString(w, `[{"repo":"sjawhar/legion","project":"`+project+`","default":true}]`)
 		case r.Method == http.MethodGet && r.URL.Path == "/api/v1/issues":
 			_, _ = io.WriteString(w, `[]`)
 		default:
@@ -116,7 +113,7 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 	natsURL := workflowNATS(t)
 	cfg := workflowConfig(t, natsURL)
 	cfg.PostgresDSN = pool.Config().ConnString()
-	cfg.DispatchURL = checkWakeDispatch(t, cfg.Project)
+	cfg.DispatchURL = checkWakeDispatch(t)
 	// The daemon refuses to boot without Envoy's notification stream; no test of this rig
 	// publishes to it.
 	workflowJetStream(t, natsURL)
@@ -140,7 +137,7 @@ func newCheckWakeRig(t *testing.T) *checkWakeRig {
 		t.Fatalf("open the store: %v", err)
 	}
 	defer st.Close()
-	if err := pgx.BeginFunc(ctx, st.Pool(), func(tx pgx.Tx) error {
+	if err := store.Transact(ctx, st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
 		if err := rig.records.PutIssue(ctx, tx, record.Issue{Key: root, Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: cfg.Project, Tree: root, Title: "Closed root", Phase: phase.Done,
 			Generation: 1, Status: "done", HandedOver: true, Rank: "U", LingerUntil: &until}); err != nil {
 			return err
@@ -215,6 +212,7 @@ func (rig *checkWakeRig) check(t *testing.T) record.ProductionCheck {
 // session kept — so a boot that still compared would start look 2 here. Nothing is compared, the
 // check stays as it was and the implementer is never resumed.
 func TestABootOnABuildCarryingTheMergeStartsNoLook(t *testing.T) {
+	t.Parallel()
 	rig := newCheckWakeRig(t)
 	rig.boot(t)
 

@@ -1,0 +1,51 @@
+-- 20261120222733_drop_block_refs_to.up.sql
+-- block_refs_to, `block_refs (to_kind, to_id)` (0121), was block_refs' index of targets until
+-- block_refs_to_source (20261120222732), `block_refs (to_kind, to_id, ((artifact_id)::text))`, took
+-- its place. Its whole key is the new index's first two columns, so every read it served reads
+-- through the new one, and it serves nothing now and is write cost on every block link Dispatch
+-- records.
+--
+-- Dropping it in the same release as the new index is safe while the release before this one
+-- still serves: that build reads block_refs by to_kind and to_id, which the new index's first two
+-- columns key as block_refs_to did. An index is not a shape the running code reads, so neither
+-- release loses an answer, only a plan choice.
+--
+-- `drop index` takes ACCESS EXCLUSIVE on block_refs for the instant it unlinks the index, inside
+-- the runner's one transaction; it reads no row of the table and rewrites none. A plain
+-- `drop index` - RESTRICT, which is the default, and no cascade - is one of the census's
+-- catalog-only shapes (pgmigrate's catalogOnlyDrop), and a set of lock_timeout is another, so the
+-- census lets the migration through whatever block_refs has grown to, because the time the
+-- statement holds its lock does not grow with the table.
+--
+-- ACCESS EXCLUSIVE waits for every reader of block_refs, so the drop sets its own lock bound,
+-- 120 s, which holds on each try: store.Migrate applies a migration through
+-- pgmigrate.RetryLockTimeouts, which tries it again after a lock timeout, up to
+-- pgmigrate.LockTimeoutAttempts (3) times with pgmigrate.LockTimeoutRetryPause (2 s) between, so
+-- the drop waits up to 120 s on each of store.Migrate's 3 tries. The drop applies at the boot that
+-- applies the build, soon after the release before stopped; Dispatch's shutdown cancels no
+-- statement in flight, a statement whose client has gone runs on at the server, and production
+-- sets no server statement_timeout, so a read of block_refs the stopped pod left can still run
+-- when the drop asks for its lock. Under the runner's bound alone, pgmigrate.LockTimeout (5 s) on
+-- each of those 3 tries, a read that outlasts about 19 s makes the runner give up, and the boot
+-- exits and starts again. 120 s is above the longest time per call production recorded on
+-- 2026-11-20, 22.3 s for refs.Edges' read of graph_edges, and far inside the app's startup probe
+-- of 30 minutes, and no context deadline on the boot's path ends the wait sooner
+-- (TestTheBlockRefsTargetIndexDropWaitsOutAReaderPastTheRunnersAttempts holds the wait past the
+-- runner's attempts, and its comment reads that path). The drop waits only while such a read
+-- still runs, so the bound decides only when the boot stops waiting for it.
+--
+-- The bound has a cost. Under Recreate nothing serves while the drop waits. Where two builds serve
+-- at once, the drop's queued lock holds off the earlier build's reads and writes of block_refs for
+-- as long as it waits, up to 120 s on each of store.Migrate's 3 tries. A fleet whose deploys run
+-- deploy/scripts/autodeploy.sh waits at most 60 s for the migration key (store.go's comment on
+-- migrationLockKey), which the boot holds while the drop waits, so a schema read of that
+-- deployer's that meets a drop waiting longer fails, and the deployer refuses to deploy. That
+-- deployer also gives a new image 90 s to answer /healthz, which the boot serves only once it has
+-- migrated, so a drop that waits out what the boot leaves of those 90 s has the deployer stop the
+-- image; the build before the drop has applied by then, so the deployer refuses to roll back, and
+-- recovery is forward. A lower bound does not remove that cost: at 60 s the 3 tries can still
+-- wait up to 180 s, and at the runner's default of 5 s the boot exits and starts again until the
+-- read ends. The bound is set for production, one pod under Recreate with a startup probe of 30
+-- minutes.
+set local lock_timeout = '120s';
+drop index block_refs_to;

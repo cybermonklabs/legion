@@ -59,6 +59,7 @@ func requireNoRecordedAskAuthors(t *testing.T, database *store.Store, artifactID
 // transaction. Task B, which never saw the update, settles the document and the ask is his, and
 // the row goes with the transaction that created the ask.
 func TestAnAskBlockTypedOnOneProcessIsItsTypistsWhenAnotherProcessSettlesIt(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-a"}
 	editAsBrowserPeer(t, pair.taskA, pair.artifactID, 1, bob,
@@ -82,6 +83,7 @@ func TestAnAskBlockTypedOnOneProcessIsItsTypistsWhenAnotherProcessSettlesIt(t *t
 // An agent's live write introduces an ask block on task A; its commit records the agent in the
 // same transaction (Ledger.recordSettlementCredit), and task B's settlement keeps the writer.
 func TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	agent := model.Actor{Kind: "session", ID: "session-agent-writer"}
 	writeThroughLedger(t, pair.taskA, pair.artifactID, agent,
@@ -104,6 +106,7 @@ func TestALiveWritesAskBlockKeepsItsWriterWhenAnotherProcessSettlesIt(t *testing
 // its events: before the durable record, a process other than the seeder's, which never
 // registered the seed's blocks, made the seeded ask SettlementActor's rather than the seeder's.
 func TestASeededAskBlockIsTheSeedersWhenAnotherProcessSettlesIt(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, "")
 	taskA, _ := newTestServiceInstance(t, database)
@@ -134,6 +137,7 @@ func TestASeededAskBlockIsTheSeedersWhenAnotherProcessSettlesIt(t *testing.T) {
 // its own; the backfill's stamp mints it a new id and records the author it carries to it in the
 // transaction that stores the stamp, and task B's settlement keeps bob.
 func TestAStampedAskBlockKeepsItsAuthorWhenAnotherProcessSettlesIt(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-a"}
 	const question = "Which transport do we pick?"
@@ -170,6 +174,7 @@ func TestAStampedAskBlockKeepsItsAuthorWhenAnotherProcessSettlesIt(t *testing.T)
 // replaced (recordStampedAskAuthors), and makes the ask his; the replaced id's row goes with it,
 // since no ask block of the settled tree carries it.
 func TestASettlementsStampCarriesTheAuthorAnotherProcessRecorded(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-b"}
 	alice := model.Actor{Kind: "user", ID: "alice-on-task-a"}
@@ -194,6 +199,7 @@ func TestASettlementsStampCarriesTheAuthorAnotherProcessRecorded(t *testing.T) {
 // A block deleted before any settlement indexed it leaves its durable author behind until the next
 // settlement, which deletes it with the block gone from its tree.
 func TestASettlementDeletesTheRecordedAuthorOfABlockGoneFromTheDocument(t *testing.T) {
+	t.Parallel()
 	pair := newProcessPair(t)
 	bob := model.Actor{Kind: "user", ID: "bob-on-task-a"}
 	editAsBrowserPeer(t, pair.taskA, pair.artifactID, 1, bob,

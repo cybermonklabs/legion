@@ -1,6 +1,6 @@
 import { afterEach, expect, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactNode } from "react";
 import { MemoryRouter, useLocation, useNavigate } from "react-router-dom";
@@ -183,8 +183,10 @@ test("each row says what its live view is doing", async () => {
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
   const views = liveViewsOf(queryClient);
-  views.show(PLANNER);
-  views.show(REVIEWER);
+  act(() => {
+    views.show(PLANNER);
+    views.show(REVIEWER);
+  });
   await waitFor(() => expect(rowTexts()[1]).toBe("Reviewerlive"));
   expect(rowTexts()[0]).toBe("Planner2live 30s");
   expect(rowTexts()[2]).toBe("Testerasleep");
@@ -234,7 +236,8 @@ test("a rail row unpins its agent", async () => {
   const { putAgentState } = renderRail({ agentState: pins });
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
-  await user.click(screen.getByRole("button", { name: "Unpin Reviewer from the sidebar" }));
+  // A row comes with the pins and its name with the agent list, a read that can answer later.
+  await user.click(await screen.findByRole("button", { name: "Unpin Reviewer from the sidebar" }));
 
   await waitFor(() => expect(rowTexts()).toEqual(["Planner2asleep", "Testerasleep"]));
   expect(putAgentState.mock.calls.map(([session, input]) => [session, input])).toEqual([
@@ -250,7 +253,7 @@ test("a move between pinned agents from the rail replaces the address, and one f
   renderRail({ agentState: pins, entries: ["/", `/agents/${PLANNER}/live`] });
 
   await waitFor(() => expect(rowTexts()).toHaveLength(3));
-  await user.click(screen.getByRole("link", { name: "Reviewer" }));
+  await user.click(await screen.findByRole("link", { name: "Reviewer" }));
   expect(screen.getByTestId("address").textContent).toBe(`/agents/${REVIEWER}/live`);
 
   await user.click(screen.getByRole("button", { name: "Back" }));

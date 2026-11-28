@@ -104,6 +104,22 @@ function dispatchListeners(): HarnessListener[] {
     ...(webDist ? { DISPATCH_E2E_SERVER_WEB_DIST: webDist } : {}),
     ...(binary ? { DISPATCH_E2E_SERVER_BIN: binary } : {}),
   });
+  const dispatchA = {
+    ...dispatchServer,
+    env: inputs(undefined, undefined),
+    heldAhead,
+    id: "dispatch-a",
+    key: "dispatchA",
+    name: "Dispatch A",
+  } as const;
+  const dispatchB = {
+    ...dispatchServer,
+    env: inputs(webDistB, binaryB),
+    heldAhead,
+    id: "dispatch-b",
+    key: "dispatchB",
+    name: "Dispatch B",
+  } as const;
   return [
     {
       argv: ["bun", script("round-robin-proxy.ts")],
@@ -114,22 +130,13 @@ function dispatchListeners(): HarnessListener[] {
       name: "the round-robin proxy",
       report: /^round-robin proxy on http:\/\/127\.0\.0\.1:(\d+) for /,
     },
-    {
-      ...dispatchServer,
-      env: inputs(undefined, undefined),
-      heldAhead,
-      id: "dispatch-a",
-      key: "dispatchA",
-      name: "Dispatch A",
-    },
-    {
-      ...dispatchServer,
-      env: inputs(webDistB, binaryB),
-      heldAhead,
-      id: "dispatch-b",
-      key: "dispatchB",
-      name: "Dispatch B",
-    },
+    // The first server to start migrates the empty database, and each listener starts once the one
+    // before it serves (e2e/harness-start.ts). Where B is an earlier build, it starts first and A,
+    // this tree, migrates the database forward: production's order. A database this tree migrated
+    // from empty records this tree's text of each migration as applied, which an earlier build that
+    // judges the applied text refuses wherever this tree edits a migration it holds
+    // (packages/envoy/cmd/dispatch/README.md, "A recorded version under another file").
+    ...(binaryB === undefined ? [dispatchA, dispatchB] : [dispatchB, dispatchA]),
   ];
 }
 
@@ -170,7 +177,7 @@ function signInIssuerListeners(): HarnessListener[] {
 // server, which keeps relaying the fake broker.
 // Each half reports on stderr, and each report is the line that follows its own bind: the issuer
 // writes `dev-oidc-issuer: issuer listening url=http://127.0.0.1:<port>`, as it does for
-// run-signin-issuer.sh, and cmd/broker writes its log as one JSON object per line
+// run-signin-issuer.sh, and cmd/cipherd writes its log as one JSON object per line
 // (packages/envoy/internal/logging's NewCloudHandler), so its report is
 // `{"time":…,"severity":"INFO","message":"broker listening","addr":"127.0.0.1:<port>"}`, the
 // message followed by its one field.

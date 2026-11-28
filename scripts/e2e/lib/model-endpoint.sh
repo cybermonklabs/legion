@@ -2,8 +2,10 @@
 # The model endpoint a key file's key is for: Anthropic's own, or the Anthropic-compatible gateway
 # (a LiteLLM proxy, say) LEGION_E2E_MODEL_BASE_URL names. Sourced by claude-backend-tmux.sh and
 # claude-backend-sandbox.sh, whose own note and fail model_key_preflight calls, by
-# parked-decision-devbox.sh, which checks LEGION_E2E_MODEL_BASE_URL with model_base_url_refusal, and
-# by lib/install-key-file-model-route.sh, which checks its --base-url with model_base_url_refusal.
+# parked-decision-devbox.sh, which checks LEGION_E2E_MODEL_BASE_URL with model_base_url_refusal, by
+# lib/install-key-file-model-route.sh, which checks its --base-url with model_base_url_refusal, and
+# by nats-callout-sessions.sh, which also holds Codex's OpenAI Responses-compatible endpoint to its
+# key with responses_key_preflight.
 
 # anthropic_base_url is the endpoint when no base URL is named.
 anthropic_base_url=https://api.anthropic.com
@@ -76,5 +78,44 @@ model_key_preflight() {
       note "the model endpoint $endpoint names no key alias for the key in $what: GET /key/info answered $code"
     fi
   fi
+  rm -f "$header"
+}
+
+# responses_key_preflight BASE KEY HEADER WHAT MODEL holds the OpenAI Responses-compatible endpoint
+# BASE (what a Codex model provider's base_url names, its /v1 included) to the key in KEY, the run's
+# 0600 copy of the key file WHAT names, before anything is created: GET BASE/models with the key as
+# a bearer must answer 200 and list MODEL, and GET BASE/models with no key must answer something
+# else, or the endpoint checks no key and its 200 proves nothing about this one. The key reaches
+# curl in HEADER, a 0600 header file removed before this returns (a refusal is the caller's fail,
+# an exit, so the caller's cleanup removes HEADER too); neither the key nor a response body is
+# printed.
+responses_key_preflight() {
+  local base=$1 key=$2 header=$3 what=$4 model=$5 code listed
+  (umask 077 && printf 'Authorization: Bearer %s\n' "$(cat "$key")" >"$header")
+  code=$(umask 077 && model_get "$base/models" "$header" "$header.models")
+  listed=false
+  [ "$code" != 200 ] ||
+    listed=$(jq -r --arg m "$model" 'any(.data[]?; .id == $m)' "$header.models" 2>/dev/null) || listed=false
+  rm -f "$header.models"
+  if [ "$code" != 200 ]; then
+    rm -f "$header"
+    fail "the model endpoint $base refuses the key in $what: GET /models answered $code"
+  fi
+  if [ "$listed" != true ]; then
+    rm -f "$header"
+    fail "the model endpoint $base answers the key in $what but lists no model $model in GET /models"
+  fi
+  code=$(model_get "$base/models" "" /dev/null)
+  case "$code" in
+  200)
+    rm -f "$header"
+    fail "the model endpoint $base answered GET /models with no key 200: it does not check keys, so its 200 to the key in $what proves nothing about that key"
+    ;;
+  [0-9][0-9][0-9]) note "the model endpoint $base checks keys: GET /models with no key answered $code, and with the key in $what lists $model" ;;
+  *)
+    rm -f "$header"
+    fail "the model endpoint $base did not answer GET /models with no key ($code), so whether it checks keys is unknown"
+    ;;
+  esac
   rm -f "$header"
 }

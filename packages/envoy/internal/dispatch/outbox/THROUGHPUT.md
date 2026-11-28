@@ -29,6 +29,10 @@ Treat the numbers as order-of-magnitude figures.
 - The peak reading is the most sends the outbox held outstanding at any one moment over the
   drain, counted by a wrapper around every window its batches publish through
   (`outstandingSends`).
+- Every reading below was taken one case at a time. The test's cases now run beside each other
+  and beside the package's other tests (`outboxTestParallelism`), so a reading to compare with
+  these comes from the test run alone, one case at a time:
+  `go test -run TestTheOutboxHoldsManySendsOutstandingUnderRemoteLatency -parallel 1`.
 
 ## Results
 
@@ -182,6 +186,3 @@ against main with #2225.
 - A failed outcome write resends what it was for: an owner settled as its own chains finished, or
   every owner the batch's own write covers. JetStream drops the repeats by MsgId, a role forward's
   included, and a role's holder drops a repeat forward by its dedupe key.
-- A session that takes an issue's events on two destinations (its topic family and its own
-  subject) can see a later event's first copy before an earlier one's when the stream fails one
-  subject and not the other (`planChains`).

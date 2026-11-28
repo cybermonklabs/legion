@@ -1,0 +1,11 @@
+kind: Added
+body: |-
+    `POST /api/v1/issues/{key}/results` refuses `409 CHECK_CONTENDED`, with nothing recorded, when
+    a document version rewords the check at each of the two attempts the write makes: it reads the
+    check's words with the two issues' owner locks free, so a version that lands between the read
+    and the locks sends it back to read them again. The refusal carries `Retry-After: 1`, because
+    what the caller waits for is that version landing rather than a budget of its own, and the
+    caller's retry resolves the check afresh.
+time: 2026-11-09T01:49:48.060653696Z
+custom:
+    Issue: pr2468

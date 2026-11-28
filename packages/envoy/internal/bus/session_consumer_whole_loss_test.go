@@ -34,6 +34,7 @@ import (
 // The loss is made as the partial cut's test makes it, with the whole first message block cut
 // instead of half of it.
 func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMessagesAgain(t *testing.T) {
+	t.Parallel()
 	srv, uri := testnats.Start(t)
 	owner, err := ConnectOwningStream([]string{uri}, WithReplicas(1))
 	if err != nil {
@@ -51,11 +52,11 @@ func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMess
 	// many the session then takes and acks.
 	const before, acked = 20, 4
 	name, _ := SessionConsumerName(session)
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 
 	for i := range before {
-		publishStored(t, owner, contracts.AgentSubject("ses_whole_loss_bystander"), fmt.Sprintf("before %02d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject("ses_whole_loss_bystander"), fmt.Sprintf("before %02d", i))
 	}
 	start, err := consumers.Ensure(ctx, session, filters, 0)
 	if err != nil {
@@ -75,18 +76,14 @@ func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMess
 	waitForAckFloor(t, consumers, session, before+acked)
 	waitForAckPending(t, consumers, session, 0)
 
+	ownerBefore, consumersBefore := reconnectsBeforeCut(owner, consumers)
 	srv.CutStream(t, Stream, func(int64) int64 { return 0 })
-
-	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-		return owner.Connected() && consumers.client.Connected()
-	})
+	awaitReconnectsAfterCut(t, owner, consumers, ownerBefore, consumersBefore)
 	var state sessionStreamState
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the restart", func() (string, bool) {
 		state, err = consumers.streamState(ctx)
-		return err == nil
-	}) {
-		t.Fatalf("read the stream after the restart: %v", err)
-	}
+		return fmt.Sprint(err), err == nil
+	})
 	if state.lastSeq != 0 {
 		t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", state.lastSeq)
 	}
@@ -114,6 +111,7 @@ func TestRestartAtFloorAfterAOneCopyStreamLostEveryMessageDeliversThePendingMess
 	t.Logf("with both awaiting an ack the server reports the ack floor as stream %d, consumer %d, the last delivery as %d and the start sequence as %d; the floor this package reads from that is %d",
 		info.AckFloor.Stream, info.AckFloor.Consumer, info.Delivered.Stream, info.Config.OptStartSeq, ackFloor(info))
 
+	waitForStoredState(t, owner, session)
 	restarted, err := consumers.RestartAtFloor(ctx, session, filters)
 	if err != nil {
 		t.Fatalf("restart at floor: %v", err)

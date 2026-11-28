@@ -50,7 +50,7 @@ func relayFrame(t *testing.T, subject string, seq string, delivered string, stor
 func TestRelayHandlerCountsEachSequenceOnce(t *testing.T) {
 	ns := &natsSessions{receipts: newCollector[receipt](16), envelopes: envelopeSamples{data: map[string][]byte{}, marked: map[string]bool{}}}
 	ns.relay = newRelaySessions(1, 1)
-	agent := contracts.AgentSubject("ses-lg-0000")
+	agent := contracts.LegacyAgentSubject("ses-lg-0000")
 	h := ns.relay.handler(ns, 0, agent, 1)
 	stored := time.Unix(100, 5)
 	h(relayFrame(t, "notifications.dispatch.issue.LGA-1.comment", "7", "1", stored, 10))
@@ -101,22 +101,22 @@ func TestRelayResumePointFollowsDoneFrames(t *testing.T) {
 	ns.relay = newRelaySessions(1, 1)
 	r := ns.relay
 	r.answered(0, sessionDeliveryConsumer, "stream-a")
-	if _, ok := r.delivery(0)["resume"]; ok {
-		t.Fatalf("resume point before any frame: %v", r.delivery(0))
+	if resume := r.delivery(0).Resume; resume != nil {
+		t.Fatalf("resume point before any frame: %+v", *resume)
 	}
-	h := r.handler(ns, 0, contracts.AgentSubject("ses-lg-0000"), 1)
+	h := r.handler(ns, 0, contracts.LegacyAgentSubject("ses-lg-0000"), 1)
 	for _, seq := range []string{"12", "9"} {
 		m := relayFrame(t, "notifications.dispatch.issue.LGA-1.comment", seq, "1", time.Unix(100, 0), 10)
 		m.Header.Set(relayHeaderStreamID, "stream-a")
 		h(m)
 	}
-	resume, _ := r.delivery(0)["resume"].(map[string]any)
-	if resume["stream_id"] != "stream-a" || resume["seq"] != uint64(12) {
-		t.Errorf("resume point %v, want stream-a at 12", resume)
+	resume := r.delivery(0).Resume
+	if resume == nil || resume.StreamID != "stream-a" || resume.Seq == nil || *resume.Seq != 12 {
+		t.Errorf("resume point %+v, want stream-a at 12", resume)
 	}
 	r.answered(0, sessionDeliveryConsumer, "stream-b")
-	if _, ok := r.delivery(0)["resume"]; ok {
-		t.Errorf("resume point after the stream changed: %v", r.delivery(0))
+	if resume := r.delivery(0).Resume; resume != nil {
+		t.Errorf("resume point after the stream changed: %+v", *resume)
 	}
 }
 

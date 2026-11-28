@@ -33,7 +33,7 @@ var askRowFrom = `from asks a
 
 // newestReply selects the newest comment in the thread of the ask aliased a: the one that
 // committed last, since a comment's created_at is when its insert ran (migration 0065) and every
-// comment insert first takes the owner row. lastReplyJoin reads it for every ask read, and a
+// comment insert first takes the owner's lock. lastReplyJoin reads it for every ask read, and a
 // hand-back records its id, so both agree on which reply is newest.
 const newestReply = `select c.id, c.author, c.created_at, c.turn from comments c
 			where c.ask_id = a.id
@@ -103,15 +103,22 @@ end`
 // issues.assignee (store/migrations/0034_issue_assignee.up.sql:6) serves a filter on it.
 const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assignee)`
 
+// ownerProjectJoin attaches the projects row as p for a row already joined to its issue as i and
+// its document as ar. Both askedOfPersonJoins and projectOfComment (api/project_scope.go) append
+// it so the join has one spelling across the module.
+const ownerProjectJoin = `
+	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+
 // askedOfPersonJoins are the three tables askedOfPersonExpression reads beside the ask aliased
 // a: its issue as i, its own document as ar, and the project of whichever of the two owns it as
-// p. Five FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
-// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go) and the
-// read putAskAskedOf takes before it writes (api/ask_asked_of.go) - and each builds them from
-// this one text, so the rule and the tables it names move together. askReadFrom serves two of
-// the six reads, askReadColumns and the Inbox's person filter, which share one statement.
-// TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the expression to
-// its own.
+// p. Six FROM clauses carry them - askReadFrom and askWaitingOnPerson below, the active CTE of
+// listOpenAsks (api/asks.go), the not-exists subquery of myRepliesOwner (api/replies.go), the
+// read putAskAskedOf takes before it writes (api/ask_asked_of.go) and projectOfAsk
+// (api/project_scope.go) - and each builds them from this one text, so the rule and the tables
+// it names move together. The six clauses serve seven reads: askReadFrom serves two of them,
+// askReadColumns and the Inbox's person filter, which share one statement, and each other clause
+// serves one. TestOneExpressionDecidesWhoWaits holds them to this one spelling as it holds the
+// expression to its own.
 //
 // Each is an outer join: a question owned by an issue has no document row and one owned by a
 // document has no issue row, and the constraint asks_one_owner (migration 0009) guarantees
@@ -121,8 +128,7 @@ const askedOfPersonExpression = `coalesce(a.asked_of, i.assignee, p.default_assi
 // to its own `from <table> a`, whatever that caller indents its statement by.
 const askedOfPersonJoins = `
 	left join issues i on i.key = a.issue_key
-	left join artifacts ar on ar.id = a.artifact_id
-	left join projects p on p.key = coalesce(i.project_key, ar.project_key)`
+	left join artifacts ar on ar.id = a.artifact_id` + ownerProjectJoin
 
 // askItemRefExpression is the SPA item route of the ask aliased a, whose issue is aliased i and
 // whose project document is aliased ar: an issue ask's `/issues/<key>/asks/<id>`, which lands an
@@ -144,25 +150,29 @@ func askWaitingOn(ctx context.Context, q queryer, askID string) (string, error) 
 	return waitingOn, nil
 }
 
-// askWaitingOnPerson reads the person the question askID reaches, for a write that has just
-// inserted one or handed an approval request back and must name that person on its answer. It
-// is the one rule every read of that person shares (askedOfPersonExpression) over the three
-// tables that rule names beside the ask - its issue, its own document and the project of
-// whichever of the two owns it, the joins askReadFrom makes - run on q, so a caller passing its
-// own transaction reads what its uncommitted write left. The person is scanned into a string:
-// the foreign keys, asks_one_owner and the not-null projects.default_assignee leave no question
-// reaching nobody, so a null here is a broken invariant and fails the scan rather than
-// answering a missing field.
+// askWaitingOnPerson reads the person a question on owner reaches, for a write that opens one or
+// hands an approval request back and must name that person on its answer. askedOf is the
+// question's own asked_of as the write leaves it: nil for a question the write opens, and the
+// open request's stored field for one it hands back, which a hand-back does not touch. It is the
+// one rule every read of that person shares (askedOfPersonExpression) over the three tables that
+// rule names beside the ask - its issue, its own document and the project of whichever of the
+// two owns it, the joins askReadFrom makes - read against a row of one holding the ask's three
+// columns rather than against the stored ask: the writes of both callers are queued on the
+// ledger (docs.Ledger), so the row a write opens is not there until Commit, and the read runs in
+// the read phase, under the owner's lock the caller holds, before anything is written. The
+// person is scanned into a string: the foreign keys, asks_one_owner and the not-null
+// projects.default_assignee leave no question reaching nobody, so a null here is a broken
+// invariant and fails the scan rather than answering a missing field.
 //
 // It is deliberately not the whole of askReadColumns: a write's answer needs this one field,
 // and the two handlers that call it (createAskFor in api/asks.go, requestArtifactApproval in
 // api/reviews.go) already hold the ask they wrote. A route whose answer is a full ask read
 // back - the hand-on's - reads it through loadAsk instead.
-func askWaitingOnPerson(ctx context.Context, q queryer, askID string) (string, error) {
+func askWaitingOnPerson(ctx context.Context, q queryer, owner owner, askedOf *string) (string, error) {
 	var person string
 	if err := q.QueryRow(ctx, `select `+askedOfPersonExpression+`
-		from asks a`+askedOfPersonJoins+`
-		where a.id = $1`, askID).Scan(&person); err != nil {
+		from (select $1::text as asked_of, $2::text as issue_key, $3::uuid as artifact_id) a`+askedOfPersonJoins,
+		askedOf, owner.IssueKey, owner.ArtifactID).Scan(&person); err != nil {
 		return "", fmt.Errorf("read ask waiting_on_person: %w", err)
 	}
 	return person, nil
@@ -244,11 +254,11 @@ func scanAskRow(row pgx.Row, extra ...any) (model.Ask, error) {
 // readers always set it, including zero. An ask's own clarification replies are inbound edges
 // too (`graph_edges`' `replies_to` arm), and the card renders that thread inline directly
 // below the count, so they are not what "referenced by" counts.
-func attachAskBacklinkCounts(ctx context.Context, q queryer, asks []*model.Ask) error {
+func attachAskBacklinkCounts(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
 	if len(asks) == 0 {
 		return nil
 	}
-	counts, err := refs.BacklinkCounts(ctx, q, "ask", distinctAskIDs(asks), refs.AskBacklinkExclusions)
+	counts, err := refs.BacklinkCounts(ctx, q, who, "ask", distinctAskIDs(asks), refs.AskBacklinkExclusions)
 	if err != nil {
 		return err
 	}
@@ -274,13 +284,13 @@ func applyAskBacklinkCounts(asks []*model.Ask, counts map[string]int) {
 // own (loadAskDetails). No ask queues nothing and its apply stamps nothing. A node kind refs
 // declares no counting arms for is refused as the count is queued, which queues nothing and
 // answers nothing itself, so the apply reports that refusal.
-func queueAskDetails(b *pgx.Batch, asks []*model.Ask) func() error {
+func queueAskDetails(b *pgx.Batch, who model.Actor, asks []*model.Ask) func() error {
 	askIDs := distinctAskIDs(asks)
 	openedEventIDs := make(map[string]int64, len(askIDs))
 	counts := map[string]int{}
 	partIDs := make([]refs.AskIDs, len(asks))
 	events.QueueOpenedEventIDs(b, askIDs, openedEventIDs)
-	countsErr := refs.QueueBacklinkCounts(b, "ask", askIDs, refs.AskBacklinkExclusions, counts)
+	countsErr := refs.QueueBacklinkCounts(b, who, "ask", askIDs, refs.AskBacklinkExclusions, counts)
 	refs.QueueAskPartIDs(b, asks, partIDs)
 	return func() error {
 		if countsErr != nil {
@@ -298,9 +308,9 @@ func queueAskDetails(b *pgx.Batch, asks []*model.Ask) func() error {
 // loadAskDetails sends queueAskDetails's statements as a batch of their own on q, for an ask read
 // that queues nothing else: an owner's asks, the Inbox's rows, an event payload's asks. The batch
 // holds q's connection until its results close, so nothing else reads the database in between.
-func loadAskDetails(ctx context.Context, q queryer, asks []*model.Ask) error {
+func loadAskDetails(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
 	batch := &pgx.Batch{}
-	apply := queueAskDetails(batch, asks)
+	apply := queueAskDetails(batch, who, asks)
 	if batch.Len() == 0 {
 		return nil
 	}
@@ -352,8 +362,8 @@ func applyAskPartIDs(asks []*model.Ask, partIDs []refs.AskIDs) {
 // graph-edge count (attachAskBacklinkCounts), then the part ids of its options and of its answer
 // with its part revision (attachAskPartIDs). A write attaches neither. A list of asks reads the
 // same fields, with their identity events, in one batch instead (queueAskDetails, loadAskDetails).
-func attachAskReadFields(ctx context.Context, q queryer, asks []*model.Ask) error {
-	if err := attachAskBacklinkCounts(ctx, q, asks); err != nil {
+func attachAskReadFields(ctx context.Context, q queryer, who model.Actor, asks []*model.Ask) error {
+	if err := attachAskBacklinkCounts(ctx, q, who, asks); err != nil {
 		return err
 	}
 	return attachAskPartIDs(ctx, q, asks)

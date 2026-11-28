@@ -20,8 +20,15 @@ import (
 // corpus's document tokens, and TestRendererVersionGoldenHoldsTheCorpus holds this build to both.
 // A hash also moves when the corpus itself gains or loses a document, which changes nothing a
 // stored rendering holds: that writes the new hash and leaves this number where it is. Only a
-// change to what the renderer writes of a document the corpus already held raises it.
-const RendererVersion = 1
+// change to what the renderer writes of a document the corpus already held raises it, and a change
+// to the parser can be one: the writer keeps a run's spelling only where the run reads back as
+// written (inlineWithEscapes), so a parser change that moves what a run reads back as moves what
+// the renderer writes of it, and raises this number too.
+//
+// Version 4 writes each blank line between two items of a list once; versions 1 and 3 wrote two
+// lines for each blank line they counted there, the first carrying its containers' prefix with the
+// space after it. Version 2 was that change alone, on a build without version 3's.
+const RendererVersion = 4
 
 type renderer struct {
 	b                bytes.Buffer
@@ -548,7 +555,7 @@ func typedFence(n *Node, column int) int {
 // writes it. Only levels one and two have that form; past them the break is written as a space, as
 // the browser editor also writes it.
 func (r *renderer) heading(n *Node, prefix string) {
-	level := int(num(n.Attrs["level"], 1))
+	level := HeadingLevel(n)
 	if !holdsHardBreak(n.Children) {
 		r.writeSyntax(strings.Repeat("#", level) + " ")
 		r.headingInline(n.Children, prefix)
@@ -581,16 +588,13 @@ func (r *renderer) list(n *Node, prefix string) {
 			return
 		}
 		if index > 0 {
-			r.writeSyntax("\n" + prefix)
-			blanks := 0
+			var blanks int
 			if previous := n.Children[index-1]; r.definitionEndsItem(previous) {
 				blanks = r.blanksAfterDefinitionItem(previous, item)
-			} else if r.writesBlankAfterItem(n, previous) {
-				blanks = 1
+			} else {
+				blanks = r.blanksAfterItem(n, previous)
 			}
-			for range blanks {
-				r.writeSyntax("\n" + strings.TrimRight(prefix, " ") + "\n" + prefix)
-			}
+			r.writeSyntax("\n" + strings.Repeat(strings.TrimRight(prefix, " ")+"\n", blanks) + prefix)
 		}
 		marker := listItemMarker(n.Type == "ordered_list", start+index, other)
 		r.writeSyntax(marker)
@@ -1183,7 +1187,7 @@ func holdsLineBreakToWrite(nodes []*Node) bool {
 			}
 		case "text":
 			if node.Text == "" || len(node.Attrs) > 0 || len(node.Children) > 0 ||
-				strings.IndexByte(node.Text, '\n') >= 0 && !nodeHasMark(node, "inlineCode") {
+				strings.IndexByte(node.Text, '\n') >= 0 && !HasMark(node, "inlineCode") {
 				return true
 			}
 		}
@@ -1314,7 +1318,7 @@ func writtenLineBreaks(nodes []*Node) []*Node {
 		switch {
 		case node.Type == "hardbreak" && node.Attrs["isInline"] == true:
 			appendText(" ", nil)
-		case node.Type == "text" && !nodeHasMark(node, "inlineCode") && strings.Contains(node.Text, "\n"):
+		case node.Type == "text" && !HasMark(node, "inlineCode") && strings.Contains(node.Text, "\n"):
 			value := node.Text
 			lastNonWhitespace := len(strings.TrimRightFunc(value, unicode.IsSpace))
 			lineStart := 0

@@ -7,7 +7,7 @@ tags:
   - retro
   - ready
 date: 2026-10-28
-status: active
+status: superseded in part — The READY route and its READY_UNREVIEWED_CHANGE refusal are deleted, and the merger reads the pull request and merges the head itself. Retro commits nothing and pushes nothing, and no role writes to docs/solutions/.
 module: .legion
 related_issues:
   - "sjawhar/legion#2422"

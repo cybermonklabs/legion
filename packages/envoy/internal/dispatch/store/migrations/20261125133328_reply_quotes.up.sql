@@ -1,0 +1,26 @@
+-- 20261125133328_reply_quotes.up.sql — the words a reply to a block quotes, and which of their
+-- matches in the block they are.
+--
+-- A reply names the block of the post it answers (replies_to_block, 0142) but not the words of
+-- that block it took up, so a reader can thread it on the block alone. replies_to_quote holds
+-- those words: characters of the block's plain text, its text runs joined with no markdown marks
+-- and no heading marker, as the reply's quote names them. replies_to_occurrence is which match of
+-- the quote in that one block they are, counted from 0 with overlapping matches counted, as
+-- pmdoc's quote finder counts them: the occurrence the reply sent, or 0 where the quote has one
+-- match and it sent none. A write stores both or neither, and only beside replies_to_block; both
+-- are null on every row stored before this migration and on every reply that quotes nothing. An
+-- edit of the answered post changes neither: the reply's reply_block says the text changed.
+--
+-- Each column is a plain nullable add with no default and no check, a catalog change that reads
+-- and rewrites no row (pgmigrate's catalogOnlyAlterTable admits it whatever the table's size). A
+-- check holding the two together would scan each table to validate it, so the write holds them
+-- together instead. Each ALTER takes its table's ACCESS EXCLUSIVE lock for the catalog write and
+-- holds it to commit, and the runner's lock_timeout (pgmigrate.LockTimeout, 5 s) bounds the wait
+-- for it.
+--
+-- The release before this one names neither column in any statement: it names its own columns in
+-- every read and write of comments and of messages, so it serves on this schema, and a reply it
+-- writes holds both null, a reply that quotes nothing. The identifier is the UTC moment this was
+-- written, as `migrationid` requires of every migration past the numbered series.
+alter table comments add column replies_to_quote text, add column replies_to_occurrence integer;
+alter table messages add column replies_to_quote text, add column replies_to_occurrence integer;

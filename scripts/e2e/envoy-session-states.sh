@@ -71,14 +71,16 @@
 # thing that check measures is the latency from a SIGKILL to `gone`, and ten minutes of waiting
 # would measure the same boundary no better.
 #
-# The session bucket's maximum age is 2h for the whole run but check 8. At the shipping five
-# minutes JetStream removes a stalled session's key at five minutes — before the gone horizon can
-# be reached — so no stalled session could ever read `unresponsive` and nothing above could be
+# The session bucket's maximum age is 2h for the whole run but check 8. At the 5 minutes of a
+# bucket an older listener created, which the live bucket keeps until ENVOY_SESSION_MAX_AGE raises
+# it, JetStream removes a stalled session's key at five minutes — before the gone horizon can be
+# reached — so no stalled session could ever read `unresponsive` and nothing above could be
 # proved at all. Raising it is the rollout this issue's sibling carries (dispatch://INFRA-887), and
 # check 8 is its proof: the two running listeners leave ENVOY_SESSION_MAX_AGE unset, so neither
 # writes the bucket's age and both adopt what the bucket carries (applyMaxAge, on every reaper
-# pass), and a listener of the run's own writes it — 2h at setup, then in check 8 the shipping 5m,
-# the raise back to 2h, and the rollback to 5m.
+# pass). The run's store is new, so listener A creates the bucket at 2h (session.BucketMaxAge),
+# and the setup checks that both listeners read that age. Only in check 8 does a listener of the
+# run's own write the age: the older 5m, the raise back to 2h, and the rollback to 5m.
 #
 # ---- the named checks ---------------------------------------------------------------------------
 # Each prints `PASS <name>` or `FAIL <name>: <reason>`, every selected check runs whatever the one
@@ -120,7 +122,6 @@ done
 root=$(cd "$(dirname "$0")/../.." && pwd)
 check=setup
 timeout_hook=
-ok=
 ran=0
 passed=0
 selection=all
@@ -208,6 +209,11 @@ mkdir -p "$evidence/logs" "$evidence/answers"
 transcript_to "$evidence/transcript.log"
 
 work=$(mktemp -d "${TMPDIR:-/tmp}/envoy-session-states.$$.XXXXXXXX")
+# Every program the run execs from here on carries its mark (run_marks, lib/process-tree.sh); each
+# start that clears its environment (`env -i`: the listeners, Dispatch, the CLI and both agents)
+# names the mark itself, and a fork of this shell that execs nothing carries none and is stopped by
+# its pid (run_marks' comment there). The transcript's tee, started above, carries none.
+export LEGION_E2E_RUN=$work
 
 note() { echo "   $*"; }
 fail() {
@@ -219,6 +225,12 @@ begin() { echo "== $1"; }
 . "$root/scripts/e2e/lib/rig.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/model-endpoint.sh
 . "$root/scripts/e2e/lib/model-endpoint.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/run-verdict.sh
+. "$root/scripts/e2e/lib/run-verdict.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/dispatch-identity.sh
+. "$root/scripts/e2e/lib/dispatch-identity.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
+. "$root/scripts/e2e/lib/omp-home.sh"
 
 # ---- the selection ------------------------------------------------------------------------------
 selected=()
@@ -294,46 +306,65 @@ role_reap_interval=20s
 heartbeat_ms=5000
 max_age=2h
 max_age_shown=2h0m0s
-shipping_max_age=5m
-shipping_max_age_shown=5m0s
+# older_bucket_max_age is the 5m maximum age of a bucket an older listener created. The live
+# bucket keeps that age until ENVOY_SESSION_MAX_AGE raises it. A listener of this build creates a
+# bucket at 2h.
+older_bucket_max_age=5m
+older_bucket_max_age_shown=5m0s
 
-# own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid to PIDFILE.
-# Every agent this proof stalls needs one. A stopped process in the run's own process group makes
-# the kernel send that whole group a SIGHUP and a SIGCONT the moment the group counts as orphaned
-# — which under a supervisor it already does — so a plain `kill -STOP` would kill this script and
-# un-stall the very session it meant to stall. The pid comes back through a file because `setsid
-# --fork` returns at once and `$!` is the pid of a process that has already gone.
+# own_session PIDFILE COMMAND… runs COMMAND in a session of its own and writes its pid and its start
+# time to PIDFILE (record_pid_sh, lib/process-tree.sh, before it execs COMMAND, so both are
+# COMMAND's own). Every agent this proof stalls needs one. A stopped process in the run's own
+# process group makes the kernel send that whole group a SIGHUP and a SIGCONT the moment the group
+# counts as orphaned — which under a supervisor it already does — so a plain `kill -STOP` would kill
+# this script and un-stall the very session it meant to stall. The pid comes back through a file
+# because `setsid --fork` returns at once and `$!` is the pid of a process that has already gone.
 own_session() {
   local pidfile=$1
   shift
-  # shellcheck disable=SC2016 # $$ and $@ are the new session's own, expanded by the shell it runs
-  setsid --fork bash -c 'printf "%s\n" "$$" >"$1"; shift; exec "$@"' own-session "$pidfile" "$@"
+  setsid --fork sh -c "$record_pid_sh" record-pid "$pidfile" "$@"
 }
 
-# agent_pid PIDFILE VAR waits for the pid the new session wrote and assigns it to VAR.
+# agent_pid PIDFILE VAR waits for the pid and start the new session wrote, assigns the pid to VAR and
+# records its start (started_at), which stop_agent's signals are held to.
 agent_pid() {
-  local waited=0
+  local waited=0 pid start
   while [ ! -s "$1" ]; do
     waited=$((waited + 1))
     [ "$waited" -lt 60 ] || return 1
     sleep 0.5
   done
-  printf -v "$2" '%s' "$(cat "$1")"
+  read -r pid start <"$1" || return 1
+  [ -n "$start" ] || return 1
+  started_at[$pid]=$start
+  printf -v "$2" '%s' "$pid"
 }
 
-# stop_agent PID ends one agent process the run started, and only while its command line or its
-# environment still names this run's work directory, so a pid the kernel gave to another process
-# since is never signalled. It is continued first: a check stops an agent with SIGSTOP, and a
-# stopped process keeps a TERM pending. The agent leads a session of its own (own_session), so
-# what it started goes with it.
+# stop_agent PID ends one agent process the run started, and only while it still carries the run's
+# mark (names_dir and run_marks, lib/process-tree.sh), so a pid the kernel gave to another process
+# since is never signalled: a shell that works under this run's work directory names it in its PWD
+# and on its command line, and carries no mark. It is continued first: a check stops an agent with
+# SIGSTOP, and a stopped process keeps a TERM pending. The agent leads a session of its own
+# (own_session), so the TERM to its group (signal_group) reaches what it started. A member that
+# outlives that TERM cannot be reached through its group once stop_pid has ended the leader, so
+# what the agent started is read while the agent is held stopped (proc_descendants, each with its
+# start), and each that still runs after stop_pid and still carries the run's mark is ended by that
+# start (kill_held): Claude Code's mid-run stop (claude_stop) is followed by a `--resume` of the
+# same session id, beside which nothing of the old one may run on. Cleanup's sweep
+# (stop_marked_processes) ends what a stop could not read.
 stop_agent() {
+  local started=
   [ -n "${1:-}" ] || return 0
-  grep -qsF "$work" "/proc/$1/cmdline" || grep -qsF "$work" "/proc/$1/environ" || return 0
+  names_dir "$work" "${run_marks[@]}" "$1" || return 0
   signalable "$1" || return 0
   kill -CONT "$1" 2>/dev/null || true
-  kill -TERM -- -"$1" 2>/dev/null || true
+  if freeze_if "$1" "${started_at[$1]:-}" STOP; then
+    started=$(proc_descendants "$1" "${started_at[$1]}") || started=
+    kill -CONT "$1" 2>/dev/null || true
+  fi
+  signal_group "$1" TERM
   stop_pid "$1"
-  kill -KILL -- -"$1" 2>/dev/null || true
+  [ -z "$started" ] || kill_held "$work" "${run_marks[@]}" <<<"$started" || true
 }
 
 cleanup() {
@@ -352,7 +383,11 @@ cleanup() {
   stop_pid "$listener_a_keeper_pid"
   stop_pid "$listener_b_keeper_pid"
   stop_pid "$dispatch_keeper_pid"
+  stop_pid "$dispatch_identity_issuer_pid"
   stop_pid "$natsd_pid"
+  # What outlived its stop, a member of an agent's group that outlived the TERM among them: every
+  # process the run marked (both agents carry LEGION_E2E_RUN).
+  stop_marked_processes "$work" || true
   if [ -n "$database" ]; then
     psql "$pg_dsn" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\"" >/dev/null 2>&1 ||
       echo "could not drop database $database; drop it by hand" >&2
@@ -360,13 +395,13 @@ cleanup() {
   rm -rf "$work"
   [ -z "$measured_kill_latency" ] ||
     echo "   measured SIGKILL-to-gone latency: ${measured_kill_latency}s"
-  if [ -n "$ok" ] && [ "$ran" -eq "$passed" ] && [ "$status" -eq 0 ]; then
-    echo "envoy session states e2e: $ran checks ran, $passed passed — PASS ($selection, ${SECONDS}s, evidence: $evidence)"
-  else
-    [ "$status" -ne 0 ] || status=1
-    echo "envoy session states e2e: $ran checks ran, $passed passed — FAIL at $check ($selection, ${SECONDS}s, evidence: $evidence)" >&2
-  fi
-  exit "$status"
+  # The last line is lib/run-verdict.sh's: PASS only for a run that reached run_end, the script's
+  # last statement, with every check it ran passed. A failed check fails the run though it reached
+  # its end, since run_check goes on to the next check.
+  [ "$ran" -eq "$passed" ] || [ "$status" -ne 0 ] || status=1
+  run_verdict "$status" \
+    "envoy session states e2e: $ran checks ran, $passed passed — PASS ($selection, ${SECONDS}s, evidence: $evidence)" \
+    "envoy session states e2e: $ran checks ran, $passed passed — FAIL at $check ($selection, ${SECONDS}s, evidence: $evidence)"
 }
 trap 'cleanup "$?"' EXIT
 trap 'cleanup 130' INT
@@ -447,11 +482,13 @@ api() { # api PORT METHOD PATH [BODY]
 # names a port (sjawhar/legion#2674), and a session receives what its own consumer holds and
 # nothing else, so the registration below names no port.
 # It asks for the session consumer, as every plugin's registration does (dispatch://INFRA-771):
-# whatever else a registration says, one that asks for no consumer is refused 409 not_requested
-# and writes nothing (`consumerFor`), so a session registered without it would exist for no check
-# to read. It says `self_subscribed` as every plugin's registration does, and that field decides
-# no delivery any more: it records what a session says of itself, which a check reads back, and
-# nothing follows from it, which is why no caller chooses it.
+# a registration that asks for no consumer is refused 409 not_requested and writes nothing
+# (`consumerFor`), unless it comes from @sjawhar/pi-envoy 14.1.0 or later, which the listener gives
+# a consumer whether or not it asks (`readsUnaskedRelay`, R21 of dispatch://INFRA-3589). This rig's
+# registration names no plugin, so without the ask it would be refused, and the session would
+# exist for no check to read. It says `self_subscribed` as every plugin's registration does, and
+# that field decides no delivery: it records what a session says of itself, which a check
+# reads back, and nothing follows from it, which is why no caller chooses it.
 registered() {
   local session=$1 body
   shift
@@ -557,6 +594,7 @@ watch_exceptions() {
     }
   ') >>"$evidence/logs/exceptions.log" 2>&1 &
   exceptions_pid=$!
+  record_start "$exceptions_pid" || true
 }
 
 # ---- prerequisites --------------------------------------------------------------------------------
@@ -643,6 +681,7 @@ if [ -n "$needs_dispatch" ]; then
   go -C "$root/packages/envoy" build -o "$work/bin/envoy-dispatch" ./cmd/dispatch ||
     fail "./cmd/dispatch did not build"
   note "built envoy-dispatch from this checkout"
+  dispatch_identity_start
 fi
 if [ -n "$needs_omp" ] || [ -n "$needs_claude" ]; then
   (cd "$root" && bun install --frozen-lockfile) >"$evidence/logs/bun-install.log" 2>&1 ||
@@ -708,12 +747,13 @@ note "NATS on $nats_url, its JetStream store in $work/nats-store"
 # id of its own, because the durable consumer a listener binds is named after it and a second
 # listener of the same name is refused the bind and shuts itself down.
 start_listener() {
-  start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_kept "$1" "$2" ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
     ENVOY_MACHINE_ID="envoy-session-states-$$-$1" ENVOY_LISTEN_HOST=127.0.0.1 NATS_URLS="$nats_url" \
     ENVOY_SESSION_LIVE_WINDOW="$live_window" ENVOY_SESSION_GONE_HORIZON="$gone_horizon" \
     ENVOY_SESSION_REAP_INTERVAL="$reap_interval" \
-    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "$work/bin/envoy-listener"
+    ENVOY_ROLE_CLAIM_REAP_INTERVAL="$role_reap_interval" "${dispatch_identity_listener_env[@]}" \
+    "$work/bin/envoy-listener"
 }
 
 serving() { curl -fsS --max-time 3 -H "@$work/envoy-auth-header" "http://127.0.0.1:$1/v1/sessions"; }
@@ -732,7 +772,7 @@ note "listener A on 127.0.0.1:$port_a, listener B on 127.0.0.1:$port_b"
 # without restarting the listeners whose /healthz it then reads.
 set_max_age() {
   rm -f "$work/maxage.port"
-  start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_held maxage maxage_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
     ENVOY_MACHINE_ID="envoy-session-states-maxage-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_MAX_AGE="$1" "$work/bin/envoy-listener"
@@ -741,12 +781,13 @@ set_max_age() {
   maxage_pid=
 }
 
-set_max_age "$max_age"
-until_true 120 "both listeners to read the bucket's $max_age maximum age" \
+# The run's store is new, so listener A created the session bucket, at the 2h a listener of this
+# build gives a new bucket. Both listeners must read that age before any check runs.
+until_true 120 "listener A to read the new bucket's $max_age maximum age" \
   healthz_max_age_is "$port_a" "$max_age_shown"
-until_true 120 "listener B to read the bucket's $max_age maximum age" \
+until_true 120 "listener B to read the new bucket's $max_age maximum age" \
   healthz_max_age_is "$port_b" "$max_age_shown"
-note "the session bucket's maximum age is $max_age, written by a listener of the run's own"
+note "the session bucket's maximum age is $max_age, the age listener A created it with"
 watch_exceptions
 
 if [ -n "$needs_dispatch" ]; then
@@ -765,7 +806,7 @@ if [ -n "$needs_dispatch" ]; then
   # (roleHolderWindows, roles.NewBuckets), and at its own five-minute default it would call a
   # holder live that both listeners already read unresponsive and forward a role-routed event at a
   # session that answers nothing.
-  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_kept dispatch dispatch_keeper DISPATCH_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent DISPATCH_LISTEN_FD=3 \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$(cat "$work/dispatch-token")" \
     DISPATCH_IDENTITY=header:X-Dispatch-User DISPATCH_IDENTITY_HEADER_TRUSTED=1 \
@@ -773,7 +814,8 @@ if [ -n "$needs_dispatch" ]; then
     DISPATCH_SIGNING_KEY="$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')" \
     DISPATCH_WEB_DIST="$work/web-dist" ENVOY_URL="http://127.0.0.1:$port_a" \
     ENVOY_TOKEN="$(cat "$work/envoy-token")" ENVOY_SESSION_LIVE_WINDOW="$live_window" \
-    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "$work/bin/envoy-dispatch"
+    ENVOY_SESSION_GONE_HORIZON="$gone_horizon" NATS_URLS="$nats_url" "${dispatch_identity_dispatch_env[@]}" \
+    "$work/bin/envoy-dispatch"
   dispatch_url=http://127.0.0.1:$dispatch_port
   await_start dispatch "$dispatch_pid" 120 "Dispatch to serve" \
     curl -fsS --max-time 3 "$dispatch_url/healthz"
@@ -783,16 +825,17 @@ echo "ok services"
 
 # ---- Dispatch's own surface ---------------------------------------------------------------------------
 # Every write names its own session as `actor`, the identity `dispatch claim` fills from the host's
-# own runtime, and reaches Dispatch over the run's agent token.
+# own runtime, and reaches Dispatch over the run's agent token, which curl reads on standard input,
+# in no command line.
 dispatch_project=ESS$(od -An -N2 -tu2 /dev/urandom | tr -d ' \n')
 
 dispatch_api() { # dispatch_api METHOD PATH [BODY]
   local method=$1 path=$2 body=${3:-}
   answer=$evidence/answers/$check.dispatch.$RANDOM.json
-  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method"
-    -H "Authorization: Bearer $(cat "$work/dispatch-token")")
+  local -a args=(-sS --max-time 20 -o "$answer" -w '%{http_code}' -X "$method" -H @-)
   [ -z "$body" ] || args+=(-H 'content-type: application/json' --data "$body")
-  api_status=$(curl "${args[@]}" "$dispatch_url$path" 2>>"$evidence/logs/curl.log") || api_status=000
+  api_status=$(printf 'Authorization: Bearer %s' "$(cat "$work/dispatch-token")" |
+    curl "${args[@]}" "$dispatch_url$path" 2>>"$evidence/logs/curl.log") || api_status=000
   [ "$api_status" = 200 ] || [ "$api_status" = 201 ]
 }
 
@@ -821,7 +864,7 @@ dispatch_cli() {
   local session=$1
   shift
   mkdir -p "$work/cli-home" "$work/cli-state"
-  env -i PATH="$PATH" HOME="$work/cli-home" XDG_CONFIG_HOME="$work/cli-home/config" \
+  env -i PATH="$PATH" HOME="$work/cli-home" LEGION_E2E_RUN="$work" XDG_CONFIG_HOME="$work/cli-home/config" \
     XDG_STATE_HOME="$work/cli-state" XDG_DATA_HOME="$work/cli-home/data" \
     XDG_CACHE_HOME="$work/cli-home/cache" DISPATCH_STATE_DIR="$work/cli-state/dispatch" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN="$(cat "$work/dispatch-token")" \
@@ -855,10 +898,10 @@ make_issue() {
 # and agent directory of the run's own. Its RPC is newline JSON both ways, so the rig writes
 # requests on a FIFO it holds open and reads answers out of the process's own stdout.
 write_omp_profile() {
-  local natives=$HOME/.omp/natives role url id key
-  # The caller's native-module cache, linked as lib/omp-home.sh links it, so a fresh home downloads
+  local natives role url id key
+  # The caller's native-module cache (omp_natives_dir, lib/omp-home.sh), so a fresh home downloads
   # nothing and the caller's own ~/.omp is neither written nor removed.
-  if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+  natives=$(omp_natives_dir)
   mkdir -p "$natives" "$work/home/.omp" "$work/agent"
   ln -sfT "$natives" "$work/home/.omp/natives"
   # A selection with no check that needs a model turn needs no model route, and still needs a
@@ -905,7 +948,7 @@ omp_launch() {
   mkfifo "$in"
   : >"$out"
   own_session "$pidfile" \
-    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" PI_CODING_AGENT_DIR="$work/agent" \
+    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" PI_CODING_AGENT_DIR="$work/agent" LEGION_E2E_RUN="$work" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
     ENVOY_URL="http://127.0.0.1:$port_a" ENVOY_TOKEN_FILE="$work/envoy-token" \
     ENVOY_NATS_URL="$nats_url" ENVOY_HEARTBEAT_MS="$heartbeat_ms" \
@@ -983,6 +1026,16 @@ stored_cards_landed() {
   [ "$(delivery_cards "$1" "mention $2")" -ge 1 ] && [ "$(delivery_cards "$1" "direct $2")" -ge 1 ]
 }
 
+# agent_wakes_reported SESSION counts the `listener agent wake reported` lines listener A logged
+# for SESSION. It counts rather than asks `grep -q`: under pipefail, a `grep -q` that exits at its
+# first match can cut the first grep off mid-write, and the pipe would then read as no match.
+agent_wakes_reported() {
+  local count
+  count=$(grep -F -e 'listener agent wake reported' -- "$evidence/logs/listener_a.log" |
+    grep -c -F -e "\"session_id\":\"$1\"") || count=0
+  printf '%s\n' "$count"
+}
+
 # kept_role_card_landed FILE MARKER: the role publish naming MARKER, which the listener kept on the
 # role's kept lane while its holder was unresponsive, has reached that session file.
 kept_role_card_landed() { [ "$(delivery_cards "$1" "role $2")" -ge 1 ]; }
@@ -1010,7 +1063,7 @@ claude_start() { # claude_start SESSION [--resume]
   mkfifo "$work/claude.in"
   touch "$work/claude.out"
   own_session "$work/claude.pid" \
-    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" CLAUDE_CONFIG_DIR="$work/claude-config" \
+    env -i PATH="$PATH" HOME="$work/home" TMPDIR="$work/tmp" CLAUDE_CONFIG_DIR="$work/claude-config" LEGION_E2E_RUN="$work" \
     CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC=1 ANTHROPIC_BASE_URL="$model_base_url" \
     ANTHROPIC_MODEL="$claude_model" ANTHROPIC_API_KEY="$(cat "$work/model-key")" \
     DISPATCH_URL="$dispatch_url" DISPATCH_TOKEN_FILE="$work/dispatch-token" \
@@ -1181,13 +1234,13 @@ check_send_to_stalled_session_is_stored() {
 # ---- 3b. every stored delivery reaches the session once ------------------------------------------------------
 # Writes on a stalled session's routes — a mention and a direct message on its own route, a publish
 # on a role route it holds — are stored while it is stalled and arrive when it answers again. Each
-# must show exactly once in the session's own transcript, no delivery may be reported failed,
-# deferred or given up, and nothing may land on the exceptions topic: a stored delivery is not a
-# failed one. The role publish is kept on the role's kept lane for one hour and answered 202 with
-# kept_reason holder_lapsed. The holder keeps its claim through the stall, so no claim follows to
-# hand the lane over: the registration that makes the holder live again after SIGCONT hands the
-# copy over (subscribeHandler), and the listener's sweep, every five minutes (main.go), is only the
-# backstop behind that handover.
+# must show exactly once in the session's own transcript, the listener may report no wake for the
+# session, which has a record throughout, and nothing may land on the exceptions topic: a stored
+# delivery is not a failed one. The role publish is kept on the role's kept lane for one hour and
+# answered 202 with kept_reason holder_lapsed. The holder keeps its claim through the stall, so no
+# claim follows to hand the lane over: the registration that makes the holder live again after
+# SIGCONT hands the copy over (subscribeHandler), and the listener's sweep, every five minutes
+# (main.go), is only the backstop behind that handover.
 check_stored_deliveries_arrive_once() {
   local role=ess-stored-$$ issue marker transcript mention direct published record claimed_at
   [ -n "$omp_pid" ] || omp_start || return 1
@@ -1219,7 +1272,7 @@ check_stored_deliveries_arrive_once() {
       '{source:"agent",source_session:"ess-peer",target_session:$t,message:("direct " + $m)}')" ||
     refuse "the direct message to the stalled session was refused $api_status: $(head -c 300 "$answer")" || return 1
   ! api "$port_a" POST /v1/messages/publish \
-    "$(jq -cn --arg r "$role" --arg m "$marker" '{topic:("notifications.role." + $r),message:("role " + $m)}')" ||
+    "$(jq -cn --arg r "$role" --arg m "$marker" '{topic:("notifications.role." + $r),source:"agent",source_session:"ess-peer",message:("role " + $m)}')" ||
     refuse "the publish onto the role route of an unresponsive holder answered 200, as if that holder had taken it" || return 1
   [ "$api_status" = 202 ] ||
     refuse "the role publish answered $api_status, not 202 kept: $(head -c 300 "$answer")" || return 1
@@ -1258,8 +1311,8 @@ check_stored_deliveries_arrive_once() {
     refuse "the session's transcript holds $mention delivery cards for the mention naming $marker and $direct for the direct message; each stored delivery arrives exactly once" || return 1
   [ "$published" -eq 1 ] ||
     refuse "the transcript holds $published delivery cards for the role publish naming $marker, which the listener kept for its unresponsive holder; the kept copy arrives exactly once" || return 1
-  ! grep -qE 'agent delivery failed|deferred|given up' "$evidence/logs/listener_a.log" ||
-    refuse "the listener's log names a failed, deferred or given-up delivery for a stored message" || return 1
+  [ "$(agent_wakes_reported "$omp_session")" -eq 0 ] ||
+    refuse "the listener's log reports a wake for $omp_session, which has a record, for a stored message" || return 1
   [ ! -s "$work/exceptions.jsonl" ] ||
     refuse "an exception landed on notifications.envoy.exceptions.*: $(head -c 200 "$work/exceptions.jsonl")" || return 1
   note "the mention and the direct message each arrived once after SIGCONT; the role publish was kept 202 for the unresponsive holder with the claim standing, and the registration that made the holder live again handed it over once"
@@ -1315,6 +1368,7 @@ watch_role_forwards() {
     }
   ') >>"$evidence/logs/role-forwards.log" 2>&1 &
   role_forwards_pid=$!
+  record_start "$role_forwards_pid" || true
   wait_until 60 "the watcher of notifications.agent.$1 to subscribe" \
     grep -q "subscribed notifications.agent.$1" "$evidence/logs/role-forwards.log"
 }
@@ -1438,13 +1492,14 @@ check_role_route_reaches_its_holder() {
   outbox_event_is "$issue" "stalled $marker" "$reached" 'true true' ||
     refuse "after SIGCONT the event reads published and role-route-reached '$(outbox_event "$issue" "stalled $marker" "$reached")', not 'true true'" || return 1
   # Nothing anywhere calls the hold a failure: the outbox never gave the event up (its attempts
-  # stayed under retry.DeadLetterAttempts, the tenth), neither log names a failed or given-up
-  # delivery, and nothing landed on the exceptions topic.
+  # stayed under retry.DeadLetterAttempts, the tenth), the listener reports no wake for the holder,
+  # which has a record throughout, Dispatch's log names no failed or given-up delivery, and nothing
+  # landed on the exceptions topic.
   attempts=$(outbox_event "$issue" "stalled $marker" attempt_count)
   [ "$attempts" -lt 10 ] ||
     refuse "the held event was tried $attempts times, the dead-letter threshold the outbox gives an event up at" || return 1
-  ! grep -qE 'agent delivery failed|deferred|given up' "$evidence/logs/listener_a.log" ||
-    refuse "the listener's log names a failed, deferred or given-up delivery for a held role forward" || return 1
+  [ "$(agent_wakes_reported "$omp_session")" -eq 0 ] ||
+    refuse "the listener's log reports a wake for $omp_session, which has a record, for a held role forward" || return 1
   # Dispatch's own log, in the words that code writes (internal/dispatch/outbox): the held event's
   # back-off is `dispatch outbox: event waits for its role's holder` at INFO, naming the holder it
   # waits on and that holder's state (waitForHolders, publisher.go), and nothing of this event is
@@ -1495,7 +1550,7 @@ check_role_claim_survives_lookups() {
       refuse "lookup $i does not name the holder, its unresponsive state, its last_seen and claim_released false: $(head -c 300 "$answer")" || return 1
   done
   ! api "$port_a" POST /v1/messages/publish \
-    "$(jq -cn --arg r "$role" '{topic:("notifications.role." + $r),message:"a publish onto a lapsed holder'\''s role"}')" ||
+    "$(jq -cn --arg r "$role" '{topic:("notifications.role." + $r),source:"agent",source_session:"ess-peer",message:"a publish onto a lapsed holder'\''s role"}')" ||
     refuse "the publish onto a lapsed holder's role answered 200, as if that holder had taken it" || return 1
   [ "$api_status" = 202 ] ||
     refuse "the publish answered $api_status, not 202 kept: $(head -c 200 "$answer")" || return 1
@@ -1590,7 +1645,7 @@ check_gone_only_past_the_horizon() {
   # 10s — the session reaper, which deletes the dead holder's record, and the role claim reaper,
   # which then releases its claim.
   rm -f "$work/shortlistener.port"
-  start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent \
+  start_held shortlistener short_port ENVOY_LISTEN_FD -- env -i PATH="$PATH" HOME=/nonexistent LEGION_E2E_RUN="$work" \
     ENVOY_LISTEN_FD=3 ENVOY_API_TOKEN="$(cat "$work/envoy-token")" \
     ENVOY_MACHINE_ID="envoy-session-states-short-$$" ENVOY_LISTEN_HOST=127.0.0.1 \
     NATS_URLS="$nats_url" ENVOY_SESSION_LIVE_WINDOW=30s ENVOY_SESSION_GONE_HORIZON=90s \
@@ -1725,12 +1780,12 @@ check_every_plugin_shows_the_state() {
 # JetStream has already removed. That restatement is this issue's architect's.
 check_max_age_change_reaches_both_listeners() {
   local late=ses_ess_maxage_$$ stall=420
-  set_max_age "$shipping_max_age"
-  wait_until 120 "listener A to read the shipping $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_a" "$shipping_max_age_shown" || return 1
-  wait_until 120 "listener B to read the shipping $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_b" "$shipping_max_age_shown" || return 1
-  note "the bucket is at the shipping maximum age, which both listeners now report"
+  set_max_age "$older_bucket_max_age"
+  wait_until 120 "listener A to read the older bucket's $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_a" "$older_bucket_max_age_shown" || return 1
+  wait_until 120 "listener B to read the older bucket's $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_b" "$older_bucket_max_age_shown" || return 1
+  note "the bucket is at the older bucket's maximum age, which both listeners now report"
   set_max_age "$max_age"
   wait_until 120 "listener A to read the raised $max_age maximum age" \
     healthz_max_age_is "$port_a" "$max_age_shown" || return 1
@@ -1738,21 +1793,21 @@ check_max_age_change_reaches_both_listeners() {
     healthz_max_age_is "$port_b" "$max_age_shown" || return 1
   note "the raise to $max_age reached both running listeners' /healthz"
   registered "$late" "notifications.agent.$late" || return 1
-  note "registered $late after the raise; stalling it ${stall}s, past the shipping maximum age"
+  note "registered $late after the raise; stalling it ${stall}s, past the older bucket's maximum age"
   sleep "$stall"
   state_is "$port_a" "$late" unresponsive unresponsive ||
-    refuse "a session stalled ${stall}s after the raise reads '$state', not unresponsive; at the shipping maximum age its key would be gone by now" || return 1
+    refuse "a session stalled ${stall}s after the raise reads '$state', not unresponsive; at the older bucket's maximum age its key would be gone by now" || return 1
   state_is "$port_b" "$late" unresponsive unresponsive ||
     refuse "listener B reads the stalled session '$state', not unresponsive" || return 1
-  set_max_age "$shipping_max_age"
-  wait_until 120 "listener A to read the rolled-back $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_a" "$shipping_max_age_shown" || return 1
-  wait_until 120 "listener B to read the rolled-back $shipping_max_age maximum age" \
-    healthz_max_age_is "$port_b" "$shipping_max_age_shown" || return 1
+  set_max_age "$older_bucket_max_age"
+  wait_until 120 "listener A to read the rolled-back $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_a" "$older_bucket_max_age_shown" || return 1
+  wait_until 120 "listener B to read the rolled-back $older_bucket_max_age maximum age" \
+    healthz_max_age_is "$port_b" "$older_bucket_max_age_shown" || return 1
   wait_until 300 "the stalled session to be gone under the rolled-back maximum age" \
     state_is "$port_a" "$late" unresponsive gone || return 1
   wait_until 120 "listener B to read it gone too" state_is "$port_b" "$late" unresponsive gone || return 1
-  note "the rollback to $shipping_max_age reached both listeners, and the session stalled past it then reads gone"
+  note "the rollback to $older_bucket_max_age reached both listeners, and the session stalled past it then reads gone"
 }
 
 # ---- the run -----------------------------------------------------------------------------------------
@@ -1760,4 +1815,4 @@ for name in "${selected[@]}"; do
   run_check "$name"
 done
 check=summary
-ok=1
+run_end

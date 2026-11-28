@@ -1,0 +1,17 @@
+kind: Fixed
+body: |-
+  `GET /api/v1/priorities` and `GET /api/v1/priorities?summary=true` each answer in one statement
+  after the read of the live priorities, two round trips in all where the full read sent six
+  statements in three. Each walks the issues under the priorities once and reads each such issue's
+  row once, and answers what it answered before, byte for byte.
+
+  Each issue now carries the time and the seq of its newest event, `last_event_at` and
+  `last_event_at_seq`, which every event append writes in the statement that advances
+  `last_seq`. So the read takes each newest event from the issue row and reads no event, but for
+  a row whose pair does not name its `last_seq`, which it reads as before. Two migrations:
+  `20261125143901_issues_last_event_at` adds the two nullable columns and writes only the catalog,
+  and `20261125144002_issues_last_event_at_backfill` fills them once. The fill skips each issue row
+  another transaction holds rather than wait for it, and that row's next append fills its pair.
+time: 2026-11-25T15:12:52Z
+custom:
+    Issue: priorities-read-one-statement

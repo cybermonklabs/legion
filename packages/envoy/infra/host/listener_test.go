@@ -303,11 +303,11 @@ func TestListenerRefusesInvalidInputs(t *testing.T) {
 			err: []string{`adopt.watchdog names "example-host-a-watchdog", but watchdog is not set`},
 		},
 		{
-			name: "a machine id with a dot, refused by core with the component's name",
+			name: "a machine id holding '%', refused by core with the component's name",
 			edit: func(a *host.ListenerArgs) {
-				a.MachineID = "example.host-a"
+				a.MachineID = "example%2Ehost-a"
 			},
-			err:   []string{"envoy-infra:host:Listener example-host-a: machineId contains '.', which the listener's NATS names or the hub's grant entries cannot carry"},
+			err:   []string{"envoy-infra:host:Listener example-host-a: machineId holds '%', which starts an escape in the listener's NATS names, so another machine id can give the same names"},
 			input: "machineId",
 		},
 	}
@@ -357,6 +357,53 @@ func TestListenerRefusesBeforeRegistering(t *testing.T) {
 	// The two provider registrations race each other, so only their set is fixed.
 	require.ElementsMatch(t, []string{"pulumi:providers:docker", "pulumi:providers:command"}, m.Types(),
 		"nothing registered beyond the test's providers")
+}
+
+// The sender limit reaches the container's environment exactly as it is given: each variable is
+// there when its input is set and absent when it is not. A limit core.CheckSenderLimit refuses
+// stops the constructor with the InputError naming the input, before anything but the test's
+// provider registers.
+func TestListenerSenderMessageLimit(t *testing.T) {
+	for _, row := range []struct {
+		name        string
+		rate, burst *int
+		want        []string
+	}{
+		{"no limit", nil, nil, nil},
+		{"a rate alone", pulumi.IntRef(4), nil, []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4"}},
+		{"a rate and a burst", pulumi.IntRef(4), pulumi.IntRef(8), []string{"ENVOY_SENDER_MESSAGES_PER_MINUTE=4", "ENVOY_SENDER_MESSAGE_BURST=8"}},
+	} {
+		t.Run("host:Listener renders "+row.name, func(t *testing.T) {
+			args := exampleArgs()
+			args.SenderMessagesPerMinute, args.SenderMessageBurst = row.rate, row.burst
+			m, err := run(t, args, nil, "docker")
+			require.NoError(t, err)
+			envs, _ := envsOf(t, m.One(t, containerType))
+			require.ElementsMatch(t, slices.Concat(exampleEnvs, row.want), envs)
+		})
+	}
+	for _, row := range []struct {
+		name        string
+		rate, burst *int
+		input       string
+	}{
+		{"a rate of 0", pulumi.IntRef(0), nil, "senderMessagesPerMinute"},
+		{"a rate of 60001", pulumi.IntRef(60001), nil, "senderMessagesPerMinute"},
+		{"a burst of 0", pulumi.IntRef(4), pulumi.IntRef(0), "senderMessageBurst"},
+		{"a burst with no rate", nil, pulumi.IntRef(8), "senderMessageBurst"},
+	} {
+		t.Run("host:Listener refuses "+row.name, func(t *testing.T) {
+			args := exampleArgs()
+			args.SenderMessagesPerMinute, args.SenderMessageBurst = row.rate, row.burst
+			var refused *core.InputError
+			require.True(t, errors.As(host.ResolveListener("example-host-a", args), &refused))
+			require.Equal(t, row.input, refused.Input)
+
+			m, err := run(t, args, nil, "docker")
+			require.ErrorContains(t, err, "envoy-infra:host:Listener example-host-a: "+row.input+" ")
+			require.Equal(t, []string{"pulumi:providers:docker"}, m.Types(), "nothing registered beyond the test's provider")
+		})
+	}
 }
 
 // core.ListenerConfig.Env refuses a URL holding a comma, and natsUrls resolves only when the

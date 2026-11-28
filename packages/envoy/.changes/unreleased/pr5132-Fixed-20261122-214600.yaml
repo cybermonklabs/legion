@@ -1,0 +1,14 @@
+kind: Fixed
+body: |-
+  The CI summary loop no longer publishes one settlement twice when the bucket has three copies. A
+  settlement's claim, reclaim, release and mark each read the record and write it back at the
+  revision they read; a read is a direct get, which any copy near enough to current answers. A mark
+  whose read reached a copy that had not applied the claim declined without writing, so the claim
+  stayed, a later pass reclaimed it and published the same snapshot again at the next generation.
+  A transition now declines only on the stream leader's read, every read after a lost
+  compare-and-swap is the leader's, and the check made just before a publication
+  (`ClaimStillHeld`) reads the leader. A mark that still does not apply logs
+  `checks settlement not marked` at WARN instead of nothing.
+time: 2026-11-22T21:46:00Z
+custom:
+    Issue: pr5132

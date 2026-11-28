@@ -1,5 +1,7 @@
 package outbox
 
+//ci:reads packages/contracts/src/dispatch-api*.ts dispatchEventTypes globs ../../../../contracts/src/dispatch-api*.ts and reads each module the glob finds (the .test.ts files skips apart)
+
 import (
 	"encoding/json"
 	"fmt"
@@ -33,13 +35,16 @@ import (
 //     present as anything but "optional" or "required".
 //
 //   - the server's own source under internal/dispatch, refused if any of it names
-//     contracts.ExpectsReplyNone, the one value that marshals to false. That covers the paths no
+//     ExpectsReplyNone, the one value that marshals to false, under either package that declares
+//     it: listenerwire, and contracts, which names listenerwire's. That covers the paths no
 //     envelope of this package builds: the comment and message deliveries' HTTP body
 //     (internal/dispatch/api, internal/dispatch/envoy), whatever their delivery mode.
 //     The read is of each file's syntax tree, so the constant named in a comment - as
 //     commentExpectsReply's and envelope()'s say what removes the workaround - is not a hit.
 func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
+	t.Parallel()
 	t.Run("no envelope the outbox builds carries false", func(t *testing.T) {
+		t.Parallel()
 		types := dispatchEventTypes(t)
 		for _, eventType := range types {
 			for _, owner := range []struct {
@@ -52,6 +57,7 @@ func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
 				}},
 			} {
 				t.Run(eventType+" "+owner.name, func(t *testing.T) {
+					t.Parallel()
 					event := owner.event
 					event.Type = eventType
 					event.CreatedAt = time.Now()
@@ -89,6 +95,7 @@ func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
 	})
 
 	t.Run("no source under internal/dispatch names the value that marshals to false", func(t *testing.T) {
+		t.Parallel()
 		fileSet := token.NewFileSet()
 		err := filepath.WalkDir("..", func(path string, entry fs.DirEntry, err error) error {
 			if err != nil {
@@ -106,13 +113,14 @@ func TestNoDispatchServerPathWritesExpectsReplyFalse(t *testing.T) {
 				if !ok || selector.Sel.Name != "ExpectsReplyNone" {
 					return true
 				}
-				if pkg, ok := selector.X.(*ast.Ident); !ok || pkg.Name != "contracts" {
+				pkg, ok := selector.X.(*ast.Ident)
+				if !ok || (pkg.Name != "contracts" && pkg.Name != "listenerwire") {
 					return true
 				}
 				t.Errorf(
-					"%s names contracts.ExpectsReplyNone, which marshals to the JSON literal false "+
+					"%s names %s.ExpectsReplyNone, which marshals to the JSON literal false "+
 						"no listener built before #2903 can read; leave the field out instead",
-					fileSet.Position(selector.Pos()),
+					fileSet.Position(selector.Pos()), pkg.Name,
 				)
 				return false
 			})

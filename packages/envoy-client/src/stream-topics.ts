@@ -3,6 +3,7 @@ import {
   DISPATCH_TOPIC_PREFIX,
   GHOSTWISPR_TOPIC_PREFIX,
   LEGION_NOTICE_TOPIC_PREFIX,
+  legacyTwin,
   ROLE_TOPIC_PREFIX,
   uncapturedTopicRefusal,
 } from "@legion/contracts";
@@ -29,6 +30,17 @@ const STREAM_SUBJECT_PREFIXES = [
   `${EXCEPTION_TOPIC_PREFIX}${AGENT_TOPIC_PREFIX}`,
   `${EXCEPTION_TOPIC_PREFIX}notifications.team.`,
 ] as const;
+
+/**
+ * The kinds of topic the stream stores, in the order of its prefixes: the token after
+ * `notifications.` of each prefix but the two exception ones. The subscribe tool lists them, and
+ * the publish tool lists each of them whose lane its route does not refuse (`STORED_DELIVERY` and
+ * `PUBLISHED_DELIVERY` in tool-contract.ts), so a kind the stream comes to store reaches those
+ * texts from this list alone.
+ */
+export const STORED_TOPIC_KINDS: readonly string[] = STREAM_SUBJECT_PREFIXES.filter(
+  (prefix) => !prefix.startsWith(EXCEPTION_TOPIC_PREFIX)
+).map((prefix) => prefix.slice("notifications.".length, -1));
 
 /**
  * Whether the stream stores a publish to `topic`, read as the listener's `bus.StreamCaptures`
@@ -155,11 +167,12 @@ export function subjectsOverlap(a: string, b: string): boolean {
  * team lane beside it), another project's controller lane, and every wildcard reaching any of
  * them (`notifications.agent.*`, `notifications.>`, `notifications.*.<x>`,
  * `notifications.envoy.>`) count. Two literal subjects are this session's own: `ownAgentSubject`,
- * and the controller notice lane of a project whose controller role `roles` names
- * (`controllerNoticeRole`), which its holder registers because a session receives what its own
- * consumer delivers and nothing else. This mirrors the listener's rule,
- * `ReachesPrivateStreamSubject` in packages/envoy/internal/bus/stream.go: the listener stores no
- * such interest, so a host registers none.
+ * in either form (its new form under a project, `NO_PROJECT` or a wildcard over every project,
+ * whose old form `legacyTwin` reads back), and the controller notice lane of a project whose
+ * controller role `roles` names (`controllerNoticeRole`), which its holder registers because a
+ * session receives what its own consumer delivers and nothing else. This mirrors the listener's
+ * rule, `ReachesPrivateStreamSubject` in packages/envoy/internal/bus/stream.go: the listener stores
+ * no such interest, so a host registers none.
  */
 export function reachesPrivateStreamSubject(
   ownAgentSubject: string,
@@ -170,7 +183,8 @@ export function reachesPrivateStreamSubject(
   const role = controllerNoticeRole(topic);
   if (role !== undefined) return !roles.includes(role);
   // A session id holding `*` or `>` makes a wildcard of its "own" agent subject, no session's alone.
-  return topic !== ownAgentSubject || /[*>]/.test(ownAgentSubject);
+  const own = topic === ownAgentSubject || legacyTwin(topic) === ownAgentSubject;
+  return !own || /[*>]/.test(ownAgentSubject);
 }
 
 /**

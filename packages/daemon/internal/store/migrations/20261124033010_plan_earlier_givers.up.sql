@@ -1,0 +1,37 @@
+-- 20261124033010_plan_earlier_givers.up.sql — every owner that gave a version of a plan.
+--
+-- issue_plans.earlier_givers is record.PlanVersion.EarlierGivers: each owner that gave the same
+-- version at the same generation before given_by did. The givers of a version are given_by and
+-- these, a set: an owner's give of the version in force that names another giver adds that owner
+-- (record.Store.AddPlanGiver), and a give by a giver writes nothing. A version is its owners' while
+-- one of its givers is an architect of the issue's tree (record.GivenByOwner), the rule by which a
+-- first step passes a version over as an earlier owner's (workflow's passOverEarlierOwners) and a
+-- give is answered as taken (workflow's planGiven). given_by is the giver added last, and given_at
+-- the time of its first give, which record.OwnersNewestPlan orders by: a giver already in
+-- earlier_givers that gives the version again stays there and moves neither.
+--
+-- It back-fills nothing. Every row written before it names its one giver in given_by and reads no
+-- earlier giver, which is what it was. A copy a carry writes (record.Store.CarryPlan) copies the
+-- column.
+--
+-- Rolling back onto a release that has the plan tables but not this migration needs no statement:
+-- that release names the columns of issue_plans in each statement it runs (its record.Store's
+-- PutPlan, CarryPlan and the reads of planVersionColumns), so it boots with the column in place,
+-- reads given_by as the one giver, and writes no earlier giver into it. What the roll back costs:
+-- that release passes a version over at a first step when the giver it last recorded (given_by) no
+-- longer owns the issue, though an earlier giver still does, and a copy its carry writes reads no
+-- earlier giver after a roll forward.
+--
+-- A rollback past 20261117034837_issue_plans, whose way back drops issue_plans, runs the way back
+-- below too, before or after that one, with every project's daemon on that database stopped: it
+-- drops the column where issue_plans still stands and deletes this migration's row, so that
+-- store.apply runs this file again after that one, on the table the roll forward creates. Each of
+-- its statements runs again with no error, so it runs in the session of each project that rolls
+-- back, as the plan tables' block does. Left out, the row stands, the table comes back without the
+-- column, and the daemon's first read of a plan fails.
+--
+-- begin;
+-- alter table if exists issue_plans drop column if exists earlier_givers;
+-- delete from schema_version where version = 20261124033010;
+-- commit;
+alter table issue_plans add column earlier_givers text[] not null default '{}';

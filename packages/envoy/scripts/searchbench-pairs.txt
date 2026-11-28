@@ -1,5 +1,5 @@
-# Known related-issue pairs from this repository's own Dispatch project (LEGION-*, exempt from
-# the private-names rule - packages/envoy/AGENTS.md): each line is `query_title<TAB>target_key`,
+# Known related-issue pairs from this repository's own Dispatch project (LEGION-*, keys the
+# root AGENTS.md's private-names rule allows): each line is `query_title<TAB>target_key`,
 # where query_title is one issue's own title (searched verbatim, as a human filing a
 # near-duplicate would type it) and target_key is the other issue of the pair - the one the
 # search should surface. This file ships only Legion's own content; a run against a corpus copy

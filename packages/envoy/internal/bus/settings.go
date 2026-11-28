@@ -23,6 +23,23 @@ const (
 // component never deploys a listener its configuration would refuse.
 const MaxReplicas = 5
 
+// SenderMessagesPerMinuteEnvVar and SenderMessageBurstEnvVar are envoy-listener's limit on the
+// messages each agent session sends through it: how many a minute, and how many at once. The bus
+// reads neither. They live here with MaxSenderMessagesPerMinute because the listener's parse
+// (cmd/listener, sender_limit.go) and envoy-infra's listener settings
+// (github.com/sjawhar/envoy/infra/core), which may not compile a listener package, name the same
+// variables.
+const (
+	SenderMessagesPerMinuteEnvVar = "ENVOY_SENDER_MESSAGES_PER_MINUTE"
+	SenderMessageBurstEnvVar      = "ENVOY_SENDER_MESSAGE_BURST"
+)
+
+// MaxSenderMessagesPerMinute is the largest SenderMessagesPerMinuteEnvVar the listener takes:
+// one message a millisecond, past which a rate limits nothing a session does. The listener's
+// parse and envoy-infra's check of a component's inputs both read it, so a component never
+// deploys a listener that would refuse its value.
+const MaxSenderMessagesPerMinute = 60000
+
 // ParseNATSReplicas reads ReplicasEnvVar, the deployment's replica count: unset or blank is 1,
 // and otherwise a whole number from 1 to MaxReplicas. Anything else (0, a negative number, more
 // than NATS keeps, a word) is refused naming the variable and the value, at load rather than as a
@@ -66,11 +83,14 @@ func ParseStreamMaxBytes(raw string) (int64, error) {
 // bucket. envoy-listener (config.Load) reads the setting through it.
 //
 // A deployment sets it because the bucket's age is the backstop a record is dropped at, and a
-// record dropped before the gone horizon leaves an unresponsive session reading gone: with the
-// 5-minute default and a 1-hour horizon, a session stalled for six minutes loses the record that
-// says it is only unresponsive. The listener applies the value at open and on every pass of its
-// session reaper (session.SessionRegistry), so a raise reaches a running deployment within one
-// pass.
+// record dropped before the gone horizon leaves an unresponsive session reading gone. A bucket that
+// the listener creates with the setting unset keeps a record for 2 hours (session.BucketMaxAge, a
+// constant: the default 1-hour gone horizon plus one hour). That age does not follow
+// ENVOY_SESSION_GONE_HORIZON, so a deployment that raises the horizon to 2 hours or more raises
+// this setting past it too. A bucket an older build created keeps its 5 minutes until this setting
+// raises it, and there a session stalled for six minutes loses the record that says it is only
+// unresponsive. The listener applies the value at open and on every pass of its session reaper
+// (session.SessionRegistry), so a raise reaches a running deployment within one pass.
 func ParseSessionMaxAge(raw string) (time.Duration, error) {
 	value := strings.TrimSpace(raw)
 	if value == "" {

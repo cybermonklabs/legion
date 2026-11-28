@@ -4,7 +4,7 @@
  *
  *  Every row here reads what the browser does with one fixed answer - the listing, the focus,
  *  the address a row navigates to, the panels a chord toggles - so each runs against a
- *  recording rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  recording rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
  *  What stayed in `keyboard-palette.e2e.ts`, and why, is written there.
  */
 import { expect } from "@playwright/test";
@@ -162,7 +162,8 @@ test("g d opens the route's project Documents, from an issue key or a project pa
   // `g p` opens the one bar, where a project is a row the reader types their way to, and
   // Enter opens the row it highlights - main's own assertions. The count is the Projects
   // group's rather than main's dialog-wide one, for the reason this row's entry in
-  // `e2e/stub/moved-row-notes.ts` gives, which `e2e/row-map.md` publishes.
+  // `e2e/stub/moved-row-notes.ts` gives, which the row map publishes
+  // (`bun e2e/tools/row-map.ts` generates it, and git does not keep it).
   await input.fill("operations");
   const projects = dialog.getByRole("group", { name: "Projects" });
   await expect(projects).toBeVisible();
@@ -548,12 +549,19 @@ test("on a short window the palette fits the screen and each highlighted row sho
     await page.keyboard.press("Control+k");
     await expect(dialog.getByRole("group", { name: "Actions" })).toBeVisible();
     await expect.soft(dialog, `${width}x${height}`).toBeInViewport({ ratio: 1 });
+    // The input names a row as the palette opens, and each ArrowDown moves it on. Each move is
+    // waited for, so every step reads the row its press moved to and not the one before it.
+    await expect(input, `${width}x${height}`).toHaveAttribute("aria-activedescendant", /./);
     for (let step = 0; step < 6; step += 1) {
       const active = await input.getAttribute("aria-activedescendant");
       await expect(page.locator(`[id="${active}"]`), `${width}x${height}`).toBeInViewport({
         ratio: 1,
       });
       await input.press("ArrowDown");
+      await expect(input, `${width}x${height}`).not.toHaveAttribute(
+        "aria-activedescendant",
+        active ?? ""
+      );
     }
     await page.keyboard.press("Escape");
     await expect(dialog).toHaveCount(0);
@@ -571,9 +579,14 @@ test("a window that shrinks under an open palette keeps the highlighted row in v
   await expect(
     page.getByRole("dialog", { name: "Search" }).getByRole("group", { name: "Actions" })
   ).toBeVisible();
-  // Down to the eleventh row, near the foot of the list at this height.
+  // Down to the eleventh row, near the foot of the list at this height. Each press is waited
+  // for, the highlight leaving the row it was on, so the row read below is the one the tenth
+  // press reached and not one before it.
+  await expect(input).toHaveAttribute("aria-activedescendant", /./);
   for (let step = 0; step < 10; step += 1) {
+    const left = await input.getAttribute("aria-activedescendant");
     await input.press("ArrowDown");
+    await expect(input).not.toHaveAttribute("aria-activedescendant", left ?? "");
   }
   const active = page.locator(`[id="${await input.getAttribute("aria-activedescendant")}"]`);
   await expect(active).toBeInViewport({ ratio: 1 });

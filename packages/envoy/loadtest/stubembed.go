@@ -137,6 +137,11 @@ func stubEmbedRefuse(status int, code string) stubEmbedAnswer {
 	return stubEmbedAnswer{status: status, body: body}
 }
 
+// ServeHTTP writes the answer's log line before the answer itself. Dispatch's client decodes the
+// JSON and closes the body without reading the chunked end, so it can have its whole answer, and
+// send its next request on another connection, while this handler is still between its write and
+// its return; a line logged after the write could reach the log after the caller had read it, or
+// after a later request's own line.
 func (s *stubEmbedder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	answer := s.answer(r)
 	payload, err := json.Marshal(answer.body)
@@ -144,12 +149,12 @@ func (s *stubEmbedder) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		answer = stubEmbedRefuse(http.StatusInternalServerError, "encode_failed")
 		payload, _ = json.Marshal(answer.body)
 	}
+	s.lg.Printf("%s %s: %d texts, %d bytes, HTTP %d", r.Method, r.URL.Path, answer.texts, answer.bytes, answer.status)
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(answer.status)
 	if _, err := w.Write(payload); err != nil {
 		s.lg.Printf("write the answer: %v", err)
 	}
-	s.lg.Printf("%s %s: %d texts, %d bytes, HTTP %d", r.Method, r.URL.Path, answer.texts, answer.bytes, answer.status)
 }
 
 // answer is what the stub replies to one request, and what that request carried. It refuses in
@@ -369,37 +374,41 @@ func (h *stubEmbedHosts) Set(value string) error {
 }
 
 // stubEmbedArgs is what `loadgen stub-embed` was given, as options newStubEmbed takes: every
-// input checked and the key read out of its file where -key-file gave it, before the port is
-// taken. The caller sets lg. It is a function of its own so a test reads the options a command
-// line resolves to without serving on them.
+// input checked and the key read out of the file -key-file names, before the port is taken. The
+// caller sets lg. It is a function of its own so a test reads the options a command line resolves
+// to without serving on them.
 func stubEmbedArgs(args []string) (stubEmbedOptions, error) {
 	fs := flag.NewFlagSet("stub-embed", flag.ExitOnError)
 	listen := fs.String("listen", "127.0.0.1:8443", "address to serve https on")
-	key := fs.String("key", "", "the api-key header every request must carry (required, or -key-file)")
-	keyFile := fs.String("key-file", "", "file holding the -key value, so no api-key reaches the command line")
+	var key string
+	var keyGiven removedFlag
+	keyFile := fs.String("key-file", "", "file holding the api-key header every request must carry (required)")
+	keyGiven.register(fs, "key", "-key-file")
 	certOut := fs.String("cert-out", "", "where the certificate is written as PEM, for Dispatch's SSL_CERT_FILE (default $LOADTEST_ROOT/stub-embed.pem)")
 	var hosts stubEmbedHosts
 	fs.Var(&hosts, "host", "a name or IP the certificate covers; repeatable (default localhost, 127.0.0.1, ::1)")
 	throttleEvery := fs.Int("throttle-every", 0, "answer 429 to every nth batch, to exercise the queue's throttle path; 0 never does")
 	fs.Usage = func() {
-		fmt.Fprintln(fs.Output(), "usage: loadgen stub-embed (-key <api-key> | -key-file <path>) [-listen 127.0.0.1:8443] [-cert-out <pem>] [-host <name or ip>]... [-throttle-every 0]")
+		fmt.Fprintln(fs.Output(), "usage: loadgen stub-embed -key-file <path> [-listen 127.0.0.1:8443] [-cert-out <pem>] [-host <name or ip>]... [-throttle-every 0]")
 		fmt.Fprintln(fs.Output(), "Serves Azure's embeddings route over https with a certificate it generates: point Dispatch's")
 		fmt.Fprintln(fs.Output(), "DISPATCH_AZURE_EMBED_ENDPOINT at it and its SSL_CERT_FILE at -cert-out, so Dispatch trusts it.")
 		fs.PrintDefaults()
 	}
-	_ = fs.Parse(args)
-	if fs.NArg() > 0 {
-		return stubEmbedOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	if err := parseArgs(fs, args); err != nil {
+		return stubEmbedOptions{}, err
 	}
-	// The key is a credential, so it has a file form and is read before anything else is judged
-	// (readCredentials): an api-key on a command line is in the argv of this process and of any
-	// ssh that carried it, for as long as the stub serves.
-	if err := readCredentials(credentialFile{"-key", "-key-file", *keyFile, key}); err != nil {
+	// The key is a credential, so it is read from its file before anything else is judged
+	// (readCredentials); -key, given at all, was refused by parseArgs: an api-key on a command
+	// line is in the argv of this process and of any ssh that carried it, for as long as the stub
+	// serves.
+	if err := readCredentials(credentialFile{"-key", "-key-file", *keyFile, &key}); err != nil {
 		return stubEmbedOptions{}, err
 	}
 	switch {
-	case *key == "":
-		return stubEmbedOptions{}, fmt.Errorf("-key or -key-file is required: the api-key Dispatch is configured with (DISPATCH_AZURE_EMBED_KEY)")
+	case fs.NArg() > 0:
+		return stubEmbedOptions{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	case key == "":
+		return stubEmbedOptions{}, fmt.Errorf("-key-file is required: the api-key Dispatch is configured with (DISPATCH_AZURE_EMBED_KEY)")
 	case *listen == "":
 		return stubEmbedOptions{}, fmt.Errorf("-listen is required")
 	case *throttleEvery < 0:
@@ -408,7 +417,7 @@ func stubEmbedArgs(args []string) (stubEmbedOptions, error) {
 	if *certOut == "" {
 		*certOut = filepath.Join(loadtestRoot(), "stub-embed.pem")
 	}
-	return stubEmbedOptions{listen: *listen, certOut: *certOut, key: *key, hosts: hosts, throttleEvery: *throttleEvery}, nil
+	return stubEmbedOptions{listen: *listen, certOut: *certOut, key: key, hosts: hosts, throttleEvery: *throttleEvery}, nil
 }
 
 func runStubEmbed(args []string) error {

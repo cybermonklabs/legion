@@ -15,12 +15,13 @@ import (
 	"github.com/nats-io/nats.go"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/natsconn"
 )
 
 // The backlog publisher (`loadgen backlog`): it publishes envelopes to the simulated sessions'
-// agent subjects (contracts.AgentSubject), as Dispatch's outbox publishes a message meant for one
-// session, so that a listener which is down builds up a backlog the sessions must get once it is
-// back (restart-step.sh). Every publish goes to the notification stream over JetStream under a
+// agent subjects (contracts.LegacyAgentSubject), as Dispatch's outbox publishes a message meant
+// for one session, so that a listener which is down builds up a backlog the sessions must get once
+// it is back (restart-step.sh). Every publish goes to the notification stream over JetStream under a
 // Nats-Msg-Id of its own, and every acknowledgement is waited for, so the summary counts the
 // publishes that failed as well as those the stream stored.
 
@@ -90,7 +91,7 @@ func backlogEnvelope(p backlogPlan) contracts.Envelope {
 		Source:         "agent",
 		SourceEventID:  id,
 		SourceSession:  "loadgen-backlog",
-		Topic:          contracts.AgentSubject(p.Session),
+		Topic:          contracts.LegacyAgentSubject(p.Session),
 		DedupeKey:      "agent." + p.Session + "." + id,
 		IssuedAt:       contracts.NowMillis(),
 		PayloadSummary: "loadtest backlog " + id,
@@ -190,7 +191,7 @@ func backlogTarget(stackPath, given string) (url, monURL, name string, err error
 func publishBacklog(url string, plans []backlogPlan, wait time.Duration) (backlogSummary, error) {
 	nc, err := nats.Connect(url, nats.Name("loadgen-backlog"), nats.MaxReconnects(-1))
 	if err != nil {
-		return backlogSummary{}, fmt.Errorf("nats connect: %w", err)
+		return backlogSummary{}, fmt.Errorf("nats connect: %w", natsconn.ConnectionError(err))
 	}
 	defer nc.Close()
 	js, err := nc.JetStream(nats.PublishAsyncMaxPending(1024))
@@ -212,7 +213,7 @@ func publishBacklog(url string, plans []backlogPlan, wait time.Duration) (backlo
 		if err != nil {
 			return sum, err
 		}
-		future, err := js.PublishMsgAsync(&nats.Msg{Subject: contracts.AgentSubject(p.Session), Data: data}, nats.MsgId(backlogMsgID(p)))
+		future, err := js.PublishMsgAsync(&nats.Msg{Subject: contracts.LegacyAgentSubject(p.Session), Data: data}, nats.MsgId(backlogMsgID(p)))
 		if err != nil {
 			sum.PublishErrors++
 			if sum.FirstError == "" {

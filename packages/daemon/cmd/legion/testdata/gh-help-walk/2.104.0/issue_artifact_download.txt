@@ -1,0 +1,48 @@
+Download issue artifacts to files. Without artifact numbers, every artifact
+on the issue is downloaded. Artifacts can also be named by their URLs, which
+must all be on one issue. `<issue>` is an issue number or URL.
+
+Each file is named `<number>-<name>`. Markdown documents end in `.md`, HTML
+documents in `.html`, and links are saved as `.url` Internet Shortcut files.
+If a file already exists, that artifact fails unless you use `--clobber` to
+overwrite it or `--skip-existing` to skip it.
+
+Use `--dir` to choose the directory to download files into, `--output` to
+choose the path for a single artifact, or `--output -` to print its content.
+Use `--version` with a single artifact to download an earlier version from
+its edit history.
+
+
+USAGE
+  gh issue artifact download {<issue> [<artifact-number>...] | <artifact-url>...} [flags]
+
+FLAGS
+      --clobber[=true|false]         Overwrite existing files of the same name
+  -D, --dir directory                The directory to download files into (default ".")
+  -O, --output file                  The file to write a single artifact to (use "-" to write to standard output)
+      --skip-existing[=true|false]   Skip downloading when files of the same name exist
+      --version number               Download the version with this number from the edit history
+
+INHERITED FLAGS
+      --help[=true|false]        Show help for command
+  -R, --repo [HOST/]OWNER/REPO   Select another repository using the [HOST/]OWNER/REPO format
+
+EXAMPLES
+  # Download every artifact on issue 142
+  $ gh issue artifact download 142
+  
+  # Download two artifacts into a folder
+  $ gh issue artifact download 142 2 5 --dir notes
+  
+  # Print one artifact's content
+  $ gh issue artifact download 142 2 --output -
+  
+  # Download an earlier version of one artifact
+  $ gh issue artifact download 142 2 --version 5
+
+LEARN MORE
+  Use `gh <command> <subcommand> --help` for more information about a command.
+  Read the manual at https://cli.github.com/manual
+  Learn about exit codes using `gh help exit-codes`
+  Learn about accessibility experiences using `gh help accessibility`
+

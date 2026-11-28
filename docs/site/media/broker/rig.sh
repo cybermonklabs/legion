@@ -4,7 +4,7 @@
 # The secrets broker's demo rig: every surface the broker's screenshots and walkthrough show,
 # running on one machine on example data. It starts
 #
-#   - the broker (packages/envoy/cmd/broker) on its fake secrets file (internal/broker/secrets'
+#   - the broker (packages/envoy/cmd/cipherd) on its fake secrets file (internal/cipher/secrets'
 #     development stand-in for Secrets Manager), holding one secret, DEMO_API_KEY, owned by
 #     alice@example.com at the human tier, whose value is made up, in a database of its own beside
 #     DATABASE_URL's, created and dropped by this run, trusting the ServiceAccount tokens of
@@ -36,7 +36,7 @@
 # on that socket (DISPATCH_E2E_LISTEN_FROM); the broker and the harness's fakes bind ports the kernel
 # assigns and report them.
 #
-# Needs go, bun, python3, psql, curl, openssl and setsid, and passwordless sudo with unshare and
+# Needs go, bun, python3, psql, curl and openssl, and passwordless sudo with unshare and
 # setpriv, which give the helper its hostname; nothing else from the machine: no credential, private
 # hostname or production service.
 set -euo pipefail
@@ -100,7 +100,7 @@ local_database "$DATABASE_URL" || {
   echo "rig: DATABASE_URL must be a postgres:// URL naming a database on this machine (a loopback host or a unix socket directory)" >&2
   exit 1
 }
-for tool in go bun python3 psql curl openssl setsid sudo unshare setpriv; do
+for tool in go bun python3 psql curl openssl sudo unshare setpriv; do
   command -v "$tool" >/dev/null || { echo "rig: $tool is required on PATH" >&2; exit 1; }
 done
 sudo -n true 2>/dev/null || { echo "rig: the agent machine's helper needs passwordless sudo" >&2; exit 1; }
@@ -117,6 +117,14 @@ fail() {
 }
 # shellcheck source-path=SCRIPTDIR/../../../.. source=scripts/e2e/lib/rig.sh
 . "$root/scripts/e2e/lib/rig.sh"
+# DATABASE_URL may hold a password: psql is given each URL without it and the password in
+# PGPASSWORD for that psql alone (pg_url_run), and the broker its database URL in its own
+# environment (exec_with_env), never in a process's arguments, where every user of the machine
+# reads it.
+# shellcheck source-path=SCRIPTDIR/../../../.. source=packages/envoy/scripts/lib/pg-url.sh
+. "$root/packages/envoy/scripts/lib/pg-url.sh"
+# shellcheck source-path=SCRIPTDIR/../../../.. source=packages/envoy/scripts/lib/exec-env.sh
+. "$root/packages/envoy/scripts/lib/exec-env.sh"
 mkdir -p "$work/logs" "$work/bin" "$work/agent"
 
 # What cleanup stops: the pids start_process sets (<name>_pid), Dispatch's port keeper among them,
@@ -125,20 +133,25 @@ broker_pid='' issuer_pid='' fake_envoy_pid='' fake_github_pid='' dispatch_pid=''
 broker_database='' admin_url='' dispatch_port='' fake_envoy_port='' fake_github_port=''
 cleanup() {
   local status=$? pid
-  if [ -z "$helper_pid" ] && [ -s "$work/agent/helper.pid" ]; then
-    helper_pid="$(cat "$work/agent/helper.pid")"
-  fi
+  # A run that died before it read the helper's pid file (below) reads it here. The helper wrote
+  # its own start beside its pid (record_pid_file), so however late the read, its signals reach the
+  # helper or nothing, never a process that took its pid since.
+  [ -n "$helper_pid" ] || record_pid_file "$work/agent/helper.pid" helper_pid || true
   # The helper runs as this user under the root-owned sudo and unshare that started it, which exit
-  # with it. Every other service leads a process group of its own (setsid), signalled whole so its
-  # children go too: run-server.sh's `flock … go build`, before it execs the server, is one.
+  # with it. Every other service leads a process group of its own (start_process starts each under
+  # job control, so its pid is the group's leader and its own), signalled whole so its children go
+  # too: run-server.sh's `flock … go build`, before it execs the server, is one. A group is
+  # signalled only while its leader is still the process recorded (signal_group). A setsid in front
+  # of a service would fork, since the job already leads its group, and leave the recorded pid a
+  # setsid that exits at once.
   stop_pid "$helper_pid"
   for pid in "$dispatch_pid" "$fake_github_pid" "$fake_envoy_pid" "$broker_pid" "$issuer_pid"; do
-    [ -z "$pid" ] || kill -TERM -- "-$pid" 2>/dev/null || true
+    [ -z "$pid" ] || signal_group "$pid" TERM
     stop_pid "$pid"
   done
   stop_pid "$dispatch_keeper_pid"
   if [ -n "$broker_database" ]; then
-    PGOPTIONS="-c client_min_messages=warning" psql "$admin_url" -q \
+    PGOPTIONS="-c client_min_messages=warning" pg_url_run "$admin_url" psql -q \
       -c "drop database if exists ${broker_database} with (force)" >/dev/null 2>&1 || true
   fi
   note "stopped; logs kept in $work/logs"
@@ -150,7 +163,10 @@ trap 'exit 130' INT TERM
 # --- Binaries: the broker and its local token issuer, and the client and host helper the agent
 # machine runs. ---------------------------------------------------------------------------------
 note "building the broker, dev-oidc-issuer, agent-secrets and agent-secrets-helper"
-(cd "$root/packages/envoy" && CGO_ENABLED=0 go build -o "$work/bin/" ./cmd/broker ./cmd/dev-oidc-issuer ./cmd/agent-secrets ./cmd/agent-secrets-helper)
+(cd "$root/packages/envoy" && CGO_ENABLED=0 go build -o "$work/bin/" ./cmd/dev-oidc-issuer &&
+  CGO_ENABLED=0 go build -o "$work/bin/broker" ./cmd/cipherd &&
+  CGO_ENABLED=0 go build -o "$work/bin/agent-secrets" ./cmd/cipher &&
+  CGO_ENABLED=0 go build -o "$work/bin/agent-secrets-helper" ./cmd/cipher-helper)
 
 # --- The broker's database, beside DATABASE_URL's, named for this run (as dev-broker.sh names
 # its own), so a database another run or anyone else made is never the one dropped. -------------
@@ -159,7 +175,7 @@ url_query="${DATABASE_URL#"$url_base"}"
 admin_url="${url_base%/*}/postgres${url_query}"
 run_database="docs_broker_$(printf '%s' "${work##*.}" | tr '[:upper:]' '[:lower:]')"
 broker_database_url="${url_base%/*}/${run_database}${url_query}"
-PGOPTIONS="-c client_min_messages=warning" psql "$admin_url" -v ON_ERROR_STOP=1 -q \
+PGOPTIONS="-c client_min_messages=warning" pg_url_run "$admin_url" psql -v ON_ERROR_STOP=1 -q \
   -c "create database ${run_database}"
 broker_database=$run_database
 
@@ -179,9 +195,10 @@ chmod 600 "$work/fake-secrets.json"
 # The same issuer is the provider the broker signs a person in at (BROKER_SIGNIN_*, required):
 # --code-flow serves the broker's own client, whose secret this run generates under umask 077 so
 # no one else can read it even for a moment and neither process takes it on a command line, and
-# --sign-in-as signs every authorization in as the operator with no page to fill in. The issuer
-# takes no domain: it puts a person's own email domain in their hd claim, so the domain the
-# broker holds them to is the operator's.
+# whose one callback is the approval page's on loopback, which the issuer takes at the port the
+# broker binds below; --sign-in-as signs every authorization in as the operator with no page to
+# fill in. The issuer takes no domain: it puts a person's own email domain in their hd claim, so
+# the domain the broker holds them to is the operator's.
 dispatch_account="system:serviceaccount:example-ns:example-dispatch"
 broker_audience="legion-broker-pod"
 signin_client="docs-broker"
@@ -189,9 +206,9 @@ signin_secret_file="$work/signin-client-secret"
 signin_domain="${OPERATOR#*@}"
 (umask 077 && openssl rand -hex 32 >"$signin_secret_file")
 note "starting dev-oidc-issuer"
-start_process issuer setsid "$work/bin/dev-oidc-issuer" \
+start_process issuer "$work/bin/dev-oidc-issuer" \
   --token "$broker_audience=$dispatch_account=$work/dispatch-account-token" \
-  --code-flow "$signin_client=$signin_secret_file" \
+  --code-flow "$signin_client=$signin_secret_file=http://127.0.0.1/signin/callback" \
   --sign-in-as "$OPERATOR"
 await_start issuer "$issuer_pid" 60 "dev-oidc-issuer to report its URL" \
   grep -q 'issuer listening url=' "$work/logs/issuer.log"
@@ -203,7 +220,7 @@ keep_port dispatch_keeper dispatch_port
 dispatch_url="http://127.0.0.1:${dispatch_port}"
 
 note "starting the broker"
-start_process broker setsid env -i PATH="$PATH" \
+start_process broker exec_with_env PATH="$PATH" \
   BROKER_DATABASE_URL="$broker_database_url" \
   BROKER_LISTEN_ADDR=127.0.0.1:0 \
   BROKER_PUBLIC_URL=http://127.0.0.1:0 \
@@ -219,7 +236,7 @@ start_process broker setsid env -i PATH="$PATH" \
   BROKER_SIGNIN_CLIENT_ID="$signin_client" \
   BROKER_SIGNIN_CLIENT_SECRET_FILE="$signin_secret_file" \
   BROKER_SIGNIN_DOMAIN="$signin_domain" \
-  "$work/bin/broker"
+  -- "$work/bin/broker"
 # The broker logs one JSON object per line; its address is the addr field of its listening line,
 # waited for up to its closing quote so that half an address is never read as the whole one.
 await_start broker "$broker_pid" 60 "the broker to report its address" \
@@ -234,8 +251,8 @@ if [ ! -f "$root/packages/dispatch/web/dist/index.html" ]; then
   (cd "$root" && bun install --frozen-lockfile >/dev/null)
   (cd "$root/packages/dispatch" && bun run build:web >/dev/null)
 fi
-start_process fake_envoy setsid bun "$root/packages/dispatch/e2e/fake-envoy.ts"
-start_process fake_github setsid bun "$root/packages/dispatch/e2e/fake-github.ts"
+start_process fake_envoy bun "$root/packages/dispatch/e2e/fake-envoy.ts"
+start_process fake_github bun "$root/packages/dispatch/e2e/fake-github.ts"
 await_start fake_envoy "$fake_envoy_pid" 60 "the fake Envoy to report its port" \
   report_port "$work/logs/fake_envoy.log" 'fake envoy listener on 127\.0\.0\.1:'
 fake_envoy_port=$(report_port "$work/logs/fake_envoy.log" 'fake envoy listener on 127\.0\.0\.1:')
@@ -247,7 +264,7 @@ export FAKE_ENVOY_PORT=$fake_envoy_port FAKE_GITHUB_PORT=$fake_github_port
 # reset reads it as run-server.sh does and leaves alone the fake broker this rig never starts.
 export DISPATCH_E2E_AGENT_SECRETS_URL="$broker_url" DISPATCH_E2E_AGENT_SECRETS_ACCOUNT_TOKEN_FILE="$work/dispatch-account-token"
 note "starting Dispatch at $dispatch_url"
-DISPATCH_E2E_LISTEN_FROM="$work/dispatch_keeper.sock" start_process dispatch setsid bash "$root/packages/dispatch/e2e/run-server.sh"
+DISPATCH_E2E_LISTEN_FROM="$work/dispatch_keeper.sock" start_process dispatch bash "$root/packages/dispatch/e2e/run-server.sh"
 # The port is kept, so a request before the server serves waits unanswered: each poll times out.
 await_start dispatch "$dispatch_pid" 600 "Dispatch" curl -sf --max-time 5 "$dispatch_url/"
 # seed.ts reaches the server through the harness's port variable, set only now: run-server.sh, given
@@ -268,16 +285,17 @@ cp "$SCRIPT_DIR/agent/bashrc" "$home/.bashrc"
 touch "$home/.hushlogin"
 cp -r "$SCRIPT_DIR/agent/demo" "$home/demo"
 note "starting the agent machine $AGENT_HOST"
-# shellcheck disable=SC2016 # the inner sh expands its own positional parameters
+# The helper writes its own pid and start (record_pid_sh, lib/process-tree.sh) before it runs.
+# shellcheck disable=SC2016,SC2154 # the inner sh expands its own positional parameters; record_pid_sh is lib/process-tree.sh's
 start_process agent sudo -n unshare --uts --fork -- env -i PATH="$work/bin:/usr/bin:/bin" \
   AGENT_SECRETS_URL="$broker_url" \
   AGENT_SECRETS_HELPER_SOCK="$work/agent/helper.sock" \
   AGENT_SECRETS_OPERATOR_FILE="$work/agent/operator" \
   AGENT_SECRETS_MACHINE_FILE="$work/agent/machine.json" \
-  sh -c 'hostname "$1" && echo $$ >"$2" && exec setpriv --reuid="$3" --regid="$4" --init-groups agent-secrets-helper serve' \
-  helper "$AGENT_HOST" "$work/agent/helper.pid" "$(id -u)" "$(id -g)"
-until_true 30 "the helper's pid" test -s "$work/agent/helper.pid"
-helper_pid="$(cat "$work/agent/helper.pid")"
+  sh -c 'hostname "$1" || exit; record=$2; shift 2; exec sh -c "$record" record-pid "$@"' \
+  helper "$AGENT_HOST" "$record_pid_sh" "$work/agent/helper.pid" \
+  setpriv --reuid="$(id -u)" --regid="$(id -g)" --init-groups agent-secrets-helper serve
+until_true 30 "the helper's pid" record_pid_file "$work/agent/helper.pid" helper_pid
 # The helper's own pid, not sudo's: kill -0 cannot probe a root process.
 await_start agent "$helper_pid" 600 "agent-secrets-helper" \
   grep -q 'agent-secrets-helper listening' "$work/logs/agent.log"

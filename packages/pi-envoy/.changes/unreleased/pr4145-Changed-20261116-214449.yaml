@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    The `agent-secrets` skill says a GitHub `404` under the session's own token is that token's reach,
+    not a denial, and has the reader ask the broker for the GitHub App secret their instructions name,
+    narrowed to that repository, and make the call again before saying the service is out of reach.
+time: 2026-11-16T21:44:49.706304963Z
+custom:
+    Issue: pr4145

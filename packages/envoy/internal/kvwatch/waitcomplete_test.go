@@ -14,15 +14,7 @@ import (
 	"github.com/sjawhar/envoy/internal/goroutinetest"
 	"github.com/sjawhar/envoy/internal/kvwatch"
 	"github.com/sjawhar/envoy/internal/testnats"
-)
-
-// waitCompleteCtx bounds every WaitComplete these tests make, and waitCompleteWake, well inside
-// it, bounds the answer each one waits for. A cause whose wakeComplete is missing therefore fails
-// its test at waitCompleteWake, naming the cause, rather than letting the call sit until ctx ends
-// or hanging the suite.
-const (
-	waitCompleteCtx  = 5 * time.Second
-	waitCompleteWake = 2 * time.Second
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // blockedInWaitComplete reports whether a goroutine is parked in WaitComplete, which is the select
@@ -48,17 +40,14 @@ func waitCompleteBlocked(t *testing.T, ctx context.Context, w *kvwatch.Watcher) 
 	return answers
 }
 
-// answerWithin reads the answer of a WaitComplete waiting on cause, failing the test when none
-// comes within waitCompleteWake: that is the wake-up cause does not make.
+// answerWithin reads the answer of a WaitComplete waiting on cause (testwait.Receive), failing the
+// test, naming cause, when none has come by testwait's margin before the test binary's deadline:
+// that is the wake-up cause does not make. Each WaitComplete these tests make waits under its
+// test's own context (t.Context), which has no deadline, so a missing wake-up holds the call until
+// this wait gives up, and no bound of the call's decides the row.
 func answerWithin(t *testing.T, cause string, answers <-chan error) error {
 	t.Helper()
-	select {
-	case err := <-answers:
-		return err
-	case <-time.After(waitCompleteWake):
-		t.Fatalf("WaitComplete did not return within %s of %s; a caller gating its start on a servable copy waits its whole bound out", waitCompleteWake, cause)
-		return nil
-	}
+	return testwait.Receive(t, "WaitComplete to return after "+cause+" (a caller gating its start on a servable copy would wait its whole bound out)", answers)
 }
 
 // refillingWatcher is a watcher of the test bucket whose first read stalls and ends at its scan's
@@ -94,8 +83,7 @@ func TestWaitCompleteReturnsOnAFailedFirstStart(t *testing.T) {
 	w := kvwatch.New("test cache", kv, newSeen())
 	t.Cleanup(w.Stop)
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
+	ctx := t.Context()
 	answers := waitCompleteBlocked(t, ctx, w)
 	w.Start()
 
@@ -129,11 +117,11 @@ func (s recreatedStreams) Stream(ctx context.Context, name string) (jetstream.St
 func anotherBucketsStream(t *testing.T, conn *natsgo.Conn) string {
 	t.Helper()
 	const bucket = "kvwatch-test-other-stream"
-	js, err := conn.JetStream()
+	js, err := conn.JetStream(testnats.MaxWait(t))
 	if err != nil {
 		t.Fatalf("jetstream: %v", err)
 	}
-	if _, err := bus.EnsureKeyValue(conn, js, &natsgo.KeyValueConfig{Bucket: bucket}); err != nil {
+	if _, err := bus.EnsureKeyValue(t.Context(), conn, js, &natsgo.KeyValueConfig{Bucket: bucket}); err != nil {
 		t.Fatalf("create %s: %v", bucket, err)
 	}
 	return "KV_" + bucket
@@ -151,8 +139,7 @@ func TestWaitCompleteReturnsWhenCheckFindsTheBucketRecreated(t *testing.T) {
 	streams := recreatedStreams{JetStream: kv.Streams(), other: anotherBucketsStream(t, conn), recreated: recreated}
 	w, _ := refillingWatcher(t, bus.NewKeyValue(kv.Legacy(), kv.WatchHandle(), streams))
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
+	ctx := t.Context()
 	answers := waitCompleteBlocked(t, ctx, w)
 	recreated.Store(true)
 	if err := w.Check(); err != nil {
@@ -173,8 +160,7 @@ func TestWaitCompleteReturnsWhenTheWatcherEndsOnItsOwn(t *testing.T) {
 	conn, kv := bucket(t, uri)
 	w, _ := refillingWatcher(t, kv)
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
+	ctx := t.Context()
 	answers := waitCompleteBlocked(t, ctx, w)
 	conn.Close()
 
@@ -191,8 +177,7 @@ func TestWaitCompleteReturnsWhenStopRetiresTheWatcher(t *testing.T) {
 	_, kv := bucket(t, uri)
 	w, _ := refillingWatcher(t, kv)
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
+	ctx := t.Context()
 	answers := waitCompleteBlocked(t, ctx, w)
 	w.Stop()
 
@@ -213,8 +198,7 @@ func TestWaitCompleteReturnsWhenTheWatchersOwnReReadCompletes(t *testing.T) {
 	}
 	w, arm := refillingWatcher(t, kv)
 
-	ctx, cancel := context.WithTimeout(context.Background(), waitCompleteCtx)
-	defer cancel()
+	ctx := t.Context()
 	answers := waitCompleteBlocked(t, ctx, w)
 	arm.fireIt(t)
 

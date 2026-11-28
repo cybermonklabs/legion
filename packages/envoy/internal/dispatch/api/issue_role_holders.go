@@ -1,0 +1,458 @@
+package api
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"net/http"
+	"slices"
+	"strings"
+	"time"
+
+	"github.com/jackc/pgx/v5"
+	"github.com/sjawhar/envoy/internal/ciphertoken"
+	"github.com/sjawhar/envoy/internal/dispatch/model"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
+	"github.com/sjawhar/envoy/internal/dispatch/text"
+	"github.com/sjawhar/envoy/internal/legionagents"
+)
+
+// An issue's role holders are the sessions that hold its Legion roles, one session for each role
+// (issue_role_holders, migration 20261116163813_issue_role_holders). The Legion daemon is the one
+// party that gives a session a role. It publishes the set of each issue here: when a claim
+// readies, when a claim ends and at each boot. A claim whose idle pod the daemon released, or that
+// a project pause's stop suspended, keeps its session and its role, so its session stays in the
+// set until the claim ends (packages/daemon's supervise.HoldsRole). The results route of a later
+// release reads the set in the write transaction of a result (heldRole), so that the stored role
+// of a result is the role that its session holds.
+//
+// With DISPATCH_LEGION_STATUS_SCOPE on, only a Legion daemon's own broker token can publish. It
+// must hold model.ScopeLegionStatus. It must prove session legion-daemon:<project> of the issue's
+// project, or prove session legion-daemon:<P> of another project's daemon and name that project
+// P (isIssueDaemon). The route refuses any other credential with 403 ROLE_HOLDER_FORBIDDEN before
+// it opens a transaction. With the setting off, the actor must still name the daemon's session, or
+// the session of another project's daemon that the request's broker token proves (isIssueDaemon),
+// but a bearer that proves no session of its own can name the daemon's session in the body
+// (bearerSessionActor).
+// The project's proven_sessions setting refuses that unproven actor with
+// 403 ROLE_HOLDER_NOT_PROVEN.
+//
+// Each accepted publication marks the issue's project in project_role_holder_marks, even if it
+// lists no holders. The document-writer guard reads that mark. Each stored pair also records
+// whether a daemon's own token published it (issue_role_holders.daemon_proven): the issue's own
+// daemon's, or another project's daemon's. A publication
+// sets that mark even on a pair it keeps. The status guard trusts only marked architect pairs.
+//
+// A claim ends when the daemon retires it, fails it or suspends it by any source but the idle
+// release. The session of an ended claim leaves the set only when the daemon's next publication
+// lands, and until then its row stays. The process of a failed or a suspended claim can still run
+// during that window: the daemon lets go of a process whose stop the runtime refused. Such a
+// process keeps the pane's bearer, and its session keeps its role, until the publication lands.
+// A released claim has not ended: its session holds its role through the release, so a process of
+// it whose stop the runtime refused writes as that session in its role, as the resumed agent
+// will. The daemon queues the publication in the transaction of each claim write that changes the
+// session holding a role, so an end whose claim write failed with an error that the daemon owes
+// is published when the daemon makes that write again at the claim's next decision. An end whose
+// claim write failed and is not owed leaves the daemon's memory ended and its store live, and the
+// set follows the store (dispatch://INFRA-4099).
+// A later decision of that claim, such as a second stop, makes that write again only while the
+// claim still holds a pending task that the decision retires, such as the task of a turn that is
+// over, because the retirement writes the claim with it; otherwise the session stays listed until
+// another write of that claim lands, and the daemon's next start takes the claim up from its row as
+// live. Such ends include a suspension, a stop or a failure whose claim write the database
+// refused, and a stop whose retirement of its round's ask failed.
+//
+// Each write replaces the issue's whole set under the issue's owner lock (store.LockOwner), which
+// a second write of the same issue waits for, so the stored set is always one whole set, and each
+// write answers the set that it stored. Two writes of one issue at once store the set of the one
+// that finishes last. The daemon sends one write of an issue at a time: its outbox holds one
+// role_holders_publish row per issue, and a lane runs its issue's rows one at a time
+// (packages/daemon's internal/daemon/outbox_lanes.go, the lanes' comment).
+//
+// Each write that changes the set appends one issue event, issue.role_holders_changed
+// (issueRoleHoldersChange), in the transaction that stores the set: the set before the write and
+// the set it stored, each in the order the routes answer, as the daemon's session and at the time
+// of the write, which is the event's own time. So the issue's event log says which session held
+// each role at a past time, which the set alone cannot: a reader that judges a comment by the role
+// its author held when it wrote it, such as a review gate that counts an approval of a parent's
+// architect, reads the newest such event at or before that comment. The log starts at the release
+// that writes the event: a change made before it has no event. A write that stores the set already
+// stored, as the daemon's publication at each boot does, appends nothing, so a republished set
+// moves no issue's sequence or activity feed. The event is quiet (events.Quiet), since it is the
+// daemon's own record of what it did: it wakes nobody, and the daemon's intake reads no fact from
+// it (packages/daemon's intake.decodeDispatchEvent passes over a type it does not act on). It
+// moves the issue's sequence, as every issue event does, so a fenced daemon write that read the
+// issue before it is refused ISSUE_CHANGED and read again (packages/daemon's
+// dispatch.HTTPClient.SetStatusAt). The write takes a closed issue, because the tester's production
+// check runs after the close.
+
+// issueRoleHoldersChange is the payload of issue.role_holders_changed: the issue, the set this
+// write stored and the set it replaced, each pair with the time Dispatch first stored it.
+type issueRoleHoldersChange struct {
+	Key             string                  `json:"key"`
+	Holders         []issueRoleHolderRecord `json:"holders"`
+	PreviousHolders []issueRoleHolderRecord `json:"previous_holders"`
+}
+
+// sameRoleHolders reports whether two stored sets, each in workflow order, name the same pairs.
+// A pair that did not change keeps its recorded time, so the pairs alone decide.
+func sameRoleHolders(a, b []issueRoleHolderRecord) bool {
+	return slices.EqualFunc(a, b, func(x, y issueRoleHolderRecord) bool {
+		return x.Role == y.Role && x.Session == y.Session
+	})
+}
+
+// issueRoleHolder is one pair of a publication: a Legion role and the session that holds it. Both
+// are required: the route refuses a pair that leaves either out.
+type issueRoleHolder struct {
+	Role    string `json:"role" required:"true" enum:"architect,planner,implementer,tester,reviewer,merger"`
+	Session string `json:"session" required:"true"`
+}
+
+// issueRoleHolderRecord is one stored pair, with the time Dispatch first stored it. A publication
+// that names the same pair again keeps that time.
+type issueRoleHolderRecord struct {
+	Role       string    `json:"role" enum:"architect,planner,implementer,tester,reviewer,merger"`
+	Session    string    `json:"session"`
+	RecordedAt time.Time `json:"recorded_at"`
+}
+
+// issueRoleHolders is the stored set both routes answer: the issue and its holders in the order of
+// legionagents.Roles, the order of the default steps. An issue where no session
+// holds a role answers [].
+type issueRoleHolders struct {
+	Issue   string                  `json:"issue"`
+	Holders []issueRoleHolderRecord `json:"holders"`
+}
+
+// issueRoleHoldersInput is the body PUT /api/v1/issues/{key}/role-holders takes. Holders is the
+// issue's whole set. It is required, and a pointer, so a body that names no list is refused rather
+// than read as the empty one: a malformed publication cannot clear the roles of an issue, while an
+// explicit [] is the publication of an issue where no session holds a role.
+type issueRoleHoldersInput struct {
+	Holders *[]issueRoleHolder `json:"holders" required:"true"`
+	Actor   *model.Actor       `json:"actor"`
+}
+
+// legionProjectOf is the project of the issue key: the key up to its first -, the daemon's own rule
+// (packages/daemon's dispatch.DaemonSession). No route moves an issue to another project, so it is
+// the issue row's project_key too.
+func legionProjectOf(key string) string {
+	project, _, _ := strings.Cut(key, "-")
+	return project
+}
+
+// legionDaemonSessionPrefix is the broker's spelling, so the session a daemon's token proves and
+// the one putIssueRoleHolders compares are one string.
+const legionDaemonSessionPrefix = ciphertoken.LegionDaemonSessionPrefix
+
+// legionDaemonSessionOf is the session of the Legion daemon of the issue key's project:
+// legion-daemon:<legionProjectOf(key)>, the daemon's own rule (packages/daemon's
+// dispatch.DaemonSession). A daemon whose broker token proves its own session writes another
+// project's issue as that session instead (isIssueDaemon).
+func legionDaemonSessionOf(key string) string {
+	return legionDaemonSessionPrefix + legionProjectOf(key)
+}
+
+// isIssueDaemon reports whether actor writes the records of the issue key: its step records, their
+// ratings, its plans and its role holders. The Legion daemon of the issue's project writes them as
+// legionDaemonSessionOf(key). A daemon that runs a claim on another project's issue writes that
+// issue's records as itself, legion-daemon:<P>. Only a broker token proves that session, so the
+// request's broker token must prove the actor's session and name the project P. A credential that
+// proves no session, such as the shared token, cannot write as another project's daemon by naming
+// its session in the body.
+func (s *server) isIssueDaemon(r *http.Request, actor model.Actor, key string) bool {
+	if actor.Kind != "session" {
+		return false
+	}
+	if actor.ID == legionDaemonSessionOf(key) {
+		return true
+	}
+	project, daemon := strings.CutPrefix(actor.ID, legionDaemonSessionPrefix)
+	if !daemon {
+		return false
+	}
+	session, proved := s.callerSession(r)
+	named, ok := s.callerProject(r)
+	return proved && session == actor.ID && ok && named == project
+}
+
+// heldRole is the role that session holds on issueKey, and "" when it holds none. An empty session
+// holds no role.
+func heldRole(ctx context.Context, q queryer, issueKey, session string) (string, error) {
+	if session == "" {
+		return "", nil
+	}
+	var role string
+	err := q.QueryRow(ctx, `
+		select role from issue_role_holders where issue_key = $1 and session = $2
+	`, issueKey, session).Scan(&role)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", nil
+	}
+	return role, err
+}
+
+// issueRoleHoldersStatement reads an issue and its stored set, $1 the issue's key and $2 the roles
+// in workflow order, which is the order the set is answered in. The left join answers one row with
+// no holder for an issue where no session holds a role, and no row for a key that no issue
+// carries, so one statement says both.
+const issueRoleHoldersStatement = `
+	select i.key, h.role, h.session, h.recorded_at
+	from issues i
+	left join issue_role_holders h on h.issue_key = i.key
+	where i.key = $1
+	order by array_position($2::text[], h.role)
+`
+
+// readIssueRoleHolders answers the stored set of issueKey, and false when no issue carries the key.
+func readIssueRoleHolders(ctx context.Context, q queryer, issueKey string) (issueRoleHolders, bool, error) {
+	rows, err := q.Query(ctx, issueRoleHoldersStatement, issueKey, legionagents.Roles)
+	if err != nil {
+		return issueRoleHolders{}, false, err
+	}
+	defer rows.Close()
+	read := issueRoleHolders{Holders: []issueRoleHolderRecord{}}
+	found := false
+	for rows.Next() {
+		var role, session *string
+		var recordedAt *time.Time
+		if err := rows.Scan(&read.Issue, &role, &session, &recordedAt); err != nil {
+			return issueRoleHolders{}, false, err
+		}
+		found = true
+		if role != nil {
+			read.Holders = append(read.Holders, issueRoleHolderRecord{Role: *role, Session: *session, RecordedAt: *recordedAt})
+		}
+	}
+	if err := rows.Err(); err != nil {
+		return issueRoleHolders{}, false, err
+	}
+	return read, found, nil
+}
+
+// writeRoleHoldersIssueNotFound answers 404 ISSUE_NOT_FOUND for a key that no issue carries. The
+// daemon ends a publication on this code alone, as it ends a design-gate publication
+// (issue_design_gates.go): a Dispatch that does not serve the route answers its router's 404 under
+// the code NOT_FOUND, which the daemon retries until the release that has the route.
+func writeRoleHoldersIssueNotFound(w http.ResponseWriter, key string) {
+	writeError(w, "ISSUE_NOT_FOUND", http.StatusNotFound, fmt.Sprintf("no issue %s", key))
+}
+
+// maxRoleHolderSessionBytes is the longest session the route stores. A Legion session id is far
+// shorter: the Legion agent registry holds one to 128 bytes (legionagents.ValidateSessionID). The
+// bound keeps every row inside the unique index on (issue_key, session), whose B-tree entry holds
+// at most 2704 bytes, so no body reaches the index with a session it cannot hold.
+const maxRoleHolderSessionBytes = 256
+
+// putIssueRoleHolders publishes the session of each Legion role of an issue. It reads the
+// request's credential as optionalActor resolved it (requestWriter), and refuses what requireActor
+// refuses. The credential is a daemon's own when it holds model.ScopeLegionStatus and proves the
+// session legion-daemon:<project> of the issue's project, or proves the session
+// legion-daemon:<P> of another project's daemon and names that project P (isIssueDaemon). With
+// Deps.LegionStatusScope on, every other credential is refused 403 ROLE_HOLDER_FORBIDDEN. With it
+// off, the actor must be that session (this file's comment).
+//
+// The daemon sends the issue's whole set, so the transaction deletes each stored pair that the
+// body does not name, then inserts the pairs that are not stored yet. A pair that changed is
+// deleted before the insert, so the insert meets neither key of the table, and a pair that did not
+// change keeps its recorded_at. The delete statement writes daemon_proven, whether the credential
+// is the daemon's own, on each stored pair the body keeps, and the insert writes it on each pair it
+// adds, with the setting on or off. The answer does not carry the mark.
+//
+// The body is checked whole before the transaction opens: each role is one of the six, once, and
+// each session is a session id (text.IsSessionID) of at most maxRoleHolderSessionBytes, once. A
+// body that fails is 400 INVALID_ROLE_HOLDER and stores nothing, so no body gives a 500 from a
+// check or an index of the table. Six distinct roles bound the set at six holders. On a project
+// whose proven_sessions is on, a write whose credential does not prove its actor's session, the
+// session of the issue's project's daemon or of another project's daemon (isIssueDaemon), is 403
+// ROLE_HOLDER_NOT_PROVEN, after those refusals; a write the route takes marks the issue's project
+// in its transaction (project_role_holder_marks).
+func (s *server) putIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
+	var input issueRoleHoldersInput
+	if err := decodeJSON(r, &input); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	writer, err := s.requestWriter(r, input.Actor)
+	if err != nil {
+		s.writeAuthenticationError(w, err)
+		return
+	}
+	key := r.PathValue("key")
+	daemon := legionDaemonSessionOf(key)
+	credential := writer.credential
+	// Whether the actor is a daemon that writes the issue's records: the issue's project's daemon,
+	// or another project's daemon whose broker token proves its session and names its project.
+	issueDaemon := s.isIssueDaemon(r, writer.actor, key)
+	// A daemon's own token: it holds legion-status, which the broker grants to a daemon's token
+	// alone, and proves the session of the issue's project's daemon, or that of another project's
+	// daemon whose project it names. Such a token's actor is the session it proves.
+	daemonProven := credential != nil && credential.Holds(model.ScopeLegionStatus) &&
+		(credential.Session == daemon || issueDaemon)
+	if s.deps.LegionStatusScope {
+		if !daemonProven {
+			writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
+				"only a Legion daemon's own broker token publishes the roles of %s. It holds the %s scope, and it proves session %s, or it proves session legion-daemon:<P> and names project P.",
+				key, model.ScopeLegionStatus, daemon))
+			return
+		}
+	} else if !issueDaemon {
+		writeError(w, "ROLE_HOLDER_FORBIDDEN", http.StatusForbidden, fmt.Sprintf(
+			"only a Legion daemon names the sessions that hold the roles of %s: the daemon of project %s, as session %s, or another project's daemon, as session legion-daemon:<P> with a broker token that names P and proves that session.",
+			key, legionProjectOf(key), legionDaemonSessionOf(key)))
+		return
+	}
+	if input.Holders == nil {
+		writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+			"holders is required: the session of each role of %s, or [] when no session holds a role.", key))
+		return
+	}
+	holders := *input.Holders
+	roles := make([]string, len(holders))
+	sessions := make([]string, len(holders))
+	for index, holder := range holders {
+		if !slices.Contains(legionagents.Roles, holder.Role) {
+			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+				"%s is not a Legion role. A role is architect, planner, implementer, tester, reviewer or merger.", holder.Role))
+			return
+		}
+		if slices.Contains(roles[:index], holder.Role) {
+			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+				"%s is named twice. Name each role once.", holder.Role))
+			return
+		}
+		if strings.TrimSpace(holder.Session) == "" {
+			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+				"the session of %s is empty.", holder.Role))
+			return
+		}
+		if !text.IsSessionID(holder.Session) || len(holder.Session) > maxRoleHolderSessionBytes {
+			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+				"the session of %s is not a session id. A session id is at most %d bytes, and it holds no whitespace, no control character and none of / ? # < > \" ' ` [ ] |.",
+				holder.Role, maxRoleHolderSessionBytes))
+			return
+		}
+		if slices.Contains(sessions[:index], holder.Session) {
+			writeError(w, "INVALID_ROLE_HOLDER", http.StatusBadRequest, fmt.Sprintf(
+				"session %s is named for two roles. A session holds one role of an issue.", holder.Session))
+			return
+		}
+		roles[index] = holder.Role
+		sessions[index] = holder.Session
+	}
+
+	tx, err := s.begin(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	defer tx.Rollback(r.Context())
+	// The issue row is read in the write's own transaction, under the issue's owner lock, which a
+	// second write of the same issue waits for (store.LockOwner, the advisory lock every writer of
+	// the issue takes), so the two replaces run one after the other: the second reads the rows that
+	// the first committed, and each answers the set that it stored. The lock and the read are one
+	// batch, and the read is a plain select, so while no earlier build is in the fleet the
+	// transaction takes no row lock of an owner table and holds no transaction id until its first
+	// write (INFRA-636; beside an earlier build LockOwnerAndRead also takes the issue's row, as that
+	// build's writers do); it does not stop a reader.
+	var issue, project string
+	var provenSessions bool
+	if err := store.LockOwnerAndRead(r.Context(), tx, store.IssueOwner(key), `
+		select i.key, i.project_key, p.proven_sessions from issues i join projects p on p.key = i.project_key where i.key = $1
+	`, []any{key}, &issue, &project, &provenSessions); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			writeRoleHoldersIssueNotFound(w, key)
+			return
+		}
+		s.writeHandlerError(w, err)
+		return
+	}
+	// Another project's daemon passes isIssueDaemon only on a broker token that proves its session,
+	// so the one actor this refuses names the issue's project's daemon without proving it.
+	if provenSessions && !writer.actor.Proven {
+		writeError(w, "ROLE_HOLDER_NOT_PROVEN", http.StatusForbidden, fmt.Sprintf(
+			"project %s records proven sessions, so it takes the role holders of %s only on a credential that proves the session it publishes as: session %s, or session legion-daemon:<P> on a broker token that names project P. This request's credential does not prove session %s.",
+			project, key, daemon, daemon))
+		return
+	}
+	// The set before this write, read under the owner lock that every writer of the set takes, so
+	// the event names the set this write really replaced. The read is a plain select before the
+	// transaction's first write, so it holds no transaction id.
+	previous, _, err := readIssueRoleHolders(r.Context(), tx, issue)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// Mark the project even if the body lists no holders. Update the provenance of each
+	// retained pair only when it changes. Delete the omitted pairs, which are separate rows.
+	// Keep all three operations in one statement so no statement is added to the transaction ID window.
+	if _, err := tx.Exec(r.Context(), `
+		with marked_project as (
+			insert into project_role_holder_marks (project_key) values ($5) on conflict do nothing
+		), marked_pairs as (
+			update issue_role_holders set daemon_proven = $4
+			where issue_key = $1 and daemon_proven <> $4
+			  and (role, session) in (select * from unnest($2::text[], $3::text[]))
+		)
+		delete from issue_role_holders
+		where issue_key = $1
+		  and (role, session) not in (select * from unnest($2::text[], $3::text[]))
+	`, issue, roles, sessions, daemonProven, project); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The delete above is the whole of the publication that names no holder, so the insert runs
+	// only when there is a pair to write.
+	if len(holders) > 0 {
+		if _, err := tx.Exec(r.Context(), `
+			insert into issue_role_holders (issue_key, role, session, daemon_proven)
+			select $1::text, published.role, published.session, $4::boolean
+			from unnest($2::text[], $3::text[]) as published(role, session)
+			on conflict (issue_key, role) do nothing
+		`, issue, roles, sessions, daemonProven); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+	}
+	stored, _, err := readIssueRoleHolders(r.Context(), tx, issue)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	var changed []model.Event
+	if !sameRoleHolders(previous.Holders, stored.Holders) {
+		event, err := s.appendEvent(r.Context(), tx, issueOwner(issue).event("issue.role_holders_changed", writer.actor,
+			issueRoleHoldersChange{Key: issue, Holders: stored.Holders, PreviousHolders: previous.Holders}))
+		if err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
+		changed = append(changed, event)
+	}
+	if err := tx.Commit(r.Context()); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	s.publish(r.Context(), changed...)
+	WriteJSON(w, http.StatusOK, stored)
+}
+
+// getIssueRoleHolders answers the stored set of an issue: GET /api/v1/issues/{key}/role-holders. A
+// closed issue reads as an open one does.
+func (s *server) getIssueRoleHolders(w http.ResponseWriter, r *http.Request) {
+	if !s.requireAuthenticated(w, r) {
+		return
+	}
+	key := r.PathValue("key")
+	read, found, err := readIssueRoleHolders(r.Context(), s.deps.Store.Pool, key)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if !found {
+		writeRoleHoldersIssueNotFound(w, key)
+		return
+	}
+	WriteJSON(w, http.StatusOK, read)
+}

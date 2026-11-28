@@ -1,4 +1,4 @@
-import { agentSubject } from "@legion/contracts"
+import { legacyAgentSubject } from "@legion/contracts"
 import { expandSubscriptionTopics } from "@legion/envoy-client/transport"
 
 export type SubscriptionTopicsOptions = {
@@ -12,5 +12,5 @@ export function subscriptionTopics(options: SubscriptionTopicsOptions): readonly
     .map((topic) => topic.trim())
     .filter((topic) => topic.length > 0)
 
-  return expandSubscriptionTopics([agentSubject(options.sessionId), ...(additional ?? [])])
+  return expandSubscriptionTopics([legacyAgentSubject(options.sessionId), ...(additional ?? [])])
 }

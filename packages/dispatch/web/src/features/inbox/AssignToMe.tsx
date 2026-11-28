@@ -1,4 +1,4 @@
-import { type ReactNode, useEffect } from "react";
+import { type ReactNode, useState } from "react";
 
 import { QueryError } from "../../components/QueryError";
 import {
@@ -8,6 +8,7 @@ import {
   secondaryButtonText,
 } from "../../theme/classes";
 import { useIssueAssignee } from "../issue/useIssueAssignee";
+import { useLiveRegistration } from "../writes/useKeyedWrite";
 
 /** Takes an issue nobody holds for the viewer: one PATCH through the shared assignee write, so
  *  the row is theirs at once and rolls back if the server refuses. Under the Unassigned filter
@@ -29,25 +30,29 @@ export function AssignToMe({
    *  sibling row of the same issue leaving the list cannot drop this row's registration. */
   askId: string;
   issueKey: string;
-  /** Registers this row while its write is in flight or failed; unregistered once it settles
-   *  cleanly or the control unmounts. */
+  /** Registers the row of the ask its write was pressed on while that write is in flight or
+   *  failed; unregistered once it settles cleanly or the control unmounts. */
   onLive: (askId: string, live: boolean) => void;
   viewer: string;
 }): ReactNode {
-  const write = useIssueAssignee(issueKey);
-  const live = write.pending || write.failed;
-  useEffect(() => {
-    if (!live) return;
-    onLive(askId, true);
-    return () => onLive(askId, false);
-  }, [askId, live, onLive]);
+  // Offered on an issue nobody holds, it stands on no assignee, and draws none: its words say
+  // whether its write is out, not who holds the issue.
+  const write = useIssueAssignee(issueKey, null);
+  // The row held is the one the live save was pressed on, which is this row's unless a host has
+  // drawn the control for another ask since that press. The save carries its issue and not the
+  // row it was pressed on (`useIssueAssignee`), so the control keeps that row's ask itself.
+  const [pressedOn, setPressedOn] = useState<string | undefined>(undefined);
+  useLiveRegistration(write.pending || write.failed ? pressedOn : undefined, onLive);
   return (
     <>
       <button
         aria-label={`Assign ${issueKey} to me`}
         className={`min-h-11 shrink-0 rounded-lg px-2 py-1 text-xs font-medium md:min-h-8 ${secondaryButtonBorder} ${secondaryButtonText} ${secondaryButtonHoverBorder} ${secondaryButtonDisabledText}`}
         disabled={write.pending}
-        onClick={() => write.submit(viewer)}
+        onClick={() => {
+          setPressedOn(askId);
+          write.submit(viewer);
+        }}
         type="button"
       >
         {write.pending ? "Assigning…" : "Assign to me"}

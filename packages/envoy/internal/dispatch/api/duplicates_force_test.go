@@ -127,7 +127,8 @@ func rawCreatedPayload(t *testing.T, handler http.Handler, key string) map[strin
 }
 
 func TestCreateIssueForcedPastARefusalRecordsWhatItNamed(t *testing.T) {
-	handler := newTestHandler(t)
+	t.Parallel()
+	handler, _ := newDuplicateTestHandler(t)
 	fixture := newDuplicateVocabulary(t, handler, "FORCED", 1)
 
 	forced := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -143,7 +144,8 @@ func TestCreateIssueForcedPastARefusalRecordsWhatItNamed(t *testing.T) {
 }
 
 func TestCreateIssueForcedPastNothingRecordsNothing(t *testing.T) {
-	handler := newTestHandler(t)
+	t.Parallel()
+	handler, _ := newDuplicateTestHandler(t)
 	createDuplicateTestProject(t, handler, "FORCED")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "FORCED", "title": "Astrolabe calibration drifts after a reseat",
@@ -153,11 +155,11 @@ func TestCreateIssueForcedPastNothingRecordsNothing(t *testing.T) {
 	// A forced create the refusal would not have stopped, and an unforced create, both carry no
 	// forced key at all, which is how a reader tells them from a create whose check did not
 	// answer.
-	forced := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	forced := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "FORCED", "title": "Orchard pickers cannot log a crate",
 		"spec": duplicateSpecHarvest, "force": true,
 	}))
-	plain := requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
+	plain := requireAnsweredCreate(t, createIssueRequest(t, handler, map[string]any{
 		"project": "FORCED", "title": "Weighbridge power returns",
 		"spec": strings.Join(duplicateWords[:6], " ") + ".",
 	}))
@@ -169,6 +171,7 @@ func TestCreateIssueForcedPastNothingRecordsNothing(t *testing.T) {
 }
 
 func TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "FORCED")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -212,14 +215,9 @@ func TestCreateIssueForcedWithNoAnswerRecordsAnEmptyList(t *testing.T) {
 // count would report it as an override; `near_copy_check` has always been absent on this path,
 // and the two records must agree.
 func TestCreateIssueForcedExternalRecordsNoCheckThatNeverRan(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	createDuplicateTestProject(t, handler, "TEST")
-	mapping := dispatchRequest(t, handler, http.MethodPut, "/api/v1/settings/repo-projects/owner/repo", map[string]string{
-		"project": "TEST",
-	}, "alice")
-	if mapping.Code != http.StatusOK {
-		t.Fatalf("map external repository: status=%d body=%s", mapping.Code, mapping.Body.String())
-	}
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
 		"project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe,
@@ -228,7 +226,7 @@ func TestCreateIssueForcedExternalRecordsNoCheckThatNeverRan(t *testing.T) {
 	// The same text as that open issue, which an unforced create of the project is refused for:
 	// the external create goes in unchecked, and `force` changes nothing it records.
 	response := createIssueRequest(t, handler, map[string]any{
-		"external": "owner/repo#41", "title": "Astrolabe calibration drifts after a reseat",
+		"external": "owner/repo#41", "project": "TEST", "title": "Astrolabe calibration drifts after a reseat",
 		"spec": duplicateSpecAstrolabe, "force": true,
 	})
 	created := requireCreatedIssue(t, response)
@@ -251,6 +249,7 @@ func TestCreateIssueForcedExternalRecordsNoCheckThatNeverRan(t *testing.T) {
 // that no near-copy check was made. Refusing it would turn one slow read into a project nobody
 // can write to.
 func TestCreateIssueNudgeIsAbsentWhenTheGateDoesNotAnswer(t *testing.T) {
+	t.Parallel()
 	handler, database, _, served := newRegisteredTestServer(t, testServerOptions{})
 	createDuplicateTestProject(t, handler, "NUDGE")
 	requireCreatedIssue(t, createIssueRequest(t, handler, map[string]any{
@@ -291,7 +290,8 @@ func TestCreateIssueNudgeIsAbsentWhenTheGateDoesNotAnswer(t *testing.T) {
 }
 
 func TestCreateIssueNudgesTheClosestOpenIssueBelowTheRefusal(t *testing.T) {
-	handler := newTestHandler(t)
+	t.Parallel()
+	handler, _ := newDuplicateTestHandler(t)
 	// Midway between the two bars, so the case holds for any pair with
 	// 0 < duplicateNudgeScore < duplicateRefuseScore < 1.
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", (duplicateNudgeScore+duplicateRefuseScore)/2)
@@ -323,14 +323,15 @@ func TestCreateIssueNudgesTheClosestOpenIssueBelowTheRefusal(t *testing.T) {
 }
 
 func TestCreateIssueNudgesNobodyBelowTheNudgeBar(t *testing.T) {
-	handler := newTestHandler(t)
+	t.Parallel()
+	handler, _ := newDuplicateTestHandler(t)
 	// Half the nudge bar: the candidate holds too little of the new text to be named.
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", duplicateNudgeScore/2)
 
 	response := createIssueRequest(t, handler, map[string]any{
 		"project": fixture.project, "title": fixture.title, "spec": fixture.spec,
 	})
-	requireCreatedIssue(t, response)
+	requireAnsweredCreate(t, response)
 	body := decodeBody[struct {
 		Advice struct {
 			Suggestions model.Suggestions `json:"suggestions"`
@@ -343,7 +344,8 @@ func TestCreateIssueNudgesNobodyBelowTheNudgeBar(t *testing.T) {
 }
 
 func TestCreateIssueNudgesNobodyOnACreateItRefuses(t *testing.T) {
-	handler := newTestHandler(t)
+	t.Parallel()
+	handler, _ := newDuplicateTestHandler(t)
 	fixture := newDuplicateVocabulary(t, handler, "NUDGE", 1)
 
 	refused := createIssueRequest(t, handler, map[string]any{
@@ -373,6 +375,7 @@ func TestCreateIssueNudgesNobodyOnACreateItRefuses(t *testing.T) {
 
 // The gate's bars are a fraction of one and ordered, and three terms is the least it judges on.
 func TestDuplicateGateBarsAreOrderedFractions(t *testing.T) {
+	t.Parallel()
 	if !(0 < duplicateNudgeScore && duplicateNudgeScore < duplicateRefuseScore && duplicateRefuseScore <= 1) {
 		t.Fatalf("bars out of order: nudge %v, refuse %v", duplicateNudgeScore, duplicateRefuseScore)
 	}

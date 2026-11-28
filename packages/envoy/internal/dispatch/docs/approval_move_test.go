@@ -20,6 +20,7 @@ import (
 // so. Every move here is a settlement's (bySettlement); a route's version of the named text moves
 // the request to its agent (api's TestOnlyASettlementsVersionKeepsAnApprovalRequestWithThePerson).
 func TestAnApprovalRequestKeepsItsTurnOverAVersionOfTheTextThePersonWasAskedAbout(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	ctx := context.Background()
 	artifactID := createDocument(t, database, "# Spec\n\nShip it.\n")
@@ -92,7 +93,9 @@ func openStoredApprovalAsk(t *testing.T, database *store.Store, artifactID strin
 
 // moveStoredApprovalAsk writes version number of artifactID with markdown and moves the open
 // approval request to it in the same transaction, as a settlement of a person's edit does
-// (bySettlement), and returns the events the move appended.
+// (bySettlement), and returns the events the move appended. The move queues its writes and its
+// event on a ledger of the transaction's own (queueWrites), as a settlement's are, and they run as
+// the transaction's write phase before it commits.
 func moveStoredApprovalAsk(t *testing.T, database *store.Store, artifactID string, number int, markdown string) []model.Event {
 	t.Helper()
 	ctx := context.Background()
@@ -107,13 +110,16 @@ func moveStoredApprovalAsk(t *testing.T, database *store.Store, artifactID strin
 	`, artifactID, number, markdown); err != nil {
 		t.Fatalf("write version %d: %v", number, err)
 	}
-	moved, err := MoveApprovalAsk(ctx, tx, events.NewBroker(), artifactID, model.Version{Number: number}, markdown,
-		model.Actor{Kind: "user", ID: "alice"}, true, "")
-	if err != nil {
+	queued, ledger := queueWrites(ctx, tx)
+	if err := MoveApprovalAsk(queued, tx, events.NewBroker(), artifactID, model.Version{Number: number}, markdown,
+		model.Actor{Kind: "user", ID: "alice"}, true, ""); err != nil {
 		t.Fatalf("move the request to version %d: %v", number, err)
+	}
+	if err := ledger.runQueue(ctx, nil); err != nil {
+		t.Fatalf("write the move to version %d: %v", number, err)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit version %d: %v", number, err)
 	}
-	return moved
+	return ledger.events
 }

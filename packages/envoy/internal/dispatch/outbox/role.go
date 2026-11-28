@@ -70,7 +70,21 @@ type roleForward struct {
 	heldState   string
 	mentionKeys map[string]string
 	settledKeys map[string]string
+	// resolvedAt is when the resolution that chose holder was made (forwardOf), which every
+	// forward carries: a forward to a live holder's send judges it against
+	// roles.ForwardFenceAge (forward), and the batch's record dates the role's claim by it
+	// (deliveredGraph).
+	resolvedAt time.Time
+	// keepAttempt is the attempt a keep stores its copy for (bus.KeptAttemptMsgID): 0 or 1 for a
+	// batch's own keep and a fallback row's, and the attempt after the one whose copy expired for
+	// a keep the expiry pass makes again (keepExpiredCopiesAgain). Every other forward ignores it.
+	keepAttempt int
 }
+
+// errStaleRoleResolution is a forward whose resolution was roles.ForwardFenceAge old or older when
+// its send started (roleForward.forward): it sends nothing and leaves the destination pending, and
+// the outbox's next read of the event resolves the role's holder again.
+var errStaleRoleResolution = errors.New("the resolution of the role's holder is too old to forward on")
 
 // The states a forward is held on that are no session state of the holder's: the resolution never
 // reached one. They are label values of the hold counter (Deps.RoleForwardsHeld) and words of the
@@ -83,10 +97,15 @@ const (
 	heldStateUnresolved = "unresolved"
 )
 
-// roleResolution is one role's holder as a batch resolved it.
+// roleResolution is one role's holder as a batch resolved it, and when: at is the publisher's
+// clock as the read answered (resolveRoles). Every forward made of it carries that time
+// (forwardOf), so a batch that reads a resolution it made earlier dates its forwards, and the
+// role's claim its record states, by when the holder was read rather than by when the
+// resolution was read again (resolveRoleHolders, deliveredGraph).
 type roleResolution struct {
 	resolution roles.Resolution
 	err        error
+	at         time.Time
 }
 
 // resolveRole resolves role's holder as the outbox reads it, within ctx: the role and session
@@ -121,7 +140,8 @@ func resolveRole(ctx context.Context, deps Deps, role string) (roles.Resolution,
 // comments name, resolved before any destination was read (resolveUnpinnedRoleMentions,
 // resolveDestinations) - and the roles read here are added to it, so a batch resolves each role
 // once however many of its roads name it: a comment routed to the role it mentions names that
-// one twice. A caller with nothing resolved yet passes nil.
+// one twice. A role resolved earlier keeps the time its holder was read at (roleResolution.at).
+// A caller with nothing resolved yet passes nil.
 //
 // A role copy of a new comment waits for the mention that decides its dedupe key, rather than
 // being sent under a key that mention has not claimed yet, which would show the mentioned session
@@ -232,7 +252,7 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 			if !ok {
 				continue
 			}
-			dest.forward = forwardOf(dest.role, event.item, result.resolution, result.err)
+			dest.forward = forwardOf(dest.role, event.item, result.resolution, result.err, result.at)
 			dest.forward.mentionKeys = dest.mentionKeys
 			dest.forward.settledKeys = dest.settledKeys
 			if roleCopyWaitsForAMention(event, *dest) {
@@ -251,7 +271,8 @@ func resolveRoleHolders(ctx context.Context, deps Deps, events []*batchEvent, re
 }
 
 // resolveRoles resolves the holder of each of names, once per role and every role at once,
-// within ctx (resolveRole). It is the one resolution a batch runs: of the roles its events route
+// within ctx (resolveRole), each dated by the publisher's clock as its read answered
+// (roleResolution.at). It is the one resolution a batch runs: of the roles its events route
 // to (resolveRoleHolders) and of the roles the unanswered mentions of its comments name
 // (resolveUnpinnedRoleMentions).
 func resolveRoles(ctx context.Context, deps Deps, names []string) map[string]roleResolution {
@@ -262,6 +283,7 @@ func resolveRoles(ctx context.Context, deps Deps, names []string) map[string]rol
 		wg.Go(func() {
 			var result roleResolution
 			result.resolution, result.err = resolveRole(ctx, deps, role)
+			result.at = time.Now()
 			mu.Lock()
 			resolved[role] = result
 			mu.Unlock()
@@ -636,7 +658,7 @@ func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope
 		return nil
 	}
 	resolution, err := resolveRole(ctx, deps, role)
-	return forwardOf(role, item, resolution, err)
+	return forwardOf(role, item, resolution, err, time.Now())
 }
 
 // forwardOf maps a role's resolution to how item reaches it, as the listener's role lane maps the
@@ -667,57 +689,63 @@ func fallbackRoleForward(ctx context.Context, deps Deps, item contracts.Envelope
 // A holder that is only unresponsive is the one no-holder case the outbox does not keep, and it
 // stays the pending error above. The outbox sends a pending event again until the session answers
 // and the forward reaches it, or until its record passes the gone horizon and the case above keeps
-// the copy. A copy kept now would wait one hour at most, and the walk that drops it at the end of
-// that hour sends no dead letter for an outbox copy (isOutboxCopy, cmd/listener), so its end would
-// tell nobody.
+// the copy. A copy kept now would wait one hour, and its end would cost a keep of the outbox's
+// bound (maxRoleKeeps) for a session that is still alive: the walk that drops it at the end of
+// that hour tells Dispatch with an expiry notice (cmd/listener, endKeptCopyWithExpiryNotice), and
+// the outbox keeps the event again or records it undelivered (readKeptExpiries).
 //
 // The listener's capability check (frameDeliveryMode) does not apply: a Dispatch envelope's payload
 // is the event itself, which has no top-level delivery key, so the listener reads it as an untagged
 // send that every holder takes.
-func forwardOf(role string, item contracts.Envelope, resolution roles.Resolution, err error) *roleForward {
+//
+// Every forward carries resolvedAt, the time the resolution was made: a live holder's send is
+// fenced by it (forward), and the batch's record dates the role's claim by it (deliveredGraph).
+func forwardOf(role string, item contracts.Envelope, resolution roles.Resolution, err error, resolvedAt time.Time) *roleForward {
 	if err != nil {
-		return &roleForward{holder: resolution.Holder, heldState: heldStateUnresolved,
+		return &roleForward{holder: resolution.Holder, heldState: heldStateUnresolved, resolvedAt: resolvedAt,
 			err: fmt.Errorf("resolve the role's holder: %w", err)}
 	}
 	holder := resolution.Holder
 	switch resolution.State {
 	case roles.Unclaimed:
-		return keptOrSkipped(role, "the role has no claim")
+		return keptOrSkipped(role, "the role has no claim", resolvedAt)
 	case roles.Lapsed:
 		if resolution.LastSeen == 0 {
-			return &roleForward{holder: holder, heldState: heldStateUndated, err: fmt.Errorf(
+			return &roleForward{holder: holder, heldState: heldStateUndated, resolvedAt: resolvedAt, err: fmt.Errorf(
 				"the role's holder %s has no session record and nothing dates it", holder)}
 		}
 		if resolution.HolderState == session.Gone {
-			return keptOrSkipped(role, "the role's holder is gone")
+			return keptOrSkipped(role, "the role's holder is gone", resolvedAt)
 		}
-		return &roleForward{holder: holder, heldState: string(resolution.HolderState), err: fmt.Errorf(
+		return &roleForward{holder: holder, heldState: string(resolution.HolderState), resolvedAt: resolvedAt, err: fmt.Errorf(
 			"the role's holder %s is %s: it has not heartbeated since %s",
 			holder, resolution.HolderState, time.UnixMilli(resolution.LastSeen).UTC().Format(time.RFC3339))}
 	}
 	if item.SourceSession != "" && item.SourceSession == holder {
-		return &roleForward{holder: holder, skip: "the role's holder is the event's actor"}
+		return &roleForward{holder: holder, skip: "the role's holder is the event's actor", resolvedAt: resolvedAt}
 	}
-	return &roleForward{holder: holder}
+	return &roleForward{holder: holder, resolvedAt: resolvedAt}
 }
 
 // keptOrSkipped is how a role route no live holder can take reaches the role's next holder: a
 // keep of the copy on the role's kept lane, which the holder that claims the role next inside the
 // copy's hour is handed (cmd/listener/role_keep.go), and which the listener's walk drops at the end
-// of that hour with no dead letter, and which a holder that claimed the role while the keep was in
-// flight is handed by the keep itself (handOverKept). The keep carries no holder, so the route is
-// keyed on its role topic as the skip it replaced was, and holds back no session's later events.
+// of that hour with an expiry notice to Dispatch rather than a dead letter, so that the outbox
+// keeps it again or records it undelivered (readKeptExpiries), and which a holder that claimed the
+// role while the keep was in flight is handed by the keep itself (handOverKept). The keep carries
+// no holder, so the route is keyed on its role topic as the skip it replaced was, and holds back
+// no session's later events.
 //
 // One role token is not kept for and skips as it did before the kept lane, under skipped: one no
 // claim can ever name (roles.Valid, the pattern POST /v1/roles/set refuses), since a copy kept
 // under such a token waits for a claim that cannot be made and expires unread. That is the rule
 // the listener's own keep follows (keepForNextHolder), which the two writers of a role's kept
-// lane must agree on.
-func keptOrSkipped(role, skipped string) *roleForward {
+// lane must agree on. resolvedAt is the resolution's time, which the forward carries (forwardOf).
+func keptOrSkipped(role, skipped string, resolvedAt time.Time) *roleForward {
 	if !roles.Valid(role) {
-		return &roleForward{skip: skipped}
+		return &roleForward{skip: skipped, resolvedAt: resolvedAt}
 	}
-	return &roleForward{keptFor: role}
+	return &roleForward{keptFor: role, resolvedAt: resolvedAt}
 }
 
 // send is the router of a role destination: it sends item, routed to that destination, as forward
@@ -756,20 +784,59 @@ func (f *roleForward) send(ctx context.Context, deps Deps, sender bus.Sender, it
 // answer, and what counts the forward as having reached the holder, for every holder alike: a
 // holder is delivered its stored copy from its own consumer by the listener's relay and answers
 // the request with nothing (INFRA-771).
+//
+// A forward whose resolution is roles.ForwardFenceAge old or older when its send starts sends
+// nothing (errStaleRoleResolution) and the destination stays pending, so the next read of the
+// event resolves the holder again: a takeover's copy of the previous holder's role messages reads
+// that holder's subject for the record's life (cmd/listener role_takeover.go), and a forward
+// started on a fresher resolution is stored where that copy reads it.
+//
+// The fence bounds when the send starts and not when the stream stores it: a forward that passed
+// the fence and then stalled - a goroutine the machine did not run, a connection that held the
+// publish - can be stored on the previous holder's subject after that takeover record has ended,
+// and no copy would carry it to the role's next holder. So the stream's acknowledgement is judged
+// again on this process's clock (Deps.now): a forward stored later than roles.ForwardFenceAge and
+// its acknowledgement window (Deps.forwardAckTimeout, the wait its Request runs under) after its
+// resolution is no delivery (roles.ForwardStoredTooLate). Its answer wraps
+// roles.ErrForwardStoredTooLate, so the destination stays pending and the next read of the event
+// resolves the holder again, as a stale resolution's does. The copy stored on the previous holder's
+// subject stays there, and the next holder is forwarded the event under the same key the stream
+// and its host drop a repeat of, so it takes it once.
 func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envelope) <-chan error {
+	if now := deps.now(); roles.ResolutionTooOld(f.resolvedAt, now) {
+		age := now.Sub(f.resolvedAt)
+		stale := make(chan error, 1)
+		stale <- fmt.Errorf("forward to %s: %w (resolved %s ago)", f.holder, errStaleRoleResolution, age.Round(time.Second))
+		return stale
+	}
 	item.DedupeKey = contracts.RoleForwardDedupeKey(item, f.holder)
-	subject := contracts.AgentSubject(f.holder)
-	return sender.Request(subject, item, bus.RequestOptions{
+	subject := contracts.LegacyAgentSubject(f.holder)
+	ackWindow := deps.forwardAckTimeout()
+	stored := sender.Request(subject, item, bus.RequestOptions{
 		MsgID:   bus.ForwardMsgID(item.DedupeKey, subject),
-		Timeout: deps.forwardAckTimeout(),
+		Timeout: ackWindow,
 	})
+	answer := make(chan error, 1)
+	go func() {
+		err := <-stored
+		if now := deps.now(); err == nil && roles.ForwardStoredTooLate(f.resolvedAt, now, ackWindow) {
+			err = fmt.Errorf("forward to %s: %w (resolved %s before the stream stored it)",
+				f.holder, roles.ErrForwardStoredTooLate, now.Sub(f.resolvedAt).Round(time.Second))
+		}
+		answer <- err
+	}()
+	return answer
 }
 
 // keep stores item on the role's kept lane (bus.KeptRoleSubject) with one JetStream publish,
 // under the id every writer of that lane keeps this message under (bus.KeptMsgID, the dedupe key
-// and the role), so the stream holds one copy of it however often the outbox retries and whether
-// the listener kept a copy of it too. The envelope is stored with its topic the role's and its
-// dedupe key the original's, which is what the listener's own keep stores and what the drain's
+// and the role) for its first keep, or that id with the keep's attempt for a keep the expiry pass
+// makes again (bus.KeptAttemptMsgID, keepAttempt), so the stream holds one copy of each keep
+// however often the outbox retries it and whether the listener kept a copy of it too. The
+// listener reads the attempt back from that id when the copy's hour ends and names it in the
+// expiry notice it sends (cmd/listener/role_keep.go, keptCopyExpiry). The envelope is stored with
+// its topic the role's and its dedupe key the original's, which is what the listener's own keep
+// stores and what the drain's
 // forward to the next holder reads (keepRoleMessage, walkKeptRole), and with the comment's
 // settled mentions by session on it (contracts.Envelope.MentionDedupeKeys, settledKeys), which
 // the holder that claims the role next is keyed by wherever the copy reaches it from: that
@@ -789,25 +856,35 @@ func (f *roleForward) forward(deps Deps, sender bus.Sender, item contracts.Envel
 // Acknowledged, the copy is handed to a holder that claimed the role while the keep was in
 // flight, before that answer is given (handOverKept), so the route's own answer stays the keep's
 // and the handover is behind it; the handover is given the time of this publish, which is the
-// copy's own age and what its forward carries (contracts.Envelope.KeptAt). The publish is made on
-// the batch's own goroutine, which issues every send of a window without waiting for any of them
-// (sendChains), so the wait for the acknowledgement and the handover behind it run on a goroutine
-// of their own, and the record of what those handovers delivered is shared between them (handed,
-// keptHandovers).
+// copy's own age and what its forward carries (contracts.Envelope.KeptAt). The answer is the
+// stream's acknowledgement, or the error of a handover that failed on a connection that no
+// longer answers a probe (handOverKept), which wraps errHandoverProbeFailed and
+// bus.ErrUnavailable. The publish is made on the batch's own goroutine, which issues every send of
+// a window without waiting for any of them (sendChains), so the wait for the acknowledgement and
+// the handover behind it run on a goroutine of their own, and the record of what those handovers
+// delivered is shared between them (handed, keptHandovers).
 func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, item contracts.Envelope, handed *keptHandovers) <-chan error {
 	keptAt := time.Now()
 	item.MentionDedupeKeys = f.settledKeys
-	stored := sender.PublishStoredAsync(bus.KeptRoleSubject(f.keptFor), item, bus.KeptMsgID(item.DedupeKey, f.keptFor))
+	stored := sender.PublishStoredAsync(bus.KeptRoleSubject(f.keptFor), item, bus.KeptAttemptMsgID(item.DedupeKey, f.keptFor, f.keepAttempt))
 	answer := make(chan error, 1)
 	go func() {
 		err := <-stored
 		if err == nil {
-			handOverKept(ctx, deps, sender, f.keptFor, item, keptAt, handed)
+			err = handOverKept(ctx, deps, sender, f.keptFor, item, keptAt, handed)
 		}
 		answer <- err
 	}()
 	return answer
 }
+
+// errHandoverProbeFailed is in the answer of a keep whose handover failed and whose probe of the
+// keep's connection then failed too (handOverKept), beside the probe's own error, which wraps
+// bus.ErrUnavailable. It says that the connection was probed already, and found not answering: a
+// batch a send of which answered it gives the hold up for NATS lost without a second probe of the
+// same connection (publishBatch), and a fallback pass reports NATS lost for it
+// (publishFallbackCopies), so the holder gives the hold up there too (Outbox.serve).
+var errHandoverProbeFailed = errors.New("the probe after the failed handover found its NATS connection not answering")
 
 // handOverKept hands the copy just kept on role's kept lane to the session holding the role now,
 // when one claimed it while the keep was in flight and that copy is the one the role's drain
@@ -874,15 +951,38 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // owner do; before it, the kept copy waited for the sweep and lost to every such event.
 //
 // A read that failed - the lane, its cursor, the claim or the holder's session - ends the
-// handover at Warn on the one line this writes, and so does a forward that failed; a read this
-// process's own stop cancelled is not one of them (lostToContextEnd), the batch saying that
-// itself. Nothing follows such a failure: the route was reached when the stream acknowledged the
-// keep, so the event is published and nothing retries the handover, and it is not counted among
-// the destinations a publish did not reach (countPublishFailure), which are the ones the outbox
-// then sends again. What it costs is this issue's order at that holder: the copy reaches it only
-// at the listener's next handover of the lane - the role's next claim, a keep, the registration
-// that makes the holder live again or the claim route's refresh that does, or the sweep, up to
-// its interval later - behind every event the holder takes meanwhile.
+// handover, and so does a forward that failed; a read this process's own stop cancelled is not one
+// of them (lostToContextEnd), the batch saying that itself. Each read is bounded at 2 s - the lane
+// and its cursor at probeTimeout (boundedKeptLanes, which New puts in front of Deps.KeptLanes),
+// the claim and the session at readTimeout in internal/roles - and the forward at its
+// acknowledgement window, roleForwardAckTimeout (Deps.forwardAckTimeout). Such a failure, while
+// the batch's ctx stands, is followed by a probe of sender's connection (bus.Sender.Probe,
+// probeTimeout), because a silence fails the read at its bound and sends no connection event: the
+// keep would answer reached, and the chain would send its next send - another keep of the role -
+// into the silence, waiting out that send's acknowledgement before the batch probes and gives the
+// hold up, past the take-over (TestAnOutboxThatLosesNATSInAKeepsHandoverGivesThePublisherToTheOther).
+// A probe that fails is logged at Error and answers the keep with an error wrapping
+// errHandoverProbeFailed and the probe's own error, and so bus.ErrUnavailable: the batch settles
+// the send lost and makes no further send, and gives the hold up for NATS lost with no second
+// probe of that connection, unless its client has reconnected since it began (sendChains,
+// publishBatch), counting the send failed (countPublishFailure), which it is to everyone reading
+// the outage. The copy is on the lane all the same, as the stream acknowledged it, and the
+// released event is sent again by the next scan: kept again under the same message id, which the
+// stream holds once, or forwarded to a holder that claimed the role meanwhile under the id every
+// forward of that copy to that holder carries, which the stream and the holder each take once. A
+// pass's keep answered so, the fallback pass's or the expiry pass's, is a send that found NATS
+// unavailable (judgeSend): its row is released after retry.BaseDelay and kept again under the
+// same id, and the fallback pass reports NATS lost for it, so the holder gives the hold up as it
+// does for such a batch (publishFallbackCopies, Outbox.serve).
+//
+// A probe that answers, or a failure once the batch's ctx has ended that is not that end's own,
+// is logged at Warn, and nothing follows it: the route was reached when the stream acknowledged
+// the keep, so the event is published and nothing retries the handover, and it is not counted
+// among the destinations a publish did not reach (countPublishFailure), which are the ones the
+// outbox then sends again. What it costs is this issue's order at that holder: the copy reaches
+// it only at the listener's next handover of the lane - the role's next claim, a keep, the
+// registration that makes the holder live again or the claim route's refresh that does, or the
+// sweep, up to its interval later - behind every event the holder takes meanwhile.
 //
 // The forward carries the time of the keep itself (contracts.Envelope.KeptAt), as the drain's
 // forward of a copy carries the stream's store time of it, so a holder can judge the message's
@@ -891,18 +991,28 @@ func (f *roleForward) keep(ctx context.Context, deps Deps, sender bus.Sender, it
 // unless a drain that read the cursor before this handover reaches the agent subject ahead of it.
 // A keep the outbox retried stamps the retry's own time, the stream having kept the copy the
 // first publish stored.
-func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) {
-	if err := handOverKeptCopy(ctx, deps, sender, role, item, keptAt, handed); err != nil && !lostToContextEnd(ctx, err) {
-		slog.Warn("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it",
-			"role", role, "event_id", item.EventID, "error", err)
+func handOverKept(ctx context.Context, deps Deps, sender bus.Sender, role string, item contracts.Envelope, keptAt time.Time, handed *keptHandovers) error {
+	err := handOverKeptCopy(ctx, deps, sender, role, item, keptAt, handed)
+	if err == nil || lostToContextEnd(ctx, err) {
+		return nil
 	}
+	if ctx.Err() == nil {
+		if probeErr := sender.Probe(probeTimeout); probeErr != nil {
+			slog.Error("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it, and the handover's NATS connection does not answer",
+				"role", role, "event_id", item.EventID, "error", err, "probe_error", probeErr)
+			return fmt.Errorf("hand role %s's kept copy of %s over: %w: %w", role, item.EventID, errHandoverProbeFailed, probeErr)
+		}
+	}
+	slog.Warn("dispatch outbox: the copy kept for a role was not handed to the holder that claimed it",
+		"role", role, "event_id", item.EventID, "error", err)
+	return nil
 }
 
-// handOverKeptCopy is the handover's reads and its forward, whose failure handOverKept logs: one
-// line for all of them, since what each costs the copy is the same and the batch's own stop
-// quiets them alike (lostToContextEnd). Nothing to hand over is no failure: a role no live holder
-// can take, a lane another copy leads and a Deps with no lane reader each come back nil with
-// nothing sent.
+// handOverKeptCopy is the handover's reads and its forward, whose failure handOverKept judges:
+// one judgement for all of them, since what each costs the copy is the same and the batch's own
+// stop quiets them alike (lostToContextEnd). Nothing to hand over is no failure: a role no live
+// holder can take, a lane another copy leads and a Deps with no lane reader each come back nil
+// with nothing sent.
 //
 // The holder is resolved before the lane is read, because what this batch has already handed over
 // counts only for the holder it reached (keptHandovers.handedTo), and because a keep is made for
@@ -916,7 +1026,7 @@ func handOverKeptCopy(ctx context.Context, deps Deps, sender bus.Sender, role st
 	if err != nil {
 		return fmt.Errorf("resolve the holder of role %s, which a copy was just kept for: %w", role, err)
 	}
-	handover := forwardOf(role, item, resolution, nil)
+	handover := forwardOf(role, item, resolution, nil, time.Now())
 	if handover.keptFor != "" || handover.skip != "" || handover.err != nil {
 		return nil
 	}
@@ -1006,19 +1116,57 @@ func (h *keptHandovers) handed(role, holder string, seq uint64) {
 	h.after[role] = keptHandover{holder: holder, sequence: seq}
 }
 
-// KeptLaneReader reads a role's kept lane and its drain cursor: the one capability beyond
-// publishing that the handover behind a keep needs (handOverKept, keptCopyLeadsTheLane). The
-// cursor read is the one the listener's own pass over a lane makes as well
-// (cmd/listener/role_keep.go, readKeptLaneHead), so the two writers of a lane decode one body one
-// way; the lane read differs, a pass reading the lane's last copy and this the first past the
-// cursor. bus.Client answers both over the stored-message API the outbox's own grant covers
-// (infra/core/permissions.go, DispatchPermissions), and is what cmd/dispatch passes.
+// KeptLaneReader reads a role's kept lane and its drain cursor, and the stream's identity: the one
+// capability beyond publishing that the handover behind a keep needs (handOverKept,
+// keptCopyLeadsTheLane), and the expiry pass's reads of the listeners' notices and of the copies
+// they name (readKeptExpiries, readExpiredCopy). The cursor read is the one the listener's own
+// pass over a lane makes as well (cmd/listener/role_keep.go, readKeptLaneHead), so the two writers
+// of a lane decode one body one way; the lane read differs, a pass reading the lane's last copy
+// and this the first past the cursor. bus.Client answers the lane and cursor reads over the
+// stored-message API and the identity with a stream info, both of which the outbox's own grant
+// covers (natsgrant.Dispatch), and is what cmd/dispatch passes.
 type KeptLaneReader interface {
 	// NextStoredMessage is the first message the stream holds at or after seq on subject.
 	NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error)
 	// ReadKeptRoleCursor is role's drain cursor as the stream holds it, the zero cursor for a
 	// lane no walk has written one for (bus.Client.ReadKeptRoleCursor).
 	ReadKeptRoleCursor(ctx context.Context, role string) (bus.StoredKeptRoleCursor, error)
+	// StreamID is the stream's identity (bus.StreamIDMetadataKey), and bus.ErrNoStreamID for a
+	// stream that carries none (bus.Client.StreamID): what tells the expiry notices' cursor to
+	// start again in a stream created again since it was written (keptExpiryStart).
+	StreamID(ctx context.Context) (string, error)
+}
+
+// boundedKeptLanes is the outbox's kept-lane reader: New puts it in front of Deps.KeptLanes, so
+// every read the outbox makes through that reader - the expiry pass's, and the handover's behind a
+// keep, a scan batch's or a pass's (handOverKept) - runs under a deadline of probeTimeout within
+// its caller's ctx. A stored-message read's flush does not end at its ctx's cancellation: it waits
+// out the call's deadline (bus confirmFlushed, nats.go's FlushTimeout), and a ctx with no deadline
+// gets storedMessageWait in internal/bus, 10 s, so on a connection that is gone or silent the read
+// ends at this deadline at the latest. A healthy stream answers each read in milliseconds. The
+// role and session buckets need no such bound, since each of their reads honours ctx and is
+// bounded at readTimeout in internal/roles, and nor does a keep, whose answer a pass reads within
+// its ctx (awaitAnswer).
+type boundedKeptLanes struct {
+	reader KeptLaneReader
+}
+
+func (b boundedKeptLanes) NextStoredMessage(ctx context.Context, subject string, seq uint64) (bus.StoredMessage, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.NextStoredMessage(ctx, subject, seq)
+}
+
+func (b boundedKeptLanes) ReadKeptRoleCursor(ctx context.Context, role string) (bus.StoredKeptRoleCursor, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.ReadKeptRoleCursor(ctx, role)
+}
+
+func (b boundedKeptLanes) StreamID(ctx context.Context) (string, error) {
+	ctx, cancel := context.WithTimeout(ctx, probeTimeout)
+	defer cancel()
+	return b.reader.StreamID(ctx)
 }
 
 // keptCopyLeadsTheLane reports whether the copy of item just kept on role's kept lane is the one

@@ -62,12 +62,19 @@ type dispatchPair struct {
 
 // newPair opens the database and takes the NATS server the pair will share, and starts nothing:
 // a row that must seed durable state the processes read at boot (the delivery settings their
-// intakes wait for) or hold a lock their first pass will wait on does that between this and
-// start.
+// intakes' settings cache reads before the intakes bind) or hold a lock their first pass will wait
+// on does that between this and start.
 func newPair(t *testing.T) *dispatchPair {
 	t.Helper()
+	return newPairOn(t, storetest.Open(t))
+}
+
+// newPairOn is newPair on database, which the caller made: the two-build suite's, which its builds
+// migrated in production's order (laneDatabase).
+func newPairOn(t *testing.T, database *store.Store) *dispatchPair {
+	t.Helper()
 	server, url := multiprocessNATS(t)
-	return &dispatchPair{database: storetest.Open(t), natsServer: server, nats: url, proxies: map[*dispatchProcess]*testnats.Proxy{}}
+	return &dispatchPair{database: database, natsServer: server, nats: url, proxies: map[*dispatchProcess]*testnats.Proxy{}}
 }
 
 // databaseURL is the connection string a process is started with: the database storetest cloned

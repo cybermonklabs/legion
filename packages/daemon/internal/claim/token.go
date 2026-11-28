@@ -1,21 +1,30 @@
 package claim
 
 import (
+	"errors"
 	"fmt"
 	"regexp"
 	"strings"
 )
 
+// ProjectKeyPattern is a Dispatch project key, the contract's PROJECT_KEY_PATTERN
+// (packages/contracts/src/dispatch-tools.ts): a capital letter, then one to nine capitals or
+// digits. IsProjectKey is the one test of it, and a refusal that names the rule quotes this.
+// TestTheProjectKeyPatternIsTheContractsOwn holds it to the contract's own.
+const ProjectKeyPattern = `^[A-Z][A-Z0-9]{1,9}$`
+
 var (
 	// issueKey is a Dispatch issue key, the one shape an issue has (legion-roles.ts:30).
 	issueKey = regexp.MustCompile(`^([A-Z][A-Z0-9]*)-([0-9]+)$`)
+	// projectKey is ProjectKeyPattern compiled.
+	projectKey = regexp.MustCompile(ProjectKeyPattern)
 	// projectToken is a project as a token spells it (legion-roles.ts:28).
 	projectToken = regexp.MustCompile(`^[a-z0-9]+$`)
 	// notAlphanumeric is everything ProjectToken drops.
 	notAlphanumeric = regexp.MustCompile(`[^a-z0-9]`)
 )
 
-// Roles are the six roles a claim can be on, in the order the workflow reaches them.
+// Roles are the six roles a claim can be on, in the order of the default steps (each task names its own).
 var Roles = []Role{RoleArchitect, RolePlanner, RoleImplementer, RoleTester, RoleReviewer, RoleMerger}
 
 // ProjectToken is the project as every token, and the private tmux server, spell it: the
@@ -32,6 +41,34 @@ func ProjectToken(project string) (string, error) {
 
 // IsIssueKey reports whether key is a Dispatch issue key (`LEGION-208`).
 func IsIssueKey(key string) bool { return issueKey.MatchString(key) }
+
+// IsProjectKey reports whether key is a Dispatch project key (`LEGION`), as the contract reads one.
+func IsProjectKey(key string) bool { return projectKey.MatchString(key) }
+
+// KeyOfProject reports whether an outbox row keyed key belongs to project: the key's part before
+// its first `-` — the whole key where it has none, as a row keyed by a project itself is (a pause's
+// stop of a claim of another project's issue, a controller notice, the gated-steps publish) — is
+// project, compared without regard to case, so that project may be the Dispatch key (`LEGION`) or
+// the claim token's project (`legion`, which ProjectToken lowercases one to one from every key a
+// Dispatch project has).
+//
+// It is the one rule every write of an outbox row by key takes (internal/daemon's projectRecords
+// and workflowRuntime.enqueueRoleHolders; internal/store's queuesRoleHolders, EnqueueRoleHolders
+// and insertOutboxRow), and the rule the outbox's run reads from the other side (record's
+// dueRowsSQL, whose `split_part(outbox.issue, '-', 1)` is the same part). A row keyed otherwise is
+// run only by the daemon whose project its key names, against that daemon's own claims, so a daemon
+// that writes it writes into another project's work.
+func KeyOfProject(project, key string) bool {
+	keyProject, _, _ := strings.Cut(key, "-")
+	return strings.EqualFold(keyProject, project)
+}
+
+// ErrKeyOfAnotherProject is the refusal of a write of an outbox row whose key is not of the
+// writer's project (KeyOfProject), by a write whose caller names the row by the id it answers:
+// internal/daemon's projectRecords.EnqueueID and internal/store's insertOutboxRow. An id of no row
+// would name nothing — the decisions a start claims, the stop a pause released, a release's mark —
+// so the write fails instead, and the caller's transaction rolls back.
+var ErrKeyOfAnotherProject = errors.New("the outbox row is keyed by another project's issue, whose rows only that project's daemon runs")
 
 // IsRole reports whether role is one of the six a claim can be on.
 func IsRole(role Role) bool {

@@ -7,6 +7,8 @@ import (
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
 )
 
 // everyForm holds each form of a text of The Spec that ExtractDocument reads, and a term-shaped
@@ -145,7 +147,7 @@ func TestExtractNamesARepeatedID(t *testing.T) {
 	if len(got.Texts) != 2 || got.Texts[0].Node != "a" || got.Texts[1].Node == "a" || got.Texts[1].Node == "" {
 		t.Fatalf("Texts = %#v, want a, then the id the parser gives the second block", got.Texts)
 	}
-	if findings := Check(Context{}, Input{Texts: got.Texts}); len(findings) != 1 || findings[0].Node != got.Texts[1].Node {
+	if findings := check(Context{}, Input{Texts: got.Texts}); len(findings) != 1 || findings[0].Node != got.Texts[1].Node {
 		t.Fatalf("Check = %#v, want one finding of Node %s", findings, got.Texts[1].Node)
 	}
 	component := "## Records (component `r`)\n\nIt holds each record.\n\n" +
@@ -178,6 +180,26 @@ func TestExtractSkipsCodeFences(t *testing.T) {
 	}
 }
 
+// TestAHeadingClosesTermsByTheLevelPmdocReads holds the extractor to the level of a heading as
+// pmdoc reads it, whatever number type the tree holds it in: a heading of level 3 stays in a part
+// of Terms of level 2, and a heading of level 2 closes it.
+func TestAHeadingClosesTermsByTheLevelPmdocReads(t *testing.T) {
+	for _, test := range []struct {
+		level  any
+		closes bool
+	}{
+		{int(3), false}, {int64(3), false}, {float64(3), false}, {float32(3), false},
+		{int(2), true}, {float32(2), true},
+	} {
+		e := &extraction{termsLevel: 2}
+		heading := &pmdoc.Node{Type: "heading", Attrs: pmdoc.Attrs{"level": test.level}, Children: []*pmdoc.Node{{Type: "text", Text: "More"}}}
+		e.heading(heading, nil)
+		if closed := e.termsLevel == 0; closed != test.closes {
+			t.Errorf("a heading of level %v (%T) closed the part of Terms of level 2: %t, want %t", test.level, test.level, closed, test.closes)
+		}
+	}
+}
+
 // A line under a heading Terms that is no term line is never dropped in silence: the extractor
 // reads it as the term, or Check finds it. Each line here is in another form than the term line
 // "- **<term>**: <definition>": the colon in the bold, a space before the colon, no space after
@@ -202,7 +224,7 @@ func TestALineUnderTermsThatIsNoTermLineIsNotDroppedInSilence(t *testing.T) {
 				read = true
 			}
 		}
-		findings := Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+		findings := check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
 		if !read && len(findings) == 0 {
 			t.Errorf("%q under # Terms: the extractor read terms %#v and Check found nothing, so the definition is dropped in silence", line, extracted.Terms)
 		}
@@ -248,9 +270,10 @@ func TestALineUnderTermsThatIsNoTermLineIsAFinding(t *testing.T) {
 		t.Errorf("Counts = %v, want 2 lines and 2 definitions", got.Counts)
 	}
 	detail := `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+		`Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
 		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`
 	want := []Finding{finding(prose, "term-line", detail), finding(drift, "term-line", detail)}
-	if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, want) {
+	if findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, want) {
 		t.Fatalf("Check =\n%#v\nwant\n%#v", findings, want)
 	}
 }
@@ -270,7 +293,7 @@ func TestATermsHeadingInAnotherFormIsNotDroppedInSilence(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExtractDocument under %q: %v", heading, err)
 		}
-		if len(extracted.Terms) == 0 && len(Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})) == 0 {
+		if len(extracted.Terms) == 0 && len(check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})) == 0 {
 			t.Errorf("under %q the extractor read no term and Check found nothing, so the definition is dropped in silence", heading)
 		}
 	}
@@ -298,7 +321,7 @@ func TestATermsHeadingInAnotherFormIsAFinding(t *testing.T) {
 			t.Errorf("under %q: Texts = %#v, Terms = %#v, Counts = %v; want the heading text, the term_line text and no term", c.heading, got.Texts, got.Terms, got.Counts)
 			continue
 		}
-		if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, []Finding{finding(text, "terms-heading", detail)}) {
+		if findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); !sameFindings(findings, []Finding{finding(text, "terms-heading", detail)}) {
 			t.Errorf("Check under %q = %#v, want one terms-heading finding", c.heading, findings)
 		}
 	}
@@ -307,7 +330,7 @@ func TestATermsHeadingInAnotherFormIsAFinding(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); len(findings) != 0 || got.Counts[KindHeading] != 0 {
+		if findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); len(findings) != 0 || got.Counts[KindHeading] != 0 {
 			t.Errorf("control %q: Check = %#v, Counts = %v, want no finding and no heading text", heading, findings, got.Counts)
 		}
 	}
@@ -328,7 +351,7 @@ func TestAHeadingThatAPersonReadsAsTermsIsTheListOfTerms(t *testing.T) {
 		if !reflect.DeepEqual(got.Terms, want) || len(got.Texts) != 0 || got.Counts[KindHeading] != 0 {
 			t.Errorf("under %q: Terms = %#v, Texts = %#v, Counts = %v; want the term heartbeat and no text", heading, got.Terms, got.Texts, got.Counts)
 		}
-		if findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); len(findings) != 0 {
+		if findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms}); len(findings) != 0 {
 			t.Errorf("Check under %q = %#v, want no finding", heading, findings)
 		}
 	}
@@ -342,10 +365,10 @@ func TestAHeadingThatAPersonReadsAsTermsIsTheListOfTerms(t *testing.T) {
 }
 
 // Under a heading Terms each line is a term line, so a decision block there breaks the form at its
-// question line, and the finding tells the writer the way out: the block stands above the heading,
-// and the chosen definition goes under it after the answer. The control: the same block above the
-// heading gives no finding, and the term line under the heading is the one term.
-func TestADecisionBlockUnderTermsIsAFindingThatNamesTheWayOut(t *testing.T) {
+// question line, and the finding's detail tells the writer where the block goes: above the
+// heading, with the chosen definition under it after the answer. The control: the same block above
+// the heading gives no finding, and the term line under the heading is the one term.
+func TestADecisionBlockUnderTermsIsAFindingThatNamesWhereItGoes(t *testing.T) {
 	block := ":::ask{#which urgency=\"med\" multiple=\"false\"}\nWhich definition does the spec keep?\n\n- Keep it: The spec keeps the definition.\n:::\n"
 	term := "- **lease**: The right of one session to one work unit for a time.\n"
 	for _, test := range []struct {
@@ -364,12 +387,12 @@ func TestADecisionBlockUnderTermsIsAFindingThatNamesTheWayOut(t *testing.T) {
 		if len(got.Terms) != 1 || got.Terms[0].Name != "lease" {
 			t.Errorf("%s: Terms = %#v, want the one term lease", test.name, got.Terms)
 		}
-		findings := Check(planted(), Input{Texts: got.Texts, Proposed: got.Terms})
+		findings := check(planted(), Input{Texts: got.Texts, Proposed: got.Terms})
 		var nodes []string
 		for _, finding := range findings {
 			nodes = append(nodes, finding.Node)
 			if finding.Rule != "term-line" || !strings.Contains(finding.Detail, "Put a decision block above the heading Terms") {
-				t.Errorf("%s: finding %#v, want rule term-line with the way out for a decision block", test.name, finding)
+				t.Errorf("%s: finding %#v, want rule term-line whose detail says where a decision block goes", test.name, finding)
 			}
 		}
 		if !reflect.DeepEqual(nodes, test.want) {

@@ -2,7 +2,6 @@ package daemon
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"strings"
@@ -24,7 +23,7 @@ import (
 // writes neither: it suspended nothing, every claim of its issue is failed, retired or
 // suspended, and the pod is gone for good.
 const (
-	idleRigIdleTeardown = "outbox: released the idle pod of an issue; its roles resume in the same sessions at the next wake"
+	idleRigIdleTeardown = "outbox: released the idle pod of an issue, whose workspace held no unpushed commit on a working copy or a bookmark and no working-copy change; its roles resume in the same sessions at the next wake"
 	idleRigIdleCancel   = "outbox: the idle release of an issue's pod did not finish; its roles go on in the same pod"
 )
 
@@ -104,41 +103,11 @@ func saysNoRoleComesBack(t *testing.T, logs *syncBuffer, line, why string) {
 	}
 }
 
-// earlierReleasesBundle leaves the issue holding the workspace bundle an earlier release of its
-// pod saved and no pod has restored, saved through the store that release saves it through
-// (store.PutWorkspaceBundle), and answers its size in bytes. The pod its work came off is a pod
-// of an earlier life of the issue, so nothing standing now is its source and its one restore
-// attempt is unspent.
-//
-// It is the state the record of this rule's release must be read in. This release saves no
-// bundle, and the teardown's ordinary bundle read is per issue (store.WorkspaceBundleSize), so a
-// teardown that made that read would record these bytes as its own and charge a reader of the
-// records for work this release never saved.
-func (r *idleRig) earlierReleasesBundle(t *testing.T) int {
-	t.Helper()
-	saved := idleRigEarlierBundle(r.issue.Key, time.Now().UTC().Add(-time.Hour))
-	if err := r.st.PutWorkspaceBundle(context.Background(), r.issue.Key, idleRigEarlierRelease, saved); err != nil {
-		t.Fatalf("save the earlier release's bundle of %s: %v", r.issue.Key, err)
-	}
-	return saved.Size()
-}
-
-// savedBundleBytes is the size of the bundle the issue holds and whether it holds one at all,
-// which is how the bytes the record carries are told from the bytes the database holds.
-func (r *idleRig) savedBundleBytes(t *testing.T) (int, bool) {
-	t.Helper()
-	size, held, err := r.st.WorkspaceBundleSize(context.Background(), r.issue.Key)
-	if err != nil {
-		t.Fatalf("read the saved bundle of %s: %v", r.issue.Key, err)
-	}
-	return size, held
-}
-
 // suspendedByOperator leaves the rig's one live claim as an operator's own suspension leaves it:
 // suspended by the operator, holding no process, and backdated with the rest of the pod. It is
 // the one suspension no daemon rule undoes (supervise.Claim.RuleMayResume), and the operator's
 // resume brings that role back into this very pod, so the rule keeps the pod for it
-// (workflow.IdleHoldUnownedOperatorSuspended).
+// (workflow.IdleHoldUnownedSuspensionHolds).
 func (r *idleRig) suspendedByOperator(t *testing.T) {
 	t.Helper()
 	if _, err := r.pool.Exec(context.Background(), `update claims set state = $2, suspended_by = $3,
@@ -167,18 +136,13 @@ func (r *idleRig) startQueuedAt(t *testing.T, row int64, role claim.Role) {
 // release and the line its pass writes — and, as much, what none of them says.
 //
 // Every reading here is of a release that suspended no role, which is the whole of this rule:
-// the record names no role and no bundle bytes, the mark names the rule rather than a role, and
-// both lines say that the pod went with nobody in it. The idle release's own two lines say the
-// opposite — the roles resume in the same sessions, the roles go on in the same pod — and an
-// operator reading one of them over this release would wait for sessions that are failed,
-// retired or suspended, and for a pod that is gone.
-//
-// The issue of every subtest that drives this rule holds the workspace bundle an earlier
-// release of its pod saved and no pod has restored (earlierReleasesBundle). That is the state
-// the record must be read in: the teardown's ordinary bundle read is per issue, so a release
-// that made it would report another release's bytes as its own. The last subtest, which drives
-// the idle rule instead, seeds no such bundle and says there why it cannot.
+// the record names no role, the mark names the rule rather than a role, and both lines say that
+// the pod went with nobody in it. The idle release's own two lines say the opposite — the roles
+// resume in the same sessions, the roles go on in the same pod — and an operator reading one of
+// them over this release would wait for sessions that are failed, retired or suspended, and for a
+// pod that is gone.
 func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 
 	t.Run("the record, the mark and the line of the release that took the pod", func(t *testing.T) {
@@ -188,7 +152,6 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 		// architect an earlier release left `released` beside the implementer whose launch
 		// budget ran out. Neither can take a turn, which is the case the line states.
 		rig.releasedArchitect(t)
-		bundle := rig.earlierReleasesBundle(t)
 		logs, log := watchedLog()
 		rig.runner.log = log
 		began := time.Now().UTC()
@@ -219,20 +182,12 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 				" it found released belongs to the release that suspended it", recorded.Roles)
 		}
 		if recorded.BundleBytes != 0 {
-			t.Errorf("the release records a bundle of %d bytes, want none: it saved none, and the %d bytes"+
-				" the issue holds are the earlier release's", recorded.BundleBytes, bundle)
+			t.Errorf("the release records a bundle of %d bytes, want none: no release saves one", recorded.BundleBytes)
 		}
 		if recorded.At.IsZero() || recorded.At.Before(began.Add(-time.Second)) ||
 			recorded.At.After(time.Now().UTC().Add(time.Second)) {
 			t.Errorf("the release was recorded at %s, want the moment the teardown finished, which is after %s",
 				recorded.At, began)
-		}
-		// The bytes above are zero because this release saved nothing, and not because the
-		// teardown deleted the row: the work an earlier release took out of this issue's pod is
-		// the only copy of it, and the pod a later start makes is owed it.
-		if size, held := rig.savedBundleBytes(t); !held || size != bundle {
-			t.Errorf("the issue holds %d bundle bytes (held %t), want the earlier release's %d left as they were",
-				size, held, bundle)
 		}
 		if len(records.Holds) != 0 {
 			t.Errorf("holds recorded = %+v, want none: the pod was released, not kept", records.Holds)
@@ -263,7 +218,6 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 		// past the quiet period with nobody able to take a turn in it, and the rule keeps it
 		// because the teardown's own fence would refuse its claim.
 		rig.stoppedImplementer(t, true)
-		rig.earlierReleasesBundle(t)
 		logs, log := watchedLog()
 		rig.w.log = log
 
@@ -280,12 +234,12 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 	})
 
 	// One pass per hold this rule can reach on a pod that stands, and what each pass records.
-	// Three of them are a pod standing past the quiet period with 3 CPU and 19 GiB held by
-	// something that is not work, and each is recorded under its own name, so a deployment
-	// reading the records can tell which of the three it is paying for. The other three are no
-	// such pod — one whose Sandbox is already gone, one whose release is already running, and
-	// one that is simply not quiet yet — and a row for any of them would say a pod was kept
-	// where nothing was kept (recordableHold).
+	// Three of them are a pod standing past the quiet period with its reservation (2 CPU and
+	// 8 GiB at the defaults) held by something that is not work, and each is recorded under its
+	// own name, so a deployment reading the records can tell which of the three it is paying for.
+	// The other three are no such pod — one whose Sandbox is already gone, one whose release is
+	// already running, and one that is simply not quiet yet — and a row for any of them would say
+	// a pod was kept where nothing was kept (recordableHold).
 	//
 	// Every row reads the pass's own line as well, because the counts are where a hold the
 	// records do not carry is still readable: a pass that keeps a pod and records nothing is
@@ -304,7 +258,7 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 			},
 			{
 				name: "an operator's own suspension holds a claim of the pod",
-				hold: workflow.IdleHoldUnownedOperatorSuspended, recorded: true,
+				hold: workflow.IdleHoldUnownedSuspensionHolds, recorded: true,
 				seed: func(t *testing.T, rig *idleRig) { rig.suspendedByOperator(t) },
 			},
 			{
@@ -351,7 +305,6 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 		} {
 			t.Run(tc.name, func(t *testing.T) {
 				rig := newIdleRig(t)
-				rig.earlierReleasesBundle(t)
 				tc.seed(t, rig)
 				logs, log := watchedLog()
 				rig.w.log = log
@@ -392,7 +345,6 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 	t.Run("a start queued between the mark and the teardown cancels the release", func(t *testing.T) {
 		rig := newIdleRig(t)
 		rig.stoppedImplementer(t, false)
-		rig.earlierReleasesBundle(t)
 		logs, log := watchedLog()
 		rig.runner.log = log
 
@@ -433,33 +385,29 @@ func TestAReleaseOfAnIssueWithNoLiveClaimRecordsItself(t *testing.T) {
 	// claims going on in the pod it kept, which is what its line has always said.
 	t.Run("an ordinary idle release cancelled before its first role stop keeps its own wording", func(t *testing.T) {
 		rig := newIdleRig(t)
-		// This issue holds no earlier release's bundle, where every issue above does: a bundle
-		// no pod has restored is a hold of the idle rule itself (IdleHoldBundleUnrestored), so
-		// that rule would keep this pod rather than mark the release whose cancel is read here.
-		// The second rule has no such conjunct — it saves no bundle, so an issue holding one is
-		// still its pod to take — which is why the two subtests are seeded differently.
 		logs, log := watchedLog()
 		rig.runner.log = log
-		// The save is the idle release's first act and the one act before its first role stop.
-		// A bundle it cannot build stops the release there.
-		rig.rt.bundleErr = errors.New("the launcher is gone")
 
 		rig.w.releaseIdlePod(ctx, rig.issue.Key)
+		// A start queued above the release's own rows once its mark stood: the boundary, the
+		// release's first role stop, reads it and cancels the release before that stop acts, so
+		// no role of the pod was suspended.
+		rig.startQueuedAt(t, rig.boundary(t)+10, claim.RoleTester)
 		rig.drain(t)
 
 		if _, suspended := rig.rt.reads(); suspended != 0 {
-			t.Fatalf("Sandbox teardowns = %d, want none: the release stopped at its save", suspended)
+			t.Fatalf("Sandbox teardowns = %d, want none: the release stopped at its boundary", suspended)
 		}
 		if rig.marked(t) {
 			t.Fatal("the cancelled release left its mark behind")
 		}
 		// The line and the attributes it has always carried: the hold that stopped the release
 		// and the roles its cancel resumed, which is the empty set here because no role stop of
-		// it had run. The release of a pod no role can use carries no such attribute at all,
-		// since it suspends nothing there is to resume.
+		// it had suspended anything. The release of a pod no role can use carries no such
+		// attribute at all, since it suspends nothing there is to resume.
 		line := releaseLogLine(t, logs, idleRigIdleCancel)
 		for _, want := range []string{"issue=" + rig.issue.Key,
-			"hold=" + workflow.IdleHoldBundleSave.String(), "resumed=[]"} {
+			"hold=" + workflow.IdleHoldOvertaken.String(), "resumed=[]"} {
 			if !strings.Contains(line, want) {
 				t.Errorf("the idle release's cancelled line does not carry %q:\n%s", want, line)
 			}

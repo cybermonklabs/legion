@@ -35,7 +35,10 @@ symptoms:
 
 ## Which order applies
 
-Sami's 2026-09-13 order withdrew rigs; his 2026-09-14 19:41Z correction (LEGION-25 spec v21,
+On 2026-09-13 Sami had the Legion smoke rig shut down ("Please shutdown the goddamn legion smoke.
+It's pointless and it has led to destructive actions twice now.", relayed verbatim in
+https://github.com/cybermonklabs/legion/pull/1022#issuecomment-5658482554), and the operator then withdrew every rig; the
+2026-09-14 19:41Z correction (LEGION-25 spec v21,
 recorded in
 [`../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md`](../legion/pre-merge-surface-withdrawn-by-standing-order-what-the-pr-carries-instead.md))
 allows a throwaway instance of the worker's own — its own team slug, state directory, ports, NATS
@@ -54,8 +57,9 @@ evidence for the tester and reviewer to re-run.
   sjawhar/105` (the slug `sjawhar105` names the private tmux socket `legion-sjawhar105`), `port`
   and `worker_stream_port` of your own, `state_dir` under the scratch dir, `nats_urls` pointing at
   a scratch JetStream container (`docker run -d --name legion105-nats -p 127.0.0.1:14224:4222
-  nats:2.10 -js`; create the `ENVOY_NOTIFICATIONS` stream with subjects `notifications.>` before
-  publishing), a project key that does not exist in Dispatch (`LEGSMOKE`), `envoy_url:
+  <the image testnats.HubImage names> -js`, a nats-server at or after the floor the daemon holds,
+  since it refuses every 2.10; create the `ENVOY_NOTIFICATIONS` stream with subjects
+  `notifications.>` before publishing), a project key that does not exist in Dispatch (`LEGSMOKE`), `envoy_url:
   http://127.0.0.1:9` (unroutable: no wake ever reaches the real listener), the production
   `omp_invocation`, `github_apps`, and `instructions` verbatim. `daemon_url` stays the default
   loopback — the tmux guard refuses anything else. `legion start … --check-config` first.

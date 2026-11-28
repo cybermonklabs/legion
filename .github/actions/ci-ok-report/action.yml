@@ -1,18 +1,21 @@
 name: Report ci-ok when this job decides a merge-group run
 description: >-
   The last step of every job of ci.yaml but `changes` and those CI_OK_EXEMPT names, and of the job
-  of each workflow ci.yaml calls. On a merge-group run whose group this job's own result decides —
-  its failure or its cancellation, or a `changes` that failed or was cancelled — it posts the
-  failing ci-ok on the group's commit at once (.github/scripts/ci-ok-report.sh says how), so the
-  queue takes the pull request out at the first failure instead of waiting for the rest of the
-  run. It posts nothing on any other run: there the verdict is ci.yaml's own `ci-ok` job, which
-  needs every job of the run and carries the verdict as its own check run. Call it with
-  `if: always()`, so a failed, timed-out or cancelled job reaches it. The job needs `actions: read`
-  (the run's jobs, which the posted check's summary names) and `checks: write` (the post).
+  of each workflow ci.yaml calls. On a merge-group run of the group at the front of the queue,
+  when this job's own result decides that group — its failure or its cancellation, or a `changes`
+  that failed or was cancelled — it posts the failing ci-ok on the group's commit at once
+  (.github/scripts/ci-ok-report.sh says how), so the queue takes the pull request out at the first
+  failure instead of waiting for the rest of the run. It posts nothing on any other run, nor for a
+  group behind the front, which the queue cannot take out before the groups in front of it end:
+  there the verdict is ci.yaml's own `ci-ok` job, which needs every job of the run, carries the
+  verdict as its own check run and holds a failing one until the group is the front
+  (.github/scripts/ci-ok-hold.sh). Call it with `if: always()`, so a failed, timed-out or cancelled
+  job reaches it. The job needs `actions: read` (the run's jobs, which the posted check's summary
+  names), `contents: read` (the tip of the queue's branch) and `checks: write` (the post).
 
   It posts on a merge_group run and nowhere else, so on a pull request's run — a fork's included
   — the script prints what it saw and exits 0 before it makes any GitHub call. A fork's pull
-  request gets its ci-ok from ci.yaml's `ci-ok` job, whose own check run carries the verdict and
+  request gets its ci-ok from `.github/workflows/ci.yaml#ci-ok` job, whose own check run carries the verdict and
   costs no token scope, where a POST under a fork's read-only token could never have landed one.
   This repository takes no fork pull requests in any case: their runs wait for an approval
   nobody gives.
@@ -41,4 +44,6 @@ runs:
         CHANGES: ${{ inputs.changes }}
         EVENT: ${{ github.event_name }}
         HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+        BASE_SHA: ${{ github.event.merge_group.base_sha }}
+        BASE_REF: ${{ github.event.merge_group.base_ref }}
       run: '"$GITHUB_ACTION_PATH/../../scripts/ci-ok-report.sh"'

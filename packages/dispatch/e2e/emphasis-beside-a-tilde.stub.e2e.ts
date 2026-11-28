@@ -1,7 +1,7 @@
 /** An asterisk beside a tilde, read in a past version of the spec: the tree the server read that
  *  version's markdown into, which the page draws from one fixed answer, so it runs against a
  *  recording
- *  (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  (packages/dispatch/README.md, "The stubbed layer").
  */
 import { fixture } from "../web/src/__tests__/pmdoc-fixtures";
 import { createIssue, createProject } from "./api";
@@ -21,7 +21,7 @@ import { stubbed } from "./stub/stub-test";
 // `packages/envoy/internal/dispatch/pmdoc/writer_spelling_test.go`'s.
 //
 // What the row reads is the version the server already stored, so it runs against a recording
-// rather than against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+// rather than against a harness (packages/dispatch/README.md, "The stubbed layer").
 
 const agentSession = {
   actor: { kind: "session" as const, id: "e2e-emphasis-beside-a-tilde" },

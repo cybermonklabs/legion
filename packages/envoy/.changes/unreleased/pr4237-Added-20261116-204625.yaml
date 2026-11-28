@@ -1,0 +1,10 @@
+kind: Added
+body: |-
+    The broker's airlock proxy carries HTTP/2 on a bound host, so a gRPC client works under an airlock grant: `agent-secrets secret …` under a lent `GCLOUD_DEMO` token and Pulumi's `gcpkms` secrets manager each failed before with `tls: no application protocol`.
+    The proxy offers `http/1.1` and then `h2`, so a client that offers both stays on HTTP/1.1; each HTTP/2 stream is decided and swapped on its own, its `:authority` checked against the CONNECT target, and one connection carries at most 100 streams at once.
+    A `CONNECT` or an `Upgrade: h2c` inside a decrypted connection is refused 403 `PROTOCOL_SWITCH_REFUSED`.
+    Every call the proxy carries - a gRPC stream, a server-sent event stream, a long poll, an upload still being sent - is ended within 15 s once its grant stops carrying it, as a WebSocket was, at the service and at the command (an HTTP/2 stream is reset and its connection's other streams go on), and logs `airlock proxy: a carried call its grant no longer carries`; a call whose service has not answered yet is refused as every later call of that grant is, rather than answered 502. A call for a github-app installation whose token the broker no longer releases ends the same way.
+    `agent-secrets` sets `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` to its trust bundle, for gRPC clients built on gRPC's C core; a file the command's own `GRPC_DEFAULT_SSL_ROOTS_FILE_PATH` names joins that bundle, as every other trust variable's does.
+time: 2026-11-16T20:46:25.46818156Z
+custom:
+    Issue: pr4237

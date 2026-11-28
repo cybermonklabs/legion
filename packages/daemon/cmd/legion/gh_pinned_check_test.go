@@ -1,40 +1,58 @@
 package main
 
 import (
+	"fmt"
 	"maps"
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sjawhar/legion/daemon/internal/leakguard/leakguardtest"
 )
 
 // ghPinnedCheckPortSHA256 is the sha256 of the public_leak_check.py ghPinnedCheckReads was ported
-// from, leak-check-v15's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
+// from, leak-check-v33's. TestGhReadsAreProvenAgainstThePinnedCheck fails while it is not
 // ghReadsProvenCheck's sha256, so a bump of the pin fails until this port moves with it.
-const ghPinnedCheckPortSHA256 = "86d087b3c70ee36907dfca54fec83dcff77f2cd87d888de914145f7f122bc554"
+const ghPinnedCheckPortSHA256 = "2e9049bfe5969e039878ae88d72dbc844a843f2d7a4819124456f3dd6c2dd1c3"
 
 // ghPinnedCheckReads says whether the pinned check, the public_leak_check.py whose sha256 is
 // ghPinnedCheckPortSHA256, reads argv, a gh call's arguments, as a read in its gh_guard: whether
 // it returns for the call before it looks up any target. It reads the call as that check does
 // with no GH_HOST, which no call of these tests sets.
 //
-// The read is the check's, part for part (its gh_guard, is_read, collect and api_read): `--help`,
-// `-h` and `--version` first; then a call that begins with an option, whose words after -R/--repo
-// values and other options are read by is_read, and which the check refuses, so no read, where
-// they are not; then `gh api` (ghPinnedAPIRead); and any other call by is_read over its first two
-// words (ghPinnedIsRead).
+// The check first asks gh's aliases (gh_alias), for every call but exactly `alias list` and
+// `alias delete -- KEY`, which it lets go at once, and which this reads as is_read reads them.
+// After that the read is the check's, part for part (its gh_guard, is_read, collect and
+// api_read): `--help`, `-h` and `--version` first; then a call that begins with an option, whose
+// words after -R/--repo values and other options are read by is_read, and which the check
+// refuses, so no read, where they are not; then `gh api` (ghPinnedAPIRead); and any other call
+// by is_read over its first two words (ghPinnedIsRead).
 //
-// Four parts differ from the check. Two are stricter here: a GraphQL call is never a read here,
+// Five parts differ from the check. Two are stricter here: a GraphQL call is never a read here,
 // where the check reads a query with no mutation as one, and `gh secret`, which the check lets go
-// before it reads anything, is read here as is_read reads it. Two are looser, and in each the
-// check refuses the call before it looks up any target, so neither makes a call the port reads as
-// a read cost the check a lookup: the check refuses a first word that is a gh alias in
-// GH_CONFIG_DIR's config (gh_alias), which this reads as any other word, and `legion gh` refuses
-// such a call itself before the guard; and the check exits 2 on a missing or unreadable file an
-// argument names (file_ok), which this never looks for, so `api --input f --input=
-// repos/acme/widgets/pulls` with no file f is a read here. No call these tests count as a read
-// meets any of the four.
+// once it has asked gh's aliases and before it reads anything else, is read here as is_read reads
+// it. Three are looser, and in each the check refuses the call before it looks up any target, so
+// none makes a call the port reads as a read cost the check a lookup. The check refuses a call
+// that an alias gh lists matches (gh_alias): a key of one word that is one of the words gh may
+// read as the call's command, or a key of several words whose later words come, in that order,
+// among the arguments after the first such word, as `gh alias list` lists them for GH_CONFIG_DIR
+// and for each directory under LEGION_GH_OWNERS_DIR that holds a config.yml. This reads every
+// call as if gh lists no alias. `legion gh` refuses such a call itself, before the guard, only
+// where a word of the command path it walks is an alias that its parent's help lists (`pr pv2`
+// for the key `pr pv2`), so a call that the check matches more widely, such as `pr view pv2` for
+// that key, reaches the check. The check exits 2 where it cannot read gh's aliases: no gh to run,
+// a working directory that is gone, a LEGION_GH_OWNERS_DIR it cannot list, or a `gh alias list`
+// that fails or does not answer within its bound (read_gh_aliases). And the check exits 2 on a
+// missing or unreadable file an argument names (file_ok), which this never looks for, so
+// `api --input f --input= repos/acme/widgets/pulls` with no file f is a read here. No call these
+// tests count as a read meets any of the five.
+//
+// The guard calls the check as `gh-guard -- <argv>`, and `gh-guard` alone for a call of no words
+// (leakguard's modeArgv). The check's main() takes out the one `--` the guard writes after the mode
+// word, so gh_guard gets argv unchanged, a leading `--` of the call's own among it; a call of no
+// words returns 0 in mode_gh before gh_guard, and this reads it as is_read reads an empty first
+// word.
 func ghPinnedCheckReads(argv []string) bool {
 	first := ""
 	if len(argv) > 0 {
@@ -109,9 +127,12 @@ var (
 // the last input as given.
 //
 // api_read then reads a read where the host is github.com, the endpoint holds no `://` and is not
-// `graphql` once its leading slashes are gone, the call has no input, and the method, or the
-// field mark where no method is given, is one of "0", "GET" and "HEAD": the check's
-// `(st.M or str(st.F)) in ("0", "GET", "HEAD")`, with the field mark 0 or 1.
+// GitHub's GraphQL one, and the call has no input, and the method, or the field mark where no
+// method is given, is one of "0", "GET" and "HEAD": the check's `(st.M or str(st.F)) in ("0",
+// "GET", "HEAD")`, with the field mark 0 or 1. The endpoint is GraphQL's where it is `graphql` once
+// its leading slashes are gone and it is cut at its first `?` or `#` (the check's
+// graphql_endpoint, which also strips a leading scheme and host: an endpoint holding `://` is no
+// read before that matters).
 func ghPinnedAPIRead(args []string) bool {
 	var endpoint, method, host, input, pending string
 	field := false
@@ -157,7 +178,11 @@ func ghPinnedAPIRead(args []string) bool {
 	if len(host) != len("github.com") || !strings.EqualFold(host, "github.com") || strings.Contains(endpoint, "://") {
 		return false
 	}
-	if strings.TrimLeft(endpoint, "/") == "graphql" || input != "" {
+	path := strings.TrimLeft(endpoint, "/")
+	if end := strings.IndexAny(path, "?#"); end >= 0 {
+		path = path[:end]
+	}
+	if path == "graphql" || input != "" {
 		return false
 	}
 	if method != "" {
@@ -181,24 +206,76 @@ func ghWordSet(words string) map[string]bool {
 // whose text matched a rule other than a credential's on a repository it must look up (a call
 // that begins with an option it refuses instead, and no test gives this one such a call). It reads
 // the target's visibility, through gh, in the argv and under the variable that check's vis_of
-// uses, and records `lookup <slug>` in its own record first. The target is
-// LEAK_CHECK_STANDIN_TARGET, which stands for the slug the check's own targets would find. Either
-// way it then clears the call, as that check clears such a call to a private repository, and it
-// records each run, as leakguardtest.Recording does, so a test reads that it was handed args.
-// `legion gh` answers its visibility read itself (answerVisibilityRead), by the guard's REST read,
-// so it reaches the stand-in gh as ghGuardLookup, as the guard's own read does: the record is
+// uses, and records `lookup <slug>` in its own record before the read and what the read did after
+// it: its exit status, when it started and ended, and what it printed (ghCheckReadOf). The target
+// is LEAK_CHECK_STANDIN_TARGET, which stands for the slug the check's own targets would find.
+// Either way it then clears the call, as that check clears such a call to a private repository,
+// and it records each run, as leakguardtest.Recording does, so a test reads that it was handed
+// args. `legion gh` answers its visibility read itself (answerVisibilityRead), by the guard's REST
+// read, so it reaches the stand-in gh as ghGuardLookup, as the guard's own read does: the record is
 // what tells the two apart.
 func ghCheckReadingLikeThePinnedCheck(args []string) string {
 	script := "cat >/dev/null 2>&1\n"
 	if !ghPinnedCheckReads(args) {
 		script += `if [ -n "${LEAK_CHECK_STANDIN_TARGET-}" ]; then
 	printf 'lookup %s\n' "$LEAK_CHECK_STANDIN_TARGET" >>"${LEAK_CHECK_RECORD:-/dev/null}"
-	PUBLIC_LEAK_CHECK_VISIBILITY_READ=$LEAK_CHECK_STANDIN_TARGET GH_HOST=github.com \
-		gh api --hostname github.com "repos/$LEAK_CHECK_STANDIN_TARGET" --jq .visibility >/dev/null 2>&1 </dev/null
+	started=$(date +%s%N)
+	said=$(PUBLIC_LEAK_CHECK_VISIBILITY_READ=$LEAK_CHECK_STANDIN_TARGET GH_HOST=github.com \
+		gh api --hostname github.com "repos/$LEAK_CHECK_STANDIN_TARGET" --jq .visibility 2>&1 </dev/null)
+	status=$?
+	printf 'read exit %s started %s ended %s said %s\n' "$status" "$started" "$(date +%s%N)" "$(printf '%s' "$said" | tr '\n' ' ')" >>"${LEAK_CHECK_RECORD:-/dev/null}"
 fi
 `
 	}
 	return leakguardtest.Recording(script + "exit 0\n")
+}
+
+// ghCheckRead is what ghCheckReadingLikeThePinnedCheck recorded of its visibility read: the exit
+// status of its gh, how long that gh ran, and what it printed, standard output and error together
+// on one line.
+type ghCheckRead struct {
+	status  int
+	ran     time.Duration
+	printed string
+}
+
+// ghCheckReadOf is the visibility read the stand-in recorded in checked, its record, and whether
+// it recorded one.
+func ghCheckReadOf(t *testing.T, checked string) (ghCheckRead, bool) {
+	t.Helper()
+	for line := range strings.Lines(checked) {
+		rest, ok := strings.CutPrefix(line, "read exit ")
+		if !ok {
+			continue
+		}
+		head, printed, _ := strings.Cut(strings.TrimSuffix(rest, "\n"), " said ")
+		var read ghCheckRead
+		var started, ended int64
+		if _, err := fmt.Sscanf(head, "%d started %d ended %d", &read.status, &started, &ended); err != nil {
+			t.Fatalf("the shared check recorded its visibility read as %q, which this cannot read: %v", line, err)
+		}
+		read.ran, read.printed = time.Duration(ended-started), strings.TrimSpace(printed)
+		return read, true
+	}
+	return ghCheckRead{}, false
+}
+
+// ghBoundStop is the words internal/leakguard says of a child its context's deadline stopped
+// (stoppedError.said), which `legion gh` prints when visibilityAnswerBound stops the read it
+// answers the shared check's own visibility read with. Were the wording to change, such a read
+// would still fail ghCheckRead.failure, by its status and what it printed.
+const ghBoundStop = "was stopped by its bound"
+
+// failure is how the read failed, and "" where it answered public: the stand-in gh's answer,
+// which `legion gh` hands back from the guard's REST read.
+func (r ghCheckRead) failure() string {
+	switch {
+	case strings.Contains(r.printed, ghBoundStop):
+		return fmt.Sprintf("the shared check's visibility read was stopped by its bound after %.1f s: %q", r.ran.Seconds(), r.printed)
+	case r.status != 0 || r.printed != "public":
+		return fmt.Sprintf("the shared check's visibility read exited %d after %.1f s and printed %q; want exit 0 and public, the stand-in gh's answer, which `legion gh` hands back from the guard's REST read", r.status, r.ran.Seconds(), r.printed)
+	}
+	return ""
 }
 
 // ghGuardLookup is what the stand-in gh records of a REST visibility read of acme/widgets: the
@@ -269,7 +346,8 @@ func ghGeneratedSpellings() []ghSpelling {
 //
 // And end to end, against ghCheckReadingLikeThePinnedCheck, a call outside the read grammar is
 // guarded whole. Where the check reads it as no read — a listed leaf by its alias `pr ls`, a gh
-// api endpoint written as a whole URL, `-i=` with a false value, which collect reads as `-f`, `--`
+// api endpoint written as a whole URL, GitHub's GraphQL endpoint with a query or a fragment after
+// it (`graphql?x=1`, `/graphql#x`), `-i=` with a false value, which collect reads as `-f`, `--`
 // before a word collect reads as a method, an empty value before a second option collect then
 // takes as that value, so that the word after it is the method or the endpoint, a method other
 // than GET, a field and an input — the check looks up its target's visibility, and the guard reads
@@ -278,8 +356,11 @@ func ghGeneratedSpellings() []ghSpelling {
 // collect takes as that value while gh sends the method, a value after `=` or joined to its short
 // option (`--method=GET`, `-XGET`), an empty header and one beginning with `-`, and a listed leaf
 // given a value after `=` — it costs the guard's read alone. The shared check's lookup reaches gh
-// as the guard's REST read, which `legion gh` answers it with, and the check records it.
+// as the guard's REST read, which `legion gh` answers it with, and the check records it. A lookup
+// that did not answer public fails as what it was, stopped by visibilityAnswerBound after so many
+// seconds or ending with its own status and words, and not as a read missing from gh's count.
 func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
+	t.Parallel()
 	t.Run("the generated spellings", func(t *testing.T) {
 		spellings := ghGeneratedSpellings()
 		admitted, mismatches := 0, 0
@@ -303,13 +384,17 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 			}
 		}
 	})
-	run := ghGuardRig(t)
+	// The guard's own lookup is a whole guard's, which reads the visibility only where the
+	// deployment names its rule file.
+	run := ghGuardRig(t, leakguardtest.WriteRules(t, t.TempDir()))
 	for _, tc := range []struct {
 		args                   []string
 		checkLooks, guardLooks bool
 	}{
 		{[]string{"pr", "ls", "-R", "acme/widgets"}, true, true},
 		{[]string{"api", "https://api.github.com/repos/acme/widgets/pulls"}, true, true},
+		{[]string{"api", "graphql?x=1"}, true, false},
+		{[]string{"api", "/graphql#x"}, true, false},
 		{[]string{"api", "-i=false", "repos/acme/widgets/pulls"}, true, true},
 		{[]string{"api", "repos/acme/widgets/pulls", "-i=f"}, true, true},
 		{[]string{"api", "-i=F", "repos/acme/widgets/pulls"}, true, true},
@@ -336,11 +421,16 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 			if got.code != 7 {
 				t.Errorf("legion gh %q = exit %d, stderr %q; want gh's own 7", tc.args, got.code, got.stderr)
 			}
-			if want := "checked gh-guard " + strings.Join(tc.args, " ") + "\n"; !strings.HasPrefix(got.checked, want) {
+			if want := ghGuardRun(tc.args); !strings.HasPrefix(got.checked, want) {
 				t.Errorf("the shared check recorded %q, want its run of the call first, %q", got.checked, want)
 			}
-			if looked := strings.Contains(got.checked, "lookup acme/widgets\n"); looked != tc.checkLooks {
+			looked := strings.Contains(got.checked, "lookup acme/widgets\n")
+			if looked != tc.checkLooks {
 				t.Errorf("the shared check read the visibility: %v, want %v: %q", looked, tc.checkLooks, got.checked)
+			}
+			read, recorded := ghCheckReadOf(t, got.checked)
+			if looked && !recorded {
+				t.Errorf("the shared check looked up the visibility and recorded no read after it, so what that read did cannot be told: %q", got.checked)
 			}
 			wantReads := 0
 			for _, looks := range []bool{tc.checkLooks, tc.guardLooks} {
@@ -348,7 +438,11 @@ func TestLegionGhReadsOnlyWhatTheSharedCheckReadsAsARead(t *testing.T) {
 					wantReads++
 				}
 			}
-			if reads := strings.Count(got.gh, ghGuardLookup); reads != wantReads {
+			if recorded && read.failure() != "" {
+				// gh's count would then miss a read the record already explains: one the bound
+				// stopped before it reached gh, or one that reached gh and failed after.
+				t.Error(read.failure())
+			} else if reads := strings.Count(got.gh, ghGuardLookup); reads != wantReads {
 				t.Errorf("gh was asked the visibility %d times, want %d (the check's read %v, the guard's %v): %q", reads, wantReads, tc.checkLooks, tc.guardLooks, got.gh)
 			}
 			if strings.Contains(got.log, `visibility="checked-only"`) {

@@ -1,0 +1,28 @@
+kind: Changed
+body: |-
+  The Envoy role a session pod's launch names in `ENVOY_SESSION_ROLE` is now claimed only by the
+  one session `ENVOY_SESSION_ROLE_SESSION` names: the id the pod starts the agent with, which
+  the deployment's sessions workload sets beside the role once t-e-32 lands. With the role named and
+  no session named, or an empty one, no session claims it. Each pass compares the session open
+  then, so the rule holds after a `/new`, a `/fork` or a tree branch.
+
+  In 17.35.0 every session that read the variable claimed the role outright. Every extension
+  instance of the process did (an ACP host's other sessions among them), a fork or a branch did
+  through the record of the claim its transcript copied, and a process started by a `Bun.spawn`
+  that names no `env` did, since the extension cleared the variable only in its own
+  `process.env`. Now none of them claims the role, by any path: not at a registration, not from a
+  copied record, the role this process holds or the listener's rows, and not through
+  `envoy_role_set` or the Legion plugin's claim, which refuse it, a name padded with white space
+  included. The extension no longer takes the variable into a process-wide slot or sets it to the
+  empty string: every child process gets both variables, and its own session id is what stops its
+  claim.
+
+  A session the process moves to from the named one hands the role back, and a resume of the named
+  session claims it again. The first refusal in a process logs one line, `envoy:
+  ENVOY_SESSION_ROLE <role> belongs to session <id or "none">; this session <id> claims nothing`,
+  and each refused session tells the person once, on screen, that role messages are not delivered
+  there and that `/resume <id>` of the pod's session takes the role back (or, with no session
+  named, that no session claims it).
+time: 2026-11-17T04:56:06Z
+custom:
+    Issue: pr4266

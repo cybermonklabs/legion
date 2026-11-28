@@ -1,9 +1,17 @@
 package api
 
+//ci:reads packages/contracts/fixtures/ask-reply-recipients.json TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers os.ReadFile (askReplyRecipientsFixture, ../../../../contracts/fixtures): TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers compares the copies the outbox published with the committed fixture, which writes under -update
+
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -12,6 +20,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
 	"github.com/sjawhar/envoy/internal/dispatch/itemblocks"
@@ -22,6 +31,7 @@ import (
 	"github.com/sjawhar/envoy/internal/roles"
 	"github.com/sjawhar/envoy/internal/session"
 	envoystore "github.com/sjawhar/envoy/internal/store"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The session whose list each test reads, and another session beside it.
@@ -141,6 +151,34 @@ func (f *answersFixture) route(t *testing.T, route string) {
 	}
 }
 
+// follow puts session among ask's followers (PUT) or takes it out of them (DELETE), as session
+// itself.
+func (f *answersFixture) follow(t *testing.T, method, askID, session string) {
+	t.Helper()
+	response := sessionRequest(t, f.handler, method, "/api/v1/asks/"+askID+"/followers/"+session, map[string]any{
+		"actor": answersActor(session),
+	})
+	if response.Code != http.StatusNoContent {
+		t.Fatalf("%s %s as a follower of ask %s: status=%d body=%s", method, session, askID, response.Code, response.Body.String())
+	}
+}
+
+// credit writes a version of the fixture issue's spec as session through the document edit route,
+// so the issue's primary document credits session (artifact_versions.authors): a person's comment
+// on the issue, while it has no route and no claim, then reaches session on its own topic (the
+// outbox's addPrimaryDocumentAuthors).
+func (f *answersFixture) credit(t *testing.T, session string) {
+	t.Helper()
+	response := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/issues/"+f.issue+"/artifacts/spec/edits", map[string]any{
+		"ops":     []map[string]string{{"op": "insert", "after": "end", "markdown": "A line " + session + " wrote."}},
+		"summary": session + "'s line",
+		"actor":   answersActor(session),
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("%s writes a version of %s's spec: status=%d body=%s", session, f.issue, response.Code, response.Body.String())
+	}
+}
+
 // unclaimedRoles is the role reader the fixture's outbox resolves a role route through: no role
 // is claimed here, so such a destination counts as reached with nothing sent and the role's topic
 // is what the publisher records (outbox's roleForward). An outbox with no reader at all leaves
@@ -162,12 +200,20 @@ func (unclaimedRoles) LastSeen(string) int64 { return 0 }
 // is published, so each one's published_destinations holds every topic the publisher reached.
 func (f *answersFixture) publishOutbox(t *testing.T) {
 	t.Helper()
+	f.publishOutboxThrough(t, acceptingPublisher{})
+}
+
+// publishOutboxThrough is publishOutbox handing every envelope to publisher, for a test that reads
+// what each topic was handed (recordingOutboxPublisher). Its wait for the outbox to publish has one
+// bound, the test binary's deadline (testwait.UntilPolling).
+func (f *answersFixture) publishOutboxThrough(t *testing.T, publisher outbox.Publisher) {
+	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	stopped := make(chan struct{})
 	go func() {
 		defer close(stopped)
 		outbox.New(outbox.Deps{
-			Store: f.database, Publisher: acceptingPublisher{}, Broker: events.NewBroker(),
+			Store: f.database, Publisher: publisher, Broker: events.NewBroker(),
 			Listen:     f.database.Pool.Listener,
 			RoleClaims: unclaimedRoles{}, Sessions: unclaimedRoles{},
 		}).Run(ctx)
@@ -176,8 +222,7 @@ func (f *answersFixture) publishOutbox(t *testing.T) {
 		cancel()
 		<-stopped
 	}()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, 10*time.Millisecond, "the outbox to publish every event that can carry a person's words to a session (those still unpublished)", func() (int, bool) {
 		var unpublished int
 		if err := f.database.Pool.QueryRow(context.Background(), `
 			select count(*) from events
@@ -187,14 +232,8 @@ func (f *answersFixture) publishOutbox(t *testing.T) {
 		`).Scan(&unpublished); err != nil {
 			t.Fatalf("count unpublished events: %v", err)
 		}
-		if unpublished == 0 {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the outbox left %d events unpublished", unpublished)
-		}
-		time.Sleep(10 * time.Millisecond)
-	}
+		return unpublished, unpublished == 0
+	})
 }
 
 // destinations is the published_destinations of the one eventType event about id.
@@ -273,10 +312,16 @@ func (f *answersFixture) issuePlace(t *testing.T, item model.SessionAnswer, segm
 	}
 }
 
-// answersAlice is alice, the person every test writes as, as an item's author.
+// answersAlice is alice, the person every test writes as, as an answer item's author: the list
+// builds that author from the answer's login and act alone, which carry no Proven mark.
 var answersAlice = model.Actor{Kind: "user", ID: "alice"}
 
+// answersAliceProven is alice as the author of an item the list reads from a stored actor - a
+// comment, a message or a decline - which keeps the Proven mark her cookie gave the write.
+var answersAliceProven = model.Actor{Kind: "user", ID: "alice", Proven: true}
+
 func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	answered := f.answer(t, askID, []string{"Postgres"}, "Postgres, for the pool.", nil)
@@ -284,11 +329,14 @@ func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
 
 	before := time.Now().UTC()
 	listed := f.list(t, answersSession, "")
+	after := time.Now().UTC()
 	if listed.SessionID != answersSession || listed.Total != 1 || len(listed.Items) != 1 {
 		t.Fatalf("answers = %+v, want one item for %s", listed, answersSession)
 	}
-	if window := before.Sub(listed.Since); window < 72*time.Hour-time.Minute || window > 72*time.Hour+time.Minute {
-		t.Fatalf("since = %s, want 72 hours before the read (%s)", listed.Since, before)
+	// The server read its clock once, between before and after, and the window starts 72 hours
+	// before that reading, however long the read took.
+	if read := listed.Since.Add(72 * time.Hour); read.Before(before) || read.After(after) {
+		t.Fatalf("since = %s, want 72 hours before the read, which came between %s and %s", listed.Since, before, after)
 	}
 	item := listed.Items[0]
 	if item.Kind != model.SessionAnswerKindAnswer || item.Relation != model.SessionAnswerRelationAnsweredYourAsk || item.ID != askID {
@@ -312,6 +360,7 @@ func TestSessionAnswersListsAPersonsAnswerToTheSessionsAsk(t *testing.T) {
 }
 
 func TestSessionAnswersListsAReplacedAnswerOnceAtItsLatestWords(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	first := f.answer(t, askID, []string{"SQLite"}, "SQLite for now.", nil)
@@ -328,6 +377,7 @@ func TestSessionAnswersListsAReplacedAnswerOnceAtItsLatestWords(t *testing.T) {
 }
 
 func TestSessionAnswersListsAPersonsReplyOnTheSessionsAsk(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	reply := f.comment(t, map[string]any{"body": "Which pool size do you need?", "ask_id": askID}, "alice")
@@ -337,7 +387,7 @@ func TestSessionAnswersListsAPersonsReplyOnTheSessionsAsk(t *testing.T) {
 	if item.Kind != model.SessionAnswerKindComment || item.Relation != model.SessionAnswerRelationRepliedOnYourAsk || item.ID != reply {
 		t.Fatalf("item = %+v, want the reply %s on the session's ask", item, reply)
 	}
-	if item.Author != answersAlice || item.Text != "Which pool size do you need?" {
+	if item.Author != answersAliceProven || item.Text != "Which pool size do you need?" {
 		t.Fatalf("item words = %+v", item)
 	}
 	if item.Ask == nil || item.Ask.ID != askID || item.Ask.Question != "Which database backs the queue?" {
@@ -347,6 +397,7 @@ func TestSessionAnswersListsAPersonsReplyOnTheSessionsAsk(t *testing.T) {
 }
 
 func TestSessionAnswersListsAReplyInTheSessionsCommentThread(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	root := f.comment(t, map[string]any{"body": "I will cut the release on Friday."}, answersSession)
 	reply := f.comment(t, map[string]any{"body": "Friday works.", "reply_to": root}, "alice")
@@ -360,6 +411,7 @@ func TestSessionAnswersListsAReplyInTheSessionsCommentThread(t *testing.T) {
 }
 
 func TestSessionAnswersListsACommentOnADocumentTheSessionWrote(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/projects/ANS/artifacts", map[string]any{
 		"name": "Rollout plan", "content": "# Rollout plan\n\nShip on Friday.\n", "actor": answersActor(answersSession),
@@ -393,6 +445,7 @@ func TestSessionAnswersListsACommentOnADocumentTheSessionWrote(t *testing.T) {
 // session through the document's author route, so its list carries the reply. A reply carries
 // replied_in_a_comment_thread, which sessionanswers.List ranks above commented_on_a_document.
 func TestSessionAnswersListsAPersonsReplyInAThreadOnADocumentTheSessionWrote(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	uploaded := sessionRequest(t, f.handler, http.MethodPost, "/api/v1/projects/ANS/artifacts", map[string]any{
 		"name": "Rollout plan", "content": "# Rollout plan\n\nShip on Friday.\n", "actor": answersActor(answersSession),
@@ -407,7 +460,7 @@ func TestSessionAnswersListsAPersonsReplyInAThreadOnADocumentTheSessionWrote(t *
 	reply := f.write(t, http.MethodPost, "/api/v1/artifacts/"+document.ID+"/comments", map[string]any{"body": "Then Monday.", "reply_to": root}, "alice")
 	f.publishOutbox(t)
 
-	if topics := f.destinations(t, "comment.created", reply); !slices.Contains(topics, contracts.AgentSubject(answersSession)) {
+	if topics := f.destinations(t, "comment.created", reply); !slices.Contains(topics, contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatalf("reply destinations = %v, want the session that wrote the document", topics)
 	}
 	listed := f.list(t, answersSession, "")
@@ -416,7 +469,7 @@ func TestSessionAnswersListsAPersonsReplyInAThreadOnADocumentTheSessionWrote(t *
 	}
 	item := listed.Items[0]
 	if item.ID != reply || item.Kind != model.SessionAnswerKindComment || item.Relation != model.SessionAnswerRelationRepliedInCommentThread ||
-		item.Author != answersAlice || item.Text != "Then Monday." || item.Ask != nil {
+		item.Author != answersAliceProven || item.Text != "Then Monday." || item.Ask != nil {
 		t.Fatalf("newest item = %+v, want alice's reply %s in the thread", item, reply)
 	}
 	if item.Owner == nil || item.Owner.Document == nil || item.Owner.Issue != nil ||
@@ -433,6 +486,7 @@ func TestSessionAnswersListsAPersonsReplyInAThreadOnADocumentTheSessionWrote(t *
 }
 
 func TestSessionAnswersListsACommentOnAnIssueRoutedToTheSession(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	f.route(t, "session:"+answersSession)
 	comment := f.comment(t, map[string]any{"body": "Please take the flaky test next."}, "alice")
@@ -446,6 +500,7 @@ func TestSessionAnswersListsACommentOnAnIssueRoutedToTheSession(t *testing.T) {
 }
 
 func TestSessionAnswersListsAMention(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	comment := f.comment(t, map[string]any{
 		"body": "@answers, can you look at the queue?", "mentions": []map[string]any{{"target": "session:" + answersSession}},
@@ -454,7 +509,7 @@ func TestSessionAnswersListsAMention(t *testing.T) {
 	if !f.sentCommentDelivery(t, comment, answersSession) {
 		t.Fatal("the mention was not delivered to the session")
 	}
-	if slices.Contains(f.destinations(t, "comment.created", comment), contracts.AgentSubject(answersSession)) {
+	if slices.Contains(f.destinations(t, "comment.created", comment), contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatal("the comment also reached the session's own topic; this case is the mention alone (S3)")
 	}
 
@@ -467,6 +522,7 @@ func TestSessionAnswersListsAMention(t *testing.T) {
 }
 
 func TestSessionAnswersListsATargetedMessage(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	direct := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages", map[string]any{"body": "Status, please.", "delivery": "btw"}, "alice")
 	onIssue := f.message(t, map[string]any{"body": "Pick this up.", "target": "session:" + answersSession, "delivery": "btw"}, "alice")
@@ -476,7 +532,7 @@ func TestSessionAnswersListsATargetedMessage(t *testing.T) {
 		t.Fatalf("answers = %+v, want the issue message then the direct one", listed)
 	}
 	for _, item := range listed.Items {
-		if item.Kind != model.SessionAnswerKindMessage || item.Relation != model.SessionAnswerRelationSentYouMessage || item.Author != answersAlice {
+		if item.Kind != model.SessionAnswerKindMessage || item.Relation != model.SessionAnswerRelationSentYouMessage || item.Author != answersAliceProven {
 			t.Fatalf("item = %+v, want a message alice sent the session", item)
 		}
 	}
@@ -488,6 +544,7 @@ func TestSessionAnswersListsATargetedMessage(t *testing.T) {
 }
 
 func TestSessionAnswersListsABroadcastCopy(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	response := postBroadcast(t, f.handler, map[string]any{
 		"body": "Stand down and report status.", "delivery": "btw", "session_ids": []string{answersSession, answersOther},
@@ -517,11 +574,12 @@ func TestSessionAnswersListsABroadcastCopy(t *testing.T) {
 }
 
 func TestSessionAnswersListsAPersonsReplyToTheSessionsMessage(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	root := f.message(t, map[string]any{"body": "The deploy is blocked on review."}, answersSession)
 	reply := f.message(t, map[string]any{"body": "I will review it now.", "in_reply_to": root}, "alice")
 	f.publishOutbox(t)
-	if topics := f.destinations(t, "message.answered", reply); !slices.Contains(topics, contracts.AgentSubject(answersSession)) {
+	if topics := f.destinations(t, "message.answered", reply); !slices.Contains(topics, contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatalf("the reply reached %v, want the session's own topic", topics)
 	}
 
@@ -533,18 +591,20 @@ func TestSessionAnswersListsAPersonsReplyToTheSessionsMessage(t *testing.T) {
 }
 
 func TestSessionAnswersLeavesOutAnAgentsCommentToTheSession(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	reply := f.comment(t, map[string]any{"body": "Postgres, I would say.", "ask_id": askID}, answersOther)
 	f.publishOutbox(t)
 	// The ask's follower route ignores Notify, so the agent's reply did reach the session's topic.
-	if topics := f.destinations(t, "comment.created", reply); !slices.Contains(topics, contracts.AgentSubject(answersSession)) {
+	if topics := f.destinations(t, "comment.created", reply); !slices.Contains(topics, contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatalf("the agent's reply reached %v, want the session's own topic", topics)
 	}
 	f.empty(t, answersSession)
 }
 
 func TestSessionAnswersLeavesOutAnEventDeliveredToAnotherSession(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersOther, "Which database backs the queue?")
 	f.answer(t, askID, []string{"Postgres"}, "Postgres.", nil)
@@ -557,6 +617,7 @@ func TestSessionAnswersLeavesOutAnEventDeliveredToAnotherSession(t *testing.T) {
 }
 
 func TestSessionAnswersLeavesOutADeliveryToARoleRoute(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	f.route(t, "role:reviewer")
 	comment := f.comment(t, map[string]any{"body": "Reviewers, please look."}, "alice")
@@ -575,6 +636,7 @@ func TestSessionAnswersLeavesOutADeliveryToARoleRoute(t *testing.T) {
 }
 
 func TestSessionAnswersLeavesOutAnAnswer73HoursOld(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	old := f.ask(t, answersSession, "Old question?")
 	recent := f.ask(t, answersSession, "Recent question?")
@@ -606,6 +668,7 @@ func TestSessionAnswersLeavesOutAnAnswer73HoursOld(t *testing.T) {
 }
 
 func TestSessionAnswersListsAnEditedCommentAtItsCurrentBody(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	reply := f.comment(t, map[string]any{"body": "Use SQLite.", "ask_id": askID}, "alice")
@@ -625,8 +688,10 @@ func TestSessionAnswersListsAnEditedCommentAtItsCurrentBody(t *testing.T) {
 
 // A reply in the session's ask's thread that mentions the session would reach it twice, by the
 // mention and as the ask's follower; the outbox leaves the follower copy to the delivered mention,
-// and the list holds the reply once, as a mention.
+// and the list holds the reply once, as a reply on the session's own ask, which outranks the
+// mention.
 func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	reply := f.comment(t, map[string]any{
@@ -636,13 +701,13 @@ func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(
 	if !f.sentCommentDelivery(t, reply, answersSession) {
 		t.Fatal("the mention was not delivered to the session")
 	}
-	if topics := f.destinations(t, "comment.created", reply); slices.Contains(topics, contracts.AgentSubject(answersSession)) {
+	if topics := f.destinations(t, "comment.created", reply); slices.Contains(topics, contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatalf("the reply reached %v, want the follower copy left to the delivered mention", topics)
 	}
 
 	item := f.only(t, answersSession)
-	if item.ID != reply || item.Relation != model.SessionAnswerRelationMentionedYou || item.Ask == nil || item.Ask.ID != askID {
-		t.Fatalf("item = %+v, want the reply once, as a mention in the ask's thread", item)
+	if item.ID != reply || item.Relation != model.SessionAnswerRelationRepliedOnYourAsk || item.Ask == nil || item.Ask.ID != askID {
+		t.Fatalf("item = %+v, want the reply once, as a reply on the session's own ask", item)
 	}
 }
 
@@ -651,6 +716,7 @@ func TestSessionAnswersLeavesAFollowersReplyToTheDeliveredMentionAndListsItOnce(
 // mention's send was not known to be delivered at publish time, so the outbox published the route
 // copy, and a retry delivered the mention after.
 func TestSessionAnswersListsACommentBothTheRouteAndAMentionHoldOnce(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	f.route(t, "session:"+answersSession)
 	comment := f.comment(t, map[string]any{
@@ -663,7 +729,7 @@ func TestSessionAnswersListsACommentBothTheRouteAndAMentionHoldOnce(t *testing.T
 	// so the outbox publishes the route copy to the session's topic.
 	f.setCommentDelivery(t, comment, answersSession, "failed")
 	f.publishOutbox(t)
-	if !slices.Contains(f.destinations(t, "comment.created", comment), contracts.AgentSubject(answersSession)) {
+	if !slices.Contains(f.destinations(t, "comment.created", comment), contracts.LegacyAgentSubject(answersSession)) {
 		t.Fatal("the route copy did not reach the session's topic")
 	}
 	// A retry delivers the mention: both sources now hold the comment.
@@ -676,6 +742,7 @@ func TestSessionAnswersListsACommentBothTheRouteAndAMentionHoldOnce(t *testing.T
 }
 
 func TestSessionAnswersListsNewestFirst(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	askID := f.ask(t, answersSession, "Which database backs the queue?")
 	f.answer(t, askID, []string{"Postgres"}, "", nil)
@@ -702,6 +769,7 @@ func TestSessionAnswersListsNewestFirst(t *testing.T) {
 }
 
 func TestSessionAnswersMaxCharsStopsAfterTheCrossingItem(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	bodies := []string{"0123456789", "abcdefghij", "😀😀😀😀😀"} // 10 UTF-16 units each, oldest first
 	ids := make([]string, len(bodies))
@@ -742,6 +810,7 @@ func TestSessionAnswersMaxCharsStopsAfterTheCrossingItem(t *testing.T) {
 // so a caller asking for a few hundred characters of declines is answered with what it asked
 // for and not with thousands.
 func TestSessionAnswersMaxCharsCountsTheWordsADeclineServes(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	older := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages",
 		map[string]any{"body": "0123456789", "delivery": "btw"}, "alice") // 10 UTF-16 units
@@ -769,6 +838,7 @@ func TestSessionAnswersMaxCharsCountsTheWordsADeclineServes(t *testing.T) {
 }
 
 func TestSessionAnswersRefusesASinceOlderThanSevenDays(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	first := f.write(t, http.MethodPost, "/api/v1/agents/"+answersSession+"/messages", map[string]any{"body": "First.", "delivery": "btw"}, "alice")
 	between := time.Now().UTC()
@@ -796,6 +866,7 @@ func TestSessionAnswersRefusesASinceOlderThanSevenDays(t *testing.T) {
 }
 
 func TestSessionAnswersRefusesABadSessionID(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	for _, session := range []string{"bad%20id", "%3Cx%3E", "a%7Cb"} {
 		response := dispatchRequest(t, f.handler, http.MethodGet, "/api/v1/agents/"+session+"/answers", nil, "alice")
@@ -805,17 +876,33 @@ func TestSessionAnswersRefusesABadSessionID(t *testing.T) {
 	}
 }
 
-// declineIndex is the partial index the answers list reads its window of human events through,
-// over the five event types the read names (20261111002444).
+// declineIndex is the partial btree index of a person's events of the five types by time
+// (20261111002444). The read of the release before this one finds a session's events in its window
+// through it, by time alone, and tests the session's topic with = any on each row. This release
+// keeps it for two reasons: its own read takes it where the window holds far fewer of a person's
+// events, reading them all by time and keeping the session's, and a pod of the release before
+// still serves through it while this release rolls out.
 const declineIndex = "events_person_words_with_declines"
+
+// destinationsIndex is the partial GIN index of the same events by (published_destinations,
+// created_at) (20261125131000), which this release's read finds a session's events in its window
+// through on a window that holds many of a person's events, as production's does and as
+// seedEvents makes this fixture's: its test of the topic is published_destinations @>
+// array[...], which GIN serves.
+const destinationsIndex = "events_person_words_destinations"
 
 // A person who declines an ask closes it with no answer, and every session the decline reached -
 // the asker and every follower - reads it on its own list: an item of its own kind, under a
 // relation of its own, at the resolution's own time, carrying the four sentences Dispatch wrote
-// and the person's note in parts of their own. No other resolution is listed at all, and the two
-// plans at the end are what lets this release drop the four-type index while a pod of the release
-// before it, whose read names four types, still serves requests through the five-type one.
+// and the person's note in parts of their own. No other resolution is listed at all. The plans at
+// the end hold the rolling update: this release's read, the five types by @>, reads
+// destinationsIndex over this fixture's window, which seedEvents fills with other sessions'
+// events, as a window of production's size and shape is filled, and the read of the release
+// before it, the five types by = any, still reads declineIndex, which this release keeps. The
+// read of the releases before 20261111002444, which names four types, reads declineIndex too,
+// since 20261111002445 dropped the four-type index.
 func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
+	t.Parallel()
 	f := newAnswersFixture(t)
 	const question = "Which database backs the queue?"
 	askID := f.ask(t, answersSession, question)
@@ -828,7 +915,7 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 	f.publishOutbox(t)
 	topics := f.destinations(t, "ask.resolved", askID)
 	for _, session := range []string{answersSession, answersOther} {
-		if !slices.Contains(topics, contracts.AgentSubject(session)) {
+		if !slices.Contains(topics, contracts.LegacyAgentSubject(session)) {
 			t.Fatalf("the decline reached %v, want %s's own topic", topics, session)
 		}
 	}
@@ -837,7 +924,7 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 	if item.Kind != model.SessionAnswerKindDeclined || item.Relation != model.SessionAnswerRelationDeclinedYourAsk || item.ID != askID {
 		t.Fatalf("item = %+v, want the decline of ask %s under a kind and a relation of its own", item, askID)
 	}
-	if item.Author != answersAlice || item.Text != note || item.DispatchWords != model.DeclineDispatchWords {
+	if item.Author != answersAliceProven || item.Text != note || item.DispatchWords != model.DeclineDispatchWords {
 		t.Fatalf("item words = %+v, want alice's note and Dispatch's sentences apart", item)
 	}
 	// Nobody chose an option, so the item carries none: a reader drawing an answer's options under
@@ -909,7 +996,7 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 	}
 	f.publishOutbox(t)
 	for _, ask := range []string{retracted, withdrawn} {
-		if reached := f.destinations(t, "ask.resolved", ask); !slices.Contains(reached, contracts.AgentSubject(answersSession)) {
+		if reached := f.destinations(t, "ask.resolved", ask); !slices.Contains(reached, contracts.LegacyAgentSubject(answersSession)) {
 			t.Fatalf("the resolution of ask %s reached %v, want the session's own topic", ask, reached)
 		}
 	}
@@ -938,9 +1025,10 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 
 	f.seedEvents(t, 2000)
 	const personWords = `'ask.answered', 'comment.created', 'message.created', 'message.answered'`
-	for _, read := range []struct{ name, types string }{
-		{"the five types this release reads", personWords + `, 'ask.resolved'`},
-		{"the four types the release before it reads", personWords},
+	for _, read := range []struct{ name, types, topic, index string }{
+		{"the five types by @>, which this release reads", personWords + `, 'ask.resolved'`, `e.published_destinations @> array[$2::text]`, destinationsIndex},
+		{"the five types by = any, which the release before it reads", personWords + `, 'ask.resolved'`, `$2 = any(e.published_destinations)`, declineIndex},
+		{"the four types by = any, which the releases before 20261111002444 read", personWords, `$2 = any(e.published_destinations)`, declineIndex},
 	} {
 		statement := `
 			select e.type, e.payload->>'id' as id
@@ -948,24 +1036,27 @@ func TestTheAnswersListHoldsADeclineForEachSessionItReached(t *testing.T) {
 			where e.actor->>'kind' = 'user'
 			  and e.type in (` + read.types + `)
 			  and e.created_at >= $1
-			  and $2 = any(e.published_destinations)`
+			  and ` + read.topic
 		plan := planWithoutSeqScans(t, f.database, statement,
-			time.Now().UTC().Add(-72*time.Hour), contracts.AgentSubject(answersSession))
+			time.Now().UTC().Add(-72*time.Hour), contracts.LegacyAgentSubject(answersSession))
 		if explaintest.SeqScansRelation(t, plan, "events") {
-			t.Fatalf("%s scans events sequentially; want %s:\n%s", read.name, declineIndex, plan)
+			t.Fatalf("%s scans events sequentially; want %s:\n%s", read.name, read.index, plan)
 		}
 		scans := explaintest.IndexScans(t, plan)
-		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == declineIndex }) {
-			t.Fatalf("%s reads %v, want an index scan of %s:\n%s", read.name, scans, declineIndex, plan)
+		if !slices.ContainsFunc(scans, func(scan explaintest.IndexScan) bool { return scan.Index == read.index }) {
+			t.Fatalf("%s reads %v, want an index scan of %s:\n%s", read.name, scans, read.index, plan)
 		}
 	}
 }
 
-// seedEvents fills events with rows of a type no partial index of this read holds, so the plans
-// above are costed over a table worth an index rather than over the handful of rows this fixture
-// writes, and analyzes after, without which the planner costs every index off the same default
-// estimate. The seeded rows are published and notify nobody, so no outbox run of this test has
-// anything to do with them.
+// seedEvents fills events with rows no list of this test reads, so the plans above are costed over
+// a table worth an index rather than over the handful of rows this fixture writes: rows of a type
+// no partial index of this read holds, and as many events of the five types that a person wrote in
+// the window to the topics of 20 other sessions, which both partial indexes hold. Without the
+// second kind, the window holds this fixture's own events alone, and a read of them by time alone
+// costs less than a read by the session's topic, whatever the statement tests. It analyzes after,
+// without which the planner costs every index off the same default estimate. The seeded rows are
+// published and notify nobody, so no outbox run of this test has anything to do with them.
 func (f *answersFixture) seedEvents(t *testing.T, rows int) {
 	t.Helper()
 	if _, err := f.database.Pool.Exec(context.Background(), `
@@ -976,7 +1067,545 @@ func (f *answersFixture) seedEvents(t *testing.T, rows int) {
 	`, f.issue, rows); err != nil {
 		t.Fatalf("seed %d events: %v", rows, err)
 	}
+	if _, err := f.database.Pool.Exec(context.Background(), `
+		insert into events (issue_key, seq, type, actor, payload, notify, published_at, created_at, published_destinations)
+		select $1::text, 100000 + $2::int + n,
+		       (array['ask.answered', 'comment.created', 'message.created', 'message.answered', 'ask.resolved'])[1 + n % 5],
+		       '{"kind":"user","id":"alice"}'::jsonb, jsonb_build_object('id', gen_random_uuid()::text), false, now(),
+		       now() - make_interval(mins => n), array[$3::text || (n % 20)]
+		from generate_series(1, $2::int) n
+	`, f.issue, rows, contracts.LegacyAgentSubject("session-seed-")); err != nil {
+		t.Fatalf("seed %d events of other sessions: %v", rows, err)
+	}
 	if _, err := f.database.Pool.Exec(context.Background(), "analyze events"); err != nil {
 		t.Fatalf("analyze the seeded events: %v", err)
+	}
+}
+
+// The sessions of the ask-ownership cases, each by the part it plays: A asks, B hears of the ask
+// for a reason of its own (the issue's primary document credits it, or the issue is routed to it),
+// C follows the ask, and D has no reason to hear of it at all. Being constants, they stand as they
+// are in the fixture the reply case writes.
+const (
+	askSessionA = "session-a"
+	askSessionB = "session-b"
+	askSessionC = "session-c"
+	askSessionD = "session-d"
+)
+
+// copiesOf is each envelope of the eventType event about id (its payload's id) that the outbox
+// handed p, by the topic it was handed on, failing when one topic was handed it twice.
+func (p *recordingOutboxPublisher) copiesOf(t *testing.T, eventType, id string) map[string]contracts.Envelope {
+	t.Helper()
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	copies := map[string]contracts.Envelope{}
+	for _, item := range p.items {
+		var event struct {
+			Type    string `json:"type"`
+			Payload struct {
+				ID any `json:"id"`
+			} `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
+			t.Fatalf("decode the envelope handed on %s: %v", item.Topic, err)
+		}
+		if event.Type != eventType || event.Payload.ID != id {
+			continue
+		}
+		if _, twice := copies[item.Topic]; twice {
+			t.Fatalf("the %s about %s was handed on %s twice", eventType, id, item.Topic)
+		}
+		copies[item.Topic] = item
+	}
+	return copies
+}
+
+// handedOn is every envelope the outbox handed p on topic, of whichever event.
+func (p *recordingOutboxPublisher) handedOn(topic string) []contracts.Envelope {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	var handed []contracts.Envelope
+	for _, item := range p.items {
+		if item.Topic == topic {
+			handed = append(handed, item)
+		}
+	}
+	return handed
+}
+
+// copyAskSessions is the ask_sessions the event an envelope carries holds in its payload, failing
+// when it holds none.
+func copyAskSessions(t *testing.T, item contracts.Envelope) []string {
+	t.Helper()
+	var event struct {
+		Payload map[string]any `json:"payload"`
+	}
+	if err := json.Unmarshal([]byte(item.Payload), &event); err != nil {
+		t.Fatalf("decode the envelope handed on %s: %v", item.Topic, err)
+	}
+	sessions, present := askSessionsOf(t, event.Payload)
+	if !present {
+		t.Fatalf("the copy handed on %s carries no ask_sessions: %s", item.Topic, item.Payload)
+	}
+	return sessions
+}
+
+// refusingOutboxPublisher is a recordingOutboxPublisher behind a server whose maximum payload is
+// refusedPast bytes: it refuses every envelope whose payload is longer, with bus.ErrTooLarge (an
+// ErrRefused), as the bus refuses one past the server's max payload, and records each envelope it
+// accepts. The outbox then sends the refused event's stand-in in its place (outbox's
+// standInEnvelope), which it accepts and records.
+type refusingOutboxPublisher struct {
+	*recordingOutboxPublisher
+	refusedPast int
+}
+
+func (p *refusingOutboxPublisher) WindowUntil(func() time.Time) bus.Sender { return p }
+
+func (p *refusingOutboxPublisher) PublishAsync(item contracts.Envelope) <-chan error {
+	if len(item.Payload) <= p.refusedPast {
+		return p.recordingOutboxPublisher.PublishAsync(item)
+	}
+	refused := make(chan error, 1)
+	refused <- fmt.Errorf("%w: a payload of %d bytes against a maximum of %d", bus.ErrTooLarge, len(item.Payload), p.refusedPast)
+	return refused
+}
+
+func (p *refusingOutboxPublisher) Request(_ string, item contracts.Envelope, _ bus.RequestOptions) <-chan error {
+	return p.PublishAsync(item)
+}
+
+func (p *refusingOutboxPublisher) PublishStoredAsync(_ string, item contracts.Envelope, _ string) <-chan error {
+	return p.PublishAsync(item)
+}
+
+// askReplyFixture is packages/contracts/fixtures/ask-reply-recipients.json, which
+// TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers writes; that test's doc says what each
+// field holds.
+type askReplyFixture struct {
+	IssueKey string            `json:"issue_key"`
+	AskID    string            `json:"ask_id"`
+	Sessions map[string]string `json:"sessions"`
+	Copies   []askReplyCopy    `json:"copies"`
+	StandIn  askReplyStandIn   `json:"stand_in"`
+}
+
+// askReplyCopy is one copy of a reply the fixture holds.
+type askReplyCopy struct {
+	Reply    string             `json:"reply"`
+	Reader   *string            `json:"reader"`
+	Topic    string             `json:"topic"`
+	Relation *string            `json:"relation"`
+	Envelope contracts.Envelope `json:"envelope"`
+}
+
+// askReplyStandIn is the fixture's stand_in section: a reply on an ask of many owners, too large
+// for the bus, as the stand-ins the outbox sent in its place.
+type askReplyStandIn struct {
+	AskID  string                `json:"ask_id"`
+	Owners []string              `json:"owners"`
+	Copies []askReplyStandInCopy `json:"copies"`
+}
+
+// askReplyStandInCopy is one stand-in of that reply the fixture holds.
+type askReplyStandInCopy struct {
+	Reader   string             `json:"reader"`
+	Topic    string             `json:"topic"`
+	Relation string             `json:"relation"`
+	Envelope contracts.Envelope `json:"envelope"`
+}
+
+// askReplyRecipientsFixture is where that fixture is committed, from this package's directory.
+var askReplyRecipientsFixture = filepath.Join("..", "..", "..", "..", "contracts", "fixtures", "ask-reply-recipients.json")
+
+// askReplyVarying matches, in the encoded fixture, each value that differs from one run of the
+// case to the next, the value alone being the one group that matched: a uuid; a time, in RFC 3339
+// or as an envelope's issued_at in Unix milliseconds; an event's id, which an envelope carries in
+// dispatch-<id> (event_id, dedupe_key, trace_id), in source_event_id and in its payload (the event
+// as a JSON string, whose quotes the fixture escapes) as id; and the event's seq on its issue.
+var askReplyVarying = regexp.MustCompile(`([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})` +
+	`|(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2}))` +
+	`|"issued_at": (\d+)` +
+	`|dispatch-(\d+)|"source_event_id": "(\d+)"|\\"id\\":(\d+)` +
+	`|\\"seq\\":(\d+)`)
+
+// askReplyVaryingKinds is the kind of value each group of askReplyVarying matches, by group.
+var askReplyVaryingKinds = []string{1: "uuid", 2: "time", 3: "millis", 4: "event", 5: "event", 6: "event", 7: "seq"}
+
+// normalizeAskReplyFixture replaces each value of encoded that askReplyVarying matches with a
+// placeholder of the same form, numbered within its kind in order of first appearance, so a value
+// that recurs gets the same placeholder each time and every run writes the same bytes: the nth
+// uuid is 00000000-0000-4000-8000-<n in 12 digits>, the nth time n seconds past
+// 2026-01-01T00:00:00Z (an RFC 3339 time and an issued_at counting on together), and the nth event
+// id, or seq, n.
+func normalizeAskReplyFixture(encoded []byte) []byte {
+	epoch := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	placeholders := map[string]string{}
+	counts := map[string]int{}
+	placeholder := func(kind, value string) string {
+		if known, ok := placeholders[kind+" "+value]; ok {
+			return known
+		}
+		counter := kind
+		if kind == "millis" {
+			counter = "time"
+		}
+		counts[counter]++
+		n := counts[counter]
+		var stand string
+		switch kind {
+		case "uuid":
+			stand = fmt.Sprintf("00000000-0000-4000-8000-%012d", n)
+		case "time":
+			stand = epoch.Add(time.Duration(n) * time.Second).Format(time.RFC3339)
+		case "millis":
+			stand = strconv.FormatInt(epoch.Add(time.Duration(n)*time.Second).UnixMilli(), 10)
+		default:
+			stand = strconv.Itoa(n)
+		}
+		placeholders[kind+" "+value] = stand
+		return stand
+	}
+	var normalized []byte
+	last := 0
+	for _, match := range askReplyVarying.FindAllSubmatchIndex(encoded, -1) {
+		for group := 1; group < len(askReplyVaryingKinds); group++ {
+			start, end := match[2*group], match[2*group+1]
+			if start < 0 {
+				continue
+			}
+			normalized = append(normalized, encoded[last:start]...)
+			normalized = append(normalized, placeholder(askReplyVaryingKinds[group], string(encoded[start:end]))...)
+			last = end
+			break
+		}
+	}
+	return append(normalized, encoded[last:]...)
+}
+
+// The report's case (dispatch://INFRA-4344): a person's reply in the thread of A's ask, on an issue
+// with no route and no claim whose spec B wrote a version of, reaches B by that credit, as it
+// reaches A, which asked, and C, which follows the ask, and never D. Every copy names A and C as
+// the sessions that own the ask (ask_sessions), and the answers read tells A and C that the reply
+// is on their own ask and B only that a person commented on an issue. An asker that left its ask
+// is no longer sent a reply as a follower; once it has a reason of its own again (it writes a
+// version of the spec too), the reply reaches it and still reads as a reply on its own ask, since
+// it wrote the ask.
+//
+// The same holds for a reply too large for the bus, which the outbox sends each destination as a
+// stand-in (payload_omitted) in its place. On a second ask, which seven sessions own, each named
+// by a 36-character id, ask_sessions encodes past the 256 bytes a stand-in keeps of any other
+// field; every stand-in of a person's reply in its thread still names all seven, and the answers
+// read tells each of them that the reply is on its own ask and B, which the reply reaches by its
+// credit, that a person commented on an issue.
+//
+// The test writes the copies it read into packages/contracts/fixtures/ask-reply-recipients.json,
+// which envoy-client's ask-reply-recipients.test.ts renders, so the live card is held to the same
+// bytes the outbox published. Its shape:
+//
+//	{
+//	  "issue_key": the fixture's issue,
+//	  "ask_id":    A's ask,
+//	  "sessions":  {"A": ..., "B": ..., "C": ..., "D": ...}, each session's id,
+//	  "copies": [{
+//	    "reply":    "first" or "third", the reply the copy is of,
+//	    "reader":   "A", "B" or "C", the session whose own topic the copy was handed on, or null
+//	                on the issue's own topic,
+//	    "topic":    the topic the copy was handed on,
+//	    "relation": what the reader's answers read calls that reply, or null on the issue's topic,
+//	    "envelope": the contracts.Envelope as the outbox handed it to the bus, which is the JSON
+//	                renderInbound takes as its raw argument
+//	  }, ...],
+//	  "stand_in": {
+//	    "ask_id": the ask the seven sessions own,
+//	    "owners": their ids, as its ask_sessions names them: the asker, then each follower in
+//	              the order it joined,
+//	    "copies": [{
+//	      "reader":   the id of the session whose own topic the stand-in was handed on: each
+//	                  owner's, then B's,
+//	      "topic":    that topic,
+//	      "relation": what the reader's answers read calls the reply,
+//	      "envelope": the stand-in as the outbox handed it to the bus, as above
+//	    }, ...]
+//	  }
+//	}
+//
+// The copies are the first reply's on A's, B's, C's and the issue's topics, then the third
+// reply's on A's. Every value that differs between runs is a placeholder of its own form
+// (normalizeAskReplyFixture), the same one wherever the value recurs, so each ask_id is the id the
+// envelopes carry; the session ids are constants and stand as they are, which is why no owner's
+// id has a uuid's shape.
+// `go test ./internal/dispatch/api -run '^TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers$' -update`
+// rewrites it.
+func TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
+	t.Parallel()
+	f := newAnswersFixture(t)
+	f.credit(t, askSessionB)
+	const question = "Which database backs the queue?"
+	askID := f.ask(t, askSessionA, question)
+	f.follow(t, http.MethodPut, askID, askSessionC)
+	owners := []string{askSessionA, askSessionC}
+	topicOf := contracts.LegacyAgentSubject
+	issueTopic := contracts.LegacyDispatchIssueSubject(f.issue, "comment.created")
+	published := &recordingOutboxPublisher{}
+
+	first := f.comment(t, map[string]any{"body": "Which pool size do you need?", "ask_id": askID}, "alice")
+	f.publishOutboxThrough(t, published)
+	reached := f.destinations(t, "comment.created", first)
+	for _, session := range []string{askSessionA, askSessionB, askSessionC} {
+		if !slices.Contains(reached, topicOf(session)) {
+			t.Fatalf("the first reply reached %v, want %s's own topic", reached, session)
+		}
+	}
+	if slices.Contains(reached, topicOf(askSessionD)) {
+		t.Fatalf("the first reply reached %v, want nothing of %s, which has no reason to hear of it", reached, askSessionD)
+	}
+	firstCopies := published.copiesOf(t, "comment.created", first)
+	for _, topic := range []string{topicOf(askSessionA), topicOf(askSessionB), topicOf(askSessionC), issueTopic} {
+		handed, ok := firstCopies[topic]
+		if !ok {
+			t.Fatalf("the first reply was handed on no copy of %s", topic)
+		}
+		if got := copyAskSessions(t, handed); !slices.Equal(got, owners) {
+			t.Fatalf("the first reply's copy on %s names %v as the ask's own sessions, want %v", topic, got, owners)
+		}
+	}
+	relations := map[string]string{}
+	for _, session := range []string{askSessionA, askSessionC} {
+		item := f.only(t, session)
+		if item.ID != first || item.Relation != model.SessionAnswerRelationRepliedOnYourAsk ||
+			item.Ask == nil || item.Ask.ID != askID || item.Ask.Question != question {
+			t.Fatalf("%s's item = %+v, want the first reply %s on its own ask %s", session, item, first, askID)
+		}
+		relations[session] = item.Relation
+	}
+	// B neither asked nor follows: it reads the reason that delivered the reply, a person's comment
+	// on an issue whose spec credits it, and still the ask the reply is in.
+	credited := f.only(t, askSessionB)
+	if credited.ID != first || credited.Relation != model.SessionAnswerRelationCommentedOnIssue ||
+		credited.Ask == nil || credited.Ask.ID != askID || credited.Ask.Question != question {
+		t.Fatalf("%s's item = %+v, want the first reply %s as a comment on the issue, in ask %s", askSessionB, credited, first, askID)
+	}
+	relations[askSessionB] = credited.Relation
+	f.empty(t, askSessionD)
+
+	// A leaves its own ask: the next reply is not sent to it as a follower, and its list does not
+	// gain the reply, while B and C hear it as they heard the first.
+	f.follow(t, http.MethodDelete, askID, askSessionA)
+	second := f.comment(t, map[string]any{"body": "Or is the default enough?", "ask_id": askID}, "alice")
+	f.publishOutboxThrough(t, published)
+	reached = f.destinations(t, "comment.created", second)
+	if slices.Contains(reached, topicOf(askSessionA)) {
+		t.Fatalf("the second reply reached %v, want nothing of %s, which left its ask", reached, askSessionA)
+	}
+	if _, handed := published.copiesOf(t, "comment.created", second)[topicOf(askSessionA)]; handed {
+		t.Fatalf("the second reply was handed on %s's own topic after it left its ask", askSessionA)
+	}
+	if item := f.only(t, askSessionA); item.ID != first {
+		t.Fatalf("%s's item = %+v, want the first reply %s alone", askSessionA, item, first)
+	}
+	for _, reader := range []struct{ session, relation string }{
+		{askSessionB, model.SessionAnswerRelationCommentedOnIssue},
+		{askSessionC, model.SessionAnswerRelationRepliedOnYourAsk},
+	} {
+		if !slices.Contains(reached, topicOf(reader.session)) {
+			t.Fatalf("the second reply reached %v, want %s's own topic", reached, reader.session)
+		}
+		listed := f.list(t, reader.session, "")
+		if listed.Total != 2 || len(listed.Items) != 2 || listed.Items[0].ID != second || listed.Items[1].ID != first {
+			t.Fatalf("%s's answers = %+v, want the second reply then the first", reader.session, listed)
+		}
+		if item := listed.Items[0]; item.Relation != reader.relation || item.Ask == nil || item.Ask.ID != askID {
+			t.Fatalf("%s's item = %+v, want the second reply as %s, in ask %s", reader.session, item, reader.relation, askID)
+		}
+	}
+
+	// A gets a reason of its own, a version of the spec, and the third reply reaches it by that
+	// credit. A wrote the ask, so the copy still names it first, and its list reads the reply as
+	// one on its own ask.
+	f.credit(t, askSessionA)
+	third := f.comment(t, map[string]any{"body": "Four connections will do.", "ask_id": askID}, "alice")
+	f.publishOutboxThrough(t, published)
+	if reached := f.destinations(t, "comment.created", third); !slices.Contains(reached, topicOf(askSessionA)) {
+		t.Fatalf("the third reply reached %v, want %s's own topic by its credit on the spec", reached, askSessionA)
+	}
+	thirdCopy, handed := published.copiesOf(t, "comment.created", third)[topicOf(askSessionA)]
+	if !handed {
+		t.Fatalf("the third reply was handed on no copy of %s's own topic", askSessionA)
+	}
+	if got := copyAskSessions(t, thirdCopy); !slices.Equal(got, owners) {
+		t.Fatalf("the third reply's copy names %v as the ask's own sessions, want %v: %s wrote the ask", got, owners, askSessionA)
+	}
+	listed := f.list(t, askSessionA, "")
+	if listed.Total != 2 || len(listed.Items) != 2 || listed.Items[0].ID != third || listed.Items[1].ID != first {
+		t.Fatalf("%s's answers = %+v, want the third reply then the first", askSessionA, listed)
+	}
+	returned := listed.Items[0]
+	if returned.Relation != model.SessionAnswerRelationRepliedOnYourAsk || returned.Ask == nil || returned.Ask.ID != askID {
+		t.Fatalf("%s's item = %+v, want the third reply on its own ask %s", askSessionA, returned, askID)
+	}
+
+	// D heard of none of it.
+	f.empty(t, askSessionD)
+	if handed := published.handedOn(topicOf(askSessionD)); len(handed) != 0 {
+		t.Fatalf("%s's own topic was handed %d envelopes, want none", askSessionD, len(handed))
+	}
+
+	// The reply as a stand-in. A second ask has seven owners, the asker and six followers, each
+	// named by a 36-character id with no uuid's shape, so the fixture keeps it as it is. Their
+	// ask_sessions encodes past the 256 bytes a stand-in keeps of any other field (outbox's
+	// standInPayloadFieldBytes).
+	standInOwners := make([]string, 7)
+	for i := range standInOwners {
+		standInOwners[i] = fmt.Sprintf("session-owner-of-the-stand-in-ask-%02d", i+1)
+		if len(standInOwners[i]) != 36 {
+			t.Fatalf("owner %q is %d characters, want 36", standInOwners[i], len(standInOwners[i]))
+		}
+	}
+	if encoded, err := json.Marshal(standInOwners); err != nil || len(encoded) <= 256 {
+		t.Fatalf("the %d owners' ids encode to %d bytes (%v), want more than the 256 a stand-in keeps of another field",
+			len(standInOwners), len(encoded), err)
+	}
+	const standInQuestion = "Which region do we ship to first?"
+	standInAskID := f.ask(t, standInOwners[0], standInQuestion)
+	for _, follower := range standInOwners[1:] {
+		f.follow(t, http.MethodPut, standInAskID, follower)
+	}
+	// This publisher refuses an event longer than refusedPast, as the bus refuses one past the
+	// server's maximum payload, and alice's reply is longer: every destination refuses its event,
+	// and the outbox sends each the stand-in instead, which the publisher takes.
+	refusing := &refusingOutboxPublisher{recordingOutboxPublisher: &recordingOutboxPublisher{}, refusedPast: 4096}
+	standInBody := strings.Repeat("Ship to the region whose queue is nearest. ", 150)
+	if len(standInBody) <= refusing.refusedPast {
+		t.Fatalf("a body of %d bytes fits the publisher's %d, so its event is not refused", len(standInBody), refusing.refusedPast)
+	}
+	standInReply := f.comment(t, map[string]any{"body": standInBody, "ask_id": standInAskID}, "alice")
+	f.publishOutboxThrough(t, refusing)
+	standInHanded := refusing.copiesOf(t, "comment.created", standInReply)
+	var standInCopies []askReplyStandInCopy
+	for _, reader := range append(slices.Clone(standInOwners), askSessionB) {
+		want := model.SessionAnswerRelationRepliedOnYourAsk
+		if reader == askSessionB {
+			want = model.SessionAnswerRelationCommentedOnIssue
+		}
+		topic := topicOf(reader)
+		handed, ok := standInHanded[topic]
+		if !ok {
+			t.Fatalf("the long reply was handed on no copy of %s's own topic", reader)
+		}
+		var event struct {
+			Payload map[string]any `json:"payload"`
+		}
+		if err := json.Unmarshal([]byte(handed.Payload), &event); err != nil {
+			t.Fatalf("decode the envelope handed on %s: %v", topic, err)
+		}
+		if _, body := event.Payload["body"]; event.Payload["payload_omitted"] != true || body {
+			t.Fatalf("the long reply's copy on %s is no stand-in: payload_omitted %v, body kept %t",
+				topic, event.Payload["payload_omitted"], body)
+		}
+		if got := copyAskSessions(t, handed); !slices.Equal(got, standInOwners) {
+			t.Fatalf("the stand-in on %s names %v as the ask's own sessions, want all %d: %v", topic, got, len(standInOwners), standInOwners)
+		}
+		listed := f.list(t, reader, "")
+		index := slices.IndexFunc(listed.Items, func(item model.SessionAnswer) bool { return item.ID == standInReply })
+		if index < 0 {
+			t.Fatalf("%s's answers = %+v, want the long reply %s among them", reader, listed, standInReply)
+		}
+		if item := listed.Items[index]; item.Relation != want || item.Ask == nil || item.Ask.ID != standInAskID || item.Ask.Question != standInQuestion {
+			t.Fatalf("%s's item = %+v, want the long reply as %s, in ask %s", reader, item, want, standInAskID)
+		}
+		standInCopies = append(standInCopies, askReplyStandInCopy{Reader: reader, Topic: topic, Relation: want, Envelope: handed})
+	}
+
+	fixture := askReplyFixture{
+		IssueKey: f.issue,
+		AskID:    askID,
+		Sessions: map[string]string{"A": askSessionA, "B": askSessionB, "C": askSessionC, "D": askSessionD},
+		StandIn:  askReplyStandIn{AskID: standInAskID, Owners: standInOwners, Copies: standInCopies},
+	}
+	for _, reader := range []struct{ name, session string }{{"A", askSessionA}, {"B", askSessionB}, {"C", askSessionC}} {
+		topic := topicOf(reader.session)
+		fixture.Copies = append(fixture.Copies, askReplyCopy{
+			Reply: "first", Reader: new(reader.name), Topic: topic, Relation: new(relations[reader.session]), Envelope: firstCopies[topic],
+		})
+	}
+	fixture.Copies = append(fixture.Copies,
+		askReplyCopy{Reply: "first", Topic: issueTopic, Envelope: firstCopies[issueTopic]},
+		askReplyCopy{Reply: "third", Reader: new("A"), Topic: topicOf(askSessionA), Relation: new(returned.Relation), Envelope: thirdCopy},
+	)
+	encoded, err := json.MarshalIndent(fixture, "", "  ")
+	if err != nil {
+		t.Fatalf("encode the fixture: %v", err)
+	}
+	got := normalizeAskReplyFixture(append(encoded, '\n'))
+	if *updateFixtures {
+		if err := os.WriteFile(askReplyRecipientsFixture, got, 0o644); err != nil {
+			t.Fatal(err)
+		}
+		t.Logf("wrote %s", askReplyRecipientsFixture)
+		return
+	}
+	const rewrite = "go test ./internal/dispatch/api -run '^TestAnAskReplyIsTheSessionsOwnOnlyForItsAskerAndFollowers$' -update"
+	want, err := os.ReadFile(askReplyRecipientsFixture)
+	if err != nil {
+		t.Fatalf("read %s (%s writes it): %v", askReplyRecipientsFixture, rewrite, err)
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatalf("%s differs from the copies this run published; when the change is meant, rewrite it with %s:\n%s",
+			askReplyRecipientsFixture, rewrite, got)
+	}
+}
+
+// An answer and a decline of A's asks reach B too, by the issue's route, but only A, which asked,
+// and C, which follows both asks, read them as their own: answered_your_ask, and declined_your_ask
+// with the words Dispatch wrote for the asking agent beside the person's note. B reads
+// answered_an_ask, and declined_an_ask with the person's note alone: those words tell the asker
+// to decide its next step, and B asked nothing.
+func TestAnAnswerAndADeclineAreTheSessionsOwnOnlyForItsAskerAndFollowers(t *testing.T) {
+	t.Parallel()
+	f := newAnswersFixture(t)
+	f.route(t, "session:"+askSessionB)
+	answeredID := f.ask(t, askSessionA, "Which database backs the queue?")
+	declinedID := f.ask(t, askSessionA, "Which region do we ship to first?")
+	for _, askID := range []string{answeredID, declinedID} {
+		f.follow(t, http.MethodPut, askID, askSessionC)
+	}
+	f.answer(t, answeredID, []string{"Postgres"}, "Postgres, for the pool.", nil)
+	const note = "The vendor owns that date; I do not."
+	written := note
+	f.decline(t, declinedID, &written)
+	f.publishOutbox(t)
+	if reached := f.destinations(t, "ask.answered", answeredID); !slices.Contains(reached, contracts.LegacyAgentSubject(askSessionB)) {
+		t.Fatalf("the answer reached %v, want %s's own topic by the issue's route", reached, askSessionB)
+	}
+	if reached := f.destinations(t, "ask.resolved", declinedID); !slices.Contains(reached, contracts.LegacyAgentSubject(askSessionB)) {
+		t.Fatalf("the decline reached %v, want %s's own topic by the issue's route", reached, askSessionB)
+	}
+
+	for _, reader := range []struct {
+		session, answered, declined, words string
+	}{
+		{askSessionA, model.SessionAnswerRelationAnsweredYourAsk, model.SessionAnswerRelationDeclinedYourAsk, model.DeclineDispatchWords},
+		{askSessionC, model.SessionAnswerRelationAnsweredYourAsk, model.SessionAnswerRelationDeclinedYourAsk, model.DeclineDispatchWords},
+		{askSessionB, model.SessionAnswerRelationAnsweredAnAsk, model.SessionAnswerRelationDeclinedAnAsk, ""},
+	} {
+		listed := f.list(t, reader.session, "")
+		// Newest first: the decline, then the answer.
+		if listed.Total != 2 || len(listed.Items) != 2 || listed.Items[0].ID != declinedID || listed.Items[1].ID != answeredID {
+			t.Fatalf("%s's answers = %+v, want the decline of %s then the answer to %s", reader.session, listed, declinedID, answeredID)
+		}
+		// Each item is checked on its own, so a session that reads both wrongly is told both.
+		declined, answered := listed.Items[0], listed.Items[1]
+		if answered.Kind != model.SessionAnswerKindAnswer || answered.Relation != reader.answered ||
+			answered.Text != "Postgres, for the pool." || answered.DispatchWords != "" || answered.Ask == nil || answered.Ask.ID != answeredID {
+			t.Errorf("%s's answer item = kind %s, relation %s, text %q, dispatch_words %q, ask %+v; want the answer to %s as %s, with no dispatch_words",
+				reader.session, answered.Kind, answered.Relation, answered.Text, answered.DispatchWords, answered.Ask, answeredID, reader.answered)
+		}
+		if declined.Kind != model.SessionAnswerKindDeclined || declined.Relation != reader.declined ||
+			declined.Text != note || declined.DispatchWords != reader.words || declined.Ask == nil || declined.Ask.ID != declinedID {
+			t.Errorf("%s's decline item = kind %s, relation %s, text %q, dispatch_words %q, ask %+v; want the decline of %s as %s, with the note and dispatch_words %q",
+				reader.session, declined.Kind, declined.Relation, declined.Text, declined.DispatchWords, declined.Ask, declinedID, reader.declined, reader.words)
+		}
 	}
 }

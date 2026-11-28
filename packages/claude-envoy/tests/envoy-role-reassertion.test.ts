@@ -57,6 +57,11 @@ class IdleNats implements ChannelConnection {
   }
 
   async *status(): AsyncGenerator<ChannelConnectionStatus> {}
+
+  /** Never closed for good. */
+  closed(): Promise<Error | undefined> {
+    return new Promise(() => undefined)
+  }
 }
 
 const notifier: ChannelNotifier = {
@@ -102,7 +107,7 @@ test("reasserts a restored role after a successful registration heartbeat loses 
     setRole: async (input) => {
       setRoles.push(input)
       if (setRoles.length === 2) reasserted.resolve()
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     getRole: async () => ({ role: "reviewer", holder: "ses_lost", last_seen: 1, state: "live" }),
   }
@@ -116,6 +121,7 @@ test("reasserts a restored role after a successful registration heartbeat loses 
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
 
@@ -148,7 +154,7 @@ test("runs the regain hook once a heartbeat's soft claim takes the held role bac
     unregisterSession: async () => undefined,
     setRole: async () => {
       holder = "ses_current"
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     getRole: async () => {
       // Healthy ticks see this session; the listener then loses the claim once.
@@ -167,6 +173,7 @@ test("runs the regain hook once a heartbeat's soft claim takes the held role bac
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   session.onRoleRegained(async (role, reason) => {
@@ -191,13 +198,20 @@ test("the role read's 404 still means no live holder: the kept lane changed only
   const stateDirectory = scratchState()
   const regains: string[] = []
   const regained = Promise.withResolvers<void>()
+  // The listener names no holder once, and this session once its soft claim takes the role back,
+  // so the regain happens once however many heartbeats run before the hook's first call is read.
+  let unclaimed = true
   const client: FakeClient = {
     subscribe: async () => registered(),
     getInterest: async () => interest(),
     unsubscribe: async () => undefined,
     unregisterSession: async () => undefined,
-    setRole: async () => ({ claimed: true, interest: interest() }),
+    setRole: async () => ({ claimed: true, interest: interest(), warnings: [] }),
     getRole: async () => {
+      if (!unclaimed) {
+        return { role: "legion-claim", holder: "ses_current", last_seen: 1, state: "live" } as const
+      }
+      unclaimed = false
       throw new EnvoyApiError({
         method: "GET",
         url: "http://listener.test/v1/roles/legion-claim",
@@ -219,6 +233,7 @@ test("the role read's 404 still means no live holder: the kept lane changed only
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   session.onRoleRegained(async (role, reason) => {
@@ -274,6 +289,7 @@ test("a soft claim a different live session refuses removes the role record, whi
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   const regains: string[] = []
@@ -313,7 +329,7 @@ test("a refusal naming this session under another process keeps the record, asks
     setRole: async (input) => {
       claims.push(input)
       if (staleClaimLive) return { claimed: false, holder: "ses_current" }
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     // The lookup names this session, under the process that claimed it: the other `claude`.
     getRole: async () => ({
@@ -334,6 +350,7 @@ test("a refusal naming this session under another process keeps the record, asks
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   const regains: string[] = []
@@ -394,7 +411,7 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
       claims.push(input)
       // The fresh claim clears the mark, as the listener's does.
       handedBack = false
-      return { claimed: true, interest: interest() }
+      return { claimed: true, interest: interest(), warnings: [] }
     },
     // This session and this very process — and the hand-back mark, which is why it is no hold.
     getRole: async () => ({
@@ -416,6 +433,7 @@ test("a lookup marked handed back makes the heartbeat claim the role again and k
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
   const regains: string[] = []
@@ -480,6 +498,7 @@ test("the age sweep does not reach the record of a process still pressing its re
     configFile: { path: join(stateDirectory, "envoy.json"), error: null },
     stateDirectory,
     clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
     pluginVersion: "source",
   })
 
@@ -503,6 +522,163 @@ test("the age sweep does not reach the record of a process still pressing its re
       client_instance_id: INSTANCE,
     })
   } finally {
+    await session.shutdown()
+  }
+})
+
+// A role the session takes while a heartbeat's claim of its old role is still out: the heartbeat
+// then learns another session holds the old role and removes the record, so the new role's record
+// must be written after that removal, not before it, or it is removed with the old one and the
+// session no longer holds the role it just took. `rememberRole` writes it in the registry chain,
+// behind the heartbeat, so the order holds however the two calls interleave.
+test("a role taken while a heartbeat's refused claim of the old role is still out keeps its record", async () => {
+  const stateDirectory = scratchState()
+  const OLD = "reviewer"
+  const NEW = "legion-claim"
+  // The heartbeat's soft claim of the old role, held until the test answers it.
+  const oldClaim = Promise.withResolvers<{ claimed: false; holder: string }>()
+  const oldClaimAsked = Promise.withResolvers<void>()
+  let interestReads = 0
+  const client: FakeClient = {
+    subscribe: async () => registered(),
+    getInterest: async () => {
+      interestReads += 1
+      return interest()
+    },
+    unsubscribe: async () => undefined,
+    unregisterSession: async () => undefined,
+    setRole: async (input) => {
+      if (input.role !== OLD) return { claimed: true, interest: interest(), warnings: [] }
+      oldClaimAsked.resolve()
+      return oldClaim.promise
+    },
+    // Another live session holds the old role, so the heartbeat claims it again; the new role is
+    // this process's own.
+    getRole: async (role) =>
+      role === OLD
+        ? { role, holder: "ses_newer", last_seen: 1, state: "live" as const }
+        : {
+            role,
+            holder: "ses_current",
+            client_instance_id: INSTANCE,
+            last_seen: 1,
+            state: "live" as const,
+          },
+  }
+  const session = await startChannelSession({
+    identity: new SessionIdentity("ses_current", "/tmp"),
+    connection: new IdleNats(),
+    notifier,
+    capabilities: testCapabilities,
+    client,
+    heartbeatMs: 25,
+    configFile: { path: join(stateDirectory, "envoy.json"), error: null },
+    stateDirectory,
+    clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
+    pluginVersion: "source",
+  })
+  const roleFile = roleStateFile(stateDirectory, "ses_current")
+
+  try {
+    // 1. The session holds the old role, and a heartbeat's claim of it is out, unanswered.
+    await session.rememberRole(OLD)
+    await oldClaimAsked.promise
+
+    // 2. The session takes the new role meanwhile. A write made at once lands now; one made in
+    //    order waits behind the heartbeat. Either way the claim is answered next: at once once
+    //    the write has landed, else after a second, which only bounds how long the test waits
+    //    for a write that is not coming before the claim is answered.
+    const remembering = session.rememberRole(NEW)
+    const window = Promise.withResolvers<void>()
+    const timer = setTimeout(window.resolve, 1_000)
+    await Promise.race([remembering, window.promise])
+    clearTimeout(timer)
+
+    // 3. The old claim is refused: another live session holds that role.
+    const readsBeforeRefusal = interestReads
+    oldClaim.resolve({ claimed: false, holder: "ses_newer" })
+
+    // 4. The heartbeat reads the interests after its role claim, so a read after the refusal
+    //    means its removal of the old role's record has finished.
+    await waitFor(
+      async () => interestReads > readsBeforeRefusal,
+      "the heartbeat's next interest read",
+    )
+
+    // 5. The new role's record is on disk.
+    await remembering
+    expect(await readPersistedRole(roleFile)).toEqual({
+      session_id: "ses_current",
+      role: NEW,
+      client_instance_id: INSTANCE,
+    })
+  } finally {
+    oldClaim.resolve({ claimed: false, holder: "ses_newer" })
+    await session.shutdown()
+  }
+})
+
+// A heartbeat body is past its stop check, its read of the held role on the wire, when the
+// session's shutdown begins, and the listener then answers that another session holds the role.
+// The body sends no claim after the shutdown began, and the regain hook does not run (R24 of
+// dispatch://INFRA-3589): the DELETE follows, and no heartbeat renews what a claim would take.
+test("a heartbeat body past its stop check when the shutdown begins makes no role write after it", async () => {
+  const stateDirectory = scratchState()
+  let shutdownBegan = false
+  const claimsAfterShutdown: unknown[] = []
+  const readOut = Promise.withResolvers<void>()
+  const readAnswered = Promise.withResolvers<void>()
+  const client: FakeClient = {
+    subscribe: async () => registered(),
+    getInterest: async () => interest(),
+    unsubscribe: async () => undefined,
+    unregisterSession: async () => undefined,
+    setRole: async (input) => {
+      if (shutdownBegan) claimsAfterShutdown.push(input)
+      return { claimed: true, interest: interest(), warnings: [] }
+    },
+    // The listener lost the claim and names another session, so the body would claim it back.
+    // The read is answered only once the test lets it go, after the shutdown began.
+    getRole: async (role) => {
+      readOut.resolve()
+      await readAnswered.promise
+      return { role, holder: "ses_lost", last_seen: 1, state: "live" as const }
+    },
+  }
+  const session = await startChannelSession({
+    identity: new SessionIdentity("ses_current", "/tmp"),
+    connection: new IdleNats(),
+    notifier,
+    capabilities: testCapabilities,
+    client,
+    heartbeatMs: 25,
+    configFile: { path: join(stateDirectory, "envoy.json"), error: null },
+    stateDirectory,
+    clientInstanceID: INSTANCE,
+    pluginName: "@sjawhar/claude-envoy",
+    pluginVersion: "source",
+  })
+  const regains: string[] = []
+  session.onRoleRegained(async (role, reason) => {
+    regains.push(`${role} ${reason}`)
+  })
+
+  try {
+    await session.rememberRole("legion-claim")
+    await readOut.promise
+
+    shutdownBegan = true
+    const stopping = session.shutdown()
+    readAnswered.resolve()
+    // The shutdown waits out the heartbeat body, and a regain hook the body fired has been
+    // called by then: it runs one microtask after it fired, before the body's chain settles.
+    await stopping
+
+    expect(claimsAfterShutdown).toEqual([])
+    expect(regains).toEqual([])
+  } finally {
+    readAnswered.resolve()
     await session.shutdown()
   }
 })

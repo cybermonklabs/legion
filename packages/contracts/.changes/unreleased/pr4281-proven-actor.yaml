@@ -1,0 +1,8 @@
+kind: Added
+custom:
+  Issue: pr4281
+body: |-
+  `ActorSchema` reads `proven: true` on a user or session actor and `ActorActSchema` reads
+  `session_proven: true`, the server's marks that the write's credential proved the actor's id or
+  the act's session; the generated `Actor` and `ActorAct` carry both as optional booleans. An
+  absent mark is a claimed actor or a row written before the marks.

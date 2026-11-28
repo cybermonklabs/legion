@@ -1,0 +1,4 @@
+kind: Added
+body: |-
+  `dispatch steps --issue <KEY>` prints an issue's step records, one line for each run of each
+  step, with its task, step, role, type, agent, model, attempt, start, end and result.

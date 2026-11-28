@@ -1,17 +1,21 @@
+import { dispatchWritingBox } from "@legion/contracts";
 import type { UseQueryResult } from "@tanstack/react-query";
 import { useQueryClient } from "@tanstack/react-query";
-import { type FormEvent, type ReactNode, useId, useState } from "react";
+import { type FormEvent, type ReactNode, useState } from "react";
 
 import { type ArtifactOwner, api, type WriteBounds } from "../../api/client";
 import type { Ask, AskRead, Comment, CommentWithTrees, CreateCommentInput } from "../../api/types";
 import { QueryError } from "../../components/QueryError";
+import { useTooltips } from "../../components/tooltips";
 import { submitOnModifiedEnter } from "../../hooks/submitOnModifiedEnter";
 import { useSending } from "../../hooks/useSending";
 import {
   borderDefault,
   borderStrong,
   enabledCardHoverBorder,
-  inputClasses,
+  pageInkText,
+  pageLineBorder,
+  pageQuietText,
   surfaceMutedBg,
   textMutedOnSurfaceMuted,
   textPrimaryOnSurfaceMuted,
@@ -19,17 +23,23 @@ import {
   textSecondaryOnSurface,
 } from "../../theme/classes";
 import { appendToDraft, DraftUploadStatus, useDraftUpload } from "../artifacts/ArtifactUpload";
+import { MentionField } from "../conversation/MentionField";
 import { AgentName } from "../refs/AgentName";
-import { MarkdownBody } from "../refs/MarkdownBody";
+import { PostBody } from "../refs/PostBody";
+import { EditedMark } from "../refs/PostMarks";
+import { postDeletion } from "../refs/post-marks";
 import { Timestamp } from "../refs/Timestamp";
 import { textSourceOf } from "../refs/text-references";
-import { Unfurl } from "../refs/Unfurl";
 import type { DwellRef } from "../shell/useDwell";
 import { EarlierReplies } from "../threads/EarlierReplies";
 import { threadLayout } from "../threads/thread-layout";
 import type { ThreadOrder } from "../threads/thread-order";
-import { useKeyedWrite } from "../writes/useKeyedWrite";
-import { clearReplyDraft, useReplyDraft } from "./reply-drafts";
+import { stoppedNote, useKeyedWrite } from "../writes/useKeyedWrite";
+import type { AskPress } from "./outstanding-answers";
+import { askArtifactId } from "./owner-reads";
+import { useQuestionLabel } from "./question-label";
+import { clearReplyDraft, setReplyDraft, useReplyDraft } from "./reply-drafts";
+import { UnsentText } from "./UnsentText";
 
 export type CreateReply = (
   issueKey: string,
@@ -57,18 +67,27 @@ function AskReply({
       ref={markRef}
     >
       <div className={textPrimaryOnSurfaceMuted}>
-        <MarkdownBody
+        <PostBody
+          deleted={postDeletion(comment)}
           markdown={comment.body}
-          source={textSourceOf("comment", comment.id)}
+          source={textSourceOf("comment", comment.id, comment.issue_key)}
+          surface="ask-thread-reply"
           tree={comment.body_tree}
         />
       </div>
-      <Unfurl body={comment.body} source={textSourceOf("comment", comment.id)} />
       <p className={`mt-1 text-xs ${textMutedOnSurfaceMuted}`}>
         <AgentName actor={comment.author} inline /> · <Timestamp at={comment.created_at} />
+        <EditedMark at={comment.edited_at} deleted={postDeletion(comment)} />
       </p>
     </li>
   );
+}
+
+/** One press of a reply: the ask it is of (`AskPress`), the text it posts, and its question as
+ *  the label names it (`questionWords`). */
+interface ReplyPress extends AskPress {
+  readonly questionWords: string;
+  readonly text: string;
 }
 
 /** AskCard owns the `["ask-thread", ask.id]` query, initializing it from an Inbox row when
@@ -76,11 +95,96 @@ function AskReply({
 export type AskThreadQuery = UseQueryResult<AskRead, Error>;
 
 /**
- * The reply form under an answered ask. It posts to the ask's issue, or to its document for a
- * project-document ask, then invalidates the shared thread so the reply shows first. Its draft is
- * the ask's (`reply-drafts.ts`), and its send is the ask's too: while any composer's reply to this
- * ask is out, every composer for it, including one mounted since, shows the draft disabled. A file
- * pasted or dropped into the field uploads to `uploadOwner` and its text joins the draft.
+ * Whether an ask's thread takes a reply through the reply composer: every ask that is no longer
+ * open, whether it was answered or resolved (resolved, retracted, declined or withdrawn alike),
+ * since the conversation under a question goes on after the question is settled. An open ask has
+ * no reply composer: its card's one composer answers it or asks back.
+ */
+export function takesReply(ask: Pick<Ask, "state">): boolean {
+  return ask.state !== "open";
+}
+
+/**
+ * The text of a reply the reader was writing under a settled ask that has since opened again (a
+ * withdrawn ask whose issue was reopened, a retracted question a document's settlement restored),
+ * or `""` when there is none. An open ask draws no reply composer (`takesReply`), so without this
+ * the draft would sit in `reply-drafts.ts` with nothing showing it: the thread draws it read-only
+ * where the composer stood (`UnsentReply`), as the card draws an answer whose question closed
+ * under it (`unsentAnswer` in `useAskAnswerForm.ts`). The draft stays the ask's, so the composer
+ * picks it up again if the ask is settled once more.
+ */
+export function useUnsentReply(ask: Pick<Ask, "id" | "state">): string {
+  const [draft] = useReplyDraft(ask.id);
+  return takesReply(ask) || draft.trim() === "" ? "" : draft;
+}
+
+/** What the unsent reply's box says, on today's pages and inside `NoTooltips` alike. */
+const UNSENT_REPLY_WHY =
+  "This question opened again before you sent your reply, so it was not sent. Your text is here to copy.";
+
+/**
+ * Each colour the unsent box draws inside `NoTooltips`, the new issue page's: its rule the
+ * page's, what happened to the reader's text in the quiet grey, and that text in the ink. They
+ * stand in a table, as `AskCard`'s do, because `theme/text-on-background.test.ts` reads a class
+ * only where it names an export of `theme/classes.ts`, and the issue page's shared controls test
+ * (`shared-controls.tooltips.test.tsx`) pairs each entry here with the page's grounds.
+ */
+const ON_PAGE = {
+  ink: pageInkText,
+  quiet: pageQuietText,
+  rule: pageLineBorder,
+} as const;
+
+/** Text the reader wrote that no form will send any more, read-only and copyable where its box
+ *  stood: the thread's unsent reply (`UnsentReply`) and the card's unsent answer (`AskCard`).
+ *  `main`'s `UnsentText` outside `NoTooltips`, the same box in the page's colours inside. */
+export function UnsentBox({
+  className,
+  testId,
+  text,
+  why,
+}: {
+  /** The caller's own spacing around the box. */
+  className?: string;
+  testId: string;
+  text: string;
+  why: string;
+}): ReactNode {
+  const tooltips = useTooltips();
+  if (tooltips) {
+    return <UnsentText className={className} testId={testId} text={text} why={why} />;
+  }
+  // Inside `NoTooltips` the box is drawn in the page's colours, which `UnsentText` does not take,
+  // and the reader's own words are a value, which breaks anywhere.
+  return (
+    <div
+      className={`rounded-xl border p-3 ${ON_PAGE.rule} ${className ?? ""}`}
+      data-testid={testId}
+    >
+      <p className={`text-xs ${ON_PAGE.quiet}`}>{why}</p>
+      <p
+        className={`mt-1 max-w-full text-sm whitespace-pre-wrap [overflow-wrap:anywhere] ${ON_PAGE.ink}`}
+      >
+        {text}
+      </p>
+    </div>
+  );
+}
+
+/** `useUnsentReply`'s text, read-only and copyable, in the reply composer's place. */
+export function UnsentReply({ className, text }: { className?: string; text: string }): ReactNode {
+  return (
+    <UnsentBox className={className} testId="ask-unsent-reply" text={text} why={UNSENT_REPLY_WHY} />
+  );
+}
+
+/**
+ * The reply form under an ask that is no longer open (`takesReply`). It posts to the ask's issue,
+ * or to its document for a project-document ask, then invalidates the shared thread so the reply
+ * shows first. Its draft is the ask's (`reply-drafts.ts`), and its send is the ask's too: while
+ * any composer's reply to this ask is out, every composer for it, including one mounted since,
+ * shows the draft disabled. A file pasted or dropped into the field uploads to `uploadOwner` and
+ * its text joins the draft.
  */
 export function AskReplyComposer({
   ask,
@@ -94,33 +198,44 @@ export function AskReplyComposer({
   uploadOwner?: ArtifactOwner;
 }): ReactNode {
   const queryClient = useQueryClient();
-  // Each composer owns its field id so transient duplicate mounts during a responsive
-  // transition cannot share an ask-id-derived id.
-  const fieldId = `${useId()}-reply`;
   const [body, setBody] = useReplyDraft(ask.id);
   // Keyed by the ask, so the send outlives the composer that started it and any composer for the
   // ask sees it in flight.
   const mutationKey = ["ask-reply", ask.id];
   const { sending } = useSending(mutationKey);
-  const upload = useDraftUpload((text) => setBody((current) => appendToDraft(current, text)));
+  // A file's text joins the draft of the ask it was pasted or dropped under, which its press
+  // carries (`useDraftUpload`): a host may draw this composer for another ask before it lands.
+  const upload = useDraftUpload((text: string, askId: string) =>
+    setReplyDraft(askId, (current) => appendToDraft(current, text))
+  );
   const uploading = upload.pending > 0;
-  // The form shows a refused reply itself, with Retry, under the draft it kept.
+  const question = useQuestionLabel(ask);
+  // The form shows a refused reply itself, with Retry, under the draft it kept. Each press
+  // carries the ask it replies to, as an answer's does (`useAskAnswerForm`): where it posts, and
+  // the draft and the thread its landing clears and reads again, are that ask's, whichever ask a
+  // host draws this composer for by then.
   const submit = useKeyedWrite({
-    write: (text: string, bounds) => {
-      if (ask.issue_key === null) {
-        if (ask.artifact_id === null || ask.artifact_id === undefined) {
-          throw new Error("document ask is missing its artifact id");
-        }
-        return api.createArtifactComment(ask.artifact_id, { ask_id: ask.id, body: text }, bounds);
+    method: "POST",
+    write: (press: ReplyPress, bounds) => {
+      if (press.ask.issue_key === null) {
+        return api.createArtifactComment(
+          askArtifactId(press.ask),
+          { ask_id: press.ask.id, body: press.text },
+          bounds
+        );
       }
-      return reply(ask.issue_key, { ask_id: ask.id, body: text }, bounds);
+      return reply(press.ask.issue_key, { ask_id: press.ask.id, body: press.text }, bounds);
     },
     inline: true,
-    label: () => `Reply on “${ask.question}”`,
+    // The question goes in as its plain-text projection, the words the card draws: the reading
+    // list's `write-label` (`DISPATCH_READING_SURFACES`) says why. Each press carries the line as
+    // it reads at the press, while the composer is drawn for that ask, so a Retry made once a host
+    // has drawn the composer for the next one names the question it answers.
+    label: (press: ReplyPress) => `Reply on “${press.questionWords}”`,
     mutationKey,
-    onSuccess: (_comment, text) => {
-      clearReplyDraft(ask.id, text);
-      void queryClient.invalidateQueries({ queryKey: ["ask-thread", ask.id] });
+    onSuccess: (_comment, press) => {
+      clearReplyDraft(press.ask.id, press.text);
+      void queryClient.invalidateQueries({ queryKey: ["ask-thread", press.ask.id] });
     },
   });
 
@@ -131,28 +246,30 @@ export function AskReplyComposer({
     if (text === "" || sending || uploading) {
       return;
     }
-    submit.mutate(text);
+    submit.mutate({ ask, questionWords: question.line(), text });
   };
 
   return (
     <form className="flex flex-col gap-2" onSubmit={submitReply}>
-      <label className={`block text-sm font-medium ${textSecondaryOnCanvas}`} htmlFor={fieldId}>
-        Reply
-        <textarea
-          className={`mt-1 block w-full rounded-lg px-3 py-2 font-normal outline-none ${inputClasses(true)}`}
-          disabled={sending}
-          id={fieldId}
-          onChange={(event) => setBody(event.target.value)}
-          onDrop={
-            uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner)
-          }
-          onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
-          onPaste={
-            uploadOwner === undefined ? undefined : (event) => upload.paste(event, uploadOwner)
-          }
-          value={body}
-        />
-      </label>
+      {question.reads}
+      <MentionField
+        body={body}
+        disabled={sending}
+        issueKey={ask.issue_key ?? undefined}
+        label="Reply"
+        labelClassName={`block text-sm font-medium ${textSecondaryOnCanvas}`}
+        onChange={(change) => setBody(change.body)}
+        onDrop={
+          uploadOwner === undefined ? undefined : (event) => upload.drop(event, uploadOwner, ask.id)
+        }
+        onKeyDown={(event) => submitOnModifiedEnter(event, { disabled: uploading })}
+        onPaste={
+          uploadOwner === undefined
+            ? undefined
+            : (event) => upload.paste(event, uploadOwner, ask.id)
+        }
+        writing={dispatchWritingBox("ask-thread-reply", "comment")}
+      />
       <DraftUploadStatus upload={upload} />
       <button
         className={`self-start rounded-lg border px-3 py-1.5 text-sm font-medium ${borderStrong} ${textSecondaryOnSurface} ${enabledCardHoverBorder} disabled:cursor-not-allowed disabled:opacity-50`}
@@ -163,12 +280,8 @@ export function AskReplyComposer({
       </button>
       {submit.isError ? (
         <QueryError
-          message="Could not post your reply."
-          onRetry={() => {
-            if (submit.variables !== undefined) {
-              submit.mutate(submit.variables);
-            }
-          }}
+          message={stoppedNote(submit, "your reply", "posted") ?? "Could not post your reply."}
+          onRetry={submit.retry}
           retrying={submit.isPending}
         />
       ) : null}
@@ -181,7 +294,7 @@ export interface AskThreadProps {
   /** The shared ask-thread query AskCard owns; this component never requests thread data itself. */
   thread: AskThreadQuery;
   createReply?: CreateReply;
-  /** False where the caller renders the answered-ask composer itself: a collapsed thread
+  /** False where the caller renders the reply composer itself: a collapsed thread
    *  (Conversation, decision blocks) puts it after its own Write a reply control. */
   showComposer?: boolean;
   /** A thread inside an open ask card inherits the card's compact flow. */
@@ -207,9 +320,10 @@ export interface AskThreadProps {
  * (Comment.ask_id) plus their own reply chains, in the reader's thread order, with the replies
  * outside the newest two folded behind **Show N earlier replies** (`threads/thread-layout.ts`,
  * drawn by `threads/EarlierReplies.tsx`, the fold control the Inbox's thread body shares).
- * Answered asks keep a plain reply composer, at the end of that order; open asks reserve their
- * single composer for answering or asking back, and a resolved ask keeps its history without a
- * composer.
+ * An answered or resolved ask keeps a plain reply composer, next to the newest message
+ * (`composerFirst`), and `takesReply` says which asks do; an open ask reserves its single
+ * composer for answering or asking back, and draws a reply the reader had not sent before it
+ * opened again read-only in the composer's place (`useUnsentReply`).
  */
 export function AskThread({
   ask,
@@ -266,10 +380,12 @@ export function AskThread({
       )}
     />
   );
-  const composer =
-    showComposer && ask.state === "answered" ? (
-      <AskReplyComposer ask={ask} createReply={reply} uploadOwner={uploadOwner} />
-    ) : null;
+  const unsentReply = useUnsentReply(ask);
+  const composer = !showComposer ? null : takesReply(ask) ? (
+    <AskReplyComposer ask={ask} createReply={reply} uploadOwner={uploadOwner} />
+  ) : unsentReply === "" ? null : (
+    <UnsentReply text={unsentReply} />
+  );
 
   return (
     <section

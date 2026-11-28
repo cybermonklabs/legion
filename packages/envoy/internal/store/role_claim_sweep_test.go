@@ -360,7 +360,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 	putRoleClaimsInParallel(t, rawRoles, others, holderOfOther)
 	t.Logf("seeded %d claims held by other sessions in %s", otherRoleClaims, time.Since(seeded).Round(time.Millisecond))
 
-	reg, err := Open(conn, WithReplicas(1))
+	reg, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry over the seeded role bucket: %v", err)
 	}
@@ -371,13 +371,14 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 		t.Fatalf("wait for the caches over %d stored claims: %v", otherRoleClaims, err)
 	}
 
-	// deregister seeds session's claims and its interest record, waits until the view names it
-	// the holder of both roles, and removes it under sweepDeadline with every role bucket call
-	// delayed. It returns the deregistration's own error and the handle that counted its calls.
+	// deregister seeds session's claims, each naming the process the deregistration states
+	// (releasedByItsProcess), and its interest record, waits until the view names it the holder
+	// of both roles, and removes it under sweepDeadline with every role bucket call delayed. It
+	// returns the deregistration's own error and the handle that counted its calls.
 	deregister := func(t *testing.T, session string, roles []string, topics []string) (error, *sweepRoleKeyValue) {
 		t.Helper()
 		for _, role := range roles {
-			putRoleClaim(t, rawRoles, role, session)
+			putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, time.Now())
 		}
 		if _, err := reg.Upsert(Interest{SessionID: session, MachineID: "m1"}, topics); err != nil {
 			t.Fatalf("store %s's interest record: %v", session, err)
@@ -442,7 +443,7 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 			t.Fatalf("the control registry's view refuses with %v, want ErrRoleViewNotReady", viewErr)
 		}
 		for _, role := range roles {
-			putRoleClaim(t, rawRoles, role, session)
+			putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, time.Now())
 		}
 		// The record's only topic is not a role's, so the pass over it releases nothing and
 		// every call the bucket takes below is the fallback's own.
@@ -551,10 +552,11 @@ func TestTheDeregistrationSweepReadsOnlyTheClaimsItsSessionHoldsFromALargeRoleBu
 }
 
 // smallRoleBucketRegistry is a registry whose view cannot be served, over a bucket of
-// smallRoleClaims claims: held are the roles session holds, and the rest are held by sessions of
-// their own. It returns the registry, the role bucket's own handle - taken before any counting
-// handle is installed over it, so a case's own writes are not counted as the sweep's - and the
-// roles the other sessions hold.
+// smallRoleClaims claims: held are the roles session holds, each naming the process
+// releasedByItsProcess states, and the rest are held by sessions of their own. It returns the
+// registry, the role bucket's own handle - taken before any counting handle is installed over
+// it, so a case's own writes are not counted as the sweep's - and the roles the other sessions
+// hold.
 func smallRoleBucketRegistry(t *testing.T, session string, held []string) (*Registry, natsgo.KeyValue, []string) {
 	t.Helper()
 	conn, cleanup := connectNATS(t)
@@ -564,7 +566,7 @@ func smallRoleBucketRegistry(t *testing.T, session string, held []string) (*Regi
 	others, holderOfOther := otherSessionsClaims("small-other", smallRoleClaims-len(held))
 	putRoleClaimsInParallel(t, rawRoles, others, holderOfOther)
 	for _, role := range held {
-		putRoleClaim(t, rawRoles, role, session)
+		putRenewedRoleClaim(t, rawRoles, role, session, roleClaimInstance, time.Now())
 	}
 	putInterest(t, rawInterests, Interest{SessionID: session, MachineID: "m1", Topics: []string{"notifications.chat"}})
 	if err := reg.RoleViewErr(); err == nil {

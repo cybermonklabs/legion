@@ -7,13 +7,15 @@ import { agentsQuery, EMPTY_AGENTS, useRegistryPolling } from "../refs/agent-reg
 
 /**
  * The agent registry list. `agents` keeps the rows of the last successful read through a failed
- * refresh, so a view need not unmount what it shows; but only a `current` list - its latest
- * read succeeded - says who is absent. Every claim that an agent is gone (ended, offline, not
- * matching, missing a capability, holding a lapsed claim) waits for `current`. `refilling` is
- * the failed read's reason when Envoy answered that its list is refilling (`isAgentListRefilling`),
- * which a view says in place of an unreachable listener. `refreshWhileOpen` keeps the list fresh
- * through the shell's one poller (`AgentRegistryPoller`) while this caller is mounted and enabled,
- * instead of an interval of its own.
+ * refresh, so a view need not unmount what it shows. Those rows are that read's word: a failed
+ * read brings no list, so it neither ends a fact read from them nor starts one. A claim that an
+ * agent is gone (ended, offline, not matching, missing a capability, holding a lapsed claim)
+ * starts only from a `current` list - its latest read succeeded; a view may keep a fact a current
+ * list gave through a failed refresh, as the live view's header and transcript line do from the
+ * kept rows. `refilling` is the failed read's reason when Envoy answered that its list is
+ * refilling (`isAgentListRefilling`), which a view says in place of an unreachable listener.
+ * `refreshWhileOpen` keeps the list fresh through the shell's one poller (`AgentRegistryPoller`)
+ * while this caller is mounted and enabled, instead of an interval of its own.
  */
 export function useAgents(
   enabled: boolean,

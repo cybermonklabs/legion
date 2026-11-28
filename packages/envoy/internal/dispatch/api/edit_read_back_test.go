@@ -38,10 +38,12 @@ func listedBlocks(t *testing.T, handler http.Handler, artifactID string) []model
 	return decodeBody[[]model.ArtifactBlock](t, dispatchRequest(t, handler, http.MethodGet, "/api/v1/artifacts/"+artifactID+"/blocks", nil, "alice"))
 }
 
-// A replace with no `with` deletes the text it matched and leaves the block standing with nothing
-// in it. The read-back names that block, which is the visibility dispatch://INFRA-1946 lacked:
-// the answer read the same as one that wrote a paragraph.
+// A replace with an empty `with` deletes the text it matched and leaves the block standing with
+// nothing in it. The read-back names that block, the visibility a caller whose replace emptied a
+// block lacked: the answer read the same as one that wrote a paragraph. (A replace with no `with`
+// at all is refused, TestAReplaceWithoutItsWithIsRefused.)
 func TestDocumentEditReadBackNamesAnEmptiedBlock(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Emptied block", "Intro.\n\nPlanning notes.\n\nOutro.\n")
 	blocks := listedBlocks(t, handler, issue.PrimaryArtifactID)
@@ -49,7 +51,7 @@ func TestDocumentEditReadBackNamesAnEmptiedBlock(t *testing.T) {
 		t.Fatalf("blocks = %#v, want the three paragraphs", blocks)
 	}
 	edited := applyEdit(t, handler, issue.PrimaryArtifactID, map[string]any{
-		"ops": []map[string]any{{"op": "replace", "find": "Planning notes."}},
+		"ops": []map[string]any{{"op": "replace", "find": "Planning notes.", "with": ""}},
 	})
 	if want := blocks[1].ID + " paragraph: emptied"; edited.Written != want {
 		t.Fatalf("written = %q, want %q", edited.Written, want)
@@ -59,6 +61,7 @@ func TestDocumentEditReadBackNamesAnEmptiedBlock(t *testing.T) {
 // A batch that only moves a block says which block moved and where it now stands, so it does not
 // read as a batch that changed nothing.
 func TestDocumentEditReadBackNamesAMovedBlock(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Moved block", "Alpha.\n\nBravo.\n\nCharlie.\n")
 	blocks := listedBlocks(t, handler, issue.PrimaryArtifactID)
@@ -89,6 +92,7 @@ func TestDocumentEditReadBackNamesAMovedBlock(t *testing.T) {
 // A batch that leaves the document exactly as it found it wrote no markdown, and says so by
 // carrying none.
 func TestDocumentEditReadBackOfABatchThatChangedNothingIsEmpty(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Unchanged", "Alpha.\n\nBravo.\n")
 	edited := applyEdit(t, handler, issue.PrimaryArtifactID, map[string]any{
@@ -148,6 +152,7 @@ func checkBoundedReadBack(t *testing.T, got string, blocks []string) {
 // An edit whose blocks hold more than the bound stops there: it prints the blocks it has room for,
 // cuts the one the bound falls in, and names the characters and the blocks it did not print.
 func TestDocumentEditReadBackStopsAtItsBound(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Long edit", "Alpha.\n\nBravo.\n\nCharlie.\n\nDelta.\n")
 	ops, blocks := longReadBackOps()
@@ -161,6 +166,7 @@ func TestDocumentEditReadBackStopsAtItsBound(t *testing.T) {
 // The same edit under a block precondition, which resolves and writes the batch in the other
 // caller of the mutate closure, reads back the same field.
 func TestDocumentEditReadBackUnderABlockPreconditionIsTheSame(t *testing.T) {
+	t.Parallel()
 	handler := newTestHandler(t)
 	issue := createInteractionIssue(t, handler, "TEST", "Guarded long edit", "Alpha.\n\nBravo.\n\nCharlie.\n\nDelta.\n")
 	listed := listedBlocks(t, handler, issue.PrimaryArtifactID)

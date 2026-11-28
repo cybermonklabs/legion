@@ -52,7 +52,7 @@ func (s *Service) InjectUnknownElementForTest(ctx context.Context, artifactID st
 }
 
 // AfterSettleLockForTest sets the hook every settlement runs once it holds its document's owner
-// row - its issue's row, for an issue's document - and before it reads the room. Tests in package
+// lock - its issue's, for an issue's document - and before it reads the room. Tests in package
 // api hold a settlement there to race an issue's close against it. It is set before the service
 // settles anything, since a settlement reads it unlocked.
 func (s *Service) AfterSettleLockForTest(hook func(room string)) {
@@ -282,7 +282,7 @@ func DocumentReadWeightForTest(markdown string) (int64, error) {
 // package makes, in place of a hook field on Service: the renders are made by the package's
 // render helpers (countDocumentRender), which hold no service. A render loads it and, outside a
 // test, finds it nil and does nothing else, so no production path changes. One test at a time
-// holds it, as the hook fields on Service are held, and clears it in t.Cleanup.
+// holds it, as the hook fields on Service are held, and clears it in a cleanup (testcleanup.Add).
 var documentRenders atomic.Pointer[renderRecord]
 
 // renderRecord is what the renderings a test watches produced: the markdown of each, in the

@@ -1,0 +1,26 @@
+kind: Fixed
+custom:
+  Issue: pr5192
+body: |-
+  `renderInbound` shows none of a Dispatch payload it reads no event of, and the card says the
+  payload was unrecognised (`unrecognised: payload`). Before, it showed that payload whole, so
+  a frame whose event an edge listener judged by one field could put another project's event,
+  nested beside it, in front of the session. The edge listener now passes a Dispatch frame only
+  when its payload has the shape this reads an event by.
+  A Dispatch event whose card is too large to lay out is shown as the card's `dispatch` block
+  written as JSON text - its owner when the event has one, type, actor, relation and payload or
+  compact record it lays out from the event `renderInbound` read, with a body read whole in place
+  of the part the frame carried - and no longer as the frame's payload, so a key the reader drops
+  beside the event reaches no card. An event on no issue, document, or artifact topic, as a direct
+  message, has no owner. An event too deep to write as text, or whose text passes the card's
+  bound, shows its owner where one is known, its type, its actor's `kind` and `id`, the `act` of
+  the agent or token that acted for its person (`act: "not shown"` for an act `ActorActSchema`
+  does not read) and a session's `service`, the verified service token that made the write
+  (`service: "not shown"` when it is no string), no other key of the actor, and the reason, so
+  neither an agent's act nor a service token's write is shown as the person's or the session's
+  own. When even that passes the bound, the card keeps its owner where present, the type, the
+  actor and the reason alone; when those pass it, it drops an existing owner (a document's owner
+  is read from a topic: the one the host names, or the frame's own) and keeps the type, the actor
+  and the reason, since the type and the actor are bytes of the frame, the reason is short, and
+  the bound is at least twice the frame; and the reason alone is the last answer. Each of these
+  is held to the bound.

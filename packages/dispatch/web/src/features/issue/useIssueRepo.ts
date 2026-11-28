@@ -1,28 +1,16 @@
-import { useQueryClient } from "@tanstack/react-query";
-
-import type { IssueDetails, IssueSummary } from "../../api/types";
-import { type IssueFieldWrite, projectListsKey, useIssueFieldWrite } from "./useIssueFieldWrite";
+import { type IssueFieldWrite, useIssueFieldWrite } from "./useIssueFieldWrite";
 
 /**
  * The one way the SPA writes an issue's own repository (owner/name, or null to inherit its
- * parent's or the project's default). The pick shows optimistically in the issue detail and every
- * project issue list; an own repository is also what the issue resolves to, while an inherited one
- * is left to the server's answer, which `useIssueFieldWrite` merges.
+ * parent's or the project's default). The pick's write shows it on the issue detail and every
+ * list of issues until it lands; an own repository is also what the issue resolves to, while an
+ * Inherit pick leaves the repository the issue showed before, marked as not its own, until
+ * Dispatch's answer names the one it inherits (see `useIssueFieldWrite`). `host` is the issue's
+ * own repository as the caller reads it from the issue's caches; draw `shown`.
  */
-export function useIssueRepo(issueKey: string): IssueFieldWrite<string | null> {
-  const queryClient = useQueryClient();
-  const show = (repo: string | null) => {
-    const fields = repo === null ? { repo } : { repo, resolved_repo: repo };
-    queryClient.setQueryData<IssueDetails>(["issue", issueKey], (current) =>
-      current === undefined ? undefined : { ...current, ...fields }
-    );
-    queryClient.setQueriesData<IssueSummary[]>({ queryKey: projectListsKey }, (current) =>
-      current?.map((issue) => (issue.key === issueKey ? { ...issue, ...fields } : issue))
-    );
-  };
-  return useIssueFieldWrite<string | null>(issueKey, {
-    label: (repo) => `${issueKey} on ${repo ?? "its project's repository"}`,
-    patch: (repo) => ({ repo }),
-    show,
-  });
+export function useIssueRepo(
+  issueKey: string,
+  host: string | null
+): IssueFieldWrite<string | null> {
+  return useIssueFieldWrite(issueKey, "repo", host);
 }

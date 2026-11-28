@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // The windows every reader of the session registry judges a record's age against. They are
@@ -43,8 +44,9 @@ const (
 // role lookup's resolution of the holder, and a soft claim taking a role from the session
 // holding it (cmd/listener's sessionIsLive). Topic fan-out keeps an Unresponsive recipient and
 // skips its push with a status of its own rather than a failure, while the role reaper and the
-// session reaper act only on Gone.
-type State string
+// session reaper act only on Gone. It is the listener's wire type (listenerwire.SessionState),
+// which its answers carry and its clients read.
+type State = listenerwire.SessionState
 
 const (
 	// Live is a session whose last registration is within the live window.

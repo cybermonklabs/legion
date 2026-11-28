@@ -3,7 +3,7 @@
  *
  *  Every row reads the card and the page around it against one fixed answer for the issue it
  *  previews, so each runs against a recording rather than against a harness
- *  (packages/dispatch/AGENTS.md, "The stubbed layer"). The phone row stayed in
+ *  (packages/dispatch/README.md, "The stubbed layer"). The phone row stayed in
  *  `hover-preview.e2e.ts`: the `iphone` project runs no stubbed row.
  */
 import { expect, type Page } from "@playwright/test";
@@ -13,6 +13,7 @@ import {
   REF_PREVIEW_OPEN_DELAY_MS,
 } from "../web/src/features/refs/ref-preview-timing";
 import { seedReference } from "./hover-preview";
+import { pauseClock } from "./page-clock";
 import { stubbed } from "./stub/stub-test";
 
 const test = stubbed(seedReference);
@@ -21,17 +22,11 @@ const test = stubbed(seedReference);
 // `web/src/features/shell/useDwell.ts`, which exports nothing a spec can import.
 const DWELL_MS = 1_000;
 
-/** Hold the page's clock still, so a check about an open or a close delay cannot race it.
- * `pauseAt` takes a time on the page's own installed clock, which the jumps above a call site
- * have already carried past the Node process's own `Date.now()`; asking it to move backwards
- * refuses, so the lead of a second is taken from the page's reading of its clock. `pauseAt` runs
- * every page timer that falls due inside the jump, so no call site may have one armed that the
- * jump must not fire: at three of them the card is open, so its open timer has fired and no
- * close is armed, and at the fourth the card is closed under a held button, which arms nothing
- * at all. */
-async function pauseClock(page: Page): Promise<void> {
-  await page.clock.pauseAt((await page.evaluate(() => Date.now())) + 1000);
-}
+// Each `pauseClock` below holds the page's clock still, so a check about an open or a close delay
+// cannot race it. It fires every page timer due inside its second, so no call site may have one
+// armed that the jump must not fire: at three of them the card is open, so its open timer has
+// fired and no close is armed, and at the fourth the card is closed under a held button, which
+// arms nothing at all.
 
 /** Put a board card in the middle of the board's scroller, clear of both edge zones. dnd-kit
  * scrolls the board while a card is held near either edge (`IssueBoard.tsx` turns the mandatory
@@ -124,6 +119,7 @@ test("hovering a board card previews the issue and moving onto the card keeps it
   await page.evaluate(() => {
     document.documentElement.dataset.boardAlive = "yes";
   });
+  // The hover above waited for the link to be visible and still, so its box is there.
   const box = await link.boundingBox();
   if (box === null) {
     throw new Error("board card is not visible");
@@ -200,8 +196,10 @@ test("a card survives a held-button drag that leaves its reference and comes bac
   // itself starts Chromium's native link drag, which stops delivering boundary events. The
   // press point is inside the turn's own collapsed button, so Chromium paints no selection
   // either - what this pins is the rule the handler reads, a pointer returning to the anchor
-  // with a button held, whatever the drag means to the page.
+  // with a button held, whatever the drag means to the page. The waits above drew the link and
+  // the card, and a drawn element has a box, so the link's box is there.
   const box = await link.boundingBox();
+  // The card was waited for above as well, so its box is there as the link's is.
   const cardBox = await card.boundingBox();
   if (box === null || cardBox === null) {
     throw new Error("reference or card is not visible");
@@ -258,8 +256,10 @@ test("a card survives a held-button move from the card back onto its reference @
   // that point leaves the zone and arms a close, which the drag's entry onto the card cancels;
   // the step from the card back onto the reference is the crossing under test (`pointerout`
   // from the card naming the anchor, then `pointerover` on the anchor with the button held),
-  // and that step must arm nothing.
+  // and that step must arm nothing. The waits above drew the link and the card, and a drawn
+  // element has a box, so the link's box is there.
   const box = await link.boundingBox();
+  // The card was waited for above as well, so its box is there as the link's is.
   const cardBox = await card.boundingBox();
   if (box === null || cardBox === null) {
     throw new Error("reference or card is not visible");

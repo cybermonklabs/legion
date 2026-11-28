@@ -80,13 +80,40 @@ test.each([
   "dispatch://CORE-1#b-x",
   "dispatch://CORE-1/log#b-x",
   "dispatch://CORE/artifact/handbook-md/message/33333333-3333-4333-8333-333333333333#b-x",
-  // A message never changes, so a pinned message block names nothing.
+  // A message records no revisions, so a pinned message block names nothing.
   "dispatch://CORE-1/message/33333333-3333-4333-8333-333333333333#b-b2@v1",
   // An ask or a comment has no document version.
   "dispatch://CORE/artifact/handbook-md@v3/comment/88888888-8888-4888-8888-888888888888#b-b2",
   "dispatch://CORE/artifact/handbook-md@v3/ask/22222222-2222-4222-8222-222222222222#b-b3",
 ])("%s names nothing", (ref) => {
   expect(parseDispatchRef(ref)).toBeNull();
+});
+
+// Each list of an issue that a read names after the issue's key: its log, which the Activity tab
+// spells `activity`, its children and its comments.
+test.each([
+  ["dispatch://CORE-1/log", "log", "log"],
+  ["dispatch://CORE-1/activity", "log", "activity"],
+  ["dispatch://CORE-1/children", "children", "children"],
+  ["dispatch://CORE-1/comments", "comments", "comments"],
+] as const)("%s names the issue's %s", (ref, kind, id) => {
+  expect(parseDispatchRef(ref)).toEqual({ owner: { kind: "issue", issue: "CORE-1" }, kind, id });
+});
+
+// Each reference whose part the issue's pattern reads after `children`: its comments, a view tab,
+// a document, a document at a version, an ask, a comment and a message. A group of the pattern
+// that the read does not name would hand each of them the part of the group after its own.
+test.each([
+  ["dispatch://CORE-1/comments", { kind: "comments", id: "comments" }],
+  ["dispatch://CORE-1/verification", { kind: "tab", id: "verification" }],
+  ["dispatch://CORE-1/plan", { kind: "tab", id: "plan" }],
+  ["dispatch://CORE-1/artifact/notes-md", { kind: "artifact", id: "notes-md" }],
+  ["dispatch://CORE-1/artifact/notes-md@v2", { kind: "artifact", id: "notes-md", version: 2 }],
+  ["dispatch://CORE-1/ask/a1", { kind: "ask", id: "a1" }],
+  ["dispatch://CORE-1/comment/c1", { kind: "comment", id: "c1" }],
+  ["dispatch://CORE-1/message/m1", { kind: "message", id: "m1" }],
+] as const)("%s names its own part of the issue", (ref, part) => {
+  expect(parseDispatchRef(ref)).toEqual({ owner: { kind: "issue", issue: "CORE-1" }, ...part });
 });
 
 // A block of a comment or an issue message names the block and its item: an issue's comment and a

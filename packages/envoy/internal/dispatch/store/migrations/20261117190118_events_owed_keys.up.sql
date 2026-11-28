@@ -1,0 +1,60 @@
+-- 20261117190118_events_owed_keys.up.sql
+--
+-- What an event still owes, as the outbox last recorded it (outbox.recordBatch, owedKeys).
+--
+--   owed_keys   the destination keys of the sends the event still owes once the outbox's last
+--               record of it was written: the key of every destination of its list that no
+--               batch has reached, a copy that waits on a mention among them, and no copy a
+--               comment_fallback_copies row owns. The owner's topic family is spelled
+--               model.OwedTopicFamily, a session's own subject is that subject, and a role
+--               route is its role topic whichever holder it resolved to, since the holder can
+--               change before the event's next record; an event whose list ends at a recipient
+--               read that failed owes model.OwedAnySession beside them. An event the record
+--               publishes owes nothing (an empty array), and so does one the outbox cannot
+--               read: a row it read but cannot publish - its list holds a null, or its actor or
+--               payload does not decode - and a row that does not scan, which the batch still
+--               knows by its id and its owner's last_seq, the first two columns it reads. The
+--               record writes the column only while the publisher hold is its own; a record
+--               made without it leaves the column as it was, on an event it publishes too,
+--               which nothing reads: both rules read unpublished events alone. Null is an event
+--               no record has written it for yet, which owes at least its owner's topic family,
+--               the first destination of every event.
+--
+--   owed_seq    the owner's last_seq (issues, artifacts or projects) as the batch that wrote
+--               owed_keys read it, in the same statement as the routing those keys come from,
+--               and written with them, under the same hold, and never without them. An event
+--               write takes its owner's row before it draws its seq, so every event written
+--               after that read has a higher seq: an owner whose last_seq is past owed_seq has
+--               had a write the record did not see, a route, a claim or a follower that moved
+--               among them. Null is an event no record has written it for yet.
+--
+-- A copy of a mention reaches its session outside the outbox's chains - the API's own send, and
+-- the outbox's fallback pass - so it is held behind the earlier events of its owner that still
+-- owe a send its session may take (model.MentionCopyHolderSQL), and these columns are what say
+-- so: only the outbox computes an event's destinations. An earlier event holds the copy while its
+-- owed_keys name a send that session may take, and while its owed_seq is behind the seq of the
+-- owner's newest event, until a batch that read the owner's last write records it again. A
+-- pending subscription command is not counted: it makes no session a destination and no batch
+-- reads it. The read walks events_outbox_owner, whose rows are the owner's unpublished events,
+-- and the owner's newest seq backwards over its unique (owner, seq) index.
+--
+-- An event written before this migration carries null in both, which holds every mention copy of
+-- a later comment of its owner until the outbox publishes it or records it again. No backfill
+-- writes the columns: a census that rewrites a row refuses the deploy (cmd/dispatch/README.md,
+-- "Pre-deploy census").
+--
+-- Adding nullable columns with no default is a catalog change that rewrites no row; one ALTER
+-- adds both. It takes ACCESS EXCLUSIVE on events, which every write appends to and the outbox
+-- reads, and holds it only for the catalog write. It must first wait for every transaction that
+-- holds the table: the runner bounds that wait at pgmigrate.LockTimeout (five seconds) and tries
+-- again up to pgmigrate.LockTimeoutAttempts times, after which the migration fails the boot, and
+-- every append queued behind the ALTER waits as long as it does.
+--
+-- The release before this one neither reads nor writes the columns, so the two roll side by side
+-- (cmd/dispatch/README.md, "Database migrations"). An event a process of that release records
+-- keeps the values this release last wrote, or null, and a write that process's API makes moves
+-- the owner's last_seq past them as any write does, so a copy this release sends waits until this
+-- release records the event again: a copy waits longer while that release holds the publisher
+-- hold, and passes no earlier event for it. Rolling back past this migration is an image rollback
+-- alone; the columns left behind are read by nothing.
+alter table events add column owed_keys text[], add column owed_seq integer;

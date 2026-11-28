@@ -1,4 +1,5 @@
 import { isLegionRole, type LegionRole } from "@legion/contracts";
+import { holdSecret } from "@legion/contracts/held-secrets";
 import { readSecretFile } from "@legion/envoy-client/secret-file";
 
 export type LegionSessionKind =
@@ -40,18 +41,20 @@ export function requiredEnvironment(env: NodeJS.ProcessEnv, key: string): string
   return value;
 }
 
-/** `<key>_FILE` (trimmed file contents) ahead of `<key>`: the daemon hands every pane secret over
- * as a 0600 file pointer, never as a tmux `-e` argv value. A set pointer is authoritative — a
- * missing, unreadable, or blank file throws naming both the variable and the path, never falling
- * back to `<key>`. */
-export function requiredSecret(env: NodeJS.ProcessEnv, key: string): string {
+/** `<key>_FILE` (trimmed file contents, read without holding the event loop) ahead of `<key>`: the
+ * daemon hands every pane secret over as a 0600 file pointer, never as a tmux `-e` argv value. A
+ * set pointer is authoritative — a missing, unreadable, or blank file rejects naming the variable
+ * and the read error's code, never the path, which is what a secret pasted into the variable would
+ * be (`readSecretFile`), and never falls back to `<key>`. Either way the secret is held, so every
+ * line this process prints is scrubbed of it (`@legion/contracts/held-secrets`). */
+export async function requiredSecret(env: NodeJS.ProcessEnv, key: string): Promise<string> {
   const fileKey = `${key}_FILE`;
   const file = env[fileKey];
   if (file !== undefined) return readSecretFile(fileKey, file);
-  return requiredEnvironment(env, key);
+  return holdSecret(requiredEnvironment(env, key));
 }
 
-export function requiredControllerCapability(env: NodeJS.ProcessEnv): string {
+export async function requiredControllerCapability(env: NodeJS.ProcessEnv): Promise<string> {
   if (env.LEGION_CONTROLLER_SECRET_FILE !== undefined) {
     return readSecretFile("LEGION_CONTROLLER_SECRET_FILE", env.LEGION_CONTROLLER_SECRET_FILE);
   }
@@ -62,5 +65,5 @@ export function requiredControllerCapability(env: NodeJS.ProcessEnv): string {
         "Launch OMP with one of them in its environment before running /legion-claim-controller."
     );
   }
-  return secret;
+  return holdSecret(secret);
 }

@@ -1,0 +1,11 @@
+kind: Fixed
+body: |-
+  The blocks a document version write hands to the block index now carry the attributes their
+  render found. The write built those blocks from the same offsets `GET /api/v1/artifacts/{id}/blocks`
+  answers from and dropped their attributes on the way, so the index was handed a `check` with no
+  `serves` or `surface` and a `plan_task` with no `needs`. Nothing stored changes: `document_blocks`
+  has no column for a block's attributes, so no row gains a value and no read answers differently
+  today.
+time: 2026-11-17T09:20:04.000000000Z
+custom:
+    Issue: pr3125

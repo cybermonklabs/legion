@@ -22,7 +22,7 @@ import (
 // watcher a writer has not got, and waits for its cache.
 func openListener(t *testing.T, conn *natsgo.Conn) *cistore.Store {
 	t.Helper()
-	store, err := cistore.Open(conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
+	store, err := cistore.Open(t.Context(), conn, logging.New("listener"), cistore.WithReplicas(1), cistore.WithTTL(time.Hour))
 	if err != nil {
 		t.Fatalf("open the listener's cistore: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 	cistore.StartSummaryLoop(loopCtx, store, client, 100*time.Millisecond, 20*time.Millisecond,
 		metrics.New().NewGauge("held", ""), logging.New("loop"))
 
-	if _, err := writer.Record(ctx, contracts.CIObservation{
+	if _, err := writer.RecordRuns(ctx, []contracts.CIObservation{{
 		Owner:      owner,
 		Repo:       repo,
 		Number:     number,
@@ -80,7 +80,7 @@ func TestAWriterRecordSettlesThroughTheListenersSummaryLoop(t *testing.T) {
 		Status:     "completed",
 		Conclusion: "success",
 		ObservedAt: "2026-09-07T03:01:00Z",
-	}); err != nil {
+	}}); err != nil {
 		t.Fatalf("the writer's check run: %v", err)
 	}
 	if _, err := writer.RecordSuite(ctx, contracts.CIObservation{
@@ -220,10 +220,10 @@ func TestHasRecordReadsTheBucketRatherThanACache(t *testing.T) {
 	}
 }
 
-// A writer's Record says whether the observation changed the head's record, which is what a
-// caller counting what its pass mended reports: the first observation of a head with no record
-// changes it, the same observation again changes nothing, and an older observation of the same
-// check is refused by the record's own rules and changes nothing either.
+// A writer's RecordRuns says whether the runs changed the head's record, which is what a caller
+// counting what its pass mended reports: the first observation of a head with no record changes
+// it, the same observation again changes nothing, and an older observation of the same check is
+// refused by the record's own rules and changes nothing either.
 func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 	ctx := context.Background()
 	_, uri := testnats.Start(t)
@@ -252,7 +252,7 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 		Conclusion: "success",
 		ObservedAt: "2026-09-07T03:01:00Z",
 	}
-	changed, err := writer.Record(ctx, observation)
+	changed, err := writer.RecordRuns(ctx, []contracts.CIObservation{observation})
 	if err != nil {
 		t.Fatalf("the first record: %v", err)
 	}
@@ -260,7 +260,7 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 		t.Fatal("the first observation of a head with no record is reported as no change")
 	}
 
-	changed, err = writer.Record(ctx, observation)
+	changed, err = writer.RecordRuns(ctx, []contracts.CIObservation{observation})
 	if err != nil {
 		t.Fatalf("the same record again: %v", err)
 	}
@@ -272,7 +272,7 @@ func TestAWriterReportsWhetherTheObservationChangedTheRecord(t *testing.T) {
 	older.ObservedAt = "2026-09-07T02:59:00Z"
 	older.Status = "in_progress"
 	older.Conclusion = ""
-	changed, err = writer.Record(ctx, older)
+	changed, err = writer.RecordRuns(ctx, []contracts.CIObservation{older})
 	if err != nil {
 		t.Fatalf("the older record: %v", err)
 	}
@@ -325,7 +325,7 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 		Conclusion: "success",
 		ObservedAt: "2026-09-07T03:01:00Z",
 	}
-	if changed, err := writer.Record(ctx, held); err != nil || !changed {
+	if changed, err := writer.RecordRuns(ctx, []contracts.CIObservation{held}); err != nil || !changed {
 		t.Fatalf("seed the record with the check the burst finds it already holding: changed = %v, %v", changed, err)
 	}
 	newRun := held
@@ -345,10 +345,10 @@ func TestConcurrentCallersOfOneHeadEachReportTheirOwnChange(t *testing.T) {
 	}
 
 	callers := []func() (bool, error){
-		func() (bool, error) { return writer.Record(ctx, newRun) },
-		func() (bool, error) { return writer.Record(ctx, newRun) },
-		func() (bool, error) { return writer.Record(ctx, held) },
-		func() (bool, error) { return writer.Record(ctx, held) },
+		func() (bool, error) { return writer.RecordRuns(ctx, []contracts.CIObservation{newRun}) },
+		func() (bool, error) { return writer.RecordRuns(ctx, []contracts.CIObservation{newRun}) },
+		func() (bool, error) { return writer.RecordRuns(ctx, []contracts.CIObservation{held}) },
+		func() (bool, error) { return writer.RecordRuns(ctx, []contracts.CIObservation{held}) },
 		func() (bool, error) { return writer.RecordSuite(ctx, newSuite) },
 		func() (bool, error) { return writer.RecordSuite(ctx, newSuite) },
 	}

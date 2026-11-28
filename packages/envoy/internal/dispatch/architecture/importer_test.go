@@ -32,6 +32,7 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
 	"github.com/sjawhar/envoy/internal/githubtest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // archRepo is the repository newImporterFixture's source of CORE reads.
@@ -75,22 +76,27 @@ func writeNoCommit(w http.ResponseWriter, r *http.Request) {
 // fakeSource is the GitHub App surface a sync walks: installation lookup,
 // token mint, branch commit, the architecture directory's subtree, and blob
 // reads. Each repository answers its own head, files and failures: archRepo,
-// the fixture's source, answers commit, files, branchMissing and treeFailure,
-// and every other repository answers its entry in repos (a repository in
-// neither has no installation, and its reads answer 404). branchMissing
-// answers the commits route as GitHub does for a branch that does not exist:
-// 422 (see writeNoCommit). files is keyed by the file name inside SourceDir;
-// the subtree sha is derived from the files, so identical files under a new
-// commit answer the same sha exactly like git would.
+// the fixture's source, answers commit, files, branchMissing, treeFailure,
+// treeStatus and blobStatus, and every other repository answers its entry in
+// repos (a repository in neither has no installation, and its reads answer
+// 404). branchMissing answers the commits route as GitHub does for a branch
+// that does not exist: 422 (see writeNoCommit). files is keyed by the file name
+// inside SourceDir; the subtree sha is derived from the files, so identical
+// files under a new commit answer the same sha exactly like git would.
+// installationStatus, when not zero, answers every installation lookup with
+// that status and GitHub's error body instead of the installation.
 type fakeSource struct {
-	t              *testing.T
-	installationID int64
-	contents       string
-	commit         string
-	files          map[string]string
-	branchMissing  bool
-	treeFailure    bool
-	repos          map[string]*fakeRepo
+	t                  *testing.T
+	installationID     int64
+	installationStatus int
+	contents           string
+	commit             string
+	files              map[string]string
+	branchMissing      bool
+	treeFailure        bool
+	treeStatus         int
+	blobStatus         int
+	repos              map[string]*fakeRepo
 	// treeShaFollowsCommit makes every commit answer a distinct subtree sha
 	// even for identical files, so a test can force the full projection path.
 	treeShaFollowsCommit bool
@@ -145,11 +151,7 @@ func (h *releasableHold) channels(t *testing.T) (held, release chan struct{}) {
 func (h *releasableHold) waitHeld(t *testing.T) {
 	t.Helper()
 	held, _ := h.channels(t)
-	select {
-	case <-held:
-	case <-time.After(10 * time.Second):
-		t.Fatal("no read reached the hold within 10s")
-	}
+	testwait.Receive(t, "a read to reach the hold", held)
 }
 
 // releaseHeld lets every held read answer.
@@ -175,6 +177,12 @@ type fakeRepo struct {
 	files         map[string]string
 	branchMissing bool
 	treeFailure   bool
+	// treeStatus and blobStatus, when not zero, answer the subtree read and
+	// every blob read with that status and GitHub's error body: a 404 subtree
+	// is a commit without the directory (Dir reads it as empty), and a 422 is
+	// an answer the client leaves to its caller.
+	treeStatus int
+	blobStatus int
 	// holdBlobs holds this repository's blob reads until the test releases
 	// them, so one source can be the slow one while another answers at once.
 	holdBlobs bool
@@ -186,7 +194,8 @@ func (f *fakeSource) repo(r *http.Request) (fakeRepo, bool) {
 	if name == archRepo {
 		return fakeRepo{
 			commit: f.commit, files: f.files, branchMissing: f.branchMissing,
-			treeFailure: f.treeFailure, holdBlobs: f.holdArchBlobs,
+			treeFailure: f.treeFailure, treeStatus: f.treeStatus, blobStatus: f.blobStatus,
+			holdBlobs: f.holdArchBlobs,
 		}, true
 	}
 	repo, ok := f.repos[name]
@@ -218,6 +227,10 @@ func (f *fakeSource) handler() http.Handler {
 		f.mu.Unlock()
 		if f.holdInstallations {
 			f.installations.wait(f.t, r)
+		}
+		if f.installationStatus != 0 {
+			writeStatus(w, f.installationStatus)
+			return
 		}
 		if _, ok := f.repo(r); !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -275,6 +288,10 @@ func (f *fakeSource) handler() http.Handler {
 			fmt.Fprint(w, `{"message":"upstream is sad"}`)
 			return
 		}
+		if repo.treeStatus != 0 {
+			writeStatus(w, repo.treeStatus)
+			return
+		}
 		names := make([]string, 0, len(repo.files))
 		for name := range repo.files {
 			names = append(names, name)
@@ -305,6 +322,10 @@ func (f *fakeSource) handler() http.Handler {
 		if repo.holdBlobs {
 			f.blobs.wait(f.t, r)
 		}
+		if repo.blobStatus != 0 {
+			writeStatus(w, repo.blobStatus)
+			return
+		}
 		content, ok := repo.files[strings.TrimPrefix(r.PathValue("sha"), "blob-")]
 		if !ok {
 			w.WriteHeader(http.StatusNotFound)
@@ -319,7 +340,19 @@ func (f *fakeSource) handler() http.Handler {
 	return mux
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// writeStatus answers status with GitHub's JSON error body for it.
+func writeStatus(w http.ResponseWriter, status int) {
+	w.Header().Set("Content-Type", "application/json; charset=utf-8")
+	w.WriteHeader(status)
+	fmt.Fprintf(w, `{"message":%q,"status":"%d"}`, http.StatusText(status), status)
+}
+
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
 // newGitHubClient serves handler as the GitHub API and returns an App client
 // pointed at it.
@@ -434,6 +467,7 @@ func validFiles() map[string]string {
 }
 
 func TestSyncProjectsComponentsDependenciesAndSnapshot(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -481,6 +515,7 @@ func TestSyncProjectsComponentsDependenciesAndSnapshot(t *testing.T) {
 // re-projected, no event — which is also what bounds a caller looping the
 // sync route.
 func TestSyncSameCommitIsIdempotentEventlessAndFetchesNothing(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -523,6 +558,7 @@ func TestSyncSameCommitIsIdempotentEventlessAndFetchesNothing(t *testing.T) {
 // the repository): the subtree sha matches, so the new commit is recorded
 // without a blob read, a snapshot, a re-projection, or an event.
 func TestSyncMovedHeadWithUnchangedTreeRecordsTheCommitOnly(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -571,6 +607,7 @@ func TestSyncMovedHeadWithUnchangedTreeRecordsTheCommitOnly(t *testing.T) {
 }
 
 func TestSyncInvalidSetKeepsThePreviousProjection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -600,6 +637,7 @@ func TestSyncInvalidSetKeepsThePreviousProjection(t *testing.T) {
 }
 
 func TestSyncRepeatedIdenticalFailureEmitsOneEventAndRecoveryEmitsSynced(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, branchMissing: true, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -634,6 +672,7 @@ func TestSyncRepeatedIdenticalFailureEmitsOneEventAndRecoveryEmitsSynced(t *test
 }
 
 func TestSyncRemovedFileRetiresItsComponent(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -668,14 +707,16 @@ func TestSyncRemovedFileRetiresItsComponent(t *testing.T) {
 // GitHub call, and an uncached one — so it joins the flight before any head
 // is read.
 func TestTwoConcurrentImportsOfOneSourceShareOneGitHubSync(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	files := validFiles()
 	fake := &fakeSource{t: t, files: files, holdInstallations: true}
 	importer, database := newImporterFixture(t, fake)
+	taken := countFlightsTaken(importer)
 
 	started := syncInBackground(importer)
 	fake.installations.waitHeld(t)
-	joined := joinInBackground(importer, archRepo)
+	joined := joinInBackground(t, importer, taken, archRepo)
 	fake.installations.releaseHeld(t)
 
 	for _, caller := range []struct {
@@ -720,6 +761,7 @@ func TestTwoConcurrentImportsOfOneSourceShareOneGitHubSync(t *testing.T) {
 // transaction, where a slow GitHub would hold a connection of the shared
 // pool for as long as it took.
 func TestASlowSourceDoesNotBlockAnotherSourceOfItsProject(t *testing.T) {
+	t.Parallel()
 	fake := &fakeSource{t: t, files: validFiles(), holdArchBlobs: true}
 	importer, database := newImporterFixture(t, fake)
 	addSource(t, database, fake, infraRepo, commitInfraOne, infraFiles())
@@ -755,6 +797,8 @@ func TestASlowSourceDoesNotBlockAnotherSourceOfItsProject(t *testing.T) {
 // outstanding, returns once the last one ends, and refuses every flight that
 // begins after it, so a goroutine that starts late does nothing.
 func TestTheFlightCounterWaitsForEveryFlightAndThenRefusesMore(t *testing.T) {
+	// Not parallel: it holds that stop waits by a 200 ms window in which stop must not return, which
+	// the load of tests beside it can pass before stop has run at all.
 	var flights syncCount
 	if !flights.begin() {
 		t.Fatal("the first flight was refused by a counter nobody has stopped")
@@ -786,6 +830,7 @@ func TestTheFlightCounterWaitsForEveryFlightAndThenRefusesMore(t *testing.T) {
 // records nothing, because a stopping process is the one thing that
 // suppresses a sync's record of its own failure.
 func TestCloseWaitsForTheSyncItLeftRunning(t *testing.T) {
+	t.Parallel()
 	fake := &fakeSource{t: t, files: validFiles(), holdArchBlobs: true}
 	importer, database := newImporterFixture(t, fake)
 
@@ -796,11 +841,7 @@ func TestCloseWaitsForTheSyncItLeftRunning(t *testing.T) {
 		importer.Close()
 		close(closed)
 	}()
-	select {
-	case <-closed:
-	case <-time.After(30 * time.Second):
-		t.Fatal("Close did not return within 30s of a flight held in its blob read; want it to end the flight and wait for it")
-	}
+	testwait.Receive(t, "Close to end the flight held in its blob read and wait for it", closed)
 
 	answer := waitForSync(t, answered, "the caller whose flight Close ended")
 	if answer.err == nil {
@@ -833,6 +874,7 @@ func TestCloseWaitsForTheSyncItLeftRunning(t *testing.T) {
 // succeeds, and the projection is always one whole snapshot's worth of
 // components.
 func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	files := map[string]string{}
 	for n := range 60 {
@@ -899,6 +941,7 @@ func TestSyncAcrossProcessesSerializesOnTheSourceRow(t *testing.T) {
 // one is mid-fetch: the sync finds the row changed under its lock and writes
 // nothing — no old-repo commit on the new row, no error recorded against it.
 func TestSyncAbortsWhenTheSourceMovedMidFetch(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles(), commit: commitOne, installationID: 11}
 	var moved atomic.Bool
@@ -944,6 +987,7 @@ func TestSyncAbortsWhenTheSourceMovedMidFetch(t *testing.T) {
 // named model problem on the row (the drift rule), not an internal error
 // escaping the projection transaction.
 func TestSyncRejectsBinaryFilesOnTheRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for name, content := range map[string]string{
 		"nul.md":  "---\ntitle: z\n---\nbody\x00here",
@@ -976,6 +1020,7 @@ func TestSyncRejectsBinaryFilesOnTheRow(t *testing.T) {
 // projection. An unknown key reaches KnownFields before that check, so recordFailure writes its
 // error through text.StorableReplacement before it reaches last_error or the sync_failed event.
 func TestSyncRejectsAFrontMatterNulOnTheRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	for _, test := range []struct {
 		field, matter, want string
@@ -1018,6 +1063,7 @@ func TestSyncRejectsAFrontMatterNulOnTheRow(t *testing.T) {
 // source says why the import stopped, one sync_failed event says so, and the previous projection
 // stays, rather than an error that records nothing.
 func TestAProjectionFailureIsRecordedOnTheRow(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -1049,6 +1095,7 @@ func TestAProjectionFailureIsRecordedOnTheRow(t *testing.T) {
 // What one failure writes — last_error, the sync_failed payload, the
 // Settings row — is capped: the first problems and a count of the rest.
 func TestRecordedFailureIsCapped(t *testing.T) {
+	t.Parallel()
 	files := map[string][]byte{}
 	const members = 5000
 	for n := range members {
@@ -1089,6 +1136,7 @@ func TestRecordedFailureIsCapped(t *testing.T) {
 // (project_key, commit): the import reuses that snapshot instead of recording
 // an error, and the row keeps its clean state.
 func TestSyncReusesAnExistingSnapshotForTheSameCommit(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -1126,6 +1174,7 @@ func TestSyncReusesAnExistingSnapshotForTheSameCommit(t *testing.T) {
 }
 
 func TestSyncUpstreamFailureAndMissingSource(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, treeFailure: true, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -1145,6 +1194,7 @@ func TestSyncUpstreamFailureAndMissingSource(t *testing.T) {
 }
 
 func TestSyncMissingBranchIsAnAccessFailure(t *testing.T) {
+	t.Parallel()
 	fake := &fakeSource{t: t, branchMissing: true, files: validFiles()}
 	importer, _ := newImporterFixture(t, fake)
 
@@ -1156,6 +1206,7 @@ func TestSyncMissingBranchIsAnAccessFailure(t *testing.T) {
 // The stored installation id is a cache: a sync re-resolves it and records the
 // new one when GitHub moved the installation.
 func TestSyncRecordsAReResolvedInstallation(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -1174,6 +1225,7 @@ func TestSyncRecordsAReResolvedInstallation(t *testing.T) {
 // ListEnabled names every enabled source as its project and repository, ordered by project and
 // then by the order the project's sources were added (not by repository name).
 func TestListEnabledNamesEveryEnabledSource(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	importer, database := newImporterFixture(t, &fakeSource{t: t, files: validFiles()})
 	if _, err := database.Pool.Exec(ctx, `
@@ -1200,6 +1252,7 @@ func TestListEnabledNamesEveryEnabledSource(t *testing.T) {
 // depends_on from component_depends, both with node kind 'component' addressed
 // '<project>/<id>' — and never a row in refs.
 func TestGraphEdgesCarriesTheComponentArms(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	importer, database := newImporterFixture(t, &fakeSource{t: t, files: validFiles()})
 	if _, err := importer.Sync(ctx, "CORE", archRepo); err != nil {
@@ -1289,6 +1342,7 @@ func componentFacts(t *testing.T, database *store.Store) map[string]componentFac
 // made again, and a component stored before its times were recorded (the migration's null row)
 // keeps them unrecorded through an import that leaves it unchanged and gains its digest.
 func TestComponentFactsRecordWhenAComponentWasMadeAndChanged(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	const platform = "---\ntitle: Platform\n---\nThe platform.\n"
 	tree := func(web string) map[string]string {
@@ -1395,6 +1449,8 @@ func TestComponentFactsRecordWhenAComponentWasMadeAndChanged(t *testing.T) {
 // row and the ticker's next tick both see why nothing imported. Only the
 // process stopping suppresses the record.
 func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
+	// Not parallel: it writes the package variable syncTimeout, which every sync of the parallel
+	// tests reads; and it holds the cancelled caller's answer to a second of the cancel.
 	previous := syncTimeout
 	syncTimeout = 300 * time.Millisecond
 	t.Cleanup(func() { syncTimeout = previous })
@@ -1460,6 +1516,7 @@ func TestSyncDeadlineIsRecordedOnTheRow(t *testing.T) {
 // its load, and starts again from the load, which takes the unchanged-head
 // refresh — one snapshot, one architecture.synced.
 func TestSyncAcrossProcessesEmitsOneEventForOneHead(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles(), commit: commitOne}
 	// Gate the first two head lookups so both processes are mid-fetch at once:
@@ -1642,6 +1699,7 @@ func sourceEvents(t *testing.T, database *store.Store) []string {
 // define it, each source's edges stand, and each source's synced event names its repository and
 // branch. A second import of both records the same heads, fetches no file and changes nothing.
 func TestEverySourceOfAProjectImportsItsOwnHeadAndComponents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -1705,6 +1763,7 @@ func TestEverySourceOfAProjectImportsItsOwnHeadAndComponents(t *testing.T) {
 // source is untouched, the other source importing as usual. The failed event names the failing
 // source's repository and branch, and the same failure on the next import emits nothing more.
 func TestOneSourcesFailedImportKeepsEverySourcesProjection(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -1745,6 +1804,7 @@ func TestOneSourcesFailedImportKeepsEverySourcesProjection(t *testing.T) {
 // previous projections stay. Once the holder drops the ids, the failed source's next import (a
 // full one, as its row carries an error) takes them.
 func TestACollidingComponentIDFailsTheImportingSourceAndNamesTheHolder(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -1800,6 +1860,7 @@ func TestACollidingComponentIDFailsTheImportingSourceAndNamesTheHolder(t *testin
 // rows, so one import succeeds and the other fails naming the winner's repository - never a
 // primary-key error from both inserting the id.
 func TestACollisionRacedAcrossProcessesFailsOneSourceByName(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{
 		t: t, installationID: 11, commit: commitArch,
@@ -1869,6 +1930,7 @@ func TestACollisionRacedAcrossProcessesFailsOneSourceByName(t *testing.T) {
 // of a deleted source reads it as retired, and once another source of the project imports that id
 // the attachment is live again, now on that source.
 func TestAnIDAnotherSourceImportsRevivesItsAttachment(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles()}
 	importer, database := newImporterFixture(t, fake)
@@ -1906,6 +1968,7 @@ func TestAnIDAnotherSourceImportsRevivesItsAttachment(t *testing.T) {
 // takes the unchanged-head shortcut like any healthy source: the freshness stamp moves, no tree or
 // blob is read, its components stay as they were, and no event is emitted.
 func TestTheLegacySourceResyncsThroughTheUnchangedHeadShortcut(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles(), commit: commitOne, installationID: 11}
 	client := newGitHubClient(t, fake.handler())
@@ -1946,6 +2009,7 @@ func TestTheLegacySourceResyncsThroughTheUnchangedHeadShortcut(t *testing.T) {
 // SyncProject leaves out a source deleted while it runs, and a project with no source is
 // ErrNoSource.
 func TestSyncProjectLeavesOutASourceDeletedMidCall(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	fake := &fakeSource{t: t, files: validFiles(), commit: commitOne, installationID: 11,
 		repos: map[string]*fakeRepo{infraRepo: {commit: commitInfraOne, files: infraFiles()}}}
@@ -1985,20 +2049,23 @@ func TestSyncProjectLeavesOutASourceDeletedMidCall(t *testing.T) {
 // movingBranch is archRepo's main branch as a GitHub the test pushes to while a sync is in
 // flight: the head is whatever the test last moved it to, each commit answers its own files
 // (the subtree sha derived from them, the blob shas naming their commit), and one read can be
-// held — the next head lookup, answering the head as it stood when the lookup arrived, or every
-// blob read of one commit — until the test releases it, so another process's sync lands while
-// the held one is mid-fetch.
+// held — the next head lookup, answering the head as it stood when the lookup arrived or the
+// status the test named, or every blob read of one commit — until the test releases it, so
+// another process's sync lands while the held one is mid-fetch.
 type movingBranch struct {
 	t *testing.T
 	// hold is the one read held open at a time, with the channels and the cleanup that releases
 	// them (releasableHold).
 	hold releasableHold
 
-	mu          sync.Mutex
-	head        string
-	commits     map[string]map[string]string
-	holdHead    bool
-	holdBlobsOf string
+	mu       sync.Mutex
+	head     string
+	commits  map[string]map[string]string
+	holdHead bool
+	// heldHeadStatus, when not zero, is what the held head lookup answers instead of the head:
+	// that status with GitHub's error body for it (writeStatus).
+	heldHeadStatus int
+	holdBlobsOf    string
 }
 
 func newMovingBranch(t *testing.T, head string, commits map[string]map[string]string) *movingBranch {
@@ -2017,6 +2084,15 @@ func (b *movingBranch) holdNextHeadLookup() {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.holdHead = true
+}
+
+// holdNextHeadLookupAnswering is holdNextHeadLookup for a lookup GitHub then answers status
+// rather than the head.
+func (b *movingBranch) holdNextHeadLookupAnswering(status int) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.holdHead = true
+	b.heldHeadStatus = status
 }
 
 func (b *movingBranch) holdBlobs(commit string) {
@@ -2042,11 +2118,15 @@ func (b *movingBranch) handler() http.Handler {
 	mux.Handle("/", (&fakeSource{t: b.t, installationID: 11}).handler())
 	mux.HandleFunc("GET /repos/{owner}/{repo}/commits/{branch}", func(w http.ResponseWriter, r *http.Request) {
 		b.mu.Lock()
-		head, hold := b.head, b.holdHead
-		b.holdHead = false
+		head, hold, status := b.head, b.holdHead, b.heldHeadStatus
+		b.holdHead, b.heldHeadStatus = false, 0
 		b.mu.Unlock()
 		if hold {
 			b.wait(r)
+		}
+		if status != 0 {
+			writeStatus(w, status)
+			return
 		}
 		writeCommit(w, r, head)
 	})
@@ -2141,14 +2221,27 @@ func syncRepoInBackground(process *Importer, repo string) <-chan syncAnswer {
 	return answer
 }
 
+// countFlightsTaken counts on the answer each flight a caller of process holds, joined or started
+// (afterFlightTaken). Call it before process's first sync: every caller reads the hook, so it is
+// written before any caller runs.
+func countFlightsTaken(process *Importer) *atomic.Int32 {
+	taken := &atomic.Int32{}
+	process.afterFlightTaken = func() { taken.Add(1) }
+	return taken
+}
+
 // joinInBackground starts a caller of repo's sync meant to join the flight already running, and
-// gives it the moment it needs to reach that flight. A caller that joins a flight makes no call
-// of its own — no GitHub read, no query, nothing a test can wait for — so this settle is what
-// keeps the test about one shared flight; the flight cannot end underneath it meanwhile, because
-// the caller returns while the test still holds the read that flight is stopped at.
-func joinInBackground(process *Importer, repo string) <-chan syncAnswer {
+// returns once two callers of process hold a flight (taken, from countFlightsTaken): the one that
+// started the flight already running, and this one. A caller that joins a flight makes no GitHub
+// read or query a test can wait for, so the hook is what the test waits on; the flight cannot end
+// underneath it meanwhile, because the test still holds the read that flight is stopped at.
+func joinInBackground(t *testing.T, process *Importer, taken *atomic.Int32, repo string) <-chan syncAnswer {
+	t.Helper()
 	answer := syncRepoInBackground(process, repo)
-	time.Sleep(500 * time.Millisecond)
+	testwait.Until(t, "the later caller to hold the flight already running", func() (int32, bool) {
+		held := taken.Load()
+		return held, held >= 2
+	})
 	return answer
 }
 
@@ -2156,13 +2249,7 @@ func joinInBackground(process *Importer, repo string) <-chan syncAnswer {
 // it never does: a caller left waiting on a flight is the regression these tests are about.
 func waitForSync(t *testing.T, answered <-chan syncAnswer, who string) syncAnswer {
 	t.Helper()
-	select {
-	case answer := <-answered:
-		return answer
-	case <-time.After(30 * time.Second):
-		t.Fatalf("%s did not return within 30s", who)
-		return syncAnswer{}
-	}
+	return testwait.Receive(t, who+" to return", answered)
 }
 
 // requireSettledAtTheNewerHead checks the held process's answer and the stored state once both
@@ -2203,6 +2290,7 @@ var infraComponents = []string{archRepo + " infra", archRepo + " infra-db", arch
 // the newer head: once released, the held process never projects its older head over the newer
 // one, and the newer head's synced event is the only one.
 func TestAProcessHeldAtAnOlderHeadNeverProjectsItOverTheNewer(t *testing.T) {
+	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles(), commitTwo: infraFiles()})
 	branch.holdBlobs(commitOne)
 	a, b, database := twoProcesses(t, branch)
@@ -2222,6 +2310,7 @@ func TestAProcessHeldAtAnOlderHeadNeverProjectsItOverTheNewer(t *testing.T) {
 // another process imported a newer head: its freshness write never records the older commit over
 // the newer projection.
 func TestAStaleUnchangedHeadNeverRecordsTheOlderCommit(t *testing.T) {
+	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles(), commitTwo: infraFiles()})
 	a, b, database := twoProcesses(t, branch)
 	if _, err := a.Sync(context.Background(), "CORE", archRepo); err != nil {
@@ -2244,6 +2333,7 @@ func TestAStaleUnchangedHeadNeverRecordsTheOlderCommit(t *testing.T) {
 // A failure a process met at a head the branch has since left, while another process imported
 // the newer head: the healthy source is never marked failed, and no sync_failed event is emitted.
 func TestAFailureMetBeforeAnotherProcessesImportNeverMarksTheSourceFailed(t *testing.T) {
+	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{
 		commitOne:    validFiles(),
 		commitBroken: {"api.md": "x\n", "API.md": "duplicate\n"},
@@ -2274,14 +2364,16 @@ func TestAFailureMetBeforeAnotherProcessesImportNeverMarksTheSourceFailed(t *tes
 // answer. One importer with two callers is the case that matters, since two processes never
 // share a flight.
 func TestACallerAfterTheHeadWasReadIsNotToldTheOlderHead(t *testing.T) {
+	t.Parallel()
 	branch := newMovingBranch(t, commitOne, map[string]map[string]string{commitOne: validFiles(), commitTwo: infraFiles()})
 	branch.holdBlobs(commitOne)
 	process, _, database := twoProcesses(t, branch)
+	taken := countFlightsTaken(process)
 
 	beforeThePush := syncInBackground(process)
 	branch.waitHeld(t)
 	branch.moveHead(commitTwo)
-	afterThePush := joinInBackground(process, archRepo)
+	afterThePush := joinInBackground(t, process, taken, archRepo)
 	branch.releaseHeld()
 
 	older := waitForSync(t, beforeThePush, "the caller that asked before the push")

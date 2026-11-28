@@ -1,23 +1,37 @@
-import { afterEach, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
+import { afterEach, beforeAll, beforeEach, expect, jest, type Mock, spyOn, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { MemoryRouter } from "react-router-dom";
 
-import { api } from "../../api/client";
+import { realClock } from "../../__tests__/fake-clock";
+import { keyedAttempt } from "../../__tests__/keyed-attempt";
+import { stopTheLateWrite } from "../../__tests__/stop-late-write";
+import { userOnFakeClock } from "../../__tests__/user";
+import { ApiError, api, NetworkError } from "../../api/client";
 import type { CredentialPendingRow } from "../../api/types";
+import { warmMarkdownRenderer } from "../refs/markdown-engine";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import { runningAgent } from "./agent-fixture";
 import { CredentialRequestsSection } from "./CredentialRequestsSection";
 import type { CredentialRequests } from "./pending";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 afterEach(cleanup);
 
 /** Whether this deployment serves the machine-code page, which every pending row reads
  *  (`useMachineCodePage`, GET /api/v1/credentials/capabilities): it serves none unless the test
- *  under way says it does. */
+ *  under way says it does. No row of this section reads `dispatch_sign_in`. */
 let capabilities: Mock<typeof api.getCredentialCapabilities>;
 
 beforeEach(() => {
   capabilities = spyOn(api, "getCredentialCapabilities").mockResolvedValue({
+    dispatch_sign_in: false,
     machine_code_page: false,
   });
 });
@@ -25,8 +39,10 @@ afterEach(() => capabilities.mockRestore());
 
 function pendingSecretRow(overrides: Partial<CredentialPendingRow> = {}): CredentialPendingRow {
   return {
+    dispatch_scopes: null,
     identifiers: ["ANTHROPIC_API_KEY"],
     kind: "agent_secret",
+    reason: "",
     record_id: "req-1",
     requested_at: "2026-09-27T00:00:00Z",
     session: { enrollment: null, request: null },
@@ -34,8 +50,23 @@ function pendingSecretRow(overrides: Partial<CredentialPendingRow> = {}): Creden
   };
 }
 
-function renderSection(credentials: CredentialRequests) {
-  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+/** An expired secret request: its deadline passed two hours ago, before anybody decided it. It
+ *  carries the broker's page, which an expired row must not link to. */
+function expiredSecretRow(overrides: Partial<CredentialPendingRow> = {}): CredentialPendingRow {
+  return pendingSecretRow({
+    approve_url: "https://secrets.example.com/approve/req-9",
+    expires_at: new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString(),
+    identifiers: ["DEEL_API_KEY"],
+    record_id: "req-9",
+    state: "expired",
+    ...overrides,
+  });
+}
+
+function renderSection(
+  credentials: CredentialRequests,
+  client = new QueryClient({ defaultOptions: { queries: { retry: false } } })
+) {
   return render(
     <MemoryRouter>
       <QueryClientProvider client={client}>
@@ -50,13 +81,15 @@ function renderSection(credentials: CredentialRequests) {
 // /api/v1/credentials/capabilities), so the row's link is there once that answer is in.
 test("renders every pending credential request, linking a secret row to its broker page and a machine row to /credentials/machine", async () => {
   const machineRow: CredentialPendingRow = {
+    dispatch_scopes: null,
     identifiers: ["worker-7.example.com"],
     kind: "launcher_credential",
+    reason: "",
     record_id: "req-2",
     requested_at: "2026-09-27T01:00:00Z",
     session: { enrollment: null, request: null },
   };
-  capabilities.mockResolvedValue({ machine_code_page: true });
+  capabilities.mockResolvedValue({ dispatch_sign_in: false, machine_code_page: true });
   renderSection({
     requests: [
       pendingSecretRow({ approve_url: "https://secrets.example.com/approve/req-1" }),
@@ -79,6 +112,66 @@ test("renders every pending credential request, linking a secret row to its brok
   expect(screen.getAllByText("No session named.")).toHaveLength(2);
 });
 
+// A pending Dispatch sign-in is decided on the same page as a machine login, but it is no machine
+// login: its row says what it is and the scopes it asks for, in the words Settings uses for them,
+// a word this build does not know as itself. A sign-in that asks for none says so. A sign-in names
+// no session, so under its line it shows the reason it gave, or that it gave none, never "No
+// session named.".
+test("a pending Dispatch sign-in's row names it, the scopes it asks for and its reason", async () => {
+  capabilities.mockResolvedValue({ dispatch_sign_in: true, machine_code_page: true });
+  renderSection({
+    requests: [
+      {
+        dispatch_scopes: ["person"],
+        identifiers: ["worker-7.example.com"],
+        kind: "launcher_credential",
+        reason: "the release tool",
+        record_id: "req-2",
+        requested_at: "2026-09-27T01:00:00Z",
+        session: { enrollment: null, request: null },
+      },
+      {
+        dispatch_scopes: [],
+        identifiers: ["worker-8.example.com"],
+        kind: "launcher_credential",
+        reason: "",
+        record_id: "req-3",
+        requested_at: "2026-09-27T01:00:00Z",
+        session: { enrollment: null, request: null },
+      },
+      {
+        dispatch_scopes: ["person", "triage"],
+        identifiers: ["worker-9.example.com"],
+        kind: "launcher_credential",
+        reason: "",
+        record_id: "req-4",
+        requested_at: "2026-09-27T01:00:00Z",
+        session: { enrollment: null, request: null },
+      },
+    ],
+    status: "listed",
+  });
+
+  const person = await screen.findByRole("link", {
+    name: /Dispatch sign-in.*worker-7\.example\.com.*asks for Act as you/s,
+  });
+  expect(person).toHaveAttribute("href", "/credentials/machine");
+  expect(
+    screen.getByRole("link", {
+      name: /Dispatch sign-in.*worker-8\.example\.com.*asks for no scope/s,
+    })
+  ).toBeDefined();
+  expect(
+    screen.getByRole("link", {
+      name: /Dispatch sign-in.*worker-9\.example\.com.*asks for Act as you, triage/s,
+    })
+  ).toBeDefined();
+  expect(screen.queryByText("Machine login")).toBeNull();
+  expect(screen.getByText("the release tool")).toBeDefined();
+  expect(screen.getAllByText("It gives no reason.")).toHaveLength(2);
+  expect(screen.queryByText("No session named.")).toBeNull();
+});
+
 // A broker older than its own approval page names none, and an approve_url that is not an
 // absolute http(s) URL is no page to send anyone to: either row reads as the same summary with
 // no link, since Dispatch decides no secret request of its own any more.
@@ -90,6 +183,162 @@ test("a secret row with no usable approve_url renders its summary with no link",
       screen.queryByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s })
     ).not.toBeInTheDocument();
     view.unmount();
+  }
+});
+
+// A row an older broker sends carries no `state`, and a newer broker's pending row says
+// `pending`: either is a pending request, a link to where it is decided, with no mark and nothing
+// to dismiss.
+test("a row with no state, or a pending one, links to its broker page with no mark and no Dismiss", () => {
+  for (const state of [undefined, "pending"] as const) {
+    const view = renderSection({
+      requests: [
+        pendingSecretRow({ approve_url: "https://secrets.example.com/approve/req-1", state }),
+      ],
+      status: "listed",
+    });
+    expect(
+      screen.getByRole("link", { name: /Secret request.*ANTHROPIC_API_KEY/s })
+    ).toHaveAttribute("href", "https://secrets.example.com/approve/req-1");
+    expect(screen.queryByText("Expired")).not.toBeInTheDocument();
+    expect(screen.queryByText(/^Its deadline passed/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^Dismiss/ })).not.toBeInTheDocument();
+    view.unmount();
+  }
+});
+
+// INFRA-3921: a request whose deadline passed before anybody decided it stays listed until
+// somebody dismisses it, and every decision of it is refused. So neither kind links to where a
+// pending one is decided - not the broker's page, not the machine-code page, which this
+// deployment serves, as the pending machine row's link shows - and each is marked, says when its
+// deadline passed and offers Dismiss, under a name that says which row it dismisses.
+test("an expired row of either kind is marked, says when its deadline passed, links nowhere and offers Dismiss", async () => {
+  const deadline = new Date(Date.now() - 2 * 60 * 60 * 1000).toISOString();
+  const machineRow = (
+    identifier: string,
+    overrides: Partial<CredentialPendingRow> = {}
+  ): CredentialPendingRow => ({
+    dispatch_scopes: null,
+    identifiers: [identifier],
+    kind: "launcher_credential",
+    reason: "",
+    record_id: `machine-${identifier}`,
+    requested_at: "2026-09-27T01:00:00Z",
+    session: { enrollment: null, request: null },
+    ...overrides,
+  });
+  capabilities.mockResolvedValue({ dispatch_sign_in: false, machine_code_page: true });
+  renderSection({
+    requests: [
+      machineRow("worker-8.example.com"),
+      expiredSecretRow({ expires_at: deadline }),
+      machineRow("worker-7.example.com", { expires_at: deadline, state: "expired" }),
+    ],
+    status: "listed",
+  });
+
+  const pendingMachine = await screen.findByRole("link", {
+    name: /Machine login.*worker-8\.example\.com/s,
+  });
+  expect(pendingMachine).toHaveAttribute("href", "/credentials/machine");
+  expect(within(pendingMachine.closest("li") as HTMLElement).queryByRole("button")).toBeNull();
+  expect(document.querySelector('a[href="https://secrets.example.com/approve/req-9"]')).toBeNull();
+
+  for (const [identifier, name] of [
+    ["DEEL_API_KEY", "Dismiss expired secret request DEEL_API_KEY"],
+    ["worker-7.example.com", "Dismiss expired machine login worker-7.example.com"],
+  ] as const) {
+    const row = screen.getByText(identifier).closest("li") as HTMLElement;
+    expect(within(row).getByText("Expired")).toBeDefined();
+    expect(within(row).queryByRole("link")).toBeNull();
+    expect(within(row).getByRole("button", { name })).toHaveTextContent("Dismiss");
+    const time = row.querySelector(`time[datetime="${deadline}"]`);
+    expect(time).not.toBeNull();
+    expect(within(row).getByText(/^Its deadline passed/).textContent).toBe(
+      `Its deadline passed ${time?.textContent}`
+    );
+    expect(within(row).getByText("No session named.")).toBeDefined();
+  }
+});
+
+// A broker that names no deadline for an expired row still marks it expired: the line then says
+// only that the deadline passed.
+test("an expired row with no deadline says only that its deadline passed", () => {
+  renderSection({ requests: [expiredSecretRow({ expires_at: undefined })], status: "listed" });
+  const line = screen.getByText(/^Its deadline passed/);
+  expect(line.textContent).toBe("Its deadline passed");
+  expect(line.querySelector("time")).toBeNull();
+});
+
+test("Dismiss on an expired row sends that record's dismissal and reads the list again", async () => {
+  const user = userEvent.setup();
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockResolvedValue(undefined);
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = spyOn(client, "invalidateQueries");
+  try {
+    renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
+    await user.click(
+      screen.getByRole("button", { name: "Dismiss expired secret request DEEL_API_KEY" })
+    );
+    await waitFor(() => expect(dismiss.mock.calls).toEqual([["req-9", keyedAttempt]]));
+    await waitFor(() =>
+      expect(invalidate).toHaveBeenCalledWith({ queryKey: ["credential-pending"] })
+    );
+  } finally {
+    dismiss.mockRestore();
+  }
+});
+
+// The broker's refusal is shown under the row it names, and the list is read again, since the
+// refusal says the list the page holds is not what the broker holds.
+test("a refused dismissal shows the broker's message and reads the list again", async () => {
+  const user = userEvent.setup();
+  const refusal = "only an approver of this request may dismiss it";
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockRejectedValue(
+    new ApiError(403, { code: "NOT_APPROVER", error: refusal })
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  const invalidate = spyOn(client, "invalidateQueries");
+  try {
+    renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
+    await user.click(
+      screen.getByRole("button", { name: "Dismiss expired secret request DEEL_API_KEY" })
+    );
+    const row = screen.getByText("DEEL_API_KEY").closest("li") as HTMLElement;
+    expect(await within(row).findByText(refusal)).toBeDefined();
+    expect(invalidate).toHaveBeenCalledWith({ queryKey: ["credential-pending"] });
+  } finally {
+    dismiss.mockRestore();
+  }
+});
+
+// A dismissal the reader stopped may have been made: the row says so, and that Dismiss is a press
+// of its own, rather than that the dismissal failed.
+test("a dismissal the reader stopped says it may have been made, not that it failed", async () => {
+  const dismiss = spyOn(api, "dismissCredentialRequest").mockRejectedValue(
+    new NetworkError("/api/v1/credentials/requests/req-9/dismiss", new TypeError("Failed to fetch"))
+  );
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+  jest.useFakeTimers();
+  try {
+    renderSection({ requests: [expiredSecretRow()], status: "listed" }, client);
+    const user = userOnFakeClock();
+    await user.click(
+      screen.getByRole("button", { name: "Dismiss expired secret request DEEL_API_KEY" })
+    );
+    await stopTheLateWrite(client);
+    const row = screen.getByText("DEEL_API_KEY").closest("li") as HTMLElement;
+    expect(
+      within(row).getByText(
+        stoppedWriteNote("the dismissal of this request", "made", {
+          anew: "Pressing Dismiss again sends a new dismissal.",
+        })
+      )
+    ).toBeDefined();
+    expect(within(row).queryByText("Could not dismiss this request.")).toBeNull();
+  } finally {
+    realClock();
+    dismiss.mockRestore();
   }
 });
 

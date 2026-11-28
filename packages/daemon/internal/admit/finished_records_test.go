@@ -48,11 +48,13 @@ func seedRunningProject(t *testing.T, pool *pgxpool.Pool, finished bool) {
 			if err := records.PutIssue(ctx, tx, issue); err != nil {
 				t.Fatalf("record %s: %v", issue.Key, err)
 			}
-			if err := records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: issue.Key, Project: testProject, Status: issue.Status, Blockers: waits, Seq: 1}); err != nil {
+			if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: issue.Key, Project: testProject, Seq: 1,
+				Status: record.Carry(issue.Status), Parent: record.Carry(""), Blockers: record.Carry(waits)}); err != nil {
 				t.Fatalf("mirror %s: %v", issue.Key, err)
 			}
 		}
-		if err := records.PutDispatchIssue(ctx, tx, record.DispatchIssueRow{Key: waitedOn, Project: testProject, Status: "todo", Seq: 1}); err != nil {
+		if err := records.PutDispatchIssue(ctx, tx, record.DispatchReading{Key: waitedOn, Project: testProject, Seq: 1,
+			Status: record.Carry("todo"), Parent: record.Carry(""), Blockers: record.Carry[[]string](nil)}); err != nil {
 			t.Fatalf("mirror %s: %v", waitedOn, err)
 		}
 		for i := range runningTrees {
@@ -94,12 +96,13 @@ func seedRunningProject(t *testing.T, pool *pgxpool.Pool, finished bool) {
 }
 
 // A project keeps the record of every issue it ever finished, and its mirror row, for good, while
-// what it runs at once is bounded by admission's cap. Every fact runs admission under the one fact
-// lock, so a fact that read every record would cost more with each tree the project finishes, until
-// the consumers fall behind Dispatch and GitHub. Each kind of fact the daemon applies all day — a
-// pull request opened, pushed to, settled and reviewed, an observation of a running root, one of an
-// issue nobody handed to Legion (which asks whether a slot stands free), and the controller tick —
-// reads the same statements and the same rows with 10,000 finished records as with none.
+// what it runs at once is bounded by admission's cap. Every pass (the pass rule, Admission.Apply)
+// runs admission under the one fact lock, so a pass that read every record would cost more with
+// each tree the project finishes, until the consumers fall behind Dispatch and GitHub. Each kind
+// of fact the daemon applies all day — a pull request opened, pushed to, settled and reviewed, an
+// observation of a running root, one of an issue nobody handed to Legion (which asks whether a
+// slot stands free), and the controller tick — reads the same statements and the same rows with
+// 10,000 finished records as with none.
 func TestAFactReadsAsManyRowsWhateverNumberOfFinishedRecordsTheProjectKeeps(t *testing.T) {
 	branch := "legion/" + runningChild(0)
 	facts := []struct {

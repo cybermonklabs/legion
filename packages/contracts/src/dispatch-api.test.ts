@@ -2,6 +2,8 @@ import { describe, expect, test } from "bun:test";
 import type { BlockTypeSchema } from "./block-schema.generated";
 import {
   type Actor,
+  ActorActSchema,
+  ActorSchema,
   type Agent,
   type Anchor,
   type AnchorInput,
@@ -56,6 +58,7 @@ import {
   type MyAnswersResponse,
   type MyRepliesResponse,
   NO_ROUTE_RETRY_DELAYS_MS,
+  ProjectAccessChangedEventPayloadSchema,
   type ReferenceChangesPayload,
   type ReplyBlock,
   ReplyBlockSchema,
@@ -64,6 +67,7 @@ import {
   SEARCH_MEMBERS_EVERY_BUILD_READS,
   type Sleep,
   serviceSubjectLabel,
+  signInScopes,
   sleep,
   type TmuxPlace,
   type UserStateUpdatedEventPayload,
@@ -85,6 +89,22 @@ test("review event validation preserves approved byte hashes and their provenanc
     artifact_id: "doc-1",
     version: 2,
   });
+});
+
+test("a project.access_changed payload names the project and the change, and no access list", () => {
+  // The event is read by every reader of the project's events, so it carries no email, group name
+  // or channel id, nor the time the channels changed.
+  const change = { project: "CORE", change: "slack_channels" } as const;
+  expect(ProjectAccessChangedEventPayloadSchema.parse(change)).toEqual(change);
+  for (const extra of [
+    { owner: "alice@example.com" },
+    { slack_channels: ["C012345678"] },
+    { slack_channels_changed_at: "2026-11-18T18:12:30Z" },
+  ]) {
+    expect(ProjectAccessChangedEventPayloadSchema.safeParse({ ...change, ...extra }).success).toBe(
+      false
+    );
+  }
 });
 
 test("delivery modes are exactly the closed capability list", () => {
@@ -247,6 +267,41 @@ test("preserves labels on an issue update event payload", () => {
 test("preserves a coarse priority on an issue update event payload", () => {
   expect(IssueEventPayloadSchema.parse({ priority: 0 })).toEqual({ priority: 0 });
   expect(IssueEventPayloadSchema.parse({ priority: null })).toEqual({ priority: null });
+});
+
+test("reads the proven mark of an actor and of its act's session, only as true", () => {
+  const session = {
+    kind: "session",
+    id: "ses_1",
+    owner: "alice@example.com",
+    proven: true,
+  } satisfies Actor;
+  expect<Actor>(ActorSchema.parse(session)).toEqual(session);
+  const person = {
+    kind: "user",
+    id: "alice@example.com",
+    act: { session: "ses_1", session_proven: true, scopes: ["person"] },
+    proven: true,
+  } satisfies Actor;
+  expect<Actor>(ActorSchema.parse(person)).toEqual(person);
+  // A claimed actor, and every actor written before the mark, carries none.
+  expect(ActorSchema.parse({ kind: "session", id: "ses_2" })).toEqual({
+    kind: "session",
+    id: "ses_2",
+  });
+  expect(ActorActSchema.parse({ session: "ses_2", token_id: "tok_1" })).toEqual({
+    session: "ses_2",
+    token_id: "tok_1",
+  });
+  // The server writes the mark only where it holds, so false is no reading of it, and the
+  // server-owned writer carries none.
+  expect(ActorSchema.safeParse({ kind: "session", id: "ses_2", proven: false }).success).toBe(
+    false
+  );
+  expect(ActorActSchema.safeParse({ session: "ses_2", session_proven: false }).success).toBe(false);
+  expect(
+    ActorSchema.safeParse({ kind: "system", id: "architecture-importer", proven: true }).success
+  ).toBe(false);
 });
 
 test("keeps what an issue write changed, its ancestors and its thread logins, and accepts an event without them", () => {
@@ -681,6 +736,26 @@ test("models the Inbox's Reply and Agent rows and the read mark's event", () => 
   ]);
 });
 
+// One rule tells a Dispatch sign-in's credential row from a machine login's, wherever a surface
+// reads one: the Inbox page and the credential pages, and `dispatch inbox`. A row whose
+// `dispatch_scopes` is a list is a sign-in, holding no scope where the list is empty; a machine
+// login's and a secret request's is null, and a row from a broker older than sign-ins carries
+// none at all. The rows that are no sign-in are the control: a rule reading the member's
+// presence, or its truth, would read one of them as a sign-in, since an empty list is a sign-in
+// holding no scope and a member that is no list at all is no sign-in.
+test("a credential row is a Dispatch sign-in exactly where its dispatch_scopes is a list", () => {
+  expect([
+    signInScopes({ dispatch_scopes: ["person", "p0"] }),
+    signInScopes({ dispatch_scopes: [] }),
+    signInScopes({ dispatch_scopes: null }),
+    signInScopes({ dispatch_scopes: undefined }),
+    signInScopes({}),
+    signInScopes({ dispatch_scopes: "person" } as unknown as {
+      dispatch_scopes?: readonly string[];
+    }),
+  ]).toEqual([["person", "p0"], [], null, null, null, null]);
+});
+
 test("models a snooze's state event and a document named in references_changed", () => {
   // A snooze's event reaches every signed-in feed, so it carries the writer and the field alone.
   const snoozed = {
@@ -796,6 +871,8 @@ test("models full orphaned anchor refresh events without a notification", () => 
     author: { id: "session-1", kind: "session" } as const,
     body: "This suggestion is now stale.",
     created_at: "2026-09-18T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id: "comment-1",
@@ -1009,6 +1086,8 @@ test("models comment thread lifecycle events and author edits", () => {
     author: actor,
     body: "Edited discussion",
     created_at: "2026-09-10T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     edited_at: "2026-09-10T00:02:00Z",
     id: "comment-1",
     issue_key: "DSP-1",
@@ -1111,6 +1190,8 @@ test("keeps the comment id, author, and message id when parsing event payloads",
     author: actor,
     body: "Please update this.",
     created_at: "2026-09-10T00:00:00Z",
+    deleted_at: null,
+    deleted_by: null,
     edited_at: null,
     id: "comment-1",
     issue_key: "DSP-1",
@@ -1204,8 +1285,10 @@ test("a reply names the block it answers, and an event recorded before reads no 
     replyInput.in_reply_to_block,
   ]).toEqual(["b2", "b2", "b2", "b2"]);
 
+  // A quote of a post its author edited carries the edit; a quote of an unedited one, none.
   const block: ReplyBlock = {
     block_id: "b2",
+    edited_at: "2026-09-10T00:00:00.5Z",
     node: "comment/comment-1#b2",
     ref: "dispatch://DSP-1/comment/comment-1#b-b2",
     removed: false,
@@ -1223,6 +1306,9 @@ test("a reply names the block it answers, and an event recorded before reads no 
     author: actor,
     body: "On two.",
     created_at: "2026-09-10T00:00:01Z",
+    deleted_at: null,
+    deleted_by: null,
+    edited_at: null,
     deliveries: [],
     id: "message-2",
     in_reply_to: "message-1",
@@ -1238,6 +1324,8 @@ test("a reply names the block it answers, and an event recorded before reads no 
     author: actor,
     body: "On the second paragraph.",
     created_at: "2026-09-10T00:00:01Z",
+    deleted_at: null,
+    deleted_by: null,
     deliveries: [],
     edited_at: null,
     id: "comment-2",
@@ -1266,6 +1354,40 @@ test("a reply names the block it answers, and an event recorded before reads no 
     MessageEventPayloadSchema.parse({ id: "message-3", author: actor, in_reply_to: "message-1" })
       .reply_block
   ).toBeUndefined();
+});
+
+// A deleted post's events carry the mark in place of the body, and an edited message carries the
+// time of its edit. MessageEventPayloadSchema strips a field it does not declare, so the three
+// message marks are declared there; an event written before the corrections carries none of them.
+test("keeps the edited and deleted marks of a post through its event payload", () => {
+  const deletedBy = { id: "alice", kind: "user" };
+  const comment = CommentEventPayloadSchema.parse({
+    id: "comment-1",
+    author: deletedBy,
+    deleted_at: "2026-11-10T00:00:00Z",
+    deleted_by: deletedBy,
+  });
+  const message = MessageEventPayloadSchema.parse({
+    id: "message-1",
+    author: deletedBy,
+    edited_at: "2026-11-10T00:01:00Z",
+    deleted_at: "2026-11-10T00:02:00Z",
+    deleted_by: deletedBy,
+  });
+
+  expect([comment.deleted_at, comment.deleted_by]).toEqual(["2026-11-10T00:00:00Z", deletedBy]);
+  expect([message.edited_at, message.deleted_at, message.deleted_by]).toEqual([
+    "2026-11-10T00:01:00Z",
+    "2026-11-10T00:02:00Z",
+    deletedBy,
+  ]);
+
+  const live = MessageEventPayloadSchema.parse({ id: "message-2", author: deletedBy });
+  expect([live.edited_at, live.deleted_at, live.deleted_by]).toEqual([
+    undefined,
+    undefined,
+    undefined,
+  ]);
 });
 
 test("accepts complete targeted-message payloads while ignoring future fields", () => {
@@ -1660,7 +1782,7 @@ test("a search carrying anything beyond them goes to GET /api/v1/search/results"
   const beyond: Record<string, unknown> = {
     number_project: "INFRA",
     status: "in_progress",
-    author: "sami@theorem.dev",
+    author: "sami@example.com",
     updated_since: "2026-11-01T00:00:00Z",
     keywords_only: true,
   };

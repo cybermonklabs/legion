@@ -109,9 +109,24 @@ const prunePasses = `delete from ci_reconcile_passes where started_at < now() - 
 // its line and records nothing, which is honest: a row naming no process could never be read as
 // running or as ended without completing.
 //
-// It writes on the pass's own context, which the end write may not use: this runs at the start of
-// the pass, where the whole interval is still ahead of it.
-func (r *Reconciler) beginPass(ctx context.Context) int64 {
+// It writes on a bounded context of its own, the one endPass writes on (duty.LeaseCall), and
+// never on the pass's. The pass's caller cancels the pass's context when the process shuts down.
+// Were the insert on the pass's context, a cancellation while the insert was in flight -- after
+// Postgres had committed the row but before the pass had read its id back -- would fail that read
+// and part the pass from its row. The pass would close nothing, and the row would read as
+// PassStateAbandoned once the pass was over (until then RecentPasses would read it as running).
+// That would report a process killed in the middle of a pass instead of a pass its caller
+// cancelled, which records outcomeCancelled. Within its five-second bound, a pass whose row was
+// written holds that row's id: the bound is a deadline, and pgx fails the read on a deadline as
+// it does on a cancellation, so an insert Postgres takes longer than that to answer parts the
+// pass from its row in the same way.
+//
+// r.Pool.QueryRow acquires its connection from the shared pool on that same context, so the
+// five-second bound also limits the wait for a connection. The pass's own context used to bound
+// that wait only at the pass's interval. A pass that gets no connection within the bound writes
+// no row, logs "ci reconcile pass recorded no start", and records nothing at its end (endPass
+// skips an id of zero).
+func (r *Reconciler) beginPass() int64 {
 	if r.Instance == nil {
 		return 0
 	}
@@ -119,6 +134,8 @@ func (r *Reconciler) beginPass(ctx context.Context) int64 {
 	if instance == "" {
 		return 0
 	}
+	ctx, done := duty.LeaseCall()
+	defer done()
 	var id int64
 	if err := r.Pool.QueryRow(ctx, insertPass, instance).Scan(&id); err != nil {
 		r.Logger.Warn("ci reconcile pass recorded no start", "instance", instance, "error", err)
@@ -227,7 +244,7 @@ type PassCounts struct {
 }
 
 // PassCursor is where a pass left the order, which is the address the pass after it takes the
-// order up at: the mapped repository, the number that names the page of its open pull requests
+// order up at: the covered repository, the number that names the page of its open pull requests
 // -- one more than the last head of the page before it, and zero for a repository's first page
 // -- and the first pull request of that page the pass did not finish, zero for the whole page.
 // Rest says the page is read from the repository's REST listing rather than from a query, and

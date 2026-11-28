@@ -1,0 +1,446 @@
+// packages/envoy/internal/cipher/helper/protocol.go
+
+// Package helper is the host-session side of agent secrets: a per-user daemon
+// that pins each registered process by pidfd, holds that session's P-256 key in memory, enrolls
+// it with the secrets broker as kind "session", and signs proofs only for the session's
+// descendants. The wire between the agent-secrets client and the helper is one JSON object per
+// line each way on a unix stream socket, one request per connection.
+package helper
+
+import (
+	"bufio"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"net"
+	"os"
+	"path/filepath"
+	"strconv"
+	"time"
+
+	"github.com/sjawhar/envoy/internal/cipherclient"
+)
+
+// Request is the client's one line. Op is register, sign, sign-request, sign-launcher,
+// unregister, sessions, login, login-status, enroll-session-key, unenroll-session-key, or an
+// installer's drain and undrain; an unrecognized op is answered BAD_REQUEST, `unknown op <op>`. A
+// field the helper does not read is ignored.
+type Request struct {
+	Op              string   `json:"op"`
+	Method          string   `json:"method,omitempty"`           // sign, sign-launcher: the HTTP method of the broker call
+	URL             string   `json:"url,omitempty"`              // sign, sign-launcher: its absolute URL
+	Secrets         []string `json:"secrets,omitempty"`          // sign-request: the requested agent_secret names
+	Reason          string   `json:"reason,omitempty"`           // sign-request: why they're needed
+	LifetimeSeconds *int     `json:"lifetime_seconds,omitempty"` // sign-request: how many seconds the grant lasts; nil for until the session ends
+	Locations       []string `json:"locations,omitempty"`        // sign-request: the target that narrows its one secret, as the one detail's locations; nil for none
+	WaitSeconds     int      `json:"wait_seconds,omitempty"`     // register: wait up to this long for the enrollment, unless the helper holds no launcher credential
+	RuntimeID       string   `json:"runtime_id,omitempty"`       // enroll-session-key: the session's runtime id on this machine
+	Thumbprint      string   `json:"thumbprint,omitempty"`       // enroll-session-key: the session key's thumbprint
+	SessionID       *string  `json:"session_id,omitempty"`       // enroll-session-key: optional registry session id; register: the omp session id this session is to be known by
+	EnrollmentID    string   `json:"enrollment_id,omitempty"`    // unenroll-session-key: which enrollment to end
+	Projects        []string `json:"projects,omitempty"`         // register, enroll-session-key: the Dispatch projects the session names, fixed at its first register
+	// Attach is register only: the caller is `agent-secrets register` run without --exec, whose
+	// own process ends with the command, so the helper never pins it. The caller is answered from
+	// the session it is already in; outside one, the helper pins RootPID, and with no RootPID it
+	// refuses NOT_A_SESSION. False (--exec, and every client from before this field) pins the
+	// caller when it is in no session.
+	Attach bool `json:"attach,omitempty"`
+	// RootPID is register only: the session launcher (an `omp` process) above the caller that the
+	// helper is to pin as the session's root when the caller is in no session. The client sends
+	// the nearest `omp` ancestor it finds, and none when it finds none.
+	RootPID int `json:"root_pid,omitempty"`
+}
+
+// Response is the helper's one line. Code and Error are set only when OK is false, except that
+// a register reply carries the last broker error in Error while State is still "enrolling" (and
+// Code NO_CREDENTIAL while the helper holds no launcher credential to enroll it with), and a
+// login/login-status reply carries the confirmation code in Code while OK is true.
+type Response struct {
+	OK           bool   `json:"ok"`
+	Code         string `json:"code,omitempty"`
+	Error        string `json:"error,omitempty"`
+	EnrollmentID string `json:"enrollment_id,omitempty"`
+	RuntimeID    string `json:"runtime_id,omitempty"`
+	// RootPID is register only: the pid the session's root is, so a client run without --exec can
+	// see that the session is rooted above it (the launcher it named, or the root of the session
+	// it is already in) and not at its own process, which ends with the command. A helper from
+	// before this field sends none, and such a client refuses that answer.
+	RootPID             int           `json:"root_pid,omitempty"`
+	Operator            string        `json:"operator,omitempty"`
+	State               string        `json:"state,omitempty"`                 // register: enrolling | enrolled | refused (the broker refused the session for good, 403 RESTRICTED_MEMBER_ENROLLS_NOTHING, named in Error; the helper asks no more)
+	VerificationURI     string        `json:"verification_uri,omitempty"`      // login: where a person types the code, the broker's device authorization verification_uri; empty from a helper before this field
+	LoginState          string        `json:"login_state,omitempty"`           // login/login-status: the most recent login's pending|issued|denied|expired; expired whenever LoginRefused and that login is not pending
+	LoginReason         string        `json:"login_reason,omitempty"`          // login-status: beside an expired LoginState that is no dropped credential, how many polls in a row before the code lapsed the broker did not answer or answered with an outage; empty otherwise, and from a helper before this field
+	CredentialHeld      bool          `json:"credential_held,omitempty"`       // login-status: the helper holds a launcher credential, whatever the most recent login's state
+	CredentialExpiresAt string        `json:"credential_expires_at,omitempty"` // login-status: RFC3339, when the held credential lapses without a refresh; empty while none is held
+	LoginRefused        bool          `json:"login_refused,omitempty"`         // login-status: the helper dropped the credential it held (the broker refused it or its refresh, or it reached its expiry), and no login has started or settled since
+	CredentialDropped   string        `json:"credential_dropped,omitempty"`    // login-status: why, set exactly when LoginRefused (dropRefused, dropRefreshRefused or dropExpired); a helper from before this field sends LoginRefused alone
+	MachineIdentity     bool          `json:"machine_identity,omitempty"`      // login-status, sign-launcher: the helper trades this machine's own identity (AGENT_SECRETS_MACHINE_IDENTITY) and holds no machine login; a helper before this field sends none, which reads as machine-login mode
+	IdentityStopped     bool          `json:"identity_stopped,omitempty"`      // login-status, sign-launcher: beside MachineIdentity, the helper's trade loop stopped on a refusal no retry cures, and nothing trades again until the helper restarts
+	LeaseExpires        string        `json:"lease_expires,omitempty"`         // enroll-session-key: RFC3339Nano
+	Proof               string        `json:"proof,omitempty"`                 // sign: a session proof; sign-launcher: a launcher proof of the machine credential
+	CredentialID        string        `json:"credential_id,omitempty"`         // sign-launcher: the machine credential the proof names, so a machine revoke can tell this machine's own login
+	RequestObject       string        `json:"request_object,omitempty"`        // sign-request: the signed compact JWS
+	Sessions            []SessionInfo `json:"sessions,omitempty"`
+	Version             string        `json:"version,omitempty"` // version: the release the running helper was built as, so a client names the process serving the socket, not the binary on disk a pin move may have replaced
+}
+
+// The causes for which the helper drops the launcher credential it holds, as login-status's
+// credential_dropped carries them: each starts the ERROR line the helper logs as it drops the
+// credential (Broker.drop), and is the reason a session cannot enroll from then until a login is
+// recorded.
+const (
+	// dropRefused: the broker answered a launcher proof 401 LAUNCHER_INVALID (clearOnInvalid).
+	dropRefused = "the broker refused the launcher credential (expired or revoked, or a proof it could not verify, such as clock skew or an AGENT_SECRETS_URL mismatch)"
+	// dropRefreshRefused: the broker answered the machine login's refresh invalid_grant
+	// (Broker.refresh), and the helper deleted its machine file.
+	dropRefreshRefused = "the broker refused the machine login's refresh: it was revoked, lapsed, or its refresh token was reused"
+	// dropExpired: the credential reached the expiry the broker last named, with no refresh moving
+	// it (watchExpiry).
+	dropExpired = "the launcher credential reached its expiry"
+)
+
+// NoCredentialReason says why a helper holds no launcher credential, from login-status's fields:
+// the most recent login's state and its reason, login_refused and credential_dropped. The helper
+// logs it on every enrollment it cannot attempt, and `agent-secrets machine login-status` prints
+// it, so the journal and the client say the same thing. It names no confirmation code: a pending
+// login's code is for the approver's screen, never the journal. A login still pending outranks a
+// dropped credential, since its approval is what replaces it. A helper from before
+// credential_dropped sets login_refused only when the broker refused the credential, so
+// login_refused alone reads as that. A login that expired names the polls the broker did not
+// answer just before (loginReason), where there were any.
+func NoCredentialReason(loginState, loginReason string, refused bool, dropped string) string {
+	switch {
+	case loginState == "pending":
+		return "a machine login is waiting for a human to approve it"
+	case dropped != "":
+		return dropped
+	case refused:
+		return dropRefused
+	case loginState == "denied":
+		return "the most recent machine login was denied"
+	case loginState == "expired" && loginReason != "":
+		return "the most recent machine login expired before anyone approved it; " + loginReason
+	case loginState == "expired":
+		return "the most recent machine login expired before anyone approved it"
+	case loginState == "":
+		return "no machine login since the helper started, and none kept on this machine"
+	default:
+		return "the most recent machine login is " + loginState
+	}
+}
+
+// NoCredentialFailure is the class of a login-status or sign-launcher answer r while the helper
+// holds no live launcher credential (cipherclient.Hint): in identity mode the helper's own trade
+// loop gets one, or, once it has stopped, nothing does until the helper restarts; otherwise a
+// machine login a human approves. An answer from a helper before MachineIdentity reads as
+// machine-login mode, the only mode such a helper reports a login for.
+func (r Response) NoCredentialFailure() cipherclient.Failure {
+	return modeFailure(r.MachineIdentity, r.IdentityStopped)
+}
+
+func modeFailure(machineIdentity, identityStopped bool) cipherclient.Failure {
+	switch {
+	case machineIdentity && identityStopped:
+		return cipherclient.FailureIdentityStopped
+	case machineIdentity:
+		return cipherclient.FailureIdentityLapsed
+	}
+	return cipherclient.FailureNoMachineLogin
+}
+
+// SessionInfo is one registered session as `sessions` lists it: never a key.
+type SessionInfo struct {
+	PID          int    `json:"pid"`
+	RuntimeID    string `json:"runtime_id"`
+	EnrollmentID string `json:"enrollment_id"`
+	State        string `json:"state"`
+	RegisteredAt string `json:"registered_at"`
+}
+
+// The codes a helper answers a request it refuses with. Every one carries a doc comment, and every
+// refusal the helper builds names one of them: the broker's generated error reference
+// (cmd/cipher-refgen) prints them and refuses a code without a comment or a refusal with any other
+// code.
+const (
+	// CodeNotASession answers sign, sign-request or unregister from a process that descends from no
+	// session `agent-secrets register` registered, and a register run without --exec from such a
+	// process that names no session launcher (omp) above it.
+	CodeNotASession = "NOT_A_SESSION"
+	// CodeNotEnrolled answers sign or sign-request for a registered session that is still
+	// enrolling: the helper holds a launcher credential, and its enroll loop has not succeeded yet.
+	CodeNotEnrolled = "NOT_ENROLLED"
+	// CodeNoCredential answers sign, sign-request or sign-launcher while the helper holds no
+	// launcher credential: the machine was never logged in, its machine file is gone, or the broker
+	// refused its login (revoked, lapsed, or a reused refresh token), until the operator logs the
+	// machine in. A restart resumes a kept login, so it alone does not cause this. The helper then
+	// enrolls no one, so a session has no broker identity, and the operator's shell has no machine
+	// login to act as. A register reply for such a session carries it too, beside OK.
+	CodeNoCredential = "NO_CREDENTIAL"
+	// CodeInSession answers sign-launcher from a process inside a registered session's process
+	// tree, or one whose ancestry the helper cannot follow to init (a parent it cannot read, a
+	// loop, or past 64 processes), so a session's own commands cannot act as its operator. A
+	// process that leaves its session's tree (a double fork or setsid, reparented to init or a
+	// subreaper) is not refused, and the operator's user can stop the helper anyway: it guards a
+	// session's own process tree, not a boundary against code running as that user.
+	CodeInSession = "IN_SESSION"
+	// CodeBadRequest answers a request that is not one JSON object per line, names an unknown op,
+	// leaves out a field its op needs, or asks sign-launcher for anything but one of the four
+	// operator routes under this helper's broker.
+	CodeBadRequest = "BAD_REQUEST"
+	// CodeUnidentified answers a caller the kernel could not identify, or one whose process exited
+	// or changed while the helper was identifying it.
+	CodeUnidentified = "PEER_UNIDENTIFIED"
+	// CodeLoginFailed answers a login the helper could not start with the broker; the error says
+	// why. When the helper does not know the outcome (the request may have reached the broker and
+	// no answer the helper could read came back, or the login did not end within the helper's
+	// bound), the error says that the outcome is unknown and that `agent-secrets machine login` is
+	// safe to run again: no confirmation code was shown, so nobody can approve a login the broker
+	// may hold, and it expires by itself.
+	CodeLoginFailed = "LOGIN_FAILED"
+	// CodeEnrollFailed answers an enroll-session-key whose outcome is known: the broker refused it,
+	// or the helper never asked the broker (it holds no launcher credential, could not read a
+	// sign-in, or could not send the request). This request made no enrollment; the error says why.
+	CodeEnrollFailed = "ENROLL_FAILED"
+	// CodeEnrollUnknown answers an enroll-session-key whose outcome the helper does not know: the
+	// request may have reached the broker and no answer the helper could read came back, or the
+	// operation did not end within the helper's bound. So the broker may have made the enrollment.
+	// The same enroll again answers the enrollment the broker made, if it made one; the error says
+	// why the outcome is unknown.
+	CodeEnrollUnknown = "ENROLL_OUTCOME_UNKNOWN"
+	// CodeUnenrollFailed answers an unenroll-session-key whose outcome is known: the broker refused
+	// it, or the helper never asked the broker. This request revoked nothing; the error says why.
+	CodeUnenrollFailed = "UNENROLL_FAILED"
+	// CodeUnenrollUnknown answers an unenroll-session-key whose outcome the helper does not know:
+	// the request may have reached the broker and no answer the helper could read came back, or the
+	// operation did not end within the helper's bound. So the broker may have revoked the
+	// enrollment. An unenroll is safe to run again; the error says why the outcome is unknown.
+	CodeUnenrollUnknown = "UNENROLL_OUTCOME_UNKNOWN"
+	// CodeKeygen answers a register the helper could not make the new session's signing key for;
+	// the error says why.
+	CodeKeygen = "KEYGEN"
+	// CodeSign answers sign, sign-request or sign-launcher when signing the proof or the request
+	// object failed; the error says why.
+	CodeSign = "SIGN"
+	// CodeDraining answers register and enroll-session-key once `drain` found no sessions: the
+	// helper is about to be restarted, and the caller should retry against the new one.
+	CodeDraining = "DRAINING"
+)
+
+const maxLine = 64 << 10
+
+// DefaultSocket is the helper's socket when AGENT_SECRETS_HELPER_SOCK is unset: under the
+// user's runtime dir, which scripts/agentbox never mounts into a box. getenv is injectable so
+// callers can test their own defaulting against a fake environment.
+func DefaultSocket(getenv func(string) string) string {
+	dir := getenv("XDG_RUNTIME_DIR")
+	if dir == "" {
+		dir = "/run/user/" + strconv.Itoa(os.Getuid())
+	}
+	return filepath.Join(dir, "agent-secrets", "helper.sock")
+}
+
+// UnitName is the helper's systemd user unit.
+const UnitName = "agent-secrets-helper.service"
+
+// UnitPath is where `agent-secrets-helper install` writes the helper's user unit: under
+// $XDG_CONFIG_HOME, default $HOME/.config. Its presence says the helper is installed here.
+func UnitPath(getenv func(string) string) string {
+	dir := getenv("XDG_CONFIG_HOME")
+	if dir == "" {
+		dir = filepath.Join(getenv("HOME"), ".config")
+	}
+	return filepath.Join(dir, "systemd", "user", UnitName)
+}
+
+// LegacyStatePath is where the helper's session records used to live: beside socket, the socket
+// THIS helper is configured to listen on, which is the one `install` wrote into its unit where
+// a machine names one (AGENT_SECRETS_HELPER_SOCK) and DefaultSocket otherwise. That directory
+// is the user's runtime dir, which is tmpfs and goes at a reboot — exactly the event a named
+// session's records must survive (dispatch://INFRA-1167) — so StatePath replaces it and
+// MigrateStateFile moves what it finds there. Reading the configured socket rather than the
+// default is what makes a helper installed with a socket of its own migrate its OWN old
+// records, and no other helper's.
+func LegacyStatePath(socket string) string {
+	return filepath.Join(filepath.Dir(socket), "sessions.json")
+}
+
+// StatePath is where the helper keeps its session records when AGENT_SECRETS_STATE_FILE names
+// no file: sessions.json beside machineFile, the machine login this helper's sessions enrol
+// under (AGENT_SECRETS_MACHINE_FILE, default $HOME/.config/agent-secrets/machine.json), so a
+// helper with nothing set keeps its records at $HOME/.config/agent-secrets/sessions.json,
+// where one upgraded in place on its default socket finds them.
+//
+// Durable, and not in the runtime directory the socket is in: a named session's record holds
+// that session's signing key, and the identity that key stands for must outlive a reboot, while
+// the runtime directory is tmpfs and goes with one.
+//
+// Beside the machine login, and not at one path every helper on the machine shares: the records
+// now hold named sessions' signing keys, so one helper writing another's records would cost
+// that helper every session it holds. The machine file is what keeps them apart, because a
+// helper refuses to start while another holds that file (claimMachineFile in
+// cmd/cipher-helper), so two helpers that can run at once have machine files of their
+// own and, through this, records of their own. A second helper started with a socket of its own
+// and no machine file of its own does not reach the records at all: the claim refuses it first.
+func StatePath(machineFile string) string {
+	return filepath.Join(filepath.Dir(machineFile), "sessions.json")
+}
+
+// writeFileOwnerOnly writes data to path so that nothing but this user can read it, and
+// atomically: it makes path's directory 0700, writes the bytes to path+".tmp" 0600, and renames
+// that over path, so a reader finds either the whole old file or the whole new one. Both the
+// session records and the file MigrateStateFile leaves hold session signing keys, and both are
+// written through here.
+//
+// Both chmods are needed, though the call above each already names the same mode. MkdirAll
+// leaves an EXISTING directory's mode alone, so a directory that was there already — the one the
+// machine login lives in, made by an older release or by hand — could stay group- or
+// world-readable while holding a session's signing key; it is corrected on every write, so no
+// write lands in a directory anyone else can list. And WriteFile applies its mode only when it
+// CREATES the file, so a .tmp left behind by an interrupted write with a wider mode is corrected
+// before these bytes go into it.
+//
+// O_EXCL through CreateTemp-like semantics is not needed here: the name is this writer's own and
+// the directory is 0700.
+func writeFileOwnerOnly(path string, data []byte) error {
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	if err := os.Chmod(dir, 0o700); err != nil {
+		return err
+	}
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+		return err
+	}
+	if err := os.Chmod(tmp, 0o600); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// MigrateStateFile moves a records file left at the old runtime-directory path to the durable
+// one, once, when the durable path has none: a helper upgraded in place keeps the sessions it
+// had rather than revoking them all at its first start. A rename across filesystems (tmpfs to
+// the home disk) is expected to fail, so it copies and removes instead, writing the copy through
+// writeFileOwnerOnly, the owner-only atomic write the records file is saved with. Anything that
+// goes wrong is returned and only logged: a lost record costs the sessions it names their
+// continuity, never the helper its start.
+func MigrateStateFile(from, to string) error {
+	if from == "" || to == "" || from == to {
+		return nil
+	}
+	if _, err := os.Stat(to); err == nil {
+		return nil
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	data, err := os.ReadFile(from)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := writeFileOwnerOnly(to, data); err != nil {
+		return err
+	}
+	return os.Remove(from)
+}
+
+// BrokerCallWait is how long a client waits for the answer of a broker-call op: login,
+// enroll-session-key or unenroll-session-key, the three ops whose answer is the outcome of a
+// broker call the helper makes while the client waits. It is the timeout a client gives Call, so
+// the dial is inside it. 30 s is what `agent-secrets enroll` and `agent-secrets unenroll` already
+// waited in every release that has them.
+const BrokerCallWait = 30 * time.Second
+
+// DefaultBrokerCallBound is how long the helper lets one broker-call op run before it answers
+// (Server.BrokerCallBound): 20 s, set from BrokerCallWait so that the answer reaches every client
+// inside that wait. A client spends up to 2 s on the dial (Call). The op then runs for at most
+// the bound, and the helper writes its answer within 5 s of the bound, the allowance every op has
+// for its read and its write: the op's requests end with its context at the bound, and the helper
+// answers at the bound plus DefaultBrokerCallSlack (1 s) whatever the op is doing. 2 s + 20 s + 5 s
+// is 27 s, under 30 s. A released agent-secrets that asks enroll-session-key and
+// unenroll-session-key (every release from legion-envoy-v10.0.0) also waits 30 s for them
+// (BrokerCallWait), so it gets this helper's answer and not an empty reply. Its machine login
+// waits 10 s, so a broker slower than about 8 s can still outlast it. A healthy broker answers in
+// a fraction of a second (DefaultFirstConfirmBound); the slow answers that were measured took 5 s
+// and 8 s.
+const DefaultBrokerCallBound = BrokerCallWait - 10*time.Second
+
+// DefaultBrokerCallSlack is how long after an op's bound brokerCall's timer answers it, when the
+// Server names no other (Server.brokerCallSlack, which only tests set).
+const DefaultBrokerCallSlack = time.Second
+
+// InstallRestartTimeout bounds the `systemctl --user restart` of the helper that
+// `agent-secrets-helper install` runs after a drain. The restart's stop sends the running helper
+// SIGTERM, and that helper exits once every broker-call op it accepted has answered, at most
+// DefaultBrokerCallBound plus DefaultBrokerCallSlack, or a connection still being read reaches its
+// 5 s read deadline (Server.Serve): 21 s at the most. The start is done once systemd has forked
+// the helper, since the unit runs it in the foreground. 30 s is that stop with 9 s for systemd to
+// queue and fork on a loaded machine. A restart still running at the bound is one install stops
+// waiting for, and systemd keeps its job: install reads the unit's main process, and sends
+// undrain when the helper it drained is still that process and no job for the unit is queued.
+// While one is, the drain ends with that restart or at DefaultDrainBound.
+const InstallRestartTimeout = DefaultBrokerCallBound + 10*time.Second
+
+// DefaultDrainBound is how long a drain holds before the helper ends it by itself
+// (Server.SetDrainBound): twice InstallRestartTimeout, a minute. Install sends SIGTERM through its
+// restart within moments of the drain's answer and waits at most InstallRestartTimeout for that
+// restart, then undoes a drain the restart did not end; the second half is room for the reads of
+// the unit's main process and the undrain around it. A helper still running and still draining
+// at the bound has a drain no install will end: the install that sent it died between the drain
+// and the restart, or its restart reached no process of this helper's (a test rig's systemctl, a
+// unit that runs another helper). Draining on, it would refuse every registration on the machine
+// until something restarts it, as one did for 36 minutes on 2026-11-16 (dispatch://INFRA-3950).
+const DefaultDrainBound = 2 * InstallRestartTimeout
+
+// ErrNoReply is in every Call error that comes after the helper was sent the whole request: the
+// helper gave no reply the client could read. No line came before the connection closed or the
+// timeout passed, or the line is not one JSON object. So the client does not know what the helper
+// did with the request: for a broker-call op, the broker may have acted on it. Test for it with
+// errors.Is. The error's text stays the failure's own.
+var ErrNoReply = errors.New("the helper gave no reply")
+
+// noReplyError is a Call failure that comes after the whole request was written. It reads as the
+// failure it wraps, so every message made from it reads as before. It unwraps to that failure and
+// to ErrNoReply, so errors.As on the failure and errors.Is(err, ErrNoReply) both hold.
+type noReplyError struct{ err error }
+
+func (e *noReplyError) Error() string { return e.err.Error() }
+
+func (e *noReplyError) Unwrap() []error { return []error{e.err, ErrNoReply} }
+
+// Call sends one request and reads one reply, all within timeout, the dial included (the dial
+// alone also gives up after 2 s). A register with wait_seconds needs that much plus slack. An
+// error after the whole request was written (no reply line within the timeout, or a reply that
+// is not one JSON object) also matches ErrNoReply, because the helper may have acted on the
+// request. A failed dial, marshal or write does not: the helper did not get the whole request.
+func Call(sock string, req Request, timeout time.Duration) (Response, error) {
+	deadline := time.Now().Add(timeout)
+	conn, err := (&net.Dialer{Timeout: 2 * time.Second, Deadline: deadline}).Dial("unix", sock)
+	if err != nil {
+		return Response{}, err
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(deadline)
+	data, err := json.Marshal(req)
+	if err != nil {
+		return Response{}, err
+	}
+	if _, err := conn.Write(append(data, '\n')); err != nil {
+		return Response{}, err
+	}
+	line, err := bufio.NewReaderSize(conn, maxLine).ReadBytes('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return Response{}, &noReplyError{err: err}
+	}
+	var resp Response
+	if err := json.Unmarshal(line, &resp); err != nil {
+		return Response{}, &noReplyError{err: fmt.Errorf("helper reply is not one JSON object: %w", err)}
+	}
+	return resp, nil
+}

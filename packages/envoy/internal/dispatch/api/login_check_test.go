@@ -45,9 +45,10 @@ func pressedAs(t *testing.T, handler http.Handler, method, target string, body a
 // as that person: another tab that signed someone else in in place makes this tab's retry go out on
 // the new cookie, and Dispatch answers it 409 LOGIN_CHANGED before anything runs, its key untouched,
 // on every write method. The person who pressed it runs it, however their login is cased; a bearer
-// naming a login is refused the same way; a caller that resolves to nobody gets the route's own 401;
-// a write without the header, and every read, is not checked.
+// naming a login is refused the same way; a caller that resolves to nobody gets the 401 the keyed
+// layer writes for its keyed write; a write without the header, and every read, is not checked.
 func TestAWriteRunsOnlyAsThePersonWhoPressedIt(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createTestIssue(t, handler, "LOGIN", "Pressed by whom")
 	comments := "/api/v1/issues/" + issue + "/comments"
@@ -100,7 +101,7 @@ func TestAWriteRunsOnlyAsThePersonWhoPressedIt(t *testing.T) {
 	}
 	if unresolved := pressedAs(t, handler, http.MethodPost, comments,
 		map[string]any{"body": "Signed out."}, "", &alice, "signed-out"); unresolved.Code != http.StatusUnauthorized {
-		t.Errorf("a caller that resolves to nobody: status=%d body=%s, want the route's own 401", unresolved.Code, unresolved.Body.String())
+		t.Errorf("a caller that resolves to nobody: status=%d body=%s, want the keyed layer's 401", unresolved.Code, unresolved.Body.String())
 	}
 	if read := pressedAs(t, handler, http.MethodGet, comments, nil, "alice", &bob, ""); read.Code != http.StatusOK {
 		t.Errorf("a read naming another login: status=%d, want it answered as ever", read.Code)
@@ -112,6 +113,7 @@ func TestAWriteRunsOnlyAsThePersonWhoPressedIt(t *testing.T) {
 // tab signed her in in place - is refused 409 LOGIN_CHANGED and writes nothing into her state, so an
 // issue never reads as read for someone who never opened it. Pressed by alice, it is written.
 func TestAReadMarkRunsOnlyAsThePersonWhoPressedIt(t *testing.T) {
+	t.Parallel()
 	handler, database, _ := newTestServer(t, testServerOptions{})
 	issue := createTestIssue(t, handler, "MARK", "Read by whom")
 	state := "/api/v1/me/issues/" + issue + "/state"
@@ -145,6 +147,7 @@ func TestAReadMarkRunsOnlyAsThePersonWhoPressedIt(t *testing.T) {
 // its handler runs: register wraps every route but a read in the check, so no write route can be
 // added that a retry on another person's session runs.
 func TestEveryWriteRouteChecksWhoPressedIt(t *testing.T) {
+	t.Parallel()
 	handler, _, _, served := newRegisteredTestServer(t, testServerOptions{})
 	bob := "bob"
 	writes := 0

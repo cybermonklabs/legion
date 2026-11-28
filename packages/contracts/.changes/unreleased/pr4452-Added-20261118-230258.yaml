@@ -1,0 +1,8 @@
+kind: Added
+body: |-
+    `LauncherCredentialResp`, the row of `GET /api/v1/machine-logins`, has a `person` field: the
+    person a person's pod login acts for (a pod whose Kubernetes account the broker's
+    `BROKER_POD_OPERATORS` maps to that person), and null on every other login.
+time: 2026-11-18T23:02:58.000000000Z
+custom:
+    Issue: pr4452

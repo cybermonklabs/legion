@@ -21,6 +21,7 @@ import (
 // listener's spent-proof bucket (bus.DPoPProofBucket), has its opener in cmd/listener and is
 // covered by that package's own tests.
 func TestEveryBucketIsCreatedAtThreeCopiesOnAThreeCopyDeployment(t *testing.T) {
+	t.Parallel()
 	const replicas = 3
 	cluster := testnats.StartCluster(t, 3)
 	conn := testnats.Connect(t, cluster.URL())
@@ -30,22 +31,22 @@ func TestEveryBucketIsCreatedAtThreeCopiesOnAThreeCopyDeployment(t *testing.T) {
 		t.Fatalf("open JetStream: %v", err)
 	}
 
-	registry, err := store.Open(conn, store.WithReplicas(replicas))
+	registry, err := store.Open(t.Context(), conn, store.WithReplicas(replicas))
 	if err != nil {
 		t.Fatalf("open the interest and role registry: %v", err)
 	}
 	t.Cleanup(registry.StopWatch)
-	sessions, err := session.OpenSessionRegistry(conn, session.WithSessionReplicas(replicas))
+	sessions, err := session.OpenSessionRegistry(t.Context(), conn, session.WithSessionReplicas(replicas))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
 	t.Cleanup(sessions.StopWatch)
-	ci, err := cistore.Open(conn, logging.New("test"), cistore.WithReplicas(replicas))
+	ci, err := cistore.Open(t.Context(), conn, logging.New("test"), cistore.WithReplicas(replicas))
 	if err != nil {
 		t.Fatalf("open the CI store: %v", err)
 	}
 	t.Cleanup(ci.StopWatch)
-	if _, err := redeliver.OpenState(conn, js, replicas); err != nil {
+	if _, err := redeliver.OpenState(t.Context(), conn, js, replicas); err != nil {
 		t.Fatalf("open the webhook redelivery state: %v", err)
 	}
 

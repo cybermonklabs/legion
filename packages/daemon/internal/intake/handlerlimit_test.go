@@ -51,6 +51,7 @@ const maxTimerWindow = 2_147_483 * time.Second
 // and one that sets its own keeps exactly what it set, which is what the package's own rigs rely
 // on when they cut a handler in under a second (ackprogress_test.go:175, :535, :601, :666).
 func TestTheIntakeHandlerLimitCoversTheReadsItsWindowBounds(t *testing.T) {
+	t.Parallel()
 	for _, row := range []struct {
 		// name says which deployment the window belongs to, since the number alone does not.
 		name    string
@@ -139,7 +140,6 @@ var reviewBoundedReads = map[string]string{
 // review does. They are bounded reads like the two above, and they are not counted, because
 // boundedReadsPerFact is the most any one fact makes and no fact here makes more than one.
 var otherFactBoundedReads = map[string]string{
-	"RepositoryMapping": "RepoMappingChanged reads the project's repository mapping again (readMapping); handleMessage returns the moment that read answers, so this fact reaches no other read and no transaction",
 	"PrepareRepository": "a DispatchIssue fact has the repository it resolves to readied before it is applied (prepareRepository); it is no pull request's event, so recordedPullRequest answers true with no read of the pool, and neither review resolver touches it: one read in all",
 	"PrepareArtifact":   "a DispatchArtifact fact has the issue its review is on readied before it is applied (prepareArtifact); it reaches the pool and GitHub through nothing else, for the same reason a DispatchIssue fact does not: one read in all",
 }
@@ -147,7 +147,8 @@ var otherFactBoundedReads = map[string]string{
 // consumerSpecNotReads are the ConsumerSpec function fields that are no read at all, by field
 // name, with what each is instead. Nothing bounds them and nothing in the limit answers for them.
 var consumerSpecNotReads = map[string]string{
-	"Now": "the clock Consumers reads when it records a consumer opened or a message handled and when Lag measures an age; it leaves neither the process nor the handling's own goroutine",
+	"Now":        "the clock Consumers reads when it records a consumer opened or a message handled and when Lag measures an age; it leaves neither the process nor the handling's own goroutine",
+	"WakeOutbox": "the outbox lane's wake a give-up calls once its transaction has committed a notice, after the handling; it signals a channel and waits on nothing",
 }
 
 // recordedPullRequestRead is the one bounded read of a review's handling that reflection cannot
@@ -170,6 +171,7 @@ const recordedPullRequestRead = 1
 // makes, or no read at all. A field in none of them fails this row by name, so whoever adds the
 // read has to say which it is and bring boundedReadsPerFact with them.
 func TestEveryConsumerSpecReadIsCountedInTheHandlerLimit(t *testing.T) {
+	t.Parallel()
 	tables := map[string]map[string]string{
 		"reviewBoundedReads":    reviewBoundedReads,
 		"otherFactBoundedReads": otherFactBoundedReads,
@@ -299,6 +301,7 @@ const readSlack = 5 * time.Second
 // deadline here can pass while the row runs, and the fact is handled the moment it is delivered;
 // what the row measures are deadlines, not elapsed time.
 func TestAReviewFactsBoundedReadsFitTheDerivedLimit(t *testing.T) {
+	t.Parallel()
 	pool := migratedPool(t)
 	js, stream := testJetStream(t)
 	spec := consumerSpec(&lockedBuffer{})

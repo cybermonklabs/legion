@@ -23,6 +23,7 @@ import (
 	"log/slog"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -55,6 +56,28 @@ const liveDaemonLogEnv = "LEGION_E2E_DAEMON_LOG"
 // publishes after the fact that enqueued it commits — lands after the read that would otherwise
 // end the step, so the step watches this long for it.
 const liveSettle = 3 * time.Second
+
+// composedRole is a role as prompts.Composer.Compose tells one composition from another: the
+// role, and whether its issue is its tree's root, which only an architect's composition reads. It
+// is false for every role but an architect.
+type composedRole struct {
+	role claim.Role
+	root bool
+}
+
+// composedParts is, for each role a live proof holds a launch's role prompt to, the parts of the
+// composer's snapshot that prompts.Composer.Compose gives that role, in its order, as paths below
+// the state directory's prompts/: at boot prompts.New writes shared/ from the role prompts the
+// daemon embeds, and go/ from the daemon's own parts. It is this package's one copy of the
+// composer's lists. role_prompt_rule_live_test.go reads its three roles from it, and
+// conflict_merger_live_test.go its merger; the unit tests of internal/prompts hold the composer to
+// their own.
+var composedParts = map[composedRole][]string{
+	{claim.RoleArchitect, true}:  {"shared/architect-root.md", "go/architect-root.md", "go/architect-common.md"},
+	{claim.RoleArchitect, false}: {"shared/architect.md", "go/architect.md", "go/architect-common.md"},
+	{claim.RolePlanner, false}:   {"shared/core/common.md", "shared/core/planner.md", "shared/mechanics/headless.md", "shared/planner.md", "go/planner.md", "go/worker-common.md"},
+	{claim.RoleMerger, false}:    {"shared/mechanics/headless.md", "shared/merger.md", "go/merger.md", "go/worker-common.md"},
+}
 
 // liveProof is what a run of a live proof holds whatever it proves: the booted daemon, the
 // configuration it was booted with, a JetStream client of the script's broker, the Dispatch and
@@ -122,12 +145,19 @@ func (p *liveProof) log() *slog.Logger {
 	if path == "" {
 		return quietLogger()
 	}
+	return slog.New(slog.NewTextHandler(evidenceFile(p.t, path), &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// evidenceFile opens path, a file of the run's evidence, to append to, and closes it when the test
+// ends: the daemon's own log, and the log of the Dispatch a driver starts beside it.
+func evidenceFile(t *testing.T, path string) *os.File {
+	t.Helper()
 	file, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
-		p.t.Fatalf("open the daemon's log %s: %v", path, err)
+		t.Fatalf("open the evidence file %s: %v", path, err)
 	}
-	p.t.Cleanup(func() { file.Close() })
-	return slog.New(slog.NewTextHandler(file, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	t.Cleanup(func() { file.Close() })
+	return file
 }
 
 // step runs one of the proof's steps between its `== name` and `ok name (<s>s)` lines, as the
@@ -179,6 +209,23 @@ func (p *liveProof) publish(subject, source, eventID, payload string) string {
 		p.t.Fatalf("publish %s: %v", subject, err)
 	}
 	return eventID
+}
+
+// publishMergeOf publishes GitHub's merge of the pull request numbered number, issue's, at head
+// onto base, as Envoy relays a GitHub pull-request event closed with merged true (intake's
+// decodePullRequest reads it), and returns its event id. The merge commit is named for the head.
+func (p *liveProof) publishMergeOf(number int, issue, head, base string) string {
+	p.t.Helper()
+	payload, err := json.Marshal(map[string]string{
+		"action": "closed", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number), "merged": "true",
+		"merge_commit_sha": "merge-" + head, "head_sha": head, "base_ref": base, "head_ref": claim.IssueBranch(issue),
+		"updated_at": time.Now().UTC().Format(time.RFC3339),
+	})
+	if err != nil {
+		p.t.Fatalf("encode the merge payload: %v", err)
+	}
+	subject := fmt.Sprintf("notifications.github.%s.pr.%d", p.subjectRepo(), number)
+	return p.publish(subject, "github", fmt.Sprintf("pr-%d-merged", number), string(payload))
 }
 
 // admit seeds issues, in order, into the next free admission slots in tx. Slot indexes are unique

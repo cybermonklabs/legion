@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  `agent-secrets secret retag` says when the store's answer to a tag write leaves open whether the
+  write landed. A tag write whose error is no definite refusal (a service fault, an outage, a lost
+  connection, or an AWS call one of whose attempts ended another way before the SDK retried it) may
+  follow a write the store carried out, so the retag says so, names the `secret show` that reads the
+  tags, and asks the broker to reread the secret.
+  The retag also asks for a reread after an AWS write that landed and whose read-back then failed,
+  not only after a race with another writer. After such a write, it says when the value was not
+  checked. It no longer says that a shared secret's owner and tier are an administrator's to
+  change when the write landed and only the read-back was refused, or when an SDK retry was denied
+  after an earlier attempt that may have applied; after such a retry, it no longer advises another
+  sign-in either. On GCP, a requesters rewrite that another writer raced now says so, rather than
+  describe the requesters tag as it was before the retag.
+custom:
+    Issue: pr4135

@@ -15,7 +15,7 @@ import (
 )
 
 // countingWriter counts what a pass costs the CI record store and hands every call to the
-// writer it wraps, which is the listener's own bucket. The two record calls are what the
+// writer it wraps, which is the listener's own bucket. The record calls are what the
 // fingerprint exists to save: each one is a read of the head's record from NATS, an unmarshal
 // of it and a hash of what it holds, and a pass of 833 heads of 39 checks made some 30,000 of
 // them whether or not GitHub had anything new. HasRecord is the one existence read the record
@@ -24,19 +24,25 @@ type countingWriter struct {
 	Writer
 
 	mu sync.Mutex
-	// updates is every Record and RecordSuite the pass made, and exists every HasRecord.
+	// updates is every RecordRuns, RecordSuite and RecordStatus the pass made, and exists every
+	// HasRecord.
 	updates int
 	exists  int
 }
 
-func (w *countingWriter) Record(ctx context.Context, observation contracts.CIObservation) (bool, error) {
+func (w *countingWriter) RecordRuns(ctx context.Context, observations []contracts.CIObservation) (bool, error) {
 	w.count(&w.updates)
-	return w.Writer.Record(ctx, observation)
+	return w.Writer.RecordRuns(ctx, observations)
 }
 
 func (w *countingWriter) RecordSuite(ctx context.Context, observation contracts.CIObservation) (bool, error) {
 	w.count(&w.updates)
 	return w.Writer.RecordSuite(ctx, observation)
+}
+
+func (w *countingWriter) RecordStatus(ctx context.Context, observation contracts.StatusObservation) (bool, error) {
+	w.count(&w.updates)
+	return w.Writer.RecordStatus(ctx, observation)
 }
 
 func (w *countingWriter) HasRecord(owner, repo, number, sha string) (bool, error) {
@@ -82,12 +88,12 @@ func (h *harness) countWrites() *countingWriter {
 	return counted
 }
 
-// writesPerHead is what one head of unchangingHeads costs a pass that writes it: its two
-// completed check runs and the completed check suite they hang under.
-const writesPerHead = 3
+// writesPerHead is what one head of unchangingHeads costs a pass that writes it: one write of its
+// two completed check runs, and one of the completed check suite they hang under.
+const writesPerHead = 2
 
-// unchangingHeads is count open pull requests of the mapped repository, each at a head commit of
-// its own with two completed check runs under one completed check suite, and nothing one query
+// unchangingHeads is count open pull requests of the harness's repository, each at a head commit
+// of its own with two completed check runs under one completed check suite, and nothing one query
 // cannot answer whole. Nothing about them changes between two passes, so a pass over them after
 // the first has nothing to write.
 func unchangingHeads(h *harness, count int64) []fakePull {
@@ -128,8 +134,9 @@ func (h *harness) dropRecord(pull fakePull) {
 // reads, unmarshals and hashes of records nothing had changed, inside a five-minute bound that
 // already holds about 178 seconds of GitHub's own time. It is k6.
 func TestASecondPassOverUnchangedHeadsWritesNothing(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	pulls := unchangingHeads(h, 5)
 	counted := h.countWrites()
 
@@ -184,8 +191,9 @@ func TestASecondPassOverUnchangedHeadsWritesNothing(t *testing.T) {
 // would be worse than no fingerprint at all: the head would keep the record of a pass before
 // the checks it is waiting on ended, which is the very failure this pass exists to mend.
 func TestAHeadGitHubHasMoreForIsWrittenThroughTheFingerprint(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckSuites(gitHubRepository, headSHA,
 		checkSuite(900, "in_progress", "", otherApp, "2026-11-10T05:53:01Z"),
@@ -237,8 +245,9 @@ func TestAHeadGitHubHasMoreForIsWrittenThroughTheFingerprint(t *testing.T) {
 // fingerprint kept, the next answer would fingerprint the same for ever and the run the record
 // lacks would never reach it.
 func TestAFailedWriteDropsTheHeadsFingerprint(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-10T05:53:00Z"),
@@ -250,7 +259,7 @@ func TestAFailedWriteDropsTheHeadsFingerprint(t *testing.T) {
 
 	h.pass()
 
-	if !h.logged("ci reconcile did not record a check run") {
+	if !h.logged("ci reconcile did not record the check runs of a head") {
 		t.Fatalf("the failed write was not named at WARN:\n%s", h.logs.String())
 	}
 	if state, _, ok := h.record(); ok {
@@ -285,8 +294,9 @@ func TestAFailedWriteDropsTheHeadsFingerprint(t *testing.T) {
 // long as GitHub's answer about it does not change -- which, for a head whose checks have all
 // finished, is for ever.
 func TestAHeadWhoseRecordHasGoneIsWrittenAgain(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	h.listHead()
 	h.github.setCheckRuns(gitHubRepository, headSHA,
 		checkRun(1, "ci-ok", "completed", "success", otherApp, "2026-11-10T05:53:00Z"),
@@ -324,8 +334,9 @@ func TestAHeadWhoseRecordHasGoneIsWrittenAgain(t *testing.T) {
 // rather than passed over on the strength of what a pass read before it closed, and the
 // fingerprints the Reconciler holds follow the open pull requests there are.
 func TestACycleThatNoLongerListsAHeadForgetsItsFingerprint(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	pulls := unchangingHeads(h, 2)
 	counted := h.countWrites()
 
@@ -365,11 +376,13 @@ func TestACycleThatNoLongerListsAHeadForgetsItsFingerprint(t *testing.T) {
 // the cut pass did read are still in the cycle's own set, so the cycle keeps what it holds of
 // them and the pass after it writes nothing for any of the heads.
 func TestACutPassKeepsTheFingerprintsOfTheHeadsItRead(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(rowRepository)
+	h.seedProjectDefault(rowRepository)
 	// Twenty-five open pull requests are two pages of a query: twenty and five.
 	pulls := unchangingHeads(h, 25)
 	h.reconciler.PassTimeout = 2 * time.Second
+	h.boundEndsAtTheStall()
 	// GitHub never answers the second page within what the pass has left, so the pass's own
 	// bound ends it there, after the twenty heads of the first page.
 	h.github.stallQuery(gitHubRepository, 1, time.Minute)
@@ -434,11 +447,11 @@ func firstRun(t *testing.T, pull *graphQLPull) *graphQLRun {
 	return nil
 }
 
-// sameObjects reports whether two mappings of one head hold the very same check objects, which
-// is what makes a test of the fingerprint about the fingerprint.
+// sameObjects reports whether two mappings of one head hold the very same check objects and
+// commit statuses, which is what makes a test of the fingerprint about the fingerprint.
 func sameObjects(t *testing.T, one, other queryHead) bool {
 	t.Helper()
-	if len(one.runs) != len(other.runs) || len(one.suites) != len(other.suites) {
+	if len(one.runs) != len(other.runs) || len(one.suites) != len(other.suites) || len(one.statuses) != len(other.statuses) {
 		return false
 	}
 	for i := range one.runs {
@@ -448,6 +461,11 @@ func sameObjects(t *testing.T, one, other queryHead) bool {
 	}
 	for i := range one.suites {
 		if !maps.EqualFunc(one.suites[i], other.suites[i], sameValue) {
+			return false
+		}
+	}
+	for i := range one.statuses {
+		if !maps.EqualFunc(one.statuses[i], other.statuses[i], sameValue) {
 			return false
 		}
 	}
@@ -475,6 +493,7 @@ func sameValue(one, other any) bool {
 // pass exists to mend. It is read from the answer GitHub really gave, as the mapping test is
 // (testdata/graphql-page.json).
 func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
+	t.Parallel()
 	head := capturedHead(t)
 	if head.fingerprint == 0 {
 		t.Fatal("the head a query answered whole carries no fingerprint, so every pass would write it again")
@@ -497,7 +516,7 @@ func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
 			runs[j].Conclusion = strings.ToLower(runs[j].Conclusion)
 		}
 	}
-	same := headOf(lowered, false)
+	same := headOf(lowered, false, nil)
 	if !sameObjects(t, same, head) {
 		t.Fatalf("the lower-cased answer maps to other objects than the one GitHub sent, so it says nothing about the fingerprint:\n%v\n%v",
 			same.runs, head.runs)
@@ -542,7 +561,7 @@ func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
 		t.Run(change.what, func(t *testing.T) {
 			pull := capturedPull(t)
 			change.apply(pull)
-			changed := headOf(pull, false)
+			changed := headOf(pull, false, nil)
 			if changed.overflow != "" {
 				t.Fatalf("the changed answer is one the pass would read over REST: %s", changed.overflow)
 			}
@@ -552,6 +571,60 @@ func TestTheFingerprintIsOfTheObservationsTheAnswerMapsTo(t *testing.T) {
 			if changed.fingerprint == head.fingerprint {
 				t.Errorf("changing %s left the fingerprint at %d, so the pass would write nothing for a head GitHub has news of",
 					change.what, changed.fingerprint)
+			}
+		})
+	}
+}
+
+// A status the pass records takes the head's fingerprint with every field of it, as a check run
+// does, and a status the pass records none of -- a pending one, or GraphQL's EXPECTED -- takes it
+// with none: a pending status that turns to success is news, and a pending one that moves its
+// link or its time is not. A new time, link or description of a recorded status is news, since
+// the record keeps each of them. It is read from the answer with statuses in testdata.
+func TestTheFingerprintTakesEveryFieldOfARecordedStatusAndNoPendingOne(t *testing.T) {
+	t.Parallel()
+	head := headOf(statusPagePull(t), false, nil)
+	for _, change := range []struct {
+		what  string
+		apply func([]graphQLStatusContext) []graphQLStatusContext
+		moves bool
+	}{
+		{"a recorded status's context", func(c []graphQLStatusContext) []graphQLStatusContext { c[0].Context += "/linux"; return c }, true},
+		{"a recorded status's state", func(c []graphQLStatusContext) []graphQLStatusContext { c[1].State = "SUCCESS"; return c }, true},
+		{"a recorded status's time", func(c []graphQLStatusContext) []graphQLStatusContext {
+			c[1].CreatedAt = "2026-11-17T06:02:00Z"
+			return c
+		}, true},
+		{"a recorded status's link", func(c []graphQLStatusContext) []graphQLStatusContext { c[1].TargetURL += "?attempt=2"; return c }, true},
+		{"a recorded status's description", func(c []graphQLStatusContext) []graphQLStatusContext { c[1].Description = "1 lint error"; return c }, true},
+		{"a recorded status GitHub no longer answers", func(c []graphQLStatusContext) []graphQLStatusContext { return c[1:] }, true},
+		{"a pending status that turned to success", func(c []graphQLStatusContext) []graphQLStatusContext { c[3].State = "SUCCESS"; return c }, true},
+		{"a pending status's link and time", func(c []graphQLStatusContext) []graphQLStatusContext {
+			c[3].TargetURL += "?attempt=2"
+			c[3].CreatedAt = "2026-11-17T06:04:00Z"
+			return c
+		}, false},
+		{"an expected status's description", func(c []graphQLStatusContext) []graphQLStatusContext {
+			c[4].Description = "Waiting for the scan"
+			return c
+		}, false},
+		{"another pending context", func(c []graphQLStatusContext) []graphQLStatusContext {
+			return append(c, graphQLStatusContext{Context: "ci/e2e", State: "PENDING", CreatedAt: "2026-11-17T05:06:00Z"})
+		}, false},
+	} {
+		t.Run(change.what, func(t *testing.T) {
+			pull := statusPagePull(t)
+			commit := pull.Commits.Nodes[0].Commit
+			commit.Status.Contexts = change.apply(commit.Status.Contexts)
+			changed := headOf(pull, false, nil)
+			if changed.overflow != "" {
+				t.Fatalf("the changed answer is one the pass would read over REST: %s", changed.overflow)
+			}
+			if same := sameObjects(t, changed, head); same == change.moves {
+				t.Fatalf("changing %s: the objects the pass records are the same = %v, want %v", change.what, same, !change.moves)
+			}
+			if moved := changed.fingerprint != head.fingerprint; moved != change.moves {
+				t.Errorf("changing %s moved the fingerprint = %v, want %v", change.what, moved, change.moves)
 			}
 		})
 	}

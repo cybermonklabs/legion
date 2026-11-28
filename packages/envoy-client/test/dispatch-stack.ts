@@ -1,13 +1,17 @@
-import { closeSync, mkdirSync, openSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import * as path from "node:path";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import { ownDatabase } from "@legion/test-fixtures/postgres";
 import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
-import { SQL, type Subprocess } from "bun";
+import type { Subprocess } from "bun";
 import {
   awaitReady,
   buildGoBinaries,
   ENVOY_MODULE,
-  freePorts,
+  type PortChosen,
   type ReadyBudget,
+  startOnHeldPort,
   stopProcess,
 } from "./envoy-stack";
 
@@ -45,26 +49,35 @@ export interface DispatchStack {
  *
  * Every test file that starts a stack calls this once per stack, at its own module scope, as
  * `const stackDirectory = useDispatchStackDirectory()`, and hands the path to `startDispatchStack`.
- * The call cannot live in this module's body, and belongs at module scope rather than in the
- * `describe` body that starts the stack, for the reasons `useEnvoyStackDirectory` states.
+ * The call cannot live in this module's body, and the `afterAll` hands the directory to a removal
+ * it does not wait for, both for the reasons `useEnvoyStackDirectory` states.
  */
 export function useDispatchStackDirectory(): string {
-  return temporaryDirectory("dispatch-stack");
+  return temporaryDirectory("dispatch-stack", { removeInBackground: true });
 }
 
 /** What a caller may change about the stack it starts. */
 export interface DispatchStackOptions {
   /**
    * The directory the stack works in, which the caller reserved with
-   * {@link useDispatchStackDirectory} and the fixture removes again. It exists and is empty when
-   * `startDispatchStack` is called, and one stack has it to itself.
+   * {@link useDispatchStackDirectory}, whose `afterAll` hands it to a removal of its own. It exists
+   * and is empty when `startDispatchStack` is called, and one stack has it to itself.
    */
   readonly work: string;
   /**
-   * Variables the server gets beside its own, such as `DISPATCH_SPEC_ROOTS`. Where the stack
-   * sets a name too, the value here is the one the server gets.
+   * Settings the server is given beside the ones below, for a row that needs a deployment the
+   * default stack is not: `DISPATCH_OIDC_ISSUER` and `DISPATCH_OIDC_AUDIENCE` make a server that
+   * verifies projected service-account tokens, and an issuer nothing serves makes every such
+   * verification answer `503 OIDC_ISSUER_UNAVAILABLE`
+   * (`src/__tests__/dispatch-keyed-resend-live.test.ts`); the CI results stack names its secrets
+   * broker and its stand-in of GitHub here. A name the stack sets itself is refused, so a row
+   * cannot quietly take the server's database, port or token away from it, but for
+   * `DISPATCH_SERVER_URL`: a stack whose callers reach the server by another name (the CI results
+   * stack's public URL, which only the airlock's proxy reaches) names the URL they reach it at.
    */
-  readonly env?: Readonly<Record<string, string>>;
+  readonly env?: Readonly<Record<string, string>> | undefined;
+  /** Called with the port the stack chooses for the server, before the server starts. */
+  readonly portChosen?: PortChosen;
 }
 
 const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
@@ -73,8 +86,9 @@ const WEB_DIST = path.resolve(import.meta.dir, "../../dispatch/web/dist");
 // that never answered stopped.
 const DISPATCH_READY: ReadyBudget = { timeoutMs: 120_000, tailLines: 20 };
 
-/** The test server's DSN, or the error that says the run has none. */
-function testDatabaseServer(): string {
+/** The test server's DSN, or the error that says the run has none: the CI results stack makes its
+ *  secrets broker's database on the server the Dispatch stack makes its own on. */
+export function testDatabaseServer(): string {
   if (DISPATCH_TEST_DATABASE_URL === undefined || DISPATCH_TEST_DATABASE_URL === "") {
     throw new Error(
       "the Dispatch stack needs DISPATCH_TEST_DATABASE_URL, the Postgres it makes its own database on"
@@ -85,26 +99,27 @@ function testDatabaseServer(): string {
 
 /**
  * Starts a real Dispatch server, built from this checkout, on a loopback port and a database of
- * its own: a copy of template1 on the server `DISPATCH_TEST_DATABASE_URL` names, which the server
- * migrates itself as it boots. It resolves once `GET /api/v1` answers 200, and throws, naming why,
- * when `go` or the DSN is missing, the build fails, or the server does not come up.
+ * its own: a copy of template1 that `@legion/test-fixtures/postgres` makes on the server
+ * `DISPATCH_TEST_DATABASE_URL` names, which the server migrates itself as it boots. It resolves
+ * once `GET /api/v1` answers 200, and throws, naming why, when `go` or the DSN is missing, the
+ * build fails, or the server does not come up.
  *
  * The server runs with NATS off and with header identity on (`X-Dispatch-User`), as
  * `startScratchDispatchOn` runs it for the daemon's own tests: no event leaves the process, and a
  * person's write is the header alone. Nothing of the caller's Dispatch, Envoy or NATS environment
- * reaches it, since the child is given the environment below, with `options.env`, and nothing else.
+ * reaches it, since the child is given the environment below, with `options.env` over it, and
+ * nothing else. It serves on a
+ * socket the stack holds from the choice of its port (`DISPATCH_LISTEN_FD`, {@link startOnHeldPort}),
+ * so no other program can take the port before it serves.
  *
  * The stack works in `options.work`, which the caller reserved with
- * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it when the file
+ * {@link useDispatchStackDirectory}: `stop` leaves it, and the fixture removes it once the file
  * that reserved it is done, whether or not the stack ever reached `stop`.
  */
 export async function startDispatchStack(options: DispatchStackOptions): Promise<DispatchStack> {
-  const postgres = testDatabaseServer();
   const work = options.work;
-  const database = `dispatch_stack_${crypto.randomUUID().replaceAll("-", "")}`;
-  const databaseUrl = new URL(postgres);
-  databaseUrl.pathname = `/${database}`;
-  const admin = new SQL(postgres);
+  // The server applies its migrations into this database at boot.
+  const database = await ownDatabase("dispatch_stack", "DISPATCH_TEST_DATABASE_URL");
   let child: Subprocess | undefined;
   const stop = async (): Promise<void> => {
     if (child !== undefined) {
@@ -115,13 +130,9 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
     }
     // Dropped with force: the server's pool is gone with the process above, and a connection the
     // run left behind must not keep the database on the shared test server.
-    await admin.unsafe(`drop database if exists ${database} with (force)`);
-    await admin.close();
+    await database.drop();
   };
   try {
-    // A copy of template1's files, as the Go tests' own fixture makes a scratch database
-    // (testdb.create): the server applies its migrations into it at boot.
-    await admin.unsafe(`create database ${database} strategy file_copy`);
     const bin = path.join(work, "bin");
     await buildGoBinaries({
       bin,
@@ -129,34 +140,49 @@ export async function startDispatchStack(options: DispatchStackOptions): Promise
       stack: "Dispatch",
       binaries: "./cmd/dispatch",
     });
-    const [port] = await freePorts(1);
-    const url = `http://127.0.0.1:${port}`;
-    const token = `dispatch-stack-${crypto.randomUUID()}`;
+    const token = fixtureSecret("dsp");
     const home = path.join(work, "home");
     mkdirSync(home);
     const log = path.join(work, "dispatch.log");
-    const out = openSync(log, "a");
-    child = Bun.spawn([path.join(bin, "dispatch")], {
-      cwd: ENVOY_MODULE,
-      env: {
-        PATH: SHELL_PATH,
-        HOME: home,
-        DATABASE_URL: databaseUrl.toString(),
-        DISPATCH_AGENT_TOKEN: token,
-        DISPATCH_IDENTITY: "header:X-Dispatch-User",
-        DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
-        DISPATCH_NATS_DISABLED: "1",
-        DISPATCH_LISTEN_HOST: "127.0.0.1",
-        DISPATCH_PORT: String(port),
-        DISPATCH_SERVER_URL: url,
-        DISPATCH_WEB_DIST: WEB_DIST,
-        ...options.env,
-      },
-      stdout: out,
-      stderr: out,
-    });
-    closeSync(out);
-    await awaitReady("Dispatch", child, log, DISPATCH_READY, async () => {
+    const started = await startOnHeldPort(
+      "dispatch",
+      "DISPATCH_LISTEN_FD",
+      options.portChosen,
+      (port) => {
+        const settings: Record<string, string> = {
+          ...bunCacheOff,
+          PATH: SHELL_PATH,
+          HOME: home,
+          DATABASE_URL: database.url,
+          DISPATCH_AGENT_TOKEN: token,
+          DISPATCH_IDENTITY: "header:X-Dispatch-User",
+          DISPATCH_IDENTITY_HEADER_TRUSTED: "1",
+          DISPATCH_NATS_DISABLED: "1",
+          // With DISPATCH_LISTEN_FD these name the held socket's address, which the server checks.
+          DISPATCH_LISTEN_HOST: "127.0.0.1",
+          DISPATCH_PORT: String(port),
+          DISPATCH_SERVER_URL: `http://127.0.0.1:${port}`,
+          DISPATCH_WEB_DIST: WEB_DIST,
+        };
+        for (const [name, value] of Object.entries(options.env ?? {})) {
+          if (name in settings && name !== "DISPATCH_SERVER_URL") {
+            throw new Error(
+              `the Dispatch stack sets ${name} itself; a caller's env may not replace it`
+            );
+          }
+          settings[name] = value;
+        }
+        return {
+          command: [path.join(bin, "dispatch")],
+          cwd: ENVOY_MODULE,
+          env: settings,
+          log,
+        };
+      }
+    );
+    child = started.child;
+    const url = `http://127.0.0.1:${started.port}`;
+    await awaitReady("Dispatch", started.child, log, DISPATCH_READY, async () => {
       const response = await fetch(`${url}/api/v1`, { signal: AbortSignal.timeout(2_000) });
       return response.ok;
     });

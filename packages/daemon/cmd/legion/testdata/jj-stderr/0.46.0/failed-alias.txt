@@ -1,0 +1,7 @@
+jj --ignore-working-copy --color=never config list -T '""'
+Warning: Failed to load `aliases.x`: Expected a string list or a table with a `definition`
+Caused by:
+1: Invalid type or value for aliases.x
+2: invalid type: string "git push", expected a sequence
+
+--- exit 0

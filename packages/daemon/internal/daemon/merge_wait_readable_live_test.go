@@ -17,7 +17,7 @@
 // shows by failing at that step.
 //
 // The daemon is the whole daemon: run, the function `legion start` calls, through this package's
-// own whole-daemon harness (startDaemonWithin), so the proof exercises the real configuration, the
+// own whole-daemon harness (startDaemonLogging), so the proof exercises the real configuration, the
 // real store and its migrations, the real HTTP API, the real intake consumers, the real review
 // round and its stuck notice, the real merge-state ladder (daemon's readMergeStates) and the real
 // state build. Facts enter only as production's do: GitHub envelopes on the ENVOY_NOTIFICATIONS
@@ -35,11 +35,12 @@
 // (liveDispatch, in live_proof_test.go), and Envoy's listener the package's noticeListener. The
 // two Apps' tokens are workflowTokenRecorder's placeholders, which is also where the review App's
 // login comes from: appLoginsAtBoot asks the lease for it and gets `legion-review[bot]`, the
-// reviewAppLogin this package already spells (pull_request_reads_test.go), so the reviews this
-// proof publishes are the reviewer's own (workflow's byReviewer, with no reviewer session
-// recorded). No agent runs: the fake runtime launches whatever claim a move starts, and the proof
-// acts as no role. The three issues, their pull requests and their slots are seeded through the
-// store, as every daemon test seeds its fixture; what is driven is the change.
+// reviewAppLogin this package already spells (pull_request_reads_test.go). No agent runs: the fake
+// runtime launches whatever claim a move starts, and the proof acts as no role. The three issues,
+// their pull requests and their slots are seeded through the store, as every daemon test seeds its
+// fixture, and so is the reviewer's claim of the two whose reviews the proof publishes, recording
+// the session those reviews' footers name, so each review is the reviewer's own (workflow's
+// byReviewer); what is driven is the change.
 package daemon
 
 import (
@@ -48,7 +49,6 @@ import (
 	"fmt"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"strconv"
 	"strings"
 	"sync"
@@ -59,10 +59,13 @@ import (
 
 	"github.com/sjawhar/legion/daemon/internal/api"
 	"github.com/sjawhar/legion/daemon/internal/claim"
+	"github.com/sjawhar/legion/daemon/internal/githubtest"
 	"github.com/sjawhar/legion/daemon/internal/notify"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
 	"github.com/sjawhar/legion/daemon/internal/runtime/fake"
+	"github.com/sjawhar/legion/daemon/internal/store"
+	"github.com/sjawhar/legion/daemon/internal/supervise"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
 )
@@ -75,11 +78,15 @@ const mergeWaitBase = "main"
 // The two heads the proof drives: the head the round is approved at, and the head a push moves it
 // to. They are full commit SHAs because a review the review App submits decides a round only when
 // the head its Legion footer names is the pull request's current head, and the daemon reads no
-// shorter spelling there (intake.PullRequestReview.LegionHead, over fullCommitSHA).
+// shorter spelling there (intake.PullRequestReview.LegionHead, over reviewround.IsHead).
 const (
 	mergeWaitFirstHead  = "4c1d0b9a7e52f38610d4c2b7a9e5f0318d6b2c47"
 	mergeWaitSecondHead = "8b3e5f1c9d04a7268f1b3c5d7e9a0b2c4d6e8f13"
 )
+
+// mergeWaitReviewerSession is the session the seeded reviewer claims record and every review the
+// proof publishes names in its Legion footer (publishReview).
+const mergeWaitReviewerSession = "ses-reviewer"
 
 // The head of each issue the negative control reads: the issue whose round waits on nothing, and
 // the issue whose pull request the record does not hold open. Both are full SHAs for the same
@@ -122,6 +129,9 @@ type mergeWaitReadableLive struct {
 // approval that follows it, the two issues the same state carries no wait for at all, and the
 // answer that ends the wait.
 func TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive(t *testing.T) {
+	// Not parallel: a live proof on the one NATS server LEGION_E2E_NATS_URL names: it creates the stream
+	// ENVOY_NOTIFICATIONS there and writes the file LEGION_E2E_DAEMON_LOG names, which a proof beside it
+	// would share, and its steps watch liveSettle's 3 s for what must not happen.
 	r := newMergeWaitReadableLive(t)
 	r.step("merge-wait-appears", r.mergeWaitAppears)
 	r.step("a-confirming-read-moves-the-stamp", r.aConfirmingReadMovesTheStamp)
@@ -133,9 +143,9 @@ func TestTheMergeWaitSaysWhatAReviewRoundWaitsOnFromGitHubLive(t *testing.T) {
 
 // newMergeWaitReadableLive boots the daemon over the script's broker with the three issues already
 // recorded, each in reviewing and holding its tree's admission slot: the one the proof drives, on
-// an open pull request GitHub answers `blocked` for; the one whose reviewer requests changes in
-// step 5; and the one whose pull request the record holds closed, its reviewer's approval standing
-// at the head it was closed on.
+// an open pull request GitHub answers `draft` for, a state its round does not end on; the one
+// whose reviewer requests changes in step 5; and the one whose pull request the record holds
+// closed, its reviewer's approval standing at the head it was closed on.
 func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	t.Helper()
 	proof := newLiveProof(t, "scripts/e2e/merge-wait-readable.sh")
@@ -151,11 +161,13 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 		openedAt: opened, pushedAt: opened.Add(30 * time.Minute),
 	}
 	r.github = newMergeWaitGitHub(t)
-	// GitHub answers `mergeable: true` for a head it holds on a check or a review the repository
-	// requires as surely as for one it would merge now, which is what makes `mergeable_state` the
-	// only answer that tells those two apart (record.PullRequest.MergeState).
-	r.github.open(r.stuckNumber, "legion/"+r.stuck, mergeWaitFirstHead, true, "blocked", r.openedAt)
-	r.github.open(r.movingNumber, "legion/"+r.moving, mergeWaitMovingHead, true, "blocked", r.openedAt)
+	// GitHub answers `mergeable: true` for a draft as surely as for a head it would merge now, which
+	// is what makes `mergeable_state` the only answer that tells those two apart
+	// (record.PullRequest.MergeState). A `blocked` head would not do for the stuck round: a
+	// `blocked` answer either ends the round or waits quietly, and only one with a review request
+	// open is told of (classify.MergeOutcomeOf).
+	r.github.open(r.stuckNumber, claim.IssueBranch(r.stuck), mergeWaitFirstHead, true, "draft", r.openedAt)
+	r.github.open(r.movingNumber, claim.IssueBranch(r.moving), mergeWaitMovingHead, true, "blocked", r.openedAt)
 	r.seed()
 	// The runtime provisions each claim's workspace itself (fake.Runtime's InPod), so the start a
 	// move makes reaches the fake's launch without the daemon cloning acme/widgets from github.com.
@@ -163,18 +175,24 @@ func newMergeWaitReadableLive(t *testing.T) *mergeWaitReadableLive {
 	o := fakeRuntime(r.rt, &built{})
 	o.workflowTokens = &workflowTokenRecorder{}
 	o.githubAPI = r.github.url
-	r.d = startDaemonWithin(t, r.cfg, o, r.log(), 60*time.Second)
+	r.d = startDaemonLogging(t, r.cfg, o, r.log())
 	return r
 }
 
 // seed records the three issues as the daemon would hold them at the moment their reviewers took
-// the work: each a root handed to Legion, in reviewing, holding its tree's admission slot, its
-// lifecycle open under the workflow, on a pull request of its own. The reviewer's row is left
-// unwritten for the two whose reviews the proof publishes, since the review itself writes it; the
-// closed issue's is seeded with the approval that stands at its head, because no review of it is
+// the work, each a root handed to Legion, in reviewing, holding its tree's admission slot, its
+// lifecycle open under the workflow, on a pull request of its own, but for one state the daemon
+// never holds: the two whose reviews the proof publishes have a reviewer claim and no reviewer
+// row, which is left for the review itself to write, where the daemon writes that row when it
+// enters the reviewer (workflow's enter). The closed issue's reviewer row is seeded with the
+// approval that stands at its head, because no review of it is
 // published and that approval is what would make the rule say its round waits, were its pull
 // request open: the rule's own test of the open pull request is what leaves its round waiting on
-// nothing.
+// nothing. The reviewer's claim of each of the two whose reviews the proof publishes records
+// mergeWaitReviewerSession, as the registration of its agent records it, and stands as the release
+// of an idle pod leaves it (supervise.SuspendedByReleased), with the session kept: the boot's
+// resume by rule resumes no such claim, and with no session recorded each review would wait and
+// decide nothing (workflow's RefusedWhileNoSession).
 func (r *mergeWaitReadableLive) seed() {
 	t := r.t
 	t.Helper()
@@ -203,7 +221,7 @@ func (r *mergeWaitReadableLive) seed() {
 			}
 			if err := r.records.PutPullRequest(ctx, tx, record.PullRequest{
 				State: seeded.state, Issue: seeded.key, Repo: liveRepo, Number: seeded.number,
-				Branch: "legion/" + seeded.key, HeadSHA: seeded.head, Base: mergeWaitBase,
+				Branch: claim.IssueBranch(seeded.key), HeadSHA: seeded.head, Base: mergeWaitBase,
 				HeadUpdatedAt: r.openedAt, Failing: []string{},
 			}); err != nil {
 				return err
@@ -224,17 +242,32 @@ func (r *mergeWaitReadableLive) seed() {
 		for _, role := range claim.Roles {
 			writePrompt(t, r.cfg, r.token(key, role))
 		}
+		if key == r.closed {
+			continue
+		}
+		token := r.token(key, claim.RoleReviewer)
+		if _, err := r.st.AdmitClaim(ctx, supervise.Claim{
+			Token: token, Project: r.project, Tree: key, Issue: key, Role: claim.RoleReviewer,
+			Generation: 1, State: supervise.StateSuspended, SuspendedBy: supervise.SuspendedByReleased,
+			Session: mergeWaitReviewerSession, SessionFile: t.TempDir() + "/" + mergeWaitReviewerSession + ".jsonl",
+			BootTokenHash: supervise.HashBootToken("seeded-" + randomSuffix(t)), ServingGeneration: 1,
+		}); err != nil {
+			t.Fatalf("record the reviewer's claim %s: %v", token, err)
+		}
 	}
-	r.note("seeded: %s in reviewing on open pull request #%d at %s, %s in reviewing on open #%d at %s, and %s in reviewing with #%d recorded closed at %s, its reviewer's approval standing there; base %s, GitHub's clock %s",
+	r.note("seeded: %s in reviewing on open pull request #%d at %s, %s in reviewing on open #%d at %s, and %s in reviewing with #%d recorded closed at %s, its reviewer's approval standing there; the reviewer's claim of %s and of %s released with session %s kept; base %s, GitHub's clock %s",
 		r.stuck, r.stuckNumber, mergeWaitShort(mergeWaitFirstHead), r.moving, r.movingNumber, mergeWaitShort(mergeWaitMovingHead),
-		r.closed, r.closedNumber, mergeWaitShort(mergeWaitClosedHead), mergeWaitBase, r.openedAt.Format(time.RFC3339))
+		r.closed, r.closedNumber, mergeWaitShort(mergeWaitClosedHead), r.stuck, r.moving, mergeWaitReviewerSession,
+		mergeWaitBase, r.openedAt.Format(time.RFC3339))
 }
 
 // write runs body in one transaction against the daemon's own database, failing the test with what
 // it was seeding on an error.
 func (r *mergeWaitReadableLive) write(what string, body func(tx pgx.Tx) error) {
 	r.t.Helper()
-	if err := r.st.Tx(context.Background(), body); err != nil {
+	if err := store.Transact(context.Background(), r.st.Pool(), func(ctx context.Context, tx pgx.Tx) error {
+		return body(tx)
+	}); err != nil {
 		r.t.Fatalf("seed %s: %v", what, err)
 	}
 }
@@ -251,7 +284,7 @@ func (r *mergeWaitReadableLive) token(issue string, role claim.Role) claim.Token
 
 // Step 1. The round waits, and the state says what on. CI settles the head's own two checks, every
 // run GitHub reported on it concluded, and the reviewer approves that head, which GitHub answers
-// `blocked` for: the round is one the daemon reads GitHub for, so the issue's view carries a
+// `draft` for: the round is one the daemon reads GitHub for, so the issue's view carries a
 // mergeWait naming the head, the state, when it was read, when GitHub last moved the pull request
 // and how many of the fence's runs are this head's own; and, once the daemon has told the
 // architect and the reviewer the round is stuck, the head and state it told them of.
@@ -262,15 +295,15 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 		r.stuckNumber, mergeWaitShort(mergeWaitFirstHead))
 	r.publishReview(r.stuckNumber, "approved", mergeWaitFirstHead)
 	r.note("drove the reviewer's APPROVE of %s, the head the pull request stands at, while GitHub answers that head mergeable_state %q",
-		mergeWaitShort(mergeWaitFirstHead), "blocked")
+		mergeWaitShort(mergeWaitFirstHead), "draft")
 
 	wait := r.waitForWait(r.stuck, "the merge wait of "+r.stuck+" with the stuck round told of",
 		func(got *api.MergeWaitView) bool { return got != nil && got.ToldHead != "" })
-	if wait.WaitsOn != mergeWaitFirstHead || wait.MergeState != "blocked" {
-		t.Fatalf("%s waits on %s/%s, want the approved head %s blocked", r.stuck, wait.WaitsOn, wait.MergeState, mergeWaitFirstHead)
+	if wait.WaitsOn != mergeWaitFirstHead || wait.MergeState != "draft" {
+		t.Fatalf("%s waits on %s/%s, want the approved head %s draft", r.stuck, wait.WaitsOn, wait.MergeState, mergeWaitFirstHead)
 	}
 	if wait.StateReadAt == nil {
-		t.Fatalf("%s's merge wait carries no stateReadAt, want the moment of the read that answered blocked", r.stuck)
+		t.Fatalf("%s's merge wait carries no stateReadAt, want the moment of the read that answered draft", r.stuck)
 	}
 	if wait.HeadUpdatedAt == nil || !wait.HeadUpdatedAt.Equal(r.openedAt) {
 		t.Fatalf("%s's merge wait carries headUpdatedAt %v, want GitHub's clock for the pull request, %v", r.stuck, wait.HeadUpdatedAt, r.openedAt)
@@ -278,8 +311,8 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 	if wait.CheckRuns != 2 {
 		t.Fatalf("%s's merge wait counts %d check runs of the head, want the head's own two", r.stuck, wait.CheckRuns)
 	}
-	if wait.ToldHead != mergeWaitFirstHead || wait.ToldState != "blocked" {
-		t.Fatalf("%s's merge wait was told stuck at %s/%s, want %s blocked", r.stuck, wait.ToldHead, wait.ToldState, mergeWaitFirstHead)
+	if wait.ToldHead != mergeWaitFirstHead || wait.ToldState != "draft" {
+		t.Fatalf("%s's merge wait was told stuck at %s/%s, want %s draft", r.stuck, wait.ToldHead, wait.ToldState, mergeWaitFirstHead)
 	}
 	issue := r.issue(r.stuck)
 	r.note("read back: %s is in %s, its pull request #%d at %s with mergeState %q, and its mergeWait is %s",
@@ -296,7 +329,7 @@ func (r *mergeWaitReadableLive) mergeWaitAppears() {
 // asked the daemon to read since step 1, so the stamp stands where that step left it; a
 // settlement of the same head — its two checks re-run and concluded the same way — asks for a
 // read of the round again (workflow's askMergeState, which Apply calls after every such fact,
-// whatever the handler recorded), GitHub answers the same `blocked` about the same head, and the
+// whatever the handler recorded), GitHub answers the same `draft` about the same head, and the
 // only thing the record takes from that answer is when it was read.
 //
 // This is the sentence the proof exists for, and the read is driven by a fact that moves nothing
@@ -323,7 +356,7 @@ func (r *mergeWaitReadableLive) aConfirmingReadMovesTheStamp() {
 
 	r.publishChecks(r.stuckNumber, mergeWaitFirstHead, "lint", "unit")
 	r.note("drove CI's settlement of the same head again, lint and unit re-run and concluded the same way, which asks the daemon to read GitHub for the round again; GitHub answers the same %q about the same head, the base has not moved under it, and nothing the wait is judged by has changed",
-		"blocked")
+		"draft")
 	wait := r.waitForWait(r.stuck, "a read of "+r.stuck+" later than "+before.StateReadAt.Format(time.RFC3339Nano),
 		func(got *api.MergeWaitView) bool {
 			return got != nil && got.StateReadAt != nil && got.StateReadAt.After(*before.StateReadAt)
@@ -435,12 +468,12 @@ func (r *mergeWaitReadableLive) aPushMovesTheHead() {
 		r.github.refusals(r.stuckNumber), r.stuck, mergeWaitShort(wait.WaitsOn), wait.HeadUpdatedAt.Format(time.RFC3339), wait.CheckRuns)
 
 	r.github.withhold(r.stuckNumber, false)
-	r.github.answers(r.stuckNumber, true, "blocked")
+	r.github.answers(r.stuckNumber, true, "behind")
 	r.publishBasePush()
 	answered := r.waitForWait(r.stuck, "the first answering read of "+mergeWaitSecondHead,
 		func(got *api.MergeWaitView) bool { return got != nil && got.StateReadAt != nil })
-	if answered.WaitsOn != mergeWaitSecondHead || answered.MergeState != "blocked" {
-		t.Fatalf("the first read of the new head left %s waiting on %s/%s, want %s blocked", r.stuck, answered.WaitsOn, answered.MergeState, mergeWaitSecondHead)
+	if answered.WaitsOn != mergeWaitSecondHead || answered.MergeState != "behind" {
+		t.Fatalf("the first read of the new head left %s waiting on %s/%s, want %s behind", r.stuck, answered.WaitsOn, answered.MergeState, mergeWaitSecondHead)
 	}
 	r.note("read back: GitHub answered again and the stamp appeared — %s", mergeWaitLine(answered))
 }
@@ -473,7 +506,7 @@ func (r *mergeWaitReadableLive) theNegativeControl() {
 }
 
 // Step 6. The wait ends when GitHub answers a state the issue may advance on. A settlement does
-// not end it — on a head GitHub answers `blocked` for, the settlement that concludes the head's
+// not end it — on a head GitHub answers `behind` for, the settlement that concludes the head's
 // checks moves the round from waiting to stuck, and both of those wait — so what ends it is the
 // read: GitHub answers `clean`, the approval that has stood throughout ends the round, and the
 // issue leaves reviewing with no mergeWait key behind it.
@@ -594,102 +627,46 @@ func keyCarried(t *testing.T, issue map[string]json.RawMessage, key string) bool
 }
 
 // publishChecks publishes CI's settlement of the pull request at head, with one run of each name
-// reported and none of them failing or cancelled, as Envoy relays the listener's settlement
-// (intake's decodeChecks reads it, which takes the subject as part of the fact's identity). Each
-// run reaches the fence stamped with the head it ran on and the conclusion the settlement's lists
-// give it (classify's stampedRuns), which is what makes it a run of this head's own.
+// reported and none of them failing or cancelled (publishSettlementOf). Each settlement reports
+// runs of its own, so a head settled twice is the same checks re-run rather than the same report
+// again (classify's redundantSettlement): the fence keeps the newest run of each name, so the count
+// of the head's own runs stands where it was.
 func (r *mergeWaitReadableLive) publishChecks(number int, head string, names ...string) {
 	r.t.Helper()
 	r.seq++
-	// Each settlement reports runs of its own, so a head settled twice is the same checks re-run
-	// rather than the same report again (classify's redundantSettlement): the fence keeps the
-	// newest run of each name, so the count of the head's own runs stands where it was.
-	runs := make([]map[string]any, 0, len(names))
-	for i, name := range names {
-		runs = append(runs, map[string]any{"name": name, "id": int64(number)*1000 + r.seq*10 + int64(i) + 1})
-	}
-	none := map[string]any{"count": 0, "checks": []string{}}
-	payload, err := json.Marshal(map[string]any{
-		"kind": "checks", "repo": liveRepo, "number": strconv.Itoa(number), "sha": head, "check_runs": runs,
-		"generation": 0, "snapshot": fmt.Sprintf("snapshot-%s-%d", head[:8], r.seq), "settled_at": time.Now().UnixMilli(),
-		"failed": none, "cancelled": none, "running": none, "queued": none, "skipped": none,
-		"passed":         map[string]any{"count": len(names), "checks": names},
-		"failing_checks": []any{},
-	})
-	if err != nil {
-		r.t.Fatalf("encode the checks payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.checks", r.subjectRepo(), number)
-	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("checks-%d-%d", number, r.seq), string(payload)))
+	r.publishSettlementOf(number, head, r.seq, names, nil)
 }
 
-// publishReview publishes the reviewer's review of the pull request at head, as Envoy relays a
-// GitHub pull-request review (intake's decodeReview reads it). It is the review App's own, with
-// the Legion footer naming the head it read, which is what lets it decide the round at all
-// (workflow's refusesRound); no reviewer session is recorded on these issues, so the review App's
-// login decides by itself (workflow's byReviewer). Each review carries an id and a time after the
-// one before it, so none is ordered behind a review already applied (record.ReviewOrder).
+// publishReview publishes the reviewer's review of the pull request at head (publishReviewAs), its
+// footer naming mergeWaitReviewerSession, the session the seeded reviewer claim records, so the
+// review is the reviewer's own (workflow's byReviewer). The footer names no entry: the review
+// decides its round as before, and this proof reads no commit the reviewer read.
 func (r *mergeWaitReadableLive) publishReview(number int, state, head string) {
 	r.t.Helper()
 	r.seq++
 	r.reviewID++
-	payload, err := json.Marshal(map[string]string{
-		"kind": "review", "repo": liveRepo, "number": strconv.Itoa(number), "action": "submitted",
-		"state": state, "commit_id": head, "head_sha": head, "author": reviewAppLogin,
-		"body":           "the reviewer's " + state + " of " + head + legionFooter("ses-reviewer", head),
-		"body_truncated": "false", "review_id": strconv.FormatInt(1000+r.reviewID, 10),
-		"submitted_at": time.Now().UTC().Format(time.RFC3339),
-	})
-	if err != nil {
-		r.t.Fatalf("encode the review payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d.review", r.subjectRepo(), number)
-	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("review-%d-%d", number, r.seq), string(payload)))
+	r.publishReviewAs(number, state, head, legionFooter(mergeWaitReviewerSession, head), r.seq, r.reviewID)
 }
 
-// publishPush publishes the implementer's push of to onto from on issue's branch, changing code, as
-// Envoy relays a GitHub push (intake's decodePush reads it). It is published before the synchronize
-// that moves the head, which is the order that leaves the move judged by the chain of its pushes
-// (classify.AdvancePullRequestHead).
+// publishPush publishes the implementer's push of to onto from on issue's branch (publishPushOf).
 func (r *mergeWaitReadableLive) publishPush(issue, from, to string) {
 	r.t.Helper()
 	r.seq++
-	payload, err := json.Marshal(map[string]string{
-		"kind": "push", "repo": liveRepo, "ref": "refs/heads/legion/" + issue, "before": from, "after": to,
-		"changed_paths": "src/widget.go", "changed_paths_truncated": "false", "forced": "false",
-		"pusher": "legion-implementer[bot]", "commit_count": "1", "head_subject": "earn what the base requires",
-	})
-	if err != nil {
-		r.t.Fatalf("encode the push payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.push.branch.legion/%s", r.subjectRepo(), issue)
-	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("push-%s-%s", issue, to[:8]), string(payload)))
+	r.publishPushOf(issue, from, to)
 }
 
-// publishSynchronize publishes GitHub's synchronize of the pull request to head at updated, as Envoy
-// relays a GitHub pull-request event (intake's decodePullRequest reads it). updated is GitHub's own
-// clock, which the lifecycle fence orders the observation by and the record keeps as HeadUpdatedAt.
+// publishSynchronize publishes GitHub's synchronize of the pull request to head at updated
+// (publishSynchronizeOf), on mergeWaitBase.
 func (r *mergeWaitReadableLive) publishSynchronize(number int, issue, head string, updated time.Time) {
 	r.t.Helper()
 	r.seq++
-	payload, err := json.Marshal(map[string]string{
-		"action": "synchronize", "kind": "pr", "repo": liveRepo, "number": strconv.Itoa(number),
-		"head_sha": head, "base_ref": mergeWaitBase, "head_ref": "legion/" + issue,
-		"title":      "the issue whose approval waits on GitHub",
-		"url":        "https://github.com/" + liveRepo + "/pull/" + strconv.Itoa(number),
-		"updated_at": updated.Format(time.RFC3339),
-	})
-	if err != nil {
-		r.t.Fatalf("encode the synchronize payload: %v", err)
-	}
-	subject := fmt.Sprintf("notifications.github.%s.pr.%d", r.subjectRepo(), number)
-	r.waitProcessed(r.publish(subject, "github", fmt.Sprintf("pr-%d-synchronize-%s", number, head[:8]), string(payload)))
+	r.publishSynchronizeOf(number, issue, head, mergeWaitBase, "the issue whose approval waits on GitHub", updated)
 }
 
 // publishBasePush publishes somebody else's push onto the base branch, as Envoy relays a GitHub
 // push to a branch Legion holds no pull request on (intake's decodePush makes it an intake.BasePush).
 // Its handler walks the open pull requests recorded on that base and asks for a read of each whose
-// round waits on GitHub (workflow's basePush, askMergeStateFor), which is how a step asks the
+// round waits on GitHub (workflow's basePush, mergeStateOwed), which is how a step asks the
 // daemon to read GitHub again without changing anything the round is judged by.
 func (r *mergeWaitReadableLive) publishBasePush() {
 	r.t.Helper()
@@ -734,10 +711,13 @@ func mergeWaitShort(sha string) string {
 // githubPullRequest) — its number, its state, the base it sits on, the head it stands at, GitHub's
 // clock for it, its lazily computed `mergeable` and `mergeable_state`, GitHub's own merge state
 // for that head — with its reviews as none (readReviews) and the branch's open pull requests as
-// none, which is what the per-issue read lists for an issue whose record holds none open. It also
-// answers what a launch reads: any repository, with default branch main, and a GraphQL root that
-// knows no pull request. Anything else is answered 404, so a read this proof did not foresee fails
-// the step that waited on it rather than reaching github.com.
+// none, which is what the per-issue read lists for an issue whose record holds none open. Its
+// GraphQL endpoint answers a batch's query of pull requests by number (the daemon's chunkQuery)
+// with each it serves, as GraphQL spells the same answer and counted as answered, or 503 while any
+// of them is withheld, since GitHub answers a query whole or not at all; every other query it
+// answers as knowing no pull request. It also answers what a launch
+// reads: any repository, with default branch main. Anything else is answered 404, so a read this
+// proof did not foresee fails the step that waited on it rather than reaching github.com.
 //
 // Every field a step sets is set under this mutex, which the answer is written under too, so a
 // step that sets a head and a state sets them for every read after it and none before it.
@@ -771,9 +751,7 @@ type mergeWaitPull struct {
 func newMergeWaitGitHub(t *testing.T) *mergeWaitGitHub {
 	t.Helper()
 	g := &mergeWaitGitHub{t: t, pulls: map[int]*mergeWaitPull{}}
-	server := httptest.NewServer(g)
-	t.Cleanup(server.Close)
-	g.url = server.URL
+	g.url = githubtest.Server(t, githubtest.Spec{Handle: g.ServeHTTP})
 	return g
 }
 
@@ -840,8 +818,11 @@ func (g *mergeWaitGitHub) pull(number int) *mergeWaitPull {
 func (g *mergeWaitGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	w.Header().Set("Content-Type", "application/json")
 	if req.Method == http.MethodPost && req.URL.Path == "/graphql" {
+		if asked, batch := liveBatchQuery(req); batch {
+			g.answerBatch(w, asked)
+			return
+		}
 		_, _ = io.WriteString(w, `{"data":{"repository":{"pullRequest":null}}}`)
 		return
 	}
@@ -851,6 +832,33 @@ func (g *mergeWaitGitHub) ServeHTTP(w http.ResponseWriter, req *http.Request) {
 
 	w.WriteHeader(http.StatusNotFound)
 	_, _ = io.WriteString(w, `{"message":"Not Found"}`)
+}
+
+// answerBatch writes the stand-in's answer to a batch's query of asked by number: each pull
+// request it serves among them, on mergeWaitBase, counted as answered, and null for any other; or
+// 503, with each withheld one asked counted as refused, while any of them is withheld, since GitHub
+// answers a query whole or not at all.
+func (g *mergeWaitGitHub) answerBatch(w http.ResponseWriter, asked []int) {
+	withheld := false
+	for _, number := range asked {
+		if pull, served := g.pulls[number]; served && pull.withheld {
+			pull.refused++
+			withheld = true
+		}
+	}
+	if withheld {
+		w.WriteHeader(http.StatusServiceUnavailable)
+		_, _ = io.WriteString(w, `{"message":"Server Error"}`)
+		return
+	}
+	nodes := map[int]map[string]any{}
+	for _, number := range asked {
+		if pull, served := g.pulls[number]; served {
+			pull.answered++
+			nodes[number] = liveBatchNode(number, pull.sha, pull.branch, mergeWaitBase, pull.mergeable, pull.state)
+		}
+	}
+	_, _ = io.WriteString(w, liveBatchAnswer(g.t, asked, nodes))
 }
 
 // answer writes the stand-in's answer to a GET of path, and says whether it had one.

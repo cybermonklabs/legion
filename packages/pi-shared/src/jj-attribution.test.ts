@@ -1,8 +1,10 @@
-import { afterEach, describe, expect, it } from "bun:test";
+import { afterEach, describe, expect, it, jest } from "bun:test";
 import { chmod, mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { LEGION_ROLES } from "@legion/contracts";
+import { turnsUntil } from "@legion/test-fixtures/fake-clock";
+import { until } from "@legion/test-fixtures/wait";
 import {
   exportJjSessionAttribution,
   JJ_CONFIG_PATH_TIMEOUT_MS,
@@ -444,6 +446,15 @@ describe("exportJjSessionAttribution", () => {
     expect(await readdir(dir)).toEqual([]);
   });
 
+  /** The jj commands the templates row below runs, counted: the row's bound is that count times
+   *  each command's own hang guard, so a loaded machine running jj slowly fails nothing, and the
+   *  row holds the count to the commands it ran. A fixed 60 s for the whole row once decided it at
+   *  a load of about 1,400, where its jj work took 46 s and more. */
+  const TEMPLATE_ROW_JJ_COMMANDS = 34;
+  /** Each jj command's hang guard in that row: far above one command on a loaded machine, so a
+   *  jj that never ends fails naming its command. */
+  const JJ_COMMAND_MS = 60_000;
+
   // The one case here that runs the real jj, which is not on every host: it skips where PATH has
   // none, except on GitHub Actions, where the pi-shared job installs one and a skip would hide
   // the only run of the check (as `ompNatsGuard` does for Oh My Pi, `test/omp-harness.ts`).
@@ -472,19 +483,31 @@ describe("exportJjSessionAttribution", () => {
       expect(chain).toBe(`${base}:${path.join(state, `omp-attribution-${ROOT_ID}.toml`)}`);
       const repo = path.join(root, "repo");
       await mkdir(repo);
+      let ran = 0;
       const jj = async (...args: string[]): Promise<string> => {
+        ran += 1;
+        if (ran > TEMPLATE_ROW_JJ_COMMANDS) {
+          throw new Error(
+            `jj ${args.join(" ")} is past the ${TEMPLATE_ROW_JJ_COMMANDS} commands this row counts`
+          );
+        }
         const child = Bun.spawn([JJ, ...args], {
           cwd: repo,
           env,
           stdin: "ignore",
           stdout: "pipe",
           stderr: "pipe",
+          timeout: JJ_COMMAND_MS,
+          killSignal: "SIGKILL",
         });
         const [code, stdout, stderr] = await Promise.all([
           child.exited,
           new Response(child.stdout).text(),
           new Response(child.stderr).text(),
         ]);
+        if (child.signalCode === "SIGKILL") {
+          throw new Error(`jj ${args.join(" ")} ran past its ${JJ_COMMAND_MS} ms guard`);
+        }
         if (code !== 0) throw new Error(`jj ${args.join(" ")} exited ${code}: ${stderr}`);
         return stdout;
       };
@@ -534,8 +557,11 @@ describe("exportJjSessionAttribution", () => {
         `the running pair\n\n${pair}`
       );
       expect(await duplicateOf(undefined)).toBe("");
+      // The count the row's bound is made of is the commands it ran.
+      expect(ran).toBe(TEMPLATE_ROW_JJ_COMMANDS);
     },
-    60_000
+    // Each counted command's guard, and room for the row's own file work around them.
+    TEMPLATE_ROW_JJ_COMMANDS * JJ_COMMAND_MS + 30_000
   );
 });
 
@@ -603,37 +629,106 @@ describe("userConfigChain", () => {
     await chmod(path.join(dir, "jj"), 0o755);
     return { PATH: `${dir}:${process.env.PATH ?? ""}`, HOME: dir };
   }
+  /** How long a wrapper's child sleeps: far past the row's deadline, which ends every wait here,
+   *  so a child the group kill missed is still running when `reaped` or `afterEach` looks. A
+   *  `sleep 30` ended by itself inside a 30 s wait for it, which read as a kill. */
+  const CHILD_SLEEP_S = 3_600;
+  /** Every child pid a row read. Bun runs `afterEach` after a row's timeout, where it skips the
+   *  row's own `finally`, so the end of a child that outlived its row is here. */
+  const children: number[] = [];
   afterEach(async () => {
+    // A row that holds Bun's fake clock and is ended by the command's guard never reaches its own
+    // `finally`, so the real clock comes back here too, before the next row.
+    jest.useRealTimers();
+    const survivors: number[] = [];
+    for (const pid of children.splice(0)) {
+      if (!(await running(pid))) continue;
+      survivors.push(pid);
+      try {
+        process.kill(pid, "SIGKILL");
+      } catch {
+        // It ended between the look and the kill.
+      }
+    }
     await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true })));
+    if (survivors.length > 0) {
+      throw new Error(`the wrapper's child ${survivors.join(", ")} outlived its row, killed here`);
+    }
   });
-  /** The wrapper's child pid, once it has written it. */
+
+  // The wrapper's pidfile and the kernel reaping its child are external OS state, which Bun's
+  // fake timers cannot advance, so each helper reads that state until it holds, and fails at the
+  // row's deadline naming what it waited for.
+  /** The wrapper's child pid, once it has written it, kept for `afterEach`. */
   async function pidFrom(pidFile: string): Promise<number> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
-      const pid = await readFile(pidFile, "utf8")
+    const pid = await until(`the jj wrapper to write ${pidFile}`, async () => {
+      const written = await readFile(pidFile, "utf8")
         .then((value) => Number(value.trim()))
         .catch(() => 0);
-      if (Number.isInteger(pid) && pid > 0) return pid;
-      await Bun.sleep(10);
-    }
-    throw new Error(`jj wrapper did not write ${pidFile}`);
+      return Number.isInteger(written) && written > 0 ? written : undefined;
+    });
+    children.push(pid);
+    return pid;
   }
 
-  // Real-time polling is required here: the wrapper's pidfile and the kernel reaping its child
-  // are external OS state, which Bun's fake timers cannot advance.
-  /** The kernel has reaped the child once signal 0 says it no longer exists. */
-  async function stops(pid: number): Promise<boolean> {
-    const deadline = Date.now() + 3_000;
-    while (Date.now() < deadline) {
-      try {
-        process.kill(pid, 0);
-      } catch {
-        return true;
-      }
-      await Bun.sleep(10);
+  /** Whether `pid` runs: signal 0 reaches it and `/proc` shows it no zombie, which nothing will
+   *  run again. */
+  async function running(pid: number): Promise<boolean> {
+    const stat = await readFile(`/proc/${pid}/stat`, "utf8").catch(() => undefined);
+    if (stat !== undefined && stat[stat.lastIndexOf(")") + 2] === "Z") return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
     }
-    return false;
   }
+
+  /** Resolves once the child is gone, and forgets it then, so `afterEach` never signals a pid the
+   *  kernel has since given another process; a child that lives on fails the wait naming it, so it
+   *  reads as that, not as the row's timeout. */
+  async function reaped(pid: number): Promise<void> {
+    await until(
+      `the wrapper's child ${pid} to be gone after the group kill`,
+      async () => !(await running(pid))
+    );
+    const at = children.indexOf(pid);
+    if (at >= 0) children.splice(at, 1);
+  }
+
+  /**
+   * Runs `call` on Bun's fake clock and moves the clock a millisecond a turn until `call` settles,
+   * answering how far it moved; at `capMs` it stops and answers the cap. The call's bound is its
+   * own timer, which only this clock moves, while jj runs in real time beside it, so a call that
+   * waits for jj rather than for its timer reads as the cap however loaded the machine.
+   */
+  async function settlesAfterMs(call: () => Promise<unknown>, capMs: number): Promise<number> {
+    jest.useFakeTimers();
+    try {
+      const began = Date.now();
+      let done = false;
+      const end = () => {
+        done = true;
+      };
+      void call().then(end, end);
+      await turnsUntil(
+        () => done || Date.now() - began >= capMs,
+        "the call to settle, or the fake clock to reach its cap",
+        { each: () => jest.advanceTimersByTime(1) }
+      );
+      return Date.now() - began;
+    } finally {
+      jest.useRealTimers();
+    }
+  }
+
+  it("forgets a child once it is seen gone, so afterEach signals no pid reaped already", async () => {
+    const child = Bun.spawn(["true"]);
+    await child.exited;
+    children.push(child.pid);
+    await reaped(child.pid);
+    expect(children).not.toContain(child.pid);
+  });
 
   it("chains the user config files jj prints, in order", async () => {
     const env = await withJj("printf '/u/a.toml\\n/u/b.toml\\n'");
@@ -645,52 +740,53 @@ describe("userConfigChain", () => {
     const dir = await mkdtemp(path.join(tmpdir(), "jj-attribution-"));
     dirs.push(dir);
     const exported: NodeJS.ProcessEnv = {};
-    const started = Date.now();
-    await exportJjSessionAttribution(ROOT_ID, dir, {
-      env: exported,
-      resolveBase: () => userConfigChain(200, env),
-    });
-    expect(Date.now() - started).toBeLessThan(5_000);
+    // The call ends at its own 200 ms timer, never at jj's 30 s.
+    const tookMs = await settlesAfterMs(
+      () =>
+        exportJjSessionAttribution(ROOT_ID, dir, {
+          env: exported,
+          resolveBase: () => userConfigChain(200, env),
+        }),
+      5_000
+    );
+    expect(tookMs).toBeGreaterThanOrEqual(200);
+    expect(tookMs).toBeLessThan(5_000);
     expect(exported.JJ_CONFIG).toBeUndefined();
   });
 
+  // The give-up comes once the wrapper has forked its child and written the child's pid: a bound
+  // of the row's own raced the wrapper, and a 200 ms one killed the group before the pid existed
+  // on a loaded machine. `giveUp` takes the same path the bound does.
   it("kills a wrapper's forked child when jj times out", async () => {
     const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
     dirs.push(path.dirname(pidFile));
-    const env = await withJj(`sleep 30 & echo $! > ${JSON.stringify(pidFile)}; wait`);
-    const started = Date.now();
-    await userConfigChain(200, env);
+    const env = await withJj(`sleep ${CHILD_SLEEP_S} & echo $! > ${JSON.stringify(pidFile)}; wait`);
+    const giveUp = new AbortController();
+    const chain = userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env, giveUp.signal);
     const pid = await pidFrom(pidFile);
-    try {
-      expect(Date.now() - started).toBeLessThan(5_000);
-      expect(await stops(pid)).toBe(true);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // The expected path: the process group killed it first.
-      }
-    }
+    giveUp.abort();
+    expect(await chain).toBeUndefined();
+    await reaped(pid);
   });
 
+  // What the row reads is two facts: the wrapper's answer and its detached child's death. The
+  // wrapper is given the production bound (JJ_CONFIG_PATH_TIMEOUT_MS, 10 s), so a loaded machine
+  // running it slowly fails nothing; a 200 ms bound here once decided the row, answering undefined
+  // for a wrapper that had not yet printed its path. Each wait fails naming its fact, at the row's
+  // deadline.
   it("kills a wrapper's detached child after jj returns a config path", async () => {
     const pidFile = path.join(await mkdtemp(path.join(tmpdir(), "jj-attribution-child-")), "pid");
     dirs.push(path.dirname(pidFile));
     const env = await withJj(
-      `sleep 30 </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
+      `sleep ${CHILD_SLEEP_S} </dev/null >/dev/null 2>&1 & echo $! > ${JSON.stringify(pidFile)}; printf '/u/a.toml\\n'`
     );
-    const paths = await userConfigChain(200, env);
+    const paths = await userConfigChain(JJ_CONFIG_PATH_TIMEOUT_MS, env);
     const pid = await pidFrom(pidFile);
-    try {
-      expect(paths).toBe("/u/a.toml");
-      expect(await stops(pid)).toBe(true);
-    } finally {
-      try {
-        process.kill(pid, "SIGKILL");
-      } catch {
-        // The expected path: the process group killed it first.
-      }
+    if (paths === undefined) {
+      throw new Error(`the wrapper gave no config path within ${JJ_CONFIG_PATH_TIMEOUT_MS} ms`);
     }
+    expect(paths).toBe("/u/a.toml");
+    await reaped(pid);
   });
 
   it("bounds jj at 10 s, inside the 30 s Oh My Pi gives the session_start handler", () => {

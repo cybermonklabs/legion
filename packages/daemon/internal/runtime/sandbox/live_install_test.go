@@ -331,8 +331,8 @@ func (r *liveRig) checkImageProbe() error {
 		return errors.New("ProbeImage returned nil without logging a pass")
 	}
 	contract, ok := bootprobe.ConfirmedContract(passed["log"])
-	if !ok || contract != api.DaemonAPIVersion {
-		return fmt.Errorf("the probe log confirms contract %d (found %t), want %d: %s", contract, ok, api.DaemonAPIVersion, passed["log"])
+	if !ok || contract != api.DaemonAPIVersion() {
+		return fmt.Errorf("the probe log confirms contract %d (found %t), want %d: %s", contract, ok, api.DaemonAPIVersion(), passed["log"])
 	}
 	note("runtime", "probe Sandbox %s passed: %s", passed["sandbox"], lastLine(passed["log"], bootprobe.OKPrefix))
 	note("runtime", "daemon-api-version=%d parsed, the daemon's contract", contract)
@@ -597,13 +597,13 @@ func (r *liveRig) checkImageProbeMissingVolumeRefusal() error {
 
 // imageProbe is the probe as the daemon asks for it: its contract, the references of the role
 // prompts it hands every pod (prompts.RoleReferences), and the probe's own fixed reservation
-// (internal/daemon/kubernetes.go imageProbe, probeReservation) — 250m and 1Gi, not a role's share,
+// (internal/daemon/kubernetes.go imageProbe, probeReservation) — 500m and 1Gi, not a role's share,
 // so a probe pod fits a pool with little room — with cpu and memory the request and the limit
 // alike, so the probe pod is Guaranteed whatever the roles request. The probe command it sends, with
 // --role-references and, the run having a provider key, --provider-env-dir, is noted.
 func (r *liveRig) imageProbe() ImageProbe {
 	p := ImageProbe{
-		Contract: api.DaemonAPIVersion, Budget: 10 * time.Minute, RoleReferences: prompts.RoleReferences(),
+		Contract: api.DaemonAPIVersion(), Budget: 10 * time.Minute, RoleReferences: prompts.RoleReferences(),
 		Retry:     bootprobe.Retry{Initial: 15 * time.Second, Max: time.Minute, Attempts: 3},
 		Resources: probeReservation(),
 	}

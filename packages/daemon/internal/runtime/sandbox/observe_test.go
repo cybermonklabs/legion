@@ -46,6 +46,7 @@ func unscheduledFor(age time.Duration) corev1.PodStatus {
 // The mapping, row by row and in the order the rows apply, against the synced stores. Every
 // observation carries the recorded locator whatever it saw; the uid it saw goes in the detail.
 func TestTheMappingRowByRowInPrecedence(t *testing.T) {
+	t.Parallel()
 	labels := claimLabels(claim.RoleTester)
 	name := SandboxName(workerToken)
 	withPod := func(mode string, conditions []metav1.Condition, uid, owner string, status corev1.PodStatus, edit ...func(*corev1.Pod)) []k8sruntime.Object {
@@ -72,7 +73,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 	failed := func(statuses ...corev1.ContainerStatus) corev1.PodStatus {
 		status := corev1.PodStatus{Phase: corev1.PodFailed}
 		for _, s := range statuses {
-			if s.Name == initContainer || s.Name == fetchContainer {
+			if s.Name == initContainer {
 				status.InitContainerStatuses = append(status.InitContainerStatuses, s)
 			} else {
 				status.ContainerStatuses = append(status.ContainerStatuses, s)
@@ -119,7 +120,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		record, err := r.recordFor(claim.RoleTester, generation, r.enrollsIn(nil, claim.RoleTester))
+		record, err := r.recordFor(claim.RoleTester, generation, r.enrollsIn(nil, claim.RoleTester), r.dispatch.Bearer != "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -138,16 +139,31 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		s.SetAnnotations(annotations)
 		return objects
 	}
+	// ending records, on the Sandbox of objects, end as the end of the pod uid a launch replaced
+	// after it had ended (endedPodAnnotation), beside whatever else the Sandbox is annotated with.
+	ending := func(objects []k8sruntime.Object, uid, end string) []k8sruntime.Object {
+		s := objects[0].(*unstructured.Unstructured)
+		annotations := s.GetAnnotations()
+		if annotations == nil {
+			annotations = map[string]string{}
+		}
+		annotations[endedPodAnnotation], annotations[endedPodEndAnnotation] = uid, end
+		s.SetAnnotations(annotations)
+		return objects
+	}
+	evicted := runtime.PodEnd("Evicted", evictedMessage)
 	deleting := func(p *corev1.Pod) {
 		now := metav1.NewTime(rigNow)
 		p.DeletionTimestamp, p.Finalizers = &now, []string{"test/hold"}
 	}
 	// killedInit is a pod still inside its init containers whose running workspace-init the kubelet
-	// terminated non-zero: what the daemon's own delete of a pod it is replacing leaves behind, and
-	// what an init container failing on its own leaves too. The pod's DeletionTimestamp is the only
-	// thing that tells them apart (verdict).
+	// terminated non-zero past its restart grace (initRestartGrace), so the end is no restart the
+	// grace covers (startingAgain): what the daemon's own delete of a pod it is replacing leaves
+	// behind, and what workspace-init failing on its own leaves too. The pod's DeletionTimestamp is
+	// the only thing that tells them apart (verdict).
 	killedInit := corev1.PodStatus{Phase: corev1.PodPending, InitContainerStatuses: []corev1.ContainerStatus{{
-		Name: initContainer, State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
+		Name: initContainer, RestartCount: initRestartGrace + 1,
+		State: corev1.ContainerState{Terminated: &corev1.ContainerStateTerminated{ExitCode: 137, Reason: "Error"}},
 	}}}
 	exited := &shimwire.LauncherState{LastExit: &shimwire.LauncherExit{Generation: 1, Code: 143, Signal: "terminated"}}
 	pending := corev1.PodStatus{Phase: corev1.PodPending}
@@ -160,6 +176,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		absent     []string
 		initFailed bool
 		displaced  bool
+		podEnd     string
 	}{
 		{row: "2 sandbox absent", want: runtime.Gone, detail: []string{"sandbox legion/" + name + " is absent"}},
 		{
@@ -187,6 +204,14 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			absent:  []string{"the daemon replaced"},
 		},
 		{
+			row:     "3 no pod while Suspended, after a launch replaced the recorded pod once it had ended, carries that pod's end",
+			objects: ending([]k8sruntime.Object{sandboxObject(t, name, sandboxUID, modeSuspended, labels)}, recorded, evicted),
+			want:    runtime.Gone,
+			podEnd:  evicted,
+			detail:  []string{"operatingMode Suspended", "; pod " + recorded + " had ended before a launch replaced it: " + evicted},
+			absent:  []string{"the daemon replaced"},
+		},
+		{
 			row:     "3 a same-named pod the sandbox does not own is no pod of the claim's",
 			objects: withPod(modeRunning, nil, recorded, "uid-sandbox-earlier", running),
 			want:    runtime.Gone, detail: []string{"pod " + name + " (uid " + recorded + ") holds the name but is not controller-owned by the sandbox (uid " + sandboxUID + ")"},
@@ -204,6 +229,20 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			detail:    []string{"is uid uid-pod-newer, not the recorded pod UID " + recorded, "the daemon replaced pod " + recorded},
 		},
 		{
+			row:     "4 another uid, after a launch replaced the recorded pod once it had ended, carries that pod's end",
+			objects: ending(withPod(modeRunning, nil, "uid-pod-newer", sandboxUID, running), recorded, evicted),
+			want:    runtime.NotRecordedProcess,
+			podEnd:  evicted,
+			detail:  []string{"is uid uid-pod-newer, not the recorded pod UID " + recorded, "; pod " + recorded + " had ended before a launch replaced it: " + evicted},
+			absent:  []string{"the daemon replaced"},
+		},
+		{
+			row:     "4 another uid, the Sandbox recording the end of an earlier pod, carries no end",
+			objects: ending(withPod(modeRunning, nil, "uid-pod-newer", sandboxUID, running), "uid-pod-earlier", evicted),
+			want:    runtime.NotRecordedProcess,
+			absent:  []string{"had ended", "Evicted"},
+		},
+		{
 			row:     "5 the pod's one container ended with the pod",
 			objects: withPod(modeRunning, nil, recorded, sandboxUID, failed(terminated(initContainer, 0, "Completed"), terminated(workerContainer, 137, "Error"))),
 			want:    runtime.Gone,
@@ -218,15 +257,15 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			detail:     []string{"pod " + name, "init container workspace-init terminated (Error, exit code 1)", "last lines of workspace-init:"},
 		},
 		{
-			row: "5 workspace-fetch failed, its repository's cache failing",
-			objects: append(withPod(modeRunning, nil, recorded, sandboxUID, failed(terminated(fetchContainer, 1, "Error")), func(p *corev1.Pod) {
-				p.Spec.InitContainers = []corev1.Container{{Name: fetchContainer, Command: []string{"/opt/legion/bin/legion", "workspace-init", "fetch", "--repo", "acme/widgets", "--feed", FeedDir}}}
+			row: "5 workspace-init failed, its repository's cache failing",
+			objects: append(withPod(modeRunning, nil, recorded, sandboxUID, failed(terminated(initContainer, 1, "Error")), func(p *corev1.Pod) {
+				p.Spec.InitContainers = []corev1.Container{{Name: initContainer, Command: []string{"/opt/legion/bin/legion", "workspace-init", "provision", "--repo", "acme/widgets"}}}
 			}), cacheObject(t, cacheRepo, "uid-cache", modeRunning, ""), crashLooping(cachePod(cacheRepo, "uid-cache-pod", "uid-cache", testImage, corev1.PodRunning))),
 			want:       runtime.Gone,
 			initFailed: true,
 			detail: []string{
-				"init container workspace-fetch terminated (Error, exit code 1)",
-				"; the repository cache of acme/widgets, which a fresh feed comes from alone, is failing: container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
+				"init container workspace-init terminated (Error, exit code 1)",
+				"; the repository cache of acme/widgets, which workspace-init fills the clone from, is failing: container cache CrashLoopBackOff: back-off 5m0s restarting failed container (restarted 4 times)",
 			},
 		},
 		{
@@ -469,7 +508,7 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 		},
 	} {
 		t.Run(tc.row, func(t *testing.T) {
-			g := newRig(t, tc.objects, withoutController())
+			g := newRig(t, tc.objects, withoutController(), withTestBootTimeout())
 			if tc.launcher != nil {
 				g.reportLauncher(workerToken, *tc.launcher)
 			}
@@ -489,6 +528,9 @@ func TestTheMappingRowByRowInPrecedence(t *testing.T) {
 			}
 			if obs.Displaced != tc.displaced {
 				t.Errorf("Displaced = %t, want %t (detail: %s)", obs.Displaced, tc.displaced, obs.Detail)
+			}
+			if obs.PodEnd != tc.podEnd {
+				t.Errorf("PodEnd = %q, want %q (detail: %s)", obs.PodEnd, tc.podEnd, obs.Detail)
 			}
 			for _, want := range tc.detail {
 				if !strings.Contains(obs.Detail, want) {
@@ -574,6 +616,7 @@ func (b *breakablePods) fail() {
 // list or watch request failed, the runtime answers Uncertain from it (row 1), never the Alive it
 // last saw, and answers from the store again once a request succeeds.
 func TestAFailingWatchMakesTheStoreUncertainUntilItRecovers(t *testing.T) {
+	t.Parallel()
 	pods := &breakablePods{}
 	g := newRig(t, nil, withBreakablePods(pods))
 	loc := g.spawn(workerSpec(t))

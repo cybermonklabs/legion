@@ -9,7 +9,8 @@
 # after a change below it, and the older group then tests a tree that will not land while its
 # ci.yaml merge-group run, which nothing cancels, runs to the end. That runner time is what the
 # act takes back. A group that can no longer merge because the group below it failed is the
-# queue's own to rebuild, and ci.yaml's `cancel-started` says so.
+# queue's own to rebuild, and
+# .github/ci-notes/ci.md#the-merge-queues-cancel-act-mains-queue-builds-each-group-on-top says so.
 #
 # Its inputs, from the step's env:
 #   RUN_ID       the asking run's databaseId.

@@ -1,6 +1,6 @@
 name: CI job pi-envoy
 
-# The steps of ci.yaml's `pi-envoy` job, in a file of its own.
+# The steps of `.github/workflows/ci.yaml#pi-envoy` job, in a file of its own.
 # ci.yaml's job of the same id calls this file, and that caller keeps `needs: changes` and the
 # whole `if:` that decides whether these steps run, so this file carries no `if:` of its own.
 #
@@ -9,13 +9,13 @@ name: CI job pi-envoy
 #
 # The job's last step reports ci-ok for the caller: on a merge-group run this job's own result
 # decides, it posts the failing ci-ok at once (.github/actions/ci-ok-report), as every job of
-# ci.yaml ends. `ci-ok-changes` carries ci.yaml's `toJSON(needs.changes)` for it.
+# ci.yaml ends. `ci-ok-changes` carries `.github/workflows/ci.yaml#toJSON(needs.changes)` for it.
 on:
   workflow_call:
     inputs:
       ci-ok-changes:
         description: >-
-          ci.yaml's `toJSON(needs.changes)`: end the job with ci-ok's report
+          `.github/workflows/ci.yaml#toJSON(needs.changes)`: end the job with ci-ok's report
           (.github/actions/ci-ok-report), as every job of ci.yaml ends.
         type: string
         required: true
@@ -23,7 +23,15 @@ on:
 jobs:
   pi-envoy:
     runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    # At least the job's sum, so that a hook or row that hangs fails by name at the test script's
+    # --timeout (package.json) rather than as a job this limit cancels: over the job's 42 green
+    # merge-group runs from 2026-11-20T01:35Z to 2026-11-21T08:58Z, its other steps at their
+    # longest, 94 s, 5 s of its clock over its steps, and its test step's longest, 406 s
+    # (run 44807153227), plus that one guard, 250 s: 755 s, or 13 minutes. 15 leaves the test step
+    # room to grow as it did from 285 s on 2026-11-18 to 406 s.
+    timeout-minutes: 15
+    env:
+      JOB_TIMEOUT_MINUTES: 15 # this job's timeout-minutes, for gh-read.sh's wait (check-workflow-files.sh holds the two equal)
     # The NATS server extensions/card-delivery-omp.test.ts delivers Envoy cards and a person's Send
     # through (LEGION_TEST_NATS_URL on the test step): the 2.10 image the envoy-client job pulls,
     # pinned by digest as this file's other service images are.
@@ -37,14 +45,11 @@ jobs:
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup-bun
-      # Only for the mise it leaves at ~/.local/bin/mise, which install-omp installs the pin through:
-      # nothing in this package drives jj.
-      - uses: ./.github/actions/install-jj
       # extensions/dispatch-first-omp.test.ts, extensions/askgate/askgate-omp.test.ts,
       # extensions/card-delivery-omp.test.ts and extensions/tmux-place-omp.test.ts run the pinned
       # Oh My Pi against stand-ins (packages/pi-shared/test/omp-harness.ts) and refuse on GitHub
       # Actions without one. The pin is read from .omp-pin, the repository's one copy of it
-      # (.github/actions/install-omp).
+      # (.github/actions/install-omp, which needs no mise and no token).
       - uses: ./.github/actions/install-omp
       # extensions/tmux-place-omp.test.ts runs that binary in a pane of a tmux server of its own,
       # the only way the place a session registers can be read from the session itself, and refuses
@@ -61,8 +66,12 @@ jobs:
       - name: Test pi-envoy
         run: bun run test
         working-directory: packages/pi-envoy
+        # LEGION_E2E runs the docker-backed reply-grant row of extensions/envoy.test.ts, which starts
+        # a NATS server with an authorization of its own from the image the nats service above
+        # pulled (packages/envoy-client/test/nats-server.ts, NATS_IMAGE).
         env:
           LEGION_TEST_NATS_URL: nats://127.0.0.1:4222
+          LEGION_E2E: "1"
       # The release's pack (release.yaml's pi_envoy_build job), which is also this job's build: the
       # manifest pointed at the one bundle, then scripts/pi-plugin-prepack.sh, which bundles
       # envoy.ts, writes dist/THIRD_PARTY_NOTICES (failing the pack on a bundled package whose

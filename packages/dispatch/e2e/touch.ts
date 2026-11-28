@@ -92,6 +92,7 @@ export async function touchHold(page: Page, point: Point, holdMs: number): Promi
 
 export async function centerOf(locator: Locator): Promise<Point> {
   await locator.scrollIntoViewIfNeeded();
+  // The scroll above waited for the element to be visible and still, so its box is there.
   const box = await locator.boundingBox();
   if (box === null) {
     throw new Error("element is not visible for a touch gesture");

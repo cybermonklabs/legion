@@ -11,8 +11,9 @@ import (
 // wants kept, and the process holding its claim may now be replaced. The machine records the
 // signal and the head the worker reports (supervise.PodUpdateSignalled); the round's own sweep is
 // what acts on it. An answer only brings the round's end forward: the round ends early once every
-// claim it asks has answered and no turn runs, and at its bound (pod_update_grace_minutes) it ends
-// whatever the claims answered.
+// claim it asks has answered, no turn runs and no claim's activity report holds it
+// (internal/daemon's roundEnd.holding), and at its bound (pod_update_grace_minutes) it ends
+// whatever the claims answered and whatever runs.
 //
 // `round` is required, and is the round the worker answers for, as the ask it read named it: the
 // machine takes the answer only for the round its claim stands in, and refuses one naming any
@@ -26,15 +27,15 @@ import (
 // round no early answer from it, and the round would wait for its bound.
 func (s *server) readyForUpdate(w http.ResponseWriter, r *http.Request) {
 	var req claim.ReadyForUpdateRequest
-	if !s.readBody(w, r, &req, s.claimSecretCheck) || !requireFields(w,
+	if !s.readBody(w, r, &req, s.claimSecretCheck) || !s.requireFields(w, r,
 		field{"claimToken", string(req.ClaimToken)}, field{"sessionId", req.SessionID},
 		field{"secret", req.Secret}, field{"round", req.Round},
-	) || !requireGeneration(w, req.Generation) {
+	) || !s.requireGeneration(w, r, req.Generation) {
 		return
 	}
 	m, _, ok := s.authenticated(req.ClaimToken, req.Secret)
 	if !ok {
-		writeJSON(w, claim.InvalidSecret.Status, claim.InvalidSecret)
+		s.writeAnswer(w, r, AnswerRefusal, claim.InvalidSecret.Status, claim.InvalidSecret)
 		return
 	}
 	ctx, decided := s.decision(r, req.ClaimToken)
@@ -44,7 +45,7 @@ func (s *server) readyForUpdate(w http.ResponseWriter, r *http.Request) {
 		Round: req.Round, Head: req.Head,
 	})
 	if err != nil {
-		s.claimFailure(w, "ready_for_update", req.ClaimToken, err)
+		s.claimFailure(w, r, "ready_for_update", req.ClaimToken, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)

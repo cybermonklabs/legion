@@ -1,0 +1,76 @@
+{
+  "answers": [
+    {
+      "answer": "issue-record",
+      "addKeyPaths": [
+        "priorityFrom",
+        "resolvedPriority"
+      ]
+    },
+    {
+      "answer": "p0-bound",
+      "change": "add",
+      "noBody": false,
+      "addKeyPaths": [
+        "bound",
+        "configured",
+        "live",
+        "live.bound",
+        "live.reason",
+        "live.setAt",
+        "live.setBy",
+        "live.setBy.kind",
+        "live.setBy.session"
+      ]
+    },
+    {
+      "answer": "state",
+      "addKeyPaths": [
+        "admission.p0Bound",
+        "admission.p0Bound.bound",
+        "admission.p0Bound.configured",
+        "admission.p0Bound.live",
+        "admission.p0Bound.live.bound",
+        "admission.p0Bound.live.reason",
+        "admission.p0Bound.live.setAt",
+        "admission.p0Bound.live.setBy",
+        "admission.p0Bound.live.setBy.kind",
+        "admission.p0Bound.live.setBy.session",
+        "admission.p0Holders",
+        "issues.*.priorityFrom",
+        "issues.*.resolvedPriority"
+      ]
+    }
+  ],
+  "routes": [
+    {
+      "route": "POST /legion/v1/project/p0-bound",
+      "change": "add",
+      "addFieldPaths": [
+        "bound",
+        "grantId",
+        "reason",
+        "unbounded"
+      ]
+    },
+    {
+      "route": "POST /legion/v1/project/p0-bound/clear",
+      "change": "add",
+      "addFieldPaths": [
+        "grantId",
+        "reason"
+      ]
+    }
+  ],
+  "answerRows": [
+    {
+      "id": "p0-bound",
+      "routes": [
+        "POST /legion/v1/project/p0-bound",
+        "POST /legion/v1/project/p0-bound/clear"
+      ],
+      "noBody": false
+    }
+  ],
+  "enumeratedRows": []
+}

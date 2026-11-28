@@ -55,14 +55,14 @@ func startListenerStream(t *testing.T, cfg config.Service) *bus.Client {
 // in its subjects, its age or its duplicate window keeps the three copies, the byte limit and the
 // id, and corrects the subjects, the age, the window and discard, to DiscardNew.
 func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsTheStream(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// listenerSettings).
 	for _, drift := range bustest.StreamDrifts() {
 		t.Run(drift.Name, func(t *testing.T) {
 			cluster := testnats.StartCluster(t, 3)
 			js := cluster.JetStream(t)
 			deployed := bustest.DeployedThreeCopyStream(drift.Change)
-			if _, err := js.AddStream(&deployed); err != nil {
-				t.Fatalf("deploy the stream: %v", err)
-			}
+			cluster.CreateStream(t, deployed)
 			before := testnats.AwaitSettledStream(t, js, bus.Stream).Config
 
 			startListenerStream(t, listenerSettings(t, cluster.URL(), map[string]string{
@@ -79,6 +79,8 @@ func TestAListenerStartKeepsAThreeCopyStreamsCopiesByteLimitAndIDAsItCorrectsThe
 // created, and the durable the listener's start created and bound on it (bindListenerDurable),
 // which sets no replica count of its own, moves to three copies with it.
 func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
+	// Not parallel: it sets environment variables of the whole process (t.Setenv in
+	// listenerSettings).
 	cluster := testnats.StartCluster(t, 3)
 	js := cluster.JetStream(t)
 	first := listenerSettings(t, cluster.URL(), nil)
@@ -107,14 +109,16 @@ func TestRaisingTheStreamMovesTheListenersDurableToThreeCopies(t *testing.T) {
 }
 
 // On a single server with the default settings, the listener binary creates the stream and its
-// six buckets (interests, role claims, sessions, known sessions, the Legion agent registry, CI
-// state; the GitHub route opens the last) at one copy, and its next start creates and updates
+// seven buckets (interests, role claims, sessions, known sessions, the Legion agent registry, CI
+// state, the spent-proof bucket; every listener opens the spent-proof bucket, and the GitHub route
+// opens CI state) at one copy, and its next start creates and updates
 // nothing.
 func TestADefaultListenerOnASingleServerCreatesEverythingAtOneCopyAndItsNextStartWritesNothing(t *testing.T) {
+	t.Parallel()
 	const machineID = "replicas-default"
 	uri := testnats.URL(t)
 	binary := cmdtest.Build(t, "envoy-listener")
-	streams := []string{bus.Stream, "KV_" + bus.InterestBucket, "KV_" + bus.RoleClaimBucket, "KV_" + bus.SessionBucket, "KV_" + bus.KnownSessionBucket, "KV_" + bus.LegionAgentBucket, "KV_" + bus.CIStateBucket}
+	streams := []string{bus.Stream, "KV_" + bus.InterestBucket, "KV_" + bus.RoleClaimBucket, "KV_" + bus.SessionBucket, "KV_" + bus.KnownSessionBucket, "KV_" + bus.LegionAgentBucket, "KV_" + bus.CIStateBucket, "KV_" + bus.DPoPProofBucket}
 
 	bustest.RequireFirstStartAtOneCopyAndNoSecondWrite(t, uri, streams, func() {
 		t.Helper()

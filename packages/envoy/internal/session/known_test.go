@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"runtime"
@@ -26,7 +27,7 @@ import (
 func openKnown(t *testing.T, now func() time.Time) *KnownSessions {
 	t.Helper()
 	client := setupNATS(t)
-	known, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
+	known, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1), WithKnownSessionClock(now))
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -79,14 +80,17 @@ func TestKnownSessionsAnswerByIDAndByTopic(t *testing.T) {
 // TouchWithin moves a record's last_seen and keeps its content; a session the store knows nothing
 // of writes nothing.
 func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
-	clock := time.Now()
-	known := openKnown(t, func() time.Time { return clock })
+	// The store's sweeper reads the clock on its own goroutine, in its marker pass every
+	// kvchunk.MarkerGrace until the store stops (sweepUntilStopped), so the test moves the clock
+	// through knownClock's lock.
+	clock := &knownClock{at: time.Now()}
+	known := openKnown(t, clock.Now)
 	topics := []string{"notifications.team.deploy-squad"}
 	if err := known.RecordWithin(context.Background(), KnownSession{SessionID: "ses_touch", Topics: topics}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
 	first, _ := known.Get("ses_touch")
-	clock = clock.Add(KnownSessionRefreshAge + time.Minute)
+	clock.set(clock.Now().Add(KnownSessionRefreshAge + time.Minute))
 	if err := known.TouchWithin(context.Background(), "ses_touch"); err != nil {
 		t.Fatalf("touch: %v", err)
 	}
@@ -94,8 +98,8 @@ func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
 	if !ok {
 		t.Fatal("the touched record is gone")
 	}
-	if moved.LastSeen != clock.UnixMilli() || moved.LastSeen == first.LastSeen {
-		t.Errorf("last_seen = %d, want the clock's %d (was %d)", moved.LastSeen, clock.UnixMilli(), first.LastSeen)
+	if moved.LastSeen != clock.Now().UnixMilli() || moved.LastSeen == first.LastSeen {
+		t.Errorf("last_seen = %d, want the clock's %d (was %d)", moved.LastSeen, clock.Now().UnixMilli(), first.LastSeen)
 	}
 	if !slices.Equal(moved.Topics, topics) {
 		t.Errorf("topics = %v, want the record's own %v", moved.Topics, topics)
@@ -108,18 +112,71 @@ func TestKnownSessionsTouchKeepsTheRecordAndMovesLastSeen(t *testing.T) {
 	}
 }
 
+// observedKnown is openKnown with the store's watcher feeding its cache through a holdingCache, so
+// a test can wait for the watcher to deliver back a record the store wrote through (holdApply on
+// the record's key, opened at once). Once the first read has completed it ends the store's watcher
+// and puts in its place one built as startWatch builds it, over the same bucket, with the store's
+// logger and watch options, the way holdingRegistry replaces the session registry's watcher. Unlike
+// holdingRegistry it writes the field under openMu, which every read of the known store's watcher
+// takes, and it waits until the replacement's own first read has completed, so a delivery the gate
+// meets after that is of a write the test makes.
+func observedKnown(t *testing.T, now func() time.Time) (*KnownSessions, *holdingCache) {
+	t.Helper()
+	known := openKnown(t, now)
+	previous := known.watch()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	previous.End(ctx)
+	held := &holdingCache{Cache: knownCache{known}}
+	replacement := kvwatch.New("known session store", previous.KV(), held,
+		append([]kvwatch.Option{kvwatch.WithLogger(known.log)}, known.watchOptions...)...)
+	known.openMu.Lock()
+	known.watcher = replacement
+	known.openMu.Unlock()
+	replacement.Start()
+	if err := known.WaitForCacheReady(context.Background()); err != nil {
+		t.Fatalf("the replaced watcher's first read did not complete: %v", err)
+	}
+	return known, held
+}
+
 // A record whose last_seen is past the 30-day retention answers as no record, by id and by topic,
 // before the sweep has run; the sweep then gives its memory back.
+//
+// The write puts the record in the copy at once (write-through), and the watcher delivers the same
+// revision back a moment later. The sweep's removal keeps that revision in the copy's fence, which
+// drops only older ones (kvwatch.Copy.Remove), so a delivery applied after the sweep puts the
+// record back: a sweep run before the watcher has delivered the write proves nothing about the
+// sweep. So the row sweeps once that delivery has been applied. In production a delivery can put
+// back a record the sweep took too: a later read of the bucket (a Rewatch) delivers every record
+// the bucket still holds, and the bucket can still hold a record past this store's retention. A
+// bucket that already existed keeps the TTL it was created with (openKnownBucket changes none),
+// and a listener whose clock is behind stamps a record's last_seen earlier than its write, so the
+// record is past the retention here before the bucket's TTL removes it. Get and MatchEach answer no
+// such record, and it costs its memory until the next sweep.
 func TestKnownSessionsAnswerNoRecordPastTheRetention(t *testing.T) {
-	clock := time.Now()
-	known := openKnown(t, func() time.Time { return clock })
+	// The store's sweeper reads the clock on its own goroutine, in its marker pass every
+	// kvchunk.MarkerGrace until the store stops (sweepUntilStopped), so the test moves the clock
+	// through knownClock's lock.
+	clock := &knownClock{at: time.Now()}
+	known, cache := observedKnown(t, clock.Now)
+	delivered := cache.holdApply(t, "ses_old")
+	delivered.open()
 	if err := known.RecordWithin(context.Background(), KnownSession{
 		SessionID: "ses_old",
 		Topics:    []string{"notifications.team.deploy-squad"},
 	}); err != nil {
 		t.Fatalf("record: %v", err)
 	}
-	clock = clock.Add(KnownSessionRetention + time.Hour)
+	testwait.Eventually(t, "the watcher to deliver ses_old's write back to the copy", func() bool {
+		select {
+		case <-delivered.done:
+			return true
+		default:
+			return false
+		}
+	})
+	clock.set(clock.Now().Add(KnownSessionRetention + time.Hour))
 	if _, ok := known.Get("ses_old"); ok {
 		t.Error("Get answered a record older than the retention")
 	}
@@ -163,7 +220,7 @@ func TestNilKnownSessionsAnswersNothingAndPanicsNowhere(t *testing.T) {
 	if err := known.TouchWithin(context.Background(), "ses_any"); err != nil {
 		t.Errorf("TouchWithin on a nil store = %v, want nil", err)
 	}
-	if err := known.Rewatch(nil); err != nil {
+	if err := known.Rewatch(context.Background(), nil); err != nil {
 		t.Errorf("Rewatch on a nil store = %v, want nil", err)
 	}
 	if err := known.WaitForCacheReady(context.Background()); err != nil {
@@ -192,6 +249,42 @@ func knownBucketGrant() []string {
 	}
 }
 
+// An attempt to open the bucket while nats.go reconnects the connection fails as
+// bus.ErrReconnecting, and the start's one WARN names the reconnect. nats.go refuses the bucket's
+// lookup then before it sends anything, with words of its own
+// (`nats: key-value requires at least server version 2.6.2`), since a reconnecting connection
+// reports no server version, and those words name no reconnect.
+func TestAKnownBucketOpenWhileNATSReconnectsFailsByName(t *testing.T) {
+	srv, uri := testnats.Start(t)
+	client, err := bus.Connect([]string{uri}, bus.WithName(t.Name()))
+	if err != nil {
+		t.Fatalf("connect: %v", err)
+	}
+	t.Cleanup(client.Close)
+	srv.Stop(t)
+	if !testwait.Holds(10*time.Second, 10*time.Millisecond, func() bool { return client.Conn.Status() == nats.RECONNECTING }) {
+		t.Fatalf("the connection reads %v 10s after its server stopped, want RECONNECTING", client.Conn.Status())
+	}
+
+	if _, err := openKnownBucket(context.Background(), client.Conn, 1); !errors.Is(err, bus.ErrReconnecting) {
+		t.Fatalf("the open while NATS reconnects failed with %v, want bus.ErrReconnecting", err)
+	}
+
+	logs := &lockedWriter{}
+	known, err := OpenKnownSessions(t.Context(), client.Conn,
+		WithKnownSessionReplicas(1),
+		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
+		// The retry waits an hour, so the start's own attempt is the one the WARN reports.
+		withKnownSessionRetry(time.Hour, time.Hour))
+	if err != nil {
+		t.Fatalf("open the store while NATS reconnects: %v", err)
+	}
+	t.Cleanup(known.StopWatch)
+	if warned := logs.Lines("the known-session bucket is not open"); !strings.Contains(warned, "bus: NATS is reconnecting") {
+		t.Fatalf("the start's WARN reads %q, want it to name the reconnect: bus: NATS is reconnecting", warned)
+	}
+}
+
 // A store whose NATS user may not open the bucket opens all the same, within one attempt's wait:
 // it stops no start, waits for no cache, answers no record and writes nothing, and says so once.
 // When the grant arrives an attempt of its own opens the bucket, with no restart, and the store
@@ -210,7 +303,7 @@ func TestAKnownSessionStoreOpensItsDeniedBucketOnceTheGrantArrives(t *testing.T)
 	logged := logs.String
 
 	started := time.Now()
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		// The production schedule's first wait is a second and its cap five minutes, which a
@@ -310,7 +403,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 	// whole question, and a handful of records would be filled whether it waits or not.
 	const records = 2000
 	const topic = "notifications.team.late-open"
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -330,7 +423,7 @@ func TestABucketOpenedAfterTheStartAnswersTheRecordsItHolds(t *testing.T) {
 
 	// The grant goes away, as it is away on every listener started before it is applied.
 	grant.Grant(t, "nothing.this.store.uses")
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {
@@ -415,7 +508,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 	client := setupNATS(t)
 	const topic = "notifications.team.timed-out-scan"
 	ids := []string{"ses_timeout_1", "ses_timeout_2", "ses_timeout_3"}
-	filling, err := OpenKnownSessions(client.Conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), client.Conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -425,7 +518,7 @@ func TestAStoreWhoseFirstScanTimedOutOpensOnlyOnceItsRescanCompletes(t *testing.
 		}
 	}
 	filling.StopWatch()
-	raw, err := bus.OpenKeyValue(client.Conn, client.JS(), bus.KnownSessionBucket)
+	raw, err := bus.OpenKeyValue(context.Background(), client.Conn, client.JS(), bus.KnownSessionBucket)
 	if err != nil {
 		t.Fatalf("open the known-session bucket: %v", err)
 	}
@@ -488,7 +581,7 @@ func knownOverGrant(t *testing.T, first, longest time.Duration, extra ...KnownSe
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(first, longest),
 	}, extra...)
-	known, err := OpenKnownSessions(conn, options...)
+	known, err := OpenKnownSessions(t.Context(), conn, options...)
 	if err != nil {
 		t.Fatalf("open the known-session store: %v", err)
 	}
@@ -544,7 +637,7 @@ func TestAFailedMoveToARecoveredConnectionIsRepairedByTheStore(t *testing.T) {
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 	if watchHandle(known) != before {
@@ -591,7 +684,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 	if !repairRunning(known) {
@@ -599,7 +692,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 	}
 
 	grant.Grant(t, knownBucketGrant()...)
-	if err := known.Rewatch(conn); err != nil {
+	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of the next connection event, once the cluster took this listener back: %v", err)
 	}
 	moved := watchHandle(known)
@@ -625,7 +718,7 @@ func TestAMoveThatSucceedsEndsTheStoresRetry(t *testing.T) {
 func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	known, conn, grant, logged := knownOverGrant(t, 5*time.Second, 5*time.Second)
 
-	if err := known.Rewatch(conn); err != nil {
+	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of an ordinary connection event: %v", err)
 	}
 	if strings.Contains(logged(), knownBackLine) {
@@ -633,7 +726,7 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	}
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a repair")
 	}
 	if strings.Contains(logged(), knownBackLine) {
@@ -641,7 +734,7 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 	}
 
 	grant.Grant(t, knownBucketGrant()...)
-	if err := known.Rewatch(conn); err != nil {
+	if err := known.Rewatch(context.Background(), conn); err != nil {
 		t.Fatalf("the move of the next connection event, once the cluster took this listener back: %v", err)
 	}
 	var back []string
@@ -669,10 +762,11 @@ func TestTheStoreSaysItIsBackAfterARepairThroughAConnectionEvent(t *testing.T) {
 // (kvwatch.Watcher.Servable), and past it answers nothing: Opened is false, so a publish leaves its
 // counts out, and Get answers no record, so a send to a session with no entry answers 404, exactly
 // as on a listener with no bucket. Once the retry has moved the watcher and the moved watcher's
-// read has completed, the store answers again. The watcher's clock is the test's, so the bound is
-// passed without waiting it out.
+// read has completed, the store answers again. The watcher's clock is the test's, and it moves only
+// when the test moves it, so the bound is passed without waiting it out, and a failed move that
+// takes minutes on a busy machine does not pass it before the test asks the store inside it.
 func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
-	watcherClock := &clock{}
+	watcherClock := &heldClock{now: time.Now()}
 	known, conn, grant, logged := knownOverGrant(t, 200*time.Millisecond, time.Second, withKnownSessionWatch(kvwatch.WithNow(watcherClock.Now)))
 	const stale = "ses_stale_store"
 	const topic = "notifications.team.stale-store"
@@ -684,7 +778,7 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	// bucket, and its stale episode begins at the disconnect.
 	grant.Grant(t, "nothing.this.store.uses")
 	known.Disconnected()
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a stale store")
 	}
 	if !known.Opened() {
@@ -713,9 +807,38 @@ func TestAStaleStoreLeavesTheCountsOutPastItsBound(t *testing.T) {
 	if _, ok := known.Get(stale); !ok {
 		t.Error("the repaired store answers no record of the session written before the failed move")
 	}
+	// Opened is the moved watcher's read completed, on the watcher's own goroutine, and the line
+	// saying the store is back is written by the retry once its move has returned (attemptRepair),
+	// so the two are not ordered: a count read when Opened turns true can find no line yet. The
+	// retry retires at an attempt after the one that wrote the line, both under repairMu, so its
+	// retirement is what the count waits for, and no attempt after it writes a second line.
+	awaitKnown(t, 60*time.Second, "the repair did not retire once it had nothing left to repair", func() bool {
+		return !repairRunning(known)
+	})
 	if lines := strings.Count(logged(), knownBackLine); lines != 1 {
 		t.Errorf("the repair logged %d lines saying the store is back, want one:\n%s", lines, logged())
 	}
+}
+
+// heldClock is a clock that moves only when the test advances it, as kvwatch's own tests hold
+// theirs: a stale bound measured on it is passed by the test's advance, never by how long the
+// steps before that advance took. The package's other clock (clock) follows the real time, which
+// a stale episode would then measure too.
+type heldClock struct {
+	mu  sync.Mutex
+	now time.Time
+}
+
+func (c *heldClock) Now() time.Time {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.now
+}
+
+func (c *heldClock) advance(d time.Duration) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.now = c.now.Add(d)
 }
 
 // A stop ends the retry wherever it is, and a store that stopped repairs nothing afterwards: its
@@ -725,7 +848,7 @@ func TestAStopEndsTheStoresRetry(t *testing.T) {
 	before := watchHandle(known)
 
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 	if watchHandle(known) != before {
@@ -778,7 +901,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	// The records the late open is to answer once the store is repaired.
 	const topic = "notifications.team.late-open-repair"
 	held := []string{"ses_late_repair_1", "ses_late_repair_2", "ses_late_repair_3"}
-	filling, err := OpenKnownSessions(conn, WithKnownSessionReplicas(1))
+	filling, err := OpenKnownSessions(t.Context(), conn, WithKnownSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the store that fills the bucket: %v", err)
 	}
@@ -804,7 +927,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	grant.Grant(t, "nothing.this.store.uses")
 	logs := &lockedWriter{}
 	logged := logs.String
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		WithKnownSessionLogger(slog.New(slog.NewTextHandler(logs, nil))),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond),
@@ -843,7 +966,7 @@ func TestAFailedMoveDuringTheFirstReadOfALateOpenIsRepairedByTheStore(t *testing
 	// The reconnect after the disconnect moves the watcher, and the move fails: the cluster
 	// refuses this listener again.
 	grant.Grant(t, "nothing.this.store.uses")
-	if err := known.Rewatch(conn); err == nil {
+	if err := known.Rewatch(context.Background(), conn); err == nil {
 		t.Fatal("the move succeeded while the user's grant named none of the bucket's subjects; this test says nothing about a move that failed")
 	}
 
@@ -897,7 +1020,7 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 		t.Fatalf("connect as the user whose grant does not carry the bucket: %v", err)
 	}
 	t.Cleanup(conn.Close)
-	known, err := OpenKnownSessions(conn,
+	known, err := OpenKnownSessions(t.Context(), conn,
 		WithKnownSessionReplicas(1),
 		withKnownSessionRetry(100*time.Millisecond, 500*time.Millisecond))
 	if err != nil {
@@ -936,8 +1059,9 @@ func TestAWatchThatEndsBeforeTheFirstReadOfALateOpenIsRepairedByTheStore(t *test
 
 // knownSessionMemoryBound is what the records, their revision fence and the subject index of
 // 100,000 sessions may cost in memory. Each session here carries its agent subject, which no other
-// session shares, and one of ten team topics, which is the shape the store holds in production:
-// one unique pattern per session plus a handful of shared ones. The measurement on this machine
+// session shares, one of ten team topics, and the principal it registered as, one of ten, which is
+// the shape the store holds in production: one unique pattern per session plus a handful of shared
+// ones, and a few principals that many sessions share. The measurement on this machine
 // (linux/amd64, go1.27), over the watcher's copy (kvwatch.Copy), was 89,710,800 bytes, 85.6 MiB,
 // 897 bytes a record. The bound is 128 MiB: room for the allocator's own slack and for a Go
 // release that grows a map's header, while still failing a change that makes a record or an index
@@ -963,6 +1087,7 @@ func TestKnownSessionsMemoryForAHundredThousandRecords(t *testing.T) {
 			Capabilities: []string{"aside"},
 			Topics:       []string{"notifications.agent." + sessionID, fmt.Sprintf("notifications.team.squad-%d", i%10)},
 			LastSeen:     now,
+			Principal:    fmt.Sprintf("person-%d@example.com", i%10),
 		})
 		if err != nil {
 			t.Fatalf("encode %s: %v", sessionID, err)

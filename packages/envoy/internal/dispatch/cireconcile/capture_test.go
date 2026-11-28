@@ -5,10 +5,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // The head the captured answers below are of: the oldest open pull request of
@@ -22,6 +24,17 @@ import (
 // testdata/rest-check-runs.json and testdata/rest-check-suites.json are the same commit's two
 // REST listings, captured the same way (`filter=all` for the runs, as the pass reads them),
 // each object kept down to the fields an observation reads and the two it is keyed by.
+//
+// testdata/graphql-page-statuses.json and testdata/rest-commit-statuses.json are one head's
+// commit statuses as headsQueryWithStatuses and the REST listing of the commit's combined status
+// answer them. They are not captured from GitHub: no repository a test here may name carried a
+// commit status that the pod could read when they were written. They are built from the fields
+// GitHub documents for a StatusContext (context, state, createdAt, targetUrl and description, the
+// state one of ERROR, EXPECTED, FAILURE, PENDING and SUCCESS) and for each status of the combined
+// status of a reference (context, state, created_at, target_url and description), under the
+// placeholder repository and head the harness reconciles (Acme/Widgets#7). They hold a status in
+// each state either read answers, a link and a description answered null, and the head's one
+// check suite and its one run.
 const (
 	capturedRepository = "cybermonklabs/legion"
 	capturedOwner      = "cybermonklabs"
@@ -75,7 +88,7 @@ func capturedPull(t *testing.T) *graphQLPull {
 // and the check objects it holds, through the code the pass runs.
 func capturedHead(t *testing.T) queryHead {
 	t.Helper()
-	head := headOf(capturedPull(t), false)
+	head := headOf(capturedPull(t), false, nil)
 	if head.overflow != "" {
 		t.Fatalf("the captured answer's head is one the pass would read over REST: %s", head.overflow)
 	}
@@ -106,6 +119,7 @@ func observationsOf(t *testing.T, event string, items []object) map[string]contr
 // own bodies make. It is k5's mapping, read from answers captured from the real API rather
 // than from a stand-in's idea of them.
 func TestGitHubsQueryAndItsRESTListingsMapToOneSetOfObservations(t *testing.T) {
+	t.Parallel()
 	head := capturedHead(t)
 	if head.sha != capturedSHA {
 		t.Fatalf("the captured answer is of commit %s, want %s", head.sha, capturedSHA)
@@ -149,13 +163,92 @@ func TestGitHubsQueryAndItsRESTListingsMapToOneSetOfObservations(t *testing.T) {
 	}
 }
 
+// statusPagePull is the one open pull request of the GraphQL page that carries commit statuses
+// (testdata/graphql-page-statuses.json), built from the fields GitHub documents for a
+// StatusContext rather than captured.
+func statusPagePull(t *testing.T) *graphQLPull {
+	t.Helper()
+	var answer graphQLAnswer
+	if err := json.Unmarshal([]byte(captured(t, "graphql-page-statuses.json")), &answer); err != nil {
+		t.Fatalf("the GraphQL answer with statuses is not GitHub's envelope: %v", err)
+	}
+	if answer.Data.Repository == nil || len(answer.Data.Repository.PullRequests.Nodes) != 1 {
+		t.Fatalf("the GraphQL answer with statuses holds no one open pull request: %+v", answer)
+	}
+	return answer.Data.Repository.PullRequests.Nodes[0]
+}
+
+// statusObservationsOf is each status object as the observation the CI record is written from,
+// keyed by its context, leaving out every object the mapping maps to none.
+func statusObservationsOf(items []object) map[string]contracts.StatusObservation {
+	mapped := map[string]contracts.StatusObservation{}
+	for _, item := range items {
+		if observation, ok := contracts.GithubStatusObservation(item, gitHubOwner, gitHubName, pullNumber, headSHA); ok {
+			mapped[observation.Context] = observation
+		}
+	}
+	return mapped
+}
+
+// One head's commit statuses in the shape of GitHub's query and in that of its REST listing, both
+// built from the fields GitHub documents for a StatusContext and for the combined status of a
+// reference (testdata/graphql-page-statuses.json, testdata/rest-commit-statuses.json), map to the
+// very same status observations, field for field, and to no more than the statuses in success,
+// failure or error: a pending status, and GraphQL's EXPECTED, map to none either way. A status
+// field GitHub refused costs the head its statuses alone: its check objects map as before.
+func TestGitHubsQueryAndItsRESTListingMapAHeadsStatusesToOneSetOfObservations(t *testing.T) {
+	t.Parallel()
+	head := headOf(statusPagePull(t), false, nil)
+	if head.overflow != "" || head.sha != headSHA {
+		t.Fatalf("the answer's head is %q, read over REST for %q; want %s answered whole", head.sha, head.overflow, headSHA)
+	}
+	if len(head.statuses) != 3 {
+		t.Fatalf("the query's head carries %d statuses to record, want the three in success, failure and error: %v", len(head.statuses), head.statuses)
+	}
+	fromQuery := statusObservationsOf(head.statuses)
+	fromREST := statusObservationsOf(capturedObjects(t, "rest-commit-statuses.json"))
+	want := map[string]string{"ci/build": "success", "ci/lint": "failure", "ci/license": "error"}
+	for _, observations := range []map[string]contracts.StatusObservation{fromQuery, fromREST} {
+		if len(observations) != len(want) {
+			t.Fatalf("the statuses map to %v, want %v and no pending or expected one", observations, want)
+		}
+		for context, state := range want {
+			if observations[context].State != state {
+				t.Fatalf("status %s maps to %+v, want state %s", context, observations[context], state)
+			}
+		}
+	}
+	for context, listed := range fromREST {
+		if queried := fromQuery[context]; queried != listed {
+			t.Errorf("status %s maps from the query to\n  %+v\nand from the REST listing to\n  %+v", context, queried, listed)
+		}
+	}
+	if license := fromQuery["ci/license"]; license.URL != "" || license.Description != "" || license.CreatedAt != "2026-11-17T05:03:00Z" {
+		t.Errorf("a status with no link and no description maps to %+v, want both empty and its time kept", license)
+	}
+
+	entries := []graphQLError{{Type: "FORBIDDEN", Message: "Resource not accessible by integration",
+		Path: []any{"repository", "pullRequests", "nodes", float64(0), "commits", "nodes", float64(0), "commit", "status"}}}
+	refused := headOf(statusPagePull(t), false, entries)
+	if refused.overflow != "" || len(refused.statuses) != 0 {
+		t.Fatalf("a head whose status field GitHub refused is read over REST for %q with statuses %v; want it answered whole with none", refused.overflow, refused.statuses)
+	}
+	if !reflect.DeepEqual(refused.statusesRefused, entries) {
+		t.Fatalf("a head whose status field GitHub refused keeps the entries %+v, want %+v for the pass to name at WARN", refused.statusesRefused, entries)
+	}
+	if len(refused.runs) != len(head.runs) || len(refused.suites) != len(head.suites) {
+		t.Fatalf("a refused status field left %d runs and %d suites, want the head's %d and %d", len(refused.runs), len(refused.suites), len(head.runs), len(head.suites))
+	}
+}
+
 // The runs and the completed suites the listener recorded from GitHub's own webhooks, read
 // again by a pass whose answer is GitHub's own captured GraphQL page, change no record and
 // publish no settlement: the pass writes the observations the webhooks already wrote, and
 // cistore applies an unchanged observation as no change. It is k5 end to end.
 func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T) {
+	t.Parallel()
 	h := newHarness(t, reviewerAppID)
-	h.mapRepository(capturedRepository)
+	h.seedProjectDefault(capturedRepository)
 	h.github.setRepository(capturedRepository, capturedRepository, 555)
 	// The one open pull request the captured page answers, and the captured page itself as the
 	// stand-in's answer to the pass's query about it.
@@ -183,16 +276,14 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 		delivery++
 		h.post("check_suite", capturedWebhook(t, "check_suite", item), fmt.Sprintf("suite-%d", delivery))
 	}
-	if _, err := settlements.NextMsg(15 * time.Second); err != nil {
+	if _, err := settlements.NextMsgWithContext(testwait.Context(t)); err != nil {
 		t.Fatalf("the webhooks published no settlement: %v", err)
 	}
-	before := capturedRevision(t, h)
+	_, before := h.settledRecordAt(capturedRepository, capturedNumber, capturedSHA, 50*time.Millisecond)
 
 	h.pass()
 
-	if message, err := settlements.NextMsg(2 * time.Second); err == nil {
-		t.Fatalf("the pass published a settlement over what the webhooks recorded: %s", message.Data)
-	}
+	h.noSettlementAt(settlements, "after the pass over what the webhooks recorded", capturedOwner, capturedName, fmt.Sprint(capturedNumber))
 	state, after := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
 	if state == nil {
 		t.Fatal("the head has no record after the pass")
@@ -209,24 +300,6 @@ func TestAPassOverACapturedAnswerChangesNothingTheWebhooksRecorded(t *testing.T)
 	if got := number(t, h.passLine(), "records"); got != 0 {
 		t.Fatalf("the pass changed %d records, want none: %v", got, h.passLine())
 	}
-}
-
-// capturedRevision is the head's record revision once the summary loop has stopped writing it:
-// publishing a settlement is itself two writes of the record, so a revision read the moment a
-// settlement arrives still moves afterwards.
-func capturedRevision(t *testing.T, h *harness) uint64 {
-	t.Helper()
-	var revision uint64
-	for deadline := time.Now().Add(15 * time.Second); time.Now().Before(deadline); {
-		state, next := h.recordAt(capturedRepository, capturedNumber, capturedSHA)
-		if state != nil && state.SettledEmitted && state.Claim == nil && next == revision {
-			return revision
-		}
-		revision = next
-		time.Sleep(50 * time.Millisecond)
-	}
-	t.Fatalf("the head's record did not settle: %+v", h.stateAt(capturedRepository, capturedNumber, capturedSHA))
-	return 0
 }
 
 // capturedWebhook is one GitHub webhook body carrying a captured object as its event, named for

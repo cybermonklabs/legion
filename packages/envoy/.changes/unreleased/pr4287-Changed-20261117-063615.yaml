@@ -1,0 +1,7 @@
+kind: Changed
+body: |-
+    A session the NATS auth service admits publishes replies under its own id alone: `natsgrant.Session` grants `_INBOX.*.<session id>.>` (`bus.SessionReplies`) where it granted every `_INBOX.` subject, so a session can no longer answer a relay frame, a connection probe or an agent stream replay asked of another session, nor publish into a requester's own inbox. The shared session user (`natsgrant.SessionPattern`, `core.SessionPermissions`) and the host users keep `_INBOX.>`, so a session holding either can still answer for another session until hubs admit sessions only through the auth service.
+    Every listener and Dispatch a session reaches must run the release that asks on reply subjects naming the session (#4286) before sessions are admitted with this grant: a session on it cannot answer an older listener's frames or probe, nor an older Dispatch's replay request.
+time: 2026-11-17T06:36:15.222393722Z
+custom:
+    Issue: pr4287

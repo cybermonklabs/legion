@@ -47,13 +47,16 @@ func ClaudeConfigDir(stateDir string, token claim.Token) string {
 // writeClaudeMCPConfig writes the pane's MCP configuration (claudelaunch.MCPConfig) into configDir,
 // 0600, and returns its path. The pane's Claude Code reads it off the daemon's own disk, which is
 // why the writing stays here; a pod's launcher writes the same document into its own directory.
+// configDir is the pane's own, which the pane can write, so the file is replaced by rename
+// (runtime.ReplaceFile) and never opened where it stands: a fifo the pane left at its path never
+// holds the spawn waiting for a reader, and a link there is never written through.
 func writeClaudeMCPConfig(configDir string, launch ClaudeLaunch) (string, error) {
 	raw, err := claudelaunch.MCPConfig(launch.Bun, launch.PluginDir, configDir)
 	if err != nil {
 		return "", err
 	}
 	path := filepath.Join(configDir, "mcp.json")
-	if err := os.WriteFile(path, raw, 0o600); err != nil {
+	if err := runtime.ReplaceFile(path, string(raw)); err != nil {
 		return "", fmt.Errorf("write the Claude Code MCP configuration: %w", err)
 	}
 	return path, nil

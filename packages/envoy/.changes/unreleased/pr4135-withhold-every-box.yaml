@@ -1,0 +1,16 @@
+kind: Fixed
+body: |-
+  An operator's revoke of an automatic grant withholds its names from every live or dormant
+  enrollment of the grant's session and ends their automatic grants of those names, where it wrote
+  only on the enrollment the grant hung off. So the withhold reaches the box the session runs on
+  even where the grant stayed on a box the session left holding nothing live, and a dormant box's
+  grant of a withheld name no longer comes back to the session at its next move. An enrolment of
+  the session waits for any revoke of one of its grants in flight, and every such revoke for an
+  enrolment in flight (a lock both take), so the operator's withhold misses neither. A revoke whose
+  grant an adoption moved to another box each time it read it, three times in a row, answers
+  `409 GRANT_MOVING`, revoking nothing; the same revoke ends the grant once it stays put.
+  `403 NOT_APPROVER` from a grant revoke now says "only the grant's approver or the person its
+  session acts for may revoke it", the rule the broker decides by.
+time: 2026-11-20T20:01:12Z
+custom:
+    Issue: pr4135

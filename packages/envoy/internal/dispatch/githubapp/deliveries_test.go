@@ -243,6 +243,37 @@ func TestGraphQLRateLimitReadsTheEnvelopeAndNeverTheData(t *testing.T) {
 	}
 }
 
+// The text of an answer its reader takes as a failure carries GitHub's body at every status but a
+// 2xx, where it ends at the status: a 2xx body is the data the request asked for -- a token the
+// mint answers 200 rather than 201 with, a private repository's pull requests -- and a loop notes
+// the text as the cause GET /healthz serves with no credential. StatusError's text is StatusText's.
+// A refusal keeps its body, and an answer with no body ends at the status at any status.
+func TestTheTextOfA2xxAnswerLeavesItsBodyOut(t *testing.T) {
+	const marker = "ghs_an-installation-token-4324"
+	data := `{"token":"` + marker + `","expires_at":"2026-11-18T06:00:00Z"}`
+	rows := []struct {
+		name string
+		text string
+		want string
+	}{
+		{name: "StatusText of a 200 with data", text: githubapp.StatusText(http.StatusOK, data), want: "status 200"},
+		{name: "StatusText of a 201 with data, as bytes", text: githubapp.StatusText(http.StatusCreated, []byte(data)), want: "status 201"},
+		{name: "StatusText of a 204 with a body", text: githubapp.StatusText(http.StatusNoContent, data), want: "status 204"},
+		{name: "StatusError of a 200 with data", text: (&githubapp.StatusError{Status: http.StatusOK, Body: data}).Error(), want: "status 200"},
+		{name: "StatusError of a 202 with data", text: (&githubapp.StatusError{Status: http.StatusAccepted, Body: data}).Error(), want: "status 202"},
+		{name: "StatusText of a refusal", text: githubapp.StatusText(http.StatusNotFound, `{"message":"Not Found"}`), want: `status 404: {"message":"Not Found"}`},
+		{name: "StatusError of a failure", text: (&githubapp.StatusError{Status: http.StatusInternalServerError, Body: `{"message":"Server Error"}`}).Error(), want: `status 500: {"message":"Server Error"}`},
+		{name: "StatusText of a refusal with no body", text: githubapp.StatusText(http.StatusConflict, ""), want: "status 409"},
+	}
+	for _, row := range rows {
+		t.Run(row.name, func(t *testing.T) {
+			if row.text != row.want || strings.Contains(row.text, marker) {
+				t.Fatalf("the text reads %q, want %q, which carries no 2xx answer's data", row.text, row.want)
+			}
+		})
+	}
+}
+
 // TestRateLimitBoundsTheWaitGitHubNames: RateLimit's wait, which rateLimitWait reads, keeps the
 // one rule every reader of a server's wait in this module keeps (internal/serverwait). A
 // Retry-After of 9999999999 seconds and an X-RateLimit-Reset of math.MaxInt64 with no requests

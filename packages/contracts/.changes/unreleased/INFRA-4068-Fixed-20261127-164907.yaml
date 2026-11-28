@@ -1,0 +1,9 @@
+kind: Fixed
+body: |-
+  The doc comments of `legionSettings` and of `backwardMoves` in `src/legion-api.ts` now say
+  what the daemon does. `review_round_cap` moves nothing: it tells the architect with a
+  `pr-blocked` notice. The `backwardMoves` counts add up to no more than `pass`, which counts
+  every move back, and `rounds` counts review rounds alone.
+time: 2026-11-27T16:49:07Z
+custom:
+    Issue: INFRA-4068

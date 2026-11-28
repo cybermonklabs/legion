@@ -31,6 +31,7 @@ func aliveObservation(m *supervise.Machine) supervise.RuntimeObservation {
 // observation rather than a turn end and is told by the count of turns the machine has ended
 // (supervise.Machine.TurnsEnded, wakeIssue). The tester's task is sent then, and not a sweep later.
 func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name string
 		// end is what ends the implementer's turn once its agent stops streaming, posted through
@@ -61,7 +62,7 @@ func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
 			// The implementer's agent is in a turn of its own, whose start the daemon never read,
 			// and its phase task is answered busy: the claim is recorded working for that turn.
 			implementerConn.SetStreaming(true)
-			implementerConn.RefusePrompt(keptBusyRefusal)
+			implementerConn.FailPrompt(keptBusy)
 			if err := writing.Handle(rig.ctx, supervise.RequestDeliver{Claim: implementer, Task: "implement the plan", ID: "outbox:1",
 				Phase: phase.Implementing, Generation: 1}); err != nil {
 				t.Fatalf("deliver the implementer's task: %v", err)
@@ -121,6 +122,7 @@ func TestABusyRecordedTurnEndReleasesTheIssuesHeldTask(t *testing.T) {
 // read them before that step was written and leaves the machine to judge (supervise's
 // backstopStalledTurn).
 func TestABusyRecordedClaimIsNotBackstopped(t *testing.T) {
+	t.Parallel()
 	rig := newBackstopRig(t)
 	idle := rig.claim(claim.RoleImplementer, "LEGION-209", backstopBound+30*time.Minute, true)
 	idle.State, idle.Pending = supervise.StateReady, nil
@@ -131,7 +133,7 @@ func TestABusyRecordedClaimIsNotBackstopped(t *testing.T) {
 	}
 	conn := fake.NewConn()
 	conn.SetStreaming(true)
-	conn.RefusePrompt(keptBusyRefusal)
+	conn.FailPrompt(keptBusy)
 	rig.sup.deps.Conns.(*fake.Conns).Register(idle.Token, conn)
 
 	if err := m.Handle(context.Background(), supervise.RequestDeliver{Claim: idle.Token, Task: "work the phase", ID: "outbox:3"}); err != nil {
@@ -173,13 +175,14 @@ func TestABusyRecordedClaimIsNotBackstopped(t *testing.T) {
 // releases, which is the control; the same pod, once its implementer's task is answered busy, is
 // held in_turn, and the daemon's own pass queues none of a release's rows.
 func TestABusyRecordedClaimIsNotReleasedAsIdle(t *testing.T) {
+	t.Parallel()
 	rig := newIdleRig(t)
 	ctx := context.Background()
 	decide := func() workflow.IdleDecision {
 		t.Helper()
 		var decision workflow.IdleDecision
 		if _, err := rig.st.ReleaseIdleIssue(ctx, "legion", rig.issue.Key, func(view pods.IdleView) (store.IdleReleaseMark, error) {
-			decision = workflow.IdleRelease(view, time.Now().UTC(), rig.w.idlePeriod, true, api.DaemonAPIVersion)
+			decision = workflow.IdleRelease(view, time.Now().UTC(), rig.w.idlePeriod, true, false, api.DaemonAPIVersion())
 			return store.IdleReleaseMark{}, nil
 		}); err != nil {
 			t.Fatalf("read the pod's idle decision: %v", err)
@@ -191,27 +194,31 @@ func TestABusyRecordedClaimIsNotReleasedAsIdle(t *testing.T) {
 	}
 
 	// The daemon's sweep finds the idle implementer's process alive and sends it its phase's task,
-	// and Oh My Pi answers the send busy.
+	// and Oh My Pi answers the send busy. Neither that record nor the pass after it queues a row:
+	// the implementer holds its role idle and working alike, so the record changes no role holder,
+	// and the pass holds the pod.
 	conn := fake.NewConn()
-	conn.RefusePrompt(keptBusyRefusal)
+	conn.FailPrompt(keptBusy)
 	rig.sup.deps.Conns.(*fake.Conns).Register(rig.token, conn)
-	if err := rig.machine.Handle(ctx, aliveObservation(rig.machine)); err != nil {
-		t.Fatalf("the sweep over the idle implementer: %v", err)
-	}
-	rig.machine.Wait()
-	if sent := conn.Prompts(); len(sent) != 1 {
-		t.Fatalf("sends = %+v, want the one the busy answer refused", sent)
-	}
-	if got := rig.machine.Claim().State; got != supervise.StateWorking {
-		t.Fatalf("the implementer is %s after the busy answer, want it recorded working", got)
-	}
+	queued := rig.queuedBy(t, func() {
+		if err := rig.machine.Handle(ctx, aliveObservation(rig.machine)); err != nil {
+			t.Fatalf("the sweep over the idle implementer: %v", err)
+		}
+		rig.machine.Wait()
+		if sent := conn.Prompts(); len(sent) != 1 {
+			t.Fatalf("sends = %+v, want the one the busy answer refused", sent)
+		}
+		if got := rig.machine.Claim().State; got != supervise.StateWorking {
+			t.Fatalf("the implementer is %s after the busy answer, want it recorded working", got)
+		}
 
-	if decision := decide(); decision.Release || decision.Hold != workflow.IdleHoldInTurn {
-		t.Fatalf("the rule's decision over the busy-recorded pod = %+v, want it held %s", decision, workflow.IdleHoldInTurn)
-	}
-	rig.w.releaseIdlePod(ctx, rig.issue.Key)
-	if got := rig.rows(t); len(got) != 0 {
-		t.Fatalf("queued rows = %v, want none: the pod is held for the implementer's turn", got)
+		if decision := decide(); decision.Release || decision.Hold != workflow.IdleHoldInTurn {
+			t.Fatalf("the rule's decision over the busy-recorded pod = %+v, want it held %s", decision, workflow.IdleHoldInTurn)
+		}
+		rig.w.releaseIdlePod(ctx, rig.issue.Key)
+	})
+	if len(queued) != 0 {
+		t.Fatalf("queued rows = %v, want none: the pod is held for the implementer's turn", queued)
 	}
 	if rig.marked(t) {
 		t.Fatal("the pod was marked for release while its implementer was in a turn")

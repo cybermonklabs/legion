@@ -13,6 +13,8 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testcleanup"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // An answer an agent made for its person carries that person's approval forward only when the
@@ -38,18 +40,20 @@ const actAnswerSpec = "Context\n\n" +
 // (approval_carry_approved_test.go), and not the 20 ms a test that only seeds can afford: a
 // settlement firing while one of these tests holds its joined transaction takes the document's
 // rows in the other order and the two deadlock, which `-race` is slow enough to hit. The seeding
-// below schedules one settlement itself and waits up to three seconds for it, so a second costs
-// the seed nothing.
+// below schedules one settlement itself and waits for it up to a minute, or to a second before the
+// test binary's deadline when that comes first (testwait.Eventually): a loaded machine takes more
+// than a few seconds for a settlement that fires at one, and a seed that never settles still
+// fails, naming what it waited for.
 func seededActDocument(t *testing.T) (*store.Store, *Service, string) {
 	t.Helper()
 	database := storetest.Open(t)
 	artifactID := createDocument(t, database, actAnswerSpec)
 	service := New(Deps{Store: database, Events: events.NewBroker(), Settle: time.Second})
 	service.SetFormGate(formKept)
-	t.Cleanup(func() { _ = service.Shutdown(context.Background()) })
+	testcleanup.Add(t, func() { _ = service.Shutdown(context.Background()) })
 	seedServiceText(t, service, artifactID, actAnswerSpec)
 	service.ScheduleSettlement(artifactID)
-	waitFor(t, 3*time.Second, "settlement to index both blocks", func() bool {
+	testwait.Eventually(t, "settlement to index both blocks", func() bool {
 		var rows int
 		if err := database.Pool.QueryRow(context.Background(), `
 			select count(*) from asks where block_artifact_id = $1 and block_id = any($2::text[])
@@ -109,6 +113,7 @@ func nameVersion(t *testing.T, service *Service, artifactID string) {
 // answer beside an agent's narrow one carries nothing either: the carry counts every block that
 // changed since the approval, and one of them was decided by a credential that may not approve.
 func TestAnActWithoutApproveCarriesNoApproval(t *testing.T) {
+	t.Parallel()
 	for _, test := range []struct {
 		name     string
 		scopes   []string
@@ -155,6 +160,7 @@ func TestAnActWithoutApproveCarriesNoApproval(t *testing.T) {
 // token, so a token narrowed, revoked or deleted after the answer changes nothing: the approval
 // its answer carried still carries at every version written after it.
 func TestTheActsScopesAreTheSnapshotTakenWhenTheAnswerWasMade(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := seededActDocument(t)
 	approveStoredVersion(t, database, artifactID, 1, "alice")
 	// The token row as it stands now: narrowed to the person scope and revoked. The act below
@@ -192,6 +198,7 @@ func TestTheActsScopesAreTheSnapshotTakenWhenTheAnswerWasMade(t *testing.T) {
 // person's own: the approval carries. The answer is built as the stored JSON a release wrote, not
 // as a Go value with a nil field, so what is proved is the decode and not the literal.
 func TestAnAnswerStoredBeforeActsExistedStillCarriesTheApproval(t *testing.T) {
+	t.Parallel()
 	database, service, artifactID := seededActDocument(t)
 	approveStoredVersion(t, database, artifactID, 1, "alice")
 

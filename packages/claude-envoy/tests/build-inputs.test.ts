@@ -128,7 +128,7 @@ test("scripts/build-inputs.txt matches every file the build reads", async () => 
 /** The entries of scripts/build-inputs.txt that are not release inputs, so
  *  $CLAUDE_ENVOY_VERSION_ARGS does not carry them: the toolchain block the list's own header
  *  names — the Bun pin, the lockfile and root manifest and bunfig a `bun install` reads, the two
- *  .gitattributes files, and the three .github paths the build jobs run the build through. No
+ *  .gitattributes files, and the two .github paths the build jobs run the build through. No
  *  plugin's version arguments carry theirs, because a lockfile or runner change alone releases
  *  nothing and the next source commit publishes whatever it built. */
 const NON_RELEASE_INPUTS = [
@@ -138,7 +138,6 @@ const NON_RELEASE_INPUTS = [
   "bunfig.toml",
   ".gitattributes",
   "packages/.gitattributes",
-  ".github/scripts/check-private-names.sh",
   ".github/scripts/release-push.sh",
   ".github/actions/setup-bun",
 ]

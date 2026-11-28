@@ -15,7 +15,14 @@ import { readFileSync } from "node:fs";
 import { cp, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { type IssueKey, LEGION_ROLES, type LegionRole, roleToken } from "@legion/contracts";
+import {
+  type IssueKey,
+  LEGION_ROLES,
+  type LegionRole,
+  LISTENER_CALL_ATTEMPTS,
+  roleToken,
+} from "@legion/contracts";
+import { daemonContract } from "@legion/contracts/daemon-contract";
 import {
   LegionCapabilityReport,
   type LegionCapabilityReportBody,
@@ -35,10 +42,11 @@ import {
   resetEnvoyPluginInterfaceForTests,
 } from "@legion/pi-shared/interface";
 import {
+  owedReminder,
   PHASE_STALL_ENTRY,
-  REMINDER,
   reminderText,
   restorePhaseStallEntry,
+  UNREAD_REMINDER,
 } from "@legion/pi-shared/phase-stall";
 import type {
   AsyncJobSnapshot,
@@ -58,13 +66,17 @@ import {
 } from "@legion/pi-shared/stall-watchdog";
 import { hostAgentRegistryMock, testAgentRoster } from "@legion/pi-shared/test/host-registry";
 import { deliveryFor } from "@legion/pi-shared/test/omp-harness";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { restoreEnvironment } from "@legion/test-fixtures/environment";
+import { turn, turnsUntil } from "@legion/test-fixtures/fake-clock";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 import {
   temporaryDirectories,
   temporaryDirectory,
 } from "@legion/test-fixtures/temporary-directories";
 import { versionControlEnvironment } from "@legion/test-fixtures/version-control-environment";
+import { settled, timeLeft, until } from "@legion/test-fixtures/wait";
 import { logger } from "@oh-my-pi/pi-utils";
 import type { ConnectionOptions, NatsConnection } from "nats";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
@@ -98,6 +110,9 @@ import type {
   setLegionCapabilitySendTimeoutForTests as SetLegionCapabilitySendTimeoutForTests,
   setLegionStallProcessesForTests as SetLegionStallProcessesForTests,
 } from "./legion";
+
+// The contract this build speaks, as `legion.ts` reads it (`daemonContract`): this checkout's.
+const PLUGIN_CONTRACT = daemonContract(pkg, import.meta.dir);
 
 // The consumer answer every registration here is given is the harness's (`deliveryFor`), shared
 // with the tests that run the real binary.
@@ -141,6 +156,8 @@ const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<Nats
   const name = options.name ?? "";
   await natsConnectGates.get(name)?.();
   const endings: (() => void)[] = [];
+  // Settles when the connection is dropped, as nats.js's `closed()` settles when it closes.
+  const shut = Promise.withResolvers<void>();
   const connection = {
     name,
     subjects: [] as string[],
@@ -148,6 +165,7 @@ const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<Nats
     closed: false,
     drop: () => {
       connection.closed = true;
+      shut.resolve();
       for (const end of endings.splice(0)) end();
     },
   };
@@ -157,6 +175,7 @@ const natsStandInConnect = async (options: ConnectionOptions = {}): Promise<Nats
     close: async () => undefined,
     drain: async () => undefined,
     isClosed: () => connection.closed,
+    closed: () => shut.promise,
     flush: async () => undefined,
     publish: () => undefined,
     subscribe: (subject: string) => {
@@ -187,7 +206,8 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
 // Every name a test in this file sets or deletes. They are captured here, above the lines that
 // set ENVOY_CONFIG_FILE and delete OMP_PROFILE and PI_CODING_AGENT_DIR, so what the caller's own
 // process holds — a worker pane's live LEGION_* and DISPATCH_* among them — goes back after each
-// test and once more when this file ends: `bun test` runs every file of a package in one process,
+// test and once more when this file ends: a plain `bun test` runs every file of a package in one
+// process (the package's `test` script passes `--parallel`, which gives each file a fresh one),
 // and the next file reads the environment this one leaves.
 const environmentKeys = [
   "ENVOY_NATS_URL",
@@ -212,6 +232,7 @@ const environmentKeys = [
   "LEGION_STALL_CALL_BOUND_MS",
   "LEGION_STALL_STEP_MS",
   "HOME",
+  "BUN_RUNTIME_TRANSPILER_CACHE_PATH",
   "DISPATCH_URL",
   "DISPATCH_TOKEN",
   "LEGION_BOOT_TOKEN_FILE",
@@ -222,13 +243,20 @@ const environmentKeys = [
   "ENVOY_CONFIG_FILE",
   "OMP_PROFILE",
   "PI_CODING_AGENT_DIR",
+  // The secrets broker and the identity this machine trades there (`brokerRouteConfigured`,
+  // `@legion/envoy-client/broker-credential`). A dev box sets both, and then a listener call the
+  // fixture gives no token of its own trades for one first: the trade fails here and waits to
+  // try again, and "closes its controller-topic subscription once a later controller takes the
+  // role" saw no unregister reach the stand-in. Unset, nothing trades.
+  "AGENT_SECRETS_URL",
+  "AGENT_SECRETS_MACHINE_IDENTITY",
 ] as const;
 
 /** The names the Envoy entry writes for a pane this file starts, rather than a test: `PATH`,
  *  which it puts its own `bin/` first on when it loads, and the two a session's `dispatch`
- *  command reads (packages/pi-envoy/AGENTS.md). They go back with the keys above and are never
- *  deleted with them: the baseline below is "not a Legion pane", and a process with no `PATH`
- *  finds none of the programs these tests run. */
+ *  command reads (packages/pi-envoy/README.md, "The `dispatch` command"). They go back with the
+ *  keys above and are never deleted with them: the baseline below is "not a Legion pane", and a
+ *  process with no `PATH` finds none of the programs these tests run. */
 const entryEnvironmentKeys = ["PATH", "DISPATCH_HOST", "DISPATCH_SESSION_ID"] as const;
 restoreEnvironment([...environmentKeys, ...entryEnvironmentKeys]);
 
@@ -239,9 +267,9 @@ restoreEnvironment([...environmentKeys, ...entryEnvironmentKeys]);
 // them. It is read rather than `process.env` because the two are the same thing only until the
 // first test runs, and a list of names that forgot one would compare that name with itself.
 //
-// `bun test` runs a package's files in one process and `afterAll` hooks run in the order they
-// were registered, so the hook below is registered under this file's cleanup hook: it still runs
-// after the restore above and sees what the next file would read, and Bun stops at the first
+// A plain `bun test` runs a package's files in one process and `afterAll` hooks run in the order
+// they were registered, so the hook below is registered under this file's cleanup hook: it still
+// runs after the restore above and sees what the next file would read, and Bun stops at the first
 // `afterAll` that throws, so a hook registered above the cleanup would leak this file's
 // temporary directories on the one run the probe exists to report. The probe is in this file,
 // and not in a file of its own, because Bun runs a directory's test files in the order the
@@ -368,11 +396,24 @@ const hook = (handlers: Map<string, Handler>, name: string): Handler => {
   return found;
 };
 
+/** The controller's registration secret: random, as a real one is, since the process holds it
+ *  and every line it prints is scrubbed of it (`@legion/contracts/held-secrets`); one spelled from
+ *  words would be scrubbed out of the lines that hold those words. */
+const CONTROLLER_SECRET = fixtureSecret("ctl");
+
+/** The boot token the daemon writes for the controller it launches: random for the same reason. */
+const LAUNCH_BOOT_TOKEN = fixtureSecret("boot");
+
 const originalFetch = globalThis.fetch;
 
 const temporaryPaths: string[] = [];
 const paneStateDirectory = temporaryDirectories("legion-pane-state");
 const controllerStateDirectory = temporaryDirectories("legion-controller");
+/** The working directory of every pane and context a test makes, and its `LEGION_WORKSPACE`: one
+ * of the test's own, removed after it, since the capability report's disk row reads a pane's
+ * repository and the jj overlay resolves its workspace, and a fixed path is one another row or
+ * another run can write. */
+const paneWorkspaceDirectory = temporaryDirectories("legion-pane-workspace");
 
 /** The home the suite's one `jj git init` runs under, so no configuration of the developer's
  * decides what the template holds. */
@@ -433,7 +474,8 @@ afterAll(() => {
 
 beforeEach(async () => {
   // A suite run from inside a Legion pane inherits that pane's LEGION_*/DISPATCH_* launch
-  // environment; every test starts from none and sets only what it declares. The `dispatch`
+  // environment; every test starts from none and sets only what it declares, and a test that
+  // calls out stubs `fetch` itself (`afterEach` puts the real one back). The `dispatch`
   // command's state (the session title file `titleSession` writes) goes to a scratch directory.
   for (const key of environmentKeys) delete process.env[key];
   const dispatchState = await mkdtemp(path.join(os.tmpdir(), "legion-dispatch-state-"));
@@ -443,6 +485,11 @@ beforeEach(async () => {
 });
 
 afterEach(async () => {
+  // A row that holds Bun's fake clock, or pins the system time, and is ended by the command's
+  // guard never reaches its own `finally`, so the real clock comes back here first, before the
+  // removals below and the next row.
+  jest.useRealTimers();
+  setSystemTime();
   globalThis.fetch = originalFetch;
   // OMP's `session_shutdown` removes each envoy instance from the process-wide interface's
   // role-claim bridge; this suite binds a fixture per test and never shuts it down, so it clears
@@ -491,7 +538,7 @@ type HostTitle = { name?: string; source?: "auto" | "user"; readonly set: string
  * the session runs now; `unresolvable` are the selectors `ctx.models.resolve` answers nothing
  * for; `suppressed` are the ones the host itself holds suppressed; and `changes` are the
  * `model_change` entries each accepted switch appended, as the host appends one with the
- * ordinary role (`session/model-controls.ts:249-252` at the pinned tag). */
+ * ordinary role (`session/model-controls.ts:327-331` at the pinned tag). */
 type HostModels = {
   readonly set: HostModel[];
   answers: boolean;
@@ -507,14 +554,17 @@ function hostModel(selector: string): HostModel {
   return { provider: provider ?? "", id: id ?? "" };
 }
 
-function createPi(
+async function createPi(
   options: {
     readonly bindEnvoy?: boolean;
     readonly agentsExposed?: boolean;
     /** The Envoy entry the pane binds; the one this file loaded unless a test loads another. */
     readonly envoyEntry?: typeof envoyExtension;
+    /** The host's answer to each `sendUserMessage`: the promise the host returns, which settles
+     *  when it has taken the prompt and rejects when it fails the send; taken unless a test says. */
+    readonly sendUserMessage?: () => Promise<void>;
   } = {}
-): {
+): Promise<{
   readonly commands: RegisteredCommand[];
   readonly handlers: Map<string, Handler>;
   /** The handlers each bound extension registered for one event, in the order they bound: the
@@ -533,7 +583,7 @@ function createPi(
   readonly title: HostTitle;
   readonly models: HostModels;
   readonly pi: TestPi;
-} {
+}> {
   const commands: RegisteredCommand[] = [];
   const handlers = new Map<string, Handler>();
   const registeredHandlers = new Map<string, Handler[]>();
@@ -563,9 +613,10 @@ function createPi(
   });
   const optional = property;
   process.env.ENVOY_NATS_URL = "nats://nats-under-test:4222";
-  process.env.LEGION_STATE_DIR ??= "/tmp/legion-state";
+  process.env.LEGION_STATE_DIR ??= paneStateDirectory();
   // Nothing under the caller's own home reaches the fixture.
   process.env.HOME = "/nonexistent-home-for-legion-tests";
+  Object.assign(process.env, bunCacheOff);
   const pi: TestPi = {
     zod: {
       object: (shape) => shape,
@@ -589,6 +640,7 @@ function createPi(
       }
       sentUserMessages.push(content);
       sentUserMessageOptions.push(sendOptions);
+      return options.sendUserMessage?.() ?? Promise.resolve();
     },
     appendEntry: (customType, data) => {
       entries.push({ type: "custom", customType, data });
@@ -647,7 +699,7 @@ function createPi(
   };
   // `bindEnvoy: false` lets a test bind legion.ts before envoy.ts, so the two extensions'
   // handlers for one session event run in the opposite order to the manifest's.
-  if (options.bindEnvoy !== false) (options.envoyEntry ?? envoyExtension)(pi as never);
+  if (options.bindEnvoy !== false) await (options.envoyEntry ?? envoyExtension)(pi as never);
   return {
     commands,
     handlers,
@@ -696,10 +748,11 @@ function sessionContext(
   sessionID: string,
   sessionFile = "/tmp/session.jsonl",
   ensureOnDisk: () => Promise<void> = async () => undefined,
-  title?: HostTitle
+  title?: HostTitle,
+  cwd: string = paneWorkspaceDirectory()
 ): SessionContext {
   return {
-    cwd: "/tmp/legion-workspace",
+    cwd,
     hasUI: true,
     taskDepth: 0,
     sessionManager: {
@@ -731,10 +784,10 @@ function hostTitleReader(
 }
 
 /** Lays out a `{ parentFile, childFile }` transcript pair matching OMP's own subagent
- * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:143-154): the
- * child's transcript sits inside a directory named after the parent's transcript file, minus
- * its `.jsonl` extension, so `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds
- * `parentFile`. */
+ * convention (oh-my-pi packages/coding-agent/src/session/session-manager.ts:542-562 at the
+ * pinned tag): the child's transcript sits inside a directory named after the parent's
+ * transcript file, minus its `.jsonl` extension, so
+ * `fs.existsSync(path.dirname(childFile) + ".jsonl")` finds `parentFile`. */
 async function createSubagentTranscriptPaths(): Promise<{
   readonly parentFile: string;
   readonly childFile: string;
@@ -857,9 +910,10 @@ interface ClaimPane {
   /** What `console.error` printed while `start()` ran. */
   readonly errors: string[];
   readonly intervals: (() => void)[];
-  /** Every one-shot timer the pane armed on its session context, in order: the phase reminder's.
-   * The host's own cannot be cancelled, so a test fires one by calling its callback, exactly as
-   * the host does when the delay is up. */
+  /** Every one-shot timer the pane armed on its session context, in order: the phase reminder's
+   * and the model fallback's return. This repository's `SessionContext` slice keeps no handle to
+   * clear one by, so a test fires one by calling its callback, exactly as the host does when the
+   * delay is up. */
   readonly timers: {
     readonly callback: () => void | Promise<void>;
     readonly delayMs: number;
@@ -937,7 +991,7 @@ async function claimPane(options: {
   const tree = options.tree ?? "REPO-42";
   const issue = options.issue ?? "REPO-43";
   const sessionId = options.sessionId ?? `ses_${options.role}`;
-  const workspace = options.workspace ?? "/tmp/legion-workspace";
+  const workspace = options.workspace ?? paneWorkspaceDirectory();
   const claimToken = roleToken("omp", issue, options.role);
   const registration = {
     claimToken,
@@ -945,10 +999,12 @@ async function claimPane(options: {
     issue,
     role: options.role,
     generation: 2,
-    secret: `secret-${sessionId}`,
+    secret: fixtureSecret("reg"),
     promptAgents: options.promptAgents ?? [],
   };
-  const bootToken = `boot-${sessionId}`;
+  // Random, as the daemon's is: the pane holds it, and one spelled from the session's id would be
+  // scrubbed out of every line naming the role (`@legion/contracts/held-secrets`).
+  const bootToken = `boot-${crypto.randomUUID()}`;
   const stateDir = paneStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
@@ -1022,7 +1078,7 @@ async function claimPane(options: {
   setLegionCapabilityHostForTests(options.capabilityHost ?? (() => fakeCapabilityHost()));
   const intervals: (() => void)[] = [];
   const timers: { readonly callback: () => void | Promise<void>; readonly delayMs: number }[] = [];
-  const fixture = createPi({
+  const fixture = await createPi({
     bindEnvoy: options.bindEnvoy,
     agentsExposed: options.agentsExposed,
     envoyEntry: options.envoyEntry,
@@ -1038,7 +1094,8 @@ async function claimPane(options: {
     sessionId,
     options.sessionFile ?? `/tmp/${sessionId}.jsonl`,
     options.ensureOnDisk,
-    fixture.title
+    fixture.title,
+    workspace
   );
   const context: SessionContext = {
     ...base,
@@ -1060,15 +1117,14 @@ async function claimPane(options: {
       hasProvider: () => true,
       isSelectorSuppressed: (selector) => fixture.models.suppressed.has(selector),
     },
-    cwd: workspace,
     setInterval: (callback) => {
       intervals.push(callback);
     },
     ...(options.asyncJobs === undefined ? {} : { getAsyncJobSnapshot: options.asyncJobs }),
     ...(options.idle === undefined ? {} : { isIdle: options.idle }),
     ...(options.abort === undefined ? {} : { abort: options.abort }),
-    // The reminder's own timer: the host's `setTimeout` cannot be cancelled, so the pane keeps
-    // every one armed and a test fires the one it means to.
+    // The pane's own timers: this repository's `SessionContext` slice keeps no handle to clear one
+    // by, so the pane keeps every one armed and a test fires the one it means to.
     setTimeout: (callback, delayMs) => {
       timers.push({ callback, delayMs });
     },
@@ -1133,11 +1189,7 @@ async function firstTurn(pane: ClaimPane): Promise<void> {
         "role" in request.body &&
         request.body.role === pane.claimToken
     );
-  const deadline = Date.now() + 2_000;
-  while (!claimed()) {
-    if (Date.now() > deadline) throw new Error("the session's first turn claimed no Envoy role");
-    await Bun.sleep(5);
-  }
+  await until("the session's first turn to claim its Envoy role", claimed);
 }
 
 const daemonRequests = <T extends { readonly path: string }>(requests: readonly T[]) =>
@@ -1223,7 +1275,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     expect(() =>
       classifySession({
         LEGION_CONTROLLER: "1",
-        LEGION_CONTROLLER_SECRET: "controller-secret",
+        LEGION_CONTROLLER_SECRET: CONTROLLER_SECRET,
         LEGION_TREE: "REPO-42",
       })
     ).toThrow("both controller and tree launch markers");
@@ -1233,7 +1285,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     process.env.LEGION_DAEMON_URL = "http://daemon.test";
     delete process.env.LEGION_CONTROLLER;
     delete process.env.LEGION_CONTROLLER_SECRET;
-    const fixture = createPi();
+    const fixture = await createPi();
 
     legionExtension(fixture.pi);
     const claimCommand = fixture.commands.find(
@@ -1243,7 +1295,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     await expect(
       claimCommand.handler("", {
-        cwd: "/tmp/legion-workspace",
+        cwd: paneWorkspaceDirectory(),
         sessionManager: {
           getSessionId: () => "ses_interactive",
           getSessionFile: () => "/tmp/session.jsonl",
@@ -1360,7 +1412,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     test("a person's own session is untouched: no Legion environment, no check, no exit", async () => {
-      const fixture = createPi({ bindEnvoy: false });
+      const fixture = await createPi({ bindEnvoy: false });
       const exits: number[] = [];
       setLegionBootstrapExitForTests((code) => {
         exits.push(code);
@@ -1382,13 +1434,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       process.env.ENVOY_URL = "http://envoy.test";
       process.env.LEGION_DAEMON_URL = "http://daemon.test";
       process.env.LEGION_PROJECT = "omp";
-      process.env.LEGION_CONTROLLER_SECRET = "controller-capability";
+      process.env.LEGION_CONTROLLER_SECRET = CONTROLLER_SECRET;
       const requests: string[] = [];
       globalThis.fetch = (async (input) => {
         requests.push(new URL(input.toString()).pathname);
         return Response.json({});
       }) as typeof fetch;
-      const fixture = createPi({ bindEnvoy: false });
+      const fixture = await createPi({ bindEnvoy: false });
       const exits: number[] = [];
       setLegionBootstrapExitForTests((code) => {
         exits.push(code);
@@ -1467,7 +1519,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           sessionId: "ses_worker",
           ompSessionFile: "/tmp/ses_worker.jsonl",
           agentId: "ses_worker",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
       {
@@ -1509,6 +1561,59 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     // The boot measures nothing: no capability host member was called before its ready.
     expect(calls).toEqual([]);
   });
+
+  // Contract entry 20261125170509: a registration that names the session this one replaces (the claim's session
+  // the daemon forgot) has the role claim name it as `previous_session_id`, a hard claim as every
+  // Legion claim is, so the listener hands that session's unread messages to this one.
+  test("a claim whose registration replaces a session names it as the role claim's previous_session_id", async () => {
+    let answer: Record<string, unknown> = {};
+    const pane = await claimPane({
+      role: "tester",
+      sessionId: "ses_worker_after",
+      register: () => Response.json(answer),
+    });
+    answer = { ...pane.registration, replaces: "ses_worker_before" };
+    await pane.start();
+    await firstTurn(pane);
+
+    const roleClaims = pane.requests.filter((request) => request.path === "/v1/roles/set");
+    expect(roleClaims.map((request) => request.body)).toEqual([
+      {
+        session_id: "ses_worker_after",
+        role: pane.claimToken,
+        previous_session_id: "ses_worker_before",
+        client_instance_id: registeredClientInstance(pane.requests, "ses_worker_after"),
+      },
+    ]);
+    expect(pane.exits).toEqual([]);
+  });
+
+  // dispatch://INFRA-2694: the daemon serves each caller the shape that caller's own contract
+  // describes, and reads that contract from a request header. This pane states the contract of
+  // the module it loaded (`daemonContract` of its own manifest) on every request it makes, a GET
+  // included.
+  test("every daemon request of a pane states this build's own daemon API contract", async () => {
+    const stated: { readonly path: string; readonly contract: string | null }[] = [];
+    const pane = await bootPane({
+      role: "tester",
+      sessionId: "ses_worker",
+      extraRoutes: (url, _body, init) => {
+        if (url.pathname.startsWith("/legion/")) {
+          stated.push({
+            path: url.pathname,
+            contract: new Headers(init?.headers).get("Legion-Plugin-Contract"),
+          });
+        }
+        return undefined;
+      },
+    });
+
+    expect(pane.exits).toEqual([]);
+    expect(stated.length).toBeGreaterThan(0);
+    expect(stated.map((request) => request.contract)).toEqual(
+      stated.map(() => String(PLUGIN_CONTRACT))
+    );
+  });
   test("does nothing for a session with no Legion environment markers", async () => {
     const requests: { readonly path: string }[] = [];
     process.env.ENVOY_URL = "http://envoy.test";
@@ -1528,7 +1633,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         ...deliveryFor(url.pathname, body, "ses_plain"),
       });
     }) as typeof fetch;
-    const fixture = createPi();
+    const fixture = await createPi();
     legionExtension(fixture.pi);
     const sessionStart = fixture.handlers.get("session_start");
     if (sessionStart === undefined) throw new Error("session_start handler was not registered");
@@ -1590,7 +1695,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     // The root runs a `task`: a fresh extension instance binds in the same process and its
     // subagent session starts with a different transcript path and the inherited environment.
-    const subagent = createPi();
+    const subagent = await createPi();
     legionExtension(subagent.pi);
     const subagentStart = subagent.handlers.get("session_start");
     if (subagentStart === undefined) throw new Error("subagent handlers were not registered");
@@ -1753,14 +1858,22 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       body: { bootToken: pane.bootToken },
     });
   });
-  test("exits the phase worker naming LEGION_BOOT_TOKEN_FILE and its path when the file is unreadable, never falling back to LEGION_BOOT_TOKEN", async () => {
+  // The variable is named and the path is not: a token pasted where the path goes would be the
+  // path, and the error is printed (envoy-client's readSecretFile).
+  test("exits the phase worker naming LEGION_BOOT_TOKEN_FILE, never its path, when the file is unreadable, never falling back to LEGION_BOOT_TOKEN", async () => {
     const pane = await claimPane({ role: "tester" });
     process.env.LEGION_BOOT_TOKEN = "decoy";
     process.env.LEGION_BOOT_TOKEN_FILE = "/nonexistent/legion-secrets/tester";
 
-    await expect(pane.start()).rejects.toThrow(
-      "LEGION_BOOT_TOKEN_FILE names /nonexistent/legion-secrets/tester, which could not be read"
+    const refusal = await pane.start().then(
+      () => undefined,
+      (error: unknown) => error
     );
+    expect(refusal).toBeInstanceOf(Error);
+    expect((refusal as Error).message).toContain(
+      "LEGION_BOOT_TOKEN_FILE names a file that could not be read (ENOENT)"
+    );
+    expect(Bun.inspect(refusal)).not.toContain("/nonexistent/legion-secrets/tester");
     expect(daemonRequests(pane.requests)).toEqual([]);
   });
   test("registers the legion tool, and only it, once a sub-architect's claim boots", async () => {
@@ -1832,8 +1945,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       order.indexOf("fetch:/legion/v1/claims/register")
     );
   });
-  test("registers no legion tool until a session's claim boots", () => {
-    const fixture = createPi();
+  test("registers no legion tool until a session's claim boots", async () => {
+    const fixture = await createPi();
 
     legionExtension(fixture.pi);
 
@@ -1907,26 +2020,35 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       refuses: (message: string) => hook(handlers, "session_stop")(refusedBy(message), context),
       /** The run's end, which is what reports the turn's outcome to the daemon. */
       ends: (event: unknown) => hook(handlers, "agent_end")(event, context),
+      /** The daemon's prompt arriving over RPC, as Oh My Pi hands it to `input`. */
+      prompted: (text: string) => hook(handlers, "input")({ text, source: "rpc" }, context),
+      /** A run starting, whatever started it. */
+      starts: () => hook(handlers, "agent_start")({}, context),
     });
     /** jj's root commit: `@-` of a workspace fresh from `jj git init`, which is what a phase that
      * writes no handoff (retro, here) reports as the commit it stands on. */
     const ROOT_COMMIT = "0000000000000000000000000000000000000000";
+    /** What the stand-in daemon calls the work REPO-43's implementer owes, and the reminder that
+     * names it: the reminder renders the daemon's answer and nothing of its own. */
+    const STALL_WORK = "the retro phase of REPO-43";
+    const STALL_REMINDER = owedReminder(STALL_WORK);
+    /** The stand-in daemon's two answers to `POST /legion/v1/claims/owed`. */
+    const owesWork = () => Response.json({ owes: true, work: STALL_WORK });
+    const owesNothing = () => Response.json({ owes: false, work: "" });
     const bootStalling = async (options: {
       readonly role?: LegionRole;
       readonly issue?: IssueKey;
       readonly branch?: readonly unknown[];
       /** The daemon's answer to `POST /legion/v1/handoff/complete`: success unless given. */
       readonly complete?: () => Response;
-      /** The phase the daemon's record puts REPO-43 at; `retro`, the implementer's, unless a
-       * test moves it, which is how the record check decides the reminder is no longer this
-       * role's to get. */
-      readonly phase?: string;
-      /** The daemon's whole answer to `GET /legion/v1/state`, for a daemon that does not answer
-       * with a record at all. */
-      readonly stateAnswer?: () => Response;
+      /** The daemon's answer to `POST /legion/v1/claims/owed` until the case changes it
+       * (`answersOwed`): that the claim owes `STALL_WORK`, unless given. This answer alone
+       * decides whether a reminder goes out. */
+      readonly owed?: () => Response;
       /** What `ctx.getAsyncJobSnapshot()` answers this pane. */
       readonly asyncJobs?: () => AsyncJobSnapshot | null;
     }) => {
+      let owed = options.owed ?? owesWork;
       // Nothing in these panes reaches the architect: the notice a run of reminders earns is the
       // real binary's case (extensions/legion-phase-stall-omp.test.ts), so the threshold is put
       // out of every mocked pane's reach and the reminding itself is what is measured here.
@@ -1948,7 +2070,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           "REPO-43": {
             key: "REPO-43",
             generation: 2,
-            phase: options.phase ?? "retro",
+            phase: "retro",
             status: "in_progress",
             repo: "acme/widgets",
             defaultBranch: "main",
@@ -1961,9 +2083,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         wakesWaiting: [],
         capabilities: [],
         repositories: {
-          owners: ["acme"],
-          mapped: [{ repo: "acme/widgets", default: true }],
-          refused: [],
+          live: [{ repo: "acme/widgets", apps: { implement: true, review: true } }],
           withoutWebhookApp: [],
           caches: [],
         },
@@ -1978,9 +2098,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         branch: options.branch,
         asyncJobs: options.asyncJobs,
         extraRoutes: (url) => {
-          if (url.pathname === "/legion/v1/state") {
-            return options.stateAnswer?.() ?? Response.json(state);
+          if (url.pathname === "/legion/v1/issues/REPO-43/record") {
+            return Response.json(state.issues["REPO-43"]);
           }
+          if (url.pathname === "/legion/v1/claims/owed") return owed();
           if (url.pathname === "/legion/v1/grants") {
             return Response.json({ grantId: "grant-stall", expiresAt: "2099-01-01T00:00:00Z" });
           }
@@ -2003,6 +2124,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         ...booted,
         ...session(booted.handlers, booted.context),
         legionTool,
+        /** What the daemon answers `claims/owed` from now on: its record has moved. */
+        answersOwed: (answer: () => Response) => {
+          owed = answer;
+        },
         /** Calls the tool's `handoff_complete`: its result, and the daemon requests it made. */
         completes: async () => {
           const before = booted.requests.length;
@@ -2109,14 +2234,21 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         activity: { backgroundWork: { running: false, kinds: [] } },
       });
 
-      // The second settle arms the ordinary reminder, and reports the wake it armed.
-      await worker.settles("Still pushing.");
+      // The second settle arms the ordinary reminder, and reports the wake it armed: the moment
+      // the settle read from the clock, which the row holds still, plus the reminder's delay.
+      const settledAt = Date.UTC(2026, 10, 14, 9, 30);
+      setSystemTime(new Date(settledAt));
+      try {
+        await worker.settles("Still pushing.");
+      } finally {
+        setSystemTime();
+      }
       expect(activityReports(worker)).toHaveLength(3);
       const wake = activityReports(worker).at(-1) as {
         activity: { phase: { nextReminderAt: string | null } };
       };
-      expect(Date.parse(String(wake.activity.phase.nextReminderAt))).toBeGreaterThanOrEqual(
-        Date.now() + DEFAULT_STALL_LIMITS.reminderMs - 1_000
+      expect(wake.activity.phase.nextReminderAt).toBe(
+        new Date(settledAt + DEFAULT_STALL_LIMITS.reminderMs).toISOString()
       );
     });
 
@@ -2134,39 +2266,44 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(pane.intervals).toEqual([]);
     });
 
-    test("the first settle after the assignment is answered by the run's own continuation: run the legion tool's handoff_complete, or reply WAITING", async () => {
+    test("the first settle after the assignment is answered by the run's own continuation: name the work the daemon gave, run the legion tool's handoff_complete, or reply WAITING", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
 
       const result = await worker.settles("I pushed the change and CI is green.");
 
+      expect(result).toEqual(followUp(`Your turn ended with ${STALL_WORK} still owed`));
       expect(result).toEqual(followUp("handoff_complete"));
       expect(result).toEqual(followUp("WAITING"));
       expect(result).toEqual(followUp("repeats at the end of every turn"));
       expect(result).not.toEqual(followUp("written as text"));
       // The run's first reminder is the continuation itself: nothing is steered into the session
-      // and no timer is armed for it.
+      // and no timer is armed for it. The one timer is the boot's resume reminder, which every
+      // boot arms — a process holds nothing that says whether it owes work — and which the
+      // assignment's turn made stale.
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       // The settle records what the worker said, so a relaunch's architect notice can still
       // quote it, and the continuation then records its count.
       const said = "I pushed the change and CI is green.";
       expect(recorded(worker)).toEqual([
-        { state: "open", count: 0, reported: false },
-        { state: "open", count: 0, reported: false, lastMessage: said },
-        { state: "open", count: 1, reported: false, lastMessage: said },
+        { state: "active", count: 0, reported: false, lastMessage: said },
+        { state: "active", count: 1, reported: false, lastMessage: said },
       ]);
     });
 
     // dispatch://INFRA-264: every turn of that implementer was refused by its provider, and every
     // reminder it earned bought another refused turn. The worker read nothing and said nothing, so
     // the turn earns no continuation and the record stands as the last real turn left it. One
-    // timer is armed all the same: the task the refused turn carried ended with it, and below
-    // `launch_failure_limit` the daemon counts the turn rather than failing the claim, so without
-    // it a single transient refusal would leave the issue idle with nothing to wake it. By the
-    // time the timer fires the daemon has had every refusal of the run reported, and at the limit
-    // the claim it reads is failed and the reminder is dropped — which is what ends the reminding
-    // of a session the provider refuses for ever.
+    // timer is armed all the same: the task the refused turn carried ended with it, and nothing
+    // else would wake this worker, so without it a single transient refusal would leave the issue
+    // idle. What ends the reminders is the daemon failing the claim, after which it answers the
+    // timer's owed check that nothing is owed, so the reminder is dropped: it fails the claim at
+    // once for a refusal whose status cannot clear, of the task's prompt or of a reminder's own
+    // turn, which no prompt ran and which the daemon judges from its turn-outcome report
+    // (dispatch://INFRA-4508). A refusal that can clear fails nothing, so the reminders keep their
+    // pace. At six such turns in a row the daemon sends the `provider-errors` notice once
+    // (`providerErrorRunReached` in the daemon's `workflow.go` says to whom).
     test("a turn the provider refused earns no continuation and no record, and is woken by one timer", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
@@ -2179,17 +2316,22 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // another turn at once and the provider would refuse that one the same way.
       expect(steered(worker)).toEqual([]);
       expect(recorded(worker)).toEqual(before);
+      // The first timer is the boot's resume reminder, which every boot arms and the assignment's
+      // turn made stale; the refused turn's own is the one after it.
       expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+        DEFAULT_STALL_LIMITS.resumeMs,
         DEFAULT_STALL_LIMITS.reminderMs,
       ]);
 
       await fires(worker);
-      expect(steered(worker)).toEqual([steeredReminder(REMINDER)]);
+      expect(steered(worker)).toEqual([steeredReminder(STALL_REMINDER)]);
     });
 
     // The daemon's own counter: every turn's end is reported, under a sequence this plugin counts
-    // itself within the claim's launch generation, so the daemon can fail a claim whose provider
-    // refuses turn after turn.
+    // itself within the claim's launch generation, from which the daemon derives the claim's run of
+    // refused turns. A turn the daemon's prompt ran is judged by that prompt's result; a turn no
+    // prompt ran, a reminder's, is marked unprompted and carries the status the provider refused it
+    // with, which is what the daemon judges it by.
     test("every turn's end reports its outcome to the daemon, in sequence", async () => {
       const worker = await bootStalling({});
       const outcomes = () =>
@@ -2197,10 +2339,18 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
           .map((request) => request.body);
 
+      await worker.prompted("Continue the task.");
+      await worker.starts();
       await worker.ends({ messages: [{ role: "assistant", stopReason: "stop" }] });
+      await worker.starts();
       await worker.ends({
         messages: [
-          { role: "assistant", stopReason: "error", errorMessage: "Overloaded: the model is busy" },
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "Overloaded: the model is busy",
+            errorStatus: 529,
+          },
         ],
       });
 
@@ -2208,7 +2358,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         {
           claimToken: worker.claimToken,
           sessionId: "ses_stall",
-          secret: "secret-ses_stall",
+          secret: worker.registration.secret,
           generation: 2,
           sequence: 1,
           outcome: "clean",
@@ -2216,13 +2366,55 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         {
           claimToken: worker.claimToken,
           sessionId: "ses_stall",
-          secret: "secret-ses_stall",
+          secret: worker.registration.secret,
           generation: 2,
           sequence: 2,
           outcome: "refused",
           message: "Overloaded: the model is busy",
+          httpStatus: 529,
+          unprompted: true,
         },
       ]);
+    });
+
+    // A prompt's run that settles with a message waiting — an Envoy steer the host runs next —
+    // is still the run the prompt's result reports: the pinned host gives a prompt the outcome of
+    // its first settled end whatever is queued (`rpc-prompt-results.ts:164-169`). So the run the
+    // waiting message starts is no prompt's, and its report says so, for the daemon to judge: a
+    // 400 there fails the claim. The entry reads nothing of `ctx.hasPendingMessages()` for this.
+    test("a run a waiting message starts after a prompt's settled end is reported unprompted", async () => {
+      const worker = await bootStalling({});
+      const outcomes = () =>
+        daemonRequests(worker.requests)
+          .filter((request) => request.path === "/legion/v1/claims/turn-outcome")
+          .map((request) => request.body);
+
+      await worker.prompted("Continue the task.");
+      await worker.starts();
+      await hook(worker.handlers, "agent_end")(
+        { messages: [{ role: "assistant", stopReason: "stop" }] },
+        { ...worker.context, hasPendingMessages: () => true }
+      );
+      await worker.starts();
+      await worker.ends({
+        messages: [
+          {
+            role: "assistant",
+            stopReason: "error",
+            errorMessage: "400 invalid_request_error",
+            errorStatus: 400,
+          },
+        ],
+      });
+
+      expect(outcomes()[0]).toMatchObject({ sequence: 1, outcome: "clean" });
+      expect(outcomes()[0]).not.toHaveProperty("unprompted");
+      expect(outcomes()[1]).toMatchObject({
+        sequence: 2,
+        outcome: "refused",
+        httpStatus: 400,
+        unprompted: true,
+      });
     });
 
     test("a turn that ends on a tool call written as text is told the call did not run", async () => {
@@ -2250,13 +2442,14 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(await worker.settles("Still pushing.")).toBeUndefined();
 
       expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+        DEFAULT_STALL_LIMITS.resumeMs,
         DEFAULT_STALL_LIMITS.reminderMs,
       ]);
       expect(steered(worker)).toEqual([]);
       await fires(worker);
-      expect(steered(worker)).toEqual([steeredReminder(REMINDER)]);
+      expect(steered(worker)).toEqual([steeredReminder(STALL_REMINDER)]);
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 2,
         reported: false,
         lastMessage: "Still pushing.",
@@ -2274,7 +2467,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       await hook(worker.handlers, "message_end")(ranTool, worker.context);
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 0,
         reported: false,
         lastMessage: "Pushed.",
@@ -2282,6 +2475,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       expect(await worker.settles("Read the file.")).toBeUndefined();
       expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+        DEFAULT_STALL_LIMITS.resumeMs,
         DEFAULT_STALL_LIMITS.reminderMs,
       ]);
       expect(steered(worker)).toEqual([]);
@@ -2297,15 +2491,17 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         await fires(worker);
       }
 
-      expect(steered(worker)).toEqual([steeredReminder(REMINDER), steeredReminder(REMINDER)]);
+      expect(steered(worker)).toEqual([
+        steeredReminder(STALL_REMINDER),
+        steeredReminder(STALL_REMINDER),
+      ]);
       expect(recorded(worker)).toEqual([
-        { state: "open", count: 0, reported: false },
-        { state: "open", count: 0, reported: false, lastMessage: "Thinking about it." },
-        { state: "open", count: 1, reported: false, lastMessage: "Thinking about it." },
-        { state: "open", count: 1, reported: false, lastMessage: "Still thinking about it." },
-        { state: "open", count: 2, reported: false, lastMessage: "Still thinking about it." },
-        { state: "open", count: 2, reported: false, lastMessage: "Nearly there." },
-        { state: "open", count: 3, reported: false, lastMessage: "Nearly there." },
+        { state: "active", count: 0, reported: false, lastMessage: "Thinking about it." },
+        { state: "active", count: 1, reported: false, lastMessage: "Thinking about it." },
+        { state: "active", count: 1, reported: false, lastMessage: "Still thinking about it." },
+        { state: "active", count: 2, reported: false, lastMessage: "Still thinking about it." },
+        { state: "active", count: 2, reported: false, lastMessage: "Nearly there." },
+        { state: "active", count: 3, reported: false, lastMessage: "Nearly there." },
       ]);
     });
 
@@ -2325,10 +2521,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       await fires(worker);
 
       expect(steered(worker)).toEqual([
-        steeredReminder(reminderText(textCall)),
-        steeredReminder(REMINDER),
+        steeredReminder(reminderText(textCall, STALL_WORK)),
+        steeredReminder(STALL_REMINDER),
       ]);
-      expect(reminderText(textCall)).toContain("written as text");
+      expect(reminderText(textCall, STALL_WORK)).toContain("written as text");
     });
 
     // Everything that is the worker, or the daemon, doing something puts the count back to zero:
@@ -2349,7 +2545,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         await hook(worker.handlers, event)(message, worker.context);
 
         expect(recorded(worker).at(-1)).toEqual({
-          state: "open",
+          state: "active",
           count: 0,
           reported: false,
           lastMessage: "Still pushing.",
@@ -2366,7 +2562,10 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       // The wait armed is the WAITING one, not the reminder's, and nothing is steered until it
       // is over.
-      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.waitingMs]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([
+        DEFAULT_STALL_LIMITS.resumeMs,
+        DEFAULT_STALL_LIMITS.waitingMs,
+      ]);
       expect(steered(worker)).toEqual([]);
       const waiting = "Pushed.\nWAITING: CI on the pull request";
       expect(recorded(worker).at(-1)).toEqual({
@@ -2378,23 +2577,23 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
       await fires(worker);
 
-      expect(steered(worker)).toEqual([steeredReminder(REMINDER)]);
+      expect(steered(worker)).toEqual([steeredReminder(STALL_REMINDER)]);
       // What the worker is told once its wait is over: the reminding repeats, rather than this
       // being the last it hears until something arrives.
-      expect(REMINDER).toContain("This reminder repeats at the end of every turn");
-      expect(REMINDER).not.toContain("until a new event arrives");
-      // The wait is over, so the phase is open again and the reminder is counted.
+      expect(STALL_REMINDER).toContain("This reminder repeats at the end of every turn");
+      expect(STALL_REMINDER).not.toContain("until a new event arrives");
+      // The wait is over, so the rhythm is active again and the reminder is counted.
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 1,
         reported: false,
         lastMessage: waiting,
       });
     });
 
-    test("a resumed worker's open phase is reminded by a timer, carrying the count it restored", async () => {
+    test("a resumed worker the daemon says owes work is reminded by a timer, carrying the count it restored", async () => {
       // The daemon relaunched the worker with --resume: a fresh process whose only memory is the
-      // branch, which holds two reminders nothing was done about.
+      // branch, which holds two reminders nothing was done about, in an earlier release's `open`.
       const resumed = await bootStalling({
         branch: branchAt({ state: "open", count: 2, reported: false }),
       });
@@ -2402,8 +2601,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(resumed.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       await fires(resumed);
 
-      expect(steered(resumed)).toEqual([steeredReminder(REMINDER)]);
-      expect(recorded(resumed)).toEqual([{ state: "open", count: 3, reported: false }]);
+      expect(steered(resumed)).toEqual([steeredReminder(STALL_REMINDER)]);
+      expect(recorded(resumed)).toEqual([{ state: "active", count: 3, reported: false }]);
     });
 
     // What the worker said before the relaunch rides the record with the count, so the architect
@@ -2411,7 +2610,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     test("a resumed worker's record carries what it last said before the relaunch", async () => {
       const resumed = await bootStalling({
         branch: branchAt({
-          state: "open",
+          state: "active",
           count: 2,
           reported: false,
           lastMessage: "Still pushing the change.",
@@ -2421,13 +2620,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       await fires(resumed);
 
       expect(recorded(resumed)).toEqual([
-        { state: "open", count: 3, reported: false, lastMessage: "Still pushing the change." },
+        { state: "active", count: 3, reported: false, lastMessage: "Still pushing the change." },
       ]);
     });
 
     test("a resume whose turn started before its timer fired is reminded by nothing", async () => {
       const resumed = await bootStalling({
-        branch: branchAt({ state: "open", count: 2, reported: false }),
+        branch: branchAt({ state: "active", count: 2, reported: false }),
       });
 
       // Whatever started the turn — the daemon re-sending the task it interrupted, the worker's
@@ -2441,13 +2640,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(recorded(resumed)).toEqual([]);
     });
 
-    // `quiet` and `text-call` are what the build now in the pods records for an open phase nothing
-    // has been reminded about, so a session resumed on either is reminded rather than left alone.
+    // `quiet` and `text-call` are what an earlier build recorded for a phase nothing had been
+    // reminded about, so a session resumed on either stands at the rhythm's start.
     for (const deployed of ["quiet", "text-call"]) {
-      test(`a resume on the ${deployed} state the deployed build wrote stands at an open phase with nothing counted`, async () => {
+      test(`a resume on the ${deployed} state an earlier build wrote stands active with nothing counted`, async () => {
         const branch = branchAt({ state: deployed });
         expect(restorePhaseStallEntry(branch)).toEqual({
-          state: "open",
+          state: "active",
           count: 0,
           reported: false,
         });
@@ -2462,41 +2661,71 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
     }
 
-    test("a record whose phase is no longer this role's silences the reminder", async () => {
+    test("a daemon that answers the claim owes nothing silences the reminder", async () => {
       // The shape of a worker that completed its phase from the shell instead of the tool: the
-      // daemon has moved REPO-43 on, and the reviewer, not this implementer, works it now.
-      const worker = await bootStalling({ phase: "reviewing" });
+      // daemon has moved REPO-43 on, and its record says this implementer owes nothing.
+      const worker = await bootStalling({ owed: owesNothing });
       await worker.arrives(assignment);
 
       expect(await worker.settles("I think I already completed.")).toBeUndefined();
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       // Nothing was put in front of the worker, so nothing is counted.
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 0,
         reported: false,
         lastMessage: "I think I already completed.",
       });
+      // The claim asked about itself, authenticated by its own secret.
+      expect(
+        daemonRequests(worker.requests).filter((r) => r.path === "/legion/v1/claims/owed")
+      ).toEqual([
+        {
+          path: "/legion/v1/claims/owed",
+          body: {
+            claimToken: worker.claimToken,
+            sessionId: "ses_stall",
+            secret: worker.registration.secret,
+          },
+        },
+      ]);
     });
 
-    test("a daemon that does not answer the record check reminds all the same: the check fails open", async () => {
-      // An unreachable daemon is exactly when a stalled worker must still be nudged.
+    test("a daemon that does not answer what the claim owes still nudges, and says it could not read the record", async () => {
+      // An unreachable daemon is exactly when a stalled worker must still be nudged; the nudge
+      // names no phase and no operation, since it read neither.
       const worker = await bootStalling({
-        stateAnswer: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
+        owed: () => Response.json({ error: "the daemon is restarting" }, { status: 503 }),
       });
       await worker.arrives(assignment);
 
-      expect(await worker.settles("Pushed.")).toEqual(followUp("handoff_complete"));
+      const result = await worker.settles("Pushed.");
+      expect(result).toEqual({ continue: true, additionalContext: UNREAD_REMINDER });
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 1,
         reported: false,
         lastMessage: "Pushed.",
       });
     });
 
-    test("a request_backward_move closes the phase too: the next settle sends nothing", async () => {
+    // R5: the check asks the daemon what this claim owes, and never reads the whole project
+    // body — the read a field changed on another issue's view used to refuse
+    // (dispatch://INFRA-2694). This is the reader the plugin itself supplies.
+    test("the reminder's owed check asks the owed route and never for the project", async () => {
+      const worker = await bootStalling({});
+      const before = worker.requests.length;
+      await worker.arrives(assignment);
+
+      expect(await worker.settles("Pushed.")).toEqual(followUp("handoff_complete"));
+
+      const paths = worker.requests.slice(before).map((request) => request.path);
+      expect(paths).toContain("/legion/v1/claims/owed");
+      expect(paths).not.toContain("/legion/v1/state");
+    });
+
+    test("a request_backward_move closes nothing of its own: the daemon's answer after it decides the next settle", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
 
@@ -2513,17 +2742,18 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       );
 
       expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
+      // The daemon moved the issue, and its record says this role owes nothing now.
+      worker.answersOwed(owesNothing);
       expect(await worker.settles("Asked for the move.")).toBeUndefined();
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
-      expect(recorded(worker).at(-1)).toEqual({ state: "closed", count: 0, reported: false });
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
     });
 
-    // INFRA-484: the update message reaches the worker while its phase is open, and
-    // `ready_for_update` closes no phase. The turn the worker answers in must still end: a
-    // continuation would do work the pod's replacement throws away, and before the round's bound
-    // the daemon waits for every turn to end before it replaces the pod.
-    test("a ready_for_update answer earns no continuation: the answering turn ends, with the phase still open", async () => {
+    // INFRA-484: the update message reaches the worker as an inbound message, and
+    // `ready_for_update` finishes nothing the daemon records. The turn the worker answers in must
+    // still end: a continuation would do work the pod's replacement throws away, and before the
+    // round's bound the daemon waits for every turn to end before it replaces the pod.
+    test("a ready_for_update answer earns no continuation: the answering turn ends, and no timer is armed in the wait", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
 
@@ -2550,12 +2780,12 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(await worker.settles(answered)).toBeUndefined();
       expect(steered(worker)).toEqual([]);
       // The wait the answer created arms no timer: the daemon's update round is its watchdog, and
-      // a reminder fired here would steer a real `agent_start`, which the daemon reads as a new
-      // turn and so as the answer retracted — the round would restart at every wait and never
-      // converge (INFRA-484, the `awaiting-update` state of `@legion/pi-shared/phase-stall`,
-      // which a record holds as the plain `waiting`). The WAITING reply's own wait keeps its
-      // timer, which the case above holds.
-      expect(worker.timers).toEqual([]);
+      // a reminder fired here would steer a real `agent_start`, a turn of work the replacement
+      // throws away, and before the round's bound a running turn holds that replacement back
+      // (INFRA-484, the `awaiting-update` state of `@legion/pi-shared/phase-stall`, which a record
+      // holds as the plain `waiting`). The WAITING reply's own wait keeps its timer, which the
+      // case above holds.
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       expect(recorded(worker).at(-1)).toEqual({
         state: "waiting",
         count: 0,
@@ -2566,21 +2796,22 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // A second turn in the same wait — a question answered while the pod waits to be replaced —
       // arms none either, and steers nothing.
       expect(await worker.settles("Still waiting for the pod.")).toBeUndefined();
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       expect(steered(worker)).toEqual([]);
     });
 
-    test("a successful handoff_complete posts the completion with a fresh grant and the commit found in the pane, and closes the phase; an inbound event does not reopen it, the next assignment does", async () => {
+    test("a successful handoff_complete posts the completion with a fresh grant and the commit found in the pane; once the daemon answers nothing is owed, no inbound message reminds, the daemon's update message included", async () => {
       const worker = await bootStalling({});
       await worker.arrives(assignment);
 
       const { result, calls } = await worker.completes();
       expect(result).toEqual({ content: [{ type: "text", text: "{}" }], details: {} });
-      // The issue's phase is read from the daemon's state, the commit is found in the pane's
-      // workspace with its jj, and the grant is minted in-process and travels only in the request;
-      // nothing is written to the pane.
+      // The issue's phase is read from the daemon's record of this issue, the commit is found in
+      // the pane's workspace with its jj, and the grant is minted in-process and travels only in
+      // the request; nothing is written to the pane, and nothing of the completion is kept by the
+      // reminder.
       expect(calls).toEqual([
-        { path: "/legion/v1/state", body: undefined },
+        { path: "/legion/v1/issues/REPO-43/record", body: undefined },
         {
           path: "/legion/v1/grants",
           body: {
@@ -2600,22 +2831,40 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           },
         },
       ]);
+      // The daemon took the completion, and its record says this role owes nothing now.
+      worker.answersOwed(owesNothing);
       expect(await worker.settles("Reported.")).toBeUndefined();
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
 
       // After its phase a worker stays to answer other roles' questions over Envoy.
       await worker.arrives(envoyEvent);
       expect(await worker.settles("Answered the reviewer.")).toBeUndefined();
 
+      // The daemon's own update message reaches the role whose phase has closed as an inbound
+      // message, here a user message, which an Envoy delivery is the same input as. It moves the
+      // rhythm's count and nothing else, so it reminds of nothing.
+      await worker.arrives({
+        message: {
+          role: "user",
+          content: [{ type: "text", text: "Your pod is being updated: push what you keep." }],
+        },
+      });
+      expect(await worker.settles("Nothing of mine to push.")).toBeUndefined();
+      expect(await worker.settles("Still nothing.")).toBeUndefined();
+      for (const timer of worker.timers) await timer.callback();
+      expect(steered(worker)).toEqual([]);
+
+      // The next round is the daemon's: its record owes the work again, and the reminder says so.
+      worker.answersOwed(owesWork);
       await worker.arrives(assignment);
-      expect(await worker.settles("Round 2 pushed.")).toEqual(followUp("handoff_complete"));
+      expect(await worker.settles("Round 2 pushed.")).toEqual(followUp(STALL_WORK));
     });
 
     // A person's Send or Aside from Dispatch's Agents page reaches the session as its own user
     // turn (extensions/envoy.ts), a user message exactly like the daemon's assignment. It is an
-    // inbound event, as its Envoy card was before: it does not open a phase, and it starts the
-    // count of a phase that has been reminded, or had a WAITING reply, again.
+    // inbound message, as its Envoy card was before: it starts the count of a run of reminders,
+    // or of a WAITING reply's wait, again, and says nothing of what the claim owes.
     const personsMessage = {
       message: {
         role: "user",
@@ -2625,12 +2874,13 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       },
     };
 
-    test("a person's direct message the session took as its own turn opens no phase; the daemon's assignment still does", async () => {
-      const worker = await bootStalling({});
+    test("a person's direct message to a role that owes nothing reminds of nothing; the daemon's answer, not the message, decides", async () => {
+      const worker = await bootStalling({ owed: owesNothing });
       noteInjectedUserTurn("ses_stall", "Where is the dashboard?", "m-1");
       await worker.arrives(personsMessage);
       expect(await worker.settles("It is at /dash.")).toBeUndefined();
 
+      worker.answersOwed(owesWork);
       await worker.arrives(assignment);
       expect(await worker.settles("Pushed.")).toEqual(followUp("handoff_complete"));
     });
@@ -2646,16 +2896,6 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       // The wait's own timer was armed before that turn, so it is stale and reminds nobody.
       await fires(worker);
       expect(steered(worker)).toEqual([]);
-    });
-
-    test("the same words arriving again as a user message are the daemon's, not the person's", async () => {
-      const worker = await bootStalling({});
-      noteInjectedUserTurn("ses_stall", "Where is the dashboard?", "m-1");
-      await worker.arrives(personsMessage);
-      expect(await worker.settles("It is at /dash.")).toBeUndefined();
-
-      await worker.arrives({ message: { ...personsMessage.message, timestamp: 2 } });
-      expect(await worker.settles("Answered.")).toEqual(followUp("handoff_complete"));
     });
 
     // A person's `/skill:<name>` sent from Dispatch runs as typed input, and the host submits it as
@@ -2682,7 +2922,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(await worker.settles("Reviewed.")).toEqual(followUp("handoff_complete"));
     });
 
-    test("a handoff_complete the daemon refuses is an error result naming its code and leaves the phase open", async () => {
+    test("a handoff_complete the daemon refuses is an error result naming its code, and the daemon still answers the work is owed", async () => {
       const worker = await bootStalling({
         complete: () =>
           Response.json(
@@ -2708,7 +2948,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         isError: true,
       });
       expect(calls.map((call) => call.path)).toEqual([
-        "/legion/v1/state",
+        "/legion/v1/issues/REPO-43/record",
         "/legion/v1/grants",
         "/legion/v1/handoff/complete",
       ]);
@@ -2732,7 +2972,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
       expect(await worker.settles("Noted the new session id.")).toBeUndefined();
       expect(recorded(worker).at(-1)).toEqual({
-        state: "open",
+        state: "active",
         count: 1,
         reported: false,
         lastMessage: "Noted the new session id.",
@@ -2778,14 +3018,25 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       });
     });
 
-    test("before any assignment a settle is quiet, and an inbound event opens nothing", async () => {
-      const worker = await bootStalling({});
+    // A process the daemon has just started holds nothing that says whether its role owes work,
+    // so its first settle — before any task, after an Envoy delivery, or from its resume timer —
+    // is reminded exactly as the daemon answers, and of nothing while the daemon answers that the
+    // claim owes nothing (dispatch://INFRA-2746).
+    test("a process made afresh reports nothing while the daemon answers that the claim owes nothing", async () => {
+      const worker = await bootStalling({ owed: owesNothing });
 
+      await fires(worker);
       expect(await worker.settles("Booted.")).toBeUndefined();
       await worker.arrives(envoyEvent);
       expect(await worker.settles("Read the notice.")).toBeUndefined();
       expect(steered(worker)).toEqual([]);
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
+
+      // The same fresh process, with the daemon answering that the work is owed, is reminded at
+      // once: what decides is the daemon's answer, which a restart does not change.
+      const owing = await bootStalling({});
+      await fires(owing);
+      expect(steered(owing)).toEqual([steeredReminder(STALL_REMINDER)]);
     });
 
     test("a settle the host aborted sends nothing and leaves the stall unanswered", async () => {
@@ -2795,11 +3046,11 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       aborted.abort();
 
       expect(await worker.settles("Interrupted.", aborted.signal)).toBeUndefined();
-      expect(worker.timers).toEqual([]);
+      expect(worker.timers.map((timer) => timer.delayMs)).toEqual([DEFAULT_STALL_LIMITS.resumeMs]);
       expect(await worker.settles("Done.")).toEqual(followUp("handoff_complete"));
     });
 
-    test("a resumed worker restores its phase from the transcript entries it wrote", async () => {
+    test("a resumed worker restores its reminder's rhythm from the transcript entries it wrote, and the daemon says what it owes", async () => {
       const waiting = await bootStalling({});
       await waiting.arrives(assignment);
       await waiting.settles("WAITING: CI");
@@ -2809,10 +3060,12 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       await resumedOpen.arrives(envoyEvent);
       expect(await resumedOpen.settles("CI passed.")).toEqual(followUp("handoff_complete"));
 
+      // A worker that completed, relaunched: its record holds the rhythm alone, and the daemon's
+      // answer that nothing is owed is what keeps it quiet.
       const completed = await bootStalling({});
       await completed.arrives(assignment);
       await completed.completes();
-      const resumedClosed = await bootStalling({ branch: completed.entries });
+      const resumedClosed = await bootStalling({ branch: completed.entries, owed: owesNothing });
       await resumedClosed.arrives(envoyEvent);
       expect(await resumedClosed.settles("Answered the question.")).toBeUndefined();
 
@@ -2829,7 +3082,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       ]);
 
       await fires(resumedCounting);
-      expect(steered(resumedCounting)).toEqual([steeredReminder(REMINDER)]);
+      expect(steered(resumedCounting)).toEqual([steeredReminder(STALL_REMINDER)]);
     });
 
     test("a sub-architect is never reminded", async () => {
@@ -2902,7 +3155,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
 
     test("a session with no Legion environment is never reminded", async () => {
       const requests = listenerOnly("ses_plain");
-      const fixture = createPi();
+      const fixture = await createPi();
       legionExtension(fixture.pi);
       const context = sessionContext("ses_plain");
       await hook(fixture.handlers, "session_start")({}, context);
@@ -2937,7 +3190,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     const pane = await bootPane({ role: "architect", issue: "REPO-42", sessionId: "ses_gate" });
     // The lookup reads the pane's Dispatch configuration when it runs, and fails to connect.
     process.env.DISPATCH_URL = "http://dispatch.unreachable.test";
-    process.env.DISPATCH_TOKEN = "dispatch-token";
+    process.env.DISPATCH_TOKEN = fixtureSecret("dsp");
     const paneFetch = globalThis.fetch;
     globalThis.fetch = (async (input, init) => {
       if (new URL(input.toString()).host === "dispatch.unreachable.test") {
@@ -2961,7 +3214,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       content: [
         {
           type: "text",
-          text: 'register_gate could not look up document "spec" on REPO-42 in Dispatch: Unable to connect. Is the computer able to access the url?',
+          // The Dispatch client names a request that reached no server by the failure's class.
+          text: 'register_gate could not look up document "spec" on REPO-42 in Dispatch: Dispatch at http://dispatch.unreachable.test is unreachable: TypeError (message withheld). If the Dispatch URL changed, restart this agent process so it picks up the new configuration.',
         },
       ],
     });
@@ -2976,8 +3230,9 @@ describe.skipIf(skip)("Legion OMP extension", () => {
   test("register_gate looks the document up in the Dispatch of the envoy.json the Envoy entry chose", async () => {
     const profile = await mkdtemp(path.join(os.tmpdir(), "legion-profile-"));
     temporaryPaths.push(profile);
+    const fileToken = fixtureSecret("file");
     const dispatchFile = (serverUrl: string) =>
-      JSON.stringify({ dispatch: { enabled: true, serverUrl, token: "file-token" } });
+      JSON.stringify({ dispatch: { enabled: true, serverUrl, token: fileToken } });
     await writeFile(
       path.join(profile, "envoy.json"),
       dispatchFile("https://profile.dispatch.example")
@@ -3194,21 +3449,42 @@ describe.skipIf(skip)("Legion OMP extension", () => {
   });
 
   test("claims/ready is retried on a 5xx and on a transport failure, three attempts a second apart", async () => {
+    const posted = [1, 2, 3].map(() => Promise.withResolvers<void>());
     const recovered = await claimPane({
       role: "implementer",
       sessionId: "ses_ready_recovers",
       ready: (attempt) => {
+        posted[attempt - 1]?.resolve();
         if (attempt === 1) return Response.json({ error: "daemon unavailable" }, { status: 503 });
         if (attempt === 2) throw new TypeError("fetch failed");
         return new Response(null, { status: 204 });
       },
     });
-    const started = Date.now();
-    await recovered.start();
-    expect(Date.now() - started).toBeGreaterThanOrEqual(1_900);
-    expect(
-      daemonRequests(recovered.requests).filter((r) => r.path === "/legion/v1/claims/ready")
-    ).toHaveLength(3);
+    const readyPosts = () =>
+      daemonRequests(recovered.requests).filter((r) => r.path === "/legion/v1/claims/ready").length;
+    // The pause between attempts is a `setTimeout` of this process, so the row holds the clock it
+    // runs on (Bun's fake timers) and moves it: each next attempt comes once a whole second has
+    // passed since the failure before it, and not a millisecond sooner.
+    jest.useFakeTimers();
+    try {
+      const booting = recovered.start();
+      for (const failed of [1, 2]) {
+        await posted[failed - 1]?.promise;
+        // The stand-in answers in memory, so the failure is read and its pause armed in microtasks.
+        await turn();
+        jest.advanceTimersByTime(999);
+        await turn();
+        expect(readyPosts()).toBe(failed);
+        jest.advanceTimersByTime(1);
+        // The next attempt is armed for this millisecond: a pause any longer leaves it unposted.
+        await turn();
+        expect(readyPosts()).toBe(failed + 1);
+      }
+      await booting;
+    } finally {
+      jest.useRealTimers();
+    }
+    expect(readyPosts()).toBe(3);
     expect(recovered.exits).toEqual([]);
   });
 
@@ -3365,7 +3641,8 @@ describe.skipIf(skip)("Legion OMP extension", () => {
      * host exposes no `pi.agents`, or whose registration names agents the task tool does not
      * resolve. `capabilityHost` replaces the recording host the pane measures through, called
      * once per measurement and handed the session's own `calls`: a host that throws on its first
-     * call is how a measurement that fails outright is made.
+     * call is how a measurement that fails outright is made. `workspace` is the session's working
+     * directory, the repository its disk row reads.
      */
     const capabilitySession = async (
       options: {
@@ -3377,6 +3654,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
         readonly promptAgents?: readonly string[];
         readonly agentsExposed?: boolean;
         readonly capabilityHost?: (calls: string[]) => CapabilityHost;
+        readonly workspace?: string;
       } = {}
     ): Promise<CapabilitySession> => {
       const calls: string[] = [];
@@ -3392,6 +3670,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           options.capabilityHost?.(calls) ?? recordingCapabilityHost(calls, options.host),
         idle: options.idle,
         ready: options.ready,
+        workspace: options.workspace,
         extraRoutes: (url, body, init) => {
           if (url.pathname === "/legion/v1/claims/activity") {
             return new Response(null, { status: 204 });
@@ -3539,11 +3818,27 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       }
     });
 
+    // Both budgets are timers of this process (`withinBudget` in `src/capability-report.ts`), so
+    // the row holds the clock they run on (Bun's fake timers), and which row fails its budget is
+    // the row's own choice, not the machine's speed: the first measurement's clock moves past the
+    // check budget once every row but the search has answered, and the second's never moves.
+    // Every row but the disk row answers from memory. The session's repository carries one
+    // skill, so the disk row reads the disk and then asks the host for the skills it loaded:
+    // that call is the moment its reading is done. The waits for what happens on the real
+    // clock begin before the fake one starts, on the real clock, whose deadlines they keep.
     test("a row that failed on its budget is measured again, and the second report is a measurement of its own", async () => {
-      setLegionCapabilityBudgetsForTests({ checkMs: 20, reportMs: 500 });
+      const budgets = { checkMs: 250, reportMs: 2000 };
+      setLegionCapabilityBudgetsForTests(budgets);
+      const measuredFrom = Date.UTC(2026, 10, 14, 9, 30);
+      const workspace = paneWorkspaceDirectory();
+      const skill = path.join(workspace, ".omp", "skills", "probe", "SKILL.md");
+      await mkdir(path.dirname(skill), { recursive: true });
+      await writeFile(skill, "---\nname: probe\ndescription: a skill the disk row finds\n---\n");
+      const skillsAsked = Promise.withResolvers<void>();
       let searches = 0;
       const session = await capabilitySession({
         sessionId: "ses_capability_afresh",
+        workspace,
         host: {
           // The first measurement's search never answers, so that row fails on its budget; the
           // second's answers.
@@ -3553,41 +3848,71 @@ describe.skipIf(skip)("Legion OMP extension", () => {
               ? Promise.withResolvers<SearchQueryResult>().promise
               : Promise.resolve(searchAnswer);
           },
+          loadSkills: async () => {
+            skillsAsked.resolve();
+            return { skills: [{ filePath: skill }] };
+          },
         },
       });
 
-      await ticks(session.pane, IMPLEMENTER_DUE_TICK);
-      await session.reported(1);
+      await ticks(session.pane, IMPLEMENTER_DUE_TICK - 1);
+      const diskRead = settled(
+        "the first measurement's disk row to ask for the skills",
+        skillsAsked.promise
+      );
+      jest.useFakeTimers({ now: measuredFrom });
+      try {
+        await ticks(session.pane, 1);
+        await diskRead;
+        // The host answers from memory, so every row but the search has answered once the
+        // microtasks queued so far have run; then the check budget runs out, and the measurement
+        // ends and its report is sent on the clock it started on.
+        await turn();
+        jest.advanceTimersByTime(budgets.checkMs);
+        await turn();
+      } finally {
+        jest.useRealTimers();
+      }
+      await settled("the first report", session.reported(1));
       await drain();
       const first = session.reports[0];
       expect(first?.rows.find((row) => row.name === "web-search")).toEqual({
         name: "web-search",
         ok: false,
-        detail: "did not finish within 20 ms",
+        detail: "did not finish within 250 ms",
       });
       expect(first?.rows.filter((row) => row.ok)).toHaveLength(5);
+      expect(first?.measuredAt).toBe(new Date(measuredFrom).toISOString());
+      expect(first?.elapsedMs).toBe(budgets.checkMs);
 
       // The next attempt is due `CAPABILITY_RETRY_TICKS` after the last one ended.
       await ticks(session.pane, CAPABILITY_RETRY_TICKS - 1);
       await drain();
       expect(measurements(session.calls)).toBe(1);
 
-      await ticks(session.pane, 1);
-      await session.reported(2);
+      // No budget of the second measurement can run out: its clock never moves.
+      const secondReported = settled("the second report", session.reported(2));
+      jest.useFakeTimers({ now: measuredFrom + budgets.checkMs });
+      try {
+        await ticks(session.pane, 1);
+        await secondReported;
+      } finally {
+        jest.useRealTimers();
+      }
       await drain();
 
       const second = session.reports[1];
       expect(second?.rows.map((row) => row.name)).toEqual([...LIVE_CAPABILITIES]);
       expect(second?.rows.every((row) => row.ok)).toBe(true);
-      // A measurement of its own, not the first with one row patched: its own `measuredAt`, and
-      // every row measured afresh — each check asked the host a second time.
-      expect(Date.parse(String(second?.measuredAt))).toBeGreaterThan(
-        Date.parse(String(first?.measuredAt))
-      );
+      // A measurement of its own, not the first with one row patched: its own `measuredAt`, the
+      // moment the first one's search budget ran out, and every row measured afresh — each check
+      // asked the host a second time.
+      expect(second?.measuredAt).toBe(new Date(measuredFrom + budgets.checkMs).toISOString());
       expect(measurements(session.calls)).toBe(2);
       expect(session.calls.filter((name) => name === "discoverAgents")).toHaveLength(2);
       expect(session.calls.filter((name) => name === "disabledAgents")).toHaveLength(2);
       expect(session.calls.filter((name) => name === "runSearchQuery")).toHaveLength(2);
+      expect(session.calls.filter((name) => name === "loadSkills")).toHaveLength(2);
       // `dispatch` and `gh`, once each per measurement.
       expect(session.calls.filter((name) => name === "run")).toHaveLength(4);
     });
@@ -3843,7 +4168,7 @@ describe.skipIf(skip)("Legion OMP extension", () => {
     });
 
     test("a send the daemon takes and never answers is bounded: the request is aborted, the tick ends, the failure costs one log line, and the session measures again at its next due tick", async () => {
-      // The real bound is 10 s, past Bun's limit for one test; the machine is the same at 50 ms.
+      // The real bound is 10 s; the machine is the same at 50 ms, which keeps the row short.
       setLegionCapabilitySendTimeoutForTests(50);
       const session = await capabilitySession({
         sessionId: "ses_capability_hung",
@@ -3858,6 +4183,14 @@ describe.skipIf(skip)("Legion OMP extension", () => {
        * is a real timer inside the schedule, and no duration is guessed at. */
       const bounded = Promise.withResolvers<void>();
 
+      // The second send's bound is a `setTimeout` of this process: every timer armed from here on
+      // is recorded, and so is every one cleared, while each still runs as it would. Each record
+      // is read before the spies are restored, which empties them.
+      const armedTimers = spyOn(globalThis, "setTimeout");
+      const clearedTimers = spyOn(globalThis, "clearTimeout");
+      /** The timers armed for the second send's 50 ms bound, and every timer cleared since. */
+      let secondBounds: NodeJS.Timeout[] = [];
+      let cleared: unknown[] = [];
       const { warnings } = await loggedWarnings(async () => {
         const stopSink = logger.registerLogSink((entry) => {
           if (entry.message.includes("capability report did not reach the daemon")) {
@@ -3871,11 +4204,19 @@ describe.skipIf(skip)("Legion OMP extension", () => {
           // leaving the schedule's in-flight guard set for the session's life.
           await bounded.promise;
           await drain();
+          armedTimers.mockClear();
+          clearedTimers.mockClear();
           await ticks(session.pane, CAPABILITY_RETRY_TICKS);
           await session.reported(2);
           await drain();
+          secondBounds = armedTimers.mock.calls.flatMap((call, index) =>
+            call[1] === 50 ? [armedTimers.mock.results[index]?.value as NodeJS.Timeout] : []
+          );
+          cleared = clearedTimers.mock.calls.map(([handle]) => handle);
         } finally {
           stopSink();
+          armedTimers.mockRestore();
+          clearedTimers.mockRestore();
         }
       });
 
@@ -3898,13 +4239,12 @@ describe.skipIf(skip)("Legion OMP extension", () => {
       expect(String((hung?.reason as Error | undefined)?.message)).toContain(
         "claims/ready did not answer within 50 ms"
       );
-      // The send the daemon took ends its own bound: its request is never aborted. The wait is
-      // what makes that an assertion — the second send answered at once, well before its own
-      // 50 ms bound, so only a wait past that bound tells a cleared timer from one still armed.
-      // It is a real wait on purpose: the bound is a real `setTimeout` inside the schedule, and
-      // a timer that was cleared fires nothing there is to await.
-      await Bun.sleep(150);
+      // The send the daemon took ends its own bound: its request is not aborted when it ends, and
+      // the bound's timer is cleared, so it never fires to abort it later — read from the timer
+      // itself, since a timer that was cleared fires nothing there is to await.
       expect(session.readySignals[1]?.aborted).toBe(false);
+      expect(secondBounds).toHaveLength(1);
+      expect(cleared).toContain(secondBounds[0]);
     });
   });
 });
@@ -3977,20 +4317,22 @@ async function launchedController(options: {
   /** The listener's answer to a `/v1/roles/set` for the controller role, in place of its own
    * registry's when it gives one. */
   readonly roleClaim?: () => Response | undefined | Promise<Response | undefined>;
+  /** The host's answer to each `sendUserMessage` (`createPi`'s): taken unless a test says. */
+  readonly sendUserMessage?: () => Promise<void>;
 }): Promise<LaunchedController> {
   const project = options.project ?? "omp";
-  const token = `legion-${project}-controller`;
+  const token = `legion-${project}-controller`; // fixture-secret: the controller's claim token, the role the daemon and the listener name it by; no client holds it
   const registration = {
     claimToken: token,
     role: "controller",
     generation: 2,
-    secret: `controller-secret-${options.sessionId}`,
+    secret: fixtureSecret("reg"),
   };
   const stateDir = controllerStateDirectory();
   const secretsDir = path.join(stateDir, "secrets");
   await mkdir(secretsDir, { mode: 0o700 });
   const capabilityFile = path.join(secretsDir, token);
-  await writeFile(capabilityFile, "controller-capability\n", { mode: 0o600 });
+  await writeFile(capabilityFile, `${CONTROLLER_SECRET}\n`, { mode: 0o600 });
   process.env.LEGION_CONTROLLER = "1";
   process.env.LEGION_ROLE = "controller";
   process.env.LEGION_CONTROLLER_SECRET_FILE = capabilityFile;
@@ -4040,6 +4382,11 @@ async function launchedController(options: {
       });
     }
     if (url.pathname === "/legion/v1/state") return Response.json(daemonState);
+    // The controller's boot check reads the project here (dispatch://INFRA-2694), where it read
+    // the whole project body before.
+    if (url.pathname === "/healthz") {
+      return Response.json({ status: "ok", project: daemonState.daemon.project });
+    }
     if (url.pathname === "/legion/v1/issues/status") return Response.json({});
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
     if (url.pathname.startsWith("/legion/")) {
@@ -4101,9 +4448,12 @@ async function launchedController(options: {
     exits.push(code);
     throw new Error("process would exit");
   });
-  const fixture = createPi({ bindEnvoy: options.order !== "legion.ts" });
+  const fixture = await createPi({
+    bindEnvoy: options.order !== "legion.ts",
+    sendUserMessage: options.sendUserMessage,
+  });
   legionExtension(fixture.pi);
-  if (options.order === "legion.ts") envoyExtension(fixture.pi as never);
+  if (options.order === "legion.ts") await envoyExtension(fixture.pi as never);
   return {
     token,
     registration,
@@ -4317,22 +4667,27 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(daemonRequests(controller.requests)).toEqual([]);
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
     expect(controller.sentUserMessages).toEqual([]);
-    // The controller's `legion` tool: `read_state` and `set_status`, registered at startup and
-    // answering only once the claim has registered the session.
+    // The controller's `legion` tool (the operations of `OPERATIONS.controller` in
+    // `src/tools.ts`), registered at startup and answering only once the claim has registered
+    // the session.
     expect(controller.tools.map((tool) => tool.name)).toContain("legion");
 
     expect(await runStartCommand(controller, controller.context("ses_controller"))).toEqual([]);
 
+    // The boot check reads the daemon's project from the health answer and asks for no state
+    // (dispatch://INFRA-2694): the whole project body reached the controller's `read_state`
+    // alone from here on.
+    expect(controller.requests.map((request) => request.path)).toContain("/healthz");
+    expect(controller.requests.map((request) => request.path)).not.toContain("/legion/v1/state");
     expect(daemonRequests(controller.requests)).toEqual([
-      { path: "/legion/v1/state", body: undefined },
       {
         path: "/legion/v1/claims/register",
         body: {
-          bootToken: "controller-capability",
+          bootToken: CONTROLLER_SECRET,
           sessionId: "ses_controller",
           ompSessionFile: "/tmp/ses_controller.jsonl",
           agentId: "ses_controller",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
     ]);
@@ -4351,6 +4706,39 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         JSON.stringify(request.body) === JSON.stringify(roleClaimBody)
     );
     expect(roleClaim).toBeGreaterThan(paths.indexOf("/legion/v1/claims/register"));
+    expect(controller.exits).toEqual([]);
+  });
+
+  // Contract entry 20261125170509: a controller registration that names the session this one replaces (the
+  // controller session the daemon forgot) has the role claim name it as `previous_session_id`,
+  // so the listener hands that session's unread messages to this one.
+  test("/legion-controller-start whose registration replaces a session names it as the role claim's previous_session_id", async () => {
+    let answer: Record<string, unknown> | undefined;
+    const controller = await launchedController({
+      sessionId: "ses_controller_after",
+      register: () => (answer === undefined ? undefined : Response.json(answer)),
+    });
+    answer = { ...controller.registration, replaces: "ses_controller_before" };
+    const context = controller.context("ses_controller_after");
+    await controller.handlers.get("session_start")?.({}, context);
+    expect(await runStartCommand(controller, context)).toEqual([]);
+
+    const roleClaims = controller.requests.filter(
+      (request) =>
+        request.path === "/v1/roles/set" &&
+        typeof request.body === "object" &&
+        request.body !== null &&
+        "role" in request.body &&
+        request.body.role === controller.token
+    );
+    expect(roleClaims.map((request) => request.body)).toEqual([
+      {
+        session_id: "ses_controller_after",
+        role: controller.token,
+        previous_session_id: "ses_controller_before",
+        client_instance_id: registeredClientInstance(controller.requests, "ses_controller_after"),
+      },
+    ]);
     expect(controller.exits).toEqual([]);
   });
 
@@ -4393,9 +4781,14 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.sentUserMessages).toEqual([]);
     expect(atTopicRegistration).toEqual([]);
 
-    const before = Date.now();
-    expect(await runStartCommand(controller, context)).toEqual([]);
-    const after = Date.now();
+    // The mark reads this process's clock, which the row holds still for the command's run.
+    const sentAt = Date.UTC(2026, 10, 14, 9, 30);
+    setSystemTime(new Date(sentAt));
+    try {
+      expect(await runStartCommand(controller, context)).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
 
     expect(sentAtRegister).toEqual([[]]);
     expect(sentAtRoleClaim).toEqual([[message]]);
@@ -4410,11 +4803,8 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.sentUserMessageOptions).toEqual([undefined]);
     expect(envoyPluginInterface().startupTurn).toEqual({
       session: "ses_controller_start",
-      sentAt: expect.any(Number),
+      sentAt,
     });
-    const sentAt = envoyPluginInterface().startupTurn?.sentAt ?? 0;
-    expect(sentAt).toBeGreaterThanOrEqual(before);
-    expect(sentAt).toBeLessThanOrEqual(after);
 
     // A second run finds the claim done: it says so, and neither claims nor sends again.
     const registrations = controller.requests.filter(
@@ -5229,6 +5619,111 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(envoyPluginInterface().startupTurn).toBeUndefined();
   });
 
+  // The host rejects a start it fails to send (a prompt it drops before dispatch, or refuses): no
+  // run starts, so no `agent_start` clears the mark the send set, and every check pi-envoy makes
+  // would hold the session's startup cards until that sent mark's 30 s cap. Cleared, the mark
+  // holds no later check; a check that read it before the rejection keeps the cards it saw until
+  // 30 s after the send, or until the next card, since clearing the mark schedules no check.
+  test("a start message whose send the host fails clears the startup-turn mark the send set", async () => {
+    const failed = Promise.withResolvers<void>();
+    const marksAtSend: EnvoyPluginInterface["startupTurn"][] = [];
+    const controller = await launchedController({
+      sessionId: "ses_controller_send_failed",
+      sendUserMessage: () => {
+        marksAtSend.push(envoyPluginInterface().startupTurn);
+        failed.reject(new Error("the host dropped the prompt before dispatch"));
+        return failed.promise;
+      },
+    });
+    await startOperatorController(controller, controller.context("ses_controller_send_failed"));
+    expect(controller.sentUserMessages).toEqual([
+      "Legion controller start: follow skill://legion-controller",
+    ]);
+    expect(marksAtSend).toEqual([
+      { session: "ses_controller_send_failed", sentAt: expect.any(Number) },
+    ]);
+
+    // The claim's handler was attached at the send, before this one, so it has run once this has.
+    await failed.promise.catch(() => undefined);
+    expect(envoyPluginInterface().startupTurn).toBeUndefined();
+  });
+
+  // `/legion-claim-controller` claims and sends the start message as the start command does, so
+  // its refusal before the send says the same: the start `session_start` marked due is not coming
+  // from it, and the mark goes.
+  test("/legion-claim-controller refused before the send clears the unsent startup-turn mark", async () => {
+    const controller = await launchedController({
+      sessionId: "ses_controller_claim_refused",
+      register: () => Response.json({ error: "capability revoked" }, { status: 403 }),
+    });
+    const context = controller.context("ses_controller_claim_refused");
+    await controller.handlers.get("session_start")?.({}, context);
+    expect(envoyPluginInterface().startupTurn).toEqual({
+      session: "ses_controller_claim_refused",
+      sentAt: undefined,
+    });
+
+    const claimCommand = controller.commands.find(
+      (command) => command.name === "legion-claim-controller"
+    );
+    if (claimCommand === undefined) throw new Error("controller claim command was not registered");
+    await loggedErrors(async () => {
+      await expect(claimCommand.handler("", commandContext(context))).rejects.toThrow(
+        "POST /legion/v1/claims/register failed with 403: capability revoked"
+      );
+    });
+
+    expect(controller.sentUserMessages).toEqual([]);
+    expect(envoyPluginInterface().startupTurn).toBeUndefined();
+  });
+
+  // A claim refused before the send while another claim waits behind it leaves the unsent mark:
+  // the claim behind it may still send the start, and a card the cleared mark let take an idle turn
+  // would run ahead of it. The mark each registration read is what shows it.
+  test("a claim refused before the send while another claim waits behind it leaves the unsent startup-turn mark for that claim's send", async () => {
+    const session = "ses_controller_claim_queued";
+    const firstRegistering = Promise.withResolvers<void>();
+    const refuseFirst = Promise.withResolvers<void>();
+    const marksAtRegister: EnvoyPluginInterface["startupTurn"][] = [];
+    const controller = await launchedController({
+      sessionId: session,
+      register: async () => {
+        marksAtRegister.push(envoyPluginInterface().startupTurn);
+        if (marksAtRegister.length > 1) return undefined;
+        firstRegistering.resolve();
+        await refuseFirst.promise;
+        return Response.json({ error: "capability revoked" }, { status: 403 });
+      },
+    });
+    const context = controller.context(session);
+    await controller.handlers.get("session_start")?.({}, context);
+
+    const claimCommand = controller.commands.find(
+      (command) => command.name === "legion-claim-controller"
+    );
+    if (claimCommand === undefined) throw new Error("controller claim command was not registered");
+    await loggedErrors(async () => {
+      const first = claimCommand.handler("", commandContext(context));
+      await firstRegistering.promise;
+      // Queued while the first claim waits on its registration.
+      const second = claimCommand.handler("", commandContext(context));
+      refuseFirst.resolve();
+      await expect(first).rejects.toThrow(
+        "POST /legion/v1/claims/register failed with 403: capability revoked"
+      );
+      await second;
+    });
+
+    expect(marksAtRegister).toEqual([
+      { session, sentAt: undefined },
+      { session, sentAt: undefined },
+    ]);
+    expect(controller.sentUserMessages).toEqual([
+      "Legion controller start: follow skill://legion-controller",
+    ]);
+    expect(envoyPluginInterface().startupTurn).toEqual({ session, sentAt: expect.any(Number) });
+  });
+
   // The operator's controller claims and sends only from `/legion-controller-start`, which Oh My
   // Pi runs after its startup, while the Envoy entry opens the session's agent subject at its own
   // `session_start`: a card arriving in between would start its turn ahead of the start message.
@@ -5255,17 +5750,23 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(daemonRequests(controller.requests)).toEqual([]);
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
 
-    const before = Date.now();
-    expect(await runStartCommand(controller, context)).toEqual([]);
+    // The mark reads this process's clock, which the row holds still for the command's run.
+    const sentAt = Date.UTC(2026, 10, 14, 9, 30);
+    setSystemTime(new Date(sentAt));
+    try {
+      expect(await runStartCommand(controller, context)).toEqual([]);
+    } finally {
+      setSystemTime();
+    }
 
     expect(marksAtRegister).toEqual([{ session: "ses_controller_pending", sentAt: undefined }]);
     expect(controller.sentUserMessages).toEqual([
       "Legion controller start: follow skill://legion-controller",
     ]);
-    const sent = envoyPluginInterface().startupTurn;
-    expect(sent?.session).toBe("ses_controller_pending");
-    expect(sent?.sentAt).toBeGreaterThanOrEqual(before);
-    expect(sent?.sentAt).toBeLessThanOrEqual(Date.now());
+    expect(envoyPluginInterface().startupTurn).toEqual({
+      session: "ses_controller_pending",
+      sentAt,
+    });
   });
 
   // Only a controller with a start message of its own to send has a start turn to keep first: the
@@ -5279,7 +5780,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       "the daemon-launched controller",
       async (controller: LaunchedController) => {
         const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-        await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+        await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
         delete process.env.LEGION_CONTROLLER_SECRET_FILE;
         process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
         process.env.LEGION_SLACK_CHANNELS = "";
@@ -5374,8 +5875,8 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
   // the operator's bearer. The session registers with that token and, holding the role and the
   // topic, reports ready, which is when the daemon hands it the start message, so it marks the
   // start turn sent just before that report. The state it reads first is the daemon's own while
-  // that daemon holds the controller's claim (internal/projection's golden), which the plugin's
-  // client parses. The pod carries no LEGION_CONTROLLER_START_MESSAGE, and the session
+  // that daemon holds the controller's claim (internal/daemon's composition test), which the
+  // plugin's client parses. The pod carries no LEGION_CONTROLLER_START_MESSAGE, and the session
   // sends no start message of its own: the daemon's delivery at ready is its one start message.
   test("a controller the daemon launched registers with its boot token, then reports ready once it holds the role", async () => {
     const markAtReady: EnvoyPluginInterface["startupTurn"][] = [];
@@ -5388,13 +5889,15 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       },
     });
     const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
     delete process.env.LEGION_CONTROLLER_SECRET_FILE;
     delete process.env.LEGION_CONTROLLER_START_MESSAGE;
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
     // The daemon always names its controller's Slack channels; this project has none.
     process.env.LEGION_SLACK_CHANNELS = "";
-    const before = Date.now();
+    // The mark reads this process's clock, which the row holds still from the session's start.
+    const readyAt = Date.UTC(2026, 10, 14, 9, 30);
+    setSystemTime(new Date(readyAt));
     let commandNotices: CommandNotice[];
     try {
       await controller.handlers.get("session_start")?.(
@@ -5404,18 +5907,18 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // Its start command, run while the process is still the daemon's controller.
       commandNotices = await runStartCommand(controller, controller.context("ses_controller_pod"));
     } finally {
+      setSystemTime();
       delete process.env.LEGION_BOOT_TOKEN_FILE;
     }
     expect(daemonRequests(controller.requests)).toEqual([
-      { path: "/legion/v1/state", body: undefined },
       {
         path: "/legion/v1/claims/register",
         body: {
-          bootToken: "launch-boot-token",
+          bootToken: LAUNCH_BOOT_TOKEN,
           sessionId: "ses_controller_pod",
           ompSessionFile: "/tmp/ses_controller_pod.jsonl",
           agentId: "ses_controller_pod",
-          pluginContract: pkg.legion.daemonApiVersion,
+          pluginContract: PLUGIN_CONTRACT,
         },
       },
       {
@@ -5431,10 +5934,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     const paths = controller.requests.map((request) => request.path);
     expect(paths.indexOf("/v1/roles/set")).toBeLessThan(paths.indexOf("/legion/v1/claims/ready"));
     expect(controller.sentUserMessages).toEqual([]);
-    expect(markAtReady).toEqual([{ session: "ses_controller_pod", sentAt: expect.any(Number) }]);
-    const sentAt = markAtReady[0]?.sentAt ?? 0;
-    expect(sentAt).toBeGreaterThanOrEqual(before);
-    expect(sentAt).toBeLessThanOrEqual(Date.now());
+    expect(markAtReady).toEqual([{ session: "ses_controller_pod", sentAt: readyAt }]);
     // Its start command had nothing to do: it claimed at session_start, and the daemon delivers
     // the start message.
     expect(commandNotices).toEqual([NOTHING_TO_DO]);
@@ -5449,8 +5949,9 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       sessionId: "ses_controller_pod",
       register: () => Response.json({ error: "invalid boot token" }, { status: 403 }),
     });
+    const staleBootToken = fixtureSecret("boot");
     const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
-    await writeFile(bootFile, "stale-boot-token\n", { mode: 0o600 });
+    await writeFile(bootFile, `${staleBootToken}\n`, { mode: 0o600 });
     delete process.env.LEGION_CONTROLLER_SECRET_FILE;
     process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
     process.env.LEGION_SLACK_CHANNELS = "";
@@ -5469,6 +5970,472 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     expect(controller.requests.map((request) => request.path)).not.toContain(
       "/legion/v1/claims/ready"
     );
+  });
+
+  // A daemon-launched controller whose role claim the listener answers 503 does not exit: the
+  // daemon supervises it, and it claims again until the claim lands. Each wait is one warning
+  // naming the attempt and the listener's answer, and its claim widget shows it holds no role
+  // until the claim lands, which takes the widget down and reports ready. The listener answers
+  // 503 to each of the first claim's transport attempts (LISTENER_CALL_ATTEMPTS), so the claim
+  // itself is answered 503 once.
+  test("a daemon-launched controller whose role claim is answered 503 logs each wait and shows it is waiting, then claims and reports ready", async () => {
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_busy",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () =>
+        ++claims <= LISTENER_CALL_ATTEMPTS
+          ? Response.json(
+              { error: "envoy: the takeover record of the claim did not store" },
+              { status: 503 }
+            )
+          : undefined,
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    let warnings: LoggedWarning[];
+    try {
+      ({ warnings } = await loggedWarnings(async () => {
+        await controller.handlers.get("session_start")?.(
+          {},
+          controller.context("ses_controller_busy")
+        );
+      }));
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
+    const waits = warnings.filter((warning) => warning.message.includes("was answered 503"));
+    expect(waits).toHaveLength(1);
+    expect(waits[0]?.message).toContain(
+      `claim of Envoy role ${controller.token} was answered 503 at attempt 1; claiming it again in`
+    );
+    expect(waits[0]?.message).toContain("the takeover record of the claim did not store");
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.map((call) => call.lines?.length ?? 0)).toEqual([1, 0]);
+    expect(shown[0]?.lines?.[0]).toStartWith(
+      `legion: this controller holds no Envoy role yet: claim of Envoy role ${controller.token} was answered 503 at attempt 1`
+    );
+    expect(shown[1]?.lines).toBeUndefined();
+    expect(controller.sentUserMessages).toEqual([]);
+    expect(controller.exits).toEqual([]);
+    expect(controller.requests.map((request) => request.path)).toContain("/legion/v1/claims/ready");
+  });
+
+  // A claim 503 can also answer a claim that landed and stands, whose handover of the session it
+  // replaces is not recorded yet: the listener names it by the code `handover_unrecorded`. The
+  // controller then holds its role, and its waiting line says so; any other claim 503 wrote
+  // nothing, and its line says the controller holds no Envoy role yet.
+  const handoverText =
+    "the claim landed, but the handover record of the session it replaces did not store, so claim again";
+  const holdsRole =
+    "legion: this controller holds its Envoy role; the handover of the session it replaces is not recorded yet, so it claims again: ";
+  const holdsNone = "legion: this controller holds no Envoy role yet: ";
+  for (const [label, sessionId, body, waiting] of [
+    [
+      "the handover 503",
+      "ses_controller_handover_coded",
+      { error: handoverText, code: "handover_unrecorded" },
+      holdsRole,
+    ],
+    [
+      "a claim 503 that wrote nothing",
+      "ses_controller_wrote_nothing",
+      { error: "envoy: the takeover record of the claim did not store" },
+      holdsNone,
+    ],
+  ] as const) {
+    test(`a daemon-launched controller whose role claim meets ${label} shows what it holds while it claims again`, async () => {
+      let claims = 0;
+      const controller = await launchedController({
+        sessionId,
+        stateFixture: "state-controller-claim.json",
+        roleClaim: () =>
+          ++claims <= LISTENER_CALL_ATTEMPTS
+            ? Response.json(body, { status: 503, headers: { "Retry-After": "1" } })
+            : undefined,
+      });
+      const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+      await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+      delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+      delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+      process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+      process.env.LEGION_SLACK_CHANNELS = "";
+      try {
+        await loggedWarnings(async () => {
+          await controller.handlers.get("session_start")?.({}, controller.context(sessionId));
+        });
+      } finally {
+        delete process.env.LEGION_BOOT_TOKEN_FILE;
+      }
+      expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
+      const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+      expect(shown.map((call) => call.lines?.length ?? 0)).toEqual([1, 0]);
+      expect(shown[0]?.lines?.[0]).toStartWith(
+        `${waiting}claim of Envoy role ${controller.token} was answered 503 at attempt 1`
+      );
+      expect(shown[0]?.lines?.[0]).toContain(body.error);
+      expect(controller.exits).toEqual([]);
+      expect(controller.requests.map((request) => request.path)).toContain(
+        "/legion/v1/claims/ready"
+      );
+    });
+  }
+
+  // A session change in the daemon-launched controller never reaches its Envoy role claim: the
+  // daemon refuses to register a session other than the one it recorded with its same-agent
+  // refusal (409, the sentence of claim.SameAgentRefusal; supervise's
+  // TestAControllersSessionChangeIsRefusedAndItIsRelaunchedOnItsRecordedSession runs that fence),
+  // so the controller exits, for the daemon to relaunch it on its recorded session, and claims the
+  // role for the new session not at all.
+  test("a daemon-launched controller whose session changed is refused at registration (409), exits, and claims no role for the new session", async () => {
+    let switched = false;
+    let roleClaimsAfterSwitch = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_switched",
+      stateFixture: "state-controller-claim.json",
+      register: (body) =>
+        body.sessionId === "ses_controller_switched"
+          ? undefined
+          : Response.json(
+              { error: "Worker respawn must resume the same agent session" },
+              { status: 409 }
+            ),
+      roleClaim: () => {
+        if (switched) roleClaimsAfterSwitch += 1;
+        return undefined;
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_switched")
+      );
+      expect(controller.exits).toEqual([]);
+      switched = true;
+      await loggedErrors(async () => {
+        await controller.handlers.get("session_switch")?.(
+          { reason: "new" },
+          controller.context("ses_controller_switched_new")
+        );
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    const refused = controller.requests.filter(
+      (request) =>
+        request.path === "/legion/v1/claims/register" &&
+        (request.body as { sessionId?: string } | undefined)?.sessionId ===
+          "ses_controller_switched_new"
+    );
+    expect(refused).toHaveLength(1);
+    expect(controller.exits).toEqual([1]);
+    expect(roleClaimsAfterSwitch).toBe(0);
+    expect(controller.holder()).toBe("ses_controller_switched");
+  });
+
+  // The bound follows who started the claim, not which controller runs it: `/legion-claim-controller`
+  // typed in the daemon-launched controller's pane, whose claim the listener keeps answering 503,
+  // shows each wait and fails as the command's error after its counted tries, and the process does
+  // not exit. The daemon's own claim at session_start, answered as it is, waits on (the row above).
+  test("/legion-claim-controller typed in a daemon-launched controller whose claim the listener keeps answering 503 fails on screen after its counted tries, and the process stays", async () => {
+    let busy = false;
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_typed_busy",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () => {
+        if (!busy) return undefined;
+        claims += 1;
+        return Response.json(
+          { error: "envoy: the takeover record of the claim did not store" },
+          { status: 503 }
+        );
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    const notices: CommandNotice[] = [];
+    let failure: unknown;
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_typed_busy")
+      );
+      busy = true;
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined) {
+        throw new Error("controller claim command was not registered");
+      }
+      const typed: SessionContext = {
+        ...controller.context("ses_controller_typed_busy"),
+        ui: {
+          notify: (message, level) => notices.push({ message, level }),
+          setWidget: recordWidget,
+        },
+      };
+      // The waits between the tries are the claim's own timers, in this process: its growing wait
+      // (`claimRoleAgainOnBusy`: 1, 2, 4 and 8 s) and envoy-client's retry delay between a
+      // claim's transport attempts. So the row holds the clock they run on (Bun's fake timers)
+      // and moves it a millisecond a turn until the command gives up, and the stand-ins answer in
+      // memory between: the tries wait as long as the product says, and the row spends none of it.
+      // A claim that never gives up fails, by name, once the real time left before the row's
+      // deadline (`timeLeft`, read before the fake clock starts) has passed.
+      await loggedWarnings(async () => {
+        const boundMs = timeLeft();
+        jest.useFakeTimers();
+        try {
+          let ended = false;
+          void claimCommand.handler("", commandContext(typed)).then(
+            () => {
+              ended = true;
+            },
+            (error: unknown) => {
+              failure = error;
+              ended = true;
+            }
+          );
+          await turnsUntil(() => ended, "the typed claim to give up after its counted tries", {
+            boundMs,
+            each: () => jest.advanceTimersByTime(1),
+            state: () => `${claims} role claims answered 503, ${notices.length} notices`,
+          });
+        } finally {
+          jest.useRealTimers();
+        }
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).name).toBe("EnvoyApiError");
+    expect(claims).toBe(5 * LISTENER_CALL_ATTEMPTS);
+    const waits = notices.filter((notice) => notice.message.includes("was answered 503"));
+    expect(waits.map((notice) => notice.message.match(/at attempt (\d+)/)?.[1])).toEqual([
+      "1",
+      "2",
+      "3",
+      "4",
+    ]);
+    expect(controller.exits).toEqual([]);
+    // The waiting line was up while the command claimed again, and came down once it gave up.
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 4") === true)).toBe(true);
+    expect(shown.at(-1)?.lines).toBeUndefined();
+  });
+
+  // The same typed claim, met by the handover 503 at every try: the claim stands, so the failure
+  // it gives up with after its counted tries says the controller holds its role and only the
+  // handover of the session it replaces is missing, never that it holds nothing; its waiting line
+  // said so while it claimed again.
+  test("/legion-claim-controller whose claim stands while its handover is never recorded fails saying it holds the role and only the handover is missing", async () => {
+    // Imported here, not at the top: the controller module reaches the host package, which this
+    // file mocks in its body, after its static imports ran, and loads `./legion` the same way.
+    const { CONTROLLER_CLAIM_BUSY_ATTEMPTS } = await import("../src/controller-session");
+    let busy = false;
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_typed_handover",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () => {
+        if (!busy) return undefined;
+        claims += 1;
+        return Response.json(
+          { error: handoverText, code: "handover_unrecorded" },
+          { status: 503, headers: { "Retry-After": "1" } }
+        );
+      },
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    let failure: unknown;
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_typed_handover")
+      );
+      busy = true;
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined) {
+        throw new Error("controller claim command was not registered");
+      }
+      const typed: SessionContext = {
+        ...controller.context("ses_controller_typed_handover"),
+        ui: { notify: () => undefined, setWidget: recordWidget },
+      };
+      await loggedWarnings(async () => {
+        failure = await claimCommand.handler("", commandContext(typed)).then(
+          () => undefined,
+          (error: unknown) => error
+        );
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(claims).toBe(CONTROLLER_CLAIM_BUSY_ATTEMPTS * LISTENER_CALL_ATTEMPTS);
+    expect(failure).toBeInstanceOf(Error);
+    expect((failure as Error).message).toBe(
+      `this controller holds its Envoy role ${controller.token}; only the handover of the session it replaces is missing, still not recorded after ${CONTROLLER_CLAIM_BUSY_ATTEMPTS} claims: ${handoverText}`
+    );
+    expect(controller.exits).toEqual([]);
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.startsWith(holdsRole) === true)).toBe(true);
+    expect(shown.some((call) => call.lines?.[0]?.startsWith(holdsNone) === true)).toBe(false);
+    expect(shown.at(-1)?.lines).toBeUndefined();
+  }, 45_000);
+
+  // A session change's re-claim in a controller the daemon did not launch holds its notices until
+  // it settles; once its claim landed after a 503, none of its waits is shown, and the widget holds
+  // no waiting line.
+  test("an operator controller's re-claim that lands after a 503 shows none of its waits once it landed", async () => {
+    let busy = false;
+    let claims = 0;
+    const controller = await launchedController({
+      sessionId: "ses_controller_reclaim_lands",
+      roleClaim: () => {
+        if (!busy || ++claims > LISTENER_CALL_ATTEMPTS) return undefined;
+        return Response.json(
+          { error: "envoy: the takeover record of the claim did not store" },
+          { status: 503 }
+        );
+      },
+    });
+    await startOperatorController(controller, controller.context("ses_controller_reclaim_lands"));
+    busy = true;
+    const notices: CommandNotice[] = [];
+    const fresh: SessionContext = {
+      ...controller.context("ses_controller_reclaim_lands_new", "/tmp/reclaim-lands-new.jsonl"),
+      ui: { notify: (message, level) => notices.push({ message, level }), setWidget: recordWidget },
+    };
+    await loggedWarnings(async () => {
+      await controller.handlers.get("session_switch")?.({ reason: "new" }, fresh);
+    });
+    expect(claims).toBe(LISTENER_CALL_ATTEMPTS + 1);
+    expect(controller.holder()).toBe("ses_controller_reclaim_lands_new");
+    expect(notices.filter((notice) => notice.message.includes("was answered 503"))).toEqual([]);
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 1") === true)).toBe(true);
+    expect((shown.at(-1)?.lines ?? []).filter((line) => line.includes("was answered 503"))).toEqual(
+      []
+    );
+  });
+
+  // A typed claim in the daemon-launched controller stays up only when its role claim gave up on
+  // the listener's 503. One whose role claim landed and whose controller-topic subscription then
+  // met a 503 (the listener's session registry unavailable) exits as the daemon's own claim does,
+  // so the daemon launches a controller that holds its topics again, rather than one that holds
+  // the role without them and sends no ready.
+  test("/legion-claim-controller typed in a daemon-launched controller whose controller-topic subscription is answered 503 after the role landed exits", async () => {
+    let typed = false;
+    let landed = false;
+    const controller = await launchedController({
+      sessionId: "ses_controller_typed_topic",
+      stateFixture: "state-controller-claim.json",
+      roleClaim: () => {
+        if (typed) landed = true;
+        return undefined;
+      },
+      answer: (path) =>
+        landed && path === "/v1/interests/subscribe"
+          ? Response.json({ error: "envoy: session registry unavailable" }, { status: 503 })
+          : undefined,
+    });
+    const bootFile = path.join(controller.secretsDir, "LEGION_BOOT_TOKEN");
+    await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
+    delete process.env.LEGION_CONTROLLER_SECRET_FILE;
+    delete process.env.LEGION_CONTROLLER_START_MESSAGE;
+    process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
+    process.env.LEGION_SLACK_CHANNELS = "";
+    try {
+      await controller.handlers.get("session_start")?.(
+        {},
+        controller.context("ses_controller_typed_topic")
+      );
+      typed = true;
+      const claimCommand = controller.commands.find(
+        (command) => command.name === "legion-claim-controller"
+      );
+      if (claimCommand === undefined)
+        throw new Error("controller claim command was not registered");
+      await loggedErrors(async () => {
+        await claimCommand
+          .handler("", commandContext(controller.context("ses_controller_typed_topic")))
+          .catch(() => undefined);
+      });
+    } finally {
+      delete process.env.LEGION_BOOT_TOKEN_FILE;
+    }
+    expect(landed).toBe(true);
+    expect(controller.exits).toEqual([1]);
+  });
+
+  // A claim that waited on the listener's 503 and then landed takes its waiting line down as soon
+  // as the role is held: a step after it that fails, here the controller-topic subscription, leaves
+  // no line saying the claim is still being made.
+  test("a typed controller claim that waited, landed and then failed at its controller topic leaves no waiting line", async () => {
+    let typed = false;
+    let claims = 0;
+    let landed = false;
+    const controller = await launchedController({
+      sessionId: "ses_controller_landed_failed",
+      roleClaim: () => {
+        if (!typed) return undefined;
+        if (++claims <= LISTENER_CALL_ATTEMPTS) {
+          return Response.json(
+            { error: "envoy: the takeover record of the claim did not store" },
+            { status: 503 }
+          );
+        }
+        landed = true;
+        return undefined;
+      },
+      answer: (path) =>
+        landed && path === "/v1/interests/subscribe"
+          ? Response.json({ error: "envoy: session registry unavailable" }, { status: 503 })
+          : undefined,
+    });
+    await startOperatorController(controller, controller.context("ses_controller_landed_failed"));
+    typed = true;
+    const claimCommand = controller.commands.find(
+      (command) => command.name === "legion-claim-controller"
+    );
+    if (claimCommand === undefined) throw new Error("controller claim command was not registered");
+    let failure: unknown;
+    await loggedWarnings(async () => {
+      failure = await claimCommand
+        .handler("", commandContext(controller.context("ses_controller_landed_failed")))
+        .then(
+          () => undefined,
+          (error: unknown) => error
+        );
+    });
+    expect(landed).toBe(true);
+    expect(failure).toBeInstanceOf(Error);
+    const shown = widgetCalls.filter((call) => call.key === "legion-controller-claim");
+    expect(shown.some((call) => call.lines?.[0]?.includes("at attempt 1") === true)).toBe(true);
+    expect(shown.at(-1)?.lines).toBeUndefined();
   });
 
   test("claims with the capability LEGION_CONTROLLER_SECRET_FILE names over LEGION_CONTROLLER_SECRET, and /legion-claim-controller moves the role to a hand-started session", async () => {
@@ -5490,11 +6457,11 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
         .map((request) => request.body)
     ).toEqual([
       expect.objectContaining({
-        bootToken: "controller-capability",
+        bootToken: CONTROLLER_SECRET,
         sessionId: "ses_controller_pane",
       }),
       expect.objectContaining({
-        bootToken: "controller-capability",
+        bootToken: CONTROLLER_SECRET,
         sessionId: "ses_controller_takeover",
       }),
     ]);
@@ -5550,7 +6517,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // A task-spawned subagent inside the pane loads its own instance of this module with the
     // pane's environment; its switch events must never take the controller role.
     const { childFile } = await createSubagentTranscriptPaths();
-    const subagent = createPi();
+    const subagent = await createPi();
     legionExtension(subagent.pi);
     await subagent.handlers.get("session_switch")?.(
       { reason: "new" },
@@ -5597,7 +6564,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // The pane runs a `task`: a fresh pair of extension instances binds in this process and
       // the subagent's session starts.
       const { childFile } = await createSubagentTranscriptPaths();
-      const subagent = createPi();
+      const subagent = await createPi();
       legionExtension(subagent.pi);
       const subagentTicks: (() => void)[] = [];
       await subagent.handlers.get("session_start")?.(
@@ -5753,7 +6720,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // A later `legion controller start`: a second session registers and takes the role. It is
     // another process, so this one's record of the session it bootstrapped does not apply to it.
     envoyPluginInterface().bootstrappedSession.file = undefined;
-    const second = createPi();
+    const second = await createPi();
     legionExtension(second.pi);
     const secondContext = first.context("ses_controller_second");
     await startOperatorController(second, secondContext);
@@ -5786,7 +6753,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     await startOperatorController(first, first.context("ses_controller_first"));
     // A later `legion controller start` takes the role, in another process.
     envoyPluginInterface().bootstrappedSession.file = undefined;
-    const second = createPi();
+    const second = await createPi();
     legionExtension(second.pi);
     await startOperatorController(second, first.context("ses_controller_second"));
     replaced = true;
@@ -5797,7 +6764,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // Only the resumed instance registers from here on; the first instance's registrations came
     // before this point.
     const requestsBeforeResume = first.requests.length;
-    const resumed = createPi();
+    const resumed = await createPi();
     legionExtension(resumed.pi);
     const context = first.context("ses_controller_first");
     const { notices } = await startRefusedController(resumed, {
@@ -5871,7 +6838,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       const secrets = await mkdtemp(path.join(os.tmpdir(), "legion-controller-boot-"));
       temporaryPaths.push(secrets);
       const bootFile = path.join(secrets, "LEGION_BOOT_TOKEN");
-      await writeFile(bootFile, "launch-boot-token\n", { mode: 0o600 });
+      await writeFile(bootFile, `${LAUNCH_BOOT_TOKEN}\n`, { mode: 0o600 });
       process.env.LEGION_BOOT_TOKEN_FILE = bootFile;
       if (channels === undefined) delete process.env.LEGION_SLACK_CHANNELS;
       else process.env.LEGION_SLACK_CHANNELS = channels;
@@ -5888,7 +6855,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     const resume = async (first: LaunchedController, sessionId: string, channels: string) => {
       envoyPluginInterface().bootstrappedSession.file = undefined;
       process.env.LEGION_SLACK_CHANNELS = channels;
-      const resumed = createPi();
+      const resumed = await createPi();
       legionExtension(resumed.pi);
       const context = first.context(sessionId);
       await resumed.handlers.get("session_start")?.(
@@ -5936,7 +6903,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
 
       // Another session takes the controller role, and this one's next heartbeat is refused.
       envoyPluginInterface().bootstrappedSession.file = undefined;
-      const second = createPi();
+      const second = await createPi();
       legionExtension(second.pi);
       await second.handlers.get("session_start")?.({}, controller.context("ses_controller_other"));
       for (const tick of ticks) tick();
@@ -6047,7 +7014,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       const requestsBefore = first.requests.length;
       const ticks: (() => void)[] = [];
       const refused = Promise.withResolvers<void>();
-      const resumed = createPi();
+      const resumed = await createPi();
       legionExtension(resumed.pi);
       const context = first.context("ses_controller_slack_owned");
       await resumed.handlers.get("session_start")?.(
@@ -6087,7 +7054,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       ]);
 
       envoyPluginInterface().bootstrappedSession.file = undefined;
-      const second = createPi();
+      const second = await createPi();
       legionExtension(second.pi);
       await second.handlers.get("session_start")?.({}, first.context("ses_controller_slack_other"));
       const requestsBeforeEnd = first.requests.length;
@@ -6188,7 +7155,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
     // While the subscription waits, a later `legion controller start` takes the role, and the
     // first session's heartbeat is refused.
     envoyPluginInterface().bootstrappedSession.file = undefined;
-    const second = createPi();
+    const second = await createPi();
     legionExtension(second.pi);
     await startOperatorController(second, first.context("ses_controller_second"));
     for (const tick of ticks) tick();
@@ -6232,7 +7199,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // A later `legion controller start` takes the role, and the first session's heartbeat is
       // refused: the lane goes back to the listener.
       envoyPluginInterface().bootstrappedSession.file = undefined;
-      const second = createPi();
+      const second = await createPi();
       legionExtension(second.pi);
       await startOperatorController(second, first.context("ses_controller_second"));
       for (const tick of ticks) tick();
@@ -6301,7 +7268,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       // A later `legion controller start` takes the role, and this session's heartbeat is
       // refused: the lane goes back to the listener.
       envoyPluginInterface().bootstrappedSession.file = undefined;
-      const second = createPi();
+      const second = await createPi();
       legionExtension(second.pi);
       await startOperatorController(second, first.context("ses_controller_second"));
       replaced = true;
@@ -6327,20 +7294,32 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       natsSubscribeObserver = (subject) => {
         if (subject === relaySubject) reopened.resolve();
       };
+      const boundMs = timeLeft();
       jest.useFakeTimers();
       natsConnectGates.set("omp-ses_controller_first", async () => undefined);
       failingConnect.reject(new Error("nats: connection refused"));
-      for (let turn = 0; turn < 50; turn++) await Promise.resolve();
-      jest.advanceTimersByTime(60_000);
+      // The failed redial schedules the next one on the long interval. The clock moves until the
+      // relay subject is subscribed again, not a fixed number of turns or timers: how many turns
+      // the failure takes to reach `retryRelay`, and which other timers are set first, is the
+      // code's business. Each turn yields to the event loop too (bun's fake clock does not own
+      // `setImmediate`), so a step that waits on a macrotask still runs.
+      let reopenedYet = false;
+      void reopened.promise.then(() => {
+        reopenedYet = true;
+      });
+      // turnsUntil takes a turn of the event loop after each move; a relay that never comes back
+      // fails, by name, once the real time left before the row's deadline (`timeLeft`, read before
+      // the fake clock starts) has passed.
+      await turnsUntil(() => reopenedYet, "the relay subject subscribed again", {
+        boundMs,
+        each: () => {
+          if (jest.getTimerCount() > 0) jest.advanceTimersByTime(60_000);
+        },
+      });
       jest.useRealTimers();
-      await reopened.promise;
-      const settled = Promise.withResolvers<void>();
-      setImmediate(settled.resolve);
-      await settled.promise;
+      await turn();
       for (const tick of ticks) tick();
-      const registered = Promise.withResolvers<void>();
-      setImmediate(registered.resolve);
-      await registered.promise;
+      await turn();
 
       const openSubjects = natsConnections
         .filter((candidate) => candidate.name === "omp-ses_controller_first" && !candidate.closed)
@@ -6360,7 +7339,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       envoyPluginInterface().bootstrappedSession.file = undefined;
       const requestsBeforeResume = first.requests.length;
 
-      const resumed = createPi();
+      const resumed = await createPi();
       legionExtension(resumed.pi);
       const context = first.context("ses_controller_first");
       const { notices } = await startRefusedController(resumed, {
@@ -6403,9 +7382,7 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       expect.stringContaining('"sessionId":"ses_controller_after"'),
     ]);
     expect(daemonRequests(controller.requests).map((request) => request.path)).toEqual([
-      "/legion/v1/state",
       "/legion/v1/claims/register",
-      "/legion/v1/state",
       "/legion/v1/claims/register",
     ]);
   });
@@ -6521,6 +7498,26 @@ describe.skipIf(skip)("the operator-launched controller (LEGION_CONTROLLER=1)", 
       "[legion] claims/register for the controller failed (403): Invalid boot token"
     );
     expect(controller.requests.map((request) => request.path)).not.toContain("/v1/roles/set");
+  });
+
+  // The daemon's detail is its own text: one that echoes the capability it was sent prints none of
+  // it, in the log line or the notice, since the capability is held (#4140, P-k).
+  test("a refusal whose detail echoes the capability prints none of it", async () => {
+    const controller = await launchedController({
+      sessionId: "ses_controller_echo",
+      register: () =>
+        Response.json({ error: `Invalid boot token ${CONTROLLER_SECRET}` }, { status: 403 }),
+    });
+
+    const { notices, errors } = await startRefusedController(
+      controller,
+      controller.context("ses_controller_echo")
+    );
+    expect(errors).toContain(
+      "[legion] claims/register for the controller failed (403): Invalid boot token <withheld>"
+    );
+    const lines = [...errors, ...notices.map((notice) => String(notice.message))];
+    for (const line of lines) expect(line).not.toContain(CONTROLLER_SECRET.slice(4, 18));
   });
 });
 
@@ -6709,7 +7706,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
   // launcher sets it, beside the role variables, and pi-legion is inert outside a Legion session.
   test("a session that is no Legion session saves no notice", async () => {
     process.env.LEGION_WORKSPACE_RECREATED = "true";
-    const fixture = createPi({ bindEnvoy: false });
+    const fixture = await createPi({ bindEnvoy: false });
     legionExtension(fixture.pi);
     await fixture.handlers.get("session_start")?.({}, sessionContext("ses_person"));
     expect(fixture.sentMessages).toEqual([]);
@@ -6783,7 +7780,7 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
     expect(await beforeAgentStart({ prompt: "task" }, context)).toEqual({
       message: {
         customType: "legion-workspace-recreated",
-        content: expect.stringContaining("it holds what was pushed to legion/REPO-43"),
+        content: expect.stringContaining("from what was pushed to legion/REPO-43"),
         display: true,
         details: { id },
       },
@@ -6822,7 +7819,8 @@ describe.skipIf(skip)("the recreated-workspace notice", () => {
 
 // The model fallback (src/model-fallback.ts) as the entry wires it: every Legion role gets it,
 // the architect included, the arming is persisted in the transcript and restored from it, and
-// the return happens in the `context` hook, which runs before every provider request.
+// the return happens in `before_agent_start`, ahead of a run's first provider request, and in the
+// `context` hook, which runs before every provider request after the host has read its model.
 describe("the model fallback", () => {
   const OPUS = "anthropic/claude-opus-5-5";
   const SONNET = "anthropic/claude-sonnet-5";
@@ -6871,15 +7869,17 @@ describe("the model fallback", () => {
     expect(armings(pane)[1]).toEqual({ levels: {} });
   });
 
+  /** The arming a worker's transcript holds when the daemon relaunches it, its wait long over. */
+  const recorded = {
+    type: "custom",
+    customType: LEGION_FALLBACK_ENTRY,
+    data: {
+      arming: { restoreTo: OPUS, entryId: "mc-fallback", dueAt: 1, cause: "refusal" },
+      levels: { [OPUS]: 3 },
+    },
+  };
+
   test("a relaunched worker takes the return its transcript records", async () => {
-    const recorded = {
-      type: "custom",
-      customType: LEGION_FALLBACK_ENTRY,
-      data: {
-        arming: { restoreTo: OPUS, entryId: "mc-fallback", dueAt: 1, cause: "refusal" },
-        levels: { [OPUS]: 3 },
-      },
-    };
     const pane = await bootPane({
       role: "implementer",
       issue: "REPO-43",
@@ -6892,6 +7892,25 @@ describe("the model fallback", () => {
     expect(pane.models.set).toEqual([{ provider: "anthropic", id: "claude-opus-5-5" }]);
     // The levels the record carried survive the return: the next refusal of that model waits on
     // the one it left off at.
+    expect(armings(pane)).toEqual([{ levels: { [OPUS]: 3 } }]);
+  });
+
+  test("a run that starts past the wait takes the return before its first request", async () => {
+    // The host reads a request's model before it runs the `context` hook, so a return made there
+    // is the model of the request after it: the run's first request goes out on the model
+    // `before_agent_start` leaves the session on.
+    const pane = await bootPane({
+      role: "implementer",
+      issue: "REPO-43",
+      branch: [walked, recorded],
+    });
+    pane.models.current = SONNET;
+
+    expect(
+      await pane.handlers.get("before_agent_start")?.({ prompt: "task" }, pane.context)
+    ).toBeUndefined();
+
+    expect(pane.models.set).toEqual([{ provider: "anthropic", id: "claude-opus-5-5" }]);
     expect(armings(pane)).toEqual([{ levels: { [OPUS]: 3 } }]);
   });
 
@@ -6990,7 +8009,7 @@ describe("the model fallback", () => {
   // Legion role's, and an entry of this plugin's in its transcript is one nothing there asked
   // for.
   test("a person's own session on a fallback takes no arming of this plugin's", async () => {
-    const fixture = createPi({ bindEnvoy: false });
+    const fixture = await createPi({ bindEnvoy: false });
     legionExtension(fixture.pi);
     const sessionStart = fixture.handlers.get("session_start");
     if (sessionStart === undefined) throw new Error("session_start handler was not registered");
@@ -7130,6 +8149,50 @@ describe("the model fallback", () => {
     expect(controller.models.set).toEqual([{ provider: "anthropic", id: "claude-opus-5-5" }]);
   });
 
+  // A controller's session change moves the pane onto the new session first, re-claims the
+  // controller there, and reads the new session's fallback only after that. The old session's
+  // arming still has its return's timer, and one that fires while the re-claim runs has no session
+  // to make its return into: the new session's transcript gets nothing of the old one's.
+  test("a return timer that fires during a controller's re-claim writes nothing to the new session", async () => {
+    let holdRoleClaim = false;
+    const roleClaimReached = Promise.withResolvers<void>();
+    const roleClaimHeld = Promise.withResolvers<void>();
+    const controller = await launchedController({
+      sessionId: "ses_controller_timer_before",
+      roleClaim: async () => {
+        if (!holdRoleClaim) return undefined;
+        roleClaimReached.resolve();
+        await roleClaimHeld.promise;
+        return undefined;
+      },
+    });
+    const before = controllerFallbackSession(controller, "ses_controller_timer_before");
+    controller.models.current = SONNET;
+    await controller.handlers.get("session_start")?.({}, before);
+    expect(await runStartCommand(controller, before)).toEqual([]);
+    // The claim armed the branch's fallback, its wait already over, and set its return's timer,
+    // which the host has not run yet.
+    expect(armings(controller)).toHaveLength(1);
+
+    // A `/new`: a session of its own, whose branch holds no fallback.
+    const fresh = controllerFallbackSession(controller, "ses_controller_timer_after");
+    const after: SessionContext = {
+      ...fresh,
+      sessionManager: { ...fresh.sessionManager, getBranch: () => [ranOn] },
+    };
+    holdRoleClaim = true;
+    const switched = controller.handlers.get("session_switch")?.({ reason: "new" }, after);
+    await roleClaimReached.promise;
+
+    // The timer fires while the re-claim waits on the role claim.
+    await runScheduledTimeouts();
+    expect(armings(controller)).toHaveLength(1);
+    expect(controller.models.set).toEqual([]);
+
+    roleClaimHeld.resolve();
+    await switched;
+  });
+
   // What the host actually hands a command: a `CommandContext` and nothing of a session's — no
   // `models`, no `modelRegistry`, no `setTimeout`. Arming a branch that already sits on a
   // fallback reads the branch alone, so a claim command's own context is enough for it, and
@@ -7142,7 +8205,7 @@ describe("the model fallback", () => {
     );
     if (claimCommand === undefined) throw new Error("controller claim command was not registered");
     const context: CommandContext = {
-      cwd: "/tmp/legion-workspace",
+      cwd: paneWorkspaceDirectory(),
       sessionManager: {
         getSessionId: () => "ses_controller_command",
         getSessionFile: () => "/tmp/ses_controller_command.jsonl",
@@ -7241,8 +8304,8 @@ describe("the stall watch the plugin's entry arms", () => {
    * and waits for the sweep it started to have written `wanted` records in all. The host arms the
    * sweep with `void` and never awaits it — a step of the ladder can outlast the tick that armed
    * it — so there is no promise or event here to await, and each step crosses the teller's
-   * publish before its record is written. The loop ends at the record rather than at a duration,
-   * and the deadline is the failure message. */
+   * publish before its record is written. The shared wait ends at the record, and its failure
+   * names the records written by then. */
   const sweeps = async (
     intervals: readonly (() => void)[],
     entries: readonly AppendedEntry[],
@@ -7250,16 +8313,14 @@ describe("the stall watch the plugin's entry arms", () => {
   ): Promise<StallWatchRecord[]> => {
     if (intervals.length === 0) throw new Error("this session armed no interval to sweep on");
     for (const tick of intervals) tick();
-    const deadline = Date.now() + 2_000;
-    while (records(entries).length < wanted) {
-      if (Date.now() > deadline) {
-        throw new Error(
-          `the stall watch wrote ${records(entries).length} records, not ${wanted}: ${JSON.stringify(records(entries))}`
-        );
-      }
-      await Bun.sleep(5);
-    }
-    return records(entries);
+    return until(`the stall watch to have written ${wanted} records`, () => {
+      const written = records(entries);
+      return written.length >= wanted && written;
+    }).catch((error: unknown) => {
+      throw new Error(`${(error as Error).message}: it wrote ${JSON.stringify(records(entries))}`, {
+        cause: error,
+      });
+    });
   };
 
   /** The clock the watch judges a call by is the machine's own (`Date.now` in the entry), so a

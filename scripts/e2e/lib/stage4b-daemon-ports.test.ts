@@ -27,6 +27,7 @@ docker() {
   printf '%s\\n' "$SESSION_DATABASE_BINDING"
 }
 record_stream() { :; }
+record_start() { :; }
 until_true() { return 0; }
 ports_ours() { :; }
 host=10.1.20.250

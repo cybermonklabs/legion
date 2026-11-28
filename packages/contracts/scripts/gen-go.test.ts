@@ -5,6 +5,7 @@ import { dirname, join, relative, resolve } from "node:path";
 import { skipWithout } from "@legion/test-fixtures/host-tools";
 
 const output = resolve(import.meta.dir, "../../envoy/internal/contracts/generated.go");
+const envelopeOutput = resolve(import.meta.dir, "../../envoy/listenerwire/envelope_generated.go");
 const dispatchToolsOutput = resolve(
   import.meta.dir,
   "../../envoy/internal/contracts/dispatch_tools_generated.go"
@@ -14,9 +15,27 @@ const blockSchemaOutput = resolve(
   "../../envoy/internal/dispatch/pmdoc/schema_generated.go"
 );
 const blockSchemaTypes = resolve(import.meta.dir, "../src/block-schema.generated.ts");
+// The Go copy of the dashboard's pages file, which the server's reader embeds.
+const dashboardPagesCopy = resolve(
+  import.meta.dir,
+  "../../envoy/internal/dispatch/text/dashboard-pages.json"
+);
+const dispatchFrameOutputs = [
+  resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_frame_generated.go"),
+  resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),
+  resolve(import.meta.dir, "../fixtures/dispatch-frame-verdicts.json"),
+];
 // Every file the generator writes, so a copy of the whole set is checked and only the hand-edit
 // below is stale.
-const generated = [output, dispatchToolsOutput, blockSchemaOutput, blockSchemaTypes];
+const generated = [
+  output,
+  envelopeOutput,
+  dispatchToolsOutput,
+  blockSchemaOutput,
+  blockSchemaTypes,
+  dashboardPagesCopy,
+  ...dispatchFrameOutputs,
+];
 const questionSchema = resolve(import.meta.dir, "../schemas/dispatch-question.schema.json");
 const generator = resolve(import.meta.dir, "gen-go.ts");
 const repoRoot = resolve(import.meta.dir, "../../..");
@@ -41,14 +60,22 @@ describe.skipIf(skip)("gen-go", () => {
     expect(stderr).toBe("");
     expect(exitCode).toBe(0);
 
-    const source = await Bun.file(output).text();
-    expect(source).toContain(`type EnvelopeSender struct {
+    // The envelope's Go mirror is the listener's wire package's, where its clients read it
+    // without a server package, and internal/contracts names the same types.
+    const envelope = await Bun.file(envelopeOutput).text();
+    expect(envelope).toContain(`package listenerwire`);
+    expect(envelope).toContain(`type EnvelopeSender struct {
 \tSessionID string   \`json:"session_id"\`
 \tMachine   string   \`json:"machine,omitempty"\`
 \tCwd       string   \`json:"cwd,omitempty"\`
 \tTitle     string   \`json:"title,omitempty"\`
 \tRoles     []string \`json:"roles,omitempty"\`
 }`);
+    expect(envelope).toContain(`func (e Envelope) Validate() error {`);
+    const source = await Bun.file(output).text();
+    expect(source).toContain(`type Envelope = listenerwire.Envelope`);
+    expect(source).toContain(`type EnvelopeSender = listenerwire.EnvelopeSender`);
+    expect(source).not.toContain(`type Envelope struct`);
     expect(await Bun.file(questionSchema).exists()).toBe(false);
   }, 120_000);
 

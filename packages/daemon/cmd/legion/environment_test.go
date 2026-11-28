@@ -26,8 +26,8 @@ type startupValue struct {
 var startupEnvironment map[string]startupValue
 
 // snapshotStartupEnvironment records what the process holds of startupRestored. TestMain calls it
-// before fixtureenv.Guard, the first thing in this binary that changes the environment, as
-// fixtureenv takes its own unguarded snapshot there.
+// after it clears the NATS seed variables and before fixtureenv.Guard, the first thing after that
+// in this binary that changes the environment, as fixtureenv takes its own unguarded snapshot there.
 func snapshotStartupEnvironment() {
 	startupEnvironment = make(map[string]startupValue, len(startupRestored))
 	for _, name := range startupRestored {
@@ -71,16 +71,17 @@ func unsetRestored(t *testing.T, names ...string) {
 // TestControllerStartOmitsTheOptionalPointersTheFileDoesNotSet clears the four of startupRestored
 // through fixtureenv.Unset, which leaves putting them back to Go's own cleanup; this test reads
 // them again and compares each with what the process held when the binary started, whether it
-// held it included. The file is named so that it sorts after controller_test.go: go test runs a
-// package's tests in the order their files declare them, files taken in name order, and a reader
-// that ran before the unsetter would prove nothing.
+// held it included. The unsetter changes the whole process's environment, so it runs one at a
+// time with the package's other serial tests, and this test calls t.Parallel: go test starts a
+// parallel test only once every serial test of the package has ended, whatever order -shuffle
+// gives them, and a reader that ran before the unsetter would prove nothing.
 //
-// Three of the four are provable this way, not all four. internal/testnats's init unsets
-// NATS_NKEY_SEED_FILE in every binary that imports that package, this one among them
-// (main_test.go), and an init runs before TestMain: the snapshot already records that name as
-// absent, and it stays absent whatever any test here does. The call at the site covers all four;
-// what this test proves is DISPATCH_URL, DISPATCH_TOKEN_FILE and ENVOY_TOKEN_FILE.
+// Three of the four are provable this way, not all four. TestMain clears NATS_NKEY_SEED_FILE
+// before it takes the snapshot (main_test.go): the snapshot records that name as absent, and it
+// stays absent whatever any test here does. The call at the site covers all four; what this test
+// proves is DISPATCH_URL, DISPATCH_TOKEN_FILE and ENVOY_TOKEN_FILE.
 func TestTheVariablesAControllerTestClearsAreBackOnceItEnds(t *testing.T) {
+	t.Parallel()
 	if startupEnvironment == nil {
 		t.Fatal("TestMain took no snapshot of the environment this binary started with")
 	}

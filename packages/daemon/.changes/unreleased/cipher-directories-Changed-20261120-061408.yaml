@@ -1,0 +1,9 @@
+kind: Changed
+body: |-
+  `internal/agentsecrets`, the daemon's client of the secrets broker, moved to `internal/cipher`, and
+  the daemon imports the broker's public packages from their Cipher paths
+  (`github.com/sjawhar/envoy/cipheraddr`, `cipherclient` and `ciphertest`). Nothing the daemon does,
+  reads or prints changed.
+time: 2026-11-20T06:14:08Z
+custom:
+    Issue: cipher-directories

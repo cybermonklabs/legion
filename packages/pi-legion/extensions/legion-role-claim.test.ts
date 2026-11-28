@@ -2,14 +2,19 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, mock, test } from "
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path, { join } from "node:path";
-import { agentSubject, roleToken } from "@legion/contracts";
+import { legacyAgentSubject, roleToken } from "@legion/contracts";
 import {
   HEARTBEAT_RETRY_MAX_MS,
   HEARTBEAT_RETRY_MIN_MS,
 } from "@legion/envoy-client/envoy-settings";
 import type { ZodNumberProperty } from "@legion/pi-shared/pi-types";
+import { bunCacheOff } from "@legion/test-fixtures/bun-child-environment";
 import { captureEnvironment, type EnvironmentRestore } from "@legion/test-fixtures/environment";
-import { temporaryDirectory } from "@legion/test-fixtures/temporary-directories";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
+import {
+  temporaryDirectories,
+  temporaryDirectory,
+} from "@legion/test-fixtures/temporary-directories";
 import type envoyEntryDefault from "../../pi-envoy/extensions/envoy";
 import type { resetNatsConnectForTests as ResetNatsConnectForTests } from "../../pi-envoy/extensions/envoy";
 import type legionEntryDefault from "./legion";
@@ -32,6 +37,7 @@ const registered: Record<string, unknown> = JSON.parse(
 // stand-in.
 const natsStandInConnect = async () => ({
   isClosed: () => false,
+  closed: () => new Promise<void>(() => undefined),
   close: async () => undefined,
   drain: async () => undefined,
   flush: async () => undefined,
@@ -59,6 +65,10 @@ mock.module("@oh-my-pi/pi-coding-agent", () => ({
 const envoyConfigDirectory = temporaryDirectory("legion-role-claim-envoy-config");
 const envoyConfigFile = join(envoyConfigDirectory, "envoy.json");
 
+/** The pane's state directory (`LEGION_STATE_DIR`, where its boot writes the jj overlay) and its
+ *  working directory: the row's own, removed after it, never a fixed path another run writes. */
+const paneDirectory = temporaryDirectories("legion-role-claim-pane");
+
 /** The Envoy and Legion entries, each loaded once the environment below is in place. The one row
  *  of this file reads them from its own body, and nothing starts a pane before the `beforeAll`
  *  that fills them. */
@@ -74,10 +84,11 @@ beforeAll(async () => {
   // three the entry's module scope writes as it loads — `PATH`, which it puts its own `bin/`
   // first on, `DISPATCH_HOST`, and the `ENVOY_CONFIG_FILE` it settles on — the two deleted below
   // so no profile of the caller's picks another envoy.json, and `DISPATCH_SESSION_ID`, which the
-  // entry writes for the session a pane here binds. They go back when this file ends: `bun test`
-  // runs every file of a package in one process, and the next file reads the environment this one
-  // leaves. They go back rather than being deleted, since the baseline is "not a Legion pane" and
-  // a process with no `PATH` finds none of the programs these tests run.
+  // entry writes for the session a pane here binds. They go back when this file ends: a plain
+  // `bun test` runs every file of a package in one process (the package's `test` script passes
+  // `--parallel`, which gives each file a fresh one), and the next file reads the environment
+  // this one leaves. They go back rather than being deleted, since the baseline is "not a Legion
+  // pane" and a process with no `PATH` finds none of the programs these tests run.
   restoreEntryEnvironment = captureEnvironment([
     "ENVOY_CONFIG_FILE",
     "OMP_PROFILE",
@@ -153,6 +164,7 @@ const originalEnvironment = {
   LEGION_TREE: process.env.LEGION_TREE,
   LEGION_STATE_DIR: process.env.LEGION_STATE_DIR,
   HOME: process.env.HOME,
+  BUN_RUNTIME_TRANSPILER_CACHE_PATH: process.env.BUN_RUNTIME_TRANSPILER_CACHE_PATH,
   DISPATCH_URL: process.env.DISPATCH_URL,
   DISPATCH_TOKEN: process.env.DISPATCH_TOKEN,
   DISPATCH_STATE_DIR: process.env.DISPATCH_STATE_DIR,
@@ -162,6 +174,7 @@ const originalEnvironment = {
 let dispatchState = "";
 beforeEach(() => {
   process.env.HOME = "/nonexistent-home-for-legion-tests";
+  Object.assign(process.env, bunCacheOff);
   delete process.env.DISPATCH_URL;
   delete process.env.DISPATCH_TOKEN;
   dispatchState = mkdtempSync(join(tmpdir(), "legion-role-claim-dispatch-"));
@@ -191,11 +204,13 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   const tree = "REPO-42";
   const sessionID = "ses_legion_root";
   const role = roleToken("omp", tree, "architect");
+  const bootToken = fixtureSecret("boot");
+  const registrationSecret = fixtureSecret("reg");
   process.env.ENVOY_NATS_URL = "nats://nats-under-test:4222";
   process.env.ENVOY_URL = "http://envoy.test";
   process.env.LEGION_DAEMON_URL = "http://daemon.test";
-  process.env.LEGION_BOOT_TOKEN = "claim-heartbeat";
-  process.env.LEGION_STATE_DIR = "/tmp/legion-state";
+  process.env.LEGION_BOOT_TOKEN = bootToken;
+  process.env.LEGION_STATE_DIR = paneDirectory("state");
   process.env.LEGION_TREE = tree;
   process.env.LEGION_ROLE = "architect";
   process.env.LEGION_ISSUE = tree;
@@ -209,7 +224,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
         issue: tree,
         role: "architect",
         generation: 3,
-        secret: "root-secret",
+        secret: registrationSecret,
       });
     }
     if (url.pathname === "/legion/v1/claims/ready") return new Response(null, { status: 204 });
@@ -272,7 +287,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   const envoyPi = createPi();
   const legionPi = createPi();
   const context: Context = {
-    cwd: "/tmp/legion-workspace",
+    cwd: paneDirectory("workspace"),
     sessionManager: {
       getSessionId: () => sessionID,
       getSessionFile: () => "/tmp/legion-root.jsonl",
@@ -294,7 +309,7 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   // manifest — to prove claimEnvoyRole's bridge waits rather than binding to
   // a claim function that was never set.
   legionExtension(legionPi as never);
-  envoyExtension(envoyPi as never);
+  await envoyExtension(envoyPi as never);
   const sessionStart = handlers.get("session_start")?.[0];
   if (sessionStart === undefined) {
     throw new Error("Legion lifecycle handlers were not registered");
@@ -302,10 +317,11 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   await sessionStart({}, context);
 
   // The boot is over and the name is not taken (INFRA-1573): the claim runs at the session's
-  // first turn, so nothing has reached the listener yet and the only managed interval is the
-  // session activity report every claimed session sends on change (INFRA-945).
+  // first turn, so nothing has reached the listener yet and the only managed intervals are the
+  // stall watch's sweep every Legion session arms, and the session activity report every claimed
+  // session sends on change (INFRA-945).
   expect(registrations).toHaveLength(0);
-  expect(intervals).toHaveLength(1);
+  expect(intervals).toHaveLength(2);
 
   // The first turn: `legion.ts` answers `agent_start` by telling the claim session its turn has
   // started, and the claim runs behind that signal, awaited by nothing of the host.
@@ -314,18 +330,18 @@ test("keeps a Legion role claimant fresh regardless of extension initialization 
   await agentStart({}, context);
   await roleClaimed.promise;
 
-  // Two managed intervals now: the activity report the boot armed, and the role claimant's own
-  // heartbeat, armed by the claim. The heartbeat is the one this test drives.
-  expect(intervals).toHaveLength(2);
+  // Three managed intervals now: the two the boot armed, and the role claimant's own heartbeat,
+  // armed by the claim. The heartbeat is the one this test drives.
+  expect(intervals).toHaveLength(3);
   // Establishing the role claimant registers before the role is applied, then
   // refreshes it after the claim.
   expect(registrations).toHaveLength(2);
-  intervals[1]?.();
+  intervals[2]?.();
   await heartbeatRegistration.promise;
   expect(registrations).toHaveLength(3);
   expect(registrations[2]).toMatchObject({
     session_id: sessionID,
-    topics: [agentSubject(sessionID)],
+    topics: [legacyAgentSubject(sessionID)],
   });
   // The heartbeat pass reads the role back, which this listener stub answers with no record, so
   // the pass fails: the pane arms the one extra call a failed heartbeat buys on the host's

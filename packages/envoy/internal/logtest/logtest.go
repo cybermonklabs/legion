@@ -1,5 +1,5 @@
-// Package logtest makes a test's handler the default logger's for the test's lifetime, and holds
-// Recorder, the handler a test captures records with.
+// Package logtest makes a test's handler the default logger's for the test's lifetime, holds
+// Recorder, the handler a test captures records with, and reads back a log of JSON lines.
 // slog.SetDefault also points the log package's output at that handler and clears its flags, and
 // setting the previous default logger back undoes neither, so the restore puts the log package's
 // output and flags back as well: without that, every log.Print after the test writes into its
@@ -12,9 +12,11 @@ package logtest
 
 import (
 	"context"
+	"encoding/json"
 	"log"
 	"log/slog"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 )
@@ -30,15 +32,49 @@ func SetDefault(t testing.TB, handler slog.Handler) {
 // function that does, which t's cleanup also calls. Calling it again sets back the same defaults.
 func Swap(t testing.TB, handler slog.Handler) (restore func()) {
 	t.Helper()
+	restore = Keep(t)
+	slog.SetDefault(slog.New(handler))
+	return restore
+}
+
+// Keep is Swap for a test that sets the default logger itself, as the code it tests does: when t
+// ends it puts back the default logger and the log package's output and flags as they are now,
+// and it returns the function that does.
+func Keep(t testing.TB) (restore func()) {
+	t.Helper()
 	previous, output, flags := slog.Default(), log.Writer(), log.Flags()
 	restore = func() {
 		slog.SetDefault(previous)
 		log.SetOutput(output)
 		log.SetFlags(flags)
 	}
-	slog.SetDefault(slog.New(handler))
 	t.Cleanup(restore)
 	return restore
+}
+
+// JSONLines is each line of written, a log of one JSON object a line, decoded, failing t on a line
+// that is no JSON object.
+func JSONLines(t testing.TB, written string) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for line := range strings.Lines(written) {
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(line), &decoded); err != nil || decoded == nil {
+			t.Fatalf("a line of the log is no JSON object: %q: %v", line, err)
+		}
+		lines = append(lines, decoded)
+	}
+	return lines
+}
+
+// LineWhere is the first of lines for which holds says true, and false when none does.
+func LineWhere(lines []map[string]any, holds func(map[string]any) bool) (map[string]any, bool) {
+	for _, line := range lines {
+		if holds(line) {
+			return line, true
+		}
+	}
+	return nil, false
 }
 
 // Recorder is the slog.Handler a test reads its code's own log records through, rather than a

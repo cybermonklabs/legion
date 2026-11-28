@@ -14,9 +14,10 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/asks"
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
 	"github.com/sjawhar/envoy/internal/dispatch/events"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
-	"github.com/sjawhar/envoy/internal/dispatch/refs"
+	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/texttrees"
 )
 
@@ -27,8 +28,8 @@ const (
 	askQuestionHintLimit = 120
 )
 
-func (s *server) askIDInputForOwner(ctx context.Context, q queryer, owner owner) error {
-	asks, _, err := s.queryOwnerAsks(ctx, q, owner, "open")
+func (s *server) askIDInputForOwner(ctx context.Context, q queryer, who model.Actor, owner owner) error {
+	asks, _, err := s.queryOwnerAsks(ctx, q, who, owner, "open")
 	if err != nil {
 		return err
 	}
@@ -196,10 +197,36 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 		s.writeHandlerError(w, err)
 		return
 	}
-	var rowID string
-	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text`).Scan(&rowID); err != nil {
+	// The row's created_at is the transaction's now(), its column default, read with its id and
+	// written explicitly, so the ask this route answers and its event carry the time the row will
+	// hold.
+	var ask model.Ask
+	if err := tx.QueryRow(r.Context(), `select gen_random_uuid()::text, now()`).Scan(&ask.ID, &ask.CreatedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
+	}
+	rowID := ask.ID
+	// The person this question reaches, read here in the read phase, under the owner's lock
+	// requireOpenOwnerStatus took, through the rule every read of that person shares, so the
+	// caller is told whose Inbox it just landed in rather than having to read the ask again. A
+	// new ask is handed to nobody, so the rule is read over its owner alone
+	// (askWaitingOnPerson): the row itself is only queued below.
+	waitingOnPerson, err := askWaitingOnPerson(r.Context(), tx, owner, nil)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// Everything up to Commit is the read phase (Docs.Join): the document operations and this
+	// route queue their writes on the ledger, in the order made, and Commit sends them as one
+	// batch. Write advice is read here, before the first write is queued, so its queries hold no
+	// transaction id, and counts the ask.opened this ask appends (writeAdvice). This write opens
+	// a question, so it hears about the asks of this issue a person declined to answer, and the
+	// same question is not put to them again.
+	var advice *writeAdvice
+	if owner.IssueKey != nil && status != nil {
+		advice = s.writeAdvice(
+			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, adviceAsks{excluded: []string{rowID}}, *status, "ask.opened", true,
+		)
 	}
 	anchor, artifactName, snapshot, err := s.resolveAnchor(documentCtx, tx, owner, input.Anchor, docs.MarkAsk, rowID, actor)
 	if err != nil {
@@ -225,20 +252,42 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
-	var ask model.Ask
-	if err := tx.QueryRow(r.Context(), `
-		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind)
-		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
-		returning created_at
-	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind).Scan(&ask.CreatedAt); err != nil {
+	// The ask's node goes in before its row, in the project of the issue or the document it is
+	// asked on, read here in the read phase; its write is a step of the write phase, queued before
+	// the row's insert, and what it states waits for the ask.opened event below
+	// (graphstore.QueueCaused).
+	project, parties, err := graphstore.ScopeOf(r.Context(), tx, owner.IssueKey, owner.ArtifactID)
+	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	if err := asks.FollowAuthor(r.Context(), tx, rowID, actor); err != nil {
+	askNode := graphstore.PlanUncaused([]graphstore.Node{graphstore.AskNode(rowID, project, parties, actor, ask.CreatedAt)}, nil)
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueNodes(b, askNode)
+		return nil
+	}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask.ID = rowID
+	if err := queueExec(ledger, `
+		insert into asks (id, issue_key, artifact_id, author, question, options, multiple, urgency, anchor, kind, created_at)
+		values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+	`, rowID, owner.IssueKey, owner.ArtifactID, author, input.Question, options, multiple, urgency, anchorJSON, kind, ask.CreatedAt); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The asker follows the ask it opened, and a session asker is a node of the store from this
+	// write on; its node learns the ask.opened event below, right after that event's insert. The
+	// follow's step fills followed when the write phase runs it, before the step that causes it.
+	var followed graphstore.Uncaused
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		var err error
+		followed, err = asks.QueueFollowAuthor(b, rowID, actor, ask.CreatedAt, graphstore.NoEvent)
+		return err
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	ask.IssueKey = owner.IssueKey
 	ask.ArtifactID = owner.ArtifactID
 	ask.Author = actor
@@ -256,69 +305,67 @@ func (s *server) createAskFor(w http.ResponseWriter, r *http.Request, owner owne
 			return
 		}
 	}
-	// The question and the parts of this write through one reader: its parts hold its question,
-	// so the database answers once per kind for both.
-	reader := refs.NewReader(r.Context(), tx, "ask", ask.ID, s.deps.ServerURL)
-	askChanges, err := refs.ReplaceCounted(r.Context(), tx, reader, ask.Question)
+	// The question and the parts are read with the whole grammar (refs.Reader.Mentions), so the
+	// bare keys, `#id`s and short ids they write are stored as the ask's edges, and the index's
+	// statements follow the row's insert, queued above, which the rows of a part reference. The
+	// event below names what the question and the parts moved between them.
+	askChanges, err := s.queueNewAskReferences(r.Context(), tx, ledger, ask)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The ask's parts, beside the ask's own references: the row is in, so its state row comes
-	// after it, and the event below names what both moved.
-	askChanges, err = refs.IndexAskPartsCounted(r.Context(), tx, reader, ask, ask.CreatedAt, askChanges)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	appended := []model.Event{}
+	appended := []*model.Event{}
 	if snapshot != nil {
-		snapshotEvent, err := s.commitArtifactVersionEvent(r.Context(), tx, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
+		snapshotEvent, err := s.commitArtifactVersionEvent(ledger, owner, actor, anchor.ArtifactID, artifactName, *snapshot, nil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
 		appended = append(appended, snapshotEvent)
 	}
-	openedPayload, err := events.AskEventPayload(r.Context(), tx, ask, askChanges)
+	// The ask's thread_logins are read by its event's insert, after the ask's own insert and the
+	// user_threads trigger it fires.
+	event, err := s.queueLoggedEvent(ledger, owner.event(
+		"ask.opened", actor, model.NewAskEventPayload(ask, askChanges),
+	), events.ThreadLoginsOf(ask.ID), "ask", ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The person this question reaches, read under this write's own transaction through the rule
-	// every read of that person shares, so the caller is told whose Inbox it just landed in
-	// rather than having to read the ask again. It is set after the payload above is built:
+	// The ask's node and the asker's follow learn the ask.opened event the step before appended.
+	if err := ledger.Queue(func(b *store.WriteBatch) error {
+		graphstore.QueueCaused(b, askNode, graphstore.LatestEvent)
+		graphstore.QueueCaused(b, followed, graphstore.LatestEvent)
+		return nil
+	}); err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	// The person read in the read phase above is set only now, after the payload is built:
 	// model.Ask carries the field on reads alone, and no `ask.*` event payload may hold it
 	// (model.Ask's own comment, and AskEventPayloadSchema in packages/contracts, which strips it).
-	ask.WaitingOnPerson, err = askWaitingOnPerson(r.Context(), tx, ask.ID)
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	event, err := s.appendEvent(r.Context(), tx, owner.event("ask.opened", actor, openedPayload))
-	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := refs.Stamp(r.Context(), tx, "ask", ask.ID, event.ID); err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	ask.OpenedEventID = &event.ID
+	ask.WaitingOnPerson = waitingOnPerson
 	appended = append(appended, event)
-	// This write opens a question, so it hears about the asks of this issue a person declined to
-	// answer, and the same question is not put to them again.
-	var advice *writeAdvice
-	if owner.IssueKey != nil && status != nil {
-		advice = s.writeAdvice(
-			r.Context(), tx, routeOpenAsk, *owner.IssueKey, actor, rowID, *status, true,
+	// The review the issue's specification already carries, reported beside the advice above.
+	// It is read here, in the read phase after every write of this ask is queued, so it answers
+	// for the specification as this write leaves it: a version the anchor's snapshot queued of
+	// that document, and a review that version's carry queued, come off the ledger, and the rest
+	// from the table. It is about the document rather than about this session, so it is read for
+	// a person's question as for an agent's, and it rides the advice the write already answers
+	// rather than a read of its own. A question on a project document has no issue and so no
+	// specification, and a write whose advice read failed carries nothing to hang it on; both
+	// report no review.
+	if advice != nil && owner.IssueKey != nil {
+		advice.StandingReview = s.standingReviewAdvice(
+			r.Context(), tx, ledger, routeOpenAsk, *owner.IssueKey,
 		)
 	}
 	if err := ledger.Commit(r.Context()); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), appended...)
+	ask.OpenedEventID = &event.ID
+	s.publish(r.Context(), appendedEvents(appended...)...)
 	s.storeDisplayTrees(r.Context(), ask.ID, texttrees.AskWrittenTexts(nil, ask.Question, ask.Options)...)
 	// The related-item check. An ask on an issue searches that issue's project and, normally, rides its check's
 	// result on the issue's own advice; one on an unlinked project document searches the
@@ -409,9 +456,11 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// The person this credential acts for, where it holds the `person` scope, resolved here and
 	// not at the author check below: resolving a credential reads the store, and the pool
 	// refuses a second connection inside the transaction the next line opens
-	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person.
+	// (store.ErrNestedAcquire). It is nil for every credential that is nobody's person. The same
+	// read is the writer the check of who writes an issue's spec or Verification document judges.
 	var asThePerson *model.Actor
-	if s.callerHoldsScope(r, model.ScopePerson) {
+	writer := s.specWriterOf(r, actor)
+	if writer.person {
 		person, held := s.actingPerson(w, r)
 		if !held {
 			return
@@ -431,13 +480,12 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 	// A block ask's text lives in its `:::ask` block and the row projects it, so writing both
 	// needs the document: the edit joins the ledger here, before it takes any lock.
 	//
-	// Locks, in the order this handler takes them: the owner row (requireOpenOwner), the ask
-	// row, then - inside the live write - the room's writer slot and the document's advisory
-	// lock. Settlement takes the owner row, the advisory lock, then the ask rows, so the two
-	// order the ask row and the advisory lock oppositely. They cannot deadlock because a block
-	// ask's owner row IS its block document's owner row: createAskBlock copies the document's
-	// owner onto the ask, so the owner row serialises both transactions before either takes a
-	// second lock. closeAsk relies on the same invariant.
+	// Locks, in the order this handler takes them: the owner's lock (requireOpenOwner), under
+	// which it reads the ask row, then - inside the live write - the room's writer slot and the
+	// document's advisory lock. Settlement takes the owner's lock, the advisory lock, then the ask
+	// rows. They cannot deadlock because a block ask's owner IS its block document's owner:
+	// createAskBlock copies the document's owner onto the ask, so the owner's lock serialises both
+	// transactions before either takes a second lock. closeAsk relies on the same invariant.
 	documentCtx, ledger := s.deps.Docs.Join(r.Context(), tx)
 	defer ledger.Discard()
 	unlockedAsk, err := s.loadAsk(r.Context(), tx, r.PathValue("id"))
@@ -449,7 +497,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	ask, err := s.lockAskForTransition(documentCtx, tx, unlockedAsk.ID)
+	ask, err := s.readAskForTransition(documentCtx, tx, unlockedAsk.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -507,6 +555,13 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 			s.writeHandlerError(w, err)
 			return
 		}
+		// The check of who writes an issue's spec or Verification document, on the block's
+		// document alone: an edit settles no copy of the ask, and a copy takes only its source's
+		// server attributes, not its wording.
+		if err := refuseSpecWriterOfDocuments(r.Context(), tx, writer, blockArtifact); err != nil {
+			s.writeHandlerError(w, err)
+			return
+		}
 		edit := docs.AskBlockEdit{Question: input.Question, Options: input.Options, Multiple: input.Multiple}
 		if input.Urgency != nil {
 			edit.Urgency = &requestedUrgency
@@ -538,41 +593,42 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var editedAt time.Time
-	if err := tx.QueryRow(documentCtx, `
+	// edited_at is the transaction's now(), which the queued update writes, read here so the ask
+	// this route answers and its event carry it before that update runs.
+	editedAt, err := ledger.Now(r.Context())
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	if err := queueExec(ledger, `
 		update asks
-		set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = now()
+		set question = $2, options = $3, multiple = $4, urgency = $5, edited_at = $6
 		where id = $1
-		returning edited_at
-	`, ask.ID, ask.Question, options, ask.Multiple, ask.Urgency).Scan(&editedAt); err != nil {
+	`, ask.ID, ask.Question, options, ask.Multiple, ask.Urgency, editedAt); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
 	ask.EditedAt = timestampPtr(&editedAt)
-	reader := refs.NewReader(documentCtx, tx, "ask", ask.ID, s.deps.ServerURL)
-	askChanges, err := refs.ReplaceCountedEdit(documentCtx, tx, reader, previous.Question, ask.Question)
+	askChanges, err := s.queueEditedReferences(documentCtx, tx, ledger, ask.Author, "ask", ask.ID, previous.Question, ask.Question)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// The edit writes the question and the options, so it is a revision of the ask's parts:
-	// index them, through the same reader, at the edited_at the row took, and name what they
-	// moved beside the rest.
-	askChanges, err = refs.IndexAskPartsCounted(documentCtx, tx, reader, ask, editedAt, askChanges)
+	// The edit writes the question and the options, so it is a revision of the ask's parts: plan
+	// them at the edited_at the queued update writes, which the row above carries already, queue
+	// the index after that update and after the question's reconciliation just queued, and name
+	// what they moved beside the rest.
+	askChanges, err = s.queueAskParts(documentCtx, ledger, ask, nil, editedAt, true, askChanges)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	event, err := s.appendEvent(documentCtx, tx, ownerOf(ask.IssueKey, ask.ArtifactID).event(
+	event, err := s.queueStampedEvent(ledger, ownerOf(ask.IssueKey, ask.ArtifactID).event(
 		"ask.edited",
 		actor,
 		model.NewAskEditEventPayload(ask, previous, actor, askChanges),
-	))
+	), "ask", ask.ID)
 	if err != nil {
-		s.writeHandlerError(w, err)
-		return
-	}
-	if err := refs.Stamp(documentCtx, tx, "ask", ask.ID, event.ID); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -580,7 +636,7 @@ func (s *server) editAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), event)
+	s.publish(r.Context(), *event)
 	// The question and options this edit replaced are stored beside the new ones: the row holds
 	// only what the ask says now, and every read of the ask's history (askEditReads) is shown the
 	// previous wording, which no other write would ever store.
@@ -764,13 +820,12 @@ type issueAskRow struct {
 	Thread    *askThread          `json:"thread,omitempty"`
 }
 
-// listIssueAsks returns every ask on an issue, filtered by state: "open" or
-// "answered" match only that state; "all" (the default) returns every ask
-// regardless of state, including resolved ones. Each ask carries its newest reply, so a
-// client can order by it; `?thread=1` adds the thread a card renders, batched over the whole
-// page in one set of reads rather than a fetch per ask. The list is unpaged and three surfaces
-// read it, so the thread is what the one surface that draws it asks for, not what every reader
-// of the ask row pays for.
+// listIssueAsks returns asks on an issue, filtered by state: "open" or "answered" match only
+// that state; "all" (the default) includes resolved ones. Each ask carries its newest reply,
+// so a client can order by it. Without order the list is unpaged, and three surfaces read it.
+// Only the surface that draws threads asks for them with ?thread=1, so other readers do not
+// pay to build them. That parameter batches thread reads over the whole answer, and under
+// order=activity only the page's asks are built (readAskThreadPage).
 func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) {
 		return
@@ -785,41 +840,46 @@ func (s *server) listIssueAsks(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, issueOwner(r.PathValue("key")), state)
+	page, err := parseThreadPage(r.URL.Query())
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
-	// One reader for the whole page: the asks' texts, and the replies, rewordings and answers of
-	// every thread the list carries, are one query and one store.
-	reader := s.readDisplayTrees(r.Context(), wantsDisplayTrees(r))
-	rows := make([]issueAskRow, len(asks))
-	for index := range asks {
-		rows[index].shapedAsk.Ask = asks[index]
-		rows[index].shapedAsk.shape(reader)
-		if reply, ok := lastReplies[asks[index].ID]; ok {
-			rows[index].LastReply = &reply
-		}
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
 	}
-	if withThread {
-		if err := s.attachIssueAskThreads(r.Context(), rows, reader); err != nil {
+	if page != nil {
+		result, err := s.readAskThreadPage(r.Context(), who, r.PathValue("key"), state, *page, withThread, wantsDisplayTrees(r))
+		if err != nil {
 			s.writeHandlerError(w, err)
 			return
 		}
+		WriteJSON(w, http.StatusOK, result)
+		return
 	}
-	reader.resolve()
+	asks, lastReplies, err := s.queryOwnerAsks(r.Context(), s.deps.Store.Pool, who, issueOwner(r.PathValue("key")), state)
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
+	rows, err := s.shapeIssueAskRows(r.Context(), who, asks, lastReplies, withThread, wantsDisplayTrees(r))
+	if err != nil {
+		s.writeHandlerError(w, err)
+		return
+	}
 	WriteJSON(w, http.StatusOK, rows)
 }
 
-// attachIssueAskThreads hangs each row's thread off it. loadAskThreads leaves `answers` empty -
-// an Inbox row, its other caller, is an open ask and can have none - so this list, which does
-// carry answered asks, merges them over the same ask ids itself.
-func (s *server) attachIssueAskThreads(ctx context.Context, rows []issueAskRow, reader *displayTreeReader) error {
+// attachIssueAskThreads hangs each row's thread off it, read for who. loadAskThreads leaves
+// `answers` empty - an Inbox row, its other caller, is an open ask and can have none - so this
+// list, which does carry answered asks, merges them over the same ask ids itself.
+func (s *server) attachIssueAskThreads(ctx context.Context, who model.Actor, rows []issueAskRow, reader *displayTreeReader) error {
 	askIDs := make([]string, len(rows))
 	for index := range rows {
 		askIDs[index] = rows[index].ID
 	}
-	threads, err := s.loadAskThreads(ctx, askIDs, reader)
+	threads, err := s.loadAskThreads(ctx, who, askIDs, reader)
 	if err != nil {
 		return err
 	}
@@ -874,6 +934,10 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	if !s.requireAuthenticated(w, r) || !requireUUIDPath(w, r, "ask") {
 		return
 	}
+	who, ok := s.actingReader(w, r)
+	if !ok {
+		return
+	}
 	ask, err := s.loadAsk(r.Context(), s.deps.Store.Pool, r.PathValue("id"))
 	if err != nil {
 		s.writeHandlerError(w, err)
@@ -882,7 +946,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 	// The ask read is the one caller that serialises the count; the write paths load the row
 	// only to check its owner and answer from their own re-read, so they do not pay for it. The
 	// same goes for the part ids of its options and of its answer, and its part revision.
-	if err := attachAskReadFields(r.Context(), s.deps.Store.Pool, []*model.Ask{&ask}); err != nil {
+	if err := attachAskReadFields(r.Context(), s.deps.Store.Pool, who, []*model.Ask{&ask}); err != nil {
 		s.writeHandlerError(w, err)
 		return
 	}
@@ -891,7 +955,7 @@ func (s *server) getAsk(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, "ask_id", ask.ID)
+	replies, err := s.loadReplyChain(r.Context(), s.deps.Store.Pool, who, "ask_id", ask.ID)
 	if err != nil {
 		s.writeHandlerError(w, err)
 		return
@@ -1046,7 +1110,7 @@ func (s *server) loadAskAnswers(ctx context.Context, q queryer, askID string) ([
 	return answers[askID], nil
 }
 
-// loadAsk reads one ask for a response: unlike lockAskForTransition, which feeds the
+// loadAsk reads one ask for a response: unlike readAskForTransition, which feeds the
 // ask.* event payloads, it carries WaitingOn for an open ask.
 func (s *server) loadAsk(ctx context.Context, q queryer, id string) (model.Ask, error) {
 	ask, _, err := scanAskRead(q.QueryRow(ctx, `
@@ -1092,7 +1156,7 @@ var (
 // options and answer with its part revision (attachAskPartIDs), and WaitingOn when open. The
 // newest reply in each ask's thread is returned keyed by ask id; an ask nobody has replied to has
 // no entry. The issue detail's `open_asks` and the issue's own ask list read through it.
-func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, state string) ([]model.Ask, map[string]model.AskLastReply, error) {
+func (s *server) queryOwnerAsks(ctx context.Context, q queryer, who model.Actor, owner owner, state string) ([]model.Ask, map[string]model.AskLastReply, error) {
 	var query, value string
 	switch {
 	case owner.IssueKey != nil:
@@ -1118,7 +1182,15 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, sta
 	default:
 		return nil, nil, errorf(http.StatusBadRequest, "OWNER_INVALID", "owner requires exactly one issue or artifact")
 	}
-	rows, err := q.Query(ctx, query, value)
+	return queryAskReads(ctx, q, who, query, value)
+}
+
+// queryAskReads runs statement, an askReadColumns query, and answers its asks in the order it
+// lists them, each with its details (loadAskDetails), and the newest reply in each ask's thread
+// keyed by ask id (scanAskReads). An owner's asks (queryOwnerAsks) and an issue's ask page
+// (readAskThreadPage) read through it.
+func queryAskReads(ctx context.Context, q queryer, who model.Actor, statement string, args ...any) ([]model.Ask, map[string]model.AskLastReply, error) {
+	rows, err := q.Query(ctx, statement, args...)
 	if err != nil {
 		return nil, nil, err
 	}
@@ -1127,7 +1199,7 @@ func (s *server) queryOwnerAsks(ctx context.Context, q queryer, owner owner, sta
 	if err != nil {
 		return nil, nil, err
 	}
-	if err := loadAskDetails(ctx, q, askReadPointers(asks)); err != nil {
+	if err := loadAskDetails(ctx, q, who, askReadPointers(asks)); err != nil {
 		return nil, nil, err
 	}
 	return asks, replies, nil
@@ -1166,17 +1238,18 @@ func askReadPointers(asks []model.Ask) []*model.Ask {
 	return pointers
 }
 
-// lockAskForTransition reads one ask and locks its row for the transition about to be applied.
-// `for no key update` because nothing deletes an ask or changes its id: this still serialises
-// two transitions of the same ask against each other, while leaving the `for key share` a
-// reply's comments.ask_id insert takes unblocked. A reply is ordered against a transition by
-// the owner row, which comment_create.go and ask_transitions.go both take before either reads
-// this ask's state.
-func (s *server) lockAskForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
+// readAskForTransition reads one ask for the transition about to be applied, after the caller took
+// its owner's lock (requireOpenOwner). It takes no row lock: every writer of an ask while requests
+// are served - a transition, an edit, an approval request, move or carry, a settlement, an anchor
+// refresh - holds its owner's lock first, so two transitions of the same ask, and a reply against
+// a transition, run one after the other, and the ask read here holds still until this transaction
+// ends. (The boot's restoration of decided wordings, docs.RestoreDecidedWordings, runs before the
+// server serves anything.)
+func (s *server) readAskForTransition(ctx context.Context, tx pgx.Tx, id string) (model.Ask, error) {
 	ask, err := scanAskRow(tx.QueryRow(ctx, `
 		select `+askRowColumns+`
 		`+askRowFrom+`
-		where a.id = $1 for no key update of a
+		where a.id = $1
 	`, id))
 	if err != nil {
 		return model.Ask{}, err

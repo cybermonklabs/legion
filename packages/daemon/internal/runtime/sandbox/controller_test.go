@@ -51,6 +51,7 @@ func controllerSpec(t *testing.T) runtime.SpawnSpec {
 // enrolled as every workflow role's launcher is, so its agent can be granted the secrets the
 // Legion daemon's service owns.
 func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	r, err := configure(opts)
@@ -127,9 +128,10 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 	want := []corev1.KeyToPath{
 		{Key: GitHubHostsKey("acme"), Path: "acme/" + ghconfig.HostsFile}, {Key: GitHubConfigKey("acme"), Path: "acme/" + ghconfig.ConfigFile},
 		{Key: GitHubHostsKey("sjawhar"), Path: "sjawhar/" + ghconfig.HostsFile}, {Key: GitHubConfigKey("sjawhar"), Path: "sjawhar/" + ghconfig.ConfigFile},
+		{Key: GitHubPairsKey, Path: ghconfig.PairsFile},
 	}
 	if gh == nil || gh.SecretName != roleSecretName(s.Name, claim.RoleController) || !slices.Equal(gh.Items, want) || gh.DefaultMode == nil || *gh.DefaultMode != 0o440 {
-		t.Errorf("the controller's gh volume projects %+v, want %s's two gh files of each owner as <owner>/hosts.yml and <owner>/config.yml, read-only",
+		t.Errorf("the controller's gh volume projects %+v, want %s's two gh files of each owner as <owner>/hosts.yml and <owner>/config.yml, the bundle's pairs file in the root, read-only",
 			gh, roleSecretName(s.Name, claim.RoleController))
 	}
 	if mount := mountHolding(launcher, GHConfigDir); mount == nil || mount.Name != roleVolume(ghVolume, claim.RoleController) || mount.MountPath != GHConfigDir || !mount.ReadOnly {
@@ -160,12 +162,14 @@ func TestTheControllersPodIsOneLauncherOnAVolumeOfItsOwn(t *testing.T) {
 // where its gh reads its own credential, how it reaches the secrets broker, like a workflow role's,
 // and the project's Slack channels, and nothing of a tree, an issue or a workspace: of the variables
 // the runtime owns (runtimeOwned), it is told exactly those every agent is told, its own marker, its
-// gh files, the broker's and its channels, so a variable the runtime comes to tell any agent fails
-// here until it is decided for the controller.
+// gh files, the broker's and its channels, and, since it resumes its recorded session, what holds
+// it to that session (OMP_SESSION_EXCLUSIVE), so a variable the runtime comes to tell any agent
+// fails here until it is decided for the controller.
 func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	opts.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
-	opts.DispatchURL, opts.DispatchToken = "https://dispatch.internal.example", "dispatch-bearer"
+	opts.DispatchURL, opts.Dispatch = "https://dispatch.internal.example", DispatchCredential{Bearer: "dispatch-bearer"}
 	opts.ControllerSlackChannels = []string{"C00000000", "G00000001"}
 	r, err := configure(opts)
 	if err != nil {
@@ -183,7 +187,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"GH_CONFIG_DIR": GHConfigDir + "/sjawhar", "GH_TOKEN": "", "GITHUB_TOKEN": "", "GH_HOST": "",
 		"LEGION_GH_OWNERS_DIR": GHConfigDir, "LEGION_GH_PATH": opts.Tools.GH,
 		"AGENT_SECRETS_URL": opts.AgentSecrets.URL, "AGENT_SECRETS_KEY_DIR": AgentSecretsKeyDir,
-		"LEGION_SLACK_CHANNELS": "C00000000,G00000001",
+		"LEGION_SLACK_CHANNELS": "C00000000,G00000001", "OMP_SESSION_EXCLUSIVE": "1",
 	} {
 		if env[name] != want {
 			t.Errorf("%s = %q, want %q", name, env[name], want)
@@ -200,10 +204,12 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 		"AGENT_SECRETS_KEY_DIR", "AGENT_SECRETS_URL", "BUN_INSTALL_CACHE_DIR", "DISPATCH_TOKEN_FILE", "DISPATCH_URL",
 		"ENVOY_NATS_URL", "ENVOY_URL", "GH_CONFIG_DIR", "GH_HOST", "GH_TOKEN",
 		"GITHUB_TOKEN", "GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_KEY_1", "GIT_CONFIG_KEY_2", "GIT_CONFIG_KEY_3", "GIT_CONFIG_KEY_4",
-		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
+		"GIT_CONFIG_KEY_5", "GIT_CONFIG_KEY_6", "GIT_CONFIG_KEY_7", "GIT_CONFIG_KEY_8",
+		"GIT_CONFIG_VALUE_0", "GIT_CONFIG_VALUE_1", "GIT_CONFIG_VALUE_2", "GIT_CONFIG_VALUE_3", "GIT_CONFIG_VALUE_4",
+		"GIT_CONFIG_VALUE_5", "GIT_CONFIG_VALUE_6", "GIT_CONFIG_VALUE_7", "GIT_CONFIG_VALUE_8", "GIT_TERMINAL_PROMPT", "GOCACHE", "GOMODCACHE",
 		"LEGION_BOOT_TOKEN_FILE", "LEGION_CONTROLLER", "LEGION_DAEMON_URL",
-		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
-		"OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "PUBLIC_LEAK_CHECK", "TMPDIR",
+		"LEGION_GENERATION", "LEGION_GH_OWNERS_DIR", "LEGION_GH_PATH", "LEGION_LEAK_CHECKER_MANIFEST_SHA256", "LEGION_PROJECT", "LEGION_ROLE", "LEGION_SLACK_CHANNELS", "LEGION_STATE_DIR",
+		"OMP_SESSION_EXCLUSIVE", "OMP_SESSION_SQL_DSN_FILE", "OMP_SESSION_STORAGE", "PATH", "PI_SHELL_PREFIX", "POD_UID", "PUBLIC_LEAK_CHECK", "TMPDIR",
 		"XDG_CACHE_HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STATE_HOME",
 	}; !slices.Equal(told, want) {
 		t.Errorf("the controller is told the runtime's variables %v, want exactly %v", told, want)
@@ -236,6 +242,7 @@ func TestTheControllersAgentIsToldItIsTheControllerAndNothingOfATree(t *testing.
 // default owner) beside the launcher token but no provisioning token, and its boot token reaches
 // its launcher in the start command, as every role's does.
 func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil, withOptions(func(o *Options) { o.Tokens = refusingTokens{} }))
 	spec := controllerSpec(t)
 	g.spawn(spec)
@@ -243,8 +250,8 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 	if secret := g.secret(secretName(name)); secret != nil {
 		t.Errorf("the controller's launch wrote the provisioning Secret %s: %v", secretName(name), secret.Data)
 	}
-	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 2+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
-		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default and the review App's gh files of each owner, and nothing else", secret)
+	if secret := g.secret(roleSecretName(name, claim.RoleController)); secret == nil || len(secret.Data) != 3+2*len(staticDirs) || len(secret.Data[LauncherTokenFile]) == 0 {
+		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the default, the bundle's renames and the review App's gh files of each owner, and nothing else", secret)
 	}
 	for _, role := range claim.Roles {
 		if g.secret(roleSecretName(name, role)) != nil {
@@ -267,6 +274,7 @@ func TestAControllerLaunchMintsNoProvisioningToken(t *testing.T) {
 // credential source that refuses every mint fails the launch naming the controller role, exactly
 // as a refusing GitHubCredential would an issue pod's role.
 func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
+	t.Parallel()
 	credential := func(context.Context, string) (ghconfig.Bundle, error) {
 		return ghconfig.Bundle{}, errors.New("no installation token: GitHub is down")
 	}
@@ -277,8 +285,8 @@ func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
 	}
 }
 
-// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: every mapped
-// repository lacks an App) still runs its controller, with gh acting as nobody, as `legion
+// A project whose repositories have no GitHub owner to mint for (runtime.ErrNoGitHubOwner: its
+// App installed on no account) still runs its controller, with gh acting as nobody, as `legion
 // controller start` does there: the launch succeeds, its role Secret holds the launcher token and
 // an empty default owner and no gh files, its gh volume is an empty directory rather than a
 // projection of the Secret (a projection with no items would project every key, the launcher
@@ -286,6 +294,7 @@ func TestAControllerLaunchFailsWhenItsCredentialMintRefuses(t *testing.T) {
 // directory, a kept pod with that Secret is bound rather than replaced, and the refresher has
 // nothing to refresh and logs nothing.
 func TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory(t *testing.T) {
+	t.Parallel()
 	logs := &lockedLog{}
 	options := withOptions(func(o *Options) {
 		o.ControllerCredential = noOwnerControllerCredential
@@ -296,8 +305,8 @@ func TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory(t *testing.T) {
 	loc := g.spawn(spec)
 	name := SandboxName(controllerToken)
 	secret := g.secret(roleSecretName(name, claim.RoleController))
-	if secret == nil || len(secret.Data) != 2 || len(secret.Data[LauncherTokenFile]) == 0 {
-		t.Fatalf("the controller's role Secret holds %+v, want the launcher token and the empty default alone", secret)
+	if secret == nil || len(secret.Data) != 3 || len(secret.Data[LauncherTokenFile]) == 0 {
+		t.Fatalf("the controller's role Secret holds %+v, want the launcher token, the empty default and the empty renames alone", secret)
 	}
 	if def, ok := secret.Data[GitHubDefaultKey]; !ok || len(def) != 0 {
 		t.Fatalf("the controller's Secret records default %q (present: %t), want an empty one", def, ok)
@@ -342,6 +351,7 @@ func TestAControllerWithNoOwnerRunsWithAnEmptyGhDirectory(t *testing.T) {
 // role's pod is by that role's: its one container, the launcher, carries it, so a controller the
 // operator sized larger than the default runs at that size.
 func TestTheControllersPodTakesItsOwnResources(t *testing.T) {
+	t.Parallel()
 	opts := goldenOptions()
 	sized := corev1.ResourceRequirements{
 		Requests: corev1.ResourceList{corev1.ResourceCPU: resource.MustParse("2"), corev1.ResourceMemory: resource.MustParse("8Gi"), corev1.ResourceEphemeralStorage: resource.MustParse("2Gi")},
@@ -369,6 +379,7 @@ func TestTheControllersPodTakesItsOwnResources(t *testing.T) {
 // daemon restarted at the same addresses re-adopts it as it is, rather than replacing it at every
 // observation.
 func TestAControllerPodIsNotStaleWhileTheBrokersAddressHolds(t *testing.T) {
+	t.Parallel()
 	broker := func(o *Options) {
 		o.AgentSecrets = &AgentSecrets{URL: "https://secrets.internal.example", Audience: "agent-secrets", TokenExpiry: time.Hour}
 	}
@@ -394,6 +405,7 @@ func TestAControllerPodIsNotStaleWhileTheBrokersAddressHolds(t *testing.T) {
 // its session, as it does a role whose envoy_url moved. The list is the controller's alone: an issue
 // pod's role under the same two daemons moved nothing, and is re-adopted as it is.
 func TestAChangedSlackChannelListMakesOnlyTheControllerStale(t *testing.T) {
+	t.Parallel()
 	channels := func(list ...string) func(*Options) {
 		return func(o *Options) { o.ControllerSlackChannels = list }
 	}
@@ -424,6 +436,7 @@ func TestAChangedSlackChannelListMakesOnlyTheControllerStale(t *testing.T) {
 // volume through their owner references. Releasing a workflow claim still leaves its issue pod to
 // the tree's cleanup (TestReleaseNeverDeletesTheIssueSandbox).
 func TestReleasingTheControllerDeletesItsSandbox(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	issue := g.spawn(workerSpec(t))
@@ -444,6 +457,7 @@ func TestReleasingTheControllerDeletesItsSandbox(t *testing.T) {
 // A launcher on the controller's pod is accepted only as the controller, with its pod's current
 // token: a workflow role is no role of that pod, and the controller is no role of an issue pod.
 func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	issue := g.spawn(workerSpec(t))
@@ -472,12 +486,41 @@ func TestTheLauncherResolverAcceptsTheControllersLauncherOnItsOwnPodOnly(t *test
 	}
 }
 
+// The controller's pod takes no cache trimmer, however the deployment configured one: its
+// launcher's single-role form returns before the background block that would run one, and the
+// volume it works on is its own Sandbox's, no issue's cache (Options.VolumeTrim).
+func TestTheControllersAcceptedLauncherIsHandedNoTrimmerSettings(t *testing.T) {
+	t.Parallel()
+	for label, configured := range map[string]*shimwire.LauncherVolumeTrim{
+		"a deployment that runs a trimmer": {HighPercent: 85, LowPercent: 70, MinAgeMinutes: 120, IntervalSeconds: 60},
+		"a deployment that runs none":      nil,
+	} {
+		t.Run(label, func(t *testing.T) {
+			g := newRig(t, nil, withOptions(func(o *Options) { o.VolumeTrim = configured }))
+			loc := g.spawn(controllerSpec(t))
+			name := loc.Sandbox.Name
+			hello := shimwire.LauncherHello{
+				Token:   string(g.secret(roleSecretName(name, claim.RoleController)).Data[LauncherTokenFile]),
+				Sandbox: name, Role: string(claim.RoleController), PodUID: loc.Sandbox.PodUID, LauncherID: "l-1",
+			}
+			handler, ack, reason := g.r.LauncherResolver()(hello)
+			if handler == nil {
+				t.Fatalf("the controller's own launcher was refused: %s", reason)
+			}
+			if ack.VolumeTrim != nil {
+				t.Fatalf("the controller's launcher was handed %+v, want none", *ack.VolumeTrim)
+			}
+		})
+	}
+}
+
 // The daemon tells the orphan sweep of every claim it has not retired (internal/daemon's
 // knownClaims), a suspended one with no locator. The controller's Sandbox holds its saved session,
 // so a known controller claim keeps it, running or suspended; once the claim is retired, and so
 // unknown, the sweep deletes it. A known claim of another Sandbox or role keeps nothing of the
 // controller's.
 func TestTheOrphanSweepKeepsAKnownControllersSandboxAndDeletesAnUnknownOnes(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	worker := g.spawn(workerSpec(t))
@@ -515,6 +558,7 @@ func TestTheOrphanSweepKeepsAKnownControllersSandboxAndDeletesAnUnknownOnes(t *t
 // launching first), and the sweep reads it again under the turn: the Sandbox, its volume and saved
 // session with it, stays. Once the claim is retired, the next sweep deletes it.
 func TestTheOrphanSweepKeepsTheSandboxOfAControllerLaunchedSinceItsClaimsWereRead(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	g.dyn.PrependReactor("delete", "sandboxes", fenceSandboxDeletes(g))
 	var known []runtime.Known // read before the controller's launch
@@ -547,6 +591,7 @@ func TestTheOrphanSweepKeepsTheSandboxOfAControllerLaunchedSinceItsClaimsWereRea
 // the keeper's retry of a retired controller, written launching before its launch begins — is read
 // again under the turn, and the Sandbox stays though nothing has written it since the listing.
 func TestTheOrphanSweepReadsTheControllersClaimAgainUnderThePodsLaunchTurn(t *testing.T) {
+	t.Parallel()
 	store := &answeringStore{fakeStore: newFakeStore(), answered: make(chan struct{})}
 	g := newRig(t, nil, withOptions(func(o *Options) { o.Store = store }))
 	g.dyn.PrependReactor("delete", "sandboxes", fenceSandboxDeletes(g))
@@ -597,6 +642,7 @@ func (s *answeringStore) ClaimUnretired(ctx context.Context, token claim.Token) 
 // suspension and orphan delete of a pod runs under it: while a relaunch holds the turn, the release
 // waits, and the Sandbox is deleted once the turn is given back.
 func TestReleasingTheControllerWaitsForItsPodsLaunchTurn(t *testing.T) {
+	t.Parallel()
 	g := newRig(t, nil)
 	loc := g.spawn(controllerSpec(t))
 	name := loc.Sandbox.Name
@@ -630,6 +676,7 @@ func TestReleasingTheControllerWaitsForItsPodsLaunchTurn(t *testing.T) {
 // next decision, which deletes it once nothing has written it since. The Sandbox kept is logged,
 // named, so an operator who released the controller can see why its Sandbox is still there.
 func TestAControllerSandboxWrittenSinceItsDeleteWasDecidedStays(t *testing.T) {
+	t.Parallel()
 	for name, deleteIt := range map[string]func(g *rig) error{
 		"the orphan sweep": func(g *rig) error { return g.r.ReconcileOrphans(g.ctx, nil, 0) },
 		"its release":      func(g *rig) error { return g.r.Release(g.ctx, runtime.Known{Claim: controllerToken}) },

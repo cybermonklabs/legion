@@ -3,12 +3,19 @@ import { dirname, relative, resolve } from "node:path";
 
 import { AGENT_STREAM_SUBJECT_PREFIX } from "../src/agent-stream";
 import {
+  BROKER_REQUEST_REASON_MAX,
   DEFAULT_ISSUE_PAGE_LIMIT,
+  DEFAULT_THREAD_PAGE_LIMIT,
+  DELETED_POST_DELIVERY_ERROR,
   DELIVERY_DUPLICATE_WINDOW_MS,
+  DISPATCH_APPROVE_ONLY_TOKEN,
+  DISPATCH_AS_OF_TOKEN_NOT_SERVED,
+  DISPATCH_EVENT_TYPES,
   DISPATCH_LOGIN_CHANGED,
   DISPATCH_LOGIN_HEADER,
   DISPATCH_READ_ONLY_TOKEN,
   DISPATCH_SIGN_IN_REQUIRED,
+  DISPATCH_SIGN_IN_SCOPES,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE,
   DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON,
   DOCUMENT_NEWER_CONTENT_CLOSE_CODE,
@@ -28,21 +35,37 @@ import {
   IDEMPOTENCY_LEASE_MS,
   IDEMPOTENCY_REPLAYED_HEADER,
   ISSUE_CLAIM_UNRESPONSIVE_GRACE_MS,
+  ISSUE_LABEL_MAX,
   ISSUE_TITLE_MAX,
+  KNOWN_SESSIONS_MAX,
   LIVE_SOCKET_MAX_AGE_CLOSE,
   LIVE_SOCKET_MAX_AGE_MS,
   LIVE_SOCKET_MAX_SUBSCRIPTIONS,
   LIVE_SOCKET_MIN_AGE_MS,
+  MARKDOWN_DOCUMENT_MAX_BYTES,
+  MARKDOWN_DOCUMENT_TOO_LARGE,
   MAX_BROADCAST_RECIPIENTS,
   MAX_ISSUE_ADVANCES,
   MAX_ISSUE_BLOCKERS,
+  MAX_ISSUE_COMPONENTS,
+  MAX_ISSUE_LABELS,
   MAX_ISSUE_PAGE_LIMIT,
+  MAX_THREAD_PAGE_LIMIT,
+  POST_HISTORY_PAGE_LIMIT,
+  PRIORITY_ID_MAX,
   PROJECT_NAME_MAX,
   RECEIPT_TIMEOUT_CAUSE,
+  REFERENCE_TARGETS_MAX,
   SEARCH_DEGRADED_EMBEDDER_UNAVAILABLE,
   SEARCH_OPERATOR_EXCLUDE,
   SEARCH_OPERATOR_OR,
   SEARCH_OPERATOR_PHRASE,
+  SPEC_CHECK_OBSERVED_CUT_NOTE,
+  SPEC_CHECK_OBSERVED_END,
+  SPEC_CHECK_OBSERVED_MAX,
+  SPEC_CHECK_OBSERVED_START,
+  STORE_UNCONFIRMED_CAUSE,
+  TEXT_REFUSAL_HEADER,
 } from "../src/dispatch-api";
 import {
   DISPATCH_BLOCK_UNITS,
@@ -51,14 +74,28 @@ import {
   DISPATCH_ITEM_BLOCKS,
   HANDOFF_PHASE_PATTERN,
   HANDOFF_PHASE_RULE_WORDS,
+  PLAN_INPUT_CODE,
+  PLAN_OTHER_ISSUE_CODE,
+  PLANNED_STEP_STATES,
   PROJECT_KEY_PATTERN,
   PROJECT_KEY_RULE,
   SEARCH_KIND_DEPTH,
   SEARCH_QUERY_HINT,
   SEARCH_QUERY_MAX,
+  STEP_AGENT_TEXT_PATTERN,
+  STEP_AGENT_TEXT_RULE_WORDS,
+  STEP_INPUT_CODE,
+  STEP_KINDS,
+  STEP_OTHER_ISSUE_CODE,
+  STEP_RESULTS,
+  STEP_TASK_MAX,
+  STEP_TASK_PATTERN,
+  STEP_TASK_RULE_WORDS,
+  STEP_WRITER_CODE,
 } from "../src/dispatch-tools";
 import { MINTED_DEDUPE_KEY_PATTERN } from "../src/envelope";
 import {
+  BUS_UNANSWERED_PREFIX,
   LISTENER_CALL_ATTEMPTS,
   LISTENER_CALL_RETRY_DELAY_MS,
   LISTENER_CALL_TIMEOUT_MS,
@@ -70,6 +107,7 @@ import {
   GOING_ANSWER_WORD_MAX,
   GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
   GOING_ERROR_ANSWER_FAILED,
+  GOING_ERROR_ANSWER_WITHDRAWN,
   GOING_ERROR_NO_MODEL_CONFIGURED,
   GOING_EVENT_CHANGED,
   GOING_EVENT_CUT,
@@ -87,13 +125,34 @@ import {
   GOING_SEARCH_TOOL,
   GOING_WORDS_MAX,
 } from "../src/going";
-import { controllerToken } from "../src/legion-roles";
 import {
+  controllerToken,
+  LEGION_PLAN_RATING_LEAST,
+  LEGION_PLAN_RATING_MOST,
+  LEGION_PLAN_REASON_MAX,
+} from "../src/legion-roles";
+import {
+  agentSubject,
+  DISPATCH_ISSUE_TOPIC_PREFIX,
+  dispatchIssueSubject,
+  LEGION_STATE_SUFFIX,
+  legacyAgentSubject,
+  legacyDispatchIssueSubject,
   legionControllerNoticeSubject,
+  legionStateSubject,
+  legionWakeSubject,
+  MESSAGE_NOT_SENT_PREFIX,
+  NO_PROJECT,
+  roleSubject,
   SUBJECT_MAX_BYTES,
   SUBJECT_SEGMENT_REPLACED,
   uncapturedTopicRefusal,
 } from "../src/subject";
+import {
+  renderDispatchFrameSchema,
+  renderDispatchFrameSchemaGo,
+  renderDispatchFrameVerdicts,
+} from "./gen-go-dispatch-frame";
 import { renderDispatchTools } from "./gen-go-tools";
 
 type ScalarKind = "string" | "integer" | "boolean";
@@ -122,6 +181,9 @@ type Schema = {
 
 const envelopeFile = resolve(import.meta.dir, "../schemas/envelope.schema.json");
 const blockSchemaFile = resolve(import.meta.dir, "../schemas/block-schema.schema.json");
+// The dashboard's pages file: packages/dispatch's web/src/features/refs/dashboard-pages-file.ts
+// writes it from the dashboard's route table, and src/dispatch-href.ts imports it.
+const dashboardPagesFile = resolve(import.meta.dir, "../src/dashboard-pages.json");
 
 const map = {
   string: "string",
@@ -187,6 +249,54 @@ const uncapturedTopicRefusalText = goConcat(
   ["topic", "sessionID"]
 );
 
+// Each builder of a project's message names is read at sentinels for its values, so the Go twin
+// writes the very text the builder writes: a project token, an issue key and a type, a session
+// and a role each stand in for one value. Any text that appears nowhere else in the name will do.
+const issueSentinel = "zzissuezz";
+const typeSentinel = "zztypezz";
+const roleSentinel = "zzrolezz";
+const dispatchIssueSubjectText = goConcat(
+  splitAtSentinels(
+    dispatchIssueSubject(projectSentinel, issueSentinel, typeSentinel),
+    projectSentinel,
+    issueSentinel,
+    typeSentinel
+  ),
+  ["project", "issueKey", "typ"]
+);
+const agentSubjectText = goConcat(
+  splitAtSentinels(
+    agentSubject(projectSentinel, sessionSentinel),
+    projectSentinel,
+    sessionSentinel
+  ),
+  ["project", "session"]
+);
+const legacyAgentSubjectText = goConcat(
+  splitAtSentinels(legacyAgentSubject(sessionSentinel), sessionSentinel),
+  ["session"]
+);
+const legacyDispatchIssueSubjectText = goConcat(
+  splitAtSentinels(
+    legacyDispatchIssueSubject(issueSentinel, typeSentinel),
+    issueSentinel,
+    typeSentinel
+  ),
+  ["issueKey", "typ"]
+);
+const roleSubjectText = goConcat(
+  splitAtSentinels(roleSubject(projectSentinel, roleSentinel), projectSentinel, roleSentinel),
+  ["project", "role"]
+);
+const legionWakeSubjectText = goConcat(
+  splitAtSentinels(legionWakeSubject(projectSentinel), projectSentinel),
+  ["token"]
+);
+const legionStateSubjectText = goConcat(
+  splitAtSentinels(legionStateSubject(projectSentinel), projectSentinel),
+  ["token"]
+);
+
 const keep = `func ValidateWire(raw []byte) error {
 	var fields map[string]json.RawMessage
 	if err := json.Unmarshal(raw, &fields); err != nil {
@@ -226,6 +336,15 @@ func validateWireNonEmpty(fields map[string]json.RawMessage, field, path string)
 const AgentTopicPrefix = "notifications.agent."
 const RoleTopicPrefix = "notifications.role."
 
+// DispatchIssueTopicPrefix begins every issue's event, in either form. Generated from
+// DISPATCH_ISSUE_TOPIC_PREFIX in packages/contracts.
+const DispatchIssueTopicPrefix = ${JSON.stringify(DISPATCH_ISSUE_TOPIC_PREFIX)}
+
+// NoProject is the project token of a message name that belongs to no project: an agent message
+// or a role lane outside every project. No project key (ProjectKeyPattern) can be it. Generated
+// from NO_PROJECT in packages/contracts.
+const NoProject = ${JSON.stringify(NO_PROJECT)}
+
 // GithubTopicPrefix begins every GitHub subject, before the repository's owner and name.
 const GithubTopicPrefix = "notifications.github."
 
@@ -255,6 +374,15 @@ func UncapturedTopicRefusal(topic, sessionID string) string {
 	return ${uncapturedTopicRefusalText}
 }
 
+// MessageNotSentPrefix opens the error of the 503 POST /v1/messages/send and POST
+// /v1/messages/publish answer for a message the bus refused before it sent anything, because the
+// deployed stream does not capture a topic this build stores (bus.ErrSubjectNotDeployed): nothing
+// was stored, and the same message may be sent again once the stream captures the topic. Generated
+// from MESSAGE_NOT_SENT_PREFIX in packages/contracts, which envoy-client's transport reads to tell
+// this answer from a 5xx after which the message may have been stored, so the listener and the
+// client cannot word it apart.
+const MessageNotSentPrefix = ${JSON.stringify(MESSAGE_NOT_SENT_PREFIX)}
+
 // DeliveryDuplicateWindow is how long a repeated delivery is recognised as a duplicate, by the
 // notification stream and by every host that reads it. Generated from
 // DELIVERY_DUPLICATE_WINDOW_MS in packages/contracts, whose doc comment states the retry promise
@@ -280,10 +408,31 @@ const MintedDedupeKeyPattern = ${JSON.stringify(MINTED_DEDUPE_KEY_PATTERN)}
 // and the string the dashboard keys its retry wording on cannot drift apart.
 const ReceiptTimeoutCause = ${JSON.stringify(RECEIPT_TIMEOUT_CAUSE)}
 
+// DeletedPostDeliveryError is what a delete settles each send of its post still pending with.
+// Generated from DELETED_POST_DELIVERY_ERROR in packages/contracts so the string Dispatch writes
+// and the string the dashboard reads a delete's receipts and attempts by cannot drift apart.
+const DeletedPostDeliveryError = ${JSON.stringify(DELETED_POST_DELIVERY_ERROR)}
+
+// StoreUnconfirmedCause is what a delivery attempt records when the listener answered its send
+// 503 with the code that says the message may be stored (listenerwire.CodeMaybeStored). Generated
+// from STORE_UNCONFIRMED_CAUSE in packages/contracts so the string Dispatch writes and the string
+// the dashboard keys its retry wording on cannot drift apart.
+const StoreUnconfirmedCause = ${JSON.stringify(STORE_UNCONFIRMED_CAUSE)}
+
 // MaxBroadcastRecipients is the most sessions one broadcast sends to. Generated from
 // MAX_BROADCAST_RECIPIENTS in packages/contracts so the server's limit and the dashboard's
 // cannot drift apart.
 const MaxBroadcastRecipients = ${MAX_BROADCAST_RECIPIENTS}
+
+// KnownSessionsMax is the most session ids one GET /api/v1/agents/known names. Generated from
+// KNOWN_SESSIONS_MAX in packages/contracts so the server's refusal and the dashboard's batches
+// cannot drift apart.
+const KnownSessionsMax = ${KNOWN_SESSIONS_MAX}
+
+// ReferenceTargetsMax is the most references one GET /api/v1/reference-targets may name. Generated
+// from REFERENCE_TARGETS_MAX in packages/contracts so the server's refusal and the dashboard's
+// batches are one number.
+const ReferenceTargetsMax = ${REFERENCE_TARGETS_MAX}
 
 // SearchQueryMax is the longest GET /api/v1/search query, in UTF-16 units. Generated from
 // SEARCH_QUERY_MAX in packages/contracts so the server's refusal and the \`dispatch search\`
@@ -349,13 +498,15 @@ const GoingEventEnd = ${JSON.stringify(GOING_EVENT_END)}
 const GoingEventError = ${JSON.stringify(GOING_EVENT_ERROR)}
 
 // The codes an error frame carries: the run reached its window without an answer, the deployment
-// has no text model configured, and the model service refused or failed. Generated from
-// GOING_ERROR_ANSWER_DID_NOT_ARRIVE, GOING_ERROR_NO_MODEL_CONFIGURED and
-// GOING_ERROR_ANSWER_FAILED in packages/contracts so the code the server writes and the wording
-// the page keys on it cannot drift apart.
+// has no text model configured, the model service refused or failed, and a post the run was
+// given was deleted after it. Generated from GOING_ERROR_ANSWER_DID_NOT_ARRIVE,
+// GOING_ERROR_NO_MODEL_CONFIGURED, GOING_ERROR_ANSWER_FAILED and GOING_ERROR_ANSWER_WITHDRAWN in
+// packages/contracts so the code the server writes and the wording the page keys on it cannot
+// drift apart.
 const GoingErrorAnswerDidNotArrive = ${JSON.stringify(GOING_ERROR_ANSWER_DID_NOT_ARRIVE)}
 const GoingErrorNoModelConfigured = ${JSON.stringify(GOING_ERROR_NO_MODEL_CONFIGURED)}
 const GoingErrorAnswerFailed = ${JSON.stringify(GOING_ERROR_ANSWER_FAILED)}
+const GoingErrorAnswerWithdrawn = ${JSON.stringify(GOING_ERROR_ANSWER_WITHDRAWN)}
 
 // GoingSearchTool is the name of the one tool the model is given, another search of Dispatch.
 // Generated from GOING_SEARCH_TOOL in packages/contracts so the name the server declares and the
@@ -405,6 +556,18 @@ const MaxIssueBlockers = ${MAX_ISSUE_BLOCKERS}
 // one number.
 const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
 
+// MaxIssueLabels is the most labels one issue holds, and the most one labels or labels_add input
+// names before deduplication, and IssueLabelMax the longest label, in UTF-16 units. Generated from
+// MAX_ISSUE_LABELS and ISSUE_LABEL_MAX in packages/contracts so the server's refusals and the
+// issue tools' bounds are one number each.
+const MaxIssueLabels = ${MAX_ISSUE_LABELS}
+const IssueLabelMax = ${ISSUE_LABEL_MAX}
+
+// MaxIssueComponents bounds the ids of a components input of mode explicit before deduplication.
+// Generated from MAX_ISSUE_COMPONENTS in packages/contracts so the server's refusal and the issue
+// tools' bound are one number.
+const MaxIssueComponents = ${MAX_ISSUE_COMPONENTS}
+
 // MaxIssuePageLimit is the most issues one page of GET /api/v1/issues holds, and
 // DefaultIssuePageLimit the page size when a caller pages with offset alone. Generated from
 // MAX_ISSUE_PAGE_LIMIT and DEFAULT_ISSUE_PAGE_LIMIT in packages/contracts so the server's bounds
@@ -412,10 +575,43 @@ const MaxIssueAdvances = ${MAX_ISSUE_ADVANCES}
 const MaxIssuePageLimit = ${MAX_ISSUE_PAGE_LIMIT}
 const DefaultIssuePageLimit = ${DEFAULT_ISSUE_PAGE_LIMIT}
 
+// SpecCheckObservedMax is the most runes of what a CI job observed that a result of a spec check
+// keeps. A longer text is kept as its first SpecCheckObservedStart runes, then
+// SpecCheckObservedCutNote, which says that the middle was cut, then its last
+// SpecCheckObservedEnd runes, SpecCheckObservedMax runes in all. Generated from
+// SPEC_CHECK_OBSERVED_MAX, SPEC_CHECK_OBSERVED_START, SPEC_CHECK_OBSERVED_CUT_NOTE and
+// SPEC_CHECK_OBSERVED_END in packages/contracts, so the text Dispatch keeps and the text
+// \`dispatch result --project\` sends are cut by one rule.
+const SpecCheckObservedMax = ${SPEC_CHECK_OBSERVED_MAX}
+const SpecCheckObservedStart = ${SPEC_CHECK_OBSERVED_START}
+const SpecCheckObservedCutNote = ${JSON.stringify(SPEC_CHECK_OBSERVED_CUT_NOTE)}
+const SpecCheckObservedEnd = ${SPEC_CHECK_OBSERVED_END}
+
+// MaxThreadPageLimit is the most threads one page of an issue's threads holds, and
+// DefaultThreadPageLimit the page size when a caller names no limit: GET
+// /api/v1/issues/{key}/comments, GET /api/v1/issues/{key}/messages and GET
+// /api/v1/issues/{key}/asks under order=activity. Generated from MAX_THREAD_PAGE_LIMIT and
+// DEFAULT_THREAD_PAGE_LIMIT in packages/contracts so the server's bounds and every client's cannot
+// drift apart.
+const MaxThreadPageLimit = ${MAX_THREAD_PAGE_LIMIT}
+const DefaultThreadPageLimit = ${DEFAULT_THREAD_PAGE_LIMIT}
+
+// PostHistoryPageLimit is the most rows one answer of GET /api/v1/comments/{id}/history or
+// GET /api/v1/messages/{id}/history holds, newest first. Generated from POST_HISTORY_PAGE_LIMIT
+// in packages/contracts so the page the server reads and the full page on which the
+// \`dispatch read --history\` command names the read of older rows cannot drift apart.
+const PostHistoryPageLimit = ${POST_HISTORY_PAGE_LIMIT}
+
 // IssueTitleMax is the longest issue title, in UTF-16 units, that POST /api/v1/issues and
 // PATCH /api/v1/issues/{key} accept. Generated from ISSUE_TITLE_MAX in packages/contracts so the
 // server's refusal and the dashboard's title fields cannot drift apart.
 const IssueTitleMax = ${ISSUE_TITLE_MAX}
+
+// PriorityIDMax is the longest priority id, in characters, that POST /api/v1/priorities writes:
+// the bound of an id the caller names and the length the id it derives from a title is cut to.
+// Generated from PRIORITY_ID_MAX in packages/contracts so the server's refusal and the server's
+// cut cannot drift apart.
+const PriorityIDMax = ${PRIORITY_ID_MAX}
 
 // DispatchBlockUnits is the longest one block of a comment, comment edit, message, broadcast or
 // ask part may be, in UTF-16 units. Generated from DISPATCH_BLOCK_UNITS in packages/contracts;
@@ -433,11 +629,58 @@ const DispatchItemBlocks = ${DISPATCH_ITEM_BLOCKS}
 // GET /api/v1/limits.
 const DispatchEventBodyMax = ${DISPATCH_EVENT_BODY_MAX}
 
+// DispatchEventTypes is every event type Dispatch writes to its log, sorted: the members of the
+// DispatchEvent union. Generated from DISPATCH_EVENT_TYPES in packages/contracts, which the
+// TypeScript compiler holds to that union, so a Go reader that sorts every type, as the keyword
+// fill's inventory test (internal/dispatch/textversions) does, learns of a new type from it.
+var DispatchEventTypes = []string{
+${DISPATCH_EVENT_TYPES.map((type) => `\t${JSON.stringify(type)},`).join("\n")}
+}
+
+// DispatchSignInScopes are the Dispatch scopes a person may approve for a Dispatch sign-in, in the
+// order a page lists them. Generated from DISPATCH_SIGN_IN_SCOPES in packages/contracts, so the
+// broker that takes a sign-in's scopes, the verifier that reads its tokens and the clients and
+// page that ask for them hold one list.
+var DispatchSignInScopes = []string{
+${DISPATCH_SIGN_IN_SCOPES.map((scope) => `\t${JSON.stringify(scope)},`).join("\n")}
+}
+
+// BrokerRequestReasonMax is the most characters, counted as Unicode code points, the reason of a
+// request to the secrets broker may carry. Generated from BROKER_REQUEST_REASON_MAX in
+// packages/contracts, so the broker's refusal (record.MaxReasonRunes) and each client's check
+// before it asks hold one bound.
+const BrokerRequestReasonMax = ${BROKER_REQUEST_REASON_MAX}
+
 // DispatchHandoffBodyMax is the longest phase handoff body, in UTF-8 bytes, that
 // POST /api/v1/issues/{key}/handoffs/{phase} accepts. Generated from DISPATCH_HANDOFF_BODY_MAX in
 // packages/contracts so the server's 413 and the \`dispatch handoff-write\` command's pre-send
 // refusal cannot drift apart.
 const DispatchHandoffBodyMax = ${DISPATCH_HANDOFF_BODY_MAX}
+
+// MarkdownDocumentMaxBytes is the most bytes of markdown one document may hold, and
+// MarkdownDocumentTooLarge what the 413 CAP_EXCEEDED of an upload past it says. Generated from
+// MARKDOWN_DOCUMENT_MAX_BYTES and MARKDOWN_DOCUMENT_TOO_LARGE in packages/contracts so the
+// server's refusal and the one \`dispatch artifact\` makes before it sends cannot drift apart.
+const MarkdownDocumentMaxBytes = ${MARKDOWN_DOCUMENT_MAX_BYTES}
+const MarkdownDocumentTooLarge = ${JSON.stringify(MARKDOWN_DOCUMENT_TOO_LARGE)}
+
+// TextRefusalHeader is the response header the markdown round trips put on their refusal of a
+// text for the text alone, whatever the refusal's status: a mark, with one value, that says the
+// answer is the refusal of the text (writeTextRefusal), so a client reads only that it is there.
+// Generated from TEXT_REFUSAL_HEADER in packages/contracts so the routes and \`dispatch artifact\`,
+// which reads an answer carrying it as the call's own refusal, name it once.
+const TextRefusalHeader = ${JSON.stringify(TEXT_REFUSAL_HEADER)}
+
+// PlanRatingLeast and PlanRatingMost are the scale of a retro's rating of the plan its issue ran,
+// from the plan cost the work to the plan fit the work, and PlanReasonMax the most characters,
+// counted as Unicode code points, the rating's reason holds. Generated from
+// LEGION_PLAN_RATING_LEAST, LEGION_PLAN_RATING_MOST and LEGION_PLAN_REASON_MAX in
+// packages/contracts, so Dispatch's record of the retro and the Legion daemon's completion route,
+// which both hold a rating to CheckPlanRating (the daemon through github.com/sjawhar/envoy/steprecord),
+// and the plugins' tools hold one scale.
+const PlanRatingLeast = ${LEGION_PLAN_RATING_LEAST}
+const PlanRatingMost = ${LEGION_PLAN_RATING_MOST}
+const PlanReasonMax = ${LEGION_PLAN_REASON_MAX}
 
 // HandoffPhaseRule says the handoff-phase pattern's rule in words; every refusal of a phase that is
 // not a handoff phase gives it. Generated from HANDOFF_PHASE_RULE_WORDS in packages/contracts so
@@ -449,6 +692,62 @@ const HandoffPhaseRule = ${JSON.stringify(HANDOFF_PHASE_RULE_WORDS)}
 // packages/contracts, which the dispatch command checks a phase against, so the two accept the
 // same phases.
 const HandoffPhasePattern = ${JSON.stringify(HANDOFF_PHASE_PATTERN.source)}
+
+// The kinds of a run a step record names: a step a plan names, at its place from 1, and the retro
+// and the merge, which no plan names, at the place 0. The results of a run that ended. The codes of
+// the step write's refusals that no retry changes. Generated from STEP_KINDS, STEP_RESULTS and the
+// STEP_*_CODE constants in packages/contracts: Dispatch's store and route use them, and the Legion
+// daemon reads them through github.com/sjawhar/envoy/steprecord, so no word is written twice.
+const (
+	StepKindStep       = ${JSON.stringify(STEP_KINDS[0])}
+	StepKindRetro      = ${JSON.stringify(STEP_KINDS[1])}
+	StepKindMerge      = ${JSON.stringify(STEP_KINDS[2])}
+	StepResultPassed   = ${JSON.stringify(STEP_RESULTS[0])}
+	StepResultFailed   = ${JSON.stringify(STEP_RESULTS[1])}
+	StepResultStopped  = ${JSON.stringify(STEP_RESULTS[2])}
+	StepInputCode      = ${JSON.stringify(STEP_INPUT_CODE)}
+	StepWriterCode     = ${JSON.stringify(STEP_WRITER_CODE)}
+	StepOtherIssueCode = ${JSON.stringify(STEP_OTHER_ISSUE_CODE)}
+)
+
+// The states of a step of an issue's plan in the steps read beside the results of a run that
+// ended: not started before any run of it, and running while its newest run has no end.
+// Generated from PLANNED_STEP_STATES in packages/contracts: Dispatch's steps read writes them.
+const (
+	PlannedStepNotStarted = ${JSON.stringify(PLANNED_STEP_STATES[0])}
+	PlannedStepRunning    = ${JSON.stringify(PLANNED_STEP_STATES[1])}
+)
+
+// The codes of the plan write's refusals that no retry changes: a value outside its form, and an id
+// whose plan is the plan of another issue (a writer that is not the daemon's session is refused
+// StepWriterCode). Generated from PLAN_INPUT_CODE and PLAN_OTHER_ISSUE_CODE in packages/contracts:
+// Dispatch's plan route answers them, and the Legion daemon reads them through
+// github.com/sjawhar/envoy/steprecord.
+const (
+	PlanInputCode      = ${JSON.stringify(PLAN_INPUT_CODE)}
+	PlanOtherIssueCode = ${JSON.stringify(PLAN_OTHER_ISSUE_CODE)}
+)
+
+// StepAgentTextPattern is the form of the agent, the session and the model a step record names:
+// printable ASCII with no space, from 1 to 128 characters. Generated from STEP_AGENT_TEXT_PATTERN in
+// packages/contracts: Dispatch's step write refuses text outside it, and the Legion daemon, through
+// github.com/sjawhar/envoy/steprecord, leaves such text out of the records it writes.
+const StepAgentTextPattern = ${JSON.stringify(STEP_AGENT_TEXT_PATTERN.source)}
+
+// StepAgentTextRule says StepAgentTextPattern's rule in words, which Dispatch's refusal gives.
+// Generated from STEP_AGENT_TEXT_RULE_WORDS in packages/contracts.
+const StepAgentTextRule = ${JSON.stringify(STEP_AGENT_TEXT_RULE_WORDS)}
+
+// StepTaskPattern is the form of the id of a task a step record names, which is also the id of a
+// plan_task block of an owner's plan: lowercase letters, digits and hyphens, the first a letter or
+// a digit, at most StepTaskMax bytes. StepTaskRule says it in words, which the refusal of either
+// side gives. Generated from STEP_TASK_PATTERN, STEP_TASK_MAX and STEP_TASK_RULE_WORDS in
+// packages/contracts: Dispatch's step write and plan write refuse a task outside it, and the
+// Legion daemon, through github.com/sjawhar/envoy/steprecord, refuses a plan whose task block has
+// such an id, whose steps Dispatch could record none of.
+const StepTaskPattern = ${JSON.stringify(STEP_TASK_PATTERN.source)}
+const StepTaskMax = ${STEP_TASK_MAX}
+const StepTaskRule = ${JSON.stringify(STEP_TASK_RULE_WORDS)}
 
 // ProjectNameMax is the longest project name, in UTF-16 units, that POST /api/v1/projects
 // accepts. Generated from PROJECT_NAME_MAX in packages/contracts so the server's refusal, the
@@ -472,19 +771,20 @@ const DocumentNewerContentCloseReason = ${JSON.stringify(DOCUMENT_NEWER_CONTENT_
 
 // DocumentAdmissionRevokedCloseCode and DocumentAdmissionRevokedCloseReason close an open writable
 // document socket whose page the live server processes no longer admit, once the message in flight
-// on it is out. The Hocuspocus provider reconnects on the code, and the reconnect is admitted
-// again. Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and
-// DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON in packages/contracts so the server's close and the
-// dashboard's reading of it cannot drift apart.
+// on it is out, and an open document socket whose upgrade's Identity-Aware Proxy assertion has
+// expired. The Hocuspocus provider reconnects on the code, and the reconnect is admitted again.
+// Generated from DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE and DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON
+// in packages/contracts so the server's close and the dashboard's reading of it cannot drift
+// apart.
 const DocumentAdmissionRevokedCloseCode = ${DOCUMENT_ADMISSION_REVOKED_CLOSE_CODE}
 const DocumentAdmissionRevokedCloseReason = ${JSON.stringify(DOCUMENT_ADMISSION_REVOKED_CLOSE_REASON)}
 
 // LiveSocketMaxAgeClose is the close code Dispatch ends a live socket with once the socket reaches
-// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), and LiveSocketMaxSubscriptions
-// the most subscriptions one live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE,
-// LIVE_SOCKET_MIN_AGE_MS, LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in
-// packages/contracts so the server's close and limit and the dashboard's reading of them cannot
-// drift apart.
+// its age, a random point in [LiveSocketMinAge, LiveSocketMaxAge), or once its upgrade's
+// Identity-Aware Proxy assertion expires, and LiveSocketMaxSubscriptions the most subscriptions one
+// live socket holds. Generated from LIVE_SOCKET_MAX_AGE_CLOSE, LIVE_SOCKET_MIN_AGE_MS,
+// LIVE_SOCKET_MAX_AGE_MS and LIVE_SOCKET_MAX_SUBSCRIPTIONS in packages/contracts so the server's
+// close and limit and the dashboard's reading of them cannot drift apart.
 const LiveSocketMaxAgeClose = ${LIVE_SOCKET_MAX_AGE_CLOSE}
 const LiveSocketMinAge = ${LIVE_SOCKET_MIN_AGE_MS} * time.Millisecond
 const LiveSocketMaxAge = ${LIVE_SOCKET_MAX_AGE_MS} * time.Millisecond
@@ -506,8 +806,8 @@ const IdempotencyKeyPattern = ${JSON.stringify(IDEMPOTENCY_KEY_PATTERN.source)}
 
 // The codes of a keyed write's refusals and of a replay whose first answer was not kept: a key
 // used for another request (422), a key whose first request still runs (409), a key whose write
-// landed and whose answer was lost (409), a header that is not a key (400), and a first answer too
-// large to keep. Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
+// landed and whose answer was lost (409), a header that is not a key (400), and a first answer
+// Dispatch gives no copy of (IDEMPOTENCY_ANSWER_NOT_KEPT names when). Generated from IDEMPOTENCY_KEY_REUSED, IDEMPOTENCY_KEY_IN_FLIGHT,
 // IDEMPOTENCY_KEY_COMMITTED, IDEMPOTENCY_KEY_INVALID and IDEMPOTENCY_ANSWER_NOT_KEPT in
 // packages/contracts so the server's codes and the clients' reading of them cannot drift apart.
 const IdempotencyKeyReused = ${JSON.stringify(IDEMPOTENCY_KEY_REUSED)}
@@ -548,6 +848,12 @@ const ListenerCallTimeout = ${LISTENER_CALL_TIMEOUT_MS} * time.Millisecond
 const ListenerCallRetryDelay = ${LISTENER_CALL_RETRY_DELAY_MS} * time.Millisecond
 const ListenerCallAttempts = ${LISTENER_CALL_ATTEMPTS}
 
+// BusUnansweredPrefix opens the error of every 503 the listener answers when its message bus did
+// not answer a request. Generated from BUS_UNANSWERED_PREFIX in packages/contracts, which
+// envoy-client's isBusUnanswered reads, so the words the listener writes and the words a client
+// tells that answer by cannot drift apart.
+const BusUnansweredPrefix = ${JSON.stringify(BUS_UNANSWERED_PREFIX)}
+
 // DispatchLoginHeader is the request header a page puts on every write it makes, naming the login
 // of the person who pressed it, and DispatchLoginChanged the code of the 409 for one whose caller
 // is anyone else: nothing ran. Generated from DISPATCH_LOGIN_HEADER and DISPATCH_LOGIN_CHANGED in
@@ -563,24 +869,81 @@ const DispatchLoginChanged = ${JSON.stringify(DISPATCH_LOGIN_CHANGED)}
 const IDAmbiguous = ${JSON.stringify(ID_AMBIGUOUS)}
 
 // DispatchSignInRequired is the code of the 403 for a write by a broker-issued access token that
-// names a session and a service but no person: the machine holding it has signed nobody in.
+// names a session and a service but no person under the project scope person: the machine
+// holding it has signed nobody in. A job's token, under named or public, and an exchange account
+// entry's token naming no person, under named, write as their service.
 // Generated from DISPATCH_SIGN_IN_REQUIRED in packages/contracts so the server's refusal and
 // every client's reading of it cannot drift apart.
 const DispatchSignInRequired = ${JSON.stringify(DISPATCH_SIGN_IN_REQUIRED)}
 
-// DispatchReadOnlyToken is the code of the 403 for a request by a broker-issued access token
-// that holds only the scope read, to a route the read list does not name: the route ran nothing,
-// and the request wrote only the row of its spent DPoP proof. Generated from
+// DispatchReadOnlyToken is the code of the 403 for a request by a read-only token (any token that
+// holds read, a broker's or a personal one) to a route outside the read class: the route ran
+// nothing, and the request wrote only the record of the token's use. Generated from
 // DISPATCH_READ_ONLY_TOKEN in packages/contracts so the server's refusal and every client's
 // reading of it cannot drift apart.
 const DispatchReadOnlyToken = ${JSON.stringify(DISPATCH_READ_ONLY_TOKEN)}
+
+// DispatchApproveOnlyToken is the code of the 403 for a request by an approve-only token - the
+// token the secrets broker mints for a person's approve grant and spends through Cipher's proxy -
+// to a route the approve list does not name, or for its answer of an ask that is not an approval
+// request: nothing ran and nothing was recorded. Generated from DISPATCH_APPROVE_ONLY_TOKEN in
+// packages/contracts so the server's refusal and every client's reading of it cannot drift apart.
+const DispatchApproveOnlyToken = ${JSON.stringify(DISPATCH_APPROVE_ONLY_TOKEN)}
+
+// DispatchAsOfTokenNotServed is the code of the 403 for a request by a read-only token that
+// carries a cut (as_of) to a read route other than GET /api/v1/whoami: no build serves a read at
+// a past time yet, so the route ran nothing rather than answer with the present. Generated from
+// DISPATCH_AS_OF_TOKEN_NOT_SERVED in packages/contracts so the server's refusal and every
+// client's reading of it cannot drift apart.
+const DispatchAsOfTokenNotServed = ${JSON.stringify(DISPATCH_AS_OF_TOKEN_NOT_SERVED)}
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-func AgentSubject(session string) string {
-	return AgentTopicPrefix + session
+// DispatchIssueSubject names an issue's event under its project and then its key
+// (notifications.dispatch.issue.INFRA.INFRA-12.comment.created), AgentSubject one session's
+// message under its project, RoleSubject a role's lane under the project it works for, each with
+// NoProject for none, and LegionWakeSubject the wake lane of the Legion deployment whose project
+// token is token. LegacyAgentSubject is a session's agent subject in the old form, with no
+// project, which every reader takes too until the old form is refused (subject_project.go).
+// Generated from dispatchIssueSubject, agentSubject, roleSubject, legionWakeSubject and
+// legacyAgentSubject in packages/contracts, so the two languages write one name.
+func DispatchIssueSubject(project, issueKey, typ string) string {
+	return ${dispatchIssueSubjectText}
+}
+
+func AgentSubject(project, session string) string {
+	return ${agentSubjectText}
+}
+
+func LegacyAgentSubject(session string) string {
+	return ${legacyAgentSubjectText}
+}
+
+func LegacyDispatchIssueSubject(issueKey, typ string) string {
+	return ${legacyDispatchIssueSubjectText}
+}
+
+func RoleSubject(project, role string) string {
+	return ${roleSubjectText}
+}
+
+func LegionWakeSubject(token string) string {
+	return ${legionWakeSubjectText}
+}
+
+// LegionStateSuffix ends the state lane of every Legion deployment, so that a reader of every
+// deployment's state lane names them all with one pattern, LegionNoticeTopicPrefix + "*" +
+// LegionStateSuffix, as Dispatch's durable does. LegionStateSubject is the state lane of the
+// Legion deployment whose project token is token: the daemon publishes its state events there,
+// one message per committed transaction. Generated from LEGION_STATE_SUFFIX and
+// legionStateSubject in packages/contracts, so the daemon's publish and Dispatch's filter name
+// one lane.
+const LegionStateSuffix = ${JSON.stringify(LEGION_STATE_SUFFIX)}
+
+func LegionStateSubject(token string) string {
+	return ${legionStateSubjectText}
 }
 
 // GithubRepositoryPrefix begins every GitHub subject with its repository's owner and name, each one
@@ -838,11 +1201,7 @@ function renderEnvelope(schema: Schema) {
     .map((key) => valueChecks(key, schema.properties[key], !req.has(key)))
     .filter(Boolean)
     .join("\n");
-  // A map property is the Go map envelopeKind names it, so it has neither a struct of its own nor
-  // required keys to check.
-  const objects = keys.filter(
-    (key) => schema.properties[key].type === "object" && !mapValues(schema.properties[key])
-  );
+  const objects = envelopeObjects(schema);
   const nestedChecks = objects
     .map((key) => objectChecks(key, schema.properties[key]))
     .filter(Boolean)
@@ -864,8 +1223,42 @@ ${validate}
 }`;
 }
 
+// The envelope's object properties that are structs of their own (renderEnvelopeObject). A map
+// property is the Go map envelopeKind names it, so it has neither a struct of its own nor
+// required keys to check.
+function envelopeObjects(schema: Schema) {
+  return Object.keys(schema.properties).filter(
+    (key) => schema.properties[key].type === "object" && !mapValues(schema.properties[key])
+  );
+}
+
+// The envelope's Go mirror is the Envoy listener's wire package's, packages/envoy/listenerwire,
+// which the listener and its clients import and which imports the standard library and
+// httpoutage alone; the generated file imports the standard library alone.
+function renderListenerwireEnvelope(envelope: Schema) {
+  return `// Code generated by scripts/gen-go.ts from schemas/envelope.schema.json. DO NOT EDIT.
+
+package listenerwire
+
+import (
+	"fmt"
+	"strings"
+)
+
+${renderEnvelope(envelope)}
+`;
+}
+
+// internal/contracts names each envelope type listenerwire declares, so the code of the envoy
+// module reads the one type as contracts.Envelope.
 function renderContracts(envelope: Schema) {
-  return `package contracts
+  const aliases = ["Envelope", ...envelopeObjects(envelope).map((key) => `Envelope${name(key)}`)]
+    .map((type) => `type ${type} = listenerwire.${type}`)
+    .join("\n");
+  return `// Code generated by packages/contracts/scripts/gen-go.ts from
+// packages/contracts/schemas/envelope.schema.json. DO NOT EDIT.
+
+package contracts
 
 import (
 	"crypto/sha256"
@@ -875,9 +1268,13 @@ import (
 	"strings"
 	"time"
 	"unicode/utf8"
+
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
-${renderEnvelope(envelope)}
+// The envelope and the types of its object properties are listenerwire's
+// (listenerwire/envelope_generated.go), named here as well.
+${aliases}
 
 ${keep}
 `;
@@ -1103,12 +1500,19 @@ ${definitions.join("\n\n")}
 const envelope = (await Bun.file(envelopeFile).json()) as Schema;
 const blockSchema = (await Bun.file(blockSchemaFile).json()) as BlockSchemaDocument;
 
+const dispatchFrameSchema = renderDispatchFrameSchema();
+
 // Every generated file this script owns, each marked with the language it is written in: a Go
 // file is gofmt-formatted before it is written and before it is compared.
 const outputs = [
   {
     path: resolve(import.meta.dir, "../../envoy/internal/contracts/generated.go"),
     rendered: renderContracts(envelope),
+    language: "go",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/listenerwire/envelope_generated.go"),
+    rendered: renderListenerwireEnvelope(envelope),
     language: "go",
   },
   {
@@ -1126,7 +1530,30 @@ const outputs = [
     rendered: renderBlockSchemaTypes(blockSchema),
     language: "ts",
   },
-] satisfies { path: string; rendered: string; language: "go" | "ts" }[];
+  // The server's reader of a dashboard address embeds the pages file
+  // (internal/dispatch/text/dashboard_pages.go), and go:embed names no file outside its package's
+  // directory, so the copy there is this file's, byte for byte.
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/dispatch/text/dashboard-pages.json"),
+    rendered: await Bun.file(dashboardPagesFile).text(),
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../schemas/dispatch-frame.schema.json"),
+    rendered: dispatchFrameSchema,
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../fixtures/dispatch-frame-verdicts.json"),
+    rendered: renderDispatchFrameVerdicts(),
+    language: "json",
+  },
+  {
+    path: resolve(import.meta.dir, "../../envoy/internal/contracts/dispatch_frame_generated.go"),
+    rendered: renderDispatchFrameSchemaGo(dispatchFrameSchema),
+    language: "go",
+  },
+] satisfies { path: string; rendered: string; language: "go" | "ts" | "json" }[];
 const fmt = Bun.which("gofmt");
 
 // `--check` pipes each Go render through gofmt and compares every render with the committed

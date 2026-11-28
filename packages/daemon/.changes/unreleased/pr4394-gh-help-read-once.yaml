@@ -1,0 +1,13 @@
+kind: Changed
+body: |-
+    `legion gh` starts gh to read gh's own help only once for each gh binary and command path. It
+    keeps each help in `$XDG_STATE_HOME/legion-gh/help`, as a file of mode 0600 in a directory of
+    mode 0700 owned by the role's user, and uses no copy that another user could read or write. It
+    reads a help from gh again when the gh binary, `config.yml` or `hosts.yml` in `GH_CONFIG_DIR`,
+    gh's extensions directory, or a `GH_*` or colour variable changes. The leak guard's own
+    visibility reads read no help at all. A repeated `gh api` read runs one gh process where it
+    ran three, and a call for which the guard reads the repository's visibility runs two where it
+    ran six.
+time: 2026-11-18T09:30:00Z
+custom:
+    Issue: pr4394

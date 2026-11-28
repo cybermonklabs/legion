@@ -1,0 +1,118 @@
+{
+  "id": 758239,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 15,
+  "type": "artifact.version",
+  "actor": {
+    "kind": "session",
+    "id": "01a1f0e9-7ba8-77b7-b613-c0deedfe7e42",
+    "origin": {
+      "host": "lor",
+      "machine": "lorem ipsum dolor s",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+      "session_title": "lorem ipsum dolor sit amet "
+    }
+  },
+  "notify": false,
+  "created_at": "2026-11-19T00:18:30.59976Z",
+  "payload": {
+    "diff": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum d",
+    "name": "lorem i",
+    "version": {
+      "size": 48530,
+      "named": true,
+      "number": 2,
+      "authors": [
+        {
+          "id": "01a1f0e9-7ba8-77b7-b613-c0deedfe7e42",
+          "kind": "session",
+          "origin": {
+            "cwd": "lorem ipsum dolor sit amet lorem ipsum dolor sit a",
+            "host": "lor",
+            "machine": "lorem ipsum dolor s",
+            "session_title": "lorem ipsum dolor sit amet "
+          }
+        }
+      ],
+      "summary": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsum dolor sit amet lorem ipsu",
+      "created_at": "2026-11-19T00:18:30.59976Z"
+    },
+    "artifact_id": "3c3192d4-d019-4a9c-b434-40eeccf6a87f",
+    "references_changed": [
+      {
+        "id": "lorem ipsum dolor ",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "7810569e-e76c-49e9-8ff4-dfb1da7967d0"
+      },
+      {
+        "id": "lorem ipsum dolor ",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "7810569e-e76c-49e9-8ff4-dfb1da7967d0"
+      },
+      {
+        "id": "lorem ipsum dolor sit",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "3c3192d4-d019-4a9c-b434-40eeccf6a87f"
+      },
+      {
+        "id": "lorem ipsum dolor sit",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "3c3192d4-d019-4a9c-b434-40eeccf6a87f"
+      },
+      {
+        "id": "lorem ipsum dolor ",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "7810569e-e76c-49e9-8ff4-dfb1da7967d0"
+      },
+      {
+        "id": "lorem ipsum dolor ",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "7810569e-e76c-49e9-8ff4-dfb1da7967d0"
+      },
+      {
+        "id": "lorem ipsum dolor ",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "7810569e-e76c-49e9-8ff4-dfb1da7967d0"
+      },
+      {
+        "id": "lorem ipsum dolor sit",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "3c3192d4-d019-4a9c-b434-40eeccf6a87f"
+      },
+      {
+        "id": "lorem ipsum dolor sit",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "3c3192d4-d019-4a9c-b434-40eeccf6a87f"
+      },
+      {
+        "id": "lorem ipsum dolor sit",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "3c3192d4-d019-4a9c-b434-40eeccf6a87f"
+      },
+      {
+        "id": "lorem ipsum dolor sit",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "3c3192d4-d019-4a9c-b434-40eeccf6a87f"
+      },
+      {
+        "id": "lorem ipsum dolor sit",
+        "ref": "dispatch://ACME-1",
+        "kind": "block",
+        "artifact_id": "3c3192d4-d019-4a9c-b434-40eeccf6a87f"
+      }
+    ]
+  }
+}

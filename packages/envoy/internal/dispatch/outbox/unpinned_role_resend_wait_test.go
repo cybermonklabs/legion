@@ -17,6 +17,7 @@ import (
 // fallback pass must not publish that row while the attempt is still owed a resend (Resending),
 // since the resend may pin the claimant.
 func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
+	t.Parallel()
 	const role = "unnamed-by-the-outbox"
 	const holder = "ses_claimant"
 	ctx := store.WithTransactionTracking(context.Background())
@@ -53,16 +54,15 @@ func TestAFallbackRowWaitsWhileItsUnnamedMentionIsOwedAResend(t *testing.T) {
 	}
 	dueNow(t, rig.database, comment.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	row := readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder))
+	row := readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder))
 	t.Logf("after lease: row settled=%v published=%v attempts=%d; event published=%v; claimant got %d",
 		row.settled, row.published, row.attempts, publishedAt(t, rig.database, comment.ID) != nil, len(claimant.received()))
 
 	// The fallback pass, with the attempt still unpinned and owed a resend, and the role still
 	// unnamed by the outbox.
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	time.Sleep(time.Second)
-	row = readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder))
-	got := claimant.received()
+	row = readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder))
+	got := claimant.receivedNow(t, rig.client)
 	t.Logf("after fallback pass: row settled=%v published=%v; claimant got %+v", row.settled, row.published, got)
 	if row.published || len(got) != 0 {
 		t.Errorf("the fallback pass published the claimant's copy (keys %v) while the unnamed mention it waited on is still owed a resend, which may pin the claimant and land under %s beside it",
@@ -81,6 +81,7 @@ func keysOf(items []contracts.Envelope) []string {
 // The claimant's copy waits on an unnamed role mention; the owner's next event bound for the
 // claimant must not overtake it.
 func TestAClaimantsWaitingCopyKeepsTheOwnersEventOrder(t *testing.T) {
+	t.Parallel()
 	const role = "unnamed-by-the-outbox"
 	const holder = "ses_claimant"
 	ctx := store.WithTransactionTracking(context.Background())
@@ -120,8 +121,7 @@ func TestAClaimantsWaitingCopyKeepsTheOwnersEventOrder(t *testing.T) {
 	dueNow(t, rig.database, first.ID)
 	dueNow(t, rig.database, second.ID)
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	time.Sleep(time.Second)
-	order := keysOf(claimant.received())
+	order := keysOf(claimant.receivedNow(t, rig.client))
 	want := []string{fmt.Sprintf("dispatch-%d", first.ID), fmt.Sprintf("dispatch-%d", second.ID)}
 	t.Logf("claimant order %v", order)
 	if !slices.Equal(order, want) {

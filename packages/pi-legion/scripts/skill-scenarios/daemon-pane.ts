@@ -2,10 +2,12 @@
  * The rig's reading of the Legion daemon: `daemon-pane.go`, run with `go run -overlay` as a main
  * inside a checkout's daemon module, which is how it reaches the daemon's internal packages. The
  * rig asks it rather than restating the daemon: a change to the daemon reaches the rig by
- * construction. The one exception is `daemon-pane.go`'s own table of the handoff words, which the
- * program carries because one program runs against both checkouts of a comparison and the daemon's
- * table has not always had the same name; its comment says so. `workerPane` builds a phase
- * worker's whole pane environment over it.
+ * construction. The exceptions are `daemon-pane.go`'s own copies of the daemon's table of the
+ * handoff words, its resolution of the real gh, and its join and write of a system prompt, which
+ * the program carries because one program runs against each label's checkout of the daemon module,
+ * and an older one names them otherwise or lacks them; each one's comment says so. `workerPane`
+ * builds a phase worker's whole pane environment over it, and `composeRolePrompt` the prompt a
+ * launch of any role starts with.
  */
 import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import os from "node:os";
@@ -13,6 +15,7 @@ import path from "node:path";
 import type { LegionRole } from "@legion/contracts";
 import { DEFAULT_ENVOY_URL } from "@legion/envoy-client/envoy-settings";
 import { sessionConfigFile, sessionEnvoySettings } from "@legion/envoy-client/session-settings";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 
 /** This checkout's daemon module, the one the rig reads unless a run names another checkout's. */
 export const DAEMON_MODULE = path.resolve(import.meta.dir, "../../../daemon");
@@ -42,6 +45,14 @@ export function runDaemonPane(module: string, args: readonly string[], input?: s
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
+}
+
+/** The prompt a launch of `role` starts with, as the daemon in `module` composes it (daemon-pane.go
+ * `prompt`): the role's parts, a blank line, then its addressing, and for the architect of a tree's
+ * root (`root`) the design gate steps after that, byte for byte as the daemon writes the prompt
+ * file. The claim is the rig's: its issue is the root of its tree, or a child under that root. */
+export function composeRolePrompt(module: string, role: LegionRole, root: boolean): string {
+  return runDaemonPane(module, ["prompt", role, root ? "root" : "child"]);
 }
 
 /** The claim a pane is launched for and the rig's stand-ins for what the daemon knows at boot
@@ -75,8 +86,10 @@ export interface DaemonPane {
 }
 
 /** The stand-in for the claim's GitHub App token: `daemon-pane.go` renders it into the claim's gh
- * files, and the pane's own `gh auth token` prints it. A placeholder, never a secret. */
-export const RIG_GH_TOKEN = "ghs_rig_token";
+ * files, and the pane's own `gh auth token` prints it. Random, as a real one is, since a process
+ * that reads it holds it and scrubs it from every line it prints
+ * (`@legion/contracts/held-secrets`). */
+export const RIG_GH_TOKEN = fixtureSecret("gh");
 
 /** Where a worker pane runs: the run directory that stands for the daemon's state directory and
  * the issue's workspace, the stand-in daemon's port, and the Oh My Pi profile. */
@@ -117,24 +130,26 @@ export interface PaneSource {
  * (`<state>/secrets/boot`, the file the stand-in checks), and PATH with the launcher directory
  * first; no grant file, since the `legion` tool mints its grants in-process and no agent runs
  * `legion` from bash; and, with `systemPrompt`, the system prompt argument. An inherited
- * `ANTHROPIC_API_KEY`, every `LEGION_*` and `DISPATCH_*` value and the caller's own GitHub
- * variables are dropped first. The profile's agent directory, and so its envoy.json, is under the
- * inherited `HOME`. Throws `envoy: <why>` when that Envoy is off with an error, or on with inbound
- * messages off (`inbound.off`: no NATS server, or its seed refused), since the pane's Legion claim
- * refuses then. */
-export function workerPane(
+ * `ANTHROPIC_API_KEY`, every `LEGION_*` and `DISPATCH_*` value, the caller's own GitHub variables
+ * and its session variables (`OMP_SESSION_ID`, `TMUX`, `TMUX_PANE` and `OMP_SESSION_EXCLUSIVE`,
+ * the hold the daemon gives a resumed launch alone, where a scenario pane is a fresh launch) are
+ * dropped first. The profile's agent directory, and so its envoy.json, is under the inherited
+ * `HOME`. Rejects `envoy: <why>` when that Envoy is off with an error, or on with inbound messages
+ * off (`inbound.off`: no NATS server, or its seed refused), since the pane's Legion claim refuses
+ * then. */
+export async function workerPane(
   launch: WorkerLaunch,
   inherited: NodeJS.ProcessEnv,
   claim: WorkerClaim,
   source: PaneSource
-): DaemonPane {
+): Promise<DaemonPane> {
   const env: Record<string, string> = {};
   for (const [key, value] of Object.entries(inherited)) {
     if (value === undefined) continue;
     if (key === "ANTHROPIC_API_KEY" || key.startsWith("LEGION_") || key.startsWith("DISPATCH_"))
       continue;
     if (["GH_CONFIG_DIR", "GH_TOKEN", "GITHUB_TOKEN", "GH_HOST"].includes(key)) continue;
-    if (key === "OMP_SESSION_ID" || key === "TMUX" || key === "TMUX_PANE") continue;
+    if (["OMP_SESSION_ID", "OMP_SESSION_EXCLUSIVE", "TMUX", "TMUX_PANE"].includes(key)) continue;
     env[key] = value;
   }
   const home = env.HOME ?? os.homedir();
@@ -145,7 +160,7 @@ export function workerPane(
     OMP_PROFILE: launch.profile,
     PI_CODING_AGENT_DIR: path.join(home, ".omp", "profiles", launch.profile, "agent"),
   };
-  const envoy = sessionEnvoySettings(sessionConfigFile("omp", profileEnv), profileEnv, {
+  const envoy = await sessionEnvoySettings(sessionConfigFile("omp", profileEnv), profileEnv, {
     cwd: workspace,
   });
   if (!envoy.enabled && envoy.error !== null) throw new Error(`envoy: ${envoy.error}`);

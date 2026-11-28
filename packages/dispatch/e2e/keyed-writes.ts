@@ -1,4 +1,4 @@
-import type { Page, Request, Response, Route } from "@playwright/test";
+import type { Locator, Page, Request, Response, Route } from "@playwright/test";
 
 declare global {
   interface Window {
@@ -158,6 +158,12 @@ export function keptWrites(page: Page): Promise<number> {
         }
       }).length
   );
+}
+
+/** The shell's one account of the writes Dispatch has not confirmed yet that no composer shows
+ *  (`PendingWritesIndicator`); gone while none is pending. */
+export function pendingWrites(page: Page): Locator {
+  return page.getByRole("region", { name: "Pending changes" });
 }
 
 /** One answer the page got to a write, as a row reads it: the key its request went under, its

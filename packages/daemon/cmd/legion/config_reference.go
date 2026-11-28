@@ -6,10 +6,12 @@ import (
 	"fmt"
 	"io"
 
+	"github.com/spf13/cobra"
+
 	"github.com/sjawhar/legion/daemon/internal/config"
 )
 
-// runConfigReference is `legion config-reference --json`: it prints the loader's key table
+// newConfigReferenceCommand is `legion config reference --json`: it prints the loader's key table
 // (internal/config/keytable.go) as JSON and reads nothing — no legion.yaml, no daemon, no cluster
 // — so a documentation build can run it anywhere. The output is one array, one object per
 // top-level key in table order, each with its `name`, `default`, `required` and `description` and,
@@ -21,23 +23,25 @@ import (
 // `items` lines of the ConfigMap and projected sources point there. JSON is the one shape it
 // prints, as `envoy-dispatch settings` prints one shape, so --json is required rather than a
 // choice among formats.
-func runConfigReference(_ context.Context, args []string, stdout, stderr io.Writer) int {
-	const usage = "usage: legion config-reference --json"
-	flags := newFlags("config-reference", usage, stderr)
-	asJSON := flags.Bool("json", false, "print the key table as JSON, the one shape this command prints")
-	if code, ok := parseFlags(flags, args); !ok {
-		return code
+func newConfigReferenceCommand(stdout, stderr io.Writer) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "reference --json",
+		Short: "print legion.yaml's key table as JSON: every top-level key with its default, whether it is required and what it does, and the described nested keys under it",
+		Args:  noArguments,
 	}
-	if flags.NArg() > 0 || !*asJSON {
-		fmt.Fprintln(stderr, usage)
-		return 2
-	}
-	encoder := json.NewEncoder(stdout)
-	encoder.SetIndent("", "  ")
-	encoder.SetEscapeHTML(false)
-	if err := encoder.Encode(config.ConfigReference()); err != nil {
-		fmt.Fprintf(stderr, "legion config-reference: %v\n", err)
-		return 1
-	}
-	return 0
+	asJSON := cmd.Flags().Bool("json", false, "print the key table as JSON, the one shape this command prints")
+	cmd.RunE = runs(func(context.Context, []string) int {
+		if !*asJSON {
+			return refuse(cmd, "--json is required: JSON is the one shape this command prints")
+		}
+		encoder := json.NewEncoder(stdout)
+		encoder.SetIndent("", "  ")
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(config.ConfigReference()); err != nil {
+			fmt.Fprintf(stderr, "legion config reference: %v\n", err)
+			return 1
+		}
+		return 0
+	})
+	return cmd
 }

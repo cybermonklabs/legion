@@ -8,13 +8,17 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"testing"
 	"time"
 
+	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
+	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 // connectPublisher opens a bus client of the test's own, apart from the listener's: a publish
@@ -59,32 +63,51 @@ func publish(t *testing.T, client *bus.Client, item contracts.Envelope) {
 	}
 }
 
-// awaitDurableState waits up to 5 s for durable to hold pending messages for an ack with every
-// message through floor acked.
+// awaitDurableState waits for durable to hold pending messages for an ack with every message
+// through floor acked. The wait ends on that state, bounded only by the test binary's deadline
+// (testwait.UntilPolling), as awaitAckState's does: the state follows the listener's ack of each
+// message, which a loaded machine delays without anything being wrong, so a fixed span (5 s,
+// before) failed rows whose listener acked late. It reads the durable every durableStatePoll.
 func awaitDurableState(t *testing.T, client *bus.Client, durable string, pending int, floor uint64) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for {
+	testwait.UntilPolling(t, durableStatePoll, fmt.Sprintf("the durable %s to hold %d pending ack with everything through %d acked", durable, pending, floor), func() (string, bool) {
 		info, err := client.JS().ConsumerInfo(bus.Stream, durable)
 		if err != nil {
 			t.Fatalf("read the durable %s: %v", durable, err)
 		}
-		if info.NumAckPending == pending && info.AckFloor.Stream >= floor {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the durable %s has %d pending ack, ack floor %d; want %d pending and everything through %d acked", durable, info.NumAckPending, info.AckFloor.Stream, pending, floor)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d pending ack, ack floor %d", info.NumAckPending, info.AckFloor.Stream), info.NumAckPending == pending && info.AckFloor.Stream >= floor
+	})
 }
 
-// awaitSessionMachine waits up to 10 s for listener's GET /v1/sessions to list sessionID as
-// registered through machineID, so a delivery through this listener reads that session entry.
+// durableStatePoll is how often awaitDurableState reads a durable: the 20 ms its fixed-span loop
+// read it at before.
+const durableStatePoll = 20 * time.Millisecond
+
+// awaitSessionConsumerStored waits for the state file of sessionID's consumer to hold the position
+// the server reports for it, read through conn, a connection of the test's on the consumer's
+// account (testnats.AwaitConsumerStored, which says why a delete of a one-copy consumer followed by
+// a create of its name waits for that). A test calls it right before the step that has the
+// listener delete the consumer after it delivered or was acked - a deregistration, a delete and
+// its restore, a relay restart at the ack floor - once the server has taken every ack the test's
+// session sent: the wait sees only the state the server already holds.
+func awaitSessionConsumerStored(t *testing.T, conn *natsgo.Conn, sessionID string) {
+	t.Helper()
+	name, ok := bus.SessionConsumerName(sessionID)
+	if !ok {
+		t.Fatalf("%s names no session consumer", sessionID)
+	}
+	testnats.AwaitConsumerStored(t, conn, bus.Stream, name)
+}
+
+// awaitSessionMachine waits for listener's GET /v1/sessions to list sessionID as registered
+// through machineID, so a delivery through this listener reads that session entry. The wait ends
+// on that listing, bounded only by the test binary's deadline (testwait.UntilPolling): the entry
+// reaches the listener through its watch of the session bucket, which a loaded machine delays
+// without anything being wrong, so a fixed span (10 s, before) failed rows whose watch delivered
+// late. It asks every sessionListPoll, an HTTP call to the listener.
 func (p *listenerProcess) awaitSessionMachine(t *testing.T, sessionID, machineID string) {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
-	for {
+	testwait.UntilPolling(t, sessionListPoll, fmt.Sprintf("the listener on port %d to list %s as registered through %s", p.port, sessionID, machineID), func() (string, bool) {
 		status, body := callListener(t, p.port, http.MethodGet, "/v1/sessions", "")
 		var listed []struct {
 			SessionID string `json:"session_id"`
@@ -93,13 +116,14 @@ func (p *listenerProcess) awaitSessionMachine(t *testing.T, sessionID, machineID
 		if status == http.StatusOK && json.Unmarshal([]byte(body), &listed) == nil {
 			for _, row := range listed {
 				if row.SessionID == sessionID && row.MachineID == machineID {
-					return
+					return "", true
 				}
 			}
 		}
-		if time.Now().After(deadline) {
-			t.Fatalf("the listener on port %d does not list %s as registered through %s within 10s: %d %s", p.port, sessionID, machineID, status, body)
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
+		return fmt.Sprintf("%d %s", status, body), false
+	})
 }
+
+// sessionListPoll is how often awaitSessionMachine asks a listener for its sessions: the 100 ms
+// its fixed-span loop asked at before.
+const sessionListPoll = 100 * time.Millisecond

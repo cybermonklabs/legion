@@ -23,6 +23,7 @@ import (
 // wrote credits it too - the read marks such a session a member of the thread and the member
 // wins (commentRecipientsQuery, threadRecipient.fromThread).
 func TestAPersonsCommentOnASessionClaimedIssueObligesTheClaimantAlone(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
 	second := model.Actor{Kind: "session", ID: "session-second"}
@@ -99,6 +100,7 @@ func TestAPersonsCommentOnASessionClaimedIssueObligesTheClaimantAlone(t *testing
 // The copies are counted wherever this pass left them - sent now, or held as a row for that
 // later pass - because a copy held is a copy that goes.
 func TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut(t *testing.T) {
+	t.Parallel()
 	sami := model.Actor{Kind: "user", ID: "sami"}
 	claimant := model.Actor{Kind: "session", ID: "session-claimant"}
 	second := model.Actor{Kind: "session", ID: "session-second"}
@@ -149,7 +151,7 @@ func TestARoleMentionPastItsLeaseLeavesTheCreditsOfAClaimedIssuesDocumentOut(t *
 		t.Fatalf("read the rows held for the pass that publishes them: %v", err)
 	}
 	slices.Sort(owed)
-	want := []string{contracts.AgentSubject(claimant.ID)}
+	want := []string{contracts.LegacyAgentSubject(claimant.ID)}
 	if !slices.Equal(slices.Compact(owed), want) {
 		t.Fatalf("the comment is owed to %v, want %v: on an issue a session claims a person's comment obliges the claimant alone, and a role mention nobody holds is no reason to deliver it to the document's credits",
 			owed, want)

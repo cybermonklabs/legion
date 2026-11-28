@@ -76,8 +76,9 @@
 # carries no consumer of that session, and the session is resumed from its session file under the
 # same id: its consumer is created again, at the position recorded before the delete, and the
 # issue comments stored while it was away reach it exactly once. The run ends the same way, both
-# sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer at
-# all.
+# sessions stopped on their stdin's end of file, and the stream must then hold no `s-` consumer of
+# either session the run registered; a consumer of any other session is another run's and is left
+# alone.
 #
 # A direct send is judged by its own answer. The listener stores a send to every session Envoy
 # knows, whether it holds a live registration for it or knows it only from its 30-day
@@ -167,6 +168,12 @@
 # writes no header value and no message text, so the log holds no key and no conversation. The
 # serve banner names the file. ANTHROPIC_BASE_URL is required with it: the proxy forwards there.
 #
+# --issue-topic-form old|new names the form of the issue topic each session is told to follow: old
+# (the default) is notifications.dispatch.issue.<KEY>.>, new is the form that names the key's
+# project first, notifications.dispatch.issue.<PROJECT>.<KEY>.> (dispatch://INFRA-3862). Dispatch
+# publishes in the old form until its producers move, so the new form's run is the proof that a
+# session following the new form receives what is published in the old one.
+#
 # Inputs (required ones refuse to start without them):
 #   LEGION_TEST_PG_DSN            required: a loopback Postgres with pgvector, as
 #                                 postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable; the run
@@ -244,6 +251,7 @@ disruptions="a,b,c,d,e,f,g,h"
 disruptions_given=""
 serve=""
 log_model_requests=""
+issue_topic_form=old
 while (($#)); do
   case $1 in
   --build-from) [ $# -ge 2 ] || refuse "--build-from needs a revision"; build_from=$2; shift 2 ;;
@@ -254,6 +262,11 @@ while (($#)); do
   --disruptions) [ $# -ge 2 ] || refuse "--disruptions needs a list"; disruptions=$2; disruptions_given=1; shift 2 ;;
   --serve) serve=1; shift ;;
   --log-model-requests) log_model_requests=1; shift ;;
+  --issue-topic-form)
+    [[ $# -ge 2 && ($2 == old || $2 == new) ]] || refuse "--issue-topic-form needs old or new"
+    issue_topic_form=$2
+    shift 2
+    ;;
   -h | --help) usage; exit 0 ;;
   *) refuse "unknown argument '$1' (--help lists them)" ;;
   esac
@@ -281,9 +294,9 @@ done
 [[ -z "$log_model_requests" || -n "${ANTHROPIC_BASE_URL:-}" ]] ||
   refuse "--log-model-requests needs ANTHROPIC_BASE_URL: the proxy it starts forwards every request there"
 
-[ -n "${LEGION_TEST_PG_DSN:-}" ] ||
+[ -n "${LEGION_TEST_PG_DSN:+set}" ] ||
   refuse "LEGION_TEST_PG_DSN is required: a loopback Postgres with pgvector (postgres://<user>@127.0.0.1:<port>/<db>?sslmode=disable). The run starts no database; docs/solutions/testing/the-real-dispatch-stack-runs-inside-a-legion-pod-with-no-postgres-no-docker-and-no-root-INFRA-42.md starts one without root."
-# The DSN itself is read by libpq alone, further down: run_database_url reads which host it
+# The DSN itself is read by libpq alone, further down: run_database_url_env reads which host it
 # names, and rebuilds it to name this run's own database.
 [ -r "$model_key_file" ] ||
   refuse "the model key file $model_key_file is not readable: both sessions run their turns on it (SESSION_DELIVERY_MODEL_KEY_FILE names another)"
@@ -319,17 +332,19 @@ done
 repo_root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd -P)
 readonly repo_root
 readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
-# lib/loopback-dsn.sh for run_database_url, the helper a proof that writes a PostgreSQL server
-# reads its caller's DSN with, and lib/port-file.sh for read_port_file, which this proof's own
-# await_port_file waits with. Neither file reads a variable of this shell. This proof sources no
-# rig: its await_port_file and keep_port, written for the pid map below, are its own, and
-# lib/rig.sh defines both of those names and a start_held that calls its own await_port_file, so
-# sourcing it for that one DSN helper would leave which await_port_file runs to the order of the
-# two files.
+# lib/loopback-dsn.sh for run_database_url_env, the helper a proof that writes a PostgreSQL server
+# reads its caller's DSN with, and psql_env, which runs psql on that DSN by its variable's name,
+# and lib/port-file.sh for read_port_file, which this proof's own await_port_file waits with.
+# Neither file reads a variable of this shell. This proof sources no rig: its await_port_file and
+# keep_port, written for the pid map below, are its own, and lib/rig.sh defines both of those
+# names and a start_held that calls its own await_port_file, so sourcing it for those DSN helpers
+# would leave which await_port_file runs to the order of the two files.
 # shellcheck source-path=SCRIPTDIR source=lib/loopback-dsn.sh
 . "$repo_root/scripts/e2e/lib/loopback-dsn.sh"
 # shellcheck source-path=SCRIPTDIR source=lib/port-file.sh
 . "$repo_root/scripts/e2e/lib/port-file.sh"
+# shellcheck source-path=SCRIPTDIR source=lib/omp-home.sh
+. "$repo_root/scripts/e2e/lib/omp-home.sh"
 [ -f "$repo_root/node_modules/nats/package.json" ] || refuse "$repo_root/node_modules has no nats package: run bun install in the checkout"
 # The database's name is only this shell's pid and random bytes, so the run has it here, and the
 # one read of the DSN runs before the builds, the services and the `create database` further
@@ -337,7 +352,8 @@ readonly held_port="$repo_root/scripts/e2e/lib/held-port.py"
 # connection string cannot carry as well. Its answer is the connection string the run keeps, and
 # its refusal is the line this script prints.
 database="session_delivery_$$_$(od -An -N3 -tx1 /dev/urandom | tr -d ' \n')"
-run_database_url database_url LEGION_TEST_PG_DSN "$LEGION_TEST_PG_DSN" "$database" "this run creates and force-drops a database there" || refuse "$database_url"
+database_url=''
+run_database_url_env database_url LEGION_TEST_PG_DSN "$database" "this run creates and force-drops a database there" || refuse "$database_url"
 work=${SESSION_DELIVERY_EVIDENCE_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/$me.XXXXXXXX")}
 mkdir -p "$work/logs" "$work/bin" "$work/sessions" "$work/ports"
 work=$(cd -- "$work" && pwd -P)
@@ -398,7 +414,7 @@ cleanup() {
     stop_label "$label"
   done
   if [[ -n "$database_created" ]]; then
-    psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
+    psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "drop database if exists \"$database\" with (force)" >/dev/null 2>&1 ||
       printf '%s: could not drop database %s\n' "$me" "$database" >&2
   fi
   printf '%s: evidence kept in %s\n' "$me" "$work"
@@ -704,14 +720,17 @@ start_proxy() {
 start_proxy proxy-pi
 start_proxy proxy-cc
 
-psql "$LEGION_TEST_PG_DSN" -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
+psql_env LEGION_TEST_PG_DSN -X -q -v ON_ERROR_STOP=1 -c "create database \"$database\"" >/dev/null || fail "could not create database $database in LEGION_TEST_PG_DSN"
 database_created=1
 agent_token=$(od -An -N24 -tx1 /dev/urandom | tr -d ' \n')
 signing_key=$(od -An -N32 -tx1 /dev/urandom | tr -d ' \n')
 mkdir -p "$web_dist"
 dispatch_ready() { curl -fsS --max-time 2 "${dispatch_url}/healthz" | jq -e '.ok and .nats'; }
+# start_dispatch's subshell turns the shell's xtrace off before it expands DATABASE_URL, the
+# connection string run_database_url_env rebuilt, which carries the DSN's password, so a run under
+# `bash -x` traces no part of it into Dispatch's log, where the subshell's stderr goes.
 start_dispatch() {
-  (isolated_exec "" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
+  (set +x; isolated_exec "" HOME=/nonexistent XDG_CONFIG_HOME=/nonexistent XDG_DATA_HOME=/nonexistent \
     DATABASE_URL="$database_url" DISPATCH_AGENT_TOKEN="$agent_token" DISPATCH_IDENTITY=header:X-Dispatch-User \
     DISPATCH_IDENTITY_HEADER_TRUSTED=1 DISPATCH_LISTEN_HOST=127.0.0.1 DISPATCH_PORT="$dispatch_port" \
     DISPATCH_SERVER_URL="$dispatch_url" DISPATCH_SIGNING_KEY="$signing_key" DISPATCH_WEB_DIST="$web_dist" \
@@ -816,10 +835,12 @@ dispatch_user() {
   curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H "X-Dispatch-User: ${dispatch_person}" \
     ${3:+-d "$3"} -w '\n%{http_code}' "${dispatch_url}$2"
 }
-# dispatch_agent METHOD PATH BODY: a request as the session live-delivery-driver (the agent token).
+# dispatch_agent METHOD PATH BODY: a request as the session live-delivery-driver (the agent token,
+# which reaches curl on standard input, in no command line).
 dispatch_agent() {
-  curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H "Authorization: Bearer ${agent_token}" \
-    -d "$(jq -c '. + {actor: {kind: "session", id: "live-delivery-driver"}}' <<<"$3")" -w '\n%{http_code}' "${dispatch_url}$2"
+  printf 'Authorization: Bearer %s' "$agent_token" |
+    curl -sS --max-time 20 -X "$1" -H 'Content-Type: application/json' -H @- \
+      -d "$(jq -c '. + {actor: {kind: "session", id: "live-delivery-driver"}}' <<<"$3")" -w '\n%{http_code}' "${dispatch_url}$2"
 }
 answer_ok() { [[ "${1##*$'\n'}" == 2?? ]]; }
 answer_body() { printf '%s' "${1%$'\n'*}"; }
@@ -832,7 +853,15 @@ followed_issue=$(answer_body "$answer" | jq -r .key)
 answer=$(dispatch_user POST /api/v1/issues '{"project":"LIVE","title":"Direct messages"}')
 answer_ok "$answer" || fail "Dispatch refused the messages issue: $answer"
 message_issue=$(answer_body "$answer" | jq -r .key)
-issue_topic="notifications.dispatch.issue.${followed_issue}.>"
+# issue_topic_of KEY: the topic of every event of issue KEY in the form --issue-topic-form names.
+issue_topic_of() {
+  if [[ $issue_topic_form == new ]]; then
+    printf 'notifications.dispatch.issue.%s.%s.>' "${1%%-*}" "$1"
+  else
+    printf 'notifications.dispatch.issue.%s.>' "$1"
+  fi
+}
+issue_topic=$(issue_topic_of "$followed_issue")
 note "Dispatch issues: ${followed_issue} (followed, ${issue_topic}) and ${message_issue} (direct messages)"
 second_topic=""
 second_issue=""
@@ -842,7 +871,7 @@ if [[ -n "$second_followed_issue" ]]; then
   answer=$(dispatch_user POST /api/v1/issues '{"project":"LIVE","title":"The second followed issue","force":true}')
   answer_ok "$answer" || fail "Dispatch refused the second followed issue: $answer"
   second_issue=$(answer_body "$answer" | jq -r .key)
-  second_topic="notifications.dispatch.issue.${second_issue}.>"
+  second_topic=$(issue_topic_of "$second_issue")
   note "second followed issue ${second_issue} (${second_topic}): both sessions follow two issue topics and a role"
 fi
 
@@ -876,8 +905,8 @@ readonly team_topic="notifications.team.live-delivery-${run_id}"
 note "the run's team topic is ${team_topic}; the setup prompt makes both sessions follow it"
 readonly pi_note="This session is an automated delivery test. Do exactly what the user's first message says, using the Envoy tools it names. After that, answer every message and every Envoy card with the single word ok, and call no tools."
 readonly cc_note="This session is an automated delivery test. Do exactly what the user's first message says, using the Envoy tools it names. After that, answer every message with exactly one line, WAITING for test events, and call no tools."
-natives=$HOME/.omp/natives
-if [ -n "${XDG_DATA_HOME:-}" ] && [ -d "$XDG_DATA_HOME/omp" ]; then natives=$XDG_DATA_HOME/omp/natives; fi
+# The caller's native-module cache (omp_natives_dir, lib/omp-home.sh), which each session's home links.
+natives=$(omp_natives_dir)
 
 # prepare_session LABEL: the session's directories and its envoy.json. A run that drives the
 # windows leaves Dispatch off: it publishes everything itself and no person is at a page. --serve
@@ -1152,9 +1181,11 @@ for await (const m of messages) {
 }
 await nc.close();
 '
+# The stream holds the comments on the subject Dispatch publishes them on, which is the old form
+# whatever form the sessions follow (--issue-topic-form) until Dispatch's producers move.
 stored_comments() {
   (cd -- "$repo_root" && isolated_exec "" HOME="$work/bun-home" TMPDIR="$work" LIVE_NATS_URL="$nats_url" \
-    LIVE_SUBJECT="$issue_topic" -- bun -e "$stored_js") 2>>"$work/logs/stored-comments.log"
+    LIVE_SUBJECT="notifications.dispatch.issue.${followed_issue}.>" -- bun -e "$stored_js") 2>>"$work/logs/stored-comments.log"
 }
 
 # The window's events, in this order: Dispatch's writes (when Dispatch is up), the listener sends,

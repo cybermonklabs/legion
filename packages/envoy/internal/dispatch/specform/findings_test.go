@@ -1,6 +1,7 @@
 package specform
 
 import (
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
@@ -34,7 +35,7 @@ func TestEachHardFindingOfSteLintIsAFindingOfTheForm(t *testing.T) {
 		for _, each := range test.want {
 			want = append(want, finding(text, each.Rule, each.Detail))
 		}
-		if got := Check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
+		if got := check(planted(), Input{Texts: []Text{text}}); !sameFindings(got, want) {
 			t.Errorf("Check(%q) =\n%#v\nwant\n%#v", test.body, got, want)
 		}
 	}
@@ -51,9 +52,75 @@ func TestEachHardRuleOfSteLintIsARuleOfTheForm(t *testing.T) {
 		{"Check the config file. Then verify the output.", "ste100-synonym-rotation"},
 		{"- Dispatch keeps the record and", "ste100-dangling-conjunction"},
 	} {
-		got := Check(planted(), Input{Texts: []Text{statement(test.body)}})
+		got := check(planted(), Input{Texts: []Text{statement(test.body)}})
 		if !slices.ContainsFunc(got, func(finding Finding) bool { return string(finding.Rule) == test.rule }) {
 			t.Errorf("Check(%q) = %#v, want a finding of %s", test.body, got, test.rule)
+		}
+	}
+}
+
+// ste-lint reads a line that starts with three backticks or three tildes as a fence, and lints no
+// line from there to the next such line. A text of The Spec is no document: Dispatch joins its
+// lines into one, and the page shows the procedure of a check as it is written. So a fence marker
+// hides no sentence of a text from the rules: the sentence count, the bounds of 25 and 20 words,
+// the rule instructions and the rules of ste-lint read the text as they read the same text without
+// the marker. Each row is a text with a fence marker and the same text without it, which give the
+// same findings, and the text without it gives one at least, so the row can fail.
+func TestAFenceMarkerHidesNoSentenceFromTheRules(t *testing.T) {
+	const claim = "The team spins up the tool; it performs an installation of each package that the team builds in the main tree of the repository " +
+		"for the users who read the guide and the notes that the team writes for them each week of the year and each day of the month at home."
+	const run = "Run the tests and read the log. Open the file and record its size. Read the report and send it."
+	const three = "Dispatch keeps each record. Dispatch shows each record. Dispatch sends each record."
+	said := func(findings []Finding) []string {
+		var lines []string
+		for _, each := range findings {
+			lines = append(lines, fmt.Sprintf("%s %s %s: %s", each.Kind, each.Node, each.Rule, each.Detail))
+		}
+		return lines
+	}
+	for _, test := range []struct {
+		name          string
+		kind          Kind
+		fenced, plain string
+	}{
+		{"the review's claim of 53 words after three backticks", KindClaim, "``` " + claim, claim},
+		{"the claim after three tildes", KindClaim, "~~~ " + claim, claim},
+		{"the claim in a fence of three lines", KindClaim, "```\n" + claim + "\n```", claim},
+		{"the review's procedure in a fence of one line", KindProcedure, "```sh " + run + " ```", run},
+		{"the procedure in a fence of three lines", KindProcedure, "```sh\n" + run + "\n```", run},
+		{"the procedure in a fence of tildes", KindProcedure, "~~~sh " + run + " ~~~", run},
+		{"the procedure after a line break that ste-lint reads", KindProcedure, "Read the guide.\u2028```sh " + run + " ```", "Read the guide.\u2028" + run},
+		{"a statement of three sentences after three backticks", KindStatement, "``` " + three, three},
+	} {
+		fenced := Text{Node: "fence", Kind: test.kind, Body: test.fenced, Where: where}
+		plain := Text{Node: "fence", Kind: test.kind, Body: test.plain, Where: where}
+		want := said(check(planted(), Input{Texts: []Text{plain}}))
+		if len(want) == 0 {
+			t.Fatalf("%s: the text without the marker gives no finding, so the row cannot fail", test.name)
+		}
+		if got := said(check(planted(), Input{Texts: []Text{fenced}})); !slices.Equal(got, want) {
+			t.Errorf("%s: Check(%q) =\n%q\nwant the findings of the text without the marker\n%q", test.name, test.fenced, got, want)
+		}
+	}
+	if words := len(strings.Fields(claim)); words != 53 {
+		t.Fatalf("the claim has %d words, want the review's 53", words)
+	}
+	// The stated limit: code font that starts a line and holds two backticks in a row, which three
+	// backticks open, counts its words there, so a claim of 25 words after it has 26. The control:
+	// the same code font inside the line is code font, which counts as no word.
+	twentyFive := strings.Repeat("word ", 24) + "words."
+	for _, test := range []struct {
+		body string
+		want []string
+	}{
+		{"``` a``b ``` " + twentyFive, []string{
+			`claim fence sentence-words: a sentence has 26 words, and a sentence has at most 25: "ab word word word word word word word"`,
+			`claim fence ste100-long-sentence: ASD-STE100 does not permit a sentence of more than 25 words: "26 words"`,
+		}},
+		{twentyFive + " ``` a``b ```", nil},
+	} {
+		if got := said(check(planted(), Input{Texts: []Text{{Node: "fence", Kind: KindClaim, Body: test.body, Where: where}}})); !slices.Equal(got, test.want) {
+			t.Errorf("Check(%q) =\n%q\nwant\n%q", test.body, got, test.want)
 		}
 	}
 }
@@ -90,9 +157,9 @@ func TestAPersonsNameIsTheNameOfOnePerson(t *testing.T) {
 	} {
 		var want []Finding
 		if test.want != "" {
-			want = []Finding{finding(test.text, "person", `it names a person: "`+test.want+`"`)}
+			want = []Finding{brokenFinding(test.text, personBreak(test.want))}
 		}
-		if got := Check(planted(test.people...), Input{Texts: []Text{test.text}}); !sameFindings(got, want) {
+		if got := check(planted(test.people...), Input{Texts: []Text{test.text}}); !sameFindings(got, want) {
 			t.Errorf("%s: Check(%q) =\n%#v\nwant\n%#v", test.name, test.text.Body, got, want)
 		}
 	}
@@ -119,7 +186,7 @@ func TestTheReferenceRulesJudgeTheNameOfATerm(t *testing.T) {
 			want = []Finding{{Node: test.term.Name, Kind: Kind("term"), Where: where, Rule: Rule(test.rule), Detail: test.name, Excerpt: test.term.Name}}
 		}
 		want = append(want, test.also...)
-		if got := Check(planted("ada.lovelace@example.com"), Input{Proposed: []Term{test.term}}); !sameFindings(got, want) {
+		if got := check(planted("ada.lovelace@example.com"), Input{Proposed: []Term{test.term}}); !sameFindings(got, want) {
 			t.Errorf("the term %q: Check =\n%#v\nwant\n%#v", test.term.Name, got, want)
 		}
 	}
@@ -132,25 +199,25 @@ func TestOnlyAnApprovedNameIsANounOfTheSystem(t *testing.T) {
 	text := statement("Each issue reaches Dispatch Admin before its owner starts work.")
 	context := planted("dispatch.admin@example.com")
 	person := []Finding{finding(text, "person", `it names a person: "Dispatch Admin"`)}
-	if got := Check(context, Input{Texts: []Text{text}}); !sameFindings(got, person) {
+	if got := check(context, Input{Texts: []Text{text}}); !sameFindings(got, person) {
 		t.Errorf("with no system name: Check = %#v, want %#v", got, person)
 	}
 	component := Text{Node: "dispatch", Kind: KindName, Body: "Dispatch", Where: where}
-	if got := Check(context, Input{Texts: []Text{text, component}}); !sameFindings(got, person) {
+	if got := check(context, Input{Texts: []Text{text, component}}); !sameFindings(got, person) {
 		t.Errorf("with a component Dispatch in the same document: Check = %#v, want %#v", got, person)
 	}
 	term := Term{Name: "dispatch", Definition: "The server of the work.", Where: where}
-	if got := Check(context, Input{Texts: []Text{text}, Proposed: []Term{term}}); !sameFindings(got, person) {
+	if got := check(context, Input{Texts: []Text{text}, Proposed: []Term{term}}); !sameFindings(got, person) {
 		t.Errorf("with a term dispatch in the same document: Check = %#v, want %#v", got, person)
 	}
 	context.SystemNames = []string{"Dispatch"}
-	if got := Check(context, Input{Texts: []Text{text}}); len(got) != 0 {
+	if got := check(context, Input{Texts: []Text{text}}); len(got) != 0 {
 		t.Errorf("with the approved system name Dispatch: Check = %#v, want none", got)
 	}
 }
 
-// The stated limits of the form, each pinned: the README says each, with its way out, and the
-// reviewer of R25 reads for what a program cannot refuse.
+// The stated limits of the form, each pinned: the README says each, and R49 leaves what a program
+// cannot refuse to the reviewer of R25.
 func TestTheStatedLimitsOfTheForm(t *testing.T) {
 	for _, test := range []struct {
 		name, body string
@@ -164,7 +231,7 @@ func TestTheStatedLimitsOfTheForm(t *testing.T) {
 		{"a bare number after incident is a count", "Envoy starts again within 10 seconds, as incident 4471 showed.", nil},
 		{"an initialism of single letters ends no sentence", "Dispatch stores records in the U.S. Dispatch indexes each record. Dispatch shows each record.", nil},
 	} {
-		if got := findingNames(Check(planted(), Input{Texts: []Text{statement(test.body)}})); !slices.Equal(got, test.want) {
+		if got := findingNames(check(planted(), Input{Texts: []Text{statement(test.body)}})); !slices.Equal(got, test.want) {
 			t.Errorf("%s: Check(%q) = %q, want %q", test.name, test.body, got, test.want)
 		}
 	}

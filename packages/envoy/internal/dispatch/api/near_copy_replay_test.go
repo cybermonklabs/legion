@@ -213,8 +213,8 @@ type nearCopyScore struct {
 	took           time.Duration
 }
 
-// nearCopyGateBound is the bound the replay runs the gate under. Production's is 500 ms
-// (duplicateGateTimeout), which this replay must not be held to: it measures what the gate
+// nearCopyGateBound is the bound the replay runs the gate under. Production's is
+// duplicateGateTimeout, which this replay must not be held to: it measures what the gate
 // costs, and a read cut off at the bound measures nothing. The gate prices the words a cold
 // project's statistics do not hold rather than probing for them (priceUnknownTerms), so no
 // early create pays for probes, but the replay's own walk writes the project as it reads it,
@@ -239,6 +239,7 @@ var nearCopyMarkedDuplicates = []string{
 }
 
 func TestNearCopyRefusalReplay(t *testing.T) {
+	t.Parallel()
 	path := os.Getenv("DISPATCH_NEARCOPY_CORPUS")
 	if path == "" {
 		t.Skip("DISPATCH_NEARCOPY_CORPUS must name a file scripts/near-copy-replay.sh wrote")
@@ -260,8 +261,9 @@ func TestNearCopyRefusalReplay(t *testing.T) {
 	ctx := context.Background()
 	handler, database, deps, served := newRegisteredTestServer(t, testServerOptions{})
 	// The related-item check is not what is being measured, and it runs on every create: give it
-	// no time, so each create answers that it was not made and the replay pays only for the gate.
-	served.suggestionTimeout = time.Millisecond
+	// an allowance already spent, so each create answers that it was not made and the replay pays
+	// only for the gate.
+	served.suggestionTimeout = spentRelatedAllowance
 	served.duplicateBound = nearCopyGateBound
 	srv := directServer(deps)
 	srv.duplicateBound = nearCopyGateBound

@@ -1,18 +1,20 @@
 package api
 
 import (
-	"cmp"
 	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/sjawhar/envoy/internal/dispatch/docs"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore"
+	"github.com/sjawhar/envoy/internal/dispatch/graphstore/graphstoretest"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/specform"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
@@ -23,366 +25,12 @@ import (
 // and a reopen and the repair pass leave such a request resolved rather than open it again. The
 // server's setting names the roots of The Spec (DISPATCH_SPEC_ROOTS); these tests name ACME-1.
 
-// formIssue is an issue the form tests made, with its spec.
-type formIssue struct {
-	Key               string `json:"key"`
-	PrimaryArtifactID string `json:"primary_artifact_id"`
-}
-
-// specFormTree is a server whose setting names specRoots, holding the project ACME, its first issue
-// ACME-1 and a top issue outside every root.
-type specFormTree struct {
-	handler  http.Handler
-	database *store.Store
-	deps     Deps
-	root     string
-	outside  string
-}
-
-func newSpecFormTree(t *testing.T, options testServerOptions) specFormTree {
-	t.Helper()
-	handler, database, deps := newTestServer(t, options)
-	return seedSpecFormTree(t, handler, database, deps)
-}
-
-// seedSpecFormTree writes the project ACME, its first issue ACME-1, a top issue beside it, and the
-// person whose name the person rule looks for.
-func seedSpecFormTree(t *testing.T, handler http.Handler, database *store.Store, deps Deps) specFormTree {
-	t.Helper()
-	seedPeople(t, database, "ada.lovelace@example.com")
-	if response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/projects", map[string]string{"key": "ACME", "name": "Acme"}, "alice"); response.Code != http.StatusCreated {
-		t.Fatalf("create project ACME: status=%d body=%s", response.Code, response.Body.String())
-	}
-	root := createFormIssue(t, handler, "", "The root of the written account", "# The Spec\n\nThe design of the written account.\n")
-	if root.Key != "ACME-1" {
-		t.Fatalf("the first issue of ACME is %s, want ACME-1", root.Key)
-	}
-	outside := createFormIssue(t, handler, "", "A tree of some other work", "# Outside\n\nA plan of some other work.\n")
-	return specFormTree{handler: handler, database: database, deps: deps, root: root.Key, outside: outside.Key}
-}
-
-// createFormIssue creates an issue of ACME under parent ("" for none) whose spec is spec.
-func createFormIssue(t *testing.T, handler http.Handler, parent, title, spec string) formIssue {
-	t.Helper()
-	body := map[string]any{"project": "ACME", "title": title, "spec": spec, "force": true}
-	if parent != "" {
-		body["parent"] = parent
-	}
-	response := dispatchRequest(t, handler, http.MethodPost, "/api/v1/issues", body, "alice")
-	if response.Code != http.StatusCreated {
-		t.Fatalf("create issue %q: status=%d body=%s", title, response.Code, response.Body.String())
-	}
-	return decodeBody[formIssue](t, response)
-}
-
-// uploadFormDocument uploads markdown to issue as the document name, as the asking agent.
-func uploadFormDocument(t *testing.T, handler http.Handler, issue, name, markdown string) model.Artifact {
-	t.Helper()
-	response := sessionRequest(t, handler, http.MethodPost, "/api/v1/issues/"+issue+"/artifacts", map[string]any{
-		"name": name, "content": markdown, "actor": sessionActor(),
-	})
-	if response.Code != http.StatusCreated {
-		t.Fatalf("upload %s to %s: status=%d body=%s", name, issue, response.Code, response.Body.String())
-	}
-	return decodeBody[artifactUploadResponse](t, response).Artifact
-}
-
-// reparentFormIssue moves issue under parent.
-func reparentFormIssue(t *testing.T, handler http.Handler, issue, parent string) {
-	t.Helper()
-	if response := dispatchRequest(t, handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]any{"parent": parent}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("move %s under %s: status=%d body=%s", issue, parent, response.Code, response.Body.String())
-	}
-}
-
-// requestFormApproval is the asking agent's approval request of the document.
-func requestFormApproval(t *testing.T, handler http.Handler, artifactID string, extra map[string]any) *httptest.ResponseRecorder {
-	t.Helper()
-	body := map[string]any{"actor": sessionActor()}
-	for key, value := range extra {
-		body[key] = value
-	}
-	return sessionRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/approval-requests", body)
-}
-
-// approvalRequestRead is the part of an approval request's answer the form tests read.
-type approvalRequestRead struct {
-	Ask      *model.Ask       `json:"ask"`
-	SpecForm *specFormSummary `json:"spec_form"`
-}
-
-// requireFormRequestOpened fails t unless response opened or handed back the request, and
-// answers it.
-func requireFormRequestOpened(t *testing.T, response *httptest.ResponseRecorder) approvalRequestRead {
-	t.Helper()
-	if response.Code != http.StatusCreated {
-		t.Fatalf("request approval: status=%d body=%s, want 201", response.Code, response.Body.String())
-	}
-	read := decodeBody[approvalRequestRead](t, response)
-	if read.Ask == nil {
-		t.Fatalf("request approval answered no ask: %s", response.Body.String())
-	}
-	return read
-}
-
-// reviewFormDocument is alice's review of the document from its header.
-func reviewFormDocument(t *testing.T, handler http.Handler, artifactID, state, reason string) *httptest.ResponseRecorder {
-	t.Helper()
-	body := map[string]any{"state": state}
-	if reason != "" {
-		body["reason"] = reason
-	}
-	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/artifacts/"+artifactID+"/reviews", body, "alice")
-}
-
-// reviewFormVersion is alice's review of version of the document.
-func reviewFormVersion(t *testing.T, handler http.Handler, artifactID string, version int, state string) *httptest.ResponseRecorder {
-	t.Helper()
-	return dispatchRequest(t, handler, http.MethodPost, fmt.Sprintf("/api/v1/artifacts/%s/versions/%d/reviews", artifactID, version),
-		map[string]any{"state": state}, "alice")
-}
-
-// answerFormApproval is alice's answer to the approval request ask from her Inbox, at the
-// question's revision she read.
-func answerFormApproval(t *testing.T, handler http.Handler, ask, selected, text string) *httptest.ResponseRecorder {
-	t.Helper()
-	read := readBlockAsk(t, handler, ask)
-	body := map[string]any{"selected": []string{selected}, "expected_edited_at": read.EditedAt}
-	if text != "" {
-		body["text"] = text
-	}
-	return dispatchRequest(t, handler, http.MethodPost, "/api/v1/asks/"+ask+"/answer", body, "alice")
-}
-
-// formFault is one of the seven fixture texts of v-form, with a clean text of the same node that
-// an edit can break, and the rule and detail its finding names. A text that ste-lint reads as a
-// sentence of more than 25 words has a second finding, ste-lint's long-sentence, whose detail is
-// steLong. A fault of a definition (v-terms) holds whole term lines: its clean line defines another
-// term, or the same term in one sentence, and excerpt is the definition its broken line gives,
-// which the finding quotes.
-type formFault struct {
-	name, node    string
-	kind          specform.Kind
-	clean, broken string
-	excerpt       string
-	rule, detail  string
-	steLong       string
-}
-
-var formFaults = []formFault{
-	{name: "three sentences", node: "store-comment", kind: specform.KindStatement,
-		clean:  "Dispatch stores each comment.",
-		broken: "Dispatch stores each comment. Dispatch indexes each comment. Dispatch shows each comment.",
-		rule:   "sentences", detail: "it has 3 sentences, and a statement has one or two"},
-	{name: "a sentence of 26 words", node: "refuse-write", kind: specform.KindStatement,
-		clean:  "Dispatch refuses a write that breaks the document schema.",
-		broken: "Dispatch refuses a write of the whole text of a document when that text breaks the document schema, and it answers with one named error code.",
-		rule:   "sentence-words", detail: `a sentence has 26 words, and a sentence has at most 25: "Dispatch refuses a write of the whole text"`,
-		steLong: `ASD-STE100 does not permit a sentence of more than 25 words: "26 words"`},
-	{name: "a hard finding of ASD-STE100", node: "check-upload", kind: specform.KindStatement,
-		clean:  "Dispatch checks each upload.",
-		broken: "Dispatch performs a validation of each upload.",
-		rule:   "ste100-nominalization", detail: `ASD-STE100 does not permit an action frozen into a noun: "performs a validation"`},
-	{name: "a link to an issue", node: "keep-answer", kind: specform.KindStatement,
-		clean:  "Dispatch keeps each answer.",
-		broken: "Dispatch keeps each answer, as dispatch://ACME-12 asks.",
-		rule:   "dispatch-link", detail: `it links to a record of Dispatch: "dispatch://ACME-12"`},
-	{name: "an incident", node: "restart-listener", kind: specform.KindStatement,
-		clean:  "Envoy restarts its listener when the listener stops.",
-		broken: "Envoy restarts its listener after incident INC-2041.",
-		rule:   "incident", detail: `it names an incident: "incident INC-2041". Dispatch reads these forms as the name of an incident: #<n>, number <n>, a key such as INC-<n> and a date`},
-	{name: "a pull request", node: "store-message", kind: specform.KindStatement,
-		clean:  "Envoy stores each message.",
-		broken: "Envoy stores each message, as pull request #4031 makes it do.",
-		rule:   "pull-request", detail: `it names a pull request: "pull request #4031". Dispatch reads these forms as the name of a pull request: #<n>, number <n>, <owner>/<repo>#<n> and its address`},
-	{name: "a person in a claim", node: "approve-change", kind: specform.KindClaim,
-		clean:  "Each change waits for its approval before it lands.",
-		broken: "Ada Lovelace approves each change before it lands.",
-		rule:   "person", detail: `it names a person: "Ada Lovelace"`},
-}
-
-// document is a spec that holds the fault's node with body: a requirement block for a statement,
-// a check block for a claim, and the line body under a heading Terms for a definition or a line.
-func (f formFault) document(body string) string {
-	if f.kind == specform.KindDefinition || f.kind == specform.KindLine {
-		return specWithTerms(body)
-	}
-	block := "requirement"
-	if f.kind == specform.KindClaim {
-		block = "check"
-	}
-	return fmt.Sprintf("# Spec\n\n:::%s{#%s}\n%s\n:::\n", block, f.node, body)
-}
-
-// lines is the refusal's line of each finding of the broken text at version of spec.md.
-func (f formFault) lines(version int) []string {
-	lines := []string{fmt.Sprintf("- %s %s in spec.md version %d: %s.", f.kind, f.node, version, f.detail)}
-	if f.steLong != "" {
-		lines = append(lines, fmt.Sprintf("- %s %s in spec.md version %d: %s.", f.kind, f.node, version, f.steLong))
-	}
-	return lines
-}
-
-// findings is each finding the broken text at version of the issue's spec gives.
-func (f formFault) findings(issue formIssue, version int) []specFormFinding {
-	finding := func(rule specform.Rule, detail string) specFormFinding {
-		return specFormFinding{
-			Document: "spec.md", ArtifactID: issue.PrimaryArtifactID, Version: version,
-			Finding: specform.Finding{
-				Node: f.node, Kind: f.kind, Where: fmt.Sprintf("spec.md version %d", version),
-				Rule: rule, Detail: detail, Excerpt: cmp.Or(f.excerpt, f.broken),
-			},
-		}
-	}
-	findings := []specFormFinding{finding(specform.Rule(f.rule), f.detail)}
-	if f.steLong != "" {
-		findings = append(findings, finding("ste100-long-sentence", f.steLong))
-	}
-	return findings
-}
-
-// requireFormRefusal fails t unless response is the 409 SPEC_FORM refusal of act, naming exactly
-// want, each by its node and rule, in that order. Its head counts the texts that want names, and
-// findings_total counts want.
-func requireFormRefusal(t *testing.T, what string, response *httptest.ResponseRecorder, act specform.Act, lines []string, want ...specFormFinding) specFormError {
-	t.Helper()
-	if response.Code != http.StatusConflict {
-		t.Fatalf("%s: status=%d body=%s, want 409 SPEC_FORM", what, response.Code, response.Body.String())
-	}
-	body := decodeBody[specFormError](t, response)
-	if body.Code != "SPEC_FORM" || body.FindingsTotal != len(want) || !reflect.DeepEqual(body.Findings, want) {
-		t.Fatalf("%s: refusal = code %q, total %d, findings %#v; want SPEC_FORM, %d, %#v", what, body.Code, body.FindingsTotal, body.Findings, len(want), want)
-	}
-	texts := map[string]bool{}
-	for _, finding := range want {
-		texts[fmt.Sprintf("%s version %d: %s %s", finding.Document, finding.Version, finding.Kind, finding.Node)] = true
-	}
-	count := "1 text breaks"
-	if len(texts) != 1 {
-		count = fmt.Sprintf("%d texts break", len(texts))
-	}
-	listed := strings.Join(lines, "\n")
-	switch act {
-	case specform.ActApproval:
-		if wantError := "Dispatch refused this approval, because " + count + " the form of The Spec.\n" + listed +
-			"\nTo send these findings to the author, choose Request changes."; body.Error != wantError {
-			t.Fatalf("%s: error =\n%s\nwant\n%s", what, body.Error, wantError)
-		}
-		if wantReason := "Dispatch refused my approval, because " + count + " the form of The Spec.\n" + listed +
-			"\nFix each text, then request approval again."; body.ChangesReason != wantReason {
-			t.Fatalf("%s: changes_reason =\n%s\nwant\n%s", what, body.ChangesReason, wantReason)
-		}
-	default:
-		if wantError := "Dispatch refused this approval request, because " + count + " the form of The Spec.\n" + listed +
-			"\nFix each text, then request approval again."; body.Error != wantError {
-			t.Fatalf("%s: error =\n%s\nwant\n%s", what, body.Error, wantError)
-		}
-		if strings.Contains(response.Body.String(), `"changes_reason"`) {
-			t.Fatalf("%s: a request's refusal carries changes_reason: %s", what, response.Body.String())
-		}
-	}
-	return body
-}
-
-// formState is what a refused write must leave as it was: every event of the issue, every review
-// of its documents and every ask of it.
-type formState struct {
-	events, reviews, asks int
-}
-
-func readFormState(t *testing.T, database *store.Store, issue string) formState {
-	t.Helper()
-	var state formState
-	if err := database.Pool.QueryRow(context.Background(), `
-		select
-			(select count(*) from events where issue_key = $1),
-			(select count(*) from artifact_reviews r join artifacts d on d.id = r.artifact_id where d.issue_key = $1),
-			(select count(*) from asks where issue_key = $1)
-	`, issue).Scan(&state.events, &state.reviews, &state.asks); err != nil {
-		t.Fatalf("read the state of %s: %v", issue, err)
-	}
-	return state
-}
-
-// lastIssueSeq is the sequence of issue's newest event.
-func lastIssueSeq(t *testing.T, database *store.Store, issue string) int {
-	t.Helper()
-	var seq int
-	if err := database.Pool.QueryRow(context.Background(), `select coalesce(max(seq), 0) from events where issue_key = $1`, issue).Scan(&seq); err != nil {
-		t.Fatalf("read the newest event of %s: %v", issue, err)
-	}
-	return seq
-}
-
-// askEventsAfter counts the eventType events of issue after its event seq that name ask.
-func askEventsAfter(t *testing.T, database *store.Store, issue string, seq int, ask, eventType string) int {
-	t.Helper()
-	var count int
-	if err := database.Pool.QueryRow(context.Background(), `
-		select count(*) from events where issue_key = $1 and seq > $2 and type = $3 and payload->>'id' = $4
-	`, issue, seq, eventType, ask).Scan(&count); err != nil {
-		t.Fatalf("count the %s events of %s: %v", eventType, ask, err)
-	}
-	return count
-}
-
-// restoreReason is the reason a reopen or the repair pass records on a request it leaves resolved,
-// for one finding line.
-func restoreReason(line string) string {
-	return "Dispatch did not open this approval request again, because 1 text breaks the form of The Spec.\n" + line +
-		"\nFix each text, then request approval again."
-}
-
-// reopenFormIssue closes issue and reopens it through the route a person uses, and answers the
-// sequence of its newest event before the reopen.
-func reopenFormIssue(t *testing.T, tree specFormTree, issue string) int {
-	t.Helper()
-	closeIssue(t, tree.handler, issue)
-	seq := lastIssueSeq(t, tree.database, issue)
-	if response := dispatchRequest(t, tree.handler, http.MethodPatch, "/api/v1/issues/"+issue, map[string]string{"status": "todo"}, "alice"); response.Code != http.StatusOK {
-		t.Fatalf("reopen %s: status=%d body=%s", issue, response.Code, response.Body.String())
-	}
-	return seq
-}
-
-// requireRestoredOpen fails t unless ask reads open after the reopen at seq, with one ask.opened.
-func requireRestoredOpen(t *testing.T, tree specFormTree, issue string, seq int, ask string) {
-	t.Helper()
-	if got := readBlockAsk(t, tree.handler, ask); got.State != "open" || got.Resolution != nil {
-		t.Fatalf("ask %s after the reopen = %s %#v, want open", ask, got.State, got.Resolution)
-	}
-	if opened := askEventsAfter(t, tree.database, issue, seq, ask, "ask.opened"); opened != 1 {
-		t.Fatalf("ask %s has %d ask.opened events after the reopen, want 1", ask, opened)
-	}
-}
-
-// requireLeftResolved fails t unless the approval request ask reads resolved after the reopen or
-// repair at seq, with the restore's reason naming line, actor, one ask.resolved and no ask.opened.
-func requireLeftResolved(t *testing.T, handler http.Handler, database *store.Store, issue string, seq int, ask, line string, actor model.Actor) {
-	t.Helper()
-	got := readBlockAsk(t, handler, ask)
-	if got.State != "resolved" || got.Resolution == nil || got.Resolution.Kind != "resolved" {
-		t.Fatalf("request %s = %s %#v, want resolved with kind resolved", ask, got.State, got.Resolution)
-	}
-	if got.Resolution.Reason != restoreReason(line) {
-		t.Fatalf("request %s reason =\n%s\nwant\n%s", ask, got.Resolution.Reason, restoreReason(line))
-	}
-	if got.Resolution.Actor.Kind != actor.Kind || got.Resolution.Actor.ID != actor.ID {
-		t.Fatalf("request %s resolved by %#v, want %#v", ask, got.Resolution.Actor, actor)
-	}
-	if opened := askEventsAfter(t, database, issue, seq, ask, "ask.opened"); opened != 0 {
-		t.Fatalf("request %s has %d ask.opened events after the reopen, want none", ask, opened)
-	}
-	if resolved := askEventsAfter(t, database, issue, seq, ask, "ask.resolved"); resolved != 1 {
-		t.Fatalf("request %s has %d ask.resolved events after the reopen, want 1", ask, resolved)
-	}
-}
-
-// Each of the seven fixture texts of v-form, on each of the six paths to a person's approval, is
-// refused with its node and rule, and leaves nothing written (requireEveryApprovalRouteRefuses).
+// Each of the seven fixture texts of v-form, and each of the two texts of a procedure, on each of
+// the six paths to a person's approval, is refused with its node and rule, and leaves nothing
+// written (requireEveryApprovalRouteRefuses).
 func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	for _, fault := range formFaults {
+	for _, fault := range append(slices.Clone(formFaults), procedureFaults...) {
 		t.Run(fault.name, func(t *testing.T) { requireEveryApprovalRouteRefuses(t, tree, fault) })
 	}
 	// The controls of path 6: a reopen opens the broken request again where the form does not
@@ -407,8 +55,8 @@ func TestEveryApprovalRouteRefusesABreakOfTheForm(t *testing.T) {
 // requireEveryApprovalRouteRefuses fails t unless the broken text of fault, under the root of
 // tree, is refused with its node and rule on each of the six paths to a person's approval, and
 // leaves nothing written: (1) open a request; (2) hand a moved request back; (3) approve from the
-// header and (4) approve a named version, each with no request open and on a request an edit moved
-// to the broken version; (5) approve from the Inbox, on that moved request and on one opened
+// header and (4) approve a named version, each with no request open and on a request a new version
+// moved to the broken text; (5) approve from the Inbox, on that moved request and on one opened
 // outside the root and then moved under it; and (6) reopen the issue, which leaves the request
 // resolved with the findings and opens every other ask.
 func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault formFault) {
@@ -428,11 +76,11 @@ func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault for
 		t.Fatalf("the refused writes on the first version changed %+v to %+v", before, after)
 	}
 
-	// A request on a clean first version, which an edit moves to the broken second: paths 2, 3, 4
-	// and 5.
+	// A request on a clean first version, which a new version moves to the broken second: paths 2,
+	// 3, 4 and 5.
 	moved := createFormIssue(t, tree.handler, tree.root, "Broken by an edit: "+fault.name, fault.document(fault.clean))
 	ask := requireFormRequestOpened(t, requestFormApproval(t, tree.handler, moved.PrimaryArtifactID, nil)).Ask.ID
-	reviseDocument(t, tree.handler, moved.PrimaryArtifactID, fault.clean, fault.broken, 2)
+	fault.revise(t, tree.handler, moved)
 	awaitSettled(t, tree.database, moved.PrimaryArtifactID)
 	before = readFormState(t, tree.database, moved.Key)
 	lines = fault.lines(2)
@@ -487,38 +135,62 @@ func requireEveryApprovalRouteRefuses(t *testing.T, tree specFormTree, fault for
 
 // The repair pass, which restores the asks of an issue an older release reopened, leaves a broken
 // approval request resolved with the findings, as a reopen does, and a second pass finds nothing
-// left. The control: a clean request is restored open.
+// left. Each of the seven fixture texts of v-form, and each of the two texts of a procedure, is
+// sent through it one at a time, with the assertions of the six other paths: the reason names the
+// node and the rule, the request is not opened again, no review is written, and the person's
+// Approve of it is refused. The control of v-form, a statement of two sentences of 25 words each,
+// beside a procedure of one instruction in 20 words, is restored open, and the person's Approve of
+// it is taken.
 func TestTheRepairPassDoesNotOpenABrokenRequestAgain(t *testing.T) {
-	for _, test := range []struct {
-		name   string
-		body   string
-		broken bool
-	}{
-		{name: "a broken request", body: formFaults[0].broken, broken: true},
-		{name: "control: a clean request", body: formFaults[0].clean},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			f := newRepairFixtureFrom(t, 20*time.Millisecond, "ACME-1")
-			tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
-			withdrawn := withdrawnByAnOlderRelease(t, f, tree, formFaults[0].document(test.body))
-
-			repair := repairNow(t, f)
-			if !test.broken {
-				if repair.Restored != 1 || repair.LeftResolved != 0 {
-					t.Fatalf("repair = %+v, want 1 restored and none left resolved", repair)
-				}
-				requireRestoredOpen(t, tree, withdrawn.issue, withdrawn.seq, withdrawn.request)
-				return
-			}
+	f := newRepairFixtureFrom(t, 20*time.Millisecond, "ACME-1")
+	tree := seedSpecFormTree(t, f.handler, f.database, f.deps)
+	reopener := repairActor("session-reopener")
+	// repaired opens a request of document under the root, closes the issue, reopens it as a
+	// release older than the restore does, and runs the repair pass once.
+	repaired := func(t *testing.T, name, document string) (formIssue, string, int, IssueAskRepair) {
+		t.Helper()
+		issue := createFormIssue(t, f.handler, tree.outside, "Reopened by an older release: "+name, document)
+		request := requireFormRequestOpened(t, requestFormApproval(t, f.handler, issue.PrimaryArtifactID, nil)).Ask.ID
+		reparentFormIssue(t, f.handler, issue.Key, tree.root)
+		closeIssue(t, f.handler, issue.Key)
+		reopenWithoutRestoring(t, f, issue.Key, "todo", reopener)
+		seq := lastIssueSeq(t, f.database, issue.Key)
+		return issue, request, seq, repairNow(t, f)
+	}
+	for _, fault := range append(slices.Clone(formFaults), procedureFaults...) {
+		t.Run(fault.name, func(t *testing.T) {
+			issue, request, seq, repair := repaired(t, fault.name, fault.document(fault.broken))
 			if repair.Restored != 0 || repair.LeftResolved != 1 {
 				t.Fatalf("repair = %+v, want none restored and 1 left resolved", repair)
 			}
-			requireLeftResolved(t, f.handler, f.database, withdrawn.issue, withdrawn.seq, withdrawn.request, strings.Join(formFaults[0].lines(1), "\n"), withdrawn.reopener)
+			requireLeftResolved(t, f.handler, f.database, issue.Key, seq, request, strings.Join(fault.lines(1), "\n"), reopener)
 			if again := repairNow(t, f); again != (IssueAskRepair{}) {
 				t.Fatalf("second repair = %+v, want nothing found", again)
 			}
+			reviews := readFormState(t, f.database, issue.Key).reviews
+			answered := answerFormApproval(t, f.handler, request, docs.ApprovalOptionApprove, "")
+			if answered.Code != http.StatusConflict || strings.Contains(answered.Body.String(), "SPEC_FORM") {
+				t.Fatalf("approve the request the repair left resolved: status=%d body=%s, want 409 for a request that is not open",
+					answered.Code, answered.Body.String())
+			}
+			if after := readFormState(t, f.database, issue.Key).reviews; after != reviews {
+				t.Fatalf("the refused answer wrote %d reviews", after-reviews)
+			}
 		})
 	}
+	t.Run("control: a statement of two sentences of 25 words each", func(t *testing.T) {
+		statement := formFault{node: "show-person", kind: specform.KindStatement}
+		procedure := formFault{node: "run-merge", kind: specform.KindProcedure}
+		document := statement.document(twentyFiveWords) + strings.TrimPrefix(procedure.document(twentyWords), "# Spec\n")
+		issue, request, seq, repair := repaired(t, "the control", document)
+		if repair.Restored != 1 || repair.LeftResolved != 0 {
+			t.Fatalf("repair = %+v, want 1 restored and none left resolved", repair)
+		}
+		requireRestoredOpen(t, specFormTree{handler: f.handler, database: f.database}, issue.Key, seq, request)
+		if response := answerFormApproval(t, f.handler, request, docs.ApprovalOptionApprove, ""); response.Code != http.StatusOK {
+			t.Fatalf("approve the restored request: status=%d body=%s, want 200", response.Code, response.Body.String())
+		}
+	})
 }
 
 // withdrawnRequest is an approval request that a close withdrew and that a reopen of an older
@@ -838,6 +510,10 @@ func TestSpecFormReadNamesEachFinding(t *testing.T) {
 		},
 		Nodes: []specFormText{{Kind: specform.KindStatement, Node: "store-comment"}}, Definitions: []specFormDefinition{},
 		Findings: fault.findings(issue, 1), FindingsTotal: 1,
+		FindingLines: []string{
+			"Dispatch refuses an approval request of spec.md version 1, because 1 text breaks the form of The Spec.",
+			"- statement store-comment in spec.md version 1: " + fault.detail + ".",
+		},
 		Terms: []specFormTerm{}, Unread: []specFormUnread{}, RefusesApproval: true,
 	}
 	if !reflect.DeepEqual(read, want) {
@@ -867,7 +543,8 @@ func TestSpecFormReadNamesEachFinding(t *testing.T) {
 	}
 }
 
-// The refusal lists 20 findings and counts the rest, with the command that lists them all.
+// The refusal lists 20 findings and counts the rest, with the command that lists them all at the
+// version that the refusal judged: the second version of the spec, whose first version is clean.
 func TestTheRefusalListsTwentyAndCountsTheRest(t *testing.T) {
 	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
 	var spec strings.Builder
@@ -875,7 +552,8 @@ func TestTheRefusalListsTwentyAndCountsTheRest(t *testing.T) {
 	for index := 1; index <= 23; index++ {
 		fmt.Fprintf(&spec, "\n:::requirement{#s%d}\n%s\n:::\n", index, formFaults[0].broken)
 	}
-	issue := createFormIssue(t, tree.handler, tree.root, "Twenty-three broken statements", spec.String())
+	issue := createFormIssue(t, tree.handler, tree.root, "Twenty-three broken statements", formFaults[0].document(formFaults[0].clean))
+	uploadFormDocument(t, tree.handler, issue.Key, "spec.md", spec.String())
 	response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
 	if response.Code != http.StatusConflict {
 		t.Fatalf("request: status=%d body=%s, want 409", response.Code, response.Body.String())
@@ -884,8 +562,8 @@ func TestTheRefusalListsTwentyAndCountsTheRest(t *testing.T) {
 	lines := strings.Split(body.Error, "\n")
 	if body.FindingsTotal != 23 || len(body.Findings) != 23 || len(lines) != 23 ||
 		lines[0] != "Dispatch refused this approval request, because 23 texts break the form of The Spec." ||
-		lines[20] != "- statement s20 in spec.md version 1: it has 3 sentences, and a statement has one or two." ||
-		lines[21] != "And 3 more: dispatch spec-form --issue "+issue.Key+" --artifact spec.md lists them all." {
+		lines[20] != "- statement s20 in spec.md version 2: it has 3 sentences, and a statement has one or two." ||
+		lines[21] != "And 3 more: dispatch spec-form --issue "+issue.Key+" --artifact spec.md --version 2 lists them all." {
 		t.Fatalf("refusal = total %d, %d findings, error\n%s", body.FindingsTotal, len(body.Findings), body.Error)
 	}
 }
@@ -959,39 +637,6 @@ func TestTheGateKnowsTheComponentNamesUnderItsRoot(t *testing.T) {
 		t.Fatalf("approve the components: status=%d body=%s", response.Code, response.Body.String())
 	}
 	requireFormRequestOpened(t, requestFormApproval(t, tree.handler, statement.PrimaryArtifactID, nil))
-}
-
-// A document of the size of level two, 301 statements that all break the form, is judged in under
-// one second, as is the same document with every statement clean.
-func TestLevelTwoSizedDocumentIsJudgedInUnderOneSecond(t *testing.T) {
-	tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
-	for _, test := range []struct {
-		name, body string
-		status     int
-	}{
-		{name: "broken", body: formFaults[0].broken, status: http.StatusConflict},
-		{name: "clean", body: "Dispatch shows the person each question.", status: http.StatusCreated},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			var spec strings.Builder
-			spec.WriteString("# Level two\n")
-			for index := 1; index <= 301; index++ {
-				fmt.Fprintf(&spec, "\n:::requirement{#statement-%d}\n%s\n:::\n", index, test.body)
-			}
-			issue := createFormIssue(t, tree.handler, tree.root, "Level two sized: "+test.name, spec.String())
-			awaitSettled(t, tree.database, issue.PrimaryArtifactID)
-			started := time.Now()
-			response := requestFormApproval(t, tree.handler, issue.PrimaryArtifactID, nil)
-			elapsed := time.Since(started)
-			if response.Code != test.status {
-				t.Fatalf("request: status=%d, want %d", response.Code, test.status)
-			}
-			if elapsed >= time.Second {
-				t.Fatalf("the request of 301 statements took %s, want under one second", elapsed)
-			}
-			t.Logf("the request of 301 statements took %s", elapsed)
-		})
-	}
 }
 
 // The list of terms of a root (R50) is the term lines of the person-approved version of the
@@ -1670,6 +1315,7 @@ var termsLineFault = formFault{
 	name: "a line under Terms that is no term line", node: `"drift: ` + driftDefinition + `"`, kind: specform.KindLine,
 	clean: termLine("drift", driftDefinition), broken: "**drift:** " + driftDefinition, excerpt: "drift: " + driftDefinition,
 	rule: "term-line", detail: `it is no term line, and a term line has the form "- **<term>**: <definition>". ` +
+		`Move a line that defines no term, such as an example or a note, out from under the heading Terms. ` +
 		`Put a decision block above the heading Terms, and after the answer, write the chosen definition under the heading`,
 }
 
@@ -1982,5 +1628,65 @@ func TestTheListIsTheSameWhicheverBuildMadeTheMoves(t *testing.T) {
 			t.Errorf("%s: the list is %#v after moves by the server that names the root, and %#v after moves by a server that names none",
 				c.name, lists["the server that names the root"], lists["a server that names no root"])
 		}
+	}
+}
+
+// The judgment of the form reads the issues under its root as everyReader (approvedSpecTexts), the
+// reader that the rule of graph_reader.go names for a read whose answer every reader reads, and no
+// acting person: an issue under the root reserved for its author gives the judgment no approved
+// component name, also in the judgment of that author's own approval, so a person's name whose part
+// is that component's name is still a name there. No route writes an issue reserved for its author
+// yet, so the test writes the issue's node at the store, through the store's own writer and the
+// visibility that a write that asked for `author` would get (graphstoretest.VisibilityFor, handed
+// graphstore.ProvesAuthor), as the tests of node_visibility_test.go write theirs. The control: the
+// same issue, not reserved, gives the name, and the same approval passes.
+func TestTheGateReadsTheIssuesUnderItsRootAsEveryReader(t *testing.T) {
+	user := formFault{node: "reach-owner", kind: specform.KindStatement, broken: "Each issue reaches Dispatch Admin before its owner starts work.",
+		rule: "person", detail: `it names a person: "Dispatch Admin"`}
+	for _, reserved := range []bool{true, false} {
+		tree := newSpecFormTree(t, testServerOptions{specRoots: "ACME-1"})
+		seedPeople(t, tree.database, "dispatch.admin@example.com")
+		component := createFormIssue(t, tree.handler, tree.root, "The components",
+			"# Components\n\n## Dispatch (component `dispatch`)\n\nThe server keeps each issue and each document.\n")
+		if response := reviewFormDocument(t, tree.handler, component.PrimaryArtifactID, "approved", ""); response.Code != http.StatusCreated {
+			t.Fatalf("approve the components: status=%d body=%s", response.Code, response.Body.String())
+		}
+		if reserved {
+			reserveIssueForAuthor(t, tree.database, component.Key)
+		}
+		statement := createFormIssue(t, tree.handler, tree.root, "Uses a component name", user.document(user.broken))
+		approval := reviewFormDocument(t, tree.handler, statement.PrimaryArtifactID, "approved", "")
+		if reserved {
+			requireFormRefusal(t, "the author's approval beside the components reserved for that author", approval,
+				specform.ActApproval, user.lines(1), user.findings(statement, 1)...)
+		} else if approval.Code != http.StatusCreated {
+			t.Errorf("the control: the approval beside the components that every reader reads: status=%d body=%s, want 201", approval.Code, approval.Body.String())
+		}
+	}
+}
+
+// reserveIssueForAuthor writes the store's node of the issue key reserved for its author, alice
+// (privateNodeAuthor), who approves the documents of the form tests (reviewFormDocument).
+func reserveIssueForAuthor(t *testing.T, database *store.Store, key string) {
+	t.Helper()
+	ctx := context.Background()
+	author := privateNodeAuthor()
+	visibility, err := graphstoretest.VisibilityFor(graphstore.VisibilityAuthor, graphstore.ProvesAuthor(author))
+	if err != nil {
+		t.Fatalf("reserve issue %s for its author: %v", key, err)
+	}
+	tx, err := database.Pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the write of issue %s: %v", key, err)
+	}
+	defer tx.Rollback(ctx)
+	if err := graphstore.Write(ctx, tx, []graphstore.Node{{
+		Kind: "issue", ID: key, Supertag: "issue", Visibility: visibility, State: graphstore.StateLive,
+		MadeAt: time.Date(2026, 11, 9, 0, 0, 0, 0, time.UTC), MadeBy: author, SourceEvent: graphstore.NoEvent,
+	}}, nil); err != nil {
+		t.Fatalf("write the reserved issue %s: %v", key, err)
+	}
+	if err := tx.Commit(ctx); err != nil {
+		t.Fatalf("commit the reserved issue %s: %v", key, err)
 	}
 }

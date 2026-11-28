@@ -86,7 +86,7 @@ func TestRenderSummaryCarriesTheAttemptSetSortedByName(t *testing.T) {
 			"lint":  {CheckRunID: 901, Status: "in_progress"},
 		},
 	})
-	want := []CheckRunRef{{Name: "build", ID: 900}, {Name: "lint", ID: 901}, {Name: "test", ID: 1024}}
+	want := []CheckRunRef{{Name: "build", ID: 900, Conclusion: "success"}, {Name: "lint", ID: 901}, {Name: "test", ID: 1024, Conclusion: "success"}}
 	if len(sum.CheckRuns) != len(want) {
 		t.Fatalf("check_runs = %+v, want %+v", sum.CheckRuns, want)
 	}
@@ -94,6 +94,44 @@ func TestRenderSummaryCarriesTheAttemptSetSortedByName(t *testing.T) {
 		if sum.CheckRuns[i] != want[i] {
 			t.Fatalf("check_runs[%d] = %+v, want %+v", i, sum.CheckRuns[i], want[i])
 		}
+	}
+}
+
+// Each check the settlement lists in check_runs carries GitHub's own conclusion word of its run,
+// as the record holds it, so a consumer names a timed-out check timed_out rather than by the
+// group the listener puts it in; a completed check whose record holds no conclusion carries no
+// conclusion key at all, read from the marshalled bytes rather than the struct.
+func TestRenderSummaryCarriesEachCheckConclusionWord(t *testing.T) {
+	words := []string{"neutral", "timed_out", "skipped", "success", "failure", "action_required", "startup_failure", "stale", "cancelled"}
+	checks := map[string]Check{"unconcluded": {CheckRunID: 100, Status: "completed"}}
+	for i, word := range words {
+		checks["check-"+word] = Check{CheckRunID: checkRunID(101 + i), Status: "completed", Conclusion: word}
+	}
+	raw, _ := renderOrFail(t, State{Owner: "example-org", Repo: "example-repo", Number: "42", SHA: "abcdef", Checks: checks})
+	var payload struct {
+		CheckRuns []map[string]json.RawMessage `json:"check_runs"`
+	}
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode rendered summary: %v", err)
+	}
+	got := map[string]map[string]json.RawMessage{}
+	for _, entry := range payload.CheckRuns {
+		var name string
+		if err := json.Unmarshal(entry["name"], &name); err != nil {
+			t.Fatalf("decode a check_runs entry's name: %v in %s", err, raw)
+		}
+		got[name] = entry
+	}
+	if len(got) != len(checks) {
+		t.Fatalf("check_runs names %d checks, want %d: %s", len(got), len(checks), raw)
+	}
+	for _, word := range words {
+		if conclusion := string(got["check-"+word]["conclusion"]); conclusion != `"`+word+`"` {
+			t.Errorf("check-%s carries conclusion %s, want %q", word, conclusion, word)
+		}
+	}
+	if conclusion, ok := got["unconcluded"]["conclusion"]; ok {
+		t.Errorf("the check with no conclusion carries conclusion %s, want no conclusion key: %s", conclusion, raw)
 	}
 }
 

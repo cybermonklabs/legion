@@ -24,12 +24,12 @@ func TestSecondDefinitionInTheListIsRefused(t *testing.T) {
 	proposed := Term{Name: "session", Definition: "The record of one agent process in Envoy.", Where: where}
 	want := []Finding{finding(definition(proposed), "term-second-definition",
 		"terms.md version 3 of ACME-1 already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first")}
-	if got := Check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listedSession}}); !sameFindings(got, want) {
+	if got := check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listedSession}}); !sameFindings(got, want) {
 		t.Fatalf("Check = %#v, want %#v", got, want)
 	}
 	heartbeat := Term{Name: "heartbeat", Definition: "The registration that a session sends again every 90 seconds.", Where: "terms.md version 3 of ACME-1"}
 	for _, list := range [][]Term{nil, {heartbeat}} {
-		if got := Check(planted(), Input{Proposed: []Term{proposed}, List: list}); len(got) != 0 {
+		if got := check(planted(), Input{Proposed: []Term{proposed}, List: list}); len(got) != 0 {
 			t.Fatalf("Check with the list %#v = %#v, want no finding", list, got)
 		}
 	}
@@ -41,11 +41,11 @@ func TestSecondDefinitionInOneDocumentIsRefused(t *testing.T) {
 	first := Term{Name: "Session", Definition: "One conversation of an agent, in which the agent does its work.", Where: where}
 	second := Term{Name: "session", Definition: "The record of one agent process in Envoy.", Where: where}
 	want := []Finding{finding(definition(second), "term-second-definition", "this document defines this term 2 times. Keep one definition")}
-	if got := Check(planted(), Input{Proposed: []Term{first, second}}); !sameFindings(got, want) {
+	if got := check(planted(), Input{Proposed: []Term{first, second}}); !sameFindings(got, want) {
 		t.Fatalf("Check = %#v, want %#v", got, want)
 	}
 	lease := Term{Name: "lease", Definition: "The right of one session to one work unit for a time.", Where: where}
-	if got := Check(planted(), Input{Proposed: []Term{first, lease}}); len(got) != 0 {
+	if got := check(planted(), Input{Proposed: []Term{first, lease}}); len(got) != 0 {
 		t.Fatalf("Check of two terms = %#v, want no finding", got)
 	}
 }
@@ -54,11 +54,11 @@ func TestSecondDefinitionInOneDocumentIsRefused(t *testing.T) {
 func TestDefinitionOfTwoSentencesIsRefused(t *testing.T) {
 	heartbeat := Term{Name: "heartbeat", Definition: "The registration that a session sends again. It comes every 90 seconds.", Where: where}
 	want := []Finding{finding(definition(heartbeat), "definition-sentences", "the definition has 2 sentences, and a definition has one")}
-	if got := Check(planted(), Input{Proposed: []Term{heartbeat}}); !sameFindings(got, want) {
+	if got := check(planted(), Input{Proposed: []Term{heartbeat}}); !sameFindings(got, want) {
 		t.Fatalf("Check = %#v, want %#v", got, want)
 	}
 	heartbeat.Definition = "The registration that a session sends again every 90 seconds."
-	if got := Check(planted(), Input{Proposed: []Term{heartbeat}}); len(got) != 0 {
+	if got := check(planted(), Input{Proposed: []Term{heartbeat}}); len(got) != 0 {
 		t.Fatalf("Check of one sentence = %#v, want no finding", got)
 	}
 }
@@ -94,7 +94,7 @@ func TestTheFindingOfADefinitionWithAFootnoteNamesTheFootnote(t *testing.T) {
 			t.Fatalf("%s: %v", row.name, err)
 		}
 		var details []string
-		for _, finding := range Check(planted(), Input{Proposed: extracted.Terms}) {
+		for _, finding := range check(planted(), Input{Proposed: extracted.Terms}) {
 			if finding.Rule == ruleDefinitionSentences {
 				details = append(details, finding.Detail)
 			}
@@ -111,7 +111,7 @@ func TestTheFindingOfADefinitionWithAFootnoteNamesTheFootnote(t *testing.T) {
 func TestADefinitionWithNoWordIsRefused(t *testing.T) {
 	for _, body := range []string{"42", "...", "\u2014", "12:30."} {
 		term := Term{Name: "mark", Definition: body, Where: where}
-		got := Check(planted(), Input{Proposed: []Term{term}})
+		got := check(planted(), Input{Proposed: []Term{term}})
 		refused := false
 		for _, f := range got {
 			if f.Rule == ruleDefinitionSentences {
@@ -123,7 +123,7 @@ func TestADefinitionWithNoWordIsRefused(t *testing.T) {
 		}
 	}
 	one := Term{Name: "mark", Definition: "The sign that a reviewer puts on one line.", Where: where}
-	if got := Check(planted(), Input{Proposed: []Term{one}}); len(got) != 0 {
+	if got := check(planted(), Input{Proposed: []Term{one}}); len(got) != 0 {
 		t.Fatalf("control, one sentence: Check = %#v, want no finding", got)
 	}
 }
@@ -135,16 +135,16 @@ func TestTermNamesCompareLowercaseWithSpacesCollapsed(t *testing.T) {
 	proposed := Term{Name: "Work  Unit", Definition: "One task of an agent.", Where: where}
 	want := []Finding{finding(definition(proposed), "term-second-definition",
 		"terms.md version 3 of ACME-1 already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first")}
-	if got := Check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listed}}); !sameFindings(got, want) {
+	if got := check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listed}}); !sameFindings(got, want) {
 		t.Fatalf("Check against the list = %#v, want %#v", got, want)
 	}
 	again := Term{Name: " work unit ", Definition: "A piece of work that one agent does.", Where: where}
 	want = []Finding{finding(definition(again), "term-second-definition", "this document defines this term 2 times. Keep one definition")}
-	if got := Check(planted(), Input{Proposed: []Term{proposed, again}}); !sameFindings(got, want) {
+	if got := check(planted(), Input{Proposed: []Term{proposed, again}}); !sameFindings(got, want) {
 		t.Fatalf("Check of one document = %#v, want %#v", got, want)
 	}
 	plural := Term{Name: "work units", Definition: "The pieces of work that the agents do.", Where: where}
-	if got := Check(planted(), Input{Proposed: []Term{plural}, List: []Term{listed}}); len(got) != 0 {
+	if got := check(planted(), Input{Proposed: []Term{plural}, List: []Term{listed}}); len(got) != 0 {
 		t.Fatalf("Check of a plural = %#v, want no finding", got)
 	}
 }
@@ -156,14 +156,14 @@ func TestTermNamesCompareInOneUnicodeForm(t *testing.T) {
 	listed := Term{Name: "caf\u00e9", Definition: "The room where the agents rest.", Where: "spec.md version 1 of ACME-35"}
 	detail := "spec.md version 1 of ACME-35 already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first"
 	again := Term{Name: "caf\u00e9", Definition: "The list of the menus of one day.", Where: where}
-	if got, want := Check(planted(), Input{Proposed: []Term{again}, List: []Term{listed}}), []Finding{
+	if got, want := check(planted(), Input{Proposed: []Term{again}, List: []Term{listed}}), []Finding{
 		finding(definition(again), "term-name", nameDetail("\"\u00e9\" (U+00E9)")),
 		finding(definition(again), "term-second-definition", detail),
 	}; !sameFindings(got, want) {
 		t.Fatalf("control, the same form: Check = %#v, want %#v", got, want)
 	}
 	proposed := Term{Name: "cafe\u0301", Definition: "The list of the menus of one day.", Where: where}
-	if got, want := Check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listed}}), []Finding{
+	if got, want := check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listed}}), []Finding{
 		finding(definition(proposed), "term-name", nameDetail("\"\u0301\" (U+0301)")),
 		finding(definition(proposed), "term-second-definition", detail),
 	}; !sameFindings(got, want) {
@@ -178,17 +178,17 @@ func TestTermNamesCompareInTheCompatibilityForm(t *testing.T) {
 	detail := "terms.md version 3 of ACME-1 already defines this term. Use that definition, or change it there and request approval of that document. When that issue has the status done, reopen it first"
 	for _, name := range []string{"\ufb01le", "\uff46\uff49\uff4c\uff45", "\uff26ile"} {
 		proposed := Term{Name: name, Definition: "One upload of a person.", Where: where}
-		if got, want := Check(planted(), Input{Proposed: []Term{proposed}, List: []Term{file}}), []Finding{finding(definition(proposed), "term-second-definition", detail)}; !sameFindings(got, want) {
+		if got, want := check(planted(), Input{Proposed: []Term{proposed}, List: []Term{file}}), []Finding{finding(definition(proposed), "term-second-definition", detail)}; !sameFindings(got, want) {
 			t.Errorf("Check of %q against the list's file = %#v, want %#v", name, got, want)
 		}
 	}
 	ligature := Term{Name: "\ufb01le", Definition: "One upload of a person.", Where: where}
 	want := []Finding{finding(definition(ligature), "term-second-definition", "this document defines this term 2 times. Keep one definition")}
-	if got := Check(planted(), Input{Proposed: []Term{{Name: "file", Definition: "The bytes of one document.", Where: where}, ligature}}); !sameFindings(got, want) {
+	if got := check(planted(), Input{Proposed: []Term{{Name: "file", Definition: "The bytes of one document.", Where: where}, ligature}}); !sameFindings(got, want) {
 		t.Errorf("Check of one document = %#v, want %#v", got, want)
 	}
 	plural := Term{Name: "\ufb01les", Definition: "The uploads of a person.", Where: where}
-	if got := Check(planted(), Input{Proposed: []Term{plural}, List: []Term{file}}); len(got) != 0 {
+	if got := check(planted(), Input{Proposed: []Term{plural}, List: []Term{file}}); len(got) != 0 {
 		t.Fatalf("Check of a plural = %#v, want no finding", got)
 	}
 }
@@ -206,7 +206,7 @@ func TestTermNamesThatReadAsOneNameAreOneTerm(t *testing.T) {
 	for _, c := range cases {
 		listed := Term{Name: c.listed, Definition: "The first meaning of this name.", Where: "spec.md version 1 of ACME-61"}
 		proposed := Term{Name: c.proposed, Definition: "Another meaning of this name.", Where: where}
-		got := Check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listed}})
+		got := check(planted(), Input{Proposed: []Term{proposed}, List: []Term{listed}})
 		refused := false
 		for _, f := range got {
 			if f.Rule == ruleTermSecondDefinition && strings.HasPrefix(f.Detail, "spec.md version 1 of ACME-61 already defines") {
@@ -219,7 +219,7 @@ func TestTermNamesThatReadAsOneNameAreOneTerm(t *testing.T) {
 	}
 	plural := Term{Name: "heartbeats", Definition: "The signals of many sessions.", Where: where}
 	listed := Term{Name: "heartbeat", Definition: "The first meaning of this name.", Where: "spec.md version 1 of ACME-61"}
-	if got := Check(planted(), Input{Proposed: []Term{plural}, List: []Term{listed}}); len(got) != 0 {
+	if got := check(planted(), Input{Proposed: []Term{plural}, List: []Term{listed}}); len(got) != 0 {
 		t.Fatalf("control, a plural: Check = %#v, want no finding", got)
 	}
 }
@@ -258,7 +258,7 @@ func nameDetail(held string) string {
 func refusedOf(proposed, listed string) (second bool, name string) {
 	list := []Term{{Name: listed, Definition: "The first meaning of this name.", Where: "terms.md version 1 of ACME-1"}}
 	in := Input{Proposed: []Term{{Name: proposed, Definition: "Another meaning of this name.", Where: where}}, List: list}
-	for _, f := range Check(planted(), in) {
+	for _, f := range check(planted(), in) {
 		switch {
 		case f.Rule == "term-second-definition" && strings.HasPrefix(f.Detail, "terms.md version 1 of ACME-1 already defines"):
 			second = true
@@ -324,7 +324,7 @@ func TestNamesThatReadAsOneAreOneTermOrARefusedName(t *testing.T) {
 func TestANameThatShowsAsAListedNameIsRefused(t *testing.T) {
 	list := []Term{{Name: "heartbeat", Definition: "The signal that a session sends.", Where: "terms.md version 1 of ACME-1"}}
 	check := func(name string) []Finding {
-		return Check(planted(), Input{Proposed: []Term{{Name: name, Definition: "Another meaning of this name.", Where: where}}, List: list})
+		return check(planted(), Input{Proposed: []Term{{Name: name, Definition: "Another meaning of this name.", Where: where}}, List: list})
 	}
 	if got := check("heartbeats"); len(got) != 0 {
 		t.Fatalf("control, a name of the letters a to z: Check = %#v, want no finding", got)
@@ -357,7 +357,7 @@ func TestATermNameHoldsOnlyTheLettersAToZDigitsSpacesAndHyphens(t *testing.T) {
 		{"work\u2010unit", "\"\u2010\" (U+2010)"},
 	} {
 		term := Term{Name: c.name, Definition: "One meaning of this name.", Where: where}
-		if got, want := Check(planted(), Input{Proposed: []Term{term}}), []Finding{finding(definition(term), "term-name", nameDetail(c.held))}; !sameFindings(got, want) {
+		if got, want := check(planted(), Input{Proposed: []Term{term}}), []Finding{finding(definition(term), "term-name", nameDetail(c.held))}; !sameFindings(got, want) {
 			t.Errorf("Check of the name %+q = %#v, want %#v", c.name, got, want)
 		}
 	}
@@ -365,7 +365,7 @@ func TestATermNameHoldsOnlyTheLettersAToZDigitsSpacesAndHyphens(t *testing.T) {
 		"heartbeat", "work unit", "work-unit", "r49 check", "Work  Unit", "STRASSE", "stra\u00dfe",
 		"\uff48\uff45\uff41\uff52\uff54\uff42\uff45\uff41\uff54", "\ufb01le", "heart\u200dbeat", "\uff11\uff12 hours",
 	} {
-		if got := Check(planted(), Input{Proposed: []Term{{Name: name, Definition: "One meaning of this name.", Where: where}}}); len(got) != 0 {
+		if got := check(planted(), Input{Proposed: []Term{{Name: name, Definition: "One meaning of this name.", Where: where}}}); len(got) != 0 {
 			t.Errorf("control, the name %+q (TermKey %+q): Check = %#v, want no finding", name, TermKey(name), got)
 		}
 	}
@@ -383,7 +383,7 @@ func TestATermNameWithNoLetterAndNoDigitIsRefused(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExtractDocument of the name %+q: %v", name, err)
 		}
-		return extracted, Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
+		return extracted, check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms})
 	}
 	for _, name := range []string{"\u200b", "-", "\u00ad"} {
 		extracted, got := check(name)
@@ -420,7 +420,7 @@ func TestASecondDefinitionUnderAnotherHeadingIsRefused(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExtractDocument under %q: %v", heading, err)
 		}
-		return Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms, List: list})
+		return check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms, List: list})
 	}
 	const second = "- **heartbeat**: A pulse of a pump."
 	if got := findingsUnder("## Terms", second); len(got) != 1 || got[0].Rule != ruleTermSecondDefinition {
@@ -460,7 +460,7 @@ func TestATermLineOutsideTermsIsNoDefinitionAndAddsNoTerm(t *testing.T) {
 		if err != nil {
 			t.Fatalf("ExtractDocument(%q): %v", markdown, err)
 		}
-		return extracted, Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms, List: list})
+		return extracted, check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms, List: list})
 	}
 	line := func(name, body string) Text {
 		return Text{Node: name, Kind: "term_line", Body: body, Where: "spec.md version 1"}
@@ -531,7 +531,7 @@ func TestATermLineOutsideTermsThatAnotherDocumentOfTheRequestDefinesIsRefused(t 
 		if err != nil {
 			t.Fatalf("ExtractDocument(%q): %v", markdown, err)
 		}
-		return Check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms, Defined: defined})
+		return check(planted(), Input{Texts: extracted.Texts, Proposed: extracted.Terms, Defined: defined})
 	}
 	const glossary = "# Spec\n\n## Glossary\n\n- **Valve**: A part that closes.\n"
 	want := []Finding{finding(Text{Node: "Valve", Kind: "term_line", Body: "A part that closes.", Where: "spec.md version 1"}, "term-second-definition",

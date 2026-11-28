@@ -11,8 +11,10 @@
 package specform
 
 import (
-	"slices"
+	"context"
 	"strings"
+
+	"github.com/sjawhar/envoy/internal/dispatch/specform/ste"
 )
 
 // Kind is the kind of a text of The Spec.
@@ -42,15 +44,36 @@ var kinds = []Kind{KindStatement, KindClaim, KindProcedure, KindFailingExample, 
 // Rule is the stable id of a rule of the form, such as "sentences" or "ste100-semicolon".
 type Rule string
 
-// Text is one text of The Spec: the words that a person reads, with code in code font (Body), and
-// what its node holds beside them (Held). The rules of a sentence and the port of ste-lint read the
-// Body, since ste-lint reads code font. Where is "<file>:<line>" or "<document> version <n>".
+// Text is one text of The Spec: the words that a person reads, with code in code font (Body), what
+// its node holds beside them (Held), and each footnote that it refers to (Notes). The rules of a
+// sentence and the port of ste-lint read the Body, since ste-lint reads code font. Where is
+// "<file>:<line>" or "<document> version <n>".
 type Text struct {
 	Node  string
 	Kind  Kind
 	Body  string
 	Where string
 	Held  Held
+	// Notes is each footnote that the text refers to, once and in the order of the first
+	// reference. Each one, and each footnote that it refers to in turn, is part of the text.
+	Notes []*Footnote
+}
+
+// Footnote is one footnote of a document, which ExtractDocument reads once for each document: its
+// label as the markdown writes it, its words, with code in code font (Body), what they hold beside
+// them (Held), and each footnote that it refers to (Notes), once and in the order of the first
+// reference, and then the next footnote of its label up to case, where the document has another
+// (readFootnotes). A footnote is part of each text that refers to it, directly or through another
+// footnote: Check judges it once, gives its findings once, and counts its sentences in each
+// statement that holds it.
+type Footnote struct {
+	Label string
+	Body  string
+	Held  Held
+	Notes []*Footnote
+	// words is whether the footnote, or a footnote that it refers to, directly or in turn, holds
+	// words, so that a definition can stand wholly in its footnotes (holdsWords).
+	words bool
 }
 
 // Held is what the reference rules read of a text: the words exactly as the page shows them, with
@@ -62,48 +85,70 @@ type Held struct {
 	Shown             string
 }
 
-// with is held and each address and title of more that held does not hold yet.
+// with is held and each address and title of more after its own. A reading gathers them so, in
+// the order that it reads them, and keeps the first of each once it is whole (unique), so its work
+// is in proportion to its links and images, not their count times their count. A caller keeps the
+// Held that with, withAddress and withTitle answer, and no longer the one it gave them.
 func (held Held) with(more Held) Held {
-	for _, address := range more.Addresses {
-		held = held.withAddress(address)
-	}
-	for _, title := range more.Titles {
-		held = held.withTitle(title)
-	}
+	held.Addresses = append(held.Addresses, more.Addresses...)
+	held.Titles = append(held.Titles, more.Titles...)
 	return held
 }
 
 func (held Held) withAddress(address string) Held {
-	if address != "" && !slices.Contains(held.Addresses, address) {
-		held.Addresses = append(slices.Clip(held.Addresses), address)
+	if address != "" {
+		held.Addresses = append(held.Addresses, address)
 	}
 	return held
 }
 
 func (held Held) withTitle(title string) Held {
-	if title != "" && !slices.Contains(held.Titles, title) {
-		held.Titles = append(slices.Clip(held.Titles), title)
+	if title != "" {
+		held.Titles = append(held.Titles, title)
 	}
 	return held
 }
 
-// Term is a term and its definition, with what each holds beside its words, and how many
-// footnotes gave words to the definition: a footnote is part of the definition that refers to it.
-// Where of a listed term is "<document> version <n> of <issue key>" or "<file>:<line>".
+// unique is held with each address and each title once, the first of each, in their order.
+func (held Held) unique() Held {
+	held.Addresses, held.Titles = firstOfEach(held.Addresses), firstOfEach(held.Titles)
+	return held
+}
+
+func firstOfEach(values []string) []string {
+	var kept []string
+	seen := make(map[string]bool, len(values))
+	for _, value := range values {
+		if !seen[value] {
+			seen[value] = true
+			kept = append(kept, value)
+		}
+	}
+	return kept
+}
+
+// Term is a term and its definition, with what each holds beside its words and each footnote that
+// its line refers to, which is part of the definition. Where of a listed term is "<document>
+// version <n> of <issue key>" or "<file>:<line>".
 type Term struct {
 	Name, Definition, Where  string
 	NameHeld, DefinitionHeld Held
-	Footnotes                int
+	DefinitionNotes          []*Footnote
 }
 
 // Context is what Check knows of the system: which project keys exist, the email of each person
-// who signed in, the names of the system's components and interfaces that a person approved, and
-// the server's address.
+// who signed in, the names of the system's components and interfaces that a person approved, the
+// server's address, and the pages of the server that show the document whose texts Check judges.
 type Context struct {
 	IsProjectKey func(key string) bool
 	PersonNames  []string // emails of signed-in people (people.email)
 	SystemNames  []string // approved component and interface names, which are nouns of the system
 	ServerURL    string
+	// Pages is each path of the dashboard that draws the document, under ServerURL, such as
+	// "/issues/ACME-1/spec" and "/issues/ACME-1/artifacts/spec" for a spec (text.DocumentPages):
+	// each page reads an address with no scheme against itself. It is empty for texts of no one
+	// document of the server, such as the files of a tree.
+	Pages []string
 }
 
 // Input is the texts to judge, the definitions a request proposes in the document, the approved
@@ -117,7 +162,8 @@ type Input struct {
 }
 
 // Finding is one break of the form: the text, by its node, kind and place, the rule it breaks,
-// the detail of the break and the start of the text.
+// the detail of the break and the start of the text. The detail is the rule's words at the place
+// of the break, which a refusal writes as the finding.
 type Finding struct {
 	Node    string `json:"node"`
 	Kind    Kind   `json:"kind"`
@@ -137,9 +183,25 @@ const excerptRunes = 160
 // definition of its term, in the list and in the proposal. A text of Kind term_line, a line in the
 // form of a term line outside Terms, is no definition and takes only the rule of a second
 // definition: it is refused when it names a term that the list, the document's own terms or the
-// request's other documents (Defined) define.
-func Check(c Context, in Input) []Finding {
+// request's other documents (Defined) define. It judges each footnote that the texts refer to
+// once (footnoteJudge), so its work is in proportion to the texts and their footnotes, whatever
+// the count of texts that share one footnote. Once ctx ends it judges no other text and answers
+// ctx's error, so a caller that stops waiting stops the judgment within the work of one text.
+func Check(ctx context.Context, c Context, in Input) ([]Finding, error) {
+	texts := make([]Text, 0, len(in.Texts)+2*len(in.Proposed))
+	for _, text := range in.Texts {
+		if text.Kind != KindTermLine {
+			texts = append(texts, text)
+		}
+	}
+	read := len(texts)
+	for _, term := range in.Proposed {
+		texts = append(texts,
+			Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where, Held: term.NameHeld},
+			Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld, Notes: term.DefinitionNotes})
+	}
 	people := peopleNames(c, in)
+	notes := newFootnoteJudge(c, people, texts)
 	terms := indexTerms(in)
 	var findings []Finding
 	keep := func(text Text, found []broken) {
@@ -151,27 +213,46 @@ func Check(c Context, in Input) []Finding {
 		}
 	}
 	for _, text := range in.Texts {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if text.Kind == KindTermLine {
 			keep(text, terms.lineBreaks(text))
 			continue
 		}
-		keep(text, breaks(c, people, text))
+		keep(text, breaks(c, people, text, notes))
 	}
 	for at, term := range in.Proposed {
-		name := Text{Node: term.Name, Kind: KindTerm, Body: term.Name, Where: term.Where, Held: term.NameHeld}
-		definition := Text{Node: term.Name, Kind: KindDefinition, Body: term.Definition, Where: term.Where, Held: term.DefinitionHeld}
-		keep(name, breaks(c, people, name))
-		keep(definition, append(terms.breaks(at, term), breaks(c, people, definition)...))
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		name, definition := texts[read+2*at], texts[read+2*at+1]
+		keep(name, breaks(c, people, name, notes))
+		keep(definition, append(terms.breaks(at, term, notes.sentences(definition.Notes)), breaks(c, people, definition, notes)...))
 	}
-	return findings
+	return findings, nil
 }
 
 // oneLine is a text as ste-lint reads one line: its lines trimmed and joined by one space.
 func oneLine(body string) string {
+	return joinedLines(body, func(line string) string { return line })
+}
+
+// proseLine is body as the rules of the form read it: one line, as oneLine joins it, with each
+// fence marker of each of its lines written as white space (ste.NoFences), so it is as long as
+// oneLine's, byte for byte. A text of The Spec is no document: Dispatch joins its lines into one,
+// and the page shows the procedure of a check as it is written, so a line that starts with three
+// backticks or three tildes opens no fence that hides the sentences after it.
+func proseLine(body string) string {
+	return joinedLines(body, ste.NoFences)
+}
+
+// joinedLines is the lines of body, each trimmed and then written by write, joined by one space.
+func joinedLines(body string, write func(string) string) string {
 	var lines []string
 	for line := range strings.SplitSeq(body, "\n") {
 		if line = strings.TrimSpace(line); line != "" {
-			lines = append(lines, line)
+			lines = append(lines, write(line))
 		}
 	}
 	return strings.Join(lines, " ")

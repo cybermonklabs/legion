@@ -10,6 +10,7 @@
 import { type RefObject, useCallback, useRef, useState } from "react";
 
 import { useMarkedKeys } from "../../hooks/useMarkedKeys";
+import { stoppedWriteNote } from "../writes/keyed-write";
 import type { InboxFilters } from "./InboxBar";
 import { type InboxListRow, rowId } from "./list-row";
 import { type AskSnoozeFailure, useAskSnoozeMany } from "./useAskSnooze";
@@ -23,16 +24,37 @@ import {
 /**
  * What the bar says after a pick the server refused in part. The count alone cannot tell a
  * sign-out from `snoozed_until must be in the future`, so the reason travels with it: one reason
- * when every refusal gave the same one, otherwise the first and how many others there are.
+ * when every refusal gave the same one, otherwise the first and how many others there are. A
+ * snooze the reader stopped is no refusal - it may have been saved - so those are said apart
+ * (`snoozeStoppedText`).
  */
 function snoozeRefusalText(failed: readonly AskSnoozeFailure[], of: number): string | undefined {
-  const first = failed[0];
-  if (first === undefined) return undefined;
-  const reasons = new Set(failed.map(({ reason }) => reason));
-  const head = `Could not snooze ${failed.length} of ${of}: ${first.reason}`;
-  if (reasons.size === 1) return `${head}.`;
+  const refused = failed.filter(
+    (failure): failure is Extract<AskSnoozeFailure, { stopped: false }> => !failure.stopped
+  );
+  const unconfirmed = snoozeStoppedText(failed.length - refused.length, of);
+  const first = refused[0];
+  if (first === undefined) return unconfirmed;
+  const reasons = new Set(refused.map(({ reason }) => reason));
+  // The reason is the server's own words for why it refused the snooze.
+  const head = `Could not snooze ${refused.length} of ${of}: ${first.reason}`;
   const others = reasons.size - 1;
-  return `${head}, and ${others} other reason${others === 1 ? "" : "s"}.`;
+  const said =
+    others === 0 ? `${head}.` : `${head}, and ${others} other reason${others === 1 ? "" : "s"}.`;
+  return unconfirmed === undefined ? said : `${said} ${unconfirmed}`;
+}
+
+/** What the bar says of the `stopped` snoozes of a pick over `of` asks that the reader stopped,
+ *  or undefined for none, in the words of a stopped write (`stoppedWriteNote`): each may have
+ *  been saved and stays marked, so the next pick is a press of its own over it. */
+function snoozeStoppedText(stopped: number, of: number): string | undefined {
+  if (stopped === 0) return undefined;
+  return stoppedWriteNote(`the snooze of ${stopped} of ${of}`, "saved", {
+    anew:
+      stopped === 1
+        ? "It stays marked, and the next pick snoozes it as a new write."
+        : "They stay marked, and the next pick snoozes them as a new write.",
+  });
 }
 
 /** The selection of one Inbox list, and the two presses it feeds. */
@@ -68,7 +90,9 @@ export interface InboxSelection {
   /** The thread rows a **Dismiss** press names, each with what the page drew in it, which is
    *  what the bar counts for that press. */
   readonly selectedThreads: readonly InboxDismissRow[];
-  readonly snoozePick: (until: string) => void;
+  /** Snoozes the marked asks the view is drawing until `until`; settles once the server has
+   *  answered for every one of them. */
+  readonly snoozePick: (until: string) => Promise<void>;
   /** What the reader is told about the last bulk snooze the server refused in part. */
   readonly snoozeRefusal: string | undefined;
   /** How many asks the snooze now in flight covers, 0 when none is: the optimistic fold empties
@@ -173,11 +197,11 @@ export function useInboxSelection({
   // control makes, once per ask. The ids the server took leave the selection; the ones it refused
   // are marked again under its own reason, even if Clear ran while the write was in flight, so a
   // second pick retries exactly those.
-  const snoozePick = (until: string) => {
+  const snoozePick = (until: string): Promise<void> => {
     const ids = [...selectedAsks];
     setSnoozeRefusal(undefined);
     setSnoozing(ids.length);
-    void bulkWrite.submit(ids, until).then(({ failed }) => {
+    return bulkWrite.submit(ids, until).then(({ failed }) => {
       setSnoozing(0);
       setSnoozeRefusal(snoozeRefusalText(failed, ids.length));
       const refused = new Set(failed.map(({ askId }) => askId));

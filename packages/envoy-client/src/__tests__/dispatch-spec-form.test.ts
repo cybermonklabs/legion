@@ -1,10 +1,12 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import type { SpecFormFinding, SpecFormRead, SpecFormTerm } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
-import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchServiceError } from "../dispatch-http";
 
 // `dispatch spec-form` and the form refusal `dispatch request-approval` prints, against a stub
 // Dispatch that answers `GET /api/v1/artifacts/{id}/spec-form` and the approval request route as
@@ -23,6 +25,9 @@ import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
 // empty, since `listArtifacts` reads no issue.
 
 const makeDirectory = temporaryDirectories("dispatch-spec-form");
+
+/** The Dispatch bearer each command, and the executor, is handed. */
+const TOKEN = fixtureSecret("dsp");
 
 /** The person the stub's issues are assigned to. */
 const PERSON = "ana@example.com";
@@ -217,14 +222,19 @@ const UNREAD_OLDER = {
   line: "Dispatch cannot read spec.md version 1 of ACME-4, an older approved version of a document under the root. So the list orders the definitions of that document as if that version held no term.",
 };
 
-/** What `GET /api/v1/artifacts/{id}/spec-form` answers for one document. */
+/**
+ * What `GET /api/v1/artifacts/{id}/spec-form` answers for one document. `findingLines` are the
+ * lines the server writes that list the findings (`finding_lines`, from `specform.Listing` in
+ * packages/envoy/internal/dispatch/specform/message.go), which the command prints as they are.
+ */
 function formRead(
   artifactID: string,
   name: string,
   version: number,
   scope: string,
   texts: Record<string, number>,
-  findings: readonly SpecFormFinding[] = []
+  findings: readonly SpecFormFinding[] = [],
+  findingLines: readonly string[] = []
 ): SpecFormRead {
   const inScope = scope === "covered" || scope === "list";
   return {
@@ -247,6 +257,7 @@ function formRead(
     },
     findings: [...findings],
     findings_total: findings.length,
+    finding_lines: [...findingLines],
     terms: [],
     unread: [],
     refuses_approval: inScope && findings.length > 0,
@@ -263,74 +274,79 @@ let approval:
   | { readonly kind: "recorded"; readonly specForm?: unknown }
   | { readonly kind: "refused"; readonly body: unknown } = { kind: "recorded" };
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back, and so does the
+// 409 SPEC_FORM, which the approval request's own handler answers behind that layer.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
-    const url = new URL(request.url);
-    const { pathname, search } = url;
-    const text = await request.text();
-    const body: unknown = text === "" ? undefined : JSON.parse(text);
-    requests.push({ method: request.method, path: pathname, search, body });
-    if (pathname === "/api/v1/issues" && request.method === "GET") {
-      const parent = url.searchParams.get("parent");
-      return Response.json(ISSUES.filter((issue) => issue.parent === parent).map(summaryBody));
-    }
-    const issue = /^\/api\/v1\/issues\/([^/]+)(\/artifacts)?$/.exec(pathname);
-    if (issue !== null && request.method === "GET") {
-      const held = ISSUES.find((candidate) => candidate.key === issue[1]);
-      if (issue[2] !== undefined) {
-        return Response.json(
-          held === undefined ? [] : held.artifacts.map((artifact) => artifactBody(held, artifact))
-        );
+  fetch: keyedLayer(
+    async (request: Request) => {
+      const url = new URL(request.url);
+      const { pathname, search } = url;
+      const text = await request.text();
+      const body: unknown = text === "" ? undefined : JSON.parse(text);
+      requests.push({ method: request.method, path: pathname, search, body });
+      if (pathname === "/api/v1/issues" && request.method === "GET") {
+        const parent = url.searchParams.get("parent");
+        return Response.json(ISSUES.filter((issue) => issue.parent === parent).map(summaryBody));
       }
-      if (held === undefined) {
-        return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
+      const issue = /^\/api\/v1\/issues\/([^/]+)(\/artifacts)?$/.exec(pathname);
+      if (issue !== null && request.method === "GET") {
+        const held = ISSUES.find((candidate) => candidate.key === issue[1]);
+        if (issue[2] !== undefined) {
+          return Response.json(
+            held === undefined ? [] : held.artifacts.map((artifact) => artifactBody(held, artifact))
+          );
+        }
+        if (held === undefined) {
+          return Response.json({ code: "NOT_FOUND", error: "not found" }, { status: 404 });
+        }
+        return Response.json(issueBody(held));
       }
-      return Response.json(issueBody(held));
-    }
-    const artifact = /^\/api\/v1\/artifacts\/([^/]+)\/(spec-form|blocks|approval-requests)$/.exec(
-      pathname
-    );
-    if (artifact !== null && artifact[2] === "spec-form" && request.method === "GET") {
-      const read = forms[artifact[1] ?? ""];
-      if (read === undefined) {
-        return Response.json(
-          { code: "NO_VERSION", error: "the document has no settled version to read yet" },
-          { status: 409 }
-        );
-      }
-      return Response.json(read);
-    }
-    if (artifact !== null && artifact[2] === "blocks" && request.method === "GET") {
-      return Response.json([]);
-    }
-    if (artifact !== null && artifact[2] === "approval-requests" && request.method === "POST") {
-      if (approval.kind === "refused") return Response.json(approval.body, { status: 409 });
-      const sent = body as { summary: string };
-      return Response.json(
-        {
-          ask: {
-            id: "ask-9",
-            issue_key: "ACME-2",
-            artifact_id: artifact[1],
-            kind: "approval",
-            question: `Approve spec.md (version 12)? ${sent.summary}`,
-            waiting_on_person: PERSON,
-          },
-          approval: { state: "awaiting", latest_version: 12, version: 12 },
-          artifact_id: artifact[1],
-          coverage: null,
-          version: 12,
-          ...(approval.specForm === undefined ? {} : { spec_form: approval.specForm }),
-        },
-        { status: 201 }
+      const artifact = /^\/api\/v1\/artifacts\/([^/]+)\/(spec-form|blocks|approval-requests)$/.exec(
+        pathname
       );
-    }
-    return Response.json(
-      { error: `unexpected ${request.method} ${pathname}${search}` },
-      { status: 500 }
-    );
-  },
+      if (artifact !== null && artifact[2] === "spec-form" && request.method === "GET") {
+        const read = forms[artifact[1] ?? ""];
+        if (read === undefined) {
+          return Response.json(
+            { code: "NO_VERSION", error: "the document has no settled version to read yet" },
+            { status: 409 }
+          );
+        }
+        return Response.json(read);
+      }
+      if (artifact !== null && artifact[2] === "blocks" && request.method === "GET") {
+        return Response.json([]);
+      }
+      if (artifact !== null && artifact[2] === "approval-requests" && request.method === "POST") {
+        if (approval.kind === "refused") return Response.json(approval.body, { status: 409 });
+        const sent = body as { summary: string };
+        return Response.json(
+          {
+            ask: {
+              id: "ask-9",
+              issue_key: "ACME-2",
+              artifact_id: artifact[1],
+              kind: "approval",
+              question: `Approve spec.md (version 12)? ${sent.summary}`,
+              waiting_on_person: PERSON,
+            },
+            approval: { state: "awaiting", latest_version: 12, version: 12 },
+            artifact_id: artifact[1],
+            coverage: null,
+            version: 12,
+            ...(approval.specForm === undefined ? {} : { spec_form: approval.specForm }),
+          },
+          { status: 201 }
+        );
+      }
+      return Response.json(
+        { error: `unexpected ${request.method} ${pathname}${search}` },
+        { status: 500 }
+      );
+    },
+    { judged: (response) => response.ok || response.status === 409 }
+  ),
 });
 
 afterAll(() => server.stop(true));
@@ -342,7 +358,6 @@ beforeEach(() => {
   approval = { kind: "recorded" };
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(
@@ -356,7 +371,7 @@ async function run(
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",
@@ -407,7 +422,7 @@ describe("dispatch spec-form", () => {
     expect(stderr).toBe("");
     expect(code).toBe(0);
     expect(stdout).toBe(
-      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.\n" +
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions: no text breaks it.\n" +
         `${REVIEWER_LINE}\n`
     );
     expect(formReads()).toEqual(["/api/v1/artifacts/ACME-2-spec/spec-form"]);
@@ -435,45 +450,83 @@ describe("dispatch spec-form", () => {
 
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
-      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 1 statement, 0 claims, 0 purposes and 0 definitions: no text breaks it.",
       UNREAD.line,
       REVIEWER_LINE,
       "",
     ]);
   });
 
-  test("a covered document with findings prints that Dispatch refuses its approval, then each finding as a statement line", async () => {
-    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 2 }, [
-      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
-      finding("ACME-2-spec", "spec.md", 2, "one-write", "statement", LONG_SENTENCE),
-    ]);
+  test("a covered document with findings prints the lines Dispatch writes for them, the line of each finding as its refusal writes it", async () => {
+    forms["ACME-2-spec"] = formRead(
+      "ACME-2-spec",
+      "spec.md",
+      2,
+      "covered",
+      { statement: 2 },
+      [
+        finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
+        finding("ACME-2-spec", "spec.md", 2, "one-write", "statement", LONG_SENTENCE),
+      ],
+      [
+        "Dispatch refuses an approval request of spec.md version 2, because 2 texts break the form of The Spec.",
+        `- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`,
+        `- statement one-write in spec.md version 2: ${LONG_SENTENCE}.`,
+      ]
+    );
 
     const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
 
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
       "Dispatch refuses an approval request of spec.md version 2, because 2 texts break the form of The Spec.",
-      `- statement ship-at-head: ${THREE_SENTENCES}.`,
-      `- statement one-write: ${LONG_SENTENCE}.`,
+      `- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`,
+      `- statement one-write in spec.md version 2: ${LONG_SENTENCE}.`,
       REVIEWER_LINE,
       "",
     ]);
   });
 
-  test("a statement with two faults is one text that breaks the form, with a line for each fault", async () => {
-    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 1 }, [
+  test("the lines of the findings are the server's words alone: a change of its wording is what the command prints", async () => {
+    // Words no release of the server writes: the command composes no line of a finding itself,
+    // so it prints these as they are, in scope and out of it, the count line among them.
+    const planted = [
+      "Planted head: the server counts the texts that break the form.",
+      "- planted line of the first finding.",
+      "- planted line of the second finding.",
+      "Planted count: the server lists 2 of 3.",
+    ];
+    const listed = [
       finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
-      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", LONG_SENTENCE),
-    ]);
+      finding("ACME-2-spec", "spec.md", 2, "one-write", "statement", LONG_SENTENCE),
+    ];
+    forms["ACME-2-spec"] = {
+      ...formRead("ACME-2-spec", "spec.md", 2, "covered", { statement: 3 }, listed, planted),
+      findings_total: 3,
+    };
+    forms["ACME-3-notes"] = {
+      ...formRead(
+        "ACME-3-notes",
+        "notes.md",
+        2,
+        "not_spec",
+        { statement: 3 },
+        listed,
+        planted.slice(1)
+      ),
+      findings_total: 3,
+    };
 
-    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+    const covered = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+    const outside = await run(["spec-form", "ACME-3", "--artifact", "notes.md"]);
 
-    expect(code).toBe(0);
-    expect(stdout.split("\n")).toEqual([
-      "Dispatch refuses an approval request of spec.md version 2, because 1 text breaks the form of The Spec.",
-      `- statement ship-at-head: ${THREE_SENTENCES}.`,
-      `- statement ship-at-head: ${LONG_SENTENCE}.`,
-      REVIEWER_LINE,
+    expect(covered.code).toBe(0);
+    expect(covered.stdout.split("\n")).toEqual([...planted, REVIEWER_LINE, ""]);
+    expect(outside.code).toBe(0);
+    expect(outside.stdout.split("\n")).toEqual([
+      "notes.md is not the spec or the Verification document of its issue, so Dispatch refuses no approval request of it for its form.",
+      "The findings below are for you to read.",
+      ...planted.slice(1),
       "",
     ]);
   });
@@ -495,21 +548,30 @@ describe("dispatch spec-form", () => {
       "root",
       "spec.md belongs to a root of The Spec, so Dispatch refuses no approval request of it for its form.",
     ],
-  ])("a document of scope %s says why Dispatch refuses nothing for it, and still lists its findings", async (scope, line) => {
-    forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, scope, { statement: 1 }, [
-      finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES),
-    ]);
+  ])(
+    "a document of scope %s says why Dispatch refuses nothing for it, and still lists its findings",
+    async (scope, line) => {
+      forms["ACME-2-spec"] = formRead(
+        "ACME-2-spec",
+        "spec.md",
+        2,
+        scope,
+        { statement: 1 },
+        [finding("ACME-2-spec", "spec.md", 2, "ship-at-head", "statement", THREE_SENTENCES)],
+        [`- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`]
+      );
 
-    const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
+      const { code, stdout } = await run(["spec-form", "ACME-2", "--artifact", "spec.md"]);
 
-    expect(code).toBe(0);
-    expect(stdout.split("\n")).toEqual([
-      line,
-      "The findings below are for you to read.",
-      `- statement ship-at-head: ${THREE_SENTENCES}.`,
-      "",
-    ]);
-  });
+      expect(code).toBe(0);
+      expect(stdout.split("\n")).toEqual([
+        line,
+        "The findings below are for you to read.",
+        `- statement ship-at-head in spec.md version 2: ${THREE_SENTENCES}.`,
+        "",
+      ]);
+    }
+  );
 
   test("a document out of scope with no finding says why, then what Dispatch read", async () => {
     forms["ACME-2-spec"] = formRead("ACME-2-spec", "spec.md", 2, "no_root", { statement: 2 });
@@ -519,7 +581,7 @@ describe("dispatch spec-form", () => {
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
       "This server names no root of The Spec, so Dispatch refuses no approval request for its form.",
-      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 2 statements, 0 claims, 0 purposes and 0 definitions: no text breaks it.",
       "",
     ]);
   });
@@ -533,6 +595,50 @@ describe("dispatch spec-form", () => {
     expect(formReads()).toEqual(["/api/v1/artifacts/ACME-2-spec/spec-form?version=2"]);
   });
 
+  test("--version with an issue, or a ref of an issue, and no --artifact is refused before any request, since a version belongs to one document", async () => {
+    forms["ACME-5-spec"] = formRead("ACME-5-spec", "spec.md", 3, "covered", { statement: 1 });
+    forms["ACME-5-verification"] = formRead(
+      "ACME-5-verification",
+      "verification.md",
+      3,
+      "covered",
+      {
+        claim: 1,
+      }
+    );
+
+    for (const argv of [
+      ["spec-form", "ACME-5", "--version", "1"],
+      ["spec-form", "--issue", "ACME-5", "--version", "1"],
+      ["spec-form", "--ref", "dispatch://ACME-5", "--version", "1"],
+      ["spec-form", "--issue", "ACME-5", "--ref", "dispatch://ACME-5", "--version", "1"],
+    ]) {
+      requests.length = 0;
+      const { code, stdout } = await run(argv);
+
+      expect(code, argv.join(" ")).toBe(2);
+      expect(stdout, argv.join(" ")).toContain(
+        "A version number belongs to one document, and an issue has several: with version, name the document with artifact (--artifact)."
+      );
+      expect(requests, argv.join(" ")).toEqual([]);
+    }
+    requests.length = 0;
+    const error: unknown = await executeDispatchTool({
+      tool: "dispatch_spec_form",
+      args: { issue: "ACME-5", version: 1 },
+      cwd: stateDir,
+      host: "omp",
+      sessionId: "ses-1",
+      config: {
+        url: `http://127.0.0.1:${server.port}`,
+        credential: bearerCredential(TOKEN),
+      },
+      env: {},
+    }).catch((thrown: unknown) => thrown);
+    expect(String(error)).toContain("with version, name the document with artifact (--artifact)");
+    expect(requests).toEqual([]);
+  });
+
   test("with no --artifact, it prints the spec and the Verification document of the issue and leaves notes.md out", async () => {
     forms["ACME-5-spec"] = formRead("ACME-5-spec", "spec.md", 3, "covered", {
       statement: 2,
@@ -544,7 +650,11 @@ describe("dispatch spec-form", () => {
       1,
       "covered",
       { claim: 1, procedure: 1 },
-      [finding("ACME-5-verification", "verification.md", 1, "v-one", "claim", LONG_SENTENCE)]
+      [finding("ACME-5-verification", "verification.md", 1, "v-one", "claim", LONG_SENTENCE)],
+      [
+        "Dispatch refuses an approval request of verification.md version 1, because 1 text breaks the form of The Spec.",
+        `- claim v-one in verification.md version 1: ${LONG_SENTENCE}.`,
+      ]
     );
     forms["ACME-5-notes"] = formRead("ACME-5-notes", "notes.md", 1, "not_spec", { statement: 1 });
 
@@ -553,10 +663,10 @@ describe("dispatch spec-form", () => {
     expect(code).toBe(0);
     expect(stdout.split("\n")).toEqual([
       "spec.md version 3:",
-      "Dispatch read the form of 2 statements, 0 claims, 1 purpose and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 2 statements, 0 claims, 1 purpose and 0 definitions: no text breaks it.",
       "verification.md version 1:",
       "Dispatch refuses an approval request of verification.md version 1, because 1 text breaks the form of The Spec.",
-      `- claim v-one: ${LONG_SENTENCE}.`,
+      `- claim v-one in verification.md version 1: ${LONG_SENTENCE}.`,
       REVIEWER_LINE,
       "",
     ]);
@@ -581,7 +691,7 @@ describe("dispatch spec-form", () => {
     expect(stdout.split("\n")).toEqual([
       "spec.md has no version yet, so Dispatch read no text in it.",
       "verification.md version 1:",
-      "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions against 0 terms: no text breaks it.",
+      "Dispatch read the form of 0 statements, 1 claim, 0 purposes and 0 definitions: no text breaks it.",
       REVIEWER_LINE,
       "",
     ]);
@@ -858,6 +968,36 @@ describe("dispatch spec-form --terms", () => {
     ]);
   });
 
+  test("the details of --terms carry the list with each approved version that Dispatch could not read, as the server answers them", async () => {
+    forms["ACME-5-spec"] = {
+      ...formRead("ACME-5-spec", "spec.md", 3, "covered", { statement: 2 }),
+      terms: [session],
+      unread: [UNREAD, UNREAD_OLDER],
+    };
+    const config = {
+      url: `http://127.0.0.1:${server.port}`,
+      credential: bearerCredential(TOKEN),
+    };
+    const terms = (args: Record<string, unknown>) =>
+      executeDispatchTool({
+        tool: "dispatch_spec_form",
+        args,
+        cwd: stateDir,
+        host: "omp",
+        sessionId: "ses-1",
+        config,
+        env: {},
+      });
+
+    for (const args of [
+      { issue: "ACME-5", terms: true },
+      { issue: "ACME-5", artifact: "spec.md", terms: true },
+    ]) {
+      const result = await terms(args);
+      expect(result.details).toMatchObject({ terms: [session], unread: [UNREAD, UNREAD_OLDER] });
+    }
+  });
+
   test("with no --artifact, names a document with no version yet and reads the list from the next one", async () => {
     forms["ACME-6-verification"] = {
       ...formRead("ACME-6-verification", "verification.md", 1, "covered", { claim: 1 }),
@@ -931,7 +1071,7 @@ describe("dispatch request-approval and the form of The Spec", () => {
     expect(stdout).toBe(`SPEC_FORM: ${REFUSAL.error}\n`);
   });
 
-  test("the refusal it throws starts with SPEC_FORM and carries the findings", async () => {
+  test("the refusal it throws starts with SPEC_FORM", async () => {
     approval = { kind: "refused", body: REFUSAL };
 
     const error: unknown = await executeDispatchTool({
@@ -942,7 +1082,7 @@ describe("dispatch request-approval and the form of The Spec", () => {
       sessionId: "ses-1",
       config: {
         url: `http://127.0.0.1:${server.port}`,
-        credential: bearerCredential("test-token"),
+        credential: bearerCredential(TOKEN),
       },
       env: {},
     }).catch((thrown: unknown) => thrown);
@@ -951,8 +1091,6 @@ describe("dispatch request-approval and the form of The Spec", () => {
     const refusal = error as DispatchServiceError;
     expect(refusal.code).toBe("SPEC_FORM");
     expect(refusal.message).toStartWith("SPEC_FORM: Dispatch refused this approval request");
-    expect(refusal.findings).toEqual(REFUSAL.findings);
-    expect(refusal.changesReason).toBeUndefined();
   });
 
   test("a request Dispatch recorded prints the line on the form that its answer carries", async () => {
@@ -961,7 +1099,6 @@ describe("dispatch request-approval and the form of The Spec", () => {
       specForm: {
         root: "ACME-1",
         texts: { statement: 59, claim: 0, procedure: 0, purpose: 40, name: 40, definition: 0 },
-        terms: 48,
       },
     };
 
@@ -974,14 +1111,14 @@ describe("dispatch request-approval and the form of The Spec", () => {
 
     expect(code).toBe(0);
     expect(stdout.split("\n")).toContain(
-      "Dispatch read the form of 59 statements, 0 claims, 40 purposes and 0 definitions against 48 terms: no text breaks it."
+      "Dispatch read the form of 59 statements, 0 claims, 40 purposes and 0 definitions: no text breaks it."
     );
   });
 
   test("a recorded request prints the line of each approved document that Dispatch could not read", async () => {
     approval = {
       kind: "recorded",
-      specForm: { root: "ACME-1", texts: { statement: 1 }, terms: 0, unread: [UNREAD] },
+      specForm: { root: "ACME-1", texts: { statement: 1 }, unread: [UNREAD] },
     };
 
     const { code, stdout } = await run([
@@ -996,7 +1133,7 @@ describe("dispatch request-approval and the form of The Spec", () => {
   });
 
   test("a recorded request whose documents hold no text of The Spec says Dispatch decided nothing", async () => {
-    approval = { kind: "recorded", specForm: { root: "ACME-1", texts: {}, terms: 0 } };
+    approval = { kind: "recorded", specForm: { root: "ACME-1", texts: {} } };
 
     const { code, stdout } = await run([
       "request-approval",

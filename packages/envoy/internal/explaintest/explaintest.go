@@ -1,21 +1,37 @@
 // Package explaintest reads an `EXPLAIN (FORMAT JSON)` plan tree for the things every
 // index-pinning test in this module asks it: whether a named relation is sequentially scanned
 // anywhere in the plan, whether any scan in it reads a relation without an index condition,
-// which index each index scan reads through, under which condition, and which relations the
-// plan reads at all, how often each and under which subplan (Scans). It also answers, from the
-// catalog, the first key column of a named index and whether a scan's condition names it, which
-// is what tells a read served by an index from one that reads the whole index and filters it,
-// and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a prepared
-// statement settles on (GenericPlan), which is the plan an index is lost in.
-// dispatch/api, dispatch/refs and broker/requests each pin an index's reach with these checks,
-// so they live here once rather than as a second (or third) hand copy of the same recursive
-// walk; it is an ordinary package rather than a _test.go file because Go cannot share test-only
-// code across packages (see internal/stacktest's identical reasoning).
+// which index each index scan reads through, under which condition, which relations the plan
+// reads at all, how often each and under which subplan (Scans), every node with the conditions
+// it tests, what an analyzed plan measured of it, the rows its Filter and a join's Join Filter
+// removed each time it ran among them, and the shared buffers it hit and read (Nodes), and each
+// bitmap heap scan with the bitmap it reads its rows through (BitmapHeapScans). It also answers,
+// from the catalog, the first key column of a named index and whether a scan's condition names
+// it, which is what tells a read served by an index from one that reads the whole index and
+// filters it, and it holds a whole plan to that (RequireIndexKeyed) and builds the generic plan a
+// prepared statement settles on, which is the plan an index is lost in, explained (GenericPlan)
+// or run and measured (AnalyzedGenericPlan), runs a statement with sequential scans off and
+// measures the plan it read its rows by (AnalyzedPlan), measures the plan made for a statement's
+// values under the caller's own settings (AnalyzedPlanUnder), and writes a plan's shape for a
+// test's log (Outline). A test that holds such a plan to a check it writes itself holds the same
+// check to failing a control's plan (RequireControlFails). For a statement over a batch of rows
+// (batch.go) it runs the statement a writer sent, after the statements it sent first, under each
+// plan-cache mode (ExplainAfter), and holds the analyzed plan to reading the batch once and each
+// named table by a probe of one row's key (UnprobedReads, RequireEachRowProbedOnce), with a
+// control that must fail it (RequireTheCheckFails), and it runs any statement under a plan-cache
+// mode with the planner's own settings and explains it with the shared buffers each node hit and
+// read (ExplainBuffered). dispatch/api, dispatch/refs, dispatch/graphstore,
+// dispatch/sessionanswers, dispatch/delivery and cipher/requests each pin a plan with these
+// checks, so they live here once rather than as a second (or third) hand copy of the same
+// recursive walk; it is an ordinary package rather than a _test.go file because Go cannot share
+// test-only code across packages (see internal/stacktest's identical reasoning).
 package explaintest
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"slices"
 	"strings"
@@ -31,24 +47,66 @@ var indexScanTypes = []string{"Index Scan", "Index Only Scan", "Bitmap Index Sca
 
 // planNode is what the checks below read of one "Plan" node of `EXPLAIN (FORMAT JSON)`: its
 // type, the relation and index it names, the index condition it carries - nil when it carries
-// none, which is not the same as an empty one - the name of the subplan it begins and its place
-// under its own parent, what an analyzed plan measured of it (its loops and the rows each
-// answered, both 0 in a plan explained without ANALYZE), the CTE it scans, and its children.
+// none, which is not the same as an empty one - the condition it tests every row it reads by
+// (Filter) and the one a bitmap heap scan rechecks a row by, a join's type, the condition a hash
+// or a merge join matches its two sides by (Hash Cond, Merge Cond) and the one a join tests each
+// pair it joins by (Join Filter), the name of the subplan it begins and its place under its own
+// parent, what an analyzed plan measured of it (its loops and the rows each answered, the rows an
+// index-only scan fetched from the heap, and the rows its Filter and a join's Join Filter removed
+// each time it ran, all 0 in a plan explained without ANALYZE), the shared buffers it and the
+// nodes under it hit and read (0 in a plan explained without BUFFERS), the CTE it scans, the
+// function a function scan reads, the alias the statement gives what it reads, the set operation a
+// SetOp node makes, and its children.
 type planNode struct {
-	NodeType           string            `json:"Node Type"`
-	RelationName       string            `json:"Relation Name"`
-	IndexName          string            `json:"Index Name"`
-	IndexCond          *string           `json:"Index Cond"`
-	SubplanName        string            `json:"Subplan Name"`
-	ParentRelationship string            `json:"Parent Relationship"`
-	ActualLoops        float64           `json:"Actual Loops"`
-	ActualRows         float64           `json:"Actual Rows"`
-	CTEName            string            `json:"CTE Name"`
-	Plans              []json.RawMessage `json:"Plans"`
+	NodeType                string            `json:"Node Type"`
+	RelationName            string            `json:"Relation Name"`
+	IndexName               string            `json:"Index Name"`
+	IndexCond               *string           `json:"Index Cond"`
+	Filter                  string            `json:"Filter"`
+	RecheckCond             string            `json:"Recheck Cond"`
+	JoinType                string            `json:"Join Type"`
+	HashCond                string            `json:"Hash Cond"`
+	MergeCond               string            `json:"Merge Cond"`
+	JoinFilter              string            `json:"Join Filter"`
+	SubplanName             string            `json:"Subplan Name"`
+	ParentRelationship      string            `json:"Parent Relationship"`
+	ActualLoops             float64           `json:"Actual Loops"`
+	ActualRows              float64           `json:"Actual Rows"`
+	HeapFetches             float64           `json:"Heap Fetches"`
+	RowsRemovedByFilter     float64           `json:"Rows Removed by Filter"`
+	RowsRemovedByJoinFilter float64           `json:"Rows Removed by Join Filter"`
+	SharedHitBlocks         float64           `json:"Shared Hit Blocks"`
+	SharedReadBlocks        float64           `json:"Shared Read Blocks"`
+	CTEName                 string            `json:"CTE Name"`
+	FunctionName            string            `json:"Function Name"`
+	Alias                   string            `json:"Alias"`
+	Command                 string            `json:"Command"`
+	Plans                   []json.RawMessage `json:"Plans"`
 
 	// subplan is the subplan this node runs under, which the walk carries down from the node
 	// that began it (nodesUnder), and so is no field of the plan's own JSON.
 	subplan string
+	// parent is the position in the walk of the node this one is directly under, -1 for the
+	// root, which the walk records as it descends (nodesUnder).
+	parent int
+}
+
+// asNode is n as the exported checks answer it, its index condition empty where it carries none.
+func (n planNode) asNode() Node {
+	found := Node{
+		Type: n.NodeType, Relation: n.RelationName, Index: n.IndexName,
+		CTE: n.CTEName, Alias: n.Alias, Subplan: n.subplan,
+		Loops: n.ActualLoops, Rows: n.ActualRows,
+		Filter: n.Filter, RecheckCond: n.RecheckCond,
+		JoinType: n.JoinType, HashCond: n.HashCond, MergeCond: n.MergeCond, JoinFilter: n.JoinFilter,
+		HeapFetches:         n.HeapFetches,
+		RowsRemovedByFilter: n.RowsRemovedByFilter, RowsRemovedByJoinFilter: n.RowsRemovedByJoinFilter,
+		SharedHitBlocks: n.SharedHitBlocks, SharedReadBlocks: n.SharedReadBlocks,
+	}
+	if n.IndexCond != nil {
+		found.IndexCond = *n.IndexCond
+	}
+	return found
 }
 
 // OnePlan is the one "Plan" node of raw, an `EXPLAIN (FORMAT JSON)` answer, which is what every
@@ -71,17 +129,18 @@ func OnePlan(t testing.TB, raw []byte) json.RawMessage {
 
 // planNodes flattens planJSON - one "Plan" node of `EXPLAIN (FORMAT JSON)`'s top-level array -
 // into every node of the tree under it, each node before its children and each carrying the
-// subplan it runs under. Every check this package exports is a filter over this one walk, so
-// the tree is descended in one place rather than once per check.
+// subplan it runs under and the position of its parent. Every check this package exports is a
+// filter over this one walk, so the tree is descended in one place rather than once per check.
 func planNodes(t testing.TB, planJSON json.RawMessage) []planNode {
 	t.Helper()
-	return nodesUnder(t, planJSON, "")
+	return nodesUnder(t, planJSON, "", -1, nil)
 }
 
-// nodesUnder is that walk of one node and the tree below it: a node whose parent relationship
-// is SubPlan begins a subplan, and every node under it belongs to that one, since a plan under
-// a subplan runs as often as the subplan does.
-func nodesUnder(t testing.TB, planJSON json.RawMessage, subplan string) []planNode {
+// nodesUnder is that walk of one node and the tree below it, appended to nodes, the walk so far,
+// whose node at position parent the node is directly under (-1 for the root): a node whose
+// parent relationship is SubPlan begins a subplan, and every node under it belongs to that one,
+// since a plan under a subplan runs as often as the subplan does.
+func nodesUnder(t testing.TB, planJSON json.RawMessage, subplan string, parent int, nodes []planNode) []planNode {
 	t.Helper()
 	var node planNode
 	if err := json.Unmarshal(planJSON, &node); err != nil {
@@ -94,9 +153,11 @@ func nodesUnder(t testing.TB, planJSON json.RawMessage, subplan string) []planNo
 		}
 	}
 	node.subplan = subplan
-	nodes := []planNode{node}
+	node.parent = parent
+	position := len(nodes)
+	nodes = append(nodes, node)
 	for _, child := range node.Plans {
-		nodes = append(nodes, nodesUnder(t, child, subplan)...)
+		nodes = nodesUnder(t, child, subplan, position, nodes)
 	}
 	return nodes
 }
@@ -203,11 +264,34 @@ func Scans(t testing.TB, planJSON json.RawMessage) []Scan {
 
 // Node is one node of a plan, whatever that node reads: its type, the relation, index and CTE
 // it names (each empty when the node names none), the subplan it runs under (empty: none, so
-// it runs with the plan rather than once per row of what drives it) and what
-// `EXPLAIN (ANALYZE)` measured of it, 0 in a plan explained without ANALYZE.
+// it runs with the plan rather than once per row of what drives it), the conditions it tests,
+// and what `EXPLAIN (ANALYZE)` measured of it, 0 in a plan explained without ANALYZE.
+//
+// Filter is the condition the node tests every row it reads by, IndexCond the one an index scan
+// reads its index by, and RecheckCond the one a bitmap heap scan tests a row by where its bitmap
+// cannot vouch for the row (a page the bitmap holds lossily, or an index that answers lossily).
+// JoinType is a join's type (Inner, Left, Semi, Anti and so on), HashCond and MergeCond the
+// condition a hash join and a merge join match their two sides by, and JoinFilter the one a join
+// tests each pair it joins by. Each is the plan's own text, empty when the node carries none.
+// Loops is how many times the node ran and Rows how many rows it answered each time; HeapFetches
+// is how many rows an index-only scan fetched from the heap, since the visibility map did not mark
+// their pages all-visible. RowsRemovedByFilter is how many rows the node's Filter removed each
+// time it ran, and RowsRemovedByJoinFilter how many rows a join's Join Filter removed each time it
+// ran: each is the per-loop figure `EXPLAIN (ANALYZE)` prints ("Rows Removed by Filter", "Rows
+// Removed by Join Filter"), the rows removed over every loop divided by Loops and rounded to a
+// whole number, and 0 where the node prints none, as a node carrying no such filter does. Alias is
+// the name the statement gives the relation the node reads, which a condition of another node
+// spells that relation's columns with. SharedHitBlocks and SharedReadBlocks are the shared buffers
+// the node and the nodes under it hit in the cache and read into it, which a plan explained with
+// the BUFFERS option carries, and 0 in a plan explained without it.
 type Node struct {
-	Type, Relation, Index, CTE, Subplan string
-	Loops, Rows                         float64
+	Type, Relation, Index, CTE, Alias, Subplan   string
+	Loops, Rows                                  float64
+	Filter, IndexCond, RecheckCond               string
+	JoinType, HashCond, MergeCond, JoinFilter    string
+	HeapFetches                                  float64
+	RowsRemovedByFilter, RowsRemovedByJoinFilter float64
+	SharedHitBlocks, SharedReadBlocks            float64
 }
 
 // String names the node as a failure message cites it: its type, and whichever of the relation,
@@ -230,13 +314,120 @@ func Nodes(t testing.TB, planJSON json.RawMessage) []Node {
 	t.Helper()
 	var nodes []Node
 	for _, node := range planNodes(t, planJSON) {
-		nodes = append(nodes, Node{
-			Type: node.NodeType, Relation: node.RelationName, Index: node.IndexName,
-			CTE: node.CTEName, Subplan: node.subplan,
-			Loops: node.ActualLoops, Rows: node.ActualRows,
-		})
+		nodes = append(nodes, node.asNode())
 	}
 	return nodes
+}
+
+// Outline is plan's nodes, one a line, each indented under the node it is directly under: its
+// side of that node, its type, its kind of join or set operation, what it reads under which name,
+// and the subplan it runs under. It is what a test logs of a plan it judges by its shape, and
+// prints where the shape fails, rather than the whole JSON, which writes out every array a plan
+// with the values was given.
+func Outline(t testing.TB, plan json.RawMessage) string {
+	t.Helper()
+	nodes := planNodes(t, plan)
+	depths, lines := make([]int, len(nodes)), make([]string, len(nodes))
+	for i, node := range nodes {
+		side := ""
+		if node.parent >= 0 {
+			depths[i] = depths[node.parent] + 1
+			side = node.ParentRelationship + ": "
+		}
+		lines[i] = strings.Repeat("  ", depths[i]) + side + outlineName(node)
+	}
+	return strings.Join(lines, "\n")
+}
+
+// outlineName names node as Outline cites it: its type, its kind of join or set operation, the
+// relation, function or CTE it reads and the name the statement gives that, and the subplan it
+// runs under.
+func outlineName(node planNode) string {
+	name := node.NodeType
+	if node.JoinType != "" {
+		name += " (" + node.JoinType + ")"
+	}
+	if node.Command != "" {
+		name += " " + node.Command
+	}
+	read := cmp.Or(node.RelationName, node.FunctionName, node.CTEName)
+	if read != "" {
+		name += " on " + read
+	}
+	if node.Alias != "" && node.Alias != read {
+		name += " " + node.Alias
+	}
+	if node.subplan != "" {
+		name += " [" + node.subplan + "]"
+	}
+	return name
+}
+
+// BitmapHeapScan is one "Bitmap Heap Scan" of a plan with the bitmap it reads its rows through:
+// the scan itself; Bitmap, the node directly under it that builds the bitmap, a "Bitmap Index
+// Scan" of one index or a "BitmapOr" or "BitmapAnd" that combines the bitmaps under it; and
+// BitmapIndexScans, every "Bitmap Index Scan" that bitmap is built from, in the order the walk
+// meets them.
+type BitmapHeapScan struct {
+	Scan, Bitmap     Node
+	BitmapIndexScans []Node
+}
+
+// OrOf reports whether s reads its rows through a BitmapOr whose Bitmap Index Scans read each of
+// indexes, among any others.
+func (s BitmapHeapScan) OrOf(indexes ...string) bool {
+	if s.Bitmap.Type != "BitmapOr" {
+		return false
+	}
+	for _, index := range indexes {
+		if !slices.ContainsFunc(s.BitmapIndexScans, func(scan Node) bool { return scan.Index == index }) {
+			return false
+		}
+	}
+	return true
+}
+
+// BitmapHeapScans is every "Bitmap Heap Scan" of relation in planJSON — one "Plan" node of
+// `EXPLAIN (FORMAT JSON)`'s top-level array — at any depth, in the order the walk meets them,
+// each with its bitmap. A statement written to read a relation by one bitmap over several
+// indexes is held to that by these: which node builds each scan's bitmap, and which indexes it
+// reads. A scan's bitmap is its one child of parent relationship Outer, any other child being a
+// subplan its conditions run; a "BitmapOr" or "BitmapAnd" holds the bitmaps it combines as its
+// children of parent relationship Member, so the bitmap's index scans are the Bitmap Index Scans
+// reached from the scan's Outer child through Member children alone.
+func BitmapHeapScans(t testing.TB, planJSON json.RawMessage, relation string) []BitmapHeapScan {
+	t.Helper()
+	nodes := planNodes(t, planJSON)
+	var scans []BitmapHeapScan
+	// scanAt is the place in scans of the Bitmap Heap Scan at each position of the walk that
+	// holds one of relation. The walk meets a node before its children, so a scan is in it before
+	// any node of its bitmap is read.
+	scanAt := map[int]int{}
+	for position, node := range nodes {
+		if node.NodeType == "Bitmap Heap Scan" && node.RelationName == relation {
+			scanAt[position] = len(scans)
+			scans = append(scans, BitmapHeapScan{Scan: node.asNode()})
+			continue
+		}
+		if node.ParentRelationship == "Outer" {
+			if at, ok := scanAt[node.parent]; ok {
+				scans[at].Bitmap = node.asNode()
+			}
+		}
+		if node.NodeType != "Bitmap Index Scan" {
+			continue
+		}
+		top := position
+		for nodes[top].ParentRelationship == "Member" {
+			top = nodes[top].parent
+		}
+		if nodes[top].ParentRelationship == "Outer" {
+			if at, ok := scanAt[nodes[top].parent]; ok {
+				scans[at].BitmapIndexScans = append(scans[at].BitmapIndexScans, node.asNode())
+			}
+		}
+	}
+	return scans
 }
 
 // describeScan names one scan node as a failure message cites it. A Bitmap Index Scan reports no
@@ -382,6 +573,115 @@ func GenericPlan(
 	settings ...string,
 ) json.RawMessage {
 	t.Helper()
+	return explainGenericPlan(t, ctx, connection, "format json", true, name, statement, parameters, literals, settings)
+}
+
+// AnalyzedGenericPlan is GenericPlan's plan run and measured: the prepared statement is explained
+// with ANALYZE and BUFFERS, so each node carries the loops and rows it ran and the shared buffers
+// it hit and read (Nodes). ANALYZE executes the statement, so the transaction it runs in is
+// rolled back rather than committed, and nothing the statement wrote is left behind. A prepared
+// statement belongs to the session rather than to the transaction, so the rollback keeps it, and
+// it is deallocated by name on connection after it, as GenericPlan's is.
+func AnalyzedGenericPlan(
+	t testing.TB,
+	ctx context.Context,
+	connection *pgxpool.Conn,
+	name, statement string,
+	parameters, literals []string,
+	settings ...string,
+) json.RawMessage {
+	t.Helper()
+	return explainGenericPlan(t, ctx, connection, "analyze, buffers, format json", false, name, statement, parameters, literals, settings)
+}
+
+// AnalyzedPlanUnder is the plan Postgres makes for statement with the values arguments, run and
+// measured (EXPLAIN (ANALYZE, BUFFERS)) under settings, the `set local` statements the caller
+// names (none: the planner's default settings), in a transaction of db that it rolls back. An
+// EXPLAIN that binds its own parameters is planned for their values, a custom plan, the plan
+// AnalyzedGenericPlan's forced mode leaves out. AnalyzedPlan is this plan under the one setting
+// every small fixture needs, with the plan's text beside it.
+func AnalyzedPlanUnder(t testing.TB, ctx context.Context, db Beginner, statement string, settings []string, arguments ...any) json.RawMessage {
+	t.Helper()
+	return OnePlan(t, analyzedPlan(t, ctx, db, statement, settings, arguments))
+}
+
+// analyzedPlan is the answer of `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` for statement with the
+// values arguments, after the statements of settings, in a transaction of db that it rolls back,
+// so nothing a setting changes or the statement writes outlasts it.
+func analyzedPlan(t testing.TB, ctx context.Context, db Beginner, statement string, settings []string, arguments []any) []byte {
+	t.Helper()
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the plan's transaction: %v", err)
+	}
+	defer tx.Rollback(ctx)
+	for _, setting := range settings {
+		if _, err := tx.Exec(ctx, setting); err != nil {
+			t.Fatalf("%s: %v", setting, err)
+		}
+	}
+	var raw []byte
+	if err := tx.QueryRow(ctx, "explain (analyze, buffers, format json) "+statement, arguments...).Scan(&raw); err != nil {
+		t.Fatalf("explain the statement: %v", err)
+	}
+	return raw
+}
+
+// controlFailures is the testing.TB a control's plan is run through a check by
+// (RequireControlFails). It keeps each failure that the check reports through Errorf rather than
+// failing the test, so the test can hold the check to failing the control. Every other call goes
+// to the test, a fatal failure of the test's own making among them.
+type controlFailures struct {
+	testing.TB
+	failures []string
+}
+
+func (f *controlFailures) Errorf(format string, args ...any) {
+	f.failures = append(f.failures, fmt.Sprintf(format, args...))
+}
+
+// firstLines is the first line of each failure, which names the read without the plan it prints.
+func (f *controlFailures) firstLines() []string {
+	lines := make([]string, 0, len(f.failures))
+	for _, failure := range f.failures {
+		line, _, _ := strings.Cut(failure, "\n")
+		lines = append(lines, line)
+	}
+	return lines
+}
+
+// RequireControlFails runs check, a check of plan that reports each failure through Errorf, on a
+// controlFailures, and fails t where the check reports none, since the check would then be one
+// that cannot fail. subject names the plan, control names the plan's part ("the control", or "a
+// control" where there are several), and cannotTell is what such a check cannot tell apart: the
+// failure says all three and prints plan. Where the check fails, as the control must, it logs the
+// first line of each failure.
+func RequireControlFails(t testing.TB, subject, control, cannotTell string, plan json.RawMessage, check func(testing.TB)) {
+	t.Helper()
+	failures := &controlFailures{TB: t}
+	check(failures)
+	lines := failures.firstLines()
+	if len(lines) == 0 {
+		t.Errorf("%s, %s, passes the check, so the check cannot tell %s:\n%s", subject, control, cannotTell, plan)
+		return
+	}
+	t.Logf("%s fails the check, as the control must:\n  %s", subject, strings.Join(lines, "\n  "))
+}
+
+// explainGenericPlan is the body GenericPlan and AnalyzedGenericPlan share: it prepares statement
+// under name, explains its EXECUTE with options under settings and plan_cache_mode
+// force_generic_plan, commits the transaction it does that in where commit is set and rolls it
+// back where it is not, deallocates the statement, and answers the plan.
+func explainGenericPlan(
+	t testing.TB,
+	ctx context.Context,
+	connection *pgxpool.Conn,
+	options string,
+	commit bool,
+	name, statement string,
+	parameters, literals, settings []string,
+) json.RawMessage {
+	t.Helper()
 	tx, err := connection.Begin(ctx)
 	if err != nil {
 		t.Fatalf("begin %s's transaction: %v", name, err)
@@ -396,14 +696,32 @@ func GenericPlan(
 		t.Fatalf("prepare %s: %v", name, err)
 	}
 	var raw []byte
-	if err := tx.QueryRow(ctx, "explain (format json) execute "+name+"("+strings.Join(literals, ", ")+")").Scan(&raw); err != nil {
+	if err := tx.QueryRow(ctx, "explain ("+options+") execute "+name+"("+strings.Join(literals, ", ")+")").Scan(&raw); err != nil {
 		t.Fatalf("explain %s: %v", name, err)
 	}
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit %s's transaction: %v", name, err)
+	if commit {
+		if err := tx.Commit(ctx); err != nil {
+			t.Fatalf("commit %s's transaction: %v", name, err)
+		}
+	} else if err := tx.Rollback(ctx); err != nil {
+		t.Fatalf("roll back %s's transaction: %v", name, err)
 	}
 	if _, err := connection.Exec(ctx, "deallocate "+name); err != nil {
 		t.Fatalf("deallocate %s: %v", name, err)
 	}
 	return OnePlan(t, raw)
+}
+
+// AnalyzedPlan runs statement under `EXPLAIN (ANALYZE, BUFFERS, FORMAT JSON)` with sequential
+// scans off, in a transaction of its own that is rolled back, and answers its one plan node for
+// the checks above and the plan's text, which a failure prints. A test's fixtures hold a handful
+// of rows, which is read fastest whole however a statement is written, so without that setting
+// the planner answers a sequential scan whatever indexes exist and the plan says nothing about the
+// statement; with it, a read that no index serves still shows up, as a sequential scan or a scan
+// carrying no index condition. ANALYZE runs the statement, so the plan is the one that read the
+// rows, with the buffers it touched; the rollback keeps a write it makes out of the database.
+func AnalyzedPlan(t testing.TB, ctx context.Context, pool Beginner, statement string, arguments ...any) (json.RawMessage, string) {
+	t.Helper()
+	raw := analyzedPlan(t, ctx, pool, statement, []string{"set local enable_seqscan = off"}, arguments)
+	return OnePlan(t, raw), string(raw)
 }

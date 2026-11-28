@@ -53,7 +53,7 @@ deploy/kubernetes/operator-route/apply.sh --context <kube context> <directory>
 `models.yml` still holding the placeholder. Then put `pod.yml` under `runtime.kubernetes.pod` in
 the deployment's `legion.yaml`, with the gateway's audience in place of `${MODEL_TOKEN_AUDIENCE}`
 and the ServiceAccount the pods run as in place of `${POD_SERVICE_ACCOUNT}`, and run
-`legion start --config <file> --check-config`, which applies the daemon's own collision checks and
+`legion config check --config <file>`, which applies the daemon's own collision checks and
 refuses a token audience or a ServiceAccount still holding its placeholder. Every deployment whose
 pods mount `legion-operator-route` in that namespace reads the same copy.
 
@@ -119,7 +119,7 @@ Every value is the operator's, passed as flags in their own `models.yml`:
 
 The service-account token is the projected token `pod.yml` already mounts at
 `/var/run/operator/token`, with the operator's dedicated sign-in audience in place of
-`${MODEL_TOKEN_AUDIENCE}`; `legion start --check-config` refuses that placeholder unfilled, and the
+`${MODEL_TOKEN_AUDIENCE}`; `legion config check` refuses that placeholder unfilled, and the
 pods' `${POD_SERVICE_ACCOUNT}` the same way. Set `X-Api-Key` to the same command.
 
 ## How the pieces compose

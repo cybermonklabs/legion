@@ -53,11 +53,11 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 	ctx := context.Background()
 	// before is how many messages the stream holds when the consumer is created (N).
 	const before = 20
-	agent := contracts.AgentSubject(session)
+	agent := contracts.LegacyAgentSubject(session)
 	filters := []string{agent}
 
 	for i := range before {
-		publishStored(t, owner, contracts.AgentSubject(session+"_bystander"), fmt.Sprintf("before %02d", i))
+		publishStored(t, owner, contracts.LegacyAgentSubject(session+"_bystander"), fmt.Sprintf("before %02d", i))
 	}
 	id := streamIDOf(t, consumers)
 	start, err := consumers.Ensure(ctx, session, filters, 0)
@@ -72,18 +72,14 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 	waitForAckFloor(t, consumers, session, before)
 	waitForAckPending(t, consumers, session, 0)
 
+	ownerBefore, consumersBefore := reconnectsBeforeCut(owner, consumers)
 	srv.CutStream(t, Stream, func(int64) int64 { return 0 })
-
-	testwait.Eventually(t, "the stream's owner and the session consumers to reconnect", func() bool {
-		return owner.Connected() && consumers.client.Connected()
-	})
+	awaitReconnectsAfterCut(t, owner, consumers, ownerBefore, consumersBefore)
 	var state sessionStreamState
-	if !testwait.Holds(testwait.Bounded(t, time.Minute, time.Second), 100*time.Millisecond, func() bool {
+	testwait.UntilPolling(t, 100*time.Millisecond, "the stream to answer a state read after the cut and the restart", func() (string, bool) {
 		state, err = consumers.streamState(ctx)
-		return err == nil
-	}) {
-		t.Fatalf("read the stream after the restart: %v", err)
-	}
+		return fmt.Sprint(err), err == nil
+	})
 	if state.lastSeq != 0 {
 		t.Fatalf("the stream's last sequence after the whole block was cut is %d, want 0", state.lastSeq)
 	}
@@ -105,6 +101,8 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 		t.Fatalf("the server reports the consumer's ack floor as %d, want it above the stream's last sequence %d: the consumer this case is for is the one nats-server v2.15.1 leaves unreconciled at the floor %d it had before the loss", info.AckFloor.Stream, held[1], before)
 	}
 
+	// The reconcile the restarted server made of the consumer kicked its state file's write.
+	waitForStoredState(t, owner, session)
 	restarted := path(t, consumers, session, filters)
 	if want := (SessionConsumerStart{Created: true, StartSeq: 1, StreamID: id, AckFloor: 0}); restarted != want {
 		t.Errorf("the restart of a consumer whose ack floor %d is above the stream's last sequence %d = %+v; want %+v, the consumer created again at the stream's first sequence", info.AckFloor.Stream, held[1], restarted, want)
@@ -128,6 +126,7 @@ func restartAfterAWholeLossLeftItUnreconciled(t *testing.T, session string, path
 // server reports plus one, not past the stream's end, and the create of the restart that follows
 // clamps that next sequence to the stream's first sequence.
 func TestRestartAtFloorRestartsAConsumerAWholeLossLeftUnreconciledAtTheStreamsFirstSequence(t *testing.T) {
+	t.Parallel()
 	restartAfterAWholeLossLeftItUnreconciled(t, "ses_went_back_restarted", func(t *testing.T, consumers *SessionConsumers, session string, filters []string) SessionConsumerStart {
 		t.Helper()
 		start, err := consumers.RestartAtFloor(context.Background(), session, filters)
@@ -143,6 +142,7 @@ func TestRestartAtFloorRestartsAConsumerAWholeLossLeftUnreconciledAtTheStreamsFi
 // (RestartAtFloor, cmd/listener session_relay.go) restarts it at the stream's first sequence
 // (restartAfterAWholeLossLeftItUnreconciled).
 func TestKeepListedLeavesAConsumerAWholeLossLeftUnreconciledToARestartAtTheStreamsFirstSequence(t *testing.T) {
+	t.Parallel()
 	restartAfterAWholeLossLeftItUnreconciled(t, "ses_went_back_listed", func(t *testing.T, consumers *SessionConsumers, session string, filters []string) SessionConsumerStart {
 		t.Helper()
 		ctx := context.Background()

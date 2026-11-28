@@ -15,7 +15,7 @@ type rebuildArtifactInput struct {
 }
 
 // rebuildArtifact discards only a history ygo cannot load and replaces it with one seed update
-// from the latest saved markdown, or supplied markdown. It needs the person scope (routeScopes)
+// from the latest saved markdown, or supplied markdown. It needs the person scope (its route's OAuthScopes)
 // because a rebuild intentionally deletes durable history, so only a credential acting as its
 // person may ask for one; a document that loads is refused unchanged. The rebuild,
 // the version supplied markdown writes, its artifact.version event and the move of the open
@@ -63,9 +63,9 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	var published []model.Event
+	var published []*model.Event
 	if written.Wrote {
-		event, err := s.commitArtifactVersionEvent(r.Context(), tx, ownerForArtifact(artifact), actor, artifact.ID, artifact.Name, written, nil)
+		event, err := s.commitArtifactVersionEvent(ledger, ownerForArtifact(artifact), actor, artifact.ID, artifact.Name, written, nil)
 		if err != nil {
 			s.writeHandlerError(w, err)
 			return
@@ -76,7 +76,7 @@ func (s *server) rebuildArtifact(w http.ResponseWriter, r *http.Request) {
 		s.writeHandlerError(w, err)
 		return
 	}
-	s.publish(r.Context(), published...)
+	s.publish(r.Context(), appendedEvents(published...)...)
 	WriteJSON(w, http.StatusOK, report)
 }
 

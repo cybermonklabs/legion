@@ -8,7 +8,7 @@ import { api } from "../../api/client";
 import type { Agent, TmuxPlace, UserAgentStates } from "../../api/types";
 import { MachinePage } from "./MachinePage";
 
-const HOST = "sami-devbox";
+const HOST = "sand-devbox";
 const SOCKET_A = "/tmp/a-socket";
 const SOCKET_B = "/tmp/b-socket";
 const THREE_PANES = "b05b,80x24,0,0[80x12,0,0,0,80x11,0,13{40x11,0,13,1,39x11,41,13,2}]";
@@ -152,8 +152,8 @@ test("picking a window puts it in the address and draws it", async () => {
     // The address names the server as well as the window: the socket, the server's pid and the
     // window id, form-encoded.
     expect(picks.map((pick) => pick.getAttribute("href"))).toEqual([
-      "/machines/sami-devbox?window=%2Ftmp%2Fa-socket%3A4242%3A%401",
-      "/machines/sami-devbox?window=%2Ftmp%2Fa-socket%3A4242%3A%402",
+      "/machines/sand-devbox?window=%2Ftmp%2Fa-socket%3A4242%3A%401",
+      "/machines/sand-devbox?window=%2Ftmp%2Fa-socket%3A4242%3A%402",
     ]);
     expect(picks.map((pick) => pick.getAttribute("data-picked"))).toEqual(["true", "false"]);
 
@@ -279,7 +279,7 @@ test("a machine whose sessions are in no pane says so and opens the Agents page 
       "No session on this machine is in tmux, so there is no layout to draw."
     );
     expect(screen.getByRole("link", { name: "Agents on this machine" }).getAttribute("href")).toBe(
-      "/agents?machine=sami-devbox"
+      "/agents?machine=sand-devbox"
     );
     expect(screen.queryByTestId("machine-server")).toBeNull();
     expect(screen.queryByTestId("machine-drawing-age")).toBeNull();

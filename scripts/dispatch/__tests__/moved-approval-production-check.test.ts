@@ -1,5 +1,12 @@
 import { describe, expect, test } from "bun:test";
+import {
+  IDEMPOTENCY_ANSWER_NOT_KEPT,
+  IDEMPOTENCY_KEY_COMMITTED,
+} from "../../../packages/contracts/src/dispatch-api-limits.ts";
 import { bearerCredential } from "../../../packages/envoy-client/src/bearer.ts";
+import { DispatchWriteLandedError } from "../../../packages/envoy-client/src/dispatch-http.ts";
+import { keyedLayer } from "../../../packages/envoy-client/test/keyed-layer.ts";
+import { routeAnswer } from "../../../packages/envoy-client/test/route-answers.ts";
 import {
   type DispatchWrites,
   type ExpectedMove,
@@ -8,6 +15,7 @@ import {
   liveDispatch,
   parseArguments,
   runCheck,
+  WRITTEN,
 } from "../moved-approval-production-check.ts";
 import { UsageError } from "../production-check-runtime.ts";
 
@@ -170,18 +178,18 @@ const SPEC_ID = "2b7f1d90-4c3a-4e58-9b21-7d0e6a5c4f83";
 const VERIFICATION_ID = "c51a7e24-8f60-4b19-83d7-4e2a9c0b6d15";
 const NOTES_ID = "9d3c6b08-2a74-4f51-b6e9-0c8f5a1d7243";
 
-/** A Dispatch that refuses the closing reason and answers the close, writing down every request
- *  it was sent in the order it arrived. */
+/** A Dispatch, behind its keyed layer, that refuses the closing reason and answers the close,
+ *  writing down every request it was sent in the order it arrived. */
 function closingServer(sent: string[]) {
   return Bun.serve({
     port: 0,
-    fetch(request) {
+    fetch: keyedLayer((request: Request) => {
       const { pathname } = new URL(request.url);
       sent.push(`${request.method} ${pathname}`);
       return pathname.endsWith("/messages")
         ? Response.json({ error: { code: "REFUSED", message: "no" } }, { status: 422 })
-        : Response.json({ status: "done" });
-    },
+        : Response.json(routeAnswer("PATCH /api/v1/issues/{key}", { key: KEY, status: "done" }));
+    }),
   });
 }
 
@@ -200,9 +208,142 @@ function writes(close: DispatchWrites["close"]): DispatchWrites {
     requestApproval: async () => ({ ask: { id: ASK }, version: 1 }),
     edit: async (artifactID) => (artifactID === VERIFICATION_ID ? answer(report()) : answer()),
     close,
+    listIssues: async () => [],
+    readIssue: async () => ({ status: "in_progress" }),
+    listArtifacts: async () => [],
+    openAsks: async () => [],
     docEditCommand: async () => ({ code: 0, line: true }),
   };
 }
+
+/** What Dispatch throws for a write that landed before its answer was lost. */
+function landed(method: string): DispatchWriteLandedError {
+  return new DispatchWriteLandedError(
+    IDEMPOTENCY_KEY_COMMITTED,
+    409,
+    method,
+    "http://dispatch.test/api"
+  );
+}
+
+describe("a write that landed with no answer to give", () => {
+  // The project as the read backs find it: an earlier run's scratch issue, closed; another
+  // issue; and this run's, the newest open issue holding the scratch title, still in triage.
+  const issues = [
+    { key: "ACME-3", title: WRITTEN.title, status: "done", created_at: "2026-11-17T10:00:00Z" },
+    {
+      key: "ACME-11",
+      title: "Another issue",
+      status: "triage",
+      created_at: "2026-11-18T10:00:00Z",
+    },
+    { key: KEY, title: WRITTEN.title, status: "triage", created_at: "2026-11-18T09:00:00.123456Z" },
+  ].map((issue) => ({ ...issue, primary_artifact_id: issue.key === KEY ? SPEC_ID : "other" }));
+
+  test("is read back, and the run goes on from what it made", async () => {
+    const closed: string[] = [];
+    const statusRead: string[] = [];
+    const run: DispatchWrites = {
+      ...writes(async () => ({ status: "done" })),
+      createIssue: async () => {
+        throw landed("POST");
+      },
+      setStatus: async () => {
+        throw new DispatchWriteLandedError(
+          IDEMPOTENCY_ANSWER_NOT_KEPT,
+          200,
+          "PATCH",
+          "http://dispatch.test/api"
+        );
+      },
+      upload: async () => {
+        throw landed("POST");
+      },
+      requestApproval: async () => {
+        throw landed("POST");
+      },
+      close: async (key) => {
+        closed.push(key);
+        throw landed("PATCH");
+      },
+      listIssues: async () => issues,
+      readIssue: async (key) => {
+        statusRead.push(key);
+        return { status: closed.length > 0 ? "done" : "in_progress" };
+      },
+      listArtifacts: async () => [
+        { id: SPEC_ID, name: "spec.md", versions: [{ number: 1 }] },
+        { id: VERIFICATION_ID, name: "verification.md", versions: [{ number: 1 }] },
+        { id: NOTES_ID, name: "notes.md", versions: [{ number: 1 }] },
+      ],
+      openAsks: async () => [
+        { id: "a-question", kind: "question", approval: null },
+        { id: ASK, kind: "approval", approval: { artifact_id: SPEC_ID, requested_version: 1 } },
+      ],
+    };
+    const out: string[] = [];
+    const code = await runCheck(parseArguments(["--project", "ACME"]), run, (line) =>
+      out.push(line)
+    );
+    expect(out.filter((line) => line.includes("landed"))).toEqual([
+      "scratch landed: read back",
+      "status landed: read back",
+      "upload landed: read back",
+      "upload landed: read back",
+      "request landed: read back",
+      "close landed: read back",
+    ]);
+    expect(out).toContain(`scratch issue=${KEY} documents=spec.md,verification.md,notes.md pass`);
+    expect(out).toContain(`request ask=${ASK} include-verification=yes pass`);
+    expect(out).toContain(`close issue=${KEY} status=done pass`);
+    expect(closed).toEqual([KEY]);
+    expect(statusRead).toEqual([KEY, KEY]);
+    expect(out.at(-1)).toBe("all 3 assertions passed");
+    expect(code).toBe(0);
+  });
+
+  test("is reported as landed, not as transport, when the read back finds nothing it made", async () => {
+    const run: DispatchWrites = {
+      ...writes(async () => ({ status: "done" })),
+      createIssue: async () => {
+        throw landed("POST");
+      },
+      listIssues: async () => issues.filter((issue) => issue.key !== KEY),
+    };
+    const out: string[] = [];
+    const code = await runCheck(parseArguments(["--project", "ACME"]), run, (line) =>
+      out.push(line)
+    );
+    expect(out).toContain("scratch unavailable: landed");
+    expect(out.some((line) => line.startsWith("close "))).toBe(false);
+    expect(code).toBe(2);
+  });
+
+  test("fails the status write when the read back finds the issue in another status", async () => {
+    const closed: string[] = [];
+    const run: DispatchWrites = {
+      ...writes(async (key) => {
+        closed.push(key);
+        return { status: "done" };
+      }),
+      setStatus: async () => {
+        throw landed("PATCH");
+      },
+      readIssue: async () => ({ status: "triage" }),
+    };
+    const out: string[] = [];
+    const code = await runCheck(parseArguments(["--project", "ACME"]), run, (line) =>
+      out.push(line)
+    );
+    expect(out).toContain("status landed: read back");
+    expect(out).toContain(`status issue=${KEY} status=other fail`);
+    expect(out.some((line) => line.startsWith("scratch issue="))).toBe(false);
+    expect(out.some((line) => line.startsWith("request "))).toBe(false);
+    expect(out).toContain(`close issue=${KEY} status=done pass`);
+    expect(closed).toEqual([KEY]);
+    expect(code).toBe(2);
+  });
+});
 
 describe("the close of the scratch issue", () => {
   test("the status write is sent although the closing reason was refused", async () => {
@@ -224,6 +365,45 @@ describe("the close of the scratch issue", () => {
       expect(out.at(-1)).toBe("all 3 assertions passed");
       expect(code).toBe(0);
     } finally {
+      server.stop(true);
+    }
+  });
+});
+
+// pi-envoy leaves DISPATCH_SESSION_ID set to "" while its session has no id, rather than
+// deleting it, so a child's inherited value cannot come back: an empty variable names no
+// session, and the check's writes act as "unknown" then, exactly as with the variable unset.
+describe("the session the check's writes act as", () => {
+  test.each([
+    ["empty", ""],
+    ["unset", undefined],
+    ["set", "ses-check"],
+  ])("DISPATCH_SESSION_ID %s", async (_label, value) => {
+    const bodies: unknown[] = [];
+    const server = Bun.serve({
+      port: 0,
+      fetch: keyedLayer(async (request: Request) => {
+        bodies.push(await request.json());
+        return Response.json(
+          routeAnswer("PATCH /api/v1/issues/{key}", { key: KEY, status: "in_progress" })
+        );
+      }),
+    });
+    const before = process.env.DISPATCH_SESSION_ID;
+    if (value === undefined) delete process.env.DISPATCH_SESSION_ID;
+    else process.env.DISPATCH_SESSION_ID = value;
+    try {
+      const live = liveDispatch({
+        url: `http://127.0.0.1:${server.port}`,
+        credential: bearerCredential("t"),
+      });
+      await live.setStatus(KEY, "in_progress");
+      expect(bodies).toEqual([
+        expect.objectContaining({ actor: { kind: "session", id: value || "unknown" } }),
+      ]);
+    } finally {
+      if (before === undefined) delete process.env.DISPATCH_SESSION_ID;
+      else process.env.DISPATCH_SESSION_ID = before;
       server.stop(true);
     }
   });

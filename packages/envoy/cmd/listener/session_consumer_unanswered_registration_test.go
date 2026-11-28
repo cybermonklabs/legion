@@ -22,6 +22,7 @@ import (
 
 	"github.com/nats-io/nats.go"
 
+	"github.com/sjawhar/envoy/internal/bus"
 	"github.com/sjawhar/envoy/internal/store"
 )
 
@@ -31,6 +32,7 @@ import (
 // of them would be lost at the cost fenceFilterWrite's doc states. The registration sets the
 // filter back to the row the bucket holds before it answers.
 func TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStoredRow(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_outrun_filter"
 	// Every pass's plan is outrun by a writer that stores a topic and sets no consumer filter,
@@ -66,6 +68,7 @@ func TestARegistrationEveryPlanOfWhichIsOutrunLeavesTheConsumerFilteredOnTheStor
 // to the row the bucket holds before it answers, as the confirm of an answered registration
 // does.
 func TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRow(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_entry_write_filter"
 	const followed = "notifications.dispatch.issue.ENTRYFAILKEPT.>"
@@ -116,6 +119,7 @@ func TestARegistrationWhoseEntryWriteFailsLeavesTheConsumerFilteredOnTheStoredRo
 // filter of the row that writer replaced, and the session would be left answered for a topic its
 // consumer does not filter on until its next heartbeat.
 func TestARegistrationThisListenerDidNotAnswerSettlesOnTheRowStoredUnderItsWrite(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	const sessionID = "ses_entry_write_settle_fence"
 	const followed = "notifications.dispatch.issue.SETTLEFENCEKEPT.>"
@@ -166,6 +170,7 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheRowStoredUnderItsWrite
 // and the connection this listener's registry reads the bucket through is closed once the
 // settle has read it, so nothing of this listener corrects what the settle wrote.
 func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenceReadsNoFurther(t *testing.T) {
+	t.Parallel()
 	rig := newSessionConsumerRig(t)
 	other := newSessionConsumerRig(t)
 	const sessionID = "ses_entry_write_settle_read"
@@ -214,27 +219,35 @@ func TestARegistrationThisListenerDidNotAnswerSettlesOnTheBucketsRowWhereTheFenc
 }
 
 // refusingEntryKV is a session bucket whose writes all fail, after before has run: the write of
-// a registration's session entry, and the window before it where another writer's interest row
-// lands.
+// a registration's session entry, whichever call makes it (Put, or the Create and Update the
+// entry write sends conditionally, session.SessionRegistry.PutWithin), and the window before it
+// where another writer's interest row lands.
 type refusingEntryKV struct {
 	nats.KeyValue
 	before func()
 }
 
-func (kv refusingEntryKV) Put(string, []byte) (uint64, error) {
+func (kv refusingEntryKV) Put(string, []byte) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) Create(string, []byte) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) Update(string, []byte, uint64) (uint64, error) { return kv.refuse() }
+
+func (kv refusingEntryKV) refuse() (uint64, error) {
 	kv.before()
 	return 0, fmt.Errorf("injected session entry write failure")
 }
 
 // requireFilteredOnStoredRow fails the test unless sessionID's consumer filters on exactly what
-// the row the bucket holds builds (sessionConsumerFilter).
+// the row the bucket holds builds (sessionConsumerFilter, every form of which the consumer
+// carries: bus.SessionConsumerFilters).
 func requireFilteredOnStoredRow(t *testing.T, rig *sessionConsumerRig, sessionID string) {
 	t.Helper()
 	stored, _, err := rig.harness.registry.RefreshAt(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("read the stored interest row of %s: %v", sessionID, err)
 	}
-	want := slices.Compact(slices.Sorted(slices.Values(rig.deps.consumers.sessionConsumerFilter(sessionID, stored.Topics))))
+	want := bus.SessionConsumerFilters(sessionConsumerFilter(sessionID, stored.Topics))
 	if got := rig.filters(t, sessionID); !slices.Equal(got, want) {
 		t.Fatalf("the consumer of %s filters on %v, want %v, the topics of the row the bucket holds", sessionID, got, want)
 	}

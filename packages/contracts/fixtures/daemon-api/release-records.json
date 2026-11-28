@@ -41,6 +41,18 @@
       "at": "2026-11-01T12:45:00Z",
       "podReadyAt": "2026-11-01T12:46:00Z",
       "stuck": true
+    },
+    {
+      "id": 203,
+      "release": 0,
+      "issue": "LEGION-210",
+      "role": "implementer",
+      "kind": "pause",
+      "at": "2026-11-01T12:50:00Z",
+      "podReadyAt": "2026-11-01T13:20:00Z",
+      "firstTurnAt": "2026-11-01T13:21:00Z",
+      "stuck": false,
+      "pause": 7
     }
   ],
   "holds": [

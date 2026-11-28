@@ -1,0 +1,8 @@
+kind: Fixed
+body: |-
+  The published tarballs' file modes no longer depend on the umask of whoever packs them: a pack
+  from a checkout made under umask 0002 shipped the manifest and every staged skill file writable
+  by group, and the Codex plugin's tarball, `@sjawhar/codex-envoy`, built under that umask shipped
+  its manifest and README writable by group too. The prepack now takes group and other write from
+  every path the pack ships, after it has read and checked them all, so a refusal leaves the
+  skills links as it found them; the Codex plugin's build does the same for every entry it writes.

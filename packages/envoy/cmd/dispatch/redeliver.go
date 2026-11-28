@@ -31,7 +31,9 @@ const redeliveryPace = time.Second
 // the first sweep that finds the client connected, not here: the client connects in the background
 // (serverBus), and a bus that is down at boot must not stop the boot. A sweep before then is
 // skipped and logged as failed. Its App client and its own backoff obey the GitHub rate limits
-// every process shares, in the database's github_rate_limits.
+// every process shares, in the database's github_rate_limits. The client counts no call for the
+// rate reading: every call the sweep makes is the App's JWT's, which GitHub charges to no
+// installation.
 func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.AppConfig, apiBase string, replicas int) (*redeliver.Sweeper, error) {
 	if natsClient == nil {
 		return nil, nil
@@ -41,11 +43,11 @@ func webhookSweeper(natsClient *bus.Client, database *store.Store, app *auth.App
 	if err != nil || github == nil {
 		return nil, err
 	}
-	open := func() (bus.KeyValue, error) {
+	open := func(ctx context.Context) (bus.KeyValue, error) {
 		if !natsClient.Connected() {
 			return bus.KeyValue{}, errors.New("NATS is not connected, so the sweep's state cannot be opened yet")
 		}
-		return redeliver.OpenState(natsClient.Conn, natsClient.JS(), replicas)
+		return redeliver.OpenState(ctx, natsClient.Conn, natsClient.JS(), replicas)
 	}
 	return &redeliver.Sweeper{GitHub: github, Open: open, Limits: limits, Logger: slog.Default(), Pace: redeliveryPace}, nil
 }
@@ -81,6 +83,14 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 		fmt.Fprintln(out, "redeliver-webhooks: DATABASE_URL is required: the GitHub rate limits every process obeys live there")
 		return 2
 	}
+	// Before anything connects, as the server refuses it at boot (gitHubAPIBaseRefusal).
+	gitHubAPIBase := strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE"))
+	if gitHubAPIBase != "" {
+		if err := gitHubAPIBaseRefusal(gitHubAPIBase); err != nil {
+			fmt.Fprintf(out, "redeliver-webhooks: %v\n", err)
+			return 2
+		}
+	}
 	database, err := store.Open(ctx, databaseURL)
 	if err != nil {
 		fmt.Fprintf(out, "redeliver-webhooks: open database: %v\n", err)
@@ -113,7 +123,7 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 		fmt.Fprintf(out, "redeliver-webhooks: load app credentials: %v\n", err)
 		return 1
 	}
-	sweeper, err := webhookSweeper(natsClient, database, app, strings.TrimSpace(env.get("DISPATCH_GITHUB_API_BASE")), replicas)
+	sweeper, err := webhookSweeper(natsClient, database, app, gitHubAPIBase, replicas)
 	if err != nil {
 		fmt.Fprintf(out, "redeliver-webhooks: %v\n", err)
 		return 1
@@ -136,16 +146,19 @@ func redeliverWebhooks(ctx context.Context, args []string, env settingValues, ou
 	return 0
 }
 
+// writeRedeliveryReport writes report to out: a table of its decisions, then one summary line. A
+// decision's GUID, event and action are GitHub's text, so the table shows each as
+// githubapp.ShownBody shows it.
 func writeRedeliveryReport(out io.Writer, report redeliver.Report) {
 	table := tabwriter.NewWriter(out, 0, 0, 2, ' ', 0)
 	fmt.Fprintln(table, "DELIVERED_AT\tGUID\tDELIVERY_ID\tEVENT\tREPOSITORY_ID\tSTATUS\tATTEMPTS\tOUTCOME")
 	for _, decision := range report.Decisions {
-		event := decision.Event
+		event := githubapp.ShownBody(decision.Event)
 		if decision.Action != "" {
-			event += "." + decision.Action
+			event += "." + githubapp.ShownBody(decision.Action)
 		}
 		fmt.Fprintf(table, "%s\t%s\t%d\t%s\t%d\t%d\t%d\t%s\n",
-			decision.DeliveredAt.Format(time.RFC3339), decision.GUID, decision.DeliveryID, event,
+			decision.DeliveredAt.Format(time.RFC3339), githubapp.ShownBody(decision.GUID), decision.DeliveryID, event,
 			decision.RepositoryID, decision.StatusCode, decision.Attempts, decision.Outcome)
 	}
 	_ = table.Flush()

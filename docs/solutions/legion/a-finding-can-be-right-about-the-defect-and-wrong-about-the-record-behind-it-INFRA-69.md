@@ -35,7 +35,7 @@ Review round 2 on `sjawhar/legion#2088` found that the note printed Legion's `de
 numbers as the deployment's standing budgets when the deployment had changed them. That was right,
 and it is the finding the round fixed. Its evidence was not: it named
 `dispatch://INFRA-51/comment/a9f52454` as a **memory** change. Opened in full, that comment is
-`agent-infra` #80 rebalancing every role's **ephemeral-storage** request and limit after the tester
+`deployment` #80 rebalancing every role's **ephemeral-storage** request and limit after the tester
 began being evicted too, its figures summing to the cluster's 10Gi per-pod ephemeral ceiling.
 Memory was not changed that night: `dispatch://INFRA-51/comment/12ce8e6b` reads a live issue pod
 created after the applies and finds exactly the repository defaults, recording that the deployment

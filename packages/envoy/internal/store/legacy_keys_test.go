@@ -206,7 +206,7 @@ func openRegistryOver(t *testing.T, seed func(js natsgo.JetStreamContext, rawInt
 		t.Fatalf("create role bucket: %v", err)
 	}
 	seed(js, rawInterests, rawRoles)
-	registry, err := Open(conn, WithReplicas(1))
+	registry, err := Open(t.Context(), conn, WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the registry over the stored keys: %v", err)
 	}

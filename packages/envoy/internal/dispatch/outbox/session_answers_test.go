@@ -20,6 +20,7 @@ import (
 // exactly the person's events whose published_destinations the publisher gave the session's own
 // topic, and never an agent's event that reached it, nor a person's event that reached only a role.
 func TestSessionAnswersReadsWhatThePublisherRecorded(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	broker := events.NewBroker()
 	seedIssue(t, database, "T-1", new("role:reviewer"))
@@ -85,7 +86,7 @@ func TestSessionAnswersReadsWhatThePublisherRecorded(t *testing.T) {
 		}
 		return topics
 	}
-	askerTopic := contracts.AgentSubject(asker.ID)
+	askerTopic := contracts.LegacyAgentSubject(asker.ID)
 	for name, event := range map[string]model.Event{"the answer": answered, "the agent's reply": agentReply, "the person's reply": personReply} {
 		if topics := destinations(event); !slices.Contains(topics, askerTopic) {
 			t.Fatalf("%s reached %v, want the asker's own topic", name, topics)

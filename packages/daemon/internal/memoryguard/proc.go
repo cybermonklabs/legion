@@ -19,23 +19,28 @@ import (
 )
 
 // classifierArgsBytes is the most bytes of a process's `cmdline` the scan reads (readProcess): a
-// classifier reads a process's first arguments, and nothing else of the guard reads them, since no
-// line and no report prints an argument (processName). It is a bound, so the scan of a process
-// with a linker's mebibyte of arguments, which the guard's loop runs before its next reading after
-// a kill, costs no more than the scan of any other.
+// classifier reads a process's first arguments, and the fork discount compares a process's with
+// its parent's (Guard.sameProgram), which reads both cmdline files whole only where both heads are
+// equal and one of them was cut here; no line and no report prints an argument (processName). It is
+// a bound, so the scan of a process with a linker's mebibyte of arguments, which the guard's loop
+// runs before its next reading after a kill, costs no more than the scan of any other.
 const classifierArgsBytes = 4096
 
-// Process is one process as the guard's scan read it: its parent and start time from
-// `/proc/<pid>/stat`, its executable from the `exe` link, its arguments from `cmdline` and its PID
-// namespace from the `ns/pid` link. A classifier knows a process by these alone: its place in the
-// tree first, then its executable and its arguments, so a program that copies a name is not taken
-// for the process it copies.
+// Process is one process as the guard's scan read it: its parent, start time and resident pages
+// from `/proc/<pid>/stat`, its executable from the `exe` link, its arguments from `cmdline` and its
+// PID namespace from the `ns/pid` link. A classifier knows a process by these alone: its place in
+// the tree first, then its executable and its arguments, so a program that copies a name is not
+// taken for the process it copies.
 type Process struct {
 	PID  int
 	PPID int
 	// StartTime is the process's start in clock ticks since boot, the field the kill reads again
 	// to know the pid still names this process and not one that took the pid after it.
 	StartTime uint64
+	// Resident is the process's resident pages, stat's rss (field 24), the kernel's own count of
+	// them; 0 where the stat holds no rss that parses. The guest watch sizes a process by it, and
+	// the guard by its smaps instead.
+	Resident uint64
 	// Name is the command name between the parentheses of stat, which can hold spaces and `)`: the
 	// name a line gives a process whose `exe` link the scan could not read (processName).
 	Name string
@@ -44,8 +49,12 @@ type Process struct {
 	Exe string
 	// Args are the NUL-separated arguments of `cmdline`, nil for a process that shows none: of its
 	// first classifierArgsBytes bytes alone, the last of them perhaps part of an argument, since a
-	// classifier reads a process's first arguments and nothing else reads them.
+	// classifier reads a process's first arguments, and the fork discount reads more only where
+	// these are equal to its parent's and cut (Guard.sameProgram).
 	Args []string
+	// argsWhole is whether Args are the whole of `cmdline`, which the scan read in fewer than
+	// classifierArgsBytes bytes; where they are not, the fork discount reads cmdline whole.
+	argsWhole bool
 	// PIDNamespace is the target of the `ns/pid` link (`pid:[4026531836]`), empty when the scan
 	// could not read it.
 	PIDNamespace string
@@ -95,11 +104,15 @@ func (t *Table) Cwd(pid int) (string, error) {
 	return os.Readlink(filepath.Join(t.proc, strconv.Itoa(pid), "cwd"))
 }
 
-// scan reads every process under proc. A process that ends while the scan reads it is left out:
-// it holds nothing any longer, and a missing file is how the kernel says so. A zombie and a dead
+// Scan reads every process under proc. A process that ends while the scan reads it is left out:
+// it holds nothing any longer, and a missing stat is how the kernel says so. A zombie and a dead
 // process are left out the same way (errExited), and so is a process that a read after its stat's
-// finds ended (endedSince). Any other failure to read its stat, exe or ns/pid counts it in unread.
-func scan(proc string) (*Table, error) {
+// finds ended (endedSince). Any other failure to read its stat, exe or ns/pid counts it in unread,
+// a missing exe or ns/pid of a process that has not ended among them: readProcess answers no
+// process for one to leave out, and the process with the error for one that counts unread.
+// The guard, the guest watch and the launcher's session peer check all read their table through
+// it, so each knows a process by the same reads.
+func Scan(proc string) (*Table, error) {
 	entries, err := os.ReadDir(proc)
 	if err != nil {
 		return nil, err
@@ -113,7 +126,7 @@ func scan(proc string) (*Table, error) {
 		}
 		p, err := readProcess(proc, pid, cmdline)
 		if err != nil {
-			if errors.Is(err, fs.ErrNotExist) || errors.Is(err, errExited) {
+			if p == nil && (errors.Is(err, fs.ErrNotExist) || errors.Is(err, errExited)) {
 				continue
 			}
 			t.unread[pid] = err
@@ -122,6 +135,12 @@ func scan(proc string) (*Table, error) {
 			t.byPID[pid] = p
 		}
 	}
+	t.linkChildren()
+	return t, nil
+}
+
+// linkChildren indexes each process of t under its parent, oldest first by start time.
+func (t *Table) linkChildren() {
 	for _, p := range t.byPID {
 		t.children[p.PPID] = append(t.children[p.PPID], p)
 	}
@@ -130,7 +149,6 @@ func scan(proc string) (*Table, error) {
 			return cmp.Or(cmp.Compare(a.StartTime, b.StartTime), cmp.Compare(a.PID, b.PID))
 		})
 	}
-	return t, nil
 }
 
 // errExited is a process whose stat reads it exited (exited), at the scan's first read of it or
@@ -143,9 +161,11 @@ var errExited = errors.New("the process has exited")
 // link answers ENOENT on Linux and EACCES under gVisor, measured in a gVisor pod on 2026-11-14,
 // where the scan counted unread a pool worker the guard had just ended and its parent had not
 // reaped. Otherwise it answers the process with an error when stat was read and exe or ns/pid was
-// not (unreadOrEnded), so the caller keeps the process in the tree and counts it unread, unless
-// the process has ended since its stat was read. The arguments are best read: a process that
-// shows none is still a process.
+// not, with any error, ENOENT among them (unreadOrEnded), so the caller keeps the process in the
+// tree and counts it unread, unless the process has ended since its stat was read, for which it
+// answers no process. A caller leaves out a pid it answers no process for with fs.ErrNotExist or
+// errExited, and counts unread a pid it answers any other error for. The arguments are best read:
+// a process that shows none is still a process.
 func readProcess(proc string, pid int, buf []byte) (*Process, error) {
 	dir := filepath.Join(proc, strconv.Itoa(pid))
 	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
@@ -162,6 +182,7 @@ func readProcess(proc string, pid int, buf []byte) (*Process, error) {
 	p.PID = pid
 	if cmdline, err := readHead(filepath.Join(dir, "cmdline"), buf); err == nil {
 		p.Args = splitCmdline(cmdline)
+		p.argsWhole = len(cmdline) < len(buf)
 	}
 	exe, err := os.Readlink(filepath.Join(dir, "exe"))
 	if err != nil {
@@ -177,14 +198,19 @@ func readProcess(proc string, pid int, buf []byte) (*Process, error) {
 }
 
 // unreadOrEnded is what readProcess answers for p, at dir, whose file what could not be read
-// after its stat was, with err: fs.ErrNotExist, or errExited where the process has ended since
-// its stat was read (endedSince), either of which leaves it out of the scan, and otherwise p with
-// the error that counts it unread.
+// after its stat was, with err, whatever err is. A process that has ended since its stat was read
+// (endedSince) is left out of the scan: it answers err where err is fs.ErrNotExist, and errExited
+// otherwise, either of which the callers (scan, startedSince) take for a process that holds no
+// memory. Every other process answers p with the error that counts it unread, ENOENT among them:
+// on Linux the exited leader of a process whose other threads run answers ENOENT on its exe, its
+// memory map cleared, while those threads hold all of the process's memory, and a scan that took
+// that ENOENT for the process's end dropped a live process with nothing logged (INFRA-3531 plan
+// version 31). The guard never ends a process it counts unread, and its stopped line names it.
 func unreadOrEnded(dir string, p *Process, what string, err error) (*Process, error) {
-	switch {
-	case errors.Is(err, fs.ErrNotExist):
-		return nil, err
-	case endedSince(dir, p.StartTime):
+	if endedSince(dir, p.StartTime) {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil, err
+		}
 		return nil, errExited
 	}
 	return p, fmt.Errorf("read the %s: %w", what, err)
@@ -192,11 +218,13 @@ func unreadOrEnded(dir string, p *Process, what string, err error) (*Process, er
 
 // endedSince is whether the process at dir, whose stat read the start time start, has ended
 // since: its stat is gone, reads another start time (a process that took its pid), or reads it
-// exited (exited). A read of a process's exe, ns/pid or smaps that fails with anything but
-// fs.ErrNotExist asks it before the process counts unread, since a process can exit between the
-// read of its stat and that later read, and under gVisor a zombie answers that read with EACCES
-// (readProcess), which would count unread a process that has simply ended. A stat that cannot be
-// read for another reason, or does not parse, shows nothing ended, and the process counts unread.
+// exited (exited), state Z or X with no thread left. A read of a process's exe or ns/pid that
+// fails, with any error, asks it before the process counts unread (unreadOrEnded), and so does a
+// read of its smaps that fails with anything but fs.ErrNotExist (assess), since a process can exit
+// between the read of its stat and that later read, and under gVisor a zombie answers that read
+// with EACCES (readProcess), which would count unread a process that has simply ended. A stat that
+// cannot be read for another reason, or does not parse, shows nothing ended, and the process counts
+// unread.
 func endedSince(dir string, start uint64) bool {
 	stat, err := os.ReadFile(filepath.Join(dir, "stat"))
 	if err != nil {
@@ -231,13 +259,18 @@ func threadsLeft(dir string) bool {
 }
 
 // statStartField is the index of starttime (stat's field 22) among the fields after the command
-// name's closing parenthesis, which begin at field 3 (state).
-const statStartField = 22 - 3
+// name's closing parenthesis, which begin at field 3 (state), and statResidentField the index of
+// rss (field 24), the resident pages.
+const (
+	statStartField    = 22 - 3
+	statResidentField = 24 - 3
+)
 
 // parseStat reads a `/proc/<pid>/stat` line: the command name between the first `(` and the last
-// `)`, and the state, the parent and the start time among the fields after that last `)`. The name
-// is the one field a process chooses, and it can hold spaces and parentheses of its own (`(omp
-// daemon brok)`), so nothing after the first `(` is split until the last `)`.
+// `)`, and the state, the parent, the start time and the resident pages among the fields after that
+// last `)`, the resident pages 0 where the stat holds none that parses. The name is the one field a
+// process chooses, and it can hold spaces and parentheses of its own (`(omp daemon brok)`), so
+// nothing after the first `(` is split until the last `)`.
 func parseStat(stat []byte) (*Process, error) {
 	open, end := bytes.IndexByte(stat, '('), bytes.LastIndexByte(stat, ')')
 	if open < 0 || end < open {
@@ -255,11 +288,19 @@ func parseStat(stat []byte) (*Process, error) {
 	if err != nil {
 		return nil, fmt.Errorf("a stat whose start time is %q", fields[statStartField])
 	}
-	return &Process{PPID: ppid, StartTime: start, Name: string(stat[open+1 : end]), state: fields[0][0]}, nil
+	p := &Process{PPID: ppid, StartTime: start, Name: string(stat[open+1 : end]), state: fields[0][0]}
+	if len(fields) > statResidentField {
+		if resident, err := strconv.ParseUint(fields[statResidentField], 10, 64); err == nil {
+			p.Resident = resident
+		}
+	}
+	return p, nil
 }
 
-// readStartTime is pid's start time as its stat reads now.
-func readStartTime(proc string, pid int) (uint64, error) {
+// ReadStartTime is pid's start time as its stat under proc reads now. A caller that read a
+// process before compares it with the start time it read then: a different one is a process that
+// took the pid after the first one ended.
+func ReadStartTime(proc string, pid int) (uint64, error) {
 	stat, err := os.ReadFile(filepath.Join(proc, strconv.Itoa(pid), "stat"))
 	if err != nil {
 		return 0, err
@@ -421,14 +462,24 @@ func heldMemfdBytes(dir, link string, counted map[memfdID]bool, shmem uint64) ui
 
 // meminfoBytes is the value of key's line in a /proc/meminfo, in bytes, read in place.
 func meminfoBytes(data []byte, key string) (uint64, bool) {
+	value, ok := keyValue(data, key)
+	if !ok {
+		return 0, false
+	}
+	return parseKB(value)
+}
+
+// keyValue is what follows the colon of key's `Key:` line in data, a file of such lines as a
+// /proc/meminfo or a /proc/<pid>/status is, read in place; false where no line has key.
+func keyValue(data []byte, key string) ([]byte, bool) {
 	for len(data) > 0 {
 		var line []byte
 		line, data, _ = bytes.Cut(data, []byte{'\n'})
 		if len(line) > len(key) && line[len(key)] == ':' && string(line[:len(key)]) == key {
-			return parseKB(line[len(key)+1:])
+			return line[len(key)+1:], true
 		}
 	}
-	return 0, false
+	return nil, false
 }
 
 // parseKB reads `  123 kB` as bytes, and a number with no unit as bytes already.

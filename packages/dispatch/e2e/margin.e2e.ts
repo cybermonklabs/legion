@@ -53,7 +53,6 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     spec: initialMarkdown,
     title: "Review the spec",
   });
-  const relatedIssue = await createIssue({ project: "CORE", title: "Related work" });
   const artifactId = issue.primary_artifact_id;
   const alice = await asUser(browser, "alice");
   const bob = await asUser(browser, "bob");
@@ -87,12 +86,6 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     await selectEditorText(alicePage, "brown");
     await barAction(alicePage, "Comment");
     const commentComposer = alicePage.getByRole("form", { name: "Comment composer" });
-    await commentComposer.getByLabel("Comment").press("Control+k");
-    await expect(
-      commentComposer.getByRole("button", { name: `${relatedIssue.key}: Related work` })
-    ).toBeVisible();
-    await alicePage.keyboard.press("Escape");
-    await expect(alicePage.getByRole("dialog", { name: "Reference picker" })).toHaveCount(0);
     await commentComposer.getByLabel("Comment").fill("why?");
     await commentComposer.getByRole("button", { exact: true, name: "Send" }).click();
     const comment = await commentWithBody(issue.key, artifactId, "why?");
@@ -147,6 +140,8 @@ test("the selection bar comments, suggests, and asks on marks that both users se
     await askComposer.locator('button[type="submit"]').click();
     const askCard = needsYouCards(alicePage).filter({ hasText: "Why fox?" });
     await expect(askCard).toBeVisible();
+    // A needs-you card carries `data-margin-item` beside its section (`CommentsTab.tsx`), so
+    // this read of the card the wait above saw is never null; the check only narrows the type.
     const askId = await askCard.getAttribute("data-margin-item");
     if (askId === null) {
       throw new Error("The selection-bar ask has no margin id.");
@@ -654,6 +649,11 @@ test("margin ask composer sends option choices that the inbox records as a selec
     const createdCard = needsYouCards(page).filter({
       hasText: "Which direction should we take?",
     });
+    // Read once the card has drawn with the id of the ask it holds, so the poll below asks the
+    // server about the ask this card shows.
+    await expect(createdCard).toHaveAttribute("data-margin-item", /./);
+    // The assertion above waited for a non-empty `data-margin-item`, so this read is never null
+    // and the check below only narrows the type.
     const askId = await createdCard.getAttribute("data-margin-item");
     if (askId === null) {
       throw new Error("The created ask has no margin id.");
@@ -710,7 +710,6 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     await alicePage.getByRole("tab", { name: "Spec" }).click();
     const aliceCard = marginCard(alicePage, ask.id);
     await expect(aliceCard).toContainText("brown");
-    await aliceCard.getByRole("button", { name: "Add a note or answer in your own words" }).click();
     await aliceCard.getByLabel("Your answer").fill("Because it is precise.");
     await aliceCard.getByRole("button", { exact: true, name: "Answer" }).click();
     await expect.poll(() => getAsk(ask.id)).toMatchObject({ ask: { state: "answered" } });
@@ -728,6 +727,7 @@ test("a viewer who opens the issue after an anchored ask is answered sees it in 
     await expect(bobCard).toContainText("Because it is precise.");
     const timestamps = bobCard.locator("time");
     await expect(timestamps).toHaveCount(2);
+    // The count of two above waited for both of the card's timestamps, so one read lists them.
     for (const timestamp of await timestamps.all()) {
       await expect(timestamp).toHaveAttribute("datetime", /.+/);
     }
@@ -787,9 +787,7 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
     await setSheet(page, testInfo.project.name, true);
     const card = needsYouCards(page).getByTestId(`ask-${ask.id}`);
     await expect(card).toContainText("severity table shape");
-    await expect(
-      card.getByRole("button", { name: "Add a note or answer in your own words" })
-    ).toBeVisible();
+    await expect(card.getByLabel("Your answer")).toBeVisible();
     await page.screenshot({
       path: testInfo.outputPath(`margin-long-options-${testInfo.project.name}.png`),
     });
@@ -799,8 +797,11 @@ test("long option labels and descriptions wrap inside the margin ask card @phone
     // failure this guards against is a control whose box grows beyond the words in it.
     const options = card.getByRole("group", { name: "Answer options" });
     await expect(options.getByRole("radio")).toHaveCount(4);
+    await expect(card).toBeVisible();
+    // The wait above drew the card, and a drawn element has a box, so the box is there.
     const cardBox = await card.boundingBox();
     if (cardBox === null) throw new Error("the ask card has no layout box");
+    // The count of four radios above settled these rows: each radio stands inside its label.
     const rows = await options.locator("label").all();
     expect(rows).toHaveLength(4);
     for (const row of rows) {

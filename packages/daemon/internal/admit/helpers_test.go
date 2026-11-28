@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -16,9 +17,12 @@ import (
 	"github.com/sjawhar/legion/daemon/internal/claim"
 	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/dispatch"
+	"github.com/sjawhar/legion/daemon/internal/ghbranch"
+	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
 	"github.com/sjawhar/legion/daemon/internal/record"
+	"github.com/sjawhar/legion/daemon/internal/store"
 	"github.com/sjawhar/legion/daemon/internal/testnats"
 	"github.com/sjawhar/legion/daemon/internal/testpg"
 	"github.com/sjawhar/legion/daemon/internal/treelifecycle"
@@ -57,15 +61,16 @@ func (e engineStub) Apply(ctx context.Context, tx pgx.Tx, fact intake.Fact) (int
 
 const testProject = "LEGION"
 
-// handed is the label set of an issue handed to Legion.
-// handed is the label list intake.DispatchIssue.Labels once carried; the wire types now
-// resolve HandedOver at the decode/client boundary, so tests set it directly.
+// handed is HandedOver of an issue handed to Legion. The wire types resolve it from the issue's
+// labels at the decode and client boundary, and every decision reads that bool, so tests set it
+// directly.
 const handed = true
 
 var fixedNow = time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
 
-// testRepositories serves every repository the admission tests record issues on, each at main, and
-// leaves out acme/gadgets, whose review App is not installed.
+// testRepositories is every repository the admission tests record issues on, each at main, and
+// leaves out acme/gadgets, whose review App is not installed. A repository it does not name is
+// one no preparation has read GitHub for, which the daemon answers as unread (its lookup).
 var testRepositories = servedRepositories{"sjawhar/legion": "main", "acme/widgets": "main", "acme/tools": "release/v7.1"}
 
 type servedRepositories map[string]string
@@ -77,7 +82,22 @@ func (r servedRepositories) ResolveRepository(resolved string) (workflow.Resolut
 	if resolved == "acme/gadgets" {
 		return workflow.Resolution{Refusal: "the review App is not installed on acme/gadgets", LeftOut: true}, nil
 	}
-	return workflow.Resolution{Refusal: resolved + " is not mapped to project " + testProject + " in Dispatch"}, nil
+	return workflow.Resolution{Refusal: "GitHub has not been read for " + resolved + " yet", Unread: true}, nil
+}
+
+// prepared is fact as the daemon's preparation of a recorded issue's fact leaves it, over these
+// repositories (its prepareRecorded): carrying GitHub's read of the repository it resolves to
+// where both role Apps are installed on it, GitHub's refusal for acme/gadgets, whose review App is
+// not, and neither for a repository GitHub did not answer for. A correction is written from that
+// read and from nothing the daemon keeps (workflow.Engine.ApplyRepositoryChange).
+func (r servedRepositories) prepared(fact intake.DispatchIssue) intake.DispatchIssue {
+	if branch, ok := r[fact.ResolvedRepo]; ok {
+		fact.RepositoryRead = &ghbranch.Repository{Name: ghrepo.MustParse(fact.ResolvedRepo), DefaultBranch: branch}
+	}
+	if fact.ResolvedRepo == "acme/gadgets" {
+		fact.RepositoryRefusal, fact.RepositoryRefusalKind = "the review App is not installed on acme/gadgets", intake.RefusedByGitHub
+	}
+	return fact
 }
 
 func newAdmission(t *testing.T, cap int, log *slog.Logger) *Admission {
@@ -105,8 +125,16 @@ func newAdmissionWithSteps(t *testing.T, cap int, steps []record.DesignStep, log
 // under, and a test of two keys proves a behaviour reads none of it.
 func newAdmissionForProject(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger) *Admission {
 	t.Helper()
+	return newAdmissionDrawing(t, project, cap, steps, log, nil)
+}
+
+// newAdmissionDrawing is newAdmissionForProject whose engine draws every `random` experiment from
+// source, the one source admission draws with too (workflow.Engine's ExperimentSource); nil is the
+// engine's own, experiment.CryptoSource.
+func newAdmissionDrawing(t *testing.T, project string, cap int, steps []record.DesignStep, log *slog.Logger, source func(uint64) (uint64, error)) *Admission {
+	t.Helper()
 	engine := workflow.New(record.NewStore(), workflow.Config{Project: project, Repositories: testRepositories, Steps: steps,
-		Clock: func() time.Time { return fixedNow }}, log)
+		ExperimentSource: source, Clock: func() time.Time { return fixedNow }}, log)
 	admission := New(record.NewStore(), engine, cap, project, log)
 	admission.now = func() time.Time { return fixedNow }
 	return admission
@@ -115,12 +143,12 @@ func newAdmissionForProject(t *testing.T, project string, cap int, steps []recor
 // architectStart is the task admission queues with the start of a root architect
 // (workflow.ArchitectStartTask), derived from the record exactly as admission derives it: what
 // workflow.ArchitectStartOf reads of the root as it stands now — whether a hand-over carried it in,
-// the design gate rows it holds and the run its architect claim last served — under the gate
-// steps its own admission runs, and what its tree is owed where a person decided something on it
-// while nobody in the tree could hear them (decided). A test about what admission writes names the
-// task through this helper; which shape each root gets, and the whole text of each shape, are
-// pinned in internal/workflow (TestTheArchitectTaskOfEachShape, TestTheArchitectTaskShapeRule)
-// and the delivery to a launched architect in internal/daemon
+// the design gate rows it holds, the run its architect claim last served and the roots that rest
+// on its approval — under the gate steps its own admission runs, and what its tree is owed where a
+// person decided something on it while nobody in the tree could hear them (decided). A test about
+// what admission writes names the task through this helper; which shape each root gets, and the
+// whole text of each shape, are pinned in internal/workflow (TestTheArchitectTaskOfEachShape,
+// TestTheArchitectTaskShapeRule) and the delivery to a launched architect in internal/daemon
 // (TestAFreshAdmissionGivesItsArchitectItsStartTask).
 func architectStart(t *testing.T, pool *pgxpool.Pool, admission *Admission, key, decided string) string {
 	t.Helper()
@@ -144,6 +172,18 @@ func apply(t *testing.T, pool *pgxpool.Pool, admission *Admission, eventID strin
 	}
 }
 
+// notStateRows is the predicate that leaves the state lane's rows (record.LaneState) out of a read
+// of the whole outbox: a write of an issue, a slot, a claim or the admission block queues one when
+// the store's state events are on, and a test that counts or lists the outbox asserts the rows of
+// the other lanes.
+var notStateRows = func() string {
+	var kinds []string
+	for _, kind := range record.LaneKinds(record.LaneState) {
+		kinds = append(kinds, "'"+string(kind)+"'")
+	}
+	return "kind not in (" + strings.Join(kinds, ", ") + ")"
+}()
+
 type effect struct {
 	kind    record.OutboxKind
 	issue   string
@@ -158,20 +198,27 @@ func assertEffects(t *testing.T, pool *pgxpool.Pool, want []effect) {
 }
 
 // effects is the outbox as these tests compare it: every row in id order, its payload decoded,
-// with every task-less phase start left out. A phase worker's start is one row, which carries
-// the task and waits for the issue's admission slot (workflow.StartOrOwe); a start that names a
-// phase and carries no task is a role admission brings back beside it, which asks that role
-// nothing. These assertions are about the starts that carry work, as the workflow package's own
-// helpers are. A start that names no phase is no phase worker's — the architect start promotion
-// makes, the production check's look — and is left in.
+// with every task-less phase start and every step record left out. A phase worker's start is one
+// row, which carries the task and, in a phase that keeps a slot (record.PhaseKeepsSlot), waits
+// for the issue's admission slot (workflow.StartOrOwe); a start that names a phase and carries no
+// task is a role admission brings back beside it, which asks that role nothing. These assertions
+// are about the starts that carry work, as the workflow package's own helpers are. A start that
+// names no phase is no phase worker's — the architect start promotion makes, the production
+// check's look — and is left in. A step record is written beside the rows of each start and end
+// of a step, and the tests of those sites read it exactly (workflow's step_sites_test.go and
+// step_sites_linger_test.go, and step_records_test.go here for admission's own sites), so every
+// row of any other kind is still compared here.
 //
 // A supervise start carries the phase entry its task is of (record.SuperviseRequest.Entry),
 // which the transition raised on the role's phases row: the record counts the entries a role has
 // been handed, so two runs of the same events write the same number and a comparison of two runs
 // reads it like any other field.
+//
+// The state lane's rows are left out too (notStateRows): these tests assert the effects of the
+// other lanes, and the state events are asserted where they are written.
 func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 	t.Helper()
-	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox order by id`)
+	rows, err := pool.Query(context.Background(), `select kind, issue, payload from outbox where `+notStateRows+` order by id`)
 	if err != nil {
 		t.Fatalf("list outbox: %v", err)
 	}
@@ -181,6 +228,9 @@ func effects(t *testing.T, pool *pgxpool.Pool) []effect {
 		var row record.OutboxRow
 		if err := rows.Scan(&row.Kind, &row.Issue, &row.Payload); err != nil {
 			t.Fatalf("scan outbox: %v", err)
+		}
+		if row.Kind == record.OutboxKindStepRecord {
+			continue
 		}
 		payload, err := record.DecodeOutboxPayload(row)
 		if err != nil {
@@ -298,6 +348,28 @@ func maybeIssue(t *testing.T, pool *pgxpool.Pool, key string) *record.Issue {
 		}
 	})
 	return got
+}
+
+// resumeTaskOf is the resume task engine sends the worker of key's phase, as the record holds
+// the issue now: workflow's Engine.ResumeTask, the one place every resume is composed, read in a
+// transaction it rolls back.
+func resumeTaskOf(t testing.TB, pool *pgxpool.Pool, engine *workflow.Engine, key string) string {
+	t.Helper()
+	ctx := context.Background()
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		t.Fatalf("begin the read of the resume task of %s: %v", key, err)
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	issue, err := record.NewStore().Issue(ctx, tx, key)
+	if err != nil || issue == nil {
+		t.Fatalf("read the record of %s: %+v, %v", key, issue, err)
+	}
+	task, err := engine.ResumeTask(ctx, tx, *issue)
+	if err != nil {
+		t.Fatalf("compose the resume task of %s: %v", key, err)
+	}
+	return task
 }
 
 func putIssue(t *testing.T, pool *pgxpool.Pool, issue record.Issue) {
@@ -439,18 +511,25 @@ func reconcile(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries
 	reconcileWithPosition(t, pool, admission, summaries, 1, 0, false)
 }
 
-func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries []dispatch.IssueSummary, target, ackFloorStream int64, idle bool) {
+// reconcileWithPosition applies summaries through Reconcile at target and the consumer's position,
+// and answers the keys Reconcile found older than an issue fact the daemon applied.
+func reconcileWithPosition(t *testing.T, pool *pgxpool.Pool, admission *Admission, summaries []dispatch.IssueSummary, target, ackFloorStream int64, idle bool) []string {
 	t.Helper()
 	position := intake.DispatchConsumerPosition{AckFloorStream: ackFloorStream, Idle: idle}
 	listed := make([]intake.DispatchIssue, len(summaries))
 	for i, summary := range summaries {
 		listed[i] = intake.ListedIssue(summary)
 	}
-	scoped, committed := intake.WithCommitHooks(context.Background())
-	inTx(t, pool, func(tx pgx.Tx) {
-		if err := admission.Reconcile(scoped, tx, listed, target, position); err != nil {
-			t.Fatalf("Reconcile: %v", err)
+	var refused []string
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		ctx, settle := intake.OpenSettlers(ctx, admission)
+		var err error
+		if refused, err = admission.Reconcile(ctx, tx, listed, target, position); err != nil {
+			return err
 		}
-	})
-	committed()
+		return settle(ctx, tx)
+	}); err != nil {
+		t.Fatalf("Reconcile: %v", err)
+	}
+	return refused
 }

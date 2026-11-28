@@ -1,10 +1,12 @@
 import { afterAll, beforeEach, describe, expect, test } from "bun:test";
 import { NO_ROUTE_ROLLING_RELEASE_MESSAGE } from "@legion/contracts";
+import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { temporaryDirectories } from "@legion/test-fixtures/temporary-directories";
+import { keyedLayer } from "../../test/keyed-layer";
 import { bearerCredential } from "../bearer";
 import { runDispatchCli } from "../dispatch-cli";
 import { executeDispatchTool, resetAdviceMemory } from "../dispatch-execute";
-import { DispatchServiceError, forgetKeyedLayerMemory } from "../dispatch-http";
+import { DispatchServiceError } from "../dispatch-http";
 import { messageFor } from "../errors";
 import { ToolInputError } from "../tool-input-errors";
 
@@ -18,8 +20,11 @@ import { ToolInputError } from "../tool-input-errors";
 
 const makeDirectory = temporaryDirectories("dispatch-review");
 
+/** The Dispatch bearer each command, and the executor, is handed. */
+const TOKEN = fixtureSecret("dsp");
+
 /** The person the token names, whom Dispatch records every review under. */
-const PERSON = "alice@theorem.dev";
+const PERSON = "alice@example.com";
 
 interface Recorded {
   readonly method: string;
@@ -67,9 +72,10 @@ let answeredAsk: string | null = null;
 /** Whether the stub answers the versioned review route as a build without it does: no route. */
 let noRoute = false;
 
+// Behind Dispatch's keyed layer: each 2xx to a write names the write's key back.
 const server = Bun.serve({
   port: 0,
-  async fetch(request) {
+  fetch: keyedLayer(async (request: Request) => {
     const { pathname } = new URL(request.url);
     const text = await request.text();
     const body: unknown = text === "" ? undefined : JSON.parse(text);
@@ -119,7 +125,7 @@ const server = Bun.serve({
       );
     }
     return Response.json({ error: `unexpected ${request.method} ${pathname}` }, { status: 500 });
-  },
+  }),
 });
 
 afterAll(() => server.stop(true));
@@ -132,7 +138,6 @@ beforeEach(() => {
   noRoute = false;
   stateDir = makeDirectory();
   resetAdviceMemory();
-  forgetKeyedLayerMemory();
 });
 
 async function run(argv: readonly string[]): Promise<{
@@ -147,7 +152,7 @@ async function run(argv: readonly string[]): Promise<{
     {
       HOME: stateDir,
       DISPATCH_URL: `http://127.0.0.1:${server.port}`,
-      DISPATCH_TOKEN: "test-token",
+      DISPATCH_TOKEN: TOKEN,
       DISPATCH_STATE_DIR: stateDir,
       DISPATCH_HOST: "omp",
       DISPATCH_SESSION_ID: "ses-1",
@@ -269,19 +274,22 @@ describe("dispatch review", () => {
       "this request's credential acts for service system:serviceaccount:legion:legion-worker and no person, so there is nobody to record this write under; run `agent-secrets login` on this machine and try again",
       {},
     ],
-  ])("a %i %s is printed with Dispatch's code and words, and exits 1", async (status, code, error, headers) => {
-    refusal = { status, code, error, headers };
+  ])(
+    "a %i %s is printed with Dispatch's code and words, and exits 1",
+    async (status, code, error, headers) => {
+      refusal = { status, code, error, headers };
 
-    const result = await run(["review", "DSP-1", "--version", "3", "--verdict", "approved"]);
+      const result = await run(["review", "DSP-1", "--version", "3", "--verdict", "approved"]);
 
-    expect(result.code).toBe(1);
-    expect(result.stdout).toBe(`${code}: ${error}\n`);
-    // Dispatch's own refusal is final: the review was sent once, to the versioned route, and not
-    // again.
-    expect(posted()).toEqual([
-      { path: "/api/v1/artifacts/artifact-spec/versions/3/reviews", body: { state: "approved" } },
-    ]);
-  });
+      expect(result.code).toBe(1);
+      expect(result.stdout).toBe(`${code}: ${error}\n`);
+      // Dispatch's own refusal is final: the review was sent once, to the versioned route, and not
+      // again.
+      expect(posted()).toEqual([
+        { path: "/api/v1/artifacts/artifact-spec/versions/3/reviews", body: { state: "approved" } },
+      ]);
+    }
+  );
 
   test("a review that answered an open approval request says so, for every document the request named, and that the answer carries this document alone", async () => {
     answeredAsk = "ask-9";
@@ -319,7 +327,7 @@ describe("dispatch review", () => {
       cwd: stateDir,
       host: "omp",
       sessionId: "ses-1",
-      config: { url: base, credential: bearerCredential("test-token") },
+      config: { url: base, credential: bearerCredential(TOKEN) },
       env: {},
       sleep: async (ms) => {
         waits.push(ms);

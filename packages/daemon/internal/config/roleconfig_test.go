@@ -92,7 +92,7 @@ const rolePod = `    pod:
 // and the image probe see only those and the image: a sub_path mount of the file, an item a
 // directory mount of a ConfigMap projects, or any file under a whole Secret volume. A path no mount
 // holds, a directory mount itself, a key the projection leaves out, and the operator's own overlay
-// again are refused at load, which is what `legion start --check-config` runs.
+// again are refused at load, which is what `legion config check` runs.
 func TestRoleConfigFilesUnderKubernetesMustBeInTheOperatorsMounts(t *testing.T) {
 	for _, tc := range []struct{ name, files, want string }{
 		{"an item the directory mount projects", "[/etc/legion-route/roles/fallback.yml]", ""},

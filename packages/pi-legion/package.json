@@ -3,6 +3,7 @@
   "version": "18.14.1",
   "license": "Apache-2.0",
   "type": "module",
+  "//": "Test guards. The `test` script runs `bun test --parallel=4`, which sets no --timeout: test-timeout-preload.ts declares 300000 ms inside each worker (setDefaultTimeout + @legion/test-fixtures/deadline declareGuard), and a plain `bun test` keeps Bun's 5000 ms (bunfig.toml). The cold role-pane row of extensions/legion-background-subagent-omp.test.ts needs more than 5000 ms in every mode (a cold Oh My Pi pane start and NATS registration read 5-6 s unloaded), so it takes COLD_PANE_GUARD_MS = 300000 of its own: useRowGuard for the shared wait, `test`'s third argument for Bun's row kill, and the afterEach's own hook timeout, whose raw-await cleanup (killing omp, stopping the stub server) also outlasts 5000 ms under load. The value is well above twice the reading, for dev-box load. Each of the eight rows of extensions/legion-stall-watchdog-omp.test.ts starts such a pane and then drives the stall ladder, so each takes its own COLD_PANE_GUARD_MS = 300000 the same three ways; that afterEach's raw-await cleanup kills a real Oh My Pi, waits for it to be reaped and removes the pane's scratch root. Readings on build-cluster Jobs with Oh My Pi and NATS running `bun run test ./extensions/legion-stall-watchdog-omp.test.ts`: 8 pass / 0 fail in 205.72 s with the slowest row ('a call the abort does not end') at 72.55 s — less than a quarter of 300000 ms (legion-load-run-nx94c); on #5151, a pane wait planted never to answer gave up by name at 285,017 ms, 15000 ms before that guard (legion-load-run-6nwz2).",
   "omp": {
     "extensions": [
       "extensions/legion.ts"
@@ -10,9 +11,6 @@
     "skills": [
       "dist/skills"
     ]
-  },
-  "legion": {
-    "daemonApiVersion": 146
   },
   "repository": {
     "type": "git",
@@ -23,15 +21,15 @@
     "agents"
   ],
   "scripts": {
-    "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
+    "build": "bun build extensions/legion.ts --outdir dist --target bun --format esm --external @oh-my-pi/pi-ai --external @oh-my-pi/pi-coding-agent --external @oh-my-pi/pi-tui --external @oh-my-pi/pi-utils",
     "prepack": "../../scripts/pi-plugin-prepack.sh",
     "postpack": "rm -rf dist/skills",
-    "typecheck": "bunx tsc --noEmit",
-    "test": "bun test",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit",
+    "test": "bun test --parallel=4 --timings=test-timings.json",
     "lint": "bunx biome lint extensions/ src/"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.14",
+    "@biomejs/biome": "2.5.15",
     "@legion/contracts": "workspace:*",
     "@legion/envoy-client": "workspace:*",
     "@legion/pi-shared": "workspace:*",

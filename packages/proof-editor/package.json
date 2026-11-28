@@ -34,16 +34,20 @@
       "bun": "./src/document-reading.ts",
       "default": "./src/document-reading.ts"
     },
+    "./block-nesting": "./src/block-nesting.ts",
     "./style.css": "./src/lib.css"
   },
   "main": "src/lib.ts",
   "types": "src/lib.ts",
+  "//": [
+    "test: --timeout 47000 is at least twice every row or hook without a guard of its own. Each reading below is marked loaded (read under busy loops, named with where) or unloaded (no busy loops). Unloaded, in one run of this command at a6913ffd with this change, in a gVisor pod of 2 CPUs that other agents share (2026-11-27): the slowest such row, mermaid-svg.test.ts's 'sanitizeMermaidSvg > keeps every element beautiful-mermaid draws for each diagram type', read 544.05 ms; the rows that took a guard of their own before and now take this one (heavy-bodies.test.ts's and nested-directive.test.ts's rows that read no cost, paste-matrix.test.ts's empty-row and no-cell cases) read at most 72.13 ms. Loaded, this change at e3b47541 ran this command three times under 8 busy loops (builds Job pe-head2-233907), and each run passed all 584 rows, every one under this command's guard, or its own where it keeps one. Loaded, the slowest hook, build-upstream-tarball.test.ts's beforeAll, read 94.03 ms under 8 busy loops on 2 CPUs in #4437's three runs of this command (builds Job g4b-pe-ed, 2026-11-21, each hook timed by a preload). 47000 is #4437's guard: twice its slowest reading of upstream-pin.test.ts's 'upstream/ is what the pinned sources emit', 23,288.77 ms loaded, under the same 8 busy loops at e976062e (two runs in builds Job d2-pe8); 6,378.10 ms unloaded, in the a6913ffd run above. That row keeps a guard of its own, 120_000, because it runs a bun process that builds two TypeScript programs with no time limit of its own. The 20 rows of heavy-bodies.test.ts and nested-directive.test.ts that read a cost keep measuredRowCeilingMs (300_000, tests/cpu-time.ts), whose slowest read 64.4 s loaded, under 12 busy loops (one run of the two files, 2026-11-09, tests/cpu-time.ts); 8,001.23 ms unloaded, in the a6913ffd run above."
+  ],
   "scripts": {
-    "typecheck": "bunx tsc --noEmit -p tsconfig.check.json",
+    "typecheck": "bun ../contracts/scripts/gen-api.ts && bunx tsc --noEmit -p tsconfig.check.json",
     "upstream-declarations": "bun scripts/upstream-declarations.ts",
     "build-upstream-tarball": "bun scripts/build-upstream-tarball.ts",
     "parity-fuzz": "bun scripts/parity-fuzz.ts",
-    "test": "bun test src/tests tests",
+    "test": "bun test --timeout 47000 --preload @legion/test-fixtures/row-deadline src/tests tests",
     "lint": "bunx biome check ."
   },
   "dependencies": {
@@ -83,7 +87,7 @@
     "yjs": "^13.6.20"
   },
   "devDependencies": {
-    "@biomejs/biome": "^2.3.14",
+    "@biomejs/biome": "2.5.15",
     "@legion/test-fixtures": "workspace:*",
     "@types/bun": "latest",
     "happy-dom": "^20.14.0",

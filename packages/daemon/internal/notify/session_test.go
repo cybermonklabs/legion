@@ -178,7 +178,7 @@ func TestReadSessionRegistrationReadsA404AsNoRegistration(t *testing.T) {
 
 // A listener predating the view selector answers the whole session row — its topics, its roles,
 // its capabilities — and nothing bounds how many topics a long-lived session subscribes to, so
-// the entry is read within registrationReadBodyLimit rather than refusalBodyLimit, which bounds
+// the entry is read within answerBodyLimit rather than refusalBodyLimit, which bounds
 // an error body. A row cut off at that limit would not decode, and the stop of the busiest
 // session would be reported as a listener that did not answer and send no delete at all.
 func TestReadSessionRegistrationReadsAnEntryPastTheRefusalBodyLimit(t *testing.T) {

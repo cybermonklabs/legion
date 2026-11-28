@@ -42,6 +42,7 @@ import { dispatchMarkPlugins, remarkDispatchMarks, dispatchMarkHandler } from '.
 import remarkInlineLinks from 'remark-inline-links';
 import { remarkSoftBreakAsLine, remarkSoftBreakAsSpace } from './dispatch-soft-breaks.js';
 import { remarkHoistNestedLinks } from './nested-links.js';
+import { remarkKeepAddressesWhole } from './whole-addresses.js';
 import { remarkContainerDirectives } from './lib-remark-directive-plugin.js';
 import { remarkHtmlBlockParagraphs, remarkStrictHtmlFlow } from './html-blocks.js';
 import { remarkReadOnlyDirectives } from './read-only-directives.js';
@@ -105,6 +106,60 @@ export interface HeadlessProofOptions {
   readOnly?: boolean;
 }
 
+/**
+ * The marks Milkdown's parser state has opened, over every parse in this process: one for each
+ * `openMark` call a runner makes, counted on each parser state the first runner call hands it,
+ * where this module builds the specs its schema holds, with no patch of Milkdown. A runner that
+ * closed a mark by its type and opened again every mark of that type around it would open about
+ * the square of a nesting's depth here (`dispatchAskSchema`'s runner, ./dispatch-marks). A parse
+ * is synchronous, so a test that reads the count around one reads that parse's opens
+ * (tests/dispatch-marks.test.ts).
+ */
+let markOpens = 0;
+
+/** How many marks Milkdown's parser state has opened in this process so far. */
+export function milkdownMarkOpens(): number {
+  return markOpens;
+}
+
+/** The parser states whose `openMark` counts into `markOpens`. */
+const markCountingStates = new WeakSet<object>();
+
+/** Makes `state`'s `openMark` count each call, the first time a runner is handed it: ParserState
+ *  holds `openMark` as a property of its own, so the wrapper replaces it on that one state. */
+function countMarkOpens(state: unknown): void {
+  if (typeof state !== 'object' || state === null || markCountingStates.has(state)) return;
+  markCountingStates.add(state);
+  const parserState = state as { openMark: (...args: unknown[]) => unknown };
+  const openMark = parserState.openMark;
+  parserState.openMark = (...args: unknown[]) => {
+    markOpens++;
+    return openMark(...args);
+  };
+}
+
+/** The parse side of a Milkdown node or mark spec, as this module reads it. */
+type MarkdownParsedSpec = {
+  readonly parseMarkdown?: { readonly runner: (...args: never[]) => void };
+};
+
+/** `spec` as the schema holds it: a copy whose parse runner counts the marks it opens. */
+function withCountedRunner<Spec extends MarkdownParsedSpec>(spec: Spec): Spec {
+  const parse = spec.parseMarkdown;
+  if (parse === undefined) return spec;
+  const { runner } = parse;
+  return {
+    ...spec,
+    parseMarkdown: {
+      ...parse,
+      runner(this: unknown, ...args: Parameters<typeof runner>) {
+        countMarkOpens(args[0]);
+        return runner.apply(this, args);
+      },
+    },
+  };
+}
+
 export async function createHeadlessProof(options: HeadlessProofOptions = {}): Promise<HeadlessProofEditor> {
   const editor = Editor.make();
   const ctx = editor.ctx;
@@ -149,9 +204,13 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
   }
 
   configureDispatchLinks(ctx);
-  const nodes = Object.fromEntries(ctx.get(nodesCtx) as never);
-  const marks = Object.fromEntries(ctx.get(marksCtx) as never);
-  const schema = new Schema({ nodes, marks });
+  const nodes = Object.fromEntries(
+    (ctx.get(nodesCtx) as [string, MarkdownParsedSpec][]).map(([name, spec]) => [name, withCountedRunner(spec)]),
+  );
+  const marks = Object.fromEntries(
+    (ctx.get(marksCtx) as [string, MarkdownParsedSpec][]).map(([name, spec]) => [name, withCountedRunner(spec)]),
+  );
+  const schema = new Schema({ nodes: nodes as never, marks: marks as never });
   // An ask a live document holds off its content rule is built, not refused (./ask-content.ts).
   relaxAskContentCheck(schema);
 
@@ -164,6 +223,10 @@ export async function createHeadlessProof(options: HeadlessProofOptions = {}): P
       .use(remarkParse)
       .use(remarkFrontmatter, ['yaml'])
       .use(remarkGfm)
+      // Right after remark-gfm, whose two readers of bare addresses may start an email or a URL
+      // inside a `dispatch://` address: each such link is text again, so the address is whole
+      // (./whole-addresses.ts), as Go's reader keeps it.
+      .use(remarkKeepAddressesWhole)
       .use(remarkContainerDirectives)
       .use(remarkStrictHtmlFlow)
       .use(remarkProofMarks)

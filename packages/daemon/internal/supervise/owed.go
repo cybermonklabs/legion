@@ -22,6 +22,18 @@ type owedClaimWrite struct {
 	// first is still owed adds its report here instead of replacing it, since the two name
 	// different transitions and the daemon acts on each.
 	reports []owedReport
+	// stops are the project pause's stops whose transaction did not land (Deps.PauseStopped,
+	// decision 6 of dispatch://INFRA-3759's plan), oldest first and one per pause, each with the
+	// pause's id and whether the role is owed a launch. While any is owed, every claim write the
+	// machine makes is that transaction (putStops): the repair, and each write that settles this
+	// mark when it lands — putClaim, putClaimAndPending, and retirePending, which writes them
+	// before its retirement — so no write of a stopped claim lands without the pause's records,
+	// and the one that lands is the repair, as this mark's rule is. A write that settles no mark
+	// leaves them where they are: queue, takeBackPending, interrupted and providerErrorClears
+	// write the claim beside a delivery and settle nothing, so the stop stays owed and the next
+	// repair makes it. Each goes off the mark as its own transaction lands, so a stop of one
+	// pause is never written twice for a later one that fails.
+	stops []PauseStop
 }
 
 // owedReport is one report a decision would have made had its write landed, kept until the write
@@ -53,6 +65,13 @@ const owedWriteLine = "supervise: a claim write the database did not take"
 // operator counts to see an outage end — and it is the line a check reads to tell a daemon that
 // caught up from one that is still behind.
 const repairedWriteLine = "supervise: a claim write the database did not take was made"
+
+// claimWriteAgainLine is the line of a store call of a decision that the claim-write bound cut
+// short and that the decision makes again at once (Machine.write), at Warn: the database answered
+// that call past defaultClaimWrite, which a healthy one never does, so an operator sees a slow
+// database here before any write is owed. A write made again that lands owes nothing and is
+// followed by no owed line; one that is cut again is owed, under owedWriteLine.
+const claimWriteAgainLine = "supervise: a claim write the bound cut short; making it again in this decision"
 
 // oweWrite marks the claim write owed and says so in the log: the row the store holds is behind
 // what memory holds, and the claim's next decision is to make that write again (repair). A
@@ -162,9 +181,14 @@ func (m *Machine) repair(ctx context.Context) {
 		return
 	}
 	method, pending := "PutClaim", m.claim.Pending
-	var err error
 	if pending != nil {
 		method = "PutClaimAndDelivery"
+	}
+	if len(m.owedWrite.stops) > 0 {
+		method = "PauseStopped"
+	}
+	var err error
+	if pending != nil {
 		err = m.putClaimAndPending(ctx)
 	} else {
 		err = m.putClaim(ctx)
@@ -178,7 +202,7 @@ func (m *Machine) repair(ctx context.Context) {
 		return
 	}
 	m.log.Warn(owedWriteLine, "store", method, "error", err, "owed", false,
-		"droppedReports", len(m.owedWrite.reports))
+		"droppedReports", len(m.owedWrite.reports), "droppedStops", len(m.owedWrite.stops))
 	m.owedWrite = nil
 }
 
@@ -253,6 +277,12 @@ func (m *Machine) makeOwedReports(reports []owedReport) {
 // owed: dropping one loses a claim fact the daemon's memory already holds and the row does not,
 // and the write is the only thing that would ever put it there. A nil error is no refusal and
 // owes nothing.
+//
+// This rule decides what is owed once Machine.write has stopped trying, not whether it tries again
+// first: write makes a deadline cut of a write the database was handed once more in the same
+// decision (cutByBound, claimWriteTries), and only a write whose last try still failed comes here.
+// A deadline cut of a write the database was never handed (a dial, a queue's wait, a BEGIN) is
+// owed at once, as the deadline row of TestTheOwedWriteErrorsAreTheOnesNoServerAnsweredAbout reads.
 //
 // The rule reads the error in two steps, and their order is the substance of it rather than a
 // style of writing.

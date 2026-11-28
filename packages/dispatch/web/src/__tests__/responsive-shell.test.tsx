@@ -1,4 +1,4 @@
-import { afterEach, expect, test } from "bun:test";
+import { afterEach, beforeAll, expect, test } from "bun:test";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
@@ -10,9 +10,21 @@ import { AuthGate } from "../app";
 import { liveViewsOf } from "../features/agent-view/live-views";
 import { jump, onFakeClock } from "./fake-clock";
 import { answerAgentStates } from "./send-answers";
-// The issue page is a lazy route of the app. Its module's first compile is not what a wait is
-// for, so the module is loaded here, with the test file, and no wait measures that load.
+// The issue page is a lazy route of the app, and the live view's page and the margin lazy parts
+// of the shell (`MountedLiveViews.tsx`, `MarginColumn.tsx`, which mounts the margin on every
+// route). A module's first compile is not what a wait is for, and a load a row starts and ends
+// before lands in a later row as React's report of a suspended resource outside `act`. So the
+// three modules are loaded here, with the test file, and no row starts or waits for that load.
+import "../features/agent-view/AgentConversationPage";
 import "../features/issue-page/IssuePage";
+import "../features/margin/Margin";
+import { warmMarkdownRenderer } from "../features/refs/markdown-engine";
+
+// The rows draw through the shared renderer, whose Markdown engine loads lazily, and they run in
+// random order, so the file loads the engine before its first row, whichever row that is.
+beforeAll(async () => {
+  await warmMarkdownRenderer();
+});
 
 const issue: IssueDetails = {
   route_status: null,
@@ -79,6 +91,7 @@ const originalApi = {
   getIssueSubscribers: api.getIssueSubscribers,
   getMyAgentState: api.getMyAgentState,
   getMyState: api.getMyState,
+  listAgentMessages: api.listAgentMessages,
   listAgents: api.listAgents,
   listComments: api.listComments,
   listIssueAsks: api.listIssueAsks,
@@ -86,7 +99,6 @@ const originalApi = {
   listMyReplies: api.listMyReplies,
   listProjectArchitectureSources: api.listProjectArchitectureSources,
   listProjects: api.listProjects,
-  listRepoProjects: api.listRepoProjects,
   whoAmI: api.whoAmI,
 };
 const originalMatchMedia = window.matchMedia;
@@ -163,6 +175,7 @@ function renderShellAt(
       name: "Core",
       open_asks: 0,
       gated_steps: [],
+      proven_sessions: false,
     },
   ];
   api.listIssueAsks = async () => [];
@@ -170,7 +183,6 @@ function renderShellAt(
   api.listAgents = async () => listedAgents;
   // The issue page under the shell reads these of its own; no test here asserts them.
   api.getIssueSubscribers = async () => [];
-  api.listRepoProjects = async () => [];
   api.listProjectArchitectureSources = async () => [];
   // Each ask card refreshes its own thread; the row the Inbox listed carries the one Dispatch
   // would answer with.
@@ -456,6 +468,8 @@ test("the shell tells the live-view registry which agents the person pinned", as
   api.getMyAgentState = async () => ({
     "planner-session": { pinned_at: "2026-09-14T00:00:01Z", unread_replies: 0 },
   });
+  // The page of the view the registry mounts reads its session's messages; none are asserted.
+  api.listAgentMessages = async () => [];
   const queryClient = renderShellAt(1280, [], 0, [agent("planner-session", "Planner")]);
   await screen.findByRole("button", { name: "Unpin Planner from the sidebar" });
 
@@ -469,6 +483,12 @@ test("the shell tells the live-view registry which agents the person pinned", as
     views.show("third-session");
     views.show(null);
   });
+  // The third view lingers, so the registry mounts its page, a lazily loaded part
+  // (`MountedLiveViews.tsx`): in a process's first run the page arrives after this commit, and in
+  // each later run it is already there. The row waits for the page either way, so it mounts the
+  // same page in every order, and the updates the page's reads make land inside this wait, not
+  // after the row.
+  await screen.findByTestId("agent-conversation");
 
   expect(views.place("planner-session")).toEqual({ id: "dispatch:m-4", top: -120 });
   expect(views.place("other-session")).toBeNull();

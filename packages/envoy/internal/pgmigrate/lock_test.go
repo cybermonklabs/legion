@@ -15,6 +15,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 
 	"github.com/sjawhar/envoy/internal/testpg"
+	"github.com/sjawhar/envoy/internal/testpg/testdb"
 )
 
 // What the watch reports after a sequence of readings. One empty reading of a wait that named its
@@ -23,6 +24,7 @@ import (
 // which pg_blocking_pids reports as pid 0, still blocks - and a departed holder must not be named.
 // Each row is the sequence that tells one term of the rule from its absence.
 func TestObserveNamesOnlyAHolderTheLatestReadingsSupport(t *testing.T) {
+	t.Parallel()
 	named := func(pid uint32) *LockWait {
 		return &LockWait{LockType: "relation", Mode: "AccessExclusiveLock", Object: "messages", Holders: []Session{{PID: pid}}}
 	}
@@ -233,6 +235,7 @@ func (s *stallAtTheCleanup) TraceQueryEnd(context.Context, *pgx.Conn, pgx.TraceQ
 // outlives the answer: the forwarder is released only by its own cleanup, after the checks below,
 // and those checks fail a call that came back with nothing of its cleanup still held.
 func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	dsn := testpg.URL(t)
 	// The session the diagnosis reads. It stays connected, so pg_stat_activity has a row for it.
@@ -304,6 +307,7 @@ func TestDiagnoseHoldersReturnsWhenTheCleanupCannotFinish(t *testing.T) {
 // connection must still carry the row's setting after the commit, since Exec's settings end with
 // its transaction.
 func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	// The census's parser reads each text below as one insert of the one constant after it. Under
 	// standard_conforming_strings off, \' escapes the quote after it: 'a\'' is a', and the rest of
@@ -443,8 +447,12 @@ func TestExecReadsAMigrationAsTheCensusReadsIt(t *testing.T) {
 // session_user it runs under into public.seen, and seen must hold the values that the connection
 // read when it was new, before the row's SETs: the values that RESET gives. The connection must
 // still carry the row's settings after the commit, since Exec's settings end with its
-// transaction.
+// transaction. Postgres lets only a session whose login is a superuser set session
+// authorization, so the server is asked whether the test database's login is one (rolsuper), and
+// the two rows that set it skip when it is not, except on GitHub Actions, where they fail
+// (testdb.SkipOutsideCI).
 func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	url := testpg.URL(t)
 	config, err := pgx.ParseConfig(url)
@@ -452,11 +460,19 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 		t.Fatalf("parse the test database's URL: %v", err)
 	}
 	admin := connect(t, ctx, url)
+	var superuser bool
+	if err := admin.QueryRow(ctx, "select rolsuper from pg_roles where rolname = session_user").Scan(&superuser); err != nil {
+		t.Fatalf("ask the server whether the test database's login is a superuser: %v", err)
+	}
 	// A role spans the cluster that every test shares, so each role takes the name of the test's
 	// own database, which is random. other and login are members of group. login signs in with a
-	// password, as a deployment's login does.
+	// password, as a deployment's login does. The test database's own login is granted group with
+	// SET, for the row whose runner signs in as it and sets the role: a login that is no superuser
+	// but creates roles (CREATEROLE) is given ADMIN alone on a role it creates (Postgres 16 and
+	// later), which lets it grant that role but not set it.
 	group, other, login := config.Database+"_group", config.Database+"_other", config.Database+"_login"
 	if _, err := admin.Exec(ctx, "create role "+group+"; create role "+other+" in role "+group+"; create role "+login+" login password 'exec-test' in role "+group+"; "+
+		"grant "+group+" to current_user with set true; "+
 		"create schema x; create table seen (search_path text, current_user_name text, session_user_name text); grant insert on seen to public"); err != nil {
 		t.Fatal(err)
 	}
@@ -480,14 +496,19 @@ func TestExecResolvesNamesUnderTheValuesResetGives(t *testing.T) {
 		// user is the login the runner's connection signs in as, "" for the test database's own.
 		user string
 		set  string
+		// superuser is whether set needs the runner's login to be a superuser.
+		superuser bool
 	}{
-		{"a session set of search_path", "", "set search_path = x"},
-		{"a set role", "", "set role " + group},
-		{"a set session authorization", "", "set session authorization " + other},
-		{"all three", "", "set session authorization " + other + "; set role " + group + "; set search_path = x"},
-		{"a set role and a set of search_path on a login that is no superuser", login, "set role " + group + "; set search_path = x"},
+		{"a session set of search_path", "", "set search_path = x", false},
+		{"a set role", "", "set role " + group, false},
+		{"a set session authorization", "", "set session authorization " + other, true},
+		{"all three", "", "set session authorization " + other + "; set role " + group + "; set search_path = x", true},
+		{"a set role and a set of search_path on a login that is no superuser", login, "set role " + group + "; set search_path = x", false},
 	} {
 		t.Run(row.name, func(t *testing.T) {
+			if row.superuser && !superuser {
+				testdb.SkipOutsideCI(t, "%q needs the test database's login, %s, to be a superuser, which the server says it is not (rolsuper): Postgres lets only a superuser's session set session authorization", row.set, config.User)
+			}
 			runnerConfig := config.Copy()
 			if row.user != "" {
 				runnerConfig.User, runnerConfig.Password = row.user, "exec-test"

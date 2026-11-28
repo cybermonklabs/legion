@@ -3,6 +3,7 @@ import {
   agentGroupToggle,
   agentRow,
   type FakeSession,
+  openAgentFilter,
   pickAgentFilter,
   setLiveSessions,
   setSessionLive,
@@ -16,8 +17,11 @@ import {
   createIssue,
   createProject,
   getIssueEvents,
+  patchIssue,
   replyToMessageDelivery,
 } from "./api";
+import { expectFootClear } from "./foot-probe";
+import { pendingWrites } from "./keyed-writes";
 import { expectRailAgents } from "./rail";
 import { setEventCreatedAt } from "./seed";
 import { expect, type Locator, type Page, test } from "./test";
@@ -61,8 +65,10 @@ const QUIET_AFTER_MS = 10 * 60_000;
 const ROW_HEIGHT_PX = { laptop: 46, phone: 126 };
 
 /** One element's box on screen, in whole pixels: what a reader sees, rather than a fraction of
- *  a pixel the layout engine carries. */
+ *  a pixel the layout engine carries. Read once the element shows. */
 async function boxOf(locator: Locator): Promise<{ bottom: number; height: number; top: number }> {
+  await expect(locator).toBeVisible();
+  // The wait above drew the element, and a drawn element has a box, so the box is there.
   const box = await locator.boundingBox();
   if (box === null) throw new Error("the element is not laid out");
   return {
@@ -133,8 +139,7 @@ function filterOptions(page: Page): Locator {
 
 /** Opens one filter's panel and leaves it open, which is where its text box is. */
 async function openFilter(page: Page, filter: "group" | "machine" | "role"): Promise<void> {
-  const trigger = agentFilter(page, filter);
-  if ((await trigger.getAttribute("aria-expanded")) === "false") await trigger.click();
+  await openAgentFilter(page, filter);
   await expect(page.getByRole("listbox")).toHaveCount(1);
 }
 
@@ -285,7 +290,11 @@ test("an ended session that replied is under Replied, no longer connected and in
     await expect(ended).toBeVisible();
     await expect(ended.locator(`[data-agent-name="${ENDED}"]`)).toHaveCount(1);
     await expect(ended).toContainText("New reply 1");
-    const groups = await page.getByTestId("agents-group-quiet").boundingBox();
+    const quiet = page.getByTestId("agents-group-quiet");
+    await expect(quiet).toBeVisible();
+    // The wait above drew the Quiet group, and a drawn element has a box, so its box is there.
+    const groups = await quiet.boundingBox();
+    // The region was waited for above as well, so its box is there as the group's is.
     const below = await ended.boundingBox();
     if (groups === null || below === null) throw new Error("the page is not laid out");
     expect(below.y).toBeGreaterThanOrEqual(groups.y + groups.height);
@@ -451,6 +460,8 @@ test("an agent row carries its state, its name, its age, its directory and its p
     // line for six hundred rows is six hundred lines.
     const boxes = await Promise.all(
       [age, directory, pin].map(async (part) => {
+        await expect(part).toBeVisible();
+        // The wait above drew the part, and a drawn element has a box, so the box is there.
         const box = await part.boundingBox();
         if (box === null) throw new Error("the row is not laid out");
         return box;
@@ -564,6 +575,75 @@ test("an agent row stands at the height recorded for its width @phone", async ({
       );
     } else {
       expect(directory.top, "the directory is on the name's line").toBeLessThan(name.bottom);
+    }
+  } finally {
+    await context.close();
+  }
+});
+
+// The broadcast composer and Pending changes, two layers of the foot of the screen
+// (`web/src/hooks/useFootInset.ts`), "so no float lies over a foot element". Scrolled to its
+// end, the page leaves the composer resting above the section of ended sessions, in the upper
+// half of a short window, with room under it. At each of four such windows the foot is read
+// through the shared probe (`expectFootClear`, e2e/foot-probe.ts) at the real end of every
+// scroller, and there the panel's box and the composer's must not meet: the panel's corner then
+// lay over the composer's message box, its mode and Send, or its recipients.
+test("scrolled to its end in a short window, the Agents page's broadcast composer and Pending changes do not meet @foot", async ({
+  browser,
+}) => {
+  const titles = Array.from(
+    { length: 14 },
+    (_, index) => `Agent ${String(index + 1).padStart(2, "0")}`
+  );
+  await setLiveSessions([
+    ...titles.map((title, index) =>
+      session(`01a0e812-0c07-7000-8000-0000000001${String(index).padStart(2, "0")}`, title)
+    ),
+    session(ENDED, "Ended"),
+  ]);
+  await seedUnreadReply(ENDED);
+  await setSessionLive(ENDED, false);
+  await createProject({ key: "CORE", name: "Core" });
+  const epic = await createIssue({ project: "CORE", title: "Parser rollout" });
+  await patchIssue(epic.key, { labels: ["epic"] });
+  const refused = await createIssue({ project: "CORE", parent: epic.key, title: "Refused move" });
+  const context = await asUser(browser, "alice");
+  try {
+    const page = await context.newPage();
+    await page.setViewportSize({ width: 1280, height: 800 });
+    await page.route(`**/api/v1/issues/${refused.key}`, async (route) => {
+      if (route.request().method() === "PATCH")
+        await route.fulfill({ status: 403, json: { error: "Move refused" } });
+      else await route.continue();
+    });
+    await page.goto("/projects/CORE/issues");
+    await page.getByRole("checkbox", { name: `Select ${refused.key}`, exact: true }).check();
+    await page.getByRole("toolbar").getByRole("button", { name: "Take out of epic" }).click();
+    const pending = pendingWrites(page);
+    await expect(pending).toContainText(refused.key);
+    await page.goto("/agents");
+    await expect(pending).toContainText(refused.key);
+    for (const title of titles.slice(0, 3)) {
+      await page.getByRole("checkbox", { name: `Select ${title} for broadcast` }).check();
+    }
+    const ended = page.getByRole("region", { name: "Replied, no longer connected" });
+    const broadcast = page.getByRole("region", { name: "Broadcast" });
+    for (const size of [
+      { width: 800, height: 600 },
+      { width: 1024, height: 500 },
+      { width: 640, height: 480 },
+      { width: 360, height: 640 },
+    ]) {
+      await page.setViewportSize(size);
+      // The list sets its height from the rows it measures, a frame or more after a resize, and
+      // the page's end can grow once a float's band counts: the probe reads the page at the end
+      // of its scroll as it then stands, until the reading holds, and the ended sessions show
+      // there.
+      await expectFootClear(page, `agents ${size.width}x${size.height} pending`);
+      await expect(ended).toBeInViewport();
+      // Both boxes the row reads apart are there: the probe leaves out an element with no box.
+      await expect(broadcast).toBeVisible();
+      await expect(pending).toBeVisible();
     }
   } finally {
     await context.close();

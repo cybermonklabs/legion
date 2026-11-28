@@ -8,9 +8,18 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sjawhar/legion/daemon/internal/execfile"
 	"github.com/sjawhar/legion/daemon/internal/procgroup"
 	"github.com/sjawhar/legion/daemon/internal/testwait"
 )
+
+// inFlight runs f on a goroutine of its own and answers the channel its answer arrives on, for a
+// row that waits, under a bound of its own (testwait.Receive), for a call that may never return.
+func inFlight[T any](f func() T) <-chan T {
+	answered := make(chan T, 1)
+	go func() { answered <- f() }()
+	return answered
+}
 
 // commandLives keeps a test's command running until a signal ends it. A shell runs a trap when the
 // command it is waiting for ends, so the command waits in a loop of short foreground sleeps rather
@@ -37,9 +46,11 @@ const commandLives = `ticks=0; while [ "$ticks" -lt 1200 ]; do sleep 0.05; ticks
 // the end of its budget is still reported as a timeout rather than as a command that could not be
 // run, which is execRunner.Run reading its kill before it propagates the run's own error.
 func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
+	t.Parallel()
 	environment := []string{"PATH=" + os.Getenv("PATH")}
 
 	t.Run("a command that handles SIGTERM removes its lock", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		lock, ready := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready")
 		budget := time.Second
@@ -50,7 +61,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := `: >"$1"; trap 'rm -f "$1"; exit 0' TERM; : >"$2"; ` + commandLives
 
 		started := time.Now()
-		_, err := RunCommand(ctx, nil, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", lock, ready})
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
@@ -68,6 +79,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	})
 
 	t.Run("a helper the command forked is stopped with it", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		ready, marker := filepath.Join(dir, "ready"), filepath.Join(dir, "deaf-helper-of-this-row")
 		trapped := filepath.Join(dir, "helper-trapped")
@@ -94,7 +106,7 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 		script := `sh -c "$2" sh "$3" "$4" & trap '' TERM; until [ -e "$4" ]; do sleep 0.01; done; : >"$1"; ` + commandLives
 
 		started := time.Now()
-		_, err := RunCommand(ctx, nil, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
+		_, err := RunCommand(ctx, procgroup.NoReaper, budget, started, environment, dir, nil, []string{"sh", "-c", script, "sh", ready, helper, marker, trapped})
 		elapsed := time.Since(started)
 
 		if _, statErr := os.Stat(ready); statErr != nil {
@@ -106,11 +118,12 @@ func TestRunCommandStopsItsCommandTheSameWay(t *testing.T) {
 	})
 
 	t.Run("execRunner reports a command that handled SIGTERM and exited 0 as timed out", func(t *testing.T) {
+		t.Parallel()
 		dir := t.TempDir()
 		lock, ready := filepath.Join(dir, "index.lock"), filepath.Join(dir, "ready")
 		fakeGit := filepath.Join(dir, "git")
 		script := "#!/bin/sh\n: >\"" + lock + "\"\ntrap 'rm -f \"" + lock + "\"; exit 0' TERM\n: >\"" + ready + "\"\n" + commandLives + "\n"
-		if err := os.WriteFile(fakeGit, []byte(script), 0o700); err != nil {
+		if err := execfile.Write(fakeGit, []byte(script), 0o700); err != nil {
 			t.Fatalf("write the fake git: %v", err)
 		}
 		timeout := time.Second

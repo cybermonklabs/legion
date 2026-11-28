@@ -1,0 +1,10 @@
+kind: Fixed
+body: |-
+  A role claim through another edge replica than the one a session registered through no longer
+  stops the session's deliveries. The claim renews the session's record with that replica's
+  machine, which moves the session's relay there; the replica now admits the session on the
+  claim's own token, as a registration does, so the session's agent messages, Dispatch copies and
+  role messages keep reaching it before its next registration.
+time: 2026-11-21T09:05:04Z
+custom:
+    Issue: pr4858

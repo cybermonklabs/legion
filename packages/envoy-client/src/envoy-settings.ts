@@ -19,6 +19,12 @@ import {
   type SectionOff,
 } from "./envoy-config";
 import { messageFor } from "./errors";
+import {
+  brokerNatsCredential,
+  NATS_AUTH_VAR,
+  type NatsCredential,
+  NoSessionNamedError,
+} from "./nats-credential";
 import { readSecretFile } from "./secret-file";
 
 /** The listener's address when neither `envoy.url` nor `ENVOY_URL` names one. */
@@ -130,10 +136,17 @@ export type EnvoyEnvironment = EnvoyConfigEnvironment & {
   readonly ENVOY_TOKEN_FILE?: string | undefined;
   readonly NATS_NKEY_SEED?: string | undefined;
   readonly NATS_NKEY_SEED_FILE?: string | undefined;
+  readonly NATS_AUTH?: string | undefined;
   readonly ENVOY_HEARTBEAT_MS?: string | undefined;
   readonly ENVOY_PASS_DEADLINE_MS?: string | undefined;
   readonly ENVOY_TMUX_PLACE_CACHE_MS?: string | undefined;
+  readonly ENVOY_INBOUND?: string | undefined;
 };
+
+/** The variable that says how a session takes its inbound messages: `nats` (what unset is) or
+ *  `listener`, the listener's relay socket. `envoy.inbound` names it in the file, and the variable
+ *  overrides that field. */
+export const ENVOY_INBOUND_VAR = "ENVOY_INBOUND";
 
 /** A NATS user's nkey seed, and where it came from, which an error about it names. */
 export interface NatsSeed {
@@ -142,18 +155,21 @@ export interface NatsSeed {
 }
 
 /** The seed the environment names: the trimmed contents of the file `NATS_NKEY_SEED_FILE` names,
- * else `NATS_NKEY_SEED`. A set variable is authoritative, and the file pointer wins over the seed:
- * an empty pointer, or a missing, unreadable or blank file, throws naming the variable and the path
- * (`readSecretFile`), never a fallback to `NATS_NKEY_SEED` or to no credential; so does a blank
- * `NATS_NKEY_SEED`. Neither set is undefined. No error carries the seed. The Go clients read the
- * same two variables (`packages/envoy/internal/bus/nkey.go`, `packages/daemon/internal/natsauth`). */
-export function natsSeedFromEnvironment(env: EnvoyEnvironment): NatsSeed | undefined {
+ * read without holding the event loop, else `NATS_NKEY_SEED`. A set variable is authoritative,
+ * and the file pointer wins over the seed: an empty pointer, or a missing, unreadable or blank
+ * file, rejects naming the variable and the path (`readSecretFile`), never a fallback to
+ * `NATS_NKEY_SEED` or to no credential; so does a blank `NATS_NKEY_SEED`. Neither set is
+ * undefined. No error carries the seed. The Go clients read the same two variables
+ * (`packages/envoy/internal/bus/nkey.go`, `packages/daemon/internal/natsauth`). */
+export async function natsSeedFromEnvironment(
+  env: EnvoyEnvironment
+): Promise<NatsSeed | undefined> {
   const { NATS_NKEY_SEED_FILE: file, NATS_NKEY_SEED: plain } = env;
   if (file !== undefined) {
     if (file === "") throw new Error("NATS_NKEY_SEED_FILE is set but empty");
     return {
-      value: readSecretFile("NATS_NKEY_SEED_FILE", file),
-      source: `NATS_NKEY_SEED_FILE (${file})`,
+      value: await readSecretFile("NATS_NKEY_SEED_FILE", file),
+      source: "the file NATS_NKEY_SEED_FILE names",
     };
   }
   if (plain === undefined) return undefined;
@@ -168,11 +184,24 @@ const NO_NATS_SERVER = "Envoy has no NATS server (envoy.natsUrls, ENVOY_NATS_URL
 /** Why a caller that opens no NATS connection (`nats: false`) takes none. */
 const NO_NATS_CONNECTION = "this session opens no NATS connection";
 
-/** How a session takes inbound messages: over `natsUrls` (never empty) as the nkey user `natsSeed`
- * names, none for a server that asks for no credential; or not at all, `off` saying why. */
+/** How a session takes inbound messages: over `natsUrls` (never empty) with `natsCredential`, the
+ * nkey user a seed names, the session's broker token, or none for a server that asks for no
+ * credential; through the listener's relay socket (`relaySetting`, the setting that chose it:
+ * `ENVOY_INBOUND`, or `envoy.inbound in <file>`), presenting `relayCredential`, the session's
+ * broker credential, the only one the socket admits (`src/listener-relay.ts`); or not at all,
+ * `off` saying why, and `noSessionNamed` set where the reason is a broker token for a process that
+ * names no session (`NoSessionNamedError`), which a caller with a remedy of its own branches on.
+ * `natsServersSetting` names the setting the servers came from (`ENVOY_NATS_URL`, or
+ * `envoy.natsUrls in <file>`), which a log names them by (`natsServersForLog`), never by their
+ * text. */
 export type EnvoyInbound =
-  | { readonly natsUrls: readonly string[]; readonly natsSeed: NatsSeed | undefined }
-  | { readonly off: string };
+  | {
+      readonly natsUrls: readonly string[];
+      readonly natsServersSetting: string;
+      readonly natsCredential: NatsCredential;
+    }
+  | { readonly relaySetting: string; readonly relayCredential: RequestCredential }
+  | { readonly off: string; readonly noSessionNamed?: true };
 
 /** An Envoy a session uses: every value resolved, credentials included. */
 export interface EnabledEnvoySettings {
@@ -186,9 +215,11 @@ export interface EnabledEnvoySettings {
    * One field, so no caller can present half of it.
    */
   readonly credential: RequestCredential | undefined;
-  /** Inbound messages, which arrive over NATS. Off with `NO_NATS_SERVER` when nothing names a
-   * NATS server, with the refusal when the seed for the named ones could not be read or used (the
-   * listener and its bearer stand), and with `NO_NATS_CONNECTION` for a caller that opens none. */
+  /** Inbound messages, which arrive over NATS, or through the listener's relay socket where
+   * `ENVOY_INBOUND` or `envoy.inbound` says `listener`. Off with `NO_NATS_SERVER` when nothing
+   * names a NATS server, with the refusal when the seed for the named ones could not be read or
+   * used (the listener and its bearer stand), with the refusal of a relay socket the settings
+   * cannot open, and with `NO_NATS_CONNECTION` for a caller that opens none. */
   readonly inbound: EnvoyInbound;
   readonly heartbeatMs: number;
   /** How long one tmux place reading is reused: see `DEFAULT_TMUX_PLACE_CACHE_MS`. */
@@ -225,31 +256,148 @@ function natsServerKey(url: string): string {
   return `${scheme.toLowerCase()}://${userinfo}${host.toLowerCase()}:${port}${withoutTrailingSlashes(rest)}`;
 }
 
+/** Throws, naming `remedy`, unless `ENVOY_NATS_URL` names no servers or exactly the section's own
+ * (as a set, each compared by `natsServerKey`): a credential the file holds goes only to the
+ * servers written beside it, since `ENVOY_NATS_URL` is the only way to name others. */
+function requireFileServers(
+  section: EnvoyFileSettings,
+  namedNatsUrls: readonly string[],
+  filePath: string,
+  remedy: string
+): void {
+  if (namedNatsUrls.length === 0) return;
+  const servers = new Set((section.natsUrls ?? []).map(natsServerKey));
+  const named = new Set(namedNatsUrls.map(natsServerKey));
+  if (named.size !== servers.size || ![...named].every((server) => servers.has(server))) {
+    throw new Error(
+      `ENVOY_NATS_URL names other servers than ${filePath}'s envoy.natsUrls; set ${remedy} for them`
+    );
+  }
+}
+
 /** The NATS user's seed: `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED`, else the section's
- * `natsSeed`, which goes only with the section's own servers: `ENVOY_NATS_URL`, the only way to
- * name others, must name exactly them (as a set, each compared by `natsServerKey`). Throws naming
+ * `natsSeed`, which goes only with the section's own servers (`requireFileServers`). Rejects naming
  * what could not be read or used. */
-function natsCredential(
+async function natsSeed(
   env: EnvoyEnvironment,
   section: EnvoyFileSettings,
   namedNatsUrls: readonly string[],
   filePath: string
-): NatsSeed | undefined {
-  const fromEnvironment = natsSeedFromEnvironment(env);
+): Promise<NatsSeed | undefined> {
+  const fromEnvironment = await natsSeedFromEnvironment(env);
   if (fromEnvironment !== undefined || section.natsSeed === undefined) return fromEnvironment;
-  if (namedNatsUrls.length > 0) {
-    const servers = new Set((section.natsUrls ?? []).map(natsServerKey));
-    const named = new Set(namedNatsUrls.map(natsServerKey));
-    if (named.size !== servers.size || ![...named].every((server) => servers.has(server))) {
-      throw new Error(
-        `ENVOY_NATS_URL names other servers than ${filePath}'s envoy.natsUrls; set NATS_NKEY_SEED_FILE for them`
-      );
-    }
-  }
+  requireFileServers(section, namedNatsUrls, filePath, "NATS_NKEY_SEED_FILE");
   return {
-    value: fileValue(section.natsSeed, "envoy.natsSeed", filePath, env),
+    value: await fileValue(section.natsSeed, "envoy.natsSeed", filePath, env),
     source: `envoy.natsSeed in ${filePath}`,
   };
+}
+
+/**
+ * The credential a session's NATS connection presents, or a rejection naming why it has none it can
+ * use. A seed (`natsSeed`) is presented as it always was. Otherwise `NATS_AUTH`, else the
+ * section's `natsAuth` (an empty variable counts as unset), says which: `broker` is the session's
+ * broker token (`brokerNatsCredential`), refused naming the gap where this machine has no broker
+ * route or where the caller names no session (`noSessionNamed`: a token traded under none is the
+ * machine's or the signed-in person's, not the session's), and, as the file's, going only to the
+ * servers written beside it (`requireFileServers`): the token and the proof it signs would
+ * otherwise go to any server `ENVOY_NATS_URL` names, which could relay that proof to the hub it
+ * was meant for. `none` is no credential; any other value is
+ * refused, naming the setting and never its value, which may be a credential pasted into the wrong
+ * place. Unset is none, whatever
+ * the machine's broker route says: that route reads only `AGENT_SECRETS_URL` and the machine's
+ * identity, which says nothing of whether the hub runs an auth service (`dev-stack.sh` without
+ * `--callout`, for one, exports a broker route beside a hub that runs none), and a broker token
+ * presented to such a hub loses the session its inbound
+ * messages. `broker` beside a seed is refused naming both, rather than one of the two silently
+ * winning; `none` beside one leaves the seed the credential, as a seed is wherever it is set.
+ */
+async function natsCredential(
+  env: EnvoyEnvironment,
+  section: EnvoyFileSettings,
+  namedNatsUrls: readonly string[],
+  filePath: string,
+  session: BrokerSessionName | undefined
+): Promise<NatsCredential> {
+  const named = nonEmpty(env.NATS_AUTH);
+  const auth =
+    named !== undefined
+      ? { value: named, source: NATS_AUTH_VAR }
+      : section.natsAuth === undefined
+        ? undefined
+        : { value: section.natsAuth, source: `envoy.natsAuth in ${filePath}` };
+  if (auth !== undefined && auth.value !== "broker" && auth.value !== "none") {
+    throw new Error(`${auth.source} is neither broker nor none`);
+  }
+  const seed = await natsSeed(env, section, namedNatsUrls, filePath);
+  if (seed !== undefined) {
+    if (auth?.value === "broker") {
+      throw new Error(
+        `${auth.source} is ${auth.value}, and ${seed.source} names an nkey seed: set one of the two`
+      );
+    }
+    return { kind: "seed", seed };
+  }
+  if (auth?.value !== "broker") return { kind: "none" };
+  const route = brokerRouteConfigured(env);
+  if (!route.traded) throw new Error(`${auth.source} is broker, but ${route.gap}`);
+  if (named === undefined) requireFileServers(section, namedNatsUrls, filePath, "NATS_AUTH=broker");
+  // No name at all refuses here; a name read from a function is read at each trade, which refuses
+  // a trade the moment it reads none (`NoSessionNamedError`).
+  if (session === undefined) throw new NoSessionNamedError(auth.source);
+  return { kind: "broker", broker: brokerNatsCredential(env, session, auth.source) };
+}
+
+/** A URL host on this machine: `localhost`, an address of 127.0.0.0/8, or `[::1]`. */
+const LOOPBACK_HOST = /^(localhost|127(\.\d{1,3}){3}|\[::1\])$/i;
+
+/** What a `listener` choice (`source`) beside a NATS server (`natsSetting`) is told. */
+function natsConflictText(source: string, natsSetting: string): string {
+  return `${source} is listener, and ${natsSetting} names NATS servers: set one of the two`;
+}
+
+/**
+ * The relay socket's inbound, which `source` chose (`ENVOY_INBOUND`, or `envoy.inbound in
+ * <file>`), or why it is off. Refused beside a NATS server named for the session (`natsSetting`,
+ * the setting that named it), naming both rather than one of the two silently winning; for a
+ * listener credential that is not the session's broker token, which is the only one the socket
+ * admits; for a caller that names no session, whose token would be the machine's or the
+ * signed-in person's, not the session the socket is for. A listener at a plain http address of
+ * another machine is refused before this, for Envoy as a whole (`plainHttpOffMachine`).
+ */
+function listenerInbound(
+  source: string,
+  natsSetting: string | undefined,
+  credential: RequestCredential | { readonly noBrokerRoute: string },
+  session: BrokerSessionName | undefined
+): EnvoyInbound {
+  if (natsSetting !== undefined) return { off: natsConflictText(source, natsSetting) };
+  if ("noBrokerRoute" in credential) {
+    return { off: `${source} is listener, but ${credential.noBrokerRoute}` };
+  }
+  if (credential.scheme !== "DPoP") {
+    return {
+      off: `${source} is listener, but the listener's credential is a bearer (ENVOY_TOKEN, ENVOY_TOKEN_FILE or envoy.token), and the relay socket admits only the session's broker token`,
+    };
+  }
+  if (session === undefined) {
+    return {
+      off: `${source} is listener, but this process names no session for its relay socket's token`,
+      noSessionNamed: true,
+    };
+  }
+  return { relaySetting: source, relayCredential: credential };
+}
+
+/**
+ * The host `url` names when it is plain http to another machine, else undefined. This machine's
+ * own listener (`localhost`, 127.0.0.0/8, `::1`) may be plain http.
+ */
+function plainHttpOffMachine(url: string): string | undefined {
+  const host = URL.canParse(url) ? new URL(url) : undefined;
+  return host?.protocol === "http:" && !LOOPBACK_HOST.test(host.hostname)
+    ? host.hostname
+    : undefined;
 }
 
 /**
@@ -264,12 +412,15 @@ function natsCredential(
  * names. With none of them, Envoy is off with a notice. Each variable overrides its own field:
  * `ENVOY_URL` the listener (`url`), `ENVOY_NATS_URL` (comma-separated) the NATS servers
  * (`natsUrls`), `ENVOY_TOKEN_FILE` (trimmed file contents, how the Legion daemon delivers it) then
- * `ENVOY_TOKEN` the listener's bearer (`token`), and `NATS_NKEY_SEED_FILE` then `NATS_NKEY_SEED`
- * the NATS user's seed (`natsSeed`, resolved only when there are NATS servers to use it on). An
- * empty `ENVOY_*` variable counts as unset; an empty `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` is
- * refused, naming it (`natsSeedFromEnvironment`). A set pointer that cannot be read is refused,
- * never a fallback: `ENVOY_TOKEN_FILE`'s turns Envoy off with that `error`, and a seed's turns off
- * inbound messages alone (`inbound.off` names the refusal), since the seed is for NATS only.
+ * `ENVOY_TOKEN` the listener's bearer (`token`), `NATS_NKEY_SEED_FILE` then `NATS_NKEY_SEED`
+ * the NATS user's seed (`natsSeed`, resolved only when there are NATS servers to use it on), and
+ * `NATS_AUTH` which credential the NATS connection presents where it has no seed (`natsAuth`:
+ * `broker` or `none`, `natsCredential`). An empty `ENVOY_*` or `NATS_AUTH` variable counts as
+ * unset; an empty `NATS_NKEY_SEED_FILE` or `NATS_NKEY_SEED` is refused, naming it
+ * (`natsSeedFromEnvironment`). A set pointer that cannot be read is refused, never a fallback:
+ * `ENVOY_TOKEN_FILE`'s turns Envoy off with that `error`, and a seed's turns off inbound messages
+ * alone (`inbound.off` names the refusal), since the seed is for NATS only, as does a NATS
+ * credential `natsCredential` refuses.
  *
  * Same server only: the file's token goes with `ENVOY_URL` only when it names the origin of the
  * listener written in the file (or the default listener when it names none); any other listener
@@ -282,19 +433,27 @@ function natsCredential(
  * command, too, turns off inbound messages alone.
  *
  * A caller that opens no NATS connection (`nats: false`: the `dispatch` command, `claude-envoy`'s
- * `envoy-send`, pi-legion's `legion.ts` extension) takes no inbound messages and resolves no seed,
- * so a seed it would never send can neither run a command nor turn it off.
+ * `envoy-send`, pi-legion's `legion.ts` extension) takes no inbound messages and resolves no NATS
+ * credential, so a seed it would never send can neither run a command nor turn it off.
+ *
+ * `ENVOY_INBOUND` (or the file's `inbound`) `listener` takes inbound messages through the
+ * listener's relay socket (`listenerInbound`). With it, a listener at a plain http address of
+ * another machine turns Envoy off as a whole, for every caller and before any credential
+ * resolves, a NATS server named or not; with one named, the error names that conflict first.
+ * This machine's own listener may be plain http, and a session not set to `listener` keeps a
+ * plain http listener.
  */
-export function envoySettings(
+export async function envoySettings(
   env: EnvoyEnvironment,
   config: EnvoyConfig,
   options: {
     readonly nats?: boolean | undefined;
     /** The session a broker trade writes under (`BrokerSessionName`), for a caller that acts as
-     * one. Nothing else reads it: a bearer route resolves the same whatever it says. */
+     * one: the listener's credential's, and the NATS connection's where it presents the broker
+     * token. A bearer or seed route resolves the same whatever it says. */
     readonly session?: BrokerSessionName | undefined;
   } = {}
-): EnvoySettings {
+): Promise<EnvoySettings> {
   if (config.kind === "failed") return offWithError(config.error);
   const section = config.envoy;
   if (section.enabled === false) {
@@ -323,9 +482,50 @@ export function envoySettings(
   }
   const listener = section.url ?? DEFAULT_ENVOY_URL;
   const url = namedUrl ?? listener;
+  // How the session takes inbound messages: `ENVOY_INBOUND`, else the file's `envoy.inbound`, an
+  // empty variable counting as unset. Unset, and `nats`, are NATS, resolved as they always were.
+  const namedInbound = nonEmpty(env.ENVOY_INBOUND);
+  const choice =
+    namedInbound !== undefined
+      ? { value: namedInbound, source: ENVOY_INBOUND_VAR }
+      : section.inbound === undefined
+        ? undefined
+        : { value: section.inbound, source: `envoy.inbound in ${config.path}` };
+  // The setting that names NATS servers for the session: what a `listener` choice beside it
+  // conflicts with (`listenerInbound`), and where a NATS session's servers come from.
+  const natsSetting =
+    namedNatsUrls.length > 0
+      ? "ENVOY_NATS_URL"
+      : (section.natsUrls ?? []).length > 0
+        ? `envoy.natsUrls in ${config.path}`
+        : undefined;
+  // A session set to take its messages through the socket is on a machine outside the
+  // deployment: over plain http to another machine its token, its proofs and every body would
+  // cross networks unencrypted, on the socket and on every call of its tools, so Envoy is off as
+  // a whole, for a caller that opens no inbound connection (`nats: false`: a send command, the
+  // `dispatch` command, a notice publisher) as much as for the session, and before any credential
+  // is resolved, so a file's `!` token command does not run for it. A NATS server named beside
+  // it is a conflict that would turn off the inbound alone and leave the tools sending the token
+  // in the clear, so with plain http Envoy is off too, the conflict named first: an operator who
+  // gave a pod `listener` by mistake drops it. A session not set to `listener` keeps a plain http
+  // listener: a pod reaches its listener so inside its cluster's network, with a token each
+  // request binds to a fresh proof.
+  if (choice?.value === "listener") {
+    const host = plainHttpOffMachine(url);
+    if (host !== undefined) {
+      const plainHttp = `the listener's address is plain http to ${host}, which is not this machine, so the session's token would cross the network unencrypted; use an https address`;
+      return offWithError(
+        natsSetting === undefined
+          ? `${choice.source} is listener, but ${plainHttp}`
+          : `${natsConflictText(choice.source, natsSetting)}. And ${plainHttp}`
+      );
+    }
+  }
   let credential: RequestCredential | undefined;
+  // Why this machine has no broker credential, where it has none and no bearer either.
+  let noBrokerRoute = "";
   try {
-    const source = bearerSource(env, "ENVOY", () =>
+    const source = await bearerSource(env, "ENVOY", () =>
       section.token === undefined
         ? undefined
         : {
@@ -341,12 +541,12 @@ export function envoySettings(
       // what the listener checks at the broker's introspection route. A listener that asks for no
       // credential is unaffected — it reads the request's identity, or none, the same way, and a
       // trade that fails leaves its calls standing (`createEnvoyClient`, transport.ts).
-      credential = brokerRouteConfigured(env).traded
-        ? brokerCredential(env, options.session)
-        : undefined;
+      const route = brokerRouteConfigured(env);
+      credential = route.traded ? brokerCredential(env, options.session) : undefined;
+      if (!route.traded) noBrokerRoute = route.gap;
     } else {
       credential = bearerCredential(
-        source.kind === "variable" ? source.token : fileBearer(source, url, "ENVOY", env)
+        source.kind === "variable" ? source.token : await fileBearer(source, url, "ENVOY", env)
       );
     }
   } catch (error) {
@@ -355,12 +555,35 @@ export function envoySettings(
   const natsUrls = namedNatsUrls.length > 0 ? namedNatsUrls : (section.natsUrls ?? []);
   let inbound: EnvoyInbound;
   if (options.nats === false) inbound = { off: NO_NATS_CONNECTION };
-  else if (natsUrls.length === 0) inbound = { off: NO_NATS_SERVER };
+  else if (choice !== undefined && choice.value !== "nats" && choice.value !== "listener") {
+    // Never echoed: a credential pasted into the wrong setting would be.
+    inbound = { off: `${choice.source} is neither nats nor listener` };
+  } else if (choice?.value === "listener") {
+    inbound = listenerInbound(
+      choice.source,
+      natsSetting,
+      credential ?? { noBrokerRoute },
+      options.session
+    );
+  } else if (natsSetting === undefined) inbound = { off: NO_NATS_SERVER };
   else {
     try {
-      inbound = { natsUrls, natsSeed: natsCredential(env, section, namedNatsUrls, config.path) };
+      inbound = {
+        natsUrls,
+        natsServersSetting: natsSetting,
+        natsCredential: await natsCredential(
+          env,
+          section,
+          namedNatsUrls,
+          config.path,
+          options.session
+        ),
+      };
     } catch (error) {
-      inbound = { off: messageFor(error) };
+      inbound =
+        error instanceof NoSessionNamedError
+          ? { off: messageFor(error), noSessionNamed: true }
+          : { off: messageFor(error) };
     }
   }
   const heartbeatMs = resolvedInterval(env.ENVOY_HEARTBEAT_MS, DEFAULT_HEARTBEAT_MS);

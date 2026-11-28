@@ -13,6 +13,7 @@ import (
 
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/pmdoc"
+	"github.com/sjawhar/envoy/internal/testcleanup"
 )
 
 // dropBlock returns a live edit that removes the block whose text starts with prefix, as a
@@ -44,6 +45,7 @@ func dropBlock(t *testing.T, prefix string) func(*pmdoc.Node) *pmdoc.Node {
 // The settlement that follows the write's publish versions the deletion. A deletion creates no Yjs
 // struct and advances no client's clock, the case a clock-only signal would miss.
 func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before\n\ndoomed paragraph")
@@ -53,9 +55,9 @@ func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testin
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	testcleanup.Add(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -88,6 +90,7 @@ func TestADeletionTheRoomTakesAfterAWritesReadIsVersionedAfterTheWrite(t *testin
 // version the settlement then writes holds the deletion, and its refresh, the only one that sees
 // the quote gone, must orphan the ask.
 func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before\n\nthe anchored quote paragraph")
@@ -101,9 +104,9 @@ func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	testcleanup.Add(t, ledger.Discard)
 
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
 		Op: "replace", Find: "before", With: "after",
@@ -130,6 +133,8 @@ func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.
 	if anchor := anchorOf(tx); anchor.Orphaned {
 		t.Fatalf("anchor = %#v after the write's version, want it anchored: that version still holds the quote", anchor)
 	}
+	// The version's anchor refresh is a write, which the transaction's write phase runs at Commit,
+	// and the Commit that runs it ends the transaction, so every read after it goes to the pool.
 	if err := ledger.Commit(ctx); err != nil {
 		t.Fatalf("commit the joined edit: %v", err)
 	}
@@ -145,6 +150,7 @@ func TestAnAnchorWhoseQuoteTheRoomDeletedIsOrphanedByTheVersionWrite(t *testing.
 // is a browser and an agent writing together, where every spurious invalidation is a full document
 // render back under the issue row.
 func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	seedServiceText(t, service, artifactID, "before")
@@ -154,9 +160,9 @@ func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 	if err != nil {
 		t.Fatalf("begin transactional edit: %v", err)
 	}
-	t.Cleanup(func() { _ = tx.Rollback(context.Background()) })
+	testcleanup.Add(t, func() { _ = tx.Rollback(context.Background()) })
 	joinedCtx, ledger := service.Join(ctx, tx)
-	t.Cleanup(ledger.Discard)
+	testcleanup.Add(t, ledger.Discard)
 
 	alice := model.Actor{Kind: "user", ID: "alice"}
 	if _, err := service.ApplyOps(joinedCtx, artifactID, []model.EditOp{{
@@ -201,6 +207,7 @@ func TestARoomChangeAfterAWritesReadCostsItsVersionNoRender(t *testing.T) {
 // encoding of the room runs, so it is granted the lock in that window: the interleave is driven
 // rather than waited for.
 func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
+	t.Parallel()
 	service, artifactID := newTestService(t)
 	service.settle = time.Hour
 	body := make([]string, 0, 1200)
@@ -216,29 +223,32 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 		marker := fmt.Sprintf("DOOMED-%d under the browser's cursor", round)
 		editLiveTree(t, service, artifactID, appendBlocks(t, marker))
 
-		// Precompute the tree the browser's delete will write, so that when it fires it does
-		// nothing but take the document's mutex and apply.
-		var want *pmdoc.Node
+		// The marker was just appended, so its paragraph is last. Locate that exact text without
+		// reading and rendering the entire document again to prepare a one-paragraph deletion.
+		markerIndex := -1
 		if err := service.srv.Apply(context.Background(), artifactID,
 			func(doc *crdt.Doc, _ func(func(*crdt.Transaction))) {
-				tree, err := pmdoc.Read(doc.GetXmlFragment(fragmentName))
-				if err != nil {
+				children := doc.GetXmlFragment(fragmentName).Children()
+				if len(children) == 0 {
 					return
 				}
-				kept := tree.Children[:0]
-				for _, child := range tree.Children {
-					rendered, renderErr := renderTree(&pmdoc.Node{Type: "doc", Children: []*pmdoc.Node{child}})
-					if renderErr != nil || strings.Contains(rendered, marker) {
-						continue
-					}
-					kept = append(kept, child)
+				last, ok := children[len(children)-1].(*crdt.YXmlElement)
+				if !ok || last.NodeName != "paragraph" {
+					return
 				}
-				tree.Children = kept
-				want = tree
+				content := last.Children()
+				if len(content) != 1 {
+					return
+				}
+				text, ok := content[0].(*crdt.YXmlText)
+				if !ok || text.ToString() != marker {
+					return
+				}
+				markerIndex = len(children) - 1
 			}); err != nil && !strings.Contains(err.Error(), "no changes") {
 			t.Fatalf("round %d: precompute the browser's delete: %v", round, err)
 		}
-		if want == nil {
+		if markerIndex < 0 {
 			t.Fatalf("round %d: could not precompute the browser's delete", round)
 		}
 
@@ -262,7 +272,7 @@ func TestACaptureNeverReusesARenderingTheForkHasMovedPast(t *testing.T) {
 			_ = service.srv.Apply(context.Background(), artifactID,
 				func(doc *crdt.Doc, transact func(func(*crdt.Transaction))) {
 					fragment := doc.GetXmlFragment(fragmentName)
-					transact(func(txn *crdt.Transaction) { _ = pmdoc.Update(txn, fragment, want) })
+					transact(func(txn *crdt.Transaction) { fragment.Delete(txn, markerIndex, 1) })
 				})
 		}()
 

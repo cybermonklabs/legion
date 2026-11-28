@@ -13,7 +13,7 @@ import { projectIssuesQueryKey } from "../features/project/issue-filters";
 import type { AdvancesListing } from "../features/project/issues-table-data";
 import { compareTimestamps, isTimestamp } from "../lib/timestamps";
 
-import { api } from "./client";
+import { api, REFERENCE_TARGETS_MAX, REFERENCE_TARGETS_MAX_QUERY_CHARS } from "./client";
 import { liveSocketFor } from "./live-socket";
 import type {
   DeliveryLiveView,
@@ -22,13 +22,16 @@ import type {
   DeliveryTimelineWithMeasures,
   InboxRow,
   IssueDetails,
+  LegionIssueResponse,
   MyRepliesResponse,
+  ReferenceTarget,
 } from "./types";
 
 /** The signed-in principal (`/auth/whoami`). One key shared by every surface that reads it; it
  *  names the person by lowercase email, the form issue assignees carry. While it answers
  *  `EVENT_HEAD_UNAVAILABLE` it is asked again for as long as that lasts (`queryRetry`), so the
- *  shell shows its skeleton, never the error page. */
+ *  shell shows its skeleton, never the error page. News that who is signed in may have changed
+ *  asks it again through `askSignInAgain` (`query-client.ts`), never a bare invalidation. */
 export const whoAmIQuery = () =>
   queryOptions({
     queryKey: ["whoami"],
@@ -132,6 +135,28 @@ export const issueCollaboratorsQuery = (key: string | undefined) =>
     },
   });
 
+/** The step records Legion wrote of one issue (`GET /api/v1/issues/{key}/steps`), which the Steps
+ *  tab draws. A step write appends no event of its own, so the event feed refreshes this key on
+ *  the issue's events that come with a phase moving (`changesSteps` in `event-refresh.ts`), each
+ *  naming it exactly as it names every issue target. The tab reads it through its catch-up,
+ *  which every refresh that reaches the key starts, and through Retry
+ *  (`features/steps/StepsTab.tsx`). */
+export const issueStepsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["issue", key, "steps"],
+    queryFn: () => api.listSteps(key),
+  });
+
+/** Each version of each phase handoff of one issue, without its body
+ *  (`GET /api/v1/issues/{key}/handoffs`): the Conversation's handoff cards and Dashboard's phase
+ *  track read the one key, which a handoff's event refreshes (`api/event-refresh.ts`). A card
+ *  reads a handoff's body when expanded. */
+export const handoffsQuery = (key: string) =>
+  queryOptions({
+    queryKey: ["handoffs", key],
+    queryFn: () => api.listHandoffs(key),
+  });
+
 /** The live blocks of one document (`GET /api/v1/artifacts/{id}/blocks`): the document's own
  *  reference panel and the Plan tab's task list read the same key, so a tab opened after the
  *  document finds it answered. */
@@ -140,6 +165,71 @@ export const artifactBlocksQuery = (id: string) =>
     queryKey: ["artifact", id, "blocks"],
     queryFn: () => api.getArtifactBlocks(id),
   });
+
+/** The batches `referenceTargetsQuery` reads `named` in, in its order: each at most
+ *  `REFERENCE_TARGETS_MAX` references and at most `REFERENCE_TARGETS_MAX_QUERY_CHARS` characters
+ *  of query string, written as the client writes it - `ref=<encoded>` for each reference, joined
+ *  by `&` - except a batch of one address longer than that budget, which goes alone and passes
+ *  it. Every reference is in exactly one batch. */
+function referenceTargetBatches(named: readonly string[]): string[][] {
+  const batches: string[][] = [];
+  let batch: string[] = [];
+  let written = 0;
+  for (const ref of named) {
+    // What this address writes into the query string: `ref=<encoded>`, after the `&` that
+    // separates it from the address before it when the batch already holds one. Only such a
+    // batch can be full, so the check below counts that `&`.
+    const length = new URLSearchParams({ ref }).toString().length;
+    const full =
+      batch.length === REFERENCE_TARGETS_MAX ||
+      written + 1 + length > REFERENCE_TARGETS_MAX_QUERY_CHARS;
+    // An address longer than the whole budget still goes out, alone: a batch of none names
+    // nothing at all, which is what this read is here to avoid.
+    if (full && batch.length > 0) {
+      batches.push(batch);
+      batch = [];
+      written = 0;
+    }
+    written += (batch.length > 0 ? 1 : 0) + length;
+    batch.push(ref);
+  }
+  if (batch.length > 0) batches.push(batch);
+  return batches;
+}
+
+/** What a names read (`referenceTargetsQuery`) holds: one member per address it names. */
+export interface ReferenceTargetsAnswer {
+  readonly targets: readonly ReferenceTarget[];
+}
+
+/** What the `dispatch://` references a page names point at (`GET /api/v1/reference-targets`): a
+ *  page that names many references reads their names with this query, in as few requests as
+ *  both bounds of one request allow. The key holds the references themselves, sorted, so two
+ *  surfaces naming the same set share one answer and a set that grows by one is a read of its
+ *  own rather than a stale hit. An empty set is never read: `enabled` is off, because a read of
+ *  nothing still costs a request.
+ *
+ *  A set past either bound of one request is read in batches (`referenceTargetBatches`), every
+ *  address named in exactly one of them, so a page naming more references than one request
+ *  carries draws every row with its words. The bounds are the server's cap
+ *  (`REFERENCE_TARGETS_MAX`, which it refuses with `400 CAP_EXCEEDED`) and the client's budget
+ *  for the request line (`REFERENCE_TARGETS_MAX_QUERY_CHARS`), which a full batch of comment or
+ *  message addresses passes. A set inside both bounds is one request. The batches are built
+ *  when the query runs, not when its options are made.
+ */
+export const referenceTargetsQuery = (refs: readonly string[]) => {
+  const named = [...new Set(refs)].sort();
+  return queryOptions({
+    enabled: named.length > 0,
+    queryKey: ["reference-targets", named],
+    queryFn: async (): Promise<ReferenceTargetsAnswer> => {
+      const answers = await Promise.all(
+        referenceTargetBatches(named).map((batch) => api.getReferenceTargets(batch))
+      );
+      return { targets: answers.flatMap((answer) => answer.targets ?? []) };
+    },
+  });
+};
 
 /** The viewer's per-agent conversation state: each session's Clear, read mark, count of unread
  *  replies to the viewer's direct messages, and `pinned_at` where the viewer pinned it
@@ -334,11 +424,13 @@ function boardMovesSettled(context: QueryFunctionContext, project: string): Prom
   return settled.promise;
 }
 
-/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, in the
- *  statuses it names, with their move into backlog or icebox where it asks for that. `open`
- *  leaves the closed issues out, as the project listing's own flag does. */
+/** What `GET /api/v1/issues` is asked for one advances listing: the issues advancing it, only
+ *  those whose own row names it where it asks for that (`own`), in the statuses it names, with
+ *  their move into backlog or icebox where it asks for that. `open` leaves the closed issues
+ *  out, as the project listing's own flag does. */
 export const advancesIssuesParams = (listing: AdvancesListing, open = false) => ({
   advances: [listing.advances],
+  ...(listing.own ? { own: true } : {}),
   ...(listing.statuses === undefined ? {} : { status: [...listing.statuses] }),
   ...(listing.moved ? { moved: true } : {}),
   ...(open ? { open: true } : {}),
@@ -359,6 +451,7 @@ export const advancesIssuesQuery = (listing: AdvancesListing, open = false) =>
       "issues",
       "advances",
       listing.advances,
+      ...(listing.own ? ["own"] : []),
       ...(listing.statuses === undefined ? [] : ["status", ...listing.statuses]),
       ...(listing.moved ? ["moved"] : []),
       ...(open ? ["open"] : []),
@@ -416,19 +509,27 @@ interface DeliveryLiveBodies {
   readonly timeline: DeliveryTimelineWithMeasures;
   readonly measures: DeliveryMeasuresResponse;
   readonly pipeline: DeliveryPipelineResponse;
+  /** One issue's Legion state, `GET /api/v1/issues/{key}/legion`'s body: not a delivery view,
+   *  but served by the same hub, so `api/legion-issue.ts` subscribes it through `subscribeLive`. */
+  readonly legion_issue: LegionIssueResponse;
 }
 
-/** The live view's answer, which is the body of the GET route its kind mirrors. */
-function subscribeLive<V extends DeliveryLiveView>(
+/** The live view's answer, which is the body of the GET route its kind mirrors. Only the views
+ *  this page subscribes — timeline, measures and pipeline — are keyed here; the socket serves
+ *  other kinds this page does not read. */
+function subscribeLive<K extends keyof DeliveryLiveBodies>(
   context: QueryFunctionContext,
-  view: V
-): Promise<DeliveryLiveBodies[V["kind"]]> {
+  view: DeliveryLiveView & { readonly kind: K }
+): Promise<DeliveryLiveBodies[K]> {
   // The socket answers each view with its own route's body (packages/contracts DeliveryLiveView);
   // the frame carries the union, and the view's kind names the member.
   return liveSocketFor(context.client).subscribe(context.queryKey, view) as Promise<
-    DeliveryLiveBodies[V["kind"]]
+    DeliveryLiveBodies[K]
   >;
 }
+
+/** `api/legion-issue.ts` builds its live query of an issue's Legion state from these two. */
+export { LIVE, subscribeLive };
 
 /** The delivery timeline, live: the window, the search and every facet, applied by Dispatch
  *  (LEGION-567's plan, "API"), keyed by the view so a filter change subscribes its own entry. */
@@ -473,4 +574,26 @@ export const deliverySettingsQuery = () =>
   queryOptions({
     queryKey: ["delivery-settings"],
     queryFn: () => api.getDeliverySettings(),
+  });
+
+/** Where the next page of an offset-paged list starts, for an infinite query's
+ *  `getNextPageParam`: after the rows this page answered, and nowhere once those reach the
+ *  total the answer carries. `GET /api/v1/me/answers` and `GET /api/v1/people/{login}/nodes`
+ *  both answer that shape (api.myAnswersQuery), so both pages read their next page from here. */
+export const nextOffsetPage = (last: {
+  offset: number;
+  rows?: readonly unknown[] | null;
+  total: number;
+}): number | undefined => {
+  const read = last.offset + (last.rows ?? []).length;
+  return read < last.total ? read : undefined;
+};
+
+/** One project's Legion daemon, or `null` for a project that names none — not a failure. Each
+ *  project is its own entry: the Settings page's Legion section reads one entry per project
+ *  (`useLegionDaemons`), since no route lists them. */
+export const legionDaemonQuery = (project: string) =>
+  queryOptions({
+    queryKey: ["legion-daemon", project],
+    queryFn: () => api.getLegionDaemon(project),
   });

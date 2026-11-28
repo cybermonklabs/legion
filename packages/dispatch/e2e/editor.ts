@@ -14,6 +14,7 @@ import type { Ask } from "../web/src/api/types";
 
 import { readField } from "../web/src/features/doc/sync-frame";
 import { createIssue, createProject, getArtifactBlocks, getArtifactText, getIssue } from "./api";
+import { settledState } from "./settled";
 import { asUser } from "./users";
 
 export function documentEditor(page: Page): Locator {
@@ -129,7 +130,7 @@ export function cursorLabel(page: Page, name: string): Locator {
  * does: a DOM Range plus the selectionchange ProseMirror's DOMObserver listens to. A quote no one
  * text node holds - text another mark's span splits - is found across the text nodes in order. */
 export async function selectEditorText(page: Page, quote: string): Promise<void> {
-  await setEditorRange(page, { extent: "whole", quote });
+  await setEditorRange(documentEditor(page), { extent: "whole", quote });
   await actionBar(page).waitFor({ state: "visible" });
 }
 
@@ -138,7 +139,7 @@ export async function selectEditorText(page: Page, quote: string): Promise<void>
  *  closed issue's document, where no caret can enter) included. `selectTextIn` is the same for a
  *  quote inside one element of an editable document. */
 export function selectEditorQuote(page: Page, quote: string): Promise<void> {
-  return setEditorRange(page, { anyText: true, extent: "whole", quote });
+  return setEditorRange(documentEditor(page), { anyText: true, extent: "whole", quote });
 }
 
 /** Puts the caret directly before or after the first occurrence of `quote` among the text a caret
@@ -151,14 +152,22 @@ export function placeCaret(
   quote: string,
   scope?: Locator
 ): Promise<void> {
-  return setEditorRange(page, { extent: edge, quote }, scope);
+  return setEditorRange(documentEditor(page), { extent: edge, quote }, scope);
 }
 
 /** Selects the first occurrence of `quote` among the text a caret can enter inside `scope`, an
  * element inside the editor, as `selectEditorText` does but without waiting for the selection bar.
  * Its text nodes read as one text, so a quote may run from one paragraph into the next. */
 export function selectTextIn(page: Page, scope: Locator, quote: string): Promise<void> {
-  return setEditorRange(page, { extent: "whole", quote }, scope);
+  return setEditorRange(documentEditor(page), { extent: "whole", quote }, scope);
+}
+
+/** Puts the caret at the end of the last text a caret can enter in `editor`, a ProseMirror editor
+ *  other than a document's own, such as a priority's description, so that ProseMirror holds the
+ *  caret there before the next key (`setEditorRange`). A click and ControlOrMeta+End do not: the
+ *  key's caret move reaches ProseMirror after the focus handler has put the click's caret back. */
+export function placeCaretAtEnd(editor: Locator): Promise<void> {
+  return setEditorRange(editor, { extent: "end" });
 }
 
 /** Over, before or after the first occurrence of `quote`, or the end of the last text a caret can
@@ -167,14 +176,17 @@ type EditorRange =
   | { anyText?: boolean; extent: "whole" | "before" | "after"; quote: string }
   | { extent: "end" };
 
-/** Sets the page's selection and dispatches the selectionchange ProseMirror's DOMObserver reads, so
- * the editor takes the selection before this returns. Every target is found only in the text a
- * caret can enter (any text, for `anyText`), inside `scope` when one is given, else the whole
- * editor. Without that read,
+/** Sets the page's selection in `editor` and dispatches the selectionchange ProseMirror's
+ * DOMObserver reads, so the editor takes the selection before this returns. Every target is found
+ * only in the text a caret can enter (any text, for `anyText`), inside `scope` when one is given,
+ * else the whole editor. Without that read,
  * ProseMirror's focus handler (prosemirror-view `handlers.focus`) writes the editor's own selection
  * back to the page 20 ms after focus and undoes a caret placed in between. */
-async function setEditorRange(page: Page, target: EditorRange, scope?: Locator): Promise<void> {
-  const editor = documentEditor(page);
+async function setEditorRange(
+  editor: Locator,
+  target: EditorRange,
+  scope?: Locator
+): Promise<void> {
   await editor.waitFor();
   await editor.focus();
   await (scope ?? editor).evaluate((root, target) => {
@@ -229,7 +241,7 @@ export async function deleteEditorText(page: Page, quote: string): Promise<void>
 /** Presses Enter at the end of the document's last text, then types `text`: after a heading or a
  * paragraph, that is a paragraph of its own. */
 export async function typeAtEnd(page: Page, text: string): Promise<void> {
-  await setEditorRange(page, { extent: "end" });
+  await setEditorRange(documentEditor(page), { extent: "end" });
   await page.keyboard.press("Enter");
   await page.keyboard.type(text);
 }
@@ -247,13 +259,19 @@ export function openedThreadCard(page: Page, project: string, rootId: string): L
 }
 
 // On the phone layout the margin is a bottom sheet over the document. Acting on a selection
-// opens it; close it again before selecting another range, as a person would.
+// opens it; close it again before selecting another range, as a person would. The sheet says
+// whether it is open, and is read once the page has drawn it rather than at the instant it
+// attaches.
 export async function setSheet(page: Page, project: string, open: boolean): Promise<void> {
   if (project !== "iphone") {
     return;
   }
   const sheet = page.getByTestId("margin-sheet");
-  if ((await sheet.getAttribute("data-expanded")) !== String(open)) {
+  const shown = await settledState("the margin sheet", [
+    ["open", sheet.and(page.locator('[data-expanded="true"]'))],
+    ["shut", sheet.and(page.locator('[data-expanded="false"]'))],
+  ]);
+  if (shown !== (open ? "open" : "shut")) {
     if (open) {
       await page.getByRole("button", { name: /Open review panel/ }).click();
     } else {
@@ -320,19 +338,6 @@ export function needsYouCards(page: Page): Locator {
   return page.locator('[data-margin-section="needs-you"]');
 }
 
-export async function replyInThread(page: Page, rootId: string, body: string): Promise<void> {
-  const card = threadCard(page, rootId);
-  if ((await card.getAttribute("aria-expanded")) !== "true") {
-    await card.getByRole("button").click();
-  }
-  const phoneThread = page.getByRole("dialog", { name: "Thread" });
-  const thread = (await phoneThread.count()) === 0 ? card : phoneThread;
-  const composer = thread.getByRole("form", { name: "Comment composer" });
-  const reply = composer.getByRole("textbox", { name: "Reply" });
-  await reply.fill(body);
-  await reply.press("Control+Enter");
-  await expect(composer.getByRole("textbox", { name: "Reply" })).toHaveValue("");
-}
 /** Document sockets the page has opened since the call, open or closed: every document's, or with
  *  `documentId` that document's alone, for a page that holds another document beside it. */
 export function countDocumentSockets(page: Page, documentId?: string): () => number {
@@ -485,18 +490,24 @@ export async function documentTransport(
 /**
  * Holds the first request `page` makes for a URL matching `url` and lets every later one through,
  * so a test decides when that one download ends: `held` resolves with its route once the page has
- * made it, for the test to abort or continue. Install it before the navigation that makes the
- * request. The route stays installed for the page's life on purpose. A `{ times: 1 }` route does
- * not stay: Playwright removes an expiring route from the page before its handler runs, and a page
- * left with no route stops intercepting while that request is still held (playwright-core 1.63,
+ * made it, for the test to abort or continue. `method` narrows the request held to that method's
+ * first, for a URL the page also reaches with another: every request of another method goes
+ * through, before and after it. Install it before the navigation that makes the request. The
+ * route stays installed for the page's life on purpose. A `{ times: 1 }` route does not stay:
+ * Playwright removes an expiring route from the page before its handler runs, and a page left
+ * with no route stops intercepting while that request is still held (playwright-core 1.63,
  * `Page._onRoute`). In Chromium the reload a failed chunk starts then got no response in 12 of 40
  * runs.
  */
-export async function holdFirstRequest(page: Page, url: RegExp): Promise<{ held: Promise<Route> }> {
+export async function holdFirstRequest(
+  page: Page,
+  url: RegExp,
+  options: { method?: string } = {}
+): Promise<{ held: Promise<Route> }> {
   const first = Promise.withResolvers<Route>();
   let holding = false;
   await page.route(url, async (route) => {
-    if (!holding) {
+    if (!holding && (options.method === undefined || route.request().method() === options.method)) {
       holding = true;
       first.resolve(route);
       return;

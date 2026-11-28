@@ -1,0 +1,8 @@
+kind: Changed
+body: |-
+    The bundled Dispatch client sends a keyed write whose answer was lost again under its key whatever
+    Dispatch's `/healthz` answers, and asks nothing first: every Dispatch that carries `b1c42d1d7d`
+    runs the keyed layer, and the client no longer reads `/healthz` before it resends a keyed write.
+time: 2026-11-18T03:57:52.85445965Z
+custom:
+    Issue: pr4379

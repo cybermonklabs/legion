@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"testing"
-	"time"
 
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/dispatch/model"
@@ -32,6 +31,7 @@ import (
 // it fails, nothing is pinned, and the copy is the outbox's: the pass that reads the row next
 // publishes it under the event's own key.
 func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
+	t.Parallel()
 	const lapsedRole = "mentioned-first-whose-attempt-is-past-its-lease"
 	const liveRole = "mentioned-second-whose-attempt-is-live"
 	const holder = "ses_claims_the_issue"
@@ -61,7 +61,7 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	seedDelivery(t, rig.database, commentID, live, "", "pending")
 
 	holding(t, rig.deps()).scan(ctx, unfenced{})
-	if row := readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder)); row.settled || row.published {
+	if row := readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder)); row.settled || row.published {
 		t.Fatalf("the batch left the claimant's held copy settled=%v published=%v, want the unpublished row the lapsed attempt's state owes every key of this comment",
 			row.settled, row.published)
 	}
@@ -78,13 +78,12 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	time.Sleep(time.Second)
-	if got := claimant.received(); len(got) != 0 {
+	if got := claimant.receivedNow(t, rig.client); len(got) != 0 {
 		t.Fatalf("the fallback pass sent %s %v while the live unnamed mention, which its sender can pin to this very claimant, is still being sent: the mention would land beside the copy under %s",
 			holder, keysOf(got),
 			contracts.AgentSendDedupeKey(holder, model.CommentMentionIdempotencyKey(commentID, live, "steer")))
 	}
-	row := readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder))
+	row := readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder))
 	if row.settled || row.published || row.attempts != 0 {
 		t.Fatalf("the fallback pass left the claimant's held copy settled=%v published=%v attempts=%d, want it unsettled, unpublished and no attempt counted: a wait is no failure",
 			row.settled, row.published, row.attempts)
@@ -105,13 +104,13 @@ func TestAHeldCopyWaitsForALiveUnnamedMentionBesideALapsedOne(t *testing.T) {
 	}
 
 	publishFallbackCopies(ctx, rig.deps(), unfenced{}, holdingProcess(t, rig.database))
-	waitFor(t, 10*time.Second, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
+	waitFor(t, "the copy both mentions' failure owes", func() bool { return len(claimant.received()) > 0 })
 	want := []string{fmt.Sprintf("dispatch-%d", comment.ID)}
 	if got := keysOf(claimant.received()); !slices.Equal(got, want) {
 		t.Fatalf("%s was sent %v once both unnamed mentions had failed, want %v: no mention of the comment is coming, so the copy is the outbox's and carries the event's own key",
 			holder, got, want)
 	}
-	if row := readHeldCopy(t, rig.database, commentID, contracts.AgentSubject(holder)); !row.settled || !row.published {
+	if row := readHeldCopy(t, rig.database, commentID, contracts.LegacyAgentSubject(holder)); !row.settled || !row.published {
 		t.Fatalf("the held copy is settled=%v published=%v after the copy went out, want it settled and marked published",
 			row.settled, row.published)
 	}

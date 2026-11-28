@@ -16,6 +16,7 @@ import { liveSocketFor } from "../api/live-socket";
 import { DispatchQueryClient } from "../api/query-client";
 import type { AuthenticatedUser, DispatchEvent, LiveServerFrame } from "../api/types";
 import { credentialPendingQuery } from "../features/credentials/pending";
+import { quietConsoleError } from "./act-warnings";
 import { realClock, tick } from "./fake-clock";
 import {
   type FakeLiveSocket,
@@ -359,7 +360,7 @@ test("an unknown event type refreshes everything, at most once per window", asyn
 test("an event this page cannot read is skipped and refreshes everything", async () => {
   const queryClient = newClient({ staleTime: Number.POSITIVE_INFINITY });
   const wholeCache = countWholeCacheRefreshes(queryClient);
-  const logged = spyOn(console, "error").mockImplementation(() => {});
+  const logged = quietConsoleError();
   const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
   try {
     const { socket, sub } = openFeed();
@@ -486,26 +487,27 @@ const firstOpenAfterFailure = [
   ["an online event", () => window.dispatchEvent(new Event("online"))],
 ] as const;
 
-test.each(
-  firstOpenAfterFailure
-)("the open after a first handshake that failed refreshes everything (%s)", async (_reopen, reopen) => {
-  const random = spyOn(Math, "random").mockReturnValue(0);
-  const queryClient = newClient();
-  const wholeCache = countWholeCacheRefreshes(queryClient);
-  const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
-  try {
-    // What a network change does to a handshake: it fails before the socket opens.
-    act(() => sockets.latest().fail());
-    act(() => reopen());
-    await waitFor(() => expect(sockets.sockets).toHaveLength(2));
-    openFeed();
-    await waitFor(() => expect(wholeCache.count()).toBe(1));
-  } finally {
-    hook.unmount();
-    random.mockRestore();
-    wholeCache.restore();
+test.each(firstOpenAfterFailure)(
+  "the open after a first handshake that failed refreshes everything (%s)",
+  async (_reopen, reopen) => {
+    const random = spyOn(Math, "random").mockReturnValue(0);
+    const queryClient = newClient();
+    const wholeCache = countWholeCacheRefreshes(queryClient);
+    const hook = renderHook(() => useEventFeed(), { wrapper: wrapperFor(queryClient) });
+    try {
+      // What a network change does to a handshake: it fails before the socket opens.
+      act(() => sockets.latest().fail());
+      act(() => reopen());
+      await waitFor(() => expect(sockets.sockets).toHaveLength(2));
+      openFeed();
+      await waitFor(() => expect(wholeCache.count()).toBe(1));
+    } finally {
+      hook.unmount();
+      random.mockRestore();
+      wholeCache.restore();
+    }
   }
-});
+);
 
 test("the first subscription resumes from the sign-in check's event head", async () => {
   jest.useFakeTimers();

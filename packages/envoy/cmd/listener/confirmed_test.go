@@ -21,6 +21,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // publishTo publishes item to subject over core NATS and flushes, as a router that forwards an
@@ -105,8 +106,13 @@ func withRoleClaimDrain(t *testing.T, d *listenerDeps) *listenerDeps {
 		roleDeadLetters:     metrics.New().NewCounter("test_role_dead_letters", "test"),
 		roleKeptUndecodable: metrics.New().NewCounter("test_role_kept_undecodable", "test"),
 		publishDeadLetter:   d.client.PublishStoredAs,
+		publishExpiryNotice: d.client.PublishKeptCopyExpiry,
+		keepPublish:         d.client.PublishStoredAck,
 		roleKeepDrains:      newRoleKeepGuards(),
 		now:                 time.Now,
+		// Whether the rig's NATS user holds the session consumers' calls, asked of the server at
+		// each call: the rig opens no session delivery, whose answer main.go wires.
+		consumerGrant: answeredBy(func(ctx context.Context) bool { return d.client.ProbeConsumerCalls(ctx) == nil }),
 	}
 	return d
 }
@@ -129,7 +135,7 @@ func startStandIn(t *testing.T, uri, sessionID string) <-chan contracts.Envelope
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	frames := make(chan contracts.Envelope, 16)
-	subscription, err := conn.Subscribe(contracts.AgentSubject(sessionID), func(message *natsgo.Msg) {
+	subscription, err := conn.Subscribe(contracts.LegacyAgentSubject(sessionID), func(message *natsgo.Msg) {
 		var frame contracts.Envelope
 		if err := json.Unmarshal(message.Data, &frame); err != nil {
 			t.Errorf("stand-in %s decode frame: %v", sessionID, err)
@@ -177,7 +183,7 @@ func expectFrames(t *testing.T, frames <-chan contracts.Envelope, want int, quie
 		select {
 		case frame := <-frames:
 			got = append(got, frame)
-		case <-time.After(5 * time.Second):
+		case <-time.After(listenerWaitBound(t)):
 			t.Fatalf("the stand-in received %d frames, want %d", len(got), want)
 		}
 	}
@@ -214,6 +220,7 @@ func exceptionProbe(t *testing.T, client *bus.Client) *natsgo.Subscription {
 // A live holder answers no receipt, so its forward counts as delivered once the stream stored it:
 // the sender is answered 200 after the one forward, and the holder is not sent the envelope again.
 func TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "stored-forward"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_holder", role, nil)
@@ -224,7 +231,7 @@ func TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status %d after %s, want 200; body %s", recorder.Code, elapsed, recorder.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
@@ -244,6 +251,7 @@ func TestPublishRouteAnswersStoredOnceTheHoldersForwardIsKept(t *testing.T) {
 // the holder's agent subject, where the holder's consumer delivers it with acknowledgement and
 // redelivery. Nothing answers a receipt there, and the send waits for none.
 func TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "offline-holder"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_offline", role, nil)
@@ -253,14 +261,14 @@ func TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected(t *testing.T) 
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status %d after %s, want 200; body %s", recorder.Code, elapsed, recorder.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
 	if answer.Holder != "ses_offline" || answer.DedupeKey != "publish.offline-1" {
 		t.Fatalf("answer %s, want holder ses_offline and dedupe key publish.offline-1", recorder.Body.String())
 	}
-	subject := contracts.AgentSubject("ses_offline")
+	subject := contracts.LegacyAgentSubject("ses_offline")
 	stored, err := harness.client.JS().GetLastMsg(bus.Stream, subject)
 	if err != nil {
 		t.Fatalf("read the stream's forward on %s: %v", subject, err)
@@ -286,6 +294,7 @@ func TestPublishRouteStoresTheForwardForAHolderThatIsNotConnected(t *testing.T) 
 // of the first one's confirmation - forward the envelope to the holder twice, and the stream
 // stores that one copy.
 func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "stored-once"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_one_copy", role, nil)
@@ -305,7 +314,7 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 			t.Fatalf("forward %d: dedupe key %s, want %s", i+1, frame.DedupeKey, roleForwardDedupePrefix+"publish.stored-once-1")
 		}
 	}
-	subject := contracts.AgentSubject("ses_one_copy")
+	subject := contracts.LegacyAgentSubject("ses_one_copy")
 	if count := storedForwards(t, harness.client, subject); count != 1 {
 		t.Fatalf("the stream holds %d messages on %s after two forwards of publish.stored-once-1, want the one copy their Nats-Msg-Id keeps", count, subject)
 	}
@@ -317,17 +326,19 @@ func TestPublishRouteStoresOneCopyOfARoleForwardSentTwice(t *testing.T) {
 // /v1/roles/<role> gives the same stalled read - the bus-unavailable 503 with Retry-After: 1,
 // naming the read - rather than holding the sender past its window.
 func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
+	// Not parallel: it requires the 503 at sendRequestBudget (3.5 s) and inside 4.5 s, a bound
+	// one second past what it waits for.
 	srv, uri := testnats.Start(t)
 	client, err := bus.ConnectOwningStream([]string{uri}, bus.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("connect: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -345,7 +356,7 @@ func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
 	if got := recorder.Header().Get("Retry-After"); got != "1" {
 		t.Fatalf("Retry-After = %q, want 1", got)
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the answer %s: %v", recorder.Body.String(), err)
 	}
@@ -357,6 +368,7 @@ func TestPublishRouteAnswersBusUnavailableWhenTheClaimReadStalls(t *testing.T) {
 // A holder that does not advertise the payload's delivery mode is refused as /v1/messages/send
 // refuses it, naming the holder, and is sent nothing.
 func TestPublishRouteRefusesADeliveryModeTheHolderDoesNotAdvertise(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "no-steer"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_aside_only", role, []string{"aside"})
@@ -375,6 +387,7 @@ func TestPublishRouteRefusesADeliveryModeTheHolderDoesNotAdvertise(t *testing.T)
 // A sender that holds the role itself is answered 200 and nothing is sent, to the holder or on the
 // role lane, as the role lane skips an echo.
 func TestPublishRouteSendsNothingToASenderHoldingTheRole(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "self-held"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_self", role, nil)
@@ -392,7 +405,7 @@ func TestPublishRouteSendsNothingToASenderHoldingTheRole(t *testing.T) {
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("status %d, want 200; body %s", recorder.Code, recorder.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(recorder.Body.Bytes(), &answer); err != nil || answer.Holder != "ses_self" {
 		t.Fatalf("answer %s (%v), want holder ses_self", recorder.Body.String(), err)
 	}
@@ -405,6 +418,7 @@ func TestPublishRouteSendsNothingToASenderHoldingTheRole(t *testing.T) {
 // A re-send under the key of a message its holder already confirmed is answered 200 and not
 // forwarded again: the holder took it once.
 func TestPublishRouteDoesNotForwardARepeatKeyItsHolderConfirmed(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const role = "repeat-key"
 	claimRoleFor(t, harness.registry, harness.sessions, "ses_holder", role, nil)
@@ -421,7 +435,7 @@ func TestPublishRouteDoesNotForwardARepeatKeyItsHolderConfirmed(t *testing.T) {
 	if repeat.Code != http.StatusOK {
 		t.Fatalf("repeat send: status %d, want 200; body %s", repeat.Code, repeat.Body.String())
 	}
-	var answer publishResponse
+	var answer listenerwire.PublishResponse
 	if err := json.Unmarshal(repeat.Body.Bytes(), &answer); err != nil || answer.Holder != "ses_holder" || answer.DedupeKey != "publish.repeat-1" {
 		t.Fatalf("repeat answer %s (%v), want holder ses_holder under publish.repeat-1", repeat.Body.String(), err)
 	}
@@ -432,6 +446,7 @@ func TestPublishRouteDoesNotForwardARepeatKeyItsHolderConfirmed(t *testing.T) {
 // the durable acknowledges it and delivers it to nobody, so a session subscribed to the copy's
 // topic is not given the message a second time.
 func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
+	t.Parallel()
 	harness := newListenerDeliveryHarness(t)
 	const topic = "notifications.team.stored-copy"
 	harness.registerFanoutTarget(t, "ses_subscriber", topic, nil)
@@ -443,8 +458,8 @@ func TestDurableAcknowledgesAStoredForwardCopyAndDeliversNothing(t *testing.T) {
 	t.Cleanup(func() { _ = subscription.Unsubscribe() })
 
 	forwardCopy := listenerTestEnvelope(topic, "publish.stored-copy")
-	publishTo(t, harness.client, contracts.AgentSubject("ses_self_subscribed"), forwardCopy)
-	deadline := time.Now().Add(5 * time.Second)
+	publishTo(t, harness.client, contracts.LegacyAgentSubject("ses_self_subscribed"), forwardCopy)
+	deadline := time.Now().Add(listenerWaitBound(t))
 	for {
 		info, err := harness.client.JS().ConsumerInfo(bus.Stream, consumer)
 		if err != nil {

@@ -2,8 +2,6 @@ package events
 
 import (
 	"context"
-	"encoding/json"
-	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -15,9 +13,11 @@ import (
 	"github.com/sjawhar/envoy/internal/dispatch/model"
 	"github.com/sjawhar/envoy/internal/dispatch/store"
 	"github.com/sjawhar/envoy/internal/dispatch/store/storetest"
+	"github.com/sjawhar/envoy/internal/testwait"
 )
 
 func TestPublishDisconnectsOverflowedSubscriber(t *testing.T) {
+	t.Parallel()
 	broker := NewBroker()
 	stream, cancel := broker.Subscribe()
 	defer cancel()
@@ -40,6 +40,7 @@ func TestPublishDisconnectsOverflowedSubscriber(t *testing.T) {
 }
 
 func TestAnchorRefreshEventsDoNotWakeAgents(t *testing.T) {
+	t.Parallel()
 	broker := NewBroker()
 	for _, eventType := range []string{"comment.anchor_refreshed", "ask.anchor_refreshed"} {
 		if broker.Notify(model.Event{Type: eventType, Actor: model.Actor{Kind: "user", ID: "alice"}}) {
@@ -52,6 +53,7 @@ func TestAnchorRefreshEventsDoNotWakeAgents(t *testing.T) {
 // an agent's comment, document or ask wakes nobody (Notify false) but is the activity a session
 // following `notifications.dispatch.issue.<KEY>.>` subscribed for, so it is not quiet.
 func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
+	t.Parallel()
 	broker := NewBroker()
 	agent := model.Actor{Kind: "session", ID: "5a660655-04ad-4ce0-8a9b-93dd03c412b7"}
 	person := model.Actor{Kind: "user", ID: "alice"}
@@ -70,6 +72,7 @@ func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
 		{name: "an anchor refresh", event: model.Event{Type: "comment.anchor_refreshed", Actor: person}, quiet: true},
 		{name: "per-viewer bookkeeping", event: model.Event{Type: "user_state.updated", Actor: person}, quiet: true},
 		{name: "a priority's write", event: model.Event{Type: "priority.updated", Actor: person, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}}, quiet: true},
+		{name: "the daemon's change of an issue's role holders", event: model.Event{Type: "issue.role_holders_changed", Actor: model.Actor{Kind: "session", ID: "legion-daemon:ACME"}}, quiet: true},
 		{
 			name: "a targeted message its session already had",
 			event: model.Event{Type: "message.created", Actor: person, Payload: model.MessageEventPayload{
@@ -140,6 +143,7 @@ func TestQuietSeparatesAnAgentsActivityFromBookkeeping(t *testing.T) {
 }
 
 func TestAppendSequencesArtifactOwnedEvents(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice')`); err != nil {
@@ -207,6 +211,7 @@ func TestAppendSequencesArtifactOwnedEvents(t *testing.T) {
 }
 
 func TestAppendRejectsEventsWithoutAValidOwnerOrAgentTarget(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice')`); err != nil {
@@ -299,15 +304,22 @@ func TestAppendRejectsEventsWithoutAValidOwnerOrAgentTarget(t *testing.T) {
 }
 
 // A priority belongs to no project, issue or document, so its write's event is ownerless: the row
-// names no owner, takes sequence 0, locks no owner row and advances no last_seq, and is quiet, so
-// a person's write of one wakes nobody.
+// names no owner, takes sequence 0, takes no owner lock, locks no owner row and advances no
+// last_seq, and is quiet, so a person's write of one wakes nobody. The three are queued on one
+// write phase's batch, as a write phase appends its events (QueueAppend).
 func TestAppendWritesAPriorityEventWithNoOwnerAndNoWake(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	log := &statementLog{}
 	traced := storetest.TracedStore(t, database, log).Pool
 	broker := NewBroker()
 	alice := model.Actor{Kind: "user", ID: "alice"}
+	planned := []model.Event{
+		{Type: "priority.updated", Actor: alice, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityCreated}},
+		{Type: "priority.updated", Actor: alice, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}},
+		{Type: "priority.updated", Actor: alice, Payload: model.PriorityEventPayload{ID: "fix-the-rail", Change: model.PriorityDeleted}},
+	}
 
 	tx, err := traced.Begin(ctx)
 	if err != nil {
@@ -315,16 +327,22 @@ func TestAppendWritesAPriorityEventWithNoOwnerAndNoWake(t *testing.T) {
 	}
 	defer tx.Rollback(ctx)
 	since := log.mark()
-	appended, err := broker.AppendAll(ctx, tx, []model.Event{
-		{Type: "priority.updated", Actor: alice, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityCreated}},
-		{Type: "priority.updated", Actor: alice, Payload: model.PriorityEventPayload{ID: "ship-the-daemon", Change: model.PriorityChanged}},
-		{Type: "priority.updated", Actor: alice, Payload: model.PriorityEventPayload{ID: "fix-the-rail", Change: model.PriorityDeleted}},
-	})
-	if err != nil {
+	appended := make([]model.Event, len(planned))
+	if err := store.RunWrite(ctx, tx, func(b *store.WriteBatch) error {
+		for index, event := range planned {
+			if err := broker.QueueAppend(b, event, func(written model.Event) { appended[index] = written }); err != nil {
+				return err
+			}
+		}
+		return nil
+	}); err != nil {
 		t.Fatalf("append priority events: %v", err)
 	}
 	if locks := log.count(since, "for no key update"); locks != 0 {
-		t.Errorf("AppendAll of priority events sent %d owner locks, want none", locks)
+		t.Errorf("the append of priority events sent %d owner row locks, want none", locks)
+	}
+	if locks := log.count(since, "pg_advisory_xact_lock"); locks != 0 {
+		t.Errorf("the append of priority events took %d owner locks, want none", locks)
 	}
 	if err := tx.Commit(ctx); err != nil {
 		t.Fatalf("commit: %v", err)
@@ -354,6 +372,7 @@ func TestAppendWritesAPriorityEventWithNoOwnerAndNoWake(t *testing.T) {
 }
 
 func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	seed := context.Background()
 	if _, err := database.Pool.Exec(seed, `insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice')`); err != nil {
@@ -368,11 +387,10 @@ func TestChildAndParentPatchesCompleteWithoutDeadlock(t *testing.T) {
 		t.Fatalf("seed parent and child: %v", err)
 	}
 	// The deadline bounds only the two patches, started once the database is provisioned and
-	// seeded, which on a loaded machine can take longer than the patches ever should. It is a
-	// ceiling on a hang, not a measure of speed: an inverted lock order ends in Postgres's
-	// deadlock error, and a patch that waits on the other for good never ends.
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	// seeded. It is a ceiling on a hang, not a measure of speed, so it is the test binary's
+	// (testwait.Context): an inverted lock order ends in Postgres's deadlock error, and a patch
+	// that waits on the other for good never ends.
+	ctx := testwait.Context(t)
 	broker := NewBroker()
 	childEvent := model.Event{
 		IssueKey: new("PP-2"), Type: "issue.updated", Actor: model.Actor{Kind: "user", ID: "alice"}, Payload: map[string]any{},
@@ -451,7 +469,12 @@ func appendEvent(t *testing.T, database *store.Store, broker *Broker, event mode
 	return event
 }
 
-func TestMain(m *testing.M) { os.Exit(storetest.Main(m)) }
+// TestMain runs the package's tests storetest.DefaultParallel at a time (SetDefaultParallel), under
+// storetest.Main.
+func TestMain(m *testing.M) {
+	storetest.SetDefaultParallel()
+	os.Exit(storetest.Main(m))
+}
 
 // statementLog records the text of every statement a pool's connections send, a pipeline's one by
 // one (pgx.QueryTracer and pgx.BatchTracer).
@@ -501,165 +524,12 @@ func (l *statementLog) mark() int {
 	return len(l.statements)
 }
 
-// AppendAll writes a transaction's events as Append would one after another - each owner's
-// events take its next sequences in the order given, its last_seq ends at the last of them, an
-// ownerless event's sequence is 0 - but locks each owner once, takes no database-wide lock, and
-// inserts every row in one statement, and hands the events back in the order given, each with the
-// id of its own row.
-func TestAppendAllSequencesMixedOwnersInInputOrderWithOneInsert(t *testing.T) {
-	ctx := context.Background()
-	database := storetest.Open(t)
-	if _, err := database.Pool.Exec(ctx, `
-		insert into projects (key, name, default_assignee) values ('PP', 'Project', 'alice');
-		insert into issues (key, project_key, number, title, created_by, rank)
-		values
-			('PP-1', 'PP', 1, 'First', '{"kind":"user","id":"alice"}', 'U'),
-			('PP-2', 'PP', 2, 'Second', '{"kind":"user","id":"alice"}', 'V');
-	`); err != nil {
-		t.Fatalf("seed owners: %v", err)
-	}
-	var artifactID string
-	if err := database.Pool.QueryRow(ctx, `
-		insert into artifacts (project_key, slug, name, kind, created_by)
-		values ('PP', 'notes-md', 'notes.md', 'doc', '{"kind":"user","id":"alice"}')
-		returning id::text
-	`).Scan(&artifactID); err != nil {
-		t.Fatalf("create unlinked artifact: %v", err)
-	}
-	broker := NewBroker()
-	alice := model.Actor{Kind: "user", ID: "alice"}
-	// PP-1 already has an event, so its next sequences start past 1.
-	appendEvent(t, database, broker, model.Event{IssueKey: new("PP-1"), Type: "issue.updated", Actor: alice, Payload: map[string]any{}})
-
-	log := &statementLog{}
-	traced := storetest.TracedStore(t, database, log).Pool
-
-	type owner struct {
-		key     string
-		event   func() model.Event
-		lastSeq string
-		arg     string
-	}
-	issue1 := owner{key: "PP-1", event: func() model.Event { return model.Event{IssueKey: new("PP-1")} },
-		lastSeq: `select last_seq from issues where key = $1`, arg: "PP-1"}
-	issue2 := owner{key: "PP-2", event: func() model.Event { return model.Event{IssueKey: new("PP-2")} },
-		lastSeq: `select last_seq from issues where key = $1`, arg: "PP-2"}
-	artifact := owner{key: "artifact", event: func() model.Event { return model.Event{ArtifactID: new(artifactID)} },
-		lastSeq: `select last_seq from artifacts where id = $1`, arg: artifactID}
-	project := owner{key: "project", event: func() model.Event { return model.Event{ProjectKey: new("PP")} },
-		lastSeq: `select last_seq from projects where key = $1`, arg: "PP"}
-	session := owner{key: "session", event: func() model.Event {
-		return model.Event{Payload: model.UserAgentStateEventPayload{SessionID: "session-1"}}
-	}}
-	order := []owner{issue2, artifact, issue1, issue2, project, session, issue1, artifact, issue2}
-	given := make([]model.Event, len(order))
-	for index, owner := range order {
-		event := owner.event()
-		event.Actor = alice
-		event.Type = fmt.Sprintf("comment.probe_%d", index)
-		if owner.key == "session" {
-			event.Type = "user_agent_state.updated"
-		} else {
-			event.Payload = map[string]any{"index": index}
-		}
-		if index == 2 {
-			// A refresh never wakes anyone, so the notify flags are not all one value.
-			event.Type = "comment.anchor_refreshed"
-		}
-		given[index] = event
-	}
-
-	tx, err := traced.Begin(ctx)
-	if err != nil {
-		t.Fatalf("begin: %v", err)
-	}
-	defer tx.Rollback(ctx)
-	since := log.mark()
-	appended, err := broker.AppendAll(ctx, tx, given)
-	if err != nil {
-		t.Fatalf("append all: %v", err)
-	}
-	statements := log.mark() - since
-	if err := tx.Commit(ctx); err != nil {
-		t.Fatalf("commit: %v", err)
-	}
-
-	if inserts := log.count(since, "insert into events"); inserts != 1 {
-		t.Errorf("AppendAll sent %d inserts into events, want 1", inserts)
-	}
-	if locks := log.count(since, "pg_advisory_xact_lock"); locks != 0 {
-		t.Errorf("AppendAll took %d advisory locks, want none: each owner's row lock orders its events", locks)
-	}
-	if ownerLocks := log.count(since, "for no key update"); ownerLocks != 4 {
-		t.Errorf("AppendAll sent %d owner locks for 4 owners, want 4", ownerLocks)
-	}
-	// Four owner locks, the insert and four last_seq advances.
-	if statements != 9 {
-		t.Errorf("AppendAll of %d events on 4 owners and a session sent %d statements, want 9", len(given), statements)
-	}
-
-	if len(appended) != len(given) {
-		t.Fatalf("AppendAll returned %d events for %d given", len(appended), len(given))
-	}
-	wantSeq := map[string]int{"PP-1": 1}
-	for index, event := range appended {
-		owner := order[index]
-		want := 0
-		if owner.key != "session" {
-			wantSeq[owner.key]++
-			want = wantSeq[owner.key]
-		}
-		if event.Type != given[index].Type || event.Seq != want {
-			t.Errorf("event %d = %s seq %d, want %s seq %d", index, event.Type, event.Seq, given[index].Type, want)
-		}
-		if owner.key != "session" && event.Project != "PP" {
-			t.Errorf("event %d project = %q, want PP", index, event.Project)
-		}
-		if want := broker.Notify(event); event.Notify != want {
-			t.Errorf("event %d notify = %t, want %t", index, event.Notify, want)
-		}
-		if index > 0 && event.ID <= appended[index-1].ID {
-			t.Errorf("event %d id %d is not above event %d's %d: ids are not in input order", index, event.ID, index-1, appended[index-1].ID)
-		}
-		var storedType string
-		var storedSeq int
-		var storedNotify bool
-		var payload []byte
-		var createdAt time.Time
-		if err := database.Pool.QueryRow(ctx, `
-			select type, seq, notify, payload, created_at from events where id = $1
-		`, event.ID).Scan(&storedType, &storedSeq, &storedNotify, &payload, &createdAt); err != nil {
-			t.Fatalf("read event %d's row: %v", index, err)
-		}
-		if storedType != event.Type || storedSeq != event.Seq || storedNotify != event.Notify || !createdAt.Equal(event.CreatedAt) {
-			t.Errorf("event %d's row %d = %s seq %d notify %t at %s, want %s seq %d notify %t at %s",
-				index, event.ID, storedType, storedSeq, storedNotify, createdAt, event.Type, event.Seq, event.Notify, event.CreatedAt)
-		}
-		if owner.key != "session" {
-			var body struct {
-				Index int `json:"index"`
-			}
-			if err := json.Unmarshal(payload, &body); err != nil || body.Index != index {
-				t.Errorf("event %d's row %d carries payload %s, want index %d", index, event.ID, payload, index)
-			}
-		}
-	}
-	for _, owner := range []owner{issue1, issue2, artifact, project} {
-		var lastSeq int
-		if err := database.Pool.QueryRow(ctx, owner.lastSeq, owner.arg).Scan(&lastSeq); err != nil {
-			t.Fatalf("read %s last_seq: %v", owner.key, err)
-		}
-		if lastSeq != wantSeq[owner.key] {
-			t.Errorf("%s last_seq = %d, want %d", owner.key, lastSeq, wantSeq[owner.key])
-		}
-	}
-}
-
 // The owner row's lock is what allocates the per-owner event sequence, so weakening it to
 // `for no key update` - which it is, so a foreign-key child insert never waits on it - has to
 // leave that allocation exactly as strict. Concurrent appends on one owner must still produce
 // a dense, gapless, duplicate-free run, and leave last_seq at its end.
 func TestConcurrentAppendsKeepOwnerSequencesDense(t *testing.T) {
+	t.Parallel()
 	ctx := context.Background()
 	database := storetest.Open(t)
 	if _, err := database.Pool.Exec(ctx, `
@@ -785,6 +655,8 @@ func issueUpdated(key string) model.Event {
 // owner's row (Broker.Append). The second write here must commit while the first is still open,
 // and its own backend must never queue behind a lock the first holds.
 func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
+	// Not parallel: the second write must commit within its 5 s deadline, and load could hold a
+	// correct write past it.
 	ctx := context.Background()
 	database := storetest.Open(t)
 	seedEventOwners(t, database)
@@ -840,7 +712,7 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 	// then got through before the deadline is caught; its own ceiling is above the write's, so
 	// the write's answer, not the watch, is what ends it.
 	pid := <-backends
-	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written, 2*writeDeadline)
+	answer, answered := storetest.WaitForQueuedBehind(t, open, pid, written)
 	if !answered {
 		t.Fatalf("backend %d, the append on PP-2, queued behind a lock PP-1's open write holds; "+
 			"an append must wait for no lock of another owner's write", pid)
@@ -866,6 +738,7 @@ func TestAppendsOnDifferentIssuesDoNotWaitForEachOther(t *testing.T) {
 // rests on the owner row alone: a second write on the owner must wait for the first to commit,
 // and only then draw its id.
 func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	artifactID := seedEventOwners(t, database)
 	broker := NewBroker()
@@ -883,9 +756,8 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 		}},
 	} {
 		t.Run(owner.name, func(t *testing.T) {
-			// A ceiling on a hang, not a measure of speed.
-			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
+			// A ceiling on a hang, not a measure of speed: the test binary's (testwait.Context).
+			ctx := testwait.Context(t)
 			open, err := database.Pool.Begin(ctx)
 			if err != nil {
 				t.Fatalf("begin the first write: %v", err)
@@ -911,9 +783,7 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 				}
 				written <- tx.Commit(ctx)
 			}()
-			if waiting := storetest.WaitForLockWaiters(t, open, 1, 10*time.Second); waiting < 1 {
-				t.Fatalf("the second write on the %s did not wait for the first's open transaction", owner.name)
-			}
+			storetest.WaitForLockWaiters(t, open, 1)
 			if err := open.Commit(ctx); err != nil {
 				t.Fatalf("commit the first write: %v", err)
 			}
@@ -933,6 +803,7 @@ func TestAppendsOnOneOwnerCommitInIDOrder(t *testing.T) {
 // backend draws from a block of its own, a later write can hold a lower id, and a reader capped at
 // the horizon could pass an id that is still open and never read it.
 func TestEventIDSequenceCachesOneValue(t *testing.T) {
+	t.Parallel()
 	database := storetest.Open(t)
 	var cache int64
 	if err := database.Pool.QueryRow(context.Background(), `

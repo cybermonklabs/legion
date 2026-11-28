@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/sjawhar/legion/daemon/internal/claim"
 )
 
 // projectBodyFile is minimalFile with body as DEMO's whole flow mapping and extra appended at the
@@ -86,6 +88,57 @@ func TestProjectExperimentsTakeAVariantWithInstructionsAndNoOverlay(t *testing.T
 	}
 }
 
+// `roles` carries the issue roles an experiment's arms reach, in the file's order, and a block that
+// names none carries no roles, which is every role: Reaches answers both for a role inside and
+// outside the list.
+func TestProjectExperimentsTakeTheRolesTheirArmsReach(t *testing.T) {
+	block := "{alpha: {mode: random, roles: [implementer, planner], variants: [{name: open, config_files: [/etc/legion-operator/open.yml]}, {name: control}]}, " +
+		"beta: {mode: off, variants: [{name: only}]}}"
+	cfg, err := Load(writeConfigFile(t, experimentsFile(block, "")), noEnv)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	experiments := cfg.Projects["DEMO"].Experiments
+	if want := []claim.Role{claim.RoleImplementer, claim.RolePlanner}; !reflect.DeepEqual(experiments[0].Roles, want) {
+		t.Fatalf("alpha's Roles = %q, want %q", experiments[0].Roles, want)
+	}
+	if experiments[1].Roles != nil {
+		t.Fatalf("beta's Roles = %q, want none, which is every role", experiments[1].Roles)
+	}
+	for _, tc := range []struct {
+		experiment Experiment
+		role       claim.Role
+		want       bool
+	}{
+		{experiments[0], claim.RoleImplementer, true},
+		{experiments[0], claim.RoleReviewer, false},
+		{experiments[0], claim.RoleTester, false},
+		{experiments[1], claim.RoleReviewer, true},
+	} {
+		if got := tc.experiment.Reaches(tc.role); got != tc.want {
+			t.Errorf("%s.Reaches(%s) = %t, want %t", tc.experiment.Name, tc.role, got, tc.want)
+		}
+	}
+}
+
+// An arm's overlays need Oh My Pi only on the roles its experiment reaches: a reviewer on Claude
+// Code beside an experiment that names only the implementer loads, since that reviewer never
+// starts on the arm's overlays, and the same file is refused once the experiment names the
+// reviewer, in words that name the fix its `roles` allows.
+func TestProjectExperimentsAskOhMyPiOnlyOfTheRolesTheyReach(t *testing.T) {
+	const extra = "worker_backends: {reviewer: claude}\n"
+	reach := func(roles string) string {
+		return "{alpha: {mode: random, roles: " + roles + ", variants: [{name: only, config_files: [/etc/a.yml]}, {name: other}]}}"
+	}
+	if _, err := Load(writeConfigFile(t, experimentsFile(reach("[implementer]"), extra)), noEnv); err != nil {
+		t.Fatalf("Load with the Claude reviewer outside the experiment's roles = %v, want it to load", err)
+	}
+	want := "projects.DEMO.experiments.alpha.variants.only names config_files, and worker_backends.reviewer is claude, which reads no PI_CONFIG_FILES: put every role its roles names on omp, or take the overlays out of the variant"
+	if _, err := Load(writeConfigFile(t, experimentsFile(reach("[implementer, reviewer]"), extra)), noEnv); err == nil || err.Error() != want {
+		t.Fatalf("Load with the Claude reviewer among the experiment's roles = %v, want %q", err, want)
+	}
+}
+
 // A project may declare the memory experiment under the key instead of the block, so long as its
 // variants are the two the wire enum takes.
 func TestProjectExperimentsTakeMemoryUnderTheKey(t *testing.T) {
@@ -116,21 +169,26 @@ func TestProjectExperimentsTakeMemoryUnderTheKey(t *testing.T) {
 
 // Every shape no unit could be drawn into is refused at load, naming the experiment, the variant
 // and the key it is about: a mapping that is no mapping, a name outside the pattern or named
-// twice, a mode or a unit that is no word of its own, a variants list that is missing, no list or
+// twice, a mode or a unit that is no word of its own, a roles list that is no list, empty, names a
+// role that is not an issue role or names one twice, a variants list that is missing, no list or
 // empty, one variant where the mode draws, a weight that is not a whole number above zero, an
 // overlay or an instructions path no role could load, a mode on that names no on_variant, an
-// on_variant that is no variant of its experiment, and the three shapes of `experiments.memory`
-// the name memory forbids: beside the block, with other variants, and drawn for each issue.
+// on_variant that is no variant of its experiment, and the four shapes of `experiments.memory`
+// the name memory forbids: beside the block, naming `plan`, with other variants, and drawn for each
+// issue. The other rules of `plan` are refused as well, each by a row of
+// TestThePlanOfAVariantIsRefused.
 func TestProjectExperimentsRefusals(t *testing.T) {
 	cases := []struct{ name, block, body, extra, want string }{
 		{name: "the key is not a mapping", block: "[alpha]",
 			want: "projects.DEMO.experiments must be a mapping of an experiment's name to its block"},
+		// A name of no key's shape (an upper-case letter, or none) is named by its line, as any
+		// unknown key of that shape is: it can be a credential pasted where a name goes.
 		{name: "an experiment name outside the pattern", block: "{Alpha: {variants: [{name: only}]}}",
-			want: `projects.DEMO.experiments key "Alpha" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
-		{name: "an experiment name of 33 characters", block: "{" + strings.Repeat("a", 33) + ": {variants: [{name: only}]}}",
-			want: `projects.DEMO.experiments key "` + strings.Repeat("a", 33) + `" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
+			want: "unknown key at line 7 under projects.DEMO.experiments, whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit): an experiment's name must match ^[a-z0-9-]{1,32}$, since it is recorded with every draw it makes"},
+		{name: "an experiment name of 33 characters", block: "{" + strings.Repeat("x", 33) + ": {variants: [{name: only}]}}",
+			want: `projects.DEMO.experiments key "` + strings.Repeat("x", 33) + `" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
 		{name: "an empty experiment name", block: `{"": {variants: [{name: only}]}}`,
-			want: `projects.DEMO.experiments key "" must match ^[a-z0-9-]{1,32}$: an experiment's name is recorded with every draw it makes`},
+			want: "unknown key at line 7 under projects.DEMO.experiments, whose name has no key's shape (lower-case letters, digits and _, from a letter, 40 at most, with no run of 8 hex digits and no run of 10 letters and digits that holds a digit): an experiment's name must match ^[a-z0-9-]{1,32}$, since it is recorded with every draw it makes"},
 		{name: "an experiment named twice", block: "{alpha: {variants: [{name: only}]}, alpha: {variants: [{name: other}]}}",
 			want: "projects.DEMO.experiments names alpha twice"},
 		{name: "an experiment that is not a mapping", block: "{alpha: [only]}",
@@ -147,6 +205,14 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 			want: `projects.DEMO.experiments.alpha.unit must be tree or issue (got "pod")`},
 		{name: "a unit that is not a string", block: "{alpha: {unit: [tree], variants: [{name: only}]}}",
 			want: "projects.DEMO.experiments.alpha.unit must be a string"},
+		{name: "roles that are no sequence", block: "{alpha: {roles: implementer, variants: [{name: only}]}}",
+			want: "projects.DEMO.experiments.alpha.roles must be a sequence of Legion issue roles, e.g. [planner, implementer]"},
+		{name: "an empty roles list", block: "{alpha: {roles: [], variants: [{name: only}]}}",
+			want: "projects.DEMO.experiments.alpha.roles names no role: an experiment whose arms reach no launch treats nothing, so name the roles its arms reach, or leave the key out for every role"},
+		{name: "the controller among the roles", block: "{alpha: {roles: [implementer, controller], variants: [{name: only}]}}",
+			want: `projects.DEMO.experiments.alpha.roles names "controller", which is not a Legion issue role (architect, planner, implementer, tester, reviewer, merger)`},
+		{name: "a role named twice", block: "{alpha: {roles: [implementer, implementer], variants: [{name: only}]}}",
+			want: "projects.DEMO.experiments.alpha.roles names implementer twice"},
 		{name: "no variants at all", block: "{alpha: {mode: off}}",
 			want: "projects.DEMO.experiments.alpha.variants is required: an experiment draws among the variants its block lists"},
 		{name: "variants that are no sequence", block: "{alpha: {variants: {name: only}}}",
@@ -202,6 +268,12 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 			want: "projects.DEMO.experiments.memory names the variants memory, nothing: its variants must be exactly memory and none, since a draw of it is served to every pod as the issue state's memoryGroup, whose wire enum is those two words, and a third makes the whole body fail to parse"},
 		{name: "experiments.memory drawn for each issue", block: "{memory: {unit: issue, variants: [{name: memory}, {name: none}]}}",
 			want: "projects.DEMO.experiments.memory is unit issue: its unit must be tree, since a draw of it is served to every pod as the issue state's memoryGroup, memoryDrawMode and memoryDrawnAt, which are the draw of the issue's tree, one answer for every issue of it"},
+		// experiments.memory naming plan gets the one refusal of its own, whatever its unit, and
+		// never the plan rules' advice to write unit: issue, which the memory rule would refuse next.
+		{name: "experiments.memory naming plan, unit left out", block: "{memory: {mode: random, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}",
+			want: "projects.DEMO.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own"},
+		{name: "experiments.memory naming plan, drawn for each issue", block: "{memory: {mode: random, unit: issue, variants: [{name: memory, plan: owner}, {name: none, plan: default}]}}",
+			want: "projects.DEMO.experiments.memory names plan: the memory experiment never sets how an issue is done, since a draw of it is the tree's memory group, so take plan out of its variants and set it on an experiment of its own"},
 		{name: "a variant's overlays beside a role on claude",
 			block: "{alpha: {mode: random, variants: [{name: only, config_files: [/etc/a.yml]}, {name: other}]}}",
 			extra: "worker_backends: {implementer: claude}\n",
@@ -225,11 +297,114 @@ func TestProjectExperimentsRefusals(t *testing.T) {
 	}
 }
 
+// planningBlock declares the experiment `planning`, drawn for each issue, whose arm `a` takes the
+// plan its issue's owner gives and whose arm `b` runs the project's default steps.
+const planningBlock = "planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}"
+
+// A variant names how the issues drawn into it are done (`plan`), and the declared list carries
+// that word on each arm, so an experiment whose arms name it says it sets how an issue is done.
+// The `memory` experiment, which every project declares and which names no plan, sets none. The
+// fault caught is a loader that reads the key into nothing, which leaves both arms at "".
+func TestAVariantNamesHowItsIssuesAreDone(t *testing.T) {
+	cfg, err := Load(writeConfigFile(t, experimentsFile("{"+planningBlock+"}", "")), noEnv)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	declared := cfg.ExperimentsDeclared()
+	if len(declared) != 2 || declared[0].Name != MemoryExperimentName || declared[1].Name != "planning" {
+		t.Fatalf("declared experiments = %+v, want memory then planning", declared)
+	}
+	planning := declared[1]
+	if got := planning.Variants[0].Plan; got != PlanGroupOwner {
+		t.Errorf("variant a's plan = %q, want %q", got, PlanGroupOwner)
+	}
+	if got := planning.Variants[1].Plan; got != PlanGroupDefault {
+		t.Errorf("variant b's plan = %q, want %q", got, PlanGroupDefault)
+	}
+	if !planning.SetsPlan() {
+		t.Error("planning.SetsPlan() = false, want true: its arms name plan")
+	}
+	if declared[0].SetsPlan() {
+		t.Error("memory.SetsPlan() = true, want false: no arm of it names plan")
+	}
+}
+
+// Each rule of `plan` refuses its own fault with its own words: a word that is none of the three,
+// an arm that names none beside an arm that does, an experiment that sets it and draws for a
+// whole tree, two experiments of one project that both set it, and `owner-alone`, which this
+// release does not carry out. Each row's control is its file with the fault taken out, which
+// loads.
+func TestThePlanOfAVariantIsRefused(t *testing.T) {
+	cases := []struct{ name, block, fixed, want string }{
+		{name: "a word that is none of the three",
+			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: alone}, {name: b, plan: default}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  `projects.DEMO.experiments.planning.variants.a.plan must be owner or default (got "alone")`},
+		{name: "an arm that names no plan beside one that does",
+			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  "projects.DEMO.experiments.planning.variants.b names no plan: each variant of an experiment that sets plan names how its issues are done"},
+		{name: "an experiment that sets plan and draws for a tree",
+			block: "{planning: {mode: random, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  "projects.DEMO.experiments.planning sets plan and is unit tree: an experiment that sets how an issue is done draws for each issue, so write unit: issue"},
+		{name: "two experiments that set plan",
+			block: "{" + planningBlock + ", steps: {mode: random, unit: issue, variants: [{name: x, plan: owner}, {name: y, plan: default}]}}",
+			fixed: "{" + planningBlock + ", steps: {mode: random, unit: issue, variants: [{name: x}, {name: y}]}}",
+			want:  "projects.DEMO.experiments.planning and projects.DEMO.experiments.steps both set plan: one experiment sets how an issue is done"},
+		{name: "the owner alone",
+			block: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: owner-alone}]}}",
+			fixed: "{planning: {mode: random, unit: issue, variants: [{name: a, plan: owner}, {name: b, plan: default}]}}",
+			want:  "projects.DEMO.experiments.planning.variants.b.plan is owner-alone: the owner doing the whole issue itself in one step. This release of Legion does not carry it out yet."},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := Load(writeConfigFile(t, experimentsFile(tc.block, "")), noEnv)
+			if err == nil || err.Error() != tc.want {
+				t.Fatalf("Load error = %v, want %q", err, tc.want)
+			}
+		})
+		t.Run(tc.name+", taken out", func(t *testing.T) {
+			if _, err := Load(writeConfigFile(t, experimentsFile(tc.fixed, "")), noEnv); err != nil {
+				t.Fatalf("Load of the file with its fault taken out: %v", err)
+			}
+		})
+	}
+}
+
+// A launch names one arm of each experiment it runs in, in the `legion.arms` attribute of its
+// telemetry (runtime.SpendArmsValue), which the agent's detector takes up to 255 characters of and
+// throws past, costing the launch every attribute it carries. So a project whose experiments, each
+// at its longest arm's name, would name 255 characters loads, and one that would name 256 is
+// refused. The memory experiment every project declares counts in both: `memory:memory` is 13 of
+// them.
+func TestProjectExperimentsHoldTheirArmsToTheTelemetryBound(t *testing.T) {
+	var block strings.Builder
+	block.WriteString("{")
+	// Three experiments of 32-character names, each with a 32-character arm beside a short one:
+	// 65 characters each and a comma before each, 198 after memory's 13.
+	for _, letter := range []string{"a", "b", "c"} {
+		name := strings.Repeat(letter, 32)
+		block.WriteString(name + ": {variants: [{name: x}, {name: " + name + "}]}, ")
+	}
+	file := func(arm int) string {
+		// A fourth of a 21-character name: a comma, the name, `:` and the arm, 23 + arm.
+		return experimentsFile(block.String()+strings.Repeat("d", 21)+": {variants: [{name: "+strings.Repeat("e", arm)+"}]}}", "")
+	}
+	if _, err := Load(writeConfigFile(t, file(21)), noEnv); err != nil {
+		t.Fatalf("Load of experiments whose longest arms make 255 characters: %v", err)
+	}
+	want := "projects.DEMO declares experiments whose arms one launch could name in legion.arms in 256 characters, over the 255 the agent's telemetry takes: shorten the experiments' or their variants' names, or declare fewer experiments"
+	if _, err := Load(writeConfigFile(t, file(22)), noEnv); err == nil || err.Error() != want {
+		t.Fatalf("Load error = %v, want %q", err, want)
+	}
+}
+
 // Under kubernetes a variant's overlay must be a file one of the operator's mounts holds, since a
 // role's pod and the image probe see only those and the image: a sub_path mount of the file, an
 // item a directory mount of a ConfigMap projects, or any file under a whole Secret volume. A path
 // no mount holds, a directory mount itself, a key the projection leaves out and a role on a
-// harness that reads no overlay are refused at load, which is what `legion start --check-config`
+// harness that reads no overlay are refused at load, which is what `legion config check`
 // runs — and the mode is off throughout, since a unit already drawn keeps the files its variant
 // names.
 func TestProjectExperimentsUnderKubernetesMustBeInTheOperatorsMounts(t *testing.T) {

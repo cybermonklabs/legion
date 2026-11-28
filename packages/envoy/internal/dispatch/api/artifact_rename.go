@@ -19,7 +19,7 @@ type renameArtifactInput struct {
 // slug, the reference key that slug gives and the role the document plays are its address and
 // its part, which the first title fixed. A correction moves none of them, so every
 // `dispatch://KEY/artifact/<slug>` reference, every anchored comment and the issue's plan or
-// Verification document still name the same row. It needs the person scope (routeScopes)
+// Verification document still name the same row. It needs the person scope (its route's OAuthScopes)
 // because a title is what every reader of the issue sees the document by, so only a credential
 // acting as its person corrects one.
 //

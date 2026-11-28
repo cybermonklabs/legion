@@ -1,4 +1,10 @@
-import type { AskThread, IssueAskRow, MyReplyRow, MyReplySession } from "./dispatch-api.generated";
+import type {
+  AskThread,
+  CredentialPendingRow,
+  IssueAskRow,
+  MyReplyRow,
+  MyReplySession,
+} from "./dispatch-api.generated";
 
 /**
  * What a person and a session each have waiting: the narrowings the Inbox reads its rows
@@ -46,6 +52,29 @@ export interface MyReplyAgentRow extends MyReplyRow {
  *  reads as a Reply row, which is what every surface already draws for one. */
 export function inboxThreadRow(row: MyReplyRow): MyReplyThreadRow | MyReplyAgentRow {
   return row.kind === "agent" ? (row as MyReplyAgentRow) : (row as MyReplyThreadRow);
+}
+
+/** Whether a row of `GET /api/v1/credential-requests?approver=me` still waits on somebody's
+ *  decision: a pending row, which a broker older than the expired rows sends with no `state` at
+ *  all. An expired row - its deadline passed before anybody decided it, so the broker refuses
+ *  every decision of it - stays listed until somebody dismisses it, but nothing waits on the
+ *  viewer there: no `Needs you` count holds it, on the page or in `dispatch inbox`, and it does
+ *  not keep the Inbox from saying that nothing needs them. */
+export function awaitsDecision(row: Pick<CredentialPendingRow, "state">): boolean {
+  return row.state !== "expired";
+}
+
+/** The Dispatch scopes `row` names where it is a Dispatch sign-in: its `dispatch_scopes`, a list
+ *  even where it holds none. Null for a machine login and a secret request, whose
+ *  `dispatch_scopes` is null, and for a row from a broker older than sign-ins, which sends none.
+ *  Every surface that tells a sign-in from a machine login reads this rule, as both read
+ *  {@link awaitsDecision}: the Inbox page and the credential pages
+ *  (`CredentialRequestsSection.tsx`, `MachineLoginsSection.tsx`, `MachineLoginPage.tsx`,
+ *  `CredentialRecordFacts.tsx`) and `dispatch inbox` (`dispatch-commands/session.ts`). */
+export function signInScopes(row: {
+  readonly dispatch_scopes?: readonly string[] | null | undefined;
+}): readonly string[] | null {
+  return Array.isArray(row.dispatch_scopes) ? row.dispatch_scopes : null;
 }
 
 /** The states `GET /api/v1/me/replies`'s `?state=` reads the caller's threads in: `unread`, the

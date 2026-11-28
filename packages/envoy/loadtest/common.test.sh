@@ -25,8 +25,16 @@
 # here (this test's own) is refused as "not visible", without naming that process as the holder;
 # (i) a root always gets the same set of ports, these two roots get two sets that share none (two
 # roots in general share all 7 when their paths hash into one block of the 200, which stack.sh
-# refuses), every port of every block lies in 1024-65535 and no two ports of two blocks meet, and a
-# LOADTEST_*_PORT overrides its own port alone.
+# refuses), every port of every block lies in 1024-65535, outside this machine's ephemeral range,
+# and no two ports of two blocks meet, and a LOADTEST_*_PORT overrides its own port alone; (j) under
+# an ephemeral range that covers the old block (a gVisor pod's 16000-65535, or one from 15500) every
+# default port lies below it, Linux's default range keeps the blocks at 15000, and a range with no
+# room for 2000 ports above 1023 is refused naming both ranges unless every port variable is set;
+# (k) LOADTEST_LOCK_WAIT_TRIES sets how many times a caller tries a busy root's lock, so a case
+# whose holder holds it for a window reads the same refusal in a fraction of the wait, a caller
+# that sets nothing still waits the whole 3 s out, and a value outside 1 to 36000 is refused by
+# name before the root is read or made, since every such value makes the loop try the lock no
+# times at all and report a free root as held by a process this PID namespace cannot see.
 set -euo pipefail
 
 here="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -268,7 +276,9 @@ case_invisible_holder() {
   pids+=("$holder")
   wait_for "${temporary_dir}/ready-d" || { fail "(d) the holder on descriptor 7 did not take the lock"; return; }
 
-  try_lock "$root"
+  # The holder holds the lock throughout, so the caller waits out every try it has and is then
+  # refused: three of them refuse it by the same reading of the record as thirty do.
+  try_lock "$root" LOADTEST_LOCK_WAIT_TRIES=3
   if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then
     fail "(d) a caller was admitted while a process that this PID namespace cannot see held the lock"
     return
@@ -321,13 +331,16 @@ case_waiting_callers() {
   pids+=("$holder")
   wait_for "${temporary_dir}/ready-f" || { fail "(f) the holder on descriptor 7 did not take the lock"; return; }
 
-  # Caller 1 sits in its first flock for 4 s; caller 2 starts once caller 1 is in it, and waits its
-  # whole 3 s while caller 1 has the lock file open.
+  # Caller 1 sits in its first flock for the 4 s its slow flock takes; caller 2 starts once
+  # caller 1 is in it, and waits out every try it has while caller 1 has the lock file open. Five
+  # tries, half a second in all, so that whole wait is well inside caller 1's flock however
+  # loaded the machine is; what the case reads is whom each refusal names, which no number of
+  # tries decides.
   local mark="${temporary_dir}/flock-f" n i waiters=() rcs=()
   for n in 1 2; do
     local path="$PATH"
     [[ $n == 2 ]] || path="${slow_flock}:${PATH}"
-    env -u LOADTEST_LOCK_TOKEN PATH="$path" LOADTEST_TEST_FLOCK_MARK="$mark" \
+    env -u LOADTEST_LOCK_TOKEN PATH="$path" LOADTEST_TEST_FLOCK_MARK="$mark" LOADTEST_LOCK_WAIT_TRIES=5 \
       bash -c 'echo "$$" >"$3"; source "$1"; lock_root "$2"' caller \
       "$helper" "$root" "${temporary_dir}/caller-f${n}.pid" >"${temporary_dir}/caller-f${n}.out" 2>&1 9>&- &
     waiters+=("$!")
@@ -382,7 +395,9 @@ case_foreign_record_live_pid() {
   pids+=("$holder")
   wait_for "${temporary_dir}/ready-g" || { fail "(g) the holder on descriptor 7 did not take the lock"; return; }
 
-  try_lock "$root"
+  # As in (d): the holder holds the lock throughout, so three tries read the record the same way
+  # thirty do.
+  try_lock "$root" LOADTEST_LOCK_WAIT_TRIES=3
   if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then
     fail "(g) a caller was admitted while a process that this PID namespace cannot see held the lock"
     return
@@ -469,21 +484,29 @@ case_stack_ports() {
   [ -z "$overlap" ] || { out="$one"$'\n'"$two" fail "(i) two roots share the ports $(tr '\n' ' ' <<<"$overlap")"; return; }
   [ "$(wc -l <<<"$one")" = 9 ] || { out="$one" fail "(i) a root's ports are not the 9 stack.json keys"; return; }
 
-  # Every port of every block, against every other: all inside 1024-65535, none twice.
+  # Every port of every block, against every other: all inside 1024-65535, none twice. The 1,800
+  # ports (9 keys of each of the 200 blocks) are written in one shell, default_port's own output
+  # rather than a command substitution of it (a process per port, which is all this check used to
+  # cost), and read back by one awk.
   local report
   report=$(bash -c '
     source "$1"
-    declare -A seen=()
-    bad=""
+    base=$(port_base)
+    printf "range %s\n" "$(ephemeral_range)"
     for ((k = 0; k < PORT_BLOCKS; k++)); do
       for key in "${PORT_KEYS[@]}"; do
-        p=$(default_port "$key" "$k")
-        ((p >= 1024 && p <= 65535)) || bad+="block $k $key is on port $p, outside 1024-65535; "
-        [ -z "${seen[$p]:-}" ] || bad+="block $k $key and ${seen[$p]} are both on port $p; "
-        seen[$p]="block $k $key"
+        printf "%s %s " "$k" "$key"
+        default_port "$key" "$k" "$base"
       done
-    done
-    printf "%s" "$bad"' blocks "$helper")
+    done' blocks "$helper" |
+    awk 'NR == 1 { low = $2; high = $3; next }
+    {
+      if ($3 < 1024 || $3 > 65535) { bad = bad "block " $1 " " $2 " is on port " $3 ", outside 1024-65535; " }
+      if (high != "" && $3 >= low + 0 && $3 <= high + 0) { bad = bad "block " $1 " " $2 " is on port " $3 ", inside the ephemeral range " low " " high "; " }
+      if ($3 in seen) { bad = bad "block " $1 " " $2 " and " seen[$3] " are both on port " $3 "; " }
+      seen[$3] = "block " $1 " " $2
+    }
+    END { printf "%s", bad }')
   [ -z "$report" ] || { fail "(i) the port blocks do not hold: $report"; return; }
 
   # A variable moves its own port alone.
@@ -497,6 +520,122 @@ case_stack_ports() {
   printf 'PASS: the default ports follow LOADTEST_ROOT, two roots in two blocks share no port, and each LOADTEST_*_PORT overrides its own\n'
 }
 
+# range_file LOW HIGH: a file holding an ephemeral range as /proc/sys/net/ipv4/ip_local_port_range
+# does, for LOADTEST_PORT_RANGE_FILE.
+range_file() {
+  local file="${temporary_dir}/range-$1-$2"
+  printf '%s\t%s\n' "$1" "$2" >"$file"
+  printf '%s\n' "$file"
+}
+
+# case_ports_below_ephemeral_range: every default port lies below the machine's ephemeral range, so
+# no outgoing connection of the stack can take a stack port as its source port first. Linux's
+# default range (32768-60999) leaves the blocks at 15000-16998; a gVisor pod's (16000-65535), and
+# one that covers the old block from 15500, move them to the 2000 ports below the range; a range
+# starting too low for 2000 ports above 1023 is refused naming both ranges, unless every port
+# variable is set; and a range this machine cannot read leaves the blocks at 15000.
+case_ports_below_ephemeral_range() {
+  out=""
+  local root=/legion/scratch/tmp/lt-one ports low rc max
+  for low in 16000 15500; do
+    ports=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file "$low" 65535)") ||
+      { out="$ports" fail "(j) a range from $low refused the stack's ports"; return; }
+    max=$(awk '{print $2}' <<<"$ports" | sort -n | tail -1)
+    ((max < low)) || { out="$ports" fail "(j) a range from $low left port $max inside it"; return; }
+    (($(awk '{print $2}' <<<"$ports" | sort -n | head -1) >= low - 2000)) ||
+      { out="$ports" fail "(j) a range from $low put a port more than 2000 below it"; return; }
+  done
+  local linux unread
+  linux=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 32768 60999)")
+  unread=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="${temporary_dir}/no-such-range")
+  [ "$linux" = "$unread" ] || { out="$linux"$'\n'"$unread" fail "(j) Linux's default range moved the blocks from 15000"; return; }
+  (($(awk '$1 == "postgres" {print $2}' <<<"$linux") % 10 == 0 && $(awk '$1 == "postgres" {print $2}' <<<"$linux") >= 15000)) ||
+    { out="$linux" fail "(j) Linux's default range did not keep the blocks at 15000"; return; }
+  out=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 1500 65535)" 2>&1) && rc=0 || rc=$?
+  ((rc != 0)) || { fail "(j) a range from 1500 left room for 2000 ports above 1023"; return; }
+  [[ $out == *"1500-65535"* && $out == *"2000 ports"* ]] || { fail "(j) the refusal does not name the range and the ports the stack needs"; return; }
+  out=$(ports_for "$root" LOADTEST_PORT_RANGE_FILE="$(range_file 1500 65535)" LOADTEST_PG_PORT=1100 \
+    LOADTEST_PROXY_PORT=1101 LOADTEST_PROXY_STATS_PORT=1102 LOADTEST_NATS_PORT=1103 LOADTEST_NATS_MONITOR_PORT=1104 \
+    LOADTEST_LISTENER_PORT=1105 LOADTEST_DISPATCH_PORT=1106 LOADTEST_PPROF_PORT=1107 LOADTEST_ENVOY_PROXY_PORT=1108 2>&1) ||
+    { fail "(j) every port variable set, a range from 1500 still refused the stack"; return; }
+  out=""
+  printf 'PASS: the default ports sit below the ephemeral range, and a range with no room below it is refused naming both\n'
+}
+
+# case_lock_wait_tries: how many times a caller tries a busy root's lock, a tenth of a second
+# apart, is LOCK_WAIT_TRIES, and LOADTEST_LOCK_WAIT_TRIES sets it. A case whose holder can hold
+# the lock only for a window (d, f and g above) sets it low, and reads the refusal every try of
+# the default wait reaches. Nothing in a run sets it, so a run that starts while another is
+# ending still waits its 3 s out.
+#
+# A value that is not a whole number of tries from 1 to 36000 is refused by name, before the
+# root is read or made. Each of them makes the loop run no times in shell arithmetic -- 0 and a
+# word are 0, a negative is below the first index, and a number past a signed 64-bit integer
+# wraps negative -- so without the refusal a caller that never tried the lock reports a free
+# root as held by a process this PID namespace cannot see, and tells the operator not to remove
+# the lock file. The control for those four refusals is the same root, never created by any of
+# them, taking a caller that sets 3.
+#
+# The two waits at the end are measured against each other rather than against a span of wall
+# clock: three tries sleep twice and thirty sleep 29 times, so the long one is about ten times
+# the short one however loaded the machine is, and a caller that never read the variable makes
+# them equal.
+case_lock_wait_tries() {
+  out=""
+  local root="${temporary_dir}/root-k" free="${temporary_dir}/root-k-free" dead started short full bad
+  for bad in 0 -1 abc 9223372036854775808; do
+    try_lock "$free" LOADTEST_LOCK_WAIT_TRIES="$bad"
+    if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then
+      fail "(k) a caller with LOADTEST_LOCK_WAIT_TRIES=$bad was admitted, having tried the lock no times"
+      return
+    fi
+    [[ $out == *LOADTEST_LOCK_WAIT_TRIES* && $out == *"$bad"* ]] ||
+      { fail "(k) the refusal of LOADTEST_LOCK_WAIT_TRIES=$bad names neither the variable nor the value"; return; }
+    [[ $out != *"not visible"* && $out != *"Do not remove"* ]] ||
+      { fail "(k) a caller with LOADTEST_LOCK_WAIT_TRIES=$bad reported a free root as held by a process this PID namespace cannot see"; return; }
+    [[ ! -e "$free" ]] ||
+      { fail "(k) a caller with LOADTEST_LOCK_WAIT_TRIES=$bad made $free before it refused"; return; }
+  done
+  try_lock "$free" LOADTEST_LOCK_WAIT_TRIES=3
+  if ((rc != 0)) || [[ $out != *ADMITTED* ]]; then
+    fail "(k) the root the four refusals above were read on is not free: a caller setting 3 was refused"
+    return
+  fi
+
+  mkdir -p "$root"
+  dead="$(dead_pid)"
+  bash "$elsewhere" "$root" "$dead" "${temporary_dir}/ready-k" 300 "$foreign_pidns" >/dev/null 2>&1 &
+  local holder=$!
+  pids+=("$holder")
+  wait_for "${temporary_dir}/ready-k" || { fail "(k) the holder on descriptor 7 did not take the lock"; return; }
+
+  started=$(date +%s%N)
+  try_lock "$root" LOADTEST_LOCK_WAIT_TRIES=3
+  short=$((($(date +%s%N) - started) / 1000000))
+  if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then
+    fail "(k) a caller was admitted while a process that this PID namespace cannot see held the lock"
+    return
+  fi
+  [[ $out == *"not visible"* ]] ||
+    { fail "(k) three tries did not reach the refusal thirty reach: it does not say that the holder is not visible here"; return; }
+
+  started=$(date +%s%N)
+  try_lock "$root"
+  full=$((($(date +%s%N) - started) / 1000000))
+  if ((rc == 0)) || [[ $out == *ADMITTED* ]]; then
+    fail "(k) a caller was admitted while a process that this PID namespace cannot see held the lock"
+    return
+  fi
+  ((short * 3 < full)) ||
+    { fail "(k) a caller with LOADTEST_LOCK_WAIT_TRIES=3 waited ${short} ms against the ${full} ms of a caller that set nothing: the variable did not shorten the wait"; return; }
+  ((full >= 2900)) ||
+    { fail "(k) a caller that set no LOADTEST_LOCK_WAIT_TRIES was refused after ${full} ms: the default is no longer 30 tries a tenth of a second apart"; return; }
+  kill -TERM "$holder"
+  wait "$holder" 2>/dev/null || true
+  out=""
+  printf 'PASS: LOADTEST_LOCK_WAIT_TRIES sets how many times a caller tries a busy root'"'"'s lock, a value outside 1 to 36000 is refused by name, and the default is still the 3 s wait\n'
+}
+
 failed=0
 case_orphaned_child || failed=$((failed + 1))
 case_stale_record || failed=$((failed + 1))
@@ -508,7 +647,9 @@ case_foreign_record_live_pid || failed=$((failed + 1))
 case_prepare_stack_built_migration || failed=$((failed + 1))
 case_prepare_stack_migration_set || failed=$((failed + 1))
 case_stack_ports || failed=$((failed + 1))
+case_ports_below_ephemeral_range || failed=$((failed + 1))
+case_lock_wait_tries || failed=$((failed + 1))
 if ((failed > 0)); then
-  printf 'FAIL: %d of 10 cases failed\n' "$failed" >&2
+  printf 'FAIL: %d of 12 cases failed\n' "$failed" >&2
   exit 1
 fi

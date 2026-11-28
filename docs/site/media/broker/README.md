@@ -42,7 +42,7 @@ agent machine, `agent-secrets-helper` for `alice@example.com` under the hostname
 machine. It prints the addresses, then waits; Ctrl-C stops everything it started and drops the
 broker's database.
 
-It needs `go`, `bun`, `python3`, `psql`, `curl`, `openssl`, `setsid`, and passwordless `sudo` with
+It needs `go`, `bun`, `python3`, `psql`, `curl`, `openssl`, and passwordless `sudo` with
 `unshare` and `setpriv`. Its one input, `DATABASE_URL`, names a Postgres database on this machine
 that it may empty, as the e2e harness requires: a `postgres://` URL whose host is a loopback name
 or address or a unix socket directory. The rig refuses any other before it runs a single `psql`,

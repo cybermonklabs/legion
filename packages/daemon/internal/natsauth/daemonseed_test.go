@@ -7,29 +7,29 @@ import (
 	"testing"
 
 	"github.com/sjawhar/legion/daemon/internal/natsauth"
-	"github.com/sjawhar/legion/daemon/internal/testnats"
+	"github.com/sjawhar/legion/daemon/internal/testnkeys"
 )
 
 // DaemonSeed reads the daemon's own seed by Seed's precedence under its own names: the configuration
 // key's file over NATS_DAEMON_NKEY_SEED_FILE over NATS_DAEMON_NKEY_SEED. It never reads the pane
 // seed's names, and Seed never reads its.
 func TestTheDaemonSeedResolvesByItsOwnNamesAlone(t *testing.T) {
-	daemon, _ := testnats.User(t)
-	pane, _ := testnats.User(t)
-	other, _ := testnats.User(t)
+	daemon, _ := testnkeys.User(t)
+	pane, _ := testnkeys.User(t)
+	other, _ := testnkeys.User(t)
 	for _, tc := range []struct {
 		name string
 		key  string
 		env  map[string]string
 		want string
 	}{
-		{"the key's file, over both variables", testnats.SeedFile(t, daemon+"\n"),
+		{"the key's file, over both variables", testnkeys.SeedFile(t, daemon+"\n"),
 			map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": "", "NATS_DAEMON_NKEY_SEED": "hunter2"}, daemon},
 		{"NATS_DAEMON_NKEY_SEED_FILE, over NATS_DAEMON_NKEY_SEED", "",
-			map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": testnats.SeedFile(t, "\n"+daemon+"  \n"), "NATS_DAEMON_NKEY_SEED": other}, daemon},
+			map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": testnkeys.SeedFile(t, "\n"+daemon+"  \n"), "NATS_DAEMON_NKEY_SEED": other}, daemon},
 		{"NATS_DAEMON_NKEY_SEED", "", map[string]string{"NATS_DAEMON_NKEY_SEED": " " + daemon + " "}, daemon},
 		{"none, whatever the pane seed's names hold", "",
-			map[string]string{"NATS_NKEY_SEED_FILE": testnats.SeedFile(t, pane), "NATS_NKEY_SEED": pane}, ""},
+			map[string]string{"NATS_NKEY_SEED_FILE": testnkeys.SeedFile(t, pane), "NATS_NKEY_SEED": pane}, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			got, err := natsauth.DaemonSeed(tc.key, env(tc.env))
@@ -43,22 +43,23 @@ func TestTheDaemonSeedResolvesByItsOwnNamesAlone(t *testing.T) {
 	}
 }
 
-// A daemon seed configured but unusable is an error naming its key or variable and the path, under
-// the pane seed's file mode rule (config.ReadGroupSecretPointer: a file the daemon's uid owns is
-// held to 0600, and only one another uid owns may be group-readable), never a fallback to the next source, to the pane seed, or to no
-// credential, and never carrying the seed.
+// A daemon seed configured but unusable is an error naming its key or variable, and the path of a
+// file that was opened (one that could not be is named by the key or variable and the system's
+// reason alone), under the pane seed's file mode rule (config.ReadGroupSecretPointer: a file the
+// daemon's uid owns is held to 0600, and only one another uid owns may be group-readable), never a
+// fallback to the next source, to the pane seed, or to no credential, and never carrying the seed.
 func TestAnUnusableDaemonSeedIsAnErrorNamingItsSource(t *testing.T) {
-	userSeed, _ := testnats.User(t)
+	userSeed, _ := testnkeys.User(t)
 	missing := filepath.Join(t.TempDir(), "missing.seed")
-	blank := testnats.SeedFile(t, " \n")
-	notASeed := testnats.SeedFile(t, "SUNOTASEED")
-	accountSeed := testnats.SeedFile(t, testnats.Account(t))
-	good := testnats.SeedFile(t, userSeed)
-	public := testnats.SeedFile(t, userSeed)
+	blank := testnkeys.SeedFile(t, " \n")
+	notASeed := testnkeys.SeedFile(t, "SUNOTASEED")
+	accountSeed := testnkeys.SeedFile(t, testnkeys.Account(t))
+	good := testnkeys.SeedFile(t, userSeed)
+	public := testnkeys.SeedFile(t, userSeed)
 	if err := os.Chmod(public, 0o604); err != nil {
 		t.Fatal(err)
 	}
-	writable := testnats.SeedFile(t, userSeed)
+	writable := testnkeys.SeedFile(t, userSeed)
 	if err := os.Chmod(writable, 0o660); err != nil {
 		t.Fatal(err)
 	}
@@ -69,13 +70,13 @@ func TestAnUnusableDaemonSeedIsAnErrorNamingItsSource(t *testing.T) {
 		env  map[string]string
 		want string
 	}{
-		{"a missing key file", missing, map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": good}, "nats_daemon_nkey_seed_file names " + missing + ", which could not be read"},
+		{"a missing key file", missing, map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": good}, "nats_daemon_nkey_seed_file names a file that could not be read: it does not exist"},
 		{"a blank key file", blank, pane, "nats_daemon_nkey_seed_file names " + blank + ", which is empty"},
 		{"a key file holding no seed", notASeed, map[string]string{"NATS_DAEMON_NKEY_SEED": userSeed}, "nats_daemon_nkey_seed_file (" + notASeed + ") does not hold a valid nkey seed"},
 		{"a key file holding an account seed", accountSeed, nil, "nats_daemon_nkey_seed_file (" + accountSeed + ") holds an nkey seed that is not a user's"},
 		{"a key file others can read", public, nil, "nats_daemon_nkey_seed_file " + public + " is readable by its group or others (mode 0604); chmod 0600 it"},
 		{"a key file its group can read and write", writable, nil, "nats_daemon_nkey_seed_file " + writable + " is readable by its group or others (mode 0660); chmod 0600 it"},
-		{"a missing file", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": missing, "NATS_DAEMON_NKEY_SEED": userSeed}, "NATS_DAEMON_NKEY_SEED_FILE names " + missing + ", which could not be read"},
+		{"a missing file", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": missing, "NATS_DAEMON_NKEY_SEED": userSeed}, "NATS_DAEMON_NKEY_SEED_FILE names a file that could not be read: it does not exist"},
 		{"a blank file", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": blank}, "NATS_DAEMON_NKEY_SEED_FILE names " + blank + ", which is empty"},
 		{"an empty pointer", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": "", "NATS_DAEMON_NKEY_SEED": userSeed, "NATS_NKEY_SEED": userSeed}, "NATS_DAEMON_NKEY_SEED_FILE is set but empty"},
 		{"a file holding no seed", "", map[string]string{"NATS_DAEMON_NKEY_SEED_FILE": notASeed}, "NATS_DAEMON_NKEY_SEED_FILE (" + notASeed + ") does not hold a valid nkey seed"},
@@ -94,7 +95,7 @@ func TestAnUnusableDaemonSeedIsAnErrorNamingItsSource(t *testing.T) {
 		})
 	}
 	// A daemon-owned 0640 seed is refused as the pane seed's is.
-	shared := testnats.SeedFile(t, userSeed)
+	shared := testnkeys.SeedFile(t, userSeed)
 	if err := os.Chmod(shared, 0o640); err != nil {
 		t.Fatal(err)
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/sjawhar/envoy/internal/session"
 	"github.com/sjawhar/envoy/internal/store"
 	"github.com/sjawhar/envoy/internal/testnats"
+	"github.com/sjawhar/envoy/listenerwire"
 )
 
 // sendBody is one send request's JSON, written the way a client writes it, so each test below
@@ -49,16 +50,23 @@ func serveRecorded(t *testing.T, build func(*logging.Logger) http.HandlerFunc, r
 	logs := &cmdtest.LockedBuffer{}
 	recorder := httptest.NewRecorder()
 	build(logging.NewWithWriter("test", logs)).ServeHTTP(recorder, request)
-	written := strings.TrimSpace(logs.String())
+	return recorder, soleRecord(t, logs.String())
+}
+
+// soleRecord is the one log line a request wrote, parsed, failing t unless exactly one was
+// written: serveRecorded's reading, and that of a test that serves its request on a goroutine.
+func soleRecord(t *testing.T, logs string) map[string]any {
+	t.Helper()
+	written := strings.TrimSpace(logs)
 	lines := strings.Split(written, "\n")
 	if written == "" || len(lines) != 1 {
-		t.Fatalf("one request wrote %d record lines, want exactly one:\n%s", len(lines), logs.String())
+		t.Fatalf("one request wrote %d record lines, want exactly one:\n%s", len(lines), logs)
 	}
 	var record map[string]any
 	if err := json.Unmarshal([]byte(lines[0]), &record); err != nil {
 		t.Fatalf("the record line is not JSON: %v\n%s", err, lines[0])
 	}
-	return recorder, record
+	return record
 }
 
 // assertRecordFields compares the named fields of one record line, field by field, as the
@@ -74,6 +82,16 @@ func assertRecordFields(t *testing.T, record map[string]any, want map[string]any
 	}
 }
 
+// assertRecordErrorCarries fails unless the error field of one record line carries want: a line's
+// error wraps the cause a test planted in what the reader that met it adds.
+func assertRecordErrorCarries(t *testing.T, record map[string]any, want string) {
+	t.Helper()
+	if message, _ := record["error"].(string); !strings.Contains(message, want) {
+		line, _ := json.Marshal(record)
+		t.Fatalf("the record's error %q does not carry %q: %s", message, want, line)
+	}
+}
+
 // A send reads the target from the session bucket itself when this listener's cache has not seen
 // it: the cache follows the bucket through a watcher and so trails it, and a sender told its
 // destination is gone routes around the pane. This drives the send route with a session another
@@ -86,6 +104,7 @@ func assertRecordFields(t *testing.T, record map[string]any, want map[string]any
 // delivery read back from notifications.agent.<id> is the second half: a 200 alone would pass
 // even if the envelope never left the listener.
 func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
+	t.Parallel()
 	const target = "ses_cold_cache_target"
 	registrar, cold := trailingListeners(t)
 	if err := registrar.sessions.Put(target, session.SessionEntry{
@@ -93,9 +112,9 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("register %s through the other listener: %v", target, err)
 	}
-	received, err := cold.client.Conn.SubscribeSync(contracts.AgentSubject(target))
+	received, err := cold.client.Conn.SubscribeSync(contracts.LegacyAgentSubject(target))
 	if err != nil {
-		t.Fatalf("subscribe to %s: %v", contracts.AgentSubject(target), err)
+		t.Fatalf("subscribe to %s: %v", contracts.LegacyAgentSubject(target), err)
 	}
 	t.Cleanup(func() { _ = received.Unsubscribe() })
 	if err := cold.client.Conn.Flush(); err != nil {
@@ -125,13 +144,13 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 
 	message, err := received.NextMsg(5 * time.Second)
 	if err != nil {
-		t.Fatalf("nothing reached %s: %v", contracts.AgentSubject(target), err)
+		t.Fatalf("nothing reached %s: %v", contracts.LegacyAgentSubject(target), err)
 	}
 	var delivered contracts.Envelope
 	if err := json.Unmarshal(message.Data, &delivered); err != nil {
 		t.Fatalf("decode the delivered envelope: %v", err)
 	}
-	if delivered.EventID != answered.EventID || delivered.Topic != contracts.AgentSubject(target) {
+	if delivered.EventID != answered.EventID || delivered.Topic != contracts.LegacyAgentSubject(target) {
 		t.Fatalf("delivered %+v, want the answered envelope %+v on the target's subject", delivered, answered)
 	}
 }
@@ -147,6 +166,8 @@ func TestSendReadsTheSessionStoreWhileTheCacheIsCold(t *testing.T) {
 // identical request before the cut, which answers 200 — without it a rig that refused every send
 // (a bad body, an unregistered target) would pass this test with a 503 of a different kind.
 func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
+	// Not parallel: it requires the 503 within 4 s of a send whose publish waits out the 3.5 s
+	// sendRequestBudget for a reconnect that never comes.
 	const target = "ses_cut_bus_target"
 	// The relay the reconnect test uses (reconnect_shutdown_test.go): cut below closes every live
 	// link and refuses every connection after it, as the hub's virtual machine being recreated
@@ -157,14 +178,14 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	// The sends below stamp their sender from the role claim view (senderStamp), so the listener's
 	// own startup gate is taken here, with the bus still reachable and before the cut.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -197,9 +218,9 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	// nats.go notices the closed link from its own read loop, so the send below is issued on a
 	// connection already known to be down rather than on one that is about to be: the measured
 	// time is the handler's, not the client's time to notice.
-	for deadline := time.Now().Add(5 * time.Second); client.Conn.IsConnected(); {
+	for deadline := time.Now().Add(listenerWaitBound(t)); client.Conn.IsConnected(); {
 		if time.Now().After(deadline) {
-			t.Fatal("the NATS client still reports itself connected 5s after the relay cut every link")
+			t.Fatal("the NATS client still reports itself connected the time this package gives a wait after the relay cut every link")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -208,7 +229,7 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("send with the bus unreachable: status %d, body %s; want 503", recorder.Code, recorder.Body.String())
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -224,6 +245,9 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 	t.Logf("bus unreachable: 503 in %s: %s", elapsed, refusal.Error)
 }
 
+// Serial (listenerTestParallelism): it holds a wall-clock bound within a second or two of what it
+// waits for: each answer inside 4 s, from a route whose budget is 3.5 s.
+//
 // A bus that goes silent without closing the connection - a partition, or a hub host that stops
 // answering without resetting its sockets - is unreachable too, and a send and a publish answer it
 // with the same named 503 inside the caller's attempt. nats.go cannot tell such a link is dead
@@ -239,6 +263,8 @@ func TestSendAnswersServiceUnavailableWhileTheBusIsUnreachable(t *testing.T) {
 // in the warm session cache, so its read is not what is under test. The negative control is the
 // identical request before the freeze, answered 200 on the same rig.
 func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testing.T) {
+	// Not parallel: it requires the 503 within 4 s of a send and a publish that spend the 3.5 s
+	// sendRequestBudget on a frozen bus.
 	const (
 		target = "ses_frozen_bus_target"
 		sender = "ses_frozen_bus_sender_with_no_interest_record"
@@ -260,7 +286,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			name:    "publish",
 			handler: func(d *listenerDeps) http.HandlerFunc { return publishHandler(d, logging.New("test")) },
 			path:    "/v1/messages/publish",
-			body:    map[string]any{"topic": "notifications.github.example-org.example-repo.pr.1", "source": "agent", "source_session": sender, "message": "is the bus there?"},
+			body:    map[string]any{"topic": "notifications.team.example-team", "source": "agent", "source_session": sender, "message": "is the bus there?"},
 		},
 	} {
 		t.Run(route.name, func(t *testing.T) {
@@ -270,14 +296,14 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 				t.Fatalf("connect the listener's bus through the relay: %v", err)
 			}
 			t.Cleanup(client.Close)
-			registry, err := store.Open(client.Conn, store.WithReplicas(1))
+			registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 			if err != nil {
 				t.Fatalf("open the interest registry: %v", err)
 			}
 			// The requests below stamp their sender from the role claim view (senderStamp), so the
 			// listener's own startup gate is taken here, before the freeze.
 			waitForRegistry(t, registry)
-			sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+			sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 			if err != nil {
 				t.Fatalf("open the session registry: %v", err)
 			}
@@ -311,7 +337,7 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 			if recorder.Code != http.StatusServiceUnavailable {
 				t.Fatalf("%s with the bus silent: status %d, body %s; want 503", route.name, recorder.Code, recorder.Body.String())
 			}
-			var refusal apiError
+			var refusal listenerwire.APIError
 			if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 				t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 			}
@@ -340,6 +366,8 @@ func TestASendAndAPublishAnswerABusThatStoppedAnsweringInsideTheBudget(t *testin
 // the one window on the read-through; and the sender the cache holds nothing for spends that same
 // one window on both of its reads together.
 func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
+	// Not parallel: it requires each stamp on a frozen bus within 1.5 s, half a second past its 1 s
+	// read window (senderStampReadTimeout), and the cached sender's within 500 ms.
 	const (
 		cached    = "ses_frozen_stamp_sender_the_cache_holds"
 		noSession = "ses_frozen_stamp_sender_with_no_session_row"
@@ -352,14 +380,14 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 		t.Fatalf("connect the listener's bus through the relay: %v", err)
 	}
 	t.Cleanup(client.Close)
-	registry, err := store.Open(client.Conn, store.WithReplicas(1))
+	registry, err := store.Open(t.Context(), client.Conn, store.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open the interest registry: %v", err)
 	}
 	// Each stamp below reads the role claim view (senderStamp), so the listener's own startup
 	// gate is taken here, before the freeze.
 	waitForRegistry(t, registry)
-	sessions, err := session.OpenSessionRegistry(client.Conn, session.WithSessionReplicas(1))
+	sessions, err := session.OpenSessionRegistry(t.Context(), client.Conn, session.WithSessionReplicas(1))
 	if err != nil {
 		t.Fatalf("open the session registry: %v", err)
 	}
@@ -367,7 +395,7 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 	for _, sender := range []string{cached, noSession} {
 		if _, err := registry.Upsert(store.Interest{
 			SessionID: sender, MachineID: "test-machine", Dir: "/test/" + sender,
-		}, []string{contracts.AgentSubject(sender)}); err != nil {
+		}, []string{contracts.LegacyAgentSubject(sender)}); err != nil {
 			t.Fatalf("write %s's interest record: %v", sender, err)
 		}
 		if _, held := registry.Cached(sender); !held {
@@ -428,6 +456,7 @@ func TestTheSenderStampSpendsOneReadWindowOnAFrozenBus(t *testing.T) {
 // topic goes to the bus as written, so `notifications..x` clears the handler's prefix checks and
 // is refused by the bus's own subject check (bus.ErrInvalidSubject).
 func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) {
+	t.Parallel()
 	const target = "ses_refused_publish_target"
 	client := setupPublishTestClient(t)
 	registry, sessions := setupSessionsTest(t, nil, []string{target})
@@ -448,7 +477,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 	if recorder.Code != http.StatusServiceUnavailable {
 		t.Fatalf("send the bus refuses: status %d, body %s; want 503", recorder.Code, recorder.Body.String())
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(recorder.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", recorder.Body.String(), err)
 	}
@@ -526,6 +555,7 @@ func TestSendAnswersServiceUnavailableWhenTheBusRefusesThePublish(t *testing.T) 
 // the line's own fields (the summary among them) are checked on a refusal that has an envelope
 // and on one refused before any envelope exists.
 func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
+	t.Parallel()
 	const target = "ses_recorded_target"
 	const sender = "ses_recorded_sender"
 	client := setupPublishTestClient(t)
@@ -748,6 +778,8 @@ func TestListenerRecordsEverySendAndPublishRequest(t *testing.T) {
 // it in one thing only — the bucket no longer answers — so a rig that refused every send could
 // not produce the pair.
 func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *testing.T) {
+	// Not parallel: it requires the 503 within the 3.5 s sendRequestBudget of a session read that
+	// its 1 s sendSessionReadTimeout ends.
 	const target = "ses_unanswered_store_read"
 	const sender = "ses_unanswered_store_sender"
 	_, observer := trailingListeners(t)
@@ -789,7 +821,7 @@ func TestSendRefusesTheBusRatherThanTheSessionWhenTheStoreReadDoesNotAnswer(t *t
 	if unanswered.Code != http.StatusServiceUnavailable {
 		t.Fatalf("a send whose bucket read never answered: status %d, body %s; want 503, since nothing was learned about %s", unanswered.Code, unanswered.Body.String(), target)
 	}
-	var refusal apiError
+	var refusal listenerwire.APIError
 	if err := json.Unmarshal(unanswered.Body.Bytes(), &refusal); err != nil {
 		t.Fatalf("decode the refusal %s: %v", unanswered.Body.String(), err)
 	}

@@ -1,0 +1,13 @@
+kind: Added
+custom:
+  Issue: pr4396
+body: |-
+  Two broker settings and a route. `BROKER_POD_REGISTRARS` holds `<registrar account>=<pod
+  account>` pairs, the registration route's authority. `BROKER_POD_REGISTRATION_AUDIENCE` is a
+  second audience that only the registration route accepts for the pod token in its body, and
+  the broker refuses to start when it equals another audience of the cluster's tokens.
+  `POST /v1/oauth/exchange/pod-sessions/release` releases the session names that the caller's
+  login account registered: the exchange then refuses each of those registrations with a permanent
+  `invalid_grant`, and each name stays bound to that account after its released rows expire, as
+  every name stays bound to the registrar that first registered it. A release revokes no access
+  token that the exchange already issued.

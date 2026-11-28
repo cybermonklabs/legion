@@ -5,6 +5,7 @@ import {
   type ExecuteDispatchToolInput,
   sessionContext,
 } from "./dispatch-commands/context";
+import { dryRunAsksDispatch } from "./dispatch-commands/issues";
 import {
   type DispatchCommand,
   type DispatchToolName,
@@ -28,11 +29,22 @@ export type {
   DocumentTarget,
   DocumentTargetContext,
 } from "./dispatch-commands/document-targets";
-export { readDocumentBlocks, resolveIssueDocumentId } from "./dispatch-commands/document-targets";
-export { goBlankPattern } from "./dispatch-commands/documents";
-export { dispatchRefFromUrl } from "./dispatch-commands/refs";
+export {
+  readDocumentBlocks,
+  resolveIssueDocument,
+  resolveIssueDocumentId,
+} from "./dispatch-commands/document-targets";
+export { dispatchRefFromUrl, linkBaseOf } from "./dispatch-commands/links";
+export {
+  OPEN_BLOCK_ASK_THE_HUMAN,
+  OPEN_BLOCK_WAIVED,
+  refuseOpenDecisionBlocks,
+} from "./dispatch-commands/open-decision-blocks";
 export { formatOpenAsksSummary, positionText } from "./dispatch-commands/render-item";
-export { checkDispatchCall, dispatchServerUrls };
+// The reader of a `dispatch://` reference the commands read theirs with, for a host that takes one
+// of its own: the `legion` tool's register_gate basis names its issue's document by one.
+export { parseDispatchRef } from "./dispatch-owner";
+export { checkDispatchCall, dispatchServerUrls, dryRunAsksDispatch };
 
 /** Validate and execute one native Dispatch tool against the JSON HTTP API. */
 export async function executeDispatchTool(
@@ -47,6 +59,11 @@ export async function executeDispatchTool(
     serverUrls: dispatchServerUrls(input.config),
   });
   if (checked.problems.length > 0) throw new ToolInputError(input.tool, checked.problems);
+  // A dry run reaches a command only where the command answers it (`dryRunAsksDispatch`: a
+  // `dispatch result` record): run as one, any other command would make its write.
+  if (input.dryRun === true && !dryRunAsksDispatch(input.tool, checked.args)) {
+    throw new Error(`dispatch ${input.tool}'s dry run runs no command`);
+  }
   // The check reads the tool's own schema, so an unknown tool is already refused by the time this
   // runs; the table is still read as a lookup that can miss, so the name stays in the message.
   const command: DispatchCommand | undefined = dispatchCommands[input.tool as DispatchToolName];

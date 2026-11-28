@@ -1,6 +1,6 @@
 /** The collapsed project filters and the compact composer a margin ask draws. The row reads
  *  only what the page draws from one fixed answer, so it runs against a recording rather than
- *  against a harness (packages/dispatch/AGENTS.md, "The stubbed layer").
+ *  against a harness (packages/dispatch/README.md, "The stubbed layer").
  *
  *  Two rows of this family stayed in `polish.e2e.ts`, each with its reason written there.
  */
@@ -68,8 +68,7 @@ test("project filters stay collapsed until needed and margin asks use the compac
   await navigateInApp(page, `/issues/${scene.issue}`);
   const marginCard = needsYouCards(page).getByTestId(`ask-${scene.ask}`);
   await expect(marginCard.getByRole("radio", { name: "Ship" })).toBeVisible();
-  await expect(marginCard.getByLabel("Your answer")).toBeHidden();
-  await marginCard.getByText("Add a note or answer in your own words", { exact: true }).click();
+  // The compact composer's answer box stands in place.
   await expect(marginCard.getByLabel("Your answer")).toBeVisible();
   await page.screenshot({
     path: testInfo.outputPath("polish-margin-1280.png"),

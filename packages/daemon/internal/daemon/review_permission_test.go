@@ -11,12 +11,14 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/jackc/pgx/v5"
 
 	"github.com/sjawhar/legion/daemon/internal/appauth"
+	"github.com/sjawhar/legion/daemon/internal/config"
 	"github.com/sjawhar/legion/daemon/internal/ghrepo"
 	"github.com/sjawhar/legion/daemon/internal/intake"
 	"github.com/sjawhar/legion/daemon/internal/phase"
@@ -36,6 +38,7 @@ import (
 // applying it with a permission nobody read. The review App's own login, and a review on a pull
 // request the daemon does not record, are answered without a GitHub call.
 func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	reset := strconv.FormatInt(time.Now().Add(90*time.Second).Unix(), 10)
 	for _, tc := range []struct {
@@ -150,6 +153,7 @@ func TestTheReviewersRepositoryPermissionDecidesWhoMayEndARound(t *testing.T) {
 // which either reads the permission or, for a removed App, is refused as not installed; a younger
 // one is kept and tried again once it is that old.
 func TestA401ForTheReviewAppsTokenIsRetriedWithAFreshOne(t *testing.T) {
+	t.Parallel()
 	for _, tc := range []struct {
 		name     string
 		minted   time.Duration
@@ -204,8 +208,8 @@ type forgettingTokens struct {
 	forgot string
 }
 
-func (t *forgettingTokens) Token(ctx context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
-	lease, err := t.outboxTokens.Token(ctx, role, repo)
+func (t *forgettingTokens) Token(ctx context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
+	lease, err := t.outboxTokens.Token(ctx, role, owner)
 	lease.Minted = t.minted
 	return lease, err
 }
@@ -222,6 +226,7 @@ func (t *forgettingTokens) Forget(role appauth.AppRole, owner string) {
 // stands, an account with no answer kept is answered with the wait left, with no call made against
 // a limited API; once the wait has passed, reads resume, so the writer the limit hid still decides.
 func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	var limitFirst bool
 	calls := 0
@@ -311,6 +316,7 @@ func TestAReviewersPermissionIsReadOncePerWindow(t *testing.T) {
 // limit the same way, so the next uncached review inside the hold is answered without minting
 // again: minting on through the App's own limit risks the ban GitHub warns a repeated call does.
 func TestAReviewMintThatFailsTransientlyHoldsTheLimitWithoutMintingAgain(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	tokens := &transientOnceTokens{}
 	w := reviewPermissionRuntime(pool, "http://unused.invalid", quietLogger())
@@ -338,12 +344,92 @@ func TestAReviewMintThatFailsTransientlyHoldsTheLimitWithoutMintingAgain(t *test
 	}
 }
 
+// In token mode a human-tier review App's grant is reused, and its waiting request joined, only
+// for the same owner, so while one owner's request waits on a person the broker refuses another
+// owner's REQUEST_PENDING, or `agent-secrets` exits 75 once its own wait ends. That is the
+// broker's answer about one owner's grant, not GitHub's trouble: the review on that owner is
+// retried in a minute, and no hold is set, so a review on another owner, whose token the broker
+// releases, is read at once. The review App here is a real token-mode Manager whose token_command
+// answers as the broker does for each owner.
+func TestAPendingGrantForOneOwnerHoldsNoOtherOwnersPermissionRead(t *testing.T) {
+	t.Parallel()
+	pool := reviewPermissionPool(t)
+	records := record.NewStore()
+	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "beta/gadgets", DefaultBranch: "main", GitHubRepo: "beta/gadgets", Project: "LEGION", Tree: "LEGION-209", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
+		return records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: "LEGION-209", Repo: "beta/gadgets", Number: 7, Branch: "legion/LEGION-209", HeadSHA: "head", State: record.PullRequestOpen})
+	}); err != nil {
+		t.Fatalf("put the second pull request: %v", err)
+	}
+	var permissionReads []string
+	var mu sync.Mutex
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		defer mu.Unlock()
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/graphql":
+			fmt.Fprint(w, `{"data":{"viewer":{"login":"legion-reviewer[bot]"}}}`)
+		case r.URL.Path == "/apps/legion-reviewer":
+			fmt.Fprint(w, `{"id":67890,"slug":"legion-reviewer"}`)
+		case r.URL.Path == "/users/legion-reviewer[bot]":
+			fmt.Fprint(w, `{"id":271566630}`)
+		case strings.HasPrefix(r.URL.Path, "/repos/") && strings.HasSuffix(r.URL.Path, "/permission"):
+			permissionReads = append(permissionReads, r.URL.Path)
+			parts := strings.Split(r.URL.Path, "/")
+			login := parts[len(parts)-2]
+			fmt.Fprintf(w, `{"permission":"write","user":{"login":%q}}`, login)
+		default:
+			http.Error(w, "unexpected "+r.Method+" "+r.URL.Path, http.StatusInternalServerError)
+		}
+	}))
+	defer server.Close()
+	for _, tc := range []struct{ name, pending string }{
+		{name: "refused REQUEST_PENDING", pending: `echo "agent-secrets: a request for one or more of these secrets is already pending: request 0123abcd is still pending (REQUEST_PENDING)" >&2; exit 1`},
+		{name: "exit 75", pending: `echo "agent-secrets: still waiting for approval" >&2; exit 75`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			mu.Lock()
+			permissionReads = nil
+			mu.Unlock()
+			command := fmt.Sprintf(`case "$%s" in
+  acme) %s ;;
+  beta) printf '{"installations":{"beta":{"installation_id":2,"token":"ghs_beta","expires_at":"%s"}}}' ;;
+  *) echo "agent-secrets: no agent secret has this name (UNKNOWN_SECRET)" >&2; exit 1 ;;
+esac`, appauth.TokenCommandOwner, tc.pending, time.Now().Add(time.Hour).UTC().Format(time.RFC3339))
+			tokens := appauth.New(config.GitHubApps{Review: config.GitHubApp{AppID: "67890", TokenCommand: command}},
+				appauth.Options{BaseURL: server.URL, Stderr: &bytes.Buffer{}})
+			defer tokens.Close()
+			w := reviewPermissionRuntime(pool, server.URL, quietLogger())
+			w.tokens = tokens
+
+			_, err := w.reviewerCanWrite(context.Background(), intake.PullRequestReview{Repo: "acme/widgets", Number: 42, State: "approved", Author: "a-writer"})
+			var later *intake.RetryLater
+			if !errors.As(err, &later) || later.After != time.Minute {
+				t.Fatalf("a review on the owner whose grant waits = %v; want a one-minute RetryLater", err)
+			}
+			if left := w.rateLimitLeft(); left > 0 {
+				t.Fatalf("the waiting grant held GitHub's rate limit for %s; want no hold, since GitHub refused nothing", left)
+			}
+			canWrite, err := w.reviewerCanWrite(context.Background(), intake.PullRequestReview{Repo: "beta/gadgets", Number: 7, State: "approved", Author: "b-writer"})
+			if err != nil || !canWrite {
+				t.Fatalf("a review on another owner while the first owner's grant waits = %v, %v; want it read at once: write access, no error", canWrite, err)
+			}
+			mu.Lock()
+			defer mu.Unlock()
+			if want := []string{"/repos/beta/gadgets/collaborators/b-writer/permission"}; !slices.Equal(permissionReads, want) {
+				t.Fatalf("permission reads = %q, want %q", permissionReads, want)
+			}
+		})
+	}
+}
+
 // A review on a repository whose owner the review App is not installed on (installed once, then
 // removed, while a record still names the repository, which GitHub intake keeps hearing) decides
 // nothing: the mint's refusal is answered at once as no write access, logged at error naming the
 // owner, and held for the permission window, rather than returned for a delivery that would mint
 // again on every redelivery. The review App's own review is restored from what was delivered.
 func TestAReviewOnAnOwnerTheReviewAppIsNotInstalledOnDecidesNothing(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	var logged syncBuffer
 	w := reviewPermissionRuntime(pool, "http://unused.invalid", slog.New(slog.NewJSONHandler(&logged, nil)))
@@ -374,12 +460,12 @@ func TestAReviewOnAnOwnerTheReviewAppIsNotInstalledOnDecidesNothing(t *testing.T
 // appauth refuses one (appauth.ErrNotInstalled), counted.
 type notInstalledTokens struct{ calls int }
 
-func (t *notInstalledTokens) Token(_ context.Context, role appauth.AppRole, repo ghrepo.Repository) (appauth.Lease, error) {
+func (t *notInstalledTokens) Token(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	t.calls++
-	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, repo.Owner())
+	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, owner)
 }
 
-func (t *notInstalledTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string, _ []string) (appauth.Lease, error) {
+func (t *notInstalledTokens) ReadToken(_ context.Context, role appauth.AppRole, owner string) (appauth.Lease, error) {
 	t.calls++
 	return appauth.Lease{}, fmt.Errorf("%w: %s not installed on %s", appauth.ErrNotInstalled, role, owner)
 }
@@ -388,7 +474,7 @@ func (t *notInstalledTokens) ReadToken(_ context.Context, role appauth.AppRole, 
 // a lease, so a test can tell a retried mint from one the hold should have skipped.
 type transientOnceTokens struct{ calls int }
 
-func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, ghrepo.Repository) (appauth.Lease, error) {
+func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, string) (appauth.Lease, error) {
 	t.calls++
 	if t.calls == 1 {
 		return appauth.Lease{}, &appauth.TransientError{Err: errors.New("mint refused: GitHub's rate limit")}
@@ -396,8 +482,8 @@ func (t *transientOnceTokens) Token(context.Context, appauth.AppRole, ghrepo.Rep
 	return appauth.Lease{Token: "token", ExpiresAt: time.Now().Add(time.Hour)}, nil
 }
 
-func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string, _ []string) (appauth.Lease, error) {
-	lease, err := t.Token(ctx, role, ghrepo.Repository{})
+func (t *transientOnceTokens) ReadToken(ctx context.Context, role appauth.AppRole, _ string) (appauth.Lease, error) {
+	lease, err := t.Token(ctx, role, "")
 	lease.Token += "-read"
 	return lease, err
 }
@@ -409,7 +495,7 @@ func reviewPermissionPool(t *testing.T) *store.Pool {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-208", Repo: "acme/widgets", DefaultBranch: "main", GitHubRepo: "acme/widgets", Project: "LEGION", Tree: "LEGION-208", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: "LEGION-208", Repo: "acme/widgets", Number: 42, Branch: "legion/LEGION-208", HeadSHA: "head", State: record.PullRequestOpen})
 	}); err != nil {
 		t.Fatalf("put the pull request: %v", err)
@@ -437,6 +523,7 @@ func reviewPermissionRuntimeRenamed(pool *store.Pool, githubAPI string, log *slo
 // one GitHub serves. With no pair configured no name finds the row, the review is one the daemon
 // does not record, and GitHub is asked nothing at all.
 func TestAReviewNamingARenamedRepositoryReadsThePermissionOfTheRecordedPullRequest(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionPool(t)
 	for _, tc := range []struct {
 		name    string
@@ -481,7 +568,7 @@ func reviewPermissionTransferredPool(t *testing.T) *store.Pool {
 	pool := isolatedOutboxPool(t)
 	records := record.NewStore()
 	putOutboxIssue(t, pool, records, record.Issue{Key: "LEGION-209", Repo: "sjawhar/legion", DefaultBranch: "main", GitHubRepo: "sjawhar/legion", Project: "LEGION", Tree: "LEGION-209", Title: "Workflow", Phase: phase.Reviewing, Generation: 1, Status: "needs_review"})
-	if err := pgx.BeginFunc(context.Background(), pool, func(tx pgx.Tx) error {
+	if err := store.Transact(context.Background(), pool, func(ctx context.Context, tx pgx.Tx) error {
 		return records.PutPullRequest(context.Background(), tx, record.PullRequest{Issue: "LEGION-209", Repo: "sjawhar/legion", Number: 42, Branch: "legion/LEGION-209", HeadSHA: "head", State: record.PullRequestOpen})
 	}); err != nil {
 		t.Fatalf("put the pull request: %v", err)
@@ -504,6 +591,7 @@ func reviewPermissionTransferredPool(t *testing.T) *store.Pool {
 // the pair exists to prevent: a permission read refused decides nothing, and a body read refused
 // is naked and redelivered.
 func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderNow(t *testing.T) {
+	t.Parallel()
 	pool := reviewPermissionTransferredPool(t)
 	// review is the review as it reaches the daemon: published under the name the repository
 	// moved away from, which is the name the pull request is recorded under too.
@@ -582,9 +670,9 @@ func TestAReviewPublishedBeforeATransferIsReadOnTheRepositoryGitHubHoldsItUnderN
 					}))
 					defer server.Close()
 					w := reviewPermissionRuntimeRenamed(pool, server.URL, quietLogger(), tc.renames)
-					// Dispatch maps the repository under the name it moved to, which is what
-					// makes cybermonklabs the owner whose installation holds it.
-					w.repositories.set([]mappedRepository{{Repo: ghrepo.MustParse("cybermonklabs/legion"), Default: true}}, nil)
+					// Both role Apps answered installed on the name the repository moved to, which
+					// is what makes cybermonklabs the owner whose installation holds it.
+					w.repositories.fill(ghrepo.MustParse("cybermonklabs/legion"))
 					w.tokens = servedOwnerTokens{owner: "cybermonklabs"}
 					err := caller.read(t, w)
 					switch {

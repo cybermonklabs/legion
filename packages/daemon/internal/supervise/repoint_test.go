@@ -61,7 +61,7 @@ func TestAStaleAddressWhileLaunchingRelaunchesAgainChargingNothing(t *testing.T)
 	h.reach(StateReady)
 	h.must(RequestSuspend{Claim: testToken, By: SuspendedByOperator})
 	h.wantState(StateSuspended)
-	h.must(RequestResume{Claim: testToken})
+	h.must(RequestResume{Claim: testToken, By: SuspendedByOperator})
 	h.wantState(StateLaunching)
 
 	h.observe(runtime.StaleAddress)

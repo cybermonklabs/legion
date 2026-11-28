@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -75,10 +76,52 @@ func gitTrailers(env map[string]string) []gitTrailer {
 	return lines
 }
 
+// gitIntRule is a value that git 2.47.3's git_parse_int reads as an int: what strtoimax reads in
+// base 0 after C white space and a sign (a hex number with 0x, a binary one with 0b, which the
+// worker image's glibc 2.41 reads as C23 has it, an octal one with a leading 0, else a decimal
+// one), then nothing or a unit, k, m or g in either case (get_unit_factor). The first group is the
+// number with its sign, and the second the unit.
+var gitIntRule = regexp.MustCompile(`^[ \t\n\v\f\r]*([+-]?(?:0[xX][0-9a-fA-F]+|0[bB][01]+|0[0-7]*|[1-9][0-9]*))([kKmMgG]?)$`)
+
+// gitIsolated is whether env asks git for an isolated configuration, as hermetic tests do:
+// GIT_CONFIG_GLOBAL exactly /dev/null, or GIT_CONFIG_NOSYSTEM a value git reads as true. Then
+// commitWithTrailers adds no line, so the commit's message and id are those git alone makes.
+//
+// git 2.47.3 reads GIT_CONFIG_NOSYSTEM with git_env_bool("GIT_CONFIG_NOSYSTEM", 0): unset is
+// false, and a value is what git_parse_maybe_bool makes of it. One of git's words is what
+// gitBoolWord says (git_parse_maybe_bool_text); any other value is true when git_parse_int reads
+// it as an int that is not 0: gitIntRule's number times its unit, within the range of a C int
+// (git_parse_signed). git dies on a value it reads neither way, so such a value asks for no
+// isolation: the lines go in as for any other commit, and git then fails on its own.
+func gitIsolated(env map[string]string) bool {
+	if env["GIT_CONFIG_GLOBAL"] == "/dev/null" {
+		return true
+	}
+	value := env["GIT_CONFIG_NOSYSTEM"]
+	if b, ok := gitBoolWord(value); ok {
+		return b
+	}
+	number := gitIntRule.FindStringSubmatch(value)
+	if number == nil {
+		return false
+	}
+	n, err := strconv.ParseInt(number[1], 0, 64)
+	factor := int64(1)
+	switch number[2] {
+	case "k", "K":
+		factor = 1 << 10
+	case "m", "M":
+		factor = 1 << 20
+	case "g", "G":
+		factor = 1 << 30
+	}
+	return err == nil && n != 0 && n >= -math.MaxInt32/factor && n <= math.MaxInt32/factor
+}
+
 // gitCommit is the argument list that `legion git` hands git for a commit, and the stash, if any,
 // that it hands git in place of a message or template git could no longer read (commitStash).
 // keep is a stash whose own descriptor that list names: it must stay open until the exec
-// (execGit). stdin is a stash that is to be git's standard input: it goes onto descriptor 0 before
+// (execWrapped). stdin is a stash that is to be git's standard input: it goes onto descriptor 0 before
 // the exec (asStandardInput). At most one of the two is set.
 type gitCommit struct {
 	args  []string
@@ -99,18 +142,19 @@ type gitCommit struct {
 // PARSE_OPT_STOP_AT_NON_OPTION), so the end is a place for an option. It sets no trailer.*
 // configuration, so each trailer of the caller's keeps git's behaviour, a repeated one too.
 //
-// It adds none and leaves every argument as written when no line is valid, when -h or --help is
-// among the options, when an option matches no option of git commit, when git would make no
-// commit (a dry run), when the helper's version is below 2.32 (the first git with
-// `commit --trailer`), and when it cannot show those two things. A message or template that it has
-// read and that git can no longer read goes to git as a file of its own, trailers or not
-// (commitStash). The stash says whether that file goes onto descriptor 0 or stays open on its own
-// descriptor, and which path, if any, takes the place of the value in the argument list. The error
-// is a stash it could not write, and then it hands git nothing.
+// It adds none and leaves every argument as written when no line is valid, when the caller asks
+// git for an isolated configuration (gitIsolated), when -h or --help is among the options, when an
+// option matches no option of git commit, when git would make no commit (a dry run), when the
+// helper's version is below 2.32 (the first git with `commit --trailer`), and when it cannot show
+// those two things. A message or template that it has read and that git can no longer read goes to
+// git as a file of its own, trailers or not (commitStash). The stash says whether that file goes
+// onto descriptor 0 or stays open on its own descriptor, and which path, if any, takes the place of
+// the value in the argument list. The error is a stash it could not write, and then it hands git
+// nothing.
 func commitWithTrailers(git gitReader, route stashRoute, args []string, env map[string]string) (gitCommit, error) {
 	written := gitCommit{args: slices.Concat(git.globals, []string{"commit"}, args)}
 	want := gitTrailers(env)
-	if len(want) == 0 {
+	if len(want) == 0 || gitIsolated(env) {
 		return written, nil
 	}
 	opts, ok := readCommitOptions(args)

@@ -396,7 +396,7 @@ func TestATurnThatEndsClearsTheDeathsEvenWhenItNeverRanTheTask(t *testing.T) {
 	h.wantBudgets(Budgets{Deaths: 1})
 
 	h.must(StreamTurnStart{Claim: testToken})
-	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: resent, Error: "Agent is already processing a request"})
+	h.must(StreamLateRefusal{Claim: testToken, DeliveryID: resent, Error: busyWords, Outcome: runtime.OutcomeAgentBusy})
 	h.must(StreamTurnEnd{Claim: testToken})
 
 	if p := h.pending(); !p.ConfirmedAt.IsZero() {
@@ -831,9 +831,10 @@ func TestAMachineRefusesLimitsOrTimeoutsThatCannotWork(t *testing.T) {
 }
 
 // A failed claim stays failed until someone decides otherwise: the architect's retry of a held
-// phase decides it for a worker, and the operator's retry for an architect, which nothing else
-// relaunches, and for a phase worker whose own retries do not reach it. Each relaunches the same
-// session with fresh budgets.
+// phase decides it for a worker, and the operator's retry for an architect, which a later start
+// the daemon writes for it also relaunches (a child's next phase start, a re-admission of its
+// tree), and for a phase worker whose own retries do not reach it. Each relaunches the same
+// session with fresh budgets, or a new one once Machine.forgetSession has dropped it.
 func TestRetryRelaunchesAFailedClaimOnItsSessionWithFreshBudgets(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -841,8 +842,8 @@ func TestRetryRelaunchesAFailedClaimOnItsSessionWithFreshBudgets(t *testing.T) {
 		retry Event
 	}{
 		{"the architect's retry of a worker", queuedClaim(), RequestRetry{Claim: testToken}},
-		{"the operator's retry of an architect", rootClaim(), RequestOperatorRetry{Claim: rootToken}},
-		{"the operator's retry of a phase worker", queuedClaim(), RequestOperatorRetry{Claim: testToken}},
+		{"the operator's retry of an architect", rootClaim(), RequestAskedRetry{Claim: rootToken, By: SuspendedByOperator}},
+		{"the operator's retry of a phase worker", queuedClaim(), RequestAskedRetry{Claim: testToken, By: SuspendedByOperator}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newHarnessOf(t, tc.claim)
@@ -885,7 +886,7 @@ func TestTheOperatorsRetryOfTheControllerIsRefused(t *testing.T) {
 			h.wantState(StateFailed)
 			before, calls, puts := h.claim(), len(h.rt.Calls()), len(h.store.history())
 
-			err := h.handle(RequestOperatorRetry{Claim: tc.claim.Token})
+			err := h.handle(RequestAskedRetry{Claim: tc.claim.Token, By: SuspendedByOperator})
 
 			var refused *RefusedError
 			if !errors.As(err, &refused) || !errors.Is(err, ErrRetryNotTheController) || refused.State != StateFailed ||
@@ -905,9 +906,9 @@ func TestTheOperatorsRetryOfTheControllerIsRefused(t *testing.T) {
 	}
 }
 
-// A retry relaunches the same session, so it hands the runtime the process the claim last ran to
-// wait out — the one its own exit released, or the one it failed on — rather than open a second
-// agent on the session while the first may still be going.
+// A retry that keeps the recorded session relaunches it, so it hands the runtime the process the
+// claim last ran to wait out — the one its own exit released, or the one it failed on — rather
+// than open a second agent on the session while the first may still be going.
 func TestRetryWaitsOutTheProcessTheClaimLastRan(t *testing.T) {
 	wantRetryWaitsOut := func(t *testing.T, h *harness, last runtime.Locator) {
 		t.Helper()

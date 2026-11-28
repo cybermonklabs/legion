@@ -22,8 +22,8 @@ import (
 // trimmed, both sides percent-decode, and neither decodes to more than 255 UTF-16 code units.
 //
 // Its caller wraps the whole parse in one try whose catch assigns nothing, so ONE malformed
-// member costs the process every attribute of the variable — the operator's theorem.project with
-// it, which is the attribute the spend report splits by today. That is why the daemon appends to
+// member costs the process every attribute of the variable, including the operator's project
+// attribute, which a spend report can group by. That is why the daemon appends to
 // the operator's value instead of composing one of its own, why SpendResourceAttributes writes no
 // empty member and percent-encodes everything it writes, and why the configuration loader refuses
 // an operator value SpendAttributesRefusal refuses rather than letting a launch carry it.
@@ -32,16 +32,48 @@ import (
 // key the operator's value already holds.
 const SpendAttributesVariable = "OTEL_RESOURCE_ATTRIBUTES"
 
-// SpendIssueAttribute and SpendRoleAttribute are the two attribute keys the daemon writes into
-// SpendAttributesVariable itself, so that a launch's attributes name the issue it serves and the
-// role it runs, and a spend row grouped by issue follows when the spend collector keeps the
-// two keys, which its theorem.* keep-list drops today (dispatch://INFRA-1835). They are named
-// here once, in one place, so that the composer that writes them and the refusal that keeps an
-// operator's own value out of them cannot drift apart.
+// SpendIssueAttribute, SpendRoleAttribute and SpendArmsAttribute are the attribute keys the daemon
+// writes into SpendAttributesVariable itself, so that a launch's attributes name the issue it
+// serves, the role it runs and the experiment arms whose files it runs with, and a spend row
+// grouped by issue, or read by arm, follows when the spend collector keeps the keys. They are
+// named here once, in one place, so that the composer that writes them and the refusal that keeps
+// an operator's own value out of them cannot drift apart.
+//
+// SpendArmsAttribute is the launch's exposure: one `<experiment>:<variant>` for each arm whose
+// files the launch runs with (SpendArmsValue), so every model call a process makes names the arm
+// it ran in, beside the issue it was spent on. A unit's recorded arm says what it was drawn into,
+// not what each of its launches ran with: a role an experiment does not reach runs in no arm of
+// it, and a Kubernetes launch that keeps a pod built before an arm's overlays were mounted starts
+// without them. Neither leaves any other record, so an experiment that reads its outcome by arm
+// reads each call's arm here.
 const (
 	SpendIssueAttribute = "legion.issue"
 	SpendRoleAttribute  = "legion.role"
+	SpendArmsAttribute  = "legion.arms"
 )
+
+// SpendAttributeLimit is the longest side of a member the detector takes, in UTF-16 code units
+// once percent-decoded: a longer key or value throws, and the throw costs the launch every
+// attribute of the variable (SpendAttributesRefusal).
+const SpendAttributeLimit = 255
+
+// SpendArmsValue is SpendArmsAttribute's value for variants, before percent-encoding: each arm as
+// `<experiment>:<variant>`, in the order given, which for a launch is the order the project's file
+// declares the experiments, joined by `,`; "" for none. An experiment's name and an arm's are of
+// a-z, 0-9 and `-` (the configuration's experimentNamePattern), so neither separator can stand
+// inside one, and a reader splits the decoded value on `,` and then on `:`.
+func SpendArmsValue(variants []Variant) string {
+	var b strings.Builder
+	for index, variant := range variants {
+		if index > 0 {
+			b.WriteByte(',')
+		}
+		b.WriteString(variant.Experiment)
+		b.WriteByte(':')
+		b.WriteString(variant.Name)
+	}
+	return b.String()
+}
 
 // spendDetectorSpace is the whitespace the detector's own trim drops: ECMAScript's
 // String.prototype.trim set, which is not Go's unicode.IsSpace set. Both were measured in this
@@ -51,11 +83,11 @@ const (
 // 202f 205f 3000` — so the two sets differ in exactly two code points, and this predicate is
 // unicode.IsSpace with those two taken out and put in.
 //
-// Go trims U+0085 (NEL) where JavaScript does not: `theorem.project=legion,<NEL>` is a member
+// Go trims U+0085 (NEL) where JavaScript does not: `acme.project=widgets,<NEL>` is a member
 // strings.TrimSpace reads as the empty one the detector skips, while the detector keeps it, finds
 // no `=` in it and throws, costing the launch every attribute. JavaScript trims U+FEFF (ZWNBSP)
 // where Go does not: `<ZWNBSP>=v` is a member whose key the detector trims to empty and throws
-// on, and `theorem.project=legion,<ZWNBSP>` one the detector trims to empty and filters away.
+// on, and `acme.project=widgets,<ZWNBSP>` one the detector trims to empty and filters away.
 func spendDetectorSpace(r rune) bool {
 	return r == '\uFEFF' || (r != '\u0085' && unicode.IsSpace(r))
 }
@@ -72,13 +104,18 @@ func spendTrailing(r rune) bool {
 const spendHex = "0123456789ABCDEF"
 
 // SpendResourceAttributes is the whole value a launch's process carries in
-// SpendAttributesVariable: the operator's own value first, then legion.issue, then legion.role.
+// SpendAttributesVariable: the operator's own value first, then legion.issue, then legion.role,
+// then legion.arms, the arms of spec.Variants (SpendArmsValue). spec.Variants must be the arms
+// whose files the launch runs with: every arm of the unit the role is reached by under tmux,
+// whose panes read their overlays off the host the boot gate checked, and under Kubernetes only
+// those whose every overlay the launch's pod holds (internal/runtime/sandbox's launch.overlays).
 // The daemon's pairs come last because the detector's assignment is last-wins, so a key the
 // operator's value already holds is the launch's by being written after it.
 //
 // A pair whose fact the spec does not hold is left out rather than written empty, since the
 // detector keeps `legion.issue=` as an attribute with an empty value rather than dropping it, and
-// an empty issue attribute on every controller pod would split the spend report by nothing. The
+// an empty issue attribute on every controller pod would split the spend report by nothing; and a
+// launch in no arm, the controller's among them, carries no legion.arms. The
 // project controller's launch has no issue (claim.RoleController holds none) and carries
 // legion.role alone; the daemon's own boot-gate probe (internal/daemon/bootgate.go's
 // gateEnvironment) has neither, since it serves no issue and runs in no role, and carries the
@@ -93,9 +130,11 @@ const spendHex = "0123456789ABCDEF"
 //
 // Every value the daemon writes is percent-encoded — RFC 3986's unreserved characters (letters,
 // digits, `-`, `.`, `_`, `~`) pass through, every other byte becomes %XX — so that the detector's
-// decodeURIComponent gives back exactly the issue key and the role however they are spelled, and
-// so that neither can carry a comma or an `=` into a member and cost the launch the whole
-// variable. The two keys are unreserved as written and encode to themselves.
+// decodeURIComponent gives back exactly the issue key, the role and the arms however they are
+// spelled, and so that none can carry a comma or an `=` into a member and cost the launch the
+// whole variable. The three keys are unreserved as written and encode to themselves. The arms'
+// value is held under the detector's bound before any launch, by the configuration loader, which
+// refuses a project whose declared experiments could name a longer one.
 func SpendResourceAttributes(operator string, spec SpawnSpec) string {
 	issue := spendEncode(spec.Issue)
 	role := spendEncode(string(spec.Role))
@@ -109,6 +148,9 @@ func SpendResourceAttributes(operator string, spec SpawnSpec) string {
 	}
 	if spec.Role != "" {
 		spendMember(&b, SpendRoleAttribute, role)
+	}
+	if len(spec.Variants) > 0 {
+		spendMember(&b, SpendArmsAttribute, spendEncode(SpendArmsValue(spec.Variants)))
 	}
 	return b.String()
 }
@@ -128,7 +170,7 @@ func spendMember(b *strings.Builder, key, value string) {
 // detector would throw on, or "" when nothing here refuses it. The configuration loader asks it
 // of the value the operator sets, because the throw is not that member's to pay: the detector's
 // caller catches it with an empty hand, so the launch loses every attribute of the variable,
-// including the operator's own theorem.project.
+// including the operator's own project attribute.
 //
 // It applies the measured rules in the detector's own order — an empty member is skipped as the
 // detector skips it, then the split on `=` into exactly two parts, the non-empty key, the
@@ -136,8 +178,8 @@ func spendMember(b *strings.Builder, key, value string) {
 // UTF-8 both throw in decodeURIComponent), then the 255-code-unit bound on each decoded side,
 // which JavaScript counts in UTF-16 code units. Every trim it makes is the detector's own set and
 // not Go's (spendDetectorSpace). It refuses one thing of its own beyond them: a member whose
-// decoded key is SpendIssueAttribute or SpendRoleAttribute, which the runtime writes into every
-// launch itself and would override without a word.
+// decoded key is SpendIssueAttribute, SpendRoleAttribute or SpendArmsAttribute, which the runtime
+// writes itself and would override without a word.
 //
 // The reason names the member it refuses and what is wrong with it, never the rest of the value:
 // an operator reading it should see the one member to fix, and the attributes of the others are
@@ -164,14 +206,17 @@ func SpendAttributesRefusal(value string) string {
 		if problem != "" {
 			return fmt.Sprintf("its member %q has a value with %s", trimmed, problem)
 		}
-		if n := spendUTF16Len(decodedKey); n > 255 {
+		if n := spendUTF16Len(decodedKey); n > SpendAttributeLimit {
 			return fmt.Sprintf("its member %q has a key of %d characters once percent-decoded, over the detector's 255", trimmed, n)
 		}
-		if n := spendUTF16Len(decodedValue); n > 255 {
+		if n := spendUTF16Len(decodedValue); n > SpendAttributeLimit {
 			return fmt.Sprintf("its member %q has a value of %d characters once percent-decoded, over the detector's 255", trimmed, n)
 		}
 		if decodedKey == SpendIssueAttribute || decodedKey == SpendRoleAttribute {
 			return fmt.Sprintf("its member %q names %s, which the runtime writes into every launch itself", trimmed, decodedKey)
+		}
+		if decodedKey == SpendArmsAttribute {
+			return fmt.Sprintf("its member %q names %s, which the runtime writes into every launch that runs in an experiment's arm", trimmed, decodedKey)
 		}
 	}
 	return ""

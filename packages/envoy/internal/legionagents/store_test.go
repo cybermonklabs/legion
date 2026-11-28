@@ -58,7 +58,7 @@ func openRegistryAt(t *testing.T, uri string) *registry {
 	conn := testnats.Connect(t, uri)
 	t.Cleanup(conn.Close)
 	c := &clock{now: time.Date(2026, 10, 26, 4, 0, 0, 0, time.UTC)}
-	store, err := legionagents.Open(conn, legionagents.WithReplicas(1), legionagents.WithClock(c.Now))
+	store, err := legionagents.Open(t.Context(), conn, legionagents.WithReplicas(1), legionagents.WithClock(c.Now))
 	if err != nil {
 		t.Fatalf("open the registry: %v", err)
 	}
@@ -151,15 +151,15 @@ func TestAnEntryRoundTripsThroughEveryRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get: %v", err)
 	}
-	if got.Entry != want || got.ReplacedBy != nil || got.ReplacedAt != nil {
+	if got.LegionAgentEntry != want || got.ReplacedBy != nil || got.ReplacedAt != nil {
 		t.Fatalf("get = %#v, want %#v with no replacement", got, want)
 	}
 	byRole, err := r.store.ByRoleToken(ctx(t), "legion-infra-infra-448-tester")
-	if err != nil || len(byRole) != 1 || byRole[0].Entry != want {
+	if err != nil || len(byRole) != 1 || byRole[0].LegionAgentEntry != want {
 		t.Fatalf("by role token = %#v, %v; want the one entry", byRole, err)
 	}
 	byIssue, err := r.store.ByIssue(ctx(t), "INFRA-448")
-	if err != nil || len(byIssue) != 1 || byIssue[0].Entry != want {
+	if err != nil || len(byIssue) != 1 || byIssue[0].LegionAgentEntry != want {
 		t.Fatalf("by issue = %#v, %v; want the one entry", byIssue, err)
 	}
 	held := r.contents(t)
@@ -191,7 +191,7 @@ func TestABatchRoundTripsInOrder(t *testing.T) {
 			t.Fatalf("stored[%d] = %#v, want %#v", i, stored[i], entries[i])
 		}
 		got, err := r.store.Get(ctx(t), entries[i].SessionID)
-		if err != nil || got.Entry != entries[i] {
+		if err != nil || got.LegionAgentEntry != entries[i] {
 			t.Fatalf("get %s = %#v, %v", entries[i].SessionID, got, err)
 		}
 	}
@@ -542,7 +542,7 @@ func TestEntriesSurviveANATSRestart(t *testing.T) {
 	server.Start(t)
 	reopened := openRegistryAt(t, uri)
 	got, err := reopened.store.Get(ctx(t), "ses-tester")
-	if err != nil || got.Entry != want {
+	if err != nil || got.LegionAgentEntry != want {
 		t.Fatalf("get after the restart = %#v, %v; want %#v", got, err, want)
 	}
 }
@@ -552,7 +552,7 @@ func TestEntriesSurviveANATSRestart(t *testing.T) {
 func TestReopenMovesTheStoreToANewConnection(t *testing.T) {
 	uri := testnats.URL(t)
 	first := testnats.Connect(t, uri)
-	store, err := legionagents.Open(first, legionagents.WithReplicas(1))
+	store, err := legionagents.Open(t.Context(), first, legionagents.WithReplicas(1))
 	if err != nil {
 		t.Fatalf("open: %v", err)
 	}
@@ -565,7 +565,7 @@ func TestReopenMovesTheStoreToANewConnection(t *testing.T) {
 	}
 	second := testnats.Connect(t, uri)
 	t.Cleanup(second.Close)
-	if err := store.Reopen(second); err != nil {
+	if err := store.Reopen(context.Background(), second); err != nil {
 		t.Fatalf("reopen: %v", err)
 	}
 	if got, err := store.Get(ctx(t), "ses-tester"); err != nil || got.SessionID != "ses-tester" {
