@@ -1,31 +1,34 @@
 //go:build e2e
 
-// What the five live proofs that drive real Oh My Pi panes share below the daemon: the constants
+// What the six live proofs that drive real Oh My Pi panes share below the daemon: the constants
 // each reads off the daemon, the run each one is (liveAgentProof) with its reads of a claim, of a
 // pane and of the daemon's own log, the `legion` binary, the plugins and the pane listener a run
 // builds before the daemon boots, the model stand-in each pane talks to, the
 // provider answers those stand-ins write, the overlay writers that point a pane at one, and the
-// log handler those reads of the daemon's own decisions go through. The five are
+// log handler those reads of the daemon's own decisions go through. The six are
 // provider_error_retry_live_test.go, the driver of scripts/e2e/provider-error-retry.sh,
 // claim_compaction_live_test.go, the driver of scripts/e2e/claim-compaction.sh,
 // role_prompt_rule_live_test.go, the driver of scripts/e2e/role-prompt-rule.sh,
-// late_completion_live_test.go, the driver of scripts/e2e/late-completion.sh, and
-// busy_relaunch_live_test.go, the driver of scripts/e2e/busy-relaunch-delivery.sh. What belongs
+// late_completion_live_test.go, the driver of scripts/e2e/late-completion.sh,
+// busy_relaunch_live_test.go, the driver of scripts/e2e/busy-relaunch-delivery.sh, and
+// adoption_delivery_live_test.go, the driver of scripts/e2e/adoption-delivery.sh. What belongs
 // to one proof stays in that proof's own file: its issues and their seed, its steps, and the Oh
 // My Pi profile and operator overlay its panes run under.
 //
-// A stand-in's handler belongs to the proof that decides an answer with it. Four have one: the
+// A stand-in's handler belongs to the proof that decides an answer with it. Five have one: the
 // retry proof's three stand-ins answer by the provider name each is given in the run's
 // models.yml, the compaction proof's four answer by what the step before them set, a turn's
 // request apart from a compaction's summary request, the late-completion proof's two answer the
 // turn a step armed with a call of the `legion` tool and that tool's result with a WAITING line,
-// and the busy-relaunch proof's five answer what a step scripted in front of the compaction
-// proof's paneStandin (scriptedStandin). The prompt-rule proof decides nothing by an answer and
-// writes no handler of its own: its two stand-ins are paneStandin at its default, which answers
-// every turn alike. What every proof holds in common is here: the HTTP server, the bodies they
-// were sent, and the answers they write — the overloaded status, a refused request, and the
-// Messages stream of one block, the text of a turn that ends or a tool call, which the
-// late-completion and busy-relaunch proofs make (streamAnthropicToolUse).
+// the busy-relaunch proof's five answer what a step scripted in front of the compaction
+// proof's paneStandin (scriptedStandin), and the adoption proof's four answer a turn with text
+// until a step holds the turns that carry a word and answers them 529 (adoptionStandin). The
+// prompt-rule proof decides nothing by an answer and writes no handler of its own: its two
+// stand-ins are paneStandin at its default, which answers every turn alike. What every proof
+// holds in common is here: the HTTP server, the bodies they were sent, and the answers they write
+// — the overloaded status, a refused request, and the Messages stream of one block, the text of a
+// turn that ends or a tool call, which the late-completion and busy-relaunch proofs make
+// (streamAnthropicToolUse).
 package daemon
 
 // The harness main's #2780 added under the e2e tag for the two agent proofs it brought
@@ -103,9 +106,9 @@ var ladderDelays = []time.Duration{30 * time.Second, time.Minute, 2 * time.Minut
 // step reads it back, and the `legion` binary this checkout built, which is both the panes' shim
 // and the operator's command line. providerErrorLive, claimCompactionLive
 // (claim_compaction_live_test.go), rolePromptRuleLive (role_prompt_rule_live_test.go),
-// lateCompletionLive (late_completion_live_test.go) and busyRelaunchLive
-// (busy_relaunch_live_test.go) are each one, so the five proofs read a claim, wait for a pane and
-// run `legion claims` the same way.
+// lateCompletionLive (late_completion_live_test.go), busyRelaunchLive
+// (busy_relaunch_live_test.go) and adoptionDeliveryLive (adoption_delivery_live_test.go) are each
+// one, so the six proofs read a claim, wait for a pane and run `legion claims` the same way.
 type liveAgentProof struct {
 	liveProof
 	rt     *localRuntime

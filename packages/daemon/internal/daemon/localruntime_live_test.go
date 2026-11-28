@@ -33,7 +33,13 @@
 //     nothing, so its spec carries no repository and PaneInputs names no owners directory, which
 //     is the same pane a runtime with no GitHubCredential function opens.
 //   - ProvisionsWorkspaces answers true, as the Sandbox runtime does, so the daemon clones no
-//     repository on its host; this runtime makes the claim's working directory itself.
+//     repository on its host; this runtime makes the claim's working directory itself, or finds
+//     the one a proof made there before the daemon booted (workDir):
+//     adoption_delivery_live_test.go makes each a jj workspace of a clone of its own, as a pod's is.
+//   - AdoptWorkingCopy answers nothing, since a proof's workers commit nothing, unless the proof
+//     sets adoptWithin: then the pane's own shim adopts its working copy over the claim's
+//     connection, as the tmux runtime has it do, which is what adoption_delivery_live_test.go
+//     proves.
 //   - PodDrift, ReplacePod and CleanupTree hold nothing per place or per tree, so each answers
 //     as a process-only runtime answers: no drift, nothing to replace, nothing to delete.
 //
@@ -41,11 +47,13 @@
 // group, so Oh My Pi and the shim go together and a failed or finished run leaves no child
 // behind: the test's cleanup kills every group the runtime ever started, whatever the proof did.
 //
-// Two things here are a step's rather than a runtime's, and both are of that process group: a
+// Three things here are a step's rather than a runtime's, and all are of that process group: a
 // step kills one out from under the daemon (killProcessGroup), and a step holds the runtime's
 // own reports of one claim back while it does (hold), so the death reaches the daemon through
 // nothing but the read it makes at the request. claim_compaction_live_test.go's step 8 is what
-// they are for.
+// those two are for. The third holds a claim's launch at its start until a step lets it go
+// (gate): adoption_delivery_live_test.go starts its tester's pane only once another claim of the
+// issue is in a turn.
 package daemon
 
 import (
@@ -123,6 +131,17 @@ type localRuntime struct {
 	// paneLogs is the directory each worker's stdout and stderr is written under, one file per
 	// launch, kept for the run's evidence.
 	paneLogs string
+	// adoptWithin is the bound of an adoption of a claim's working copy, which AdoptWorkingCopy
+	// then asks of the pane's own shim over the claim's connection, as the tmux runtime does
+	// within slow_command_timeout_seconds. Zero, as every proof but adoption_delivery_live_test.go
+	// leaves it, adopts nothing: those proofs' working directories are no jj workspace.
+	adoptWithin time.Duration
+	// gate answers, for one claim, a file each launch of that claim waits for before it starts the
+	// shim: the launch's process runs from the start, a shell in the claim's own process group,
+	// and execs the pane's command in its own place once the file is there, so the pid and the
+	// start ticks the locator records are the shim's. "" starts the shim at once, and so does a
+	// nil gate, every proof's but adoption_delivery_live_test.go's.
+	gate func(claim.Token) string
 
 	mu      sync.Mutex
 	panes   map[claim.Token]*localPane
@@ -382,6 +401,13 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	if spec.ResumeSessionFile != "" {
 		argv = slices.Insert(argv, len(argv)-4, "--resume="+spec.ResumeSessionFile)
 	}
+	// A gated claim's launch waits for its gate's file in a shell that then becomes the shim
+	// (exec), so the process the locator records is the shim's from the start (gate).
+	if r.gate != nil {
+		if gate := r.gate(spec.Claim); gate != "" {
+			argv = append([]string{"/bin/sh", "-c", `while [ ! -e "$0" ]; do sleep 0.2; done; exec "$@"`, gate}, argv...)
+		}
+	}
 	logPath := filepath.Join(r.paneLogs, fmt.Sprintf("%s.%d.log", spec.Claim, seq))
 	logFile, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 	if err != nil {
@@ -432,8 +458,10 @@ func (r *localRuntime) launch(ctx context.Context, spec runtime.SpawnSpec) (runt
 	return pane.locator, nil
 }
 
-// workDir is the working directory of every pane of issue, which launch makes: the roles of one
-// issue share it, as they share the issue's jj workspace in a pod.
+// workDir is the working directory of every pane of issue, which launch makes where it is not
+// there yet: the roles of one issue share it, as they share the issue's jj workspace in a pod. A
+// proof whose panes work a jj workspace adds it at this path before the daemon boots
+// (adoption_delivery_live_test.go).
 func (r *localRuntime) workDir(issue string) string {
 	return filepath.Join(r.stateDir, "workspaces", issue)
 }
@@ -665,10 +693,32 @@ func (r *localRuntime) ReconcileOrphans(ctx context.Context, known []runtime.Kno
 	return nil
 }
 
-// AdoptWorkingCopy is nothing to do: this proof's workers commit nothing, and their working
-// directory is no jj workspace, so no update leaves an edit in any commit.
-func (r *localRuntime) AdoptWorkingCopy(context.Context, runtime.Locator, runtime.GitIdentity) (runtime.Adoption, error) {
-	return runtime.Adoption{}, nil
+// AdoptWorkingCopy is nothing to do for a proof that leaves adoptWithin zero: its workers commit
+// nothing, and their working directory is no jj workspace, so no update leaves an edit in any
+// commit. A proof that sets it has the pane's own shim adopt the working copy over the claim's
+// connection within that bound, as the tmux runtime has it (runtime/tmux's AdoptWorkingCopy), and
+// answers the shim's account of it beside the error (runtime.Adoption). The recorded process must
+// still run, since the connection is its, and a refusal wraps the connection's own, so the daemon
+// reads the shim's refusal as the far side's answer (runtime.ErrAdoptRefused).
+func (r *localRuntime) AdoptWorkingCopy(ctx context.Context, loc runtime.Locator, id runtime.GitIdentity) (runtime.Adoption, error) {
+	if r.adoptWithin <= 0 {
+		return runtime.Adoption{}, nil
+	}
+	if observed := r.observation(loc); observed.Kind != runtime.Alive {
+		return runtime.Adoption{}, fmt.Errorf("adopt %s's working copy: its recorded process is %s: %s", loc.Claim, observed.Kind, observed.Detail)
+	}
+	if r.conns == nil {
+		return runtime.Adoption{}, fmt.Errorf("adopt %s's working copy: the daemon handed this runtime no connection directory", loc.Claim)
+	}
+	conn, ok := r.conns.Conn(loc.Claim)
+	if !ok {
+		return runtime.Adoption{}, fmt.Errorf("adopt %s's working copy: the claim has no connection to ask over", loc.Claim)
+	}
+	adoption, err := conn.AdoptWorkingCopy(ctx, id, r.adoptWithin)
+	if err != nil {
+		return adoption, fmt.Errorf("adopt %s's working copy for %s <%s>: %w", loc.Claim, id.Name, id.Email, err)
+	}
+	return adoption, nil
 }
 
 // ProvisionsWorkspaces answers true, as the Sandbox runtime does, so the daemon clones no

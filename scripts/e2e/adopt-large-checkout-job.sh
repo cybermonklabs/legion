@@ -76,7 +76,13 @@
 #                                   backend needs it) and a GNU tar built on a glibc before 2.43
 #                                   (gVisor has no openat2), and lets uid 1000 run them (the Job's
 #                                   test builds with CGO_ENABLED=0, as the worker image's Go does);
-#                                   a mirror of google-cloud-cli on Debian 13 carries them all.
+#                                   a mirror of google-cloud-cli on Debian 13 carries them all. A
+#                                   multi-platform image is named by its index digest, never by the
+#                                   digest of one platform's manifest: a node names the image it ran
+#                                   by the digest it pulled the image under (the pod's imageID), an
+#                                   index digest where it holds the index, which this harness then
+#                                   cannot tie to a manifest digest it was given (on 2026-11-28 a
+#                                   pod given the amd64 manifest's digest named its index's).
 #   --namespace <namespace>         required: the namespace the Job runs in.
 #   --node-selector <key=value>[,…] required: the compute class the Job's pod selects, a class
 #                                   that admits `runtimeClassName: gvisor`, which this Job always
@@ -185,8 +191,8 @@ usage: scripts/e2e/adopt-large-checkout-job.sh --commit <40 hex> --image <ref>@s
        scripts/e2e/adopt-large-checkout-job.sh --make-repository <dir> [--files <n>] [--commits <n>]
 
   --commit           the pushed commit of cybermonklabs/legion the Job clones and tests.
-  --image            the image the Job runs, by digest (bash, coreutils, awk, curl, git 2.42 or
-                     later, a GNU tar gVisor runs; uid 1000).
+  --image            the image the Job runs, by digest, a multi-platform image by its index digest
+                     (bash, coreutils, awk, curl, git 2.42 or later, a GNU tar gVisor runs; uid 1000).
   --namespace        the namespace the Job runs in.
   --node-selector    the compute class the pod selects; it must admit runtimeClassName: gvisor.
   --storage-class    the storage class of the disk volume mounted at /scratch.
@@ -876,7 +882,7 @@ echo "  imageID: ${ran:-unreadable}"
 case "$ran" in
   *"${image#*@}"*) ;;
   *)
-    echo "the pod ran imageID [${ran:-unreadable}], which does not name the digest ${image#*@}"
+    echo "the pod ran imageID [${ran:-unreadable}], which does not name the digest ${image#*@}: name a multi-platform image by its index digest, which a node reports"
     exit 2
     ;;
 esac
