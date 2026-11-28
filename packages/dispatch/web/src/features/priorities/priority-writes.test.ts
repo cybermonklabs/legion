@@ -1,5 +1,5 @@
 import { afterEach, expect, spyOn, test } from "bun:test";
-import { IDEMPOTENCY_KEY_TTL_MS } from "@legion/contracts";
+import { IDEMPOTENCY_KEY_TTL_MS, utf8Bytes } from "@legion/contracts";
 import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-query";
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { createElement, type ReactNode } from "react";
@@ -8,7 +8,7 @@ import { answerPriorityPatches, PRIORITY_TITLE_CHANGED } from "../../__tests__/s
 import { ApiError, api } from "../../api/client";
 import { prioritiesQuery } from "../../api/queries";
 import { DispatchQueryClient } from "../../api/query-client";
-import type { Priorities, Priority } from "../../api/types";
+import type { PatchPriorityInput, Priorities, Priority } from "../../api/types";
 import { FIRST_BACKOFF_MS, SEND_DEADLINE_MS } from "../writes/keyed-write";
 import { ofKind, type Write, writesOf } from "../writes/write-store";
 import type { WriteAnswer } from "./field-arrival";
@@ -271,6 +271,15 @@ function pageWrites(shown: readonly string[] = [], Client: typeof QueryClient = 
       });
       return answered;
     },
+    /** The reader writes `description` as priority `p1`'s description, as `rename` writes its
+     *  title, and answers how the write ended (`WriteAnswer`). */
+    describe: (description: string, from: string, on = from): Promise<WriteAnswer> => {
+      let answered = Promise.resolve<WriteAnswer>("refused");
+      act(() => {
+        answered = hook.result.current.describe("p1", description, from, on, "Description");
+      });
+      return answered;
+    },
     /** What the `index`th write to go out changed, once it went. */
     sentAt: async (index: number) => {
       await waitFor(() => expect(sent().length).toBeGreaterThan(index));
@@ -375,6 +384,13 @@ const writerRefused = () =>
 
 /** An answer that is no verdict: the attempt failed, and the write tries again later. */
 const UNAVAILABLE = new ApiError(503, { code: "UNAVAILABLE", error: "the server is down" });
+
+/** A build of Dispatch from before the list refusing a write that names one: a body it cannot
+ *  read, `400 INVALID_JSON`, as an older pod answers while a deploy rolls out. A refusal of its
+ *  own for each write, since the write path marks the one that follows an attempt that went
+ *  unanswered (`refusedByDispatch`). */
+const listRefused = () =>
+  new ApiError(400, { code: "INVALID_JSON", error: "the body is not the JSON it should be" });
 
 // How a write ends, and what the next write of the same text names. The field takes the server's
 // text in only from a read, so the reader's next edit starts from what the read after the ending
@@ -488,9 +504,10 @@ test("a write after one stopped while out names both texts and lands; the stoppe
 });
 
 // A build of Dispatch from before the list refuses a write naming one `400 INVALID_JSON`, a body
-// it cannot read, as an older pod does while a deploy rolls out. The write goes once more naming
-// the one text it names first, as every write did before, and lands; the refusal of the list is
-// let go, so the shell's line holds nothing of it, and the field hears that the write landed.
+// it cannot read, as an older pod does while a deploy rolls out. No write of the same text is
+// pressed after it, so the write goes once more naming the one text the server holds by its
+// turn, as every write did before the list, and lands; the refusal of the list is let go, so the
+// shell's line holds nothing of it, and the field hears that the write landed.
 test("a write whose list an older build refuses is sent again naming its one text, and lands", async () => {
   const { answer, client, read, rename, sentAt, stopLate } = pageWrites();
   await read(0, "Old");
@@ -499,10 +516,7 @@ test("a write whose list an older build refuses is sent again naming its one tex
     await stopLate(0);
     const next = rename("Mine, more", "Old", "Mine");
     expect(await sentAt(1)).toEqual({ expected: { title: ["Old", "Mine"] }, title: "Mine, more" });
-    await answer(
-      1,
-      new ApiError(400, { code: "INVALID_JSON", error: "the body is not the JSON it should be" })
-    );
+    await answer(1, listRefused());
     expect(await sentAt(2)).toEqual({ expected: { title: "Old" }, title: "Mine, more" });
     await answer(2, false);
     expect(await next).toBe("landed");
@@ -511,6 +525,172 @@ test("a write whose list an older build refuses is sent again naming its one tex
       .filter((row) => row.status === "refused" && (row.refusal as ApiError).status === 400);
     expect(refusedAsList).toEqual([]);
   });
+});
+
+// The same where an attempt of the write went unanswered first, a 503, and the attempt after it
+// met the older build. That build wrote nothing of the list, whatever answered before it: every
+// attempt carried the same list, and one that landed would have had its key answer the next. So
+// the write goes once more naming the one text, and lands.
+test("a write whose list an older build refuses after an attempt of it went unanswered is sent again naming its one text, and lands", async () => {
+  const { answer, client, read, rename, sentAt } = pageWrites();
+  await read(0, "Old");
+  await onFakeClock(async () => {
+    void rename("A", "Old");
+    const next = rename("AB", "Old");
+    expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "A" });
+    await answer(0, false);
+    expect(await sentAt(1)).toEqual({ expected: { title: ["A", "Old"] }, title: "AB" });
+    await answer(1, UNAVAILABLE);
+    await tick(FIRST_BACKOFF_MS);
+    expect(await sentAt(2)).toEqual({ expected: { title: ["A", "Old"] }, title: "AB" });
+    await answer(2, listRefused());
+    expect(await sentAt(3)).toEqual({ expected: { title: "A" }, title: "AB" });
+    await answer(3, false);
+    expect(await next).toBe("landed");
+    expect(writesOf(client).rows()).toEqual([]);
+  });
+});
+
+// Three writes overlap while the older build serves, and a fourth is pressed once it has refused
+// the first list. "A" over "Old" names one text, and lands; "AB", "ABC" and "ABCD" each name a
+// list, which it refuses. A write so refused with a later write of the same text behind it in its
+// chain is let go: that one carries her newer text, and goes after it in the line. The last goes
+// once more naming the one text the server holds by its turn, "A", and lands: nobody else wrote,
+// so no write is refused 409.
+test("overlapping writes whose lists an older build refuses: each with a later write behind it is let go, and the last is sent again naming the text the server holds, and lands", async () => {
+  const { answer, client, read, rename, sentAt, sentCount } = pageWrites();
+  await read(0, "Old");
+  const first = rename("A", "Old");
+  const second = rename("AB", "Old");
+  const third = rename("ABC", "Old");
+  expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "A" });
+  await answer(0, false);
+  expect(await sentAt(1)).toEqual({ expected: { title: ["A", "Old"] }, title: "AB" });
+  await answer(1, listRefused());
+  const fourth = rename("ABCD", "Old");
+  expect(await sentAt(2)).toEqual({ expected: { title: ["AB", "Old", "A"] }, title: "ABC" });
+  await answer(2, listRefused());
+  expect(await sentAt(3)).toEqual({ expected: { title: ["ABC", "Old", "A"] }, title: "ABCD" });
+  await answer(3, listRefused());
+  expect(await sentAt(4)).toEqual({ expected: { title: "A" }, title: "ABCD" });
+  await answer(4, false);
+  expect([await first, await second, await third, await fourth]).toEqual([
+    "landed",
+    "refused",
+    "refused",
+    "landed",
+  ]);
+  expect(sentCount()).toBe(5);
+  expect(writesOf(client).rows()).toEqual([]);
+});
+
+// Builds of both kinds serve while a deploy rolls out. "A" over "Old" lands, and a read shows it,
+// which the field takes in before the reader writes "ABCD"; "AB" and "ABC" were pressed before
+// that. The older build refuses the list "AB" names, and "AB" is let go; the newer lands "ABC",
+// whose list names "A". The older refuses the list "ABCD" names, and it goes once more naming
+// "ABC", which the server holds, and lands.
+test("a write whose list an older build refuses after a newer build landed the write before it is sent again naming that write's text, and lands", async () => {
+  const { answer, read, rename, sentAt } = pageWrites();
+  await read(0, "Old");
+  const first = rename("A", "Old");
+  const second = rename("AB", "Old");
+  const third = rename("ABC", "Old");
+  expect(await sentAt(0)).toEqual({ expected: { title: "Old" }, title: "A" });
+  await answer(0, false);
+  await read(1, "A");
+  const fourth = rename("ABCD", "A");
+  expect(await sentAt(1)).toEqual({ expected: { title: ["A", "Old"] }, title: "AB" });
+  await answer(1, listRefused());
+  expect(await sentAt(2)).toEqual({ expected: { title: ["AB", "Old", "A"] }, title: "ABC" });
+  await answer(2, false);
+  expect(await sentAt(3)).toEqual({ expected: { title: ["ABC", "A", "AB"] }, title: "ABCD" });
+  await answer(3, listRefused());
+  expect(await sentAt(4)).toEqual({ expected: { title: "ABC" }, title: "ABCD" });
+  await answer(4, false);
+  expect([await first, await second, await third, await fourth]).toEqual([
+    "landed",
+    "refused",
+    "landed",
+    "landed",
+  ]);
+});
+
+/** The most bytes Dispatch reads of a write's body (`maxJSONRequestBytes`). */
+const MAX_BODY_BYTES = 1 << 20;
+
+/** The bytes of the body a write sent, as Dispatch counts them. */
+const bodyBytes = (input: PatchPriorityInput | undefined) => utf8Bytes(JSON.stringify(input));
+
+/** What a write of a description sent, each text named by its length, so a row of long texts
+ *  compares it whole and a failure prints it short. */
+function lengths(input: PatchPriorityInput | undefined) {
+  const over = input?.expected?.description;
+  return {
+    description: input?.description?.length,
+    expected: Array.isArray(over) ? over.map((text) => text.length) : over?.length,
+  };
+}
+
+/** A description of `size` characters. */
+const longText = (size: number) => "x".repeat(size);
+
+// A description of 400,000 characters, written three times, each write pressed while the ones
+// before it are out. The third may go over "Old", the text the field took in, and over the first
+// write's text, beside the second's, which it names: those and its own text would be 1.2 MB, past
+// the 1 MiB Dispatch reads of a body, which it refuses `413`, and a Retry would send the same. It
+// names "Old", which fits, and not the first write's text.
+test("a write of a long description names only those of its own texts its body holds within what Dispatch reads", async () => {
+  const { answer, describe, read, sentAt } = pageWrites();
+  await read(0, "Old");
+  void describe(longText(400_000), "Old");
+  void describe(longText(400_001), "Old");
+  const third = describe(longText(400_002), "Old");
+  await answer(0, false);
+  expect(lengths(await sentAt(1))).toEqual({ description: 400_001, expected: [400_000, 3] });
+  await answer(1, false);
+  const sent = await sentAt(2);
+  expect(bodyBytes(sent)).toBeLessThanOrEqual(MAX_BODY_BYTES);
+  expect(lengths(sent)).toEqual({ description: 400_002, expected: [400_001, 3] });
+  await answer(2, false);
+  expect(await third).toBe("landed");
+});
+
+// The overlapping writes against the older build, of a description that grows past the size
+// whose body holds any text of its own beside the one it goes over: the fourth write's holds none.
+// It names that one text as a list all the same, which the older build refuses as it refuses the
+// lists before it, so it goes once more naming the first write's text, which the server holds,
+// and lands. Named as one text, it would go over the third's, which never landed, and be refused
+// 409.
+test("overlapping writes of a growing description against an older build: the one whose body holds none of its own texts names its one text as a list, and her last text lands", async () => {
+  const { answer, describe, read, sentAt } = pageWrites();
+  await read(0, "Old");
+  const start = longText(340_000);
+  const first = describe(longText(345_000), start);
+  const second = describe(longText(350_000), start);
+  const third = describe(longText(355_000), start);
+  expect(lengths(await sentAt(0))).toEqual({ description: 345_000, expected: 340_000 });
+  await answer(0, false);
+  const sentSecond = await sentAt(1);
+  expect(bodyBytes(sentSecond)).toBeLessThanOrEqual(MAX_BODY_BYTES);
+  expect(lengths(sentSecond)).toEqual({ description: 350_000, expected: [345_000, 340_000] });
+  await answer(1, listRefused());
+  const fourth = describe(longText(360_000), start);
+  const sentThird = await sentAt(2);
+  expect(bodyBytes(sentThird)).toBeLessThanOrEqual(MAX_BODY_BYTES);
+  expect(lengths(sentThird)).toEqual({ description: 355_000, expected: [350_000, 340_000] });
+  await answer(2, listRefused());
+  const sentFourth = await sentAt(3);
+  expect(bodyBytes(sentFourth)).toBeLessThanOrEqual(MAX_BODY_BYTES);
+  expect(lengths(sentFourth)).toEqual({ description: 360_000, expected: [355_000] });
+  await answer(3, listRefused());
+  expect(lengths(await sentAt(4))).toEqual({ description: 360_000, expected: 345_000 });
+  await answer(4, false);
+  expect([await first, await second, await third, await fourth]).toEqual([
+    "landed",
+    "refused",
+    "refused",
+    "landed",
+  ]);
 });
 
 // "B" waited its turn behind "A", and the reader discarded it before it went. "A" lands, and an

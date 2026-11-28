@@ -1,3 +1,4 @@
+import { utf8Bytes } from "@legion/contracts";
 import { type QueryClient, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ApiError, api, priorityPatchRequest } from "../../api/client";
@@ -121,7 +122,9 @@ export interface PriorityTextWrite {
   /** The field's own texts besides `expected` that the server may hold as this write's turn
    *  comes, which the write goes over too (`ownTexts`): its start, its writes landed and not yet
    *  drawn, and its writes whose end is unknown - still out, or stopped or ended with no verdict
-   *  while they may land still. Absent where there is none, and from a text held unsent. */
+   *  while they may land still - as many as its body holds. Absent where there is none, and from
+   *  a text held unsent; empty where its body holds none of them, so it names its one text as a
+   *  list all the same (`textRequest`). */
   readonly also?: readonly string[];
   /** What the edit this write carries was made on, and when. Absent from a text a field kept on
    *  its own, which is never sent. */
@@ -149,11 +152,11 @@ const keptTextWrite = shape.record({
 }) satisfies Shape<PriorityTextWrite>;
 
 /** The request a write of a priority's text makes: the text, and the text it goes over as
- *  `expected` - a list of it and `also` where the write names more than one, so the write lands
- *  where the server holds any of them, and a plain string where it names one, which every build
- *  of Dispatch takes. A build before the list refuses one `400 INVALID_JSON` (`refusedAsList`). */
+ *  `expected` - a list of it and `also` where the write carries `also`, so the write lands where
+ *  the server holds any of them, and a plain string where it does not, which every build of
+ *  Dispatch takes. A build before the list refuses one `400 INVALID_JSON` (`refusedAsList`). */
 function textRequest(write: PriorityTextWrite) {
-  const over = write.also?.length ? [write.expected, ...write.also] : write.expected;
+  const over = write.also === undefined ? write.expected : [write.expected, ...write.also];
   return priorityPatchRequest(
     write.id,
     write.attribute === "title"
@@ -163,18 +166,50 @@ function textRequest(write: PriorityTextWrite) {
 }
 
 /** Whether `error`, which ended a write naming a list of texts it goes over, is a build of
- *  Dispatch from before the list refusing the list: a body it cannot read, `400 INVALID_JSON`. */
+ *  Dispatch from before the list refusing the list: a body it cannot read, `400 INVALID_JSON`.
+ *  That build wrote nothing of the write, whatever answered its attempts before: each carried the
+ *  same list under the same key, and Dispatch answers every attempt after one that landed from
+ *  its key, never running the write again (`internal/dispatch/api/request_keys.go`). */
 function refusedAsList(error: unknown): boolean {
   return error instanceof ApiError && error.status === 400 && error.code === "INVALID_JSON";
 }
 
-/** The texts besides `expected` a write of the field may go over (`PriorityTextWrite.also`):
- *  among `own`, the field's own texts the server may hold as its turn comes - its start, the
- *  texts of its chain, and its writes whose end is unknown (`unknownTexts`) - each once. Absent
- *  where there is none. */
-function ownTexts(expected: string, own: readonly string[]): readonly string[] | undefined {
-  const also = [...new Set(own)].filter((text) => text !== expected);
-  return also.length === 0 ? undefined : also;
+/** The most bytes Dispatch reads of a write's body (`maxJSONRequestBytes` in
+ *  `internal/dispatch/api/server.go`): it refuses a larger one `413 REQUEST_TOO_LARGE`, and a
+ *  Retry sends the same body again. */
+const MAX_BODY_BYTES = 1 << 20;
+
+/**
+ * The texts besides `write.expected` a write of the field may go over (`PriorityTextWrite.also`):
+ * among `own`, the field's own texts the server may hold as its turn comes - its start, the texts
+ * of its chain, and its writes whose end is unknown (`unknownTexts`) - each once, in that order,
+ * while the write's body stays within `MAX_BODY_BYTES`; a text past that is left out. The body
+ * holds the text written and the one it goes over already, so where the texts are about a quarter
+ * of that size it names one more of them, and where they are a third of it, none. A text left out
+ * may be the one the server holds, which then refuses the write as it refuses a write naming one
+ * text, where a body past the bound would be refused every time. Absent where the field has no
+ * such text. Empty where the body holds none of them: the write still names its one text as a
+ * list (`textRequest`), so a build from before the list refuses it as it refuses the writes ahead
+ * of it, which name lists, and it goes again from its chain (`writeText`). Named as one text, it
+ * would go over the text of a write ahead of it that such a refusal let go, which never landed.
+ */
+function ownTexts(
+  write: Omit<PriorityTextWrite, "also">,
+  own: readonly string[]
+): readonly string[] | undefined {
+  const texts = [...new Set(own)].filter((text) => text !== write.expected);
+  if (texts.length === 0) return undefined;
+  // The body naming `expected` alone, and the brackets a list puts around it; each text of the
+  // list adds a comma and itself as JSON writes it.
+  let bytes = utf8Bytes(JSON.stringify(textRequest(write).body)) + 2;
+  const also: string[] = [];
+  for (const text of texts) {
+    const more = utf8Bytes(JSON.stringify(text)) + 1;
+    if (bytes + more > MAX_BODY_BYTES) continue;
+    bytes += more;
+    also.push(text);
+  }
+  return also;
 }
 
 /** The texts of priority `id`'s `attribute` the store `rows` holds writes of whose end is unknown:
@@ -435,11 +470,13 @@ const NO_PRIORITIES: readonly string[] = [];
  * follows it: so each write names, beside that text, every other text of the field's own the
  * server may hold as its turn comes (`PriorityTextWrite.also`, rule 1 of the state table in
  * e2e/priorities.e2e.ts): its start, the texts of its chain, and the texts of the writes the
- * store holds whose end is unknown, and lands where the server holds any of them. Where somebody
- * else wrote the text meanwhile, it is none of those: the server refuses the write `409
- * PRIORITY_CHANGED` and writes nothing, so nobody's text is written over unseen. A build of
- * Dispatch from before the list refuses one `400 INVALID_JSON`, and the write goes once more
- * naming the one text, as every write did before it. "Use my text" is written as any write is: a
+ * store holds whose end is unknown, as many as its body holds (`ownTexts`), and lands where the
+ * server holds any of them. Where somebody else wrote the text meanwhile, it is none of those:
+ * the server refuses the write `409 PRIORITY_CHANGED` and writes nothing, so nobody's text is
+ * written over unseen. A build of Dispatch from before the list refuses one `400 INVALID_JSON`:
+ * a write of that text pressed after it carries the reader's text on, and the last goes once
+ * more naming the one text the server holds by its turn, as every write did before the list
+ * (`writeText`); each refusal of a list is let go. "Use my text" is written as any write is: a
  * write of the reader's own still out - the one the field's blur made as they pressed it - is
  * theirs to replace, and it goes after that. A write that would change nothing is not sent. Each
  * write is answered with how it ended, once its chain has heard (`WriteAnswer`): landed, refused,
@@ -732,15 +769,21 @@ export function usePriorityWrites(
    *  server and made the edit on `on` (`PriorityTextWrite.made`): over the newest write of its
    *  chain it goes after (`aheadOf`), or over `from`, and over any other text of the field's own
    *  the server may hold as its turn comes (`also`): `from`, the texts of its chain, and the texts
-   *  of the writes whose end is unknown (`unknownTexts`), so a write of the reader's that
-   *  landed unseen, or lands late, takes nothing of the next one from her. Another person's text
-   *  is none of those, so a write over it is still refused. A build of Dispatch from before the
-   *  list refuses one (`refusedAsList`): the write goes once more naming the one text alone, as
-   *  every write did before, and that refusal is let go. Answers how the write ended
-   *  (`WriteAnswer`), once its chain has heard (`text`'s `onSettled`, which TanStack runs before
-   *  it settles the press): landed; of unknown end where it ended with no verdict of Dispatch's,
-   *  so it may land still and its text is the reader's own when a read brings it; and else
-   *  refused, as one not sent is. */
+   *  of the writes whose end is unknown (`unknownTexts`), as many as its body holds (`ownTexts`),
+   *  so a write of the reader's that landed unseen, or lands late, takes nothing of the next one
+   *  from her. Another person's text is none of those, so a write over it is still refused. A
+   *  build of Dispatch from before the list refuses one (`refusedAsList`), and that refusal is let
+   *  go. Where a write of the same text pressed after it is in its chain, that write carries her
+   *  newer text and goes after it in the line, so this one ends there, refused. Else it goes once
+   *  more naming one text, as every write did before the list: the newest of its chain as it
+   *  stands then, or else `from`. Every write ahead of it in the line has settled by then, so the
+   *  chain holds only those of them that landed, the newest of which the server holds; it is not
+   *  read against `from` again (`aheadOf`), since the write that went over `from` may be one such
+   *  a refusal let go. Answers how the write ended (`WriteAnswer`), once its chain has heard
+   *  (`text`'s `onSettled`, which TanStack runs before it settles the press): landed; of unknown
+   *  end where it ended with no verdict of Dispatch's, so it may land still and its text is the
+   *  reader's own when a read brings it; and else refused, as one not sent is. One sent again
+   *  answers as that write ended. */
   const writeText = useCallback(
     (
       id: string,
@@ -768,7 +811,7 @@ export function usePriorityWrites(
         holdText(detail, label, holding, refresh());
         return NOT_LANDED;
       }
-      const also = ownTexts(expected, [
+      const also = ownTexts(detail, [
         from,
         ...chain.map((write) => write.text),
         ...unknownTexts(writes.rows(), { attribute, id }),
@@ -782,11 +825,16 @@ export function usePriorityWrites(
         return mutateAsync({ label, press, write }).then(
           () => "landed",
           (error: unknown) => {
-            if (endedWithoutVerdict(error)) return "unknown";
-            if (write.also === undefined || !refusedAsList(error)) return "refused";
+            // Asked before whether the write ended with a verdict: a build before the list wrote
+            // nothing of it, whatever answered its attempts before (`refusedAsList`).
+            if (write.also === undefined || !refusedAsList(error)) {
+              return endedWithoutVerdict(error) ? "unknown" : "refused";
+            }
             const refused = writes.rows().find((row) => row.detail === write);
             if (refused !== undefined) writes.supersede(refused.id);
-            return send(detail, aheadOf(own.chains.get(key), from, drawn.current.reads));
+            const now = own.chains.get(key) ?? NO_WRITES;
+            if (now.some((later) => later.press > press)) return "refused";
+            return send({ ...detail, expected: expectedText(now, from) }, now);
           }
         );
       };
