@@ -227,7 +227,7 @@ func newGatedServiceInstanceTo(t *testing.T, database *store.Store, logger *slog
 		Persistence: gated,
 		Events:      events.NewBroker(),
 		Identity:    headerIdentity(database),
-		ServerURL:   "https://dispatch.example",
+		Origins:     testOrigins,
 		Settle:      time.Hour,
 		Logger:      logger,
 	})

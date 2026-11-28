@@ -189,7 +189,7 @@
 #      of the matching actions/cache/restore nor that key followed by `-${{ github.sha }}`, or
 #      whose `path:` is not exactly that restore's, for a restore of ci.yaml or of a workflow
 #      ci.yaml calls - dispatch-browser.yaml's binaries, multiprocess, embedder and visual jobs
-#      restore go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow
+#      restore go-browser-binaries, go-envoy and go-envoy-test for the dispatch-browser job - or of any other workflow
 #      of .github/workflows that restores it (the release builds, the nightly browser re-record,
 #      the fill workflows' own restores), since a drift there misses as silently (the keys compared
 #      as text, trailing whitespace aside, the paths as ordered lists of stripped lines), naming
@@ -408,6 +408,55 @@
 #      arm, with two, or with one that lists no file, a dispatch-browser.yaml that runs the script
 #      from no step or from two directories, and no file of .github/ci-gates that declares that
 #      filter, fail too, rather than holding the filter to nothing.
+#  25. a step of a ci_job_reads.py BINARIES_FILLS pair - the build and connections steps of
+#      .github/workflows/ci-caches.yaml's browser-binaries job, and the two steps of
+#      dispatch-browser.yaml's binaries job they fill the cache family for - that does not run the
+#      pair's text (compared as an Exact entry compares a step's, the whole text), in the pair's
+#      directory, with no `if:` of its own, no GOCACHE of the workflow, the job or the step, no
+#      other env: name outside ENV_ALLOWED, no earlier step writing $GITHUB_ENV or $GITHUB_PATH or
+#      running `go env -w`, and no shell or container, naming the file, the step and its first
+#      line that differs; before each paired step, a fill job whose last actions/setup-go step
+#      gives another go-version-file, go-version, go-download-base-url or architecture than
+#      the reader job's last before the step it pairs with, each compared as text, naming the
+#      file, the job, the paired step and both; a job of either side with no setup-go step
+#      before a paired step that gives a go-version-file or go-version (one that gives neither
+#      installs no Go, and counts as none), which then builds on whatever Go the runner
+#      carries, naming the file, the job and the step, and saying to set Go up there as the
+#      other side's job does where that job's installs Go, else to set both jobs' Go up from
+#      one go-version-file, such as the go.mod of the pair's directory; that setup-go step
+#      with an `if:` of its own, which may install no Go at all, naming the file, the job, the
+#      step and the `if:`; a step of the reader job whose run: holds a go command and that no
+#      pair names, naming the file, the job and the step: the fill does not run it, so the job
+#      restores the entry and that step's own packages miss on every run; a job or step of
+#      either side that is gone, each in its own words; and an entry that names no pair, an
+#      empty text or a workflow the tree does not have. An object's cache key holds the
+#      compiler's flags, CGO_ENABLED and the other GO* variables that enter the build, with
+#      the source it compiles, so a fill that drifts saves an entry with which the job
+#      compiles again each package whose key the drift changes, and nothing fails: with a cgo
+#      drift, the binaries job's build step compiles again 427 of the 1,034 packages of its
+#      whole build closure, as measured on a go-envoy-test entry, a family filled with cgo on;
+#      with another Go, every package. GOCACHE and a step's `if:` are refused although neither
+#      enters a key: a GOCACHE sends the objects away from the `~/.cache/go-build` the fill saves,
+#      which leaves the fill saving an empty entry, and a step that does not run compiles nothing,
+#      while every text still matches. Whole texts rather than the go commands read out of them, so
+#      that no shape of a command (a `GOFLAGS=` prefix, a `time`, a continued line, an `export`)
+#      can read as no command on both sides and pass. The two steps of a pair are two copies of one
+#      text rather than one script: a Run pinned to a script's text is reduced over every job of
+#      the called workflow, and the shard and alone jobs run in a container, so a shared script
+#      would make that filter read every Go file of the repository (ci_job_reads.py's browser gate
+#      says so where it lists no script Run). The setup-go inputs are compared because the readers'
+#      restore-keys do not carry the Go version: an entry a fill on another Go saved is restored,
+#      and every object of it misses - go-download-base-url chooses the distribution setup-go
+#      downloads, and another distribution's toolchain has another build ID; architecture chooses
+#      the architecture whose Go setup-go installs, and that Go's default GOARCH changes the key of
+#      every object, while the restore-keys carry only `runner.arch`. Not compared: a job's
+#      `if:` - the fill job's is `inputs.only != 'dispatch-builds'`, the selection every fill job
+#      of ci-caches.yaml but dispatch-builds carries, and no rule holds a fill job's `if:` for any
+#      family; the runner, whose OS and architecture the readers' restore-keys carry too, so an
+#      entry another OS or architecture filled is never restored - the binaries job then compiles
+#      everything, and its restore step shows the miss as "Cache not found" - and no rule holds the
+#      runner of any other fill family either; and GOPROXY, which decides where a module comes from
+#      and enters no key.
 #
 # A branch made before the gates and the //ci: lines moved out of ci_job_reads.py keeps its old
 # RULES and GATES there, and .github/ci-filters.yaml, when it merges main: the table refuses to

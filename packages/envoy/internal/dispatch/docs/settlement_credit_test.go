@@ -814,12 +814,12 @@ func newTestServiceInstance(t *testing.T, database *store.Store) (*Service, *htt
 func newTestServiceInstanceTo(t *testing.T, database *store.Store, logger *slog.Logger) (*Service, *httptest.Server) {
 	t.Helper()
 	service := New(Deps{
-		Store:     database,
-		Events:    events.NewBroker(),
-		Identity:  headerIdentity(database),
-		ServerURL: "https://dispatch.example",
-		Settle:    time.Hour,
-		Logger:    logger,
+		Store:    database,
+		Events:   events.NewBroker(),
+		Identity: headerIdentity(database),
+		Origins:  testOrigins,
+		Settle:   time.Hour,
+		Logger:   logger,
 	})
 	testcleanup.Add(t, func() {
 		if err := service.Shutdown(context.Background()); err != nil {
