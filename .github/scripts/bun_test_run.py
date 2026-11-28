@@ -48,7 +48,7 @@ be read from the wrong directory); or a script with a line break or any other fo
 one `bun test` command (bun gives the reporter flags to a script's last command alone). It also
 refuses to run outside a runner (no RUNNER_TEMP or GITHUB_WORKSPACE, or a working directory outside
 GITHUB_WORKSPACE).
-.github/scripts/check-workflow-files.sh's rule 8 (bun_test_steps.py) holds every bun test step of
+.github/scripts/check-workflow-files.sh's rule 10 (bun_test_steps.py) holds every bun test step of
 ci.yaml's run to this script; its tests are in bun_test_reports.test.sh, which runs it with the
 real bun.
 """

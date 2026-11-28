@@ -13,11 +13,11 @@ description: >-
   keeps its record too (upload-artifact leaves such files out by default).
   .github/scripts/bun_test_reports.py reads them (docs/testing.md, "Which bun tests a CI job
   ran"). Call it with `if: always()`, so a failed, timed-out or cancelled job keeps what its runs
-  wrote; .github/scripts/check-workflow-files.sh's rule 8 holds every such job to this one step.
+  wrote; .github/scripts/check-workflow-files.sh's rule 10 holds every such job to this one step.
   A job whose bun test steps wrote no file fails here (if-no-files-found: error). The artifact
   keeps the repository's retention, 90 days, and is public, and the runner's log masker does not
   touch its files: a test name or output holding a secret is kept unmasked, so a secret in a bun
-  step's env is a point for review. Rule 8 of check-workflow-files.sh checks the artifact `name`
+  step's env is a point for review. Rule 10 of check-workflow-files.sh checks the artifact `name`
   and `path` against bun_test_record.py's PREFIX and REPORTS_DIR, respectively. It also requires
   `include-hidden-files: true`.
 

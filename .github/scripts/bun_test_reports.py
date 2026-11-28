@@ -42,7 +42,7 @@ These are every such line:
     - an artifact of the run (or a directory of the store) is named for no job that has a step
       named "Keep the bun test reports".
 
-A job with no step of that name runs no bun test (rule 8 of check-workflow-files.sh holds every
+A job with no step of that name runs no bun test (rule 10 of check-workflow-files.sh holds every
 job that does to one), and is not listed.
 
 --store DIR keeps each artifact it downloads, unpacked, under DIR/<artifact name>/, with the run's

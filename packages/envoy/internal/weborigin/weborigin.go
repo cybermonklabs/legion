@@ -17,6 +17,8 @@ import (
 
 	"golang.org/x/net/idna"
 	"golang.org/x/net/publicsuffix"
+
+	"github.com/sjawhar/envoy/internal/fold"
 )
 
 var (
@@ -70,6 +72,72 @@ func Parse(raw string) (*url.URL, error) {
 		return nil, fmt.Errorf("must be written as a browser writes this origin, %s: a lowercase scheme and no default port", canonical)
 	}
 	return &url.URL{Scheme: parsed.Scheme, Host: parsed.Host}, nil
+}
+
+// WithoutDefaultPort is host, a URL's host and port, with scheme's default port (443 for https, 80
+// for http) taken off, the scheme compared without case: as a browser writes an origin, and as RFC
+// 3986 Section 6.2.3 has a URL compared.
+func WithoutDefaultPort(scheme, host string) string {
+	for name, port := range defaultPorts {
+		if strings.EqualFold(scheme, name) {
+			// The suffix is written on the stack: a proof's check and each link's reading call this.
+			var suffix [len(":65535")]byte
+			host, _ = strings.CutSuffix(host, string(strconv.AppendInt(append(suffix[:0], ':'), int64(port), 10)))
+			break
+		}
+	}
+	return host
+}
+
+// SameHost reports whether a and b, each a scheme and a host (an origin, or a request's Host under
+// the scheme of the origin it is compared with), can be named by one request's Host. Two hosts are
+// one when their names are one (hostName: without regard to ASCII case, an IPv6 literal's
+// brackets or one trailing dot) and their ports are one as numbers, where a scheme's default port
+// (443 for https, 80 for http) is equal to no port. So https://b.example.test and
+// http://b.example.test share the Host b.example.test, https://B.Example.Test.:443 is
+// https://b.example.test's host, and https://b.example.test:8443 is a host of its own. A request's
+// Host names origin's host where SameHost(origin, &url.URL{Scheme: origin.Scheme, Host: host}).
+func SameHost(a, b *url.URL) bool {
+	aPort, aBare := hostPort(a.Scheme, a.Host)
+	bPort, bBare := hostPort(b.Scheme, b.Host)
+	return hostName(a.Host) == hostName(b.Host) && (aPort == bPort || aBare && bBare)
+}
+
+// SameHostName reports whether a and b have one host name, at any port of either: their names
+// compared as SameHost compares them (hostName: without regard to ASCII case, an IPv6 literal's
+// brackets or one trailing dot) and their ports not at all. It is the host a browser keeps one set
+// of cookies for, whatever the port.
+func SameHostName(a, b *url.URL) bool {
+	return hostName(a.Host) == hostName(b.Host)
+}
+
+// hostName is the name of host, a URL's host and port or a request's Host: any port taken off, an
+// IPv6 literal's brackets taken off, its ASCII letters lowered (fold.ASCII) and one trailing dot
+// dropped, since DNS reads "name." as "name".
+func hostName(host string) string {
+	if name, _, err := net.SplitHostPort(host); err == nil {
+		host = name
+	}
+	return strings.TrimSuffix(fold.ASCII(strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")), ".")
+}
+
+// hostPort is host's port under scheme, as SameHost compares it: a number, scheme's default where
+// host names none and -1 where it names no string of digits; and whether that port is scheme's
+// default, so that a request naming no port names host too (bare).
+func hostPort(scheme, host string) (int, bool) {
+	written := ""
+	if _, port, err := net.SplitHostPort(host); err == nil {
+		written = port
+	}
+	defaultPort, known := defaultPorts[fold.ASCII(scheme)]
+	if written == "" {
+		return defaultPort, known
+	}
+	port, err := strconv.Atoi(written)
+	if err != nil || strings.Trim(written, "0123456789") != "" {
+		return -1, false
+	}
+	return port, known && port == defaultPort
 }
 
 // ReservedLabel refuses a host label with "--" as its third and fourth characters, the reserved

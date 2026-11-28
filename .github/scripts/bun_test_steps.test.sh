@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Tests for rule 8 of check-workflow-files.sh (bun_test_steps.py): every bun test of ci.yaml's run
+# Tests for rule 10 of check-workflow-files.sh (bun_test_steps.py): every bun test of ci.yaml's run
 # runs under bun_test_run.py, and every job that runs one keeps its reports with the upload step.
 #
 # Each case builds a miniature repository under a temporary directory and symlinks the real
@@ -348,6 +348,6 @@ YAML
 run_check "$root"
 check "exits 0" "$(is "$status" 0)"
 check "says the record is UNKNOWN, not kept" \
-  "$(contains "$out" "and keep bun test reports UNKNOWN: there is no .github/workflows/ci.yaml, so rule 8 read no step$")"
+  "$(contains "$out" "and keep bun test reports UNKNOWN: there is no .github/workflows/ci.yaml, so rule 10 read no step$")"
 
-summary "bun_test_steps.py (check-workflow-files.sh rule 8)"
+summary "bun_test_steps.py (check-workflow-files.sh rule 10)"

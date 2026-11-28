@@ -1,4 +1,4 @@
-"""Rule 8 of .github/scripts/check-workflow-files.sh: every bun test of ci.yaml's run runs under
+"""Rule 10 of .github/scripts/check-workflow-files.sh: every bun test of ci.yaml's run runs under
 .github/scripts/bun_test_run.py, and every job that runs one keeps its reports.
 
 In ci.yaml and every workflow of this repository it reaches through its calls (the run a pull
@@ -95,7 +95,7 @@ def first_line(node: yaml.ScalarNode) -> int:
 
 
 def check_bun_test_steps(path: Path, root: object, problem, census: Census) -> None:
-    """Rule 8 over one workflow file, counting what it held into `census`."""
+    """Rule 10 over one workflow file, counting what it held into `census`."""
     jobs = mapping_get(root, "jobs")
     if not isinstance(jobs, yaml.MappingNode):
         return

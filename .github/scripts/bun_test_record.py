@@ -20,10 +20,10 @@ run's name and REPORT (`packages/pi-shared/test.xml`; at the repository's root, 
 
 runs() finds a directory's runs, and report_of() names one. The job's step named UPLOAD_STEP
 (UPLOAD_ACTION) uploads that directory as the artifact `PREFIX<the job's check run id>`.
-.github/scripts/check-workflow-files.sh's rule 8 (bun_test_steps.py) holds every bun test step of
+.github/scripts/check-workflow-files.sh's rule 10 (bun_test_steps.py) holds every bun test step of
 ci.yaml's run to the wrapper, with a report name NAME matches, every such job to that step, and
 the action's own upload to PREFIX and REPORTS_DIR. These names have this one spelling: the wrapper,
-the rule, the reader (bun_test_reports.py) and ci_job_reads.py import them from here, and rule 8
+the rule, the reader (bun_test_reports.py) and ci_job_reads.py import them from here, and rule 10
 holds the action's copy of the two to them.
 
 The rule. A run, found by its `.run` marker or by its report, is whole, and its report's tests are
@@ -74,7 +74,7 @@ UPLOAD_ACTION_DIR = UPLOAD_ACTION.removeprefix("./")
 UPLOAD_STEP = "Keep the bun test reports"
 REPORTS_DIR = "bun-test-reports"
 PREFIX = f"{REPORTS_DIR}-"
-# The run's name, which names its report: the wrapper refuses any other, and rule 8 reads only
+# The run's name, which names its report: the wrapper refuses any other, and rule 10 reads only
 # this one as a name.
 NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 REPORT = ".xml"

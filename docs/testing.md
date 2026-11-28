@@ -384,7 +384,7 @@ itself, whose tests import its sources by relative path.
   job it does not re-run is listed again under a new id with no artifact, and the artifact keeps
   the id of the attempt that ran the job. The artifact is kept for the repository's retention,
   90 days, and is public, as the log is.
-- `.github/scripts/check-workflow-files.sh`'s rule 8 (`.github/scripts/bun_test_steps.py`) holds
+- `.github/scripts/check-workflow-files.sh`'s rule 10 (`.github/scripts/bun_test_steps.py`) holds
   each bun test step of `ci.yaml`'s run to the wrapper, each such job to that upload step, and the
   upload action's artifact name and path to the record's, and refuses a bare `bun test` or
   `bun run test…`. Its docstring lists the forms it does not read.
