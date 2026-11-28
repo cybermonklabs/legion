@@ -156,6 +156,7 @@
   - TestProfilesCheckReportsWhatChangedAgainstTheOldFile  # 0.0 s
   - TestProfilesCheckSaysUnknownOfAKindOnlyTheStoreGives  # 0.0 s
   - TestProfilesCheckSaysWhenNothingChanged  # 0.0 s
+  - TestProfilesCheckSaysWhichBlockANameIsServedBehind
   - TestProfilesCheckServesNoTagByAKindAFileOfNoKindsMadeForABlock  # 0.0 s
   - TestProfilesCheckServesTheFileOfProxyBlocks  # 0.0 s
   - TestRDSAuthTokensSignsAConnectRequestForTheEndpointAndUser  # 0.0 s

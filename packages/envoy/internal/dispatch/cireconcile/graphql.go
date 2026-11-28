@@ -295,9 +295,10 @@ func (r *Reconciler) query(ctx context.Context, repository reconciled, after str
 	if repository.statuses {
 		document = headsQueryWithStatuses
 	}
-	started := time.Now()
+	clk := r.deadlineClock()
+	started := clk.Now()
 	body, status, _, err := r.GitHub.GraphQL(ctx, repository.token, document, variables)
-	c.graphQLTook = time.Since(started)
+	c.graphQLTook = clk.Now().Sub(started)
 	c.queries++
 	if err != nil {
 		return queryPage{}, err
@@ -695,12 +696,7 @@ func (r *Reconciler) graphQLPace(ctx context.Context, c *counts) {
 	if c.graphQLTook <= 0 {
 		return
 	}
-	timer := time.NewTimer(graphQLWait(c.graphQLTook))
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-	case <-timer.C:
-	}
+	r.waitForPace(ctx, graphQLWait(c.graphQLTook))
 }
 
 // graphQLWait is the pause one query of took earns: the time outside the budget, shared out in

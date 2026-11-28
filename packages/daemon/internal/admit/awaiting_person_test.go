@@ -373,17 +373,23 @@ func TestAWaitHeldByUntakenWorkStartsAtTheTaskConfirmation(t *testing.T) {
 // An awaiting root whose Dispatch claim a person or an outside session took cannot resume in its
 // own session, so the daemon takes it out of the workflow, and tells the controller nothing: the
 // controller reads the root from the state, at phase done beside the status it ran with. One the
-// daemon's own session or a session of its tree holds resumes as it is.
+// daemon's own session or a session of its tree holds resumes as it is, and so does one a session
+// its tree's own claim left behind holds: that claim is the daemon's, which queued that session's
+// release when it left it, so the root keeps its row until the release takes the claim.
 func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		holder string
+		// left seeds the holder's session as one the root's architect claim recorded and left
+		// behind: claim_sessions holds its name for that claim, whose session is another now.
+		left   bool
 		leaves bool
 	}{
-		{"a person", "user:alice", true},
-		{"a session outside the tree", "session:ses_elsewhere", true},
-		{"the daemon's own session", "session:" + dispatch.DaemonSession("LEGION-208"), false},
-		{"nobody", "", false},
+		{name: "a person", holder: "user:alice", leaves: true},
+		{name: "a session outside the tree", holder: "session:ses_elsewhere", leaves: true},
+		{name: "the daemon's own session", holder: "session:" + dispatch.DaemonSession("LEGION-208")},
+		{name: "a session the root's own tree left behind", holder: "session:ses_left", left: true},
+		{name: "nobody", holder: ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			pool := migratedPool(t)
@@ -391,6 +397,15 @@ func TestAnAwaitingRootAnOutsiderClaimedLeavesTheWorkflow(t *testing.T) {
 			tick(t, pool, admission, "tick-1")
 			if got := issue(t, pool, "LEGION-208").Phase; got != phase.AwaitingPerson {
 				t.Fatalf("phase = %s, want the root waiting", got)
+			}
+			if tc.left {
+				architect := awaitingArchitect(t, "LEGION-208")
+				tag, err := pool.Exec(context.Background(), `insert into claim_sessions (project, kind, name, claim)
+					select project, 'session', $2::text, token from claims where token = $1 and session <> $2::text`,
+					string(architect), strings.TrimPrefix(tc.holder, "session:"))
+				if err != nil || tag.RowsAffected() != 1 {
+					t.Fatalf("hold the session the architect of LEGION-208 left behind: %d rows, %v", tag.RowsAffected(), err)
+				}
 			}
 			seedDispatchClaim(t, pool, "LEGION-208", tc.holder)
 			tick(t, pool, admission, "tick-2")

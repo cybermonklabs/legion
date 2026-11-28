@@ -157,13 +157,13 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 		}
 		at = known
 	}
-	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, text: request.Query, started: time.Now()})
+	f.queries = append(f.queries, fakeQuery{repository: repository, after: after, page: at.page, text: request.Query, started: f.clockNow()})
 	asked := len(f.queries) - 1
 	f.inFlight++
 	f.mostInFlight = max(f.mostInFlight, f.inFlight)
 	defer func() {
 		f.mu.Lock()
-		f.queries[asked].ended = time.Now()
+		f.queries[asked].ended = f.clockNow()
 		f.inFlight--
 		f.mu.Unlock()
 	}()
@@ -189,6 +189,10 @@ func (f *fakeGitHub) answerQuery(w http.ResponseWriter, r *http.Request) {
 	}
 	if stall > 0 && stalled != nil {
 		stalled()
+	}
+	if takes > 0 && f.queryWait != nil {
+		f.queryWait(takes)
+		takes = 0
 	}
 	for _, wait := range []time.Duration{stall, takes} {
 		if wait <= 0 {
