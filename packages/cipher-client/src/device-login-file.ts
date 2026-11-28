@@ -33,6 +33,7 @@ import {
 } from "node:fs/promises";
 import { userInfo } from "node:os";
 import { dirname, isAbsolute, join } from "node:path";
+import { DISPATCH_SIGN_IN_SCOPES, type DispatchSignInScope } from "@legion/contracts";
 import { holdSecret } from "@legion/contracts/held-secrets";
 import {
   DEVICE_LOGIN_MOST_BYTES,
@@ -96,6 +97,10 @@ export interface DeviceLogin {
    *  answered, the broker's `BROKER_ACCESS_TOKEN_SECONDS`. Null where the file keeps none, as a
    *  file an older build wrote does not; the next refresh keeps it. */
   readonly accessLifeSeconds: number | null;
+  /** The Dispatch scopes the person approved, which every answer of a Dispatch sign-in names
+   *  again. Null for a machine login, which is what a file that keeps none reads as, as a file an
+   *  older build wrote does. */
+  readonly dispatchScopes: readonly DispatchSignInScope[] | null;
 }
 
 /** A member of the file's JSON as a string, "" where it is absent or not one. */
@@ -108,6 +113,31 @@ function member(json: Record<string, unknown>, name: string): string {
 function wholeMember(json: Record<string, unknown>, name: string): number | null {
   const value = json[name];
   return typeof value === "number" && Number.isSafeInteger(value) && value > 0 ? value : null;
+}
+
+/**
+ * A member of the file's JSON as a Dispatch sign-in's approved scopes: null where it is absent, as
+ * in a machine login's file. One that is there and is not a list of distinct scopes a sign-in may
+ * hold ({@link DISPATCH_SIGN_IN_SCOPES}), which no build writes, is refused: its scopes are not
+ * known, so the refusal names the sign-in's command with the scopes left for the person to name.
+ */
+function scopesMember(
+  json: Record<string, unknown>,
+  name: string
+): readonly DispatchSignInScope[] | null {
+  if (!Object.hasOwn(json, name)) return null;
+  const value = json[name];
+  const consentable: readonly unknown[] = DISPATCH_SIGN_IN_SCOPES;
+  if (
+    !Array.isArray(value) ||
+    new Set(value).size !== value.length ||
+    value.some((scope) => !consentable.includes(scope))
+  ) {
+    throw new Error(
+      `${DEVICE_LOGIN_FILE_NAMED}: ${name}, where it is given, is a list of distinct Dispatch scopes a sign-in may hold (${DISPATCH_SIGN_IN_SCOPES.join(", ")}); make the Dispatch sign-in again with: ${DEVICE_LOGIN_COMMAND} --scope <list>`
+    );
+  }
+  return value as DispatchSignInScope[];
 }
 
 /**
@@ -626,6 +656,10 @@ async function checkLinkDirectories(path: string, absent: () => Error): Promise<
  * read of a pipe nobody writes to never returns. Each refusal names the file by its setting
  * ({@link DEVICE_LOGIN_FILE_NAMED}) and quotes none of its content. The refresh and access tokens
  * are held (`holdSecret`), so no line this process prints carries them.
+ *
+ * A file with no `dispatch_scopes` is a machine login's, as every file an older build wrote is; one
+ * whose `dispatch_scopes` is there but is not a list of distinct scopes a sign-in may hold is
+ * refused, since no build writes it.
  */
 export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
   const absent = () =>
@@ -709,6 +743,7 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
   if (key.asymmetricKeyDetails?.namedCurve !== "prime256v1") {
     throw new Error(`${DEVICE_LOGIN_FILE_NAMED}: key is not a P-256 key`);
   }
+  const dispatchScopes = scopesMember(json, "dispatch_scopes");
   const accessToken = member(json, "access_token");
   const accessText = member(json, "access_expires_at");
   const accessExpiresAt = accessToken === "" || accessText === "" ? null : new Date(accessText);
@@ -722,6 +757,7 @@ export async function readDeviceLogin(path: string): Promise<DeviceLogin> {
     accessToken: accessUsable ? holdSecret(accessToken, accessExpiresAt) : "",
     accessExpiresAt: accessUsable ? accessExpiresAt : null,
     accessLifeSeconds: accessUsable ? wholeMember(json, "access_life_seconds") : null,
+    dispatchScopes,
   };
 }
 
@@ -799,6 +835,7 @@ export async function saveDeviceLogin(
     refresh_token: login.refreshToken,
     expires_at: login.expiresAt.toISOString(),
     broker: login.broker,
+    ...(login.dispatchScopes === null ? {} : { dispatch_scopes: login.dispatchScopes }),
     ...(login.accessToken === "" || login.accessExpiresAt === null
       ? {}
       : {

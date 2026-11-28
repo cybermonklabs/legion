@@ -1,0 +1,80 @@
+{
+  "id": 330181,
+  "issue_key": "ACME-1",
+  "artifact_id": null,
+  "project": "ACME",
+  "seq": 4,
+  "type": "issue.updated",
+  "actor": {
+    "kind": "session",
+    "id": "909e3d27-208d-40d4-afc1-896b234720e1",
+    "origin": {
+      "host": "lorem ",
+      "machine": "lorem ipsum dolor ",
+      "cwd": "lorem ipsum dolor sit amet lorem ipsum"
+    },
+    "owner": "alice@example.com"
+  },
+  "notify": false,
+  "created_at": "2026-11-10T06:41:12.779772Z",
+  "payload": {
+    "key": "ACME-1",
+    "rank": "l",
+    "repo": null,
+    "claim": null,
+    "route": null,
+    "title": "lorem ipsum dolor sit amet lorem ipsum dolor sit amet lor",
+    "labels": [],
+    "number": 26,
+    "parent": "ACME-2",
+    "status": "backlog",
+    "changed": [
+      "status",
+      "blocked_by"
+    ],
+    "project": "ACME",
+    "assignee": "alice@example.com",
+    "last_seq": 4,
+    "priority": null,
+    "ancestors": [
+      "ACME-2"
+    ],
+    "closed_at": null,
+    "blocked_by": [
+      "ACME-3",
+      "ACME-4"
+    ],
+    "components": {
+      "ids": [],
+      "mode": "inherit",
+      "reason": null,
+      "unknown": [],
+      "inherited_from": null
+    },
+    "created_at": "2026-11-10T06:40:52.476687Z",
+    "created_by": {
+      "id": "909e3d27-208d-40d4-afc1-896b234720e1",
+      "kind": "session",
+      "owner": "alice@example.com",
+      "origin": {
+        "cwd": "lorem ipsum dolor sit amet lorem ipsum do",
+        "host": "lorem ",
+        "machine": "lorem ipsum dolor "
+      }
+    },
+    "updated_at": "2026-11-10T06:41:12.788562Z",
+    "resolved_repo": null,
+    "thread_logins": [],
+    "external_links": [],
+    "plan_artifact_id": "",
+    "references_changed": [
+      {
+        "id": "ACME-3",
+        "kind": "issue"
+      }
+    ],
+    "primary_artifact_id": "771cae10-0286-409b-87e0-b4462d5de534",
+    "decisions_artifact_id": "",
+    "verification_artifact_id": "59699dc2-8f43-464a-af76-5596999676a9"
+  }
+}

@@ -152,7 +152,9 @@ const handoverReadBound = roleHolderReadTimeout
 // one principal, so that handover stands. An agent session that names a person's session is
 // refused by design: its credential acts for its service, for another principal, or for that
 // person on a project an operator's entry names, which is another principal than the person's own
-// token (ciphertoken.Caller.Principal). A credential that proves no principal acts for any session
+// token (ciphertoken.Caller.Principal). So is a session of one of the person's Dispatch sign-ins
+// that names the session of another, or of their own token: each sign-in is a principal of its
+// own (oauthwire.ConsentedPrincipal). A credential that proves no principal acts for any session
 // on every route already, and may name a session whose last registration proved none either,
 // which is every handover on a listener its clients reach with no credential; it may not name a
 // session that registered as a principal.
