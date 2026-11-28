@@ -83,7 +83,8 @@ export interface OutlineWriter {
   readonly reply: ReplyTarget | null;
   /** Sets the line to reply to `node` and puts the caret in it. An open question's Reply is a
    *  question back, which hands the turn to whoever asked it; an answered or resolved one's is a
-   *  word under it that carries no turn, so a reader can answer the thread they are reading. */
+   *  word under it that carries no turn, so a reader can answer the thread they are reading.
+   *  Under Threads it sets nothing (the provider's `threads`). */
   readonly replyTo: (item: ReplyItem | StatementItem) => void;
   /** The name the line's writes are held under (`held-sends.ts`), so a send that is out, or was
    *  refused, comes back with its draft and its reply whatever unmounts the line. */
@@ -114,7 +115,8 @@ export interface OutlineWriter {
    *  Reply, whose reply is a comment on the issue. */
   readonly writeOnIssue: () => void;
   /** Sets the line to edit the reader's own comment `id`, its words `body`, which Save writes
-   *  back: the old thread card's Edit, which the comment's facts in the panel now carry. */
+   *  back: the old thread card's Edit, which the comment's facts in the panel now carry. Under
+   *  Threads it sets nothing (the provider's `threads`). */
   readonly edit: (id: string, body: string) => void;
   /** The comment the line is editing, if it is. */
   readonly editing: { readonly body: string; readonly id: string } | undefined;
@@ -279,12 +281,19 @@ export function OutlineWriterProvider({
   children,
   issueKey,
   openAsks,
+  threads = false,
 }: {
   children: ReactNode;
   issueKey: string;
   /** The asks the issue read holds open (`IssueDetails.open_asks`), which `land` reads beside
    *  the asks read, as the outline and the history do (`issueAsks`). */
   openAsks: IssueDetails["open_asks"];
+  /** Threads is the open view (`IssueAddress.preset`), where the page mounts no box at the foot
+   *  (`slots/foot.tsx`, dispatch://INFRA-5704 R16). There Details' Reply on a turn of its
+   *  history and its Edit on the reader's own comment set no target, which Conversation would
+   *  draw once the reader goes back to it (decision 127, c-box); a target the line held before
+   *  Threads opened stays held. False unless given. */
+  threads?: boolean;
 }): ReactNode {
   const sendKey = useMemo<MutationKey>(() => ["issue-composer", issueKey], [issueKey]);
   const store = useHeldSends();
@@ -383,6 +392,8 @@ export function OutlineWriterProvider({
   }, []);
   const replyTo = useCallback(
     (item: ReplyItem | StatementItem) => {
+      // Threads mounts no box at the foot, so a Reply there aims nothing (`threads`).
+      if (threads) return;
       // While a send of the line's own is out, a Reply is refused: the reply it was sent with is
       // the one the line shows until Dispatch decides it, and the redirect below reads only a
       // send that was refused or none (`held-sends.ts`'s `redirectedReplyTarget`).
@@ -418,7 +429,7 @@ export function OutlineWriterProvider({
       setReply(redirectedReplyTarget(store, sendKey, target));
       focus();
     },
-    [agentText, comments.data, focus, issueKey, messages.data, sendKey, setReply, store]
+    [agentText, comments.data, focus, issueKey, messages.data, sendKey, setReply, store, threads]
   );
   const answering = useCallback((node: TreeNode): AnswerTarget | undefined => {
     const item = conversationItem(node);
@@ -503,6 +514,8 @@ export function OutlineWriterProvider({
   }, [clear, focus, sendKey, store]);
   const edit = useCallback(
     (id: string, body: string) => {
+      // As a Reply is (`replyTo`), an Edit under Threads aims nothing (`threads`).
+      if (threads) return;
       if (store.sendingNow(sendKey)) return;
       const line = { setAnswer, setEditing, setReply, setStatement };
       if (keptOnTarget(store.get(sendKey)?.request, line)) {
@@ -515,7 +528,7 @@ export function OutlineWriterProvider({
       setEditing({ body, id });
       focus();
     },
-    [focus, sendKey, setReply, store]
+    [focus, sendKey, setReply, store, threads]
   );
   const writer = useMemo<OutlineWriter>(
     () => ({
