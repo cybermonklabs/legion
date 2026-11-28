@@ -1,0 +1,13 @@
+kind: Fixed
+body: |-
+  `dispatch-route-adopt` refuses a tree with changes with commands that return that tree: `git -C
+  <tree> stash -u` under git, since a plain `git stash` left an untracked file and the next run
+  refused again, and `jj -R <tree> new` under jj, where a bare `jj new` acted on the checkout the
+  command was run from with `-C`. `split -rev` with a commit the checkout does not hold says that
+  the commit is missing, not that `routes_table.go` does not exist. The report names the side
+  that added, changed or removed each route, so the move's own branch merging an old-layout
+  revision is told that the revision added a route. The server guide's route item, the README's
+  Routes paragraph and the command's package comment say what it does.
+time: 2026-11-28T05:05:56Z
+custom:
+    Issue: INFRA-6299
