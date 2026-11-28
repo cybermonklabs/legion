@@ -249,19 +249,22 @@ func OutboxLanes() []OutboxLane {
 // (state_change, state_admission and state_boot on the state lane, which publish what Dispatch
 // observes, the claims the release stops among it, and which a held row would hold every later
 // event of the project behind), the writes of an issue's step records and of the plan its run
-// carries out (step_record, plan_record), the release of a Dispatch claim (claim_release), the
-// reconcile of a tree's news of its approved design
-// (design_changes), which reads Dispatch and writes the news record, a supervise row that stops a
-// role (op `suspend`, `issue_close`, `tree_close`, a stopped task's `step_stop`, and a project
-// pause's `pause_stop`, which stops a live role and keeps its session, phase and task, and stops
-// nothing once its pause has ended), the retirement of the task of a phase the workflow stopped
-// (op `retire_task`), which writes the claim's record alone while the release holds, since the
-// machine hands no claim anything then (supervise.Deps.ProjectReleaseHolds), an issue's pod
-// deleted after its close (issue_suspend), a linger's close and its workspace's removal
-// (linger_close, workspace_remove), a gate's seed (gate_seed), the two reads of Dispatch for a
-// root's design-gate basis and for a re-parented root (pending_basis_seed, reparent_seed), each of
-// which applies what it read as a fact, and an issue's branch (issue_branch). None of them makes a
-// pod or prompts a role, and a start or a notice one of them queues is a row this holds. A
+// carries out (step_record, plan_record), the release of a Dispatch claim (claim_release: the
+// move's, the boot pass's, and the one a claim write queues for a session it left behind, which
+// starts no role either; a claim the release stops keeps its session, so its stop leaves no
+// session behind, and a left session's row that finds a stopped claim naming that session as its
+// current one leaves the Dispatch claim to it, works-now), the reconcile of a tree's news of its
+// approved design (design_changes), which reads Dispatch and writes the news record, a supervise
+// row that stops a role (op `suspend`, `issue_close`, `tree_close`, a stopped task's `step_stop`,
+// and a project pause's `pause_stop`, which stops a live role and keeps its session, phase and
+// task, and stops nothing once its pause has ended), the retirement of the task of a phase the
+// workflow stopped (op `retire_task`), which writes the claim's record alone while the release
+// holds, since the machine hands no claim anything then (supervise.Deps.ProjectReleaseHolds), an
+// issue's pod deleted after its close (issue_suspend), a linger's close and its workspace's
+// removal (linger_close, workspace_remove), a gate's seed (gate_seed), the two reads of Dispatch
+// for a root's design-gate basis and for a re-parented root (pending_basis_seed, reparent_seed),
+// each of which applies what it read as a fact, and an issue's branch (issue_branch). None of them
+// makes a pod or prompts a role, and a start or a notice one of them queues is a row this holds. A
 // `pause_stop` that runs while the release holds suspends a role the release has not stopped yet
 // with the idle release's source, which the release's own suspension then takes over (supervise's
 // suspensionRank), and leaves a role the release stopped as it stands, ending its stop as taken
@@ -384,11 +387,19 @@ type OwedStart struct {
 // OutboxPayload is the sealed vocabulary of payloads a workflow may enqueue.
 type OutboxPayload interface{ OutboxKind() OutboxKind }
 
-// ClaimRelease releases the issue's Dispatch claim: the row's issue column is the whole of what
-// it carries. The holder and the issue's record are read when the row runs, not when it is
-// queued, so a re-admission, a second park or a person who claims the issue meanwhile each end
-// the row on their own, with no generation or holder to fence it.
-type ClaimRelease struct{}
+// ClaimRelease releases the issue's Dispatch claim; the row's issue column names the issue. The
+// holder and the issue's record are read when the row runs, not when it is queued, so a
+// re-admission, a second park or a person who claims the issue meanwhile each end the row on their
+// own, with no generation or holder to fence it.
+type ClaimRelease struct {
+	// Session, when set, is the session the daemon left behind for a claim of the issue: store's
+	// putClaim queued the row in the claim write that moved the claim off it, and the row acts only
+	// while Dispatch shows that session as the holder. Empty is the row of a move out of the
+	// workflow and of the boot pass, which judge whatever holder Dispatch shows. A release before
+	// this one decodes the payload strictly (DisallowUnknownFields) and would retry a row that
+	// carries it for ever, so the way back of 20261127193428_claim_left deletes those rows.
+	Session string `json:"session,omitempty"`
+}
 
 func (ClaimRelease) OutboxKind() OutboxKind { return OutboxKindClaimRelease }
 

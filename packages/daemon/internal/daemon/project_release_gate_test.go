@@ -342,7 +342,10 @@ func TestProjectReleaseHoldsThePeriodicWork(t *testing.T) {
 // state_boot, dispatch://INFRA-3931): they publish to Dispatch what it observes of the daemon and
 // start or prompt no role, and the release's own stops write state_change rows, each claim it
 // stops a change of that claim's state, which a held row would keep from Dispatch, holding every
-// later state event of the project behind it on the project's one state lane.
+// later state event of the project behind it on the project's one state lane. Both shapes of a
+// Dispatch claim's release run (claim_release, dispatch://INFRA-3144), the one a claim write queues
+// for a session it left behind among them: it starts no role, and a claim the release stops keeps
+// its session, so its stop leaves none behind.
 func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T) {
 	t.Parallel()
 	const ownRound = "release:7"
@@ -379,22 +382,25 @@ func TestProjectReleaseHoldsEveryOutboxKindThatStartsOrPromptsARole(t *testing.T
 			{"a project-paused notice", record.ControllerNotice{Kind: record.ProjectPausedNotice}, true},
 			{"a project-resumed notice", record.ControllerNotice{Kind: record.ProjectResumedNotice}, true},
 		},
-		record.OutboxKindRoleMessage:        {{"a role message", record.RoleMessage{}, true}},
-		record.OutboxKindPhaseEnded:         {{"the end of a parent's worker's phase", record.PhaseEnded{}, true}},
-		record.OutboxKindHookPrompt:         {{"a hook's prompt", record.HookPrompt{}, true}},
-		record.OutboxKindMergeQueueRead:     {{"a merge-queue read", record.MergeQueueRead{}, true}},
-		record.OutboxKindMergeQueueRemoval:  {{"a merge-queue removal", record.MergeQueueRemoval{}, true}},
-		record.OutboxKindMergeHoldsChanged:  {{"the merger's message that the merge holds changed", record.MergeHoldsChanged{Project: "legion"}, true}},
-		record.OutboxKindConflictConfirm:    {{"a conflicting head's second read", record.ConflictConfirm{}, true}},
-		record.OutboxKindMergeForward:       {{"a merge forward's message", record.MergeForwardMessage{}, true}},
-		record.OutboxKindCheckWake:          {{"a check's wake", record.CheckWakeDue{}, true}},
-		record.OutboxKindCheckLook:          {{"a check's look", record.CheckLook{}, true}},
-		record.OutboxKindCheckBound:         {{"a check's bound", record.CheckBound{}, true}},
-		record.OutboxKindIssueBundle:        {{"an idle release's workspace check", record.IssueWorkspaceCheck{}, true}},
-		record.OutboxKindIssueRelease:       {{"an idle release's teardown", record.IssueRelease{}, true}},
-		record.OutboxKindDispatchStatus:     {{"a status write", record.StatusWrite{}, false}},
-		record.OutboxKindDispatchMessage:    {{"a message post", record.MessagePost{}, false}},
-		record.OutboxKindClaimRelease:       {{"a Dispatch claim's release", record.ClaimRelease{}, false}},
+		record.OutboxKindRoleMessage:       {{"a role message", record.RoleMessage{}, true}},
+		record.OutboxKindPhaseEnded:        {{"the end of a parent's worker's phase", record.PhaseEnded{}, true}},
+		record.OutboxKindHookPrompt:        {{"a hook's prompt", record.HookPrompt{}, true}},
+		record.OutboxKindMergeQueueRead:    {{"a merge-queue read", record.MergeQueueRead{}, true}},
+		record.OutboxKindMergeQueueRemoval: {{"a merge-queue removal", record.MergeQueueRemoval{}, true}},
+		record.OutboxKindMergeHoldsChanged: {{"the merger's message that the merge holds changed", record.MergeHoldsChanged{Project: "legion"}, true}},
+		record.OutboxKindConflictConfirm:   {{"a conflicting head's second read", record.ConflictConfirm{}, true}},
+		record.OutboxKindMergeForward:      {{"a merge forward's message", record.MergeForwardMessage{}, true}},
+		record.OutboxKindCheckWake:         {{"a check's wake", record.CheckWakeDue{}, true}},
+		record.OutboxKindCheckLook:         {{"a check's look", record.CheckLook{}, true}},
+		record.OutboxKindCheckBound:        {{"a check's bound", record.CheckBound{}, true}},
+		record.OutboxKindIssueBundle:       {{"an idle release's workspace check", record.IssueWorkspaceCheck{}, true}},
+		record.OutboxKindIssueRelease:      {{"an idle release's teardown", record.IssueRelease{}, true}},
+		record.OutboxKindDispatchStatus:    {{"a status write", record.StatusWrite{}, false}},
+		record.OutboxKindDispatchMessage:   {{"a message post", record.MessagePost{}, false}},
+		record.OutboxKindClaimRelease: {
+			{"a Dispatch claim's release", record.ClaimRelease{}, false},
+			{"the release of the Dispatch claim of a session a claim write left behind", record.ClaimRelease{Session: "ses_left"}, false},
+		},
 		record.OutboxKindGatedStepsPublish:  {{"the gated steps' publish", record.GatedStepsPublish{}, false}},
 		record.OutboxKindDesignGatesPublish: {{"an issue's design gates' publish", record.DesignGatesPublish{}, false}},
 		record.OutboxKindRoleHoldersPublish: {{"an issue's role holders' publish", record.RoleHoldersPublish{}, false}},

@@ -2829,6 +2829,54 @@ After an operator changes an issue's phase, tree or wait, a slot or a claim by S
 A whole read of the project that was in flight as the `PUT` landed stands for the `PUT`'s read, and its snapshot can predate the edit.
 Where the project's first `legion intake: whole read` line after the `PUT` is of a read that began before the `PUT`, as its `started` earlier than the `updated_at` the `PUT` answers shows, `PUT` the setting once more.
 
+#### Rolling back the release that releases a left session's claim
+
+This release releases the Dispatch claim of each session that the daemon leaves behind (dispatch://INFRA-3144).
+Each claim write that moves a claim off a session it recorded queues a `claim_release` row whose payload names that session, `{"session": "<session>"}` (store's `putClaim`).
+The row of a move out of the workflow and the row of the boot pass carry no session, as before (`{}`).
+Its migration `20261127193428_claim_left` adds `issues.claim_left`, null on every issue it finds: why the newest claim release that judged the issue's Dispatch holder left that holder's claim.
+`GET /legion/v1/state`, `GET /legion/v1/issues/{key}/record` and the `legion` tool's `read_record` serve it as `claimLeft` (daemon API contract entry 20261127202231, claim-left).
+
+The release before this one decodes an outbox payload strictly (`record.DecodeOutboxPayload`, `DisallowUnknownFields`).
+It refuses a `claim_release` row that carries `session` at every attempt, and that row retries for ever on its issue's claim lane.
+A daemon of this release reads `issues.claim_left` in every read of a record (record's `issueColumns`).
+`issues` and `outbox` hold the rows of every project that shares the database.
+So a rollback runs the way back while no daemon of the database runs:
+
+1. Stop every daemon of the database, for every project.
+   A daemon of this release that still runs fails every read of a record once the column is dropped.
+   It can also queue a new row that carries `session` after the delete.
+
+2. Run the way back in one `psql` session.
+   It is the last paragraph of the header of `20261127193428_claim_left.up.sql`:
+
+   ```sh
+   psql '<postgres_dsn>' -X -v ON_ERROR_STOP=1 <<'SQL'
+   begin;
+   delete from outbox where kind = 'claim_release' and payload ? 'session';
+   alter table issues drop column if exists claim_left;
+   delete from schema_version where version = 20261127193428;
+   commit;
+   SQL
+   ```
+
+3. Start the release before.
+
+The delete is owed to the release before.
+It deletes each `claim_release` row that carries `session`, and keeps each row that carries none, which the release before runs as it always did.
+The drop of the column and the delete of the version row go together.
+The release before needs neither, since it never names the column.
+The delete of the version row makes the version that the store reports, its highest recorded row, the version of the release before again.
+At the roll-forward, the store finds no row of this version and runs the migration again, which adds the column again, null on every issue.
+
+The rollback loses two things:
+
+- The Dispatch claims that the deleted rows were to release.
+  They stay in Dispatch, and the controller releases them by hand, as it did before this release.
+
+- The `claimLeft` entries.
+  The release before serves no `claimLeft`, and after the roll-forward no issue has an entry until a release leaves a claim again.
+
 #### Rolling back the broker release that holds a pod's grants to the daemon that enrolled it
 
 This release's broker migration `0037_pod_carry_launcher` rewrites, once, the `carry_principal` of every pod enrollment that carries the pod's account alone and that a token login which proved an account enrolled: to the pair of that account and the login's account, `account:<pod account> launched-by account:<login account>` (`exchange.PodLaunchPrincipal`).
@@ -4199,6 +4247,7 @@ A rollback of a store that cybermonklabs/legion#5310's release or a later one mi
 A rollback of a store that the release that backs a production check off a checking role that keeps failing migrated runs the way back in the header of `20261125000600_production_check_failed_looks.up.sql` first, with every daemon of the database stopped, which takes `wakeAt` off every queued `check_wake` row, drops `production_checks.failed_looks` and deletes that version's row, and then #5303's, since that release carries #5303; that store then reports the highest version it still records after the two blocks, #4392's 20261124182040, which that release carries too and which has no way back.
 A rollback of a store that the release that lets a message wake go ahead of the other paced wakes migrated runs the way back in the header of `20261125163328_message_wake_pacing.up.sql` first, with every daemon of the database stopped, which makes every catch-up that the wake pacing still holds due at once, takes `paced_turns` off every queued catch-up and clears every claim's message mark; it drops no column and deletes no version row, so that store then reports 20261125163328, whose two columns an earlier release names in no statement.
 A rollback of a store that #5285's release migrated runs the way back of the line above first, since #5285's release carries the release that lets a message wake go ahead and `20261125163328_message_wake_pacing` is the newest of the three migrations, then the ways back in the headers of `20261125023100_pod_replacements.up.sql` and `20261125023041_idle_release_declines_told_pod.up.sql`, newest first ([Rolling back the release that keeps no saved workspace](#rolling-back-the-release-that-keeps-no-saved-workspace)), which delete those two versions' rows, and then the steps of the line for the release that backs a production check off, since #5285's release carries that release too.
+A rollback of a store that the release that releases a left session's claim migrated runs the way back in the header of `20261127193428_claim_left.up.sql` first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, drops `issues.claim_left` and deletes that version's row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 `20261120210000_issue_release_committed.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its column in place and the release before writes none of it (the migration's header).
 `20261126001514_pod_release_give_ups.up.sql`, of #4194's release (dispatch://INFRA-3589), carries no way back, since a rollback leaves its table in place and the release before names it in no statement (the migration's header).
 #4194's release still adds one statement to such a rollback, which changes no schema version: it strips the `wakeDetail` key from each queued start, which the earlier release refuses, after #4194's daemon stops and before the earlier image starts ([Rolling back idle release](#rolling-back-idle-release)).
@@ -4328,6 +4377,7 @@ That statement was run on 2026-11-26 at 01:26Z against PostgreSQL 18.7, on a scr
 20261126001514_pod_release_give_ups, of dispatch://INFRA-3589, adds the table `pod_release_give_ups` and touches none of the six, so the block holds over it and leaves the table standing, which the earlier release names in no statement; it carries no way back.
 20261126110259_merge_holds_changed, of cybermonklabs/legion#4065, writes the outbox's kind check again with `merge_holds_changed` added to the list of 20261122154643 and touches none of the six either, so the block holds over it, and a rollback to a release before it takes the steps of its own section, [Rolling back the release whose controller acts on agents and whose daemon tells a held role of a merge hold](#rolling-back-the-release-whose-controller-acts-on-agents-and-whose-daemon-tells-a-held-role-of-a-merge-hold).
 20261126163320_state_events, of dispatch://INFRA-3931, writes the outbox's kind check again after 20261126110259_merge_holds_changed does, with the three state kinds added to that migration's list, `conflict_confirm`, `merge_forward`, `design_changes`, `pending_basis_seed`, `reparent_seed` and `merge_holds_changed` among it, and adds the tables `state_publication` and `state_admission_blocks`, the columns `outbox.state_seq`, `outbox.state_at` and `outbox.state_tx`, and the commit trigger that fills them; it touches none of the six, so the block holds over it and leaves what it adds standing, and a rollback to a release before it takes the steps of its own section, [Rolling out and rolling back the release that publishes the daemon's state events](#rolling-out-and-rolling-back-the-release-that-publishes-the-daemons-state-events).
+20261127193428_claim_left, of dispatch://INFRA-3144, adds `issues.claim_left`, null on every issue it finds, and touches none of the six, so the block holds over it; a rollback to a release before it runs the way back in its own header first, with every daemon of the database stopped, which deletes each queued `claim_release` row that carries `session`, a key the release before refuses as one it does not know, drops the column and deletes its version row ([Rolling back the release that releases a left session's claim](#rolling-back-the-release-that-releases-a-left-sessions-claim)).
 The `20261111225552` is the identifier of `20261111225552_phase_entry.up.sql`, whose header carries this same block;
 where that file carries another identifier in the release you roll back from, use that one.
 The SQL was run on 2026-11-13 at 04:00Z against PostgreSQL 18.6, on a scratch database that `internal/store`'s own `Migrate` took to the head of the branch the run was made on, as that head stood at that time, applying 133 migrations and leaving 133 versions recorded, the highest 20261112180548, and that held four outbox rows:
