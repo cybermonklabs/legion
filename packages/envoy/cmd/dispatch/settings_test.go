@@ -2314,6 +2314,24 @@ func TestEverySettingReachesItsReader(t *testing.T) {
 				`DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT="999us" (expected at least 1ms`)
 			refusedWith(t, map[string]string{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT": "500ms"}, "DISPATCH_TEST_HOOKS=1 required")
 		},
+		"DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY": func(t *testing.T) {
+			const name = "DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY"
+			if boot := resolveWith(t, nil); boot.SearchFillStandbyRetry != 0 {
+				t.Errorf("%s unset: SearchFillStandbyRetry = %v, want 0 (the default interval)", name, boot.SearchFillStandbyRetry)
+			}
+			for _, want := range []time.Duration{500 * time.Millisecond, 10 * time.Second} {
+				if boot := resolveWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: want.String()}); boot.SearchFillStandbyRetry != want {
+					t.Errorf("%s=%s: SearchFillStandbyRetry = %v, want %v", name, want, boot.SearchFillStandbyRetry, want)
+				}
+			}
+			for _, invalid := range []string{"not-a-duration", "-1s", "0s"} {
+				refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: invalid},
+					fmt.Sprintf("%s=%q (expected a positive Go duration)", name, invalid))
+			}
+			refusedWith(t, map[string]string{"DISPATCH_TEST_HOOKS": "1", name: "11s"},
+				name+`="11s" (expected at most 10s`)
+			refusedWith(t, map[string]string{name: "500ms"}, "DISPATCH_TEST_HOOKS=1 required with "+name)
+		},
 		"DISPATCH_TEST_HTTP_DRAIN": func(t *testing.T) {
 			if boot := resolveWith(t, map[string]string{}); boot.HTTPDrain != 0 {
 				t.Errorf("DISPATCH_TEST_HTTP_DRAIN unset: HTTPDrain = %v, want 0 (httpDrainBeforeDocuments' eleven seconds)", boot.HTTPDrain)

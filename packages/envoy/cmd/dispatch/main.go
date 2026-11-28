@@ -233,6 +233,10 @@ type bootConfig struct {
 	// boot meets a locked or a slow table waits each bound out; resolveBootConfig refuses one below
 	// searchFillTableLockTimeoutFloor.
 	SearchFillLockTimeout time.Duration
+	// SearchFillStandbyRetry replaces the keyword fill's interval between tries for its hold.
+	// Zero keeps the default of 10 s. Only DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY under the
+	// test hooks sets it, so an end-to-end test can watch for an unexpected fill over several retries.
+	SearchFillStandbyRetry time.Duration
 	// HTTPDrain is how long shutdown waits for the requests in flight before the document service
 	// settles the documents owed with requests still running, zero for httpDrainBeforeDocuments'
 	// eleven seconds; only DISPATCH_TEST_HTTP_DRAIN, under the test hooks, sets it, since a test
@@ -1425,12 +1429,13 @@ func main() {
 		go func() {
 			defer close(fillStopped)
 			if err := textversions.Run(ctx, textversions.Config{
-				Leases:   textVersionsLeases,
-				Horizon:  background.EventHorizon(),
-				Latency:  answersLatency,
-				Serving:  serving,
-				Events:   textVersionsEventsWake,
-				Released: textVersionsReleasedWake,
+				Leases:       textVersionsLeases,
+				Horizon:      background.EventHorizon(),
+				Latency:      answersLatency,
+				Serving:      serving,
+				Events:       textVersionsEventsWake,
+				Released:     textVersionsReleasedWake,
+				StandbyRetry: boot.SearchFillStandbyRetry,
 			}); err != nil {
 				slog.Error("dispatch: start the keyword fill", "error", err)
 			}
@@ -1879,6 +1884,7 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 		{"DISPATCH_TEST_COVERAGE_STATEMENT_TIMEOUT", &boot.CoverageStatementTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_LOCK_TIMEOUT", &boot.SearchFillLockTimeout},
 		{"DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT", &boot.SearchFillReadTimeout},
+		{"DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY", &boot.SearchFillStandbyRetry},
 		{"DISPATCH_TEST_HTTP_DRAIN", &boot.HTTPDrain},
 		{"DISPATCH_TEST_RATE_READING_BEFORE_RESET", &boot.RateReadingBeforeReset},
 	} {
@@ -1900,6 +1906,10 @@ func resolveBootConfig(env settingValues) (bootConfig, error) {
 	if read, statement := boot.SearchFillReadTimeout, searchFillBounds(boot.SearchFillLockTimeout).statement; read > 0 && read <= statement {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT=%q (expected longer than %s, the reads' statement timeout, so that Postgres's own timeouts still end a read before the client's deadline)",
 			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_READ_TIMEOUT")), statement)
+	}
+	if boot.SearchFillStandbyRetry > textversions.StandbyRetryBound {
+		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY=%q (expected at most %s, a deployment's standby retry: a test shortens it, never lengthens it)",
+			strings.TrimSpace(env.get("DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY")), textversions.StandbyRetryBound)
 	}
 	if boot.HTTPDrain > httpDrainBeforeDocuments {
 		return bootConfig{}, fmt.Errorf("DISPATCH_TEST_HTTP_DRAIN=%q (expected at most %s, a deployment's drain: what the %s stop grace leaves after the document service's %s budget and a 5s reserve)",

@@ -2696,12 +2696,6 @@ func writeKeywordFillComments(t *testing.T, database *store.Store, count int) []
 	return ids
 }
 
-// keywordFillDeferredWatch is how long a process booted with DISPATCH_SEARCH_FILL=off is watched,
-// from its admission to the registry of live server processes, for a keyword fill that started
-// anyway: longer than the 10 s a standby waits between its tries for the hold, where a fill that
-// started takes the hold the moment its process serves and writes the waiting events' rows.
-const keywordFillDeferredWatch = 15 * time.Second
-
 // keywordFillTablesEmpty is the end of the deferral line of a process booted with
 // DISPATCH_SEARCH_FILL=off on a database where neither table the keyword fill writes holds a row
 // (searchFillTableRows).
@@ -2709,27 +2703,33 @@ const keywordFillTablesEmpty = "search_text_versions_rows=none search_text_versi
 
 // DISPATCH_SEARCH_FILL decides whether a serving process starts the keyword fill. Booted with it
 // off, a process that the registry of live server processes admitted, and so serves, logs once
-// that the fill is deferred, saying that neither table the fill writes holds a row, and for
-// keywordFillDeferredWatch takes no hold of the fill's and writes no row and no cursor row, though
-// 50 events wait for their rows and 50 more are written while it serves. Booted with it on, on a
-// database of its own holding the same events, a process takes the hold, writes every event's row
-// and the cursor row, and logs no deferral; the same read that finds none of them in the off row
-// counts each of them there.
+// that the fill is deferred, saying that neither table the fill writes holds a row, and for three
+// standby retries (DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY, shortened so that a fill that started
+// anyway and was refused the hold at first has tried again twice) takes no hold of the fill's and
+// writes no row and no cursor row, though 50 events wait for their rows and 50 more are written
+// while it serves. Booted with it on, on a database of its own holding the same events, a process
+// takes the hold, writes every event's row and the cursor row, and logs no deferral; the same read
+// that finds none of them in the off row counts each of them there.
 func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 	t.Parallel()
 	t.Run("off", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		textversionstest.SeedIssue(t, database)
 		writeKeywordFillComments(t, database, 50)
-		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "off"}})
+		// Half a second gives a retry time to reach Postgres without making the three-retry watch long.
+		const standbyRetry = 500 * time.Millisecond
+		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{
+			"DISPATCH_SEARCH_FILL":                    "off",
+			"DISPATCH_TEST_SEARCH_FILL_STANDBY_RETRY": standbyRetry.String(),
+		}})
 		process.waitHealthy(t)
 		awaitRegistryAdmission(t, database, process)
 		writeKeywordFillComments(t, database, 50)
-		admitted := time.Now()
-		for time.Since(admitted) < keywordFillDeferredWatch {
-			requireNoKeywordFillWrite(t, database, fmt.Sprintf("%v after the process was admitted", time.Since(admitted).Round(time.Millisecond)))
-			time.Sleep(250 * time.Millisecond)
-		}
+		testwait.Span(t, 3*standbyRetry, "No test state can show that the fill never started. "+
+			"The child process is outside synctest. The off path writes nothing after its deferral "+
+			"line that a later action could read. A fill that starts anyway tries for the hold "+
+			"immediately and retries within one standby interval.")
 		requireNoKeywordFillWrite(t, database, "at the end of the watch")
 		if lines := process.logLines(keywordFillDeferredLine); len(lines) != 1 {
 			t.Fatalf("the process logged the deferral %d times; want once:\n%s", len(lines), process.Output.String())
@@ -2744,12 +2744,13 @@ func TestDispatchSearchFillDecidesWhetherTheKeywordFillStarts(t *testing.T) {
 		}
 	})
 	t.Run("on", func(t *testing.T) {
+		t.Parallel()
 		database := storetest.Open(t)
 		textversionstest.SeedIssue(t, database)
 		before := writeKeywordFillComments(t, database, 50)
 		process := startDispatchProcessWith(t, databaseURLOf(t, database), dispatchOptions{Env: map[string]string{"DISPATCH_SEARCH_FILL": "on"}})
 		process.waitHealthy(t)
-		process.waitForLog(t, 30*time.Second, keywordFillTookLine)
+		process.awaitLog(t, keywordFillTookLine)
 		after := writeKeywordFillComments(t, database, 50)
 		textversionstest.AwaitRowsUntil(t, database, append(before, after...), nil)
 		if writes := readKeywordFillWrites(t, database); writes.holds == 0 || writes.rows == 0 || writes.cursors == 0 {
