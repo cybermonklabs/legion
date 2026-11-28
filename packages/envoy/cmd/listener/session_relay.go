@@ -238,9 +238,9 @@ type sessionRelays struct {
 	pauseFirst  time.Duration
 	pauseMax    time.Duration
 	receiptWait time.Duration
-	// clock times the retry and pause waits, frame receipts and gap-mark writes; nil is the wall
-	// clock. nakDelay is the first rung of the nak ladder. Set before the first relay starts and
-	// read-only after.
+	// clock times the retry and pause waits, frame receipts, gap-mark writes and refused-reply
+	// log throttle; nil is the wall clock. nakDelay is the first rung of the nak ladder.
+	// Set before use and read-only after.
 	clock    clock.Clock
 	nakDelay time.Duration
 	// repositories is the edge listener's repository reader (edge_repositories.go), which holds
@@ -1895,7 +1895,7 @@ func (m *sessionRelays) onReply(msg *nats.Msg) {
 		return
 	}
 	if frame.run.sessionID != sessionID {
-		now := time.Now()
+		now := m.clk().Now()
 		logLine := m.refusedLoggedAt.IsZero() || now.Sub(m.refusedLoggedAt) >= relayRefusedReplyLogEvery
 		held := m.refusedHeld
 		if logLine {

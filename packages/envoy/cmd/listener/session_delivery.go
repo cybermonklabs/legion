@@ -204,10 +204,10 @@ type sessionDelivery struct {
 	marks atomic.Uint64
 	// now is the clock of the no-grant backoff; time.Now unless a test sets it.
 	now func() time.Time
-	// clock is what a registration's consumer calls are bounded on (sessionConsumerCallTimeout in
-	// consumerFor). It is nil in production and clk reads it as clock.Real then; a test that holds
-	// the registration route's own bounds on a clocktest.Fake (listenerDeps.clock) hands the same
-	// fake here, so how long a loaded machine takes over those calls is not what answers it.
+	// clock bounds a registration's consumer calls (consumerFor) and measures the time left
+	// for the shutdown drain (drain). A test that sets listenerDeps.clock for registration
+	// gives delivery the same clock, so both bounds use the same time. In production clk
+	// uses the wall clock.
 	clock clock.Clock
 	// beforeRegister runs at the top of each register call, before the session's lock is taken and
 	// the consumer's filter set; nil unless a test sets it. The window between a registration's
@@ -417,8 +417,7 @@ func (m *sessionDelivery) close() {
 	}
 }
 
-// clk is the clock a registration's consumer calls are bounded on: the one a test gave m, and
-// clock.Real otherwise, which every production listener is.
+// clk returns the delivery's clock, or the wall clock if none was set.
 func (m *sessionDelivery) clk() clock.Clock {
 	if m.clock == nil {
 		return clock.Real()
@@ -716,7 +715,7 @@ func (m *sessionDelivery) drain(ctx context.Context) {
 	}
 	timeout := sessionConsumerDrain
 	if deadline, ok := ctx.Deadline(); ok {
-		timeout = min(timeout, time.Until(deadline))
+		timeout = min(timeout, deadline.Sub(m.clk().Now()))
 	}
 	if timeout <= 0 {
 		m.consumers.Close()

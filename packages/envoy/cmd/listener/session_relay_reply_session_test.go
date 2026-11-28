@@ -17,6 +17,7 @@ import (
 
 	natsgo "github.com/nats-io/nats.go"
 	"github.com/sjawhar/envoy/internal/bus"
+	"github.com/sjawhar/envoy/internal/clock/clocktest"
 	"github.com/sjawhar/envoy/internal/cmdtest"
 	"github.com/sjawhar/envoy/internal/contracts"
 	"github.com/sjawhar/envoy/internal/id"
@@ -422,11 +423,12 @@ func (a *countingAcker) NakWithDelay(time.Duration) error { a.naks.Add(1); retur
 func TestAReplyNamingAnotherSessionMovesNoFrame(t *testing.T) {
 	t.Parallel()
 	var logs bytes.Buffer
-	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.NewWithWriter("test", &logs)}
+	fake := clocktest.New(time.Unix(0, 0))
+	relays := &sessionRelays{replyPrefix: "relay.reply.", frames: map[string]*relayFrame{}, logger: logging.NewWithWriter("test", &logs), clock: fake}
 	run := &relayRun{sessionID: "ses_two", outstanding: map[string]*relayFrame{}}
 	acker := &countingAcker{}
 	const token = "TOKENOFTHEFRAMEOFSESTWO234"
-	frame := &relayFrame{run: run, acker: acker, sentAt: time.Now(), delivered: 1}
+	frame := &relayFrame{run: run, acker: acker, sentAt: fake.Now(), delivered: 1}
 	relays.frames[token] = frame
 	run.outstanding[token] = frame
 	forge := func(word string) {
@@ -463,11 +465,7 @@ func TestAReplyNamingAnotherSessionMovesNoFrame(t *testing.T) {
 		}
 	}
 
-	// The limiter still reads the wall clock, not relays.clock. Move its stored log time
-	// back one minute so the next refusal logs without waiting.
-	relays.framesMu.Lock()
-	relays.refusedLoggedAt = relays.refusedLoggedAt.Add(-relayRefusedReplyLogEvery)
-	relays.framesMu.Unlock()
+	fake.Advance(relayRefusedReplyLogEvery + time.Second)
 	forge(relayReplyDone)
 	lines := refusals()
 	if len(lines) != 2 {
