@@ -134,8 +134,7 @@ function writeWhole(file: string, text: string): void {
 /** `codex queue --thread <id> --message=<text>`: hands the message to the running session and
  *  exits 0 once it took it, 1 when it refused it or no session process takes the queue. Each exit
  *  comes once its line has reached the pipe, or `QUEUE_EXIT_FLUSH_MS` after it asked to
- *  (`exitProcess`), inside the 30 s the plugin gives `codex queue` before it kills it
- *  (`QUEUE_TIMEOUT_MS`, packages/claude-envoy/src/codex/codex-cli.ts). */
+ *  (`exitProcess`). */
 async function queue(args: readonly string[]): Promise<never> {
   let thread: string | undefined;
   let message: string | undefined;

@@ -117,7 +117,6 @@ import {
   createPi,
   followedTopics,
   forwardedRoleEnvelope,
-  until as harnessUntil,
   hostBuiltins,
   listenCountingDials,
   NATS_DEFAULT_PORT,
@@ -7589,6 +7588,8 @@ console.log(JSON.stringify(args));
       stop = async () => fixture.handlers.get("session_shutdown")?.({}, live);
 
       natsState.heldFlush = new Promise<void>(() => undefined);
+      // The wait's one bound is the row's deadline, read before the clock is held.
+      const boundMs = Math.floor(timeLeft());
       jest.useFakeTimers();
       // The start's first open waits out its 50 ms bound for an answer the connection never
       // gives, which marks the connection and starts the background confirmation's sleep. The
@@ -7599,10 +7600,13 @@ console.log(JSON.stringify(args));
           startReturned = true;
         }
       );
-      while (!startReturned) {
-        await settle();
-        jest.advanceTimersByTime(10);
-      }
+      await turnsUntil(() => startReturned, "the start to return", {
+        boundMs,
+        turn: async () => {
+          await settle();
+          jest.advanceTimersByTime(10);
+        },
+      });
       await started;
 
       natsState.flushes.length = 0;
@@ -13998,9 +14002,9 @@ console.log(JSON.stringify(args));
         agent.push(targetedCommentEnvelope("btw", name));
         // Settled either way: the line that says the reply landed, or a second reply on the
         // attempt, or the failure the delivery prints.
-        await harnessUntil(
-          () => warnings.includes(LANDED) || replies.length > 1 || failures().length > 0,
-          "the reply's outcome"
+        await until(
+          "the reply's outcome",
+          () => warnings.includes(LANDED) || replies.length > 1 || failures().length > 0
         );
         await settle();
         return { replies, warnings, failures: failures() };
@@ -16432,7 +16436,7 @@ console.log(JSON.stringify(args));
           agent.push(directDispatchEnvelope("steer", "shell-command-broker-left-while-running"));
           // The command is running: the host leaves, and the move's pass runs to its end, before
           // the command is let go.
-          await harnessUntil(() => existsSync(started), "the command to be running", 10_000);
+          await until("the command to be running", () => existsSync(started));
           await moveHost(fixture, other);
           writeFileSync(go, "");
           await replied(1);
@@ -18010,7 +18014,7 @@ console.log(JSON.stringify(args));
     // then stays idle. The figure is the message's own: the host answers for the turn that is
     // running, so a reading taken when the frame goes out would be a different conversation's.
     // The trailing timer is the publisher's own, in this process, so the row holds it and
-    // `Date.now()` on Bun's fake clock (R4): the held frame has not gone out a millisecond before
+    // `Date.now()` on Bun's fake clock: the held frame has not gone out a millisecond before
     // its interval ends, and goes out at that end, stamped with it.
     test("publishes the reading its interval held back, as it stood at the message", async () => {
       process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS = "50";
@@ -18166,7 +18170,7 @@ console.log(JSON.stringify(args));
     // settings (this host lists no commands to ride after it), and the reading before it is gone.
     // The answer of no window ends inside the interval the turn's reading opened, so the interval
     // holds it: the trailing timer is the publisher's own, in this process, so the row holds it on
-    // Bun's fake clock and moves the clock to the interval's end (R4), as the trailing-reading row
+    // Bun's fake clock and moves the clock to the interval's end, as the trailing-reading row
     // above does.
     test("a window of zero after a reading replays the clearing frame in its place", async () => {
       process.env.ENVOY_CONTEXT_FRAME_INTERVAL_MS = "50";
@@ -19234,7 +19238,7 @@ console.log(JSON.stringify(args));
           `Look:\n\n![shot.png](${early})\n![kept.png](${kept})\n![late.png](${late})`
         )
       );
-      await harnessUntil(() => fixture.deliveries.length >= 3, "the three cards");
+      await until("the three cards", () => fixture.deliveries.length >= 3);
       await settle();
 
       // The ledger passed over every frame it holds; each handled attempt is a card with no accept.

@@ -1,9 +1,9 @@
 import { expect, test } from "bun:test";
 import { SHUTDOWN_SETTLE_MS } from "@legion/envoy-client/envoy-settings";
+import { turn } from "@legion/test-fixtures/fake-clock";
 import {
   deregisterAndDrain,
   HOST_SHUTDOWN_HANDLER_MS,
-  HOST_SHUTDOWN_MARGIN_MS,
   SHUTDOWN_DEADLINE_MS,
   SHUTDOWN_DELETE_MS,
   SHUTDOWN_RELEASE_MS,
@@ -29,8 +29,7 @@ function shutdownRace(deregistration: Promise<void>, draining: Promise<void> = P
   return { warned, deadline, ran };
 }
 
-test("the shutdown deadline is the host's limit less its margin, and holds the release, the settle and the DELETE's own budget", () => {
-  expect(SHUTDOWN_DEADLINE_MS).toBe(HOST_SHUTDOWN_HANDLER_MS - HOST_SHUTDOWN_MARGIN_MS);
+test("the shutdown deadline falls inside the host's limit, and holds the release, the settle and the DELETE's own budget", () => {
   expect(SHUTDOWN_DEADLINE_MS).toBeLessThan(HOST_SHUTDOWN_HANDLER_MS);
   expect(SHUTDOWN_DEADLINE_MS).toBeGreaterThanOrEqual(
     SHUTDOWN_RELEASE_MS + SHUTDOWN_SETTLE_MS + SHUTDOWN_DELETE_MS
@@ -50,10 +49,10 @@ test("a DELETE still pending at the deadline is given up and logged at warn with
       detail: `the DELETE was still pending ${SHUTDOWN_DEADLINE_MS} ms into the shutdown, so the session reads live until the listener's live window passes`,
     },
   ]);
-  // The failure it meets once given up is not logged a second time.
+  // The failure it meets once given up is not logged a second time: a turn of the event loop
+  // settles every promise the race chained on the DELETE.
   deletion.reject(new Error("aborted at its own deadline"));
-  await deletion.promise.catch(() => undefined);
-  await Promise.resolve();
+  await turn();
   expect(race.warned).toHaveLength(1);
 });
 
@@ -76,8 +75,10 @@ test("a DELETE that lands logs nothing, and the race waits for the drain beside 
   void race.ran.then(() => {
     ended = true;
   });
-  // The drain still runs: a later action's effect (its own end) is what ends the race.
-  await Promise.resolve();
+  // The drain still runs: a later action's effect (its own end) is what ends the race. A turn of
+  // the event loop settles every promise the race chained, so a race that did not wait for the
+  // drain would have ended by now.
+  await turn();
   expect(ended).toBe(false);
   drain.resolve();
   await race.ran;

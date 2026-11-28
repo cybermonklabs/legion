@@ -21,7 +21,6 @@ import type { EnvoyModule } from "../test/envoy-module";
 import {
   configDirectory,
   createPi,
-  until as harnessUntil,
   sessionContext,
   setNatsConnectForTests,
   settle,
@@ -40,6 +39,10 @@ useExtensionHarness();
 
 /** A pod's projected service-account token, which this machine trades at a stub broker. */
 const MACHINE_IDENTITY_TOKEN = fixtureSecret("machine");
+
+/** The request a stand-in `fetch` was handed, from whichever form its first argument took. */
+const requestOf = (input: string | URL | Request, init?: RequestInit): Request =>
+  input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
 
 describe("envoy OMP extension", () => {
   // The acceptance's row for #4140 (AcceptE2-2): a broker that answers no trade. Run it alone with
@@ -69,8 +72,7 @@ describe("envoy OMP extension", () => {
       process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
       process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
       globalThis.fetch = standInFetch(async (input, init) => {
-        const request =
-          input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+        const request = requestOf(input, init);
         if (new URL(request.url).host !== "broker.test")
           return responseWithRegistration(input, init, []);
         await request.text();
@@ -131,8 +133,7 @@ describe("envoy OMP extension", () => {
     const minted = new Map<string, string>();
     let trades = 0;
     globalThis.fetch = standInFetch(async (input, init) => {
-      const request =
-        input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+      const request = requestOf(input, init);
       if (new URL(request.url).host !== "broker.test")
         return responseWithRegistration(input, init, []);
       const session = new URLSearchParams(await request.text()).get("session") ?? "";
@@ -309,8 +310,7 @@ describe("envoy OMP extension", () => {
     /** Each token the stub broker minted, to the session its trade wrote under. */
     const minted = new Map<string, string>();
     globalThis.fetch = standInFetch(async (input, init) => {
-      const request =
-        input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+      const request = requestOf(input, init);
       const url = new URL(request.url);
       if (url.host !== "broker.test") return responseWithRegistration(input, init, []);
       const session = new URLSearchParams(await request.text()).get("session") ?? "";
@@ -444,8 +444,7 @@ describe("envoy OMP extension", () => {
     process.env.AGENT_SECRETS_MACHINE_IDENTITY = "kubernetes";
     process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
     globalThis.fetch = standInFetch(async (input, init) => {
-      const request =
-        input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+      const request = requestOf(input, init);
       if (new URL(request.url).host !== "broker.test")
         return responseWithRegistration(input, init, []);
       const session = new URLSearchParams(await request.text()).get("session") ?? "";
@@ -480,8 +479,8 @@ describe("envoy OMP extension", () => {
       next
     );
 
-    // A viewer of the old session asks for its history right after the new session's turn, as
-    // main's row asked: a control subject still open then would answer the replay with it.
+    // A viewer of the old session asks for its history right after the new session's turn: a
+    // control subject still open then would answer the replay with it.
     const control = natsState.controls.get(oldControl);
     control?.push(JSON.stringify({ type: "watch", v: 1 }));
     control?.push(JSON.stringify({ type: "replay", v: 1 }), "inbox-old-viewer");
@@ -542,7 +541,7 @@ describe("envoy OMP extension", () => {
     control?.push(JSON.stringify({ type: "watch", v: 1 }));
     control?.push(JSON.stringify({ type: "replay", v: 1 }), inbox);
     const answered = () => natsState.published.filter((each) => each.subject === inbox);
-    await harnessUntil(() => answered().length > 0, `the replay answer on ${inbox}`);
+    await until(`the replay answer on ${inbox}`, () => answered().length > 0);
     const answer = answered().at(-1);
     return z
       .object({ frames: z.array(z.record(z.string(), z.unknown())) })
@@ -920,8 +919,7 @@ describe("envoy OMP extension", () => {
     process.env.AGENT_SECRETS_MACHINE_TOKEN_FILE = tokenFile;
     const minted: string[] = [];
     globalThis.fetch = standInFetch(async (input, init) => {
-      const request =
-        input instanceof Request ? new Request(input, init) : new Request(input.toString(), init);
+      const request = requestOf(input, init);
       if (new URL(request.url).host !== "broker.test")
         return responseWithRegistration(input, init, []);
       const token = fixtureSecret("nats");

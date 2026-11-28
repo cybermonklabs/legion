@@ -28,6 +28,12 @@ export const followUp = { deliverAs: "followUp", triggerTurn: false } as const;
 /** The session the harness's cards go into, which `isOwnSession` answers for. */
 const OWN_SESSION = "ses_own";
 
+/** The text of the wake for one card, and for two. */
+export const oneCard =
+  "1 Envoy message above arrived with no turn to read it: read it and act on it.";
+export const twoCards =
+  "2 Envoy messages above arrived with no turn to read them: read them and act on them.";
+
 /** What `cardWakeHarness` hands a test; each member's doc is at its definition there. */
 export interface CardWakeHarness {
   readonly advance: (ms: number) => void;

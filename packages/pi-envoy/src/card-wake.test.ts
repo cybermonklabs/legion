@@ -7,6 +7,8 @@ import {
   contentOf,
   followUp,
   interrupted,
+  oneCard,
+  twoCards,
   wakeMessage,
 } from "../test/card-wake-host";
 import {
@@ -529,10 +531,6 @@ describe("in the startup phase", () => {
 // once `/legion-controller-start` sends it, and the daemon's in RPC mode sent right before the
 // daemon writes the prompt.
 describe("while the start-turn mark names the session", () => {
-  const oneCard = "1 Envoy message above arrived with no turn to read it: read it and act on it.";
-  const twoCards =
-    "2 Envoy messages above arrived with no turn to read them: read them and act on them.";
-
   test("sends a terminal's idle card as a follow-up that starts no turn while the start is unsent, and wakes for none while the mark holds, reading the mark again at each poll", async () => {
     const host = cardWakeHarness({ mode: "tui" });
     host.markUnsent();

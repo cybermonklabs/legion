@@ -37,10 +37,10 @@ import { NO_WINDOW_MODEL } from "../test/no-window-provider";
 // LEGION_TEST_OMP names the binary, as in card-delivery-omp.test.ts, and LEGION_TEST_NATS_URL the
 // NATS server. A run without both skips, except on GitHub Actions, where the pi-envoy job
 // supplies both.
-// This file runs in a `bun test` of its own, the package `test` script's second command, which
-// runs only the `-omp` files: envoy.test.ts's `mock.module("nats", …)` replaces `nats` for the
-// whole process, and a file loaded after it gets the mock's `connect`, which the check below
-// turns into one clear failure.
+// This file needs a `bun test` process of its own (in packages/pi-envoy,
+// `bun test extensions/session-surface-omp.test.ts`): envoy.test.ts's `mock.module("nats", …)`
+// replaces `nats` for the whole process, and a file loaded after it gets the mock's `connect`,
+// which the check below turns into one clear failure.
 const omp = process.env.LEGION_TEST_OMP;
 const natsUrl = process.env.LEGION_TEST_NATS_URL;
 const onActions = process.env.GITHUB_ACTIONS === "true";
@@ -1336,7 +1336,7 @@ test.skipIf(skip)(
 // so rather than leaving the person waiting. That the command ran to the limit rather than being
 // cut short is the session's own record of it (`SHELL_RECORD_FILE`, src/typed-shell.ts), written
 // as the command ends and so before the reply is posted: the delay the session armed the limit
-// for, and that the limit's timer, not a stop or the command's own end, is what ended it (R4: the
+// for, and that the limit's timer, not a stop or the command's own end, is what ended it (the
 // bound the session chose and the path that ended the command, read across the process boundary
 // rather than timed). That it was stopped long before its ten minutes is the reply arriving at
 // all, inside the deadline every wait in this file shares. src/typed-shell.test.ts holds the

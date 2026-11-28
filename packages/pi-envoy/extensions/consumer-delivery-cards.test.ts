@@ -11,7 +11,6 @@ import { logger } from "@oh-my-pi/pi-utils";
 import { REPLAY_DELIVERED_ENTRY } from "../src/missed-messages";
 import { AGENT, bootConsumer, peer, SESSION } from "../test/consumer-delivery-session";
 import {
-  until as harnessUntil,
   ledgerSeam,
   sessionContext,
   settle,
@@ -256,10 +255,9 @@ describe("consumer delivery", () => {
         JSON.stringify({ event_id: "evt-deep", source: "agent", topic: AGENT, payload: nested })
       );
       // The answer that settles the frame: `done` once it is taken, `nak` once it failed.
-      await harnessUntil(
-        () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak"),
+      await until(
         "the frame's settling answer",
-        30_000
+        () => session.replies(inbox).includes("done") || session.replies(inbox).includes("nak")
       );
 
       expect(session.replies(inbox)).toEqual(["received", "done"]);

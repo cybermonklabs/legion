@@ -5,6 +5,8 @@ import {
   type CardWakeHarness,
   cardWakeHarness,
   followUp,
+  oneCard,
+  twoCards,
   wakeMessage,
 } from "../test/card-wake-host";
 import { STARTUP_TURN_CAP_MS, STARTUP_TURN_POLL_MS } from "./card-wake";
@@ -12,21 +14,18 @@ import { STARTUP_TURN_CAP_MS, STARTUP_TURN_POLL_MS } from "./card-wake";
 // The Legion controller's start message is its session's first turn however slowly the pod
 // starts: no clock ends an unsent start-turn mark's hold, only the mark going does, and the Legion
 // entry clears it on a fact (`src/card-wake.ts`, "The start turn"). One row per fact, each after
-// the unsent mark held for twice the 30 s that main held it for from its first read, so a cap of
-// that length put back on the unsent mark sends its wake ahead of the start in every row. The one
-// clearing a bound makes, the daemon's registration deadline for its own controller whose claim
-// never answers, ends the process and the hold with it: no card is left to wake
-// (`packages/daemon/internal/supervise/table.go`, `registrationDeadline`). A sent mark keeps main's
+// the unsent mark held for twice the 30 s an earlier version held it for from its first read, so a
+// cap of that length put back on the unsent mark sends its wake ahead of the start in every row.
+// The one clearing a bound makes, the daemon's registration deadline for its own controller whose
+// claim never answers, ends the process and the hold with it: no card is left to wake
+// (`packages/daemon/internal/supervise/table.go`, `registrationDeadline`). A sent mark keeps its
 // cap, `STARTUP_TURN_CAP_MS` from the send, until the daemon retries a start it failed to deliver
 // (that cap's own doc says why): the rows that send the start hold the sent mark short of its cap,
 // and one holds a start the daemon never delivered to that cap and no further.
 
-/** Twice the 30 s main capped an unsent mark's hold at, from the wake's first read of it. */
+/** Twice the 30 s an earlier version capped an unsent mark's hold at, from the wake's first read
+ *  of it. */
 const TWO_OLD_CAPS_MS = 60_000;
-
-const oneCard = "1 Envoy message above arrived with no turn to read it: read it and act on it.";
-const twoCards =
-  "2 Envoy messages above arrived with no turn to read them: read them and act on them.";
 
 /** Runs the wake's checks for `ms` of the fake clock, one poll at a time: each sends no wake, and
  *  arms the next read of the mark one poll later. */

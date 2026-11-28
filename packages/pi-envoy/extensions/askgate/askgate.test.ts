@@ -446,6 +446,11 @@ async function shutdownTakesMs(g: BoundGate): Promise<number> {
   }
 }
 
+/** The gate's own cap on its shutdown's wait (`SHUTDOWN_WAIT_MS` in `askgate-core.ts`). An
+ *  aborted call that never settles is let go at its shorter grace (`SHUTDOWN_GRACE_MS`, 1 s), so
+ *  a handler that reads this much on the fake clock ran its whole wait out instead. */
+const GATE_SHUTDOWN_WAIT_MS = 1_500;
+
 /**
  * Lets the decision record the gate starts as its handler returns run to its end: nothing of the
  * gated call waits on it, so a test that reads what Dispatch was sent drains the microtasks the
@@ -1806,7 +1811,7 @@ describe("deadline and abandonment", () => {
       COMMENT
     );
     await started.promise;
-    expect(await shutdownTakesMs(g)).toBeLessThan(HOST_SHUTDOWN_HANDLER_MS);
+    expect(await shutdownTakesMs(g)).toBeLessThan(GATE_SHUTDOWN_WAIT_MS);
     expect(g.entries).toMatchObject([{ decision: "allow", outcome: "shutdown" }]);
     await gated;
   });
@@ -7171,7 +7176,7 @@ describe("rules check", () => {
     ]);
 
     const shut = await bothPending({}, false);
-    expect(await shutdownTakesMs(shut.g)).toBeLessThan(HOST_SHUTDOWN_HANDLER_MS);
+    expect(await shutdownTakesMs(shut.g)).toBeLessThan(GATE_SHUTDOWN_WAIT_MS);
     expect(shut.signals.map((s) => s.aborted)).toEqual([true, true]);
     expect(shut.g.entries).toMatchObject([
       { decision: "allow", outcome: "shutdown", ruleOutcome: "shutdown" },

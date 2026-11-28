@@ -16,7 +16,7 @@ import {
   type Registration,
   SESSION,
 } from "../test/consumer-delivery-session";
-import { until as harnessUntil, settle, useExtensionHarness } from "../test/extension-harness";
+import { settle, useExtensionHarness } from "../test/extension-harness";
 import { natsState } from "../test/listener-stand-in";
 
 useExtensionHarness();
@@ -82,7 +82,7 @@ describe("consumer delivery", () => {
       setSystemTime(new Date(start + 30_000));
       await session.tick();
       const inbox = session.relay(1, peer("start-race"));
-      await harnessUntil(() => session.replies(inbox).includes("done"), "the frame's done");
+      await until("the frame's done", () => session.replies(inbox).includes("done"));
 
       expect(session.cards("evt-start-race")).toHaveLength(1);
       expect(session.cards("Envoy inbound unavailable")).toEqual([]);
@@ -134,7 +134,7 @@ describe("consumer delivery", () => {
       const inbox = session.relay(4, peer("stored-meanwhile"), {
         storedAt: new Date(pastBound + 5_000),
       });
-      await harnessUntil(() => session.replies(inbox).includes("done"), "the frame's done");
+      await until("the frame's done", () => session.replies(inbox).includes("done"));
       expect(session.cards("evt-stored-meanwhile")).toHaveLength(1);
 
       // A later accepted registration tells nothing more.
@@ -170,7 +170,7 @@ describe("consumer delivery", () => {
     });
     try {
       // The start's pass found NATS closed, so its registration found no relay subject.
-      await harnessUntil(() => found().length > 0, "the log line");
+      await until("the log line", () => found().length > 0);
       expect(found()).toEqual([
         "warn envoy: a registration found that this session holds no relay subject, because its relay subject could not be opened: CONNECTION_REFUSED",
       ]);
@@ -296,10 +296,7 @@ describe("consumer delivery", () => {
   }): Promise<void> {
     const before = session.registrations.length;
     await session.tick();
-    await harnessUntil(
-      () => session.registrations.length >= before + 2,
-      "the tick's second attempt"
-    );
+    await until("the tick's second attempt", () => session.registrations.length >= before + 2);
     await settle();
   }
 
@@ -309,12 +306,12 @@ describe("consumer delivery", () => {
     });
     const start = Date.now();
     try {
-      await harnessUntil(() => session.registrations.length >= 2, "the first registration's retry");
+      await until("the first registration's retry", () => session.registrations.length >= 2);
       await settle();
       expect(session.cards("Envoy inbound unavailable")).toEqual([]);
       // The listener made the consumer before the record's write, so a stored message arrives.
       const inbox = session.relay(1, peer("unrecorded"));
-      await harnessUntil(() => session.replies(inbox).includes("done"), "the frame's done");
+      await until("the frame's done", () => session.replies(inbox).includes("done"));
       expect(session.cards("evt-unrecorded")).toHaveLength(1);
 
       setSystemTime(new Date(start + 15_000));
@@ -341,7 +338,7 @@ describe("consumer delivery", () => {
     });
     const start = Date.now();
     try {
-      await harnessUntil(() => session.registrations.length >= 2, "the first registration's retry");
+      await until("the first registration's retry", () => session.registrations.length >= 2);
       await settle();
       setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await refusedTick(session);
@@ -378,7 +375,7 @@ describe("consumer delivery", () => {
     const start = Date.now();
     const claims = /receive[sd]? (nothing|again)|inbound messages are/;
     try {
-      await harnessUntil(() => session.registrations.length >= 2, "the first registration's retry");
+      await until("the first registration's retry", () => session.registrations.length >= 2);
       await settle();
       setSystemTime(new Date(start + INBOUND_FIRST_OPEN_BOUND_MS + 1_000));
       await refusedTick(session);
@@ -421,7 +418,7 @@ describe("consumer delivery", () => {
     session.hold();
     const asked = session.registrations.length;
     const navigating = session.navigate();
-    await harnessUntil(() => session.registrations.length > asked, "the held registration");
+    await until("the held registration", () => session.registrations.length > asked);
     session.beat();
     await settle();
     return { session, navigating };
@@ -464,7 +461,7 @@ describe("consumer delivery", () => {
       const sent = session.registrations.length;
       session.release();
       await navigating;
-      await harnessUntil(() => session.registrations.length > sent, "the heartbeat's registration");
+      await until("the heartbeat's registration", () => session.registrations.length > sent);
       await settle();
 
       expect(session.registrations).toHaveLength(sent + 1);
@@ -484,7 +481,7 @@ describe("consumer delivery", () => {
     session.hold();
     const asked = session.registrations.length;
     const navigating = session.navigate();
-    await harnessUntil(() => session.registrations.length > asked, "the held registration");
+    await until("the held registration", () => session.registrations.length > asked);
     const notified = session.notifications.length;
 
     const stopping = session.stop();

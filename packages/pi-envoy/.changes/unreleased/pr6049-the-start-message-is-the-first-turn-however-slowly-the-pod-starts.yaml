@@ -11,7 +11,7 @@ body: |-
   operator's first turn, and one wake follows that turn. A start once sent still holds the cards
   for at most 30 s from its send, or until a failed send clears the mark: the daemon only logs a
   start it fails to deliver to its own controller, so nothing else would end that wait. Plugin
-  interface version 6, which pi-envoy reads; install it with the `@sjawhar/pi-legion` released
+  interface version 7, which pi-envoy reads; install it with the `@sjawhar/pi-legion` released
   beside it.
 time: 2026-11-28T13:29:26Z
 custom:

@@ -13,7 +13,7 @@ import { fixtureSecret } from "@legion/test-fixtures/fixture-secret";
 import { until } from "@legion/test-fixtures/wait";
 import { REPLAY_NOTICE_ENTRY } from "../src/missed-messages";
 import type { EnvoyModule } from "./envoy-module";
-import { createPi, until as harnessUntil, sessionContext, settle } from "./extension-harness";
+import { createPi, sessionContext, settle } from "./extension-harness";
 import { natsState, pushNatsStatus, response } from "./listener-stand-in";
 import type { SessionContext } from "./stand-in-host";
 
@@ -357,7 +357,7 @@ export async function bootConsumer(
     tickWithoutNats: async () => {
       const dials = natsState.failConnects;
       for (const interval of intervals) interval();
-      await harnessUntil(() => natsState.failConnects < dials, "the tick's NATS dial");
+      await until("the tick's NATS dial", () => natsState.failConnects < dials);
       await settle();
     },
     /** nats.js reports a reconnect. */

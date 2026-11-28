@@ -23,13 +23,7 @@ import {
   STREAM,
 } from "../test/consumer-delivery-session";
 import type { EnvoyModule } from "../test/envoy-module";
-import {
-  createPi,
-  until as harnessUntil,
-  sessionContext,
-  settle,
-  useExtensionHarness,
-} from "../test/extension-harness";
+import { createPi, sessionContext, settle, useExtensionHarness } from "../test/extension-harness";
 import {
   busOutageAnswer,
   natsState,
@@ -382,7 +376,7 @@ describe("consumer delivery", () => {
         await settle();
         answer = row.answer;
         session.relay(index + 1, removal(issue, topic));
-        await harnessUntil(() => warnings.length > index, `the warning about ${issue}'s removal`);
+        await until(`the warning about ${issue}'s removal`, () => warnings.length > index);
         expect(warnings[index]).toBe(row.warned);
       }
     } finally {

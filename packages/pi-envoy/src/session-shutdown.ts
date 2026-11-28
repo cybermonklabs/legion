@@ -14,7 +14,7 @@ export const HOST_SHUTDOWN_HANDLER_MS = 2_000;
 
 /** What the stop leaves of the host's limit for the synchronous work ahead of its race and for
  *  the host itself. */
-export const HOST_SHUTDOWN_MARGIN_MS = 1_000;
+const HOST_SHUTDOWN_MARGIN_MS = 1_000;
 
 /** How long the DELETE of a stop waits for the release of the session's role claims, which goes
  *  first: a quarter of a second, as the wait on a registration still on the wire. A listener

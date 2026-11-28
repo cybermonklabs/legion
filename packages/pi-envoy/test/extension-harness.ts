@@ -473,19 +473,15 @@ export async function settle(): Promise<void> {
 // clock, which `setSystemTime` leaves alone. A caller waiting on a real child process rather
 // than on this process's own work passes a longer bound: starting a shell and killing its group
 // is the operating system's work, and two seconds of it is a wait a loaded machine can lose.
-// A row whose wait can still be parked when the row ends (bun fails a row at its timeout and
-// goes on to the next while the row's own code waits on a turn of `settle`) passes `ended`, which
-// its teardown aborts: once it is aborted the wait reads the condition no more and returns, so it
-// neither polls on after the row nor throws into a later one.
+// Rows written before the shared wait (`@legion/test-fixtures/wait`) still call this, and each
+// moves there as it is carried (docs/testing.md, "A Bun test waits for its fact").
 export async function until(
   condition: () => boolean,
   what: string,
-  timeoutMs = 2_000,
-  ended?: AbortSignal
+  timeoutMs = 2_000
 ): Promise<void> {
   const deadline = performance.now() + timeoutMs;
   for (;;) {
-    if (ended?.aborted === true) return;
     if (condition()) return;
     if (performance.now() > deadline) throw new Error(`timed out waiting for ${what}`);
     await settle();

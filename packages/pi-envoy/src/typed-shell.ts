@@ -331,9 +331,7 @@ export async function runShellCommand(
     child.kill("SIGKILL");
     killGroup(child.pid);
   };
-  // The delay the limit is armed for, as `SHELL_RECORD_FILE` records it.
-  const armedMs = options.limitMs;
-  const limit = setTimeout(() => kill("limit"), armedMs);
+  const limit = setTimeout(() => kill("limit"), options.limitMs);
   options.started?.(() => kill("stop"));
   try {
     await child.exited;
@@ -344,7 +342,7 @@ export async function runShellCommand(
     // the last process holding them, which is what ends the reads.
     endGroup();
   }
-  recordShellCommand?.({ index, armedMs, endedBy: ended ?? "exit" });
+  recordShellCommand?.({ index, armedMs: options.limitMs, endedBy: ended ?? "exit" });
   await drained(reads);
   const output = printable(printed.text());
   const cut = output.length > SHELL_OUTPUT_MAX;

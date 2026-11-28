@@ -157,9 +157,6 @@ describe("envoy OMP extension", () => {
       const notifications: string[] = [];
       const context: SessionContext = {
         ...sessionContext("ses_redial"),
-        cwd: "/tmp/envoy-omp-test",
-        sessionManager: { ...topLevelSession, getSessionId: () => "ses_redial" },
-        setInterval: () => {},
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
       const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?redial-first-dial");
@@ -205,14 +202,12 @@ describe("envoy OMP extension", () => {
       ];
       const context: SessionContext = {
         ...sessionContext("ses_woken"),
-        cwd: "/tmp/envoy-omp-test",
         sessionManager: {
           ...topLevelSession,
           getSessionId: () => "ses_woken",
           getBranch: () => earlier,
           getEntries: () => earlier,
         },
-        setInterval: () => {},
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
       const { default: envoyExtension }: EnvoyModule = await import(
@@ -254,8 +249,6 @@ describe("envoy OMP extension", () => {
       const intervals: (() => void)[] = [];
       const context: SessionContext = {
         ...sessionContext("ses_restored"),
-        cwd: "/tmp/envoy-omp-test",
-        sessionManager: { ...topLevelSession, getSessionId: () => "ses_restored" },
         setInterval: (callback) => intervals.push(callback),
         ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
       };
@@ -698,13 +691,7 @@ describe("envoy OMP extension", () => {
         NATS_DIAL_PLAN
       );
       try {
-        const context: SessionContext = {
-          ...sessionContext("ses_pass_budget"),
-          cwd: "/tmp/envoy-omp-test",
-          sessionManager: { ...topLevelSession, getSessionId: () => "ses_pass_budget" },
-          setInterval: () => {},
-          ui: sessionContext().ui,
-        };
+        const context: SessionContext = sessionContext("ses_pass_budget");
         const { default: envoyExtension }: EnvoyModule = await import("./envoy.ts?pass-budget");
         const fixture = createPi();
         await envoyExtension(fixture.pi);
@@ -808,8 +795,6 @@ describe("envoy OMP extension", () => {
         const intervals: (() => void)[] = [];
         const context: SessionContext = {
           ...sessionContext("ses_named_failure"),
-          cwd: "/tmp/envoy-omp-test",
-          sessionManager: { ...topLevelSession, getSessionId: () => "ses_named_failure" },
           setInterval: (callback) => intervals.push(callback),
           ui: { ...sessionContext().ui, notify: (message) => notifications.push(message) },
         };
